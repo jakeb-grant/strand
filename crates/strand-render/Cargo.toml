@@ -11,6 +11,11 @@ publish.workspace = true
 strand-core.workspace = true
 strand-scene.workspace = true
 strand-text.workspace = true
+vello_cpu = "0.3"
+
+[dev-dependencies]
+png = "0.18"
+criterion = "0.8"
 
 [lints]
 workspace = true
