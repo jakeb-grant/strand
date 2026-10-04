@@ -13,6 +13,7 @@ publish = false
 strand-compiler = { path = "crates/strand-compiler" }
 strand-core = { path = "crates/strand-core" }
 strand-render = { path = "crates/strand-render" }
+strand-scene = { path = "crates/strand-scene" }
 strand-services = { path = "crates/strand-services" }
 strand-surface = { path = "crates/strand-surface" }
 strand-text = { path = "crates/strand-text" }

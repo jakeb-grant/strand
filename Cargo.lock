@@ -9,6 +9,7 @@ dependencies = [
  "strand-compiler",
  "strand-core",
  "strand-render",
+ "strand-scene",
  "strand-services",
  "strand-surface",
  "strand-text",
@@ -38,8 +39,13 @@ name = "strand-render"
 version = "0.0.0"
 dependencies = [
  "strand-core",
+ "strand-scene",
  "strand-text",
 ]
+
+[[package]]
+name = "strand-scene"
+version = "0.0.0"
 
 [[package]]
 name = "strand-services"
@@ -52,7 +58,7 @@ dependencies = [
 name = "strand-surface"
 version = "0.0.0"
 dependencies = [
- "strand-render",
+ "strand-scene",
 ]
 
 [[package]]

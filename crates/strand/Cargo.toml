@@ -11,6 +11,7 @@ publish.workspace = true
 strand-compiler.workspace = true
 strand-core.workspace = true
 strand-render.workspace = true
+strand-scene.workspace = true
 strand-services.workspace = true
 strand-surface.workspace = true
 strand-text.workspace = true
