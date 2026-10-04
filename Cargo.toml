@@ -1,0 +1,31 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+repository = "https://github.com/jakeb-grant/strand"
+publish = false
+
+[workspace.dependencies]
+strand-compiler = { path = "crates/strand-compiler" }
+strand-core = { path = "crates/strand-core" }
+strand-render = { path = "crates/strand-render" }
+strand-services = { path = "crates/strand-services" }
+strand-surface = { path = "crates/strand-surface" }
+strand-text = { path = "crates/strand-text" }
+strand-watch = { path = "crates/strand-watch" }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

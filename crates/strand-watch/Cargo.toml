@@ -1,0 +1,13 @@
+[package]
+name = "strand-watch"
+description = "Change sources: inotify directory watches, portal, outputs, compositor events, IPC"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true
