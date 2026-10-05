@@ -158,6 +158,11 @@ pub(crate) struct HandlerCtx {
     pub(crate) input: bool,
 }
 
+/// Flush work classes, in the order they run at one rank.
+const CLASS_TASK: u8 = 0;
+const CLASS_EVENTS: u8 = 1;
+const CLASS_SINK: u8 = 2;
+
 /// A non-fatal report the host may show (the overlay, `strand watch`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Diagnostic {
@@ -245,6 +250,25 @@ pub enum Diagnostic {
     /// shadowed by the runtime overlay, a write went to the overlay because
     /// the file is read-only (a notice), or a write failed.
     Settings(crate::settings::SettingsNotice),
+    /// Strict edges only ([`Runtime::set_strict_edges`]): `writer` wrote
+    /// `target` without a `rt.writes_to` declaration, so the runtime had to
+    /// learn the edge (a possible double run with an intermediate value).
+    /// Once per edge.
+    UndeclaredWrite {
+        /// The handler (effect, listener, timer, site) that wrote.
+        writer: NodeId,
+        /// The cell or event queue it wrote.
+        target: NodeId,
+    },
+    /// Strict edges only ([`Runtime::set_strict_edges`]): `reader`, which
+    /// declared its reads (`rt.reads_from`), read `source` without
+    /// declaring it. Once per edge.
+    UndeclaredRead {
+        /// The node that declared its reads.
+        reader: NodeId,
+        /// The source it did not declare.
+        source: NodeId,
+    },
 }
 
 /// Events kept per frozen listener of a lossless queue; past this the
@@ -359,6 +383,15 @@ pub(crate) struct Inner {
     pub(crate) fresh: RefCell<foldhash::HashSet<NodeId>>,
     /// Event queues holding events for suspended listeners.
     pub(crate) backlogged: RefCell<Vec<NodeId>>,
+    /// Effects downstream of a reload write ([`Signal::set_reloaded`]):
+    /// an `on change` handler among them re-baselines on its next run
+    /// instead of firing. Cleared at the end of each flush (except for
+    /// held ones).
+    rebaseline: RefCell<foldhash::HashSet<NodeId>>,
+    /// [`Runtime::set_strict_edges`]: report learned edges.
+    pub(crate) strict_edges: Cell<bool>,
+    /// Learned edges already reported (strict edges only).
+    pub(crate) strict_seen: RefCell<foldhash::HashSet<(NodeId, NodeId)>>,
     /// Bumped at the start of every `advance_to` and `flush`: the write-rate
     /// guard coalesces attempts per logic step, so timer-body writes and the
     /// following flush's writes count separately.
@@ -510,6 +543,9 @@ impl Runtime {
                 declared: RefCell::new(crate::order::Declared::default()),
                 fresh: RefCell::new(foldhash::HashSet::default()),
                 backlogged: RefCell::new(Vec::new()),
+                rebaseline: RefCell::new(foldhash::HashSet::default()),
+                strict_edges: Cell::new(false),
+                strict_seen: RefCell::new(foldhash::HashSet::default()),
                 epoch: Cell::new(0),
                 pending: RefCell::new(Vec::new()),
                 seq: Cell::new(0),
@@ -621,6 +657,34 @@ impl Runtime {
             .borrow()
             .get(id)
             .is_some_and(|n| n.color != Color::Clean)
+    }
+
+    /// A reload write changed `cell`: mark every effect downstream of it
+    /// (through derived values), so the `on change` handlers among them
+    /// take the new value as their baseline.
+    pub(crate) fn rebaseline_from(&self, cell: NodeId) {
+        let nodes = self.inner.nodes.borrow();
+        let mut seen: foldhash::HashSet<NodeId> = foldhash::HashSet::default();
+        let mut stack = vec![cell];
+        let mut marked = self.inner.rebaseline.borrow_mut();
+        while let Some(n) = stack.pop() {
+            let Some(node) = nodes.get(n) else { continue };
+            for &o in &node.observers {
+                if seen.insert(o) {
+                    if nodes.get(o).is_some_and(|m| m.kind == NodeKind::Effect) {
+                        marked.insert(o);
+                    }
+                    stack.push(o);
+                }
+            }
+        }
+    }
+
+    /// Whether `effect` is downstream of a reload write not yet seen by it
+    /// (clears the mark).
+    pub(crate) fn take_rebaseline(&self, effect: NodeId) -> bool {
+        let mut marked = self.inner.rebaseline.borrow_mut();
+        !marked.is_empty() && marked.remove(&effect)
     }
 
     /// Make a sink run after the other queued sinks have settled (`on
@@ -1673,9 +1737,10 @@ impl Runtime {
     }
 
     /// End the tick: deliver events, poll woken handlers (each at most
-    /// once), run dirty sinks (in topological order, see
-    /// [`Runtime::writes_to`]; `on change` handlers after the others have
-    /// settled) until quiescent, and
+    /// once) and run dirty sinks, all in topological order (see
+    /// [`Runtime::writes_to`]: a delivery at the highest rank of its queue
+    /// and listeners, a task at its own or its writer's; `on change`
+    /// handlers after the others have settled) until quiescent, and
     /// report what changed. Writes made by sinks during the flush are part
     /// of this tick.
     ///
@@ -1699,31 +1764,66 @@ impl Runtime {
         self.inner.epoch.set(self.inner.epoch.get() + 1);
         let mut runs: HashMap<NodeId, u32> = HashMap::new();
         let mut ran_once: foldhash::HashSet<NodeId> = foldhash::HashSet::default();
-        let mut polled: HashSet<NodeId> = HashSet::new();
+        let mut polled: foldhash::HashSet<NodeId> = foldhash::HashSet::default();
         let mut errors = Vec::new();
-        // Sinks by (rank, creation order): a computed topological order of
-        // the read edges and the write edges handlers have made (see
-        // `order`), so each sink runs after everything that writes what it
-        // reads, once.
-        let mut queue: BinaryHeap<Reverse<(u32, u64, NodeId)>> = BinaryHeap::new();
+        // Work by (rank, class, order): a computed topological order of the
+        // read edges and the write edges handlers have made (see `order`),
+        // so each sink, listener and woken task runs after everything that
+        // writes what it reads, sinks once. At one rank, woken tasks come
+        // first (in wake order), then event deliveries (in emit order),
+        // then sinks (in creation order).
+        let mut queue: BinaryHeap<Reverse<(u32, u8, u64, NodeId)>> = BinaryHeap::new();
+        // Tasks and event queues on the heap (each once).
+        let mut scheduled: foldhash::HashSet<NodeId> = foldhash::HashSet::default();
+        // Tasks woken again after their poll in this flush: the next one.
+        let mut again: Vec<NodeId> = Vec::new();
+        let mut order: u64 = 0;
         // Tasks woken by other threads are polled when the flush starts;
         // one woken while sinks run waits for the next flush (its write
         // could not be ordered before readers that already ran).
         let mut start = true;
         loop {
-            // Writers that are not sinks (woken handlers, event listeners)
-            // run as soon as they are due, before the next sink.
-            let mut progressed = self.poll_ready_tasks(&mut polled, start);
-            start = false;
-            progressed |= self.deliver_events(&mut runs, &mut errors);
             self.learn_queued();
-            self.queue_pending(&mut queue);
-            let Some(Reverse((rank, seq, id))) = queue.pop() else {
-                if progressed {
-                    continue;
+            for id in self.take_ready(start) {
+                if polled.contains(&id) {
+                    again.push(id);
+                } else if scheduled.insert(id) {
+                    order += 1;
+                    queue.push(Reverse((self.task_rank(id), CLASS_TASK, order, id)));
                 }
+            }
+            start = false;
+            for q in self.take_pending_events() {
+                if scheduled.insert(q) {
+                    order += 1;
+                    queue.push(Reverse((self.delivery_rank(q), CLASS_EVENTS, order, q)));
+                }
+            }
+            self.queue_pending(&mut queue);
+            let Some(Reverse((rank, class, seq, id))) = queue.pop() else {
                 break;
             };
+            if class != CLASS_SINK {
+                let now_rank = if class == CLASS_TASK {
+                    self.task_rank(id)
+                } else {
+                    self.delivery_rank(id)
+                };
+                if now_rank != rank {
+                    // A listener's or writer's rank changed since it was
+                    // queued.
+                    queue.push(Reverse((now_rank, class, seq, id)));
+                    continue;
+                }
+                scheduled.remove(&id);
+                if class == CLASS_TASK {
+                    polled.insert(id);
+                    self.poll_task(id);
+                } else {
+                    self.deliver_queue(id, &mut runs, &mut errors);
+                }
+                continue;
+            }
             let kind = {
                 let nodes = self.inner.nodes.borrow();
                 match nodes.get(id) {
@@ -1732,7 +1832,7 @@ impl Runtime {
                             // Renumbered by a reparent: requeue in order.
                             let seq = n.seq;
                             drop(nodes);
-                            queue.push(Reverse((self.sched_rank(id), seq, id)));
+                            queue.push(Reverse((self.sched_rank(id), CLASS_SINK, seq, id)));
                             continue;
                         }
                         n.kind
@@ -1744,7 +1844,7 @@ impl Runtime {
             let now_rank = self.sched_rank(id);
             if now_rank != rank {
                 // Raised (a write edge learned) since it was queued.
-                queue.push(Reverse((now_rank, seq, id)));
+                queue.push(Reverse((now_rank, CLASS_SINK, seq, id)));
                 continue;
             }
             if self.is_suspended(id) {
@@ -1775,6 +1875,9 @@ impl Runtime {
                 }
             }
         }
+        for id in again {
+            self.inner.ready.push_quiet(id);
+        }
         errors.extend(self.take_errors());
         // A cycle seen on several runs is reported once.
         let mut unique: Vec<(NodeId, Error)> = Vec::with_capacity(errors.len());
@@ -1798,6 +1901,15 @@ impl Runtime {
         tick.changed.dedup();
         tick.diagnostics = self.take_diagnostics();
         self.inner.flush_writes.borrow_mut().clear();
+        {
+            // Reload marks last one flush, except for handlers still held
+            // by a frozen component (they see the reload when released).
+            let mut marked = self.inner.rebaseline.borrow_mut();
+            if !marked.is_empty() {
+                let held = self.inner.held_set.borrow();
+                marked.retain(|n| held.contains(n));
+            }
+        }
         self.inner.flushing.set(false);
         // A task that woke itself during this flush waits for the next one;
         // tell the host so a loop sleeping on the hook polls it.
@@ -1808,7 +1920,7 @@ impl Runtime {
     }
 
     /// Move the sinks queued by writes into the flush's ordered queue.
-    fn queue_pending(&self, queue: &mut BinaryHeap<Reverse<(u32, u64, NodeId)>>) {
+    fn queue_pending(&self, queue: &mut BinaryHeap<Reverse<(u32, u8, u64, NodeId)>>) {
         let pending = std::mem::take(&mut *self.inner.pending.borrow_mut());
         if pending.is_empty() {
             return;
@@ -1818,7 +1930,7 @@ impl Runtime {
         for id in pending {
             if let Some(n) = nodes.get(id) {
                 let rank = if ranked { self.sched_rank(id) } else { 0 };
-                queue.push(Reverse((rank, n.seq, id)));
+                queue.push(Reverse((rank, CLASS_SINK, n.seq, id)));
             }
         }
     }

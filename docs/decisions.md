@@ -917,7 +917,9 @@ than a handler of the flush (another thread's waker) writes when it is
 polled. Ranks live in a side map (most nodes are rank 0), so the node and
 the 10k-node numbers stay as they were (`docs/benchmarks.md`). (Refined by
 "Declared reads" and "Foreign wakes" below: the first flush and woken
-tasks are now ordered too.)
+tasks are now ordered too; and by "Event deliveries and woken tasks are
+ranked" (review round 6): deliveries and polls are items of the ranked
+queue, no longer run before every sink.)
 
 **2026-10-05 · Declared reads and the provisional phase (review round
 1).** Read edges exist only once a node has run, so round 0 ran a reader
@@ -1198,7 +1200,8 @@ a moment after the sweep would lose its file; a quarantine also refreshes
 the time, so a corrupt copy is kept 90 days for inspection. A store no cell
 used (a tool's) never sweeps. Not chosen: a `forget(path)` call for the
 reconciler, which cannot tell an item removed for good from one filtered
-out for a while. Residual: a second shell instance sharing the directory
+out for a while. (Narrowed in round 6: only instance-qualified paths
+expire, see "Retention is for instance files".) Residual: a second shell instance sharing the directory
 and running longer than 90 days without touching a file can lose it to
 the other's exit sweep. (c) *`save`/`remove` are for tools.* They now
 replace what is queued for the file (the doc said "after") and run their
@@ -1217,3 +1220,90 @@ like any other. (f) The list of persisted writers is pruned at a
 high-water mark (twice its live size after the last prune), so cells
 created and disposed one for one around a power of two no longer rescan
 it on every creation.
+
+**2026-10-05 · Reload writes (review round 6).** Design, "Events and
+time": `on change x` fires "on changes, never at boot or reload". Round
+1's `Persisted::redeclare` adopted a new default with a plain `set`, so
+editing a `state … persist` default in source fired the `on change` that
+pops an OSD; the persist hand-over (surface recreate, monitor replug) and
+`Settings::redeclare` did the same through `set_raw`, and plain `state`
+default adoption had no way to avoid it. New primitive:
+`Signal::set_reloaded(rt, v)` writes the value (not rate-gated: not a
+handler's write) and marks every effect downstream of the cell, through
+derived values; an `on change` handler (`on_change`, `on_change_after`,
+`on_change_keyed`) whose next run finds its mark takes the value as its
+new baseline without running the handler or restarting a debounce, as a
+key change does. Marks last one flush (a handler held by a frozen
+component keeps its mark until it runs). Used by the Adopted path of
+`Persisted::redeclare`, the hand-over to a waiting cell, the new
+`Persisted::reset_reloaded` (`@reset` at reload) and
+`Settings::redeclare` (adopted defaults, type resets); the overlay's
+`[reset]` (`Persisted::reset`) is the user's action and stays an ordinary
+write, and so does a settings file the user edited (that is a change, not
+a reload). Residual: a real change to another input of the same `on
+change` in the reload's flush is absorbed into the baseline too; a reload
+is its own tick, so that does not happen in practice. Removes a concept
+(the reconciler no longer needs to know which handlers read a cell).
+
+**2026-10-05 · Retention is for instance files (review round 6).** Round
+5's 90-day sweep removed any cell file no cell had claimed for 90 days,
+including the plain declared path of a component that is simply not
+mounted (`if open { state level persist }`, a popup opened twice a year,
+a hidden page): silent loss of user state, which design.md does not have
+(`persist` keeps values across restarts; `[reset]`/`@reset` are the only
+ways to drop one). "Does it remove a concept, or add one?": expiry of
+declared state adds one, so it is gone. The sweep now only removes files
+of instance-qualified paths (a `[` in the path, escaped `%5B` in the file
+name: `list[<key>].x`, `bar[<monitor>].x`), the narrow problem it was
+added for, plus quarantined `.<name>.corrupt` copies (not values; a
+quarantine now refreshes the copy's time, so it is kept 90 days for
+inspection, as round 5 meant). Considered: having the binary pass the set
+of declared paths, so a removed declaration's file could expire too;
+not chosen, since a removed declaration's single file costs nothing and
+the binary would need a complete set at exit.
+
+**2026-10-05 · Small persist fixes (review round 6).** (a) `load` looks
+for the newest queued write, removal or quarantine, then the one in
+flight: a queued `Touch` (or settings job) no longer hides a write still
+in flight, which made a component remounted twice on a slow disk start
+from its default; claim and release no longer queue a touch behind an
+operation in flight. (b) A write made before a persisted cell's tracking
+effect first runs (the mount tick, `on mount { boots += 1 }`) arms the
+debounce from that first run (`on change` never fires for the first
+value, so it never did): it reached the disk only at unmount or shutdown
+and was lost by a crash. Settings files do the same for a field whose
+live value differs from what was shown. (c) A UI write over a key the
+user wrote as a table (`[a]`) replaces it as a new key with default
+spacing instead of keeping the table header's decor.
+
+**2026-10-05 · Event deliveries and woken tasks are ranked (review round
+6).** Round 0 delivered events and polled woken tasks before every sink,
+whatever their rank, so a listener declared to read a cell a handler
+writes in the same flush (`on notifications.received(n) { if !dnd { … }
+}` with `dnd` set by an effect) saw the old value and the handler wrote
+the new one after it: a glitch at the edge that declarations could not
+fix. They are now items of the flush's ranked queue: a queue's delivery
+runs at the highest rank of the queue and its listeners (all listeners
+get each event together, in order, as before; one listener with a high
+rank delays the queue's delivery to the others, which is still before
+anything that reads what they write), a woken task at its own rank (it
+ranks with the handler site that owns it) or its writer's. At one rank,
+woken tasks run before deliveries, deliveries before sinks (wave 1's
+order). A task is still polled at most once per flush; foreign wakes are
+still taken only when the flush starts. `tests/order_props.rs` adds
+listeners to the random graphs (one outside emit per flush, declared:
+every delivery sees final values). Also: a listener released by an
+earlier listener's handler during a delivery gets what it missed first,
+in order (round 0 queued it behind the rest of the batch).
+
+**2026-10-05 · Strict edges (review round 6).** Round 4 made a missing
+declaration countable (`Stats::learned_edges`), which a test has to
+read on purpose; principle: loud errors over silent ones.
+`rt.set_strict_edges(true)` reports every learned edge once, in the tick
+it is learned, as `Diagnostic::UndeclaredWrite { writer, target }` or
+`Diagnostic::UndeclaredRead { reader, source }` (the same edges the
+counter counts: undeclared reads only for nodes that declared their
+reads). Opt-in rather than `cfg(debug_assertions)`: runtime-internal
+nodes and Rust-side tests that declare nothing would flood every debug
+build; the VM's and compiler's test runtimes turn it on, and a debug
+binary may.

@@ -13,7 +13,9 @@
 //!   first, so an owner re-running disposes what it owns before that runs);
 //! * a cell or event queue written by a handler ranks above it
 //!   (`rank(cell) >= rank(writer) + 1`), and an event queue's listeners
-//!   rank with it;
+//!   rank with it or above (a listener also ranks with what it reads); a
+//!   queue is delivered at the highest rank of the queue and its
+//!   listeners, a woken task polled at its own or its writer's rank;
 //! * `on change` handlers start at [`LATE_RANK`]: they run after every
 //!   ordinary sink has settled, so one outside write fires them once with
 //!   the final values.
@@ -47,7 +49,7 @@
 //! its remaining edges need.
 
 use crate::error::Error;
-use crate::runtime::{NodeId, NodeKind, Runtime};
+use crate::runtime::{Diagnostic, NodeId, NodeKind, Runtime};
 
 /// What a declared or learned write edge became ([`Runtime::writes_to`],
 /// [`Runtime::write_edge`]).
@@ -281,6 +283,7 @@ impl Runtime {
             if self.exists(writer) && self.exists(target) {
                 if self.write_edge(writer, target).is_none() {
                     self.bump(|s| s.learned_edges += 1);
+                    self.report_learned(writer, target, true);
                 }
                 self.learn(writer, target);
             }
@@ -320,17 +323,61 @@ impl Runtime {
         };
         let nodes = self.inner.nodes.borrow();
         let Some(n) = nodes.get(id) else { return };
-        let undeclared = if list.len() > 16 && n.sources.len() > 16 {
+        let undeclared: Vec<NodeId> = if list.len() > 16 && n.sources.len() > 16 {
             let set: foldhash::HashSet<NodeId> = list.iter().copied().collect();
-            n.sources.iter().filter(|s| !set.contains(s)).count()
+            n.sources
+                .iter()
+                .filter(|s| !set.contains(s))
+                .copied()
+                .collect()
         } else {
-            n.sources.iter().filter(|s| !list.contains(s)).count()
-        } as u64;
+            n.sources
+                .iter()
+                .filter(|s| !list.contains(s))
+                .copied()
+                .collect()
+        };
         drop(nodes);
         drop(declared);
-        if undeclared > 0 {
-            self.bump(|s| s.learned_edges += undeclared);
+        if !undeclared.is_empty() {
+            self.bump(|s| s.learned_edges += undeclared.len() as u64);
+            for source in undeclared {
+                self.report_learned(id, source, false);
+            }
         }
+    }
+
+    /// Strict edges: report a learned edge once
+    /// ([`Diagnostic::UndeclaredWrite`] / [`Diagnostic::UndeclaredRead`]).
+    fn report_learned(&self, node: NodeId, other: NodeId, write: bool) {
+        if !self.inner.strict_edges.get()
+            || !self.inner.strict_seen.borrow_mut().insert((node, other))
+        {
+            return;
+        }
+        self.diagnose(if write {
+            Diagnostic::UndeclaredWrite {
+                writer: node,
+                target: other,
+            }
+        } else {
+            Diagnostic::UndeclaredRead {
+                reader: node,
+                source: other,
+            }
+        });
+    }
+
+    /// Report every edge the runtime has to learn as a diagnostic
+    /// ([`Diagnostic::UndeclaredWrite`], [`Diagnostic::UndeclaredRead`]),
+    /// once per edge, in the tick it is learned: what
+    /// [`Stats::learned_edges`](crate::Stats) counts, made loud. Off by
+    /// default; the VM's and compiler's test suites turn it on, so every
+    /// fixture fails on a missing `reads_from`/`writes_to` declaration
+    /// without asserting the counters. A debug build of the binary may turn
+    /// it on too (the overlay then shows a lowering bug).
+    pub fn set_strict_edges(&self, on: bool) {
+        self.inner.strict_edges.set(on);
     }
 
     /// `id` was just created by (or moved to) `owner`: it ranks no lower.

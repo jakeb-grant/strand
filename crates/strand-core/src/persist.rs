@@ -28,7 +28,10 @@
 //! is queued when its owner is disposed (unmount), at shutdown and when the
 //! last runtime handle is dropped, so a write made in the same tick as the
 //! unmount is not lost. [`Persisted::redeclare`] follows a default changed
-//! by a live reload and [`Persisted::reset`] is `@reset`.
+//! by a live reload, [`Persisted::reset_reloaded`] is `@reset` and
+//! [`Persisted::reset`] the overlay's `[reset]`. Reload-driven changes are
+//! reload writes ([`Signal::set_reloaded`]): `on change` handlers take them
+//! as their baseline.
 
 use std::cell::{Cell, RefCell};
 use std::fmt;
@@ -180,11 +183,13 @@ pub const PERSIST_SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
 /// Temp files of other processes older than this are removed.
 const STALE_TEMP: Duration = Duration::from_secs(60);
 
-/// How long a persisted file is kept when no cell claims it: per-instance
-/// paths (a list item's key, a monitor that never comes back) would
-/// otherwise pile up for good. A store that persisted cells used removes,
-/// when it goes (at exit), the files older than this that no cell of the
-/// process claimed; a claim refreshes the file's modification time.
+/// How long the file of an instance-qualified path (`list[<key>].x`,
+/// `bar[<monitor>].x`) is kept when no cell claims it: per-instance files
+/// (a list item's key, a monitor that never comes back) would otherwise
+/// pile up for good. A store that persisted cells used removes, when it
+/// goes (at exit), such files older than this that no cell of the process
+/// claimed (and quarantined copies older than this); a claim refreshes the
+/// file's modification time. A plain declared path never expires.
 pub const PERSIST_RETENTION: Duration = Duration::from_secs(90 * 24 * 60 * 60);
 
 type IoHook = Arc<dyn Fn(&Path) + Send + Sync>;
@@ -307,6 +312,15 @@ struct Queue {
     claimed: std::collections::HashSet<PathBuf>,
     /// A persisted cell used this store: it sweeps at exit.
     used: bool,
+}
+
+impl Queue {
+    /// An operation is queued or in flight for `file` (it rewrites the
+    /// file anyway, or is a touch already).
+    fn busy(&self, file: &Path) -> bool {
+        self.ops.iter().any(|(f, _)| f == file)
+            || self.in_flight.as_ref().is_some_and(|(f, _)| f == file)
+    }
 }
 
 struct Job {
@@ -538,12 +552,15 @@ impl Shared {
         })
     }
 
-    /// Remove cell files (and quarantined copies) that no cell has
-    /// claimed for [`PERSIST_RETENTION`]: per-instance paths
-    /// (`list[<key>].x`, a monitor that never comes back) do not pile up
-    /// for good. Files claimed in this process, or with an operation
-    /// queued, are kept; the check and the removal happen under the queue
-    /// lock, so a claim cannot slip in between.
+    /// Remove the files of instance-qualified paths (`list[<key>].x`,
+    /// `bar[<monitor>].x`: a `[` in the path) and quarantined copies that
+    /// no cell has claimed for [`PERSIST_RETENTION`], so per-instance files
+    /// do not pile up for good. A plain declared path (`bar.level`) never
+    /// expires: its component may simply not be mounted (a popup rarely
+    /// opened, `if open { state level persist }`). Files claimed in this
+    /// process, or with an operation queued, are kept; the check and the
+    /// removal happen under the queue lock, so a claim cannot slip in
+    /// between.
     fn sweep_unclaimed(&self) {
         let Ok(entries) = fs::read_dir(&self.dir) else {
             return;
@@ -555,6 +572,9 @@ impl Shared {
             // the hidden ones only quarantined copies are ours to expire
             // (temp files are `sweep_temps`').
             if name.starts_with('.') && !name.ends_with(".corrupt") {
+                continue;
+            }
+            if !name.starts_with('.') && !is_instance_file(&name) {
                 continue;
             }
             // `DirEntry::metadata` does not follow links.
@@ -571,14 +591,18 @@ impl Shared {
             }
             let path = e.path();
             let q = self.lock();
-            let busy = q.claimed.contains(&path)
-                || q.ops.iter().any(|(f, _)| *f == path)
-                || q.in_flight.as_ref().is_some_and(|(f, _)| *f == path);
-            if !busy {
+            if !q.claimed.contains(&path) && !q.busy(&path) {
                 let _ = fs::remove_file(&path);
             }
         }
     }
+}
+
+/// A cell file of an instance-qualified path: `[` (escaped by
+/// [`escape_name`]) marks the instance segment (`list[<key>].x`). Only
+/// these expire ([`PERSIST_RETENTION`]).
+fn is_instance_file(name: &str) -> bool {
+    name.contains("%5B")
 }
 
 /// Refresh `file`'s modification time (best effort; a missing file stays
@@ -767,17 +791,23 @@ impl PersistStore {
         let file = self.file_of(path)?;
         {
             let q = self.inner.shared.lock();
+            // What the file will hold: the newest queued write, removal or
+            // move aside, else the one in flight. A queued `Touch` changes
+            // nothing, so it must not hide a write still in flight.
+            let changes = |op: &&Op| matches!(op, Op::Write { .. } | Op::Remove | Op::Quarantine);
             let queued = q
                 .ops
                 .iter()
                 .rev()
-                .find(|(f, _)| *f == file)
+                .filter(|(f, _)| *f == file)
                 .map(|(_, j)| &j.op)
+                .find(changes)
                 .or(q
                     .in_flight
                     .as_ref()
                     .filter(|(f, _)| *f == file)
-                    .map(|(_, op)| op));
+                    .map(|(_, op)| op)
+                    .filter(changes));
             match queued {
                 Some(Op::Write {
                     default_hash,
@@ -879,7 +909,7 @@ impl PersistStore {
             let mut q = shared.lock();
             q.used = true;
             let fresh = q.claimed.insert(file.to_path_buf());
-            if !fresh || !touch || q.ops.iter().any(|(f, _)| f == file) {
+            if !fresh || !touch || q.busy(file) {
                 return;
             }
             q.ops.push((
@@ -901,7 +931,7 @@ impl PersistStore {
         let shared = &self.inner.shared;
         {
             let mut q = shared.lock();
-            if !q.claimed.remove(file) || q.ops.iter().any(|(f, _)| f == file) {
+            if !q.claimed.remove(file) || q.busy(file) {
                 return;
             }
             q.ops.push((
@@ -1079,9 +1109,13 @@ pub(crate) fn quarantine_path(file: &Path) -> PathBuf {
     file.with_file_name(format!(".{name}.corrupt"))
 }
 
-/// Move `file` aside to `.<name>.corrupt` (best effort).
+/// Move `file` aside to `.<name>.corrupt` (best effort). The copy's time
+/// is refreshed, so it is kept [`PERSIST_RETENTION`] for inspection.
 pub(crate) fn quarantine(file: &Path) {
-    let _ = fs::rename(file, quarantine_path(file));
+    let to = quarantine_path(file);
+    if fs::rename(file, &to).is_ok() {
+        touch(&to);
+    }
 }
 
 /// Remove temp files (`.<name>.tmp.<pid>.<n>`) a crash left between create
@@ -1341,7 +1375,8 @@ impl<T: Clone + PartialEq + 'static> Waiter for Writer<T> {
             }
             match (self.decode)(&file_bytes) {
                 Some(v) if rt.check_write_allowed(self.cell).is_ok() => {
-                    let _ = self.signal.set_raw(rt, v);
+                    // A hand-over, not a change: `on change` re-baselines.
+                    let _ = self.signal.set_reloaded(rt, v);
                     return;
                 }
                 // Inside a derived value's computation: keep its own value.
@@ -1416,7 +1451,8 @@ impl<T: Clone + PartialEq + 'static> Persisted<T> {
                 w.store
                     .enqueue(w.file.clone(), Op::Remove, Some(w.report.clone()));
             }
-            self.signal.set(rt, new_default)?;
+            // A reload write: `on change` takes it as its baseline.
+            self.signal.set_reloaded(rt, new_default)?;
             return Ok(Redeclared::Adopted);
         }
         if w.active.get() {
@@ -1437,10 +1473,22 @@ impl<T: Clone + PartialEq + 'static> Persisted<T> {
         Ok(Redeclared::Kept)
     }
 
-    /// `@reset` (and the overlay's `[reset]`): forget the stored value and
-    /// go back to the default. A write still pending or queued for the
-    /// cell is cancelled, so it cannot bring the old value back.
+    /// The overlay's `[reset]` (the user's action, an ordinary write that
+    /// `on change` sees): forget the stored value and go back to the
+    /// default. A write still pending or queued for the cell is cancelled,
+    /// so it cannot bring the old value back.
     pub fn reset(&self, rt: &Runtime) -> Result<(), Error> {
+        self.forget(rt, false)
+    }
+
+    /// `@reset` applied by a live reload: [`Persisted::reset`] as a reload
+    /// write ([`Signal::set_reloaded`]), so `on change` handlers take the
+    /// default as their baseline instead of firing.
+    pub fn reset_reloaded(&self, rt: &Runtime) -> Result<(), Error> {
+        self.forget(rt, true)
+    }
+
+    fn forget(&self, rt: &Runtime, reload: bool) -> Result<(), Error> {
         let w = &self.writer;
         let (default, bytes) = {
             let d = w.default.borrow();
@@ -1452,7 +1500,11 @@ impl<T: Clone + PartialEq + 'static> Persisted<T> {
             w.store
                 .enqueue(w.file.clone(), Op::Remove, Some(w.report.clone()));
         }
-        self.signal.set(rt, default)
+        if reload {
+            self.signal.set_reloaded(rt, default).map(|_| ())
+        } else {
+            self.signal.set(rt, default)
+        }
     }
 }
 
@@ -1625,10 +1677,23 @@ impl Runtime {
         }
         let w = writer.clone();
         let saver = Rc::downgrade(&writer);
-        self.on_change_after(
+        // `on change` never fires for the first value, but a write made
+        // before the first tracking run (the mount tick, `on mount { boots
+        // += 1 }`) is a change from what the file holds: that run arms the
+        // debounce itself.
+        let debounce: Rc<Cell<Option<crate::timer::Timer>>> = Rc::new(Cell::new(None));
+        let arm = debounce.clone();
+        let first = Cell::new(true);
+        let d = self.on_change_after(
             move |rt| {
                 let v = signal.get(rt)?;
                 w.note(&v);
+                if first.replace(false)
+                    && w.pending.borrow().is_some()
+                    && let Some(t) = arm.get()
+                {
+                    t.restart(rt)?;
+                }
                 Ok(v)
             },
             PERSIST_DEBOUNCE,
@@ -1639,6 +1704,7 @@ impl Runtime {
                 Ok(())
             },
         );
+        debounce.set(Some(d.timer));
         let flusher = Rc::downgrade(&writer);
         let rt = self.downgrade();
         self.on_cleanup(move || {

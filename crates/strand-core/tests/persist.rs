@@ -902,7 +902,7 @@ fn removing_a_dangling_link_removes_the_link() {
 }
 
 #[test]
-fn files_no_cell_claimed_for_the_retention_period_are_swept_at_exit() {
+fn instance_files_no_cell_claimed_for_the_retention_period_are_swept_at_exit() {
     use std::time::SystemTime;
     use strand_core::persist::PERSIST_RETENTION;
     let tmp = TempDir::new("retention");
@@ -923,39 +923,236 @@ fn files_no_cell_claimed_for_the_retention_period_are_swept_at_exit() {
             .elapsed()
             .unwrap()
     };
+    let store = PersistStore::new(&dir);
+    let file = |path: &str| store.file_of(path).unwrap();
+    let name = |path: &str| {
+        file(path)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()
+    };
     {
-        let store = PersistStore::new(&dir);
-        for name in ["claimed", "released", "unclaimed", "recent"] {
-            store.save(name, b"0", b"1").unwrap();
+        let tool = PersistStore::new(&dir);
+        for path in [
+            "list[claimed].x",
+            "list[released].x",
+            "list[unclaimed].x",
+            "list[recent].x",
+        ] {
+            tool.save(path, b"0", b"1").unwrap();
         }
     }
     let old = PERSIST_RETENTION + Duration::from_secs(3600);
-    for name in ["claimed", "released", "unclaimed"] {
-        age(&dir.join(name), old);
+    for path in ["list[claimed].x", "list[released].x", "list[unclaimed].x"] {
+        age(&file(path), old);
     }
     let corrupt = dir.join(".gone.corrupt");
     fs::write(&corrupt, b"x").unwrap();
     age(&corrupt, old);
+    // A corrupt file moved aside in this session is kept for inspection,
+    // even if it was last written long ago.
+    fs::write(file("list[bad].x"), b"not a strand file").unwrap();
+    age(&file("list[bad].x"), old);
     {
         let store = PersistStore::new(&dir);
         let rt = Runtime::new();
-        let _kept = rt.persisted_value(&store, "claimed", 0i64);
-        let (scope, _released) = rt.scope(|rt| rt.persisted_value(&store, "released", 0i64));
+        let _kept = rt.persisted_value(&store, "list[claimed].x", 0i64);
+        let _bad = rt.persisted_value(&store, "list[bad].x", 0i64);
+        let (scope, _released) =
+            rt.scope(|rt| rt.persisted_value(&store, "list[released].x", 0i64));
         rt.flush();
         scope.dispose(&rt);
         rt.shutdown();
     }
     let mut left = files(&dir);
     left.sort();
-    assert_eq!(left, vec!["claimed", "recent", "released"]);
-    for name in ["claimed", "released"] {
+    let mut want = vec![
+        name("list[claimed].x"),
+        name("list[recent].x"),
+        name("list[released].x"),
+        format!(".{}.corrupt", name("list[bad].x")),
+    ];
+    want.sort();
+    assert_eq!(left, want);
+    for path in ["list[claimed].x", "list[released].x"] {
         assert!(
-            mtime_age(&dir.join(name)) < Duration::from_secs(3600),
-            "{name}: a claim refreshes the time"
+            mtime_age(&file(path)) < Duration::from_secs(3600),
+            "{path}: a claim refreshes the time"
         );
     }
     // A store no cell used (a tool) sweeps nothing.
-    age(&dir.join("recent"), old);
+    age(&file("list[recent].x"), old);
     drop(PersistStore::new(&dir));
-    assert!(dir.join("recent").exists());
+    assert!(file("list[recent].x").exists());
+}
+
+#[test]
+fn a_declared_cell_unmounted_for_the_retention_period_is_kept() {
+    use std::time::SystemTime;
+    use strand_core::persist::PERSIST_RETENTION;
+    let tmp = TempDir::new("retention-plain");
+    let store = tmp.store();
+    // `if open { state level persist }`: set once, then not mounted for a
+    // long time.
+    store.save("popup.level", b"0", b"7").unwrap();
+    let f = store.file_of("popup.level").unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&f)
+        .unwrap()
+        .set_modified(SystemTime::now() - PERSIST_RETENTION - Duration::from_secs(86_400))
+        .unwrap();
+    {
+        // A session whose cells are all elsewhere sweeps at exit.
+        let store = tmp.store();
+        let rt = Runtime::new();
+        let _other = rt.persisted_value(&store, "bar.dnd", false);
+        rt.flush();
+        rt.shutdown();
+    }
+    drop(store);
+    let rt = Runtime::new();
+    let p = rt.persisted_value(&tmp.store(), "popup.level", 0i64);
+    assert_eq!(p.restored, Restore::Stored(b"7".to_vec()));
+    assert_eq!(p.signal.get(&rt).unwrap(), 7);
+}
+
+#[test]
+fn a_remount_behind_a_slow_disk_sees_the_write_in_flight() {
+    let tmp = TempDir::new("remount-slow");
+    let (release, gate) = std::sync::mpsc::channel::<()>();
+    let gate = std::sync::Mutex::new(gate);
+    let store = PersistStore::with_io_hook(tmp.0.join("persist"), move |_| {
+        let _ = gate.lock().unwrap().recv_timeout(Duration::from_secs(10));
+    });
+    let rt = Runtime::new();
+    let mount = |rt: &Runtime| rt.scope(|rt| rt.persisted_value(&store, "bar.level", 0i64));
+    let (a, pa) = mount(&rt);
+    rt.flush();
+    pa.signal.set(&rt, 5).unwrap();
+    rt.flush();
+    // A live reload: dispose and remount, twice, while the write of 5 is
+    // stuck with the IO thread.
+    a.dispose(&rt);
+    let (b, pb) = mount(&rt);
+    assert_eq!(pb.signal.get(&rt).unwrap(), 5);
+    rt.flush();
+    b.dispose(&rt);
+    let (_c, pc) = mount(&rt);
+    assert_eq!(pc.restored, Restore::Stored(b"5".to_vec()));
+    assert_eq!(pc.signal.get(&rt).unwrap(), 5);
+    for _ in 0..8 {
+        let _ = release.send(());
+    }
+    rt.shutdown();
+    drop(release);
+    let rt = Runtime::new();
+    let p = rt.persisted_value(&tmp.store(), "bar.level", 0i64);
+    assert_eq!(p.signal.get(&rt).unwrap(), 5);
+}
+
+#[test]
+fn a_write_before_the_first_tracking_run_is_written_after_the_debounce() {
+    let tmp = TempDir::new("mount-write");
+    let store = tmp.store();
+    let rt = Runtime::new();
+    // `on mount { boots += 1 }`: written in the tick that creates it.
+    let p = rt.persisted_value(&store, "shell.boots", 0i64);
+    p.signal.set(&rt, 7).unwrap();
+    rt.flush();
+    rt.tick(PERSIST_DEBOUNCE + Duration::from_millis(16));
+    assert!(store.sync(Duration::from_secs(5)));
+    let text = fs::read(store.file_of("shell.boots").unwrap()).unwrap();
+    assert!(
+        text.ends_with(b"\n\n7"),
+        "on disk without a shutdown: {:?}",
+        String::from_utf8_lossy(&text)
+    );
+    rt.shutdown();
+}
+
+#[test]
+fn redeclare_does_not_fire_on_change() {
+    let tmp = TempDir::new("redeclare-on-change");
+    let store = tmp.store();
+    let rt = Runtime::new();
+    let p = rt.persisted_value(&store, "bar.level", 5i64);
+    let fired = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let seen = fired.clone();
+    let level = p.signal;
+    rt.on_change(
+        move |rt| level.get(rt),
+        move |_, v| {
+            seen.borrow_mut().push(*v);
+            Ok(())
+        },
+    );
+    let debounced = std::rc::Rc::new(std::cell::Cell::new(0));
+    let d = debounced.clone();
+    rt.on_change_after(
+        move |rt| level.get(rt),
+        Duration::from_millis(100),
+        move |_| {
+            d.set(d.get() + 1);
+            Ok(())
+        },
+    );
+    rt.flush();
+    // A live reload: `= 5` became `= 7`; the value held the old default.
+    assert_eq!(p.redeclare(&rt, 7), Ok(Redeclared::Adopted));
+    rt.flush();
+    assert_eq!(p.signal.get(&rt).unwrap(), 7);
+    rt.tick(Duration::from_secs(1));
+    assert!(fired.borrow().is_empty(), "{:?}", fired.borrow());
+    assert_eq!(debounced.get(), 0, "no debounce restarted");
+    // `@reset` at reload is a reload write too.
+    p.signal.set(&rt, 9).unwrap();
+    rt.flush();
+    assert_eq!(*fired.borrow(), vec![9], "a real change still fires");
+    p.reset_reloaded(&rt).unwrap();
+    rt.flush();
+    assert_eq!(p.signal.get(&rt).unwrap(), 7);
+    assert_eq!(*fired.borrow(), vec![9]);
+    // The overlay's `[reset]` is the user's: an ordinary write.
+    p.signal.set(&rt, 3).unwrap();
+    rt.flush();
+    p.reset(&rt).unwrap();
+    rt.flush();
+    assert_eq!(*fired.borrow(), vec![9, 3, 7]);
+    rt.shutdown();
+}
+
+#[test]
+fn a_promoted_waiter_does_not_fire_on_change() {
+    let tmp = TempDir::new("promote-on-change");
+    let store = tmp.store();
+    let rt = Runtime::new();
+    let (old, p_old) = rt.scope(|rt| rt.persisted_value(&store, "bar.level", 0i64));
+    rt.flush();
+    p_old.signal.set(&rt, 5).unwrap();
+    rt.flush();
+    // The replacement is mounted before the old instance goes: it waits.
+    let (_new, p_new) = rt.scope(|rt| rt.persisted_value(&store, "bar.level", 0i64));
+    let fired = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let seen = fired.clone();
+    let level = p_new.signal;
+    rt.on_change(
+        move |rt| level.get(rt),
+        move |_, v| {
+            seen.borrow_mut().push(*v);
+            Ok(())
+        },
+    );
+    rt.flush();
+    p_old.signal.set(&rt, 6).unwrap();
+    rt.flush();
+    old.dispose(&rt);
+    rt.flush();
+    assert_eq!(p_new.signal.get(&rt).unwrap(), 6, "continues from the old");
+    assert!(fired.borrow().is_empty(), "{:?}", fired.borrow());
+    p_new.signal.set(&rt, 8).unwrap();
+    rt.flush();
+    assert_eq!(*fired.borrow(), vec![8]);
+    rt.shutdown();
 }

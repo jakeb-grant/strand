@@ -4,8 +4,8 @@
 //! Random graphs of primary signals, memos, *handler-written cells* (an
 //! effect reads earlier nodes and writes the cell) and async memos (`let
 //! hits = svc.call(input)`: an internal effect starts a load that a task
-//! resolves, here at once), with reader effects and
-//! `on change` handlers on top, all effects created in a random order (so
+//! resolves, here at once), with reader effects, event listeners (one
+//! outside emit per flush) and `on change` handlers on top, all effects created in a random order (so
 //! creation order is not topological).
 //!
 //! With every edge declared (`rt.reads_from` with the syntactic read set,
@@ -17,6 +17,8 @@
 //!   first; no rank ever rises;
 //! * every reader that runs sees the flush's final values (glitch-free at
 //!   the edge), and every reader whose inputs changed ran (never deaf);
+//! * every listener gets the event once and sees final values, also of
+//!   cells a handler writes in the same flush;
 //! * `on change` fires at most once per flush, with the final value,
 //!   exactly when the value differs from the previous flush's (never in
 //!   the first flush).
@@ -32,7 +34,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use proptest::prelude::*;
-use strand_core::{AsyncMemo, Effect, Memo, NodeId, Runtime, Signal};
+use strand_core::{AsyncMemo, Memo, NodeId, Runtime, Signal};
 
 #[derive(Clone, Debug)]
 enum Spec {
@@ -57,6 +59,10 @@ enum Fx {
     OnChange(usize),
     /// The writer of the `Written` cell at this index.
     Writer(usize),
+    /// A listener of the tick's event queue (one outside emit per flush,
+    /// made after the primary writes) reading nodes and checking them:
+    /// `on notifications.received(n) { if !dnd { … } }`.
+    Listener(Vec<usize>),
 }
 
 #[derive(Clone, Debug)]
@@ -103,7 +109,7 @@ fn case_strategy() -> impl Strategy<Value = Case> {
             (0u8..10, prop::collection::vec(any::<usize>(), 1..4)),
             2..24,
         ),
-        prop::collection::vec((0u8..3, prop::collection::vec(any::<usize>(), 1..4)), 1..8),
+        prop::collection::vec((0u8..4, prop::collection::vec(any::<usize>(), 1..4)), 1..8),
         any::<bool>(),
         any::<bool>(),
         any::<u64>(),
@@ -135,7 +141,8 @@ fn case_strategy() -> impl Strategy<Value = Case> {
             for (kind, idx) in raw_fx {
                 effects.push(match kind {
                     0 | 1 => Fx::Reader(idx.iter().map(|&j| j % n).collect()),
-                    _ => Fx::OnChange(idx[0] % n),
+                    2 => Fx::OnChange(idx[0] % n),
+                    _ => Fx::Listener(idx.iter().map(|&j| j % n).collect()),
                 });
             }
             // A deterministic shuffle: creation order is not topological.
@@ -278,7 +285,9 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
         }
     }
     let log = Rc::new(RefCell::new(Log::default()));
-    let mut ids: Vec<Effect> = Vec::new();
+    // The tick's outside event (a service's `received`).
+    let events = rt.events::<u32>();
+    let mut ids: Vec<NodeId> = Vec::new();
     for (e, fx) in case.effects.iter().enumerate() {
         log.borrow_mut().runs.push(0);
         log.borrow_mut().seen.push(Vec::new());
@@ -300,7 +309,25 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
                     Ok(())
                 });
                 declare_reads(r.id(), ins, &hs);
-                r
+                r.id()
+            }
+            Fx::Listener(ins) => {
+                let ins2 = ins.clone();
+                let hs2 = hs.clone();
+                let l = events
+                    .on(&rt, move |rt, _| {
+                        let mut seen = Vec::new();
+                        for &j in &ins2 {
+                            seen.push(hs2[j].get(rt)?);
+                        }
+                        let mut l = lg.borrow_mut();
+                        l.runs[e] += 1;
+                        l.seen[e].push(seen);
+                        Ok(())
+                    })
+                    .unwrap();
+                declare_reads(l, ins, &hs);
+                l
             }
             Fx::Writer(i) => {
                 let Spec::Written(ins) = &case.specs[*i] else {
@@ -321,7 +348,7 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
                 if case.declare {
                     rt.writes_to(w.id(), cell.id()).unwrap();
                 }
-                w
+                w.id()
             }
             Fx::OnChange(j) => {
                 let j = *j;
@@ -336,7 +363,7 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
                     },
                 );
                 declare_reads(oc.id(), &[j], &hs);
-                oc
+                oc.id()
             }
         };
         ids.push(effect);
@@ -361,7 +388,7 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
                 l.fired[e].clear();
             }
         }
-        let ranks_before: Vec<u32> = ids.iter().map(|e| rt.rank(e.id())).collect();
+        let ranks_before: Vec<u32> = ids.iter().map(|&e| rt.rank(e)).collect();
         for &(p, v) in ticks {
             primary[p] = v;
             let H::S(s) = handles.borrow()[p] else {
@@ -369,6 +396,7 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
             };
             s.set(&rt, v).unwrap();
         }
+        events.emit(&rt, 0).unwrap();
         let tick = rt.flush();
         prop_assert!(tick.errors.is_empty(), "{:?}", tick.errors);
         let fin = naive(&case.specs, &primary);
@@ -378,7 +406,7 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
         }
         let l = log.borrow();
         for (e, fx) in case.effects.iter().enumerate() {
-            let rose = rt.rank(ids[e].id()) > ranks_before[e];
+            let rose = rt.rank(ids[e]) > ranks_before[e];
             prop_assert!(
                 !rose || case.dynamic() && !case.declare,
                 "declared or static ranks are settled: effect {} rose",
@@ -421,6 +449,16 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
                         vec![]
                     };
                     prop_assert_eq!(&l.fired[e], &want, "on change {} of node {}", e, j);
+                }
+                Fx::Listener(ins) => {
+                    // One event, one delivery.
+                    prop_assert_eq!(l.runs[e], 1, "listener {} deliveries", e);
+                    // Declared: delivered after the writers of what it
+                    // reads (glitch-free at the edge). Learned: no order.
+                    if case.declare {
+                        let want: Vec<i64> = ins.iter().map(|&j| fin[j]).collect();
+                        prop_assert_eq!(&l.seen[e][0], &want, "listener {} saw a glitch", e);
+                    }
                 }
                 Fx::Writer(_) => {}
             }
@@ -835,4 +873,108 @@ fn stats_count_learned_edges_and_reruns() {
     let missing = build(false);
     assert_eq!(missing.learned_edges, 2, "the write edge and the read of x");
     assert_eq!(missing.reruns, 1, "the reader ran before the learned edge");
+}
+
+#[test]
+fn a_listener_sees_what_a_handler_wrote_in_the_same_flush() {
+    // effect W reads s and writes dnd; `on received(n) { if !dnd { … } }`.
+    let rt = Runtime::new();
+    let s = rt.signal(0i64);
+    let dnd = rt.signal(0i64);
+    let w = rt.effect(move |rt| dnd.set(rt, s.get(rt)?));
+    rt.reads_from(w.id(), &[s.id()]).unwrap();
+    rt.writes_to(w.id(), dnd.id()).unwrap();
+    let q = rt.events::<u32>();
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let sn = seen.clone();
+    let l = q
+        .on(&rt, move |rt, &n| {
+            sn.borrow_mut().push((n, dnd.get(rt)?));
+            Ok(())
+        })
+        .unwrap();
+    rt.reads_from(l, &[dnd.id()]).unwrap();
+    rt.flush();
+    s.set(&rt, 1).unwrap();
+    q.emit(&rt, 42).unwrap();
+    let tick = rt.flush();
+    assert!(tick.errors.is_empty(), "{:?}", tick.errors);
+    assert_eq!(*seen.borrow(), vec![(42, 1)], "delivered after W ran");
+    assert_eq!(rt.stats().reruns, 0);
+}
+
+#[test]
+fn a_woken_task_runs_after_the_writers_of_what_its_handler_reads() {
+    // `on received(n) { await sleep(10ms); if !dnd { … } }`: the sleep
+    // comes due in the tick that also changes dnd's input.
+    let rt = Runtime::new();
+    let s = rt.signal(0i64);
+    let dnd = rt.signal(0i64);
+    let w = rt.effect(move |rt| dnd.set(rt, s.get(rt)?));
+    rt.reads_from(w.id(), &[s.id()]).unwrap();
+    rt.writes_to(w.id(), dnd.id()).unwrap();
+    let q = rt.events::<u32>();
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let sn = seen.clone();
+    let l = q
+        .on(&rt, move |rt, _| {
+            let sn = sn.clone();
+            let weak = rt.downgrade();
+            rt.spawn(async move {
+                let rt = weak.upgrade().ok_or(strand_core::Error::Cancelled)?;
+                rt.sleep(Duration::from_millis(10)).await;
+                sn.borrow_mut().push(dnd.get(&rt)?);
+                Ok(())
+            });
+            Ok(())
+        })
+        .unwrap();
+    rt.reads_from(l, &[dnd.id()]).unwrap();
+    rt.flush();
+    q.emit(&rt, 1).unwrap();
+    rt.flush();
+    s.set(&rt, 1).unwrap();
+    let tick = rt.tick(Duration::from_millis(20));
+    assert!(tick.errors.is_empty(), "{:?}", tick.errors);
+    assert_eq!(*seen.borrow(), vec![1], "polled after W ran");
+}
+
+#[test]
+fn strict_edges_report_each_missing_declaration_once() {
+    use strand_core::Diagnostic;
+    let rt = Runtime::new();
+    rt.set_strict_edges(true);
+    let x = rt.signal(1);
+    let cell = rt.signal(0);
+    let reader = rt.effect(move |rt| cell.get(rt).map(|_| ()));
+    let writer = rt.effect(move |rt| cell.set(rt, x.get(rt)? * 10));
+    rt.reads_from(reader.id(), &[cell.id()]).unwrap();
+    rt.reads_from(writer.id(), &[]).unwrap();
+    let mut d = rt.flush().diagnostics;
+    x.set(&rt, 2).unwrap();
+    d.extend(rt.flush().diagnostics);
+    x.set(&rt, 3).unwrap();
+    d.extend(rt.flush().diagnostics);
+    d.sort_by_key(|d| format!("{d:?}"));
+    assert_eq!(
+        d,
+        vec![
+            Diagnostic::UndeclaredRead {
+                reader: writer.id(),
+                source: x.id()
+            },
+            Diagnostic::UndeclaredWrite {
+                writer: writer.id(),
+                target: cell.id()
+            },
+        ]
+    );
+    // Off (the default): counted, not reported.
+    let rt = Runtime::new();
+    let x = rt.signal(1);
+    let cell = rt.signal(0);
+    let writer = rt.effect(move |rt| cell.set(rt, x.get(rt)?));
+    rt.reads_from(writer.id(), &[]).unwrap();
+    assert!(rt.flush().diagnostics.is_empty());
+    assert_eq!(rt.stats().learned_edges, 2);
 }

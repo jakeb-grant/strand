@@ -224,11 +224,13 @@ impl Runtime {
         let effect = self.effect(move |rt| {
             let k = key(rt)?;
             let value = track(rt)?;
+            // A reload write upstream (`Signal::set_reloaded`): re-baseline.
+            let reloaded = rt.current_writer().is_some_and(|me| rt.take_rebaseline(me));
             let fire = match &prev {
                 // First value: boot or reload.
                 None => false,
                 // Same identity, new value.
-                Some((pk, pv)) => *pk == k && *pv != value,
+                Some((pk, pv)) => !reloaded && *pk == k && *pv != value,
             };
             let r = if fire {
                 let writer = rt.current_writer().unwrap_or_default();
@@ -335,6 +337,29 @@ impl<T: Clone + PartialEq + 'static> Signal<T> {
                 *v = value;
             }
         });
+    }
+
+    /// A write made by live reload: a declared default adopted, a
+    /// persisted value handed over to the replacement instance, `@reset`
+    /// applied at reload. The value changes like any write (readers update
+    /// in the next flush), but every `on change` handler downstream of the
+    /// cell takes the new value as its baseline instead of firing, and an
+    /// `on change … after` debounce is not restarted, as when its key
+    /// changes ([`Runtime::on_change_keyed`]): `on change` fires "never at
+    /// boot or reload" (design, "Events and time"). Not rate-gated (it is
+    /// not a handler's write). Returns whether the value changed.
+    ///
+    /// The re-baseline applies to the next run of each such handler in the
+    /// next flush (a handler held by a frozen component keeps it until it
+    /// runs); a real change to another of its inputs in that same flush is
+    /// absorbed into the new baseline too.
+    pub fn set_reloaded(self, rt: &Runtime, value: T) -> Result<bool, Error> {
+        rt.check_write_allowed(self.id)?;
+        let changed = self.set_raw(rt, value)?;
+        if changed {
+            rt.rebaseline_from(self.id);
+        }
+        Ok(changed)
     }
 
     /// Write without rate gating. Returns whether the value changed.

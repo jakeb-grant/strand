@@ -136,16 +136,7 @@ impl<T: 'static> NodeData for EventsData<T> {
             .borrow_mut()
             .extend(self.listeners.borrow().iter().map(|&l| (id, l)));
         for b in released {
-            if b.dropped > 0 {
-                rt.diagnose(Diagnostic::EventsDropped {
-                    queue: id,
-                    listener: b.listener,
-                    dropped: b.dropped,
-                });
-            }
-            for ev in b.events {
-                self.run_listener(rt, b.listener, &ev, errors);
-            }
+            self.replay(rt, id, b, errors);
         }
         for ev in &events {
             let listeners: Vec<NodeId> = self.listeners.borrow().clone();
@@ -154,8 +145,16 @@ impl<T: 'static> NodeData for EventsData<T> {
                     // A frozen component ignores input; other events wait.
                     if !self.input && rt.exists(l) {
                         self.keep_for(l, ev.clone());
+                        // Listed now: a handler later in this delivery may
+                        // release it.
+                        self.note_backlog(rt, id);
                     }
                     continue;
+                }
+                // Released by a handler earlier in this delivery: what it
+                // missed comes first, in order.
+                if let Some(b) = self.take_backlog(l) {
+                    self.replay(rt, id, b, errors);
                 }
                 self.run_listener(rt, l, ev, errors);
             }
@@ -188,6 +187,31 @@ impl<T: 'static> EventsData<T> {
         if let Err(e) = r {
             errors.push((l, e));
         }
+    }
+
+    /// Deliver what a released listener missed while frozen, reporting
+    /// what it lost first.
+    fn replay(&self, rt: &Runtime, id: NodeId, b: Backlog<T>, errors: &mut Vec<(NodeId, Error)>) {
+        if b.dropped > 0 {
+            rt.diagnose(Diagnostic::EventsDropped {
+                queue: id,
+                listener: b.listener,
+                dropped: b.dropped,
+            });
+        }
+        for ev in b.events {
+            self.run_listener(rt, b.listener, &ev, errors);
+        }
+    }
+
+    /// The backlog kept for `l`, if any (removed).
+    fn take_backlog(&self, l: NodeId) -> Option<Backlog<T>> {
+        let mut backlog = self.backlog.try_borrow_mut().ok()?;
+        if backlog.is_empty() {
+            return None;
+        }
+        let i = backlog.iter().position(|b| b.listener == l)?;
+        Some(backlog.remove(i))
     }
 
     /// Keep `ev` for the suspended listener `l`, dropping (and counting) the
@@ -254,30 +278,49 @@ impl Runtime {
         }
     }
 
-    /// Deliver every queued event. Returns whether anything was delivered.
-    /// `runs` counts deliveries per queue in this flush (cycle guard).
-    pub(crate) fn deliver_events(
-        &self,
-        runs: &mut HashMap<NodeId, u32>,
-        errors: &mut Vec<(NodeId, Error)>,
-    ) -> bool {
-        let mut any = false;
-        loop {
-            let mut queues = std::mem::take(&mut *self.inner.events_pending.borrow_mut());
-            if queues.is_empty() {
-                return any;
-            }
-            let mut seen = HashSet::new();
+    /// Queues with events to deliver (emitted, or kept for listeners just
+    /// released), each once, in the order they were first emitted to.
+    pub(crate) fn take_pending_events(&self) -> Vec<NodeId> {
+        let mut queues = std::mem::take(&mut *self.inner.events_pending.borrow_mut());
+        if queues.len() > 1 {
+            let mut seen = HashSet::with_capacity(queues.len());
             queues.retain(|q| seen.insert(*q));
-            for q in queues {
-                let Ok(data) = self.data(q) else { continue };
-                if self.cycle_cut(q, runs, errors) {
-                    // Parked: the events stay queued for the next emit.
-                    continue;
-                }
-                any |= data.deliver(self, q, errors);
+        }
+        queues
+    }
+
+    /// The rank a queue's delivery runs at: the queue's, or the highest of
+    /// its listeners' (a listener ranks with what it reads, declared or
+    /// learned), so the writers of what the listeners read run first and
+    /// every listener sees final values. All listeners of a queue get each
+    /// event together, in order.
+    pub(crate) fn delivery_rank(&self, q: NodeId) -> u32 {
+        if self.inner.ranks.borrow().is_empty() {
+            return 0;
+        }
+        let mut r = self.rank_of(q);
+        if let Ok(data) = self.data(q) {
+            for l in data.downstream() {
+                r = r.max(self.rank_of(l));
             }
         }
+        r
+    }
+
+    /// Deliver what queue `q` holds (the flush calls it in rank order).
+    /// `runs` counts deliveries per queue in this flush (cycle guard).
+    pub(crate) fn deliver_queue(
+        &self,
+        q: NodeId,
+        runs: &mut HashMap<NodeId, u32>,
+        errors: &mut Vec<(NodeId, Error)>,
+    ) {
+        let Ok(data) = self.data(q) else { return };
+        if self.cycle_cut(q, runs, errors) {
+            // Parked: the events stay queued for the next emit.
+            return;
+        }
+        data.deliver(self, q, errors);
     }
 }
 

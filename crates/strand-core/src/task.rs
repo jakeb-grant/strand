@@ -319,77 +319,83 @@ impl Runtime {
         let _ = self.with_data::<TaskData, _>(task.id, |d| d.quiet.set(true));
     }
 
-    /// Poll every woken task that has not been polled in this flush yet
-    /// (`polled`). A task woken again during the flush (a `yield_now`
-    /// pattern) waits for the next flush, so a self-waking task can't spin
-    /// the flush. Tasks woken by other threads are polled only when
-    /// `foreign` is set (at the start of a flush). Returns whether any task
-    /// was polled.
-    pub(crate) fn poll_ready_tasks(&self, polled: &mut HashSet<NodeId>, foreign: bool) -> bool {
+    /// Woken tasks, each once, in wake order (first wake wins), never slot
+    /// order: slots are reused, so a later handler must not run before an
+    /// earlier one and lose "latest value wins" to it. Tasks woken by other
+    /// threads are included only when `foreign` is set (at the start of a
+    /// flush).
+    pub(crate) fn take_ready(&self, foreign: bool) -> Vec<NodeId> {
         let mut ids = self.inner.ready.take(foreign);
-        if ids.is_empty() {
-            return false;
+        if ids.len() > 1 {
+            let mut seen = HashSet::with_capacity(ids.len());
+            ids.retain(|id| seen.insert(*id));
         }
-        // Wake order (first wake wins), never slot order: slots are reused,
-        // so a later handler must not run before an earlier one and lose
-        // "latest value wins" to it.
-        let mut seen = HashSet::with_capacity(ids.len());
-        ids.retain(|id| seen.insert(*id));
-        let mut any = false;
-        for id in ids {
-            if !polled.insert(id) {
-                self.inner.ready.push_quiet(id);
-                continue;
-            }
-            if self.is_suspended(id) {
-                // Frozen with its component: polled again on resume.
-                self.hold(id);
-                continue;
-            }
-            let Ok(data) = self.data(id) else { continue };
-            let Some(task) = data.as_any().downcast_ref::<TaskData>() else {
-                continue;
-            };
-            let Some(mut fut) = task.fut.borrow_mut().take() else {
-                continue;
-            };
-            let Some(waker) = task.waker.borrow().clone() else {
-                continue;
-            };
-            any = true;
-            let ctx = HandlerCtx {
-                writer: task.writer,
-                owner: task.creation_owner,
-                // Tasks it spawns share its site.
-                site: self.owner_of(id).ok().flatten(),
-                input: task.input.get(),
-            };
-            let mut cx = Context::from_waker(&waker);
-            let prev = self.inner.polling.replace(Some(id));
-            let poll = self.run_handler(ctx, |_| fut.as_mut().poll(&mut cx));
-            self.inner.polling.set(prev);
-            match poll {
-                Poll::Ready(r) => {
-                    if let Err(e) = r {
-                        self.record_error(id, e);
-                    }
-                    // Finished, not cancelled: its last held write lands.
-                    self.detach_deferred(id);
-                    self.dispose(id);
+        ids
+    }
+
+    /// The rank a woken task is polled at: its own (it ranks with the
+    /// handler site that owns it) or its writer's, whichever is higher, so
+    /// it runs after the writers of what its handler reads.
+    pub(crate) fn task_rank(&self, id: NodeId) -> u32 {
+        if self.inner.ranks.borrow().is_empty() {
+            return 0;
+        }
+        let writer = self
+            .with_data::<TaskData, _>(id, |t| t.writer)
+            .unwrap_or(id);
+        self.rank_of(id).max(self.rank_of(writer))
+    }
+
+    /// Poll one woken task (the flush calls it in rank order, each task at
+    /// most once per flush; one woken again waits for the next flush, so a
+    /// self-waking task can't spin the flush).
+    pub(crate) fn poll_task(&self, id: NodeId) {
+        if self.is_suspended(id) {
+            // Frozen with its component: polled again on resume.
+            self.hold(id);
+            return;
+        }
+        let Ok(data) = self.data(id) else { return };
+        let Some(task) = data.as_any().downcast_ref::<TaskData>() else {
+            return;
+        };
+        let Some(mut fut) = task.fut.borrow_mut().take() else {
+            return;
+        };
+        let Some(waker) = task.waker.borrow().clone() else {
+            return;
+        };
+        let ctx = HandlerCtx {
+            writer: task.writer,
+            owner: task.creation_owner,
+            // Tasks it spawns share its site.
+            site: self.owner_of(id).ok().flatten(),
+            input: task.input.get(),
+        };
+        let mut cx = Context::from_waker(&waker);
+        let prev = self.inner.polling.replace(Some(id));
+        let poll = self.run_handler(ctx, |_| fut.as_mut().poll(&mut cx));
+        self.inner.polling.set(prev);
+        match poll {
+            Poll::Ready(r) => {
+                if let Err(e) = r {
+                    self.record_error(id, e);
                 }
-                Poll::Pending => {
-                    // Past its synchronous response to the input event.
-                    task.input.set(false);
-                    if self.exists(id) {
-                        *task.fut.borrow_mut() = Some(fut);
-                    } else {
-                        // Disposed during its own poll: cancelled here.
-                        self.diagnose(Diagnostic::Cancelled { task: id });
-                    }
+                // Finished, not cancelled: its last held write lands.
+                self.detach_deferred(id);
+                self.dispose(id);
+            }
+            Poll::Pending => {
+                // Past its synchronous response to the input event.
+                task.input.set(false);
+                if self.exists(id) {
+                    *task.fut.borrow_mut() = Some(fut);
+                } else {
+                    // Disposed during its own poll: cancelled here.
+                    self.diagnose(Diagnostic::Cancelled { task: id });
                 }
             }
         }
-        any
     }
 
     /// A future that completes once the logic clock reaches `now + d`

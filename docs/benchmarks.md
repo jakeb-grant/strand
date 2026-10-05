@@ -114,6 +114,31 @@ The bench asserts that the handler write runs every sink once
 rank walk for an unchanged source list, review round 4 measured the
 ranked fan-out at 3–10% over unranked (2.33–2.42 ms vs 2.18–2.35 ms).
 
+Wave 2 review round 6 (ROUND6: event deliveries and woken tasks are
+items of the ranked queue instead of being checked before every sink;
+`set_reloaded` marks; strict-edge reporting off by default). Full run,
+same machine, medians, under load from the other agent:
+
+| Case | Time |
+| --- | --- |
+| Single write + flush | 1.72 ms |
+| Full fan-out + flush | 2.38 ms |
+| Narrow path + flush | 2.21 µs |
+| Equality cut-off + flush | 0.93 µs |
+| Idle flush | 52 ns |
+| Idle check | 7.9 ns |
+| Ranked single write + flush | 1.92 ms |
+| Ranked full fan-out + flush | 2.53 ms |
+| Ranked handler write + tick | 2.21 ms |
+| Build | 3.96 ms |
+| Memory | 347 B and 5.54 allocations per node (unchanged) |
+
+An A/B on a quieter machine right after (criterion baseline of the
+previous commit, d3e29a5, then this one): narrow path 2.02 → 1.99 µs and
+cut-off 815 → 823 ns (unchanged within noise), idle flush 44.9 → 50.0 ns
+(+5 ns: the flush now drains the ready and event lists into its heap and
+clears the reload marks; still far below a frame).
+
 The "single write" case recomputes about half of this deliberately
 over-connected graph, so it measures fan-out twice; the narrow-path and
 cut-off rows are what real shell writes look like (the bench asserts that
@@ -193,6 +218,22 @@ superseded; the in-place path is unchanged), same machine: get by key
 76 µs / 10+10 39 µs / reversed 97 µs / shuffled 172 µs, chain update
 20.0 µs, remove + push 26.0 µs, move 25.7 µs, filter query change 358 µs,
 `keyed_memo` one row 52 µs, rotated 131 µs: unchanged within noise.
+
+Review round 6 re-run (ROUND6; the review asked for a re-run after the
+write-path changes of 77cf7be and 822905c, which this includes), as an
+A/B against d3e29a5 on the same machine, back to back, medians (before →
+after): get by key 11.2 → 11.5 ns, update by key 26.6 → 26.7 ns, chain
+update 22.9 → 22.7 µs, remove + push 28.6 → 29.3 µs, move 28.3 →
+29.1 µs, filter query change 410 → 401 µs, `keyed_memo` one row 58.5 →
+58.4 µs, rotated 144 → 143 µs; handler writing 500 / 1,000 / 2,000 /
+4,000 cells 43 / 88 / 184 / 429 µs → 42 / 84 / 183 / 445 µs, throttled
+60 / 130 / 287 / 798 µs → 59 / 122 / 311 / 822 µs. Unchanged within
+noise (changes go both ways, −12% to +12%, on cases this round did not
+touch). Against the round 1 table the machine itself is slower today:
+`keyed_diff`, whose code has not changed since 915a084, measured
+5.6 µs identical / 102 µs one move / 69 µs 10+10 / 127 µs reversed /
+210 µs shuffled in the same session (round 1: 5.2 / 76 / 39 / 97 /
+172 µs).
 
 ### One handler writing a cell per row
 

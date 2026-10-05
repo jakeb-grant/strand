@@ -494,7 +494,7 @@ fn apply_edits(doc: &mut DocumentMut, edits: &[Edit]) {
                 doc.remove(name);
             }
             Some(new) => match doc.get_mut(name) {
-                Some(old) => {
+                Some(old) if old.is_value() => {
                     let decor = old.as_value().map(|v| v.decor().clone());
                     match (decor, new.clone()) {
                         (Some(decor), Item::Value(mut v)) => {
@@ -503,6 +503,13 @@ fn apply_edits(doc: &mut DocumentMut, edits: &[Edit]) {
                         }
                         (_, new) => *old = new,
                     }
+                }
+                // A table (or array of tables) the user wrote under that
+                // name: replaced as a new key, with the key's default
+                // spacing (its own decor belongs to a `[header]`).
+                Some(_) => {
+                    doc.remove(name);
+                    doc.insert(name, new.clone());
                 }
                 None => {
                     doc.insert(name, new.clone());
@@ -1030,8 +1037,10 @@ impl<V: Clone + PartialEq + 'static> Inner<V> {
     }
 
     /// Give the signal its layers' value, unless the user wrote it since
-    /// (that write is saved next).
-    fn show(&self, rt: &Runtime, f: &Field<V>, force: bool) {
+    /// (that write is saved next). `reload`: a live reload's redeclare (an
+    /// adopted default, a type reset), a reload write that `on change`
+    /// handlers take as their baseline ([`Signal::set_reloaded`]).
+    fn show(&self, rt: &Runtime, f: &Field<V>, force: bool, reload: bool) {
         let eff = f.effective();
         let Ok(cur) = f.signal.get_untracked(rt) else {
             return;
@@ -1045,7 +1054,12 @@ impl<V: Clone + PartialEq + 'static> Inner<V> {
         // left stale is not mistaken for a user write.
         if rt.check_write_allowed(f.signal.id()).is_ok() {
             rt.note_write(f.signal.id());
-            if f.signal.set_raw(rt, eff.clone()).is_ok() {
+            let set = if reload {
+                f.signal.set_reloaded(rt, eff.clone())
+            } else {
+                f.signal.set_raw(rt, eff.clone())
+            };
+            if set.is_ok() {
                 f.shown.replace(eff);
             }
         }
@@ -1190,7 +1204,7 @@ impl<V: Clone + PartialEq + 'static> Sibling for Inner<V> {
                 f.file.replace(v);
                 f.file_seq.set(seq);
             }
-            self.show(rt, &f, false);
+            self.show(rt, &f, false, false);
         }
     }
 }
@@ -1329,7 +1343,7 @@ impl<V: Clone + PartialEq + 'static> Settings<V> {
     pub fn reload_with(&self, rt: &Runtime, read: SettingsRead) {
         self.inner.apply(rt, read, false);
         for f in self.inner.fields() {
-            self.inner.show(rt, &f, false);
+            self.inner.show(rt, &f, false, false);
         }
     }
 
@@ -1343,7 +1357,7 @@ impl<V: Clone + PartialEq + 'static> Settings<V> {
             .inner
             .enqueue(&self.inner.overlay, edits.clone(), Target::Overlay, false);
         f.overlay_seq.set(seq);
-        self.inner.show(rt, &f, true);
+        self.inner.show(rt, &f, true, false);
         self.inner.tell_siblings(rt, true, &edits, seq);
         Ok(())
     }
@@ -1360,7 +1374,7 @@ impl<V: Clone + PartialEq + 'static> Settings<V> {
             .inner
             .enqueue(&self.inner.overlay, edits.clone(), Target::Overlay, false);
         f.overlay_seq.set(seq);
-        self.inner.show(rt, &f, true);
+        self.inner.show(rt, &f, true, false);
         self.inner.tell_siblings(rt, true, &edits, seq);
         Ok(())
     }
@@ -1427,7 +1441,7 @@ impl<V: Clone + PartialEq + 'static> Settings<V> {
             inner.apply(rt, inner.sources().read(), true);
         }
         for f in inner.fields() {
-            inner.show(rt, &f, reset.contains(&f.name));
+            inner.show(rt, &f, reset.contains(&f.name), true);
         }
         // The saver tracks the new field list.
         let n = inner.schema.get_untracked(rt).unwrap_or(0);
@@ -1505,16 +1519,30 @@ impl Runtime {
         // The tracking effect keeps the handle alive with the field cells.
         let tracked = inner.clone();
         let saver: Weak<Inner<V>> = Rc::downgrade(&inner);
-        self.on_change_after(
+        // A field written before the first tracking run (the mount tick)
+        // differs from what was shown: that run arms the debounce itself,
+        // since `on change` never fires for the first value.
+        let debounce: Rc<Cell<Option<crate::timer::Timer>>> = Rc::new(Cell::new(None));
+        let arm = debounce.clone();
+        let first = Cell::new(true);
+        let d = self.on_change_after(
             move |rt| {
                 let inner = &tracked;
                 inner.schema.get(rt)?;
                 let fields = inner.fields();
                 let mut values = Vec::with_capacity(fields.len());
+                let mut written = false;
                 for f in &fields {
                     let v = f.signal.get(rt)?;
+                    written |= *f.shown.borrow() != v;
                     f.live.replace(v.clone());
                     values.push(v);
+                }
+                if first.replace(false)
+                    && written
+                    && let Some(t) = arm.get()
+                {
+                    t.restart(rt)?;
                 }
                 Ok(values)
             },
@@ -1526,6 +1554,7 @@ impl Runtime {
                 Ok(())
             },
         );
+        debounce.set(Some(d.timer));
         let flusher = Rc::downgrade(&inner);
         let rt = self.downgrade();
         self.on_cleanup(move || {
@@ -1568,6 +1597,15 @@ mod tests {
             edit(&out, &[(Arc::from("gap"), None)]),
             "# My settings\naccent   =  \"#ff0000\"   # blue\n\n# denser bar\ncompact = true\n"
         );
+    }
+
+    #[test]
+    fn a_table_replaced_by_a_value_gets_default_spacing() {
+        let out = edit(
+            "b = 5\n[a]\nx = 1\n",
+            &[(Arc::from("a"), Some(toml_edit::value(9)))],
+        );
+        assert_eq!(out, "b = 5\na = 9\n");
     }
 
     #[test]

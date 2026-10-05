@@ -1193,3 +1193,60 @@ fn own_writes_are_reported_with_the_bytes_that_land() {
         assert_eq!(fs::read(&target).ok(), content, "{target:?}");
     }
 }
+
+#[test]
+fn a_field_written_in_the_mount_tick_is_saved_after_the_debounce() {
+    let tmp = TempDir::new("mount-write");
+    let file = tmp.config("prefs.toml");
+    let rt = Runtime::new();
+    let store = tmp.store();
+    let s = prefs(&rt, &store, &file);
+    // Written before the saver's first tracking run.
+    s.set(&rt, "compact", V::Bool(true)).unwrap();
+    rt.flush();
+    rt.tick(PERSIST_DEBOUNCE + Duration::from_millis(16));
+    assert!(store.sync(Duration::from_secs(5)));
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        "compact = true\n",
+        "saved without an unmount"
+    );
+    rt.shutdown();
+}
+
+#[test]
+fn redeclare_does_not_fire_on_change() {
+    let tmp = TempDir::new("redeclare-on-change");
+    let file = tmp.config("prefs.toml");
+    let rt = Runtime::new();
+    let store = tmp.store();
+    let s = prefs(&rt, &store, &file);
+    let compact = s.signal("compact").unwrap();
+    let fired = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let seen = fired.clone();
+    rt.on_change(
+        move |rt| compact.get(rt),
+        move |_, v| {
+            seen.borrow_mut().push(v.clone());
+            Ok(())
+        },
+    );
+    rt.flush();
+    // A live reload adopts a new default: not a change.
+    s.redeclare(&rt, vec![color("accent", "#7aa2f7"), flag("compact", true)]);
+    rt.flush();
+    assert_eq!(get(&rt, &s, "compact"), V::Bool(true));
+    // A type change resets the field: not a change either.
+    s.redeclare(
+        &rt,
+        vec![color("accent", "#7aa2f7"), color("compact", "#000000")],
+    );
+    rt.flush();
+    assert_eq!(get(&rt, &s, "compact"), V::Color("#000000".into()));
+    assert!(fired.borrow().is_empty(), "{:?}", fired.borrow());
+    // A write is.
+    s.set(&rt, "compact", V::Color("#111111".into())).unwrap();
+    rt.flush();
+    assert_eq!(*fired.borrow(), vec![V::Color("#111111".into())]);
+    rt.shutdown();
+}

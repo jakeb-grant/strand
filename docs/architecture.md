@@ -287,9 +287,25 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   edge to the value itself; the VM declares the input's read set on
   `memo.effect_id()` and readers declare `memo.id()`. For `on change …
   after T` (`Debounced`), the tracked expression's reads go on `d.effect`
-  and the body's writes on `d.timer`. Tasks woken from other threads (IO and
-  D-Bus replies) are polled at the start of the next flush, never between
-  sinks.
+  and the body's writes on `d.timer`. Event deliveries and woken tasks are
+  ranked like sinks: a queue is delivered at the highest rank of the queue
+  and its listeners (all listeners get each event together, in order), a
+  task at its own or its writer's rank, so a listener declared to read a
+  cell a handler writes in the same flush sees the final value; at one
+  rank, woken tasks run before deliveries, deliveries before sinks. Tasks
+  woken from other threads (IO and D-Bus replies) are polled at the start
+  of the next flush, never between sinks.
+  Reload writes: the reconciler adopts a changed `state` default (and
+  makes any other reload-driven change to a live cell) with
+  `signal.set_reloaded(rt, v)`, not `set`: the value changes as usual, but
+  every `on change` / `on_change_after` / `on_change_keyed` handler
+  downstream of the cell takes it as its new baseline in the next flush
+  instead of firing, and a debounce is not restarted ("`on change` fires
+  on changes, never at boot or reload"). `Persisted::redeclare`, the
+  persist hand-over to a waiting cell, `Persisted::reset_reloaded`
+  (`@reset`) and `Settings::redeclare` use it; the overlay's `[reset]`
+  (`Persisted::reset`) and file reloads of a settings file are ordinary
+  writes.
   Service events are `EventQueue`s. Keyed collection writes from
   graph-triggered handlers are rate-guarded too (wave 2): a throttled
   handler writes to a held copy (with the list it started from) whose
@@ -333,9 +349,13 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   and the calls the reconciler makes: on a reload that changes the
   declared default, `persisted.redeclare(rt, new_default)` (adopt if the
   value still holds the old default, else keep it, report once and
-  re-stamp; returns `Redeclared`), and for `@reset` / the overlay's
-  `[reset]`, `persisted.reset(rt)` (cancels a pending or queued write,
-  removes the file, sets the default). Warnings arrive as
+  re-stamp; returns `Redeclared`), for `@reset` at reload
+  `persisted.reset_reloaded(rt)` and for the overlay's `[reset]`
+  `persisted.reset(rt)` (both cancel a pending or queued write, remove the
+  file and set the default; the first is a reload write that `on change`
+  handlers take as their baseline, the second the user's write). An
+  adopted default and a hand-over to a waiting cell are reload writes too
+  (`Signal::set_reloaded`). Warnings arrive as
   `Diagnostic::PersistDefaultChanged` / `Diagnostic::PersistFailed` (write
   failures in a later tick, with a wake-hook call; `rt.is_idle()` is false
   while one waits to be reported). A write is never lost to the debounce:
@@ -343,9 +363,12 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   cell's live value and queue it, even when the owner went in the same
   tick as the write; `rt.shutdown()` waits (bounded) for queued writes.
   A write that fails is written again on the cell's next change or
-  capture. Files no cell has claimed for 90 days (`PERSIST_RETENTION`)
-  are removed when the store is dropped at exit, so per-key paths do not
-  pile up; `PersistStore::save`/`remove` are for offline tools (a live
+  capture. Files of instance-qualified paths (a `[` in the path:
+  `list[<key>].x`, `bar[<monitor>].x`) that no cell has claimed for 90
+  days (`PERSIST_RETENTION`), and quarantined copies that old, are
+  removed when the store is dropped at exit, so per-key files do not pile
+  up; a plain declared path (`bar.level`) never expires, however long its
+  component stays unmounted; `PersistStore::save`/`remove` are for offline tools (a live
   cell on the path does not see them).
 - Strand's own writes, for the watcher (wave 2):
   `persist_store.on_written(|w: &OwnWrite| ..)` (also on
@@ -431,14 +454,20 @@ Public interfaces other crates and later stages build on:
   check the lowering in tests: after lowering real fixtures and running a
   few flushes, `rt.stats().learned_edges` (edges nobody declared) and
   `rt.stats().reruns` (sinks run twice in one flush) are 0 unless the
-  program has a feedback edge;
+  program has a feedback edge; or turn on `rt.set_strict_edges(true)` in
+  the VM's and compiler's test runtimes (and in debug builds), which
+  reports every learned edge once as `Diagnostic::UndeclaredWrite {
+  writer, target }` / `Diagnostic::UndeclaredRead { reader, source }`, so
+  any fixture fails loudly on a missing declaration;
   `writes_to` answering `WriteEdge::Feedback` is not an error (a
   self-normalising handler is valid; only a static cycle among `let`s is a
   load error); for `let x = svc.call(input)` declare the input's reads on
   `memo.effect_id()`, for `on change … after T` the tracked reads on
   `d.effect` and the body's writes on `d.timer`;
   create persisted cells with an instance-qualified path and keep the
-  `Persisted` handle for `redeclare` (reload) and `reset` (`@reset`);
+  `Persisted` handle for `redeclare` (reload), `reset_reloaded` (`@reset`)
+  and `reset` (the overlay's `[reset]`); adopt any other changed `state`
+  default with `signal.set_reloaded(rt, v)`;
   node closures use their `rt` parameter or a `WeakRuntime`
   (`rt.downgrade()`), never a captured `Runtime` clone: that is an `Rc`
   cycle, so neither dropping the last handle nor a persisted cell's
