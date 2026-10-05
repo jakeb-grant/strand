@@ -16,7 +16,7 @@ mod engine;
 mod worker;
 
 pub use atlas::{AtlasConfig, AtlasSlot, AtlasUpload, MAX_PAGE_SIZE, PageId, PageLease};
-pub use engine::{FontConfig, MAX_FONT_PX, SUBPIXEL_STEPS, TextEngine};
+pub use engine::{FontConfig, MAX_FONT_PX, MAX_TEXT_BYTES, SUBPIXEL_STEPS, TextEngine};
 pub use worker::{TextError, TextWorker, Waker};
 
 use strand_scene::{Font, LogicalSize, Rect, Scale};
@@ -93,6 +93,8 @@ pub struct TextLayout {
     pub uploads: Vec<AtlasUpload>,
     /// Keeps the pages this layout draws from alive.
     leases: Vec<PageLease>,
+    /// The worker restarted its engine (see [`TextLayout::is_reset`]).
+    reset: bool,
 }
 
 impl TextLayout {
@@ -107,7 +109,27 @@ impl TextLayout {
             runs: Vec::new(),
             uploads: Vec::new(),
             leases: Vec::new(),
+            reset: false,
         }
+    }
+
+    /// The empty reply the worker sends after recovering from a panicking
+    /// request by starting a fresh engine (public so receivers can test
+    /// their handling of it).
+    pub fn reset(key: TextKey, scale: Scale) -> Self {
+        Self {
+            reset: true,
+            ..Self::empty(key, scale)
+        }
+    }
+
+    /// True when the worker had to restart its engine before answering:
+    /// every atlas page uploaded before is gone. The receiver must drop
+    /// its atlas mirror and every layout it holds (their glyphs point at
+    /// those pages) and request its text again. Uploads of layouts that
+    /// arrive after this one belong to the new engine.
+    pub fn is_reset(&self) -> bool {
+        self.reset
     }
 
     /// Number of atlas pages this layout keeps alive.

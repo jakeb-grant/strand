@@ -6,14 +6,14 @@
 //! shaped layout). Flex layout with taffy replaces it in M2.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use strand_scene::{
     Border, Color, Corners, Damage, Font, Length, LogicalRect, NodeId, NodeKind, Paint, Prop,
-    PropValue, Rect, Scale, Shadow, Size,
+    PropValue, Rect, Scale, Shadow, Size, TokenScope, TokenTable,
 };
 use strand_text::{TextAlign, TextLayout, TextStyle};
 use vello_cpu::kurbo::{self, BezPath, RoundedRect, RoundedRectRadii, Shape};
@@ -105,7 +105,8 @@ pub struct NodeRecord {
 #[derive(Debug, Default)]
 pub struct Flattened {
     pub items: Vec<DisplayItem>,
-    pub records: HashMap<NodeId, NodeRecord>,
+    /// Ordered, so damage is added in a deterministic order.
+    pub records: BTreeMap<NodeId, NodeRecord>,
     /// Text nodes and the shaping they need at this scale.
     pub text: Vec<(NodeId, TextSpec)>,
     /// Where the surface root paints fully opaque pixels.
@@ -113,9 +114,12 @@ pub struct Flattened {
 }
 
 #[derive(Clone)]
-struct Inherited {
+struct Inherited<'a> {
     color: Color,
     font: Font,
+    /// Token tables in scope: the global one, then each ancestor's
+    /// `tokens` override.
+    tokens: Vec<&'a TokenTable>,
     /// Hash of everything above this node that affects how it paints
     /// (opacity, clips, paint-order epochs).
     ctx: u64,
@@ -145,12 +149,24 @@ pub fn flatten(
         layouts,
         out: &mut out,
     };
-    let inh = Inherited {
+    let mut inh = Inherited {
         color: Color::BLACK,
         font: Font::default(),
+        tokens: vec![&tree.tokens],
         ctx: 0,
         clip: full,
     };
+    // A surface nested in another (a popup in a bar) inherits tokens,
+    // colour and font from its ancestors, though it paints on its own.
+    let mut ancestors = Vec::new();
+    let mut up = node.parent;
+    while let Some(a) = up.and_then(|p| tree.get(p)) {
+        ancestors.push(a);
+        up = a.parent;
+    }
+    for a in ancestors.into_iter().rev() {
+        inherit(a, &mut inh);
+    }
     f.node(
         node,
         LogicalRect::new(0.0, 0.0, logical.w, logical.h),
@@ -166,6 +182,25 @@ struct Flattener<'a> {
     surface: Rect,
     layouts: &'a HashMap<NodeId, Arc<TextLayout>>,
     out: &'a mut Flattened,
+}
+
+/// Applies a node's inherited props (`tokens`, `color`, `font`, `weight`)
+/// to `inh`, as its children see them.
+fn inherit<'a>(node: &'a Node, inh: &mut Inherited<'a>) {
+    if let Some(PropValue::Tokens(t)) = node.get(Prop::Tokens) {
+        inh.tokens.push(t);
+    }
+    let scope = TokenScope::new(&inh.tokens);
+    let get = |p: Prop| node.get(p).and_then(|v| scope.resolve(v));
+    if let Some(PropValue::Color(c)) = get(Prop::Color).as_deref() {
+        inh.color = *c;
+    }
+    if let Some(PropValue::Font(f)) = get(Prop::Font).as_deref() {
+        inh.font = sane_font(f.clone());
+    }
+    if let Some(w) = number(get(Prop::Weight).as_deref()) {
+        inh.font.weight = w.clamp(1.0, 1000.0) as u16;
+    }
 }
 
 /// A finite value clamped to `±MAX_LOGICAL`; non-finite is `None`.
@@ -238,17 +273,31 @@ fn paint_of(v: Option<&PropValue>) -> Option<Paint> {
     }
 }
 
-fn corners_of(v: Option<&PropValue>) -> Corners {
+/// Corner radii in logical pixels for a box of `w × h` logical pixels.
+/// `radius: full` arrives as `Keyword("full")` or infinite radii
+/// ([`Corners::FULL`]) and becomes the largest finite radius, which the
+/// CSS shrink in [`radii`] turns into a pill; a percentage is of the
+/// shorter side. NaN and negative radii are square.
+fn corners_of(v: Option<&PropValue>, w: f32, h: f32) -> Corners {
     let c = match v {
         Some(PropValue::Corners(c)) => *c,
         Some(PropValue::Number(n)) | Some(PropValue::Length(Length::Px(n))) => Corners::all(*n),
+        Some(PropValue::Length(Length::Percent(p))) => Corners::all(w.min(h) * p / 100.0),
+        Some(PropValue::Keyword(k)) if k == "full" => Corners::FULL,
         _ => Corners::default(),
     };
+    let one = |r: f32| {
+        if r == f32::INFINITY {
+            MAX_LOGICAL
+        } else {
+            finite_or_zero(r).max(0.0)
+        }
+    };
     Corners {
-        top_left: finite_or_zero(c.top_left),
-        top_right: finite_or_zero(c.top_right),
-        bottom_right: finite_or_zero(c.bottom_right),
-        bottom_left: finite_or_zero(c.bottom_left),
+        top_left: one(c.top_left),
+        top_right: one(c.top_right),
+        bottom_right: one(c.bottom_right),
+        bottom_left: one(c.bottom_left),
     }
 }
 
@@ -450,14 +499,26 @@ impl<'a> Flattener<'a> {
 
     /// Flattens `node` and its subtree; returns the subtree's ink bounds
     /// (clipped by ancestors).
-    fn node(&mut self, node: &'a Node, parent: LogicalRect, inh: &Inherited, root: bool) -> Rect {
+    fn node(
+        &mut self,
+        node: &'a Node,
+        parent: LogicalRect,
+        inh: &Inherited<'a>,
+        root: bool,
+    ) -> Rect {
         let s = self.scale.as_f64();
-        // Token references resolve against the current table once per node.
-        let tokens = &self.tree.tokens;
+        // Token references resolve once per node, against the global table
+        // and the `tokens` overrides of this node and its ancestors.
+        let mut tokens = inh.tokens.clone();
+        if let Some(PropValue::Tokens(t)) = node.get(Prop::Tokens) {
+            tokens.push(t);
+        }
+        let scope = TokenScope::new(&tokens);
         let props: Vec<(Prop, Cow<'a, PropValue>)> = node
             .props
             .iter()
-            .filter_map(|e| tokens.resolve(&e.value).map(|v| (e.prop, v)))
+            .filter(|e| e.prop != Prop::Tokens)
+            .filter_map(|e| scope.resolve(&e.value).map(|v| (e.prop, v)))
             .collect();
         let get = |p: Prop| props.iter().find(|(q, _)| *q == p).map(|(_, v)| v.as_ref());
 
@@ -532,7 +593,7 @@ impl<'a> Flattener<'a> {
 
         let opacity_group = (opacity < 1.0).then(|| self.marker(Item::PushOpacity(opacity)));
         let r = radii(
-            corners_of(get(Prop::Radius)),
+            corners_of(get(Prop::Radius), rect.w, rect.h),
             frame.width(),
             frame.height(),
             s,
@@ -650,13 +711,15 @@ impl<'a> Flattener<'a> {
         let child_inh = Inherited {
             color,
             font,
+            tokens,
             ctx: ctx.finish(),
             clip: child_clip,
         };
         let mut children = Rect::default();
         if !(clips && child_clip.is_empty()) {
             for c in &node.children {
-                if let Some(child) = self.tree.get(*c) {
+                // A nested surface (a popup) paints on its own surface.
+                if let Some(child) = self.tree.get(*c).filter(|n| !n.kind.is_surface()) {
                     children = children.union(self.node(child, rect, &child_inh, false));
                 }
             }
@@ -793,6 +856,25 @@ mod tests {
         let c = flatten(&t, id(0), Size::new(100, 20), Scale::ONE, &HashMap::new());
         // Parent opacity changes how the child paints.
         assert_ne!(a.records[&id(1)].sig, c.records[&id(1)].sig);
+    }
+
+    #[test]
+    fn radius_full_is_a_pill_in_every_encoding() {
+        let full = [
+            PropValue::Keyword("full".into()),
+            PropValue::Corners(Corners::FULL),
+            PropValue::Number(f32::INFINITY),
+            PropValue::Length(Length::Percent(50.0)),
+        ];
+        for v in full {
+            let c = corners_of(Some(&v), 40.0, 10.0);
+            let r = radii(c, 40.0, 10.0, 1.0);
+            assert_eq!(r.top_left, 5.0, "{v:?}");
+            assert_eq!(r.bottom_right, 5.0, "{v:?}");
+        }
+        for v in [PropValue::Number(f32::NAN), PropValue::Number(-3.0)] {
+            assert!(corners_of(Some(&v), 40.0, 10.0).is_zero(), "{v:?}");
+        }
     }
 
     #[test]

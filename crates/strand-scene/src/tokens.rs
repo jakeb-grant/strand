@@ -13,7 +13,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use crate::color::{Color, Oklch};
-use crate::protocol::{Length, Paint, PropValue};
+use crate::protocol::{Length, Paint, Prop, PropClass, PropValue, Transition};
 
 /// Deepest chain of token references followed before giving up (a cycle
 /// is a load error on the logic side; this only bounds a bad table).
@@ -162,37 +162,115 @@ impl TokenTable {
         self.derived.insert(path.into(), expr);
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.tokens.is_empty() && self.derived.is_empty()
+    }
+
     /// Evaluates the token at `path`, plain or derived.
     pub fn lookup(&self, path: &str) -> Option<PropValue> {
-        self.eval_ref(path, 0)
+        TokenScope::new(&[self]).lookup(path)
     }
 
     /// Resolves a prop value: token references are evaluated, everything
     /// else is borrowed as is. `None` if a reference cannot be resolved
     /// (unknown token, wrong type); callers treat that as unset.
     pub fn resolve<'a>(&self, v: &'a PropValue) -> Option<Cow<'a, PropValue>> {
+        TokenScope::new(&[self]).resolve(v)
+    }
+
+    /// Evaluates an expression.
+    pub fn eval(&self, e: &TokenExpr) -> Option<PropValue> {
+        TokenScope::new(&[self]).eval(e)
+    }
+}
+
+/// A chain of token tables: the global table sent by
+/// [`crate::SceneOp::SetTokens`] first, then the [`crate::Prop::Tokens`]
+/// overrides of each ancestor down to the node being drawn.
+///
+/// Lookup takes the nearest table that defines a path. An override's own
+/// expression is evaluated in its *parent* scope, so in
+/// `set { $surface: $surface.alpha(0.5) }` the right-hand `$surface` is the
+/// inherited value (no cycle). Derived tokens of the global table are
+/// evaluated in the scope of the node asking, so they stay derived inside
+/// a subtree: with `$surface` overridden, `$surface.hi` follows it.
+#[derive(Copy, Clone, Debug)]
+pub struct TokenScope<'a> {
+    levels: &'a [&'a TokenTable],
+}
+
+impl<'a> TokenScope<'a> {
+    /// `levels[0]` is the global table, the last entry the nearest
+    /// override.
+    pub fn new(levels: &'a [&'a TokenTable]) -> Self {
+        Self { levels }
+    }
+
+    /// Evaluates the token at `path` in this scope.
+    pub fn lookup(&self, path: &str) -> Option<PropValue> {
+        self.eval_ref(path, 0)
+    }
+
+    /// Resolves a prop value in this scope (see [`TokenTable::resolve`]).
+    pub fn resolve<'v>(&self, v: &'v PropValue) -> Option<Cow<'v, PropValue>> {
         match v {
             PropValue::Token(e) => self.eval(e).map(Cow::Owned),
             v => Some(Cow::Borrowed(v)),
         }
     }
 
-    /// Evaluates an expression.
+    /// Evaluates an expression in this scope.
     pub fn eval(&self, e: &TokenExpr) -> Option<PropValue> {
         self.eval_in(e, 0, None)
+    }
+
+    /// The concrete curve for a prop set with `t`: `Default` takes the
+    /// prop class's `$motion.spatial` / `$motion.effects` token (and snaps
+    /// props that cannot interpolate), `Token` takes the named token.
+    /// Missing or mistyped tokens fall back to [`Transition::Instant`].
+    pub fn transition(&self, t: &Transition, prop: Prop) -> Transition {
+        let path = match t {
+            Transition::Default => match prop.class() {
+                PropClass::Spatial => "motion.spatial",
+                PropClass::Effects => "motion.effects",
+                PropClass::Snap => return Transition::Instant,
+            },
+            Transition::Token(path) => path.as_str(),
+            t => return t.clone(),
+        };
+        match self.lookup(path) {
+            Some(PropValue::Transition(t))
+                if !matches!(t, Transition::Default | Transition::Token(_)) =>
+            {
+                t
+            }
+            _ => Transition::Instant,
+        }
     }
 
     fn eval_ref(&self, path: &str, depth: u32) -> Option<PropValue> {
         if depth > MAX_TOKEN_DEPTH {
             return None;
         }
-        if let Some(v) = self.tokens.get(path) {
-            return match v {
-                PropValue::Token(e) => self.eval_in(e, depth + 1, None),
-                v => Some(v.clone()),
+        for (i, table) in self.levels.iter().enumerate().rev() {
+            // Overrides see their parent scope; global derived tokens see
+            // the scope of whoever asks.
+            let scope = if i == 0 {
+                *self
+            } else {
+                TokenScope::new(&self.levels[..i])
             };
+            if let Some(v) = table.tokens.get(path) {
+                return match v {
+                    PropValue::Token(e) => scope.eval_in(e, depth + 1, None),
+                    v => Some(v.clone()),
+                };
+            }
+            if let Some(e) = table.derived.get(path) {
+                return scope.eval_in(e, depth + 1, None);
+            }
         }
-        self.eval_in(self.derived.get(path)?, depth + 1, None)
+        None
     }
 
     fn eval_in(&self, e: &TokenExpr, depth: u32, base: Option<Oklch>) -> Option<PropValue> {
@@ -438,5 +516,97 @@ mod tests {
         );
         assert!(t.lookup("bad").is_none());
         assert_eq!(TokenMethod::from_name("mix"), Some(TokenMethod::Mix));
+    }
+
+    #[test]
+    fn scoped_overrides_shadow_inherit_and_rederive() {
+        let global = table();
+        let surface = Color::from_hex("#1e1e2e").unwrap();
+        // set { $surface: $surface.alpha(0.5) }: the right-hand side is the
+        // inherited value, so this is not a cycle.
+        let mut set = TokenTable::default();
+        set.insert(
+            "surface",
+            PropValue::Token(TokenExpr::path("surface").call(
+                TokenMethod::Alpha,
+                vec![TokenExpr::value(PropValue::Number(0.5))],
+            )),
+        );
+        let levels = [&global, &set];
+        let inner = TokenScope::new(&levels);
+        assert_eq!(
+            inner.lookup("surface"),
+            Some(PropValue::Color(surface.with_alpha(0.5)))
+        );
+        // Global derived tokens follow the override inside the subtree...
+        let PropValue::Color(b) = inner.lookup("border").unwrap() else {
+            panic!()
+        };
+        assert_eq!(b.a, 0.5);
+        // ...and not outside it.
+        let PropValue::Color(b) = global.lookup("border").unwrap() else {
+            panic!()
+        };
+        assert_eq!(b.a, 1.0);
+        // Untouched tokens come from the global table.
+        assert_eq!(inner.lookup("space.2"), Some(PropValue::Number(8.0)));
+
+        // A nested override of a component token (`tokens { radius: … }`).
+        let mut comp = TokenTable::default();
+        comp.insert_derived("Toast.radius", TokenExpr::path("space.2"));
+        comp.insert("surface", PropValue::Color(Color::BLACK));
+        let levels = [&global, &set, &comp];
+        let deeper = TokenScope::new(&levels);
+        assert_eq!(deeper.lookup("Toast.radius"), Some(PropValue::Number(8.0)));
+        assert_eq!(
+            deeper.lookup("surface"),
+            Some(PropValue::Color(Color::BLACK))
+        );
+        assert_eq!(inner.lookup("Toast.radius"), None);
+    }
+
+    #[test]
+    fn transitions_resolve_through_motion_tokens() {
+        let mut t = table();
+        let spatial = Transition::Spring {
+            stiffness: 700.0,
+            damping: 0.9,
+        };
+        let bouncy = Transition::Spring {
+            stiffness: 380.0,
+            damping: 0.75,
+        };
+        t.insert("motion.spatial", PropValue::Transition(spatial.clone()));
+        t.insert("motion.bouncy", PropValue::Transition(bouncy.clone()));
+        let levels = [&t];
+        let s = TokenScope::new(&levels);
+        assert_eq!(s.transition(&Transition::Default, Prop::Width), spatial);
+        // width: 24 ~ $motion.bouncy
+        assert_eq!(
+            s.transition(&Transition::Token("motion.bouncy".into()), Prop::Width),
+            bouncy
+        );
+        // No $motion.effects token, fonts snap, unknown tokens snap.
+        assert_eq!(
+            s.transition(&Transition::Default, Prop::Bg),
+            Transition::Instant
+        );
+        assert_eq!(
+            s.transition(&Transition::Default, Prop::Font),
+            Transition::Instant
+        );
+        assert_eq!(
+            s.transition(&Transition::Token("motion.nope".into()), Prop::X),
+            Transition::Instant
+        );
+        // A theme swap reaches props that named the token.
+        let mut t2 = t.clone();
+        t2.insert("motion.bouncy", PropValue::Transition(spatial.clone()));
+        let levels = [&t2];
+        assert_eq!(
+            TokenScope::new(&levels)
+                .transition(&Transition::Token("motion.bouncy".into()), Prop::X),
+            spatial
+        );
     }
 }

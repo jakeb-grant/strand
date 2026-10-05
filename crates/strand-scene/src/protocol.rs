@@ -244,6 +244,12 @@ props! {
     Speed = "speed": Snap,
     /// `canvas { draw: (c) => … }`.
     Draw = "draw": Snap,
+    // Tokens.
+    /// Token overrides for this node and its subtree, as a
+    /// [`PropValue::Tokens`] table: `set { $surface: $surface.alpha(0.5) }`
+    /// and a component's `tokens { radius: $radius.lg }` (as
+    /// `Toast.radius`) both lower to it. See [`crate::TokenScope`].
+    Tokens = "tokens": Snap,
 }
 
 /// A length in logical pixels or relative to a reference.
@@ -279,6 +285,11 @@ impl Insets {
 
 /// Per-corner radii in logical pixels, clockwise from top-left
 /// (`radius: 14, 14, 0, 0`).
+///
+/// `radius: full` (a pill or circle) is [`Corners::FULL`]: an infinite
+/// radius, which shrinks like CSS to half the shorter side. Render also
+/// accepts `PropValue::Keyword("full")` for the `radius` prop, and a
+/// `Length::Percent` radius is a percentage of the shorter side.
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct Corners {
     pub top_left: f32,
@@ -296,6 +307,9 @@ impl Corners {
             bottom_left: r,
         }
     }
+
+    /// `radius: full`.
+    pub const FULL: Corners = Corners::all(f32::INFINITY);
 
     pub fn is_zero(&self) -> bool {
         self.top_left <= 0.0
@@ -412,6 +426,8 @@ pub enum PropValue {
     /// An `enter { … }` / `exit { … }` pose: the props a node animates in
     /// from or out to.
     Pose(Vec<(Prop, PropValue)>),
+    /// Token overrides for a subtree (the value of [`Prop::Tokens`]).
+    Tokens(Box<TokenTable>),
 }
 
 impl PropValue {
@@ -496,11 +512,17 @@ impl Easing {
 }
 
 /// How a prop moves to its new value, matching `~` in the language.
-#[derive(Copy, Clone, Debug, Default, PartialEq)]
+/// [`crate::TokenScope::transition`] turns `Default` and `Token` into a
+/// concrete curve.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub enum Transition {
     /// The token spring for the prop's class (see [`Prop::class`]).
     #[default]
     Default,
+    /// `~ $motion.bouncy`: a token path (without the `$`) holding a
+    /// [`PropValue::Transition`], resolved like `Default` so a theme swap
+    /// reaches props that named it.
+    Token(String),
     /// `~ spring(700, 0.9)`: stiffness and damping ratio.
     Spring { stiffness: f32, damping: f32 },
     /// `~ 200ms` or `~ ease(out_back, 300ms)` or `~ bezier(…)`.
@@ -513,7 +535,9 @@ pub enum Transition {
 #[derive(Clone, Debug, PartialEq)]
 pub enum SceneOp {
     /// Creates a node as child `index` of `parent` (`None` for a surface
-    /// root).
+    /// root); indices past the end append. A surface-kind node created
+    /// under a parent (a `popup` inside a `bar`) is its own surface root:
+    /// it does not paint into its parent's surface.
     Create {
         id: NodeId,
         kind: NodeKind,
@@ -521,10 +545,17 @@ pub enum SceneOp {
         index: u32,
     },
     /// Removes a node and its subtree; render plays `exit` before unmounting.
+    /// The id is dead as soon as the op applies: logic may reuse its slot
+    /// with a new generation in the same diff. (From M2 an exiting subtree
+    /// lives on as a render-side ghost outside the id-indexed slots, so
+    /// slot reuse never waits for an exit animation.)
     Remove {
         id: NodeId,
     },
-    /// Re-parents or reorders a node.
+    /// Re-parents or reorders a node. `index` is the position among the
+    /// new parent's children *after* the node has been detached from its
+    /// old place (so moving the first of three children to the end is
+    /// index 2); indices past the end append.
     Move {
         id: NodeId,
         parent: Option<NodeId>,

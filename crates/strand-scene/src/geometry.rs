@@ -371,6 +371,41 @@ impl Scale {
             fin(f(r.bottom())).ceil() as i64,
         )
     }
+
+    /// The largest rectangle in whole *logical* (surface-local) pixels
+    /// whose physical image lies inside the physical rectangle `r`: near
+    /// edges round up, far edges round down. Use it for regions that must
+    /// never over-claim, such as `wl_surface.set_opaque_region`, which
+    /// takes surface-local coordinates while [`crate::Painter::opaque_region`]
+    /// reports buffer pixels. The result is in logical pixels even though
+    /// it is a [`Rect`]; it is empty when no whole logical pixel fits.
+    pub fn inner_logical_rect(self, r: Rect) -> Rect {
+        let (n, d) = (self.0 as i128, Self::DENOMINATOR as i128);
+        // logical = physical × 120 / n, exactly.
+        let up =
+            |v: i64| (v as i128 * d).div_euclid(n) + i128::from((v as i128 * d).rem_euclid(n) != 0);
+        let down = |v: i64| (v as i128 * d).div_euclid(n);
+        let clamp = |v: i128| v.clamp(i64::MIN as i128, i64::MAX as i128) as i64;
+        if r.is_empty() {
+            return Rect::default();
+        }
+        let (x0, y0) = (clamp(up(r.left())), clamp(up(r.top())));
+        let (x1, y1) = (clamp(down(r.right())), clamp(down(r.bottom())));
+        if x1 <= x0 || y1 <= y0 {
+            return Rect::default();
+        }
+        Rect::from_edges(x0, y0, x1, y1)
+    }
+
+    /// [`Scale::inner_logical_rect`] for every rectangle of a region,
+    /// dropping the ones that vanish.
+    pub fn inner_logical_region(self, d: &crate::Damage) -> Vec<Rect> {
+        d.rects()
+            .iter()
+            .map(|r| self.inner_logical_rect(*r))
+            .filter(|r| !r.is_empty())
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -432,6 +467,44 @@ mod tests {
         let a = s.snap_rect(LogicalRect::new(0.0, 0.0, 10.3, 5.0));
         let b = s.snap_rect(LogicalRect::new(10.3, 0.0, 7.1, 5.0));
         assert_eq!(a.right(), b.left());
+    }
+
+    #[test]
+    fn inner_logical_rounds_inward() {
+        let s125 = Scale::new(150).unwrap();
+        // Physical 13..37 is logical 10.4..29.6: whole pixels 11..29.
+        assert_eq!(
+            s125.inner_logical_rect(Rect::from_edges(13, 0, 37, 45)),
+            Rect::from_edges(11, 0, 29, 36)
+        );
+        let s15 = Scale::new(180).unwrap();
+        // Physical 3..30 is logical 2..20 exactly.
+        assert_eq!(
+            s15.inner_logical_rect(Rect::from_edges(3, 3, 30, 31)),
+            Rect::from_edges(2, 2, 20, 20)
+        );
+        // Less than one logical pixel wide vanishes.
+        assert!(s15.inner_logical_rect(Rect::new(1, 0, 1, 9)).is_empty());
+        assert_eq!(
+            Scale::ONE.inner_logical_rect(Rect::new(-4, 2, 8, 8)),
+            Rect::new(-4, 2, 8, 8)
+        );
+        // Never over-claims: the logical rect maps back inside.
+        for n in [120u32, 150, 180, 210, 240] {
+            let s = Scale::new(n).unwrap();
+            for (x, w) in [(0, 1), (3, 17), (7, 100), (-9, 31)] {
+                let r = Rect::new(x, x, w, w);
+                let l = s.inner_logical_rect(r);
+                if !l.is_empty() {
+                    assert!(s.to_physical(l.left() as f32) >= r.left() as f64 - 1e-9);
+                    assert!(s.to_physical(l.right() as f32) <= r.right() as f64 + 1e-9);
+                }
+            }
+        }
+        let mut d = crate::Damage::new();
+        d.add(Rect::new(0, 0, 1, 1));
+        d.add(Rect::new(10, 10, 30, 30));
+        assert_eq!(s15.inner_logical_region(&d).len(), 1);
     }
 
     #[test]

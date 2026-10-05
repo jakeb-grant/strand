@@ -82,6 +82,11 @@ impl AtlasMirror {
             .map(|p| &p.pixmap)
     }
 
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.pages.is_empty()
+    }
+
     /// Drops pages of scales no surface uses any more.
     pub fn retain_scales(&mut self, keep: impl Fn(Scale) -> bool) {
         self.pages.retain(|(s, _), _| keep(*s));

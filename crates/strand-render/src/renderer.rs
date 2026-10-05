@@ -64,6 +64,10 @@ struct SurfaceState {
     root: NodeId,
     size: Size,
     scale: Scale,
+    /// The scale this surface showed before its last rescale. Its text
+    /// layouts are kept (drawn resampled) until every text on the surface
+    /// has a layout at the new scale; then it is pruned.
+    prev_scale: Option<Scale>,
     records: BTreeMap<NodeId, NodeRecord>,
     /// Damage of the most recent frames, newest first.
     history: VecDeque<Damage>,
@@ -75,6 +79,32 @@ struct SurfaceState {
     /// Presentation time of the last painted frame (springs sample it
     /// from M2).
     time: Duration,
+    /// The flattened scene for the current state, reused by `paint` after
+    /// `update`; `None` once anything it depends on changes.
+    cache: Option<Flattened>,
+}
+
+impl SurfaceState {
+    fn mark_dirty(&mut self) {
+        self.dirty = true;
+        self.cache = None;
+    }
+
+    /// Takes a new size and scale; returns true if the scale changed.
+    fn resize(&mut self, size: Size, scale: Scale) -> bool {
+        if self.size == size && self.scale == scale {
+            return false;
+        }
+        let rescaled = self.scale != scale;
+        if rescaled && self.size != Size::default() && self.prev_scale.is_none() {
+            self.prev_scale = Some(self.scale);
+        }
+        self.size = size;
+        self.scale = scale;
+        self.valid = false;
+        self.mark_dirty();
+        rescaled
+    }
 }
 
 /// Retained scene, damage tracking and painting for every surface.
@@ -124,12 +154,14 @@ impl Renderer {
                 root,
                 size: Size::default(),
                 scale: Scale::ONE,
+                prev_scale: None,
                 records: BTreeMap::new(),
                 history: VecDeque::new(),
                 valid: false,
                 dirty: true,
                 opaque: Damage::new(),
                 time: Duration::ZERO,
+                cache: None,
             },
         );
     }
@@ -146,13 +178,8 @@ impl Renderer {
     /// Tells the renderer a surface's buffer size and scale before its first
     /// paint, so text can be shaped ahead of the first frame.
     pub fn configure_surface(&mut self, surface: SurfaceId, size: Size, scale: Scale) {
-        if let Some(s) = self.surfaces.get_mut(&surface)
-            && (s.size != size || s.scale != scale)
-        {
-            s.size = size;
-            s.scale = scale;
-            s.valid = false;
-            s.dirty = true;
+        if let Some(s) = self.surfaces.get_mut(&surface) {
+            s.resize(size, scale);
         }
         self.prune_scales();
         self.update();
@@ -169,11 +196,22 @@ impl Renderer {
     /// worker's atlas. The worker and the mirror are dropped together, so
     /// a scale that comes back (a monitor replugged) re-rasterises and
     /// re-uploads its glyphs.
+    ///
+    /// A surface's previous scale counts as used until its text has been
+    /// re-shaped at the new scale, so a rescale never blanks text.
     fn prune_scales(&mut self) {
-        let used: BTreeSet<Scale> = self.surfaces.values().map(|s| s.scale).collect();
+        let used: BTreeSet<Scale> = self
+            .surfaces
+            .values()
+            .flat_map(|s| [Some(s.scale), s.prev_scale])
+            .flatten()
+            .collect();
         let gone: Vec<Scale> = self.text_scales.difference(&used).copied().collect();
         if gone.is_empty() {
             return;
+        }
+        for s in self.surfaces.values_mut() {
+            s.cache = None;
         }
         for scale in gone {
             self.text_scales.remove(&scale);
@@ -206,27 +244,26 @@ impl Renderer {
     /// Applies one tick's diff. Failed ops are returned; the rest apply.
     pub fn apply(&mut self, diff: SceneDiff) -> Vec<SceneError> {
         let mut errors = Vec::new();
-        // Surfaces whose subtree an op touches; `None` means all of them.
+        // Surface roots whose subtree an op touches; `None` means all.
         let mut touched: Option<Vec<NodeId>> = Some(Vec::new());
         for op in diff.ops {
-            let mut roots = Vec::new();
-            match &op {
-                SceneOp::Create { id, parent, .. } => {
-                    roots.push(parent.and_then(|p| self.tree.root_of(p)).unwrap_or(*id));
+            // Where the node painted before the op, and the node whose
+            // root to look up after it.
+            let (before, after) = match &op {
+                SceneOp::Create { id, .. } => (None, Some(*id)),
+                SceneOp::Remove { id } => (self.tree.root_of(*id), None),
+                SceneOp::SetProp { id, .. } => (self.tree.root_of(*id), None),
+                SceneOp::Move { id, .. } => (self.tree.root_of(*id), Some(*id)),
+                SceneOp::SetTokens { .. } => {
+                    touched = None;
+                    (None, None)
                 }
-                SceneOp::Remove { id } | SceneOp::SetProp { id, .. } => {
-                    roots.extend(self.tree.root_of(*id));
-                }
-                SceneOp::Move { id, parent, .. } => {
-                    roots.extend(self.tree.root_of(*id));
-                    roots.push(parent.and_then(|p| self.tree.root_of(p)).unwrap_or(*id));
-                }
-                SceneOp::SetTokens { .. } => touched = None,
-            }
+            };
             match self.tree.apply_op(op) {
                 Ok(()) => {
                     if let Some(t) = &mut touched {
-                        t.extend(roots);
+                        t.extend(before);
+                        t.extend(after.and_then(|id| self.tree.root_of(id)));
                     }
                 }
                 Err(e) => errors.push(e),
@@ -246,9 +283,16 @@ impl Renderer {
         });
         let texts = &self.texts;
         self.pending.retain(|_, slot| texts.contains_key(slot));
+        // A surface nested in a touched one (a popup in a bar) inherits
+        // from it, so it is touched too; `update` clears it again if
+        // nothing it draws changed.
+        let tree = &self.tree;
         for s in self.surfaces.values_mut() {
-            if touched.as_ref().is_none_or(|t| t.contains(&s.root)) {
-                s.dirty = true;
+            if touched
+                .as_ref()
+                .is_none_or(|t| t.iter().any(|r| tree.is_ancestor(*r, s.root)))
+            {
+                s.mark_dirty();
             }
         }
         self.update();
@@ -257,16 +301,26 @@ impl Renderer {
 
     /// Collects finished text layouts and sends shaping requests for text
     /// that changed. Never blocks. Call after the text worker's waker fires.
+    ///
+    /// A dirty surface whose flattened scene turns out identical to its
+    /// last painted frame (only text still being shaped changed) stops
+    /// being dirty, so it asks for no frame until the layout arrives.
     pub fn update(&mut self) {
         self.poll_text();
         let ids: Vec<SurfaceId> = self
             .surfaces
             .iter()
-            .filter(|(_, s)| s.dirty && s.size != Size::default())
+            .filter(|(_, s)| s.dirty && s.cache.is_none() && s.size != Size::default())
             .map(|(id, _)| *id)
             .collect();
         for id in ids {
-            self.flatten_surface(id);
+            let f = self.flatten_surface(id);
+            if let Some(s) = self.surfaces.get_mut(&id) {
+                if s.valid && s.records == f.records && s.opaque == f.opaque {
+                    s.dirty = false;
+                }
+                s.cache = Some(f);
+            }
         }
     }
 
@@ -318,9 +372,16 @@ impl Renderer {
     }
 
     fn deliver(&mut self, layout: TextLayout) {
-        // Atlas uploads apply even when the layout itself is stale.
+        if layout.is_reset() {
+            self.reset_text();
+            return;
+        }
+        // Atlas uploads apply even when the layout itself is stale, except
+        // for scales already pruned (their pages would never be freed).
         for up in &layout.uploads {
-            self.atlas.apply(up);
+            if self.text_scales.contains(&up.page.scale) {
+                self.atlas.apply(up);
+            }
         }
         let Some(slot) = self.pending.remove(&layout.key) else {
             return;
@@ -335,11 +396,28 @@ impl Renderer {
             state.shaped = Some(spec);
             state.layout = Some(Arc::new(layout));
         }
+        // Surfaces at other scales may draw it resampled meanwhile.
         let root = self.tree.root_of(slot.0);
         for s in self.surfaces.values_mut() {
-            if Some(s.root) == root && s.scale == slot.1 {
-                s.dirty = true;
+            if Some(s.root) == root {
+                s.mark_dirty();
             }
+        }
+    }
+
+    /// The text worker restarted its engine: every mirrored page and every
+    /// layout drawing from one is stale. Forget them all and re-request.
+    fn reset_text(&mut self) {
+        self.atlas = AtlasMirror::default();
+        for (_, t) in self.texts.drain() {
+            if let Some((k, _)) = t.requested {
+                self.text.cancel(k);
+            }
+        }
+        self.pending.clear();
+        for s in self.surfaces.values_mut() {
+            s.valid = false;
+            s.mark_dirty();
         }
     }
 
@@ -360,21 +438,43 @@ impl Renderer {
     /// inline backend new layouts are available at once, so it flattens
     /// again until text is stable.
     fn flatten_surface(&mut self, id: SurfaceId) -> Flattened {
+        let mut stable = None;
         for _ in 0..4 {
             let Some(s) = self.surfaces.get(&id) else {
                 return Flattened::default();
             };
             let layouts = self.layouts_for(s.scale);
-            let f = flatten(&self.tree, s.root, s.size, s.scale, &layouts);
-            if !self.request_text(&f.text) {
-                return f;
+            let flat = flatten(&self.tree, s.root, s.size, s.scale, &layouts);
+            if !self.request_text(&flat.text) {
+                stable = Some(flat);
+                break;
             }
         }
-        let Some(s) = self.surfaces.get(&id) else {
-            return Flattened::default();
+        let f = match stable {
+            Some(f) => f,
+            None => {
+                let Some(s) = self.surfaces.get(&id) else {
+                    return Flattened::default();
+                };
+                let layouts = self.layouts_for(s.scale);
+                flatten(&self.tree, s.root, s.size, s.scale, &layouts)
+            }
         };
-        let layouts = self.layouts_for(s.scale);
-        flatten(&self.tree, s.root, s.size, s.scale, &layouts)
+        // Once every text here has a layout at this scale, the previous
+        // scale's layouts are no longer needed as stand-ins.
+        let texts = &self.texts;
+        let settled = f.text.iter().all(|(node, spec)| {
+            texts
+                .get(&(*node, spec.scale))
+                .is_some_and(|t| t.requested.is_none())
+        });
+        if settled
+            && let Some(s) = self.surfaces.get_mut(&id)
+            && s.prev_scale.take().is_some()
+        {
+            self.prune_scales();
+        }
+        f
     }
 
     /// Sends requests for text whose spec changed. Returns true if a layout
@@ -466,34 +566,31 @@ impl Painter for Renderer {
             return Damage::new();
         };
         s.time = target.time;
-        let rescaled = s.scale != target.scale;
-        if s.size != target.size || rescaled {
-            s.size = target.size;
-            s.scale = target.scale;
-            s.valid = false;
-        }
-        if rescaled {
+        if s.resize(target.size, target.scale) {
             self.prune_scales();
         }
         self.poll_text();
-        let f = self.flatten_surface(surface);
+        let cached = self.surfaces.get_mut(&surface).and_then(|s| s.cache.take());
+        let f = match cached {
+            Some(f) => f,
+            None => self.flatten_surface(surface),
+        };
         let Some(s) = self.surfaces.get_mut(&surface) else {
             return Damage::new();
         };
         let bounds = target.bounds();
-        let records: BTreeMap<NodeId, NodeRecord> = f.records.into_iter().collect();
         s.opaque = f.opaque;
         s.dirty = false;
 
         // This frame's changes.
         let mut frame = Damage::new();
         if s.valid {
-            diff_records(&s.records, &records, &mut frame);
+            diff_records(&s.records, &f.records, &mut frame);
             frame.clip(bounds);
         } else {
             frame = Damage::full(target.size);
         }
-        s.records = records;
+        s.records = f.records.clone();
 
         // Widen by the buffer's age: it misses the last `age - 1` frames.
         let age = target.age as usize;
@@ -509,6 +606,7 @@ impl Painter for Renderer {
         if total.is_empty() {
             // Nothing drawn: no frame, so nothing enters the history and
             // the caller does not commit (see `Painter::paint`).
+            s.cache = Some(f);
             self.last_damage.insert(surface, total);
             return total;
         }
@@ -519,6 +617,10 @@ impl Painter for Renderer {
         let scale = s.scale;
         self.raster
             .paint(&f.items, &total, &self.atlas, scale, target);
+        // Nothing changed since flattening: the next paint can reuse it.
+        if let Some(s) = self.surfaces.get_mut(&surface) {
+            s.cache = Some(f);
+        }
         self.last_damage.insert(surface, total);
         total
     }
@@ -536,5 +638,56 @@ impl Painter for Renderer {
         self.surfaces
             .get(&surface)
             .map_or_else(Damage::new, |s| s.opaque)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use strand_scene::{Color, PropValue};
+    use strand_text::{FontConfig, test_font_path};
+
+    fn engine() -> TextEngine {
+        let data = std::fs::read(test_font_path()).unwrap();
+        TextEngine::new(FontConfig::isolated(vec![Arc::new(data)]))
+    }
+
+    fn renderer() -> Renderer {
+        Renderer::new(TextBackend::Inline(Box::new(engine())))
+    }
+
+    fn paint(r: &mut Renderer, px: &mut [u8], age: u8) -> Damage {
+        let mut t = PaintTarget::new(px, Size::new(80, 20), 320, Scale::ONE, age).unwrap();
+        r.paint(SurfaceId(1), &mut t)
+    }
+
+    /// After the worker restarts its engine, every mirrored page is stale:
+    /// the renderer drops them with all layouts, repaints in full and
+    /// re-requests its text, ending up with the same pixels.
+    #[test]
+    fn engine_reset_drops_layouts_and_reshapes() {
+        let mut r = renderer();
+        let (root, txt) = (NodeId::new(0, 0), NodeId::new(1, 0));
+        let mut d = SceneDiff::new();
+        d.create(root, NodeKind::Bar, None, 0)
+            .set(root, Prop::Color, PropValue::Color(Color::WHITE))
+            .create(txt, NodeKind::Text, Some(root), 0)
+            .set(txt, Prop::Text, PropValue::Text("12:59".into()));
+        assert!(r.apply(d).is_empty());
+        r.attach_surface(SurfaceId(1), root);
+        let mut before = vec![0u8; 80 * 20 * 4];
+        paint(&mut r, &mut before, 0);
+        assert!(before.iter().any(|b| *b != 0));
+        assert!(!r.wants_frame(SurfaceId(1)));
+
+        // What the worker does: a fresh engine, then the reset marker.
+        r.text = TextBackend::Inline(Box::new(engine()));
+        r.deliver(TextLayout::reset(TextKey(0), Scale::ONE));
+        assert!(r.texts.is_empty() && r.atlas.is_empty());
+        assert!(r.wants_frame(SurfaceId(1)));
+        let mut after = vec![0u8; 80 * 20 * 4];
+        let d = paint(&mut r, &mut after, 1);
+        assert_eq!(d, Damage::full(Size::new(80, 20)));
+        assert!(before == after);
     }
 }

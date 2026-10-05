@@ -95,12 +95,27 @@ impl SceneTree {
         self.get(id).is_some()
     }
 
-    /// The surface root above `id` (itself for a root).
+    /// The surface root `id` paints on: the nearest surface-kind node at
+    /// or above it (a `popup` nested in a `bar` is its own root).
     pub fn root_of(&self, mut id: NodeId) -> Option<NodeId> {
         loop {
-            match self.get(id)?.parent {
+            let node = self.get(id)?;
+            match node.parent {
+                Some(p) if !node.kind.is_surface() => id = p,
+                _ => return Some(id),
+            }
+        }
+    }
+
+    /// True if `ancestor` is `id` or above it.
+    pub fn is_ancestor(&self, ancestor: NodeId, mut id: NodeId) -> bool {
+        loop {
+            if id == ancestor {
+                return true;
+            }
+            match self.get(id).and_then(|n| n.parent) {
                 Some(p) => id = p,
-                None => return Some(id),
+                None => return false,
             }
         }
     }

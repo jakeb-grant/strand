@@ -430,9 +430,11 @@ fn worker_backend_keeps_last_layout_until_delivery() {
 
     r.apply(set_text(clock, "13:00"));
     assert!(r.text_pending());
-    assert!(r.wants_frame(BAR));
-    // Painting while shaping is in flight draws nothing new and must not
-    // keep frame callbacks going: delivery marks the surface dirty.
+    // Nothing visible changes until the layout arrives, so no frame is
+    // wanted yet: delivery marks the surface dirty.
+    // (Nothing has polled the worker since `apply`, so it is pending.)
+    assert!(!r.wants_frame(BAR), "no frames while waiting for text");
+    // Painting anyway while shaping is in flight draws nothing new.
     let early = buf.paint(&mut r, BAR, 1);
     let d = if r.text_pending() {
         assert!(early.is_empty(), "{early:?}");
@@ -559,10 +561,85 @@ fn rescaling_frees_and_restores_text() {
     let s2 = Scale::new(240).unwrap();
     let mut b = Buffer::new(5120, 72, s2);
     b.paint(&mut r, BAR, 0);
+    let (_, want_b) = fresh(bar("12:59").0, 5120, 72, s2);
+    assert!(b.pixels == want_b.pixels, "2x after the move");
     let mut a = Buffer::new(2560, 36, Scale::ONE);
     a.paint(&mut r, BAR, 0);
     let (_, want) = fresh(bar("12:59").0, 2560, 36, Scale::ONE);
     assert!(a.pixels == want.pixels);
+}
+
+/// Number of pixels with any coverage inside `r`.
+fn lit(buf: &Buffer, r: Rect) -> usize {
+    let mut n = 0;
+    for y in r.top()..r.bottom() {
+        for x in r.left()..r.right() {
+            if buf.px(x as u32, y as u32)[3] > 0 {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+/// With the threaded worker, the first frame after a rescale draws the
+/// old scale's layouts resampled while the new ones are shaped: text never
+/// blanks (startup's late `preferred_scale`, outputs of mixed scale).
+#[test]
+fn worker_rescale_keeps_text_on_the_first_frame() {
+    use std::time::Duration;
+    let mut r = worker_renderer();
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Color, color("#ffffff"))]);
+    b.node(
+        NodeKind::Text,
+        Some(root),
+        vec![
+            (Prop::X, num(4.0)),
+            (Prop::Y, num(2.0)),
+            (Prop::Font, PropValue::Font(font(13.0))),
+            (Prop::Text, text("Hello 12:59")),
+        ],
+    );
+    r.apply(b.diff);
+    r.attach_surface(BAR, root);
+    r.configure_surface(BAR, Size::new(200, 20), Scale::ONE);
+    assert!(r.wait_for_text(Duration::from_secs(10)));
+    let mut a = Buffer::new(200, 20, Scale::ONE);
+    a.paint(&mut r, BAR, 0);
+    let one = lit(&a, Rect::new(0, 0, 200, 20));
+    assert!(one > 50, "{one}");
+
+    let s2 = Scale::new(240).unwrap();
+    let mut b = Buffer::new(400, 40, s2);
+    b.paint(&mut r, BAR, 0);
+    let first = lit(&b, Rect::new(0, 0, 400, 40));
+    assert!(
+        first > one,
+        "text on the first 2x frame: {first} lit pixels"
+    );
+    // Then the sharp layout arrives and replaces it.
+    assert!(r.wait_for_text(Duration::from_secs(10)));
+    assert!(r.wants_frame(BAR));
+    b.paint(&mut r, BAR, 1);
+    let mut want_r = renderer();
+    let mut w = Builder::default();
+    let root = w.node(NodeKind::Bar, None, vec![(Prop::Color, color("#ffffff"))]);
+    w.node(
+        NodeKind::Text,
+        Some(root),
+        vec![
+            (Prop::X, num(4.0)),
+            (Prop::Y, num(2.0)),
+            (Prop::Font, PropValue::Font(font(13.0))),
+            (Prop::Text, text("Hello 12:59")),
+        ],
+    );
+    want_r.apply(w.diff);
+    want_r.attach_surface(BAR, root);
+    let mut want = Buffer::new(400, 40, s2);
+    want.paint(&mut want_r, BAR, 0);
+    assert!(b.pixels == want.pixels, "sharp 2x text after delivery");
 }
 
 /// The buffer-age contract: an empty paint is not a frame. A caller that
@@ -859,4 +936,127 @@ fn token_bound_props_follow_the_table() {
     assert_eq!(dmg.rects(), &[Rect::new(10, 0, 10, 10)]);
     let pink = buf.px(15, 5);
     assert!(pink[2] > pink[0], "accent is pink: {pink:?}");
+}
+
+/// `set { $surface: … }` on one subtree changes `$surface` (and tokens
+/// derived from it) for that subtree only; editing the override repaints
+/// only what reads it.
+#[test]
+fn scoped_token_overrides_apply_to_their_subtree() {
+    let mut table = TokenTable::default();
+    table.insert("surface", color("#0000ff"));
+    table.insert_derived(
+        "surface.dim",
+        TokenExpr::path("surface").call(TokenMethod::Alpha, vec![TokenExpr::value(num(0.5))]),
+    );
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![]);
+    let boxed = |x: f32, path: &str| {
+        vec![
+            (Prop::X, num(x)),
+            (Prop::Size, num(10.0)),
+            (Prop::Bg, PropValue::Token(TokenExpr::path(path))),
+        ]
+    };
+    let plain = b.node(NodeKind::Box, Some(root), boxed(0.0, "surface"));
+    let mut red = TokenTable::default();
+    red.insert("surface", color("#ff0000"));
+    let group = b.node(
+        NodeKind::Stack,
+        Some(root),
+        vec![(Prop::Tokens, PropValue::Tokens(Box::new(red)))],
+    );
+    let child = b.node(NodeKind::Box, Some(group), boxed(20.0, "surface"));
+    let derived = b.node(NodeKind::Box, Some(group), boxed(40.0, "surface.dim"));
+    b.diff.push(SceneOp::SetTokens { table });
+    let (mut r, mut buf) = fresh(b.diff, 60, 10, Scale::ONE);
+    let _ = (plain, child, derived);
+    // BGRA bytes.
+    assert_eq!(buf.px(5, 5), [255, 0, 0, 255], "outside: blue");
+    assert_eq!(buf.px(25, 5), [0, 0, 255, 255], "inside: red");
+    let dim = buf.px(45, 5);
+    assert_eq!(
+        (dim[0], dim[2], dim[3]),
+        (0, 128, 128),
+        "derived follows: {dim:?}"
+    );
+
+    // Editing the override repaints only the subtree.
+    let mut green = TokenTable::default();
+    green.insert("surface", color("#00ff00"));
+    let mut d = SceneDiff::new();
+    d.set(group, Prop::Tokens, PropValue::Tokens(Box::new(green)));
+    r.apply(d);
+    let dmg = buf.paint(&mut r, BAR, 1);
+    assert!(!dmg.covers(Rect::new(0, 0, 10, 10)), "{dmg:?}");
+    assert!(dmg.covers(Rect::new(20, 0, 10, 10)), "{dmg:?}");
+    assert!(dmg.covers(Rect::new(40, 0, 10, 10)), "{dmg:?}");
+    assert_eq!(buf.px(5, 5), [255, 0, 0, 255]);
+    assert_eq!(buf.px(25, 5), [0, 255, 0, 255]);
+}
+
+/// `radius: full` (the workspace dot, the OSD pill) draws round in each of
+/// its encodings.
+#[test]
+fn radius_full_keyword_draws_a_pill() {
+    for radius in [
+        PropValue::Keyword("full".into()),
+        PropValue::Corners(Corners::FULL),
+        num(999.0),
+    ] {
+        let mut b = Builder::default();
+        let root = b.node(NodeKind::Bar, None, vec![]);
+        b.node(
+            NodeKind::Box,
+            Some(root),
+            vec![
+                (Prop::Width, num(40.0)),
+                (Prop::Height, num(20.0)),
+                (Prop::Radius, radius.clone()),
+                (Prop::Bg, color("#ffffff")),
+            ],
+        );
+        let (_, buf) = fresh(b.diff, 40, 20, Scale::ONE);
+        assert_eq!(buf.px(0, 0)[3], 0, "corner is cut: {radius:?}");
+        assert_eq!(buf.px(1, 1)[3], 0, "corner is cut: {radius:?}");
+        assert_eq!(buf.px(20, 10)[3], 255, "{radius:?}");
+    }
+}
+
+/// A popup nested in a bar is its own surface: the bar does not paint it,
+/// and editing it does not wake the bar.
+#[test]
+fn nested_popup_paints_only_on_its_own_surface() {
+    let mut b = Builder::default();
+    let bar = b.node(NodeKind::Bar, None, vec![(Prop::Color, color("#ff0000"))]);
+    let popup = b.node(
+        NodeKind::Popup,
+        Some(bar),
+        vec![(Prop::Bg, color("#00ff00"))],
+    );
+    let inner = b.node(
+        NodeKind::Box,
+        Some(popup),
+        vec![(Prop::Size, num(4.0)), (Prop::Bg, color("#0000ff"))],
+    );
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    let (bar_s, popup_s) = (SurfaceId(1), SurfaceId(2));
+    r.attach_surface(bar_s, bar);
+    r.attach_surface(popup_s, popup);
+    let mut a = Buffer::new(20, 10, Scale::ONE);
+    let mut p = Buffer::new(10, 10, Scale::ONE);
+    a.paint(&mut r, bar_s, 0);
+    p.paint(&mut r, popup_s, 0);
+    assert_eq!(a.px(1, 1), [0, 0, 0, 0], "the bar does not paint the popup");
+    assert_eq!(p.px(1, 1), [255, 0, 0, 255]);
+    assert_eq!(p.px(8, 8), [0, 255, 0, 255]);
+
+    let mut d = SceneDiff::new();
+    d.set(inner, Prop::Bg, color("#ffffff"));
+    r.apply(d);
+    assert!(!r.wants_frame(bar_s), "the bar stays idle");
+    assert!(r.wants_frame(popup_s));
+    assert!(!p.paint(&mut r, popup_s, 1).is_empty());
+    assert_eq!(p.px(1, 1), [255, 255, 255, 255]);
 }

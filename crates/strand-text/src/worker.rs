@@ -1,6 +1,6 @@
 //! The text worker thread: requests in, layouts out, over channels.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::thread::JoinHandle;
@@ -43,7 +43,9 @@ enum Msg {
 /// loop can wake (for example a calloop ping).
 pub type Waker = Box<dyn Fn() + Send + 'static>;
 
-/// Handle to the text worker. Dropping it stops and joins the thread.
+/// Handle to the text worker. Dropping it stops and joins the thread
+/// (after at most the request being shaped; requests are capped at
+/// [`crate::MAX_TEXT_BYTES`]).
 pub struct TextWorker {
     requests: Option<Sender<Msg>>,
     layouts: Receiver<TextLayout>,
@@ -53,6 +55,15 @@ pub struct TextWorker {
 impl std::fmt::Debug for TextWorker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TextWorker").finish_non_exhaustive()
+    }
+}
+
+fn enqueue(m: Msg, queue: &mut VecDeque<Msg>, cancelled: &mut HashSet<TextKey>) {
+    match m {
+        Msg::Cancel(k) => {
+            cancelled.insert(k);
+        }
+        m => queue.push_back(m),
     }
 }
 
@@ -70,44 +81,54 @@ impl TextWorker {
             .name("strand-text".into())
             .spawn(move || {
                 let mut engine = TextEngine::new(config.clone());
-                while let Ok(first) = req_rx.recv() {
-                    // Drain what is queued so cancelled requests are skipped
-                    // instead of shaped (text that changes every frame).
-                    let mut batch = vec![first];
-                    batch.extend(req_rx.try_iter());
-                    let cancelled: HashSet<TextKey> = batch
-                        .iter()
-                        .filter_map(|m| match m {
-                            Msg::Cancel(k) => Some(*k),
-                            _ => None,
-                        })
-                        .collect();
-                    for msg in batch {
-                        let req = match msg {
-                            Msg::Layout(req) if !cancelled.contains(&req.key) => req,
-                            Msg::DropScale(s) => {
-                                engine.drop_scale(s);
-                                continue;
-                            }
-                            _ => continue,
-                        };
-                        let layout = match catch_unwind(AssertUnwindSafe(|| engine.layout(&req))) {
-                            Ok(l) => l,
-                            Err(_) => {
-                                // A bug in shaping must not end text for the
-                                // session. The engine's atlas may now be out
-                                // of step with what was uploaded, so start a
-                                // fresh one (page generations never repeat).
-                                engine = TextEngine::new(config.clone());
-                                TextLayout::empty(req.key, req.scale)
-                            }
-                        };
-                        if out_tx.send(layout).is_err() {
-                            return;
+                let mut queue: VecDeque<Msg> = VecDeque::new();
+                // Keys cancelled while their request is still queued.
+                let mut cancelled: HashSet<TextKey> = HashSet::new();
+                loop {
+                    if queue.is_empty() {
+                        // A cancel always follows its request on the
+                        // channel, so with nothing queued every
+                        // remembered cancel is for a finished request.
+                        cancelled.clear();
+                        match req_rx.recv() {
+                            Ok(m) => enqueue(m, &mut queue, &mut cancelled),
+                            Err(_) => return,
                         }
-                        if let Some(w) = &waker {
-                            w();
+                    }
+                    // Fold in whatever arrived meanwhile before each
+                    // request, so a cancel sent while a long batch is
+                    // being shaped still skips the superseded ones.
+                    for m in req_rx.try_iter() {
+                        enqueue(m, &mut queue, &mut cancelled);
+                    }
+                    let Some(msg) = queue.pop_front() else {
+                        continue;
+                    };
+                    let req = match msg {
+                        Msg::Layout(req) if !cancelled.remove(&req.key) => req,
+                        Msg::DropScale(s) => {
+                            engine.drop_scale(s);
+                            continue;
                         }
+                        _ => continue,
+                    };
+                    let layout = match catch_unwind(AssertUnwindSafe(|| engine.layout(&req))) {
+                        Ok(l) => l,
+                        Err(_) => {
+                            // A bug in shaping must not end text for the
+                            // session. The engine's atlas may now be out of
+                            // step with what was uploaded, so start a fresh
+                            // one and tell the receiver to forget every page
+                            // it mirrors (see `TextLayout::is_reset`).
+                            engine = TextEngine::new(config.clone());
+                            TextLayout::reset(req.key, req.scale)
+                        }
+                    };
+                    if out_tx.send(layout).is_err() {
+                        return;
+                    }
+                    if let Some(w) = &waker {
+                        w();
                     }
                 }
             })

@@ -69,6 +69,11 @@ pub struct AtlasConfig {
     /// Pages per scale before least-recently-used pages are evicted. Pages
     /// beyond this are only allocated while every page is leased.
     pub max_pages: usize,
+    /// Hard cap on the alpha bytes of one scale's pages (the render
+    /// thread's mirror holds four times this as RGBA). A glyph that would
+    /// need a page past it is not drawn, so one layout full of huge or
+    /// distinct glyphs cannot grow the atlas without bound.
+    pub max_bytes: usize,
 }
 
 /// Largest page side; a glyph mask bigger than this minus one pixel of
@@ -86,6 +91,7 @@ impl Default for AtlasConfig {
         Self {
             page_size: 256,
             max_pages: 4,
+            max_bytes: 1 << 20,
         }
     }
 }
@@ -238,55 +244,68 @@ impl GlyphAtlas {
 
     /// Finds room for a `w × h` mask. Pages used by the current request
     /// (stamped `now`) and leased pages are never evicted. A mask too big
-    /// for a regular page gets a page of its own, sized to fit, which is
-    /// leased and evicted like any other. `None` if nothing fits; such
-    /// failures are not cached, so a later request retries.
+    /// for a regular page goes on an oversized page, sized to fit and
+    /// shared with other masks when they fit, leased and evicted like any
+    /// other. New pages are only created within `max_bytes`. `None` if
+    /// nothing fits; such failures are not cached, so a later request
+    /// retries.
     pub fn allocate(&mut self, w: u16, h: u16, now: u64) -> Option<AtlasSlot> {
         let needed = w.max(h).checked_add(1)?;
         if needed > MAX_PAGE_SIZE {
             return None;
         }
+        // Most recently used first: keeps hot glyphs together.
+        let mut order: Vec<usize> = (0..self.pages.len()).collect();
+        order.sort_by_key(|&i| std::cmp::Reverse(self.pages[i].last_used));
+        for i in order {
+            if let Some((x, y)) = self.pages[i].alloc(w, h) {
+                return Some(self.slot(i, x, y, w, h, now));
+            }
+        }
         let regular = self.config.page_size;
         let size = if needed <= regular {
-            // Most recently used first: keeps hot glyphs together.
-            let mut order: Vec<usize> = (0..self.pages.len()).collect();
-            order.sort_by_key(|&i| std::cmp::Reverse(self.pages[i].last_used));
-            for i in order {
-                if let Some((x, y)) = self.pages[i].alloc(w, h) {
-                    return Some(self.slot(i, x, y, w, h, now));
-                }
-            }
             regular
         } else {
             // Round up so a page can be reused for similar sizes.
             needed.div_ceil(64).saturating_mul(64).min(MAX_PAGE_SIZE)
         };
-        let index = if self.pages.len() < self.config.max_pages {
-            None
-        } else {
-            self.pages
-                .iter()
-                .enumerate()
-                .filter(|(_, p)| p.last_used != now && !p.leased())
-                .min_by_key(|(_, p)| p.last_used)
-                .map(|(i, _)| i)
-        };
-        let i = match index {
-            Some(i) => {
+        let bytes = |side: u16| side as usize * side as usize;
+        let total: usize = self.pages.iter().map(|p| bytes(p.size)).sum();
+        let within = |freed: usize| total - freed + bytes(size) <= self.config.max_bytes;
+        let victim = self
+            .pages
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.last_used != now && !p.leased())
+            .min_by_key(|(_, p)| p.last_used)
+            .map(|(i, p)| (i, bytes(p.size)));
+        let grow = self.pages.len() < self.config.max_pages && within(0);
+        let i = match victim {
+            Some((i, freed)) if !grow && within(freed) => {
                 let old = self.pages[i].id;
                 self.glyphs
                     .retain(|_, g| g.slot.is_none_or(|s| s.page.index != old.index));
                 self.pages[i].reset(size);
                 i
             }
-            None => {
+            // Past `max_pages` only while nothing can be evicted.
+            _ if grow || (victim.is_none() && within(0)) => {
                 let i = self.pages.len();
                 self.pages.push(Page::new(self.scale, i as u32, size));
                 i
             }
+            _ => return None,
         };
         let (x, y) = self.pages[i].alloc(w, h)?;
         Some(self.slot(i, x, y, w, h, now))
+    }
+
+    /// Alpha bytes of every page.
+    pub fn bytes(&self) -> usize {
+        self.pages
+            .iter()
+            .map(|p| p.size as usize * p.size as usize)
+            .sum()
     }
 
     /// Frees pages above `max_pages` that were only allocated while every
@@ -344,6 +363,7 @@ mod tests {
             AtlasConfig {
                 page_size: 32,
                 max_pages,
+                max_bytes: usize::MAX,
             },
         )
     }
@@ -439,5 +459,39 @@ mod tests {
         let s2 = a.allocate(30, 30, 4).unwrap();
         assert_ne!(s2.page, s1.page);
         assert_ne!(s2.page.generation, s1.page.generation);
+    }
+
+    #[test]
+    fn oversized_glyphs_share_pages() {
+        let mut a = atlas(4);
+        let first = a.allocate(40, 20, 1).unwrap();
+        let second = a.allocate(40, 20, 1).unwrap();
+        assert_eq!(first.page, second.page, "both fit one 64 px page");
+        assert_eq!(a.page_count(), 1);
+    }
+
+    /// One request full of distinct huge glyphs cannot grow the atlas past
+    /// its byte budget, even though none of its pages may be evicted.
+    #[test]
+    fn byte_budget_bounds_one_request() {
+        let mut a = GlyphAtlas::new(
+            Scale::ONE,
+            AtlasConfig {
+                page_size: 32,
+                max_pages: 2,
+                max_bytes: 4 * 64 * 64,
+            },
+        );
+        let mut drawn = 0;
+        for _ in 0..62 {
+            if a.allocate(60, 60, 1).is_some() {
+                drawn += 1;
+            }
+        }
+        assert_eq!(drawn, 4);
+        assert!(a.bytes() <= 4 * 64 * 64);
+        // A later request can evict and reuse them.
+        assert!(a.allocate(60, 60, 2).is_some());
+        assert!(a.bytes() <= 4 * 64 * 64);
     }
 }

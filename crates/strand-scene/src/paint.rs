@@ -123,8 +123,10 @@ pub trait Painter {
     /// only while true.
     fn wants_frame(&self, surface: SurfaceId) -> bool;
     /// The part of the last painted frame that is fully opaque, in
-    /// physical pixels, for `set_opaque_region`. Empty when nothing is
-    /// known to be opaque.
+    /// physical *buffer* pixels. Empty when nothing is known to be opaque.
+    /// `wl_surface.set_opaque_region` takes surface-local logical
+    /// coordinates: convert with [`crate::Scale::inner_logical_region`],
+    /// which rounds inward so translucent pixels are never claimed.
     fn opaque_region(&self, surface: SurfaceId) -> Damage {
         let _ = surface;
         Damage::new()

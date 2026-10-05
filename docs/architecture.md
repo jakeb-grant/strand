@@ -64,7 +64,7 @@ be built and tested without the language, and the language without pixels.
       /// surface is unsettled; the surface manager requests frame callbacks
       /// only while true.
       fn wants_frame(&self, surface: SurfaceId) -> bool;
-      /// Fully opaque part of the last painted frame, for set_opaque_region.
+      /// Fully opaque part of the last painted frame, in buffer pixels.
       fn opaque_region(&self, surface: SurfaceId) -> Damage { Damage::new() }
   }
   ```
@@ -76,20 +76,33 @@ be built and tested without the language, and the language without pixels.
   surface. If a painted buffer cannot be committed, call
   `Renderer::invalidate(surface)`. `PaintTarget::new` sets `time` to zero;
   the surface manager sets it (`.at(t)`) and tests pass fixed values so
-  springs sample deterministic timestamps. The input region (shadows grow
-  the buffer but not the input region) joins this trait with M2 layout.
+  springs sample deterministic timestamps. `opaque_region` is in buffer
+  pixels; `wl_surface.set_opaque_region` takes surface-local logical
+  coordinates, so convert with `Scale::inner_logical_region`, which rounds
+  inward and never claims a translucent pixel. The input region (shadows
+  grow the buffer but not the input region) joins this trait with M2
+  layout.
 
 - **Scene protocol** (logic → render, one batch per tick): `SceneDiff`
   holding ordered `SceneOp`s over a retained tree: `Create { id, kind,
   parent, index }`, `Remove { id }` (render plays `exit` before unmounting),
   `Move { id, parent, index }`, `SetProp { id, prop, value, transition }`,
-  `SetTokens { table }`. Node ids are generational. Prop values are typed
-  (`Length`, `Color`, `Paint`, `Text`, `Shadow`, ...). `transition` is
-  `Default` (the token spring for that prop class), `Spring { .. }`,
-  `Duration { .. }` or `Instant`, matching `~` in the language. `Create`/`Move`
-  take `parent: Option<NodeId>` (`None` for surface roots) and
-  `PropValue::Unset` reverts a prop to its default. Render maps a surface
-  root to Wayland surfaces with `Renderer::attach_surface(SurfaceId, NodeId)`.
+  `SetTokens { table }`. Node ids are generational; a removed id is dead
+  at once (logic may reuse the slot with a new generation in the same
+  diff). `Move`'s `index` counts the new parent's children after the node
+  is detached. Prop values are typed (`Length`, `Color`, `Paint`, `Text`,
+  `Shadow`, ...). `transition` is `Default` (the token spring for that
+  prop class), `Token(path)` (`~ $motion.bouncy`), `Spring { .. }`,
+  `Duration { .. }` or `Instant`, matching `~` in the language;
+  `TokenScope::transition` resolves the first two through `$motion.*`
+  tokens at render time. `Create`/`Move` take `parent: Option<NodeId>`
+  (`None` for surface roots) and `PropValue::Unset` reverts a prop to its
+  default. Render maps a surface root to Wayland surfaces with
+  `Renderer::attach_surface(SurfaceId, NodeId)`. A surface-kind node
+  created under a parent (a `popup` in a `bar`) is its own root: it
+  inherits tokens, colour and font from its ancestors but paints only on
+  its own surface. `radius: full` is `Corners::FULL` (infinite radii) or
+  `PropValue::Keyword("full")`; a `%` radius is of the shorter side.
   Token-bound values travel unresolved as `PropValue::Token(TokenExpr)`
   (`$path`, colour methods `alpha`/`mix`/`lighten`/`darken`,
   `oklch(from …)` with channel arithmetic, and `Template` for composite
@@ -98,8 +111,34 @@ be built and tested without the language, and the language without pixels.
   scales, fonts, `PropValue::Transition` springs for `$motion.*`) and
   derived tokens as expressions; render evaluates references at flatten
   time, every frame, so only palette roots need to spring. Logic still
-  resolves which theme and overrides apply. `enter`/`exit` are props whose
+  resolves which theme applies. Subtree overrides (`set { $x: … }` and a
+  component's `tokens { }`, as `Toast.radius`) are the `tokens` prop
+  holding a `PropValue::Tokens` table; render resolves through a
+  `TokenScope` chain (global table, then each ancestor's override,
+  nearest first). An override's right-hand side sees its parent scope
+  (`set { $surface: $surface.alpha(0.5) }` is not a cycle) and global
+  derived tokens are evaluated in the asking node's scope, so they stay
+  derived inside the subtree. `enter`/`exit` are props whose
   value is a `PropValue::Pose` (prop/value pairs) or a preset keyword.
+
+- **Render loop** (the binary wires this; surface calls `Painter`):
+  1. Spawn the text worker with `TextWorker::spawn_with_waker(config,
+     Some(waker))`, where the waker pings the main calloop loop, and
+     build `Renderer::new(TextBackend::Worker(worker))`.
+  2. When the ping fires, call `Renderer::update()`: it collects
+     delivered layouts and marks the surfaces they change dirty. Without
+     this, changed text reaches the screen only with the next unrelated
+     event.
+  3. Call `apply(diff)` once per logic tick with the `SceneDiff` received.
+  4. On output and configure events call `attach_surface`,
+     `configure_surface(size, scale)` (before the first paint, so text is
+     shaped ahead of it) and `detach_surface`; these also free per-scale
+     atlases and text no surface uses.
+  5. Request a frame callback while `wants_frame(surface)`, and in it call
+     `paint`. Commit only a non-empty result, with exactly that damage
+     (`damage_buffer`) and the converted `opaque_region`; if the commit
+     fails, call `invalidate(surface)`. Text still being shaped does not
+     keep `wants_frame` true: the delivery does, through step 2.
 
 ### `strand-core`
 
@@ -134,8 +173,13 @@ one. Two more messages share the request channel, in order:
 is superseded) and `drop_scale(scale)` (free that scale's atlas; render
 sends it when no surface uses the scale and drops its mirror pages at the
 same time, so a returning scale re-uploads its glyphs). The worker drains
-its queue before shaping and survives a panicking request (it answers with
-an empty layout and starts a fresh engine).
+its queue before shaping (and folds in newly arrived cancels before each
+request) and survives a panicking request: it starts a fresh engine and
+answers with an empty layout whose `is_reset()` is true, on which render
+drops its mirror and every layout and re-requests its text. Each scale's
+atlas is capped at `AtlasConfig::max_bytes` of alpha (1 MiB by default;
+glyphs that do not fit are skipped), fonts at `MAX_FONT_PX` (512) and
+text at `MAX_TEXT_BYTES` (64 KiB) per request.
 
 ### `strand-surface`
 

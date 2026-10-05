@@ -23,7 +23,11 @@ use crate::{GlyphRun, PlacedGlyph, TextAlign, TextLayout, TextRequest};
 /// Largest font size shaped, in physical pixels; larger requests are
 /// shaped at this size so one value from a bad expression cannot stall the
 /// worker or exhaust memory.
-pub const MAX_FONT_PX: f32 = 1024.0;
+pub const MAX_FONT_PX: f32 = 512.0;
+
+/// Longest text shaped, in bytes; longer text is cut at a character
+/// boundary. Keeps one request from occupying the worker for long.
+pub const MAX_TEXT_BYTES: usize = 64 * 1024;
 
 /// Horizontal subpixel positions per pixel. Glyph origins are snapped to a
 /// quarter pixel horizontally and a whole pixel vertically.
@@ -139,6 +143,11 @@ impl TextEngine {
         self.atlases.get(&scale).map_or(0, GlyphAtlas::page_count)
     }
 
+    /// Alpha bytes of the atlas pages for `scale`.
+    pub fn atlas_bytes(&self, scale: Scale) -> usize {
+        self.atlases.get(&scale).map_or(0, GlyphAtlas::bytes)
+    }
+
     /// Glyphs cached in the atlas for `scale`.
     pub fn atlas_glyphs(&self, scale: Scale) -> usize {
         self.atlases.get(&scale).map_or(0, GlyphAtlas::glyph_count)
@@ -176,9 +185,14 @@ impl TextEngine {
             .filter(|w| w.is_finite() && *w >= 0.0)
             .map(|w| (w * s).min(1e7));
 
+        let mut end = req.text.len().min(MAX_TEXT_BYTES);
+        while !req.text.is_char_boundary(end) {
+            end -= 1;
+        }
+        let text = &req.text[..end];
         let mut builder = self
             .layout_cx
-            .ranged_builder(&mut self.font_cx, &req.text, s, true);
+            .ranged_builder(&mut self.font_cx, text, s, true);
         builder.push_default(StyleProperty::FontFamily(FontFamily::Source(
             req.style.font.family.as_str().into(),
         )));
@@ -187,7 +201,7 @@ impl TextEngine {
         if let Some(lh) = line_height {
             builder.push_default(StyleProperty::LineHeight(LineHeight::FontSizeRelative(lh)));
         }
-        let mut layout: parley::Layout<()> = builder.build(&req.text);
+        let mut layout: parley::Layout<()> = builder.build(text);
         layout.break_all_lines(max_width);
         let alignment = match req.style.align {
             TextAlign::Start => Alignment::Start,
@@ -308,6 +322,7 @@ impl TextEngine {
             runs,
             uploads,
             leases,
+            reset: false,
         }
     }
 }

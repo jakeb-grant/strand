@@ -133,6 +133,7 @@ fn atlas_is_lru_bounded_while_layouts_are_dropped() {
     cfg.atlas = AtlasConfig {
         page_size: 64,
         max_pages: 2,
+        ..AtlasConfig::default()
     };
     let mut e = TextEngine::new(cfg);
     for (i, size) in (8..23).enumerate() {
@@ -292,4 +293,24 @@ fn worker_skips_cancelled_requests() {
     // Requests queued behind the first one were drained and skipped; at
     // most the ones that arrived before the drain could have run.
     assert!(got.len() < 18, "{got:?}");
+}
+
+/// One layout of many distinct huge glyphs stays within the atlas byte
+/// budget instead of allocating a page per glyph.
+#[test]
+fn huge_distinct_glyphs_stay_within_the_byte_budget() {
+    let mut e = TextEngine::new(config());
+    let text = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let l = e.layout(&request(1, text, 1e30, Scale::ONE));
+    assert!(l.glyphs().count() > 0, "some glyphs still draw");
+    assert!(
+        e.atlas_bytes(Scale::ONE) <= AtlasConfig::default().max_bytes,
+        "{} bytes in {} pages",
+        e.atlas_bytes(Scale::ONE),
+        e.atlas_pages(Scale::ONE)
+    );
+    // Text past MAX_TEXT_BYTES is cut, at a character boundary.
+    let long = "é".repeat(strand_text::MAX_TEXT_BYTES);
+    let l = e.layout(&request(2, &long, 13.0, Scale::ONE));
+    assert!(l.size.w.is_finite());
 }

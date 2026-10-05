@@ -20,4 +20,4 @@ pub use protocol::{
     Border, Corners, Easing, Font, GradientStop, Insets, Length, NodeKind, Paint, Prop, PropClass,
     PropValue, SceneDiff, SceneOp, Shadow, Transition,
 };
-pub use tokens::{BinOp, Channel, TokenExpr, TokenMethod, TokenTable};
+pub use tokens::{BinOp, Channel, TokenExpr, TokenMethod, TokenScope, TokenTable};

@@ -141,7 +141,8 @@ impl Color {
     /// Parses `#rgb`, `#rgba`, `#rrggbb` or `#rrggbbaa` (the `#` is optional).
     pub fn from_hex(s: &str) -> Option<Self> {
         let s = s.strip_prefix('#').unwrap_or(s);
-        if !s.is_ascii() {
+        // `from_str_radix` alone would accept a leading `+`.
+        if !s.bytes().all(|b| b.is_ascii_hexdigit()) {
             return None;
         }
         let nib = |i: usize| u8::from_str_radix(&s[i..i + 1], 16).ok().map(|v| v * 17);
@@ -361,6 +362,9 @@ mod tests {
         );
         assert_eq!(Color::from_hex("#12345"), None);
         assert_eq!(Color::from_hex("#ééé"), None);
+        assert_eq!(Color::from_hex("#+f+f+f"), None);
+        assert_eq!(Color::from_hex("+f+f+f"), None);
+        assert_eq!(Color::from_hex("+ff"), None);
     }
 
     #[test]
