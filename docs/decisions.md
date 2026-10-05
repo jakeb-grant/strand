@@ -1131,8 +1131,10 @@ schema from `strand-compiler`).
   enum's name, a file stem and a schema enum complete their variants and
   exports. Members are fields, methods, `Async`'s `pending`/`error`/
   `value` and list members; the list methods mirror the checker's private
-  `LIST_METHODS` (open issue: the checker should publish that list, e.g.
-  as `methods list { … }` in the schema).
+  `LIST_METHODS`, and a test (`completion.rs`,
+  `list_methods_are_the_checkers`) fails if the checker stops knowing one
+  (the checker could publish the list, e.g. as `methods list { … }` in
+  the schema, so the copy goes).
 - **2026-10-05 · wave2-lsp: what `<->` offers.** Only places a widget can
   write (design.md "Two-way"): this file's states and the enclosing
   component's or surface's own, other files' exported states as
@@ -1149,9 +1151,13 @@ schema from `strand-compiler`).
   and the schema's own tokens (palette roles and the base tiers, which the
   schema types even when a theme values them) are refused with a reason.
   A token key inside a group (`2` in `space { 2: 8px }`) is renamed in
-  place, so the new name must keep the group's prefix. A rename that would
-  add an error (a clash, a name taken) is refused with that error: every
-  edited file is re-checked before the edit is returned.
+  place, so the new name must keep the group's prefix. Every edited file
+  is re-checked before the edit is returned: a rename that would add an
+  error (a clash, a name taken) is refused with that error, and one that
+  would change what another name refers to without an error (a component
+  `let` renamed to a file `state` it then hides, which lexical scoping
+  accepts) is refused too, by comparing every declaration's reference
+  count before and after.
 - **2026-10-05 · wave2-lsp: quick fixes.** A diagnostic whose help is
   "did you mean `x`?" offers one preferred quick fix replacing its primary
   span with `x`, or only a misspelt unit's letters (`12pz` → `px`). Other

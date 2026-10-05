@@ -860,3 +860,28 @@ fn rw_paths(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unknown_member(src: &str) -> bool {
+        let (map, _) = strand_compiler::SourceMap::single("t.strand", src);
+        strand_compiler::compile(&map)
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "check::unknown_field")
+    }
+
+    /// The checker knows every list method completion offers.
+    #[test]
+    fn list_methods_are_the_checkers() {
+        assert!(unknown_member("let xs = [1, 2]\nlet y = xs.frob()\n"));
+        for m in LIST_METHODS {
+            assert!(
+                !unknown_member(&format!("let xs = [1, 2]\nlet y = xs.{m}()\n")),
+                "the checker does not know `{m}`"
+            );
+        }
+    }
+}

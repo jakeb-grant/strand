@@ -835,6 +835,19 @@ fn rename_refuses_what_would_break_or_is_built_in() {
     assert_eq!(r["placeholder"], "Dot");
 }
 
+#[test]
+fn rename_refuses_to_capture_another_name() {
+    let src = "state level = 1\ncomponent A {\n  let amount = 2\n  text pct(level) { opacity: amount }\n}\n";
+    let mut c = Client::start(&[("a.strand", src.into())]);
+    c.open("a.strand");
+    assert_eq!(c.diagnostics("a.strand"), Vec::<Value>::new());
+    // `let level` inside A would quietly take over `pct(level)`.
+    let e = c.rename_err("a.strand", Client::pos(src, "amount", 0, 1), "level");
+    assert!(e.contains("would change what other names refer to"), "{e}");
+    let edit = c.rename("a.strand", Client::pos(src, "amount", 0, 1), "alpha");
+    assert!(c.applied(&edit, "a.strand", src).contains("opacity: alpha"));
+}
+
 /// design.md, "What you see" #2: renaming a component's prop renames the
 /// parameter, its reads, and the prop at every call site in other files.
 #[test]

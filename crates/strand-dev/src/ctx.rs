@@ -41,7 +41,7 @@ pub fn context<'a>(file: &'a File, src: &str, offset: u32) -> Context<'a> {
         block: Block::TopLevel,
         element: None,
     };
-    let top = file.items.iter().find(|it| f.inside_item(it));
+    let top = file.items.iter().rev().find(|it| f.inside_item(it));
     if let Some(it) = top {
         f.item(it);
     }
@@ -75,12 +75,28 @@ impl Finder<'_> {
             || self.blocks_of(it).iter().any(|b| self.inside(*b))
     }
 
-    /// The block spans an item opens.
+    /// The block spans an item opens (an unclosed one reaches past the
+    /// item's own span).
     fn blocks_of(&self, it: &Item) -> Vec<Span> {
         match &it.kind {
             ItemKind::Component(c) => vec![c.body.span],
             ItemKind::Surface(s) => vec![s.body.span],
             ItemKind::Element(e) => e.block.iter().map(|b| b.span).collect(),
+            ItemKind::Prop(p) => p.block.iter().map(|b| b.span).collect(),
+            ItemKind::When(w) => vec![w.body.span],
+            ItemKind::Pose(p) => vec![p.body.span],
+            ItemKind::Selector(s) => vec![s.body.span],
+            ItemKind::For(f) => vec![f.body.span],
+            ItemKind::If(i) => {
+                let mut v = vec![i.then.span];
+                if let Some(Else::Block(b)) = &i.else_ {
+                    v.push(b.span);
+                }
+                v
+            }
+            ItemKind::On(o) => vec![o.body.span],
+            ItemKind::Timer(t) => vec![t.body.span],
+            ItemKind::Fn(f) => vec![f.body.span],
             _ => Vec::new(),
         }
     }
@@ -93,11 +109,10 @@ impl Finder<'_> {
             props_only,
             sub_of: None,
         };
-        for it in items {
-            if it.span.start <= self.offset && self.offset <= it.span.end {
-                self.item(it);
-                break;
-            }
+        // The last item holding the offset: an earlier item with an
+        // unclosed block may claim it too.
+        if let Some(it) = items.iter().rev().find(|it| self.inside_item(it)) {
+            self.item(it);
         }
         self.element = saved;
     }
@@ -362,4 +377,55 @@ pub fn line_before(src: &str, offset: usize) -> &str {
     let offset = offset.min(src.len());
     let start = src[..offset].rfind(['\n', '\r']).map_or(0, |i| i + 1);
     &src[start..offset]
+}
+
+#[cfg(test)]
+mod tests {
+    use strand_compiler::FileId;
+    use strand_compiler::syntax::parse;
+
+    use super::*;
+
+    fn at(src: &str, marker: &str) -> Block {
+        let offset = src.find(marker).unwrap() as u32;
+        let src = src.replacen(marker, "", 1);
+        let p = parse(FileId::default(), &src);
+        context(&p.file, &src, offset).block
+    }
+
+    fn tree(element: Option<&str>, props_only: bool) -> Block {
+        Block::Tree {
+            element: element.map(String::from),
+            props_only,
+            sub_of: None,
+        }
+    }
+
+    #[test]
+    fn blocks_while_typing() {
+        assert_eq!(
+            at("bar T {\n  row {\n    |\n", "|"),
+            tree(Some("row"), false)
+        );
+        assert_eq!(
+            at("bar T {\n  row { when hover { | } }\n}\n", "|"),
+            tree(Some("row"), true)
+        );
+        assert_eq!(at("component C {\n  |\n}\n", "|"), tree(None, false));
+        assert_eq!(at("bar T {\n  on click { | }\n}\n", "|"), Block::Statements);
+        assert_eq!(at("state a = 1\n|\n", "|"), Block::TopLevel);
+        // An unclosed block earlier does not claim a later declaration.
+        assert_eq!(
+            at("bar T {\n  row {\ncomponent C {\n  |\n}\n", "|"),
+            tree(None, false)
+        );
+        assert_eq!(
+            at("bar T { stroke: 1, $fg { | } }\n", "|"),
+            Block::Tree {
+                element: Some("bar".into()),
+                props_only: true,
+                sub_of: Some("stroke".into()),
+            }
+        );
+    }
 }

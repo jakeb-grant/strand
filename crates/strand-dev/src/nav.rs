@@ -563,7 +563,60 @@ pub fn rename(an: &Analysis, file: FileId, offset: u32, new_name: &str) -> Resul
             "renaming to `{new_name}` would break the config: {first}"
         ));
     }
+    // Nor change what any other name means: a new name that shadows
+    // another (or is shadowed) moves references between declarations.
+    let renamed = |t: &Target| match (&found, t) {
+        (Found::Ref(Target::Def(d)), Target::Def(x)) => d == x,
+        (Found::Ref(Target::Local(l)) | Found::CallProp(l), Target::Local(x)) => l == x,
+        (Found::Ref(Target::Token(a)), Target::Token(b)) => a == b,
+        _ => false,
+    };
+    let new_name = new_name.trim_start_matches('$');
+    let was = ref_counts(p, |t| renamed(t).then_some(new_name));
+    let now = ref_counts(&after.compiled.program, |_| None);
+    if was != now {
+        return Err(format!(
+            "renaming to `{new_name}` would change what other names refer to"
+        ));
+    }
     Ok(edits)
+}
+
+/// How many references each declaration has, by a description that does
+/// not depend on ids or positions; `rename` gives the new name of the
+/// target being renamed.
+fn ref_counts<'n>(
+    p: &Program,
+    rename: impl Fn(&Target) -> Option<&'n str>,
+) -> BTreeMap<String, usize> {
+    let mut out = BTreeMap::new();
+    for r in &p.refs {
+        let new = rename(&r.target);
+        let key = match &r.target {
+            Target::Def(d) => {
+                let def = p.def(*d);
+                format!(
+                    "def {:?} {:?} {}",
+                    def.file,
+                    def.kind,
+                    new.unwrap_or(&def.name)
+                )
+            }
+            Target::Local(l) => {
+                let local = p.local(*l);
+                format!(
+                    "local {:?} {:?} {}",
+                    local.file,
+                    std::mem::discriminant(&local.kind),
+                    new.unwrap_or(&local.name)
+                )
+            }
+            Target::Token(path) => format!("token {}", new.unwrap_or(path)),
+            other => format!("{other:?}"),
+        };
+        *out.entry(key).or_insert(0) += 1;
+    }
+    out
 }
 
 /// The component whose parameter `l` is.
