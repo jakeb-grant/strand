@@ -627,14 +627,12 @@ impl Ctx {
                     for d in diffs {
                         match d {
                             strand_core::VecDiff::Reset { items: new } => {
+                                let keys: Vec<ValueKey> = new.into_iter().map(|(k, _)| k).collect();
                                 let old: Vec<_> = items.borrow_mut().drain(..).collect();
-                                for (_, f) in old {
-                                    ctx.unmount(rt, f, false);
-                                }
-                                for (i, (k, _)) in new.into_iter().enumerate() {
-                                    let f = mount_item(rt, i, k.clone());
-                                    items.borrow_mut().push((k, f));
-                                }
+                                let placed = ctx.reconcile(rt, frag, old, &keys, |rt, at, k| {
+                                    mount_item(rt, at, k.clone())
+                                });
+                                *items.borrow_mut() = placed;
                             }
                             strand_core::VecDiff::Insert { index, key, .. } => {
                                 let f = mount_item(rt, index, key.clone());
@@ -692,6 +690,67 @@ impl Ctx {
                 Ok(())
             })
         });
+    }
+
+    /// A whole new list (a first publish, or a reader that fell behind
+    /// the diff log) against the mounted items, by key: items that left
+    /// are unmounted, new ones mounted, and only the items outside the
+    /// longest run already in order are moved, so identity and state are
+    /// kept and a list where one item moved sends one `Move`.
+    fn reconcile(
+        self: &Rc<Self>,
+        rt: &Runtime,
+        frag: FragId,
+        old: Vec<(ValueKey, FragId)>,
+        keys: &[ValueKey],
+        mut mount: impl FnMut(&Runtime, usize, &ValueKey) -> FragId,
+    ) -> Vec<(ValueKey, FragId)> {
+        let wanted: std::collections::HashSet<&ValueKey> = keys.iter().collect();
+        let mut kept: HashMap<ValueKey, (usize, FragId)> = HashMap::new();
+        for (k, f) in old {
+            if wanted.contains(&k) && !kept.contains_key(&k) {
+                let at = kept.len();
+                kept.insert(k, (at, f));
+            } else {
+                self.unmount(rt, f, false);
+            }
+        }
+        // Old positions of the kept items, in new order; the longest
+        // increasing run of them stays put.
+        let seq: Vec<usize> = keys
+            .iter()
+            .filter_map(|k| kept.get(k).map(|(i, _)| *i))
+            .collect();
+        let stay: std::collections::HashSet<usize> = longest_increasing(&seq).into_iter().collect();
+        let mut out: Vec<(ValueKey, FragId)> = Vec::with_capacity(keys.len());
+        let position = |ctx: &Rc<Ctx>, f: FragId| {
+            ctx.em
+                .borrow()
+                .frag(frag)
+                .and_then(|p| p.children.iter().position(|c| *c == f))
+        };
+        for k in keys {
+            // Right after the previous item, wherever that is now.
+            let prev = out.last().and_then(|(_, p)| position(self, *p));
+            let f = match kept.get(k) {
+                Some((i, f)) => {
+                    if !stay.contains(i) {
+                        // `move_frag` counts positions without the moved
+                        // item.
+                        let at = match (prev, position(self, *f)) {
+                            (None, _) => 0,
+                            (Some(p), Some(cur)) if cur < p => p,
+                            (Some(p), _) => p + 1,
+                        };
+                        self.em.borrow_mut().move_frag(*f, at);
+                    }
+                    *f
+                }
+                None => mount(rt, prev.map_or(0, |p| p + 1), k),
+            };
+            out.push((k.clone(), f));
+        }
+        out
     }
 
     fn mount_for(self: &Rc<Self>, rt: &Runtime, f: &For, env: &Rc<Env>, parent: FragId) {
@@ -1003,6 +1062,32 @@ impl Ctx {
     }
 }
 
+/// The values of one longest strictly increasing subsequence of `seq`.
+fn longest_increasing(seq: &[usize]) -> Vec<usize> {
+    // tails[l]: index into seq of the smallest tail of a run of length l+1.
+    let mut tails: Vec<usize> = Vec::new();
+    let mut prev: Vec<Option<usize>> = vec![None; seq.len()];
+    for (i, &x) in seq.iter().enumerate() {
+        let l = tails.partition_point(|&t| seq[t] < x);
+        if l > 0 {
+            prev[i] = Some(tails[l - 1]);
+        }
+        if l == tails.len() {
+            tails.push(i);
+        } else {
+            tails[l] = i;
+        }
+    }
+    let mut out = Vec::with_capacity(tails.len());
+    let mut cur = tails.last().copied();
+    while let Some(i) = cur {
+        out.push(seq[i]);
+        cur = prev[i];
+    }
+    out.reverse();
+    out
+}
+
 /// The current value of the item with key `k` in a keyed list.
 fn item_value(
     rt: &Runtime,
@@ -1045,5 +1130,20 @@ fn collect_decls<'a>(
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::longest_increasing;
+
+    #[test]
+    fn longest_increasing_runs() {
+        assert_eq!(longest_increasing(&[]), Vec::<usize>::new());
+        assert_eq!(longest_increasing(&[0, 1, 2]), [0, 1, 2]);
+        // One item moved from the front to the back.
+        assert_eq!(longest_increasing(&[1, 2, 3, 0]), [1, 2, 3]);
+        assert_eq!(longest_increasing(&[3, 0, 1, 2]), [0, 1, 2]);
+        assert_eq!(longest_increasing(&[2, 1, 0]).len(), 1);
     }
 }

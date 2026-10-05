@@ -485,7 +485,8 @@ Public interfaces other crates and later stages build on:
   effects swapping branch fragments; `for` is `rt.keyed_memo` over the
   list keyed by `key e`, the item record's key or a keyed `state`'s key,
   applying `VecDiff`s (`Move` becomes scene `Move`s, so items keep
-  identity and state); a `bar` is a keyed instance per `screens.all`
+  identity and state; a `Reset` is reconciled by key, moving only the
+  items outside the longest run already in order); a `bar` is a keyed instance per `screens.all`
   item (key `name`) with `screen` in scope and `screens: "<name>"`
   (`Screens::Named`); every surface gets `Prop::Name`. `exit` mirrors
   `enter` when not given. Component `tokens { }` entries

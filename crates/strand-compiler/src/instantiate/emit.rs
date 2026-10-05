@@ -67,8 +67,9 @@ pub(crate) struct Emitter {
     order: HashMap<Option<NodeId>, Vec<NodeId>>,
     pub nodes: HashMap<NodeId, NodeEntry>,
     pub bindings: HashMap<CoreId, Binding>,
-    /// The last value sent per prop, so unchanged values are not resent.
-    pub sent: HashMap<(NodeId, Prop), PropValue>,
+    /// The last value sent per node and prop, so unchanged values are
+    /// not resent.
+    pub sent: HashMap<NodeId, HashMap<Prop, PropValue>>,
 }
 
 impl Emitter {
@@ -287,6 +288,7 @@ impl Emitter {
             self.all_nodes(root, &mut all);
             for n in all {
                 self.order.remove(&Some(n));
+                self.sent.remove(&n);
                 self.alloc.free(n);
                 if let Some(e) = self.nodes.remove(&n) {
                     for b in e.bindings {
@@ -296,7 +298,6 @@ impl Emitter {
                     states.push(e.state);
                 }
             }
-            self.sent.retain(|(n, _), _| self.alloc.is_live(*n));
             let mut frags = Vec::new();
             self.all_frags(root, &mut frags);
             // Children first: inner scopes are owned by outer ones anyway.
@@ -322,14 +323,13 @@ impl Emitter {
         if !self.alloc.is_live(id) {
             return;
         }
-        let key = (id, prop);
-        if self.sent.get(&key) == Some(&value) {
-            return;
+        let sent = self.sent.entry(id).or_default();
+        match sent.get(&prop) {
+            Some(v) if *v == value => return,
+            None if matches!(value, PropValue::Unset) => return,
+            _ => {}
         }
-        if matches!(value, PropValue::Unset) && !self.sent.contains_key(&key) {
-            return;
-        }
-        self.sent.insert(key, value.clone());
+        sent.insert(prop, value.clone());
         self.ops.push(SceneOp::SetProp {
             id,
             prop,
@@ -343,7 +343,7 @@ impl Emitter {
         if !self.alloc.is_live(id) {
             return;
         }
-        self.sent.insert((id, prop), value.clone());
+        self.sent.entry(id).or_default().insert(prop, value.clone());
         self.ops.push(SceneOp::SetProp {
             id,
             prop,

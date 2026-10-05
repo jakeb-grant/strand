@@ -1227,3 +1227,171 @@ fn node_flags_survive_a_branch_swap() {
         "an unmounted node is not hovered"
     );
 }
+
+/// A 2,000-item keyed list: changing one item sends one prop, moving one
+/// sends one move, removing one sends one remove.
+#[test]
+fn a_long_list_touches_only_what_changed() {
+    let src = "bar B { col { for a in apps.all { text a.name } } }\n";
+    let app = |host: &SchemaHost, i: usize, name: &str| {
+        host.record(
+            "App",
+            &[
+                ("id", Value::text(format!("app{i}"))),
+                ("name", Value::text(name)),
+            ],
+        )
+    };
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"]);
+        let list = (0..2000)
+            .map(|i| app(host, i, &format!("App {i}")))
+            .collect();
+        host.set(rt, "apps.all", Value::list(list)).unwrap();
+    });
+    assert_eq!(shell.scene.texts().len(), 2000);
+    let mut list: Vec<Value> = (0..2000)
+        .map(|i| app(&shell.host, i, &format!("App {i}")))
+        .collect();
+    list[1000] = app(&shell.host, 1000, "Renamed");
+    shell
+        .host
+        .set(&shell.rt, "apps.all", Value::list(list.clone()))
+        .unwrap();
+    let u = shell.flush();
+    assert_eq!(u.diff.ops.len(), 1, "{:?}", u.diff.ops.len());
+    assert_eq!(shell.scene.texts()[1000], "Renamed");
+    let moved = list.remove(5);
+    list.insert(1500, moved);
+    shell
+        .host
+        .set(&shell.rt, "apps.all", Value::list(list.clone()))
+        .unwrap();
+    let u = shell.flush();
+    assert!(
+        matches!(u.diff.ops[..], [SceneOp::Move { .. }]),
+        "{:?}",
+        u.diff.ops
+    );
+    assert_eq!(shell.scene.texts()[1500], "App 5");
+    list.remove(0);
+    shell
+        .host
+        .set(&shell.rt, "apps.all", Value::list(list))
+        .unwrap();
+    let u = shell.flush();
+    assert!(
+        matches!(u.diff.ops[..], [SceneOp::Remove { .. }]),
+        "{:?}",
+        u.diff.ops
+    );
+    assert_eq!(shell.scene.texts().len(), 1999);
+}
+
+/// Random edits to a keyed list whose items have one or two root nodes
+/// (an `if` inside each): after every tick the scene shows exactly the
+/// list, in order, and items that stayed kept their nodes.
+#[test]
+fn keyed_lists_match_the_list_after_random_edits() {
+    let src =
+        "bar B { col { for a in apps.all { text a.name; if a.comment != null { box {} } } } }\n";
+    let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+    let mut rand = move |n: usize| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed % n.max(1) as u64) as usize
+    };
+    let app = |host: &SchemaHost, id: usize, name: &str, boxed: bool| {
+        host.record(
+            "App",
+            &[
+                ("id", Value::text(format!("a{id}"))),
+                ("name", Value::text(name)),
+                (
+                    "comment",
+                    if boxed { Value::text("c") } else { Value::Null },
+                ),
+            ],
+        )
+    };
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    // (id, name, boxed)
+    let mut list: Vec<(usize, String, bool)> = Vec::new();
+    let mut next = 0;
+    let mut nodes: std::collections::HashMap<usize, NodeId> = Default::default();
+    for round in 0..300 {
+        for _ in 0..1 + rand(3) {
+            match rand(5) {
+                0 | 1 => {
+                    let at = rand(list.len() + 1);
+                    list.insert(at, (next, format!("n{next}"), rand(2) == 0));
+                    next += 1;
+                }
+                2 if !list.is_empty() => {
+                    let i = rand(list.len());
+                    list.remove(i);
+                }
+                3 if !list.is_empty() => {
+                    let i = rand(list.len());
+                    let x = list.remove(i);
+                    let to = rand(list.len() + 1);
+                    list.insert(to, x);
+                }
+                _ if !list.is_empty() => {
+                    let i = rand(list.len());
+                    list[i].1 = format!("r{round}");
+                    list[i].2 = !list[i].2;
+                }
+                _ => {}
+            }
+        }
+        let values = list
+            .iter()
+            .map(|(id, name, boxed)| app(&shell.host, *id, name, *boxed))
+            .collect();
+        shell
+            .host
+            .set(&shell.rt, "apps.all", Value::list(values))
+            .unwrap();
+        let u = shell.flush();
+        assert!(u.errors.is_empty(), "{:?}", u.errors);
+        // The scene: per item its text, then a box if it has a comment.
+        let col = shell.scene.of_kind(NodeKind::Col)[0];
+        let mut expected = Vec::new();
+        for (_, name, boxed) in &list {
+            expected.push(format!("text {name}"));
+            if *boxed {
+                expected.push("box".to_string());
+            }
+        }
+        let got: Vec<String> = shell
+            .scene
+            .children(col)
+            .iter()
+            .map(|&n| match shell.scene.prop(n, Prop::Text) {
+                Some(PropValue::Text(t)) => format!("text {t}"),
+                _ => "box".to_string(),
+            })
+            .collect();
+        assert_eq!(got, expected, "round {round}");
+        // Identity: an item's text node is the same while it stays.
+        let mut texts = shell
+            .scene
+            .children(col)
+            .iter()
+            .copied()
+            .filter(|&n| shell.scene.kind(n) == Some(NodeKind::Text));
+        let mut now = std::collections::HashMap::new();
+        for (id, _, _) in &list {
+            let n = texts.next().unwrap();
+            if let Some(old) = nodes.get(id) {
+                assert_eq!(*old, n, "item {id} kept its node (round {round})");
+            }
+            now.insert(*id, n);
+        }
+        nodes = now;
+    }
+}

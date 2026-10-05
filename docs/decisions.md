@@ -1183,6 +1183,15 @@ schema from `strand-compiler`).
   it to the next. A surface (a `popup` included) is the top of its own
   event tree: a click on a calendar day does not reach the clock text the
   popup is anchored to.
+- **2026-10-05 · wave2-vm: a keyed reset is reconciled.** A `for` gets
+  `Insert`/`Remove`/`Move`/`Update` diffs from core, but a `Reset` (its
+  first publish, or more than 256 diffs since it last read, which one
+  item moved far in a long list can cause) is matched by key against the
+  mounted items: items that left are unmounted, new ones mounted, and
+  only the items outside the longest run already in order move. Items
+  keep their nodes and state either way
+  (`tests/instantiate.rs::keyed_lists_match_the_list_after_random_edits`,
+  `a_long_list_touches_only_what_changed`).
 - **2026-10-05 · wave2-vm: element flags belong to their scope.** An
   element's `hover`, `pressed`, `focused`, `selected` and size live in
   the component, surface or `for` item that owns the element (so `id:`
