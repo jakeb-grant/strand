@@ -14,6 +14,11 @@
 //! periods are not replayed). A zero period pauses an `every` timer and
 //! reports [`Diagnostic::ZeroPeriod`]; periods under [`MIN_EVERY_PERIOD`]
 //! are clamped to it. Deadlines past the end of time mean "never".
+//!
+//! A timer inside a suspended (frozen) component is paused like a false
+//! condition: it keeps the time counted so far and counts again from the
+//! moment the component is released ([`Runtime::resume`]), so a toast frozen
+//! with a fault does not expire behind the user's back.
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
@@ -108,8 +113,9 @@ impl NodeData for TimerData {
         s.duration = duration;
         s.cond = cond;
         s.zero = zero;
-        // A zero `every` period counts nothing, like a false condition.
-        match (cond && s.armed && !zero, s.since) {
+        // A zero `every` period counts nothing, like a false condition, and
+        // so does a frozen component (frozen = paused).
+        match (cond && s.armed && !zero && !rt.is_suspended(id), s.since) {
             // A resume found while catching up before a clock advance
             // happened somewhere in (previous now, new now]: count from the
             // new now, so the timer never counts time the condition may not
@@ -213,6 +219,7 @@ impl Timer {
             };
             (s.armed, fraction)
         })?;
+        let frozen = rt.is_suspended(self.id);
         self.with(rt, |t| {
             let mut s = t.st.get();
             s.armed = armed;
@@ -223,7 +230,7 @@ impl Timer {
             } else {
                 Duration::ZERO
             };
-            s.since = (armed && s.cond && !s.zero).then_some(now);
+            s.since = (armed && s.cond && !s.zero && !frozen).then_some(now);
             t.st.set(s);
         })
     }
@@ -231,11 +238,12 @@ impl Timer {
     /// Restart counting from zero (debounce).
     pub fn restart(self, rt: &Runtime) -> Result<(), Error> {
         let now = rt.now();
+        let frozen = rt.is_suspended(self.id);
         self.with(rt, |t| {
             let mut s = t.st.get();
             s.armed = true;
             s.elapsed = Duration::ZERO;
-            s.since = s.cond.then_some(now);
+            s.since = (s.cond && !frozen).then_some(now);
             t.st.set(s);
         })
     }
@@ -366,6 +374,36 @@ impl Runtime {
             .min()
     }
 
+    /// Pause timers inside suspended scopes and resume the ones released:
+    /// frozen = paused, like a `while` condition that turned false (time
+    /// counted so far is kept; counting restarts at the release). Returns
+    /// whether a timer started counting again (it has a deadline now).
+    pub(crate) fn sync_frozen_timers(&self) -> bool {
+        let now = self.now();
+        self.inner.timers.borrow_mut().retain(|&t| self.exists(t));
+        let timers = self.inner.timers.borrow().clone();
+        let mut resumed = false;
+        for id in timers {
+            let frozen = self.is_suspended(id);
+            let _ = self.with_data::<TimerData, _>(id, |t| {
+                let mut s = t.st.get();
+                match (frozen, s.since) {
+                    (true, Some(since)) => {
+                        s.elapsed = s.elapsed.saturating_add(now.saturating_sub(since));
+                        s.since = None;
+                    }
+                    (false, None) if s.cond && s.armed && !s.zero => {
+                        s.since = Some(now);
+                        resumed = true;
+                    }
+                    _ => {}
+                }
+                t.st.set(s);
+            });
+        }
+        resumed
+    }
+
     /// Bring timers whose condition or duration inputs changed up to date
     /// before the clock moves to `upcoming`: a pause counts up to the
     /// current (previous) time, a resume counts from `upcoming`. Either way
@@ -397,7 +435,7 @@ impl Runtime {
                     .ok()
                     .flatten()?;
                 let seq = self.inner.nodes.borrow().get(id)?.seq;
-                // A frozen timer stays due and fires on resume.
+                // (A frozen timer is paused, so it has no deadline.)
                 (d <= now && !self.is_suspended(id)).then_some((d, seq, id))
             })
             .collect();

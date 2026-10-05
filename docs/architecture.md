@@ -233,8 +233,10 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   state kept across a monitor unplug, moves to its new owner before the old
   one is disposed (keyed cells keep their diff log, so items keep identity).
   A runtime fault freezes one component with `rt.suspend(scope)` (effects,
-  timers, listeners and tasks stop, state kept; service events are kept for
-  its listeners, input events dropped) and the fixing reload calls
+  listeners and tasks stop, timers pause as if their `while` were false,
+  state kept; service events are kept for its listeners up to
+  `MAX_FROZEN_EVENTS` each, the oldest dropped and counted in
+  `Diagnostic::EventsDropped`; input events dropped) and the fixing reload calls
   `rt.resume(scope)`, or moves the live state out with `reparent` and
   disposes the frozen scope (held work is released either way). Reloaded
   timers take over the old countdown with `new.rescale_from(rt, old)`

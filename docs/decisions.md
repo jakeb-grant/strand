@@ -816,3 +816,21 @@ handler) supersedes held copies, and a cancelled handler's copy never
 lands. The rate is checked before an in-place write and counted only when
 the operation changed something, so the unthrottled path stays in place
 (no copy).
+
+**2026-10-05 · Frozen = paused, with a bounded backlog.** Refines wave 1's
+"timers count while frozen". A timer inside a suspended component is
+paused exactly as if its `while` condition had turned false: it keeps the
+time counted so far and counts again from `rt.resume` (or from leaving the
+frozen scope), so a toast frozen by a fault does not expire behind the
+user's back, and an `every` does not fire a catch-up tick on release. A
+timer created or restarted while frozen starts counting at the release.
+`await sleep(..)` inside a handler is not a timer: a frozen task wakes on
+time but is held, and continues on release. State needs no bound (a cell
+keeps its latest value, a held sink runs once on release with it; the held
+list is a set). Events of lossless queues are kept per frozen listener up
+to `MAX_FROZEN_EVENTS` (256, the size of a collection's diff log); past
+that the oldest are dropped and the release reports one
+`Diagnostic::EventsDropped { queue, listener, dropped }` before delivering
+the rest in order. Reported at release rather than per drop: a chatty
+service would otherwise flood the overlay, which already outlines the
+frozen component.

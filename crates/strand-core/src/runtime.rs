@@ -172,7 +172,23 @@ pub enum Diagnostic {
         /// The timer.
         timer: NodeId,
     },
+    /// A frozen listener missed more than [`MAX_FROZEN_EVENTS`] events of a
+    /// lossless queue; the oldest were dropped. Reported when it is
+    /// released, before the kept events are delivered.
+    EventsDropped {
+        /// The event queue.
+        queue: NodeId,
+        /// The listener that was frozen.
+        listener: NodeId,
+        /// How many events it lost.
+        dropped: usize,
+    },
 }
+
+/// Events kept per frozen listener of a lossless queue; past this the
+/// oldest are dropped (and counted, see [`Diagnostic::EventsDropped`]), so a
+/// component frozen for hours under a chatty service stays bounded.
+pub const MAX_FROZEN_EVENTS: usize = 256;
 
 /// What one flush did. The scene emitter builds one diff from this.
 #[derive(Debug, Default, Clone)]
@@ -250,8 +266,9 @@ pub(crate) struct Inner {
     /// and listeners do not run until resumed.
     pub(crate) suspended: RefCell<HashSet<NodeId>>,
     /// Sinks and tasks skipped because they are inside a suspended scope
-    /// (each once).
+    /// (each once, in the order they were held).
     held: RefCell<Vec<NodeId>>,
+    held_set: RefCell<HashSet<NodeId>>,
     /// Sinks that run only after the other queued sinks have settled
     /// (`on change` handlers), so they see one consistent state per tick.
     /// A set, not a node field: few nodes are late and the node stays small.
@@ -373,6 +390,7 @@ impl Runtime {
                 sites: RefCell::new(SecondaryMap::new()),
                 suspended: RefCell::new(HashSet::new()),
                 held: RefCell::new(Vec::new()),
+                held_set: RefCell::new(HashSet::new()),
                 late: RefCell::new(HashSet::new()),
                 backlogged: RefCell::new(Vec::new()),
                 epoch: Cell::new(0),
@@ -1150,6 +1168,10 @@ impl Runtime {
             if !held.is_empty() {
                 let nodes = self.inner.nodes.borrow();
                 held.retain(|&n| nodes.contains_key(n));
+                self.inner
+                    .held_set
+                    .borrow_mut()
+                    .retain(|&n| nodes.contains_key(n));
             }
         }
         // A suspended scope that went away (its live parts moved out first)
@@ -1265,27 +1287,35 @@ impl Runtime {
 
     /// Freeze a subtree (a component whose handler faulted, outlined in red
     /// until the fixing reload): its effects, watches, timers, listeners
-    /// and tasks stop running, but its state is kept. Memos stay readable
-    /// (they are pure). Work that comes due while frozen is held and done
-    /// on [`Runtime::resume`]. A frozen
-    /// subtree schedules nothing, so the runtime can still be idle.
+    /// and tasks stop running, but its state is kept (cells keep their
+    /// latest value; each held sink runs once on release). Memos stay
+    /// readable (they are pure). Work that comes due while frozen is held
+    /// and done on [`Runtime::resume`]. Its timers are paused, like a
+    /// `while` condition that turned false, and count again from the
+    /// release. A frozen subtree schedules nothing, so the runtime can
+    /// still be idle.
     ///
     /// Events from input queues ([`Runtime::input_events`]) are dropped for
     /// its listeners (a frozen component ignores input); other events
     /// (service and component events, which are lossless) are kept per
-    /// listener and delivered in order after it is released.
+    /// listener and delivered in order after it is released, up to
+    /// [`MAX_FROZEN_EVENTS`] per listener: past that the oldest are dropped
+    /// and the release reports [`Diagnostic::EventsDropped`] with the
+    /// count.
     pub fn suspend(&self, id: NodeId) -> Result<(), Error> {
         if !self.exists(id) {
             return Err(Error::Disposed(id));
         }
         self.inner.suspended.borrow_mut().insert(id);
+        // Frozen = paused: its timers stop counting now.
+        self.sync_frozen_timers();
         Ok(())
     }
 
     /// Unfreeze a subtree suspended with [`Runtime::suspend`]: held sinks,
     /// woken tasks and events kept for its listeners run at the next flush;
-    /// timers count again (one that came due while frozen fires at the next
-    /// tick). Calls the wake hook when it re-queued work.
+    /// timers count again from now. Calls the wake hook when it re-queued
+    /// work or restarted a timer.
     pub fn resume(&self, id: NodeId) {
         if self.inner.suspended.borrow_mut().remove(&id) {
             self.release_held(true);
@@ -1318,6 +1348,7 @@ impl Runtime {
                 requeued = true;
             }
         }
+        *self.inner.held_set.borrow_mut() = keep.iter().copied().collect();
         *self.inner.held.borrow_mut() = keep;
         // Queues re-deliver what their released listeners missed; one that
         // still has frozen listeners puts itself back on the list.
@@ -1327,8 +1358,9 @@ impl Runtime {
                 requeued = true;
             }
         }
-        let overdue = unfroze && self.timer_deadline().is_some_and(|d| d <= self.now());
-        if requeued || overdue {
+        // Released timers count again from now: their deadlines are back.
+        let restarted = unfroze && self.sync_frozen_timers();
+        if requeued || restarted {
             self.call_wake_hook();
         }
     }
@@ -1360,9 +1392,8 @@ impl Runtime {
     /// Remember a sink or task skipped because it is suspended (once: a
     /// frozen task woken at 60 Hz must not grow the list).
     pub(crate) fn hold(&self, id: NodeId) {
-        let mut held = self.inner.held.borrow_mut();
-        if !held.contains(&id) {
-            held.push(id);
+        if self.inner.held_set.borrow_mut().insert(id) {
+            self.inner.held.borrow_mut().push(id);
         }
     }
 
