@@ -15,10 +15,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install headless sway, grim and fonts
+      - name: Install headless sway, grim, fonts and fontconfig headers
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends sway grim fonts-dejavu-core
+          sudo apt-get install -y --no-install-recommends sway grim fonts-dejavu-core pkg-config libfontconfig1-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy

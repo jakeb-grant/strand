@@ -35,8 +35,8 @@ cargo test --workspace
 
 ## Headless Wayland for tests
 
-sway, grim and DejaVu fonts are installed in the dev container (not in CI
-yet). Start a headless compositor:
+sway, grim and DejaVu fonts are installed in the dev container and in CI
+(`.github/workflows/ci.yml`). Start a headless compositor:
 
 ```sh
 export XDG_RUNTIME_DIR=$(mktemp -d); chmod 700 $XDG_RUNTIME_DIR
