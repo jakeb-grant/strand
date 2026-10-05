@@ -429,6 +429,49 @@ where
         })
     }
 
+    /// A write made by live reload (a declared default adopted, a
+    /// persisted list handed over, `@reset` applied at reload): replace
+    /// the contents by key, like [`KeyedSignal::replace_all`], but as
+    /// [`Signal::set_reloaded`](crate::Signal::set_reloaded) does for a
+    /// plain cell: not rate-gated (it is not a handler's write; a held
+    /// throttled copy is re-based onto it), and every `on change` handler
+    /// downstream takes the new contents as its baseline instead of
+    /// firing. Consumers get a keyed diff. Returns whether anything
+    /// changed.
+    pub fn replace_all_reloaded(
+        self,
+        rt: &Runtime,
+        values: impl IntoIterator<Item = T>,
+    ) -> Result<bool, Error> {
+        rt.check_write_allowed(self.id)?;
+        let changed = rt.with_data::<CellData<K, T>, _>(self.id, |d| {
+            let mut vec = d.vec.try_borrow_mut().map_err(|_| Error::Reentrant)?;
+            let diffs = vec.replace_all(values)?;
+            let changed = !diffs.is_empty();
+            let mut log = d.log.borrow_mut();
+            for diff in diffs {
+                log.push(diff);
+            }
+            Ok::<bool, Error>(changed)
+        })??;
+        if changed {
+            rt.cell_changed(self.id);
+            rt.rebaseline_from(self.id);
+        }
+        Ok(changed)
+    }
+
+    /// The starting contents of a cell nothing has read yet (a persisted
+    /// collection's restored list): no diff, no change.
+    pub(crate) fn init_value(self, rt: &Runtime, value: KeyedVec<K, T>) {
+        let _ = rt.with_data::<CellData<K, T>, _>(self.id, |d| {
+            if let Ok(mut vec) = d.vec.try_borrow_mut() {
+                *vec = value;
+                *d.log.borrow_mut() = DiffLog::new();
+            }
+        });
+    }
+
     /// Apply diffs published by a service, in order. If one is malformed,
     /// the ones before it stay applied and are published (consumers and
     /// derived collections stay consistent with the items) and the error is

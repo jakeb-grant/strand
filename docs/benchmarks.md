@@ -139,6 +139,36 @@ cut-off 815 → 823 ns (unchanged within noise), idle flush 44.9 → 50.0 ns
 (+5 ns: the flush now drains the ready and event lists into its heap and
 clears the reload marks; still far below a frame).
 
+Wave 2 review round 7 (each listener delivered at its own rank, handler
+reads tracked, persist queue indexed by file). The review asked about the
+ranked cases of round 6 (1.92 ms ranked single write against 1.72 ms
+unranked, +12%, where round 4 had +1.5%), which round 6's A/B had not
+covered. One session, back to back, criterion baseline of d3e29a5, then
+round 6 (5542c70) and this round against it, medians:
+
+| Case | d3e29a5 | Round 6 | Round 7 |
+| --- | --- | --- | --- |
+| Single write + flush | 1.75 ms | 1.75 ms | 1.83 ms |
+| Full fan-out + flush | 2.38 ms | 2.47 ms | 2.42 ms |
+| Narrow path + flush | 1.94 µs | 2.06 µs | 2.00 µs |
+| Equality cut-off + flush | 802 ns | 834 ns | 838 ns |
+| Idle flush | 45.3 ns | 49.1 ns | 49.1 ns |
+| Idle check | 8.0 ns | 7.6 ns | 11.1 ns |
+| Ranked single write + flush | 1.78 ms | 1.84 ms | 1.78 ms |
+| Ranked full fan-out + flush | 2.36 ms | 2.54 ms | 2.39 ms |
+| Ranked handler write + tick | 2.13 ms | 1.99 ms | 2.10 ms |
+| Build | 4.11 ms | 4.18 ms | 4.40 ms |
+| Memory | 347 B, 5.54 allocations per node | | 347 B, 5.54 allocations per node |
+
+Ranked against unranked in the same run: +1.5% (d3e29a5), +5.7%
+(round 6), −2.7% (round 7), so ranks cost what round 4 measured and the
++12% of round 6's table was the load at the time: the ranked heap holding
+deliveries and tasks costs nothing measurable when there are none (the
+bench has no listeners), and round 6's own ranked cases moved by −6% to
++7% against d3e29a5, both ways, with the noise of the shared machine.
+Round 7's idle check is about 3 ns slower (`is_idle` also looks at the
+listeners waiting for delivery).
+
 The "single write" case recomputes about half of this deliberately
 over-connected graph, so it measures fan-out twice; the narrow-path and
 cut-off rows are what real shell writes look like (the bench asserts that
@@ -283,3 +313,27 @@ What changed:
 
 Every case is far inside a 16 ms frame; scrolling itself writes nothing to
 the list.
+
+## Persisted cells, 2,000 rows (wave 2 review round 7)
+
+`cargo bench -p strand-core --bench persist`
+(`crates/strand-core/benches/persist.rs`): a list whose items each persist
+a field under an instance-qualified path (`list[<i>].x`), files present,
+mounted and unmounted in one runtime (a live reload, or a long list
+scrolled in and out). Mount creates the cells (reading every file) and
+flushes; unmount disposes them and flushes. Medians, review round 7, A/B
+against the previous commit (2ecfb76) on the same machine:
+
+| Rows | Mount before | Mount after | Unmount before | Unmount after |
+| --- | --- | --- | --- | --- |
+| 500 | 22.7 ms | 2.9 ms | 10.3 ms | 0.62 ms |
+| 1,000 | 65.7 ms | 5.9 ms | 36.9 ms | 1.36 ms |
+| 2,000 | 132 ms | 13.9 ms | 128 ms | 3.1 ms |
+
+Before, every load, claim, release and write scanned the store's queue
+(a list holding a touch per claimed file) under the lock the IO thread
+takes: quadratic, 8 frames to unmount 2,000 rows. The queue is now
+indexed by file and a claim or release no longer queues a touch for a
+file the store touched or wrote in the last day: linear. Mount is now
+dominated by reading 2,000 files on the logic thread (about 7 µs each),
+a frame for 2,000 rows; unmount is under a frame.

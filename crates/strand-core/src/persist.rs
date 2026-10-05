@@ -44,6 +44,8 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
 use crate::error::Error;
+use crate::keyed::KeyedVec;
+use crate::keyed::reactive::KeyedSignal;
 use crate::runtime::{Diagnostic, NodeId, Runtime};
 use crate::signal::Signal;
 
@@ -187,10 +189,22 @@ const STALE_TEMP: Duration = Duration::from_secs(60);
 /// `bar[<monitor>].x`) is kept when no cell claims it: per-instance files
 /// (a list item's key, a monitor that never comes back) would otherwise
 /// pile up for good. A store that persisted cells used removes, when it
-/// goes (at exit), such files older than this that no cell of the process
-/// claimed (and quarantined copies older than this); a claim refreshes the
+/// goes (at exit) and every [`PERSIST_SWEEP_INTERVAL`] while it runs, such
+/// files older than this that no cell of the process claimed (and
+/// quarantined copies older than this); a claim and a release refresh the
 /// file's modification time. A plain declared path never expires.
 pub const PERSIST_RETENTION: Duration = Duration::from_secs(90 * 24 * 60 * 60);
+
+/// A store that persisted cells used also sweeps (see
+/// [`PERSIST_RETENTION`]) this often on its IO thread while it runs, so a
+/// shell that runs for weeks without exiting still expires old files.
+pub const PERSIST_SWEEP_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// A file this store touched or wrote less than this long ago is not
+/// touched again when a cell claims or releases it: the retention sweep
+/// counts in months, and remounting 2,000 per-row cells must not queue
+/// 2,000 touches.
+const REFRESHED_FOR: Duration = Duration::from_secs(24 * 60 * 60);
 
 type IoHook = Arc<dyn Fn(&Path) + Send + Sync>;
 type WriteObserver = Arc<dyn Fn(&OwnWrite<'_>) + Send + Sync>;
@@ -290,14 +304,26 @@ struct Shared {
     changed: Condvar,
     /// Called before every queued operation (tests: a slow disk).
     io_hook: Option<IoHook>,
+    /// [`PERSIST_SWEEP_INTERVAL`] (shorter in unit tests).
+    sweep_every: Duration,
     /// [`PersistStore::on_written`].
     observer: Mutex<Option<WriteObserver>>,
 }
 
 #[derive(Default)]
 struct Queue {
-    /// Pending operations, at most one per file, oldest first.
-    ops: Vec<(PathBuf, Job)>,
+    /// Pending operations, at most one per file, with their place in
+    /// `order`. Indexed by file: a cell checks its file on every claim,
+    /// release, write and load, and a list of 2,000 per-row cells must
+    /// not make each of those scan the queue.
+    ops: std::collections::HashMap<PathBuf, (u64, Job)>,
+    /// `(seq, file)` oldest first; an entry whose `seq` no longer matches
+    /// `ops` was replaced (requeued at the back) or done, and is skipped.
+    order: std::collections::VecDeque<(u64, PathBuf)>,
+    next_seq: u64,
+    /// Files this store touched or wrote recently, and when (see
+    /// [`REFRESHED_FOR`]).
+    refreshed: std::collections::HashMap<PathBuf, std::time::Instant>,
     /// The operation the IO thread is performing.
     in_flight: Option<(PathBuf, Op)>,
     stop: bool,
@@ -318,8 +344,50 @@ impl Queue {
     /// An operation is queued or in flight for `file` (it rewrites the
     /// file anyway, or is a touch already).
     fn busy(&self, file: &Path) -> bool {
-        self.ops.iter().any(|(f, _)| f == file)
-            || self.in_flight.as_ref().is_some_and(|(f, _)| f == file)
+        self.ops.contains_key(file) || self.in_flight.as_ref().is_some_and(|(f, _)| f == file)
+    }
+
+    /// Queue `job` for `file`, replacing what is queued for it (the new
+    /// one goes to the back).
+    fn push(&mut self, file: PathBuf, job: Job) {
+        self.next_seq += 1;
+        let seq = self.next_seq;
+        if matches!(job.op, Op::Write { .. } | Op::Touch) {
+            self.refreshed
+                .insert(file.clone(), std::time::Instant::now());
+        }
+        self.order.push_back((seq, file.clone()));
+        self.ops.insert(file, (seq, job));
+        // Replaced entries linger in `order` until popped; keep it small.
+        if self.order.len() > 2 * self.ops.len() + 64 {
+            let ops = &self.ops;
+            self.order
+                .retain(|(seq, f)| ops.get(f).is_some_and(|(s, _)| s == seq));
+        }
+    }
+
+    /// The oldest queued operation.
+    fn pop(&mut self) -> Option<(PathBuf, Job)> {
+        while let Some((seq, file)) = self.order.pop_front() {
+            if self.ops.get(&file).is_some_and(|(s, _)| *s == seq)
+                && let Some((_, job)) = self.ops.remove(&file)
+            {
+                return Some((file, job));
+            }
+        }
+        None
+    }
+
+    /// The operation queued for `file`.
+    fn queued(&self, file: &Path) -> Option<&Op> {
+        self.ops.get(file).map(|(_, j)| &j.op)
+    }
+
+    /// `file` was touched or written by this store moments ago.
+    fn fresh(&self, file: &Path) -> bool {
+        self.refreshed
+            .get(file)
+            .is_some_and(|t| t.elapsed() < REFRESHED_FOR)
     }
 }
 
@@ -433,23 +501,43 @@ impl Shared {
 
     /// The IO thread.
     fn run(&self) {
+        let mut last_sweep = std::time::Instant::now();
         loop {
-            let (file, job, sweep) = {
+            let next = {
                 let mut q = self.lock();
                 loop {
                     // `in_flight` may be a `save`/`remove` running on its
                     // caller's thread: wait for it.
-                    if q.in_flight.is_none() && !q.ops.is_empty() {
-                        let (file, job) = q.ops.remove(0);
+                    if q.in_flight.is_none()
+                        && let Some((file, job)) = q.pop()
+                    {
                         q.in_flight = Some((file.clone(), job.op.clone()));
                         let sweep = !std::mem::replace(&mut q.swept, true);
-                        break (file, job, sweep);
+                        break Some((file, job, sweep));
                     }
                     if q.stop && q.ops.is_empty() {
                         return;
                     }
-                    q = self.changed.wait(q).unwrap_or_else(PoisonError::into_inner);
+                    // Expire old files every [`PERSIST_SWEEP_INTERVAL`]
+                    // while running, not only at exit.
+                    let due = self.sweep_every.saturating_sub(last_sweep.elapsed());
+                    if !q.used || q.in_flight.is_some() {
+                        q = self.changed.wait(q).unwrap_or_else(PoisonError::into_inner);
+                    } else if due.is_zero() {
+                        break None;
+                    } else {
+                        q = self
+                            .changed
+                            .wait_timeout(q, due)
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .0;
+                    }
                 }
+            };
+            let Some((file, job, sweep)) = next else {
+                self.sweep_unclaimed();
+                last_sweep = std::time::Instant::now();
+                continue;
             };
             if sweep {
                 sweep_temps(&self.dir, None);
@@ -599,10 +687,14 @@ impl Shared {
 }
 
 /// A cell file of an instance-qualified path: `[` (escaped by
-/// [`escape_name`]) marks the instance segment (`list[<key>].x`). Only
-/// these expire ([`PERSIST_RETENTION`]).
+/// [`escape_name`]) marks the instance segment (`list[<key>].x`); a
+/// shortened name says so in its suffix (`~i<hash>`). Only these expire
+/// ([`PERSIST_RETENTION`]).
 fn is_instance_file(name: &str) -> bool {
-    name.contains("%5B")
+    match name.rfind('~') {
+        Some(i) => name[i + 1..].starts_with('i'),
+        None => name.contains("%5B"),
+    }
 }
 
 /// Refresh `file`'s modification time (best effort; a missing file stays
@@ -619,7 +711,7 @@ static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 impl PersistStore {
     /// A store keeping its files in `dir` (created on the first write).
     pub fn new(dir: impl Into<PathBuf>) -> Self {
-        Self::build(dir.into(), None)
+        Self::build(dir.into(), None, PERSIST_SWEEP_INTERVAL)
     }
 
     /// A store whose IO thread calls `hook` with the file before every
@@ -629,10 +721,10 @@ impl PersistStore {
         dir: impl Into<PathBuf>,
         hook: impl Fn(&Path) + Send + Sync + 'static,
     ) -> Self {
-        Self::build(dir.into(), Some(Arc::new(hook)))
+        Self::build(dir.into(), Some(Arc::new(hook)), PERSIST_SWEEP_INTERVAL)
     }
 
-    fn build(dir: PathBuf, io_hook: Option<IoHook>) -> Self {
+    fn build(dir: PathBuf, io_hook: Option<IoHook>, sweep_every: Duration) -> Self {
         Self {
             inner: Arc::new(StoreInner {
                 shared: Arc::new(Shared {
@@ -640,6 +732,7 @@ impl PersistStore {
                     queue: Mutex::new(Queue::default()),
                     changed: Condvar::new(),
                     io_hook,
+                    sweep_every,
                     observer: Mutex::new(None),
                 }),
                 worker: Mutex::new(None),
@@ -738,19 +831,19 @@ impl PersistStore {
         let shared = &self.inner.shared;
         {
             let mut q = shared.lock();
-            let queued = q.ops.iter_mut().find_map(|(f, j)| match &mut j.op {
-                Op::Settings(old) if *f == key => Some(old),
+            let queued = q.ops.get_mut(&key).and_then(|(_, j)| match &mut j.op {
+                Op::Settings(old) => Some(old),
                 _ => None,
             });
             match queued {
                 Some(old) => old.merge(job),
-                None => q.ops.push((
+                None => q.push(
                     key,
                     Job {
                         op: Op::Settings(job),
                         report: None,
                     },
-                )),
+                ),
             }
         }
         self.ensure_worker();
@@ -771,9 +864,8 @@ impl PersistStore {
             .iter()
             .filter(|(f, _)| f == key)
             .map(|(_, op)| op);
-        let queued = q.ops.iter().filter(|(f, _)| f == key).map(|(_, j)| &j.op);
         let edits = in_flight
-            .chain(queued)
+            .chain(q.queued(key))
             .filter_map(|op| match op {
                 Op::Settings(job) => Some(job.edits.iter().cloned()),
                 _ => None,
@@ -795,19 +887,12 @@ impl PersistStore {
             // move aside, else the one in flight. A queued `Touch` changes
             // nothing, so it must not hide a write still in flight.
             let changes = |op: &&Op| matches!(op, Op::Write { .. } | Op::Remove | Op::Quarantine);
-            let queued = q
-                .ops
-                .iter()
-                .rev()
+            let queued = q.queued(&file).filter(changes).or(q
+                .in_flight
+                .as_ref()
                 .filter(|(f, _)| *f == file)
-                .map(|(_, j)| &j.op)
-                .find(changes)
-                .or(q
-                    .in_flight
-                    .as_ref()
-                    .filter(|(f, _)| *f == file)
-                    .map(|(_, op)| op)
-                    .filter(changes));
+                .map(|(_, op)| op)
+                .filter(changes));
             match queued {
                 Some(Op::Write {
                     default_hash,
@@ -890,7 +975,7 @@ impl PersistStore {
                     .wait(q)
                     .unwrap_or_else(PoisonError::into_inner);
             }
-            q.ops.retain(|(f, _)| f != file);
+            q.ops.remove(file);
             q.in_flight = Some((file.to_path_buf(), op.clone()));
         }
         let r = shared.perform_guarded(file, op, false);
@@ -902,45 +987,51 @@ impl PersistStore {
     /// A persisted cell claimed `file`: the retention sweep keeps it, and
     /// with `touch` (the file exists and nothing will rewrite it) its
     /// modification time is refreshed on the IO thread, unless another
-    /// operation is already queued for it, which writes it anyway.
+    /// operation is already queued for it, which writes it anyway, or this
+    /// store touched or wrote it moments ago ([`REFRESHED_FOR`]).
     fn claim(&self, file: &Path, touch: bool) {
         let shared = &self.inner.shared;
+        let first_use;
         {
             let mut q = shared.lock();
-            q.used = true;
+            first_use = !std::mem::replace(&mut q.used, true);
             let fresh = q.claimed.insert(file.to_path_buf());
-            if !fresh || !touch || q.busy(file) {
+            if fresh && touch && !q.busy(file) && !q.fresh(file) {
+                q.push(
+                    file.to_path_buf(),
+                    Job {
+                        op: Op::Touch,
+                        report: None,
+                    },
+                );
+            } else if !first_use {
                 return;
             }
-            q.ops.push((
-                file.to_path_buf(),
-                Job {
-                    op: Op::Touch,
-                    report: None,
-                },
-            ));
         }
+        // The IO thread also runs the periodic sweep.
         self.ensure_worker();
         shared.changed.notify_all();
     }
 
     /// The last cell on `file` went: the sweep no longer keeps it for this
     /// process, so its modification time is refreshed now (the time it was
-    /// last in use) unless a write is queued for it anyway.
+    /// last in use) unless a write is queued for it anyway or this store
+    /// touched or wrote it moments ago (an unmount right after the mount
+    /// or the last write).
     fn release(&self, file: &Path) {
         let shared = &self.inner.shared;
         {
             let mut q = shared.lock();
-            if !q.claimed.remove(file) || q.busy(file) {
+            if !q.claimed.remove(file) || q.busy(file) || q.fresh(file) {
                 return;
             }
-            q.ops.push((
+            q.push(
                 file.to_path_buf(),
                 Job {
                     op: Op::Touch,
                     report: None,
                 },
-            ));
+            );
         }
         self.ensure_worker();
         shared.changed.notify_all();
@@ -951,8 +1042,7 @@ impl PersistStore {
         let shared = &self.inner.shared;
         {
             let mut q = shared.lock();
-            q.ops.retain(|(f, _)| *f != file);
-            q.ops.push((file, Job { op, report }));
+            q.push(file, Job { op, report });
         }
         self.ensure_worker();
         shared.changed.notify_all();
@@ -976,7 +1066,10 @@ impl PersistStore {
             // No thread: do the work here rather than lose it.
             Err(_) => {
                 let shared = &self.inner.shared;
-                let jobs = std::mem::take(&mut shared.lock().ops);
+                let jobs: Vec<(PathBuf, Job)> = {
+                    let mut q = shared.lock();
+                    std::iter::from_fn(|| q.pop()).collect()
+                };
                 for (file, job) in jobs {
                     let r = shared.perform_guarded(&file, &job.op, false);
                     if let (Err(error), Some(rep)) = (r, job.report) {
@@ -1028,7 +1121,10 @@ impl PersistStore {
 }
 
 /// A path as one file name: bytes outside `[A-Za-z0-9_.-]` (and a leading
-/// `.`) percent-escaped, very long names shortened with their hash.
+/// `.`) percent-escaped, very long names shortened with their hash:
+/// `<head>~<hash>`, or `<head>~i<hash>` for an instance-qualified path (a
+/// `[` in it), so the retention sweep still knows it as one whatever the
+/// cut kept ([`is_instance_file`]). (`~` is always escaped otherwise.)
 pub(crate) fn escape_name(path: &str) -> String {
     let mut name = String::with_capacity(path.len());
     for (i, b) in path.bytes().enumerate() {
@@ -1044,7 +1140,12 @@ pub(crate) fn escape_name(path: &str) -> String {
             .rev()
             .find(|&i| name.is_char_boundary(i))
             .unwrap_or(0);
-        name = format!("{}~{:016x}", &name[..cut], value_hash(path.as_bytes()));
+        let instance = if path.contains('[') { "i" } else { "" };
+        name = format!(
+            "{}~{instance}{:016x}",
+            &name[..cut],
+            value_hash(path.as_bytes())
+        );
     }
     name
 }
@@ -1214,21 +1315,132 @@ fn parse(bytes: &[u8]) -> Result<Stored, String> {
 
 /// A persisted cell: [`Runtime::persisted`]. Keep it to follow live
 /// reloads ([`Persisted::redeclare`]) and `@reset` ([`Persisted::reset`]).
-pub struct Persisted<T> {
+pub struct Persisted<T: Clone + PartialEq + 'static> {
     /// The state cell (an ordinary [`Signal`]).
     pub signal: Signal<T>,
     /// How its starting value was chosen.
     pub restored: Restore,
-    writer: Rc<Writer<T>>,
+    writer: Rc<Writer<Signal<T>>>,
 }
 
-impl<T> fmt::Debug for Persisted<T> {
+impl<T: Clone + PartialEq + 'static> fmt::Debug for Persisted<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Persisted")
             .field("signal", &self.signal)
             .field("path", &self.writer.path)
             .field("restored", &self.restored)
             .finish()
+    }
+}
+
+/// A persisted keyed collection (`state xs: [T] key f = [...] persist`):
+/// [`Runtime::persisted_keyed`]. The same rules as [`Persisted`]; live
+/// reloads and `@reset` replace the contents by key
+/// ([`KeyedSignal::replace_all_reloaded`]), so items keep their identity
+/// and consumers get a keyed diff.
+pub struct PersistedKeyed<K, T>
+where
+    K: Clone + Eq + std::hash::Hash + 'static,
+    T: Clone + PartialEq + 'static,
+{
+    /// The collection cell (an ordinary [`KeyedSignal`]).
+    pub cell: KeyedSignal<K, T>,
+    /// How its starting value was chosen.
+    pub restored: Restore,
+    writer: Rc<Writer<KeyedSignal<K, T>>>,
+}
+
+impl<K, T> fmt::Debug for PersistedKeyed<K, T>
+where
+    K: Clone + Eq + std::hash::Hash + 'static,
+    T: Clone + PartialEq + 'static,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PersistedKeyed")
+            .field("cell", &self.cell)
+            .field("path", &self.writer.path)
+            .field("restored", &self.restored)
+            .finish()
+    }
+}
+
+/// The cell a persisted value lives in: a state cell or a keyed
+/// collection.
+pub(crate) trait PersistCell: Copy + 'static {
+    type Value: Clone + 'static;
+    fn id(self) -> NodeId;
+    /// The value, encoded (read tracked or untracked).
+    fn encoded(
+        self,
+        rt: &Runtime,
+        tracked: bool,
+        encode: &dyn Fn(&Self::Value) -> Vec<u8>,
+    ) -> Result<Vec<u8>, Error>;
+    /// An ordinary write (the overlay's `[reset]`).
+    fn write(self, rt: &Runtime, value: Self::Value) -> Result<(), Error>;
+    /// A reload write ([`Signal::set_reloaded`]).
+    fn write_reloaded(self, rt: &Runtime, value: Self::Value) -> Result<bool, Error>;
+    /// The starting value of a cell nothing observes yet.
+    fn init(self, rt: &Runtime, value: Self::Value);
+}
+
+impl<T: Clone + PartialEq + 'static> PersistCell for Signal<T> {
+    type Value = T;
+    fn id(self) -> NodeId {
+        Signal::id(self)
+    }
+    fn encoded(
+        self,
+        rt: &Runtime,
+        tracked: bool,
+        encode: &dyn Fn(&T) -> Vec<u8>,
+    ) -> Result<Vec<u8>, Error> {
+        if tracked {
+            self.with(rt, encode)
+        } else {
+            rt.untrack(|rt| self.with(rt, encode))
+        }
+    }
+    fn write(self, rt: &Runtime, value: T) -> Result<(), Error> {
+        self.set(rt, value)
+    }
+    fn write_reloaded(self, rt: &Runtime, value: T) -> Result<bool, Error> {
+        self.set_reloaded(rt, value)
+    }
+    fn init(self, rt: &Runtime, value: T) {
+        self.init_value(rt, value);
+    }
+}
+
+impl<K, T> PersistCell for KeyedSignal<K, T>
+where
+    K: Clone + Eq + std::hash::Hash + 'static,
+    T: Clone + PartialEq + 'static,
+{
+    type Value = KeyedVec<K, T>;
+    fn id(self) -> NodeId {
+        KeyedSignal::id(self)
+    }
+    fn encoded(
+        self,
+        rt: &Runtime,
+        tracked: bool,
+        encode: &dyn Fn(&KeyedVec<K, T>) -> Vec<u8>,
+    ) -> Result<Vec<u8>, Error> {
+        if tracked {
+            self.with(rt, encode)
+        } else {
+            self.with_untracked(rt, encode)
+        }
+    }
+    fn write(self, rt: &Runtime, value: KeyedVec<K, T>) -> Result<(), Error> {
+        self.replace_all(rt, value.items().iter().map(|(_, t)| t.clone()))
+    }
+    fn write_reloaded(self, rt: &Runtime, value: KeyedVec<K, T>) -> Result<bool, Error> {
+        self.replace_all_reloaded(rt, value.items().iter().map(|(_, t)| t.clone()))
+    }
+    fn init(self, rt: &Runtime, value: KeyedVec<K, T>) {
+        self.init_value(rt, value);
     }
 }
 
@@ -1269,16 +1481,16 @@ pub(crate) trait Waiter {
 }
 
 /// Write-behind for one persisted cell.
-struct Writer<T> {
+struct Writer<C: PersistCell> {
     store: PersistStore,
     path: Arc<str>,
     file: PathBuf,
     cell: NodeId,
-    signal: Signal<T>,
+    signal: C,
     /// The declared default, its encoding and hash (changed by a reload).
-    default: RefCell<(T, Vec<u8>, u64)>,
-    encode: Encode<T>,
-    decode: Decode<T>,
+    default: RefCell<(C::Value, Vec<u8>, u64)>,
+    encode: Encode<C::Value>,
+    decode: Decode<C::Value>,
     /// The encoding of the value the cell started from: a waiting cell
     /// still holding it when promoted takes what the old owner left.
     start: Vec<u8>,
@@ -1294,13 +1506,18 @@ struct Writer<T> {
     report: Reporter,
 }
 
-impl<T> Writer<T> {
-    /// The value changed: remember it unless the file already says it.
-    fn note(&self, value: &T) {
+impl<C: PersistCell> Writer<C> {
+    /// The live value, encoded.
+    fn live(&self, rt: &Runtime, tracked: bool) -> Result<Vec<u8>, Error> {
+        self.signal.encoded(rt, tracked, &*self.encode)
+    }
+
+    /// The value changed (`bytes`, encoded): remember it unless the file
+    /// already says it.
+    fn note(&self, bytes: Vec<u8>) {
         if !self.active.get() {
             return;
         }
-        let bytes = (self.encode)(value);
         if self.report.stale.swap(false, Ordering::AcqRel) {
             // A write (or removal) failed: the file may hold anything.
             *self.baseline.borrow_mut() = None;
@@ -1327,14 +1544,14 @@ impl<T> Writer<T> {
     }
 }
 
-impl<T: Clone + PartialEq + 'static> Waiter for Writer<T> {
+impl<C: PersistCell> Waiter for Writer<C> {
     fn cell(&self) -> NodeId {
         self.cell
     }
 
     fn capture(&self, rt: &Runtime) {
-        if let Ok(v) = self.signal.get_untracked(rt) {
-            self.note(&v);
+        if let Ok(bytes) = self.live(rt, false) {
+            self.note(bytes);
         }
         self.flush();
     }
@@ -1364,10 +1581,9 @@ impl<T: Clone + PartialEq + 'static> Waiter for Writer<T> {
             _ => {}
         }
         *self.baseline.borrow_mut() = Some(file_bytes.clone());
-        let Ok(live) = self.signal.get_untracked(rt) else {
+        let Ok(live_bytes) = self.live(rt, false) else {
             return;
         };
-        let live_bytes = (self.encode)(&live);
         if live_bytes == self.start {
             // Untouched while it waited: it continues from the old owner.
             if live_bytes == file_bytes {
@@ -1376,7 +1592,7 @@ impl<T: Clone + PartialEq + 'static> Waiter for Writer<T> {
             match (self.decode)(&file_bytes) {
                 Some(v) if rt.check_write_allowed(self.cell).is_ok() => {
                     // A hand-over, not a change: `on change` re-baselines.
-                    let _ = self.signal.set_reloaded(rt, v);
+                    let _ = self.signal.write_reloaded(rt, v);
                     return;
                 }
                 // Inside a derived value's computation: keep its own value.
@@ -1408,7 +1624,7 @@ impl<T: Clone + PartialEq + 'static> Waiter for Writer<T> {
     }
 }
 
-impl<T> Drop for Writer<T> {
+impl<C: PersistCell> Drop for Writer<C> {
     /// A runtime dropped without [`Runtime::shutdown`] still writes what
     /// was pending (the store drains its queue when it goes).
     fn drop(&mut self) {
@@ -1416,22 +1632,10 @@ impl<T> Drop for Writer<T> {
     }
 }
 
-impl<T: Clone + PartialEq + 'static> Persisted<T> {
-    /// The persist path.
-    pub fn path(&self) -> &str {
-        &self.writer.path
-    }
-
-    /// Live reload changed the declared default (`state x = 40 persist`
-    /// became `= 60`): the reconciler calls this instead of creating a new
-    /// cell. The "state default" rule: a value that still holds the old
-    /// default takes the new one (the stored file is removed: nothing
-    /// stored means the default); a changed value is kept, reported once
-    /// as [`Diagnostic::PersistDefaultChanged`] and re-stamped with the new
-    /// default's hash, so the next start neither adopts it nor reports it
-    /// again.
-    pub fn redeclare(&self, rt: &Runtime, new_default: T) -> Result<Redeclared, Error> {
-        let w = &self.writer;
+impl<C: PersistCell> Writer<C> {
+    /// [`Persisted::redeclare`].
+    fn redeclare(&self, rt: &Runtime, new_default: C::Value) -> Result<Redeclared, Error> {
+        let w = self;
         let new_bytes = (w.encode)(&new_default);
         let new_hash = value_hash(&new_bytes);
         let old_bytes = {
@@ -1441,8 +1645,7 @@ impl<T: Clone + PartialEq + 'static> Persisted<T> {
             }
             d.1.clone()
         };
-        let live = self.signal.get_untracked(rt)?;
-        let live_bytes = (w.encode)(&live);
+        let live_bytes = w.live(rt, false)?;
         *w.default.borrow_mut() = (new_default.clone(), new_bytes.clone(), new_hash);
         *w.pending.borrow_mut() = None;
         if live_bytes == old_bytes || live_bytes == new_bytes {
@@ -1452,7 +1655,7 @@ impl<T: Clone + PartialEq + 'static> Persisted<T> {
                     .enqueue(w.file.clone(), Op::Remove, Some(w.report.clone()));
             }
             // A reload write: `on change` takes it as its baseline.
-            self.signal.set_reloaded(rt, new_default)?;
+            w.signal.write_reloaded(rt, new_default)?;
             return Ok(Redeclared::Adopted);
         }
         if w.active.get() {
@@ -1473,23 +1676,9 @@ impl<T: Clone + PartialEq + 'static> Persisted<T> {
         Ok(Redeclared::Kept)
     }
 
-    /// The overlay's `[reset]` (the user's action, an ordinary write that
-    /// `on change` sees): forget the stored value and go back to the
-    /// default. A write still pending or queued for the cell is cancelled,
-    /// so it cannot bring the old value back.
-    pub fn reset(&self, rt: &Runtime) -> Result<(), Error> {
-        self.forget(rt, false)
-    }
-
-    /// `@reset` applied by a live reload: [`Persisted::reset`] as a reload
-    /// write ([`Signal::set_reloaded`]), so `on change` handlers take the
-    /// default as their baseline instead of firing.
-    pub fn reset_reloaded(&self, rt: &Runtime) -> Result<(), Error> {
-        self.forget(rt, true)
-    }
-
+    /// [`Persisted::reset`] (`reload`: [`Persisted::reset_reloaded`]).
     fn forget(&self, rt: &Runtime, reload: bool) -> Result<(), Error> {
-        let w = &self.writer;
+        let w = self;
         let (default, bytes) = {
             let d = w.default.borrow();
             (d.0.clone(), d.1.clone())
@@ -1501,10 +1690,79 @@ impl<T: Clone + PartialEq + 'static> Persisted<T> {
                 .enqueue(w.file.clone(), Op::Remove, Some(w.report.clone()));
         }
         if reload {
-            self.signal.set_reloaded(rt, default).map(|_| ())
+            w.signal.write_reloaded(rt, default).map(|_| ())
         } else {
-            self.signal.set(rt, default)
+            w.signal.write(rt, default)
         }
+    }
+}
+
+impl<T: Clone + PartialEq + 'static> Persisted<T> {
+    /// The persist path.
+    pub fn path(&self) -> &str {
+        &self.writer.path
+    }
+
+    /// Live reload changed the declared default (`state x = 40 persist`
+    /// became `= 60`): the reconciler calls this instead of creating a new
+    /// cell. The "state default" rule: a value that still holds the old
+    /// default takes the new one (the stored file is removed: nothing
+    /// stored means the default); a changed value is kept, reported once
+    /// as [`Diagnostic::PersistDefaultChanged`] and re-stamped with the new
+    /// default's hash, so the next start neither adopts it nor reports it
+    /// again.
+    pub fn redeclare(&self, rt: &Runtime, new_default: T) -> Result<Redeclared, Error> {
+        self.writer.redeclare(rt, new_default)
+    }
+
+    /// The overlay's `[reset]` (the user's action, an ordinary write that
+    /// `on change` sees): forget the stored value and go back to the
+    /// default. A write still pending or queued for the cell is cancelled,
+    /// so it cannot bring the old value back.
+    pub fn reset(&self, rt: &Runtime) -> Result<(), Error> {
+        self.writer.forget(rt, false)
+    }
+
+    /// `@reset` applied by a live reload: [`Persisted::reset`] as a reload
+    /// write ([`Signal::set_reloaded`]), so `on change` handlers take the
+    /// default as their baseline instead of firing.
+    pub fn reset_reloaded(&self, rt: &Runtime) -> Result<(), Error> {
+        self.writer.forget(rt, true)
+    }
+}
+
+impl<K, T> PersistedKeyed<K, T>
+where
+    K: Clone + Eq + std::hash::Hash + 'static,
+    T: Clone + PartialEq + 'static,
+{
+    /// The persist path.
+    pub fn path(&self) -> &str {
+        &self.writer.path
+    }
+
+    /// [`Persisted::redeclare`] for a collection: a list that still holds
+    /// the old default takes the new one by key (a reload write: `on
+    /// change` takes it as its baseline); a changed list is kept and
+    /// reported once.
+    pub fn redeclare(
+        &self,
+        rt: &Runtime,
+        new_default: KeyedVec<K, T>,
+    ) -> Result<Redeclared, Error> {
+        self.writer.redeclare(rt, new_default)
+    }
+
+    /// [`Persisted::reset`]: back to the default (an ordinary write, by
+    /// key), the stored list forgotten.
+    pub fn reset(&self, rt: &Runtime) -> Result<(), Error> {
+        self.writer.forget(rt, false)
+    }
+
+    /// [`Persisted::reset_reloaded`]: `@reset` at reload, as a reload
+    /// write ([`KeyedSignal::replace_all_reloaded`]).
+    pub fn reset_reloaded(&self, rt: &Runtime) -> Result<(), Error> {
+        self.writer.forget(rt, true)
     }
 }
 
@@ -1551,9 +1809,79 @@ impl Runtime {
         E: Fn(&T) -> Vec<u8> + 'static,
         D: Fn(&[u8]) -> Option<T> + 'static,
     {
+        let signal = self.signal(default.clone());
+        let (restored, writer) = self.persist_cell(
+            store,
+            path,
+            signal,
+            default,
+            Box::new(encode),
+            Box::new(decode),
+        );
+        Persisted {
+            signal,
+            restored,
+            writer,
+        }
+    }
+
+    /// `state xs: [T] key f = [...] persist`: [`Runtime::persisted`] for a
+    /// keyed collection. `encode` writes the list's values (in order);
+    /// `decode` reads them back, and the collection is rebuilt with the
+    /// default's key function (stored values with a repeated key do not
+    /// decode: the default is used, as for any value that no longer
+    /// decodes). Writes are debounced and queued like a plain cell's;
+    /// reload-driven changes replace the contents by key as reload writes,
+    /// so items keep their identity and consumers get a keyed diff.
+    pub fn persisted_keyed<K, T, E, D>(
+        &self,
+        store: &PersistStore,
+        path: &str,
+        default: KeyedVec<K, T>,
+        encode: E,
+        decode: D,
+    ) -> PersistedKeyed<K, T>
+    where
+        K: Clone + Eq + std::hash::Hash + 'static,
+        T: Clone + PartialEq + 'static,
+        E: Fn(&KeyedVec<K, T>) -> Vec<u8> + 'static,
+        D: Fn(&[u8]) -> Option<Vec<T>> + 'static,
+    {
+        let cell = self.keyed(default.clone());
+        let key_of = default.key_fn();
+        let decode = move |bytes: &[u8]| {
+            let values = decode(bytes)?;
+            let key_of = key_of.clone();
+            KeyedVec::from_values(move |t: &T| key_of(t), values).ok()
+        };
+        let (restored, writer) = self.persist_cell(
+            store,
+            path,
+            cell,
+            default,
+            Box::new(encode),
+            Box::new(decode),
+        );
+        PersistedKeyed {
+            cell,
+            restored,
+            writer,
+        }
+    }
+
+    /// Bind `signal` (just created, holding `default`) to `path` in
+    /// `store`: restore its starting value, write behind its changes.
+    fn persist_cell<C: PersistCell>(
+        &self,
+        store: &PersistStore,
+        path: &str,
+        signal: C,
+        default: C::Value,
+        encode: Encode<C::Value>,
+        decode: Decode<C::Value>,
+    ) -> (Restore, Rc<Writer<C>>) {
         let path: Arc<str> = Arc::from(path);
         let default_bytes = encode(&default);
-        let signal = self.signal(default.clone());
         self.set_name(signal.id(), path.clone());
         let report = Reporter {
             cell: signal.id(),
@@ -1630,7 +1958,7 @@ impl Runtime {
         }
         if let Some(v) = initial {
             // Its starting value, not a write: nothing observes it yet.
-            signal.init_value(self, v);
+            signal.init(self, v);
         }
         match &restored {
             Restore::KeptOverNewDefault(_) => self.diagnose(Diagnostic::PersistDefaultChanged {
@@ -1652,15 +1980,15 @@ impl Runtime {
             cell: signal.id(),
             signal,
             default: RefCell::new((default, default_bytes, default_hash)),
-            encode: Box::new(encode),
-            decode: Box::new(decode),
+            encode,
+            decode,
             start: baseline.clone(),
             baseline: RefCell::new(Some(baseline)),
             pending: RefCell::new(None),
             active: Cell::new(active),
             report,
         });
-        let waiter: Weak<dyn Waiter> = Rc::downgrade(&writer) as Weak<Writer<T>>;
+        let waiter: Weak<dyn Waiter> = Rc::downgrade(&writer) as Weak<Writer<C>>;
         {
             // Pruned at a high-water mark, so churn around any size
             // (cells disposed and created one for one) stays amortised O(1).
@@ -1686,15 +2014,15 @@ impl Runtime {
         let first = Cell::new(true);
         let d = self.on_change_after(
             move |rt| {
-                let v = signal.get(rt)?;
-                w.note(&v);
+                let bytes = w.live(rt, true)?;
+                w.note(bytes.clone());
                 if first.replace(false)
                     && w.pending.borrow().is_some()
                     && let Some(t) = arm.get()
                 {
                     t.restart(rt)?;
                 }
-                Ok(v)
+                Ok(bytes)
             },
             PERSIST_DEBOUNCE,
             move |_| {
@@ -1752,11 +2080,7 @@ impl Runtime {
                 o.promote(&rt);
             }
         });
-        Persisted {
-            signal,
-            restored,
-            writer,
-        }
+        (restored, writer)
     }
 
     /// [`Runtime::persisted`] for values with a built-in text encoding
@@ -1879,6 +2203,72 @@ mod tests {
                 Some(Path::new("/state"))
             );
         }
+    }
+
+    #[test]
+    fn long_instance_paths_still_expire() {
+        let store = PersistStore::new("/state");
+        let name = |p: &str| {
+            store
+                .file_of(p)
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        };
+        // A long monitor description as the instance key.
+        let monitor = "Dell Inc. DELL U2720Q 0x4A2B ".repeat(12);
+        let short = name(&format!("bar[{monitor}].expanded"));
+        assert!(short.len() <= MAX_NAME);
+        assert!(is_instance_file(&short), "{short}");
+        // The `[` past the cut, and a cut splitting its escape.
+        for head in [300, MAX_NAME - 21, MAX_NAME - 20, MAX_NAME - 19] {
+            let path = format!("{}[k].x", "a".repeat(head));
+            let n = name(&path);
+            assert!(n.len() <= MAX_NAME, "{head}");
+            assert!(is_instance_file(&n), "{head}: {n}");
+        }
+        // Plain paths never expire, long or not.
+        assert!(!is_instance_file(&name(&"a".repeat(500))));
+        assert!(!is_instance_file(&name("bar.level")));
+        assert!(is_instance_file(&name("list[k].x")));
+        // A `~` in a path is escaped: it cannot fake the suffix.
+        assert!(!is_instance_file(&name("a~i.x")));
+    }
+
+    #[test]
+    fn a_running_store_sweeps_periodically() {
+        let dir =
+            std::env::temp_dir().join(format!("strand-persist-periodic-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let old = std::time::SystemTime::now() - PERSIST_RETENTION - Duration::from_secs(60);
+        let make = |name: &str| {
+            let file = dir.join(name);
+            fs::write(&file, b"x").unwrap();
+            fs::File::options()
+                .write(true)
+                .open(&file)
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
+            file
+        };
+        let gone = make("list%5Bk%5D.x");
+        let claimed = make("list%5Bj%5D.x");
+        let plain = make("bar.level");
+        let store = PersistStore::build(dir.clone(), None, Duration::from_millis(20));
+        // A cell claims a file (without touching it): the store is in use.
+        store.claim(&claimed, false);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while gone.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!gone.exists(), "swept while running");
+        assert!(claimed.exists() && plain.exists());
+        drop(store);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

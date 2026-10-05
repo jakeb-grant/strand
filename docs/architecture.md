@@ -287,14 +287,20 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   edge to the value itself; the VM declares the input's read set on
   `memo.effect_id()` and readers declare `memo.id()`. For `on change …
   after T` (`Debounced`), the tracked expression's reads go on `d.effect`
-  and the body's writes on `d.timer`. Event deliveries and woken tasks are
-  ranked like sinks: a queue is delivered at the highest rank of the queue
-  and its listeners (all listeners get each event together, in order), a
-  task at its own or its writer's rank, so a listener declared to read a
-  cell a handler writes in the same flush sees the final value; at one
-  rank, woken tasks run before deliveries, deliveries before sinks. Tasks
-  woken from other threads (IO and D-Bus replies) are polled at the start
-  of the next flush, never between sinks.
+  and the body's writes on `d.timer`. Listeners and woken tasks are
+  ranked like sinks: an emit is handed to every live listener of the
+  queue as soon as the flush sees it, and each listener is delivered at
+  its own rank (each gets its events in emit order; listeners of one
+  queue are not delivered together), a task at its own or its writer's
+  rank, so a listener declared to read a cell a handler (an effect, or
+  another listener of the same event) writes in the same flush sees the
+  final value, and the readers of what a listener writes run after it;
+  at one rank, woken tasks run before listeners, listeners before sinks.
+  A listener's body and a task's polls are tracked without subscribing:
+  a read not declared on the listener (for a task, on its handler) is
+  learned (it ranks the handler from then on) and reported in strict
+  mode. Tasks woken from other threads (IO and D-Bus replies) are polled
+  at the start of the next flush, never between sinks.
   Reload writes: the reconciler adopts a changed `state` default (and
   makes any other reload-driven change to a live cell) with
   `signal.set_reloaded(rt, v)`, not `set`: the value changes as usual, but
@@ -305,7 +311,12 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   persist hand-over to a waiting cell, `Persisted::reset_reloaded`
   (`@reset`) and `Settings::redeclare` use it; the overlay's `[reset]`
   (`Persisted::reset`) and file reloads of a settings file are ordinary
-  writes.
+  writes. For a keyed collection the reload write is
+  `xs.replace_all_reloaded(rt, values)` (a keyed diff, by key, as a
+  reload write). A load an `rt.async_memo` starts because of a reload
+  write lands as a reload write too, whenever it resolves; a value a
+  handler (timer, listener) copies from a reloaded cell into another
+  cell is an ordinary write.
   Service events are `EventQueue`s. Keyed collection writes from
   graph-triggered handlers are rate-guarded too (wave 2): a throttled
   handler writes to a held copy (with the list it started from) whose
@@ -366,10 +377,17 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   capture. Files of instance-qualified paths (a `[` in the path:
   `list[<key>].x`, `bar[<monitor>].x`) that no cell has claimed for 90
   days (`PERSIST_RETENTION`), and quarantined copies that old, are
-  removed when the store is dropped at exit, so per-key files do not pile
-  up; a plain declared path (`bar.level`) never expires, however long its
-  component stays unmounted; `PersistStore::save`/`remove` are for offline tools (a live
-  cell on the path does not see them).
+  removed when the store is dropped at exit and once a day while it runs
+  (`PERSIST_SWEEP_INTERVAL`), so per-key files do not pile up; a plain
+  declared path (`bar.level`) never expires, however long its component
+  stays unmounted; `PersistStore::save`/`remove` are for offline tools (a
+  live cell on the path does not see them). `state xs: [T] key f = [...]
+  persist` is `rt.persisted_keyed(&store, path, default_keyed_vec, encode,
+  decode)`: `encode` writes the list's values, `decode` returns them as a
+  `Vec<T>` and the list is rebuilt with the default's key function; the
+  `PersistedKeyed` handle (`cell: KeyedSignal`, `restored`) has the same
+  `redeclare` (taking the new default `KeyedVec`), `reset_reloaded` and
+  `reset`, all applied by key.
 - Strand's own writes, for the watcher (wave 2):
   `persist_store.on_written(|w: &OwnWrite| ..)` (also on
   `SettingsStore`: one observer slot per IO thread, so setting it on
@@ -466,8 +484,11 @@ Public interfaces other crates and later stages build on:
   `d.effect` and the body's writes on `d.timer`;
   create persisted cells with an instance-qualified path and keep the
   `Persisted` handle for `redeclare` (reload), `reset_reloaded` (`@reset`)
-  and `reset` (the overlay's `[reset]`); adopt any other changed `state`
-  default with `signal.set_reloaded(rt, v)`;
+  and `reset` (the overlay's `[reset]`), and `rt.persisted_keyed` /
+  `PersistedKeyed` for a persisted keyed collection; adopt any other
+  changed `state` default (and apply `@reset` to a non-persisted one)
+  with `signal.set_reloaded(rt, v)`, or `xs.replace_all_reloaded(rt,
+  values)` for a keyed collection;
   node closures use their `rt` parameter or a `WeakRuntime`
   (`rt.downgrade()`), never a captured `Runtime` clone: that is an `Rc`
   cycle, so neither dropping the last handle nor a persisted cell's

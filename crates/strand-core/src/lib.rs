@@ -58,7 +58,8 @@ pub use keyed::reactive::{KeyedMemo, KeyedOps, KeyedSignal, KeyedSource, Snapsho
 pub use keyed::{KeyedError, KeyedVec, VecDiff, keyed_diff};
 pub use order::WriteEdge;
 pub use persist::{
-    OwnWrite, PersistError, PersistStore, PersistValue, Persisted, Redeclared, Restore,
+    OwnWrite, PersistError, PersistStore, PersistValue, Persisted, PersistedKeyed, Redeclared,
+    Restore,
 };
 pub use runtime::{
     Diagnostic, HARD_RUNS_PER_FLUSH, MAX_FROZEN_EVENTS, MAX_RUNS_PER_FLUSH, NodeId, NodeKind,

@@ -32,6 +32,8 @@ impl TempDir {
 }
 
 impl Drop for TempDir {
+    /// Declare it first in a test, so the runtimes and stores using it
+    /// (and their IO threads) are gone before the directory is removed.
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
@@ -382,9 +384,9 @@ fn reset_cancels_a_write_queued_behind_a_slow_disk() {
     rt.tick(2 * PERSIST_DEBOUNCE);
     p.reset(&rt).unwrap();
     assert_eq!(store.load("osd.level"), Ok(None), "the queued removal wins");
-    for _ in 0..3 {
-        let _ = release.send(());
-    }
+    // The disk is fast again: every later operation goes through at once,
+    // so nothing is still queued when the directory is removed.
+    drop(release);
     rt.shutdown();
     assert!(files(store.dir()).is_empty(), "{:?}", files(store.dir()));
 }
@@ -416,7 +418,8 @@ fn a_slow_disk_does_not_stall_the_logic_tick() {
         store.load("launcher.query").unwrap().unwrap().value,
         b"fire"
     );
-    let _ = release.send(());
+    // The disk is fast again (every later operation too).
+    drop(release);
     // Shutdown waits for the queue, so the write is not lost at exit.
     rt.shutdown();
     let text = fs::read(store.dir().join("launcher.query")).unwrap();
@@ -800,11 +803,16 @@ fn a_failed_write_is_retried_and_restored_on_the_next_start() {
     rt.flush();
     p.signal.set(&rt, 7).unwrap();
     rt.tick(Duration::from_millis(10));
-    rt.tick(Duration::from_millis(10) + PERSIST_DEBOUNCE);
-    assert!(store.sync(Duration::from_secs(5)));
-    let diags = rt
-        .tick(Duration::from_millis(20) + PERSIST_DEBOUNCE)
+    // The IO thread may fail the write before the tick that queued it
+    // ends (then that tick reports it) or after.
+    let mut diags = rt
+        .tick(Duration::from_millis(10) + PERSIST_DEBOUNCE)
         .diagnostics;
+    assert!(store.sync(Duration::from_secs(5)));
+    diags.extend(
+        rt.tick(Duration::from_millis(20) + PERSIST_DEBOUNCE)
+            .diagnostics,
+    );
     assert!(
         diags
             .iter()
@@ -1042,11 +1050,9 @@ fn a_remount_behind_a_slow_disk_sees_the_write_in_flight() {
     let (_c, pc) = mount(&rt);
     assert_eq!(pc.restored, Restore::Stored(b"5".to_vec()));
     assert_eq!(pc.signal.get(&rt).unwrap(), 5);
-    for _ in 0..8 {
-        let _ = release.send(());
-    }
-    rt.shutdown();
+    // The disk is fast again (every later operation too).
     drop(release);
+    rt.shutdown();
     let rt = Runtime::new();
     let p = rt.persisted_value(&tmp.store(), "bar.level", 0i64);
     assert_eq!(p.signal.get(&rt).unwrap(), 5);
@@ -1155,4 +1161,203 @@ fn a_promoted_waiter_does_not_fire_on_change() {
     rt.flush();
     assert_eq!(*fired.borrow(), vec![8]);
     rt.shutdown();
+}
+
+/// `state history: [Note] key id = [] persist`, the shape notification
+/// history and launcher recents have.
+type Note = (u32, String);
+
+fn notes(items: &[(u32, &str)]) -> strand_core::KeyedVec<u32, Note> {
+    strand_core::KeyedVec::from_values(
+        |n: &Note| n.0,
+        items.iter().map(|&(k, t)| (k, t.to_string())),
+    )
+    .unwrap()
+}
+
+fn encode_notes(v: &strand_core::KeyedVec<u32, Note>) -> Vec<u8> {
+    v.items()
+        .iter()
+        .map(|(_, (k, t))| format!("{k}\t{t}\n"))
+        .collect::<String>()
+        .into_bytes()
+}
+
+fn decode_notes(b: &[u8]) -> Option<Vec<Note>> {
+    std::str::from_utf8(b)
+        .ok()?
+        .lines()
+        .map(|l| {
+            let (k, t) = l.split_once('\t')?;
+            Some((k.parse().ok()?, t.to_string()))
+        })
+        .collect()
+}
+
+fn history(
+    rt: &Runtime,
+    store: &PersistStore,
+    default: &[(u32, &str)],
+) -> strand_core::PersistedKeyed<u32, Note> {
+    rt.persisted_keyed(
+        store,
+        "notifications.history",
+        notes(default),
+        encode_notes,
+        decode_notes,
+    )
+}
+
+#[test]
+fn a_keyed_collection_persists_and_keeps_its_keys() {
+    use strand_core::KeyedSource;
+    let tmp = TempDir::new("keyed");
+    let store = tmp.store();
+    let rt = Runtime::new();
+    let h = history(&rt, &store, &[]);
+    assert_eq!(h.restored, Restore::Default);
+    rt.flush();
+    h.cell.push(&rt, (7, "low battery".into())).unwrap();
+    h.cell.push(&rt, (9, "update ready".into())).unwrap();
+    rt.tick(PERSIST_DEBOUNCE + Duration::from_millis(16));
+    assert!(store.sync(Duration::from_secs(5)));
+    rt.shutdown();
+
+    let rt = Runtime::new();
+    let h = history(&rt, &store, &[]);
+    assert_eq!(
+        h.restored,
+        Restore::Stored(b"7\tlow battery\n9\tupdate ready\n".to_vec())
+    );
+    let snap = h.cell.snapshot(&rt).unwrap();
+    assert_eq!(snap.keys().copied().collect::<Vec<_>>(), vec![7, 9]);
+    // Removing one item is one keyed diff, written after the debounce.
+    let v = snap.version();
+    h.cell.remove_key(&rt, &7).unwrap();
+    rt.tick(PERSIST_DEBOUNCE + Duration::from_millis(16));
+    let diffs = h.cell.snapshot(&rt).unwrap().diffs_since(v).unwrap();
+    assert!(
+        matches!(diffs[..], [strand_core::VecDiff::Remove { key: 7, .. }]),
+        "{diffs:?}"
+    );
+    rt.shutdown();
+    let rt = Runtime::new();
+    let h = history(&rt, &store, &[]);
+    assert_eq!(
+        h.cell.get_untracked(&rt).unwrap().items(),
+        &[(9, (9, "update ready".to_string()))]
+    );
+    rt.shutdown();
+    // Stored values with a repeated key do not decode: the default, with
+    // a warning, the file moved aside.
+    store
+        .save(
+            "notifications.history",
+            &encode_notes(&notes(&[])),
+            b"1\ta\n1\tb\n",
+        )
+        .unwrap();
+    let rt = Runtime::new();
+    let h = history(&rt, &store, &[]);
+    assert!(matches!(
+        h.restored,
+        Restore::Failed(PersistError::Corrupt { .. })
+    ));
+    assert!(h.cell.get_untracked(&rt).unwrap().is_empty());
+    rt.shutdown();
+}
+
+#[test]
+fn keyed_redeclare_and_reload_reset_do_not_fire_on_change() {
+    use strand_core::KeyedSource;
+    let tmp = TempDir::new("keyed-redeclare");
+    let store = tmp.store();
+    let rt = Runtime::new();
+    let h = history(&rt, &store, &[(1, "welcome")]);
+    let cell = h.cell;
+    let fired = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let seen = fired.clone();
+    rt.on_change(
+        move |rt| cell.with(rt, |v| v.len()),
+        move |_, n| {
+            seen.borrow_mut().push(*n);
+            Ok(())
+        },
+    );
+    rt.flush();
+    let v = cell.snapshot(&rt).unwrap().version();
+    // A live reload: the default gained an item; the list held the old
+    // default, so it takes the new one, by key.
+    assert_eq!(
+        h.redeclare(&rt, notes(&[(1, "welcome"), (2, "tips")])),
+        Ok(Redeclared::Adopted)
+    );
+    rt.flush();
+    rt.tick(Duration::from_secs(1));
+    assert!(fired.borrow().is_empty(), "{:?}", fired.borrow());
+    let diffs = cell.snapshot(&rt).unwrap().diffs_since(v).unwrap();
+    assert!(
+        matches!(diffs[..], [strand_core::VecDiff::Insert { key: 2, .. }]),
+        "keyed, not a reset: {diffs:?}"
+    );
+    // A real change fires; `@reset` at reload does not; the overlay's
+    // `[reset]` does.
+    cell.push(&rt, (3, "x".into())).unwrap();
+    rt.flush();
+    assert_eq!(*fired.borrow(), vec![3]);
+    h.reset_reloaded(&rt).unwrap();
+    rt.flush();
+    assert_eq!(cell.with_untracked(&rt, |v| v.len()), Ok(2));
+    assert_eq!(*fired.borrow(), vec![3]);
+    cell.push(&rt, (4, "y".into())).unwrap();
+    rt.flush();
+    h.reset(&rt).unwrap();
+    rt.flush();
+    assert_eq!(*fired.borrow(), vec![3, 3, 2]);
+    // A changed list is kept over a new default, reported once.
+    cell.push(&rt, (5, "z".into())).unwrap();
+    rt.flush();
+    rt.take_diagnostics();
+    assert_eq!(h.redeclare(&rt, notes(&[])), Ok(Redeclared::Kept));
+    assert_eq!(cell.with_untracked(&rt, |v| v.len()), Ok(3));
+    assert!(
+        rt.take_diagnostics()
+            .iter()
+            .any(|d| matches!(d, Diagnostic::PersistDefaultChanged { .. }))
+    );
+    rt.shutdown();
+}
+
+#[test]
+fn a_reload_write_to_a_keyed_cell_is_keyed_and_does_not_fire_on_change() {
+    use strand_core::KeyedSource;
+    // Plain keyed state (no persist): the reconciler adopts a changed
+    // default through `replace_all_reloaded`.
+    let rt = Runtime::new();
+    let cell = rt.keyed(notes(&[(1, "a"), (2, "b")]));
+    let fired = std::rc::Rc::new(std::cell::RefCell::new(0));
+    let f = fired.clone();
+    rt.on_change(
+        move |rt| cell.with(rt, |v| v.items().to_vec()),
+        move |_, _| {
+            *f.borrow_mut() += 1;
+            Ok(())
+        },
+    );
+    rt.flush();
+    let v = cell.snapshot(&rt).unwrap().version();
+    let values = [(2, "b".to_string()), (3, "c".to_string())];
+    assert_eq!(cell.replace_all_reloaded(&rt, values.clone()), Ok(true));
+    rt.flush();
+    assert_eq!(*fired.borrow(), 0);
+    let diffs = cell.snapshot(&rt).unwrap().diffs_since(v).unwrap();
+    assert_eq!(diffs.len(), 2, "remove 1, insert 3: {diffs:?}");
+    assert_eq!(
+        cell.replace_all_reloaded(&rt, values),
+        Ok(false),
+        "unchanged"
+    );
+    cell.push(&rt, (4, "d".into())).unwrap();
+    rt.flush();
+    assert_eq!(*fired.borrow(), 1, "a real change still fires");
 }

@@ -1277,7 +1277,8 @@ user wrote as a table (`[a]`) replaces it as a new key with default
 spacing instead of keeping the table header's decor.
 
 **2026-10-05 · Event deliveries and woken tasks are ranked (review round
-6).** Round 0 delivered events and polled woken tasks before every sink,
+6).** (Refined in review round 7: each listener is delivered at its own
+rank, see "Each listener at its own rank".) Round 0 delivered events and polled woken tasks before every sink,
 whatever their rank, so a listener declared to read a cell a handler
 writes in the same flush (`on notifications.received(n) { if !dnd { … }
 }` with `dnd` set by an effect) saw the old value and the handler wrote
@@ -1307,3 +1308,61 @@ reads). Opt-in rather than `cfg(debug_assertions)`: runtime-internal
 nodes and Rust-side tests that declare nothing would flood every debug
 build; the VM's and compiler's test runtimes turn it on, and a debug
 binary may.
+
+**2026-10-05 · Each listener at its own rank (review round 7).** Round 6
+delivered a queue's events to all its listeners together, at the highest
+rank of the queue and its listeners. That is not glitch-free once a
+listener writes: a listener's write targets are ranked from its own rank,
+so with `on received(n) { history.push(n) }` next to `on received(n) {
+if !dnd { … } }` (the second ranked high by what it reads) the push
+landed after the readers of `history` had run, and they ran twice; and
+with listener A writing `x`, an effect S reading `x` and writing `y`, and
+listener B reading `y`, no single rank for the queue fits (A must run
+before S, B after it), so B saw the old `y` (which value it saw also
+depended on registration order). Design.md asks for events to be
+lossless and in order per handler and for handlers to see final values;
+it does not ask that all handlers of an event run back to back, so that
+requirement goes (it added a concept). Now an emit is handed to every
+live listener as soon as the flush sees it (right after the handler that
+emitted, or at the flush's start), into the listener's own inbox, and
+each listener is delivered at its own rank, its events in emit order.
+The rank rules are unchanged (a listener ranks with its queue and with
+what it reads; what it writes ranks above it), so every listener sees
+final values and every sink fed by a listener runs once. The cycle guard
+counts hand-outs per queue as it counted deliveries (a parked queue
+keeps its events, `queue -> listener -> queue` paths are unchanged); a
+frozen listener's inbox is its backlog (input dropped, others bounded by
+`MAX_FROZEN_EVENTS`, the count reported on release or disposal). A
+listener alive when the flush picks an emit up gets it (before: when
+the queue was delivered). `tests/order_props.rs` adds listener-written
+cells (with declarations) to the random graphs, so listeners read what
+effects and other listeners of the same event write.
+
+**2026-10-05 · Handler reads are learned (review round 7).** A listener
+and a task are scheduled by rank, not by observer edges, and their reads
+were never tracked: a read the compiler failed to declare left the
+listener one tick stale for good, silently, also under
+`set_strict_edges(true)`, which exists to catch exactly that lowering
+bug. Listener bodies and task polls now run in a tracking frame that
+records reads without subscribing; a source the listener (for a task,
+its handler, which is where the compiler declares a handler's whole read
+set) did not declare is kept as a read edge of the handler (it ranks
+with it from then on, so the glitch happens at most once), counted in
+`Stats::learned_edges` and reported as `Diagnostic::UndeclaredRead` in
+strict mode, as for sinks (only for handlers that declared their reads).
+A handler that reads what it writes (`count = count + 1` in a listener)
+gets a feedback edge, exactly as when the compiler declares both.
+
+**2026-10-05 · Reload marks reach late landings (review round 7).**
+Round 6's reload marks follow observer edges and last one flush, which
+missed two cases where an `on change` handler sees the reloaded value
+later: (a) through `let hits = svc.call(query)`, where the reload write
+changes the input and the load lands in a later flush: the async memo's
+effect, re-run with a mark, makes the load's begin and its result
+reload writes (the result whenever it lands; a superseded load never
+lands); (b) an `on change` whose tracked read errs in the reload's flush
+(the mark was taken only after the read succeeded, then cleared): the
+mark is now taken first and forgets the previous value, so the next
+successful read is a baseline. Residual, recorded rather than built: a
+handler that copies a reloaded value into another cell (a timer, a
+listener) 
