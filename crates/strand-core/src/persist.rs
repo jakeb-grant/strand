@@ -20,7 +20,7 @@
 //! Values are opaque bytes: the VM encodes and decodes its own values
 //! ([`Runtime::persisted`] takes the codec). A file that cannot be read back
 //! (bad header, checksum mismatch, a value that no longer decodes because
-//! the type changed) is moved aside to `<name>.corrupt` and the default is
+//! the type changed) is moved aside to `.<name>.corrupt` and the default is
 //! used, with [`Diagnostic::PersistFailed`]. Writes are atomic (temp file,
 //! `fsync`, rename, directory `fsync`), so a crash never leaves a torn
 //! file, done on the store's IO thread (never on the logic tick), and
@@ -29,12 +29,12 @@
 //! runtime is dropped. [`Persisted::redeclare`] follows a default changed
 //! by a live reload and [`Persisted::reset`] is `@reset`.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
@@ -69,7 +69,7 @@ pub enum PersistError {
         message: Arc<str>,
     },
     /// The file exists but is not a valid persisted value (moved aside to
-    /// `<name>.corrupt`).
+    /// `.<name>.corrupt`).
     Corrupt {
         /// The file.
         path: PathBuf,
@@ -93,7 +93,7 @@ impl fmt::Display for PersistError {
 
 impl std::error::Error for PersistError {}
 
-fn io_error(path: &Path, e: &std::io::Error) -> PersistError {
+pub(crate) fn io_error(path: &Path, e: &std::io::Error) -> PersistError {
     PersistError::Io {
         path: path.to_path_buf(),
         message: Arc::from(e.to_string()),
@@ -235,8 +235,11 @@ enum Op {
         value: Arc<[u8]>,
     },
     Remove,
-    /// Move the file aside to `<name>.corrupt`.
+    /// Move the file aside to `.<name>.corrupt`.
     Quarantine,
+    /// Per-field edits of a settings file (or its overlay), applied with
+    /// `toml_edit` to what the file holds when the IO thread gets to it.
+    Settings(crate::settings::SettingsJob),
 }
 
 /// Where a queued operation reports its failure: the runtime drains it in
@@ -264,6 +267,10 @@ impl FailSink {
             ready,
         }
     }
+    /// Failures are waiting to be reported (lock-free).
+    pub(crate) fn is_pending(&self) -> bool {
+        self.any.load(Ordering::Acquire)
+    }
     pub(crate) fn take(&self) -> Vec<Diagnostic> {
         if !self.any.load(Ordering::Acquire) {
             return Vec::new();
@@ -272,7 +279,7 @@ impl FailSink {
         self.any.store(false, Ordering::Release);
         std::mem::take(&mut *list)
     }
-    fn push(&self, d: Diagnostic) {
+    pub(crate) fn push(&self, d: Diagnostic) {
         {
             let mut list = self.list.lock().unwrap_or_else(PoisonError::into_inner);
             list.push(d);
@@ -360,6 +367,11 @@ impl Shared {
                 quarantine(file);
                 Ok(())
             }
+            // Reports its own outcome (notices and failures).
+            Op::Settings(job) => {
+                crate::settings::perform(file, job);
+                Ok(())
+            }
         }
     }
 }
@@ -438,27 +450,68 @@ impl PersistStore {
         if path.is_empty() {
             return Err(PersistError::EmptyPath);
         }
-        let mut name = String::with_capacity(path.len());
-        for (i, b) in path.bytes().enumerate() {
-            let plain = b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'.' && i > 0;
-            if plain {
-                name.push(char::from(b));
-            } else {
-                name.push_str(&format!("%{b:02X}"));
+        Ok(self.dir().join(escape_name(path)))
+    }
+
+    /// A settings store sharing this store's IO thread, keeping overlays
+    /// for read-only settings files in `settings/` next to this store's
+    /// directory (`$XDG_STATE_HOME/strand/settings`).
+    pub fn settings(&self) -> crate::settings::SettingsStore {
+        let dir = self
+            .dir()
+            .parent()
+            .map_or_else(|| self.dir().join("settings"), |p| p.join("settings"));
+        crate::settings::SettingsStore::sharing(self.clone(), dir)
+    }
+
+    /// Queue settings edits for `key` (a settings file, or its overlay),
+    /// merged into edits already queued for it (a later edit of a field
+    /// replaces an earlier one).
+    pub(crate) fn enqueue_settings(&self, key: PathBuf, job: crate::settings::SettingsJob) {
+        let shared = &self.inner.shared;
+        {
+            let mut q = shared.lock();
+            let queued = q.ops.iter_mut().find_map(|(f, j)| match &mut j.op {
+                Op::Settings(old) if *f == key => Some(old),
+                _ => None,
+            });
+            match queued {
+                Some(old) => old.merge(job),
+                None => q.ops.push((
+                    key,
+                    Job {
+                        op: Op::Settings(job),
+                        report: None,
+                    },
+                )),
             }
         }
-        if name.len() > MAX_NAME {
-            let cut = (0..=MAX_NAME - 20)
-                .rev()
-                .find(|&i| name.is_char_boundary(i))
-                .unwrap_or(0);
-            name = format!("{}~{:016x}", &name[..cut], value_hash(path.as_bytes()));
-        }
-        Ok(self.dir().join(name))
+        self.ensure_worker();
+        shared.changed.notify_all();
+    }
+
+    /// Settings edits for `key` not yet on disk (in flight first, then
+    /// queued), so a reload sees what the file is about to hold.
+    pub(crate) fn queued_settings(&self, key: &Path) -> Vec<crate::settings::Edit> {
+        let q = self.inner.shared.lock();
+        let in_flight = q
+            .in_flight
+            .iter()
+            .filter(|(f, _)| f == key)
+            .map(|(_, op)| op);
+        let queued = q.ops.iter().filter(|(f, _)| f == key).map(|(_, j)| &j.op);
+        in_flight
+            .chain(queued)
+            .filter_map(|op| match op {
+                Op::Settings(job) => Some(job.edits.iter().cloned()),
+                _ => None,
+            })
+            .flatten()
+            .collect()
     }
 
     /// Read a stored value. `Ok(None)` when nothing is stored; a file that
-    /// is not a valid persisted value is moved aside to `<name>.corrupt`
+    /// is not a valid persisted value is moved aside to `.<name>.corrupt`
     /// and reported as [`PersistError::Corrupt`]. Operations still queued
     /// for the file count: the latest one is what the file will hold.
     pub fn load(&self, path: &str) -> Result<Option<Stored>, PersistError> {
@@ -487,7 +540,7 @@ impl PersistStore {
                     }));
                 }
                 Some(Op::Remove | Op::Quarantine) => return Ok(None),
-                None => {}
+                Some(Op::Settings(_)) | None => {}
             }
         }
         let bytes = match fs::read(&file) {
@@ -639,6 +692,41 @@ impl PersistStore {
     }
 }
 
+/// A path as one file name: bytes outside `[A-Za-z0-9_.-]` (and a leading
+/// `.`) percent-escaped, very long names shortened with their hash.
+pub(crate) fn escape_name(path: &str) -> String {
+    let mut name = String::with_capacity(path.len());
+    for (i, b) in path.bytes().enumerate() {
+        let plain = b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'.' && i > 0;
+        if plain {
+            name.push(char::from(b));
+        } else {
+            name.push_str(&format!("%{b:02X}"));
+        }
+    }
+    if name.len() > MAX_NAME {
+        let cut = (0..=MAX_NAME - 20)
+            .rev()
+            .find(|&i| name.is_char_boundary(i))
+            .unwrap_or(0);
+        name = format!("{}~{:016x}", &name[..cut], value_hash(path.as_bytes()));
+    }
+    name
+}
+
+/// A fresh temp name next to `file`: `.<name>.tmp.<pid>.<n>`.
+pub(crate) fn temp_next_to(dir: &Path, file: &Path) -> PathBuf {
+    let name = file
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    dir.join(format!(
+        ".{name}.tmp.{}.{}",
+        std::process::id(),
+        TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
 /// Write `value` to `file` atomically: temp file, `fsync`, rename,
 /// directory `fsync`.
 fn write_file(
@@ -654,15 +742,7 @@ fn write_file(
     )
     .into_bytes();
     body.extend_from_slice(value);
-    let name = file
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let temp = dir.join(format!(
-        ".{name}.tmp.{}.{}",
-        std::process::id(),
-        TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
+    let temp = temp_next_to(dir, file);
     let written = (|| {
         let mut f = fs::File::create(&temp)?;
         f.write_all(&body)?;
@@ -681,11 +761,20 @@ fn write_file(
     Ok(())
 }
 
-/// Move `file` aside to `<name>.corrupt` (best effort).
+/// Where [`quarantine`] moves `file`: `.<name>.corrupt`, a name
+/// [`PersistStore::file_of`] never produces (it escapes a leading `.`), so
+/// no cell path reads another cell's quarantined bytes.
+fn quarantine_path(file: &Path) -> PathBuf {
+    let name = file
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    file.with_file_name(format!(".{name}.corrupt"))
+}
+
+/// Move `file` aside to `.<name>.corrupt` (best effort).
 fn quarantine(file: &Path) {
-    let mut aside = file.as_os_str().to_owned();
-    aside.push(".corrupt");
-    let _ = fs::rename(file, &aside);
+    let _ = fs::rename(file, quarantine_path(file));
 }
 
 /// Remove temp files (`.<name>.tmp.<pid>.<n>`) a crash left between create
@@ -705,7 +794,11 @@ fn sweep_temps(dir: &Path) {
         let Some((_, tail)) = rest.rsplit_once(".tmp.") else {
             continue;
         };
-        let Some(pid) = tail.split('.').next().and_then(|p| p.parse::<u32>().ok()) else {
+        // Exactly `<pid>.<n>`: a quarantined `.<name>.corrupt` is kept.
+        let Some((pid, n)) = tail.split_once('.') else {
+            continue;
+        };
+        let (Ok(pid), true) = (pid.parse::<u32>(), n.parse::<u64>().is_ok()) else {
             continue;
         };
         if pid == me {
@@ -725,7 +818,7 @@ fn sweep_temps(dir: &Path) {
 }
 
 /// Create `dir` (and parents) readable only by the user.
-fn create_private_dir(dir: &Path) -> Result<(), PersistError> {
+pub(crate) fn create_private_dir(dir: &Path) -> Result<(), PersistError> {
     use std::os::unix::fs::DirBuilderExt;
     if dir.is_dir() {
         return Ok(());
@@ -806,6 +899,24 @@ pub enum Redeclared {
 }
 
 type Encode<T> = Box<dyn Fn(&T) -> Vec<u8>>;
+type Decode<T> = Box<dyn Fn(&[u8]) -> Option<T>>;
+
+/// Who holds a persist file: the live cell that writes it and, oldest
+/// first, the cells created on the same path while it was held (a
+/// replacement mounted before the old instance went away). When the owner
+/// is disposed, the oldest live waiter takes over.
+pub(crate) struct PathSlot {
+    owner: NodeId,
+    waiting: Vec<Weak<dyn Waiter>>,
+}
+
+/// A persisted cell waiting for its path.
+trait Waiter {
+    fn cell(&self) -> NodeId;
+    /// The path is now this cell's: take what the file holds (after the old
+    /// owner's last write) or write its own value.
+    fn promote(&self, rt: &Runtime);
+}
 
 /// Write-behind for one persisted cell.
 struct Writer<T> {
@@ -813,24 +924,29 @@ struct Writer<T> {
     path: Arc<str>,
     file: PathBuf,
     cell: NodeId,
+    signal: Signal<T>,
     /// The declared default, its encoding and hash (changed by a reload).
     default: RefCell<(T, Vec<u8>, u64)>,
     encode: Encode<T>,
+    decode: Decode<T>,
+    /// The encoding of the value the cell started from: a waiting cell
+    /// still holding it when promoted takes what the old owner left.
+    start: Vec<u8>,
     /// What the file holds (or will, once the queue drains); the default
     /// when nothing is stored.
     baseline: RefCell<Vec<u8>>,
     /// Encoded value not yet queued.
     pending: RefCell<Option<Vec<u8>>>,
-    /// False for a second live cell on a path already in use: it never
-    /// writes (the first one owns the file).
-    active: bool,
+    /// False while another live cell owns the path: it does not write
+    /// until it is promoted ([`PathSlot`]).
+    active: Cell<bool>,
     report: Reporter,
 }
 
 impl<T> Writer<T> {
     /// The value changed: remember it unless the file already says it.
     fn note(&self, value: &T) {
-        if !self.active {
+        if !self.active.get() {
             return;
         }
         let bytes = (self.encode)(value);
@@ -853,6 +969,79 @@ impl<T> Writer<T> {
             Some(self.report.clone()),
         );
         *self.baseline.borrow_mut() = bytes;
+    }
+}
+
+impl<T: Clone + PartialEq + 'static> Waiter for Writer<T> {
+    fn cell(&self) -> NodeId {
+        self.cell
+    }
+
+    fn promote(&self, rt: &Runtime) {
+        self.active.set(true);
+        let default_bytes = self.default.borrow().1.clone();
+        // The old owner's last value is queued by now; `restore` sees it
+        // and applies the state-default rule to it.
+        let restored =
+            self.store
+                .restore_reporting(&self.path, &default_bytes, Some(self.report.clone()));
+        let file_bytes = match &restored {
+            Restore::Stored(b) | Restore::KeptOverNewDefault(b) => b.clone(),
+            Restore::Default | Restore::Adopted | Restore::Failed(_) => default_bytes.clone(),
+        };
+        match restored {
+            Restore::KeptOverNewDefault(_) => rt.diagnose(Diagnostic::PersistDefaultChanged {
+                cell: self.cell,
+                path: self.path.clone(),
+            }),
+            Restore::Failed(error) => rt.diagnose(Diagnostic::PersistFailed {
+                cell: self.cell,
+                path: self.path.clone(),
+                error,
+            }),
+            _ => {}
+        }
+        *self.baseline.borrow_mut() = file_bytes.clone();
+        let Ok(live) = self.signal.get_untracked(rt) else {
+            return;
+        };
+        let live_bytes = (self.encode)(&live);
+        if live_bytes == self.start {
+            // Untouched while it waited: it continues from the old owner.
+            if live_bytes == file_bytes {
+                return;
+            }
+            match (self.decode)(&file_bytes) {
+                Some(v) if rt.check_write_allowed(self.cell).is_ok() => {
+                    let _ = self.signal.set_raw(rt, v);
+                    return;
+                }
+                // Inside a derived value's computation: keep its own value.
+                Some(_) => {}
+                None => {
+                    self.store.enqueue(
+                        self.file.clone(),
+                        Op::Quarantine,
+                        Some(self.report.clone()),
+                    );
+                    rt.diagnose(Diagnostic::PersistFailed {
+                        cell: self.cell,
+                        path: self.path.clone(),
+                        error: PersistError::Corrupt {
+                            path: self.file.clone(),
+                            reason: Arc::from(
+                                "the stored value does not decode as this cell's type",
+                            ),
+                        },
+                    });
+                    *self.baseline.borrow_mut() = default_bytes;
+                }
+            }
+        }
+        // Changed while it waited: its value wins and is written now.
+        let fresh = *self.baseline.borrow() != live_bytes;
+        *self.pending.borrow_mut() = fresh.then_some(live_bytes);
+        self.flush();
     }
 }
 
@@ -895,14 +1084,14 @@ impl<T: Clone + PartialEq + 'static> Persisted<T> {
         *w.pending.borrow_mut() = None;
         if live_bytes == old_bytes || live_bytes == new_bytes {
             *w.baseline.borrow_mut() = new_bytes;
-            if w.active {
+            if w.active.get() {
                 w.store
                     .enqueue(w.file.clone(), Op::Remove, Some(w.report.clone()));
             }
             self.signal.set(rt, new_default)?;
             return Ok(Redeclared::Adopted);
         }
-        if w.active {
+        if w.active.get() {
             w.store.enqueue(
                 w.file.clone(),
                 Op::Write {
@@ -931,7 +1120,7 @@ impl<T: Clone + PartialEq + 'static> Persisted<T> {
         };
         *w.pending.borrow_mut() = None;
         *w.baseline.borrow_mut() = bytes;
-        if w.active {
+        if w.active.get() {
             w.store
                 .enqueue(w.file.clone(), Op::Remove, Some(w.report.clone()));
         }
@@ -948,15 +1137,19 @@ impl Runtime {
     /// identity of its instance when the component has several (`bar[<make
     /// model description>].expanded` for a `bar` on every monitor, the item
     /// key for state on list items). A second live cell on a path already
-    /// in use is reported as [`Diagnostic::PersistPathInUse`] and never
-    /// writes (the first cell owns the file); it starts from the stored
-    /// value.
+    /// in use is reported as [`Diagnostic::PersistPathInUse`] and does not
+    /// write while the first cell owns the file; it starts from the stored
+    /// value. When the owner is disposed the oldest waiting cell takes the
+    /// path over (a replacement mounted before the old instance went
+    /// away): if it still holds the value it started from it continues from
+    /// what the old owner left (its last value is flushed first), otherwise
+    /// its own value is written.
     ///
     /// The starting value follows [`PersistStore::restore`]; a kept value
     /// over a changed default reports [`Diagnostic::PersistDefaultChanged`],
     /// and a file that cannot be read (or a value that no longer decodes,
     /// such as after a type change, which is then moved aside to
-    /// `<name>.corrupt`) starts from the default and reports
+    /// `.<name>.corrupt`) starts from the default and reports
     /// [`Diagnostic::PersistFailed`]. Changes are queued for the store's IO
     /// thread [`PERSIST_DEBOUNCE`] after the last one (logic time, so the
     /// host's `tick` drives it); a pending change is queued when the
@@ -975,7 +1168,7 @@ impl Runtime {
     where
         T: Clone + PartialEq + 'static,
         E: Fn(&T) -> Vec<u8> + 'static,
-        D: Fn(&[u8]) -> Option<T>,
+        D: Fn(&[u8]) -> Option<T> + 'static,
     {
         let path: Arc<str> = Arc::from(path);
         let default_bytes = encode(&default);
@@ -991,17 +1184,24 @@ impl Runtime {
         let mut active = file.is_ok();
         if let Ok(file) = &file {
             let mut bound = self.inner.persist_paths.borrow_mut();
-            match bound.get(file) {
-                Some(&other) if self.exists(other) => {
+            match bound.get_mut(file) {
+                Some(slot) if self.exists(slot.owner) => {
                     active = false;
                     self.diagnose(Diagnostic::PersistPathInUse {
                         cell: signal.id(),
-                        other,
+                        other: slot.owner,
                         path: path.clone(),
                     });
                 }
-                _ => {
-                    bound.insert(file.clone(), signal.id());
+                Some(slot) => slot.owner = signal.id(),
+                None => {
+                    bound.insert(
+                        file.clone(),
+                        PathSlot {
+                            owner: signal.id(),
+                            waiting: Vec::new(),
+                        },
+                    );
                 }
             }
             drop(bound);
@@ -1064,13 +1264,20 @@ impl Runtime {
             path,
             file: file.unwrap_or_default(),
             cell: signal.id(),
+            signal,
             default: RefCell::new((default, default_bytes, default_hash)),
             encode: Box::new(encode),
+            decode: Box::new(decode),
+            start: baseline.clone(),
             baseline: RefCell::new(baseline),
             pending: RefCell::new(None),
-            active,
+            active: Cell::new(active),
             report,
         });
+        if !active && let Some(slot) = self.inner.persist_paths.borrow_mut().get_mut(&writer.file) {
+            let waiter: Weak<dyn Waiter> = Rc::downgrade(&writer) as Weak<Writer<T>>;
+            slot.waiting.push(waiter);
+        }
         let w = writer.clone();
         let saver = Rc::downgrade(&writer);
         self.on_change_after(
@@ -1090,17 +1297,44 @@ impl Runtime {
         let flusher = Rc::downgrade(&writer);
         let rt = self.downgrade();
         self.on_cleanup(move || {
-            if let Some(w) = flusher.upgrade() {
-                w.flush();
-                // The path is free for the next cell (a remount).
-                if let Some(rt) = rt.upgrade()
-                    && w.active
-                {
-                    let mut bound = rt.inner.persist_paths.borrow_mut();
-                    if bound.get(&w.file) == Some(&w.cell) {
+            let Some(w) = flusher.upgrade() else {
+                return;
+            };
+            w.flush();
+            let Some(rt) = rt.upgrade() else {
+                return;
+            };
+            let next = {
+                let mut bound = rt.inner.persist_paths.borrow_mut();
+                let Some(slot) = bound.get_mut(&w.file) else {
+                    return;
+                };
+                if slot.owner != w.cell {
+                    // A waiter going away.
+                    slot.waiting
+                        .retain(|o| o.upgrade().is_some_and(|o| o.cell() != w.cell));
+                    return;
+                }
+                // The owner going away: the oldest live waiter takes over,
+                // else the path is free for the next cell (a remount).
+                let mut next = None;
+                while next.is_none() && !slot.waiting.is_empty() {
+                    next = slot
+                        .waiting
+                        .remove(0)
+                        .upgrade()
+                        .filter(|o| rt.exists(o.cell()));
+                }
+                match &next {
+                    Some(o) => slot.owner = o.cell(),
+                    None => {
                         bound.remove(&w.file);
                     }
                 }
+                next
+            };
+            if let Some(o) = next {
+                o.promote(&rt);
             }
         });
         Persisted {

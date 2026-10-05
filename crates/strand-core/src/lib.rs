@@ -45,6 +45,7 @@ mod order;
 pub mod persist;
 pub mod rate;
 mod runtime;
+pub mod settings;
 mod signal;
 mod task;
 mod timer;
@@ -55,11 +56,13 @@ pub use error::{CyclePath, Error};
 pub use events::EventQueue;
 pub use keyed::reactive::{KeyedMemo, KeyedOps, KeyedSignal, KeyedSource, Snapshot};
 pub use keyed::{KeyedError, KeyedVec, VecDiff, keyed_diff};
+pub use order::WriteEdge;
 pub use persist::{PersistError, PersistStore, PersistValue, Persisted, Redeclared, Restore};
 pub use runtime::{
     Diagnostic, HARD_RUNS_PER_FLUSH, MAX_FROZEN_EVENTS, MAX_RUNS_PER_FLUSH, NodeId, NodeKind,
     Runtime, Scope, Stats, Tick, WeakRuntime,
 };
+pub use settings::{FieldSpec, Settings, SettingsIssue, SettingsNotice, SettingsStore};
 pub use signal::{Effect, Memo, Signal};
 pub use task::{Sleep, Task};
 pub use timer::{Debounced, MIN_EVERY_PERIOD, Timer};

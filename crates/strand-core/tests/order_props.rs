@@ -1,8 +1,10 @@
 //! Property tests for the flush order: effects run in a computed
 //! topological order, once per flush, and see final values.
 //!
-//! Random graphs of primary signals, memos and *handler-written cells* (an
-//! effect reads earlier nodes and writes the cell), with reader effects and
+//! Random graphs of primary signals, memos, *handler-written cells* (an
+//! effect reads earlier nodes and writes the cell) and async memos (`let
+//! hits = svc.call(input)`: an internal effect starts a load that a task
+//! resolves, here at once), with reader effects and
 //! `on change` handlers on top, all effects created in a random order (so
 //! creation order is not topological).
 //!
@@ -27,9 +29,10 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::Duration;
 
 use proptest::prelude::*;
-use strand_core::{Effect, Memo, NodeId, Runtime, Signal};
+use strand_core::{AsyncMemo, Effect, Memo, NodeId, Runtime, Signal};
 
 #[derive(Clone, Debug)]
 enum Spec {
@@ -41,6 +44,9 @@ enum Spec {
     Pick(usize, usize, usize),
     /// A cell written by an effect: `(sum of inputs + 1) mod 7`.
     Written(Vec<usize>),
+    /// An async memo over the sum of its inputs, resolving at once to
+    /// `(sum + 2) mod 7`; read as its value (`-1` before the first).
+    Fetched(Vec<usize>),
 }
 
 #[derive(Clone, Debug)]
@@ -84,6 +90,7 @@ fn naive(specs: &[Spec], primary: &[i64]) -> Vec<i64> {
                 }
             }
             Spec::Written(ins) => (ins.iter().map(|&j| v[j]).sum::<i64>() + 1).rem_euclid(7),
+            Spec::Fetched(ins) => (ins.iter().map(|&j| v[j]).sum::<i64>() + 2).rem_euclid(7),
         };
         v.push(x);
     }
@@ -114,6 +121,7 @@ fn case_strategy() -> impl Strategy<Value = Case> {
                     0 | 1 => Spec::Primary,
                     2 | 3 => Spec::Sum(idx.iter().map(|&j| j % avail).collect()),
                     4 if dynamic => Spec::Pick(pick(0), pick(1), pick(2)),
+                    8 => Spec::Fetched(idx.iter().map(|&j| j % avail).collect()),
                     _ => Spec::Written(idx.iter().map(|&j| j % avail).collect()),
                 });
             }
@@ -163,6 +171,7 @@ fn case_strategy() -> impl Strategy<Value = Case> {
 enum H {
     S(Signal<i64>),
     M(Memo<i64>),
+    A(AsyncMemo<i64>),
 }
 
 impl H {
@@ -170,12 +179,14 @@ impl H {
         match self {
             H::S(s) => s.get(rt),
             H::M(m) => m.get(rt),
+            H::A(a) => Ok(a.get(rt)?.value().copied().unwrap_or(-1)),
         }
     }
     fn id(self) -> NodeId {
         match self {
             H::S(s) => s.id(),
             H::M(m) => m.id(),
+            H::A(a) => a.id(),
         }
     }
 }
@@ -227,10 +238,30 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
                     }
                 }))
             }
+            Spec::Fetched(ins) => {
+                let hs = handles.clone();
+                let ins = ins.clone();
+                H::A(rt.async_memo(
+                    move |rt| {
+                        let hs = hs.borrow().clone();
+                        let mut s = 0;
+                        for &j in &ins {
+                            s += hs[j].get(rt)?;
+                        }
+                        Ok(s)
+                    },
+                    |s: i64| async move { Ok((s + 2).rem_euclid(7)) },
+                ))
+            }
         };
         match spec {
             Spec::Sum(ins) => declare_reads(h.id(), ins, &handles.borrow()),
             Spec::Pick(c, a, b) => declare_reads(h.id(), &[*c, *a, *b], &handles.borrow()),
+            // The input's reads are declared on the internal effect.
+            Spec::Fetched(ins) => {
+                let H::A(a) = h else { unreachable!() };
+                declare_reads(a.effect_id(), ins, &handles.borrow());
+            }
             Spec::Primary | Spec::Written(_) => {}
         }
         handles.borrow_mut().push(h);
@@ -522,11 +553,103 @@ fn a_feedback_edge_is_not_ranked() {
         x.set(rt, v + v.rem_euclid(2))
     });
     rt.flush();
-    let err = rt.writes_to(norm.id(), x.id());
-    assert!(matches!(err, Err(strand_core::Error::Cycle(_))), "{err:?}");
+    // Feedback, not an error: a self-normalising handler is valid.
+    assert_eq!(
+        rt.writes_to(norm.id(), x.id()),
+        Ok(strand_core::WriteEdge::Feedback)
+    );
     x.set(&rt, 3).unwrap();
     assert!(rt.flush().errors.is_empty());
     assert_eq!(x.get(&rt), Ok(4));
+}
+
+#[test]
+fn a_self_normalising_handler_declared_in_either_order_is_the_same() {
+    // `on change x { if x > 10 { x = 10 } }` and two handlers normalising
+    // each other's cells: the compiler may declare reads and writes in any
+    // order; the edge ends up feedback (not an error) with the same ranks.
+    use strand_core::WriteEdge;
+    #[derive(Debug, PartialEq)]
+    struct Outcome {
+        edges: Vec<Option<WriteEdge>>,
+        ranks: Vec<u32>,
+        x: i64,
+        b: i64,
+    }
+    let run = |reads_first: bool| {
+        let rt = Runtime::new();
+        let src = rt.signal(0i64);
+        let x = rt.signal(0i64);
+        let b = rt.signal(0i64);
+        // An ordinary ranked writer upstream, so ranks are not all zero.
+        let feed = rt.effect(move |rt| x.set(rt, src.get(rt)?));
+        let norm = rt.effect(move |rt| {
+            if x.get(rt)? > 10 {
+                x.set(rt, 10)?;
+            }
+            Ok(())
+        });
+        // Two handlers normalising each other: b = min(x, 5), and x never
+        // above b once b is set.
+        let ab = rt.effect(move |rt| {
+            let v = x.get(rt)?.min(5);
+            if b.get(rt)? != v {
+                b.set(rt, v)?;
+            }
+            Ok(())
+        });
+        let ba = rt.effect(move |rt| {
+            let v = b.get(rt)?;
+            if v > 0 && x.get(rt)? > v {
+                x.set(rt, v)?;
+            }
+            Ok(())
+        });
+        let mut edges = Vec::new();
+        let reads = |rt: &Runtime| {
+            rt.reads_from(feed.id(), &[src.id()]).unwrap();
+            rt.reads_from(norm.id(), &[x.id()]).unwrap();
+            rt.reads_from(ab.id(), &[x.id(), b.id()]).unwrap();
+            rt.reads_from(ba.id(), &[x.id(), b.id()]).unwrap();
+        };
+        let writes = |rt: &Runtime, edges: &mut Vec<Result<WriteEdge, strand_core::Error>>| {
+            edges.push(rt.writes_to(feed.id(), x.id()));
+            edges.push(rt.writes_to(norm.id(), x.id()));
+            edges.push(rt.writes_to(ab.id(), b.id()));
+            edges.push(rt.writes_to(ba.id(), x.id()));
+        };
+        if reads_first {
+            reads(&rt);
+            writes(&rt, &mut edges);
+        } else {
+            writes(&rt, &mut edges);
+            reads(&rt);
+        }
+        assert!(edges.iter().all(Result::is_ok), "never an error: {edges:?}");
+        rt.flush();
+        src.set(&rt, 30).unwrap();
+        let tick = rt.flush();
+        assert!(tick.errors.is_empty(), "{:?}", tick.errors);
+        let nodes = [src.id(), x.id(), b.id()];
+        let sinks = [feed.id(), norm.id(), ab.id(), ba.id()];
+        Outcome {
+            edges: vec![
+                rt.write_edge(feed.id(), x.id()),
+                rt.write_edge(norm.id(), x.id()),
+                rt.write_edge(ab.id(), b.id()),
+                rt.write_edge(ba.id(), x.id()),
+            ],
+            ranks: nodes.iter().chain(&sinks).map(|&n| rt.rank(n)).collect(),
+            x: x.get(&rt).unwrap(),
+            b: b.get(&rt).unwrap(),
+        }
+    };
+    let a = run(true);
+    let b = run(false);
+    assert_eq!(a, b);
+    assert_eq!(a.edges[0], Some(WriteEdge::Ranked));
+    assert_eq!(a.edges[1], Some(WriteEdge::Feedback));
+    assert_eq!((a.x, a.b), (5, 5));
 }
 
 #[test]
@@ -574,10 +697,10 @@ fn a_read_edge_closing_a_loop_unranks_the_write_edge() {
     let tick = rt.flush();
     assert!(tick.errors.is_empty(), "{:?}", tick.errors);
     assert_eq!(c.get(&rt), Ok(10), "the loop settles at its cut-off");
-    assert!(matches!(
+    assert_eq!(
         rt.writes_to(w.id(), c.id()),
-        Err(strand_core::Error::Cycle(_))
-    ));
+        Ok(strand_core::WriteEdge::Feedback)
+    );
     // Later writes still settle, with no rank walk going round the loop.
     a.set(&rt, 2).unwrap();
     assert!(rt.flush().errors.is_empty());
@@ -611,4 +734,70 @@ fn a_listener_written_cell_is_read_after_the_event_that_fills_it() {
     // Each flush: the effect emits, the listener writes, the reader runs
     // once with the new total.
     assert_eq!(*reads.borrow(), vec![1, 3, 6]);
+}
+
+#[test]
+fn a_declared_reader_of_an_async_memo_runs_once_per_flush() {
+    // `let hits = apps.search(q)` with `for h in hits`: the reader is
+    // created first and declares its reads; the load resolves at once.
+    let rt = Runtime::new();
+    let q = rt.signal(1i64);
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let s = seen.clone();
+    let hits: Rc<RefCell<Option<AsyncMemo<i64>>>> = Rc::new(RefCell::new(None));
+    let h = hits.clone();
+    let reader = rt.effect(move |rt| {
+        let Some(m) = *h.borrow() else { return Ok(()) };
+        let a = m.get(rt)?;
+        s.borrow_mut().push((a.pending(), a.value().copied()));
+        Ok(())
+    });
+    let m = rt.async_memo(move |rt| q.get(rt), |q: i64| async move { Ok(q * 10) });
+    *hits.borrow_mut() = Some(m);
+    rt.reads_from(m.effect_id(), &[q.id()]).unwrap();
+    rt.reads_from(reader.id(), &[m.id()]).unwrap();
+    rt.flush();
+    assert_eq!(*seen.borrow(), vec![(false, Some(10))], "once, resolved");
+    seen.borrow_mut().clear();
+    q.set(&rt, 2).unwrap();
+    rt.flush();
+    assert_eq!(*seen.borrow(), vec![(false, Some(20))], "once per query");
+}
+
+#[test]
+fn a_declared_debounced_writer_orders_its_readers() {
+    // `on change x after 100ms { cell = x * 2 }` with a reader of `cell`
+    // created before it: the timer body's write edge is declared on
+    // `Debounced::timer`, the input's read on `Debounced::effect`.
+    let rt = Runtime::new();
+    let x = rt.signal(0i64);
+    let cell = rt.signal(0i64);
+    let other = rt.signal(0i64);
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let s = seen.clone();
+    let reader = rt.effect(move |rt| {
+        s.borrow_mut().push((cell.get(rt)?, other.get(rt)?));
+        Ok(())
+    });
+    let d = rt.on_change_after(
+        move |rt| x.get(rt),
+        Duration::from_millis(100),
+        move |rt| cell.set(rt, x.get_untracked(rt)? * 2),
+    );
+    // Another declared writer the reader also reads, fed by the cell.
+    let follow = rt.effect(move |rt| other.set(rt, cell.get(rt)? + 1));
+    rt.reads_from(d.effect.id(), &[x.id()]).unwrap();
+    rt.reads_from(d.timer.id(), &[]).unwrap();
+    rt.writes_to(d.timer.id(), cell.id()).unwrap();
+    rt.reads_from(follow.id(), &[cell.id()]).unwrap();
+    rt.writes_to(follow.id(), other.id()).unwrap();
+    rt.reads_from(reader.id(), &[cell.id(), other.id()])
+        .unwrap();
+    rt.flush();
+    assert_eq!(*seen.borrow(), vec![(0, 1)]);
+    seen.borrow_mut().clear();
+    x.set(&rt, 4).unwrap();
+    rt.tick(Duration::from_millis(10));
+    rt.tick(Duration::from_millis(110));
+    assert_eq!(*seen.borrow(), vec![(8, 9)], "once, with final values");
 }

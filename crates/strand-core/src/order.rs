@@ -39,12 +39,27 @@
 //! sees the final values. A write edge that would close a loop (a handler
 //! writing what it reads, directly or through other handlers) is a
 //! feedback edge: it is not ranked, and the runtime's cycle guard bounds
-//! it as before.
+//! it as before. A feedback edge is not a static-cycle error: a
+//! self-normalising `on change x { if x > 10 { x = 10 } }` is a valid
+//! program. Whether an edge ends up ranked or feedback, and the ranks,
+//! do not depend on the order the declarations are made in: a read that
+//! closes a loop demotes the write edge and lowers its target back to what
+//! its remaining edges need.
 
 use crate::error::Error;
-use crate::runtime::{NodeId, Runtime};
+use crate::runtime::{NodeId, NodeKind, Runtime};
 
-use std::sync::Arc;
+/// What a declared or learned write edge became ([`Runtime::writes_to`],
+/// [`Runtime::write_edge`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteEdge {
+    /// The target ranks above the writer: its readers run after the writer.
+    Ranked,
+    /// The edge closes a loop (the writer reads the target, directly or
+    /// through other writers): not ranked; the runtime cycle guard bounds
+    /// it. Not an error.
+    Feedback,
+}
 
 /// The rank `on change` handlers start at: above any rank reachable from
 /// ordinary writes (each write edge adds one).
@@ -152,18 +167,34 @@ impl Runtime {
     /// write is seen: from the first flush on when they declare their reads
     /// ([`Runtime::reads_from`]) or declare nothing (they then wait for the
     /// ranked work on their first run), else once they have run. The
-    /// compiler declares every assignment and `emit`. A declaration that would
-    /// close a loop (`writer` reads `target`, directly or through other
-    /// writers) is a feedback edge: [`Error::Cycle`] names it and nothing
-    /// is ranked.
-    pub fn writes_to(&self, writer: NodeId, target: NodeId) -> Result<(), Error> {
+    /// compiler declares every assignment and `emit`. A declaration that
+    /// closes a loop (`writer` reads `target`, directly or through other
+    /// writers) is a feedback edge ([`WriteEdge::Feedback`]): nothing is
+    /// ranked, and it is not an error (a self-normalising handler is
+    /// valid). The answer is what the edge is *now*; a read declared later
+    /// ([`Runtime::reads_from`]) can still turn a ranked edge into feedback,
+    /// with the same ranks either order ([`Runtime::write_edge`] tells).
+    /// `Err` only for a disposed id.
+    pub fn writes_to(&self, writer: NodeId, target: NodeId) -> Result<WriteEdge, Error> {
         self.write_target_check(writer, target)?;
-        if self.learn(writer, target) {
-            Ok(())
+        Ok(if self.learn(writer, target) {
+            WriteEdge::Ranked
         } else {
-            Err(Error::Cycle(Arc::new(
-                self.path(vec![writer, target, writer]),
-            )))
+            WriteEdge::Feedback
+        })
+    }
+
+    /// What the write edge `writer -> target` is, if it was declared or
+    /// learned. Graph introspection for the inspector and tests.
+    pub fn write_edge(&self, writer: NodeId, target: NodeId) -> Option<WriteEdge> {
+        let writes = self.inner.writes.borrow();
+        let w = writes.get(&writer)?;
+        if w.ranked.contains(&target) {
+            Some(WriteEdge::Ranked)
+        } else if w.feedback.contains(&target) {
+            Some(WriteEdge::Feedback)
+        } else {
+            None
         }
     }
 
@@ -290,28 +321,74 @@ impl Runtime {
     /// handler downstream of it writes), the write edges on the loop are
     /// feedback: they are unranked and the rank retried.
     pub(crate) fn rank_after_sources(&self, id: NodeId) {
-        let top = {
-            let nodes = self.inner.nodes.borrow();
-            let Some(n) = nodes.get(id) else { return };
-            let ranks = self.inner.ranks.borrow();
-            if ranks.is_empty() {
-                return;
-            }
-            let declared = self.inner.declared.borrow();
-            let extra = declared.sources.get(&id).map_or(&[][..], Vec::as_slice);
-            n.sources
-                .iter()
-                .chain(extra)
-                .filter_map(|s| ranks.get(s).copied())
-                .max()
-                .unwrap_or(0)
-        };
         for _ in 0..8 {
+            // Again after a loop was broken: its target may have been
+            // lowered.
+            let top = {
+                let nodes = self.inner.nodes.borrow();
+                let Some(n) = nodes.get(id) else { return };
+                let ranks = self.inner.ranks.borrow();
+                if ranks.is_empty() {
+                    return;
+                }
+                let declared = self.inner.declared.borrow();
+                let extra = declared.sources.get(&id).map_or(&[][..], Vec::as_slice);
+                n.sources
+                    .iter()
+                    .chain(extra)
+                    .filter_map(|s| ranks.get(s).copied())
+                    .max()
+                    .unwrap_or(0)
+            };
             if top <= self.rank_of(id) || self.raise(id, top, None) {
                 return;
             }
             if !self.break_loop(id) {
                 return;
+            }
+        }
+    }
+
+    /// A write edge into `target` was demoted to feedback: lower `target`
+    /// (a cell or event queue) to what its remaining edges need (its owner,
+    /// its ranked writers + 1), so the ranks match those of declaring the
+    /// read first. Lowering one node keeps every constraint: what ranks at
+    /// or above it still does.
+    fn lower(&self, target: NodeId) {
+        let cur = self.rank_of(target);
+        let floor = {
+            let nodes = self.inner.nodes.borrow();
+            let Some(n) = nodes.get(target) else { return };
+            if !matches!(
+                n.kind,
+                NodeKind::Signal | NodeKind::Events | NodeKind::Collection
+            ) {
+                return;
+            }
+            let ranks = self.inner.ranks.borrow();
+            let rank = |id: NodeId| ranks.get(&id).copied().unwrap_or(0);
+            let mut floor = n.owner.map_or(0, rank);
+            let declared = self.inner.declared.borrow();
+            for s in n
+                .sources
+                .iter()
+                .chain(declared.sources.get(&target).into_iter().flatten())
+            {
+                floor = floor.max(rank(*s));
+            }
+            for (&w, edges) in self.inner.writes.borrow().iter() {
+                if edges.ranked.contains(&target) {
+                    floor = floor.max(rank(w).saturating_add(1));
+                }
+            }
+            floor
+        };
+        if floor < cur {
+            let mut ranks = self.inner.ranks.borrow_mut();
+            if floor == 0 {
+                ranks.remove(&target);
+            } else {
+                ranks.insert(target, floor);
             }
         }
     }
@@ -361,19 +438,24 @@ impl Runtime {
                     queue.push_back(m);
                     continue;
                 }
-                let mut demoted = false;
+                let mut demoted = Vec::new();
                 let mut cur = m;
-                let mut writes = self.inner.writes.borrow_mut();
-                while cur != id {
-                    let (p, write) = parent[&cur];
-                    if write && let Some(w) = writes.get_mut(&p) {
-                        w.ranked.remove(&cur);
-                        w.feedback.insert(cur);
-                        demoted = true;
+                {
+                    let mut writes = self.inner.writes.borrow_mut();
+                    while cur != id {
+                        let (p, write) = parent[&cur];
+                        if write && let Some(w) = writes.get_mut(&p) {
+                            w.ranked.remove(&cur);
+                            w.feedback.insert(cur);
+                            demoted.push(cur);
+                        }
+                        cur = p;
                     }
-                    cur = p;
                 }
-                if demoted {
+                for &t in &demoted {
+                    self.lower(t);
+                }
+                if !demoted.is_empty() {
                     return true;
                 }
             }

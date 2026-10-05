@@ -239,8 +239,8 @@ memos read lazily by the emitter, not visibility.
 
 **2026-10-05 · Left for wave 2.** `persist` storage with a default hash and
 settings files are not in `strand-core` yet (they need file IO and the
-schema from `strand-compiler`). (Wave 2: `persist` storage is done, see wave2-core; settings files
-remain.)
+schema from `strand-compiler`). (Wave 2: both are done in `strand-core`,
+see wave2-core; the compiler supplies the field schema.)
 
 ## compiler
 
@@ -972,20 +972,85 @@ pending and queued write, removes the file, sets the default), so the
 default hash follows reloads and `@reset` cannot be undone by a late
 write. A path names one live cell: the reconciler qualifies it with the
 instance identity (`bar[<make model description>].x`, a list item's key);
-a second live cell on a path in use reports `PersistPathInUse` and never
-writes (the first owns the file). A stored value that no longer decodes is
-moved aside to `<name>.corrupt` like a corrupt file (round 0 left it, so
-the warning repeated on every start). Temp files of dead processes (or
+a second live cell on a path in use reports `PersistPathInUse` and does
+not write while the first owns the file (round 2: it waits and takes over,
+see "Persist path hand-over"). A stored value that no longer decodes is
+moved aside like a corrupt file (round 0 left it, so the warning repeated
+on every start; round 2 renamed the quarantine to `.<name>.corrupt`). Temp files of dead processes (or
 older than a minute and not ours) are swept on a store's first write.
 
-**2026-10-05 · Settings files deferred (review round 1).** `state x from
-"file.toml" { .. }` (per-field validation, `toml_edit` write-back,
-symlinks, the read-only overlay in `$XDG_STATE_HOME`) is not part of this
-step: `docs/features.md` lists it under M2 ("Settings files: per-field
-validation, `toml_edit` write-back, symlink-following, read-only
-overlay"), it needs the checker's typed field schema from
-`strand-compiler`, and wave 1's "left for wave 2" note named it by mistake
-next to `persist`. When it is built, the store belongs next to `persist`
-in `strand-core` (the same atomic write path, IO thread and
-`$XDG_STATE_HOME` layout), with the schema and per-field checks from
-`strand-compiler`; the orchestrator should assign it to an M2 track.
+**2026-10-05 · Settings files (review round 2).** Round 1 deferred
+`state x from "file.toml" { .. }` to M2; that was wrong: wave 1 carried it
+into wave 2 and the core side does not need the compiler, so it is built
+now. `strand_core::settings`: `rt.settings_file(&store, path, fields)`
+with one `FieldSpec { name, default, decode(&toml_edit::Item) ->
+Result<V, String>, encode(&V) -> Item }` per field, generic over the VM's
+value type `V` like `persist`'s codec (the compiler fills the schema from
+the checked field types). Each field is an ordinary `Signal`, so `<->`
+bindings, UI writes and `strand set` are plain writes; after 250 ms of
+quiet (`PERSIST_DEBOUNCE`, as for `persist`) the changed fields are queued
+as per-field edits on the persist IO thread, merged per file, and applied
+with `toml_edit` to what the file holds when the thread gets to it
+(replaced values keep their decor, keys their order and comments, new keys
+are appended), written via temp file in the resolved target's directory
+(symlinks followed, the target's permissions kept), `fsync` and rename.
+Interpretations: (1) the "runtime overlay" of "Who wins" and the
+read-only "overlay in `$XDG_STATE_HOME`" are one layer, a TOML file in
+`$XDG_STATE_HOME/strand/settings/` named by the declared (link) path, so
+it survives restarts and a `home-manager switch` that swaps the link; it
+holds redirected writes and explicit `set_overlay` values, and `[clear]`
+is `clear_overlay`. (2) A target is read-only when neither it nor its
+directory has a write bit (`/nix/store`: 0444 in 0555; checked before
+writing, so root does not write there either) or the write fails with
+`EACCES`/`EROFS`; the write then goes to the overlay, with one
+`SettingsIssue::ReadOnly` notice per file. (3) A UI write to a field that
+has an overlay value updates the overlay (a file write would be shadowed
+and look ignored). (4) A UI write never overwrites a file that has a
+syntax error (the user is mid-edit): `WriteFailed`, the value stays live.
+(5) `Shadowed` ("file changed but runtime overlay wins [clear]") is
+reported by a reload whose read of that field differs from the previous
+read, not at boot (no previous read). (6) At boot a syntax error or bad
+value has no last good value yet, so the default applies (a last-good
+cache would add a second store for little gain; the compiled-output cache
+covers broken `.strand` files, not settings). (7) A reload applies edits
+still queued for the IO thread and leaves a field the user wrote since the
+last write-out alone, so it never undoes a write that has not reached the
+disk.
+
+**2026-10-05 · Persist path hand-over (review round 2).** A second live
+cell on a persist path no longer stays inactive for good: it is kept in a
+per-path waiting list, and when the owner is disposed (its pending value
+is queued first) the oldest live waiter takes the path over. If it still
+holds the value it started from, it continues from what the old owner left
+(the state-default rule applied through `restore`); if it was changed
+while it waited, its value wins and is written. This makes a reconcile that
+mounts the replacement before disposing the old instance (surface
+recreate, monitor replug, a list item re-created under its key) safe
+without an ordering rule for the reconciler.
+
+**2026-10-05 · Feedback edges are not errors (review round 2).**
+`rt.writes_to` returns `Ok(WriteEdge::Ranked | WriteEdge::Feedback)` and
+errs only for disposed ids (round 1 returned `Err(Cycle)` for a valid
+self-normalising handler, and only when its reads were declared first).
+When a read declared later closes a loop, the write edge is demoted and its
+target (a cell or event queue) lowered to what its remaining edges need
+(owner, ranked writers + 1, sources), so the ranks match those of the other
+declaration order. `rt.write_edge(w, t)` tells what an edge became.
+
+**2026-10-05 · Composite nodes declare their own edges (review round
+2).** `rt.async_memo` declares its internal effect's write edge to the
+value (load bookkeeping also counts as a write for learned edges now), and
+`AsyncMemo::effect_id()` lets the VM declare the input's reads, so a
+declared reader of `let hits = apps.search(q)` runs once per flush, after
+the load started and (when ready at once) resolved. `Debounced` already
+exposes `effect` (tracked reads) and `timer` (the body's writes). Persisted
+and settings cells write nothing in the graph from their internal
+handlers; keyed derived collections are pull-based.
+
+**2026-10-05 · Small fixes (review round 2).** A quarantined persist file
+is `.<name>.corrupt` (a name no cell path maps to; round 1's
+`<name>.corrupt` was what the path `<name>.corrupt` reads), and the temp
+sweep only matches `.<name>.tmp.<pid>.<n>`. `rt.is_idle()` is false while
+an IO thread's failure waits to be reported. `KeyedSignal::get_untracked`
+inside the collection's own `update` returns `Error::Reentrant` instead of
+panicking.

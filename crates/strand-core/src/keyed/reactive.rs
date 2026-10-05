@@ -453,7 +453,7 @@ where
     /// use [`KeyedSignal::with`], [`KeyedSignal::with_untracked`] or
     /// [`KeyedSignal::get_key`].
     pub fn get_untracked(self, rt: &Runtime) -> Result<KeyedVec<K, T>, Error> {
-        rt.with_data::<CellData<K, T>, _>(self.id, |d| d.vec.borrow().clone())
+        self.with_untracked(rt, KeyedVec::clone)
     }
 
     /// Borrow the list (tracked) without cloning it: the VM's read path

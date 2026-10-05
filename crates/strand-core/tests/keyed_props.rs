@@ -326,6 +326,22 @@ fn keyed_vec_rejects_bad_operations() {
 }
 
 #[test]
+fn reading_a_collection_inside_its_own_update_is_an_error_value() {
+    // The VM evaluating `xs.len` inside an `update` closure must not crash
+    // the logic thread.
+    let rt = Runtime::new();
+    let xs = rt.keyed(KeyedVec::from_values(|v: &Item| v.0, [(1, 1), (2, 2)]).unwrap());
+    let mut seen = None;
+    xs.update(&rt, &1, |v| {
+        seen = Some(xs.get_untracked(&rt).map(|l| l.len()));
+        v.1 = 5;
+    })
+    .unwrap();
+    assert_eq!(seen, Some(Err(strand_core::Error::Reentrant)));
+    assert_eq!(xs.get_key(&rt, &1).unwrap(), Some((1, 5)));
+}
+
+#[test]
 fn reactive_ops_publish_keyed_diffs_and_cut_off() {
     let rt = Runtime::new();
     let xs = rt.keyed(KeyedVec::from_values(|v: &Item| v.0, [(1, 1), (2, 2), (3, 3)]).unwrap());

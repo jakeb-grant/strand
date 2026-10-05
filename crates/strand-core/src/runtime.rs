@@ -218,8 +218,9 @@ pub enum Diagnostic {
     },
     /// A second live persisted cell asked for a path another live cell
     /// already uses (two instances of a component without their instance
-    /// identity in the path). It never writes; the first cell owns the
-    /// file.
+    /// identity in the path, or a replacement mounted before the old
+    /// instance went away). It does not write while the first cell owns
+    /// the file, and takes the path over when that one is disposed.
     PersistPathInUse {
         /// The new cell.
         cell: NodeId,
@@ -239,6 +240,11 @@ pub enum Diagnostic {
         /// What went wrong.
         error: crate::persist::PersistError,
     },
+    /// A settings file (`state prefs from "prefs.toml"`): a value or the
+    /// whole file did not apply (last good values kept), a file change is
+    /// shadowed by the runtime overlay, a write went to the overlay because
+    /// the file is read-only (a notice), or a write failed.
+    Settings(crate::settings::SettingsNotice),
 }
 
 /// Events kept per frozen listener of a lossless queue; past this the
@@ -373,8 +379,8 @@ pub(crate) struct Inner {
     pub(crate) ready: Arc<crate::task::ReadyQueue>,
     /// Write failures reported by persist IO threads.
     pub(crate) persist_failures: Arc<crate::persist::FailSink>,
-    /// Persist file -> the live cell that owns it.
-    pub(crate) persist_paths: RefCell<HashMap<std::path::PathBuf, NodeId>>,
+    /// Persist file -> the live cell that owns it and the cells waiting.
+    pub(crate) persist_paths: RefCell<HashMap<std::path::PathBuf, crate::persist::PathSlot>>,
     /// Stores used by persisted cells (synced at shutdown).
     pub(crate) persist_stores: RefCell<Vec<crate::persist::PersistStore>>,
 }
@@ -1612,7 +1618,8 @@ impl Runtime {
     // ----- flush ----------------------------------------------------------
 
     /// True when nothing is queued for the next flush: no dirty sinks, no
-    /// events, no woken handlers, no unreported writes. Work scheduled on
+    /// events, no woken handlers, no unreported writes and no persist
+    /// failures from an IO thread waiting to be reported. Work scheduled on
     /// the clock (timers, sleeping handlers, throttled writes) is reported
     /// by [`Runtime::next_deadline`] instead; a host is truly idle when
     /// this is true and that is `None`.
@@ -1621,6 +1628,7 @@ impl Runtime {
             && self.inner.events_pending.borrow().is_empty()
             && self.ready_is_empty()
             && self.inner.written.borrow().is_empty()
+            && !self.inner.persist_failures.is_pending()
     }
 
     /// End the tick: deliver events, poll woken handlers (each at most

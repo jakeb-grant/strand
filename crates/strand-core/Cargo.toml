@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 foldhash = "0.2.0"
+toml_edit = "0.25.15"
 slotmap = "1.1.1"
 
 [dev-dependencies]

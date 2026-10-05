@@ -158,7 +158,7 @@ fn a_corrupt_file_gives_the_default_and_a_warning() {
     );
     assert_eq!(
         files(store.dir()),
-        vec!["osd.level.corrupt"],
+        vec![".osd.level.corrupt"],
         "moved aside for inspection"
     );
     // Garbage, truncation and a foreign file are corrupt too.
@@ -192,7 +192,7 @@ fn a_value_that_no_longer_decodes_starts_from_the_default() {
     );
     // Moved aside like a corrupt file, so the warning is not repeated on
     // every start (even while the value stays at its default).
-    assert_eq!(files(store.dir()), vec!["osd.level.corrupt"]);
+    assert_eq!(files(store.dir()), vec![".osd.level.corrupt"]);
     let (restored, value, diags) = session(&store, 40, &[]);
     assert_eq!(restored, Restore::Default);
     assert_eq!(value, 40);
@@ -434,6 +434,7 @@ fn a_failed_write_is_reported_in_a_later_tick() {
         woke.load(std::sync::atomic::Ordering::SeqCst),
         "the host is woken"
     );
+    assert!(!rt.is_idle(), "a host checking is_idle flushes for it");
     let diags = rt.flush().diagnostics;
     assert!(
         matches!(
@@ -442,6 +443,7 @@ fn a_failed_write_is_reported_in_a_later_tick() {
         ),
         "{diags:?}"
     );
+    assert!(rt.is_idle());
 }
 
 #[test]
@@ -472,11 +474,97 @@ fn two_live_cells_on_one_path_are_reported() {
     // With the instance identity in the path they are separate.
     let c = rt.persisted_value(&store, "bar[Dell U2720Q].expanded", false);
     assert!(rt.take_diagnostics().is_empty());
-    // Once the owner unmounts, the path is free again.
+    // Once the owner unmounts, the waiting cell takes the path over; it was
+    // never changed, so it continues from the owner's value.
     left.dispose(&rt);
-    rt.persisted_value(&store, "bar.expanded", false);
-    assert!(rt.take_diagnostics().is_empty());
-    drop(c);
+    rt.flush();
+    assert!(b.signal.get(&rt).unwrap());
+    let (gone, d) = rt.scope(|rt| rt.persisted_value(&store, "bar.expanded", false));
+    assert!(
+        matches!(
+            &rt.take_diagnostics()[..],
+            [Diagnostic::PersistPathInUse { other, .. }] if *other == b.signal.id()
+        ),
+        "the promoted cell owns the path"
+    );
+    gone.dispose(&rt);
+    drop((c, d));
+    rt.shutdown();
+}
+
+#[test]
+fn a_cell_waiting_for_its_path_takes_over_when_the_owner_goes() {
+    // A reconcile mounts the replacement before disposing the old instance
+    // (surface recreate, monitor replug, a list item re-created under its
+    // key): the replacement's later changes must still be saved.
+    let tmp = TempDir::new("promote");
+    let store = tmp.store();
+    let rt = Runtime::new();
+    let (old, a) = rt.scope(|rt| rt.persisted_value(&store, "bar.level", 0i64));
+    let b = rt.persisted_value(&store, "bar.level", 0i64);
+    rt.take_diagnostics();
+    rt.flush();
+    // The old instance changes, and goes before its debounce ran out: its
+    // last value is flushed, then b takes over.
+    a.signal.set(&rt, 5).unwrap();
+    rt.tick(Duration::from_millis(10));
+    b.signal.set(&rt, 7).unwrap();
+    rt.tick(Duration::from_millis(20));
+    old.dispose(&rt);
+    let t = rt.tick(Duration::from_millis(30));
+    assert!(t.diagnostics.is_empty(), "{:?}", t.diagnostics);
+    // b was changed while it waited: its value wins.
+    assert_eq!(b.signal.get(&rt).unwrap(), 7);
+    assert!(store.sync(Duration::from_secs(5)));
+    assert_eq!(store.load("bar.level").unwrap().unwrap().value, b"7");
+    // And it keeps saving.
+    b.signal.set(&rt, 42).unwrap();
+    rt.tick(Duration::from_millis(40));
+    rt.tick(Duration::from_millis(40) + PERSIST_DEBOUNCE);
+    assert!(store.sync(Duration::from_secs(5)));
+    assert_eq!(store.load("bar.level").unwrap().unwrap().value, b"42");
+    rt.shutdown();
+}
+
+#[test]
+fn an_untouched_replacement_continues_from_the_old_instance() {
+    let tmp = TempDir::new("promote-adopt");
+    let store = tmp.store();
+    let rt = Runtime::new();
+    let (old, a) = rt.scope(|rt| rt.persisted_value(&store, "bar.level", 0i64));
+    rt.flush();
+    a.signal.set(&rt, 3).unwrap();
+    rt.tick(Duration::from_millis(10));
+    // Mounted while a's write is still pending: it starts from the disk.
+    let (_new, b) = rt.scope(|rt| rt.persisted_value(&store, "bar.level", 0i64));
+    assert_eq!(b.signal.get(&rt).unwrap(), 0);
+    rt.take_diagnostics();
+    old.dispose(&rt);
+    rt.flush();
+    assert_eq!(
+        b.signal.get(&rt).unwrap(),
+        3,
+        "the old instance's last value"
+    );
+    b.signal.set(&rt, 9).unwrap();
+    rt.tick(Duration::from_millis(20) + PERSIST_DEBOUNCE);
+    rt.shutdown();
+    assert_eq!(store.load("bar.level").unwrap().unwrap().value, b"9");
+}
+
+#[test]
+fn a_path_never_reads_another_paths_quarantined_file() {
+    let tmp = TempDir::new("quarantine-name");
+    let store = tmp.store();
+    store.save("x", b"0", b"hello").unwrap();
+    let rt = Runtime::new();
+    // "hello" is not an i64: moved aside.
+    let x = rt.persisted_value(&store, "x", 0i64);
+    assert!(matches!(x.restored, Restore::Failed(_)));
+    assert!(store.sync(Duration::from_secs(5)));
+    let other = rt.persisted_value(&store, "x.corrupt", String::from("default"));
+    assert_eq!(other.restored, Restore::Default);
+    assert_eq!(other.signal.get(&rt).unwrap(), "default");
     rt.shutdown();
 }
 

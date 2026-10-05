@@ -275,7 +275,18 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   reload mounts) included. Undeclared edges are learned when first seen,
   which can re-run a sink once in that flush; a sink that has never run
   and declares nothing runs after all ranked sinks on its first run.
-  `rt.rank(id)` exposes the rank. Tasks woken from other threads (IO and
+  `rt.rank(id)` exposes the rank. `writes_to` returns
+  `Ok(WriteEdge::Ranked | WriteEdge::Feedback)` and errs only for a
+  disposed id: a write edge that closes a loop (a self-normalising `on
+  change x { if x > 10 { x = 10 } }`, two handlers normalising each other)
+  is a feedback edge bounded by the runtime cycle guard, not a static-cycle
+  error, and the outcome and ranks do not depend on whether reads or writes
+  are declared first (`rt.write_edge(w, t)` tells what an edge became).
+  Composite nodes: `rt.async_memo` declares its internal effect's write
+  edge to the value itself; the VM declares the input's read set on
+  `memo.effect_id()` and readers declare `memo.id()`. For `on change …
+  after T` (`Debounced`), the tracked expression's reads go on `d.effect`
+  and the body's writes on `d.timer`. Tasks woken from other threads (IO and
   D-Bus replies) are polled at the start of the next flush, never between
   sinks.
   Service events are `EventQueue`s. Keyed collection writes from
@@ -310,7 +321,12 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   `bar` on every monitor (the monitor identity of `strand-surface`), or
   the item key for state on list items (`list[<key>].x`); any bytes are
   allowed, the store escapes them. A second live cell on a path in use is
-  reported as `Diagnostic::PersistPathInUse` and never writes. It returns
+  reported as `Diagnostic::PersistPathInUse` and waits: it does not write
+  while the first owns the file, and takes the path over when the first
+  is disposed (the reconciler may mount a replacement before disposing
+  the old instance): if it still holds the value it started from, it
+  continues from the old owner's last value (flushed first), else its own
+  value is written. It returns
   a `Persisted` handle: the cell's `Signal`, the `Restore` decision
   (default, stored, adopted new default, kept over a new default, failed),
   and the calls the reconciler makes: on a reload that changes the
@@ -320,8 +336,35 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   `[reset]`, `persisted.reset(rt)` (cancels a pending or queued write,
   removes the file, sets the default). Warnings arrive as
   `Diagnostic::PersistDefaultChanged` / `Diagnostic::PersistFailed` (write
-  failures in a later tick, with a wake-hook call). `rt.shutdown()` waits
-  (bounded) for queued writes.
+  failures in a later tick, with a wake-hook call; `rt.is_idle()` is false
+  while one waits to be reported). `rt.shutdown()` waits (bounded) for
+  queued writes.
+- `state prefs from "prefs.toml" { accent: color = #7aa2f7; … }` is
+  `rt.settings_file(&settings_store, path, fields)` (wave 2,
+  `strand_core::settings`): `settings_store` is
+  `persist_store.settings()` (overlays in `$XDG_STATE_HOME/strand/settings`,
+  writes on the persist IO thread), `path` the file resolved against the
+  config directory, and `fields` one `FieldSpec::new(name, default,
+  decode, encode)` per typed field, where `decode(&toml_edit::Item) ->
+  Result<V, String>` checks the field's type and `encode(&V) ->
+  toml_edit::Item` writes it back (`strand_core::settings::toml_edit` is
+  re-exported so the VM uses the same version). It returns a `Settings<V>`
+  handle: `signal(name)` is the field's ordinary `Signal` (UI writes, `<->`
+  bindings and `strand set prefs.compact true` write it; the write is saved
+  through `toml_edit` after 250 ms of quiet, keeping comments, spacing and
+  order, following symlinks, temp file plus rename in the target's
+  directory); `reload(rt)` is what the watcher calls when the file changes
+  (each field checked on its own, a syntax error keeps every last good
+  value, a deleted key springs back to its default; edits not yet on disk
+  and unsaved UI writes are never undone); `set_overlay(rt, name, v)` /
+  `clear_overlay(rt, name)` (the overlay's `[clear]`) manage the runtime
+  overlay, which wins over the file, which wins over the default. A
+  read-only target (no write permission, `EACCES`, `EROFS`: `/nix/store`)
+  gets its writes in the overlay instead. Reports are
+  `Diagnostic::Settings(SettingsNotice { file, field, issue })` with
+  `SettingsIssue::{Syntax, Unreadable, BadValue, Shadowed, ReadOnly,
+  WriteFailed}`; `Shadowed` displays as `accent: file changed but runtime
+  overlay wins [clear]`.
 
 ### `strand-compiler`
 
@@ -351,9 +394,19 @@ Public interfaces other crates and later stages build on:
   target)` as nodes are created, so effects run once per flush in
   topological order from the first flush on; read keyed collections with
   `with`/`with_untracked`/`get_key` instead of holding `KeyedVec` clones;
+  `writes_to` answering `WriteEdge::Feedback` is not an error (a
+  self-normalising handler is valid; only a static cycle among `let`s is a
+  load error); for `let x = svc.call(input)` declare the input's reads on
+  `memo.effect_id()`, for `on change … after T` the tracked reads on
+  `d.effect` and the body's writes on `d.timer`;
   create persisted cells with an instance-qualified path and keep the
-  `Persisted` handle for `redeclare` (reload) and `reset` (`@reset`). See
-  the `strand-core` section.
+  `Persisted` handle for `redeclare` (reload) and `reset` (`@reset`);
+  lower `state x from "file.toml" { typed fields }` to
+  `rt.settings_file(&store, resolved_path, fields)` with one `FieldSpec`
+  per field from the checked schema (the type's decode and encode over
+  `toml_edit::Item`, the declared default), keep the `Settings` handle,
+  call `reload` when the watcher reports the file, and give its path to
+  the watcher. See the `strand-core` section.
 - **Identity and change detection.** AST `PartialEq` compares spans, which
   shift on every edit above a node. Reload identity and "did this handler
   change" use a span-insensitive structural hash over the texts of the
