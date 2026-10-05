@@ -332,6 +332,61 @@ fn contributed_service_schemas_check() {
     assert!(msgs[0].contains("did you mean `temp`?"), "{msgs:?}");
 }
 
+#[test]
+fn builtin_names_are_a_prelude() {
+    // A declaration shadows a builtin function, value or type in its
+    // scope: no reserved words (grammar.md).
+    one("state min = 0\n\
+         let hue = 3\n\
+         enum Place { home, away }\n\
+         type Key { k: int }\n\
+         enum Variant { a, b }\n\
+         fn ease_out(t: float) -> float { 1 - (1 - t) * (1 - t) }\n\
+         fn wave(x: float) -> float { x }\n\
+         component Avatar(shape: Shape = circle, blur: length = 0, contrast: float = 1) {\n\
+           box { width: blur; opacity: contrast }\n\
+         }\n\
+         bar Top { edge: top; text pct(ease_out(min + hue)); Avatar { }; box { bg: conic($accent, $secondary) } }\n");
+    // A service crate that adds a name the config already uses does not
+    // break it.
+    let mut schema = strand_compiler::schema::Schema::builtin().clone();
+    schema
+        .extend("service weather { temp: float }\nfn ring(x: float) -> float")
+        .unwrap();
+    let mut map = SourceMap::new();
+    map.add(
+        "a.strand",
+        "let ring = 2\nfn f(weather: float) -> float { weather * ring }\n",
+    );
+    let out = strand_compiler::compile_with(&map, &schema);
+    assert!(
+        out.diagnostics.iter().all(|d| !d.is_error()),
+        "{:?}",
+        out.diagnostics
+    );
+}
+
+#[test]
+fn component_tokens_are_overridden_loudly() {
+    let src = "component Toast(n: int) tokens { radius: $radius.lg } {\n\
+                 col { radius: $Toast.radius }\n\
+               }\n\
+               tokens x { override Toast.radius: 3px }\n\
+               use tokens x\n";
+    one(src);
+    let (out, map) = compile_files(&[(
+        "a.strand",
+        "component Toast(n: int) tokens { radius: $radius.lg } {\n\
+           col { radius: $Toast.radius }\n\
+         }\n\
+         tokens x { override Toast.radius: $accent }\n"
+            .to_string(),
+    )]);
+    let text = render(&out.diagnostics, &map, Style::Plain);
+    assert_eq!(out.diagnostics.len(), 1, "{text}");
+    assert!(text.contains("check::type_mismatch"), "{text}");
+}
+
 fn def_ty(p: &hir::Program, name: &str) -> String {
     let d = p
         .defs

@@ -25,3 +25,14 @@ check::unknown_token
  7 │ }
    ╰────
   help: did you mean `fg.muted`?
+
+check::unknown_token
+
+  × `override Toast.raduis` overrides nothing
+   ╭─[misspelt_override.strand:9:25]
+ 8 │ component Toast(n: int) tokens { radius: $radius.lg } { col { radius: $Toast.radius } }
+ 9 │ tokens extra { override Toast.raduis: 3px }
+   ·                         ──────┬─────
+   ·                               ╰── no such token
+   ╰────
+  help: did you mean `Toast.radius`?

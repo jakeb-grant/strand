@@ -2,97 +2,86 @@
 source: crates/strand-compiler/tests/checker.rs
 expression: rendered
 ---
-check::redeclared
+check::shadows_builtin
 
-  × `battery` is a builtin service
-   ╭─[shadow_builtin.strand:5:5]
- 4 │ // `battery.percent` into a confusing error far away.
- 5 │ let battery = 5
+  ⚠ this `let` hides the builtin service `battery`
+   ╭─[shadow_builtin.strand:6:5]
+ 5 │ // far away.
+ 6 │ let battery = 5
    ·     ───┬───
-   ·        ╰── already taken
- 6 │ state clock = 0
+   ·        ╰── shadows a service
+ 7 │ state clock = 0
    ╰────
-  help: rename the `let`: here it would hide the builtin `battery`
+  help: rename the `let`: in its scope `battery` no longer reads the service
 
-check::redeclared
+check::shadows_builtin
 
-  × `clock` is a builtin service
-   ╭─[shadow_builtin.strand:6:7]
- 5 │ let battery = 5
- 6 │ state clock = 0
+  ⚠ this `state` hides the builtin service `clock`
+   ╭─[shadow_builtin.strand:7:7]
+ 6 │ let battery = 5
+ 7 │ state clock = 0
    ·       ──┬──
-   ·         ╰── already taken
- 7 │ let t = 3
+   ·         ╰── shadows a service
+ 8 │ component C(audio: float) {
    ╰────
-  help: rename the `state`: here it would hide the builtin `clock`
+  help: rename the `state`: in its scope `clock` no longer reads the service
 
-check::redeclared
+check::shadows_builtin
 
-  × `t` is a builtin value
-   ╭─[shadow_builtin.strand:7:5]
- 6 │ state clock = 0
- 7 │ let t = 3
-   ·     ┬
-   ·     ╰── already taken
- 8 │ let pct = 0.5
+  ⚠ this parameter hides the builtin service `audio`
+   ╭─[shadow_builtin.strand:8:13]
+ 7 │ state clock = 0
+ 8 │ component C(audio: float) {
+   ·             ──┬──
+   ·               ╰── shadows a service
+ 9 │   let media = 1
    ╰────
-  help: rename the `let`: here it would hide the builtin `t`
+  help: rename the parameter: in its scope `audio` no longer reads the service
 
-check::redeclared
+check::shadows_builtin
 
-  × `pct` is a builtin function
-   ╭─[shadow_builtin.strand:8:5]
- 7 │ let t = 3
- 8 │ let pct = 0.5
-   ·     ─┬─
-   ·      ╰── already taken
- 9 │ component C(audio: float) {
-   ╰────
-  help: rename the `let`: here it would hide the builtin `pct`
-
-check::redeclared
-
-  × `audio` is a builtin service
-    ╭─[shadow_builtin.strand:9:13]
-  8 │ let pct = 0.5
-  9 │ component C(audio: float) {
-    ·             ──┬──
-    ·               ╰── already taken
- 10 │   let media = 1
-    ╰────
-  help: rename the parameter: here it would hide the builtin `audio`
-
-check::redeclared
-
-  × `media` is a builtin service
-    ╭─[shadow_builtin.strand:10:7]
-  9 │ component C(audio: float) {
- 10 │   let media = 1
+  ⚠ this `let` hides the builtin service `media`
+    ╭─[shadow_builtin.strand:9:7]
+  8 │ component C(audio: float) {
+  9 │   let media = 1
     ·       ──┬──
-    ·         ╰── already taken
- 11 │   box { on click { let wm = 2 } }
+    ·         ╰── shadows a service
+ 10 │   box { on click { let wm = 2 } }
     ╰────
-  help: rename the `let`: here it would hide the builtin `media`
+  help: rename the `let`: in its scope `media` no longer reads the service
 
-check::redeclared
+check::shadows_builtin
 
-  × `wm` is a builtin service
-    ╭─[shadow_builtin.strand:11:24]
- 10 │   let media = 1
- 11 │   box { on click { let wm = 2 } }
+  ⚠ this `let` hides the builtin service `wm`
+    ╭─[shadow_builtin.strand:10:24]
+  9 │   let media = 1
+ 10 │   box { on click { let wm = 2 } }
     ·                        ─┬
-    ·                         ╰── already taken
- 12 │ }
+    ·                         ╰── shadows a service
+ 11 │ }
     ╰────
-  help: rename the `let`: here it would hide the builtin `wm`
+  help: rename the `let`: in its scope `wm` no longer reads the service
 
-check::redeclared
+check::shadows_builtin
 
-  × `blur` is a builtin function
-    ╭─[shadow_builtin.strand:13:6]
- 12 │ }
- 13 │ fn f(blur: float) -> float { blur }
-    ·      ──┬─
-    ·        ╰── already taken
+  ⚠ this `fn` hides the builtin service `notifications`
+    ╭─[shadow_builtin.strand:12:4]
+ 11 │ }
+ 12 │ fn notifications(x: float) -> float { x }
+    ·    ──────┬──────
+    ·          ╰── shadows a service
+ 13 │ // Calling a parameter that hides a builtin function names the builtin.
     ╰────
-  help: rename the parameter: here it would hide the builtin `blur`
+  help: rename the `fn`: in its scope `notifications` no longer reads the service
+
+check::type_mismatch
+
+  × `blur` here is a `length`, not a function
+    ╭─[shadow_builtin.strand:15:14]
+ 14 │ component Card(blur: length = 24) {
+ 15 │   let soft = blur(16)
+    ·              ──┬─
+    ·                ╰── cannot be called
+ 16 │   box { width: blur }
+    ╰────
+  help: `blur` in scope hides the builtin `blur`; rename it to call the builtin

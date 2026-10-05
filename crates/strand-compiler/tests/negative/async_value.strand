@@ -13,4 +13,10 @@ let hits = apps.search(q)
 let top: [Hit] = hits.take(3)
 let fine_top: [Hit] = hits.take(3) ?? []
 let names = join(", ", apps.search(q))
-component Count { text "{hits.len}"; col { for h in hits.filter(h => h.app.name != "") { text h.app.name } } }
+component Count {
+  let n = hits.len
+  text join(" ", n)
+  col { for h in hits.filter(h => h.app.name != "") { text h.app.name } }
+}
+// A handler that drops an `Async` almost always meant to wait for it.
+component Wait { box { on click { sleep(1s); apps.search(q) } } }

@@ -1,7 +1,9 @@
 // The builtin schema: the elements, services, functions and tokens of
 // docs/design.md, as data. The language is described in schema/mod.rs.
-// Services are types only until M3 brings the real ones; a service crate
-// adds its own entries with `Schema::extend`.
+// Services are types only until M3 brings the real ones. They and the
+// records only services hand out are `provisional`: a service crate's
+// `Schema::extend` text that declares the same name replaces the stub once,
+// in place; everything else an extension adds must be new.
 
 // ---------------------------------------------------------------------------
 // Enums used by props and functions. Variants are written bare in source
@@ -64,7 +66,7 @@ record Key {
   logo: bool
 }
 
-record Date {
+provisional record Date {
   year: int
   month: int
   day: int
@@ -74,7 +76,7 @@ record Date {
   fn format(pattern: text) -> text
 }
 
-record Day key date {
+provisional record Day key date {
   date: Date
   in_month: bool
   today: bool
@@ -85,7 +87,7 @@ record Day key date {
 /// ` #2` for a second identical one): what a `bar` instance is keyed and
 /// pinned by, kept across a replug to another port. `name` is the
 /// connector (`DP-1`).
-record Screen key id {
+provisional record Screen key id {
   id: text
   name: text
   make: text
@@ -97,7 +99,7 @@ record Screen key id {
   focused: bool
 }
 
-record Window key id {
+provisional record Window key id {
   id: text
   title: text
   app_id: text
@@ -111,7 +113,7 @@ record Window key id {
   action minimize()
 }
 
-record Workspace key id {
+provisional record Workspace key id {
   id: int
   name: text
   focused: bool
@@ -122,7 +124,7 @@ record Workspace key id {
   action focus()
 }
 
-record AudioDevice key id {
+provisional record AudioDevice key id {
   id: int
   name: text
   description: text
@@ -133,9 +135,9 @@ record AudioDevice key id {
   action make_default()
 }
 
-record TrayMenu { action open() }
+provisional record TrayMenu { action open() }
 
-record TrayItem key id {
+provisional record TrayItem key id {
   id: text
   title: text
   icon: text
@@ -147,15 +149,15 @@ record TrayItem key id {
   action scroll(dy: float)
 }
 
-record NotificationApp { name: text; icon: text }
+provisional record NotificationApp { name: text; icon: text }
 
-record NotificationAction key id {
+provisional record NotificationAction key id {
   id: text
   label: text
   action invoke()
 }
 
-record Notification key id {
+provisional record Notification key id {
   id: int
   app: NotificationApp
   summary: text
@@ -170,7 +172,7 @@ record Notification key id {
   action activate()
 }
 
-record App key id {
+provisional record App key id {
   id: AppId
   name: text
   comment: text?
@@ -191,13 +193,13 @@ record Drop {
 }
 
 /// A launcher search result: the app, its score and the matched ranges.
-record Hit key app.id {
+provisional record Hit key app.id {
   app: App
   score: float
   ranges: [Range]
 }
 
-record BluetoothDevice key address {
+provisional record BluetoothDevice key address {
   address: text
   name: text
   connected: bool
@@ -221,18 +223,18 @@ record Canvas {
 // ---------------------------------------------------------------------------
 // Services: global names whose fields are live values.
 
-service clock {
+provisional service clock {
   today: Date
   now: Date
   /// Wakes only as often as the pattern changes (once a minute for %H:%M).
   fn format(pattern: text) -> text
 }
 
-service calendar {
+provisional service calendar {
   fn days(month: Date) -> [Day]
 }
 
-service battery {
+provisional service battery {
   present: bool
   percent: float
   charging: bool
@@ -241,34 +243,34 @@ service battery {
   power: float
 }
 
-service windows {
+provisional service windows {
   focused: Window?
   all: [Window]
 }
 
-service workspaces {
+provisional service workspaces {
   all: [Workspace]
   focused: Workspace?
   fn on(screen: Screen) -> [Workspace]
 }
 
-service audio {
+provisional service audio {
   sink: AudioDevice
   source: AudioDevice
   sinks: [AudioDevice]
   sources: [AudioDevice]
 }
 
-service brightness {
+provisional service brightness {
   level: float rw
   available: bool
 }
 
-service tray {
+provisional service tray {
   items: [TrayItem]
 }
 
-service notifications {
+provisional service notifications {
   popups: [Notification]
   all: [Notification]
   count: int
@@ -276,13 +278,13 @@ service notifications {
   event received(n: Notification)
 }
 
-service apps {
+provisional service apps {
   all: [App]
   /// Fuzzy match plus frecency; keeps its last result while searching.
   fn search(query: text) -> Async<[Hit]>
 }
 
-service media {
+provisional service media {
   playing: bool
   title: text?
   artist: text?
@@ -298,7 +300,7 @@ service media {
 }
 
 /// Portal settings.
-service system {
+provisional service system {
   dark: bool
   accent: color?
   contrast: float
@@ -306,42 +308,42 @@ service system {
   hostname: text
 }
 
-service cpu {
+provisional service cpu {
   usage: float
   cores: [float]
   temperature: float?
 }
 
-service memory {
+provisional service memory {
   usage: float
   used: float
   total: float
 }
 
-service screens {
+provisional service screens {
   all: [Screen]
   focused: Screen?
 }
 
-service wm {
+provisional service wm {
   name: text
   event config_reloaded()
 }
 
-service network {
+provisional service network {
   connected: bool
   ssid: text?
   strength: float
   wifi: bool rw
 }
 
-service bluetooth {
+provisional service bluetooth {
   powered: bool rw
   devices: [BluetoothDevice]
 }
 
 /// The lock screen's PAM helper.
-service auth {
+provisional service auth {
   busy: bool
   failed: bool
   action submit(password: text)

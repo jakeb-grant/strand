@@ -1087,31 +1087,35 @@ see wave2-core; the compiler supplies the field schema.)
   (`join`, `find`, `contains`…) and an `Async` passed to an `any`
   parameter (`join(", ", hits)`) are `check::async`, since each would
   forget the loading state.
-- **2026-10-05 · wave2-check (round 4): overloads are chosen by shape.**
-  A call picks its overload before checking any argument: named
-  parameters, a `from` argument, the positional count and the required
-  parameters (`material(seed:)` vs `material(image:)`, `oklch(from …)`
-  vs `oklch(l, c, h)`). Only calls the shape cannot tell apart
-  (`radial(center, 40%)` vs `radial(#000, #fff)`) try overloads in turn,
-  at most two nested levels deep (deeper, the first that fits is taken),
-  so nested overloaded calls check in linear time. A declaration (or
-  token) first read inside an attempt is checked once, and its
-  diagnostics and references are kept whatever the attempt's outcome, so
-  an unknown name there is never lost (`negative/overload_lazy.strand`,
+- **2026-10-05 · wave2-check (round 4): overloads are chosen by shape.** A
+  call picks its overload before checking any argument: named parameters,
+  a `from` argument, the positional count and the required parameters
+  (`material(seed:)` vs `material(image:)`, `oklch(from …)` vs `oklch(l,
+  c, h)`). Only calls the shape cannot tell apart (`radial(center, 40%)`
+  vs `radial(#000, #fff)`) try overloads in turn, at most two nested
+  levels deep (deeper, the first that fits is taken), so nested overloaded
+  calls check in polynomial time (bounded speculation: about k²·n³ for k
+  overloads nested n deep, not exponential; corrected in round 5, which
+  earlier said linear). A declaration (or token) first read inside an
+  attempt is checked once, and its diagnostics and references are kept
+  whatever the attempt's outcome, so an unknown name there is never lost
+  (`negative/overload_lazy.strand`,
   `robustness.rs::nested_overloaded_calls_stay_cheap`).
 - **2026-10-05 · wave2-check (round 4): builtin names are not shadowed.**
-  A top-level, component or handler `state`/`let`, or a component or fn
-  parameter, named like a builtin service (`battery`), value (`t`) or
-  function (`pct`, `blur`) is `check::redeclared`: it would hide the
-  builtin without a word, and the mistake would surface far away
+  (Replaced by round 5: builtin names are a prelude.) A top-level,
+  component or handler `state`/`let`, or a component or fn parameter,
+  named like a builtin service (`battery`), value (`t`) or function
+  (`pct`, `blur`) is `check::redeclared`: it would hide the builtin
+  without a word, and the mistake would surface far away
   (`battery.percent` failing on a number). This follows the
   service-named-file rule. `for` bindings and lambda parameters are
   exempt: they are short-lived and local to one expression or loop, as
   round 3 decided for ordinary lexical scoping. A handler `let` declared
-  twice in one block, and a prop set twice in one element (`value: <->
-  v; value: 0.3`), are `check::redeclared` too.
+  twice in one block, and a prop set twice in one element (`value: <-> v;
+  value: 0.3`), are `check::redeclared` too.
 - **2026-10-05 · wave2-check (round 4): a `let` holding a colour is
-  linted.** `let c = #ff0000` then `bg: c` would bypass the raw-colour
+  linted.** (Widened by round 5 to every declaration that hands a colour
+  on.) `let c = #ff0000` then `bg: c` would bypass the raw-colour
   lint, so a raw colour in a `let` whose type is a colour or paint (or a
   list or nullable of them) gets the same `check::raw_color` warning.
   Settings defaults, token values and `material(seed: …)` arguments stay
@@ -1128,12 +1132,87 @@ see wave2-core; the compiler supplies the field schema.)
   or token that already exists, and a function overload whose parameters
   (names and types) match an existing one, with "declared twice": a
   service crate cannot silently change a builtin (`element text(int)`).
+  (Round 5: records and services too, the same rule for method
+  overloads, a `provisional` exception for service stubs, and atomicity.)
 - **2026-10-05 · wave2-check (round 4): one error for a kebab name.**
   `my-bar.open`, with neither `my` nor `bar` known and no spaces around
   the `-`, is one `check::unknown_name` for `my-bar` (naming the
   snake_case spelling, or the file to rename) rather than two, and a
   write to an `id:` node's prop (`vol.opacity = 1`) is one
   `check::assign_to_prop`.
+- **2026-10-05 · wave2-check (round 5): builtin names are a prelude.**
+  grammar.md says there are no reserved words, and a service crate that
+  adds a function or service must not break configs that already use the
+  name. So a `state`, `let`, parameter, `fn`, `type` or `enum` named like
+  a builtin function, value or type shadows it in its scope, silently
+  (`component Avatar(shape: Shape = circle, blur: length = 0)`, `fn
+  ease_out(t: float)`, a user `enum Place`). Where the shadowing is
+  observed it is named: calling a shadowing non-function (`blur(16)` with
+  a `length` parameter `blur`) is `check::type_mismatch` with the help
+  "`blur` in scope hides the builtin `blur`". Shadowing a builtin
+  *service* (`let battery = 5`) is a `check::shadows_builtin` warning,
+  not an error, for every kind of declaration (`fn battery` included):
+  the confusing far-away failure is flagged, and a new service from a
+  crate only warns. A component or surface named like a builtin element
+  stays an error (the tree resolves builtin elements first, so it could
+  never be placed), as does a user `service` named like a builtin one.
+- **2026-10-05 · wave2-check (round 5): component tokens are overridden
+  loudly.** `component Toast(n) tokens { radius: $radius.lg }` defines
+  `$Toast.radius`, a knob (design.md). A `tokens` set entry with that path
+  is a redefinition: without `override` it is `check::override_needed`
+  pointing at the component; `override Toast.radius: …` is accepted and
+  checked against the component token's type, and a misspelt one is
+  `check::unknown_token` with did-you-mean. A read of `$Toast.radius`
+  outside a set is typed by the component's own entry, never by whichever
+  set happens to define the path first.
+- **2026-10-05 · wave2-check (round 5): the raw-colour lint covers every
+  named value.** Round 4 linted a `let` but not the same bypass through
+  `state sc = #ff0000`, a `fn red() -> color { #ff0000 }` or a parameter
+  default `C(c: color = #0000ff)`. One rule now: a raw colour in a prop,
+  or in a declaration that hands it on as a colour (a `let`, a `state`'s
+  initial value, a `fn`'s result, a component parameter default), is
+  `check::raw_color`. Settings defaults, token values and `material(seed:
+  …)` arguments (in a prop too) are exempt. Reading a role of a computed
+  `Palette` inline (`material(…).accent`) stays unsupported: `Palette` is
+  opaque in design.md; roles are read as tokens after `use palette`.
+- **2026-10-05 · wave2-check (round 5): a dropped `Async` is an error.**
+  An expression statement in a handler whose value is `Async<T>`
+  (`on click { sleep(1s) }`) is `check::async` with the help "`await` it,
+  or assign the result": it almost always meant to wait (design.md,
+  "Errors, not surprises").
+- **2026-10-05 · wave2-check (round 5): `await` on a list transform
+  waits.** `await hits.take(2)` while `hits` is loading waits for the
+  load and then applies the transform: the VM gives the derived `Async`
+  its own pending operation over the source's (weak handles to the VM and
+  runtime), rather than rejecting it in the checker
+  (`vm.rs::await_waits_for_a_transformed_load`).
+- **2026-10-05 · wave2-check (round 5): one more prop set twice.** The
+  positional is the prop it fills, so `meter 0.5 { value: 0.7 }` is
+  `check::redeclared`; so is a prop set twice in one `when` block. A
+  lambda whose result was already reported against the expected type
+  takes that type, so the call does not report the same mistake again;
+  `page wifi` outside `pages` is one `check::misplaced`.
+- **2026-10-05 · wave2-check (round 5): `from` parameters.** `from x`
+  (the relative-colour source) or `from: x` fills a `from` parameter; a
+  positional argument never does when telling overloads apart by shape,
+  and a defaulted `from` before a variadic (`conic(from: angle = 0,
+  ...stops)`) is given by name only, so `conic($accent, $secondary)` is
+  two stops.
+- **2026-10-05 · wave2-check (round 5): schema extensions are atomic, and
+  stubs are provisional.** `Schema::extend` stages the text on a copy and
+  swaps it in only when every item is valid, fingerprint included. A
+  record or service that already exists is refused and left untouched
+  (round 4 still overwrote its members). The builtin's service stubs and
+  the records only services hand out are `provisional`: the first
+  extension that declares the name replaces the stub in place (same id,
+  its members and docs dropped), once. Method overloads follow the same
+  "same parameters is declared twice" rule as functions.
+- **2026-10-05 · wave2-check (round 5): one member table.** List and
+  `Async` members (`len`, `first`, `filter`, `take`, `remove_key`,
+  `pending`, `value`, …) moved out of the checker's match arms into
+  `schema::members` (`list_members`, `async_members`, `members_of`), which
+  the checker types `x.name(…)` by and which the LSP lists after `.` with
+  docs; generic schema syntax can come later without changing the API.
 
 ## wave2-vm
 

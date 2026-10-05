@@ -62,3 +62,29 @@ check::redeclared
  8 │   }
    ╰────
   help: rename one of them
+
+check::redeclared
+
+  × `value` is set twice
+    ╭─[widgets.strand:12:15]
+ 11 │ component Both {
+ 12 │   meter 0.5 { value: 0.7 }
+    ·         ─┬─   ──┬──
+    ·          │      ╰── set again here
+    ·          ╰── the positional value is `meter`'s `value`
+ 13 │   box { when hover { bg: $accent; bg: $error } }
+    ╰────
+  help: `meter` takes its value positionally: keep one of them
+
+check::redeclared
+
+  × `bg` is set twice
+    ╭─[widgets.strand:13:35]
+ 12 │   meter 0.5 { value: 0.7 }
+ 13 │   box { when hover { bg: $accent; bg: $error } }
+    ·                      ─┬           ─┬
+    ·                       │            ╰── set again here
+    ·                       ╰── first set here
+ 14 │ }
+    ╰────
+  help: keep one of them

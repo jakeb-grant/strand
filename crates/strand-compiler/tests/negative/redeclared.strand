@@ -14,3 +14,8 @@ component Twice {
     on click { let x = 4; let y = x; let x = 5 }
   }
 }
+// The positional is the prop it fills; a prop set twice in a `when`.
+component Both {
+  meter 0.5 { value: 0.7 }
+  box { when hover { bg: $accent; bg: $error } }
+}

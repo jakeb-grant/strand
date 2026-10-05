@@ -250,7 +250,18 @@ impl<'a> Tokens<'a> {
         })
     }
 
-    /// Every readable token path and its type.
+    /// The component token (`Toast.radius` of `component Toast(…) tokens
+    /// { radius: … }`) with this path: the knob a set may `override`.
+    fn component_entry(&self, path: &str) -> Option<usize> {
+        self.by_path
+            .get(path)?
+            .iter()
+            .copied()
+            .find(|&e| matches!(self.entries[e].owner, Owner::Component(_)))
+    }
+
+    /// Every readable token path and its type. A component token's type
+    /// is its own (a set's `override` of it is checked against it).
     pub fn all_types(&self, schema: &Schema) -> BTreeMap<String, Ty> {
         let mut out: BTreeMap<String, Ty> = schema
             .tokens
@@ -259,7 +270,11 @@ impl<'a> Tokens<'a> {
             .collect();
         for e in &self.entries {
             if let EntryState::Done(t) = &e.state {
-                out.entry(e.path.clone()).or_insert_with(|| t.clone());
+                if matches!(e.owner, Owner::Component(_)) {
+                    out.insert(e.path.clone(), t.clone());
+                } else {
+                    out.entry(e.path.clone()).or_insert_with(|| t.clone());
+                }
             }
         }
         out
@@ -375,8 +390,6 @@ impl<'a> Checker<'a> {
         self.module = self.tokens.sets[s].module;
         let parent = self.tokens.sets[s].extends;
         let set_name = self.defs[self.tokens.sets[s].def.0 as usize].name.clone();
-        let parent_name =
-            parent.map(|p| self.defs[self.tokens.sets[p].def.0 as usize].name.clone());
         let entries = self.tokens.sets[s].entries.clone();
         let mut own: HashMap<String, usize> = HashMap::new();
         let mut reported_groups: Vec<String> = Vec::new();
@@ -396,20 +409,30 @@ impl<'a> Checker<'a> {
                 continue;
             }
             own.insert(path.to_string(), e);
-            let inherited = self.tokens.find_in_chain(parent, path);
+            // A component's token (`$Toast.radius`) is a knob sets
+            // override like an inherited one.
+            let inherited = self
+                .tokens
+                .find_in_chain(parent, path)
+                .or_else(|| self.tokens.component_entry(path));
             let schema = self.schema.tokens.get(path);
             if !entry.override_ {
                 if let Some(inh) = inherited {
+                    let by = match self.tokens.entries[inh].owner {
+                        Owner::Component(d) => {
+                            format!("component `{}`", self.defs[d.0 as usize].name)
+                        }
+                        Owner::Set(p) => {
+                            format!("`{}`", self.defs[self.tokens.sets[p].def.0 as usize].name)
+                        }
+                    };
                     let (f, sp) = (
                         self.modules[self.tokens.entries[inh].module].file,
                         self.tokens.entries[inh].span,
                     );
                     self.error(
                         "check::override_needed",
-                        format!(
-                            "`${path}` is already defined by `{}`",
-                            parent_name.as_deref().unwrap_or("")
-                        ),
+                        format!("`${path}` is already defined by {by}"),
                         entry.span,
                         "redefined without `override`",
                     )
@@ -432,7 +455,9 @@ impl<'a> Checker<'a> {
                     let dotted = format!("{prefix}.");
                     let any = self.schema.tokens.keys().any(|p| p.starts_with(&dotted))
                         || self.tokens.by_path.keys().any(|p| {
-                            p.starts_with(&dotted) && self.tokens.find_in_chain(parent, p).is_some()
+                            p.starts_with(&dotted)
+                                && (self.tokens.find_in_chain(parent, p).is_some()
+                                    || self.tokens.component_entry(p).is_some())
                         });
                     if !any {
                         if !reported_groups.contains(prefix) {
@@ -472,6 +497,13 @@ impl<'a> Checker<'a> {
 
     fn override_candidates(&self, parent: Option<usize>) -> Vec<String> {
         let mut v: Vec<String> = self.schema.tokens.keys().cloned().collect();
+        v.extend(
+            self.tokens
+                .entries
+                .iter()
+                .filter(|e| matches!(e.owner, Owner::Component(_)))
+                .map(|e| e.path.clone()),
+        );
         for s in self.tokens.chain(parent) {
             v.extend(
                 self.tokens.sets[s]
@@ -564,7 +596,14 @@ impl<'a> Checker<'a> {
         let mark = (self.diags.len(), self.refs.len());
         self.tokens.stack.push(e);
         let entry = self.tokens.entries[e].clone();
-        let want = self.schema.tokens.get(&entry.path).map(|t| t.ty.clone());
+        let mut want = self.schema.tokens.get(&entry.path).map(|t| t.ty.clone());
+        // A set's entry for a component token is typed by the component's.
+        if want.is_none()
+            && matches!(entry.owner, Owner::Set(_))
+            && let Some(c) = self.tokens.component_entry(&entry.path)
+        {
+            want = Some(self.entry_ty(c, entry.span)).filter(|t| *t != Ty::Error);
+        }
         let ctx = Ctx {
             token_entry: Some(e),
             ..Ctx::default()
@@ -636,6 +675,11 @@ impl<'a> Checker<'a> {
         }
         if let Some(t) = self.schema.tokens.get(path) {
             return t.ty.clone();
+        }
+        // A component token reads as the component's own entry; a set's
+        // `override` of it has been checked against that type.
+        if let Some(e) = self.tokens.component_entry(path) {
+            return self.entry_ty(e, span);
         }
         if let Some(&e) = self.tokens.by_path.get(path).and_then(|v| v.first()) {
             return self.entry_ty(e, span);

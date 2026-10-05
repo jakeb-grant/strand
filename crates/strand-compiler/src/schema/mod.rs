@@ -29,6 +29,7 @@
 //!   event received(n: Notification)      // `on svc.received(n)`
 //! }
 //! service battery { … }                  // a record that is a global name
+//! provisional service audio { … }        // a stub one extension replaces
 //! fn pct(x: float) -> text lift          // `lift`: null in, null out
 //! fn join(sep: text, ...parts: any?) -> text
 //! value t: float                         // a builtin value
@@ -44,9 +45,15 @@
 //! above, `[T]`, `T?`, `Async<T>`, `fn(A, B) -> R`, `(A, B)` (comma
 //! shorthand), `A | B` (props only).
 
+mod members;
 mod parse;
 
-use std::collections::BTreeMap;
+pub use members::{
+    ASYNC_TRANSFORMS, MemberInfo, MemberKind, async_members, builtin_methods, list_members,
+    members_of,
+};
+
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, OnceLock};
 
 use crate::ty::{EventDef, FnSig, MethodDef, RecordId, Ty, TypeTable};
@@ -136,6 +143,10 @@ pub struct Schema {
     pub tokens: BTreeMap<String, TokenSchema>,
     /// `///` doc comments, by what they document (hover and completion).
     pub docs: BTreeMap<DocKey, String>,
+    /// Records and services declared `provisional` (the types-only service
+    /// stubs of the builtin text): the first extension that declares the
+    /// same name replaces each one in place.
+    pub provisional: BTreeSet<String>,
     /// BLAKE3 over every text given to [`Schema::extend`], in order; see
     /// [`Schema::fingerprint`].
     fingerprint: [u8; 32],
@@ -189,24 +200,36 @@ impl Schema {
             let mut s = Schema::default();
             // The builtin text is part of the compiler and has a test
             // (`builtin_schema_parses`); a broken entry is skipped here
-            // rather than taking the compiler down.
-            let _ = s.extend(BUILTIN);
+            // rather than taking the compiler down, so this applies the
+            // rest even on error, unlike `extend`.
+            s.fingerprint = s.next_fingerprint(BUILTIN);
+            let _ = parse::extend(&mut s, BUILTIN);
             s
         })
     }
 
     /// Adds the declarations in `text` (the language described in the
     /// module docs). Names may refer to anything declared before, in this
-    /// text, or in earlier calls. Entries with errors are skipped and
-    /// reported; the rest are added.
+    /// text, or in earlier calls. An extension adds and never replaces,
+    /// except that it may replace a `provisional` record or service once.
+    ///
+    /// Atomic: on error nothing is added and the fingerprint is unchanged.
     pub fn extend(&mut self, text: &str) -> Result<(), Vec<SchemaError>> {
+        let mut staged = self.clone();
+        parse::extend(&mut staged, text)?;
+        staged.fingerprint = self.next_fingerprint(text);
+        *self = staged;
+        Ok(())
+    }
+
+    /// The fingerprint after `text` is added.
+    fn next_fingerprint(&self, text: &str) -> [u8; 32] {
         let mut h = blake3::Hasher::new();
         h.update(b"strand-schema\0");
         h.update(&self.fingerprint);
         h.update(&(text.len() as u64).to_le_bytes());
         h.update(text.as_bytes());
-        self.fingerprint = *h.finalize().as_bytes();
-        parse::extend(self, text)
+        *h.finalize().as_bytes()
     }
 
     /// The schema hash: BLAKE3 chained over the builtin text and every
@@ -449,6 +472,69 @@ mod tests {
         let mut s = Schema::builtin().clone();
         s.extend("fn pct(part: int, whole: int) -> text").unwrap();
         assert_eq!(s.functions["pct"].len(), 2);
+        // Records and services that are not provisional stay as they are,
+        // and so do builtin methods.
+        for (text, rec, fields) in [
+            ("record Range { start: text }", "Range", 2),
+            ("record Node { x: int }", "Node", 6),
+        ] {
+            let mut s = Schema::builtin().clone();
+            let err = s.extend(text).expect_err(text);
+            assert!(err[0].message.contains("declared twice"), "{text}: {err:?}");
+            let id = s.types.find_record(rec).unwrap();
+            assert_eq!(s.types.record(id).fields.len(), fields, "{text}");
+        }
+        let mut s = Schema::builtin().clone();
+        let err = s
+            .extend("methods color { fn mix(other: color, amount: float) -> int }")
+            .expect_err("same parameters as the builtin mix");
+        assert!(err[0].message.contains("declared twice"), "{err:?}");
+    }
+
+    #[test]
+    fn a_contributed_service_replaces_its_stub_once() {
+        let builtin = Schema::builtin();
+        let stub = builtin.service("battery").unwrap();
+        assert!(builtin.provisional.contains("battery"));
+        let mut s = builtin.clone();
+        s.extend(
+            "/// The real one.\n\
+             service battery { percent: float; level: float rw }\n\
+             record Window key id { id: text; title: text; pid: int }",
+        )
+        .unwrap();
+        // Same id, so `[Window]` fields of other services see the new one.
+        assert_eq!(s.service("battery"), Some(stub));
+        let bat = s.types.record(stub);
+        assert_eq!(bat.fields.len(), 2);
+        assert!(bat.field("level").unwrap().rw);
+        assert_eq!(
+            s.doc(&DocKey::Type("battery".into())),
+            Some("The real one.")
+        );
+        let win = s.types.find_record("Window").unwrap();
+        assert!(s.types.record(win).field("pid").is_some());
+        assert!(!s.provisional.contains("battery"));
+        // A second contribution is refused, and leaves the first alone.
+        let err = s
+            .extend("service battery { other: int }")
+            .expect_err("replaced once");
+        assert!(err[0].message.contains("declared twice"), "{err:?}");
+        assert_eq!(s.types.record(stub).fields.len(), 2);
+    }
+
+    #[test]
+    fn a_failed_extend_changes_nothing() {
+        let mut s = Schema::builtin().clone();
+        let before = s.fingerprint();
+        let err = s.extend("value fresh: int\nvalue t: text").unwrap_err();
+        assert!(err[0].message.contains("declared twice"), "{err:?}");
+        assert!(!s.values.contains_key("fresh"));
+        assert_eq!(s.fingerprint(), before);
+        let err = s.extend("service ppd { level: Nope }").unwrap_err();
+        assert!(err[0].message.contains("Nope"), "{err:?}");
+        assert!(s.service("ppd").is_none());
+        assert_eq!(s.fingerprint(), before);
     }
 
     #[test]

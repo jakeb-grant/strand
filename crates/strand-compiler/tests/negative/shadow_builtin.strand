@@ -1,13 +1,17 @@
-// expect: check::redeclared
-// A `state`, `let` or parameter named like a builtin service, value or
-// function would hide it without a word: `let battery = 5` turns
-// `battery.percent` into a confusing error far away.
+// expect: check::shadows_builtin, check::type_mismatch
+// Builtin names are a prelude: a declaration shadows a builtin function,
+// value or type in its scope. Shadowing a builtin service is a warning:
+// `let battery = 5` would turn `battery.percent` into a confusing error
+// far away.
 let battery = 5
 state clock = 0
-let t = 3
-let pct = 0.5
 component C(audio: float) {
   let media = 1
   box { on click { let wm = 2 } }
 }
-fn f(blur: float) -> float { blur }
+fn notifications(x: float) -> float { x }
+// Calling a parameter that hides a builtin function names the builtin.
+component Card(blur: length = 24) {
+  let soft = blur(16)
+  box { width: blur }
+}

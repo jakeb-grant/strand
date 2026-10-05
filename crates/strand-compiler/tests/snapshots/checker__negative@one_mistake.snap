@@ -5,23 +5,23 @@ expression: rendered
 check::unknown_field
 
   × `prefs` has no field `b`
-    ╭─[one_mistake.strand:10:22]
-  9 │   box {
- 10 │     on click { prefs.b = 1 }
+    ╭─[one_mistake.strand:12:22]
+ 11 │   box {
+ 12 │     on click { prefs.b = 1 }
     ·                      ┬
     ·                      ╰── unknown field
- 11 │     text "a" { color: <-> s }
+ 13 │     text "a" { color: <-> s }
     ╰────
 
 check::two_way_prop
 
   × `color` cannot be bound two-way
-    ╭─[one_mistake.strand:11:23]
- 10 │     on click { prefs.b = 1 }
- 11 │     text "a" { color: <-> s }
+    ╭─[one_mistake.strand:13:23]
+ 12 │     on click { prefs.b = 1 }
+ 13 │     text "a" { color: <-> s }
     ·                       ─┬─
     ·                        ╰── the element never writes it
- 12 │   }
+ 14 │   }
     ╰────
   help: `<->` is for props a widget writes back: `value`, `text`, `open`, `current`; bind this one
         with `name: value`
@@ -29,32 +29,55 @@ check::two_way_prop
 check::misplaced
 
   × `bar` is a surface, declared at the top level
-    ╭─[one_mistake.strand:13:3]
- 12 │   }
- 13 │   bar X { edge: top }
+    ╭─[one_mistake.strand:15:3]
+ 14 │   }
+ 15 │   bar X { edge: top }
     ·   ─┬─
     ·    ╰── not inside a tree
- 14 │ }
+ 16 │ }
     ╰────
   help: declare it on its own: `bar Name { … }`; inside a tree, `popup` anchors a surface
 
 check::unknown_prop
 
   × unknown prop `edge` on `panel`
-    ╭─[one_mistake.strand:15:11]
- 14 │ }
- 15 │ panel P { edge: bottm }
+    ╭─[one_mistake.strand:17:11]
+ 16 │ }
+ 17 │ panel P { edge: bottm }
     ·           ──┬─
     ·             ╰── not a prop of this element
- 16 │ fn get() = 1
+ 18 │ fn get() = 1
     ╰────
 
 syntax::expected
 
   × expected `{` to start the function body, found `=`
-    ╭─[one_mistake.strand:16:10]
- 15 │ panel P { edge: bottm }
- 16 │ fn get() = 1
+    ╭─[one_mistake.strand:18:10]
+ 17 │ panel P { edge: bottm }
+ 18 │ fn get() = 1
     ·          ┬
     ·          ╰── expected `{` to start the function body
+ 19 │ type Pin { id: text; n: int }
+    ╰────
+
+check::type_mismatch
+
+  × the function's result expects `Pin`, found `float`
+    ╭─[one_mistake.strand:22:42]
+ 21 │ component D {
+ 22 │   box { on click { pins.update("a", p => 3) } }
+    ·                                          ┬
+    ·                                          ╰── this is `float`
+ 23 │   page wifi { }
+    ╰────
+
+check::misplaced
+
+  × `page` goes directly inside `pages`
+    ╭─[one_mistake.strand:23:3]
+ 22 │   box { on click { pins.update("a", p => 3) } }
+ 23 │   page wifi { }
+    ·   ──┬─
+    ·     ╰── not in a `pages`
+ 24 │ }
     ╰────

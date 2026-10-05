@@ -498,11 +498,26 @@ Public interfaces other crates and later stages build on:
   contribute their schemas the same way: clone the builtin, call
   `Schema::extend(text) -> Result<(), Vec<SchemaError { line, message }>>`
   (it adds and never replaces: an existing element, group, type, alias,
-  value, palette role or token, or an overload with the same parameters,
-  is a "declared twice" error), and check with `compile_with(&map,
-  &schema)`; the LSP reads the same
+  value, palette role or token, or a function or method overload with the
+  same parameters, is a "declared twice" error; it is atomic, so on error
+  nothing is added and the fingerprint is unchanged), and check with
+  `compile_with(&map, &schema)`. The builtin's service stubs, and the
+  records only services hand out (`Window`, `Notification`, `Date`, …),
+  are declared `provisional service` / `provisional record`: the first
+  extension that declares the same name replaces the stub in place (same
+  `RecordId`, so `[Window]` fields of other services see the real one; the
+  stub's members and docs go) and the name stops being provisional, so a
+  second contribution is "declared twice" (`Schema::provisional:
+  BTreeSet<String>`). The LSP reads the same
   table for completion and hover (M3, "service schemas drive type checking
-  and LSP hover"). `///` comments in schema text document the entry they
+  and LSP hover"). Members after `.` come from one table the checker
+  itself types `x.name` and `x.name(…)` by: `schema::members_of(&Ty,
+  &Schema, &TypeTable) -> Vec<MemberInfo { name, kind: Field | Method, ty,
+  sigs, writes, doc }>` (records and services from the schema with their
+  docs, builtin-type methods, and the generic list and `Async` members —
+  `len`, `first`, `filter`, `take`, `remove_key`, `pending`, `value`, … —
+  built for the item type; `list_members`, `async_members`,
+  `ASYNC_TRANSFORMS`). `///` comments in schema text document the entry they
   precede: `Schema::doc(&DocKey) -> Option<&str>` with `DocKey::{Type(name),
   Member(type, member), Function(name), Value(name), Method(type, method),
   Element(kind), Prop(kind, name) (also `on event`, `stroke.dash` and

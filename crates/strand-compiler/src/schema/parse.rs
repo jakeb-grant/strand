@@ -5,7 +5,7 @@
 //! name is registered, and then types are resolved, so declarations may
 //! refer to ones further down.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use super::{DocKey, ElementFlags, ElementSchema, PropSchema, Schema, SchemaError, TokenSchema};
@@ -199,6 +199,8 @@ enum RawItem {
         key: Option<Vec<String>>,
         members: Vec<RawMember>,
         service: bool,
+        /// `provisional`: a stub one later extension may replace.
+        provisional: bool,
     },
     Fn(RawSig),
     Value {
@@ -350,7 +352,16 @@ impl Parser {
 
     fn item(&mut self) -> PResult<RawItem> {
         let doc = self.doc();
-        let kw = self.word()?;
+        let mut kw = self.word()?;
+        let provisional = kw == "provisional";
+        if provisional {
+            kw = self.word()?;
+            if kw != "record" && kw != "service" {
+                return self.err(format!(
+                    "`provisional` goes before `record` or `service`, not `{kw}`"
+                ));
+            }
+        }
         Ok(match kw.as_str() {
             "enum" => {
                 let name = self.word()?;
@@ -404,6 +415,7 @@ impl Parser {
                     key,
                     members,
                     service: kw == "service",
+                    provisional,
                 }
             }
             "fn" | "action" => {
@@ -813,13 +825,37 @@ fn resolve_params(
         .collect()
 }
 
-fn add_method(methods: &mut Vec<MethodDef>, name: &str, sig: Arc<FnSig>) {
+/// Whether two overloads take the same parameters (one would silently
+/// replace, or never be picked over, the other).
+fn same_params(a: &FnSig, b: &FnSig) -> bool {
+    a.params.len() == b.params.len()
+        && a.params
+            .iter()
+            .zip(&b.params)
+            .all(|(p, q)| p.name == q.name && p.ty == q.ty)
+}
+
+/// Adds a method overload; an overload with the same parameters as an
+/// existing one is declared twice.
+fn add_method(
+    methods: &mut Vec<MethodDef>,
+    name: &str,
+    sig: Arc<FnSig>,
+    line: u32,
+) -> Result<(), SchemaError> {
     match methods.iter_mut().find(|m| m.name == name) {
-        Some(m) => m.sigs.push(sig),
-        None => methods.push(MethodDef {
-            name: name.to_string(),
-            sigs: vec![sig],
-        }),
+        Some(m) if m.sigs.iter().any(|o| same_params(o, &sig)) => Err(twice(line, name)),
+        Some(m) => {
+            m.sigs.push(sig);
+            Ok(())
+        }
+        None => {
+            methods.push(MethodDef {
+                name: name.to_string(),
+                sigs: vec![sig],
+            });
+            Ok(())
+        }
     }
 }
 
@@ -834,9 +870,28 @@ pub(super) fn extend(schema: &mut Schema, text: &str) -> Result<(), Vec<SchemaEr
     };
     let items = p.items();
     let mut errors = std::mem::take(&mut p.errors);
+    // A `provisional` record or service (a types-only stub) is replaced by
+    // the first extension that declares the same name: it keeps its id, so
+    // every type that refers to it now sees the real one, and loses its
+    // members and docs.
+    let mut replacing: HashSet<String> = HashSet::new();
+    for (item, _) in &items {
+        if let RawItem::Record { name, .. } = item
+            && schema.provisional.contains(name)
+            && replacing.insert(name.clone())
+        {
+            schema.docs.retain(|k, _| match k {
+                DocKey::Type(t) | DocKey::Member(t, _) => t != name,
+                _ => true,
+            });
+        }
+    }
     for (key, doc) in std::mem::take(&mut p.docs) {
         schema.docs.entry(key).or_insert(doc);
     }
+    // Records refused in pass 1 (declared twice), so pass 2 leaves the
+    // existing record alone.
+    let mut refused: HashSet<String> = HashSet::new();
 
     // Pass 1: names.
     for (item, line) in &items {
@@ -875,21 +930,44 @@ pub(super) fn extend(schema: &mut Schema, text: &str) -> Result<(), Vec<SchemaEr
                 }
             }
             RawItem::Record {
-                name, key, service, ..
+                name,
+                key,
+                service,
+                provisional,
+                ..
             } => {
-                if dup(schema, name) || declared_later_as_opaque(all_items, name) {
+                let replaced = schema
+                    .types
+                    .find_record(name)
+                    .filter(|_| replacing.contains(name) && schema.provisional.remove(name));
+                if let Some(id) = replaced {
+                    let mut rec = RecordDef::new(name.clone(), Origin::Schema);
+                    rec.key = key.clone();
+                    rec.doc = schema.docs.get(&DocKey::Type(name.clone())).cloned();
+                    *schema.types.record_mut(id) = rec;
+                    if *service {
+                        schema.services.insert(name.clone(), id);
+                    } else {
+                        schema.services.remove(name);
+                    }
+                } else if dup(schema, name) || declared_later_as_opaque(all_items, name) {
                     errors.push(SchemaError {
                         line: *line,
                         message: format!("`{name}` is declared twice"),
                     });
+                    refused.insert(name.clone());
                     continue;
+                } else {
+                    let mut rec = RecordDef::new(name.clone(), Origin::Schema);
+                    rec.key = key.clone();
+                    rec.doc = schema.docs.get(&DocKey::Type(name.clone())).cloned();
+                    let id = schema.types.add_record(rec);
+                    if *service {
+                        schema.services.insert(name.clone(), id);
+                    }
                 }
-                let mut rec = RecordDef::new(name.clone(), Origin::Schema);
-                rec.key = key.clone();
-                rec.doc = schema.docs.get(&DocKey::Type(name.clone())).cloned();
-                let id = schema.types.add_record(rec);
-                if *service {
-                    schema.services.insert(name.clone(), id);
+                if *provisional {
+                    schema.provisional.insert(name.clone());
                 }
             }
             _ => {}
@@ -920,6 +998,9 @@ pub(super) fn extend(schema: &mut Schema, text: &str) -> Result<(), Vec<SchemaEr
         let line = *line;
         match item {
             RawItem::Record { name, members, .. } => {
+                if refused.contains(name) {
+                    continue;
+                }
                 let Some(id) = schema.types.find_record(name) else {
                     continue;
                 };
@@ -938,10 +1019,13 @@ pub(super) fn extend(schema: &mut Schema, text: &str) -> Result<(), Vec<SchemaEr
                                 Err(e) => errors.push(e),
                             }
                         }
-                        RawMember::Method(sig) => match resolve_sig(schema, sig) {
-                            Ok(s) => add_method(&mut methods, &sig.name, s),
-                            Err(e) => errors.push(e),
-                        },
+                        RawMember::Method(sig) => {
+                            if let Err(e) = resolve_sig(schema, sig)
+                                .and_then(|s| add_method(&mut methods, &sig.name, s, sig.line))
+                            {
+                                errors.push(e);
+                            }
+                        }
                         RawMember::Event { name, params, line } => {
                             match resolve_params(schema, params, *line) {
                                 Ok(params) => events.push(EventDef {
@@ -963,15 +1047,8 @@ pub(super) fn extend(schema: &mut Schema, text: &str) -> Result<(), Vec<SchemaEr
                     // An overload must differ in its parameters, or it
                     // would silently replace (or never be picked over)
                     // the first.
-                    let same = |a: &FnSig, b: &FnSig| {
-                        a.params.len() == b.params.len()
-                            && a.params
-                                .iter()
-                                .zip(&b.params)
-                                .all(|(p, q)| p.name == q.name && p.ty == q.ty)
-                    };
                     let list = schema.functions.entry(sig.name.clone()).or_default();
-                    if list.iter().any(|o| same(o, &s)) {
+                    if list.iter().any(|o| same_params(o, &s)) {
                         errors.push(twice(line, &sig.name));
                     } else {
                         list.push(s);
@@ -991,9 +1068,10 @@ pub(super) fn extend(schema: &mut Schema, text: &str) -> Result<(), Vec<SchemaEr
             RawItem::Methods { ty_name, sigs } => {
                 let mut list = schema.methods.remove(ty_name).unwrap_or_default();
                 for sig in sigs {
-                    match resolve_sig(schema, sig) {
-                        Ok(s) => add_method(&mut list, &sig.name, s),
-                        Err(e) => errors.push(e),
+                    if let Err(e) = resolve_sig(schema, sig)
+                        .and_then(|s| add_method(&mut list, &sig.name, s, sig.line))
+                    {
+                        errors.push(e);
                     }
                 }
                 schema.methods.insert(ty_name.clone(), list);

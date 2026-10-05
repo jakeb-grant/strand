@@ -22,9 +22,12 @@ impl<'a> Checker<'a> {
         let mut out: Vec<hir::Stmt> = Vec::with_capacity(items.len());
         for (i, s) in items.iter().enumerate() {
             let last = i + 1 == items.len();
-            out.push(match (&s.kind, ret) {
-                (ast::StmtKind::Expr(e), Some(r)) if last => hir::Stmt {
-                    kind: StmtKind::Expr(self.expr(e, Some(r))),
+            out.push(match &s.kind {
+                // The fn's value.
+                ast::StmtKind::Expr(e) if last => hir::Stmt {
+                    kind: StmtKind::Expr(
+                        self.named_value("a `fn`'s result", ret, |c| c.expr(e, ret)),
+                    ),
                     span: s.span,
                 },
                 _ => self.stmt(s),
@@ -40,7 +43,21 @@ impl<'a> Checker<'a> {
         let kind = match &s.kind {
             ast::StmtKind::Let(l) => self.stmt_let(l),
             ast::StmtKind::Assign { target, op, value } => self.assign(target, *op, value),
-            ast::StmtKind::Expr(e) => StmtKind::Expr(self.expr(e, None)),
+            ast::StmtKind::Expr(e) => {
+                let h = self.expr(e, None);
+                if self.ctx.handler && matches!(h.ty, Ty::Async(_)) {
+                    // `on click { sleep(1s) }` almost always meant to wait.
+                    let shown = self.show(&h.ty);
+                    self.error(
+                        "check::async",
+                        format!("this `{shown}` is dropped"),
+                        h.span,
+                        "never awaited or kept",
+                    )
+                    .help = Some("`await` it, or assign the result".into());
+                }
+                StmtKind::Expr(h)
+            }
             ast::StmtKind::If(i) => self.stmt_if(i),
             ast::StmtKind::For(f) => self.stmt_for(f),
             ast::StmtKind::Match(m) => self.stmt_match(m),

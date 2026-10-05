@@ -46,6 +46,28 @@ check::async
  15 │ let names = join(", ", apps.search(q))
     ·                        ───────┬──────
     ·                               ╰── this is `Async<[Hit]>`
- 16 │ component Count { text "{hits.len}"; col { for h in hits.filter(h => h.app.name != "") { text h.app.name } } }
+ 16 │ component Count {
     ╰────
   help: give a value for while it loads or fails: `… ?? fallback`
+
+check::async
+
+  × this `Async<()>` is dropped
+    ╭─[async_value.strand:22:35]
+ 21 │ // A handler that drops an `Async` almost always meant to wait for it.
+ 22 │ component Wait { box { on click { sleep(1s); apps.search(q) } } }
+    ·                                   ────┬────
+    ·                                       ╰── never awaited or kept
+    ╰────
+  help: `await` it, or assign the result
+
+check::async
+
+  × this `Async<[Hit]>` is dropped
+    ╭─[async_value.strand:22:46]
+ 21 │ // A handler that drops an `Async` almost always meant to wait for it.
+ 22 │ component Wait { box { on click { sleep(1s); apps.search(q) } } }
+    ·                                              ───────┬──────
+    ·                                                     ╰── never awaited or kept
+    ╰────
+  help: `await` it, or assign the result

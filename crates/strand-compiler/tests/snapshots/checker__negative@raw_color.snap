@@ -5,35 +5,71 @@ expression: rendered
 check::raw_color
 
   ⚠ raw colour in a prop
-    ╭─[raw_color.strand:9:13]
-  8 │ component C {
-  9 │   box { bg: #ff0000; color: prefs.accent }
+    ╭─[raw_color.strand:10:13]
+  9 │ component C {
+ 10 │   box { bg: #ff0000; color: prefs.accent }
     ·             ───┬───
     ·                ╰── this colour ignores the theme
- 10 │ }
+ 11 │ }
     ╰────
   help: use a token such as `$accent` or `$fg.muted`, so theme swaps reach it
 
 check::raw_color
 
   ⚠ raw colour in a `let`
-    ╭─[raw_color.strand:11:12]
- 10 │ }
- 11 │ let warn = #ff0000
+    ╭─[raw_color.strand:12:12]
+ 11 │ }
+ 12 │ let warn = #ff0000
     ·            ───┬───
     ·               ╰── this colour ignores the theme
- 12 │ let pick = true ? #00ff00 : $accent
+ 13 │ let pick = true ? #00ff00 : $accent
     ╰────
   help: use a token such as `$accent` or `$fg.muted`, so theme swaps reach it
 
 check::raw_color
 
   ⚠ raw colour in a `let`
-    ╭─[raw_color.strand:12:19]
- 11 │ let warn = #ff0000
- 12 │ let pick = true ? #00ff00 : $accent
+    ╭─[raw_color.strand:13:19]
+ 12 │ let warn = #ff0000
+ 13 │ let pick = true ? #00ff00 : $accent
     ·                   ───┬───
     ·                      ╰── this colour ignores the theme
- 13 │ component D { box { bg: warn } }
+ 14 │ component D { box { bg: warn } }
+    ╰────
+  help: use a token such as `$accent` or `$fg.muted`, so theme swaps reach it
+
+check::raw_color
+
+  ⚠ raw colour in a `state`
+    ╭─[raw_color.strand:15:12]
+ 14 │ component D { box { bg: warn } }
+ 15 │ state sc = #ff0000
+    ·            ───┬───
+    ·               ╰── this colour ignores the theme
+ 16 │ fn red() -> color { #ff0000 }
+    ╰────
+  help: use a token such as `$accent` or `$fg.muted`, so theme swaps reach it
+
+check::raw_color
+
+  ⚠ raw colour in a `fn`'s result
+    ╭─[raw_color.strand:16:21]
+ 15 │ state sc = #ff0000
+ 16 │ fn red() -> color { #ff0000 }
+    ·                     ───┬───
+    ·                        ╰── this colour ignores the theme
+ 17 │ component E(c: color = #0000ff) { box { bg: c } }
+    ╰────
+  help: use a token such as `$accent` or `$fg.muted`, so theme swaps reach it
+
+check::raw_color
+
+  ⚠ raw colour in a parameter default
+    ╭─[raw_color.strand:17:24]
+ 16 │ fn red() -> color { #ff0000 }
+ 17 │ component E(c: color = #0000ff) { box { bg: c } }
+    ·                        ───┬───
+    ·                           ╰── this colour ignores the theme
+ 18 │ component F { box { drag: material(seed: #7aa2f7) } }
     ╰────
   help: use a token such as `$accent` or `$fg.muted`, so theme swaps reach it

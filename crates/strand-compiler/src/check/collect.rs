@@ -206,30 +206,27 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// A `state`, `let`, `fn` or parameter named like a builtin service,
-    /// value or function would hide it in its scope without a word
-    /// (`let battery = 5`, then `battery.percent` fails far from the
-    /// cause): an error asking for another name. `what` names the
-    /// declaration (`let`, `state`, `parameter`).
+    /// Builtin names are a prelude: a `state`, `let`, parameter, `fn`,
+    /// type or component named like a builtin function, value or type
+    /// shadows it in its scope (a call that then fails names the hidden
+    /// builtin). Shadowing a builtin service gets a warning, since
+    /// `let battery = 5` turns `battery.percent` far away into a confusing
+    /// error; a warning, so a service crate that adds a service never
+    /// breaks a config. `what` names the declaration (`let`, `state`,
+    /// `parameter`).
     pub(super) fn shadows_builtin(&mut self, name: &ast::Ident, what: &str) {
         let n = name.name.as_str();
-        let taken = if self.schema.services.contains_key(n) {
-            "a builtin service"
-        } else if self.schema.values.contains_key(n) {
-            "a builtin value"
-        } else if self.schema.functions.contains_key(n) {
-            "a builtin function"
-        } else {
+        if !self.schema.services.contains_key(n) {
             return;
-        };
-        self.error(
-            "check::redeclared",
-            format!("`{n}` is {taken}"),
+        }
+        self.warning(
+            "check::shadows_builtin",
+            format!("this {what} hides the builtin service `{n}`"),
             name.span,
-            "already taken",
+            "shadows a service",
         )
         .help = Some(format!(
-            "rename the {what}: here it would hide the builtin `{n}`"
+            "rename the {what}: in its scope `{n}` no longer reads the service"
         ));
     }
 
@@ -240,21 +237,28 @@ impl<'a> Checker<'a> {
         ty: Ty,
         lazy: LazyState<'a>,
     ) -> DefId {
+        // Builtin elements are resolved before components in a tree, so a
+        // component named like one could never be placed; two services
+        // under one name would be ambiguous. Other builtin names are a
+        // prelude the declaration shadows (see `shadows_builtin`).
         let builtin = match &kind {
             DefKind::Component | DefKind::Surface(_) => {
                 self.schema.element(&name.name).map(|_| "a builtin element")
             }
-            DefKind::Type(_) | DefKind::Enum(_) => {
-                self.schema.named_type(&name.name).map(|_| "a builtin type")
-            }
             DefKind::Service(_) => self.schema.service(&name.name).map(|_| "a builtin service"),
-            DefKind::Fn => self
-                .schema
-                .functions
-                .contains_key(&name.name)
-                .then_some("a builtin function"),
             _ => None,
         };
+        match &kind {
+            DefKind::Fn | DefKind::Type(_) | DefKind::Enum(_) | DefKind::Component => {
+                let what = match &kind {
+                    DefKind::Fn => "`fn`",
+                    DefKind::Component => "component",
+                    _ => "type",
+                };
+                self.shadows_builtin(name, what);
+            }
+            _ => {}
+        }
         if let Some(what) = builtin {
             self.error(
                 "check::redeclared",
@@ -506,7 +510,9 @@ impl<'a> Checker<'a> {
             }
             let declared = p.ty.as_ref().map(|t| self.resolve_type(t));
             let default = p.default.as_ref().map(|d| {
-                let e = self.expr(d, declared.as_ref());
+                let e = self.named_value("a parameter default", declared.as_ref(), |c| {
+                    c.expr(d, declared.as_ref())
+                });
                 if let Some(t) = &declared {
                     self.require(&e, t, "the default");
                 }

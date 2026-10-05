@@ -25,5 +25,20 @@ check::override_needed
  5 │ tokens other { accent: #7aa2f7 }
    ·                ───┬──
    ·                   ╰── redefined without `override`
+ 6 │ // A component's token is a knob: a set that redefines it says `override`.
    ╰────
   help: palette roles come from `use palette …`; to replace one here, write `override accent: …`
+
+check::override_needed
+
+  × `$Toast.radius` is already defined by component `Toast`
+   ╭─[override_needed.strand:8:16]
+ 6 │ // A component's token is a knob: a set that redefines it says `override`.
+ 7 │ component Toast(n: int) tokens { radius: $radius.lg } { col { radius: $Toast.radius } }
+   ·                                  ───┬──
+   ·                                     ╰── defined here
+ 8 │ tokens extra { Toast.radius: 3px }
+   ·                ──────┬─────
+   ·                      ╰── redefined without `override`
+   ╰────
+  help: redefining a token is loud: `override Toast.radius: …`

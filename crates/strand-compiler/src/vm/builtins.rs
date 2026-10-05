@@ -544,19 +544,25 @@ pub(crate) fn method(
         Value::Num(n, u) => num_method(*n, *u, name, &args),
         Value::List(items) => list_method(vm, rt, items, name, args),
         Value::Async(a) => {
+            let again = a.op.as_ref().map(|_| Args {
+                params: args.params.clone(),
+                rest: args.rest.clone(),
+            });
             let out = match &a.value {
                 Some(Value::List(items)) => list_method(vm, rt, items, name, args)?,
                 _ => list_method(vm, rt, &[], name, args)?,
             };
             // A transform of a loading list is still loading (the
             // checker types it `Async<[U]>`): `.pending` and `.error`
-            // carry over, so `?? fallback` still covers them.
+            // carry over, so `?? fallback` still covers them, and `await`
+            // on it waits for the source, then applies the transform.
             Ok(if matches!(out, Value::List(_)) {
+                let op = again.map(|args| derived_op(vm, rt, a, name, args));
                 Value::Async(Rc::new(AsyncValue {
                     value: a.value.as_ref().map(|_| out),
                     pending: a.pending,
                     error: a.error.clone(),
-                    op: None,
+                    op,
                 }))
             } else {
                 out
@@ -573,6 +579,33 @@ pub(crate) fn method(
         }
         _ => Ok(Value::Null),
     }
+}
+
+/// What `await` waits on for `source.name(args)` (`hits.take(2)`): the
+/// source's load, then the transform of its result. Weak handles, so a
+/// value kept in state does not keep the VM or the runtime alive.
+fn derived_op(
+    vm: &Rc<Vm>,
+    rt: &Runtime,
+    source: &Rc<AsyncValue>,
+    name: &str,
+    args: Args,
+) -> Rc<PendingOp> {
+    let (vm, rt) = (Rc::downgrade(vm), rt.downgrade());
+    let (source, name) = (Value::Async(source.clone()), name.to_string());
+    Rc::new(PendingOp::new(Box::pin(async move {
+        let settled = super::exec::await_value(source)
+            .await
+            .map_err(|e| e.to_string())?;
+        let (Some(vm), Some(rt)) = (vm.upgrade(), rt.upgrade()) else {
+            return Err("the program was unloaded".to_string());
+        };
+        let items = match &settled {
+            Value::List(items) => items.as_slice(),
+            _ => &[],
+        };
+        list_method(&vm, &rt, items, &name, args).map_err(|e| e.to_string())
+    })))
 }
 
 fn color_method(recv: &Value, name: &str, args: &Args) -> Result<Value, Error> {

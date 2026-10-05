@@ -831,23 +831,35 @@ impl<'a> Checker<'a> {
             Some("read `.value` (null while loading) or give a fallback: `… ?? fallback`".into());
     }
 
-    /// Checks a `let`'s value. A raw colour in it that the `let` hands on
-    /// as a colour (`let c = #ff0000`, then `bg: c`) bypasses the theme
-    /// as a prop's would, so it gets the same lint; one inside
-    /// `material(seed: …)` does not.
+    /// Checks a `let`'s value (see [`Checker::named_value`]).
     pub(crate) fn let_value(&mut self, value: &'a ast::Expr, expected: Option<&Ty>) -> hir::Expr {
+        self.named_value("a `let`", expected, |c| c.expr(value, expected))
+    }
+
+    /// Checks the value of a declaration that names a value: a `let`, a
+    /// `state`'s initial value, a `fn`'s result or a parameter default. A
+    /// raw colour in it that the declaration hands on as a colour (`let c
+    /// = #ff0000`, then `bg: c`) bypasses the theme as a prop's would, so
+    /// it gets the same lint; one inside `material(seed: …)` does not.
+    /// Settings defaults never come here.
+    pub(crate) fn named_value(
+        &mut self,
+        what: &str,
+        declared: Option<&Ty>,
+        check: impl FnOnce(&mut Self) -> hir::Expr,
+    ) -> hir::Expr {
         let mark = self.let_colours.len();
         let saved = self.ctx.let_value;
         self.ctx.let_value = true;
-        let h = self.expr(value, expected);
+        let h = check(self);
         self.ctx.let_value = saved;
         let found = self.let_colours.split_off(mark.min(self.let_colours.len()));
-        let ty = expected.unwrap_or(&h.ty);
+        let ty = declared.unwrap_or(&h.ty);
         if colour_like(ty) {
             for span in found {
                 self.warning(
                     "check::raw_color",
-                    "raw colour in a `let`",
+                    format!("raw colour in {what}"),
                     span,
                     "this colour ignores the theme",
                 )
@@ -920,16 +932,21 @@ impl<'a> Checker<'a> {
         let n = name.name.as_str();
         match t {
             Ty::Error | Ty::Any => Ty::Error,
-            Ty::List(elem, _) => match n {
-                "len" => Ty::INT,
-                "first" | "last" => (**elem).clone().optional(),
-                _ => {
-                    let candidates = ["len", "first", "last"].map(String::from);
-                    let is_method = LIST_METHODS.contains(&n);
-                    self.no_field(t, base_ast, name, &candidates, is_method);
-                    Ty::Error
+            Ty::List(elem, keyed) => {
+                let members = crate::schema::list_members(elem, *keyed, &Ty::Error);
+                match members.iter().find(|m| m.name == n) {
+                    Some(m) if m.kind == crate::schema::MemberKind::Field => m.ty.clone(),
+                    found => {
+                        let candidates: Vec<String> = members
+                            .iter()
+                            .filter(|m| m.kind == crate::schema::MemberKind::Field)
+                            .map(|m| m.name.clone())
+                            .collect();
+                        self.no_field(t, base_ast, name, &candidates, found.is_some());
+                        Ty::Error
+                    }
                 }
-            },
+            }
             Ty::Prim(Prim::Text | Prim::Path) if n == "len" => Ty::INT,
             Ty::Record(r) => {
                 let rec = self.types.record(*r);
@@ -1056,6 +1073,26 @@ impl<'a> Checker<'a> {
         let name = id.name.as_str();
         if let Some(b) = self.lookup_scope(name) {
             let f = self.binding_expr(b, id.span);
+            if !matches!(f.ty, Ty::Fn(_) | Ty::Error | Ty::Any)
+                && self.schema.functions.contains_key(name)
+            {
+                // Builtins are a prelude: a local shadows one. Say so where
+                // the shadowing is observed.
+                for a in args {
+                    self.expr(&a.value, None);
+                }
+                let shown = self.show(&f.ty);
+                self.error(
+                    "check::type_mismatch",
+                    format!("`{name}` here is a `{shown}`, not a function"),
+                    id.span,
+                    "cannot be called",
+                )
+                .help = Some(format!(
+                    "`{name}` in scope hides the builtin `{name}`; rename it to call the builtin"
+                ));
+                return hir::Expr::error(span);
+            }
             return self.call_value(f, args, span);
         }
         if let Some(&d) = self.globals.get(name) {
@@ -1105,12 +1142,13 @@ impl<'a> Checker<'a> {
             let reported = sigs.iter().any(|s| s.action) && self.action_check(name, id.span);
             // `material(seed: #7aa2f7)`: a seed is where a raw colour
             // belongs.
-            let saved = self.ctx.let_value;
+            let saved = (self.ctx.let_value, self.ctx.prop);
             if name == "material" {
                 self.ctx.let_value = false;
+                self.ctx.prop = false;
             }
             let (overload, args, ret) = self.call_overloads(&sigs, args, name, span);
-            self.ctx.let_value = saved;
+            (self.ctx.let_value, self.ctx.prop) = saved;
             let ret = if reported { Ty::Error } else { ret };
             return hir::Expr {
                 kind: ExprKind::Call {
@@ -1336,8 +1374,17 @@ impl<'a> Checker<'a> {
                     }
                 },
                 ArgKind::Positional => {
+                    // A defaulted `from` before a variadic (`conic(from: 0,
+                    // ...stops)`) is given by name only, so `conic($a, $b)`
+                    // are all stops.
+                    let by_name_only = |p: &ParamSig| {
+                        p.name == "from"
+                            && p.has_default
+                            && sig.params.last().is_some_and(|l| l.variadic)
+                    };
                     while next_pos < sig.params.len()
-                        && (filled[next_pos] && !sig.params[next_pos].variadic)
+                        && ((filled[next_pos] && !sig.params[next_pos].variadic)
+                            || by_name_only(&sig.params[next_pos]))
                     {
                         next_pos += 1;
                     }
@@ -1462,7 +1509,7 @@ impl<'a> Checker<'a> {
             // list is still loading (`Async<[U]>`, `.pending` kept).
             Ty::Async(inner)
                 if inner.list_elem().is_some()
-                    && ASYNC_TRANSFORMS.contains(&name.name.as_str()) =>
+                    && crate::schema::ASYNC_TRANSFORMS.contains(&name.name.as_str()) =>
             {
                 let list = (*inner).clone();
                 let Ty::List(elem, keyed) = &list else {
@@ -1613,24 +1660,34 @@ impl<'a> Checker<'a> {
         span: Span,
     ) -> (Vec<CallArg>, Ty) {
         let t = elem.clone();
-        let list = Ty::List(Box::new(t.clone()), keyed);
-        let p = |n: &str, ty: Ty| ParamSig {
-            name: n.into(),
-            ty,
-            has_default: false,
-            default: None,
-            variadic: false,
-        };
-        let pred = Ty::Fn(Arc::new(FnSig::positional(vec![t.clone()], Ty::BOOL)));
-        let any_fn = Ty::Fn(Arc::new(FnSig::positional(vec![t.clone()], Ty::Any)));
         let n = name.name.as_str();
-        let mutation = matches!(
-            n,
-            "push" | "insert" | "remove" | "clear" | "remove_key" | "move" | "update"
-        );
-        let needs_key = matches!(n, "remove_key" | "move" | "update");
-        let key = if needs_key {
-            match self.key_ty(recv, elem) {
+        let members = crate::schema::list_members(&t, keyed, &Ty::Error);
+        let Some(member) = members
+            .iter()
+            .find(|m| m.name == n && m.kind == crate::schema::MemberKind::Method)
+        else {
+            let candidates: Vec<String> = members
+                .iter()
+                .filter(|m| m.kind == crate::schema::MemberKind::Method)
+                .map(|m| m.name.clone())
+                .collect();
+            let help = Self::did_you_mean(n, &candidates);
+            self.error(
+                "check::unknown_field",
+                format!("lists have no method `{n}`"),
+                name.span,
+                "unknown method",
+            )
+            .help = help;
+            for a in args {
+                self.expr(&a.value, None);
+            }
+            return (Vec::new(), Ty::Error);
+        };
+        let mutation = member.writes;
+        let needs_key = member.sigs[0].params.iter().any(|p| p.name == "key");
+        let sig = if needs_key {
+            let key = match self.key_ty(recv, elem) {
                 Some(k) => k,
                 None => {
                     let owner = quoted(recv_ast);
@@ -1643,52 +1700,16 @@ impl<'a> Checker<'a> {
                     .help = Some("declare one: `state xs: [T] key field = []`".into());
                     Ty::Error
                 }
-            }
-        } else {
-            Ty::Error
-        };
-        let sig = match n {
-            "filter" => FnSig::new(vec![p("keep", pred)], list.clone()),
-            "map" => FnSig::new(vec![p("f", any_fn.clone())], list.clone()),
-            "sort_by" => FnSig::new(vec![p("by", any_fn)], list.clone()),
-            "take" | "skip" => FnSig::new(vec![p("count", Ty::INT)], list.clone()),
-            "reverse" => FnSig::new(vec![], list.clone()),
-            "join" => FnSig::new(vec![p("sep", Ty::TEXT)], Ty::TEXT),
-            "contains" => FnSig::new(vec![p("item", t.clone())], Ty::BOOL),
-            "any" | "all" => FnSig::new(vec![p("test", pred)], Ty::BOOL),
-            "count" => FnSig::new(vec![p("test", pred)], Ty::INT),
-            "find" => FnSig::new(vec![p("test", pred)], t.clone().optional()),
-            "push" => FnSig::new(vec![p("item", t.clone())], Ty::Unit),
-            "insert" => FnSig::new(vec![p("at", Ty::INT), p("item", t.clone())], Ty::Unit),
-            "remove" => FnSig::new(vec![p("at", Ty::INT)], Ty::Unit),
-            "clear" => FnSig::new(vec![], Ty::Unit),
-            "remove_key" => FnSig::new(vec![p("key", key)], Ty::Unit),
-            "move" => FnSig::new(vec![p("key", key), p("to", Ty::INT)], Ty::Unit),
-            "update" => FnSig::new(
-                vec![
-                    p("key", key),
-                    p(
-                        "f",
-                        Ty::Fn(Arc::new(FnSig::positional(vec![t.clone()], t.clone()))),
-                    ),
-                ],
-                Ty::Unit,
-            ),
-            _ => {
-                let candidates: Vec<String> = LIST_METHODS.iter().map(|s| s.to_string()).collect();
-                let help = Self::did_you_mean(n, &candidates);
-                self.error(
-                    "check::unknown_field",
-                    format!("lists have no method `{n}`"),
-                    name.span,
-                    "unknown method",
-                )
-                .help = help;
-                for a in args {
-                    self.expr(&a.value, None);
+            };
+            let mut sig = (*member.sigs[0]).clone();
+            for p in &mut sig.params {
+                if p.name == "key" {
+                    p.ty = key.clone();
                 }
-                return (Vec::new(), Ty::Error);
             }
+            sig
+        } else {
+            (*member.sigs[0]).clone()
         };
         let label = path_text(recv_ast).map_or_else(|| n.to_string(), |p| format!("{p}.{n}"));
         if mutation
@@ -2196,13 +2217,25 @@ impl<'a> Checker<'a> {
         let want_ret = sig.as_ref().map(|s| s.ret.clone());
         let (hbody, ret) = match body {
             ast::LambdaBody::Expr(e) => {
-                let h = match &want_ret {
+                let (h, ty) = match &want_ret {
                     Some(r) if !matches!(r, Ty::Any | Ty::Unit) => {
-                        self.expect(e, r, "the function's result")
+                        let h = self.expr(e, Some(r));
+                        // A result already reported against the expected
+                        // type: the lambda takes that type, so the call
+                        // does not report it again.
+                        let ty = if self.require(&h, r, "the function's result") {
+                            h.ty.clone()
+                        } else {
+                            r.clone()
+                        };
+                        (h, ty)
                     }
-                    _ => self.expr(e, None),
+                    _ => {
+                        let h = self.expr(e, None);
+                        let ty = h.ty.clone();
+                        (h, ty)
+                    }
                 };
-                let ty = h.ty.clone();
                 (hir::LambdaBody::Expr(Box::new(h)), ty)
             }
             ast::LambdaBody::Block(b) => {
@@ -2652,29 +2685,6 @@ impl<'a> Checker<'a> {
     }
 }
 
-/// Methods every list has.
-const LIST_METHODS: &[&str] = &[
-    "filter",
-    "map",
-    "sort_by",
-    "take",
-    "skip",
-    "reverse",
-    "join",
-    "contains",
-    "any",
-    "all",
-    "count",
-    "find",
-    "push",
-    "insert",
-    "remove",
-    "clear",
-    "remove_key",
-    "move",
-    "update",
-];
-
 /// A colour, paint, or a list or nullable of them.
 fn colour_like(t: &Ty) -> bool {
     match t {
@@ -2684,10 +2694,6 @@ fn colour_like(t: &Ty) -> bool {
         _ => false,
     }
 }
-
-/// List methods that keep an `Async` list loading: they transform the
-/// last result, and the transform is `Async` too.
-const ASYNC_TRANSFORMS: &[&str] = &["filter", "map", "sort_by", "take", "skip", "reverse"];
 
 /// How deep overload attempts nest before the first overload that fits
 /// the call's shape is taken without trying the others.
@@ -2718,15 +2724,26 @@ fn shape_fits(sig: &FnSig, args: &[ast::Arg]) -> bool {
             ArgKind::Positional => positional += 1,
         }
     }
-    if from != has_from {
+    // `from x` needs a `from` parameter. Shape never fills `from`
+    // positionally: a required one (`oklch(from c, …)`) must be given by
+    // `from x` or `from: x`, which tells it from `oklch(l, c, h)`; a
+    // defaulted one (`conic(from: 0, ...stops)`) only by name.
+    let from_at = sig.params.iter().position(|p| p.name == "from");
+    if from && !has_from {
         return false;
     }
-    if from && let Some(i) = sig.params.iter().position(|p| p.name == "from") {
+    if from && let Some(i) = from_at {
+        if filled[i] {
+            return false;
+        }
         filled[i] = true;
     }
     for (i, p) in sig.params.iter().enumerate() {
         if positional == 0 {
             break;
+        }
+        if Some(i) == from_at {
+            continue;
         }
         if p.variadic {
             positional = 0;

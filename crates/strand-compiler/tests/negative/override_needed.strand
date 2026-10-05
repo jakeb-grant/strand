@@ -3,3 +3,6 @@
 tokens base { space { 1: 4px; 2: 8px } }
 tokens compact extends base { space { 1: 2px }; override space { 2: 4px } }
 tokens other { accent: #7aa2f7 }
+// A component's token is a knob: a set that redefines it says `override`.
+component Toast(n: int) tokens { radius: $radius.lg } { col { radius: $Toast.radius } }
+tokens extra { Toast.radius: 3px }
