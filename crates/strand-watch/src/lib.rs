@@ -1,8 +1,36 @@
 //! Change sources that become writes into the reactive graph.
 //!
-//! Directory (never file) inotify watches acting on `CLOSE_WRITE` and
-//! `MOVED_TO`, symlink-target watches, settings TOML and wallpapers, portal
-//! `SettingChanged`, monitor hotplug, compositor reload events and IPC.
-//! Saves are coalesced (15 ms) and deduplicated by BLAKE3 hash.
+//! - [`Watcher`]: directory (never file) inotify watches through `notify`,
+//!   acting on `CLOSE_WRITE` and `MOVED_TO` (never `MODIFY`), editor
+//!   scratch names filtered, symlink chains followed (the link's directory
+//!   and the target's directory are both watched; a link swap is an edit),
+//!   network filesystems polled with content comparison, a queue overflow
+//!   answered with a full rescan. Saves are coalesced (15 ms after the last
+//!   completed write) and deduplicated by BLAKE3 hash, Strand's own writes
+//!   included.
+//! - [`PortalSettings`]: `org.freedesktop.portal.Settings` `ReadOne` at boot
+//!   and `SettingChanged` for `system.dark`, `system.accent`,
+//!   `system.contrast`.
+//! - [`CompositorEvent`]: the slot the M3 compositor adapters send
+//!   `wm.config_reloaded` through.
 //!
-//! See `docs/design.md`, "Live reload and real-time config changes". Lands in M1.
+//! Everything arrives as [`ChangeEvent`]s on one channel ([`channel`]). The
+//! watcher never parses: it sends paths, kinds and hashes. See
+//! `docs/design.md`, "Live reload and real-time config changes", and
+//! `docs/architecture.md`, "strand-watch".
+
+mod core;
+mod event;
+mod paths;
+mod portal;
+mod watcher;
+
+pub use crate::core::{ConfigWatch, ModuleSet, Options, RescanFn};
+pub use event::{
+    CacheKind, ChangeEvent, ChangeKind, ColorScheme, CompositorEvent, ContentHash, Contrast,
+    EventSink, FileBatch, FileChange, Notice, PollReason, RescanReason, Role, SystemBatch,
+    SystemSetting, channel, hash_bytes,
+};
+pub use paths::is_scratch;
+pub use portal::{APPEARANCE, Bus, KEYS, PortalSettings, parse_setting};
+pub use watcher::Watcher;
