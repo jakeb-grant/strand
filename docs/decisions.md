@@ -1068,3 +1068,116 @@ schema from `strand-compiler`).
   a parameter declared again in its body, and a file's `state` named
   like a global. A component `let` or a `for` binding that hides a
   file-level `state` is ordinary lexical scoping and is accepted.
+
+## wave2-vm
+
+- **2026-10-05 · wave2-vm: tokens stay symbolic in the VM.** `$accent`
+  evaluates to a `Value::Token` holding a `strand_scene::TokenExpr`, and
+  colour methods, channel arithmetic (`oklch(from $surface, l: l +
+  0.12)`) and comma or space values containing tokens stay expressions.
+  The emitter turns them into `PropValue::Token` (a `Template` when a
+  token fills a colour slot of a border, shadow or gradient), so render
+  resolves them every frame and a palette spring reaches every prop
+  without logic re-sending it (design.md, "Token model").
+- **2026-10-05 · wave2-vm: the positional argument's prop.** `text x`,
+  `button x` and `letters x` fill `text`; `meter x`, `graph x` and
+  `merge x` fill `value`; `effect x` fills `style`; `page x` fills
+  `name`; every other element (`icon`, `image`, `svg`, `lottie`,
+  `shader`, `spectrum`, `thumbnail`) fills `source`. A record (a
+  `Window` for `thumbnail`, an `AudioDevice` for `spectrum`) is sent as
+  its key's text.
+- **2026-10-05 · wave2-vm: palettes before M2.** `material(seed:)` is a
+  deterministic stand-in for Material 3 (`vm/palette.rs`): five tonal
+  palettes in OKLCH from the seed's hue and chroma, every role at its M3
+  tone (light or dark), contrast pushing tones apart. It fills the whole
+  palette schema, so themes written against M3 roles run now; the
+  `material-colors` crate replaces it in M2. `material(image:)` is a
+  failed `Async` until wallpaper quantisation lands, so the theme's `??
+  material(seed: …)` takes over. `import()` knows the four Catppuccin
+  flavours. A config without `use palette` gets `material(seed:
+  #7aa2f7, dark: system.dark)` (the design's default accent); without
+  `use tokens`, the first declared token set applies.
+- **2026-10-05 · wave2-vm: component tokens are global defaults.** A
+  component's `tokens { radius: … }` entries (`$Toast.radius`) go into
+  the global token table, not onto the component's nodes, so an
+  ancestor's `set { $Toast.radius: … }` overrides them (nearest scope
+  wins) as "knobs a component exposes for overriding" requires.
+- **2026-10-05 · wave2-vm: `exit` mirrors `enter` in the emitter.** An
+  element with `enter` (block or prop form) and no `exit` is sent the
+  same pose as its `exit`, so render only ever plays what it is given.
+- **2026-10-05 · wave2-vm: `~` without a duration.** `~ bezier(…)`
+  names a curve but no duration; it runs 300 ms
+  (`instantiate::BEZIER_DURATION`). `~ 200ms` uses the standard curve.
+  A `when` block's own `~` applies while that block wins.
+- **2026-10-05 · wave2-vm: `play`.** `play shake` sets the node's `play`
+  prop to `[shake, n]` with a sequence number, so playing the same
+  keyframes twice is two changes. Render plays keyframes in M4.
+- **2026-10-05 · wave2-vm: time signals until M4.** `t`, `wave(…)` and
+  `noise(…)` read 0 on the logic thread: they are render-side signals
+  ("only that node repaints, only while visible") that arrive with the
+  effects catalogue. Node-valued props (`nav: results`) are not sent
+  until keyboard navigation (M4).
+- **2026-10-05 · wave2-vm: numbers carry units at run time.** A
+  `Value::Num` keeps `int`, `float`, `px`, `%`, `ch`, `deg` or ms;
+  arithmetic follows the checker's unit rules, `int / int` is a
+  `float`, and `==` compares values whatever their units (`1 == 1.0`).
+  Division by zero is an error value, not infinity.
+- **2026-10-05 · wave2-vm: handlers always run as tasks.** Every handler
+  invocation is a core task, awaiting or not: element events through an
+  input queue and `rt.spawn_input(Some(site), …)` (not rate-counted up
+  to the first `await`), service events through `rt.spawn_for(site, …)`,
+  `on change` and timer bodies through `rt.spawn` inside their handler
+  (owned by their site). A task is polled in the flush that started it,
+  so a click's writes land in the same tick. `<->` writes and `strand
+  set` are made outside any handler.
+- **2026-10-05 · wave2-vm: `on change` identity.** A target that is a
+  field of a keyed record (`audio.sink.volume`, a `sink` has `key id`)
+  re-baselines when the record's identity changes
+  (`rt.on_change_keyed`), so switching sinks pops no OSD; other targets
+  compare values only.
+- **2026-10-05 · wave2-vm: per-monitor bars.** A `bar` is instantiated
+  once per item of `screens.all`, keyed by the screen's `name` (the
+  connector), with `screen` in scope and `screens: "<name>"`; its state
+  lives in that instance. Keeping it across a 30-second unplug (monitor
+  identity is make, model and description) needs the binary's `screens`
+  service to keep a replugged monitor's item; that wiring is the `strand
+  run` item.
+- **2026-10-05 · wave2-vm: service readers.** Every mounted component,
+  surface instance and the config's top level acquires the services its
+  body reads and releases them when unmounted, so a service's reader
+  count is the number of mounted readers (a bar and its `Battery` both
+  count).
+- **2026-10-05 · wave2-vm: `persist` storage lives in the compiler.**
+  strand-core has no persistence, so `vm::persist` stores cells as JSON
+  by declared type (enums by variant name, records by field name) with
+  the BLAKE3 hash of the default's encoding. A stored value that is
+  still the old default takes a changed default; one the user changed is
+  kept and reported (`toasts.dnd: kept true (default changed)`); one that
+  no longer fits the type resets. Keys are `module.name`, or
+  `Component.name` for component state (shared by its instances).
+- **2026-10-05 · wave2-vm: settings files hold their defaults until
+  M2.** `state prefs from "….toml" { … }` is a record of its fields'
+  defaults, written field by field (`prefs.compact = true`, `<->`);
+  reading the TOML file, per-field validation and `toml_edit` write-back
+  are the M2 settings item.
+- **2026-10-05 · wave2-vm: errors keep the last good value.** A binding
+  that fails reports its error in the tick's `Update::errors` and its
+  prop keeps the value last sent; a failing `if` condition keeps the
+  mounted branch. Keyed mutations that would duplicate a key, or name a
+  missing one, fail the handler and change nothing.
+- **2026-10-05 · wave2-vm: the mock's behaviour.** `SchemaHost::mock`
+  models what tests need beyond storing fields: `apps.search` is a
+  ready `Async` of substring matches, `workspaces.on(screen)` filters by
+  the workspace's `screen`, `calendar` and `clock` run on a fixed clock,
+  and a notification's `expire`, `dismiss` or `activate` removes it from
+  `notifications.popups`. Every action is logged.
+- **2026-10-05 · wave2-vm: awaiting.** `await` waits on the pending
+  future an `Async` carries (`sleep(d)`); an `Async` without one (a
+  service load) gives its current value or its error. Service crates
+  give their `Async` results a future in M3.
+- **2026-10-05 · wave2-vm: render → logic input.** Until render hit
+  tests (M2) the instance takes scene `NodeId`s: `event(node, name,
+  args)`, `set_flag(node, hover | pressed | focused | selected, on)`,
+  `set_size(node, w, h)` and `write(node, prop, value)`. An event goes
+  to the innermost element with a handler for it; `propagate()` passes
+  it to the next.

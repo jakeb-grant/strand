@@ -402,11 +402,8 @@ impl Lowerer<'_> {
                     .iter()
                     .map(|p| (p.local, p.default.as_ref().map(|d| self.expr_chunk(d))))
                     .collect();
-                let tokens = c
-                    .tokens
-                    .iter()
-                    .map(|t| self.token_def(t, &format!("{}.", self.hir.def(c.def).name)))
-                    .collect();
+                // Paths already carry the component's name (`Toast.radius`).
+                let tokens = c.tokens.iter().map(|t| self.token_def(t)).collect();
                 let body = self.body(&c.body);
                 self.out.components.insert(
                     c.def,
@@ -455,7 +452,7 @@ impl Lowerer<'_> {
                 );
             }
             hir::Item::Tokens(t) => {
-                let entries = t.entries.iter().map(|e| self.token_def(e, "")).collect();
+                let entries = t.entries.iter().map(|e| self.token_def(e)).collect();
                 self.out.token_sets.insert(
                     t.def,
                     TokenSet {
@@ -592,9 +589,7 @@ impl Lowerer<'_> {
                 props: self.props(&p.props, None),
             },
             hir::Node::Slot(_) => Node::Slot,
-            hir::Node::Set(defs, _) => {
-                Node::Set(defs.iter().map(|d| self.token_def(d, "")).collect())
-            }
+            hir::Node::Set(defs, _) => Node::Set(defs.iter().map(|d| self.token_def(d)).collect()),
             // `#needle { … }` inside an `svg` lands with bindable SVG (M4).
             hir::Node::Selector(_) => return None,
             hir::Node::Play(e) => Node::Play(self.expr_chunk(e)),
@@ -753,8 +748,8 @@ impl Lowerer<'_> {
         }
     }
 
-    fn token_def(&mut self, t: &hir::TokenDef, prefix: &str) -> TokenDef {
-        let path = format!("{prefix}{}", t.path);
+    fn token_def(&mut self, t: &hir::TokenDef) -> TokenDef {
+        let path = t.path.clone();
         let ty = self
             .hir
             .tokens

@@ -36,7 +36,7 @@ use strand_scene::{
 
 pub use convert::{BEZIER_DURATION, from_prop, prop_value, token_entry, transition};
 pub use emit::PropOut;
-pub use mirror::SceneMirror;
+pub use mirror::{SceneMirror, show, show_expr};
 
 use crate::hir::DefKind;
 use crate::lower::{Node, Program};

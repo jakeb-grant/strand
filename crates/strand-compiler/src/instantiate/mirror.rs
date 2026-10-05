@@ -155,6 +155,22 @@ impl SceneMirror {
         self.nodes.get(&id).map(|n| n.kind)
     }
 
+    pub fn parent(&self, id: NodeId) -> Option<NodeId> {
+        self.nodes.get(&id).and_then(|n| n.parent)
+    }
+
+    /// The nearest ancestor of `id` (itself included) of `kind`.
+    pub fn ancestor(&self, id: NodeId, kind: NodeKind) -> Option<NodeId> {
+        let mut cur = Some(id);
+        while let Some(n) = cur {
+            if self.kind(n) == Some(kind) {
+                return Some(n);
+            }
+            cur = self.parent(n);
+        }
+        None
+    }
+
     pub fn children(&self, id: NodeId) -> &[NodeId] {
         self.nodes.get(&id).map_or(&[], |n| n.children.as_slice())
     }

@@ -34,12 +34,14 @@ pub(crate) struct ElemCtx {
 }
 
 /// One source of a prop's value: the base binding or a `when` block.
+#[derive(Clone)]
 struct Source {
     cond: Option<ChunkId>,
     value: SourceValue,
     transition: Transition,
 }
 
+#[derive(Clone)]
 enum SourceValue {
     Chunk(ChunkId, Ty),
     Pose(Vec<Prop>),
@@ -397,6 +399,12 @@ impl Ctx {
                     transition: Transition::Default,
                 },
             );
+        }
+        // `exit` mirrors `enter` unless given (design.md, "Poses").
+        let has_exit = out.iter().any(|(p, _)| *p == SceneProp::Exit);
+        if !has_exit && let Some((_, enter)) = out.iter().find(|(p, _)| *p == SceneProp::Enter) {
+            let mirrored = enter.clone();
+            out.push((SceneProp::Exit, mirrored));
         }
         out
     }
