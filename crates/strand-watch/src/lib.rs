@@ -26,7 +26,7 @@ mod paths;
 mod portal;
 mod watcher;
 
-pub use crate::core::{ConfigWatch, ModuleSet, Options, RescanFn};
+pub use crate::core::{ConfigWatch, ModuleSet, Options, Referenced, RescanFn};
 pub use event::{
     CacheKind, ChangeEvent, ChangeKind, ColorScheme, CompositorEvent, ContentHash, Contrast,
     EventSink, FileBatch, FileChange, Notice, PollReason, RescanReason, Role, SystemBatch,

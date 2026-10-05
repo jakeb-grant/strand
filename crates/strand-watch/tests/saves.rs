@@ -681,7 +681,9 @@ fn registrations_are_counted_per_role() {
     let b = one_batch(&fx);
     let roles: Vec<_> = b.changes.iter().map(|c| c.role).collect();
     assert_eq!(roles, vec![Role::Wallpaper]);
-    fx.watcher.set_referenced([]).unwrap();
+    fx.watcher
+        .set_referenced(Vec::<(PathBuf, Role)>::new())
+        .unwrap();
     fs::write(&wall, "png 4").unwrap();
     no_batch(&fx);
 }
@@ -730,7 +732,11 @@ fn fifos_are_not_read() {
             .expect("watch_file blocked on a FIFO");
     });
 
-    // A module renamed over by a FIFO is reported as unreadable.
+    // A module renamed over by a FIFO is reported as unreadable. (Once the
+    // boot listing is done: a module-set listing that runs after the
+    // rename drops it from the set instead, as `find_files` lists regular
+    // files only.)
+    std::thread::sleep(SETTLE);
     let theme = fx.cfg.join("theme.strand");
     let fifo2 = fx.base.join("fifo2");
     let status = std::process::Command::new("mkfifo")
@@ -885,4 +891,168 @@ fn a_file_written_while_a_new_directory_is_being_watched() {
     assert!(wrote.load(Ordering::SeqCst));
     let c = b.changes.iter().find(|c| c.path == osd).unwrap();
     assert_eq!(c.hash, Some(hash_bytes(b"osd {}\n")));
+}
+
+// --- Registration races -------------------------------------------------------
+
+/// Watch, then list, at boot too: a module (and a directory of modules)
+/// created after the caller listed the config but before the watches
+/// existed is reported once, as `Created`.
+#[test]
+fn a_module_created_before_the_watch_is_reported() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = fs::canonicalize(tmp.path()).unwrap().join("cfg");
+    fs::create_dir(&cfg).unwrap();
+    fs::write(cfg.join("bar.strand"), "bar {}\n").unwrap();
+    let listed = config(&cfg);
+    fs::write(cfg.join("late.strand"), "late {}\n").unwrap();
+    fs::create_dir(cfg.join("widgets")).unwrap();
+    fs::write(cfg.join("widgets/osd.strand"), "osd {}\n").unwrap();
+    let (sink, rx) = channel();
+    let _w = Watcher::spawn(Some(listed), Options::default(), sink).unwrap();
+    let b = next_files(&rx, FIRST).expect("no batch");
+    let got: Vec<_> = b
+        .changes
+        .iter()
+        .map(|c| (c.path.clone(), c.kind, c.role))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            (cfg.join("late.strand"), ChangeKind::Created, Role::Module),
+            (
+                cfg.join("widgets/osd.strand"),
+                ChangeKind::Created,
+                Role::Module
+            ),
+        ]
+    );
+    assert_eq!(b.changes[0].hash, Some(hash_bytes(b"late {}\n")));
+    if let Some(extra) = next_files(&rx, SETTLE) {
+        panic!("a second batch: {extra:#?}");
+    }
+    // The new directory is watched.
+    fs::write(cfg.join("widgets/osd.strand"), "osd { a: 1 }\n").unwrap();
+    let b = next_files(&rx, FIRST).expect("the nested edit");
+    assert_eq!(b.changes.len(), 1, "{b:#?}");
+}
+
+/// The loader read a referenced file, a save landed, then it registered
+/// the path with the hash of what it read: the save is reported.
+#[test]
+fn a_save_between_read_and_registration_is_reported() {
+    let fx = fixture();
+    let prefs = fx.cfg.join("prefs.toml");
+    fs::write(&prefs, "a = 1\n").unwrap();
+    let read = hash_bytes(&fs::read(&prefs).unwrap());
+    fs::write(&prefs, "a = 2\n").unwrap();
+    fx.watcher
+        .set_referenced([(prefs.clone(), Role::Settings, read)])
+        .unwrap();
+    let b = one_batch(&fx);
+    assert_eq!(b.changes.len(), 1, "{b:#?}");
+    assert_modified(&b.changes[0], &prefs, "a = 2\n");
+
+    // Register, then read: nothing to report, and the next save is seen.
+    let wall = fx.cfg.join("wall.png");
+    fs::write(&wall, "png 1").unwrap();
+    fx.watcher.watch_file(&wall, Role::Wallpaper).unwrap();
+    let _loaded = fs::read(&wall).unwrap();
+    no_batch(&fx);
+    fs::write(&wall, "png 2").unwrap();
+    let b = one_batch(&fx);
+    assert_modified(&b.changes[0], &wall, "png 2");
+}
+
+/// `register_own_write` is in place when it returns, whatever the watcher
+/// thread is doing: a tight loop of registered atomic writes reports
+/// nothing, even with flushes running concurrently.
+#[test]
+fn own_writes_in_a_tight_loop_are_never_reported() {
+    let fx = fixture();
+    let prefs = fx.cfg.join("prefs.toml");
+    fs::write(&prefs, "v = 0\n").unwrap();
+    fx.watcher.watch_file(&prefs, Role::Settings).unwrap();
+    let tmp = fx.cfg.join(".prefs.toml.tmp");
+    let end = Instant::now() + Duration::from_millis(1500);
+    let mut writes = 0u32;
+    while Instant::now() < end {
+        writes += 1;
+        let body = format!("v = {writes}\n");
+        fx.watcher
+            .register_own_write(&prefs, hash_bytes(body.as_bytes()));
+        fs::write(&tmp, &body).unwrap();
+        fs::rename(&tmp, &prefs).unwrap();
+    }
+    assert!(writes > 100, "{writes}");
+    no_batch(&fx);
+}
+
+/// A file made complete through `O_TMPFILE` and linked in (`linkat`, as
+/// systemd's `link_tmpfile` does) is reported: its creation already has
+/// bytes, and its `CLOSE_WRITE` comes under the unnamed `#<ino>`.
+#[test]
+fn a_file_linked_in_from_o_tmpfile_is_reported() {
+    use rustix::fs::{AtFlags, CWD, Mode, OFlags};
+    let fx = fixture();
+    let prefs = fx.cfg.join("prefs.toml");
+    fx.watcher.watch_file(&prefs, Role::Settings).unwrap();
+    let fd = match rustix::fs::openat(
+        CWD,
+        &fx.cfg,
+        OFlags::TMPFILE | OFlags::WRONLY | OFlags::CLOEXEC,
+        Mode::from_raw_mode(0o644),
+    ) {
+        Ok(fd) => fd,
+        Err(e) => {
+            eprintln!("skipping: O_TMPFILE unsupported here ({e})");
+            return;
+        }
+    };
+    rustix::io::write(&fd, b"a = 1\n").unwrap();
+    let proc_path = format!("/proc/self/fd/{}", std::os::fd::AsRawFd::as_raw_fd(&fd));
+    rustix::fs::linkat(
+        CWD,
+        proc_path.as_str(),
+        CWD,
+        &prefs,
+        AtFlags::SYMLINK_FOLLOW,
+    )
+    .unwrap();
+    drop(fd);
+    let b = one_batch(&fx);
+    assert_eq!(b.changes.len(), 1, "{b:#?}");
+    assert_eq!(b.changes[0].path, prefs);
+    assert_eq!(b.changes[0].kind, ChangeKind::Created);
+    assert_eq!(b.changes[0].hash, Some(hash_bytes(b"a = 1\n")));
+}
+
+/// An ancestor of a watched directory moved while its own parent holds no
+/// full watch: the light ancestor watch sees it, the file is reported
+/// removed, and created again when the directory comes back.
+#[test]
+fn a_moved_ancestor_directory_is_seen() {
+    let fx = fixture();
+    let z = fx.base.join("x/y/z");
+    fs::create_dir_all(&z).unwrap();
+    let prefs = z.join("prefs.toml");
+    fs::write(&prefs, "a = 1\n").unwrap();
+    fx.watcher.watch_file(&prefs, Role::Settings).unwrap();
+    // `x` is watched only as an ancestor of `x/y/z`.
+    fs::rename(fx.base.join("x/y"), fx.base.join("x/q")).unwrap();
+    let b = until(&fx.rx, "the removal", |b| {
+        has(b, &prefs, ChangeKind::Removed)
+    });
+    assert_eq!(b.changes.len(), 1, "{b:#?}");
+    // A write in the moved tree is not reported under the old name.
+    fs::write(fx.base.join("x/q/z/prefs.toml"), "a = 2\n").unwrap();
+    no_batch(&fx);
+    fs::rename(fx.base.join("x/q"), fx.base.join("x/y")).unwrap();
+    let b = until(&fx.rx, "the return", |b| {
+        has(b, &prefs, ChangeKind::Created)
+    });
+    assert_eq!(b.changes[0].hash, Some(hash_bytes(b"a = 2\n")));
+    fs::write(&prefs, "a = 3\n").unwrap();
+    let b = one_batch(&fx);
+    assert_modified(&b.changes[0], &prefs, "a = 3\n");
 }

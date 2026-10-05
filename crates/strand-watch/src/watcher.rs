@@ -7,7 +7,7 @@
 //! read of `~/.config`) would wake this thread. The mask here holds only
 //! the events Strand acts on, and the kernel never queues the rest.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::io;
 use std::mem::MaybeUninit;
@@ -18,39 +18,47 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::JoinHandle;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use rustix::event::{EventfdFlags, PollFd, PollFlags, Timespec};
 use rustix::fs::inotify::{self, CreateFlags, ReadFlags, WatchFlags};
 use rustix::io::Errno;
 
-use crate::core::{Backend, ConfigWatch, Core, Options, Raw};
+use crate::core::{
+    Backend, ConfigWatch, Core, Options, Raw, Referenced, SharedOwnWrites, WatchKind,
+};
 use crate::event::{CacheKind, ChangeEvent, ContentHash, EventSink, Notice, RescanReason, Role};
 
 enum Ctl {
     AddFile(PathBuf, Role, Sender<()>),
     RemoveFile(PathBuf, Role, Sender<()>),
-    SetReferenced(Vec<(PathBuf, Role)>, Sender<()>),
+    SetReferenced(Vec<Referenced>, Sender<()>),
     AddTree(PathBuf, usize, CacheKind, Sender<()>),
-    OwnWrite(PathBuf, ContentHash),
     Rescan,
     Stop,
 }
 
 /// What a directory watch listens for. Never `IN_OPEN`, `IN_ACCESS`,
 /// `IN_CLOSE_NOWRITE` or `IN_ATTRIB`: reads cost nothing. `IN_MODIFY` only
-/// keeps an already-open batch waiting.
-fn watch_mask() -> WatchFlags {
-    WatchFlags::CLOSE_WRITE
-        | WatchFlags::MOVED_TO
-        | WatchFlags::MOVED_FROM
-        | WatchFlags::CREATE
+/// keeps an already-open batch waiting. An ancestor watch hears only its
+/// children being moved away or deleted (and itself going): writes, new
+/// files and edits in `~` or `/` queue nothing.
+fn watch_mask(kind: WatchKind) -> WatchFlags {
+    let gone = WatchFlags::MOVED_FROM
         | WatchFlags::DELETE
         | WatchFlags::DELETE_SELF
         | WatchFlags::MOVE_SELF
-        | WatchFlags::MODIFY
         | WatchFlags::ONLYDIR
-        | WatchFlags::EXCL_UNLINK
+        | WatchFlags::EXCL_UNLINK;
+    match kind {
+        WatchKind::Ancestor => gone,
+        WatchKind::Full => {
+            gone | WatchFlags::CLOSE_WRITE
+                | WatchFlags::MOVED_TO
+                | WatchFlags::CREATE
+                | WatchFlags::MODIFY
+        }
+    }
 }
 
 /// One inotify instance and its watch-descriptor map. The map is the only
@@ -75,8 +83,8 @@ impl Inotify {
         })
     }
 
-    fn watch(&mut self, dir: &Path) -> Result<(), String> {
-        let wd = inotify::add_watch(&self.fd, dir, watch_mask())
+    fn watch(&mut self, dir: &Path, kind: WatchKind) -> Result<(), String> {
+        let wd = inotify::add_watch(&self.fd, dir, watch_mask(kind))
             .map_err(|e| io::Error::from(e).to_string())?;
         if let Some(old) = self.wds.insert(dir.to_path_buf(), wd)
             && old != wd
@@ -176,10 +184,14 @@ pub(crate) fn classify(flags: ReadFlags, named: bool, path: PathBuf) -> Option<R
                 // `ln -s` makes no CLOSE_WRITE: the link is complete now.
                 Ok(m) if m.file_type().is_symlink() => Raw::Written(path),
                 Ok(m) if m.is_dir() => Raw::Dir(path),
-                // A plain new file is being written: wait for CLOSE_WRITE.
-                // But `ln` (a new name for complete content) and `mkfifo`
-                // and the like make no CLOSE_WRITE either.
-                Ok(m) if m.is_file() && m.nlink() == 1 => Raw::Busy(path),
+                // An empty new file is being written: wait for CLOSE_WRITE.
+                // But `ln` (a new name for complete content), a file
+                // linked in complete from `O_TMPFILE` (its CLOSE_WRITE, if
+                // any, came under its `#<ino>` name), `mkfifo` and the
+                // like make no CLOSE_WRITE either. A file that already has
+                // bytes when its creation is read is reported; a write
+                // still in progress extends the batch with MODIFY.
+                Ok(m) if m.is_file() && m.nlink() == 1 && m.len() == 0 => Raw::Busy(path),
                 Ok(_) => Raw::Written(path),
                 Err(_) => Raw::Busy(path),
             }
@@ -209,9 +221,9 @@ impl Kernel {
 }
 
 impl Backend for Kernel {
-    fn watch(&mut self, dir: &Path) -> Result<(), String> {
+    fn watch(&mut self, dir: &Path, kind: WatchKind) -> Result<(), String> {
         match self {
-            Kernel::Inotify(i) => i.watch(dir),
+            Kernel::Inotify(i) => i.watch(dir, kind),
             Kernel::Unavailable(reason) => Err(reason.clone()),
         }
     }
@@ -228,6 +240,7 @@ impl Backend for Kernel {
 #[derive(Debug)]
 pub struct Watcher {
     tx: Sender<Ctl>,
+    own: SharedOwnWrites,
     /// Wakes the thread's `poll` after a control message.
     wake: Arc<OwnedFd>,
     thread: Option<JoinHandle<()>>,
@@ -271,12 +284,14 @@ impl Watcher {
             EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK,
         )?);
         let core = Core::new(kernel, options.clone(), config);
+        let own = core.own_writes();
         let thread_wake = wake.clone();
         let thread = std::thread::Builder::new()
             .name("strand-watch".into())
             .spawn(move || run(core, rx, &thread_wake, sink, options))?;
         Ok(Watcher {
             tx,
+            own,
             wake,
             thread: Some(thread),
         })
@@ -300,6 +315,10 @@ impl Watcher {
     /// file nor its directory need exist yet. Registrations are counted
     /// per (path, role); a path watched for several roles gets one change
     /// per role.
+    ///
+    /// Register, then read: a save made after this returns is reported.
+    /// A file read before registering is passed with the hash of what was
+    /// read through [`Watcher::set_referenced`] instead.
     pub fn watch_file(&self, path: impl Into<PathBuf>, role: Role) -> io::Result<()> {
         let path = path.into();
         self.call(|ack| Ctl::AddFile(path, role, ack))
@@ -315,13 +334,17 @@ impl Watcher {
 
     /// Replace every [`Watcher::watch_file`] registration with this set:
     /// the referenced paths the compiler collected from the whole program
-    /// after a reload. Paths that stay keep their baseline; new ones get
-    /// one; dropped ones are no longer watched (unless they are modules).
-    pub fn set_referenced(
+    /// after a reload, as `(path, role)` or `(path, role, hash)` where
+    /// `hash` is [`hash_bytes`](crate::hash_bytes) of what the loader
+    /// read. Paths that stay keep their baseline; new ones get one;
+    /// dropped ones are no longer watched (unless they are modules). A
+    /// file that no longer holds the bytes its `hash` names (saved between
+    /// the read and this call) is reported at the next quiet period.
+    pub fn set_referenced<R: Into<Referenced>>(
         &self,
-        refs: impl IntoIterator<Item = (PathBuf, Role)>,
+        refs: impl IntoIterator<Item = R>,
     ) -> io::Result<()> {
-        let refs: Vec<_> = refs.into_iter().collect();
+        let refs: Vec<Referenced> = refs.into_iter().map(Into::into).collect();
         self.call(|ack| Ctl::SetReferenced(refs, ack))
     }
 
@@ -339,9 +362,14 @@ impl Watcher {
     }
 
     /// Strand is about to write `path` with content hashing to `hash`
-    /// (`hash_bytes`); that write is not reported. Call it before writing.
+    /// (`hash_bytes`); that write is not reported. Call it before writing;
+    /// the registration is in place when this returns. Write atomically
+    /// (a temporary file renamed over `path`): an in-place write can be
+    /// read half done, and that content is not the registered one.
     pub fn register_own_write(&self, path: impl Into<PathBuf>, hash: ContentHash) {
-        let _ = self.send(Ctl::OwnWrite(path.into(), hash));
+        let path = path.into();
+        let mut own = self.own.lock().unwrap_or_else(|e| e.into_inner());
+        own.register(&path, hash, Instant::now());
     }
 
     /// Rescan everything now (`strand reload`); the batch is marked
@@ -364,7 +392,7 @@ impl Drop for Watcher {
 fn control(core: &mut Core<Kernel>, ctl: Ctl) -> bool {
     match ctl {
         Ctl::AddFile(p, role, ack) => {
-            core.add_file(&p, role);
+            core.add_file(&p, role, None);
             let _ = ack.send(());
         }
         Ctl::RemoveFile(p, role, ack) => {
@@ -379,7 +407,6 @@ fn control(core: &mut Core<Kernel>, ctl: Ctl) -> bool {
             core.add_tree(&p, depth, kind);
             let _ = ack.send(());
         }
-        Ctl::OwnWrite(p, h) => core.register_own_write(&p, h, Instant::now()),
         Ctl::Rescan => core.request_rescan(RescanReason::Requested, Instant::now()),
         Ctl::Stop => return false,
     }
@@ -389,6 +416,10 @@ fn control(core: &mut Core<Kernel>, ctl: Ctl) -> bool {
 fn run(mut core: Core<Kernel>, rx: Receiver<Ctl>, wake: &OwnedFd, sink: EventSink, opts: Options) {
     let mut next_poll = Instant::now() + opts.poll_interval;
     let mut raws = Vec::new();
+    // A failing `poll(2)` (ENOMEM) is retried after a growing pause, and
+    // each distinct error is reported once.
+    let mut backoff = Duration::ZERO;
+    let mut reported = HashSet::new();
     loop {
         let now = Instant::now();
         let mut deadline = core.deadline();
@@ -403,13 +434,23 @@ fn run(mut core: Core<Kernel>, rx: Receiver<Ctl>, wake: &OwnedFd, sink: EventSin
                 fds.push(PollFd::new(&i.fd, PollFlags::IN));
             }
             match rustix::event::poll(&mut fds, timeout.as_ref()) {
-                Ok(_) => (
-                    !fds[0].revents().is_empty(),
-                    fds.get(1).is_some_and(|f| !f.revents().is_empty()),
-                ),
+                Ok(_) => {
+                    backoff = Duration::ZERO;
+                    (
+                        !fds[0].revents().is_empty(),
+                        fds.get(1).is_some_and(|f| !f.revents().is_empty()),
+                    )
+                }
                 Err(Errno::INTR) => (false, false),
                 Err(e) => {
-                    core.notice(Notice::Backend(e.to_string()), Instant::now());
+                    let msg = format!("poll: {e}");
+                    if reported.insert(msg.clone()) {
+                        core.notice(Notice::Backend(msg), Instant::now());
+                    }
+                    backoff = (backoff * 2)
+                        .max(Duration::from_millis(10))
+                        .min(opts.poll_interval);
+                    std::thread::sleep(backoff);
                     (true, true)
                 }
             }
@@ -434,11 +475,17 @@ fn run(mut core: Core<Kernel>, rx: Receiver<Ctl>, wake: &OwnedFd, sink: EventSin
         if fs_ready && let Kernel::Inotify(i) = core.backend() {
             let read = i.read(&mut raws);
             let now = Instant::now();
-            if let Err(e) = read {
-                core.notice(Notice::Backend(e.to_string()), now);
-            }
             for raw in raws.drain(..) {
                 core.on_raw(raw, now);
+            }
+            if let Err(e) = read {
+                // The fd would stay readable and fail again on every turn:
+                // drop inotify, poll everything, and rescan for what the
+                // failed read lost.
+                let reason = format!("inotify read failed: {e}");
+                core.notice(Notice::Backend(reason.clone()), now);
+                *core.backend() = Kernel::Unavailable(reason);
+                core.rewatch_all(now);
             }
         }
         let now = Instant::now();
@@ -469,7 +516,10 @@ mod tests {
         let link = dir.join("link.strand");
         std::os::unix::fs::symlink(&file, &link).unwrap();
         let alone = dir.join("alone.strand");
-        std::fs::write(&alone, "y").unwrap();
+        std::fs::write(&alone, "").unwrap();
+        // Complete before its creation is read (`O_TMPFILE` + `linkat`).
+        let whole = dir.join("whole.strand");
+        std::fs::write(&whole, "y").unwrap();
         let hard = dir.join("hard.strand");
         std::fs::hard_link(&file, &hard).unwrap();
         let sub = dir.join("sub");
@@ -477,6 +527,7 @@ mod tests {
         let got: Vec<Option<Raw>> = vec![
             f(ReadFlags::MODIFY, &file),
             f(ReadFlags::CREATE, &alone),
+            f(ReadFlags::CREATE, &whole),
             f(ReadFlags::CREATE, &link),
             f(ReadFlags::CREATE, &hard),
             f(ReadFlags::CLOSE_WRITE, &file),
@@ -497,6 +548,7 @@ mod tests {
             vec![
                 Some(Raw::Busy(file.clone())),
                 Some(Raw::Busy(alone)),
+                Some(Raw::Written(whole)),
                 Some(Raw::Written(link)),
                 Some(Raw::Written(hard)),
                 Some(Raw::Written(file.clone())),
@@ -526,7 +578,7 @@ mod tests {
         let file = dir.join("font.ttf");
         std::fs::write(&file, "glyphs").unwrap();
         let mut ino = Inotify::new().unwrap();
-        ino.watch(&dir).unwrap();
+        ino.watch(&dir, WatchKind::Full).unwrap();
         let mut out = Vec::new();
         for _ in 0..100 {
             let mut s = String::new();
@@ -556,7 +608,7 @@ mod tests {
         let cfg = base.join("cfg");
         std::fs::create_dir(&cfg).unwrap();
         let mut ino = Inotify::new().unwrap();
-        ino.watch(&cfg).unwrap();
+        ino.watch(&cfg, WatchKind::Full).unwrap();
         std::fs::rename(&cfg, base.join("cfg.bak")).unwrap();
         let mut out = Vec::new();
         ino.read(&mut out).unwrap();

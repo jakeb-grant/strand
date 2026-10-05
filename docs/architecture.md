@@ -474,18 +474,31 @@ It does not depend on `strand-compiler` or `strand-core`.
   or a directory link appears or vanishes in a config directory, a
   directory link on the way is swapped, the config directory itself is
   replaced, or on a rescan. When `spawn` returns, every watch is in place
-  and every module file's baseline hash is recorded: start the watcher,
-  then load. Referenced paths come from the compiler: after each reload
-  the loader calls `set_referenced(impl IntoIterator<Item = (PathBuf,
-  Role)>)` with every `(path, Role::{Shader, Settings, Wallpaper,
-  Other})` the program references, which replaces all registrations;
-  `watch_file(path, role)` / `unwatch_file(path, role)` add or drop one
-  (counted per path and role). Module-set membership is separate, so a
+  and every module file's baseline hash was read after its watch:
+  start the watcher, then load. The `modules` passed in were listed
+  before the watches existed, so the watcher lists the set once more at
+  the first quiet period and reports a module created in between as
+  `Created` (nothing when the set is unchanged). Referenced paths come
+  from the compiler: after each reload the loader calls
+  `set_referenced(impl IntoIterator<Item = impl Into<Referenced>>)`,
+  each item `(path, role)` or `(path, role, hash)` with `hash` the
+  `hash_bytes` of what the loader read, for every `(path,
+  Role::{Shader, Settings, Wallpaper, Other})` the program references;
+  it replaces all registrations, and a file that no longer holds the
+  bytes its `hash` names (saved between the read and the call) is
+  reported. `watch_file(path, role)` / `unwatch_file(path, role)` add or
+  drop one (counted per path and role); `watch_file` is register, then
+  read. Module-set membership is separate, so a
   module file registered for another role stays a module. Neither a
   referenced file nor its directory need exist yet. Cache sources come
   through `watch_tree(dir, depth, CacheKind::{Apps, Icons, Fonts})`.
   `register_own_write(path, hash_bytes(&bytes))` before Strand writes a
-  file (settings write-back) makes the matching write silent.
+  file (settings write-back) makes the matching write silent; the
+  registration is in place when it returns. Own writes must be atomic
+  (temporary file renamed over the path): an in-place write can be read
+  half done. Every ancestor of a watched directory holds a light watch
+  (moves and deletions of its children only), so moving any directory
+  on the way reports the files below as `Removed`.
   `rescan()` is `strand reload`.
 - **`FileBatch { changes, rescan, notices, first_event, last_event }`.**
   One batch per quiet period: 15 ms after the last completed write

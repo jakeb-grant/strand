@@ -946,8 +946,10 @@ schema from `strand-compiler`).
   because the rescan listed that directory before its watch existed and
   a file created in between (a slow `cp -r`, a `git checkout`) made no
   event. The second listing adds no new watch, so it ends there, and an
-  unchanged set sends no batch. Referenced files are hashed after their
-  watch is in place, so they need no second pass.
+  unchanged set sends no batch. The same holds at boot (the caller's
+  `find_files` ran before `spawn` added any watch: the set is listed
+  again at the first quiet period) and for a new cache tree (walked
+  again once watched).
 - **2026-10-05 · Registrations per role.** A referenced path can be
   wanted for several reasons (two `state … from "prefs.toml"`, a
   wallpaper also shown by an `image`), so registrations are counted per
@@ -974,3 +976,53 @@ schema from `strand-compiler`).
   `ConfigLoaded { failed }` gives `Some(failed)`; Hyprland's
   `configreloaded` says nothing about success, so its adapter sends
   `None` rather than inventing `false`.
+- **2026-10-05 · Watch, then read, for every baseline.** A file's
+  baseline hash is read after its directory watch exists (module files
+  at `spawn`, `watch_file`, `set_referenced`): the entry is created
+  resolved but unread, the watches are synced, then the file is hashed
+  without reporting anything. A save in between is either in the
+  baseline or makes an event; reading first left a stale baseline, so a
+  later undo to the old bytes was dropped as a no-op.
+- **2026-10-05 · Loaded hashes.** The loader reads referenced files
+  before it knows to register them (the compiler collects the paths), so
+  a save between its read and `set_referenced` would be lost.
+  `set_referenced` takes `Referenced { path, role, loaded }`, built from
+  `(path, role)` or `(path, role, hash)`; when `loaded` differs from
+  what the watcher holds, the baseline becomes `loaded` and the path is
+  re-checked at the next quiet period, so the file is compared with what
+  the loader holds. Every role of that path sees the change (a module
+  also registered as `Other` gets a redundant `Modified`, which a hash
+  check on the logic side ignores). `watch_file` stays "register, then
+  read".
+- **2026-10-05 · Own writes are registered synchronously.**
+  `register_own_write` pushes into a list shared with the watcher thread
+  (`Arc<Mutex<_>>`) instead of queueing a control message, so a flush
+  already under way when Strand writes sees the registration. Strand's
+  own writes are atomic (temporary file renamed over the path); an
+  in-place write can be read half done and that content is reported.
+- **2026-10-05 · Files linked in complete.** A `CREATE` of a regular
+  file with one link and non-zero length is a completed write: its bytes
+  existed before its name (`O_TMPFILE` + `linkat`, as systemd's
+  `link_tmpfile` does; its `CLOSE_WRITE` is reported under the unnamed
+  `#<ino>`, if at all). An empty new file still waits for `CLOSE_WRITE`;
+  a write still in progress extends the batch with `MODIFY`.
+- **2026-10-05 · Light ancestor watches.** A watched directory's inotify
+  descriptor follows its inode, so moving an unwatched ancestor
+  (`mv ~/x ~/w` with only `~/x/y/z` watched) made no event and the file
+  kept being reported under its old path. Every ancestor of a directory
+  watched in full now holds a light watch (`MOVED_FROM`, `DELETE`,
+  `DELETE_SELF`, `MOVE_SELF` only, no writes or creations), so the move
+  forgets the watches below, re-resolves and reports `Removed`; the
+  ancestor then becomes the full watch waiting for the path to return.
+  Writes in `~` or `/` queue nothing; renames and deletions there wake
+  the thread for a map lookup and no batch. Ancestor watches are best
+  effort and silent: on a network or read-only filesystem, or past the
+  watch limit, they are skipped (polled directories already notice a
+  vanished directory when listing fails). A periodic inode audit was
+  rejected: it would wake an idle shell.
+- **2026-10-05 · Backend errors do not spin.** A failing `poll(2)` is
+  retried after a pause that doubles from 10 ms up to `poll_interval`,
+  and each distinct error is reported once. A failing inotify `read`
+  (not `EAGAIN`) leaves the fd readable, so the watcher drops inotify,
+  polls every directory (each reported once as `WatchFailed`) and
+  rescans everything (`RescanReason::Overflow`: events were lost).

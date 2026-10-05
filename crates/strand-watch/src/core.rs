@@ -8,6 +8,7 @@ use std::ffi::OsString;
 use std::io;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::event::{
@@ -108,9 +109,21 @@ pub(crate) enum Raw {
     Overflow,
 }
 
-/// Adds and removes inotify directory watches.
+/// What a directory watch is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WatchKind {
+    /// A directory whose entries matter: every event Strand acts on.
+    Full,
+    /// An ancestor of a watched directory, watched only so that its
+    /// children being moved or deleted is seen (`mv ~/x ~/w` when only
+    /// `~/x/y/z` holds a referenced file). Writes in it queue nothing.
+    Ancestor,
+}
+
+/// Adds and removes inotify directory watches. Watching a directory again
+/// with another kind replaces its mask.
 pub(crate) trait Backend {
-    fn watch(&mut self, dir: &Path) -> Result<(), String>;
+    fn watch(&mut self, dir: &Path, kind: WatchKind) -> Result<(), String>;
     fn unwatch(&mut self, dir: &Path);
 }
 
@@ -145,25 +158,32 @@ struct Entry {
 }
 
 impl Entry {
-    /// A new entry with the file's current state as its baseline.
-    fn baseline(path: &Path) -> Entry {
+    /// A new entry with its links resolved and no baseline yet. Its
+    /// directories are watched first and [`Entry::take_baseline`] reads it
+    /// after (watch, then read): a save in between is either in the
+    /// baseline or makes an event.
+    fn unread(path: &Path) -> Entry {
         let resolved = paths::resolve(path);
-        let (hash, stamp, error, exists) = match read_hash(path) {
-            Ok((h, s)) => (Some(h), Some(s), None, true),
-            Err(e) if is_missing(&e) => (None, None, None, false),
-            Err(e) => (None, current_stamp(path), Some(e.kind()), true),
-        };
         Entry {
             module: false,
             module_new: false,
             refs: BTreeMap::new(),
             reported: resolved.path.clone(),
             resolved,
-            hash,
-            stamp,
-            error,
-            exists,
+            hash: None,
+            stamp: None,
+            error: None,
+            exists: false,
         }
+    }
+
+    /// Record the file's current state as the baseline, reporting nothing.
+    fn take_baseline(&mut self, path: &Path) {
+        (self.hash, self.stamp, self.error, self.exists) = match read_hash(path) {
+            Ok((h, s)) => (Some(h), Some(s), None, true),
+            Err(e) if is_missing(&e) => (None, None, None, false),
+            Err(e) => (None, current_stamp(path), Some(e.kind()), true),
+        };
     }
 
     fn unused(&self) -> bool {
@@ -199,6 +219,94 @@ struct OwnWrite {
 
 /// Own-write registrations nobody matched are dropped after this long.
 const OWN_WRITE_TTL: Duration = Duration::from_secs(10);
+
+/// Registered own writes. Shared with [`crate::Watcher`], which adds to it
+/// on the caller's thread: a registration is in place before the caller
+/// writes, whatever the watcher thread is doing (a flush already under
+/// way sees it).
+#[derive(Debug, Default)]
+pub(crate) struct OwnWrites {
+    list: Vec<OwnWrite>,
+    seq: u64,
+}
+
+/// The handle both sides hold.
+pub(crate) type SharedOwnWrites = Arc<Mutex<OwnWrites>>;
+
+impl OwnWrites {
+    pub(crate) fn register(&mut self, path: &Path, hash: ContentHash, now: Instant) {
+        self.expire(now);
+        let path = paths::absolute(path);
+        self.seq += 1;
+        self.list.push(OwnWrite {
+            seq: self.seq,
+            canonical: paths::resolve(&path).path,
+            path,
+            hash,
+            at: now,
+        });
+    }
+
+    fn expire(&mut self, now: Instant) {
+        self.list
+            .retain(|o| now.saturating_duration_since(o.at) < OWN_WRITE_TTL);
+    }
+
+    /// Whether `hash` at `path` is a registered own write. Registrations
+    /// for the same file made before the matched one were superseded (a
+    /// slider written several times in one quiet period) and are dropped
+    /// too, so a later user save with those bytes is not swallowed.
+    fn take(&mut self, path: &Path, canonical: &Path, hash: ContentHash) -> bool {
+        let same_file = |o: &OwnWrite| o.path == path || o.canonical == canonical;
+        let Some(seq) = self
+            .list
+            .iter()
+            .filter(|o| o.hash == hash && same_file(o))
+            .map(|o| o.seq)
+            .max()
+        else {
+            return false;
+        };
+        self.list.retain(|o| !(same_file(o) && o.seq <= seq));
+        true
+    }
+}
+
+fn lock(own: &SharedOwnWrites) -> std::sync::MutexGuard<'_, OwnWrites> {
+    // A panic while holding it leaves a valid list.
+    own.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// A file the loader read, to register for a role: `loaded` is the hash
+/// of the bytes it read, when it knows them. If the file no longer holds
+/// those bytes when it is registered (a save landed between the read and
+/// the registration), that is reported as a change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Referenced {
+    pub path: PathBuf,
+    pub role: Role,
+    pub loaded: Option<ContentHash>,
+}
+
+impl From<(PathBuf, Role)> for Referenced {
+    fn from((path, role): (PathBuf, Role)) -> Self {
+        Referenced {
+            path,
+            role,
+            loaded: None,
+        }
+    }
+}
+
+impl From<(PathBuf, Role, ContentHash)> for Referenced {
+    fn from((path, role, hash): (PathBuf, Role, ContentHash)) -> Self {
+        Referenced {
+            path,
+            role,
+            loaded: Some(hash),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Stamp {
@@ -270,9 +378,10 @@ pub(crate) struct Core<B> {
     config_root: Option<Resolved>,
     files: BTreeMap<PathBuf, Entry>,
     trees: Vec<Tree>,
-    own: Vec<OwnWrite>,
-    own_seq: u64,
+    own: SharedOwnWrites,
     watched: BTreeMap<PathBuf, Mode>,
+    /// Watched directories that are only ancestors ([`WatchKind::Ancestor`]).
+    light: HashSet<PathBuf>,
     /// Inode of each watched directory when its watch was added.
     watched_ino: HashMap<PathBuf, u64>,
     snaps: HashMap<PathBuf, Snapshot>,
@@ -342,12 +451,25 @@ fn current_stamp(path: &Path) -> Option<Stamp> {
 /// `open` revalidates the attribute cache (close-to-open consistency),
 /// where a `stat` may serve stale attributes.
 fn fresh_stamp(path: &Path) -> Option<Stamp> {
+    polled_stamp(path, open_nonblocking)
+}
+
+/// [`fresh_stamp`] with the `open` passed in. A file that exists but
+/// cannot be opened (EACCES) gets its `stat` stamp, which is what
+/// [`Core::check`] stored for it: comparing anything else would re-read
+/// it on every poll.
+fn polled_stamp(
+    path: &Path,
+    open: impl FnOnce(&Path) -> io::Result<std::fs::File>,
+) -> Option<Stamp> {
     let m = std::fs::metadata(path).ok()?;
     if !m.is_file() {
         return Some(Stamp::of(&m));
     }
-    let file = open_nonblocking(path).ok()?;
-    file.metadata().ok().map(|m| Stamp::of(&m))
+    match open(path).and_then(|f| f.metadata()) {
+        Ok(m) => Some(Stamp::of(&m)),
+        Err(_) => Some(Stamp::of(&m)),
+    }
 }
 
 fn canonical_dirs(dirs: &[PathBuf]) -> Vec<PathBuf> {
@@ -397,7 +519,11 @@ fn walk(root: &Path, depth: usize) -> Vec<PathBuf> {
 }
 
 impl<B: Backend> Core<B> {
-    /// Set up watches and record a baseline hash of every module file.
+    /// Set up watches, then record a baseline hash of every module file.
+    /// The module set was listed before the watches existed, so it is
+    /// listed again at the first quiet period (watch, then list): a module
+    /// created in between is reported `Created`; an unchanged set sends
+    /// nothing.
     pub(crate) fn new(backend: B, opts: Options, config: Option<ConfigWatch>) -> Self {
         let mut core = Core {
             backend,
@@ -407,9 +533,9 @@ impl<B: Backend> Core<B> {
             config_root: None,
             files: BTreeMap::new(),
             trees: Vec::new(),
-            own: Vec::new(),
-            own_seq: 0,
+            own: SharedOwnWrites::default(),
             watched: BTreeMap::new(),
+            light: HashSet::new(),
             watched_ino: HashMap::new(),
             snaps: HashMap::new(),
             by_path: HashMap::new(),
@@ -428,27 +554,87 @@ impl<B: Backend> Core<B> {
                 let path = paths::absolute(f);
                 core.files
                     .entry(path.clone())
-                    .or_insert_with(|| Entry::baseline(&path))
+                    .or_insert_with(|| Entry::unread(&path))
                     .module = true;
             }
             core.config = Some(cfg);
         }
-        core.sync_watches();
+        let added = core.sync_watches();
+        for (path, e) in core.files.iter_mut() {
+            e.take_baseline(path);
+        }
+        core.relist(&added, Instant::now());
         core.mark_if_notices();
         core
     }
 
+    /// The own-write registrations, for [`crate::Watcher`] to add to from
+    /// the caller's thread.
+    pub(crate) fn own_writes(&self) -> SharedOwnWrites {
+        self.own.clone()
+    }
+
+    /// Watch, then list: a config or cache-tree directory just watched was
+    /// listed before its watch existed, and a file created in between made
+    /// no event. List it again at the next quiet period (that listing adds
+    /// no new watch, so it ends; an unchanged set is no batch).
+    fn relist(&mut self, added: &[PathBuf], now: Instant) {
+        if added.iter().any(|d| self.config_dirs.contains(d)) {
+            self.pending.config = true;
+            self.mark(now);
+        }
+        if added.iter().any(|d| self.tree_dirs.contains_key(d)) {
+            self.pending.trees = true;
+            self.mark(now);
+        }
+    }
+
+    /// Take the baseline of entries just created by a registration (their
+    /// directories are watched by now), then compare each with the bytes
+    /// the loader says it read: a mismatch is a save between the read and
+    /// the registration, reported at the next quiet period.
+    fn settle_new(&mut self, fresh: &[PathBuf], loaded: &[(PathBuf, ContentHash)]) {
+        for path in fresh {
+            if let Some(e) = self.files.get_mut(path) {
+                e.take_baseline(path);
+            }
+        }
+        let mut stale = false;
+        for (path, hash) in loaded {
+            let Some(e) = self.files.get_mut(path) else {
+                continue;
+            };
+            if e.hash != Some(*hash) {
+                // Compare the file with what the loader holds, not with
+                // what the watcher read.
+                e.hash = Some(*hash);
+                e.exists = true;
+                e.error = None;
+                self.pending.files.insert(path.clone());
+                stale = true;
+            }
+        }
+        if stale {
+            self.mark(Instant::now());
+        }
+    }
+
     /// Watch one more file (settings TOML, wallpaper, shader, …) for
     /// `role`. Registrations are counted per (path, role). The file need
-    /// not exist yet, nor its directory: creation is reported.
-    pub(crate) fn add_file(&mut self, path: &Path, role: Role) {
+    /// not exist yet, nor its directory: creation is reported. `loaded` is
+    /// the hash of the bytes the caller already read, if it did.
+    pub(crate) fn add_file(&mut self, path: &Path, role: Role, loaded: Option<ContentHash>) {
         let path = paths::absolute(path);
+        let fresh = !self.files.contains_key(&path);
         let e = self
             .files
             .entry(path.clone())
-            .or_insert_with(|| Entry::baseline(&path));
+            .or_insert_with(|| Entry::unread(&path));
         *e.refs.entry(role).or_default() += 1;
         self.sync_watches();
+        let fresh: Vec<PathBuf> = fresh.then(|| path.clone()).into_iter().collect();
+        let loaded: Vec<_> = loaded.map(|h| (path, h)).into_iter().collect();
+        self.settle_new(&fresh, &loaded);
         self.mark_if_notices();
     }
 
@@ -476,27 +662,31 @@ impl<B: Backend> Core<B> {
     /// Replace every registration made with [`Core::add_file`] by this
     /// set (what the compiler collected from the whole program). A pair
     /// listed twice counts twice.
-    pub(crate) fn set_referenced(&mut self, refs: Vec<(PathBuf, Role)>) {
+    pub(crate) fn set_referenced(&mut self, refs: Vec<Referenced>) {
         let mut wanted: BTreeMap<PathBuf, BTreeMap<Role, usize>> = BTreeMap::new();
-        for (p, role) in refs {
-            *wanted
-                .entry(paths::absolute(&p))
-                .or_default()
-                .entry(role)
-                .or_default() += 1;
+        let mut loaded = Vec::new();
+        for r in refs {
+            let path = paths::absolute(&r.path);
+            if let Some(h) = r.loaded {
+                loaded.push((path.clone(), h));
+            }
+            *wanted.entry(path).or_default().entry(r.role).or_default() += 1;
         }
         for (p, e) in self.files.iter_mut() {
             e.refs = wanted.remove(p).unwrap_or_default();
         }
         self.files.retain(|_, e| !e.unused());
+        let mut fresh = Vec::new();
         for (p, refs) in wanted {
-            let mut e = Entry::baseline(&p);
+            let mut e = Entry::unread(&p);
             e.refs = refs;
-            self.files.insert(p, e);
+            self.files.insert(p.clone(), e);
+            fresh.push(p);
         }
         let files = &self.files;
         self.pending.files.retain(|p| files.contains_key(p));
         self.sync_watches();
+        self.settle_new(&fresh, &loaded);
         self.mark_if_notices();
     }
 
@@ -513,24 +703,23 @@ impl<B: Backend> Core<B> {
             depth,
             kind,
         });
-        self.sync_watches();
+        let added = self.sync_watches();
+        self.relist(&added, Instant::now());
         self.mark_if_notices();
     }
 
     /// The next write of `path` whose content hashes to `hash` is Strand's
     /// own and is not reported.
-    pub(crate) fn register_own_write(&mut self, path: &Path, hash: ContentHash, now: Instant) {
-        self.own
-            .retain(|o| now.saturating_duration_since(o.at) < OWN_WRITE_TTL);
-        let path = paths::absolute(path);
-        self.own_seq += 1;
-        self.own.push(OwnWrite {
-            seq: self.own_seq,
-            canonical: paths::resolve(&path).path,
-            path,
-            hash,
-            at: now,
-        });
+    /// The backend was replaced (inotify failed): every watch it held is
+    /// gone. Add them all again and rescan everything, since events were
+    /// lost.
+    pub(crate) fn rewatch_all(&mut self, now: Instant) {
+        self.watched.clear();
+        self.light.clear();
+        self.watched_ino.clear();
+        self.snaps.clear();
+        self.sync_watches();
+        self.request_rescan(RescanReason::Overflow, now);
     }
 
     /// Rescan everything at the next flush.
@@ -719,6 +908,7 @@ impl<B: Backend> Core<B> {
         if self.watched.remove(dir) == Some(Mode::Inotify) {
             self.backend.unwatch(dir);
         }
+        self.light.remove(dir);
         self.watched_ino.remove(dir);
         self.snaps.remove(dir);
     }
@@ -753,9 +943,7 @@ impl<B: Backend> Core<B> {
                 if !e.exists || !e.resolved.watch_dirs().any(|d| d == dir) {
                     continue;
                 }
-                // A file that exists but cannot be opened (EACCES) falls
-                // back to `stat`, as `check` stored it.
-                let stamp = fresh_stamp(f).or_else(|| current_stamp(f));
+                let stamp = fresh_stamp(f);
                 let swept = sweep && stamp.is_some_and(|s| s.len <= self.opts.sweep_max_bytes);
                 if stamp != e.stamp || swept {
                     self.pending.files.insert(f.clone());
@@ -832,19 +1020,9 @@ impl<B: Backend> Core<B> {
         for path in &touched {
             self.check(path, &mut changes);
         }
-        // Watch, then list: the rescan above listed directories before
-        // their new watches existed, so a file created in between made no
-        // event. List them once more after the next quiet period (the
-        // next sync adds nothing, so this ends; an unchanged set is no
-        // batch).
-        if added.iter().any(|d| self.config_dirs.contains(d)) {
-            self.pending.config = true;
-            self.mark(now);
-        }
-        if added.iter().any(|d| self.tree_dirs.contains_key(d)) {
-            self.pending.trees = true;
-            self.mark(now);
-        }
+        // The rescan above listed directories before their new watches
+        // existed.
+        self.relist(&added, now);
         for (path, kind) in cache {
             let exists = std::fs::symlink_metadata(&path).is_ok();
             changes.push(FileChange {
@@ -860,8 +1038,7 @@ impl<B: Backend> Core<B> {
                 error: None,
             });
         }
-        self.own
-            .retain(|o| now.saturating_duration_since(o.at) < OWN_WRITE_TTL);
+        lock(&self.own).expire(now);
         // Stable: of two entries for one (path, role) the first pushed (a
         // module-set change from the rescan) is kept.
         changes.sort_by(|a, b| (&a.path, a.role).cmp(&(&b.path, b.role)));
@@ -952,25 +1129,6 @@ impl<B: Backend> Core<B> {
         cfg.modules.files = set.files;
     }
 
-    /// Whether `hash` at `path` is a registered own write. Registrations
-    /// for the same file made before the matched one were superseded (a
-    /// slider written several times in one quiet period) and are dropped
-    /// too, so a later user save with those bytes is not swallowed.
-    fn take_own_write(&mut self, path: &Path, canonical: &Path, hash: ContentHash) -> bool {
-        let same_file = |o: &OwnWrite| o.path == path || o.canonical == canonical;
-        let Some(seq) = self
-            .own
-            .iter()
-            .filter(|o| o.hash == hash && same_file(o))
-            .map(|o| o.seq)
-            .max()
-        else {
-            return false;
-        };
-        self.own.retain(|o| !(same_file(o) && o.seq <= seq));
-        true
-    }
-
     /// Compare `path` with its last known state and push one change per
     /// role it is watched for.
     fn check(&mut self, path: &Path, out: &mut Vec<FileChange>) {
@@ -984,7 +1142,7 @@ impl<B: Backend> Core<B> {
         let moved = e.reported != canonical;
         let (base, hash, error) = match read_hash(path) {
             Ok((h, stamp)) => {
-                let own = self.take_own_write(path, &canonical, h);
+                let own = lock(&self.own).take(path, &canonical, h);
                 let Some(e) = self.files.get_mut(path) else {
                     return;
                 };
@@ -1135,16 +1293,20 @@ impl<B: Backend> Core<B> {
     /// Bring the backend's watches in line with what the state needs. A
     /// wanted directory that does not exist is replaced by its nearest
     /// existing ancestor, and the first missing path below that ancestor
-    /// is remembered in `waiting`. A watched directory whose inode changed
-    /// behind our back is watched again, and what lies below it re-checked
-    /// at the next flush. Returns the directories newly watched or polled.
+    /// is remembered in `waiting`. Every ancestor of a wanted directory is
+    /// watched lightly ([`WatchKind::Ancestor`]), so that one of them being
+    /// moved or deleted is seen even though the descriptors below follow
+    /// the moved inodes and report nothing. A watched directory whose inode
+    /// changed behind our back is watched again, and what lies below it
+    /// re-checked at the next flush. Returns the directories newly watched
+    /// or polled in full.
     fn sync_watches(&mut self) -> Vec<PathBuf> {
         self.reindex();
         self.waiting.clear();
-        let mut desired = BTreeSet::new();
+        let mut desired: BTreeMap<PathBuf, WatchKind> = BTreeMap::new();
         for d in self.desired_dirs() {
             if d.is_dir() {
-                desired.insert(d);
+                desired.insert(d, WatchKind::Full);
                 continue;
             }
             let mut child = d.as_path();
@@ -1157,45 +1319,94 @@ impl<B: Backend> Core<B> {
                 ancestor = a.parent();
             }
             if let Some(a) = ancestor {
-                desired.insert(a.to_path_buf());
+                desired.insert(a.to_path_buf(), WatchKind::Full);
                 self.waiting.insert(child.to_path_buf());
+            }
+        }
+        let full: Vec<PathBuf> = desired.keys().cloned().collect();
+        for d in full {
+            for a in d.ancestors().skip(1) {
+                desired
+                    .entry(a.to_path_buf())
+                    .or_insert(WatchKind::Ancestor);
             }
         }
         let stale: Vec<PathBuf> = self
             .watched
-            .keys()
-            .filter(|d| !desired.contains(*d))
-            .cloned()
+            .iter()
+            .filter(|(d, _)| match desired.get(*d) {
+                None => true,
+                // Wanted for another reason now: watched again below.
+                Some(k) => (*k == WatchKind::Ancestor) != self.light.contains(*d),
+            })
+            .map(|(d, _)| d.clone())
             .collect();
         for d in stale {
-            self.forget_watch(&d);
+            // Not `forget_watch`: re-adding an inotify watch replaces its
+            // mask, and dropping it first would lose events in between.
+            self.watched.remove(&d);
+            self.light.remove(&d);
+            self.snaps.remove(&d);
+            if !desired.contains_key(&d) {
+                self.backend.unwatch(&d);
+                self.watched_ino.remove(&d);
+            }
         }
         let mut added = Vec::new();
-        for d in desired {
+        for (d, kind) in desired {
             let Ok(meta) = std::fs::metadata(&d) else {
                 continue;
             };
             if !meta.is_dir() {
                 continue;
             }
-            if self.watched.contains_key(&d) {
-                if self.watched_ino.get(&d) == Some(&meta.ino()) {
-                    continue;
-                }
+            let known = self.watched_ino.get(&d).copied();
+            if known.is_some_and(|i| i != meta.ino()) {
+                self.backend.unwatch(&d);
                 self.forget_tree(&d);
+                self.watched_ino.remove(&d);
                 self.wake_under(&d);
                 self.mark(Instant::now());
+            } else if self.watched.contains_key(&d) {
+                continue;
+            }
+            // Still known: watched until now for the other kind, and its
+            // inotify watch (if any) is replaced or dropped here.
+            let rewatch = self.watched_ino.contains_key(&d);
+            if kind == WatchKind::Ancestor {
+                // Best effort and silent: an ancestor that cannot be
+                // watched (a network or read-only filesystem, the watch
+                // limit) only loses the early notice of a move.
+                let mode = match paths::fs_kind(&d) {
+                    FsKind::Local if !self.opts.force_polling => {
+                        match self.backend.watch(&d, WatchKind::Ancestor) {
+                            Ok(()) => Mode::Inotify,
+                            Err(_) => Mode::Skip,
+                        }
+                    }
+                    _ => Mode::Skip,
+                };
+                if rewatch && mode != Mode::Inotify {
+                    self.backend.unwatch(&d);
+                }
+                self.light.insert(d.clone());
+                self.watched_ino.insert(d.clone(), meta.ino());
+                self.watched.insert(d, mode);
+                continue;
             }
             let poll = |reason| (Mode::Poll, Some(reason));
             let (mode, reason) = match paths::fs_kind(&d) {
                 FsKind::Immutable => (Mode::Skip, None),
                 _ if self.opts.force_polling => poll(PollReason::Forced),
                 FsKind::NoEvents => poll(PollReason::NoEventsFilesystem),
-                FsKind::Local => match self.backend.watch(&d) {
+                FsKind::Local => match self.backend.watch(&d, WatchKind::Full) {
                     Ok(()) => (Mode::Inotify, None),
                     Err(e) => poll(PollReason::WatchFailed(e)),
                 },
             };
+            if rewatch && mode != Mode::Inotify {
+                self.backend.unwatch(&d);
+            }
             if mode == Mode::Poll {
                 self.snaps
                     .insert(d.clone(), snapshot(&d).unwrap_or_default());
@@ -1226,9 +1437,14 @@ impl<B: Backend> Core<B> {
         &mut self.backend
     }
 
+    /// Directories watched in full (not ancestors).
     #[cfg(test)]
     pub(crate) fn watched_dirs(&self) -> Vec<PathBuf> {
-        self.watched.keys().cloned().collect()
+        self.watched
+            .keys()
+            .filter(|d| !self.light.contains(*d))
+            .cloned()
+            .collect()
     }
 }
 
@@ -1246,8 +1462,14 @@ mod tests {
     struct Silent(Arc<Mutex<BTreeSet<PathBuf>>>);
 
     impl Backend for Silent {
-        fn watch(&mut self, dir: &Path) -> Result<(), String> {
-            self.0.lock().unwrap().insert(dir.to_path_buf());
+        /// Records full watches only (ancestors are bookkeeping).
+        fn watch(&mut self, dir: &Path, kind: WatchKind) -> Result<(), String> {
+            let mut set = self.0.lock().unwrap();
+            if kind == WatchKind::Full {
+                set.insert(dir.to_path_buf());
+            } else {
+                set.remove(dir);
+            }
             Ok(())
         }
         fn unwatch(&mut self, dir: &Path) {
@@ -1259,7 +1481,7 @@ mod tests {
     struct Full;
 
     impl Backend for Full {
-        fn watch(&mut self, _: &Path) -> Result<(), String> {
+        fn watch(&mut self, _: &Path, _: WatchKind) -> Result<(), String> {
             Err("inotify watch limit reached".into())
         }
         fn unwatch(&mut self, _: &Path) {}
@@ -1313,7 +1535,7 @@ mod tests {
             ..Options::default()
         };
         let mut core = Core::new(Silent::default(), opts.clone(), Some(config(&root)));
-        core.add_file(&root.join("big.png"), Role::Wallpaper);
+        core.add_file(&root.join("big.png"), Role::Wallpaper, None);
         core.flush(core.deadline().unwrap());
         let t0 = Instant::now();
 
@@ -1334,6 +1556,13 @@ mod tests {
         let names: Vec<_> = b.changes.iter().map(|c| c.path.clone()).collect();
         assert_eq!(names, vec![root.join("a.strand")]);
         assert_eq!(b.changes[0].hash, Some(blake3::hash(b"b")));
+    }
+
+    /// Cut the boot listing (watch, then list), which finds nothing new.
+    fn settle<B: Backend>(core: &mut Core<B>) {
+        let d = core.deadline().expect("the boot listing is due");
+        assert!(core.flush(d).is_none(), "nothing changed since the listing");
+        assert!(core.deadline().is_none());
     }
 
     fn strand_files(dir: &Path) -> ModuleSet {
@@ -1374,7 +1603,8 @@ mod tests {
         std::fs::write(root.join("prefs.toml"), "a = 1").unwrap();
         let backend = Silent::default();
         let mut core = Core::new(backend.clone(), Options::default(), Some(config(&root)));
-        core.add_file(&root.join("prefs.toml"), Role::Settings);
+        core.add_file(&root.join("prefs.toml"), Role::Settings, None);
+        settle(&mut core);
         assert!(backend.0.lock().unwrap().contains(&root));
         // The root's parent too: a replaced config directory is seen there.
         assert!(backend.0.lock().unwrap().contains(root.parent().unwrap()));
@@ -1423,6 +1653,7 @@ mod tests {
         let (_tmp, root) = cfg_dir();
         std::fs::write(root.join("a.strand"), "a").unwrap();
         let mut core = Core::new(Silent::default(), Options::default(), Some(config(&root)));
+        settle(&mut core);
         let t0 = Instant::now();
         core.on_raw(Raw::Busy(root.join("a.strand")), t0);
         assert!(core.deadline().is_none());
@@ -1449,7 +1680,7 @@ mod tests {
         )
         .unwrap();
         let mut core = Core::new(Silent::default(), Options::default(), None);
-        core.add_file(&root.join("cfg/theme.strand"), Role::Other);
+        core.add_file(&root.join("cfg/theme.strand"), Role::Other, None);
         assert_eq!(
             core.watched_dirs(),
             vec![root.join("cfg"), root.join("store")]
@@ -1464,7 +1695,7 @@ mod tests {
         let root = std::fs::canonicalize(tmp.path()).unwrap();
         let mut core = Core::new(Silent::default(), Options::default(), None);
         let prefs = root.join("state/strand/prefs.toml");
-        core.add_file(&prefs, Role::Settings);
+        core.add_file(&prefs, Role::Settings, None);
         assert_eq!(core.watched_dirs(), vec![root.clone()]);
         assert!(core.waiting.contains(&root.join("state")));
 
@@ -1530,5 +1761,175 @@ mod tests {
             .find(|c| c.path == root.join("widgets/osd.strand"))
             .expect("the nested edit");
         assert_eq!(osd.kind, ChangeKind::Modified);
+    }
+
+    /// A backend that saves a file the moment a watch is added: the save
+    /// lands between the watch and the baseline read.
+    struct SavesDuringWatch {
+        file: PathBuf,
+        body: &'static str,
+        done: bool,
+    }
+
+    impl Backend for SavesDuringWatch {
+        fn watch(&mut self, _: &Path, _: WatchKind) -> Result<(), String> {
+            if !std::mem::replace(&mut self.done, true) {
+                std::fs::write(&self.file, self.body).unwrap();
+            }
+            Ok(())
+        }
+        fn unwatch(&mut self, _: &Path) {}
+    }
+
+    /// Watch, then read: the baseline is taken after the watch exists, so
+    /// a save in between is in the baseline (what a loader reading after
+    /// `watch_file` holds), and an undo back to the old bytes is reported.
+    #[test]
+    fn a_save_during_the_watch_is_in_the_baseline() {
+        let (_tmp, root) = cfg_dir();
+        let prefs = root.join("prefs.toml");
+        std::fs::write(&prefs, "a = 1").unwrap();
+        let backend = SavesDuringWatch {
+            file: prefs.clone(),
+            body: "a = 2",
+            done: false,
+        };
+        let mut core = Core::new(backend, Options::default(), None);
+        core.add_file(&prefs, Role::Settings, None);
+        assert_eq!(core.files[&prefs].hash, Some(blake3::hash(b"a = 2")));
+        assert!(core.deadline().is_none());
+        std::fs::write(&prefs, "a = 1").unwrap();
+        core.on_raw(Raw::Written(prefs.clone()), Instant::now());
+        let b = core.flush(core.deadline().unwrap()).unwrap();
+        assert_eq!(b.changes.len(), 1, "{b:#?}");
+        assert_eq!(b.changes[0].kind, ChangeKind::Modified);
+        assert_eq!(b.changes[0].hash, Some(blake3::hash(b"a = 1")));
+
+        // The same for module files at boot.
+        let module = root.join("bar.strand");
+        std::fs::write(&module, "bar 1").unwrap();
+        let backend = SavesDuringWatch {
+            file: module.clone(),
+            body: "bar 2",
+            done: false,
+        };
+        let mut core = Core::new(backend, Options::default(), Some(config(&root)));
+        settle(&mut core);
+        std::fs::write(&module, "bar 1").unwrap();
+        core.on_raw(Raw::Written(module.clone()), Instant::now());
+        let b = core.flush(core.deadline().unwrap()).unwrap();
+        assert_eq!(b.changes.len(), 1, "{b:#?}");
+        assert_eq!(b.changes[0].hash, Some(blake3::hash(b"bar 1")));
+    }
+
+    /// The loader read a file, then a save landed before it registered the
+    /// path: the hash it passes is compared with the file, and the save is
+    /// reported. A matching hash reports nothing.
+    #[test]
+    fn a_save_between_load_and_registration_is_reported() {
+        let (_tmp, root) = cfg_dir();
+        let prefs = root.join("prefs.toml");
+        let shader = root.join("glow.wgsl");
+        std::fs::write(&prefs, "a = 1").unwrap();
+        std::fs::write(&shader, "fn main() {}").unwrap();
+        let mut core = Core::new(Silent::default(), Options::default(), None);
+        let read = blake3::hash(b"a = 1");
+        std::fs::write(&prefs, "a = 2").unwrap();
+        core.set_referenced(vec![
+            (prefs.clone(), Role::Settings, read).into(),
+            (shader.clone(), Role::Shader, blake3::hash(b"fn main() {}")).into(),
+        ]);
+        let b = core
+            .flush(core.deadline().expect("the save is due"))
+            .unwrap();
+        assert_eq!(b.changes.len(), 1, "{b:#?}");
+        assert_eq!(b.changes[0].path, prefs);
+        assert_eq!(b.changes[0].kind, ChangeKind::Modified);
+        assert_eq!(b.changes[0].hash, Some(blake3::hash(b"a = 2")));
+        assert!(core.deadline().is_none());
+
+        // An already watched path read stale by the loader is reported
+        // too; one it read current is not.
+        core.set_referenced(vec![
+            (prefs.clone(), Role::Settings, read).into(),
+            (shader.clone(), Role::Shader).into(),
+        ]);
+        let b = core.flush(core.deadline().unwrap()).unwrap();
+        assert_eq!(b.changes.len(), 1, "{b:#?}");
+        assert_eq!(b.changes[0].hash, Some(blake3::hash(b"a = 2")));
+        core.add_file(&prefs, Role::Other, Some(blake3::hash(b"a = 2")));
+        assert!(core.deadline().is_none());
+    }
+
+    /// A polled file that exists but cannot be opened (EACCES) is compared
+    /// by the `stat` stamp `check` stored for it, so it is not re-read on
+    /// every poll.
+    #[test]
+    fn an_unopenable_polled_file_keeps_its_stat_stamp() {
+        let (_tmp, root) = cfg_dir();
+        let f = root.join("prefs.toml");
+        std::fs::write(&f, "a = 1").unwrap();
+        let denied = |_: &Path| -> io::Result<std::fs::File> {
+            Err(io::Error::from(io::ErrorKind::PermissionDenied))
+        };
+        let stamp = polled_stamp(&f, denied);
+        assert!(stamp.is_some());
+        assert_eq!(stamp, current_stamp(&f));
+        assert_eq!(polled_stamp(&f, open_nonblocking), current_stamp(&f));
+        assert_eq!(polled_stamp(&root.join("missing"), denied), None);
+    }
+
+    /// Every ancestor of a watched directory is watched lightly, so moving
+    /// one away (the descriptors below follow the inodes and say nothing)
+    /// is seen: the file is reported removed, and back again when the
+    /// directory returns.
+    #[test]
+    fn a_moved_ancestor_is_seen() {
+        let (_tmp, root) = cfg_dir();
+        let z = root.join("x/y/z");
+        std::fs::create_dir_all(&z).unwrap();
+        let prefs = z.join("prefs.toml");
+        std::fs::write(&prefs, "a = 1").unwrap();
+        let mut core = Core::new(Silent::default(), Options::default(), None);
+        core.add_file(&prefs, Role::Settings, None);
+        assert_eq!(core.watched_dirs(), vec![z.clone()]);
+        for a in [
+            root.join("x/y"),
+            root.join("x"),
+            root.clone(),
+            PathBuf::from("/"),
+        ] {
+            assert!(core.light.contains(&a), "{a:?} {:?}", core.light);
+        }
+        std::fs::rename(root.join("x"), root.join("w")).unwrap();
+        // What the light watch on `root` reports.
+        core.on_raw(Raw::Gone(root.join("x")), Instant::now());
+        let b = core.flush(core.deadline().unwrap()).unwrap();
+        assert_eq!(b.changes.len(), 1, "{b:#?}");
+        assert_eq!(b.changes[0].kind, ChangeKind::Removed);
+        // Waited for from `root`, now watched in full.
+        assert_eq!(core.watched_dirs(), vec![root.clone()]);
+        assert!(!core.light.contains(&root));
+
+        std::fs::rename(root.join("w"), root.join("x")).unwrap();
+        core.on_raw(Raw::Dir(root.join("x")), Instant::now());
+        let b = core.flush(core.deadline().unwrap()).unwrap();
+        assert_eq!(b.changes.len(), 1, "{b:#?}");
+        assert_eq!(b.changes[0].kind, ChangeKind::Created);
+        assert_eq!(core.watched_dirs(), vec![z]);
+        assert!(core.light.contains(&root));
+    }
+
+    /// A cache tree is walked before its watches exist: it is walked again
+    /// once they do, so a directory made in between is watched.
+    #[test]
+    fn a_new_tree_is_walked_again_once_watched() {
+        let (_tmp, root) = cfg_dir();
+        let mut core = Core::new(Silent::default(), Options::default(), None);
+        core.add_tree(&root, 2, CacheKind::Icons);
+        std::fs::create_dir(root.join("hicolor")).unwrap();
+        let d = core.deadline().expect("a second walk is due");
+        core.flush(d);
+        assert!(core.watched_dirs().contains(&root.join("hicolor")));
     }
 }
