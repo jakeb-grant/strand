@@ -148,3 +148,65 @@ Each track appends under its own heading.
   non-finite numbers read as unset, lengths and offsets clamp to ±1e6
   logical px, blur to 1000; `Create` with an index more than 65,536 past
   the live slots is rejected; rect and damage arithmetic saturates.
+
+## surface
+
+- 2026-10-05 · surface: buffer size is `Scale::physical_size` (round half
+  away from zero), which is what `wp_fractional_scale_v1` prescribes, not
+  the `ceil` the track spec mentioned; they differ only when
+  `logical × scale` has a fraction below .5, where `ceil` would make a
+  buffer 1 px larger than the viewport and the compositor would resample
+  it (blur). Before the compositor's `preferred_scale` arrives the scale
+  is estimated from the output's mode and xdg-output logical size, so the
+  first frame is already sharp. Without fractional scale or viewporter
+  (or with `Config::fractional_scale = false`) buffers are `logical × n`
+  with `set_buffer_scale(n)`, `n` the surface's preferred integer scale.
+- 2026-10-05 · surface: the lifecycle hooks the manager needs (attach,
+  configure, detach, monitors, `frame_deadline`, `frame_dropped`) live in
+  `strand_surface::SurfaceHost: Painter` with no-op defaults, not in
+  `strand-scene`: render does not depend on surface, and the binary wraps
+  `Renderer` to forward them. `frame_deadline` returns an `Instant` like
+  `Renderer::frame_deadline`. No `strand-scene` change was needed.
+- 2026-10-05 · surface: frame callbacks. A buffer commit requests a frame
+  callback only if `wants_frame` is still true after the paint, so a
+  single repaint (a clock tick) costs one commit and no callback.
+  Repaint requests and Wayland events mark surfaces dirty; marked surfaces
+  are painted once at the end of the loop wakeup (calloop idle), and wait
+  for an outstanding callback. A paint that returns no damage while
+  `wants_frame` stays true arms a timer at `frame_deadline` if the host
+  gives one, else requests a callback with a bare commit. Presentation
+  feedback is requested for every buffer commit (none while idle).
+  `State` methods called between dispatches take effect on the next
+  `SurfaceManager::dispatch`, which does not sleep while work is pending.
+- 2026-10-05 · surface: buffers. One pool per surface and size, buffers
+  created lazily: the free buffer holding the newest frame is reused, a
+  second is created while the first is on screen, a third only while two
+  are busy; with all three busy the paint waits for a release. Ages count
+  buffer commits since the last resize. A new size (or a new pool) drops
+  the old pool and destroys its buffers at once, busy or not: allowed by
+  `wl_surface.attach` because that storage is never written again.
+- 2026-10-05 · surface: monitors. Identity is `"make | model |
+  description"`; a second identical monitor plugged at the same time gets
+  ` #2`. `Screens::Named` matches the identity or the connector name
+  (`DP-1`). An unplugged monitor is remembered for 30 s (one timer, armed
+  only while something is remembered) and keeps its per-node
+  `SurfaceId`s, so a quick replug reattaches the same ids. `screens:
+  focused` means the output the pointer last entered one of our surfaces
+  on, else the first output; it is re-evaluated on hotplug and spec
+  changes only until keyboard focus tracking lands.
+- 2026-10-05 · surface: a layer surface the compositor `closed` is
+  destroyed and detached; it is recreated only when outputs change or its
+  spec is updated, never in a loop. Content-sized surfaces (a bar without
+  thickness, a panel or OSD without width and height) are not mapped until
+  M2 layout can size them (logged); `popup` and `lock` are not layer
+  surfaces. Logical lengths are rounded to whole pixels for layer-shell.
+  Spec updates reconfigure anchor, size, margins, exclusive zone and
+  keyboard in place with a bare commit; layer or namespace changes
+  recreate.
+- 2026-10-05 · surface: SCTK is used without default features (no
+  xkbcommon until keyboard input); `rustix` reads the clock
+  `wp_presentation.clock_id` names. SCTK 0.21.1 declares rust-version
+  1.86 while the workspace says 1.85. Headless wlroots reports refresh 0
+  in presentation feedback, so predictions there fall back to "now";
+  refresh locking is covered by fake-clock unit tests.
+

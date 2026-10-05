@@ -230,6 +230,36 @@ and `SurfaceChange`s render reports (render loop step 0): namespace
 `screens` selects, and mapping by `open`. Compositor-animated poses (alpha modifier, viewporter,
 margins) are its job in M4.
 
+Interface (main thread; `SurfaceManager<H>` owns the calloop `EventLoop`
+and the connection):
+
+- `trait SurfaceHost: Painter` is what it calls: `paint`/`wants_frame`/
+  `opaque_region` plus no-op-default hooks `surface_attached(surface,
+  node, &Monitor)`, `surface_configured(surface, size, scale)` (before the
+  first paint at that size), `surface_detached`, `monitor_added(&Monitor,
+  reconnected)`, `monitor_removed`, `monitor_forgotten` (30 s after an
+  unplug), `frame_deadline(surface) -> Option<Instant>` and
+  `frame_dropped(surface)`. The binary implements it on a wrapper around
+  `Renderer`, forwarding to `attach_surface`, `configure_surface`,
+  `detach_surface`, `frame_deadline` and `invalidate`.
+- `SurfaceManager::connect(host, Config)` / `with_connection(conn, ..)`;
+  `Config { clock: Box<dyn FrameClock>, fractional_scale, max_buffers }`.
+  `dispatch(timeout)` blocks while idle (no timers armed). Other sources
+  (logic diffs, the text worker ping) go on `loop_handle()`; their
+  callbacks get `&mut State<H>` and call `apply_surface_change(node,
+  change)` for each `take_surface_changes()` entry and `poll()` (ask
+  `wants_frame` again) or `repaint(surface)` (force a paint).
+- `repaint_handle()` gives a `Send` `RepaintHandle` (a calloop channel:
+  `Request::{Repaint(id), RepaintAll, Poll}`); `take_input()` gives the
+  `mpsc::Receiver<InputEvent>` (pointer enter/leave/motion/button/axis in
+  surface-local logical pixels; keyboard later).
+- `FrameClock` (`now`, `presented`, `discarded`, `predict(surface)`) is fed
+  by `wp_presentation` feedback; `PresentationClock` is the real one,
+  `FakeClock` the injectable one. `predict` becomes `PaintTarget::time`.
+- `MonitorId` is `"make | model | description"` (a duplicate gets ` #2`);
+  `Screens::Named` matches it or the connector name. `SurfaceId`s are
+  stable per (node, monitor) while the monitor is remembered.
+
 ### `strand-services`, `strand-watch`
 
 Specified when their milestones start (M3, M1). Both only produce writes and

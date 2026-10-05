@@ -11,13 +11,13 @@ Exit: [ ] ≤34 MB PSS on 2 monitors · [ ] no wakeups between minute ticks ·
 [ ] ≤2,000 px² damage per tick
 
 - [x] `strand-scene` vocabulary: geometry, colour (sRGB ↔ OKLab), `Damage` (≤8 rects, merge), `Painter`, scene protocol types — `crates/strand-scene/src/{geometry,color,damage,id,paint,protocol,surface,tokens}.rs` (unit + proptest), `crates/strand-render/tests/damage.rs` (`surface_specs_resolve_tokens_and_report_changes`)
-- [ ] SCTK layer-shell bar on every output, anchored to an edge, exclusive zone
-- [ ] Output hotplug: bar appears on a new output and is destroyed when one goes; layer-surface `closed` handled
-- [ ] wl_shm pool, 2–3 buffers per surface, buffer age tracked per buffer
-- [ ] `damage_buffer` with exact rects; `set_opaque_region` when opaque
-- [ ] Fractional scale (`wp_fractional_scale_v1`) + viewporter; crisp at 1.0, 1.25, 1.5, 2.0
-- [ ] Frame callbacks requested only while something is dirty or unsettled
-- [ ] `wp_presentation` feedback as the frame clock; injectable fake clock for tests
+- [x] SCTK layer-shell bar on every output, anchored to an edge, exclusive zone — `crates/strand-surface/tests/sway.rs` (`bar_on_every_output_with_hotplug`, `bars_on_two_outputs_at_startup`), `crates/strand-surface/src/placement.rs`
+- [x] Output hotplug: bar appears on a new output and is destroyed when one goes; layer-surface `closed` handled — `crates/strand-surface/tests/sway.rs` (`bar_on_every_output_with_hotplug`), `crates/strand-surface/src/monitor.rs` (30 s retention)
+- [x] wl_shm pool, 2–3 buffers per surface, buffer age tracked per buffer — `crates/strand-surface/src/shm.rs`, `crates/strand-surface/tests/sway.rs` (`renders_pixels_with_exact_damage` checks every buffer holds the frame its age claims)
+- [x] `damage_buffer` with exact rects; `set_opaque_region` when opaque — `crates/strand-surface/tests/sway.rs` (`renders_pixels_with_exact_damage`)
+- [x] Fractional scale (`wp_fractional_scale_v1`) + viewporter; crisp at 1.0, 1.25, 1.5, 2.0 — `crates/strand-surface/tests/sway.rs` (`fractional_scale_buffers_and_viewport`, `integer_scale_fallback`, `renders_pixels_with_exact_damage`)
+- [x] Frame callbacks requested only while something is dirty or unsettled — `crates/strand-surface/tests/sway.rs` (`idle_requests_no_frames_and_commits_nothing`)
+- [x] `wp_presentation` feedback as the frame clock; injectable fake clock for tests — `crates/strand-surface/src/clock.rs` (60 Hz, 144 Hz, jitter), `crates/strand-surface/tests/sway.rs` (`presentation_feedback_feeds_the_frame_clock`)
 - [x] vello_cpu (single-threaded) paints the scene IR into shm with rect clips to damage — `crates/strand-render/tests/damage.rs` (`clock_tick_damage_is_small_and_exact`, `random_edits_match_full_repaint`, `clock_tick_on_4k_rasterises_only_the_damage`)
 - [x] Retained scene → display list → damage diff (only changed nodes' bounds) — `crates/strand-render/tests/damage.rs`
 - [x] Text: parley shaping on the text worker; swash rasterisation; LRU glyph atlas per scale — `crates/strand-text/tests/text.rs` (`huge_distinct_glyphs_stay_within_the_byte_budget`), `crates/strand-render/tests/damage.rs` (`text_survives_output_hotplug`, `worker_rescale_keeps_text_on_the_first_frame`, `first_frame_of_a_new_surface_has_its_text`, `atlas_mirror_stays_bounded`)
