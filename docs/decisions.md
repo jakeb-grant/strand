@@ -3205,3 +3205,73 @@ take waits on a write source instead of 20 Hz polling.
 `run.rs::saves_reload_live_with_state_kept`,
 `a_replayed_hard_reload_reports_the_newer_errors`,
 `ipc.rs::a_stalled_watcher_is_waited_for_without_polling`.
+
+## wave2-exit
+
+**2026-10-05 · The reload fuzzer saves every edit in all five styles.**
+design.md: "Each edit is replayed through five save styles". The fuzzer
+(`crates/strand/src/fuzz.rs::random_edits_through_five_save_styles`)
+runs five live `strand run` pipelines side by side (the real watcher,
+compiler worker, logic thread and IPC socket, without Wayland), one per
+style, each on its own copy of the config on tmpfs (`/dev/shm`), and
+saves every random edit into all five: in place, write-and-rename,
+backup-then-rename, delete-and-create, and a symlink swapped to a new
+target in a store directory. Replaying one edit five times into one
+pipeline would make the second to fifth saves no-ops (same hashes), so
+it would test the no-op path, not the styles. The edits are drawn from
+a model of a three-file config (`theme.strand` with tokens, an exported
+`let` and the `Chip` component; `cells.strand` with exported state;
+`bar.strand`): token values, a binding, a prop, nodes added and removed,
+nodes reordered and wrapped (moves), the component moved to the other
+file, `state` defaults, cells renamed and retyped across two files,
+syntax and name errors, and partial multi-file saves. Before each edit
+some state is changed by clicks, as a user would.
+
+**2026-10-05 · What the fuzzer asserts.** Every diff keeps exactly one
+bar and adds no root but the error overlay (no blank frame, no leaked
+surface: at the logic level a surface is a scene root). A partial save
+(one file of a multi-file edit whose text alone does not type-check
+with the others' old text, checked in the test with `Build::compile`)
+and a broken save are held back and change nothing. After each
+committed edit the scene (without the overlay) and the token table
+equal a cold boot of the same files with the state the edit table keeps
+written into it (`set_value` for the cells, clicks for the chips'
+component state): kept where the table keeps it, the new default where
+the cell still held the old one, reset when renamed or retyped, fresh
+for a node added. The number of cells `strand watch` reports reset
+equals the table's. The overlay itself is not compared: reset notices
+open it and stay until dismissed (wave2-runtime), and a broken save may
+stand 250 ms under load. A logic thread that panics fails the run (its
+events stop; it must also join with `Ok`). `STRAND_FUZZ_EDITS` (60 by
+default, every push) and `STRAND_FUZZ_SEED`; the nightly CI job runs
+10,000 with a new seed each night. Edits drawn that change nothing are
+drawn again, so the count is saves made.
+
+**2026-10-05 · Save → pixels ends at the compositor's presentation.**
+The M1 gate "under 50 ms from save to pixels" is measured to the
+`wp_presentation_feedback.presented` timestamp of the first frame that
+carries the edit (painted with damage and with no text still being
+shaped), on a headless sway at 2560×1440 and 60 Hz
+(`crates/strand/src/bench.rs::reload_latency_to_the_presented_frame`).
+The time starts just before the write, on `CLOCK_MONOTONIC`, the clock
+sway announces (asserted). The bench drives `strand run`'s own main
+loop pieces (`Host`, `demo::apply`, the text worker and its waker, the
+logic thread and compiler worker) with a test-only probe on `Host`
+(paints and monitor changes) and a `FrameClock` that wraps
+`PresentationClock`; the shipped binary has no probe. The painted-buffer
+bench (`run.rs::reload_latency_meets_its_budget`) stays as the
+Wayland-free reading of the same pipeline. Both fail the build when p95
+misses 35 ms (token) or 50 ms (markup).
+
+**2026-10-05 · "Monitor changes on the next frame", measured.** On sway
+a plugged monitor (`swaymsg create_output`) is timed from the main
+thread hearing of it (`wl_output.done`, `SurfaceHost::monitor_added`)
+to the presentation of its bar's first frame, gated at two refresh
+intervals: a new layer surface must wait for its configure round trip
+before it may commit, then shows at the next refresh. The logic side is
+exact: `run.rs::a_monitor_change_is_in_the_next_diff` checks that a
+plug, a scale change, an unplug and a replug are each wholly in the
+first diff the logic thread sends after the message. Portal changes are
+not measured: `system.dark`, `system.accent` and `system.contrast` are
+not fed into `strand run` yet (the portal item under M2), so the
+features.md benchmark line stays open for that clause.

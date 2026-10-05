@@ -19,15 +19,22 @@ bar Top {
 That file is already on every monitor, reactive, themed and animated. It wakes
 once a minute.
 
-**Status:** M0 spike done, M1 under way. `strand run --demo` puts a
-hard-coded hello bar with a minute clock on every monitor (layer-shell,
-fractional scale, exact damage, true idle between ticks, about 21 MB PSS on
-two monitors; see [`docs/m0-report.md`](docs/m0-report.md)). The reactive core
-(`strand-core`) and the `.strand` parser with did-you-mean diagnostics
-(`strand check`) are in; the type checker, VM and live reload are not, so
-`strand run` cannot load your own `.strand` files yet. Progress is tracked in
-[`docs/features.md`](docs/features.md); [`docs/design.md`](docs/design.md) has
-the full design.
+**Status:** M0 spike done; M1's exit gates are met (see
+[`docs/m1-report.md`](docs/m1-report.md)). `strand run [dir]` compiles your
+`.strand` files (type checker, bytecode VM, reactive core), puts the
+surfaces on every monitor and reloads live on save: a token edit is on
+screen about 18 ms after the save and a markup edit within 34 ms (p95,
+presented by sway), with state kept as the design's edit table says, a
+broken save held back behind an error overlay, and 10,000 random edits
+through five editor save styles without a panic, a blank frame or a
+leaked surface. `strand check` reports did-you-mean diagnostics, and
+`strand watch` / `strand reload` talk to a running shell. Still open in
+M1: the formatter, the tree-sitter grammar and the LSP (`strand-dev`),
+and the parts of `fn`/`keyframes`/`shader`/`canvas` that are render work;
+layout, services and theming come in M2 and M3. Progress is tracked in
+[`docs/features.md`](docs/features.md); [`docs/design.md`](docs/design.md)
+has the full design. (M0: `strand run --demo`, about 21 MB PSS on two
+monitors; [`docs/m0-report.md`](docs/m0-report.md).)
 
 ## Layout
 
@@ -65,7 +72,10 @@ cargo test --workspace
 CI runs the same three on every push, with headless sway, grim and DejaVu
 fonts installed so the Wayland integration tests and the M0 demo run (set
 `STRAND_REQUIRE_SWAY=1` to make a missing sway fail instead of skip), plus
-`cargo test --release -p strand --test demo` for the 34 MB PSS budget.
-Offline render tests run in plain `cargo test`. The later tiers in the
-design's Testing section (mocked D-Bus services and the reload fuzzer) are
-added with the milestones that need them.
+`cargo test --release -p strand --test demo` for the 34 MB PSS budget and
+`cargo test --release -p strand --bin strand reload_latency` for the
+save-to-pixels budget. Offline render tests and a short run of the reload
+fuzzer (60 edits through the five save styles, on tmpfs) are part of plain
+`cargo test`; a nightly job runs the fuzzer for 10,000 edits
+(`STRAND_FUZZ_EDITS`, `STRAND_FUZZ_SEED`) and the latency bench for 200
+edits per kind. The mocked D-Bus services tier comes with M3.
