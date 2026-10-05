@@ -1552,8 +1552,10 @@ name = "strand-compiler"
 version = "0.0.0"
 dependencies = [
  "blake3",
+ "chrono",
  "insta",
  "miette",
+ "serde_json",
  "stacker",
  "strand-core",
  "strand-scene",
