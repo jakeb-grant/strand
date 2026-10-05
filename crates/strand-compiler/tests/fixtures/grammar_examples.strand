@@ -8,7 +8,7 @@ type Inner { c: text }
 type Outer { b: Inner? }
 enum Net { wifi, wired }
 state pins: [Pin] key app = []
-state password = ""
+state secret = ""
 state items: [Item] = []
 state xs: [Item] = []
 state a = Outer(b: null)
@@ -42,7 +42,7 @@ enum Side { left, right
 }
 
 lock {
-  input { text: <-> password; on activate { auth.submit(password) } }
+  input { type: password; text: <-> secret; on activate { auth.submit(secret) } }
 }
 
 component Grammar(level: float, side: Side = left) {

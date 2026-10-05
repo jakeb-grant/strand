@@ -899,9 +899,9 @@ schema from `strand-compiler`).
   count states index lists, fill `columns:` and feed `.take(n)`. When a
   fraction is written to one (`i = 0.5`, `i += t`, `i /= 2`, `i *= 0.5`,
   a `float` assigned to it, or a slider's `value: <-> i`) it is a `float`
-  instead: the checker runs again with it pinned (each pass pins at least
-  one more, capped at 8). A `float` where an `int` is expected says how
-  to fix it (`declare it `state i: int = …``, or round it: `i.round`).
+  instead: the checker runs again with it pinned. A `float` where an
+  `int` is expected says how to fix it (`declare it `state i: int = …``,
+  or round it: `i.round`). Round 3 refines the passes (below).
 - **2026-10-05 · wave2-check: a file named like a service.** In
   `battery.low`, `battery` is the service, so a `battery.strand` that
   exports `low` could never be read: its export is an error asking to
@@ -952,17 +952,19 @@ schema from `strand-compiler`).
   booleans, records and lists are errors.
 - **2026-10-05 · wave2-check (round 2): one catalogue with the scene.**
   Every schema element is a `strand_scene::protocol::NodeKind` and every
-  element prop a scene `Prop`, except compiler-only `id` and the props
-  design.md names that the scene lacks (`tests/scene_catalogue.rs`). The
-  props the schema had invented, which design.md never names, are
-  dropped: `justify`, `shrink`, `exclusive` (surfaces; `keyboard:
-  exclusive` stays), `rows`, `axis`, `wrap`, `italic`, `min`, `max`,
-  `step`, `type` (input), `start` (arc), `loop`, `playing` (lottie),
-  `intensity`, `tint` (effect), `spread`, `gravity` (particles), with the
-  `Axis` and `InputKind` enums. A design.md update must come first to add
-  any of them back. `dash` (design.md: "Stroke styles: dash, trim, caps,
-  wavy") stays and is recorded in docs/architecture.md as a scene
-  addition (`Prop::Dash`) for strand-scene's owner.
+  element prop a scene `Prop`, except compiler-only `id`
+  (`tests/scene_catalogue.rs`). The props the schema had invented, which
+  neither design.md nor grammar.md names, are dropped: `justify`,
+  `shrink`, `exclusive` (surfaces; `keyboard: exclusive` stays), `rows`,
+  `axis`, `wrap`, `italic`, `min`, `max`, `step`, `start` (arc), `loop`,
+  `playing` (lottie), `intensity`, `tint` (effect), `spread`, `gravity`
+  (particles), with the `Axis` enum. A doc update must come first to add
+  any of them back. Round 3: `input`'s `type: text | password` stays
+  (`InputKind`): grammar.md names it as a canonical prop (`type:
+  password`, "Keywords are contextual"), and the lock's password field
+  needs it. `dash` (design.md: "Stroke styles: dash, trim, caps, wavy")
+  stays too. The scene gained both (`Prop::Dash`, `Prop::InputType`) in
+  the same commit, so nothing is pending.
 - **2026-10-05 · wave2-check (round 2): `Drop`.** External drops arrive as
   `Drop { kind: DropKind (files | app | text), files: [path], app: App?,
   text: text }` (design.md: "Files, apps and text from other programs
@@ -996,9 +998,10 @@ schema from `strand-compiler`).
 - **2026-10-05 · wave2-check (round 2): `strand check <file>`.** A file is
   checked with the rest of its config, so its references to other files
   resolve: the config is the default config directory if the file is in
-  it, else the file's directory. Only the diagnostics whose primary label
-  is in that file are reported (and the summary names the files it was
-  checked with). A file the module set leaves out (hidden, too deep) is
+  it, else the file's directory. Only the diagnostics with a label in
+  that file are reported, primary or secondary (round 3: the first
+  declaration of a name redeclared in another file is that file's error
+  too), and the summary names the files it was checked with. A file the module set leaves out (hidden, too deep) is
   checked alone.
 - **2026-10-05 · wave2-check (round 2): schema docs, defaults and hash.**
   `///` comments in schema text document the entry they precede and are
@@ -1008,3 +1011,37 @@ schema from `strand-compiler`).
   text (`ParamSig::default`). `Schema::fingerprint()` is BLAKE3 chained
   over every text `extend` was given, in order, for the compiled cache
   key.
+- **2026-10-05 · wave2-check (round 3): whole-number passes.** The extra
+  checker passes for whole-number states are bounded and sound. Before
+  the first pass, fraction writes the source shows plainly are pinned
+  (`check/prepin.rs`): `x = 0.5`, `x /= …`, `x += 0.1`, or `<-> x` on a
+  builtin prop that reads and writes a `float`, when `x` is the only
+  declaration of its name in the file and the write is in that file.
+  The configs in the fixtures, and any with sliders bound to
+  `state v = 0`, check in one pass. A pass also records hand-offs between
+  whole-number states (`b = a`, `b = a * 2`, `b = c ? a : 0`, `b = a ??
+  0`), and the pins are closed over them, so a chain costs one extra pass
+  however long it is. Hand-offs through locals or calls are not followed
+  and cost a pass per link; at the cap (8 passes) the last pass reports
+  a write that would still widen as `check::needs_type` ("holds whole
+  numbers and fractions", fix: `state x: float = …`), so a fraction
+  never reaches an `int` position unreported.
+- **2026-10-05 · wave2-check (round 3): inferred parameters.** A
+  whole-number literal passed to a parameter whose type comes from its
+  callers is an `int` there, as in an untyped `state` (`Grid 3` makes
+  `n` an `int`; a caller passing `0.5` widens it to `float`). A bare
+  builtin variant passed to such a parameter (`Side center`) cannot be
+  resolved, as no enum is expected: it is one `check::unknown_name` whose
+  help says to write the enum (`Align.center`) or type the parameter.
+  A parameter whose callers all passed errors is not also reported as
+  "nothing passes it a value".
+- **2026-10-05 · wave2-check (round 3): uniform vectors.** A shader
+  uniform's vector is a WGSL `vec2` to `vec4`: 2 to 4 comma values. A
+  list, or more or fewer comma values, is a `check::type_mismatch`.
+- **2026-10-05 · wave2-check (round 3): what shadowing is reported.**
+  design.md asks for no shadowing errors. The checker reports the cases
+  where a name would silently change meaning: a declaration named like a
+  variant of the enum a position expects (`state top` with `edge: top`),
+  a parameter declared again in its body, and a file's `state` named
+  like a global. A component `let` or a `for` binding that hides a
+  file-level `state` is ordinary lexical scoping and is accepted.

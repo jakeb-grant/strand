@@ -23,6 +23,7 @@
 
 mod collect;
 mod expr;
+mod prepin;
 mod stmt;
 mod tokens;
 mod tree;
@@ -65,6 +66,9 @@ pub struct Module<'a> {
 pub struct Checked {
     pub program: Program,
     pub diagnostics: Vec<Diagnostic>,
+    /// How many times the program was checked: 1, plus one per round of
+    /// whole-number states found fractional (see [`check`]).
+    pub passes: usize,
 }
 
 impl Checked {
@@ -78,21 +82,68 @@ pub fn check<'a>(modules: &'a [Module<'a>], schema: &'a Schema) -> Checked {
     // An untyped `state`/`let` holding a whole number (`state i = 0`) is
     // an `int` until a fraction is written to it (`i = 0.5`, `i += t`, a
     // slider's `value: <-> i`); then it is a `float` and the program is
-    // checked again with it pinned. Each pass pins at least one more
-    // declaration, so this ends; the cap only bounds pathological chains
-    // (the last pass's diagnostics stand).
-    let mut pins: HashSet<(FileId, Span)> = HashSet::new();
+    // checked again with it pinned. A pass also records which whole
+    // declarations are assigned from which (`b = a`, `b = a * 2`), and the
+    // pins are closed over those hand-offs, so a chain of them costs one
+    // extra pass, not one per link. Each pass pins at least one more
+    // declaration, so this ends; past the cap (hand-offs through locals or
+    // calls, which are not followed), the last pass reports a write that
+    // would still widen as an error instead of accepting it, so a fraction
+    // never flows unreported into an `int`. The fraction writes the
+    // source shows plainly (`level = 0.5`, a slider's `<-> level`) are
+    // pinned before the first pass ([`prepin`]), so the usual config is
+    // checked once.
+    let mut pins: HashSet<(FileId, Span)> = prepin::pre_pins(modules, schema);
     let mut passes = 0;
     loop {
         let mut c = Checker::new(modules, schema);
         c.float_pins = pins.clone();
-        c.run();
         passes += 1;
+        c.strict_widen = passes >= MAX_WIDENING_PASSES;
+        c.run();
         let before = pins.len();
         pins.extend(c.widened.iter().copied());
-        if pins.len() == before || passes >= MAX_WIDENING_PASSES {
-            return c.finish();
+        close_flows(&mut pins, &c.flows);
+        if pins.len() == before || c.strict_widen {
+            let mut out = c.finish();
+            out.passes = passes;
+            return out;
         }
+    }
+}
+
+/// A declaration by where its name is: stable across checker passes.
+pub(crate) type DeclAt = (FileId, Span);
+
+/// Adds to `pins` every whole-number declaration assigned (directly or
+/// through other hand-offs) from a pinned one: `(target, source)` edges.
+fn close_flows(pins: &mut HashSet<DeclAt>, flows: &[(DeclAt, DeclAt)]) {
+    let mut from: HashMap<DeclAt, Vec<DeclAt>> = HashMap::new();
+    for &(target, source) in flows {
+        from.entry(source).or_default().push(target);
+    }
+    let mut queue: Vec<DeclAt> = pins.iter().copied().collect();
+    while let Some(s) = queue.pop() {
+        for &t in from.get(&s).into_iter().flatten() {
+            if pins.insert(t) {
+                queue.push(t);
+            }
+        }
+    }
+}
+
+/// A whole-number literal with no unit (`3`, `-1`, `(0)`): an `int` where
+/// nothing else fixes its type (an untyped `state`/`let`, an argument to
+/// an inferred component parameter).
+pub(crate) fn is_whole_literal(e: &ast::Expr) -> bool {
+    match &e.kind {
+        ast::ExprKind::Number(n) => !n.fraction && n.unit.is_none(),
+        ast::ExprKind::Paren(inner) => is_whole_literal(inner),
+        ast::ExprKind::Unary {
+            op: ast::UnaryOp::Neg,
+            expr,
+        } => is_whole_literal(expr),
+        _ => false,
     }
 }
 
@@ -299,6 +350,14 @@ pub(crate) struct Checker<'a> {
     /// Whole-number declarations earlier passes found fractions written
     /// to: typed `float`.
     pub float_pins: HashSet<(FileId, Span)>,
+    /// The inferred component parameter whose argument is being checked
+    /// (for the help on a bare builtin variant: `Side center`).
+    pub infer_arg: Option<String>,
+    /// Hand-offs between whole-number declarations this pass: `(target,
+    /// source)` for `target = …source…` (see [`check`]).
+    pub flows: Vec<(DeclAt, DeclAt)>,
+    /// The last pass: a write that would widen is an error.
+    pub strict_widen: bool,
 }
 
 impl<'a> Checker<'a> {
@@ -346,6 +405,9 @@ impl<'a> Checker<'a> {
             whole: HashSet::new(),
             widened: HashSet::new(),
             float_pins: HashSet::new(),
+            infer_arg: None,
+            flows: Vec::new(),
+            strict_widen: false,
         }
     }
 
@@ -389,6 +451,7 @@ impl<'a> Checker<'a> {
                 refs: self.refs,
             },
             diagnostics: self.diags,
+            passes: 1,
         }
     }
 
@@ -630,19 +693,8 @@ impl<'a> Checker<'a> {
     /// for a whole-number literal (see [`check`]), unless an earlier pass
     /// pinned it to `float`.
     pub fn whole_hint(&mut self, id: DefId, value: &ast::Expr) -> Option<Ty> {
-        fn whole(e: &ast::Expr) -> bool {
-            match &e.kind {
-                ast::ExprKind::Number(n) => !n.fraction && n.unit.is_none(),
-                ast::ExprKind::Paren(inner) => whole(inner),
-                ast::ExprKind::Unary {
-                    op: ast::UnaryOp::Neg,
-                    expr,
-                } => whole(expr),
-                _ => false,
-            }
-        }
         let def = &self.defs[id.0 as usize];
-        if !whole(value) || self.float_pins.contains(&(def.file, def.span)) {
+        if !is_whole_literal(value) || self.float_pins.contains(&(def.file, def.span)) {
             return None;
         }
         self.whole.insert(id);
@@ -651,7 +703,9 @@ impl<'a> Checker<'a> {
 
     /// Writes a value of type `from` into `target`: if `target` is a
     /// whole-number declaration and `from` is fractional, records it for
-    /// the next pass and returns true (the write is not an error).
+    /// the next pass and returns true (the write is not an error). On the
+    /// last pass (see [`check`]) it reports the write instead, still
+    /// returning true so the caller does not report it again.
     pub fn widen(&mut self, target: &hir::Expr, from: &Ty) -> bool {
         let hir::ExprKind::Def(d) = target.kind else {
             return false;
@@ -663,8 +717,78 @@ impl<'a> Checker<'a> {
             return false;
         }
         let def = &self.defs[d.0 as usize];
-        self.widened.insert((def.file, def.span));
+        let (name, file, span) = (def.name.clone(), def.file, def.span);
+        let kw = if def.kind == DefKind::Let {
+            "let"
+        } else {
+            "state"
+        };
+        if self.strict_widen {
+            self.error(
+                "check::needs_type",
+                format!("`{name}` holds whole numbers and fractions"),
+                target.span,
+                "a fraction is written here",
+            )
+            .add_secondary(file, span, "declared with a whole number")
+            .help = Some(format!(
+                "write its type: `{kw} {name}: float = …`; the hand-offs that make it fractional are too long to follow"
+            ));
+            return true;
+        }
+        self.widened.insert((file, span));
         true
+    }
+
+    /// Records that `value` is written into `target`: if both sides are
+    /// whole-number declarations, a fraction in the source makes the
+    /// target fractional too (see [`check`]). Follows the value through
+    /// arithmetic, `?:` and `??`, which keep a `float` a `float`.
+    pub fn record_flow(&mut self, target: &hir::Expr, value: &hir::Expr) {
+        fn sources(e: &hir::Expr, out: &mut Vec<DefId>) {
+            match &e.kind {
+                hir::ExprKind::Def(d) => out.push(*d),
+                hir::ExprKind::Unary {
+                    op: hir::UnaryOp::Neg,
+                    expr,
+                } => sources(expr, out),
+                hir::ExprKind::Binary {
+                    op:
+                        hir::BinaryOp::Add
+                        | hir::BinaryOp::Sub
+                        | hir::BinaryOp::Mul
+                        | hir::BinaryOp::Div
+                        | hir::BinaryOp::Rem
+                        | hir::BinaryOp::Coalesce,
+                    lhs,
+                    rhs,
+                } => {
+                    sources(lhs, out);
+                    sources(rhs, out);
+                }
+                hir::ExprKind::Ternary { then, else_, .. } => {
+                    sources(then, out);
+                    sources(else_, out);
+                }
+                _ => {}
+            }
+        }
+        let hir::ExprKind::Def(t) = target.kind else {
+            return;
+        };
+        if !self.whole.contains(&t) {
+            return;
+        }
+        let mut found = Vec::new();
+        sources(value, &mut found);
+        let td = &self.defs[t.0 as usize];
+        let tk = (td.file, td.span);
+        for s in found {
+            if s != t && self.whole.contains(&s) {
+                let sd = &self.defs[s.0 as usize];
+                self.flows.push((tk, (sd.file, sd.span)));
+            }
+        }
     }
 
     /// Whether a bare `name` resolves to anything at a value position

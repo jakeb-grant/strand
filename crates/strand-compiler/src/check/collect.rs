@@ -3,7 +3,7 @@
 //! sets), then the per-file walk and the checks that need the whole
 //! program.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::{Binding, Checker, CompParam, CompSig, Ctx, DoneHir, LazyAst, LazyState, Pending};
 use crate::diagnostic::suggest;
@@ -635,29 +635,58 @@ impl<'a> Checker<'a> {
     /// such components the first declared goes first.
     pub(super) fn deferred_components(&mut self, files: &mut [hir::FileHir]) {
         let mut pending = std::mem::take(&mut self.deferred);
-        let names: Vec<&str> = pending.iter().map(|d| d.ast.name.name.as_str()).collect();
-        // callers[i]: the pending components whose bodies use component i.
-        let callers: Vec<Vec<usize>> = (0..pending.len())
-            .map(|i| {
-                (0..pending.len())
-                    .filter(|&j| j != i)
-                    .filter(|&j| {
-                        let mut used = HashSet::new();
-                        element_names(&pending[j].ast.body.items, &mut used);
-                        used.contains(names[i])
-                    })
-                    .collect()
-            })
+        let n = pending.len();
+        let index: HashMap<&str, usize> = pending
+            .iter()
+            .enumerate()
+            .map(|(i, d)| (d.ast.name.name.as_str(), i))
             .collect();
-        let mut done = vec![false; pending.len()];
+        // callees[j]: the pending components component j's body uses;
+        // waiting[i]: how many of component i's pending callers are
+        // unchecked. Each body is walked once.
+        let mut callees: Vec<Vec<usize>> = Vec::with_capacity(n);
+        let mut waiting = vec![0usize; n];
+        for (j, d) in pending.iter().enumerate() {
+            let mut used = HashSet::new();
+            element_names(&d.ast.body.items, &mut used);
+            let mut out: Vec<usize> = used
+                .iter()
+                .filter_map(|name| index.get(name).copied())
+                .filter(|&i| i != j)
+                .collect();
+            out.sort_unstable();
+            for &i in &out {
+                waiting[i] += 1;
+            }
+            callees.push(out);
+        }
+        // Kahn's order: the first declared ready component next; in a
+        // cycle (none ready), the first declared unchecked one.
+        let mut ready: std::collections::BTreeSet<usize> =
+            (0..n).filter(|&i| waiting[i] == 0).collect();
+        let mut done = vec![false; n];
+        let mut cursor = 0;
         let mut placed: Vec<(usize, usize, u32, hir::Item)> = Vec::new();
-        for _ in 0..pending.len() {
-            let next = (0..pending.len())
-                .filter(|&i| !done[i])
-                .find(|&i| callers[i].iter().all(|&j| done[j]))
-                .or_else(|| (0..pending.len()).find(|&i| !done[i]));
-            let Some(i) = next else { break };
+        for _ in 0..n {
+            let i = match ready.pop_first() {
+                Some(i) => i,
+                None => {
+                    while cursor < n && done[cursor] {
+                        cursor += 1;
+                    }
+                    if cursor == n {
+                        break;
+                    }
+                    cursor
+                }
+            };
             done[i] = true;
+            for &k in &callees[i] {
+                waiting[k] = waiting[k].saturating_sub(1);
+                if waiting[k] == 0 && !done[k] {
+                    ready.insert(k);
+                }
+            }
             let d = pending[i];
             self.module = d.module;
             self.infer_params(d.def);
@@ -686,9 +715,9 @@ impl<'a> Checker<'a> {
             if !p.infer {
                 continue;
             }
-            let args: Vec<super::PassedArg> = self
-                .param_args
-                .get(&(def, i))
+            let passed = self.param_args.get(&(def, i));
+            let had_args = passed.is_some_and(|v| !v.is_empty());
+            let args: Vec<super::PassedArg> = passed
                 .map(|v| {
                     v.iter()
                         .filter(|(_, _, t)| !t.is_error())
@@ -697,6 +726,11 @@ impl<'a> Checker<'a> {
                 })
                 .unwrap_or_default();
             let Some((_, _, first)) = args.first() else {
+                if had_args {
+                    // Every argument was already an error at its call
+                    // (`Side cente`): not also "nothing passes it a value".
+                    self.infer_failed.insert((def, i));
+                }
                 continue;
             };
             let mut joined = first.clone();

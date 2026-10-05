@@ -165,6 +165,7 @@ impl<'a> Checker<'a> {
         let v = match op {
             AssignOp::Set => {
                 let v = self.expr(value, Some(&t.ty));
+                self.record_flow(&t, &v);
                 if !self.widen(&t, &v.ty) {
                     self.require(&v, &t.ty, "this assignment");
                 }
@@ -172,6 +173,7 @@ impl<'a> Checker<'a> {
             }
             _ => {
                 let v = self.expr(value, Some(&t.ty));
+                self.record_flow(&t, &v);
                 // `i += 0.5`, `i *= 0.5`, `i /= 2` make a whole-number
                 // state fractional.
                 let fraction = match op {

@@ -1,0 +1,15 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::unknown_name
+
+  × unknown name `center`
+   ╭─[infer_builtin_variant.strand:7:27]
+ 6 │ component Side(e) { row { align: e; text "x" } }
+ 7 │ bar Top { edge: top; Side center }
+   ·                           ───┬──
+   ·                              ╰── no enum expected here
+   ╰────
+  help: `center` is a builtin variant, and the parameter it fills has no type to resolve it by:
+        write `Anchor.center` or `Align.center`, or give the parameter a type (`e: Anchor`)

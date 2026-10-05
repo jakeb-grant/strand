@@ -23,11 +23,7 @@ const COMPILER_ONLY: &[&str] = &[
 /// yet; each is recorded in docs/architecture.md as a scene addition for
 /// its owner. Remove an entry when the scene gains it (the test then
 /// insists it stays).
-const SCENE_PENDING: &[&str] = &[
-    // `stroke: 3, $accent { dash: 6, 4 }`: design.md, "Stroke styles:
-    // dash, trim, caps, wavy".
-    "dash",
-];
+const SCENE_PENDING: &[&str] = &[];
 
 #[test]
 fn every_element_is_a_scene_kind() {

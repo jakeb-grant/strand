@@ -495,14 +495,18 @@ impl<'a> Checker<'a> {
     }
 
     fn unknown_name(&mut self, id: &ast::Ident, expected: Option<&Ty>, field_base: bool) {
-        let help = if self.may_suggest() {
+        let variant_help = self.builtin_variant_help(&id.name, expected);
+        let label = match expected {
+            Some(t @ Ty::Enum(_)) => format!("not a name, nor a variant of `{}`", self.show(t)),
+            _ if variant_help.is_some() => "no enum expected here".to_string(),
+            _ => "not found".to_string(),
+        };
+        let help = if variant_help.is_some() {
+            variant_help
+        } else if self.may_suggest() {
             self.name_suggestion(&id.name, expected, field_base)
         } else {
             None
-        };
-        let label = match expected {
-            Some(t @ Ty::Enum(_)) => format!("not a name, nor a variant of `{}`", self.show(t)),
-            _ => "not found".to_string(),
         };
         self.error(
             "check::unknown_name",
@@ -511,6 +515,34 @@ impl<'a> Checker<'a> {
             label,
         )
         .help = help;
+    }
+
+    /// A bare builtin variant where nothing expects its enum (`Side
+    /// center` for an inferred parameter, `let a = center`): the enum
+    /// must be written, or the position typed.
+    fn builtin_variant_help(&self, name: &str, expected: Option<&Ty>) -> Option<String> {
+        if expected.is_some_and(|t| !t.is_lenient()) {
+            return None;
+        }
+        let enums: Vec<&str> = self.types.enums[..self.schema.types.enums.len()]
+            .iter()
+            .filter(|e| e.variant(name).is_some())
+            .map(|e| e.name.as_str())
+            .collect();
+        let first = *enums.first()?;
+        let written = enums
+            .iter()
+            .map(|e| format!("`{e}.{name}`"))
+            .collect::<Vec<_>>()
+            .join(" or ");
+        Some(match &self.infer_arg {
+            Some(param) => format!(
+                "`{name}` is a builtin variant, and the parameter it fills has no type to resolve it by: write {written}, or give the parameter a type (`{param}: {first}`)"
+            ),
+            None => format!(
+                "`{name}` is a builtin variant, and nothing here expects its enum: write {written}"
+            ),
+        })
     }
 
     /// Did-you-mean for an unknown name: the variants of the enum the

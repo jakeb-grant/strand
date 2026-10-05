@@ -198,6 +198,9 @@ props! {
     BlurFallback = "blur_fallback": Snap,
     /// Stroke trim range: `trim: 0, progress`.
     Trim = "trim": Effects,
+    /// Stroke dash pattern, a sub-prop of `stroke`:
+    /// `stroke: 3, $accent { dash: 6, 4 }` (dash length, gap length).
+    Dash = "dash": Effects,
     Cap = "cap": Snap,
     // Text.
     Text = "text": Snap,
@@ -213,6 +216,8 @@ props! {
     // Widgets and input.
     Value = "value": Spatial,
     Placeholder = "placeholder": Snap,
+    /// What an `input` holds: `type: password` masks it.
+    InputType = "type": Snap,
     Options = "options": Snap,
     Source = "source": Snap,
     Fit = "fit": Snap,

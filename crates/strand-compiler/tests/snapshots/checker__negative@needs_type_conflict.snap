@@ -4,7 +4,7 @@ expression: rendered
 ---
 check::needs_type
 
-  × parameter `v` of `Badge` is passed `float` and `text`
+  × parameter `v` of `Badge` is passed `int` and `text`
    ╭─[needs_type_conflict.strand:4:17]
  3 │ // different types, it is one error at the parameter naming both.
  4 │ component Badge(v) { text "badge" }
@@ -13,6 +13,6 @@ check::needs_type
  5 │ bar Top { Badge 1; Badge "x" }
    ·                 ┬        ─┬─
    ·                 │         ╰── `text` here
-   ·                 ╰── `float` here
+   ·                 ╰── `int` here
    ╰────
   help: write the type it takes (`v: T`), or pass the same type everywhere

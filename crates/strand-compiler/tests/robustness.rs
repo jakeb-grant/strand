@@ -438,3 +438,46 @@ fn many_unknown_names_stay_cheap() {
     assert_eq!(with_help, 100);
     assert!(elapsed < Duration::from_secs(15), "{elapsed:?}");
 }
+
+/// Components whose parameters are inferred from callers are ordered in
+/// linear time: a chain of 3,000 (each calling the next) checks about as
+/// fast as the same chain with typed parameters.
+#[test]
+fn long_inferred_component_chains_stay_cheap() {
+    let n = 3000;
+    let mut src = String::new();
+    for i in 0..n {
+        if i + 1 < n {
+            src.push_str(&format!("component C{i}(x) {{ C{} x }}\n", i + 1));
+        } else {
+            src.push_str(&format!("component C{i}(x) {{ text x }}\n"));
+        }
+    }
+    src.push_str("bar Top { edge: top; C0 \"hi\" }\n");
+    let (map, _) = SourceMap::single("chain.strand", src);
+    let started = Instant::now();
+    let out = strand_compiler::compile(&map);
+    let elapsed = started.elapsed();
+    assert_eq!(out.errors(), 0, "{:?}", out.diagnostics.first());
+    assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+}
+
+/// A long `extends` chain of token sets is checked without rebuilding
+/// the chain per entry.
+#[test]
+fn long_token_extends_chains_stay_cheap() {
+    let n = 4000;
+    let mut src = String::from("tokens t0 { gap { k0: 1px } }\n");
+    for i in 1..n {
+        src.push_str(&format!(
+            "tokens t{i} extends t{} {{ gap {{ k{i}: 1px }} override gap {{ k0: 2px }} }}\n",
+            i - 1
+        ));
+    }
+    let (map, _) = SourceMap::single("tokens.strand", src);
+    let started = Instant::now();
+    let out = strand_compiler::compile(&map);
+    let elapsed = started.elapsed();
+    assert_eq!(out.errors(), 0, "{:?}", out.diagnostics.first());
+    assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+}

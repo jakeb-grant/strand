@@ -966,8 +966,11 @@ impl<'a> Checker<'a> {
             Some(ast::HeadArg::Positional(e)) => match sig.params.first() {
                 Some(p) => {
                     filled[0] = true;
-                    let ty = p.ty.clone();
+                    let ty = self.arg_ty(p, e);
+                    let outer = self.infer_arg.take();
+                    self.infer_arg = p.infer.then(|| p.name.clone());
                     let h = self.prop_value(e, &ty, &format!("`{}` of `{kind}`", p.name));
+                    self.infer_arg = outer;
                     if p.infer {
                         self.passed(d, 0, &h);
                     }
@@ -1035,6 +1038,47 @@ impl<'a> Checker<'a> {
         })
     }
 
+    /// The type an argument to parameter `p` is checked against. A
+    /// parameter whose type comes from its callers expects nothing, except
+    /// that a whole-number literal is an `int` there, as in an untyped
+    /// `state` (`Grid 3`); callers that also pass fractions widen it to
+    /// `float` when the types are joined.
+    fn arg_ty(&self, p: &super::CompParam, e: &ast::Expr) -> Ty {
+        if p.infer && super::is_whole_literal(e) {
+            Ty::INT
+        } else {
+            p.ty.clone()
+        }
+    }
+
+    /// A shader uniform's vector is a WGSL `vec2` to `vec4`: 2 to 4
+    /// comma values (`u_dir: 1, 0`), never a list of any length.
+    fn uniform_vector(&mut self, v: &hir::Expr) {
+        let n = match &v.kind {
+            hir::ExprKind::Commas(items) => items.len(),
+            _ if matches!(v.ty, Ty::List(..)) => 0,
+            _ => return,
+        };
+        if (2..=4).contains(&n) {
+            return;
+        }
+        let found = if n == 0 {
+            "a list, not comma values,".to_string()
+        } else {
+            format!("{n} values")
+        };
+        self.error(
+            "check::type_mismatch",
+            "a shader uniform vector has 2 to 4 components",
+            v.span,
+            format!("{found} here"),
+        )
+        .help = Some(
+            "write a WGSL `vec2` to `vec4` as comma values (`u_dir: 1, 0`); pass more data as several uniforms"
+                .into(),
+        );
+    }
+
     /// Records an argument for a parameter whose type comes from its
     /// call sites.
     fn passed(&mut self, comp: DefId, i: usize, h: &hir::Expr) {
@@ -1078,8 +1122,11 @@ impl<'a> Checker<'a> {
                         "pass the value; let the component's widgets bind their own state".into(),
                     );
                 }
-                let ty = sig.params[i].ty.clone();
+                let ty = self.arg_ty(&sig.params[i], p.value);
+                let outer = self.infer_arg.take();
+                self.infer_arg = sig.params[i].infer.then(|| name.to_string());
                 let value = self.prop_value(p.value, &ty, &format!("`{name}` of `{}`", call.name));
+                self.infer_arg = outer;
                 if sig.params[i].infer {
                     self.passed(call.def, i, &value);
                 }
@@ -1206,12 +1253,17 @@ impl<'a> Checker<'a> {
         {
             // A shader uniform: say what uniforms take, not the union.
             let lead = format!("`{name}` expects");
+            let mut mismatch = false;
             for d in &mut self.diags[mark..] {
                 if d.code == "check::type_mismatch" && d.message.starts_with(&lead) {
+                    mismatch = true;
                     d.message = format!(
                         "shader uniform `{name}` takes a number, length, angle, duration or colour, or a comma vector of them"
                     );
                 }
+            }
+            if !mismatch {
+                self.uniform_vector(&prop.value);
             }
         }
         if let Some(n) = &node
@@ -2099,8 +2151,6 @@ enum Shape {
     List(Ty),
 }
 
-/// A child that renders inside its parent, for "takes no children"
-/// (a `popup` or `tooltip` is its own surface, so a leaf may hold one).
 /// What a shader uniform (`u_speed: 0.4`, `u_tint: $accent`, `u_dir: 1,
 /// 0`) may hold: the values WGSL uniforms take (scalars, lengths, angles,
 /// durations, colours, and comma vectors of them). Checking each against
@@ -2120,6 +2170,8 @@ fn uniform_ty() -> Ty {
     Ty::Union(alts)
 }
 
+/// A child that renders inside its parent, for "takes no children"
+/// (a `popup` or `tooltip` is its own surface, so a leaf may hold one).
 fn rendered_child(n: &Node) -> Option<Span> {
     match n {
         Node::Element(e) => match &e.kind {

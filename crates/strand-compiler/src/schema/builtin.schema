@@ -31,6 +31,8 @@ enum SpectrumStyle { bars, mirror, wave, line }
 enum EffectKind { lightning, sparks, shimmer, ripple, aurora }
 enum Urgency { low, normal, critical }
 enum DropKind { files, app, text }
+/// What an `input` holds: `type: password` masks it (docs/grammar.md).
+enum InputKind { text, password }
 enum Variant { tonal_spot, vibrant, expressive, neutral, monochrome, fidelity, content, rainbow, fruit_salad }
 
 // Values with no inner structure the language can see.
@@ -562,6 +564,7 @@ element slider: node {
 element input: node {
   text: text <->
   placeholder: text
+  type: InputKind
   focus: bool
   nav: Node
   flags leaf

@@ -59,6 +59,10 @@ pub(crate) struct Tokens<'a> {
     pub entries: Vec<Entry<'a>>,
     pub by_path: HashMap<String, Vec<usize>>,
     pub stack: Vec<usize>,
+    /// Each set's place in the `extends` forest once cycles are broken:
+    /// `(enter, leave, depth)` of a pre-order walk, so whether a set is on
+    /// another's chain is two comparisons (see [`Tokens::index_chains`]).
+    pub tour: Vec<(u32, u32, u32)>,
 }
 
 fn key_path(k: &ast::TokenKey) -> String {
@@ -162,10 +166,12 @@ impl<'a> Tokens<'a> {
 
     /// Sets from `set` up its `extends` chain, without repeats.
     fn chain(&self, set: Option<usize>) -> Vec<usize> {
+        // A chain visits each set at most once, so more steps than there
+        // are sets means a cycle (only before cycles are broken).
         let mut out = Vec::new();
         let mut cur = set;
         while let Some(s) = cur {
-            if out.contains(&s) {
+            if out.len() >= self.sets.len() || out.last() == Some(&s) {
                 break;
             }
             out.push(s);
@@ -174,7 +180,67 @@ impl<'a> Tokens<'a> {
         out
     }
 
+    /// Numbers the `extends` forest (see [`Tokens::tour`]); called once
+    /// cycles are broken.
+    pub fn index_chains(&mut self) {
+        let n = self.sets.len();
+        let mut children = vec![Vec::new(); n];
+        let mut roots = Vec::new();
+        for s in 0..n {
+            match self.sets[s].extends {
+                Some(p) => children[p].push(s),
+                None => roots.push(s),
+            }
+        }
+        let mut tour = vec![(u32::MAX, u32::MAX, 0); n];
+        let mut clock = 0u32;
+        for r in roots {
+            tour[r] = (clock, 0, 0);
+            clock += 1;
+            let mut stack: Vec<(usize, usize)> = vec![(r, 0)];
+            while let Some(top) = stack.last_mut() {
+                let (node, next) = *top;
+                if let Some(&c) = children[node].get(next) {
+                    top.1 += 1;
+                    tour[c] = (clock, 0, tour[node].2 + 1);
+                    clock += 1;
+                    stack.push((c, 0));
+                } else {
+                    tour[node].1 = clock;
+                    stack.pop();
+                }
+            }
+        }
+        // Every set is reached once no cycle is left; otherwise lookups
+        // walk the chain.
+        if tour.iter().all(|t| t.0 != u32::MAX) {
+            self.tour = tour;
+        }
+    }
+
+    /// Whether set `a` is `s` or one of the sets `s` extends.
+    fn on_chain(&self, a: usize, s: usize) -> bool {
+        let (ta, ts) = (self.tour[a], self.tour[s]);
+        ta.0 <= ts.0 && ts.0 < ta.1
+    }
+
+    /// The entry for `path` nearest `set` up its `extends` chain: of the
+    /// entries with that path on the chain, the one in the deepest set.
     fn find_in_chain(&self, set: Option<usize>, path: &str) -> Option<usize> {
+        if let Some(s) = set
+            && self.tour.len() == self.sets.len()
+        {
+            let mut best: Option<(u32, usize)> = None;
+            for &e in self.by_path.get(path)? {
+                if let Owner::Set(a) = self.entries[e].owner
+                    && self.on_chain(a, s)
+                    && best.is_none_or(|(d, _)| self.tour[a].2 > d)
+                {
+                    best = Some((self.tour[a].2, e));
+                }
+            }
+            return best.map(|(_, e)| e);
+        }
         self.chain(set).into_iter().find_map(|s| {
             self.sets[s]
                 .entries
@@ -243,41 +309,63 @@ impl<'a> Checker<'a> {
                 }
             }
         }
-        // `a extends b extends a`.
-        for s in 0..self.tokens.sets.len() {
-            let mut seen = vec![s];
-            let mut cur = self.tokens.sets[s].extends;
+        // `a extends b extends a`: each set extends at most one, so a walk
+        // from every unvisited set finds each cycle once (O(sets)). A
+        // cycle is reported at its first declared member and broken there.
+        let n = self.tokens.sets.len();
+        // 0: unvisited, 1: on the current walk, 2: done.
+        let mut mark = vec![0u8; n];
+        let mut cycles: Vec<Vec<usize>> = Vec::new();
+        for start in 0..n {
+            let mut path = Vec::new();
+            let mut cur = Some(start);
             while let Some(c) = cur {
-                if c == s {
-                    let names: Vec<String> = seen
-                        .iter()
-                        .chain(std::iter::once(&s))
-                        .map(|i| {
-                            format!("`{}`", self.defs[self.tokens.sets[*i].def.0 as usize].name)
-                        })
-                        .collect();
-                    self.module = self.tokens.sets[s].module;
-                    let span = self.tokens.sets[s]
-                        .ast
-                        .extends
-                        .as_ref()
-                        .map_or(Span::default(), |e| e.span);
-                    self.error(
-                        "check::cycle",
-                        format!("token sets extend each other: {}", names.join(" → ")),
-                        span,
-                        "extends itself",
-                    );
-                    self.tokens.sets[s].extends = None;
-                    break;
+                match mark[c] {
+                    0 => {
+                        mark[c] = 1;
+                        path.push(c);
+                        cur = self.tokens.sets[c].extends;
+                    }
+                    1 => {
+                        let at = path.iter().position(|&p| p == c).unwrap_or(0);
+                        cycles.push(path[at..].to_vec());
+                        break;
+                    }
+                    _ => break,
                 }
-                if seen.contains(&c) {
-                    break;
-                }
-                seen.push(c);
-                cur = self.tokens.sets[c].extends;
+            }
+            for p in path {
+                mark[p] = 2;
             }
         }
+        for cycle in cycles {
+            let first = cycle
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, s)| **s)
+                .map_or(0, |(i, _)| i);
+            let s = cycle[first];
+            let names: Vec<String> = cycle[first..]
+                .iter()
+                .chain(&cycle[..first])
+                .chain(std::iter::once(&s))
+                .map(|i| format!("`{}`", self.defs[self.tokens.sets[*i].def.0 as usize].name))
+                .collect();
+            self.module = self.tokens.sets[s].module;
+            let span = self.tokens.sets[s]
+                .ast
+                .extends
+                .as_ref()
+                .map_or(Span::default(), |e| e.span);
+            self.error(
+                "check::cycle",
+                format!("token sets extend each other: {}", names.join(" → ")),
+                span,
+                "extends itself",
+            );
+            self.tokens.sets[s].extends = None;
+        }
+        self.tokens.index_chains();
         for s in 0..self.tokens.sets.len() {
             self.validate_set(s);
         }
@@ -290,14 +378,12 @@ impl<'a> Checker<'a> {
         let parent_name =
             parent.map(|p| self.defs[self.tokens.sets[p].def.0 as usize].name.clone());
         let entries = self.tokens.sets[s].entries.clone();
+        let mut own: HashMap<String, usize> = HashMap::new();
         let mut reported_groups: Vec<String> = Vec::new();
-        for (i, &e) in entries.iter().enumerate() {
+        for &e in &entries {
             let entry = self.tokens.entries[e].clone();
             let path = entry.path.as_str();
-            if let Some(&prev) = entries[..i]
-                .iter()
-                .find(|&&p| self.tokens.entries[p].path == path)
-            {
+            if let Some(&prev) = own.get(path) {
                 let ps = self.tokens.entries[prev].span;
                 let file = self.file();
                 self.error(
@@ -309,6 +395,7 @@ impl<'a> Checker<'a> {
                 .add_secondary(file, ps, "first defined here");
                 continue;
             }
+            own.insert(path.to_string(), e);
             let inherited = self.tokens.find_in_chain(parent, path);
             let schema = self.schema.tokens.get(path);
             if !entry.override_ {
@@ -342,9 +429,11 @@ impl<'a> Checker<'a> {
             } else if inherited.is_none() && schema.is_none() {
                 // A misspelt override is an unknown name, never a new token.
                 if let Some((prefix, gspan)) = &entry.group {
-                    let any = self.tokens.all_paths(self.schema).iter().any(|p| {
-                        p.starts_with(&format!("{prefix}.")) && self.override_target(parent, p)
-                    });
+                    let dotted = format!("{prefix}.");
+                    let any = self.schema.tokens.keys().any(|p| p.starts_with(&dotted))
+                        || self.tokens.by_path.keys().any(|p| {
+                            p.starts_with(&dotted) && self.tokens.find_in_chain(parent, p).is_some()
+                        });
                     if !any {
                         if !reported_groups.contains(prefix) {
                             reported_groups.push(prefix.clone());
@@ -379,12 +468,6 @@ impl<'a> Checker<'a> {
                 });
             }
         }
-    }
-
-    /// Whether `path` is something `override` in a set extending `parent`
-    /// may name.
-    fn override_target(&self, parent: Option<usize>, path: &str) -> bool {
-        self.schema.tokens.contains_key(path) || self.tokens.find_in_chain(parent, path).is_some()
     }
 
     fn override_candidates(&self, parent: Option<usize>) -> Vec<String> {

@@ -16,7 +16,7 @@ file
     field b :Inner?
   enum Net wifi wired
   state pins :[Pin] (key app) (= array)
-  state password (= "")
+  state secret (= "")
   state items :[Item] (= array)
   state xs :[Item] (= array)
   state a (= (call Outer (b: null)))
@@ -51,9 +51,10 @@ file
   enum Side left right top bottom
   lock
     element input
-      prop text: <-> password
+      prop type: password
+      prop text: <-> secret
       on activate
-        expr (call (. auth submit) password)
+        expr (call (. auth submit) secret)
   component Grammar (params (level :float) (side :Side (= left)))
     state page (= wifi)
     state cur (= level)

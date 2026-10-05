@@ -58,7 +58,7 @@ pub fn check_dir(dir: &Path, style: Style) -> Result<Report, String> {
 /// Checks one file as part of its config, so its references to other
 /// files resolve: the config is `default_root` if the file is inside it,
 /// else the file's directory. Every file of that config is compiled, and
-/// only the diagnostics in `file` are reported. A file the config's
+/// only the diagnostics that point into `file` are reported. A file the config's
 /// module set does not include (hidden, or too deep) is checked alone.
 pub fn check_file(
     file: &Path,
@@ -90,7 +90,7 @@ pub fn check_file(
 }
 
 /// Checks the config at `dir`; with `focus`, reports only the diagnostics
-/// in that file (a canonical path).
+/// with a label (primary or secondary) in that file (a canonical path).
 fn check_config(dir: &Path, focus: Option<&Path>, style: Style) -> Result<Report, String> {
     let found =
         find_files(dir).map_err(|e| format!("strand check: cannot read {}: {e}", dir.display()))?;
@@ -144,7 +144,10 @@ fn check_config(dir: &Path, focus: Option<&Path>, style: Style) -> Result<Report
     }
     let mut diags = strand_compiler::compile(&map).diagnostics;
     if focus.is_some() {
-        diags.retain(|d| Some(d.file()) == focus_id);
+        // A diagnostic is the file's if any of its labels is there: the
+        // first declaration of a name redeclared in another file, a call
+        // site of a parameter whose callers disagree.
+        diags.retain(|d| d.labels.iter().any(|l| Some(l.file) == focus_id));
     }
     for d in &diags {
         if d.is_error() {
@@ -406,6 +409,16 @@ mod tests {
             "{}",
             report.text
         );
+        // A name declared in two files is both files' error, though the
+        // primary label is on the second declaration.
+        let t = TempDir::new();
+        t.write("a.strand", "component Card { box {} }\n");
+        t.write("b.strand", "component Card { box {} }\n");
+        for f in ["a.strand", "b.strand"] {
+            let report = check_file(&t.0.join(f), None, Style::Plain).unwrap();
+            assert_eq!(report.errors, 1, "{f}: {}", report.text);
+            assert!(!report.ok(), "{f}");
+        }
     }
 
     #[test]

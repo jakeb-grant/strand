@@ -1,0 +1,7 @@
+// expect: check::unknown_name
+// A builtin variant passed to a parameter whose type comes from its
+// callers has no enum to resolve by: one error at the call, which says to
+// write the enum or type the parameter (not also "nothing passes it a
+// value" at the parameter).
+component Side(e) { row { align: e; text "x" } }
+bar Top { edge: top; Side center }

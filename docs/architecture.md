@@ -343,10 +343,11 @@ Public interfaces other crates and later stages build on:
   one. The schema's element kinds and props are the scene's
   (`strand_scene::protocol::NodeKind`, `Prop`), checked by
   `strand-compiler/tests/scene_catalogue.rs`; `id` is compiler-only.
-  **Scene addition pending (strand-scene's owner):** `Prop::Dash` for the
-  `dash` sub-prop of `stroke` (`stroke: 3, $accent { dash: 6, 4 }`, a
-  `(length, length)` pair, class `Effects`); the test lists it as pending
-  until the scene has it.
+  Two scene props exist for the language's sake: `Prop::Dash` (`"dash"`,
+  class `Effects`), the `dash` sub-prop of `stroke` (`stroke: 3, $accent
+  { dash: 6, 4 }`, dash and gap lengths), and `Prop::InputType`
+  (`"type"`, `Snap`), an `input`'s `type: text | password` (grammar.md);
+  render stores both and draws them when strokes and inputs land.
 - **Types** (`strand_compiler::ty`): `Ty` is `Error` (already reported,
   accepted everywhere), `Any`, `Null`, `Unit`, `Prim(Prim)` (`bool int float
   length percent angle duration color paint text path font shadow insets
@@ -373,9 +374,13 @@ Public interfaces other crates and later stages build on:
   `stacker::maybe_grow`, so checking is safe on small worker-thread
   stacks (the LSP's, the reload compile's) however long a chain of
   declarations is. An untyped `state`/`let` holding a whole number is an
-  `int` in the HIR unless a fraction is written to it (then `float`; the
-  checker re-runs internally, see decisions.md), and an untyped
-  component parameter has the joined type of its call sites' arguments.
+  `int` in the HIR unless a fraction is written to it (then `float`).
+  Fraction writes the source shows plainly are pinned before checking;
+  any found while checking re-run the checker once, closed over the
+  hand-offs between such states (`Checked::passes` says how many ran;
+  see decisions.md). An untyped component parameter has the joined type
+  of its call sites' arguments (a whole-number literal argument counts
+  as `int`).
 - **HIR** (`strand_compiler::hir`), the typed, resolved program the VM
   lowering, the reconciler and the LSP consume. `Program { files:
   Vec<FileHir { file, name, items }>, defs: Vec<Def>, locals: Vec<Local>,
@@ -426,7 +431,8 @@ Directories past `MAX_DEPTH` that hold `.strand` files are listed in
 `strand check <file>` checks the file with the rest of its config (the
 default config directory if the file is in it, else the file's own
 directory, both through `find_files`) and reports only the diagnostics
-whose primary label is in that file.
+with a label, primary or secondary, in that file (so both files of a
+cross-file redeclaration report it).
 
 It is not the watch set. Per design.md ("Change sources") the watcher also
 watches `.wgsl` shader files, settings TOML (`state … from "…"`), wallpaper

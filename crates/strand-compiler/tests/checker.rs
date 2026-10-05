@@ -377,6 +377,48 @@ fn whole_number_declarations_are_ints_until_a_fraction_arrives() {
     ] {
         assert_eq!(def_ty(p, name), ty, "{name}");
     }
+    // A chain of hand-offs longer than the pass cap still widens every
+    // link, so the fraction reaches the `int` prop and is reported.
+    let links = 12;
+    let mut src = String::new();
+    for k in 0..=links {
+        src.push_str(&format!("state s{k} = 0\n"));
+    }
+    src.push_str("component C {\n  box { on click { s0 = 0.5");
+    for k in 1..=links {
+        src.push_str(&format!("; s{k} = s{} * 2", k - 1));
+    }
+    src.push_str(&format!(" }} }}\n  grid {{ columns: s{links} }}\n}}\n"));
+    let (out, map) = compile_files(&[("a.strand", src)]);
+    let codes: Vec<&str> = out.diagnostics.iter().map(|d| d.code).collect();
+    assert_eq!(
+        codes,
+        ["check::type_mismatch"],
+        "{}",
+        render(&out.diagnostics, &map, Style::Plain)
+    );
+    assert_eq!(def_ty(&out.program, &format!("s{links}")), "float");
+    // Hand-offs through locals are not followed; past the cap the write
+    // that would still widen is an error, never a silent `int`.
+    let mut src = String::new();
+    for k in 0..=links {
+        src.push_str(&format!("state s{k} = 0\n"));
+    }
+    src.push_str("component C {\n  box { on click { s0 = 0.5");
+    for k in 1..=links {
+        src.push_str(&format!("; let v{k} = s{}; s{k} = v{k}", k - 1));
+    }
+    src.push_str(&format!(" }} }}\n  grid {{ columns: s{links} }}\n}}\n"));
+    let (out, map) = compile_files(&[("a.strand", src)]);
+    let rendered = render(&out.diagnostics, &map, Style::Plain);
+    assert!(out.errors() > 0, "{rendered}");
+    assert!(
+        out.diagnostics
+            .iter()
+            .any(|d| d.code == "check::needs_type"
+                && d.message.contains("whole numbers and fractions")),
+        "{rendered}"
+    );
     // An exported whole number reads as an `int` from another file.
     let (out, map) = compile_files(&[
         ("a.strand", "export let q = 1\n".into()),
@@ -400,7 +442,9 @@ fn component_parameters_are_inferred_from_callers() {
                    panel Toasts { for n in notifications.popups { Toast n } }\n\
                    component Label(t) { text t }\n\
                    component Wrap(x) { Label t: x }\n\
-                   bar Top { edge: top; Wrap \"hi\" }\n");
+                   component Grid(n) { grid { columns: n } }\n\
+                   component Mixed(v) { meter v }\n\
+                   bar Top { edge: top; Wrap \"hi\"; Grid 3; Grid n: -2; Mixed 1; Mixed 0.5 }\n");
     let p = &out.program;
     let param_ty = |comp: &str| {
         let c = p
@@ -418,6 +462,10 @@ fn component_parameters_are_inferred_from_callers() {
     // Through another inferred component, named or positional.
     assert_eq!(param_ty("Wrap"), "text");
     assert_eq!(param_ty("Label"), "text");
+    // A whole-number literal is an `int`, as in an untyped `state`; a
+    // fraction from another caller widens it.
+    assert_eq!(param_ty("Grid"), "int");
+    assert_eq!(param_ty("Mixed"), "float");
     // The HIR keeps file order.
     let names: Vec<&str> = p.files[0]
         .items
@@ -428,7 +476,10 @@ fn component_parameters_are_inferred_from_callers() {
             _ => None,
         })
         .collect();
-    assert_eq!(names, ["Toast", "Toasts", "Label", "Wrap", "Top"]);
+    assert_eq!(
+        names,
+        ["Toast", "Toasts", "Label", "Wrap", "Grid", "Mixed", "Top"]
+    );
 }
 
 /// A whole-number literal is a `float` unless its position expects an
