@@ -1,0 +1,13 @@
+---
+source: crates/strand-compiler/tests/diagnostics.rs
+expression: report(src)
+---
+syntax::bad_colour
+
+  × `#needle` is not a colour
+   ╭─[e.strand:1:9]
+ 1 │ let c = #needle
+   ·         ───┬───
+   ·            ╰── colours are `#rgb`, `#rgba`, `#rrggbb` or `#rrggbbaa`
+   ╰────
+  help: an SVG selector such as `#needle { … }` goes at the start of an item

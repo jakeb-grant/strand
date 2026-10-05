@@ -1,0 +1,128 @@
+---
+source: crates/strand-compiler/tests/fixtures.rs
+expression: tree
+---
+file
+  bar Top
+    prop edge: top
+    prop height: 36
+    prop margin: (commas $space.2 $space.2 0)
+    prop bg: (call (. $surface alpha) 0.72)
+    prop blur: 24
+    prop radius: $radius.lg
+    prop shadow: $elevation.md
+    prop font: $font.ui
+    prop color: $fg
+    element split
+      prop pad: (commas 0 $space.3)
+      element start
+        prop gap: $space.3
+        element row
+          prop gap: $space.1
+          for ws (in (call (. workspaces on) screen))
+            element Dot ws
+        element text (?? (?. (. windows focused) title) "")
+          prop color: $fg.muted
+          prop max_width: 40%
+          prop ellipsis: end
+      element center
+        element Clock
+      element end
+        prop gap: $space.3
+        element Volume
+        if (. battery present)
+          then
+            element Battery
+        for item (in (. tray items))
+          element image (. item icon)
+            prop size: 16
+            on click
+              expr (call (. item activate))
+            on secondary
+              expr (call (. (. item menu) open))
+  component Dot (params (ws :Workspace))
+    element box
+      prop size: 8
+      prop radius: full
+      prop bg: (call (. $fg alpha) 0.25)
+      prop hit: (call grow 6)
+      when (. ws occupied)
+        prop bg: $fg.muted
+      when (. ws focused)
+        prop width: 24
+        prop bg: $accent
+      when (. ws urgent)
+        prop bg: $error
+      when hover
+        prop bg: $accent.hover
+      when pressed
+        prop scale: 0.9
+      enter
+        prop width: 0
+        prop opacity: 0
+      on click
+        expr (call (. ws focus))
+  component Volume
+    element row
+      prop gap: $space.1
+      on scroll (params dy)
+        assign -= (. (. audio sink) volume) (* dy 0.05)
+      element icon (. (. audio sink) icon)
+        on click
+          assign = (. (. audio sink) muted) (! (. (. audio sink) muted))
+      if hover
+        then
+          element slider
+            prop width: 90
+            prop value: <-> (. (. audio sink) volume)
+            enter
+              prop width: 0
+              prop opacity: 0
+  component Battery
+    element row
+      prop gap: $space.1
+      element icon (. battery icon)
+      element text (call join " · " (call pct (. battery percent)) (call dur (. battery time_left)))
+      when (&& (< (. battery percent) 0.15) (! (. battery charging)))
+        prop color: $error
+  component Clock
+    state open (= false)
+    element text (call (. clock format) "%a %d  %H:%M")
+      on click
+        assign = open (! open)
+      element popup
+        prop open: <-> open
+        element Calendar
+  component Calendar
+    state month (= (call (. (. clock today) month_start)))
+    element col
+      prop pad: $space.3
+      prop gap: $space.2
+      prop bg: $surface
+      prop radius: $radius.lg
+      prop shadow: $elevation.lg
+      element row
+        prop align: center
+        element button "‹"
+          on click
+            assign = month (call (. month add) (months: (neg 1)))
+        element text (call (. month format) "%B %Y")
+          prop grow: 1
+          prop align: center
+        element button "›"
+          on click
+            assign = month (call (. month add) (months: 1))
+      element grid
+        prop columns: 7
+        prop gap: $space.1
+        for d (in (call (. calendar days) month))
+          element text (call (. (. d date) format) "%e")
+            prop width: 28
+            prop height: 28
+            prop align: center
+            when (! (. d in_month))
+              prop color: $fg.faint
+            when (== (. d date) (. clock today))
+              prop bg: $accent
+              prop color: $on_accent
+              prop radius: full

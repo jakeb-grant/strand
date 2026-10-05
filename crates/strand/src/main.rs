@@ -2,12 +2,17 @@
 //!
 //! See `docs/design.md` for the design and roadmap.
 
+mod check;
+
+use std::io::IsTerminal;
 use std::process::ExitCode;
+
+use strand_compiler::diagnostic::Style;
 
 /// Subcommands the design commits to, with the milestone that delivers each.
 const COMMANDS: &[(&str, &str, &str)] = &[
     ("run", "start the shell from the config directory", "M0"),
-    ("check", "type-check the config without running it", "M1"),
+    ("check", "check the config without running it [dir]", "M1"),
     ("watch", "stream reload events (--json)", "M1"),
     (
         "reload",
@@ -59,6 +64,17 @@ fn dispatch(args: &[String]) -> Result<String, String> {
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("check") {
+        let color = std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+        let style = if color { Style::Color } else { Style::Plain };
+        let (text, ok) = check::run(&args[1..], style);
+        eprint!("{text}");
+        return if ok {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        };
+    }
     match dispatch(&args) {
         Ok(out) => {
             print!("{out}");
@@ -90,8 +106,8 @@ mod tests {
     #[test]
     fn known_commands_name_their_milestone() {
         assert_eq!(
-            run(&["check"]).unwrap_err(),
-            "strand check: not implemented yet (M1)"
+            run(&["watch"]).unwrap_err(),
+            "strand watch: not implemented yet (M1)"
         );
     }
 

@@ -1,0 +1,14 @@
+---
+source: crates/strand-compiler/tests/diagnostics.rs
+expression: report(src)
+---
+syntax::missing_value
+
+  × `bg:` has no value
+   ╭─[e.strand:2:12]
+ 1 │ component A {
+ 2 │   box { bg: }
+   ·            ▲
+   ·            ╰── expected a value here, on the same line
+ 3 │ }
+   ╰────

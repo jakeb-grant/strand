@@ -1,0 +1,44 @@
+---
+source: crates/strand-compiler/tests/fixtures.rs
+expression: tree
+---
+file
+  enum Kind volume brightness
+  state kind (= volume)
+  state shown (= false)
+  on change (. (. audio sink) volume) (. (. audio sink) muted)
+    assign = kind volume
+    assign = shown true
+  on change (. brightness level)
+    assign = kind brightness
+    assign = shown true
+  on change (. (. audio sink) volume) (. (. audio sink) muted) (. brightness level) (after 1.2s)
+    assign = shown false
+  let level (= (?: (== kind volume) (paren (?: (. (. audio sink) muted) 0 (. (. audio sink) volume))) (. brightness level)))
+  osd Level
+    prop anchor: bottom
+    prop margin: (commas 0 0 96)
+    prop open: shown
+    enter
+      prop opacity: 0
+      prop scale: 0.9
+    element row
+      prop width: 260
+      prop pad: $space.3
+      prop gap: $space.3
+      prop align: center
+      prop radius: full
+      prop bg: (call (. $surface alpha) 0.8)
+      prop blur: 24
+      prop shadow: $elevation.lg
+      element icon (?: (== kind volume) (. (. audio sink) icon) "display-brightness-symbolic")
+        prop size: 20
+      element meter level
+        prop grow: 1
+        prop height: 6
+        prop color: $accent
+        prop track: (call (. $fg alpha) 0.15)
+      element text (call pct level)
+        prop width: 4ch
+        prop align: end
+        prop font: $font.mono

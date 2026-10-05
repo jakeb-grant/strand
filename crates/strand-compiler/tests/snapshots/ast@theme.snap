@@ -1,0 +1,51 @@
+---
+source: crates/strand-compiler/tests/fixtures.rs
+expression: tree
+---
+file
+  enum Look auto light dark wallpaper mocha
+  export state look (= auto) persist
+  state prefs from "~/.config/strand/prefs.toml"
+    field accent :color (= #7aa2f7ff)
+    field wallpaper :path (= "~/Pictures/wall.jpg")
+    field compact :bool (= false)
+  let dark (= (match look (arm auto (. system dark)) (arm light false) (arm _ true)))
+  let scheme :Palette (= (match look (arm wallpaper (?? (call material (image: (. prefs wallpaper)) (variant: tonal_spot) (dark: dark)) (call material (seed: (. prefs accent)) (dark: dark)))) (arm mocha (call import "catppuccin:mocha")) (arm _ (call material (seed: (?? (. system accent) (. prefs accent))) (dark: dark) (contrast: (. system contrast))))))
+  tokens base
+    token space
+      token 1 4px
+      token 2 8px
+      token 3 12px
+      token 4 16px
+    token radius
+      token sm 6px
+      token md 10px
+      token lg 14px
+      token xl 20px
+      token full 999px
+    token font
+      token ui (spaced "Inter" 13px 500)
+      token title (spaced "Inter" 18px 600)
+      token caption (spaced "Inter" 11px)
+      token mono (spaced "JetBrains Mono" 12px)
+    token motion
+      token spatial (call spring 700 0.9)
+      token effects (call spring 1600 1)
+      token bouncy (call spring 380 0.75)
+    token elevation
+      token md (spaced 0 2px 8px (call (. $shadow alpha) 0.25))
+      token lg (commas (spaced 0 8px 24px (call (. $shadow alpha) 0.3)) (spaced 0 1px 2px (call (. $shadow alpha) 0.2)))
+      token xl (spaced 0 16px 48px (call (. $shadow alpha) 0.4))
+    token surface.hi (call (. $surface mix) $fg 8%)
+    token fg.muted (call (. $fg alpha) 0.65)
+    token fg.faint (call (. $fg alpha) 0.35)
+    token accent.hover (call (. $accent mix) $on_accent 8%)
+    token accent.container (call (. $accent alpha) 0.22)
+    token border (call oklch (from $surface) (l: (+ l 0.12)))
+  tokens compact extends base
+    override token space
+      token 1 2px
+      token 2 4px
+      token 3 8px
+      token 4 12px
+  use (tokens (?: (. prefs compact) compact base)) (palette scheme)

@@ -1,0 +1,15 @@
+---
+source: crates/strand-compiler/tests/diagnostics.rs
+expression: report(src)
+---
+syntax::expected
+
+  × expected `{` to start the handler, found `a`
+   ╭─[e.strand:2:13]
+ 1 │ component A {
+ 2 │   on chnage a, b { x = 1 }
+   ·             ┬
+   ·             ╰── expected `{` to start the handler
+ 3 │ }
+   ╰────
+  help: did you mean `change`?

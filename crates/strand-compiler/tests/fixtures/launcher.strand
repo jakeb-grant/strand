@@ -1,0 +1,30 @@
+// launcher.strand. Bind a key to: strand toggle launcher.open
+export state open = false
+state query = ""
+let hits = apps.search(query)          // Async<[Hit]>: fuzzy + frecency, keeps last result
+
+panel Launcher {
+  screens: focused; layer: overlay; anchor: center; keyboard: exclusive
+  open: <-> open                       // Escape, click-away and focus loss write false
+  enter { opacity: 0; scale: 0.96 }    // animated by the compositor, no repaint
+  on show { query = "" }
+  col { width: 600; pad: $space.3; gap: $space.2; radius: $radius.xl; clip: true
+        bg: $surface.alpha(0.82); blur: 32; shadow: $elevation.xl
+    input { text: <-> query; placeholder: "Search apps"; font: $font.title; focus: true; nav: results }
+    list { id: results; max_height: 420               // virtualised; arrows move selection
+      for h in hits {
+        row { pad: $space.2; gap: $space.3; radius: $radius.md; align: center
+          when hover    { bg: $surface.hi }
+          when selected { bg: $accent.container }
+          on activate { h.app.launch(); open = false }
+          image h.app.icon { size: 32 }
+          col { grow: 1
+            text h.app.name { marks: h.ranges; mark_color: $accent; weight: 600 }
+            text h.app.comment ?? "" { font: $font.caption; color: $fg.muted; ellipsis: end }
+          }
+        }
+      }
+    }
+    if hits.len == 0 && query != "" && !hits.pending { text "No matches" { color: $fg.muted } }
+  }
+}

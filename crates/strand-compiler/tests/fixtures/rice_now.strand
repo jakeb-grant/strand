@@ -1,0 +1,9 @@
+component Now {
+  row { radius: full; corners: squircle; bg: $surface.alpha(0.7); blur: 24
+        border: 1.5, conic(from: t * 40deg, $accent, $tertiary, $accent)
+        morph: "media"                                  // grows into the media panel
+    image media.art { size: 28; shape: cookie; rotate: media.playing ? t * 20deg : 0 }
+    spectrum audio.sink { bars: 24; width: 72; color: $accent; style: mirror }
+    when media.playing { glow: 10 * wave(2s), $accent.alpha(0.4) }
+  }
+}

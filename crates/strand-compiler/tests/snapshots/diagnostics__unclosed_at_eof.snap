@@ -1,0 +1,19 @@
+---
+source: crates/strand-compiler/tests/diagnostics.rs
+expression: report(src)
+---
+syntax::unclosed
+
+  × unclosed `{`
+   ╭─[e.strand:1:13]
+ 1 │ component A {
+   ·             ┬
+   ·             ╰── this `{` has no matching `}`
+ 2 │   box {
+   ·       ┬
+   ·       ╰── probably missing its `}`: the `}` that closed it is indented differently
+ 3 │     text "x"
+ 4 │ }
+   ·  ▲
+   ·  ╰── the file ends here
+   ╰────

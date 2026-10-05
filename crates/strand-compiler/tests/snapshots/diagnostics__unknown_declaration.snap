@@ -1,0 +1,14 @@
+---
+source: crates/strand-compiler/tests/diagnostics.rs
+expression: report(src)
+---
+syntax::expected
+
+  × expected a declaration, found `componnet`
+   ╭─[e.strand:1:1]
+ 1 │ componnet Foo {
+   · ────┬────
+   ·     ╰── unknown declaration
+ 2 │   text "hi"
+   ╰────
+  help: did you mean `component`?

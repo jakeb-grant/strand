@@ -1,0 +1,15 @@
+---
+source: crates/strand-compiler/tests/diagnostics.rs
+expression: report(src)
+---
+syntax::expected
+
+  × expected `;` or a line break after this item, found `(`
+   ╭─[e.strand:2:12]
+ 1 │ component A {
+ 2 │   text pct (x)
+   ·            ┬
+   ·            ╰── expected `;` or a line break after this item
+ 3 │ }
+   ╰────
+  help: to call or index, remove the space before `(`

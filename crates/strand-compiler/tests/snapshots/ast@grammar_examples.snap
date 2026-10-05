@@ -1,0 +1,89 @@
+---
+source: crates/strand-compiler/tests/fixtures.rs
+expression: tree
+---
+file
+  fn clamp01 (params (x :float)) (-> :float)
+    expr (?: (< x 0) 0 (?: (> x 1) 1 x))
+  fn label (params (n :int)) (-> :text)
+    let s (= (?: (== n 1) "item" "items"))
+    expr (call join " " n s)
+  service temp (from poll (array "sensors" "-j") (every 5s))
+    field cpu :float (= package)
+  service ups (from dbus system "org.freedesktop.UPower" "/org/freedesktop/UPower/devices/DisplayDevice")
+    field percent :float (= Percentage)
+    permit exec
+  service mood (from file "~/.cache/mood.json")
+    field level :int (= level)
+  service music (from listen (array "playerctl" "-F" "metadata"))
+    field title :text? (= title)
+  permit exec "sensors" "playerctl"
+  keyframes shake
+    stop 0% 100%
+      prop x: 0
+    stop 25%
+      prop x: (neg 4)
+    stop 75%
+      prop x: 4
+    prop duration: 300ms
+  export let total (= (. pins len))
+  enum Side left right top bottom
+  lock
+    element input
+      prop text: <-> password
+      on activate
+        expr (call (. auth submit) password)
+  component Grammar (params (level :float) (side :Side (= left)))
+    state page (= wifi)
+    let lines (= (array "a" "b"))
+    element text (call (. (call (. (call (. (. clock today) month_start)) add) (months: (neg 1))) format) "%B")
+    element box
+      prop shadow: (commas (spaced 0 (paren (neg 2px)) 8px (call (. $shadow alpha) 0.2)) (spaced 0 1px 2px #00000040))
+    element box
+      prop margin: (commas 8 8 0) (~ instant)
+    element box
+      prop bg: (call oklch (from $accent) (l: (+ l 0.12)) (c: (* c 0.5)))
+    element text (match side (arm left "L") (arm right "R") (arm _ "?"))
+    match side
+      arm left
+        element text "left"
+      arm right
+        element icon "go-next"
+      arm _
+        element box
+    if (> level 0.5)
+      then
+        element text "high"
+      else
+        if (> level 0.2)
+          then
+            element text "mid"
+          else
+            element text "low"
+    for p (in pins) (key (. p app))
+      element text (. p label)
+    on click
+      let next (= (+ level 0.1))
+      if (> next 1)
+        then
+          assign = level 1
+        else
+          assign = level next
+      match side
+        arm left
+          assign = side right
+        arm _
+          assign = side left
+      for p (in pins)
+        expr (call (. p touch))
+      expr (await (call sleep 200ms))
+    on key (params k)
+      expr (call propagate)
+    element text (call (. (call (. (call (. items filter) (=> (params i) (&& (. i visible) (! (. i hidden))))) map) (=> (params (i :Item)) (. i name))) join) ", ")
+    element text (?? (?. (. a b) c) (paren (?? d "none")))
+    element text (?: cond "yes" "no")
+    every 1s (while visible)
+      assign += ticks 1
+    element canvas
+      prop draw: (=> (params c) (block (expr (call (. c fill) $accent)) (expr (call (. c line) 0 0 width height))))
+    element text (. (index xs 0) name)

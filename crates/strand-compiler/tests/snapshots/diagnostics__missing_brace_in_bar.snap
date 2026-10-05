@@ -1,0 +1,29 @@
+---
+source: crates/strand-compiler/tests/diagnostics.rs
+expression: report(&broken)
+---
+syntax::unclosed
+
+  × unclosed `{`
+    ╭─[e.strand:27:30]
+ 26 │ 
+ 27 │ component Dot(ws: Workspace) {
+    ·                              ┬
+    ·                              ╰── this `{` has no matching `}`
+ 28 │   box { size: 8; radius: full; bg: $fg.alpha(0.25); hit: grow(6)
+    ·       ┬
+    ·       ╰── probably missing its `}`: the `}` that closed it is indented differently
+ 29 │     when ws.occupied { bg: $fg.muted }
+ 30 │     when ws.focused  { width: 24; bg: $accent }    // later `when` wins, like CSS
+ 31 │     when ws.urgent   { bg: $error }
+ 32 │     when hover       { bg: $accent.hover }
+ 33 │     when pressed     { scale: 0.9 }
+ 34 │     enter { width: 0; opacity: 0 }                 // exit mirrors enter
+ 35 │     on click { ws.focus() }
+ 36 │ }
+ 37 │ 
+ 38 │ component Volume {
+    · ────┬────
+    ·     ╰── the next declaration starts here
+ 39 │   row { gap: $space.1
+    ╰────

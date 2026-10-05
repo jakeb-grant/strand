@@ -1,0 +1,24 @@
+---
+source: crates/strand-compiler/tests/fixtures.rs
+expression: tree
+---
+file
+  component Now
+    element row
+      prop radius: full
+      prop corners: squircle
+      prop bg: (call (. $surface alpha) 0.7)
+      prop blur: 24
+      prop border: (commas 1.5 (call conic (from: (* t 40deg)) $accent $tertiary $accent))
+      prop morph: "media"
+      element image (. media art)
+        prop size: 28
+        prop shape: cookie
+        prop rotate: (?: (. media playing) (* t 20deg) 0)
+      element spectrum (. audio sink)
+        prop bars: 24
+        prop width: 72
+        prop color: $accent
+        prop style: mirror
+      when (. media playing)
+        prop glow: (commas (* 10 (call wave 2s)) (call (. $accent alpha) 0.4))

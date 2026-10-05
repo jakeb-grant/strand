@@ -1,0 +1,15 @@
+---
+source: crates/strand-compiler/tests/diagnostics.rs
+expression: report(src)
+---
+syntax::unknown_unit
+
+  × unknown unit `pz`
+   ╭─[e.strand:2:18]
+ 1 │ component A {
+ 2 │   box { width: 12pz }
+   ·                  ─┬
+   ·                   ╰── units are px, %, deg, ch, s and ms
+ 3 │ }
+   ╰────
+  help: did you mean `px`?
