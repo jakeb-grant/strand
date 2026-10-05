@@ -486,8 +486,10 @@ fn a_surface_namespace_or_kind_change_recreates_only_it_with_its_state() {
 }
 
 /// A surface changed between `bar` (one per monitor) and a single
-/// surface cannot keep its state (which monitor's would it be?): the
-/// cells are reset, with a warning, never dropped silently.
+/// surface keeps its state when the bar has one instance (one monitor:
+/// nothing to guess); on several monitors, which one's state would the
+/// single surface keep? Those cells are reset, with a warning, never
+/// dropped silently.
 #[test]
 fn a_bar_turned_panel_reports_its_state_reset() {
     let src = |kind: &str| {
@@ -495,7 +497,41 @@ fn a_bar_turned_panel_reports_its_state_reset() {
             "{kind} Top {{\n  state n = 0\n  text join(\"\", \"n\", n) {{ on click {{ n += 1 }} }}\n}}\n"
         )
     };
+    // One monitor: the bar's only instance and the panel trade state.
     let mut shell = boot(&[("t.strand", &src("bar"))]);
+    let t = shell.scene.find_text("n0").unwrap();
+    shell.inst.event(t, "click", Vec::new());
+    shell.flush();
+    let (report, _) = shell.reload(&[("t.strand", &src("panel"))]);
+    assert!(report.reset.is_empty(), "{report:?}");
+    assert!(
+        !report.classes.contains(&EditClass::StateReset),
+        "{report:?}"
+    );
+    assert!(
+        shell.scene.find_text("n1").is_some(),
+        "{}",
+        shell.scene.render()
+    );
+    assert_eq!(shell.scene.of_kind(NodeKind::Panel).len(), 1);
+    let t = shell.scene.find_text("n1").unwrap();
+    shell.inst.event(t, "click", Vec::new());
+    shell.flush();
+    let (report, _) = shell.reload(&[("t.strand", &src("bar"))]);
+    assert!(report.reset.is_empty(), "{report:?}");
+    assert!(
+        shell.scene.find_text("n2").is_some(),
+        "{}",
+        shell.scene.render()
+    );
+    assert_eq!(shell.scene.of_kind(NodeKind::Bar).len(), 1);
+
+    // Two monitors: reset, with a warning.
+    let mut shell = boot_with(
+        &[("t.strand", &src("bar"))],
+        Storage::none(),
+        &["DP-1", "DP-2"],
+    );
     let t = shell.scene.find_text("n0").unwrap();
     shell.inst.event(t, "click", Vec::new());
     shell.flush();
@@ -504,17 +540,18 @@ fn a_bar_turned_panel_reports_its_state_reset() {
         report.classes.contains(&EditClass::StateReset),
         "{report:?}"
     );
-    assert_eq!(report.reset.len(), 1, "{report:?}");
+    assert_eq!(report.reset.len(), 2, "{report:?}");
     assert!(report.reset[0].0.ends_with(".n"), "{report:?}");
     assert!(report.reset[0].1.contains("bar"), "{report:?}");
     assert!(shell.scene.find_text("n0").is_some());
-    // And back: a panel's cell cannot be one monitor's either.
+    // And back onto two monitors: the panel's cell cannot be one
+    // monitor's either.
     let t = shell.scene.find_text("n0").unwrap();
     shell.inst.event(t, "click", Vec::new());
     shell.flush();
     let (report, _) = shell.reload(&[("t.strand", &src("bar"))]);
     assert_eq!(report.reset.len(), 1, "{report:?}");
-    assert!(shell.scene.find_text("n0").is_some());
+    assert_eq!(shell.scene.texts(), ["n0", "n0"]);
 }
 
 /// Per-monitor bars keep their own state across a reload.

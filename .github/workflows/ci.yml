@@ -31,3 +31,6 @@ jobs:
       - run: cargo test --workspace
       # The 34 MB PSS gate is checked on a release build (design.md, "Testing": budgets).
       - run: cargo test --release -p strand --test demo
+      # Save → pixels p95 within design.md's 35 ms (token) and 50 ms
+      # (markup) on an optimised build; ignored in debug builds.
+      - run: cargo test --release -p strand --bin strand reload_latency

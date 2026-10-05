@@ -313,11 +313,17 @@ fn run(
         // that reverts a broken one to the last good text changes
         // nothing either, but the problems it clears are reported gone
         // (`cleared`: the overlay closes, `strand watch` hears it).
-        let quiet = outcome.build.is_none()
-            && outcome.diagnostics.is_empty()
-            && outcome.held.is_empty()
-            && outcome.unreadable.is_empty()
-            && !outcome.cleared;
+        //
+        // The watcher's re-listing after a `strand reload` on a broken
+        // config finds the files as the reload did: the loader repeats
+        // that attempt's problems without compiling, and they are not
+        // reported twice.
+        let quiet = outcome.repeated
+            || (outcome.build.is_none()
+                && outcome.diagnostics.is_empty()
+                && outcome.held.is_empty()
+                && outcome.unreadable.is_empty()
+                && !outcome.cleared);
         if quiet && reload.is_none() {
             continue;
         }

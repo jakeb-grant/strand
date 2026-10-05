@@ -62,11 +62,12 @@ pub enum WriteTarget {
 }
 
 /// The direct reads of one chunk, and the chunks whose reads it takes
-/// on (its lambdas, the `fn`s it calls).
-fn direct(prog: &Program, id: ChunkId) -> (Reads, Vec<ChunkId>) {
+/// on: the `fn`s it calls, and its lambdas.
+fn direct(prog: &Program, id: ChunkId) -> (Reads, Vec<ChunkId>, Vec<ChunkId>) {
     let chunk = prog.chunk(id);
     let mut r = Reads::default();
     let mut deps = Vec::new();
+    let mut lambdas = Vec::new();
     let next_field = |i: usize| match chunk.ops.get(i + 1) {
         Some(Op::Field(n)) => Some(chunk.names[*n as usize].clone()),
         _ => None,
@@ -111,7 +112,7 @@ fn direct(prog: &Program, id: ChunkId) -> (Reads, Vec<ChunkId>) {
             Op::Node(n) => {
                 r.nodes.insert(*n);
             }
-            Op::Closure(l) => deps.push(chunk.lambdas[*l as usize].chunk),
+            Op::Closure(l) => lambdas.push(chunk.lambdas[*l as usize].chunk),
             Op::Keyed { root, .. } => match root {
                 super::code::KeyedRoot::Def(d) => {
                     r.defs.insert(*d);
@@ -126,7 +127,7 @@ fn direct(prog: &Program, id: ChunkId) -> (Reads, Vec<ChunkId>) {
             _ => {}
         }
     }
-    (r, deps)
+    (r, deps, lambdas)
 }
 
 /// What one place write targets.
@@ -149,11 +150,13 @@ pub(crate) fn compute(prog: &mut Program) {
     let n = prog.chunks.len();
     let mut direct_reads = Vec::with_capacity(n);
     let mut deps = Vec::with_capacity(n);
+    let mut lambdas = Vec::with_capacity(n);
     let mut writes = Vec::with_capacity(n);
     for id in 0..n as ChunkId {
-        let (r, d) = direct(prog, id);
+        let (r, d, l) = direct(prog, id);
         direct_reads.push(r);
         deps.push(d);
+        lambdas.push(l);
         let chunk = prog.chunk(id);
         let mut w: Vec<WriteTarget> = chunk
             .ops
@@ -170,25 +173,110 @@ pub(crate) fn compute(prog: &mut Program) {
         w.dedup();
         writes.push(w);
     }
-    // Transitive closure over lambdas and `fn` calls (recursion included).
-    let mut reads = Vec::with_capacity(n);
-    for id in 0..n {
-        if deps[id].is_empty() {
-            reads.push(direct_reads[id].clone());
-            continue;
-        }
-        let mut all = direct_reads[id].clone();
-        let mut seen: BTreeSet<ChunkId> = BTreeSet::from([id as ChunkId]);
-        let mut stack: Vec<ChunkId> = deps[id].clone();
-        while let Some(c) = stack.pop() {
-            if !seen.insert(c) {
-                continue;
-            }
-            all.extend(&direct_reads[c as usize]);
-            stack.extend(deps[c as usize].iter().copied());
-        }
-        reads.push(all);
+    // Transitive closure over lambdas and `fn` calls (recursion
+    // included): one union per strongly connected component, each taking
+    // in the components it reaches, which Tarjan's algorithm finishes
+    // first. Linear in the call graph (a fresh walk per chunk was
+    // quadratic in call depth). A `fn`'s own locals (its parameters, its
+    // `let`s) mean nothing where it is called: they reach callers only
+    // through the lambdas that share their scope.
+    let all: Vec<Vec<ChunkId>> = (0..n)
+        .map(|i| deps[i].iter().chain(&lambdas[i]).copied().collect())
+        .collect();
+    let mut outer = closure(&all, |i| {
+        let mut r = direct_reads[i].clone();
+        r.locals.clear();
+        r
+    });
+    let locals = closure(&lambdas, |i| Reads {
+        locals: direct_reads[i].locals.clone(),
+        ..Reads::default()
+    });
+    for (r, l) in outer.iter_mut().zip(locals) {
+        r.locals = l.locals;
     }
+    let reads = outer;
     prog.reads = reads;
     prog.writes = writes;
+}
+
+/// Each node's `own` reads together with those of every node it
+/// reaches in `deps`.
+fn closure(deps: &[Vec<ChunkId>], own: impl Fn(usize) -> Reads) -> Vec<Reads> {
+    let (comp, order) = components(deps);
+    let mut per: Vec<Reads> = Vec::with_capacity(order.len());
+    for (c, members) in order.iter().enumerate() {
+        let mut all = Reads::default();
+        for &m in members {
+            all.extend(&own(m));
+            for &d in &deps[m] {
+                let dc = comp[d as usize];
+                if dc != c {
+                    all.extend(&per[dc]);
+                }
+            }
+        }
+        per.push(all);
+    }
+    (0..deps.len()).map(|i| per[comp[i]].clone()).collect()
+}
+
+/// The strongly connected components of the graph `deps` (iterative
+/// Tarjan): each node's component, and the components' members in the
+/// order they finish (a component after every component it reaches).
+fn components(deps: &[Vec<ChunkId>]) -> (Vec<usize>, Vec<Vec<usize>>) {
+    const NONE: usize = usize::MAX;
+    let n = deps.len();
+    let mut index = vec![NONE; n];
+    let mut low = vec![0; n];
+    let mut on_stack = vec![false; n];
+    let mut comp = vec![NONE; n];
+    let mut stack = Vec::new();
+    let mut order: Vec<Vec<usize>> = Vec::new();
+    let mut next = 0;
+    // (node, next edge to look at)
+    let mut work: Vec<(usize, usize)> = Vec::new();
+    for root in 0..n {
+        if index[root] != NONE {
+            continue;
+        }
+        work.push((root, 0));
+        while let Some(&mut (v, ref mut edge)) = work.last_mut() {
+            if *edge == 0 && index[v] == NONE {
+                index[v] = next;
+                low[v] = next;
+                next += 1;
+                stack.push(v);
+                on_stack[v] = true;
+            }
+            if let Some(&w) = deps[v].get(*edge) {
+                *edge += 1;
+                let w = w as usize;
+                if index[w] == NONE {
+                    work.push((w, 0));
+                } else if on_stack[w] {
+                    low[v] = low[v].min(index[w]);
+                }
+                continue;
+            }
+            work.pop();
+            if let Some(&(parent, _)) = work.last() {
+                low[parent] = low[parent].min(low[v]);
+            }
+            if low[v] == index[v] {
+                let c = order.len();
+                let mut members = Vec::new();
+                while let Some(w) = stack.pop() {
+                    on_stack[w] = false;
+                    comp[w] = c;
+                    members.push(w);
+                    if w == v {
+                        break;
+                    }
+                }
+                order.push(members);
+            }
+        }
+    }
+    (comp, order)
 }

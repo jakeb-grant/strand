@@ -45,7 +45,10 @@ sends it `Job::{Reload { hard, client }, Referenced(settings files)}`
 (the `Loaded` a reload causes carries the IPC clients it answers). A
 load that commits nothing but clears the last attempt's problems (a
 broken save reverted to the last good text, `Outcome::cleared`) is
-sent too, so the overlay closes and `strand watch` hears it. The
+sent too, so the overlay closes and `strand watch` hears it; an attempt
+on exactly the files the one before it read (`Outcome::repeated`: the
+watcher's re-listing after a `strand reload`) repeats its problems
+without compiling and is not sent again. The
 persist store's `on_written` registers Strand's own writes with the
 watcher. The logic thread commits each `Loaded` (`Instance::reload`,
 `reload_hard`, held back while a lock is shown: the newest such load
@@ -82,12 +85,19 @@ its event; at once with `"deferred": true` in the event while a lock is
 shown), `reset` (`"path"`: a state cell back to its default, as the
 overlay's `[reset]`) and `watch` (`{"ok": true}`, then one event per line:
 `{"event": "reload", files, committed, held, unreadable, from_cache,
-classes, kept, reset: [{cell, why}], notices, restarted, cancelled,
-timing: {watch_ms, compile_ms, commit_ms, total_ms}, diagnostics:
-[{severity, code, message, help, at: {file, line, column}, labels,
-short}]}` and `{"event": "fault", message, at, frozen}`). `total_ms`
-runs from the watcher's last event behind the save to the moment the
-diff holding the reload is sent to render.
+classes, kept, kept_over_default: [{path, shown}], reset: [{cell, why}],
+ambiguous, notices, restarted, cancelled, deferred, timing: {watch_ms,
+compile_ms, commit_ms, total_ms}, diagnostics: [{severity, code,
+message, help, at: {file, line, column}, labels, short}]}`,
+`{"event": "notices", kept_over_default, notices}` for cells kept over a
+changed default outside a reload (persisted cells at boot, a parked bar
+back; with nobody watching they go into the next reload event's
+`kept_over_default`) and lowering's notices, and `{"event": "fault",
+message, at, frozen}`). `total_ms` runs from the watcher's last event
+behind the save to the moment the diff holding the reload is sent to
+render. A client whose socket cannot take its output yet gets a write
+source on the logic loop until it is written (no polling); one more
+than 1 MiB behind is dropped.
 
 ## Crate graph
 
@@ -626,7 +636,8 @@ Public interfaces other crates and later stages build on:
   `reconcile::loader::Loader::new(root, schema, cache_dir)` is the
   compiler worker's state: `boot()`, `changed([(path, exists)])`,
   `rescan()` each return an `Outcome { build, committed, held,
-  diagnostics, sources, unreadable, from_cache, cleared, compile_time }`
+  diagnostics, sources, unreadable, from_cache, cleared, repeated,
+  compile_time }`
   (`cleared`: the last attempt had errors, held or unreadable files and
   this one has none, even when nothing changed against the last good
   build): the
@@ -1093,7 +1104,9 @@ Public interfaces other crates and later stages build on:
     held the old one, as a reload write; renamed or retyped cells and
     `@reset` reset; a surface's cells are keyed by its scope, not its
     name, so a renamed surface keeps them; a surface changed between
-    `bar` and a single surface resets its cells with a warning), handlers with an unchanged hash keep their tasks
+    `bar` and a single surface keeps its cells when the bar has one
+    instance on that side, and resets them with a warning when it has
+    several), handlers with an unchanged hash keep their tasks
     (others are disposed with the old instance, cancelling their
     `await`), timers and debounces rescale from the old countdown, a
     parked bar's cells wait for its monitor. While a `lock` is shown a

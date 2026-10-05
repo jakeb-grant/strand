@@ -137,6 +137,32 @@ pub(crate) struct Carry {
     /// Surfaces the new instance mounted: their scope ident (a bar's:
     /// the prefix of its per-monitor idents) and whether it is a bar.
     pub surfaces: Vec<(Rc<str>, bool)>,
+    /// Bars (by ident prefix) that mount exactly one instance in this
+    /// reload: one that was a single surface hands that instance its
+    /// cells.
+    pub single_bars: std::collections::HashSet<Rc<str>>,
+}
+
+/// `<ident>[<instance>]<rest>` as `(ident, rest)`, for a bar instance
+/// under `ident` (the instance's end: the first `]` followed by the
+/// scope's own `#` or `/`, or the end).
+fn strip_instance<'a>(key: &'a str, ident: &str) -> Option<&'a str> {
+    let rest = key.strip_prefix(ident)?.strip_prefix('[')?;
+    let mut from = 0;
+    while let Some(i) = rest[from..].find(']') {
+        let after = &rest[from + i + 1..];
+        if after.is_empty() || after.starts_with('#') || after.starts_with('/') {
+            return Some(after);
+        }
+        from += i + 1;
+    }
+    None
+}
+
+/// The instance part of a bar instance's key under `ident`.
+fn instance_of<'a>(key: &'a str, ident: &str) -> Option<&'a str> {
+    let rest = strip_instance(key, ident)?;
+    Some(&key[ident.len()..key.len() - rest.len()])
 }
 
 impl Carry {
@@ -144,6 +170,10 @@ impl Carry {
     /// changed between `bar` (one per monitor) and a single surface:
     /// one monitor's cell cannot become the single surface's, nor the
     /// other way round, without guessing.
+    ///
+    /// With one instance on either side there is nothing to guess: the
+    /// cells move (see [`Ctx::bar_instances`] and [`Ctx::note_surface`]),
+    /// and only what is left here (a bar on several monitors) is reset.
     pub(crate) fn surface_kind_change(&self, key: &str) -> Option<&'static str> {
         self.surfaces.iter().find_map(|(ident, per_monitor)| {
             let rest = key.strip_prefix(&**ident)?;
@@ -243,11 +273,35 @@ impl Ctx {
 
     /// The old cell for `key`, taken out of the carry, with the program
     /// that made it.
+    ///
+    /// A bar's only instance takes the cell of the single surface it was
+    /// (`ident#…` for `ident[<monitor>]#…`): design.md keeps state across
+    /// a kind change, and with one instance nothing is guessed.
     pub(crate) fn take_cell(&self, key: &str) -> Option<(CellRec, Arc<Program>)> {
         let mut c = self.carry.borrow_mut();
         let c = c.as_mut()?;
-        let rec = c.old.cells.remove(key)?;
+        let rec = match c.old.cells.remove(key) {
+            Some(r) => r,
+            None => {
+                let single = c.single_bars.iter().find_map(|ident| {
+                    strip_instance(key, ident).map(|rest| format!("{ident}{rest}"))
+                })?;
+                c.old.cells.remove(single.as_str())?
+            }
+        };
         Some((rec, c.old_prog.clone()))
+    }
+
+    /// A bar under `ident` mounts `n` instances in this reload (its
+    /// monitor list as first computed).
+    pub(crate) fn bar_instances(&self, ident: &str, n: usize) {
+        if let Some(c) = self.carry.borrow_mut().as_mut() {
+            if n == 1 {
+                c.single_bars.insert(ident.into());
+            } else {
+                c.single_bars.remove(ident);
+            }
+        }
     }
 
     /// Remember a cell under `key`, until its holder goes.
@@ -280,10 +334,54 @@ impl Ctx {
 
     /// A surface mounted under `ident` (a bar: per monitor, `ident` the
     /// prefix of its instances' idents).
+    ///
+    /// A single surface that was a bar with one instance (on a monitor
+    /// now or parked) takes that instance's cells: they move to the
+    /// surface's keys (`ident[<monitor>]#…` to `ident#…`).
     pub(crate) fn note_surface(&self, ident: Rc<str>, per_monitor: bool) {
-        if let Some(c) = self.carry.borrow_mut().as_mut() {
-            c.surfaces.push((ident, per_monitor));
+        let mut carry = self.carry.borrow_mut();
+        let Some(c) = carry.as_mut() else { return };
+        if !per_monitor {
+            let mut pending = self.pending.borrow_mut();
+            let mut instances: Vec<&str> = c
+                .old
+                .cells
+                .keys()
+                .chain(pending.keys())
+                .filter_map(|k| instance_of(k, &ident))
+                .collect();
+            instances.sort_unstable();
+            instances.dedup();
+            if instances.len() == 1 {
+                let moved: Vec<Rc<str>> = c
+                    .old
+                    .cells
+                    .keys()
+                    .filter(|k| strip_instance(k, &ident).is_some())
+                    .cloned()
+                    .collect();
+                for k in moved {
+                    if let (Some(rest), Some(rec)) =
+                        (strip_instance(&k, &ident), c.old.cells.remove(&k))
+                    {
+                        c.old.cells.insert(format!("{ident}{rest}").into(), rec);
+                    }
+                }
+                let moved: Vec<Rc<str>> = pending
+                    .keys()
+                    .filter(|k| strip_instance(k, &ident).is_some())
+                    .cloned()
+                    .collect();
+                for k in moved {
+                    if let (Some(rest), Some(rec)) =
+                        (strip_instance(&k, &ident), pending.remove(&k))
+                    {
+                        pending.insert(format!("{ident}{rest}").into(), rec);
+                    }
+                }
+            }
         }
+        c.surfaces.push((ident, per_monitor));
     }
 
     /// A persisted path handed from an old cell to a new one.

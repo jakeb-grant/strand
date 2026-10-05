@@ -61,6 +61,11 @@ pub struct Outcome {
     /// text, or a file readable again with its old text. Nothing may be
     /// committed, but whoever shows the problems must hear they are gone.
     pub cleared: bool,
+    /// The files on disk are exactly as the last attempt found them (a
+    /// `strand reload` and then the watcher's own re-listing): nothing
+    /// was compiled again, and the attempt's problems are the last
+    /// one's, repeated.
+    pub repeated: bool,
     /// Time spent compiling.
     pub compile_time: Duration,
 }
@@ -72,13 +77,16 @@ impl Outcome {
     }
 }
 
+/// Every module file's saved text, or why it cannot be read.
+type Disk = BTreeMap<PathBuf, Result<Arc<str>, String>>;
+
 /// See the module docs.
 #[derive(Debug)]
 pub struct Loader {
     root: PathBuf,
     schema: Schema,
     /// The saved text of every module file (or why it cannot be read).
-    disk: BTreeMap<PathBuf, Result<Arc<str>, String>>,
+    disk: Disk,
     /// The texts of the running build.
     live: BTreeMap<PathBuf, Arc<str>>,
     last: Option<Build>,
@@ -92,6 +100,9 @@ pub struct Loader {
     /// The last attempt had errors, held or unreadable files (see
     /// [`Outcome::cleared`]).
     dirty: bool,
+    /// The files the last compiling attempt read, and the problems it
+    /// found (see [`Outcome::repeated`]).
+    tried: Option<(Disk, Outcome)>,
 }
 
 /// Compile attempts per batch at most (each held-back file costs one per
@@ -115,6 +126,7 @@ impl Loader {
             unlisted: Vec::new(),
             cache_error: None,
             dirty: false,
+            tried: None,
         }
     }
 
@@ -160,6 +172,7 @@ impl Loader {
             Ok(f) => f,
             Err(e) => {
                 self.dirty = true;
+                self.tried = None;
                 return Outcome {
                     unreadable: vec![(self.root.clone(), e.to_string())],
                     ..Outcome::default()
@@ -284,6 +297,9 @@ impl Loader {
     }
 
     fn attempt(&mut self, force: bool) -> Outcome {
+        // Only the attempt right before this one can be repeated: one in
+        // between (a revert, say) was reported, and this one must be too.
+        let tried = self.tried.take();
         let mut unreadable = Vec::new();
         let mut changed: BTreeSet<PathBuf> = BTreeSet::new();
         for (p, t) in &self.disk {
@@ -312,6 +328,41 @@ impl Loader {
                 ..Outcome::default()
             };
         }
+        // The same files as the last attempt that compiled: the same
+        // result (nothing of it committed, or `changed` would be smaller).
+        if !force
+            && let Some((disk, last)) = tried
+            && disk == self.disk
+        {
+            let out = Outcome {
+                repeated: true,
+                ..last.clone()
+            };
+            self.tried = Some((disk, last));
+            return out;
+        }
+        let out = self.compile_changed(changed, unreadable, unread);
+        self.tried = Some((
+            self.disk.clone(),
+            Outcome {
+                held: out.held.clone(),
+                unreadable: out.unreadable.clone(),
+                diagnostics: out.diagnostics.clone(),
+                sources: out.sources.clone(),
+                ..Outcome::default()
+            },
+        ));
+        out
+    }
+
+    /// Compile the running files with `changed` taken from disk: commit
+    /// it all, or the largest consistent part.
+    fn compile_changed(
+        &mut self,
+        changed: BTreeSet<PathBuf>,
+        unreadable: Vec<(PathBuf, String)>,
+        unread: Vec<PathBuf>,
+    ) -> Outcome {
         let started = Instant::now();
         let full = self.assemble(&changed);
         let compiled = crate::compile_with(&full, &self.schema);

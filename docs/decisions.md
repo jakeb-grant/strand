@@ -2953,11 +2953,16 @@ scope alone, and recreated ids follow into the registry:
 `reload.rs::a_surface_namespace_or_kind_change_recreates_only_it_with_its_state`
 renames, re-layers and turns a panel into an `osd` with its state
 kept.) The exception is `bar` (one instance and one set of cells per
-monitor) to or from a single surface: picking one monitor's cells, or
-copying one surface's to every monitor, would be guessing, so those
-cells are reset and reported (`reset: the bar is now a single surface`,
-`the surface is now a bar, one per monitor`), never dropped silently:
-`a_bar_turned_panel_reports_its_state_reset`.
+monitor) to or from a single surface on several monitors: picking one
+monitor's cells, or copying one surface's to every monitor, would be
+guessing, so those cells are reset and reported (`reset: the bar is now
+a single surface`, `the surface is now a bar, one per monitor`), never
+dropped silently. (Corrected in fixer round 3: this reset also on one
+monitor, where nothing is guessed. A bar with one instance, on its
+monitor or parked, hands its cells to the single surface it becomes,
+and a single surface hands its cells to the bar's only instance when the
+bar mounts one: `a_bar_turned_panel_reports_its_state_reset` keeps the
+state both ways on one monitor and resets it on two.)
 
 **2026-10-05 · The loader compiles the whole program per batch.** The
 checker is whole-program (names are global across files), so "changed
@@ -3050,7 +3055,13 @@ commits at once while a lock is shown, unless a lock edit is already
 waiting: the loader has that edit in its sources (it compiled, so it is
 the last good text), every later build carries it, and so every later
 build waits with it until the unlock. (Corrected in fixer round 2: this
-paragraph said such edits always commit at once.) Keeping the old lock's
+paragraph said such edits always commit at once.) This narrows design.md's
+"anything inside `lock` — deferred until unlock", so it is said where it
+happens: every deferred load's event, the log and the overlay carry
+`<files>: waits for the unlock (the lock changed while it is shown)` or,
+for one held only behind a waiting lock edit, `(a lock edit is
+waiting)`; the overlay row goes when the waiting build lands (fixer
+round 3). Keeping the old lock's
 text out of later builds would mean building programs from a mix of
 saved and unsaved text, a file at a time when the lock shares a file
 with the bar; the wait ends with the unlock. Proven by
@@ -3138,9 +3149,16 @@ bar, and takes the time from the write to the painted buffer; the
 compositor's present (at most one refresh) is not in it. A debug build
 measures token p95 35–38 ms (watch 15.5, compile 1.5, commit 1.8, then
 a full repaint of the recoloured bar in unoptimised code, about 15 ms)
-and markup p95 25 ms. The test fails an optimised build at the budget
-(35 ms, 50 ms) and a debug build at twice it, so `cargo test` in CI
-catches a regression without failing on unoptimised paint. Portal and
+and markup p95 25 ms. (Changed in fixer round 3: the token edit is now
+a pure token edit, only `bar.bg` changing, and the test asserts its
+diff is the token swap alone (round 2's token saves also changed a
+label). The test is ignored in debug builds, where it measured the
+unoptimised repaint rather than the design, and CI runs it optimised,
+`cargo test --release -p strand --bin strand reload_latency`, failing
+the build when p95 misses 35 ms (token) or 50 ms (markup). Optimised on
+the 4-CPU dev container, 20 edits each, three runs: token p95 17.7–17.9 ms
+(max 27.2), markup p95 17.2–17.5 ms; the watcher's 15 ms coalescing is
+most of both.) Portal and
 monitor changes "on the next frame" are not measured yet.
 
 **2026-10-05 · The overlay's rows.** It lists at most 40 rows and counts
@@ -3151,3 +3169,39 @@ are kept. `[reset]` takes the cell from the report's structured
 `kept_over_default` (`KeptCell { path, shown }`), not from the notice
 text. With no last good config the header says "nothing is running
 yet".
+
+**2026-10-05 · Fn read sets per strongly connected component.**
+Lowering's read sets (what a binding or handler can read, for core's
+declared edges) took a fresh transitive walk over lambdas and called
+`fn`s per chunk, quadratic in call depth (a chain of 2,000 `fn`s took
+3.4 s to lower, on every reload). They are now one union per strongly
+connected component of the chunk graph, in Tarjan's finishing order,
+and a called `fn`'s own locals (its parameters and `let`s, meaningless
+where it is called; the instantiator skipped them) are no longer
+carried to its callers; locals still flow from lambdas to the chunk that
+makes them. `reconcile.rs::a_long_chain_of_fns_lowers_quickly`.
+
+**2026-10-05 · A repeated attempt is not compiled or reported twice.**
+`strand reload` lists the module set again, and so does the watcher,
+whose re-listing then arrives as a batch of its own. On a broken config
+that compiled the whole config a second time and sent a second event.
+The loader now remembers the files its last compiling attempt read: an
+attempt on exactly those files (and right after it) repeats that
+attempt's problems without compiling (`Outcome::repeated`), which the
+worker sends only when it was asked for. A save in between (a revert)
+makes the next attempt compile and report again.
+`loader.rs::the_same_broken_files_are_not_compiled_twice`,
+`run.rs::a_reload_of_a_broken_config_is_one_event`.
+
+**2026-10-05 · `strand watch` names kept cells as data.** The reload event
+carries `kept_over_default: [{path, shown}]` and `ambiguous` besides the
+prose `notices`. Cells kept over a changed default outside a reload
+(persisted cells at boot, a parked bar back) go out as `{"event":
+"notices", kept_over_default, notices}`; with nobody watching (at boot,
+before any client connects) the next reload event lists them. A hard
+reload replayed after the unlock reports the newest attempt's problems,
+as the deferred load replay does. IPC output a client's socket cannot
+take waits on a write source instead of 20 Hz polling.
+`run.rs::saves_reload_live_with_state_kept`,
+`a_replayed_hard_reload_reports_the_newer_errors`,
+`ipc.rs::a_stalled_watcher_is_waited_for_without_polling`.

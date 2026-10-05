@@ -50,6 +50,10 @@ pub struct Line {
     pub cell: Option<String>,
 }
 
+/// The row key of the notice that edits wait for the unlock (not a
+/// cell path: removed when the waiting build lands).
+pub const WAITS_FOR_UNLOCK: &str = "(waits for the unlock)";
+
 /// A reload notice as an overlay row.
 pub fn notice_line(n: &str) -> Line {
     Line {

@@ -283,3 +283,37 @@ fn a_revert_to_the_last_good_text_clears_the_problems() {
     assert!(out.cleared);
     let _ = std::fs::remove_dir_all(d);
 }
+
+/// `strand reload` on a broken config and then the watcher's own
+/// re-listing find the same files: the second attempt repeats the
+/// first's problems without compiling (one compile, one report). Any
+/// attempt in between (a revert) makes the next one compile again.
+#[test]
+fn the_same_broken_files_are_not_compiled_twice() {
+    let d = dir("repeat");
+    let bar = write(&d, "bar.strand", BAR);
+    write(&d, "clock.strand", CLOCK);
+    let mut l = loader(&d);
+    l.boot();
+    let broken = "bar Top {\n  Clokc { open: true }\n}\n";
+    std::fs::write(&bar, broken).unwrap();
+    let first = l.changed([(bar.clone(), true)]);
+    assert!(first.errors() > 0 && !first.repeated);
+    let again = l.rescan();
+    assert!(again.repeated, "the same files");
+    assert_eq!(again.compile_time, std::time::Duration::ZERO);
+    assert_eq!(again.errors(), first.errors());
+    assert_eq!(again.held, first.held);
+    assert!(!again.cleared);
+    // A revert, then the same break: reported again, compiled again.
+    std::fs::write(&bar, BAR).unwrap();
+    assert!(l.changed([(bar.clone(), true)]).cleared);
+    std::fs::write(&bar, broken).unwrap();
+    let out = l.changed([(bar.clone(), true)]);
+    assert!(out.errors() > 0 && !out.repeated);
+    // Another break: compiled.
+    std::fs::write(&bar, broken.replace("Clokc", "Clk")).unwrap();
+    let out = l.changed([(bar.clone(), true)]);
+    assert!(out.errors() > 0 && !out.repeated);
+    let _ = std::fs::remove_dir_all(d);
+}

@@ -239,3 +239,45 @@ fn a_dense_cycle_of_fns_hashes_quickly() {
     let budget = tc * 3 + std::time::Duration::from_millis(100);
     assert!(ta < budget && tb < budget, "{ta:?} {tb:?} (check {tc:?})");
 }
+
+/// A long chain of `fn`s (each calling the next, the last reading a
+/// state) lowers in time linear in its length: the read sets are one
+/// union per strongly connected component, not a walk per chunk (which
+/// took 3.4 s at 2000), and the handler at the top still reads the state
+/// at the bottom.
+#[test]
+fn a_long_chain_of_fns_lowers_quickly() {
+    let n = 2000;
+    let mut s = String::from("state deep = 1\nstate v = 0\n");
+    for i in 0..n {
+        if i == n - 1 {
+            s.push_str(&format!("fn f{i}(x: int) -> int {{ x + deep }}\n"));
+        } else {
+            s.push_str(&format!("fn f{i}(x: int) -> int {{ f{}(x + 1) }}\n", i + 1));
+        }
+    }
+    s.push_str("bar Top {\n  text join(\"\", v, f0(0))\n}\n");
+    let check = std::time::Instant::now();
+    let _ = strand_compiler::compile(&{
+        let mut m = SourceMap::new();
+        m.add("bar.strand", s.clone());
+        m
+    });
+    let tc = check.elapsed();
+    let t = std::time::Instant::now();
+    let b = build(None, &[("bar.strand", &s)]);
+    let tb = t.elapsed();
+    let prog = &b.program;
+    let deep = (0..prog.defs.len())
+        .find(|&i| prog.defs[i].name == "deep")
+        .expect("the state");
+    let text = prog
+        .reads
+        .iter()
+        .filter(|r| r.defs.iter().any(|d| d.0 as usize == deep))
+        .count();
+    // f{n-1}, every fn above it, and the text binding.
+    assert!(text > n, "{text} chunks read `deep`");
+    let budget = tc * 3 + std::time::Duration::from_millis(100);
+    assert!(tb < budget, "{tb:?} (check {tc:?})");
+}

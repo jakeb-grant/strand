@@ -389,6 +389,9 @@ struct Shell {
     latest: Problems,
     /// The settings files last given to the watcher.
     watched: Vec<PathBuf>,
+    /// Cells kept over a changed default outside a reload while nobody
+    /// watched (at boot): the next reload event lists them.
+    unheard: Vec<strand_compiler::reconcile::KeptCell>,
 }
 
 impl Shell {
@@ -473,11 +476,41 @@ impl Shell {
             .as_ref()
             .is_some_and(|r| r.classes == [EditClass::LockDeferred]);
         if deferred {
-            log::info!("a lock is shown: the reload waits for the unlock");
+            // Said in the event, the log and the overlay: an edit synced
+            // in while locked (over ssh, a home-manager switch) does not
+            // land until the unlock, also when it does not touch the
+            // lock itself (decisions.md, wave2-runtime).
+            let what = if l.files.is_empty() {
+                "the reload".to_string()
+            } else {
+                l.files
+                    .iter()
+                    .map(|f| f.file_name().unwrap_or(f.as_os_str()).to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let why = if self.deferred.is_some() {
+                "a lock edit is waiting"
+            } else {
+                "the lock changed while it is shown"
+            };
+            let notice = format!("{what}: waits for the unlock ({why})");
+            log::info!("{notice}");
+            self.overlay.note(
+                vec![overlay::Line {
+                    cell: Some(overlay::WAITS_FOR_UNLOCK.to_string()),
+                    ..overlay::notice_line(&notice)
+                }],
+                Instant::now(),
+                &self.inst,
+            );
+            l.notices.push(notice);
             if let Some(old) = self.deferred.take() {
                 absorb(&mut l, &old);
             }
         } else if report.is_some() {
+            self.overlay
+                .forget_cell(overlay::WAITS_FOR_UNLOCK, &self.inst);
             // Committed: an older deferred build is stale (this one is
             // newer and has everything it had, the lock edit aside,
             // which this one either reverted or kept).
@@ -534,6 +567,15 @@ impl Shell {
         self.watch_settings();
         let mut ev = reload_event(&l, report.as_ref(), commit);
         ev["deferred"] = json!(deferred);
+        if !self.unheard.is_empty()
+            && let Some(k) = ev["kept_over_default"].as_array_mut()
+        {
+            // Kept when nobody was watching (the boot's persisted cells).
+            let earlier = kept_json(&std::mem::take(&mut self.unheard));
+            if let Json::Array(earlier) = earlier {
+                k.splice(0..0, earlier);
+            }
+        }
         let clients = std::mem::take(&mut l.clients);
         self.events
             .push((ev, l.saved.unwrap_or(l.started), clients));
@@ -557,7 +599,7 @@ impl Shell {
             self.apply(l, true);
         } else if std::mem::take(&mut self.deferred_hard) {
             let now = Instant::now();
-            let l = Loaded {
+            let mut l = Loaded {
                 outcome: Outcome::default(),
                 requested: true,
                 clients: Vec::new(),
@@ -567,6 +609,9 @@ impl Shell {
                 started: now,
                 notices: Vec::new(),
             };
+            // Its event reports the newest attempt's problems (the
+            // overlay already lists them).
+            self.latest.onto(&mut l.outcome);
             self.apply(Box::new(l), false);
         }
     }
@@ -654,6 +699,16 @@ impl Shell {
             // `[reset]` from the structured record), lowering's warnings.
             let rows = overlay::kept_and_notices(&update.kept, &update.notices);
             self.overlay.note(rows, Instant::now(), &self.inst);
+            // `strand watch` hears them as they happen; with nobody
+            // watching (at boot), the next reload event carries them.
+            match &mut self.server {
+                Some(s) if s.watchers() > 0 => s.broadcast(&json!({
+                    "event": "notices",
+                    "kept_over_default": kept_json(&update.kept),
+                    "notices": update.notices,
+                })),
+                _ => self.unheard.extend(update.kept.iter().cloned()),
+            }
         }
         let now = Instant::now();
         for (mut ev, since, clients) in self.events.drain(..) {
@@ -699,6 +754,13 @@ fn absorb(l: &mut Loaded, old: &Loaded) {
             l.notices.push(n.clone());
         }
     }
+}
+
+/// Cells kept over a changed default, as `strand watch` lists them.
+fn kept_json(kept: &[strand_compiler::reconcile::KeptCell]) -> Json {
+    kept.iter()
+        .map(|k| json!({"path": k.path, "shown": k.shown}))
+        .collect()
 }
 
 fn ms(d: Duration) -> f64 {
@@ -755,7 +817,9 @@ fn reload_event(l: &Loaded, report: Option<&Report>, commit: Duration) -> Json {
         "from_cache": l.outcome.from_cache,
         "classes": r.classes.iter().map(|c| c.name()).collect::<Vec<_>>(),
         "kept": r.kept,
+        "kept_over_default": kept_json(&r.kept_over_default),
         "reset": r.reset.iter().map(|(c, w)| json!({"cell": c, "why": w})).collect::<Vec<_>>(),
+        "ambiguous": r.ambiguous,
         "notices": r.notices.iter().chain(&l.notices).collect::<Vec<_>>(),
         "restarted": r.restarted,
         "cancelled": r.cancelled,
@@ -835,6 +899,7 @@ pub fn logic(
         events: Vec::new(),
         latest: Problems::of(&boot),
         watched: Vec::new(),
+        unheard: Vec::new(),
     };
     shell.overlay.set_running(boot.build.is_some());
     // The boot's diagnostics: a config broken at boot runs its last good
@@ -860,7 +925,11 @@ pub fn logic(
             break;
         }
         shell.after_step(&update);
-        let queued = shell.server.as_mut().is_some_and(|s| s.flush(&handle));
+        // Output a client's socket cannot take yet waits for its write
+        // source to wake the loop (no polling).
+        if let Some(s) = shell.server.as_mut() {
+            s.flush(&handle);
+        }
         let now = Instant::now();
         let mut timeout = wake.deadline.map(|d| d.saturating_sub(start.elapsed()));
         let mut also = |t: Option<Duration>| {
@@ -874,7 +943,6 @@ pub fn logic(
                 .deadline()
                 .map(|d| d.saturating_duration_since(now)),
         );
-        also(queued.then_some(Duration::from_millis(50)));
         // A step that closed the lock: the deferred load commits now
         // (no polling while it stays shown: only a step can unlock).
         if (shell.deferred.is_some() || shell.deferred_hard) && !shell.inst.lock_shown() {
@@ -1108,6 +1176,9 @@ mod tests {
     struct Mirror {
         inbox: std::sync::mpsc::Receiver<SceneDiff>,
         scene: SceneMirror,
+        /// Every diff must leave the bar up and the error overlay shut
+        /// (saves that are valid once complete never flash it).
+        steady: bool,
     }
 
     impl Mirror {
@@ -1133,6 +1204,46 @@ mod tests {
             Self {
                 inbox,
                 scene: SceneMirror::new(),
+                steady: false,
+            }
+        }
+
+        /// Apply one diff, checking what every diff must keep.
+        fn apply(&mut self, what: &str, diff: &SceneDiff) {
+            let had = !self.scene.roots().is_empty();
+            self.scene.apply(diff).unwrap();
+            // No blank frame: once something shows, a diff never leaves
+            // nothing.
+            assert!(
+                !had || !self.scene.roots().is_empty(),
+                "{what}: a blank frame"
+            );
+            if self.steady {
+                assert_eq!(
+                    self.scene.of_kind(strand_scene::NodeKind::Bar).len(),
+                    1,
+                    "{what}: the bar went\n{}",
+                    self.scene.render()
+                );
+                assert!(
+                    self.scene.of_kind(strand_scene::NodeKind::Panel).is_empty(),
+                    "{what}: the error overlay flashed\n{}",
+                    self.scene.render()
+                );
+            }
+        }
+
+        /// Apply whatever diffs come for `d`.
+        fn settle(&mut self, what: &str, d: Duration) {
+            let deadline = Instant::now() + d;
+            loop {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return;
+                }
+                if let Ok(diff) = self.inbox.recv_timeout(left) {
+                    self.apply(what, &diff);
+                }
             }
         }
 
@@ -1142,16 +1253,7 @@ mod tests {
             while !done(&self.scene) {
                 let left = deadline.saturating_duration_since(Instant::now());
                 match self.inbox.recv_timeout(left) {
-                    Ok(diff) => {
-                        let had = !self.scene.roots().is_empty();
-                        self.scene.apply(&diff).unwrap();
-                        // No blank frame: once something shows, a diff
-                        // never leaves nothing.
-                        assert!(
-                            !had || !self.scene.roots().is_empty(),
-                            "{what}: a blank frame"
-                        );
-                    }
+                    Ok(diff) => self.apply(what, &diff),
                     Err(_) => panic!("{what}:\n{}", self.scene.render()),
                 }
             }
@@ -1350,6 +1452,25 @@ mod tests {
         assert_eq!(m.texts(), ["fixed", "n 1"]);
         let ev = next_event();
         assert_eq!(ev["diagnostics"], json!([]), "{ev}");
+        assert_eq!(ev["kept_over_default"], json!([]), "{ev}");
+        assert_eq!(ev["ambiguous"], json!([]), "{ev}");
+        // A new default while the cell holds another value: kept, and
+        // `strand watch` names the cell (not only in prose).
+        std::fs::write(
+            &file,
+            bar("0.75", "  text \"fixed\"\n").replace("state n = 0", "state n = 7"),
+        )
+        .unwrap();
+        let ev = next_event();
+        assert_eq!(ev["classes"], json!(["state-default"]), "{ev}");
+        let kept = &ev["kept_over_default"];
+        assert_eq!(kept.as_array().map(Vec::len), Some(1), "{ev}");
+        assert!(
+            kept[0]["path"].as_str().is_some_and(|p| p.ends_with(".n")),
+            "{ev}"
+        );
+        assert_eq!(kept[0]["shown"], "1", "{ev}");
+        assert_eq!(m.texts(), ["fixed", "n 1"]);
         // `strand reload`: answered with its event once done.
         let mut client =
             std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
@@ -1383,7 +1504,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ans["event"]["classes"], json!(["hard"]), "{ans}");
-        m.until("a fresh bar", |s| s.texts().contains(&"n 0".to_string()));
+        m.until("a fresh bar", |s| s.texts().contains(&"n 7".to_string()));
         to_logic.send(ToLogic::Shutdown).unwrap();
         assert_eq!(t.join().unwrap(), Ok(()));
         drop(compiler);
@@ -1481,6 +1602,11 @@ mod tests {
         let ev = next_event();
         assert_eq!(ev["deferred"], true, "{ev}");
         assert_eq!(ev["classes"], json!(["lock-deferred"]), "{ev}");
+        assert_eq!(
+            ev["notices"],
+            json!(["shell.strand: waits for the unlock (the lock changed while it is shown)"]),
+            "{ev}"
+        );
         // Once a lock edit waits, a later save waits with it (the
         // loader's sources carry the lock edit; decisions.md).
         // `strand reload --hard` while locked: answered at once,
@@ -1490,6 +1616,13 @@ mod tests {
         std::fs::write(&file, src("lock b", "bar c")).unwrap();
         let ev = next_event();
         assert_eq!(ev["deferred"], true, "{ev}");
+        // A save that waits only because a lock edit does is told so.
+        assert!(
+            ev["notices"].as_array().is_some_and(|n| n.contains(&json!(
+                "shell.strand: waits for the unlock (a lock edit is waiting)"
+            ))),
+            "{ev}"
+        );
         let ans = ipc::request(
             &mut client,
             &ipc::Request::Reload { hard: true },
@@ -1628,6 +1761,135 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// A hard reload asked for while locked, made stale by a bar edit
+    /// committed meanwhile, is still owed after the unlock; its replayed
+    /// event reports the newest attempt's problems (a broken save after
+    /// it), not a clean reload.
+    #[test]
+    fn a_replayed_hard_reload_reports_the_newer_errors() {
+        let dir = temp_dir("hard-replay");
+        let src = |bar: &str, el: &str| {
+            format!(
+                "export state locked = true\nlock L {{\n  open: locked\n  on click {{ locked = false }}\n  text \"lock\"\n}}\nbar Top {{\n  {el} \"{bar}\"\n}}\n"
+            )
+        };
+        let file = dir.join("shell.strand");
+        std::fs::write(&file, src("bar a", "text")).unwrap();
+        let socket = dir.join("ipc.sock");
+        let (compiler, to_logic, t, mut m) = spawn_live(&dir, Some(socket.clone()));
+        m.until("lock and bar", |s| s.texts().len() == 2);
+        let mut next_event = watch(&socket);
+        let mut client =
+            std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
+        let ans = ipc::request(
+            &mut client,
+            &ipc::Request::Reload { hard: true },
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        assert_eq!(ans["event"]["deferred"], true, "{ans}");
+        assert_eq!(next_event()["deferred"], true);
+        // A bar edit commits at once (the hard reload is still owed).
+        std::fs::write(&file, src("bar b", "text")).unwrap();
+        assert_eq!(next_event()["deferred"], false);
+        m.until("the bar edit", |s| s.texts().contains(&"bar b".to_string()));
+        // Broken.
+        std::fs::write(&file, src("bar c", "txet")).unwrap();
+        let ev = next_event();
+        assert_eq!(ev["diagnostics"][0]["severity"], "error", "{ev}");
+        let lock = m.scene.of_kind(strand_scene::NodeKind::Lock)[0];
+        to_logic
+            .send(ToLogic::Event {
+                node: lock,
+                event: NodeEvent::Click,
+            })
+            .unwrap();
+        let ev = next_event();
+        assert_eq!(ev["classes"], json!(["hard"]), "{ev}");
+        assert_eq!(ev["diagnostics"][0]["severity"], "error", "{ev}");
+        assert_eq!(ev["held"].as_array().map(Vec::len), Some(1), "{ev}");
+        to_logic.send(ToLogic::Shutdown).unwrap();
+        assert_eq!(t.join().unwrap(), Ok(()));
+        drop(compiler);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// design.md: "Format-on-save and delete-then-create saves never
+    /// flash it": a broken text fixed within 100 ms (a formatter's second
+    /// write) lands without the overlay ever opening.
+    #[test]
+    fn a_save_fixed_at_once_never_opens_the_overlay() {
+        let dir = temp_dir("format-on-save");
+        let file = dir.join("bar.strand");
+        std::fs::write(&file, "bar Top {\n  text \"a\"\n}\n").unwrap();
+        let (compiler, to_logic, t, mut m) = spawn_live(&dir, None);
+        m.until("the bar", |s| s.texts() == ["a"]);
+        m.steady = true;
+        for (i, gap) in [5u64, 40, 90].into_iter().enumerate() {
+            // The editor's write, then the formatter's.
+            std::fs::write(&file, format!("bar Top {{\ntext \"b{i}\"\n")).unwrap();
+            std::thread::sleep(Duration::from_millis(gap));
+            std::fs::write(&file, format!("bar Top {{\n  text \"b{i}\"\n}}\n")).unwrap();
+            let want = format!("b{i}");
+            m.until("the formatted save", |s| s.texts() == [want.as_str()]);
+        }
+        m.settle("after the saves", Duration::from_millis(500));
+        to_logic.send(ToLogic::Shutdown).unwrap();
+        assert_eq!(t.join().unwrap(), Ok(()));
+        drop(compiler);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// `strand reload` on a broken config: one compile and one event
+    /// (the watcher's own re-listing that follows finds nothing new).
+    #[test]
+    fn a_reload_of_a_broken_config_is_one_event() {
+        use std::io::BufRead;
+        let dir = temp_dir("reload-broken");
+        let file = dir.join("bar.strand");
+        std::fs::write(&file, "bar Top {\n  text \"a\"\n}\n").unwrap();
+        let socket = dir.join("ipc.sock");
+        let (compiler, to_logic, t, mut m) = spawn_live(&dir, Some(socket.clone()));
+        m.until("the bar", |s| s.texts() == ["a"]);
+        let mut events =
+            std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
+        let ok = ipc::request(&mut events, &ipc::Request::Watch, Duration::from_secs(10)).unwrap();
+        assert_eq!(ok["ok"], true);
+        let mut next = |wait: Duration| -> Option<Json> {
+            events.get_ref().set_read_timeout(Some(wait)).unwrap();
+            let mut line = String::new();
+            match events.read_line(&mut line) {
+                Ok(n) if n > 0 => Some(serde_json::from_str(&line).unwrap()),
+                _ => None,
+            }
+        };
+        std::fs::write(&file, "bar Top {\n  txet \"a\"\n}\n").unwrap();
+        let ev = next(Duration::from_secs(10)).expect("the broken save");
+        assert_eq!(ev["diagnostics"][0]["severity"], "error", "{ev}");
+        let mut client =
+            std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
+        let ans = ipc::request(
+            &mut client,
+            &ipc::Request::Reload { hard: false },
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        assert_eq!(ans["event"]["requested"], true, "{ans}");
+        assert_eq!(
+            ans["event"]["diagnostics"][0]["severity"], "error",
+            "the reload still reports the error: {ans}"
+        );
+        let ev = next(Duration::from_secs(10)).expect("the reload's event");
+        assert_eq!(ev["requested"], true, "{ev}");
+        if let Some(ev) = next(Duration::from_millis(500)) {
+            panic!("a second event: {ev}");
+        }
+        to_logic.send(ToLogic::Shutdown).unwrap();
+        assert_eq!(t.join().unwrap(), Ok(()));
+        drop(compiler);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// p95 of `v` (milliseconds).
     fn p95(v: &[f64]) -> f64 {
         let mut v = v.to_vec();
@@ -1646,7 +1908,7 @@ mod tests {
         use strand_scene::{NodeKind, PaintTarget, Painter, Scale, SceneOp, Size, SurfaceId};
         let dir = temp_dir("latency");
         let file = dir.join("bar.strand");
-        let src = |bg: &str, label: &str, extra: bool| {
+        let src = |bg: &str, extra: bool| {
             format!(
                 "tokens base {{ bar.bg: {bg} }}\n\
                  bar Top {{\n\
@@ -1655,7 +1917,7 @@ mod tests {
                  \x20 bg: $bar.bg\n\
                  \x20 on click {{ n += 1 }}\n\
                  \x20 split {{\n\
-                 \x20   start  {{ text \"{label}\" }}\n\
+                 \x20   start  {{ text \"start\" }}\n\
                  \x20   center {{ text clock.format(\"%H:%M\") }}\n\
                  \x20   end    {{ text join(\"\", n) }}\n\
                  {}\
@@ -1664,7 +1926,7 @@ mod tests {
                 if extra { "    text \"extra\"\n" } else { "" }
             )
         };
-        std::fs::write(&file, src("#204080", "m0", false)).unwrap();
+        std::fs::write(&file, src("#204080", false)).unwrap();
         let (compiler, to_logic, t, mut m) = spawn_live(&dir, None);
         let font = std::fs::read(strand_text::test_font_path()).unwrap();
         let engine = strand_text::TextEngine::new(FontConfig::isolated(vec![Arc::new(font)]));
@@ -1674,28 +1936,41 @@ mod tests {
         let mut attached = false;
         // Apply diffs until `done` holds for one, painting each; the
         // time the matching one is painted.
-        let mut until = |m: &mut Mirror, done: &dyn Fn(&SceneDiff) -> bool| -> Instant {
-            loop {
-                let d = m
-                    .inbox
-                    .recv_timeout(Duration::from_secs(10))
-                    .expect("a diff");
-                m.scene.apply(&d).unwrap();
-                let hit = done(&d);
-                r.apply(d);
-                if !attached && let Some(&bar) = m.scene.of_kind(NodeKind::Bar).first() {
-                    r.attach_surface(SurfaceId(1), bar);
-                    attached = true;
+        let mut until =
+            |m: &mut Mirror, done: &dyn Fn(&SceneDiff) -> bool| -> (Instant, SceneDiff) {
+                loop {
+                    let d = m
+                        .inbox
+                        .recv_timeout(Duration::from_secs(10))
+                        .expect("a diff");
+                    m.scene.apply(&d).unwrap();
+                    let hit = done(&d);
+                    let kept = hit.then(|| d.clone());
+                    r.apply(d);
+                    if !attached && let Some(&bar) = m.scene.of_kind(NodeKind::Bar).first() {
+                        r.attach_surface(SurfaceId(1), bar);
+                        attached = true;
+                    }
+                    let mut target =
+                        PaintTarget::new(&mut px, size, size.w * 4, Scale::ONE, 1).unwrap();
+                    r.paint(SurfaceId(1), &mut target);
+                    if let Some(d) = kept {
+                        return (Instant::now(), d);
+                    }
                 }
-                let mut target =
-                    PaintTarget::new(&mut px, size, size.w * 4, Scale::ONE, 1).unwrap();
-                r.paint(SurfaceId(1), &mut target);
-                if hit {
-                    return Instant::now();
-                }
-            }
-        };
+            };
         until(&mut m, &|_| true);
+        // The clock's text may tick during a token edit; nothing else
+        // may change with it.
+        let clock = m
+            .scene
+            .of_kind(NodeKind::Text)
+            .into_iter()
+            .find(|&n| {
+                matches!(m.scene.prop(n, strand_scene::Prop::Text),
+                    Some(PropValue::Text(t)) if t.contains(':'))
+            })
+            .expect("the clock");
         let (mut tokens, mut markup) = (Vec::new(), Vec::new());
         let mut extra = false;
         for i in 1..=rounds {
@@ -1703,17 +1978,27 @@ mod tests {
             // A token edit: the bar's colour.
             let bg = format!("#{:02x}4080", (i * 7) % 256);
             let saved = Instant::now();
-            std::fs::write(&file, src(&bg, &format!("m{i}"), extra)).unwrap();
-            let painted = until(&mut m, &|d| {
+            std::fs::write(&file, src(&bg, extra)).unwrap();
+            let (painted, d) = until(&mut m, &|d| {
                 d.ops.iter().any(|o| matches!(o, SceneOp::SetTokens { .. }))
             });
+            // A pure token edit: the token swap and nothing else.
+            assert!(
+                d.ops.iter().all(|o| match o {
+                    SceneOp::SetTokens { .. } => true,
+                    SceneOp::SetProp { id, .. } => *id == clock,
+                    _ => false,
+                }),
+                "{:#?}",
+                d.ops
+            );
             tokens.push(painted.duration_since(saved).as_secs_f64() * 1e3);
             std::thread::sleep(Duration::from_millis(40));
             // A markup edit: a node added or removed.
             extra = !extra;
             let saved = Instant::now();
-            std::fs::write(&file, src(&bg, &format!("m{i}"), extra)).unwrap();
-            let painted = until(&mut m, &|d| {
+            std::fs::write(&file, src(&bg, extra)).unwrap();
+            let (painted, _) = until(&mut m, &|d| {
                 d.ops
                     .iter()
                     .any(|o| matches!(o, SceneOp::Create { .. } | SceneOp::Remove { .. }))
@@ -1730,11 +2015,17 @@ mod tests {
     /// design.md, "Live reload": at p95 a token edit shows within 35 ms
     /// of save and a markup edit within 50 ms. Measured save → painted
     /// buffer through the real watcher, compiler worker, logic thread
-    /// and renderer (the compositor's present is not in it). Debug builds
-    /// are checked against twice the budget (unoptimised code); an
-    /// optimised build (`cargo test --release`) against the budget
-    /// itself. `STRAND_LATENCY_ROUNDS` sets the edits per kind (20).
+    /// and renderer (the compositor's present is not in it). Checked on
+    /// an optimised build only, against the budget itself: CI runs
+    /// `cargo test --release -p strand --bin strand reload_latency`
+    /// (an unoptimised repaint alone takes about half the token budget,
+    /// so a debug run would measure the build, not the design).
+    /// `STRAND_LATENCY_ROUNDS` sets the edits per kind (20).
     #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "a budget test: run optimised (cargo test --release)"
+    )]
     fn reload_latency_meets_its_budget() {
         let rounds = std::env::var("STRAND_LATENCY_ROUNDS")
             .ok()
@@ -1747,15 +2038,8 @@ mod tests {
             tokens.iter().copied().fold(0.0, f64::max),
             markup.iter().copied().fold(0.0, f64::max),
         );
-        let slack = if cfg!(debug_assertions) { 2.0 } else { 1.0 };
-        assert!(
-            pt <= 35.0 * slack,
-            "token edits: p95 {pt:.1} ms: {tokens:?}"
-        );
-        assert!(
-            pm <= 50.0 * slack,
-            "markup edits: p95 {pm:.1} ms: {markup:?}"
-        );
+        assert!(pt <= 35.0, "token edits: p95 {pt:.1} ms: {tokens:?}");
+        assert!(pm <= 50.0, "markup edits: p95 {pm:.1} ms: {markup:?}");
     }
 
     /// The scene as text with surfaces in a fixed order.
@@ -1862,6 +2146,10 @@ mod tests {
         let mut m = Mirror::new(rx);
         let expect = cold_boot(&config);
         m.until("the boot", |s| canonical(s) == expect);
+        // From here on every diff keeps the bar and never opens the
+        // error overlay: a delete-then-create or backup-then-rename save
+        // is briefly a missing file, never shown as an error.
+        m.steady = true;
         let rounds = std::env::var("STRAND_SAVE_FUZZ")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -1912,6 +2200,8 @@ mod tests {
                 canonical(s) == expect
             });
         }
+        // An overlay a save had armed would open 250 ms after it.
+        m.settle("after the saves", Duration::from_millis(400));
         to_logic.send(ToLogic::Shutdown).unwrap();
         assert_eq!(t.join().unwrap(), Ok(()));
         drop(compiler);

@@ -784,6 +784,7 @@ impl Instance {
             fresh: Vec::new(),
             handover: Vec::new(),
             surfaces: Vec::new(),
+            single_bars: Default::default(),
         });
         let old_root = self.root.take();
         let old_tokens = self.tokens.take();

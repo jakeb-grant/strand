@@ -2221,7 +2221,8 @@ impl Ctx {
             .find(|p| p.prop == Some(SceneProp::Screens))
             .map(|p| p.value);
         let tag = format!("s{}", self.sid(s.element.file, s.element.span));
-        self.note_surface(format!("{}/{tag}", env.ident()).into(), true);
+        let ident: Rc<str> = format!("{}/{tag}", env.ident()).into();
+        self.note_surface(ident.clone(), true);
         let (ctx, outer) = (self.clone(), env.clone());
         let list: ListFn = Box::new(move |rt| {
             let all = ctx.vm.host.read(rt, "screens", "all")?;
@@ -2268,6 +2269,9 @@ impl Ctx {
                     out.push((ValueKey(Value::text(key)), sc.clone()));
                 }
             }
+            // In a reload: a single surface turned bar hands its cells
+            // to the bar's only instance.
+            ctx.bar_instances(&ident, out.len());
             Ok(out)
         });
         let item: ItemMount = Rc::new(move |ctx, rt, env, frag, v| {

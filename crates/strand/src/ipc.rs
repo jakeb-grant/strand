@@ -139,6 +139,10 @@ struct Client {
     stream: UnixStream,
     /// Its read source (`None` once it sent EOF).
     token: Option<RegistrationToken>,
+    /// Its write source, registered only while output waits for a
+    /// reader that has not taken it (no polling: the loop wakes when
+    /// the socket can take more).
+    wtoken: Option<RegistrationToken>,
     inbuf: Vec<u8>,
     out: Vec<u8>,
     watching: bool,
@@ -165,6 +169,8 @@ pub struct Server {
 pub struct Ready {
     pub accept: bool,
     pub readable: Vec<ClientId>,
+    /// A client's socket can take more of its queued output.
+    pub writable: bool,
 }
 
 /// The loop data the server's sources write to.
@@ -240,6 +246,7 @@ impl Server {
                         Client {
                             stream,
                             token: Some(token),
+                            wtoken: None,
                             inbuf: Vec::new(),
                             out: Vec::new(),
                             watching: false,
@@ -332,6 +339,11 @@ impl Server {
         self.send(id, v);
     }
 
+    /// How many clients watch.
+    pub fn watchers(&self) -> usize {
+        self.clients.values().filter(|c| c.watching).count()
+    }
+
     /// Queue `event` for every watching client.
     pub fn broadcast(&mut self, event: &Json) {
         let ids: Vec<ClientId> = self
@@ -345,9 +357,11 @@ impl Server {
         }
     }
 
-    /// Write what can be written now; drop closed clients. Returns true
-    /// while output is still queued (the loop should look again soon).
-    pub fn flush<D: 'static>(&mut self, handle: &LoopHandle<'static, D>) -> bool {
+    /// Write what can be written now; drop closed clients. A client with
+    /// output its socket cannot take yet gets a write source that wakes
+    /// the loop when it can (removed once the output is written).
+    /// Returns true while output is still queued.
+    pub fn flush<D: HasReady + 'static>(&mut self, handle: &LoopHandle<'static, D>) -> bool {
         let mut queued = false;
         for c in self.clients.values_mut() {
             while !c.out.is_empty() && !c.closed {
@@ -361,7 +375,34 @@ impl Server {
                     Err(_) => c.closed = true,
                 }
             }
-            queued |= !c.out.is_empty() && !c.closed;
+            let waiting = !c.out.is_empty() && !c.closed;
+            queued |= waiting;
+            match (waiting, c.wtoken.is_some()) {
+                (true, false) => {
+                    let token = c.stream.try_clone().ok().and_then(|w| {
+                        handle
+                            .insert_source(
+                                Generic::new(w, Interest::WRITE, Mode::Level),
+                                |_, _, data: &mut D| {
+                                    data.ready().writable = true;
+                                    Ok(PostAction::Continue)
+                                },
+                            )
+                            .ok()
+                    });
+                    match token {
+                        Some(t) => c.wtoken = Some(t),
+                        // Cannot wait for it: it goes.
+                        None => c.closed = true,
+                    }
+                }
+                (false, true) => {
+                    if let Some(t) = c.wtoken.take() {
+                        handle.remove(t);
+                    }
+                }
+                _ => {}
+            }
             // Half-closed: its socket stays readable (EOF) for good, so
             // it leaves the loop now; once everything it waits for is
             // written (a watcher: until a write fails), it goes.
@@ -381,10 +422,10 @@ impl Server {
             .map(|(id, _)| *id)
             .collect();
         for id in gone {
-            if let Some(c) = self.clients.remove(&id)
-                && let Some(t) = c.token
-            {
-                handle.remove(t);
+            if let Some(c) = self.clients.remove(&id) {
+                for t in [c.token, c.wtoken].into_iter().flatten() {
+                    handle.remove(t);
+                }
             }
         }
         queued
@@ -551,6 +592,13 @@ pub fn describe(ev: &Json) -> String {
                 }
             }
         }
+        // Outside a reload: cells kept over a changed default (a
+        // persisted cell at boot, a parked bar back), lowering's notices.
+        Some("notices") => {
+            for n in list("notices") {
+                out.push_str(&format!("{n}\n"));
+            }
+        }
         Some("fault") => {
             out.push_str(&format!("fault: {}\n", s(&ev["message"])));
             if let Some(at) = ev.get("at").and_then(Json::as_str) {
@@ -566,6 +614,81 @@ pub fn describe(ev: &Json) -> String {
 mod tests {
     use super::*;
     use std::ffi::OsString;
+
+    #[derive(Default)]
+    struct Data(Ready);
+    impl HasReady for Data {
+        fn ready(&mut self) -> &mut Ready {
+            &mut self.0
+        }
+    }
+
+    /// A watcher that stops reading (a paused pager) does not make the
+    /// loop poll: its output waits on a write source, the loop sleeps
+    /// until the watcher reads, and then the rest is written and the
+    /// source removed.
+    #[test]
+    fn a_stalled_watcher_is_waited_for_without_polling() {
+        use calloop::EventLoop;
+        let dir = std::env::temp_dir().join(format!("strand-ipc-stall-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.sock");
+        let mut el = EventLoop::<Data>::try_new().unwrap();
+        let handle = el.handle();
+        let mut server = Server::bind(&path, &handle).unwrap();
+        let mut data = Data::default();
+        let mut client = std::io::BufReader::new(UnixStream::connect(&path).unwrap());
+        client
+            .get_mut()
+            .write_all(encode(&Request::Watch).as_bytes())
+            .unwrap();
+        while server.clients.values().all(|c| !c.watching) {
+            el.dispatch(Some(Duration::from_secs(5)), &mut data)
+                .unwrap();
+            let ready = std::mem::take(&mut data.0);
+            if ready.accept {
+                server.accept(&handle);
+            }
+            for id in ready.readable {
+                server.read(id);
+            }
+        }
+        // More than the socket buffer takes, under the cap.
+        let ev = json!({"event": "reload", "pad": "x".repeat(1000)});
+        for _ in 0..600 {
+            server.broadcast(&ev);
+        }
+        assert!(server.flush(&handle), "output waits for the reader");
+        assert!(server.clients.values().any(|c| c.wtoken.is_some()));
+        // Nothing to do while the watcher does not read: the loop sleeps
+        // the whole timeout.
+        let t = std::time::Instant::now();
+        el.dispatch(Some(Duration::from_millis(200)), &mut data)
+            .unwrap();
+        assert!(!data.0.writable, "woken although the socket is full");
+        assert!(t.elapsed() >= Duration::from_millis(150));
+        // The watcher reads everything: the loop is woken to write.
+        let reader = std::thread::spawn(move || {
+            let mut line = String::new();
+            let mut n = 0;
+            while n < 601 {
+                line.clear();
+                client.read_line(&mut line).unwrap();
+                n += 1;
+            }
+            n
+        });
+        while server.flush(&handle) {
+            el.dispatch(Some(Duration::from_secs(5)), &mut data)
+                .unwrap();
+            assert!(std::mem::take(&mut data.0).writable);
+        }
+        assert_eq!(reader.join().unwrap(), 601);
+        assert!(server.clients.values().all(|c| c.wtoken.is_none()));
+        drop(server);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn the_socket_is_per_display() {
