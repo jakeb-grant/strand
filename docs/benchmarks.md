@@ -75,7 +75,7 @@ Review rounds 2 and 3 (77cf7be, 2eb240e) did not touch the flush hot path
 `writes_to`/`reads_from`, and `is_idle`, measured above), so the round 1
 numbers stood for them.
 
-Wave 2 review round 4 (the commit after 2eb240e that adds the `ranked_*`
+Wave 2 review round 4 (822905c, which adds the `ranked_*`
 cases: `Stats::reruns` / `learned_edges` counting, and `set_sources`
 skipping the rank walk when a source list did not change). Same machine,
 medians, measured while another agent was building on the shared CPUs:
