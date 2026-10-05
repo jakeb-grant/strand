@@ -99,6 +99,21 @@ impl Ctx {
         frag: FragId,
         el: Option<&ElemCtx>,
     ) {
+        // Trees nest up to 256 levels (the parser's bound); mounting
+        // recurses once per level, so grow the stack on small threads.
+        stacker::maybe_grow(64 * 1024, 1024 * 1024, || {
+            self.mount_node_inner(rt, n, env, frag, el)
+        });
+    }
+
+    fn mount_node_inner(
+        self: &Rc<Self>,
+        rt: &Runtime,
+        n: &Node,
+        env: &Rc<Env>,
+        frag: FragId,
+        el: Option<&ElemCtx>,
+    ) {
         match n {
             Node::Element(e) => self.mount_element(rt, e, env, frag, Vec::new()),
             Node::Surface(s) => self.mount_surface(rt, s, env, frag),

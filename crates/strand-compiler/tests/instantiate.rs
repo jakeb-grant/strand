@@ -1395,3 +1395,32 @@ fn keyed_lists_match_the_list_after_random_edits() {
         nodes = now;
     }
 }
+
+/// Deeply nested trees and recursive fns mount on a 2 MiB thread (the
+/// logic thread's size), as they check there.
+#[test]
+fn deep_trees_mount_on_a_small_stack() {
+    std::thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(|| {
+            let depth = 120;
+            let mut src =
+                String::from("fn down(n: int) -> int { n <= 0 ? 0 : down(n - 1) }\nbar B {\n");
+            for _ in 0..depth {
+                src.push_str("box {\n");
+            }
+            src.push_str("text join(\"\", down(150))\n");
+            for _ in 0..depth {
+                src.push_str("}\n");
+            }
+            src.push_str("}\n");
+            let shell = boot(&[("t.strand", src.as_str())], |rt, host| {
+                screens(rt, host, &["DP-1"])
+            });
+            assert_eq!(shell.scene.of_kind(NodeKind::Box).len(), depth);
+            assert_eq!(shell.scene.texts(), ["0"]);
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}

@@ -312,7 +312,7 @@ impl Vm {
             frame.push((*p, a));
         }
         let mut m = exec::Machine::new(c.chunk, c.env.clone(), frame, Some(c.clone()), None);
-        let r = m.run(self, rt);
+        let r = stacker::maybe_grow(64 * 1024, 1024 * 1024, || m.run(self, rt));
         self.depth.set(depth);
         match r? {
             exec::Exit::Done(v) => Ok(v),
