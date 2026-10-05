@@ -19,8 +19,8 @@ pub enum Error {
     /// Only reachable through type-erased ids.
     TypeMismatch(NodeId),
     /// A runtime dependency cycle; the path names every node on it and ends
-    /// where it started.
-    Cycle(CyclePath),
+    /// where it started. (Boxed so errors stay small: memos store them.)
+    Cycle(Arc<CyclePath>),
     /// A write happened while a derived value was being computed. Derived
     /// values (`let`, props, memos) are pure.
     WriteInDerived {

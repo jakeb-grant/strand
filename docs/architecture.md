@@ -84,6 +84,24 @@ publish `VecDiff`s and incremental `filter/map/take/sort_by` keep keys.
 `Async<T>` keeps its last value and exposes `pending`/`error`. The dynamic
 `Value` used by the VM is defined by `strand-compiler`, not here.
 
+How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
+
+- One `Runtime` per logic thread, passed as `&Runtime`; closures receive it.
+  Reads return `Result<T, Error>`; memo closures return `Result<T, Error>`.
+- The host loop calls `rt.tick(now)` (advance the logic clock, fire timers,
+  then `flush`) and sleeps until `rt.next_deadline()`; `None` means idle.
+- The scene emitter calls `rt.watch(prop_memo.id())` per bound prop and,
+  each tick, turns `Tick::changed` (watched ids whose value changed, in
+  creation order) into `SetProp`s; `for` loops read a collection
+  `Snapshot` and turn `diffs_since(last_version)` into keyed
+  `Create`/`Remove`/`Move` ops.
+- Mounting a component runs inside `rt.scope(..)`; unmounting is
+  `scope.dispose(rt)`, which drops its nodes, timers and handlers.
+- Handlers are `rt.spawn(future)` (cancelled on unmount), timers
+  `rt.after/every(_dyn)`, `on change` is `rt.on_change(_after)`, service
+  events are `EventQueue`s, service `rw` writes use `write_tagged` and
+  reports come back through `receive`.
+
 ### `strand-compiler`
 
 `syntax` (lossless lexer and parser with spans and recovery), `check` (names,

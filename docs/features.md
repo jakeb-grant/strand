@@ -23,7 +23,7 @@ Exit: [ ] ≤34 MB PSS on 2 monitors · [ ] no wakeups between minute ticks ·
 - [ ] Text: parley shaping on the text worker; swash rasterisation; LRU glyph atlas per scale
 - [ ] Offline render tests: scenes → PNG compared to references within tolerance
 - [ ] Clock tick aligned to the minute boundary; process sleeps between ticks
-- [ ] 10k-node reactive graph benchmark (propagation latency, memory per node)
+- [x] 10k-node reactive graph benchmark (propagation latency, memory per node) — `crates/strand-core/benches/graph.rs`, shape checked by `crates/strand-core/tests/bench_graph.rs`, results in `docs/benchmarks.md`
 - [ ] mimalloc allocator in the runtime binary
 - [ ] Measurement script: PSS, wakeups, damage per tick, on headless sway with 2 outputs
 
@@ -41,8 +41,8 @@ Language (`docs/grammar.md`):
 - [ ] `when cond { props }`; `hover`, `pressed`, `focused`, `selected`; `id:` and `other.hover`; later `when` wins
 - [ ] `if`/`else`, `match`, `for x in xs [key e]`; plain data without a key is an error
 - [ ] `enter {}` / `exit {}` poses; exit mirrors enter
-- [ ] Events: `on click`, `on secondary`, `on scroll(dy)`, `on show`, `on activate`, `on drop(p: T, at: int)`, `on change a, b [after T]`, `on notifications.received(n)`
-- [ ] Timers: `after T while cond { }`, `every T while cond { }`
+- [ ] Events: `on click`, `on secondary`, `on scroll(dy)`, `on show`, `on activate`, `on drop(p: T, at: int)`, `on change a, b [after T]`, `on notifications.received(n)` (runtime side done in strand-core: `on_change`, `on_change_after`, `EventQueue` — `crates/strand-core/tests/handlers.rs`, `tests/graph.rs::on_change_skips_first_value`)
+- [ ] Timers: `after T while cond { }`, `every T while cond { }` (runtime side done in strand-core: `Runtime::after/every` — `crates/strand-core/tests/handlers.rs::after_while_pauses_and_resumes`, `every_while_repeats_only_while_true`)
 - [ ] Two-way binding `prop: <-> target`
 - [ ] Expressions: `?.`, `??`, ternary, lambdas `x => e`, method calls, named args `f(months: -1)`, `match` expressions
 - [ ] Spring override `prop: value ~ $motion.bouncy | ~ 200ms | ~ instant | ~ ease(..) | ~ bezier(..)`
@@ -56,13 +56,13 @@ Checking and runtime:
 - [ ] Type checker: records, enums, `Async<T>` vs `T`, nullable `?`, durations, colours, lengths
 - [ ] Errors: unknown name with did-you-mean; redeclaration across files; assignment to `let` or bound prop; static cycles name the path
 - [ ] Bytecode lowering + VM evaluating bindings against `strand-core` signals
-- [ ] Handlers as cancellable coroutines; errors as values; cancelled at next `await` on unmount
-- [ ] Reactive graph: push-pull, glitch-free, equality cut-off, generational ids, stale read is an error value
-- [ ] Batching: one `SceneDiff` per tick
-- [ ] State vs events: latest-value coalescing vs lossless queues
-- [ ] Write generation tags (ignore service echoes); >30 writes/s per cell warns and throttles
-- [ ] Keyed collections: `push/insert/remove_key/move/update`, `VecDiff`, incremental `filter/map/take/sort_by`
-- [ ] `Async<T>` with `.pending`, `.error`, keeps last value
+- [x] Handlers as cancellable coroutines; errors as values; cancelled at next `await` on unmount — `crates/strand-core/tests/handlers.rs` (`unmount_cancels_a_handler_at_its_next_await`, `handler_errors_are_values`); VM handlers plug in through `Runtime::spawn`
+- [x] Reactive graph: push-pull, glitch-free, equality cut-off, generational ids, stale read is an error value — `crates/strand-core/tests/graph_props.rs`, `tests/graph.rs`, `tests/disposal.rs`
+- [ ] Batching: one `SceneDiff` per tick (core side done: writes coalesce, one `Tick` per flush listing changed watched props — `crates/strand-core/tests/graph.rs::writes_coalesce_and_effects_run_once_per_tick`, `watch_reports_changed_props_once`; the emitter is strand-compiler)
+- [x] State vs events: latest-value coalescing vs lossless queues — `crates/strand-core/tests/handlers.rs::events_are_lossless_while_state_coalesces`
+- [x] Write generation tags (ignore service echoes); >30 writes/s per cell warns and throttles — `crates/strand-core/tests/feedback.rs`
+- [x] Keyed collections: `push/insert/remove_key/move/update`, `VecDiff`, incremental `filter/map/take/sort_by` — `crates/strand-core/tests/keyed_props.rs`
+- [x] `Async<T>` with `.pending`, `.error`, keeps last value — `crates/strand-core/tests/handlers.rs::async_keeps_previous_value`, `async_load_runs_as_a_cancellable_handler`
 - [ ] `persist` storage with default hash
 
 Live reload:

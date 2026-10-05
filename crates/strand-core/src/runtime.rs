@@ -195,6 +195,10 @@ pub(crate) struct Inner {
     root_cleanups: RefCell<Vec<Box<dyn FnOnce()>>>,
     names: RefCell<SecondaryMap<NodeId, Arc<str>>>,
     tracking: RefCell<Vec<Frame>>,
+    /// Recycled source lists, so a recompute allocates nothing.
+    pool: RefCell<Vec<Vec<NodeId>>>,
+    /// Recycled stack for `propagate`.
+    scratch: RefCell<Vec<(NodeId, Color)>>,
     computing_stack: RefCell<Vec<NodeId>>,
     pub(crate) owner: Cell<Option<NodeId>>,
     pub(crate) writer: Cell<Option<NodeId>>,
@@ -293,6 +297,8 @@ impl Runtime {
                 root_cleanups: RefCell::new(Vec::new()),
                 names: RefCell::new(SecondaryMap::new()),
                 tracking: RefCell::new(Vec::new()),
+                pool: RefCell::new(Vec::new()),
+                scratch: RefCell::new(Vec::new()),
                 computing_stack: RefCell::new(Vec::new()),
                 owner: Cell::new(None),
                 writer: Cell::new(None),
@@ -537,10 +543,11 @@ impl Runtime {
     pub(crate) fn propagate(&self, from: NodeId, pulled: bool) {
         let mut nodes = self.inner.nodes.borrow_mut();
         let mut pending = self.inner.pending.borrow_mut();
-        let mut stack: Vec<(NodeId, Color)> = match nodes.get(from) {
-            Some(n) => n.observers.iter().map(|&o| (o, Color::Dirty)).collect(),
+        let mut stack = std::mem::take(&mut *self.inner.scratch.borrow_mut());
+        match nodes.get(from) {
+            Some(n) => stack.extend(n.observers.iter().map(|&o| (o, Color::Dirty))),
             None => return,
-        };
+        }
         while let Some((id, color)) = stack.pop() {
             let Some(node) = nodes.get_mut(id) else {
                 continue;
@@ -548,12 +555,17 @@ impl Runtime {
             if node.color >= color || pulled && node.running {
                 continue;
             }
-            if node.color == Color::Clean && node.kind.is_sink() {
+            let was_clean = node.color == Color::Clean;
+            if was_clean && node.kind.is_sink() {
                 pending.push(id);
             }
             node.color = color;
-            stack.extend(node.observers.iter().map(|&o| (o, Color::Check)));
+            // A node that was already Check has its descendants marked.
+            if was_clean {
+                stack.extend(node.observers.iter().map(|&o| (o, Color::Check)));
+            }
         }
+        *self.inner.scratch.borrow_mut() = stack;
     }
 
     /// Called by every cell write that changed a value.
@@ -588,7 +600,7 @@ impl Runtime {
         let mut path: Vec<NodeId> = stack[start..].to_vec();
         drop(stack);
         path.push(id);
-        Error::Cycle(self.path(path))
+        Error::Cycle(Arc::new(self.path(path)))
     }
 
     /// Bring `id` up to date if it is `Check` or `Dirty`.
@@ -662,9 +674,10 @@ impl Runtime {
         if kind != NodeKind::Scope && kind != NodeKind::Task {
             self.dispose_owned(id);
         }
+        let sources = self.inner.pool.borrow_mut().pop().unwrap_or_default();
         self.inner.tracking.borrow_mut().push(Frame {
             observer: Some(id),
-            sources: Vec::new(),
+            sources,
         });
         if let Some(n) = self.inner.nodes.borrow_mut().get_mut(id) {
             n.running = true;
@@ -701,45 +714,60 @@ impl Runtime {
         }
     }
 
+    /// Install `new` as `id`'s sources and fix observer edges; the list
+    /// that is no longer needed goes back to the pool.
     fn set_sources(&self, id: NodeId, new: Vec<NodeId>) {
         let mut nodes = self.inner.nodes.borrow_mut();
         let Some(node) = nodes.get_mut(id) else {
             return;
         };
-        if node.sources == new {
-            return;
-        }
-        let old = std::mem::replace(&mut node.sources, new.clone());
-        let new = &new;
-        let small = old.len() <= 16 && new.len() <= 16;
-        let (removed, added): (Vec<NodeId>, Vec<NodeId>) = if small {
-            (
-                old.iter().copied().filter(|s| !new.contains(s)).collect(),
-                new.iter().copied().filter(|s| !old.contains(s)).collect(),
-            )
+        let mut spare = if node.sources == new {
+            new
         } else {
-            let old_set: std::collections::HashSet<NodeId> = old.iter().copied().collect();
-            let new_set: std::collections::HashSet<NodeId> = new.iter().copied().collect();
-            (
-                old.iter()
-                    .copied()
-                    .filter(|s| !new_set.contains(s))
-                    .collect(),
-                new.iter()
-                    .copied()
-                    .filter(|s| !old_set.contains(s))
-                    .collect(),
-            )
+            let old = std::mem::replace(&mut node.sources, new);
+            let large = old.len() > 16 || nodes[id].sources.len() > 16;
+            let old_set: std::collections::HashSet<NodeId> = if large {
+                old.iter().copied().collect()
+            } else {
+                Default::default()
+            };
+            let in_old = |s: &NodeId| {
+                if large {
+                    old_set.contains(s)
+                } else {
+                    old.contains(s)
+                }
+            };
+            for i in 0..nodes[id].sources.len() {
+                let s = nodes[id].sources[i];
+                if !in_old(&s)
+                    && let Some(src) = nodes.get_mut(s)
+                {
+                    src.observers.push(id);
+                }
+            }
+            let new_set: std::collections::HashSet<NodeId> = if large {
+                nodes[id].sources.iter().copied().collect()
+            } else {
+                Default::default()
+            };
+            for &s in &old {
+                let kept = if large {
+                    new_set.contains(&s)
+                } else {
+                    nodes[id].sources.contains(&s)
+                };
+                if !kept && let Some(src) = nodes.get_mut(s) {
+                    src.observers.retain(|&o| o != id);
+                }
+            }
+            old
         };
-        for s in removed {
-            if let Some(src) = nodes.get_mut(s) {
-                src.observers.retain(|&o| o != id);
-            }
-        }
-        for s in added {
-            if let Some(src) = nodes.get_mut(s) {
-                src.observers.push(id);
-            }
+        spare.clear();
+        drop(nodes);
+        let mut pool = self.inner.pool.borrow_mut();
+        if pool.len() < 64 {
+            pool.push(spare);
         }
     }
 
@@ -975,7 +1003,7 @@ impl Runtime {
                 *count += 1;
                 if *count > MAX_RUNS_PER_FLUSH {
                     let path = self.feedback_path(id);
-                    errors.push((id, Error::Cycle(path)));
+                    errors.push((id, Error::Cycle(Arc::new(path))));
                     // Leave the rest queued for the next tick so a loop
                     // can't freeze the logic thread.
                     self.inner
