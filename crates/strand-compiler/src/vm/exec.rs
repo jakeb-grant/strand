@@ -18,7 +18,9 @@ use super::builtins;
 use super::value::{Closure, NodeState, PendingOp, Value, ValueKey};
 use super::{Env, Vm};
 use crate::hir::{AssignOp, LocalId};
-use crate::lower::{ArgMap, ChunkId, Const, Op, Pattern, Place, PlaceRoot, PlaceSeg};
+use crate::lower::{
+    ArgMap, ChunkId, Const, KeyedQuery, KeyedRoot, Op, Pattern, Place, PlaceRoot, PlaceSeg,
+};
 
 /// Locals bound while a chunk runs (handler `let`s, event parameters,
 /// lambda parameters, `for` statement bindings).
@@ -456,6 +458,12 @@ impl Machine {
                     }
                 }
                 Op::Fail(n) => return Err(fail(chunk.names[*n as usize].clone())),
+                Op::Keyed { root, query } => {
+                    let arg = matches!(query, KeyedQuery::Index | KeyedQuery::Contains)
+                        .then(|| self.pop());
+                    let v = self.keyed(vm, rt, chunk, root, *query, arg)?;
+                    self.stack.push(v);
+                }
             }
         }
         if self.stop.is_some_and(|s| s == self.pc) {
@@ -484,6 +492,75 @@ impl Machine {
         let a = self.pop_args(&chunk.args[*args as usize]);
         let recv = self.pop();
         Ok((recv, a.into_vec()))
+    }
+
+    /// [`Op::Keyed`]: a keyed collection answered through core's
+    /// accessors (tracked on the collection, no copy of the list); any
+    /// other list value is read and queried as usual.
+    fn keyed(
+        &self,
+        vm: &Rc<Vm>,
+        rt: &Runtime,
+        chunk: &crate::lower::Chunk,
+        root: &KeyedRoot,
+        query: KeyedQuery,
+        arg: Option<Value>,
+    ) -> Result<Value, Error> {
+        let cell = match root {
+            KeyedRoot::Def(d) => match self.env.def(*d) {
+                Some(super::Slot::Keyed(k, _)) => Some(k),
+                _ => None,
+            },
+            KeyedRoot::Service { service, field } => vm.host.read_keyed(
+                rt,
+                &chunk.names[*service as usize],
+                &chunk.names[*field as usize],
+            ),
+        };
+        let arg = arg.unwrap_or(Value::Null);
+        let Some(k) = cell else {
+            let base = match root {
+                KeyedRoot::Def(d) => vm.read_def(rt, *d, &self.env)?,
+                KeyedRoot::Service { service, field } => vm.host.read(
+                    rt,
+                    &chunk.names[*service as usize],
+                    &chunk.names[*field as usize],
+                )?,
+            };
+            return match query {
+                KeyedQuery::Len => builtins::field(vm, rt, &base, "len"),
+                KeyedQuery::First => builtins::field(vm, rt, &base, "first"),
+                KeyedQuery::Last => builtins::field(vm, rt, &base, "last"),
+                KeyedQuery::Index => Ok(builtins::index(&base, &arg)),
+                KeyedQuery::Contains => builtins::method(
+                    vm,
+                    rt,
+                    &base,
+                    "contains",
+                    Args {
+                        params: vec![Some(arg)],
+                        rest: Vec::new(),
+                    },
+                ),
+            };
+        };
+        let item = |v: Option<&(ValueKey, Value)>| v.map_or(Value::Null, |(_, x)| x.clone());
+        match query {
+            KeyedQuery::Len => k.with(rt, |v| Value::int(v.len() as i64)),
+            KeyedQuery::First => k.with(rt, |v| item(v.items().first())),
+            KeyedQuery::Last => k.with(rt, |v| item(v.items().last())),
+            KeyedQuery::Index => {
+                let i = arg.as_f64().filter(|i| *i >= 0.0);
+                k.with(rt, |v| item(i.and_then(|i| v.items().get(i as usize))))
+            }
+            KeyedQuery::Contains => {
+                let key = k.with_untracked(rt, |v| (v.key_fn())(&arg))?;
+                let found = k.get_key(rt, &key)?;
+                Ok(Value::Bool(
+                    found.is_some_and(|x| builtins::equal(&x, &arg)),
+                ))
+            }
+        }
     }
 
     fn pop_n(&mut self, n: u32) -> Vec<Value> {
@@ -904,22 +981,57 @@ impl Future for AwaitValue {
         self.v = None;
         Poll::Ready(match (&a.error, &a.value) {
             (Some(e), _) => Err(Error::failed(e.to_string())),
+            // Pending with nothing to wait on: never a silent null or a
+            // stale value.
+            _ if a.pending => Err(Error::failed(
+                "nothing to await: the value is still pending",
+            )),
             (None, Some(v)) => Ok(v.clone()),
             (None, None) => Ok(Value::Null),
         })
     }
 }
 
+/// Poll a shared pending operation: the first awaiter to see it finish
+/// keeps the result for the others and wakes them.
 fn poll_op(op: &PendingOp, cx: &mut Context<'_>) -> Poll<Result<Value, String>> {
-    let mut slot = op.fut.borrow_mut();
-    match slot.as_mut() {
-        None => Poll::Ready(Err("this value was already awaited".into())),
-        Some(f) => match f.as_mut().poll(cx) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(r) => {
-                *slot = None;
-                Poll::Ready(r)
+    if let Some(r) = op.result.borrow().as_ref() {
+        return Poll::Ready(r.clone());
+    }
+    let polled = {
+        let Ok(mut slot) = op.fut.try_borrow_mut() else {
+            // Another awaiter is polling it right now (re-entrant): wait
+            // for its wake.
+            op.waiters.borrow_mut().push(cx.waker().clone());
+            return Poll::Pending;
+        };
+        match slot.as_mut() {
+            None => return Poll::Ready(Err("this value was already awaited".into())),
+            Some(f) => match f.as_mut().poll(cx) {
+                Poll::Pending => None,
+                Poll::Ready(r) => {
+                    *slot = None;
+                    Some(r)
+                }
+            },
+        }
+    };
+    match polled {
+        None => {
+            // The future keeps only the latest waker: every other awaiter
+            // waits on the list.
+            let mut w = op.waiters.borrow_mut();
+            if !w.iter().any(|x| x.will_wake(cx.waker())) {
+                w.push(cx.waker().clone());
             }
-        },
+            Poll::Pending
+        }
+        Some(r) => {
+            *op.result.borrow_mut() = Some(r.clone());
+            for w in op.waiters.borrow_mut().drain(..) {
+                w.wake();
+            }
+            Poll::Ready(r)
+        }
     }
 }

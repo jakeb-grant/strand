@@ -1,15 +1,18 @@
 //! Expressions and statements to bytecode.
 
 use crate::hir::{
-    self, AssignOp, BinaryOp, CallArg, Callee, ExprKind, LambdaBody, LocalKind, Pattern as HPat,
-    StmtKind, UnaryOp, Unit,
+    self, AssignOp, BinaryOp, CallArg, Callee, DefId, DefKind, ExprKind, LambdaBody, LocalKind,
+    Pattern as HPat, StmtKind, UnaryOp, Unit,
 };
 use crate::syntax::Span;
 use crate::ty::Ty;
 use crate::vm::value::Num;
 
 use super::Lowerer;
-use super::code::{ArgMap, Chunk, ChunkId, Const, Lambda, Op, Pattern, Place, PlaceRoot, PlaceSeg};
+use super::code::{
+    ArgMap, Chunk, ChunkId, Const, KeyedQuery, KeyedRoot, Lambda, Op, Pattern, Place, PlaceRoot,
+    PlaceSeg,
+};
 
 /// List methods that change the collection they are called on.
 pub(crate) const MUTATIONS: &[&str] = &[
@@ -207,6 +210,32 @@ impl Lowerer<'_> {
         Some(Place { root, segs })
     }
 
+    /// A keyed collection read in place: a keyed `state` (`pins`) or a
+    /// service's keyed field (`notifications.popups`). Notes the service.
+    pub(crate) fn keyed_root(&mut self, c: &mut Chunk, e: &hir::Expr) -> Option<KeyedRoot> {
+        if !matches!(e.ty, Ty::List(_, true)) {
+            return None;
+        }
+        match &e.kind {
+            ExprKind::Def(d) if self.hir.def(*d).kind == DefKind::State => Some(KeyedRoot::Def(*d)),
+            ExprKind::Field {
+                base,
+                name,
+                optional: false,
+            } => match &base.kind {
+                ExprKind::Service(s) => {
+                    self.note_service(s);
+                    Some(KeyedRoot::Service {
+                        service: c.name(s),
+                        field: c.name(name),
+                    })
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     fn note_service(&mut self, s: &str) {
         if let Some(top) = self.services.last_mut() {
             top.insert(s.to_string());
@@ -331,6 +360,51 @@ impl Lowerer<'_> {
             ExprKind::Token(p) => {
                 let n = c.name(p);
                 c.emit(Op::Token(n), span);
+            }
+            ExprKind::Field {
+                base,
+                name,
+                optional: false,
+            } if matches!(name.as_str(), "len" | "first" | "last")
+                && self.keyed_root(c, base).is_some() =>
+            {
+                let root = self.keyed_root(c, base).unwrap_or(KeyedRoot::Def(DefId(0)));
+                let query = match name.as_str() {
+                    "len" => KeyedQuery::Len,
+                    "first" => KeyedQuery::First,
+                    _ => KeyedQuery::Last,
+                };
+                c.emit(Op::Keyed { root, query }, span);
+            }
+            ExprKind::Index { base, index } if self.keyed_root(c, base).is_some() => {
+                let root = self.keyed_root(c, base).unwrap_or(KeyedRoot::Def(DefId(0)));
+                self.expr(c, index);
+                c.emit(
+                    Op::Keyed {
+                        root,
+                        query: KeyedQuery::Index,
+                    },
+                    span,
+                );
+            }
+            ExprKind::Call {
+                callee: Callee::Method { receiver, name, .. },
+                args,
+            } if name == "contains"
+                && args.len() == 1
+                && self.keyed_root(c, receiver).is_some() =>
+            {
+                let root = self
+                    .keyed_root(c, receiver)
+                    .unwrap_or(KeyedRoot::Def(DefId(0)));
+                self.expr(c, &args[0].value);
+                c.emit(
+                    Op::Keyed {
+                        root,
+                        query: KeyedQuery::Contains,
+                    },
+                    span,
+                );
             }
             ExprKind::Field {
                 base,

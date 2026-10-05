@@ -2005,3 +2005,247 @@ fn one_item_change_reruns_one_item() {
     assert!(runs < 20, "{runs} computations for one changed item");
     assert!(shell.scene.find_text("changed").is_some());
 }
+
+/// A fault in a file's top-level handler is located but freezes
+/// nothing: freezing the config's root would stop every bar (design.md:
+/// a fault freezes only its own component).
+#[test]
+fn a_top_level_fault_freezes_nothing() {
+    let src = "state n = 0\nstate zero = 0\non notifications.received(x) { n = 1 / zero }\nbar B { text pct(battery.percent) }\n";
+    let mut shell = boot(&[("top.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    shell
+        .host
+        .emit(&shell.rt, "notifications.received", vec![Value::Null])
+        .unwrap();
+    let u = shell.flush();
+    assert_eq!(u.errors.len(), 1, "{:?}", u.errors);
+    let e = &u.errors[0];
+    assert!(e.span.is_some());
+    assert_eq!(e.scope, None);
+    assert!(!shell.inst.freeze(e), "nothing to freeze");
+    shell
+        .host
+        .set(&shell.rt, "battery.percent", Value::float(0.5))
+        .unwrap();
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["50%"], "the bar keeps updating");
+}
+
+/// The host loop sets the clock on every step: a wall clock that jumps
+/// back is followed at once, and a clock reader mounted later (a popup
+/// opened) shows the time now, not the time at boot.
+#[test]
+fn the_clock_follows_backward_jumps_and_late_readers() {
+    use std::time::UNIX_EPOCH;
+    let t0 = strand_compiler::vm::schema_host::MOCK_TIME;
+    let wall = |s: u64| UNIX_EPOCH + Duration::from_secs(s);
+    let src = "export state o = false\nbar B { text clock.format(\"%H:%M\") }\npanel P { open: <-> o; text clock.format(\"%H:%M:%S\") }\n";
+    let mut shell = boot(&[("clk.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    assert_eq!(shell.scene.texts(), ["09:41"]);
+    let (u, _) = shell.inst.step(Duration::from_secs(1), wall(t0 + 3600));
+    shell.scene.apply(&u.diff).unwrap();
+    assert_eq!(shell.scene.texts(), ["10:41"]);
+    // Back an hour: shown at once, and the next wake is a minute away at
+    // most.
+    let (u, wake) = shell.inst.step(Duration::from_secs(2), wall(t0 + 5));
+    shell.scene.apply(&u.diff).unwrap();
+    assert_eq!(shell.scene.texts(), ["09:41"]);
+    let sleep = wake
+        .sleep_for(Duration::from_secs(2), wall(t0 + 5))
+        .unwrap();
+    assert!(sleep <= Duration::from_secs(60), "{sleep:?}");
+    // The panel's seconds clock mounts later and starts at the time now.
+    shell.inst.set("clk.o", Value::Bool(true)).unwrap();
+    let (u, _) = shell.inst.step(Duration::from_secs(3), wall(t0 + 30));
+    shell.scene.apply(&u.diff).unwrap();
+    assert_eq!(shell.scene.texts(), ["09:41", "09:41:37"]);
+}
+
+/// The live sinks (effects, watches, timers) of a runtime.
+fn sinks(rt: &Runtime) -> usize {
+    use strand_core::NodeKind as K;
+    let mut stack = rt.root_owned();
+    let mut n = 0;
+    while let Some(id) = stack.pop() {
+        if matches!(rt.kind(id), Ok(K::Effect | K::Watch | K::Timer)) {
+            n += 1;
+        }
+        stack.extend(rt.owned(id).unwrap_or_default());
+    }
+    n
+}
+
+/// The compiler declares every binding's and handler's reads and every
+/// handler's writes before the first flush, so a sink that reads what a
+/// handler writes runs after it, once per flush, with final values: an
+/// `if` reading `m` and what a handler derives from `m` never sees one
+/// new and the other old (it would mount the glitch branch and run
+/// twice), from the first flush on.
+#[test]
+fn sinks_run_once_after_the_handlers_that_feed_them() {
+    let src = "export state m = 0\nstate n = 0\nstate k = 0\nstate j = 0\nbar B {\n  if m > 0 && n == 0 { text \"glitch\" } else { text \"ok\" }\n  if m > 2 && k == 0 { text \"glitch\" } else { text \"ok\" }\n  if m > 0 && j != m * 10 { text \"glitch\" } else { text \"ok\" }\n  text join(\" \", m, n, k, j)\n  button { on click { n = 1 } }\n}\non change m { j = m * 10 }\nevery 1s { k += 1 }\n";
+    let mut map = SourceMap::new();
+    map.add("order.strand", src.to_string());
+    let compiled = strand_compiler::compile(&map);
+    assert_eq!(compiled.errors(), 0, "{:#?}", compiled.diagnostics);
+    let program = Arc::new(lower::lower(
+        &compiled.program,
+        strand_compiler::schema::Schema::builtin(),
+    ));
+    let rt = Runtime::new();
+    let host = Rc::new(SchemaHost::mock(&rt, &program.types));
+    screens(&rt, &host, &["DP-1"]);
+    let inst = Instance::new(&rt, program, host.clone(), Storage::none());
+    // The first flush: no sink runs twice (timers and watches whose
+    // value is already sent wait for a change).
+    let live = sinks(&rt);
+    let u = inst.tick(Duration::ZERO);
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    let boot = rt.stats().effect_runs;
+    assert!(boot as usize <= live, "{boot} runs for {live} sinks");
+    let mut scene = SceneMirror::new();
+    scene.apply(&u.diff).unwrap();
+    let shown = format!("{:?}", u.diff);
+    assert!(!shown.contains("glitch"), "{shown}");
+    let mut shell = Shell {
+        rt,
+        host,
+        inst,
+        scene,
+        boot: Vec::new(),
+    };
+    assert_eq!(shell.scene.texts(), ["ok", "ok", "ok", "0 0 0 0"]);
+    let runs = |shell: &Shell| shell.rt.stats().effect_runs;
+    // A click, an outside write and the `on change` it fires in one tick.
+    let button = shell.inst.nodes_handling("click")[0];
+    shell.inst.set("order.m", Value::int(2)).unwrap();
+    assert!(shell.inst.event(button, "click", Vec::new()));
+    let before = runs(&shell);
+    let u = shell.flush();
+    // Once each: the three `if`s, the text and `on change m`.
+    assert_eq!(runs(&shell) - before, 5);
+    let shown = format!("{:?}", u.diff);
+    assert!(!shown.contains("glitch"), "{shown}");
+    assert_eq!(shell.scene.texts(), ["ok", "ok", "ok", "2 1 0 20"]);
+    // A timer and an outside write in one tick.
+    shell.at(0.5);
+    shell.inst.set("order.m", Value::int(3)).unwrap();
+    let before = runs(&shell);
+    let u = shell.at(1.0);
+    assert_eq!(runs(&shell) - before, 5);
+    let shown = format!("{:?}", u.diff);
+    assert!(!shown.contains("glitch"), "{shown}");
+    assert_eq!(shell.scene.texts(), ["ok", "ok", "ok", "3 1 1 30"]);
+}
+
+/// A surface's visibility governs every service read under it: a
+/// component in a panel's content lets go when the panel hides, and a
+/// popup nested in a bar holds what it reads only while it is open.
+#[test]
+fn hidden_surfaces_hold_no_services_below_them() {
+    let src = "export state o = false\nexport state p = false\ncomponent Bat { text pct(battery.percent) }\npanel P { open: <-> o; Bat }\nbar B {\n  text \"x\"\n  popup { open: <-> p; text pct(audio.sink.volume) }\n}\n";
+    let mut shell = boot(&[("vis2.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    assert_eq!(shell.host.readers("battery"), 0);
+    assert_eq!(shell.host.readers("audio"), 0, "the popup is closed");
+    shell.inst.set("vis2.o", Value::Bool(true)).unwrap();
+    shell.flush();
+    assert_eq!(shell.host.readers("battery"), 1);
+    shell.inst.set("vis2.o", Value::Bool(false)).unwrap();
+    shell.flush();
+    assert_eq!(shell.host.readers("battery"), 0, "hidden with its panel");
+    shell.inst.set("vis2.o", Value::Bool(true)).unwrap();
+    shell.flush();
+    assert_eq!(shell.host.readers("battery"), 1, "shown again");
+    shell.inst.set("vis2.p", Value::Bool(true)).unwrap();
+    shell.flush();
+    assert_eq!(shell.host.readers("audio"), 1, "the popup is open");
+    shell.inst.set("vis2.p", Value::Bool(false)).unwrap();
+    shell.flush();
+    assert_eq!(shell.host.readers("audio"), 0);
+    // A parked bar lets go of everything under it, popup included.
+    shell.inst.set("vis2.p", Value::Bool(true)).unwrap();
+    shell.flush();
+    screens(&shell.rt, &shell.host, &[]);
+    shell.flush();
+    assert_eq!(shell.host.readers("audio"), 0, "parked");
+    screens(&shell.rt, &shell.host, &["DP-1"]);
+    shell.flush();
+    assert_eq!(shell.host.readers("audio"), 1, "back");
+}
+
+/// `for` over `.filter(…).take(5)` on a keyed collection follows core's
+/// incremental views (design.md: they "update incrementally and keep
+/// keys"): over 2,000 rows one push or update is a diff through the
+/// chain, never a rebuild, and the rows kept keep their scene nodes.
+#[test]
+fn keyed_chains_update_incrementally() {
+    let mut src = String::from(
+        "type Row { id: int; label: text; show: bool }\nexport state min = 0\nstate rows: [Row] key id = [",
+    );
+    for i in 0..2000 {
+        src.push_str(&format!(
+            "Row(id: {i}, label: \"r{i}\", show: {}), ",
+            i % 2 == 0
+        ));
+    }
+    src.push_str("]\nstate next = 5000\nbar B {\n  for r in rows.filter(r => r.show && r.id >= min).take(5) { text r.label }\n  button { on click { rows.push(Row(id: next, label: \"new\", show: true)); next += 1 } }\n  button { on scroll(dy) { rows.update(2, r => Row(id: r.id, label: \"two\", show: true)) } }\n  button { on activate { rows.remove_key(0) } }\n}\n");
+    let mut shell = boot(&[("chain.strand", &src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    assert_eq!(shell.scene.texts(), ["r0", "r2", "r4", "r6", "r8"]);
+    let r2 = shell.text_node("r2");
+    let rebuilds = |shell: &Shell| shell.rt.stats().rebuilds;
+    // A push at the end: past the first five, nothing to show.
+    let before = rebuilds(&shell);
+    let push = shell.inst.nodes_handling("click")[0];
+    shell.inst.event(push, "click", Vec::new());
+    let u = shell.flush();
+    assert_eq!(rebuilds(&shell), before, "a push is one diff");
+    assert!(u.diff.is_empty(), "{:?}", u.diff);
+    // An update of a shown row: that row's text only, same node.
+    let update = shell.inst.nodes_handling("scroll")[0];
+    shell.inst.event(update, "scroll", vec![Value::float(1.0)]);
+    let u = shell.flush();
+    assert_eq!(rebuilds(&shell), before, "an update is one diff");
+    assert_eq!(u.diff.ops.len(), 1, "{:?}", u.diff);
+    assert_eq!(shell.text_node("two"), r2, "the row keeps its node");
+    // A shown row leaves: the rest keep their nodes, one more arrives.
+    let remove = shell.inst.nodes_handling("activate")[0];
+    shell.inst.event(remove, "activate", Vec::new());
+    shell.flush();
+    assert_eq!(rebuilds(&shell), before);
+    assert_eq!(shell.scene.texts(), ["two", "r4", "r6", "r8", "r10"]);
+    assert_eq!(shell.text_node("two"), r2);
+    // A parameter the lambda reads changes: the view is rebuilt.
+    shell.inst.set("chain.min", Value::int(6)).unwrap();
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["r6", "r8", "r10", "r12", "r14"]);
+}
+
+/// `.len`, `.first`, `[i]` and `.contains` on a keyed collection go
+/// through core's accessors: a change never copies the list.
+#[test]
+fn keyed_reads_do_not_copy_the_list() {
+    let mut src = String::from("type Row { id: int; label: text }\nstate rows: [Row] key id = [");
+    for i in 0..2000 {
+        src.push_str(&format!("Row(id: {i}, label: \"r{i}\"), "));
+    }
+    src.push_str("]\nstate next = 5000\nbar B {\n  text join(\" \", rows.len, rows.first?.label, rows[1]?.label, rows.contains(Row(id: 3, label: \"r3\")))\n  button { on click { rows.push(Row(id: next, label: \"new\")); next += 1 } }\n}\n");
+    let mut shell = boot(&[("len.strand", &src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    assert_eq!(shell.scene.texts(), ["2000 r0 r1 true"]);
+    let button = shell.inst.nodes_handling("click")[0];
+    let before = shell.rt.stats().computations;
+    shell.inst.event(button, "click", Vec::new());
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["2001 r0 r1 true"]);
+    // The text's binding only: no list value is rebuilt.
+    assert_eq!(shell.rt.stats().computations - before, 1);
+}

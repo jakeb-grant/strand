@@ -74,9 +74,26 @@ pub struct CallValue {
 /// handler). `await` polls it.
 pub type PendingFuture = Pin<Box<dyn Future<Output = Result<Value, String>>>>;
 
-/// The pending part of an [`AsyncValue`].
+/// The pending part of an [`AsyncValue`]: what `await` waits on. Shared
+/// by every copy of the value, so several handlers can await it: the
+/// first to see it finish keeps the result and wakes the others, which
+/// get the same result.
 pub struct PendingOp {
     pub fut: std::cell::RefCell<Option<PendingFuture>>,
+    /// The result, once the future finished.
+    pub result: std::cell::RefCell<Option<Result<Value, String>>>,
+    /// Awaiters waiting while another one polls the future.
+    pub waiters: std::cell::RefCell<Vec<std::task::Waker>>,
+}
+
+impl PendingOp {
+    pub fn new(fut: PendingFuture) -> Self {
+        Self {
+            fut: std::cell::RefCell::new(Some(fut)),
+            result: std::cell::RefCell::default(),
+            waiters: std::cell::RefCell::default(),
+        }
+    }
 }
 
 impl fmt::Debug for PendingOp {

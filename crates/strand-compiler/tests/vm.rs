@@ -210,6 +210,60 @@ fn coalesce_covers_a_pending_async() {
     assert_eq!(get(&inst, "n"), Value::int(2));
 }
 
+/// `await` on an async `let` waits for its load (never a silent null or
+/// a stale value), and every handler awaiting the same value gets the
+/// same result.
+#[test]
+fn await_waits_for_a_pending_load() {
+    let src = "state q = \"f\"\nstate a = -1\nstate b = -1\nlet hits = apps.search(q)\non notifications.received(x) { let r = await hits\n a = r.len }\non notifications.received(x) { let r = await hits\n b = r.len }\nbar B { text join(\" \", a, b, hits.pending) }\n";
+    let mut map = SourceMap::new();
+    map.add("t.strand", src.to_string());
+    let c = strand_compiler::compile(&map);
+    assert_eq!(c.errors(), 0, "{:#?}", c.diagnostics);
+    let p = Arc::new(lower::lower(
+        &c.program,
+        strand_compiler::schema::Schema::builtin(),
+    ));
+    let rt = Runtime::new();
+    let host = Rc::new(SchemaHost::mock(&rt, &p.types));
+    let apps = ["firefox", "files", "foot"]
+        .iter()
+        .map(|a| host.record("App", &[("id", Value::text(*a)), ("name", Value::text(*a))]))
+        .collect();
+    host.set(&rt, "apps.all", Value::list(apps)).unwrap();
+    let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+    host.set(&rt, "screens.all", Value::list(vec![screen]))
+        .unwrap();
+    host.hold("apps.search");
+    let inst = Instance::new(
+        &rt,
+        p,
+        host.clone(),
+        strand_compiler::instantiate::Storage::none(),
+    );
+    inst.flush();
+    host.emit(&rt, "notifications.received", vec![Value::Null])
+        .unwrap();
+    let u = inst.flush();
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    // Both handlers are suspended at `await`: nothing written yet.
+    assert_eq!(get(&inst, "a"), Value::int(-1));
+    assert_eq!(get(&inst, "b"), Value::int(-1));
+    host.release_fetch("apps.search");
+    inst.flush();
+    let u = inst.flush();
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    assert_eq!(get(&inst, "a"), Value::int(3), "firefox, files, foot");
+    assert_eq!(get(&inst, "b"), Value::int(3), "the second awaiter too");
+    // Awaiting a settled value resumes at once.
+    host.emit(&rt, "notifications.received", vec![Value::Null])
+        .unwrap();
+    inst.set_value("t", "a", Value::int(0)).unwrap();
+    inst.flush();
+    inst.flush();
+    assert_eq!(get(&inst, "a"), Value::int(3));
+}
+
 /// The runtime host keeps no history of actions (the mock records them
 /// for tests).
 #[test]

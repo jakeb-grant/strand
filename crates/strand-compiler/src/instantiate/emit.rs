@@ -85,6 +85,7 @@ impl Emitter {
         let frag = Frag {
             parent,
             children: Vec::new(),
+            parked: Vec::new(),
             scene: None,
             scope: None,
         };
@@ -219,13 +220,23 @@ impl Emitter {
         }
     }
 
+    /// Live fragments, scene nodes and bindings (tests: nothing leaks).
+    #[cfg(test)]
+    pub fn counts(&self) -> (usize, usize, usize) {
+        (
+            self.frags.iter().filter(|f| f.is_some()).count(),
+            self.nodes.len(),
+            self.bindings.len(),
+        )
+    }
+
     /// Every scene node in `frag`'s subtree.
     fn all_nodes(&self, frag: FragId, out: &mut Vec<NodeId>) {
         let Some(f) = self.frag(frag) else { return };
         if let Some(n) = f.scene {
             out.push(n);
         }
-        for &c in &f.children {
+        for &c in f.children.iter().chain(&f.parked) {
             self.all_nodes(c, out);
         }
     }
@@ -233,7 +244,7 @@ impl Emitter {
     fn all_frags(&self, frag: FragId, out: &mut Vec<FragId>) {
         out.push(frag);
         if let Some(f) = self.frag(frag) {
-            for &c in &f.children {
+            for &c in f.children.iter().chain(&f.parked) {
                 self.all_frags(c, out);
             }
         }
@@ -285,6 +296,7 @@ impl Emitter {
             && let Some(pf) = self.frag_mut(p)
         {
             pf.children.retain(|&c| c != frag);
+            pf.parked.push(frag);
         }
         self.parked.insert(frag);
         self.frag(frag).and_then(|f| f.scope)
@@ -301,6 +313,7 @@ impl Emitter {
         if let Some(p) = self.frag(frag).and_then(|f| f.parent)
             && let Some(pf) = self.frag_mut(p)
         {
+            pf.parked.retain(|&c| c != frag);
             let at = at.min(pf.children.len());
             pf.children.insert(at, frag);
         }
@@ -353,7 +366,7 @@ impl Emitter {
     pub fn unmount(&mut self, frag: FragId, keep_self: bool) -> (Vec<Scope>, Vec<Rc<NodeState>>) {
         let roots: Vec<FragId> = if keep_self {
             self.frag(frag)
-                .map(|f| f.children.clone())
+                .map(|f| f.children.iter().chain(&f.parked).copied().collect())
                 .unwrap_or_default()
         } else {
             vec![frag]
@@ -389,6 +402,7 @@ impl Emitter {
             self.all_frags(root, &mut frags);
             // Children first: inner scopes are owned by outer ones anyway.
             for f in frags.into_iter().rev() {
+                self.parked.remove(&f);
                 if let Some(fr) = self.frags.get_mut(f).and_then(Option::take) {
                     if let Some(s) = fr.scope {
                         scopes.push(s);
@@ -400,6 +414,7 @@ impl Emitter {
                 && let Some(pf) = self.frag_mut(p)
             {
                 pf.children.retain(|&c| c != root);
+                pf.parked.retain(|&c| c != root);
             }
         }
         (scopes, states)
@@ -437,5 +452,43 @@ impl Emitter {
             value,
             transition: Transition::Default,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A parked fragment goes with the list that owns it: its frags,
+    /// node ids and `parked` entry are freed, and no `Remove` is sent for
+    /// what is already off the scene.
+    #[test]
+    fn parked_fragments_are_unmounted_with_their_list() {
+        let mut em = Emitter::default();
+        let root = em.new_frag(None, None);
+        let list = em.new_frag(Some(root), None);
+        let bar = em.new_frag(Some(list), None);
+        let id = em.create(bar, NodeKind::Bar);
+        let inner = em.new_frag(Some(bar), None);
+        em.create(inner, NodeKind::Text);
+        em.park(bar);
+        em.ops.clear();
+        em.unmount(list, false);
+        assert!(em.parked.is_empty());
+        assert_eq!(em.counts().0, 1, "only the root is left");
+        assert!(!em.alloc.is_live(id));
+        assert!(
+            !em.ops.iter().any(|o| matches!(o, SceneOp::Remove { .. })),
+            "{:?}",
+            em.ops
+        );
+        // With `keep_self`, parked children go too.
+        let list = em.new_frag(Some(root), None);
+        let bar = em.new_frag(Some(list), None);
+        em.create(bar, NodeKind::Bar);
+        em.park(bar);
+        em.unmount(list, true);
+        assert!(em.parked.is_empty());
+        assert_eq!(em.counts().0, 2);
     }
 }

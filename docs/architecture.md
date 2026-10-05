@@ -288,7 +288,10 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   after T` (`Debounced`), the tracked expression's reads go on `d.effect`
   and the body's writes on `d.timer`. Tasks woken from other threads (IO and
   D-Bus replies) are polled at the start of the next flush, never between
-  sinks.
+  sinks. Tasks that event listeners spawn (`on click`, `on
+  notifications.received`) are polled as soon as the listeners ran,
+  before the next sink, so a sink reading what such a handler writes
+  synchronously runs after it, once.
   Service events are `EventQueue`s. Keyed collection writes from
   graph-triggered handlers are rate-guarded too (wave 2): a throttled
   handler writes to a held copy (with the list it started from) whose
@@ -423,6 +426,21 @@ Public interfaces other crates and later stages build on:
   reports the file, call `redeclare` when a reload changes the
   declaration, pass each field's type name with `FieldSpec::with_type`,
   and give its path to the watcher. See the `strand-core` section.
+  How the compiler meets this: `lower::reads` computes every chunk's
+  syntactic read set (`Program::reads(chunk)`: `state`s, `let`s,
+  settings fields, scope locals, service fields, element instances;
+  the lambdas a chunk makes and the `fn`s it calls included) and
+  write set (`Program::writes(chunk)`: assignment and list-mutation
+  targets). The instantiator resolves those names to core nodes in the
+  scope a chunk is mounted in (`ServiceHost::sources` names a service
+  field's nodes) and declares them as each node is created: binding
+  memos, `let`s (after every name of the body is bound), component
+  parameters, derived lists and their effects, `if`/`match` effects,
+  timers (duration and `while`), `on change` effects (tracked targets),
+  listeners (empty), the token table; writes on the handler site (`on
+  click`, `on svc.event`), the `on change` effect, the timer, and for
+  a debounce `d.effect`/`d.timer`, for an async `let`
+  `memo.effect_id()`.
 - **Identity and change detection.** AST `PartialEq` compares spans, which
   shift on every edit above a node. Reload identity and "did this handler
   change" use a span-insensitive structural hash over the texts of the
@@ -580,6 +598,12 @@ Public interfaces other crates and later stages build on:
     (`fn` methods: `clock.format`, `calendar.days`, `workspaces.on`)
     must read through the graph (a `Signal<Value>` per field) so
     bindings depend on exactly that field.
+  - `sources(rt, service, field: Option<&str>) -> Vec<NodeId>`: the
+    core nodes a read of `service.field` (or of the service as a whole,
+    `None`: a method such as `clock.format`) depends on, which the VM
+    declares with `rt.reads_from` before the first flush. A superset is
+    fine; the default (none) leaves those edges to be learned on first
+    run.
   - `read_keyed(rt, service, field) -> Option<KeyedSignal<ValueKey,
     Value>>`: a list field published as a core keyed collection
     (`notifications.popups`, `workspaces.all`). A `for` directly over
@@ -609,8 +633,13 @@ Public interfaces other crates and later stages build on:
   - `acquire`/`release(service)`: a reader count. Every mounted
     component and the config's top level hold the services their body
     reads; a surface holds its body's services only while shown (its
-    `open` is true, or it has no `open`), and a parked bar (monitor
-    unplugged) lets go of everything under it until it returns. The
+    `open` is true, or it has no `open`), a hidden surface's content
+    (components in it, surfaces nested in it) lets go of everything it
+    holds, a surface nested in another (`popup` in a `bar`) holds its
+    own children's reads only while it is shown (they do not count for
+    the body around it: `lower::Element::services`), and a parked bar
+    (monitor unplugged) lets go of everything under it until it
+    returns. The
     service starts on its first reader and stops 5 s after its last
     leaves or goes invisible.
   - `declare(rt, name, record)` adds a custom service; `next_wake(rt) ->
@@ -672,9 +701,26 @@ Public interfaces other crates and later stages build on:
     `rt.keyed_memo` over the list keyed by `key e` or the item record's
     key. `Move` becomes scene `Move`s; a `Reset` is reconciled by key,
     moving only the items outside the longest run already in order.
-    `.filter`/`.map`/`.take`/`.sort_by` chains are whole-list until they
-    lower to core's incremental keyed views (M4, with virtualised
-    lists).
+    A chain of `.filter`/`.map`/`.take`/`.sort_by` on a keyed `state`
+    or a host's keyed field (`lower::For::chain`) is core's incremental
+    views (`KeyedOps::{filter_with, map_with, take_with,
+    sort_by_with}`) fed by the source's diffs: each lambda runs per
+    item through the VM, and what it reads besides the item (its
+    captured values and the values of its read set; a keyed collection
+    by its version) is the step's tracked parameters, whose change
+    rebuilds that step. A lambda calling a service method falls back
+    to `keyed_memo`.
+  - Reads of a keyed collection (`xs.len`, `.first`, `.last`, `xs[i]`,
+    `xs.contains(x)` on a keyed `state` or a host's keyed field) are
+    `Op::Keyed`: answered with core's `with`/`get_key`, never by
+    building the list as a value. The list value (`Slot::Keyed`'s
+    memo) is built lazily, only for reads that need the whole list.
+  - `await` on an `Async` waits for its operation: a `sleep`, or for an
+    async `let` that is pending, the load settling (a settle effect
+    wakes the awaiters). The operation is shared by every copy of the
+    value, so several handlers awaiting it get the same result.
+    `await` on a pending value with nothing to wait on is an error
+    value, never a silent null.
   - A `bar` is a keyed instance per `screens.all` item that its own
     `screens:` picks (a connector or monitor id, a list of them,
     `focused`, `all`), keyed by the monitor's identity (`Screen.id`:
@@ -703,9 +749,13 @@ Public interfaces other crates and later stages build on:
     (FileId, NodeIdx, Span)` maps a scene node back to its element (the
     overlay's click to `$EDITOR`, inspector provenance), and
     `Instance::freeze(&err)` suspends the faulting component's instance
-    scope (`thaw` resumes it after the fixing reload).
-  - The host loop: `Instance::step(now, wall) -> (Update, Wake)` wakes
-    wall-clock services that are due, ticks the logic clock to `now`
+    scope (`thaw` resumes it after the fixing reload). A fault at the
+    config's top level (a file's `let`, handler or timer) has no scope:
+    it is outlined, nothing is frozen.
+  - The host loop: `Instance::step(now, wall) -> (Update, Wake)` sets
+    wall-clock services to `wall` (every step: a wall clock that jumps
+    back is followed, and a clock reader mounted by the step sees the
+    time now), ticks the logic clock to `now`
     and says when to come back (`Wake { deadline, wall }`,
     `sleep_for(now, wall_now)`). The `strand run` logic thread is: feed
     the `screens` service from the surface layer's monitor hooks

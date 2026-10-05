@@ -15,7 +15,7 @@ use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use chrono::FixedOffset;
-use strand_core::{Error, EventQueue, KeyedSignal, Memo, Runtime, Signal};
+use strand_core::{Error, EventQueue, KeyedSignal, Memo, NodeId, Runtime, Signal};
 
 use super::builtins::default_of;
 use super::clock::{Clock, Zone};
@@ -470,6 +470,38 @@ impl ServiceHost for SchemaHost {
             Field::Plain(s) => s.get(rt),
             Field::Keyed(_, list) => list.get(rt),
         }
+    }
+
+    fn sources(&self, _rt: &Runtime, service: &str, field: Option<&str>) -> Vec<NodeId> {
+        let mut out = Vec::new();
+        if matches!(service, "clock" | "calendar")
+            && let Some(c) = &self.clock
+        {
+            out.extend(c.ids());
+        }
+        let ids = |f: &Field, out: &mut Vec<NodeId>| match f {
+            Field::Plain(s) => out.push(s.id()),
+            Field::Keyed(k, l) => {
+                out.push(k.id());
+                out.push(l.id());
+            }
+        };
+        let fields = self.fields.borrow();
+        match field {
+            Some(f) => {
+                if let Some(x) = fields.get(&(service.to_string(), f.to_string())) {
+                    ids(x, &mut out);
+                }
+            }
+            None => {
+                for ((s, _), x) in fields.iter() {
+                    if s == service {
+                        ids(x, &mut out);
+                    }
+                }
+            }
+        }
+        out
     }
 
     fn read_keyed(

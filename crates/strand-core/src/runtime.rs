@@ -1675,9 +1675,14 @@ impl Runtime {
         loop {
             // Writers that are not sinks (woken handlers, event listeners)
             // run as soon as they are due, before the next sink.
-            let mut progressed = self.poll_ready_tasks(&mut polled, start);
+            let progressed = self.poll_ready_tasks(&mut polled, start);
             start = false;
-            progressed |= self.deliver_events(&mut runs, &mut errors);
+            if self.deliver_events(&mut runs, &mut errors) {
+                // Listeners spawn handler tasks (`on click`, `on
+                // notifications.received`): poll those before the next
+                // sink, so a sink reading what they write runs after them.
+                continue;
+            }
             self.learn_queued();
             self.queue_pending(&mut queue);
             let Some(Reverse((rank, seq, id))) = queue.pop() else {

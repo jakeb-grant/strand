@@ -136,6 +136,12 @@ impl Clock {
         }
     }
 
+    /// The clock's nodes (the minute and the second): what a read of
+    /// `clock` or `calendar` can depend on.
+    pub fn ids(&self) -> [strand_core::NodeId; 2] {
+        [self.minute.id(), self.second.id()]
+    }
+
     /// The wall clock reached `now`.
     pub fn set_time(&self, rt: &Runtime, now: SystemTime) {
         let s = unix(now);
@@ -273,17 +279,24 @@ pub(crate) fn date_method(
         return Err(fail("not a date"));
     };
     let arg = |i: usize| args.get(i).and_then(Value::as_f64).unwrap_or(0.0) as i64;
+    let out_of_range = || fail("date out of range");
     match name {
         "month_start" => d
             .with_day(1)
             .map(|d| date_record(r.ty, d))
             .ok_or_else(|| fail("date out of range")),
         "add" => {
-            let months = arg(1) + 12 * arg(2);
+            // Config values: checked, never an overflow panic or a
+            // silently truncated month count.
+            let months = arg(2)
+                .checked_mul(12)
+                .and_then(|y| y.checked_add(arg(1)))
+                .ok_or_else(out_of_range)?;
+            let count = u32::try_from(months.unsigned_abs()).map_err(|_| out_of_range())?;
             let shifted = if months >= 0 {
-                d.checked_add_months(Months::new(months as u32))
+                d.checked_add_months(Months::new(count))
             } else {
-                d.checked_sub_months(Months::new(months.unsigned_abs() as u32))
+                d.checked_sub_months(Months::new(count))
             };
             let days = arg(0);
             shifted
@@ -394,5 +407,26 @@ mod tests {
         assert_eq!(date_of(&t, &prev), NaiveDate::from_ymd_opt(2026, 9, 5));
         let f = date_method(&t, &prev, "format", &[Value::text("%B %Y")]).unwrap();
         assert_eq!(f, Value::text("September 2026"));
+    }
+
+    #[test]
+    fn huge_date_shifts_are_errors_not_panics() {
+        let t = types();
+        let utc = Zone::Fixed(FixedOffset::east_opt(0).unwrap());
+        let rt = Runtime::new();
+        let today = Clock::new(&rt, &t, utc, at(1_791_193_267))
+            .read(&rt, "today")
+            .unwrap();
+        for args in [
+            vec![Value::int(0), Value::int(0), Value::float(1e18)],
+            vec![Value::int(0), Value::float(1e30), Value::int(0)],
+            vec![Value::int(0), Value::float(4_294_967_296.0)],
+            vec![Value::int(0), Value::float(-4_294_967_296.0)],
+            vec![Value::float(1e30)],
+            vec![Value::float(-1e30)],
+        ] {
+            let r = date_method(&t, &today, "add", &args);
+            assert!(r.is_err(), "{args:?} gave {r:?}");
+        }
     }
 }

@@ -19,7 +19,9 @@
 //! [`Instance::set_size`] (layout facts) and [`Instance::write`] (`<->`
 //! writes from widgets).
 
+mod chain;
 mod convert;
+mod edges;
 mod emit;
 mod mirror;
 mod mount;
@@ -53,6 +55,9 @@ use emit::{Emitter, FragId};
 pub(crate) struct Frag {
     pub parent: Option<FragId>,
     pub children: Vec<FragId>,
+    /// Children taken off the scene but kept (parked bars): not in
+    /// `children`, still unmounted with this fragment.
+    pub parked: Vec<FragId>,
     pub scene: Option<NodeId>,
     pub scope: Option<Scope>,
 }
@@ -113,10 +118,13 @@ pub(crate) type Forget = dyn Fn(&Runtime, &Value) -> bool;
 pub(crate) struct Hold {
     pub scope: Option<CoreId>,
     pub services: Arc<std::collections::BTreeSet<String>>,
+    /// The scope wants them (mounted, or its surface shown).
+    pub want: bool,
+    /// Blocked scopes it is under: a hidden surface's content, a parked
+    /// bar. Held only while this is 0.
+    pub blocks: u32,
     /// Acquired now.
-    pub held: bool,
-    /// Let go because its bar is parked; taken again on return.
-    pub parked: bool,
+    pub acquired: bool,
 }
 
 /// Where a binding, handler or timer comes from, for its errors.
@@ -160,6 +168,9 @@ pub(crate) struct Ctx {
     /// Services each mounted scope reads, by token.
     pub holds: RefCell<std::collections::HashMap<u64, Hold>>,
     pub next_hold: Cell<u64>,
+    /// Scopes whose holds are let go (a hidden surface's content, a
+    /// parked bar), with how many reasons each.
+    pub blocked: RefCell<std::collections::HashMap<CoreId, u32>>,
     /// Mounted settings files (the watcher's `reload_settings`).
     pub settings: RefCell<Vec<std::rc::Weak<crate::vm::SettingsSlot>>>,
     /// Per-monitor bar lists: forget a parked monitor's bar by key.
@@ -488,6 +499,7 @@ impl Instance {
             settings: RefCell::default(),
             holds: RefCell::default(),
             next_hold: Cell::new(0),
+            blocked: RefCell::default(),
             notices: RefCell::default(),
             play_seq: Cell::new(0),
         });
@@ -546,6 +558,24 @@ impl Instance {
         let c = ctx.clone();
         let memo = rt.memo(move |rt| c.token_table(rt));
         rt.set_name(memo.id(), "tokens");
+        let chunks: Vec<_> = prog
+            .use_palette
+            .iter()
+            .chain(prog.use_tokens.iter())
+            .copied()
+            .chain(
+                prog.token_sets
+                    .values()
+                    .flat_map(|s| s.entries.iter().map(|e| e.value)),
+            )
+            .chain(
+                prog.components
+                    .values()
+                    .flat_map(|c| c.tokens.iter().map(|e| e.value)),
+            )
+            .collect();
+        let system = ctx.vm.host.sources(&rt, "system", Some("dark"));
+        ctx.declare_reads(&rt, memo.id(), &chunks, &root_env, &system);
         match memo.get_untracked(&rt) {
             Ok(table) => ctx.em.borrow_mut().ops.insert(
                 0,
@@ -643,15 +673,17 @@ impl Instance {
     }
 
     /// One turn of the host loop (the `strand run` logic thread): services
-    /// driven by the wall clock catch up to `wall` (the clock's minute),
+    /// driven by the wall clock are set to `wall` (forward or back),
     /// the logic clock moves to `now` and the tick ends. Returns the
     /// tick's update (its diff goes to render, its errors to the overlay)
     /// and when to come back if nothing else (input, a monitor hook, an IO
     /// wake) happens first.
     pub fn step(&self, now: Duration, wall: SystemTime) -> (Update, Wake) {
-        if self.next_wake().is_some_and(|t| t <= wall) {
-            self.wake(wall);
-        }
+        // Always: the wall clock can jump back (a manual set, an NTP
+        // step), and a clock reader mounted by this step (a popup opened)
+        // must see the time now, not when the clock last had a reader.
+        // The clock's signals skip equal values, so this is cheap.
+        self.wake(wall);
         let update = self.tick(now);
         let wake = Wake {
             deadline: self.next_deadline(),

@@ -1255,8 +1255,8 @@ see wave2-core; the compiler supplies the field schema.)
   `rt.keyed_memo`. Every mounted item has its own value cell, set from
   `VecDiff::Update`, so one changed row re-runs one row's bindings
   (`tests/instantiate.rs::one_item_change_reruns_one_item`: 2,000 rows).
-  Chains of `.filter`/`.map`/`.take`/`.sort_by` stay whole-list until
-  they lower to core's incremental views with virtualised lists (M4).
+  Chains of `.filter`/`.map`/`.take`/`.sort_by` on a keyed collection
+  follow core's incremental views (see "keyed chains" below).
 - **2026-10-05 · wave2-vm: located runtime errors.** Errors are
   `RuntimeError`s carrying the failing operation's file and span (the
   innermost chunk that raised it), the scene node, the component and
@@ -1285,6 +1285,74 @@ see wave2-core; the compiler supplies the field schema.)
   `strand set` whose value does not fit the declared type is refused
   with an error; a widget's `f32` becomes the `f64` with the shortest
   decimal that round-trips it (a slider's 0.8 is 0.8).
+- **2026-10-05 · wave2-vm: declared edges.** The compiler declares
+  every read and write set it can see in the source before the first
+  flush (`lower::reads`, `instantiate::edges`), as architecture.md asks:
+  a conservative superset (every branch; a lambda's and a called `fn`'s
+  reads count for the chunk that makes or calls it; an element
+  instance's six flags; a service method call reads the whole service,
+  `ServiceHost::sources(rt, s, None)`). Handler bodies' reads are not
+  declared on their sites (tasks do not track reads); their writes
+  are, on the site, the `on change` effect, the timer or the
+  debounce's timer. Proving it took one core change, made here because
+  the compiler cannot meet the "once per flush" promise without it:
+  tasks spawned by event listeners are polled before the next sink (the
+  flush polled them one sink late, so an `if` reading what an `on
+  click` wrote ran before and after it). The core track should own it
+  from here (`crates/strand-core/src/runtime.rs`, `flush`).
+  `tests/instantiate.rs::sinks_run_once_after_the_handlers_that_feed_them`
+  fails without the declarations.
+- **2026-10-05 · wave2-vm: keyed chains.** design.md says `.filter`,
+  `.map`, `.take` and `.sort_by` "update incrementally and keep keys".
+  A `for` over such a chain rooted at a keyed `state` or a service's
+  keyed field is core's incremental views. Core's operators take pure
+  closures plus tracked parameters; a VM lambda is not pure (it can
+  read state), so a step's parameters are its lambda (compared by code
+  and captured values, not closure identity) and the values of
+  everything the lambda reads besides its item (a keyed collection by
+  its version, not a copy). Changing one of those rebuilds the step,
+  which is what recomputing the lambda over every item would do. A
+  lambda calling a service method (whose reads the VM cannot name)
+  falls back to whole-list comparison. `map` keeps the source keys, so
+  a mapped loop uses them even when the mapped item has a key field of
+  its own; a loop with its own `key e` is never a chain. A lambda that
+  fails is reported once and the item is filtered out, mapped to null
+  or sorted as equal. `sort_by` compares keys with a total order (NaN
+  after every number, kinds by kind), so a sort never panics.
+- **2026-10-05 · wave2-vm: keyed reads.** `.len`, `.first`, `.last`,
+  `[i]` and `.contains(x)` on a keyed collection compile to `Op::Keyed`
+  and use core's accessors; `contains` looks the value's key up and
+  compares the item found. The collection's list value is a lazy memo
+  built only for reads that need the whole list (passing it to a `fn`,
+  `join`, `.filter` outside a `for`).
+- **2026-10-05 · wave2-vm: `await` on a pending value.** An async
+  `let` that is pending carries an operation that settles with the
+  load; `await` on it suspends until then. An awaited operation keeps
+  its result, so every awaiter (two handlers on one `let`) gets the same
+  value. A pending value with nothing to wait on is an error value
+  ("nothing to await"), never null or a stale value.
+- **2026-10-05 · wave2-vm: faults at the top level.** design.md: "a
+  runtime fault freezes only its own component". A file's own `let`s,
+  handlers and timers belong to no component; freezing their scope would
+  freeze the whole program, so their errors carry no scope and
+  `Instance::freeze` declines them (they are still located and
+  outlined).
+- **2026-10-05 · wave2-vm: visibility reaches everything under a
+  surface.** A hidden surface's content lets go of every service held
+  under it (its components, surfaces nested in it), and a nested
+  surface (`popup` in a `bar`) holds what its children read only while
+  it is open; its reads no longer count for the enclosing body. A
+  surface's props (`open:`) still count for the body around it, since
+  they are evaluated while it is hidden.
+- **2026-10-05 · wave2-vm: the wall clock every step.** `Instance::step`
+  sets the clock to the wall time on every step instead of only when
+  the next minute is due: a wall clock set back (by hand or by NTP)
+  would otherwise freeze the clock until it caught up, and a clock
+  reader mounted later (a popup opened) would show the time of the last
+  wake. Setting equal minute and second values is a no-op for the
+  graph. Date arithmetic (`d.add(months:, years:)`) and `noise` use
+  checked or wrapping arithmetic: a huge config value is an error value
+  or a wrapped cell, not an overflow panic.
 
 ## wave2-core
 
