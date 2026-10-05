@@ -7,13 +7,17 @@ boxes and its exit criteria are ticked.
 
 ## M0 Spike (weeks 1–6)
 
-Exit: [ ] ≤34 MB PSS on 2 monitors · [ ] no wakeups between minute ticks ·
-[ ] ≤2,000 px² damage per tick
+Exit: [x] ≤34 MB PSS on 2 monitors · [x] no wakeups between minute ticks ·
+[x] ≤2,000 px² damage per tick — measured by `scripts/m0-exit.sh` (21.3–21.4 MB,
+0 context switches from :03 to :57, 444–456 / 705 px² per tick at 1.0 / 1.25);
+see `docs/m0-report.md`; in `cargo test`: `crates/strand/tests/demo.rs`
+(`demo_bar_on_two_outputs_then_idle`), `crates/strand/src/demo/mod.rs`
+(`a_minute_tick_repaints_at_most_2000_px2`)
 
 - [x] `strand-scene` vocabulary: geometry, colour (sRGB ↔ OKLab), `Damage` (≤8 rects, merge), `Painter`, scene protocol types — `crates/strand-scene/src/{geometry,color,damage,id,paint,protocol,surface,tokens}.rs` (unit + proptest), `crates/strand-render/tests/damage.rs` (`surface_specs_resolve_tokens_and_report_changes`)
 - [x] SCTK layer-shell bar on every output, anchored to an edge, exclusive zone — `crates/strand-surface/tests/sway.rs` (`bar_on_every_output_with_hotplug`, `bars_on_two_outputs_at_startup`, `floating_bar_margins`: margin 8, 8, 0 on sway), `crates/strand-surface/src/placement.rs`
 - [x] Output hotplug: bar appears on a new output and is destroyed when one goes; layer-surface `closed` handled — `crates/strand-surface/tests/sway.rs` (`bar_on_every_output_with_hotplug`; `replugged_monitor_keeps_its_surface_ids`: disable/enable within 30 s gives back the same `SurfaceId` with `monitor_added(.., reconnected: true)`), `crates/strand-surface/src/monitor.rs` (30 s retention)
-- [x] wl_shm pool, 2–3 buffers per surface, buffer age tracked per buffer — `crates/strand-surface/src/shm.rs`, `crates/strand-surface/tests/sway.rs` (`renders_pixels_with_exact_damage` checks every buffer holds the frame its age claims)
+- [x] wl_shm pool, 2–3 buffers per surface, buffer age tracked per buffer — `crates/strand-surface/src/shm.rs`, `crates/strand-surface/tests/sway.rs` (`renders_pixels_with_exact_damage` checks every buffer holds the frame its age claims; a new buffer starts as a copy of the newest frame, age 1: `a_fresh_buffer_copied_forward_has_age_one`)
 - [x] `damage_buffer` with exact rects; `set_opaque_region` when opaque — `crates/strand-surface/tests/sway.rs` (`renders_pixels_with_exact_damage` compares the sent rects with the painter's; `fractional_scale_buffers_and_viewport` checks the logical opaque region at 1.5), `crates/strand-surface/tests/render.rs` (the real renderer through the surface manager)
 - [x] Fractional scale (`wp_fractional_scale_v1`) + viewporter; crisp at 1.0, 1.25, 1.5, 2.0 — `crates/strand-surface/tests/sway.rs` (`fractional_buffers_are_crisp`: a 1-px checkerboard at 33 × 1.25 = 41.25, 33 × 1.5 = 49.5, 33 × 2 and 33 × 1 shown 1:1; `fractional_scale_buffers_and_viewport`, `integer_scale_fallback`, `renders_pixels_with_exact_damage`)
 - [x] Frame callbacks requested only while something is dirty or unsettled — `crates/strand-surface/tests/sway.rs` (`idle_requests_no_frames_and_commits_nothing`; `commits_lock_to_the_refresh_rate`: 100 changes in 200 ms commit at most once per refresh; `empty_first_paint_does_not_stall`), `crates/strand-surface/tests/render.rs` (`first_frame_waits_for_its_text`: with the text worker the first commit already has its text and the hold's timer is cancelled)
@@ -22,10 +26,10 @@ Exit: [ ] ≤34 MB PSS on 2 monitors · [ ] no wakeups between minute ticks ·
 - [x] Retained scene → display list → damage diff (only changed nodes' bounds) — `crates/strand-render/tests/damage.rs`
 - [x] Text: parley shaping on the text worker; swash rasterisation; LRU glyph atlas per scale — `crates/strand-text/tests/text.rs` (`huge_distinct_glyphs_stay_within_the_byte_budget`), `crates/strand-render/tests/damage.rs` (`text_survives_output_hotplug`, `worker_rescale_keeps_text_on_the_first_frame`, `first_frame_of_a_new_surface_has_its_text`, `atlas_mirror_stays_bounded`)
 - [x] Offline render tests: scenes → PNG compared to references within tolerance — `crates/strand-render/tests/scenes.rs`
-- [ ] Clock tick aligned to the minute boundary; process sleeps between ticks
+- [x] Clock tick aligned to the minute boundary; process sleeps between ticks — `crates/strand/src/demo/clock.rs` (`boundary_is_the_next_whole_minute`, `timer_sleeps_until_its_absolute_time`: a `CLOCK_REALTIME` timerfd armed at the absolute next minute), `crates/strand/src/demo/logic.rs` (`a_minute_tick_is_one_diff_with_one_text_prop`, `first_tick_emits_the_bar_with_the_clock`: idle with no deadline), `crates/strand/tests/demo.rs` (no context switches while idle), `scripts/m0-exit.sh` (a whole minute)
 - [x] 10k-node reactive graph benchmark (propagation latency, memory per node) — `crates/strand-core/benches/graph.rs`, shape checked by `crates/strand-core/tests/bench_graph.rs`, results in `docs/benchmarks.md`
-- [ ] mimalloc allocator in the runtime binary
-- [ ] Measurement script: PSS, wakeups, damage per tick, on headless sway with 2 outputs
+- [x] mimalloc allocator in the runtime binary — `crates/strand/src/main.rs` (`mimalloc_is_the_global_allocator`)
+- [x] Measurement script: PSS, wakeups, damage per tick, on headless sway with 2 outputs — `scripts/m0-exit.sh` (results in `docs/m0-report.md`)
 
 ## M1 Language and live reload (weeks 7–16)
 
