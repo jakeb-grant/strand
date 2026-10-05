@@ -221,6 +221,10 @@ struct Queue {
     stop: bool,
     /// Old temp files were swept (once per store).
     swept: bool,
+    /// Per settings key, the highest job sequence number done (written or
+    /// failed): a reload trusts what it read only for fields whose last
+    /// edit is at most this ([`crate::settings`]).
+    settings_landed: std::collections::HashMap<PathBuf, u64>,
 }
 
 struct Job {
@@ -332,12 +336,16 @@ impl Shared {
                 }
             };
             if sweep {
-                sweep_temps(&self.dir);
+                sweep_temps(&self.dir, None);
             }
             if let Some(hook) = &self.io_hook {
                 hook(&file);
             }
             let r = self.perform(&file, &job.op);
+            let settings_seq = match &job.op {
+                Op::Settings(j) => Some(j.seq),
+                _ => None,
+            };
             // Reported before the operation counts as done, so a `sync`
             // that returns has its failures in the runtime.
             if let (Err(error), Some(rep)) = (r, job.report) {
@@ -347,7 +355,14 @@ impl Shared {
                     error,
                 });
             }
-            self.lock().in_flight = None;
+            {
+                let mut q = self.lock();
+                if let Some(seq) = settings_seq {
+                    let landed = q.settings_landed.entry(file).or_insert(0);
+                    *landed = (*landed).max(seq);
+                }
+                q.in_flight = None;
+            }
             self.changed.notify_all();
         }
     }
@@ -490,24 +505,30 @@ impl PersistStore {
         shared.changed.notify_all();
     }
 
-    /// Settings edits for `key` not yet on disk (in flight first, then
-    /// queued), so a reload sees what the file is about to hold.
-    pub(crate) fn queued_settings(&self, key: &Path) -> Vec<crate::settings::Edit> {
+    /// For a settings reload, under one lock: the highest job sequence
+    /// number done for `key`, and the edits not yet on disk (in flight
+    /// first, then queued), so the reload sees what the file is about to
+    /// hold. Taken *before* the file is read: an edit that lands in
+    /// between is then both in the file and in the list, and applying it
+    /// twice changes nothing.
+    pub(crate) fn settings_mark(&self, key: &Path) -> (u64, Vec<crate::settings::Edit>) {
         let q = self.inner.shared.lock();
+        let landed = q.settings_landed.get(key).copied().unwrap_or(0);
         let in_flight = q
             .in_flight
             .iter()
             .filter(|(f, _)| f == key)
             .map(|(_, op)| op);
         let queued = q.ops.iter().filter(|(f, _)| f == key).map(|(_, j)| &j.op);
-        in_flight
+        let edits = in_flight
             .chain(queued)
             .filter_map(|op| match op {
                 Op::Settings(job) => Some(job.edits.iter().cloned()),
                 _ => None,
             })
             .flatten()
-            .collect()
+            .collect();
+        (landed, edits)
     }
 
     /// Read a stored value. `Ok(None)` when nothing is stored; a file that
@@ -764,7 +785,7 @@ fn write_file(
 /// Where [`quarantine`] moves `file`: `.<name>.corrupt`, a name
 /// [`PersistStore::file_of`] never produces (it escapes a leading `.`), so
 /// no cell path reads another cell's quarantined bytes.
-fn quarantine_path(file: &Path) -> PathBuf {
+pub(crate) fn quarantine_path(file: &Path) -> PathBuf {
     let name = file
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -773,14 +794,15 @@ fn quarantine_path(file: &Path) -> PathBuf {
 }
 
 /// Move `file` aside to `.<name>.corrupt` (best effort).
-fn quarantine(file: &Path) {
+pub(crate) fn quarantine(file: &Path) {
     let _ = fs::rename(file, quarantine_path(file));
 }
 
 /// Remove temp files (`.<name>.tmp.<pid>.<n>`) a crash left between create
 /// and rename: those of processes that are gone, or older than a minute
-/// and not ours.
-fn sweep_temps(dir: &Path) {
+/// and not ours. `only`: just the temp files of that file name (a settings
+/// file's directory is the user's).
+pub(crate) fn sweep_temps(dir: &Path, only: Option<&str>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
@@ -791,9 +813,12 @@ fn sweep_temps(dir: &Path) {
         let Some(rest) = name.strip_prefix('.') else {
             continue;
         };
-        let Some((_, tail)) = rest.rsplit_once(".tmp.") else {
+        let Some((of, tail)) = rest.rsplit_once(".tmp.") else {
             continue;
         };
+        if only.is_some_and(|o| o != of) {
+            continue;
+        }
         // Exactly `<pid>.<n>`: a quarantined `.<name>.corrupt` is kept.
         let Some((pid, n)) = tail.split_once('.') else {
             continue;

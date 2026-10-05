@@ -418,7 +418,18 @@ fn a_failed_write_is_reported_in_a_later_tick() {
     let tmp = TempDir::new("late-failure");
     let blocked = tmp.0.join("blocked");
     fs::write(&blocked, b"").unwrap();
-    let store = PersistStore::new(&blocked);
+    // The IO thread waits at a gate until the second tick has returned, so
+    // the failure can only arrive after it (deterministic, whatever the
+    // scheduler does).
+    let gate = std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    let g = gate.clone();
+    let store = PersistStore::with_io_hook(&blocked, move |_| {
+        let (open, cv) = &*g;
+        let mut open = open.lock().unwrap();
+        while !*open {
+            open = cv.wait(open).unwrap();
+        }
+    });
     let rt = Runtime::new();
     let p = rt.persisted_value(&store, "osd.level", 1i64);
     rt.take_diagnostics();
@@ -428,7 +439,19 @@ fn a_failed_write_is_reported_in_a_later_tick() {
     rt.flush();
     p.signal.set(&rt, 2).unwrap();
     rt.tick(Duration::from_millis(10));
-    rt.tick(Duration::from_millis(10) + PERSIST_DEBOUNCE);
+    let t2 = rt.tick(Duration::from_millis(10) + PERSIST_DEBOUNCE);
+    assert!(
+        !t2.diagnostics
+            .iter()
+            .any(|d| matches!(d, Diagnostic::PersistFailed { .. })),
+        "the write has not run yet: {:?}",
+        t2.diagnostics
+    );
+    {
+        let (open, cv) = &*gate;
+        *open.lock().unwrap() = true;
+        cv.notify_all();
+    }
     assert!(store.sync(Duration::from_secs(5)));
     assert!(
         woke.load(std::sync::atomic::Ordering::SeqCst),

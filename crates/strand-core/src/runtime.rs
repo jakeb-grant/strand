@@ -383,6 +383,9 @@ pub(crate) struct Inner {
     pub(crate) persist_paths: RefCell<HashMap<std::path::PathBuf, crate::persist::PathSlot>>,
     /// Stores used by persisted cells (synced at shutdown).
     pub(crate) persist_stores: RefCell<Vec<crate::persist::PersistStore>>,
+    /// Live settings-file handles, by overlay path (one per store and
+    /// declared file): a write through one is adopted by the others.
+    pub(crate) settings_files: RefCell<Vec<crate::settings::Registered>>,
 }
 
 /// The reactive runtime of one logic thread.
@@ -503,6 +506,7 @@ impl Runtime {
                 persist_failures: Arc::new(crate::persist::FailSink::new(ready.clone())),
                 persist_paths: RefCell::new(HashMap::new()),
                 persist_stores: RefCell::new(Vec::new()),
+                settings_files: RefCell::new(Vec::new()),
                 ready,
             }),
         }

@@ -1009,13 +1009,69 @@ and look ignored). (4) A UI write never overwrites a file that has a
 syntax error (the user is mid-edit): `WriteFailed`, the value stays live.
 (5) `Shadowed` ("file changed but runtime overlay wins [clear]") is
 reported by a reload whose read of that field differs from the previous
-read, not at boot (no previous read). (6) At boot a syntax error or bad
-value has no last good value yet, so the default applies (a last-good
-cache would add a second store for little gain; the compiled-output cache
-covers broken `.strand` files, not settings). (7) A reload applies edits
-still queued for the IO thread and leaves a field the user wrote since the
-last write-out alone, so it never undoes a write that has not reached the
-disk.
+read, not at boot (no previous read). (6) Withdrawn in round 3: boot
+falls back to a last-good snapshot, not the defaults (see "Settings files
+(review round 3)"). (7) A reload applies edits still queued for the IO
+thread and leaves a field the user wrote since the last write-out alone,
+so it never undoes a write that has not reached the disk (round 3 made
+this hold for reads made before a write landed, too).
+
+**2026-10-05 · Settings files (review round 3).** (a) *Last good values
+survive a restart.* Principle 5 and "a TOML syntax error keeps every last
+good value" leave no room for a default-colour flash at boot, so each
+settings file has a last-good snapshot,
+`$XDG_STATE_HOME/strand/settings/last-good/<escaped declared path>.toml`
+(a subdirectory, so it cannot collide with an overlay name). Whenever a
+field's file layer changes (a good read, a deleted key, a UI write to the
+file) the changed fields are queued to it on the IO thread; at boot (and
+for fields a redeclare adds or resets) a file that has a syntax error or
+cannot be read, or a field with a bad value, takes the snapshot's value,
+and the diagnostic is still reported. A snapshot with a syntax error is
+simply replaced. (b) *Stale reads.* Every settings job has a process-wide
+sequence number; the IO thread records, per file, the highest one done.
+A read first takes a mark (that number plus the edits queued or in
+flight, under one lock) and only then reads the file, so an edit landing
+in between is applied twice, harmlessly; a field whose last edit is newer
+than the mark keeps its layer, so a read made before Strand's own write
+landed (the watcher's thread is slower than the IO thread) can never undo
+it. (c) *Reads off the logic thread.* `Settings::sources()` gives a
+`Send` `SettingsSources`; strand-watch calls `mark()`, reads the bytes
+(which it hashes anyway), then `read_from(mark, text)`, which also reads
+the overlay and probes writability, and posts the `SettingsRead` to the
+logic thread for `Settings::reload_with`. `reload` does both on the
+calling thread. Boot (`settings_file`) and `redeclare` still read on the
+logic thread: once per declaration, small files, before the first frame.
+(d) *Writability is probed on every read*, so a link swapped from
+`/nix/store` to a writable file takes writes again; when the probe goes
+from read-only to writable the once-per-file notice is re-armed. A file
+the IO thread found read-only (EACCES) while the probe says writable stays
+redirected. (e) *One file, several handles* (a component mounted per
+monitor): each `settings_file` call keeps its own signals (sharing them
+would tie them to the first owner, whose unmount would dispose them), and
+the runtime keeps a registry of live handles by overlay path (one per
+store and declared path); a write-out, `set_overlay` or `clear_overlay`
+through one is adopted by the others in the same call, without IO, unless
+a sibling declares the field with a type that does not decode it. (f)
+*`redeclare(rt, fields)`* matches fields by name and keeps their signals;
+a new default is adopted where neither file nor overlay sets the field and
+the user has not written it (the state-default rule); a field whose
+declared type (`FieldSpec::with_type`, the compiler's type name) changed
+is reset and read again under the new type, with
+`SettingsIssue::TypeChanged`; an added field is read from the file (or
+the snapshot); a removed field's cell is disposed and its key stays in the
+file. `Settings::layer(field)` reports `Overlay | File | Default` for the
+inspector. (g) *The overlay is Strand's file*: one with a syntax error is
+moved aside to `.<name>.corrupt` (reported once as `CorruptOverlay`, by
+the read that saw it or by the IO thread when a write finds it first) and
+the overlay starts empty. (h) *A missing directory* of the settings file
+is created on the first write, with the user's umask (`create_dir_all`),
+as editors do. (i) Temp files `.<name>.tmp.<pid>.<n>` a crash left next to
+the resolved target are swept when the file is declared (that file name
+only; not this process's; dead processes or older than a minute). (j)
+`show` moves the field's "shown" value only once the signal holds it, and
+a write-out to the file updates the field's last-seen value, so a reload
+from inside a derived value cannot turn a stale signal into a write, and
+Strand's own write is not reported as `Shadowed`.
 
 **2026-10-05 · Persist path hand-over (review round 2).** A second live
 cell on a persist path no longer stays inactive for good: it is kept in a

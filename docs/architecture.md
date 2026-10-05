@@ -363,8 +363,18 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   gets its writes in the overlay instead. Reports are
   `Diagnostic::Settings(SettingsNotice { file, field, issue })` with
   `SettingsIssue::{Syntax, Unreadable, BadValue, Shadowed, ReadOnly,
-  WriteFailed}`; `Shadowed` displays as `accent: file changed but runtime
-  overlay wins [clear]`.
+  WriteFailed, CorruptOverlay, TypeChanged}`; `Shadowed` displays as
+  `accent: file changed but runtime overlay wins [clear]`. Round 3 adds:
+  a last-good snapshot per file (`last_good_path()`, under
+  `settings/last-good/`) that a broken file falls back to at boot;
+  `layer(name) -> SettingsLayer::{Overlay, File, Default}` (inspector
+  provenance); `redeclare(rt, fields)` for live reload of the declaration
+  (fields matched by name keep their signals; a new default is adopted
+  only where nothing set the field; a changed `FieldSpec::with_type` type
+  resets that field; added fields are read, removed ones disposed); and
+  several handles on one declared file (one per mounted instance) adopt
+  each other's writes in the same tick. Off-thread reads: see
+  `strand-watch` below.
 
 ### `strand-compiler`
 
@@ -405,8 +415,10 @@ Public interfaces other crates and later stages build on:
   `rt.settings_file(&store, resolved_path, fields)` with one `FieldSpec`
   per field from the checked schema (the type's decode and encode over
   `toml_edit::Item`, the declared default), keep the `Settings` handle,
-  call `reload` when the watcher reports the file, and give its path to
-  the watcher. See the `strand-core` section.
+  call `reload` (or `reload_with`, see `strand-watch`) when the watcher
+  reports the file, call `redeclare` when a reload changes the
+  declaration, pass each field's type name with `FieldSpec::with_type`,
+  and give its path to the watcher. See the `strand-core` section.
 - **Identity and change detection.** AST `PartialEq` compares spans, which
   shift on every edit above a node. Reload identity and "did this handler
   change" use a span-insensitive structural hash over the texts of the
@@ -567,3 +579,17 @@ and the connection):
 
 Specified when their milestones start (M3, M1). Both only produce writes and
 events into `strand-core`.
+
+Settings files (fixed in wave 2 by `strand-core`): the watcher should not
+read a settings file twice or parse it on the logic thread. For each
+declared file it holds the `SettingsSources` from `Settings::sources()`
+(`Send`, cheap to clone). On a change event, on its own thread: `let m =
+sources.mark()` (Strand's own writes done or queued; must come *before*
+reading the bytes), read the bytes, hash them (an unchanged hash, such as
+Strand's own write, stops here), then `sources.read_from(m, Ok(text))`
+(also reads the overlay and probes writability) and post the
+`SettingsRead` to the logic thread, which calls
+`settings.reload_with(rt, read)` and only decodes. Strand's temp files next
+to a settings file are named `.<name>.tmp.<pid>.<n>` (renamed over the file:
+the watcher sees `MOVED_TO` for the file itself); its scratch-name filter
+should ignore that pattern, as it does editors' scratch names.

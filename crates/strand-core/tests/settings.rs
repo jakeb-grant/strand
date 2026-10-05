@@ -2,7 +2,9 @@
 //! rule of "Settings files" in the design: per-field checking, last good
 //! values on a syntax error, deleted keys back to their default,
 //! `toml_edit` write-back, symlink-following writes, the read-only overlay
-//! and runtime overlay > file > default.
+//! and runtime overlay > file > default; plus last good values across a
+//! restart, reads made on the watcher's thread, several handles on one
+//! file and live redeclaration.
 
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
@@ -12,8 +14,8 @@ use std::time::Duration;
 use strand_core::persist::PERSIST_DEBOUNCE;
 use strand_core::settings::toml_edit::{self, Item};
 use strand_core::{
-    Diagnostic, FieldSpec, PersistStore, Runtime, Settings, SettingsIssue, SettingsNotice,
-    SettingsStore,
+    Diagnostic, FieldSpec, PersistStore, Runtime, Settings, SettingsIssue, SettingsLayer,
+    SettingsNotice, SettingsStore,
 };
 
 /// The VM's value type, as far as these fields need it.
@@ -38,6 +40,7 @@ fn color(name: &str, default: &str) -> FieldSpec<V> {
             V::Bool(b) => toml_edit::value(*b),
         },
     )
+    .with_type("color")
 }
 
 fn flag(name: &str, default: bool) -> FieldSpec<V> {
@@ -54,6 +57,7 @@ fn flag(name: &str, default: bool) -> FieldSpec<V> {
             V::Color(c) => toml_edit::value(c.as_str()),
         },
     )
+    .with_type("bool")
 }
 
 /// `state prefs from "prefs.toml" { accent: color = #7aa2f7; compact:
@@ -619,4 +623,510 @@ fn a_target_made_read_only_later_falls_back_on_the_io_thread() {
     assert_eq!(get(&rt, &s, "compact"), V::Bool(true));
     assert_eq!(get(&rt, &s, "accent"), V::Color("#abcdef".into()));
     assert!(rt.take_diagnostics().is_empty());
+}
+
+#[test]
+fn last_good_values_survive_a_restart_with_a_broken_file() {
+    let tmp = TempDir::new("last-good");
+    let file = tmp.config("prefs.toml");
+    fs::write(&file, "accent = \"#00ff00\"\ncompact = true\n").unwrap();
+    let store = tmp.store();
+    {
+        let rt = Runtime::new();
+        let s = prefs(&rt, &store, &file);
+        rt.flush();
+        // A UI write is a last good value too.
+        write(
+            &rt,
+            &s,
+            &store,
+            "accent",
+            V::Color("#123456".into()),
+            Duration::from_millis(10),
+        );
+        assert!(s.last_good_path().starts_with(store.dir()));
+        rt.shutdown();
+    }
+    assert!(store.sync(Duration::from_secs(5)));
+    // Broken while Strand was not running: the next boot keeps every last
+    // good value instead of flashing the defaults.
+    fs::write(&file, "accent = \"#123456\"\ncompact = tru\n[oops\n").unwrap();
+    {
+        let rt = Runtime::new();
+        let s = prefs(&rt, &store, &file);
+        assert_eq!(get(&rt, &s, "accent"), V::Color("#123456".into()));
+        assert_eq!(get(&rt, &s, "compact"), V::Bool(true));
+        assert_eq!(s.layer("accent"), Some(SettingsLayer::File));
+        let d = rt.take_diagnostics();
+        assert!(
+            matches!(&issues(&d)[..], [(None, SettingsIssue::Syntax(_))]),
+            "{d:?}"
+        );
+        rt.shutdown();
+    }
+    // A bad value at boot keeps that field's last good value; the others
+    // apply (and become the new last good values).
+    fs::write(&file, "accent = 12\ncompact = false\n").unwrap();
+    {
+        let rt = Runtime::new();
+        let s = prefs(&rt, &store, &file);
+        assert_eq!(get(&rt, &s, "accent"), V::Color("#123456".into()));
+        assert_eq!(get(&rt, &s, "compact"), V::Bool(false));
+        let d = rt.take_diagnostics();
+        assert!(
+            matches!(&issues(&d)[..], [(Some(f), SettingsIssue::BadValue(_))] if f == "accent"),
+            "{d:?}"
+        );
+        rt.shutdown();
+    }
+    fs::write(&file, "[oops\n").unwrap();
+    let rt = Runtime::new();
+    let s = prefs(&rt, &store, &file);
+    assert_eq!(get(&rt, &s, "compact"), V::Bool(false));
+    // A key deleted from a good file is the default again, there too.
+    fs::write(&file, "accent = \"#123456\"\n").unwrap();
+    s.reload(&rt);
+    rt.shutdown();
+    assert!(store.sync(Duration::from_secs(5)));
+    fs::write(&file, "[oops\n").unwrap();
+    let rt = Runtime::new();
+    let s = prefs(&rt, &store, &file);
+    assert_eq!(get(&rt, &s, "accent"), V::Color("#123456".into()));
+    assert_eq!(get(&rt, &s, "compact"), V::Bool(false));
+    assert_eq!(s.layer("compact"), Some(SettingsLayer::Default));
+}
+
+#[test]
+fn a_link_swapped_to_a_writable_file_takes_writes_again() {
+    // `home-manager` at first, then the user moves to stow: the link now
+    // points at a writable file, and the next write reaches it.
+    let tmp = TempDir::new("swap-writable");
+    let nix = tmp.0.join("nix/store/abc-prefs");
+    fs::create_dir_all(&nix).unwrap();
+    let frozen = nix.join("prefs.toml");
+    fs::write(&frozen, "accent = \"#00ff00\"\n").unwrap();
+    fs::set_permissions(&frozen, fs::Permissions::from_mode(0o444)).unwrap();
+    fs::set_permissions(&nix, fs::Permissions::from_mode(0o555)).unwrap();
+    let dotfiles = tmp.0.join("dotfiles");
+    fs::create_dir_all(&dotfiles).unwrap();
+    let writable = dotfiles.join("prefs.toml");
+    fs::write(&writable, "accent = \"#00ff00\"\n").unwrap();
+    let link = tmp.config("prefs.toml");
+    symlink(&frozen, &link).unwrap();
+    let rt = Runtime::new();
+    let store = tmp.store();
+    let s = prefs(&rt, &store, &link);
+    assert!(s.is_read_only());
+    rt.flush();
+    let mut d = write(
+        &rt,
+        &s,
+        &store,
+        "compact",
+        V::Bool(true),
+        Duration::from_millis(10),
+    );
+    // The swap.
+    fs::remove_file(&link).unwrap();
+    symlink(&writable, &link).unwrap();
+    s.reload(&rt);
+    rt.flush();
+    assert!(!s.is_read_only());
+    d.extend(write(
+        &rt,
+        &s,
+        &store,
+        "accent",
+        V::Color("#abcdef".into()),
+        Duration::from_secs(1),
+    ));
+    assert_eq!(
+        fs::read_to_string(&writable).unwrap(),
+        "accent = \"#abcdef\"\n"
+    );
+    // The field written while read-only stays in the overlay, which wins.
+    assert_eq!(s.layer("compact"), Some(SettingsLayer::Overlay));
+    assert_eq!(s.layer("accent"), Some(SettingsLayer::File));
+    // And back to read-only: the notice comes again.
+    fs::remove_file(&link).unwrap();
+    symlink(&frozen, &link).unwrap();
+    s.reload(&rt);
+    assert!(s.is_read_only());
+    d.extend(write(
+        &rt,
+        &s,
+        &store,
+        "accent",
+        V::Color("#fedcba".into()),
+        Duration::from_secs(2),
+    ));
+    let notices: Vec<_> = issues(&d)
+        .into_iter()
+        .filter(|(_, i)| matches!(i, SettingsIssue::ReadOnly { .. }))
+        .collect();
+    assert_eq!(notices.len(), 2, "{d:?}");
+    assert!(
+        fs::read_to_string(s.overlay_path())
+            .unwrap()
+            .contains("#fedcba")
+    );
+}
+
+#[test]
+fn the_watcher_can_read_on_its_own_thread() {
+    let tmp = TempDir::new("off-thread");
+    let file = tmp.config("prefs.toml");
+    fs::write(&file, "accent = \"#00ff00\"\n").unwrap();
+    let rt = Runtime::new();
+    let store = tmp.store();
+    let s = prefs(&rt, &store, &file);
+    rt.flush();
+    fs::write(&file, "accent = \"#0000ff\"\ncompact = true\n").unwrap();
+    let sources = s.sources();
+    // The watcher hashes the bytes it read: it marks first, then reads,
+    // then hands both over, so the file is read once.
+    let read = std::thread::spawn(move || {
+        let mark = sources.mark();
+        let text = fs::read_to_string(sources.path());
+        sources.read_from(mark, text)
+    })
+    .join()
+    .unwrap();
+    s.reload_with(&rt, read);
+    rt.flush();
+    assert_eq!(get(&rt, &s, "accent"), V::Color("#0000ff".into()));
+    assert_eq!(get(&rt, &s, "compact"), V::Bool(true));
+    assert!(rt.take_diagnostics().is_empty());
+}
+
+#[test]
+fn a_read_from_before_a_write_landed_does_not_undo_it() {
+    // The watcher read the file, then Strand's own write was queued and
+    // reached the disk, then the stale read arrives.
+    let tmp = TempDir::new("stale-read");
+    let file = tmp.config("prefs.toml");
+    fs::write(&file, "compact = false\n").unwrap();
+    let rt = Runtime::new();
+    let store = tmp.store();
+    let s = prefs(&rt, &store, &file);
+    rt.flush();
+    s.set(&rt, "compact", V::Bool(true)).unwrap();
+    rt.tick(Duration::from_millis(10));
+    let stale = s.sources().read();
+    rt.tick(Duration::from_millis(10) + PERSIST_DEBOUNCE);
+    assert!(store.sync(Duration::from_secs(5)));
+    assert_eq!(fs::read_to_string(&file).unwrap(), "compact = true\n");
+    s.reload_with(&rt, stale);
+    rt.flush();
+    assert_eq!(get(&rt, &s, "compact"), V::Bool(true));
+    // A later write still goes out (the shown value was not reset).
+    let d = write(
+        &rt,
+        &s,
+        &store,
+        "compact",
+        V::Bool(false),
+        Duration::from_secs(1),
+    );
+    assert!(d.is_empty(), "{d:?}");
+    assert_eq!(fs::read_to_string(&file).unwrap(), "compact = false\n");
+    // A fresh read applies again.
+    fs::write(&file, "compact = true\n").unwrap();
+    s.reload(&rt);
+    rt.flush();
+    assert_eq!(get(&rt, &s, "compact"), V::Bool(true));
+}
+
+#[test]
+fn two_handles_on_one_file_see_each_others_writes() {
+    // `state prefs from "prefs.toml"` in a component mounted per monitor.
+    let tmp = TempDir::new("siblings");
+    let file = tmp.config("prefs.toml");
+    fs::write(&file, "accent = \"#00ff00\"\n").unwrap();
+    let rt = Runtime::new();
+    let store = tmp.store();
+    let (left, a) = rt.scope(|rt| prefs(rt, &store, &file));
+    let b = prefs(&rt, &store, &file);
+    rt.flush();
+    let d = write(
+        &rt,
+        &a,
+        &store,
+        "accent",
+        V::Color("#123456".into()),
+        Duration::from_millis(10),
+    );
+    assert!(d.is_empty(), "{d:?}");
+    // No reload: b took a's write when it was queued.
+    assert_eq!(get(&rt, &b, "accent"), V::Color("#123456".into()));
+    assert_eq!(fs::read_to_string(&file).unwrap(), "accent = \"#123456\"\n");
+    b.set_overlay(&rt, "compact", V::Bool(true)).unwrap();
+    rt.flush();
+    assert_eq!(get(&rt, &a, "compact"), V::Bool(true));
+    assert_eq!(a.layer("compact"), Some(SettingsLayer::Overlay));
+    b.clear_overlay(&rt, "compact").unwrap();
+    rt.flush();
+    assert_eq!(get(&rt, &a, "compact"), V::Bool(false));
+    // A handle that went away is not told anything.
+    left.dispose(&rt);
+    let d = write(
+        &rt,
+        &b,
+        &store,
+        "accent",
+        V::Color("#654321".into()),
+        Duration::from_secs(1),
+    );
+    assert!(d.is_empty(), "{d:?}");
+    assert_eq!(get(&rt, &b, "accent"), V::Color("#654321".into()));
+}
+
+#[test]
+fn a_corrupt_overlay_is_moved_aside_and_writes_go_on() {
+    let tmp = TempDir::new("corrupt-overlay");
+    let file = tmp.config("prefs.toml");
+    fs::write(&file, "accent = \"#00ff00\"\n").unwrap();
+    let rt = Runtime::new();
+    let store = tmp.store();
+    let s = prefs(&rt, &store, &file);
+    s.set_overlay(&rt, "accent", V::Color("#ff00ff".into()))
+        .unwrap();
+    rt.flush();
+    assert!(store.sync(Duration::from_secs(5)));
+    let overlay = s.overlay_path().to_path_buf();
+    let corrupt = overlay.with_file_name(format!(
+        ".{}.corrupt",
+        overlay.file_name().unwrap().to_string_lossy()
+    ));
+    // Broken by a crash or a hand edit; the reload reports it once and
+    // goes on from an empty overlay.
+    fs::write(&overlay, "accent = \"#ff00ff\n").unwrap();
+    s.reload(&rt);
+    let d = rt.flush().diagnostics;
+    assert!(
+        matches!(&issues(&d)[..], [(None, SettingsIssue::CorruptOverlay { moved_to, .. })] if *moved_to == corrupt),
+        "{d:?}"
+    );
+    assert_eq!(get(&rt, &s, "accent"), V::Color("#00ff00".into()));
+    s.clear_overlay(&rt, "accent").unwrap();
+    s.set_overlay(&rt, "compact", V::Bool(true)).unwrap();
+    let mut d = write(
+        &rt,
+        &s,
+        &store,
+        "accent",
+        V::Color("#111111".into()),
+        Duration::from_millis(10),
+    );
+    assert!(d.is_empty(), "{d:?}");
+    assert_eq!(fs::read_to_string(&overlay).unwrap(), "compact = true\n");
+    assert!(fs::read_to_string(&file).unwrap().contains("#111111"));
+    assert!(corrupt.exists());
+    // Broken again with no read in between: the write moves it aside and
+    // says so.
+    fs::write(&overlay, "[oops\n").unwrap();
+    s.set_overlay(&rt, "compact", V::Bool(false)).unwrap();
+    assert!(store.sync(Duration::from_secs(5)));
+    d = rt.flush().diagnostics;
+    assert!(
+        matches!(
+            &issues(&d)[..],
+            [(None, SettingsIssue::CorruptOverlay { .. })]
+        ),
+        "{d:?}"
+    );
+    assert_eq!(fs::read_to_string(&overlay).unwrap(), "compact = false\n");
+}
+
+#[test]
+fn a_reload_that_cannot_write_leaves_the_field_to_the_next_one() {
+    // A reload from inside a derived value cannot set the signal; the
+    // stale signal must not be taken for a user write and saved over the
+    // external edit.
+    let tmp = TempDir::new("stale-show");
+    let file = tmp.config("prefs.toml");
+    fs::write(&file, "compact = false\n").unwrap();
+    let rt = Runtime::new();
+    let store = tmp.store();
+    let s = prefs(&rt, &store, &file);
+    rt.flush();
+    fs::write(&file, "compact = true\n").unwrap();
+    let inside = s.clone();
+    let m = rt.memo(move |rt| {
+        inside.reload(rt);
+        Ok(0)
+    });
+    m.get(&rt).unwrap();
+    s.write_out(&rt);
+    assert!(store.sync(Duration::from_secs(5)));
+    assert_eq!(fs::read_to_string(&file).unwrap(), "compact = true\n");
+    s.reload(&rt);
+    rt.flush();
+    assert_eq!(get(&rt, &s, "compact"), V::Bool(true));
+}
+
+#[test]
+fn strands_own_file_write_is_not_reported_as_shadowed() {
+    let tmp = TempDir::new("own-write");
+    let file = tmp.config("prefs.toml");
+    fs::write(&file, "compact = false\n").unwrap();
+    let rt = Runtime::new();
+    let store = tmp.store();
+    let s = prefs(&rt, &store, &file);
+    rt.flush();
+    s.set(&rt, "compact", V::Bool(true)).unwrap();
+    s.write_out(&rt);
+    s.set_overlay(&rt, "compact", V::Bool(false)).unwrap();
+    assert!(store.sync(Duration::from_secs(5)));
+    s.reload(&rt);
+    let d = rt.flush().diagnostics;
+    assert!(d.is_empty(), "{d:?}");
+    assert_eq!(get(&rt, &s, "compact"), V::Bool(false));
+}
+
+#[test]
+fn a_missing_directory_is_created_for_the_first_write() {
+    let tmp = TempDir::new("missing-dir");
+    let file = tmp.config("strand/settings/prefs.toml");
+    let rt = Runtime::new();
+    let store = tmp.store();
+    let s = prefs(&rt, &store, &file);
+    rt.flush();
+    let d = write(
+        &rt,
+        &s,
+        &store,
+        "compact",
+        V::Bool(true),
+        Duration::from_millis(10),
+    );
+    assert!(d.is_empty(), "{d:?}");
+    assert_eq!(fs::read_to_string(&file).unwrap(), "compact = true\n");
+}
+
+#[test]
+fn temp_files_a_crash_left_next_to_the_file_are_swept() {
+    let tmp = TempDir::new("sweep");
+    let file = tmp.config("prefs.toml");
+    fs::write(&file, "").unwrap();
+    // A process that is gone left one of ours, and one of another file.
+    let dead = 999_999_999u32;
+    let ours = tmp.config(&format!(".prefs.toml.tmp.{dead}.0"));
+    let other = tmp.config(&format!(".other.toml.tmp.{dead}.0"));
+    let live = tmp.config(&format!(".prefs.toml.tmp.{}.7", std::process::id()));
+    for f in [&ours, &other, &live] {
+        fs::write(f, "x").unwrap();
+    }
+    let rt = Runtime::new();
+    let _s = prefs(&rt, &tmp.store(), &file);
+    assert!(!ours.exists());
+    assert!(other.exists(), "only this file's temp files");
+    assert!(live.exists(), "never this process's own");
+}
+
+#[test]
+fn redeclare_keeps_cells_by_name_and_resets_a_changed_type() {
+    let tmp = TempDir::new("redeclare");
+    let file = tmp.config("prefs.toml");
+    fs::write(&file, "accent = \"#00ff00\"\ndense = true\n").unwrap();
+    let rt = Runtime::new();
+    let store = tmp.store();
+    let s = prefs(&rt, &store, &file);
+    rt.flush();
+    let accent = s.signal("accent").unwrap();
+    let compact = s.signal("compact").unwrap();
+    assert_eq!(s.layer("accent"), Some(SettingsLayer::File));
+    assert_eq!(s.layer("compact"), Some(SettingsLayer::Default));
+    // A new default for a field nothing set is adopted.
+    s.redeclare(&rt, vec![color("accent", "#7aa2f7"), flag("compact", true)]);
+    rt.flush();
+    assert_eq!(get(&rt, &s, "compact"), V::Bool(true));
+    assert_eq!(s.signal("compact"), Some(compact), "same cell");
+    // A field the user wrote keeps its value over a new default.
+    s.set(&rt, "compact", V::Bool(false)).unwrap();
+    s.redeclare(&rt, vec![color("accent", "#000000"), flag("compact", true)]);
+    rt.flush();
+    assert_eq!(get(&rt, &s, "compact"), V::Bool(false));
+    assert_eq!(
+        get(&rt, &s, "accent"),
+        V::Color("#00ff00".into()),
+        "the file still wins"
+    );
+    assert!(rt.take_diagnostics().is_empty());
+    // A type change resets that field only; a new field is read from the
+    // file; a removed one is gone.
+    s.redeclare(
+        &rt,
+        vec![
+            flag("accent", false),
+            flag("compact", true),
+            flag("dense", false),
+        ],
+    );
+    let d = rt.flush().diagnostics;
+    assert_eq!(s.signal("accent"), Some(accent), "same cell");
+    assert_eq!(get(&rt, &s, "accent"), V::Bool(false));
+    assert_eq!(get(&rt, &s, "dense"), V::Bool(true));
+    assert_eq!(get(&rt, &s, "compact"), V::Bool(false), "kept");
+    let found = issues(&d);
+    assert!(
+        found.iter().any(|(f, i)| f.as_deref() == Some("accent")
+            && matches!(i, SettingsIssue::TypeChanged { from, to } if &**from == "color" && &**to == "bool")),
+        "{d:?}"
+    );
+    s.redeclare(&rt, vec![flag("compact", true), flag("dense", false)]);
+    assert!(s.signal("accent").is_none());
+    assert!(
+        accent.get(&rt).is_err(),
+        "the removed field's cell is disposed"
+    );
+    // The saver tracks the field list as it is now.
+    let d = write(
+        &rt,
+        &s,
+        &store,
+        "dense",
+        V::Bool(false),
+        Duration::from_secs(1),
+    );
+    assert!(d.is_empty(), "{d:?}");
+    let text = fs::read_to_string(&file).unwrap();
+    assert!(text.contains("dense = false"), "{text}");
+    assert!(text.contains("compact = false"), "{text}");
+    assert!(text.contains("accent = \"#00ff00\""), "{text}");
+}
+
+#[test]
+fn redeclare_keeps_a_live_value_the_broken_file_could_not_take() {
+    let tmp = TempDir::new("redeclare-broken");
+    let file = tmp.config("prefs.toml");
+    fs::write(&file, "compact = false\n").unwrap();
+    let rt = Runtime::new();
+    let store = tmp.store();
+    let s = prefs(&rt, &store, &file);
+    rt.flush();
+    fs::write(&file, "compact = false\n[oops\n").unwrap();
+    let d = write(
+        &rt,
+        &s,
+        &store,
+        "compact",
+        V::Bool(true),
+        Duration::from_millis(10),
+    );
+    assert!(
+        matches!(&issues(&d)[..], [(None, SettingsIssue::WriteFailed(_))]),
+        "{d:?}"
+    );
+    s.redeclare(
+        &rt,
+        vec![
+            color("accent", "#7aa2f7"),
+            flag("compact", false),
+            flag("dense", true),
+        ],
+    );
+    rt.flush();
+    assert_eq!(get(&rt, &s, "compact"), V::Bool(true));
+    assert_eq!(get(&rt, &s, "dense"), V::Bool(true));
 }
