@@ -1,0 +1,5 @@
+// expect: check::needs_type
+// An untyped parameter takes its type from its callers; when they pass
+// different types, it is one error at the parameter naming both.
+component Badge(v) { text "badge" }
+bar Top { Badge 1; Badge "x" }

@@ -39,6 +39,17 @@ use crate::syntax::Span;
 use crate::syntax::ast;
 use crate::ty::{Ty, TypeTable};
 
+/// Runs `f`, first moving to a fresh heap-allocated stack segment if
+/// little of the current one is left. Every lazily checked entry point
+/// (declarations, token entries, component bodies) goes through here, so
+/// how deep a chain of definitions nests is bounded by memory, not by the
+/// calling thread's stack.
+pub(crate) fn grow<T>(f: impl FnOnce() -> T) -> T {
+    const RED_ZONE: usize = 256 * 1024;
+    const SEGMENT: usize = 4 * 1024 * 1024;
+    stacker::maybe_grow(RED_ZONE, SEGMENT, f)
+}
+
 /// One file of the program.
 #[derive(Clone, Copy, Debug)]
 pub struct Module<'a> {
@@ -64,10 +75,29 @@ impl Checked {
 
 /// Resolves names and checks types across every file of a config.
 pub fn check<'a>(modules: &'a [Module<'a>], schema: &'a Schema) -> Checked {
-    let mut c = Checker::new(modules, schema);
-    c.run();
-    c.finish()
+    // An untyped `state`/`let` holding a whole number (`state i = 0`) is
+    // an `int` until a fraction is written to it (`i = 0.5`, `i += t`, a
+    // slider's `value: <-> i`); then it is a `float` and the program is
+    // checked again with it pinned. Each pass pins at least one more
+    // declaration, so this ends; the cap only bounds pathological chains
+    // (the last pass's diagnostics stand).
+    let mut pins: HashSet<(FileId, Span)> = HashSet::new();
+    let mut passes = 0;
+    loop {
+        let mut c = Checker::new(modules, schema);
+        c.float_pins = pins.clone();
+        c.run();
+        passes += 1;
+        let before = pins.len();
+        pins.extend(c.widened.iter().copied());
+        if pins.len() == before || passes >= MAX_WIDENING_PASSES {
+            return c.finish();
+        }
+    }
 }
+
+/// See [`check`].
+const MAX_WIDENING_PASSES: usize = 8;
 
 /// Tree keywords, offered when an unknown element looks like one
 /// (`whn hover { … }` → `when`).
@@ -95,6 +125,10 @@ pub(crate) const TOP_KEYWORDS: &[&str] = &[
     "permit",
     "keyframes",
 ];
+
+/// Unknown names per file that get a did-you-mean; see
+/// [`Checker::may_suggest`].
+pub(crate) const SUGGESTIONS_PER_FILE: u32 = 200;
 
 /// The node booleans every element has.
 pub(crate) const NODE_BOOLS: &[&str] = &["hover", "pressed", "focused", "selected"];
@@ -174,6 +208,24 @@ pub(crate) struct CompParam {
     pub name: String,
     pub ty: Ty,
     pub has_default: bool,
+    /// Written with neither a type nor a default (`Toast(n)`): its type
+    /// is joined from the arguments at its call sites.
+    pub infer: bool,
+}
+
+/// An argument passed to a parameter whose type is inferred: where, and
+/// its type.
+pub(crate) type PassedArg = (FileId, Span, Ty);
+
+/// A component whose body waits for its call sites (it has a parameter
+/// to infer).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Deferred<'a> {
+    pub module: usize,
+    /// Where its item goes among the file's items.
+    pub index: usize,
+    pub def: DefId,
+    pub ast: &'a ast::Component,
 }
 
 pub(crate) struct Checker<'a> {
@@ -227,6 +279,26 @@ pub(crate) struct Checker<'a> {
     pub comp_tokens: HashMap<DefId, Vec<usize>>,
     /// Parameters of fns whose return type comes from their body.
     pub fn_params: HashMap<DefId, Vec<crate::ty::ParamSig>>,
+    /// Argument types at the call sites of parameters to infer, with
+    /// where each was passed.
+    pub param_args: HashMap<(DefId, usize), Vec<PassedArg>>,
+    /// Inferred parameters whose callers disagree (already reported).
+    pub infer_failed: HashSet<(DefId, usize)>,
+    pub deferred: Vec<Deferred<'a>>,
+    /// Did-you-mean suggestions each file may still compute.
+    pub suggestions_left: Vec<u32>,
+    /// The name being checked is the base of `name.field`.
+    pub field_base: bool,
+    /// `let`s whose value reads nothing that changes (`let c = 1`).
+    pub constant_lets: HashSet<DefId>,
+    /// Untyped `state`s and `let`s initialised with a whole number, typed
+    /// `int` this pass (see [`check`]).
+    pub whole: HashSet<DefId>,
+    /// Of those, the ones a fraction was written to this pass.
+    pub widened: HashSet<(FileId, Span)>,
+    /// Whole-number declarations earlier passes found fractions written
+    /// to: typed `float`.
+    pub float_pins: HashSet<(FileId, Span)>,
 }
 
 impl<'a> Checker<'a> {
@@ -265,6 +337,15 @@ impl<'a> Checker<'a> {
             calls: Vec::new(),
             comp_tokens: HashMap::new(),
             fn_params: HashMap::new(),
+            param_args: HashMap::new(),
+            infer_failed: HashSet::new(),
+            deferred: Vec::new(),
+            suggestions_left: vec![SUGGESTIONS_PER_FILE; modules.len()],
+            field_base: false,
+            constant_lets: HashSet::new(),
+            whole: HashSet::new(),
+            widened: HashSet::new(),
+            float_pins: HashSet::new(),
         }
     }
 
@@ -281,6 +362,7 @@ impl<'a> Checker<'a> {
                 items,
             });
         }
+        self.deferred_components(&mut files);
         self.after(&files);
         self.out_files = files;
     }
@@ -450,7 +532,16 @@ impl<'a> Checker<'a> {
     }
 
     /// Checks a pending declaration now.
+    ///
+    /// A chain of declarations (`let a0 = a1 + 1`, `let a1 = a2 + 1`, …)
+    /// is checked as nested first uses, one set of expression frames per
+    /// link, so the stack grows onto the heap here: a long chain must not
+    /// overflow a worker thread's stack (the LSP's, the reload compile's).
     pub fn force(&mut self, id: DefId) {
+        grow(|| self.force_now(id));
+    }
+
+    fn force_now(&mut self, id: DefId) {
         let LazyState::Pending(p) =
             std::mem::replace(&mut self.lazy[id.0 as usize], LazyState::Checking)
         else {
@@ -506,29 +597,125 @@ impl<'a> Checker<'a> {
         .help = Some(help);
     }
 
-    /// Names for did-you-mean at a value position.
-    pub fn value_candidates(&self) -> Vec<String> {
-        let mut out: Vec<String> = Vec::new();
+    /// Names for did-you-mean at a value position, borrowed (an unknown
+    /// name must not copy every name in scope). File stems only when the
+    /// name is read as `name.field` (`thme.look`).
+    pub fn value_candidates(&self, field_base: bool) -> Vec<&str> {
+        let mut out: Vec<&str> = Vec::new();
         for s in &self.scopes {
-            out.extend(s.iter().map(|(n, _)| n.clone()));
+            out.extend(s.iter().map(|(n, _)| n.as_str()));
         }
         if !self.nodes.is_empty() {
-            out.extend(NODE_BOOLS.iter().map(|s| s.to_string()));
-            out.push("self".into());
+            out.extend(NODE_BOOLS.iter().copied());
+            out.push("self");
         }
-        out.extend(self.file_scopes[self.module].keys().cloned());
+        out.extend(self.file_scopes[self.module].keys().map(String::as_str));
         for (n, d) in &self.globals {
             if matches!(
                 self.defs[d.0 as usize].kind,
                 DefKind::Fn | DefKind::Tokens | DefKind::Service(_) | DefKind::Enum(_)
             ) {
-                out.push(n.clone());
+                out.push(n);
             }
         }
-        out.extend(self.schema.services.keys().cloned());
-        out.extend(self.schema.values.keys().cloned());
-        out.extend(self.file_index.keys().cloned());
+        out.extend(self.schema.services.keys().map(String::as_str));
+        out.extend(self.schema.values.keys().map(String::as_str));
+        if field_base {
+            out.extend(self.file_index.keys().map(String::as_str));
+        }
         out
+    }
+
+    /// The expected type for the value of an untyped `state`/`let`: `int`
+    /// for a whole-number literal (see [`check`]), unless an earlier pass
+    /// pinned it to `float`.
+    pub fn whole_hint(&mut self, id: DefId, value: &ast::Expr) -> Option<Ty> {
+        fn whole(e: &ast::Expr) -> bool {
+            match &e.kind {
+                ast::ExprKind::Number(n) => !n.fraction && n.unit.is_none(),
+                ast::ExprKind::Paren(inner) => whole(inner),
+                ast::ExprKind::Unary {
+                    op: ast::UnaryOp::Neg,
+                    expr,
+                } => whole(expr),
+                _ => false,
+            }
+        }
+        let def = &self.defs[id.0 as usize];
+        if !whole(value) || self.float_pins.contains(&(def.file, def.span)) {
+            return None;
+        }
+        self.whole.insert(id);
+        Some(Ty::INT)
+    }
+
+    /// Writes a value of type `from` into `target`: if `target` is a
+    /// whole-number declaration and `from` is fractional, records it for
+    /// the next pass and returns true (the write is not an error).
+    pub fn widen(&mut self, target: &hir::Expr, from: &Ty) -> bool {
+        let hir::ExprKind::Def(d) = target.kind else {
+            return false;
+        };
+        if !self.whole.contains(&d)
+            || self.types.assignable(from, &Ty::INT)
+            || !self.types.assignable(from, &Ty::FLOAT)
+        {
+            return false;
+        }
+        let def = &self.defs[d.0 as usize];
+        self.widened.insert((def.file, def.span));
+        true
+    }
+
+    /// Whether a bare `name` resolves to anything at a value position
+    /// (ignoring enum variants, which need an expected type).
+    pub fn names_something(&self, name: &str) -> bool {
+        self.lookup_scope(name).is_some()
+            || NODE_BOOLS.contains(&name)
+            || name == "self"
+            || self.file_scopes[self.module].contains_key(name)
+            || self.globals.contains_key(name)
+            || self.schema.services.contains_key(name)
+            || self.schema.values.contains_key(name)
+            || self.file_index.contains_key(name)
+    }
+
+    /// Whether an unknown name in the current file may still compute a
+    /// suggestion: each costs a pass over every name in scope, so a file
+    /// full of broken names (a large paste) stops suggesting after
+    /// [`SUGGESTIONS_PER_FILE`].
+    pub fn may_suggest(&mut self) -> bool {
+        let left = &mut self.suggestions_left[self.module];
+        if *left == 0 {
+            return false;
+        }
+        *left -= 1;
+        true
+    }
+
+    /// `file.name` for an unknown bare name another file exports
+    /// (`dnd` → `toasts.dnd`), exact matches first.
+    pub fn export_suggestion(&self, word: &str) -> Option<String> {
+        let mut exports: Vec<(&str, &str)> = Vec::new();
+        for (m, scope) in self.file_scopes.iter().enumerate() {
+            if m == self.module {
+                continue;
+            }
+            for (n, d) in scope {
+                if self.defs[d.0 as usize].exported {
+                    exports.push((self.modules[m].name, n.as_str()));
+                }
+            }
+        }
+        exports.sort_unstable();
+        let (file, name) = match exports.iter().find(|(_, n)| *n == word) {
+            Some(&hit) => hit,
+            None => {
+                let name = suggest(word, exports.iter().map(|(_, n)| *n))?;
+                *exports.iter().find(|(_, n)| *n == name)?
+            }
+        };
+        Some(format!("did you mean `{file}.{name}`?"))
     }
 
     pub fn did_you_mean(word: &str, candidates: &[String]) -> Option<String> {

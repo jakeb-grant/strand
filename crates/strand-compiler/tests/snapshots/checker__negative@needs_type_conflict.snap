@@ -1,0 +1,18 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::needs_type
+
+  × parameter `v` of `Badge` is passed `float` and `text`
+   ╭─[needs_type_conflict.strand:4:17]
+ 3 │ // different types, it is one error at the parameter naming both.
+ 4 │ component Badge(v) { text "badge" }
+   ·                 ┬
+   ·                 ╰── its type comes from its callers, which disagree
+ 5 │ bar Top { Badge 1; Badge "x" }
+   ·                 ┬        ─┬─
+   ·                 │         ╰── `text` here
+   ·                 ╰── `float` here
+   ╰────
+  help: write the type it takes (`v: T`), or pass the same type everywhere

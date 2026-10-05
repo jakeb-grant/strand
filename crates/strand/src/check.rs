@@ -39,22 +39,72 @@ pub fn default_dir(xdg_config_home: Option<OsString>, home: Option<OsString>) ->
     .map(|base| base.join("strand"))
 }
 
-/// Checks every `.strand` file under `dir` (or `dir` itself, if it is a
-/// file) as one config and renders what it found. Which files count is
-/// [`strand_compiler::source::find_files`], the same rule the loader and
-/// watcher use.
+/// Checks every `.strand` file under `dir` as one config and renders what
+/// it found. Which files count is [`strand_compiler::source::find_files`],
+/// the same rule the loader and watcher use. If `dir` is a file, see
+/// [`check_file`] (with the default config directory from the
+/// environment).
 pub fn check_dir(dir: &Path, style: Style) -> Result<Report, String> {
+    if dir.is_file() {
+        let root = default_dir(
+            std::env::var_os("XDG_CONFIG_HOME"),
+            std::env::var_os("HOME"),
+        );
+        return check_file(dir, root.as_deref(), style);
+    }
+    check_config(dir, None, style)
+}
+
+/// Checks one file as part of its config, so its references to other
+/// files resolve: the config is `default_root` if the file is inside it,
+/// else the file's directory. Every file of that config is compiled, and
+/// only the diagnostics in `file` are reported. A file the config's
+/// module set does not include (hidden, or too deep) is checked alone.
+pub fn check_file(
+    file: &Path,
+    default_root: Option<&Path>,
+    style: Style,
+) -> Result<Report, String> {
+    let canonical = std::fs::canonicalize(file)
+        .map_err(|e| format!("strand check: cannot read {}: {e}", file.display()))?;
+    let inside_default = default_root
+        .and_then(|r| std::fs::canonicalize(r).ok())
+        .filter(|r| canonical.starts_with(r));
+    let root = match inside_default {
+        Some(r) => r,
+        None => canonical
+            .parent()
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf),
+    };
+    let in_set = find_files(&root).is_ok_and(|found| {
+        found
+            .files
+            .iter()
+            .any(|f| std::fs::canonicalize(f).is_ok_and(|f| f == canonical))
+    });
+    if in_set {
+        check_config(&root, Some(&canonical), style)
+    } else {
+        check_config(file, None, style)
+    }
+}
+
+/// Checks the config at `dir`; with `focus`, reports only the diagnostics
+/// in that file (a canonical path).
+fn check_config(dir: &Path, focus: Option<&Path>, style: Style) -> Result<Report, String> {
     let found =
         find_files(dir).map_err(|e| format!("strand check: cannot read {}: {e}", dir.display()))?;
     let mut report = Report {
         files: found.files.len(),
         ..Report::default()
     };
-    for (path, e) in &found.errors {
+    // Problems elsewhere in the config are not this file's.
+    let whole = focus.is_none();
+    for (path, e) in found.errors.iter().filter(|_| whole) {
         report.errors += 1;
         let _ = writeln!(report.text, "error: cannot read {}: {e}\n", path.display());
     }
-    for path in &found.too_deep {
+    for path in found.too_deep.iter().filter(|_| whole) {
         report.warnings += 1;
         let _ = writeln!(
             report.text,
@@ -71,6 +121,7 @@ pub fn check_dir(dir: &Path, style: Style) -> Result<Report, String> {
         ));
     }
     let mut map = SourceMap::new();
+    let mut focus_id = None;
     for path in &found.files {
         let name = path.display().to_string();
         let src = match std::fs::read(path).map(String::from_utf8) {
@@ -86,9 +137,15 @@ pub fn check_dir(dir: &Path, style: Style) -> Result<Report, String> {
                 continue;
             }
         };
-        map.add(name, src);
+        let id = map.add(name, src);
+        if focus.is_some_and(|f| std::fs::canonicalize(path).is_ok_and(|p| p == f)) {
+            focus_id = Some(id);
+        }
     }
-    let diags = strand_compiler::compile(&map).diagnostics;
+    let mut diags = strand_compiler::compile(&map).diagnostics;
+    if focus.is_some() {
+        diags.retain(|d| Some(d.file()) == focus_id);
+    }
     for d in &diags {
         if d.is_error() {
             report.errors += 1;
@@ -98,21 +155,34 @@ pub fn check_dir(dir: &Path, style: Style) -> Result<Report, String> {
     }
     report.text.push_str(&render(&diags, &map, style));
     let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
-    let _ = writeln!(
-        report.text,
-        "strand check: {} in {}: {}, {}",
-        plural(report.files, "file"),
-        dir.display(),
-        plural(report.errors, "error"),
-        plural(report.warnings, "warning"),
-    );
+    let _ = match focus {
+        Some(f) => writeln!(
+            report.text,
+            "strand check: {} (checked with the {} in {}): {}, {}",
+            f.display(),
+            plural(report.files, "file"),
+            dir.display(),
+            plural(report.errors, "error"),
+            plural(report.warnings, "warning"),
+        ),
+        None => writeln!(
+            report.text,
+            "strand check: {} in {}: {}, {}",
+            plural(report.files, "file"),
+            dir.display(),
+            plural(report.errors, "error"),
+            plural(report.warnings, "warning"),
+        ),
+    };
     Ok(report)
 }
 
 const USAGE: &str = "usage: strand check [dir | file]\n\n\
     Parses and type-checks every .strand file under the directory (default \
     $XDG_CONFIG_HOME/strand) as one config and prints diagnostics; exits \
-    non-zero on errors.\n";
+    non-zero on errors. Given a file, checks it with the rest of its config \
+    (the default directory if the file is in it, else the file's directory) \
+    and prints the diagnostics in that file.\n";
 
 /// Runs `strand check` with its arguments (after `check`). Returns the text
 /// for stderr and whether the check passed.
@@ -291,6 +361,51 @@ mod tests {
         assert_eq!(report.files, 1);
         assert!(!report.ok());
         assert!(report.text.contains("one.strand:1:"), "{}", report.text);
+    }
+
+    /// A file is checked with the rest of its config: names other files
+    /// declare resolve, and only its own diagnostics are reported.
+    #[test]
+    fn a_file_is_checked_with_its_config() {
+        let t = TempDir::new();
+        t.write(
+            "theme.strand",
+            "enum Look { light, dark }\nexport state look = light\ncomponent Dot { box {} }\nlet unused = nope\n",
+        );
+        t.write(
+            "bar.strand",
+            "bar Top {\n  text theme.look == dark ? \"d\" : \"l\"\n  Dot\n}\n",
+        );
+        // No default root: the file's directory is its config.
+        let report = check_file(&t.0.join("bar.strand"), None, Style::Plain).unwrap();
+        assert_eq!(report.errors, 0, "{}", report.text);
+        assert_eq!(report.files, 2, "{}", report.text);
+        assert!(
+            report.text.contains("bar.strand (checked with the 2 files"),
+            "{}",
+            report.text
+        );
+        // theme.strand's own error is reported when it is the file asked for.
+        let report = check_file(&t.0.join("theme.strand"), None, Style::Plain).unwrap();
+        assert_eq!(report.errors, 1, "{}", report.text);
+        assert!(
+            report.text.contains("unknown name `nope`"),
+            "{}",
+            report.text
+        );
+        // Inside the default config directory, the whole of it counts.
+        t.write("widgets/use.strand", "bar Side { Dot }\n");
+        let report = check_file(&t.0.join("widgets/use.strand"), Some(&t.0), Style::Plain).unwrap();
+        assert_eq!(report.errors, 0, "{}", report.text);
+        assert_eq!(report.files, 3, "{}", report.text);
+        // Outside it, only its own directory.
+        let report = check_file(&t.0.join("widgets/use.strand"), None, Style::Plain).unwrap();
+        assert_eq!(report.errors, 1, "{}", report.text);
+        assert!(
+            report.text.contains("unknown element `Dot`"),
+            "{}",
+            report.text
+        );
     }
 
     #[test]

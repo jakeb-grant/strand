@@ -88,9 +88,16 @@ impl<'a> Checker<'a> {
                 .as_ref()
                 .and_then(|s| s.params.get(i))
                 .map_or(Ty::Error, |p| p.ty.clone());
-            let local = self.bind_local(&p.name.name, ty, p.name.span, LocalKind::Param);
+            let local = self.bind_local(&p.name.name, ty.clone(), p.name.span, LocalKind::Param);
             self.add_ref(p.name.span, Target::Local(local));
-            if p.ty.is_none() && p.default.is_none() {
+            // No type, no default and nothing inferred from callers (none
+            // call it): an error where it is read. Callers that disagree
+            // were reported at the parameter.
+            if p.ty.is_none()
+                && p.default.is_none()
+                && ty.is_error()
+                && !self.infer_failed.contains(&(id, i))
+            {
                 self.untyped.insert(local);
             }
             params.push(hir::Param {
@@ -102,6 +109,25 @@ impl<'a> Checker<'a> {
             Some(entries) => self.token_defs(&entries),
             None => Vec::new(),
         };
+        // A parameter and a body-level `state`/`let` share one block.
+        for item in &c.body.items {
+            let name = match &item.kind {
+                ItemKind::State(s) => &s.name,
+                ItemKind::Let(l) => &l.name,
+                _ => continue,
+            };
+            if let Some(p) = c.params.iter().flatten().find(|p| p.name.name == name.name) {
+                let file = self.file();
+                self.error(
+                    "check::redeclared",
+                    format!("`{}` is declared twice", name.name),
+                    name.span,
+                    "declared again here",
+                )
+                .add_secondary(file, p.name.span, "a parameter of the component")
+                .help = Some("rename one of them".into());
+            }
+        }
         self.collect_ids(&c.body.items);
         let (_, body) = self.tree_items(&c.body.items, Place::Component);
         self.pop_scope(); // ids
@@ -625,9 +651,18 @@ impl<'a> Checker<'a> {
             let suggestion = match &elem {
                 Ty::Record(r) => {
                     let rec = self.types.record(*r);
-                    ["id", "name", "key"]
+                    // An id-like field, else the first text or int one
+                    // (`key p.app`): keying by a whole record is rarely
+                    // what identifies it.
+                    ["id", "key", "name", "app"]
                         .into_iter()
                         .find(|n| rec.field(n).is_some())
+                        .or_else(|| {
+                            rec.fields
+                                .iter()
+                                .find(|f| f.ty == Ty::TEXT || f.ty == Ty::INT)
+                                .map(|f| f.name.as_str())
+                        })
                         .map_or_else(|| b.clone(), |n| format!("{b}.{n}"))
                 }
                 _ => b.clone(),
@@ -763,6 +798,9 @@ impl<'a> Checker<'a> {
         self.ctx.prop = false;
         let arg = match &el.arg {
             None | Some(ast::HeadArg::Named(..)) => None,
+            // `bar X { … }` misplaced in a tree: `X` is the surface's
+            // name, already part of the one error.
+            Some(ast::HeadArg::Positional(_)) if schema.flags.surface => None,
             Some(ast::HeadArg::Positional(e)) => {
                 let want = if kind == "page" {
                     self.pages_current.last().cloned().or(Some(Ty::Any))
@@ -929,7 +967,11 @@ impl<'a> Checker<'a> {
                 Some(p) => {
                     filled[0] = true;
                     let ty = p.ty.clone();
-                    Some(self.prop_value(e, &ty, &format!("`{}` of `{kind}`", p.name)))
+                    let h = self.prop_value(e, &ty, &format!("`{}` of `{kind}`", p.name));
+                    if p.infer {
+                        self.passed(d, 0, &h);
+                    }
+                    Some(h)
                 }
                 None => {
                     self.error(
@@ -993,6 +1035,16 @@ impl<'a> Checker<'a> {
         })
     }
 
+    /// Records an argument for a parameter whose type comes from its
+    /// call sites.
+    fn passed(&mut self, comp: DefId, i: usize, h: &hir::Expr) {
+        let file = self.file();
+        self.param_args
+            .entry((comp, i))
+            .or_default()
+            .push((file, h.span, h.ty.clone()));
+    }
+
     /// A prop in a component call: one of its parameters.
     fn call_prop(&mut self, p: PropRef<'a>, _span: Span) -> Option<hir::Prop> {
         let call = self.calls.last()?.clone();
@@ -1028,6 +1080,9 @@ impl<'a> Checker<'a> {
                 }
                 let ty = sig.params[i].ty.clone();
                 let value = self.prop_value(p.value, &ty, &format!("`{name}` of `{}`", call.name));
+                if sig.params[i].infer {
+                    self.passed(call.def, i, &value);
+                }
                 Some(hir::Prop {
                     name: name.to_string(),
                     span: p.name.span,
@@ -1081,16 +1136,23 @@ impl<'a> Checker<'a> {
                 Some(ps) => Some(ps.clone()),
                 None if schema.flags.uniforms && name.starts_with("u_") => Some(PropSchema {
                     name: name.to_string(),
-                    ty: Ty::Any,
+                    ty: uniform_ty(),
                     two_way: false,
                     inherited: false,
                     sub: Vec::new(),
                 }),
                 None => {
                     let kind = node.as_ref().map_or("", |n| n.kind.as_str()).to_string();
-                    let candidates: Vec<String> =
-                        schema.props.iter().map(|q| q.name.clone()).collect();
-                    let help = Self::did_you_mean(name, &candidates);
+                    let help = if name == kind && schema.arg.is_some() {
+                        // `text { text: s }`: the element's own value.
+                        Some(format!(
+                            "`{kind}` takes its value positionally: `{kind} value {{ … }}`"
+                        ))
+                    } else {
+                        let candidates: Vec<String> =
+                            schema.props.iter().map(|q| q.name.clone()).collect();
+                        Self::did_you_mean(name, &candidates)
+                    };
                     self.error(
                         "check::unknown_prop",
                         format!("unknown prop `{name}` on `{kind}`"),
@@ -1108,14 +1170,14 @@ impl<'a> Checker<'a> {
             self.ctx.prop = true;
             // A bare variant (`elipsis: end`) cannot be read without the
             // prop's type; the unknown prop is the one error.
+            // Nor can a bare name that resolves to nothing (`edge:
+            // bottm` on `panel`): the prop's type would say what it is.
             let bare_variant = match &p.value.kind {
                 ast::ExprKind::Name(id) => {
-                    self.lookup_scope(&id.name).is_none()
-                        && self
-                            .types
-                            .enums
-                            .iter()
-                            .any(|e| e.variant(&id.name).is_some())
+                    let n = id.name.as_str();
+                    self.lookup_scope(n).is_none()
+                        && (self.types.enums.iter().any(|e| e.variant(n).is_some())
+                            || !self.names_something(n))
                 }
                 _ => false,
             };
@@ -1135,7 +1197,23 @@ impl<'a> Checker<'a> {
                 inherited: false,
             };
         };
+        let mark = self.diags.len();
         let prop = self.prop_with(p, &ps, span);
+        if name.starts_with("u_")
+            && node
+                .as_ref()
+                .is_some_and(|n| n.schema.is_some_and(|s| s.prop(name).is_none()))
+        {
+            // A shader uniform: say what uniforms take, not the union.
+            let lead = format!("`{name}` expects");
+            for d in &mut self.diags[mark..] {
+                if d.code == "check::type_mismatch" && d.message.starts_with(&lead) {
+                    d.message = format!(
+                        "shader uniform `{name}` takes a number, length, angle, duration or colour, or a comma vector of them"
+                    );
+                }
+            }
+        }
         if let Some(n) = &node
             && n.kind == "pages"
             && name == "current"
@@ -1168,7 +1246,8 @@ impl<'a> Checker<'a> {
                 }
             }
         } else if let Some(tw) = p.two_way {
-            if !ps.two_way {
+            let rejected = !ps.two_way;
+            if rejected {
                 self.error(
                     "check::two_way_prop",
                     format!("`{name}` cannot be bound two-way"),
@@ -1181,8 +1260,13 @@ impl<'a> Checker<'a> {
                 );
             }
             let h = self.expr(p.value, Some(&ps.ty));
-            if let Err(why) = self.writable(&h) {
+            if rejected {
+                // The `<->` is the mistake; its target is not checked
+                // against a binding that cannot exist.
+            } else if let Err(why) = self.writable(&h) {
                 self.not_writable_bind(why, p.value.span);
+            } else if self.widen(&h, &ps.ty) {
+                // `state level = 0` bound to a slider: a `float` next pass.
             } else if !ps.ty.is_lenient()
                 && !h.ty.is_lenient()
                 && !(self.types.assignable(&h.ty, &ps.ty) && self.types.assignable(&ps.ty, &h.ty))
@@ -1501,7 +1585,10 @@ impl<'a> Checker<'a> {
                 let declared = ty.as_ref().map(|t| self.resolve_type(t));
                 let h = match &declared {
                     Some(t) => self.expect(value, t, "the default"),
-                    None => self.expr(value, None),
+                    None => {
+                        let hint = self.whole_hint(id, value);
+                        self.expr(value, hint.as_ref())
+                    }
                 };
                 if declared.is_none() {
                     self.inferable(&h.ty, &s.name, value.span, "state");
@@ -1707,13 +1794,19 @@ impl<'a> Checker<'a> {
         let declared = l.ty.as_ref().map(|t| self.resolve_type(t));
         let value = match &declared {
             Some(t) => self.expect(&l.value, t, &format!("`{}`", l.name.name)),
-            None => self.expr(&l.value, None),
+            None => {
+                let hint = self.whole_hint(id, &l.value);
+                self.expr(&l.value, hint.as_ref())
+            }
         };
         if declared.is_none() {
             self.inferable(&value.ty, &l.name, l.value.span, "let");
         }
         let ty = declared.unwrap_or_else(|| value.ty.clone());
         self.defs[id.0 as usize].ty = ty;
+        if !self.is_reactive(&value) {
+            self.constant_lets.insert(id);
+        }
         hir::LetDecl {
             def: id,
             value,
@@ -2008,6 +2101,25 @@ enum Shape {
 
 /// A child that renders inside its parent, for "takes no children"
 /// (a `popup` or `tooltip` is its own surface, so a leaf may hold one).
+/// What a shader uniform (`u_speed: 0.4`, `u_tint: $accent`, `u_dir: 1,
+/// 0`) may hold: the values WGSL uniforms take (scalars, lengths, angles,
+/// durations, colours, and comma vectors of them). Checking each against
+/// the `.wgsl` file's declarations needs naga's reflection (M4).
+fn uniform_ty() -> Ty {
+    let scalars = vec![
+        Ty::FLOAT,
+        Ty::PERCENT,
+        Ty::LENGTH,
+        Ty::ANGLE,
+        Ty::DURATION,
+        Ty::COLOR,
+    ];
+    let vector = Ty::List(Box::new(Ty::Union(scalars.clone())), false);
+    let mut alts = scalars;
+    alts.push(vector);
+    Ty::Union(alts)
+}
+
 fn rendered_child(n: &Node) -> Option<Span> {
     match n {
         Node::Element(e) => match &e.kind {

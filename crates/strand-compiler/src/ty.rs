@@ -250,6 +250,9 @@ pub struct ParamSig {
     pub name: String,
     pub ty: Ty,
     pub has_default: bool,
+    /// The default as written in the schema (`"%H:%M"`, `0.5`), for
+    /// hover; `None` for config `fn`s and parameters without one.
+    pub default: Option<String>,
     /// `...parts: T`: takes every remaining positional argument.
     pub variadic: bool,
 }
@@ -274,6 +277,7 @@ impl FnSig {
                     name: format!("_{i}"),
                     ty,
                     has_default: false,
+                    default: None,
                     variadic: false,
                 })
                 .collect(),

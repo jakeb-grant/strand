@@ -5,22 +5,23 @@ expression: rendered
 check::needs_type
 
   × parameter `n` needs a type
-   ╭─[needs_type.strand:4:27]
- 3 │ // where it cannot infer.
- 4 │ component Toast(n) { text n.summary }
+   ╭─[needs_type.strand:5:27]
+ 4 │ // has no type to take.
+ 5 │ component Toast(n) { text n.summary }
    ·                 ┬         ┬
    ·                 │         ╰── its type is needed here
    ·                 ╰── declared without a type
- 5 │ component Fine(dense = false) { box { opacity: dense ? 0.5 : 1 } }
+ 6 │ component Fine(dense = false) { box { opacity: dense ? 0.5 : 1 } }
    ╰────
-  help: write the type it takes, such as `n: Notification` or `n: float`
+  help: nothing passes it a value, so its type cannot come from a caller; write the type it takes,
+        such as `n: Notification` or `n: float`
 
 check::needs_type
 
   × parameter `x` needs a type
-   ╭─[needs_type.strand:6:10]
- 5 │ component Fine(dense = false) { box { opacity: dense ? 0.5 : 1 } }
- 6 │ fn twice(x) -> float { x * 2 }
+   ╭─[needs_type.strand:7:10]
+ 6 │ component Fine(dense = false) { box { opacity: dense ? 0.5 : 1 } }
+ 7 │ fn twice(x) -> float { x * 2 }
    ·          ┬
    ·          ╰── add `: T`
    ╰────

@@ -451,6 +451,11 @@ impl<'a> Checker<'a> {
 
     /// The type of entry `e`, checking it on first use.
     fn entry_ty(&mut self, e: usize, span: Span) -> Ty {
+        // Token chains (`t0: $t1`, `t1: $t2`, …) nest like `let` chains.
+        super::grow(|| self.entry_ty_now(e, span))
+    }
+
+    fn entry_ty_now(&mut self, e: usize, span: Span) -> Ty {
         match &self.tokens.entries[e].state {
             EntryState::Done(t) => return t.clone(),
             EntryState::Checking => {

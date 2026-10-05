@@ -5,29 +5,40 @@
 //! name is registered, and then types are resolved, so declarations may
 //! refer to ones further down.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::{ElementFlags, ElementSchema, PropSchema, Schema, SchemaError, TokenSchema};
+use super::{DocKey, ElementFlags, ElementSchema, PropSchema, Schema, SchemaError, TokenSchema};
 use crate::ty::{EnumDef, EventDef, FieldDef, FnSig, MethodDef, Origin, ParamSig, RecordDef, Ty};
 
 #[derive(Clone, Debug, PartialEq)]
 enum Tok {
     Word(String),
     Punct(&'static str),
-    /// A number or string, used only as a parameter default.
-    Lit,
+    /// A number, colour or string (its source text), used only as a
+    /// parameter default.
+    Lit(String),
 }
 
 struct Lexer;
 
+/// Tokens with their lines, and `///` doc comments by the index of the
+/// token they precede.
+type Lexed = (Vec<(Tok, u32)>, HashMap<usize, String>);
+
 impl Lexer {
-    fn lex(text: &str) -> Vec<(Tok, u32)> {
-        let mut out = Vec::new();
+    fn lex(text: &str) -> Lexed {
+        let mut out: Vec<(Tok, u32)> = Vec::new();
+        let mut docs = HashMap::new();
+        let mut doc = String::new();
         let mut line = 1u32;
         let b = text.as_bytes();
         let mut i = 0;
         while i < b.len() {
             let c = b[i];
+            if !doc.is_empty() && !matches!(c, b'\n' | b' ' | b'\t' | b'\r' | b';' | b'/') {
+                docs.insert(out.len(), std::mem::take(&mut doc));
+            }
             match c {
                 b'\n' => {
                     line += 1;
@@ -35,17 +46,30 @@ impl Lexer {
                 }
                 b' ' | b'\t' | b'\r' | b';' => i += 1,
                 b'/' if b.get(i + 1) == Some(&b'/') => {
+                    let start = i;
                     while i < b.len() && b[i] != b'\n' {
                         i += 1;
                     }
+                    // `/// text` documents the entry it precedes.
+                    let comment = &text[start..i];
+                    if let Some(d) = comment.strip_prefix("///")
+                        && !d.starts_with('/')
+                    {
+                        if !doc.is_empty() {
+                            doc.push('\n');
+                        }
+                        doc.push_str(d.strip_prefix(' ').unwrap_or(d).trim_end());
+                    }
                 }
                 b'"' => {
+                    let start = i;
                     i += 1;
                     while i < b.len() && b[i] != b'"' && b[i] != b'\n' {
                         i += 1;
                     }
                     i += 1;
-                    out.push((Tok::Lit, line));
+                    let end = i.min(b.len());
+                    out.push((Tok::Lit(text[start..end].to_string()), line));
                 }
                 b'0'..=b'9' | b'#' => {
                     // Numbers (also token keys like `1`) and colours.
@@ -58,7 +82,7 @@ impl Lexer {
                     if s.bytes().all(|c| c.is_ascii_digit()) {
                         out.push((Tok::Word(s.to_string()), line));
                     } else {
-                        out.push((Tok::Lit, line));
+                        out.push((Tok::Lit(s.to_string()), line));
                     }
                 }
                 c if c.is_ascii_alphabetic() || c == b'_' => {
@@ -87,7 +111,7 @@ impl Lexer {
                 }
             }
         }
-        out
+        (out, docs)
     }
 }
 
@@ -105,7 +129,8 @@ enum RawType {
 struct RawParam {
     name: String,
     ty: RawType,
-    default: bool,
+    /// The default's source text.
+    default: Option<String>,
     variadic: bool,
 }
 
@@ -199,11 +224,26 @@ struct Parser {
     toks: Vec<(Tok, u32)>,
     pos: usize,
     errors: Vec<SchemaError>,
+    /// `///` comments by the index of the token they precede.
+    doc_at: HashMap<usize, String>,
+    /// Docs found, by what they document.
+    docs: Vec<(DocKey, String)>,
 }
 
 type PResult<T> = Result<T, SchemaError>;
 
 impl Parser {
+    /// The doc comment before the current token.
+    fn doc(&self) -> Option<String> {
+        self.doc_at.get(&self.pos).cloned()
+    }
+
+    fn document(&mut self, key: DocKey, doc: Option<String>) {
+        if let Some(d) = doc {
+            self.docs.push((key, d));
+        }
+    }
+
     fn line(&self) -> u32 {
         self.toks
             .get(self.pos)
@@ -309,10 +349,12 @@ impl Parser {
     }
 
     fn item(&mut self) -> PResult<RawItem> {
+        let doc = self.doc();
         let kw = self.word()?;
         Ok(match kw.as_str() {
             "enum" => {
                 let name = self.word()?;
+                self.document(DocKey::Type(name.clone()), doc);
                 self.expect("{")?;
                 let mut variants = Vec::new();
                 while !self.eat("}") {
@@ -326,10 +368,14 @@ impl Parser {
                 while self.eat(",") {
                     names.push(self.word()?);
                 }
+                for n in &names {
+                    self.document(DocKey::Type(n.clone()), doc.clone());
+                }
                 RawItem::Opaque(names)
             }
             "alias" => {
                 let name = self.word()?;
+                self.document(DocKey::Type(name.clone()), doc);
                 self.expect("=")?;
                 RawItem::Alias {
                     name,
@@ -338,6 +384,7 @@ impl Parser {
             }
             "record" | "service" => {
                 let name = self.word()?;
+                self.document(DocKey::Type(name.clone()), doc);
                 let key = if self.eat_word("key") {
                     let mut path = vec![self.word()?];
                     while self.eat(".") {
@@ -350,7 +397,7 @@ impl Parser {
                 self.expect("{")?;
                 let mut members = Vec::new();
                 while !self.eat("}") {
-                    members.push(self.member()?);
+                    members.push(self.member(&name)?);
                 }
                 RawItem::Record {
                     name,
@@ -359,10 +406,14 @@ impl Parser {
                     service: kw == "service",
                 }
             }
-            "fn" => RawItem::Fn(self.sig(false)?),
-            "action" => RawItem::Fn(self.sig(true)?),
+            "fn" | "action" => {
+                let sig = self.sig(kw == "action")?;
+                self.document(DocKey::Function(sig.name.clone()), doc);
+                RawItem::Fn(sig)
+            }
             "value" => {
                 let name = self.word()?;
+                self.document(DocKey::Value(name.clone()), doc);
                 self.expect(":")?;
                 RawItem::Value {
                     name,
@@ -374,17 +425,21 @@ impl Parser {
                 self.expect("{")?;
                 let mut sigs = Vec::new();
                 while !self.eat("}") {
+                    let doc = self.doc();
                     let action = match self.word()?.as_str() {
                         "fn" => false,
                         "action" => true,
                         other => return self.err(format!("expected `fn`, found `{other}`")),
                     };
-                    sigs.push(self.sig(action)?);
+                    let sig = self.sig(action)?;
+                    self.document(DocKey::Method(ty_name.clone(), sig.name.clone()), doc);
+                    sigs.push(sig);
                 }
                 RawItem::Methods { ty_name, sigs }
             }
             "group" | "element" => {
                 let name = self.word()?;
+                self.document(DocKey::Element(name.clone()), doc);
                 let arg = if self.eat("(") {
                     let t = self.ty()?;
                     self.expect(")")?;
@@ -400,7 +455,7 @@ impl Parser {
                     }
                 }
                 self.expect("{")?;
-                let members = self.el_members()?;
+                let members = self.el_members(&name, "")?;
                 RawItem::Element {
                     group: kw == "group",
                     name,
@@ -413,7 +468,10 @@ impl Parser {
                 self.expect("{")?;
                 let mut names = Vec::new();
                 while !self.eat("}") {
-                    names.push(self.word()?);
+                    let doc = self.doc();
+                    let n = self.word()?;
+                    self.document(DocKey::Token(n.clone()), doc);
+                    names.push(n);
                     self.eat(",");
                 }
                 RawItem::Palette(names)
@@ -435,6 +493,7 @@ impl Parser {
     ) -> PResult<()> {
         while !self.eat("}") {
             let line = self.line();
+            let doc = self.doc();
             let mut key = self.word()?;
             while self.eat(".") {
                 key.push('.');
@@ -445,6 +504,7 @@ impl Parser {
             } else {
                 format!("{prefix}.{key}")
             };
+            self.document(DocKey::Token(path.clone()), doc);
             if self.eat("{") {
                 self.token_entries(&path, out)?;
             } else {
@@ -455,14 +515,20 @@ impl Parser {
         Ok(())
     }
 
-    fn member(&mut self) -> PResult<RawMember> {
+    fn member(&mut self, owner: &str) -> PResult<RawMember> {
         let line = self.line();
+        let doc = self.doc();
         let name = self.word()?;
+        let key = |n: &str| DocKey::Member(owner.to_string(), n.to_string());
         match name.as_str() {
-            "fn" if !self.at(":") => return Ok(RawMember::Method(self.sig(false)?)),
-            "action" if !self.at(":") => return Ok(RawMember::Method(self.sig(true)?)),
+            "fn" | "action" if !self.at(":") => {
+                let sig = self.sig(name == "action")?;
+                self.document(key(&sig.name), doc);
+                return Ok(RawMember::Method(sig));
+            }
             "event" if !self.at(":") => {
                 let name = self.word()?;
+                self.document(key(&name), doc);
                 let params = if self.at("(") {
                     self.params()?
                 } else {
@@ -472,21 +538,26 @@ impl Parser {
             }
             _ => {}
         }
+        self.document(key(&name), doc);
         self.expect(":")?;
         let ty = self.ty()?;
         let rw = self.eat_word("rw");
         Ok(RawMember::Field { name, ty, rw, line })
     }
 
-    fn el_members(&mut self) -> PResult<Vec<RawElMember>> {
+    /// `prefix`: `stroke.` for the sub-props of `stroke`.
+    fn el_members(&mut self, element: &str, prefix: &str) -> PResult<Vec<RawElMember>> {
         let mut members = Vec::new();
         while !self.eat("}") {
             let line = self.line();
+            let doc = self.doc();
             let name = self.word()?;
+            let key = |n: String| DocKey::Prop(element.to_string(), format!("{prefix}{n}"));
             if !self.at(":") {
                 match name.as_str() {
                     "on" => {
                         let name = self.word()?;
+                        self.document(key(format!("on {name}")), doc);
                         let params = if self.at("(") {
                             self.params()?
                         } else {
@@ -497,6 +568,7 @@ impl Parser {
                     }
                     "let" => {
                         let name = self.word()?;
+                        self.document(key(name.clone()), doc);
                         self.expect(":")?;
                         let ty = self.ty()?;
                         members.push(RawElMember::Scope { name, ty, line });
@@ -516,6 +588,7 @@ impl Parser {
                     _ => {}
                 }
             }
+            self.document(key(name.clone()), doc);
             self.expect(":")?;
             let ty = self.ty()?;
             let mut two_way = false;
@@ -530,7 +603,7 @@ impl Parser {
                 }
             }
             let sub = if self.eat("{") {
-                self.el_members()?
+                self.el_members(element, &format!("{prefix}{name}."))?
             } else {
                 Vec::new()
             };
@@ -575,15 +648,16 @@ impl Parser {
             self.expect(":")?;
             let ty = self.ty()?;
             let default = if self.eat("=") {
-                // The default's value is documentation; only its presence
-                // matters to the checker.
-                match self.peek() {
-                    Some(Tok::Word(_) | Tok::Lit) => self.pos += 1,
+                // Kept as written, for hover; the checker only needs to
+                // know there is one.
+                let text = match self.peek() {
+                    Some(Tok::Word(w) | Tok::Lit(w)) => w.clone(),
                     _ => return self.err("expected a default value"),
-                }
-                true
+                };
+                self.pos += 1;
+                Some(text)
             } else {
-                false
+                None
             };
             params.push(RawParam {
                 name,
@@ -731,7 +805,8 @@ fn resolve_params(
             Ok(ParamSig {
                 name: p.name.clone(),
                 ty: resolve(schema, &p.ty, line)?,
-                has_default: p.default,
+                has_default: p.default.is_some(),
+                default: p.default.clone(),
                 variadic: p.variadic,
             })
         })
@@ -749,13 +824,19 @@ fn add_method(methods: &mut Vec<MethodDef>, name: &str, sig: Arc<FnSig>) {
 }
 
 pub(super) fn extend(schema: &mut Schema, text: &str) -> Result<(), Vec<SchemaError>> {
+    let (toks, doc_at) = Lexer::lex(text);
     let mut p = Parser {
-        toks: Lexer::lex(text),
+        toks,
         pos: 0,
         errors: Vec::new(),
+        doc_at,
+        docs: Vec::new(),
     };
     let items = p.items();
     let mut errors = std::mem::take(&mut p.errors);
+    for (key, doc) in std::mem::take(&mut p.docs) {
+        schema.docs.entry(key).or_insert(doc);
+    }
 
     // Pass 1: names.
     for (item, line) in &items {
@@ -805,6 +886,7 @@ pub(super) fn extend(schema: &mut Schema, text: &str) -> Result<(), Vec<SchemaEr
                 }
                 let mut rec = RecordDef::new(name.clone(), Origin::Schema);
                 rec.key = key.clone();
+                rec.doc = schema.docs.get(&DocKey::Type(name.clone())).cloned();
                 let id = schema.types.add_record(rec);
                 if *service {
                     schema.services.insert(name.clone(), id);
@@ -913,6 +995,20 @@ pub(super) fn extend(schema: &mut Schema, text: &str) -> Result<(), Vec<SchemaEr
                             el.props.extend(g.props.iter().cloned());
                             el.events.extend(g.events.iter().cloned());
                             el.scope.extend(g.scope.iter().cloned());
+                            // The group's docs are the element's too.
+                            let inherited: Vec<(DocKey, String)> = schema
+                                .docs
+                                .iter()
+                                .filter_map(|(k, d)| match k {
+                                    DocKey::Prop(e, n) if e == inc => {
+                                        Some((DocKey::Prop(name.clone(), n.clone()), d.clone()))
+                                    }
+                                    _ => None,
+                                })
+                                .collect();
+                            for (k, d) in inherited {
+                                schema.docs.entry(k).or_insert(d);
+                            }
                         }
                         None => errors.push(SchemaError {
                             line,

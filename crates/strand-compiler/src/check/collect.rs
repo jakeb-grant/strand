@@ -3,6 +3,8 @@
 //! sets), then the per-file walk and the checks that need the whole
 //! program.
 
+use std::collections::HashSet;
+
 use super::{Binding, Checker, CompParam, CompSig, Ctx, DoneHir, LazyAst, LazyState, Pending};
 use crate::diagnostic::suggest;
 use crate::hir::{self, Def, DefId, DefKind, Target};
@@ -468,6 +470,7 @@ impl<'a> Checker<'a> {
                 name: p.name.name.clone(),
                 ty,
                 has_default: p.default.is_some(),
+                infer: p.ty.is_none() && p.default.is_none(),
             });
         }
         let has_slot = has_slot(&c.body.items);
@@ -505,6 +508,7 @@ impl<'a> Checker<'a> {
                 name: p.name.name.clone(),
                 ty,
                 has_default: false,
+                default: None,
                 variadic: false,
             });
         }
@@ -529,7 +533,22 @@ impl<'a> Checker<'a> {
                 |c: &Self, name: &ast::Ident| c.item_defs.get(&(c.module, name.span)).copied();
             match &item.kind {
                 ItemKind::Component(c) => {
-                    if let Some(id) = def(self, &c.name) {
+                    let Some(id) = def(self, &c.name) else {
+                        continue;
+                    };
+                    let infers = self
+                        .comp_sigs
+                        .get(&id)
+                        .is_some_and(|s| s.params.iter().any(|p| p.infer));
+                    if infers {
+                        // Checked once every call site has been seen.
+                        self.deferred.push(super::Deferred {
+                            module: self.module,
+                            index: out.len(),
+                            def: id,
+                            ast: c,
+                        });
+                    } else {
                         out.push(hir::Item::Component(self.component(id, c)));
                     }
                 }
@@ -609,6 +628,136 @@ impl<'a> Checker<'a> {
         out
     }
 
+    /// Checks the components that infer parameter types from their call
+    /// sites, after everything else (so every call outside them has been
+    /// seen), callers before callees: a deferred component that calls
+    /// another is checked first, so its calls count too. In a cycle of
+    /// such components the first declared goes first.
+    pub(super) fn deferred_components(&mut self, files: &mut [hir::FileHir]) {
+        let mut pending = std::mem::take(&mut self.deferred);
+        let names: Vec<&str> = pending.iter().map(|d| d.ast.name.name.as_str()).collect();
+        // callers[i]: the pending components whose bodies use component i.
+        let callers: Vec<Vec<usize>> = (0..pending.len())
+            .map(|i| {
+                (0..pending.len())
+                    .filter(|&j| j != i)
+                    .filter(|&j| {
+                        let mut used = HashSet::new();
+                        element_names(&pending[j].ast.body.items, &mut used);
+                        used.contains(names[i])
+                    })
+                    .collect()
+            })
+            .collect();
+        let mut done = vec![false; pending.len()];
+        let mut placed: Vec<(usize, usize, u32, hir::Item)> = Vec::new();
+        for _ in 0..pending.len() {
+            let next = (0..pending.len())
+                .filter(|&i| !done[i])
+                .find(|&i| callers[i].iter().all(|&j| done[j]))
+                .or_else(|| (0..pending.len()).find(|&i| !done[i]));
+            let Some(i) = next else { break };
+            done[i] = true;
+            let d = pending[i];
+            self.module = d.module;
+            self.infer_params(d.def);
+            let item = hir::Item::Component(self.component(d.def, d.ast));
+            placed.push((d.module, d.index, d.ast.name.span.start, item));
+        }
+        pending.clear();
+        // Back into file order: the last first keeps the others' indices
+        // valid (two at one index: the later in the file first).
+        placed.sort_by(|a, b| (a.0, b.1, b.2).cmp(&(b.0, a.1, a.2)));
+        for (module, index, _, item) in placed {
+            let items = &mut files[module].items;
+            items.insert(index.min(items.len()), item);
+        }
+    }
+
+    /// Joins the argument types passed to each inferred parameter of
+    /// component `def`; disagreeing callers are one error at the
+    /// parameter.
+    fn infer_params(&mut self, def: DefId) {
+        let Some(mut sig) = self.comp_sigs.get(&def).cloned() else {
+            return;
+        };
+        let decl = self.defs[def.0 as usize].clone();
+        for (i, p) in sig.params.iter_mut().enumerate() {
+            if !p.infer {
+                continue;
+            }
+            let args: Vec<super::PassedArg> = self
+                .param_args
+                .get(&(def, i))
+                .map(|v| {
+                    v.iter()
+                        .filter(|(_, _, t)| !t.is_error())
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default();
+            let Some((_, _, first)) = args.first() else {
+                continue;
+            };
+            let mut joined = first.clone();
+            let mut clash = None;
+            for (k, (_, _, t)) in args.iter().enumerate().skip(1) {
+                match self.types.join(&joined, t) {
+                    Some(j) => joined = j,
+                    None => {
+                        clash = Some(k);
+                        break;
+                    }
+                }
+            }
+            match clash {
+                None => p.ty = joined,
+                Some(k) => {
+                    self.infer_failed.insert((def, i));
+                    let (af, aspan, aty) = args[0].clone();
+                    let (bf, bspan, bty) = args[k].clone();
+                    let (sa, sb) = (self.show(&aty), self.show(&bty));
+                    let span = self.param_span(def, i).unwrap_or(decl.span);
+                    let name = p.name.clone();
+                    self.error(
+                        "check::needs_type",
+                        format!(
+                            "parameter `{name}` of `{}` is passed `{sa}` and `{sb}`",
+                            decl.name
+                        ),
+                        span,
+                        "its type comes from its callers, which disagree",
+                    )
+                    .add_secondary(af, aspan, format!("`{sa}` here"))
+                    .add_secondary(bf, bspan, format!("`{sb}` here"))
+                    .help = Some(format!(
+                        "write the type it takes (`{name}: T`), or pass the same type everywhere"
+                    ));
+                }
+            }
+        }
+        self.comp_sigs.insert(def, sig);
+    }
+
+    /// The span of parameter `i` of component `def`.
+    fn param_span(&self, def: DefId, i: usize) -> Option<Span> {
+        let d = self.deferred_ast(def)?;
+        d.params.as_ref()?.get(i).map(|p| p.name.span)
+    }
+
+    fn deferred_ast(&self, def: DefId) -> Option<&'a ast::Component> {
+        let d = &self.defs[def.0 as usize];
+        let m = self.modules.iter().position(|m| m.file == d.file)?;
+        self.modules[m]
+            .ast
+            .items
+            .iter()
+            .find_map(|i| match &i.kind {
+                ItemKind::Component(c) if c.name.span == d.span => Some(c),
+                _ => None,
+            })
+    }
+
     /// Checks that need every file.
     pub(super) fn after(&mut self, _files: &[hir::FileHir]) {
         // `use tokens` and `use palette` choose one theme for the config.
@@ -668,6 +817,68 @@ impl<'a> Checker<'a> {
                 self.module = saved;
             }
         }
+        // A file's `state`/`let` named like a global (`state C` and
+        // `component C`): `C` would be a value here and an element
+        // everywhere, so it is a redeclaration.
+        for m in 0..self.modules.len() {
+            let mut clashes: Vec<(DefId, DefId)> = self.file_scopes[m]
+                .iter()
+                .filter_map(|(n, d)| self.globals.get(n).map(|g| (*d, *g)))
+                .collect();
+            clashes.sort_by_key(|(d, _)| self.defs[d.0 as usize].span.start);
+            for (d, g) in clashes {
+                let def = &self.defs[d.0 as usize];
+                let (name, span) = (def.name.clone(), def.span);
+                let what = if def.kind == DefKind::Let {
+                    "let"
+                } else {
+                    "state"
+                };
+                let global = &self.defs[g.0 as usize];
+                let (gf, gs) = (global.file, global.span);
+                let saved = std::mem::replace(&mut self.module, m);
+                self.error(
+                    "check::redeclared",
+                    format!("`{name}` is declared twice"),
+                    span,
+                    format!("a `{what}` of this file"),
+                )
+                .add_secondary(gf, gs, "a name the whole config shares")
+                .help = Some(format!(
+                    "rename the `{what}`: components, types and other global names cannot be reused by a file's `state` or `let`"
+                ));
+                self.module = saved;
+            }
+        }
+        // `my-bar.strand`: `my-bar.x` reads as a subtraction, so an export
+        // there can never be reached.
+        for (i, m) in self.modules.iter().enumerate() {
+            if is_identifier(m.name) {
+                continue;
+            }
+            let first = self
+                .defs
+                .iter()
+                .find(|d| d.exported && d.file == m.file)
+                .map(|d| (d.span, d.name.clone()));
+            if let Some((span, export)) = first {
+                let fixed = snake_case(m.name);
+                let saved = std::mem::replace(&mut self.module, i);
+                self.error(
+                    "check::file_name",
+                    format!(
+                        "`{export}` cannot be read from other files: `{}` is not a name",
+                        m.name
+                    ),
+                    span,
+                    "exported from a file whose name cannot be written",
+                )
+                .help = Some(format!(
+                    "rename the file to snake_case (`{fixed}.strand`) and read it as `{fixed}.{export}`"
+                ));
+                self.module = saved;
+            }
+        }
         // Two files with one stem would give two exports one path.
         let mut stems: std::collections::HashMap<&str, usize> = Default::default();
         for (i, m) in self.modules.iter().enumerate() {
@@ -696,6 +907,67 @@ impl<'a> Checker<'a> {
                 stems.insert(m.name, i);
             }
         }
+    }
+}
+
+/// Whether `s` can be written as a name (`theme`, `my_bar`).
+fn is_identifier(s: &str) -> bool {
+    let mut b = s.bytes();
+    b.next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == b'_')
+        && b.all(|c| c.is_ascii_alphanumeric() || c == b'_')
+}
+
+/// `My-Bar 2` → `my_bar_2`.
+fn snake_case(s: &str) -> String {
+    let mut out = String::new();
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else if !out.ends_with('_') {
+            out.push('_');
+        }
+    }
+    let out = out.trim_matches('_').to_string();
+    match out.chars().next() {
+        Some(c) if c.is_ascii_alphabetic() => out,
+        Some(_) => format!("f_{out}"),
+        None => "config".to_string(),
+    }
+}
+
+/// The element kinds a tree uses (component calls among them).
+fn element_names<'t>(items: &'t [ast::Item], out: &mut HashSet<&'t str>) {
+    for i in items {
+        match &i.kind {
+            ItemKind::Element(e) => {
+                out.insert(e.kind.name.as_str());
+                if let Some(b) = &e.block {
+                    element_names(&b.items, out);
+                }
+            }
+            ItemKind::When(w) => element_names(&w.body.items, out),
+            ItemKind::If(f) => if_element_names(f, out),
+            ItemKind::For(f) => element_names(&f.body.items, out),
+            ItemKind::Match(m) => {
+                for a in &m.arms {
+                    match &a.body {
+                        ast::ArmBody::Block(b) => element_names(&b.items, out),
+                        ast::ArmBody::Single(i) => element_names(std::slice::from_ref(&**i), out),
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn if_element_names<'t>(f: &'t ast::If<ast::Item>, out: &mut HashSet<&'t str>) {
+    element_names(&f.then.items, out);
+    match &f.else_ {
+        Some(ast::Else::If(i, _)) => if_element_names(i, out),
+        Some(ast::Else::Block(b)) => element_names(&b.items, out),
+        None => {}
     }
 }
 

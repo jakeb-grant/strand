@@ -1,0 +1,5 @@
+// expect: check::unreachable_arm
+// An arm no value can reach: a variant matched twice, anything after `_`.
+enum Mode { a, b, c }
+state mode = Mode.a
+let n = match mode { a => 1, b => 2, a => 3, _ => 4, c => 5 }

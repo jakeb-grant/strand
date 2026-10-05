@@ -1,0 +1,13 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::file_name
+
+  × `shown` cannot be read from other files: `my-bar` is not a name
+   ╭─[my-bar.strand:1:14]
+ 1 │ export state shown = false
+   ·              ──┬──
+   ·                ╰── exported from a file whose name cannot be written
+   ╰────
+  help: rename the file to snake_case (`my_bar.strand`) and read it as `my_bar.shown`

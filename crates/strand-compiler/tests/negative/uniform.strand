@@ -1,0 +1,6 @@
+// expect: check::type_mismatch
+// Shader uniforms take the values WGSL uniforms can: numbers, lengths,
+// angles, durations, colours and comma vectors of them.
+component Glow {
+  shader "aurora.wgsl" { u_speed: 0.4; u_dir: 1, 0; u_tint: $accent; u_name: "aurora"; u_on: true }
+}

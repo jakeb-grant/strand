@@ -412,3 +412,29 @@ fn errors_far_along_a_long_line_render() {
         assert!(out.len() < 10_000, "the long line was drawn");
     }
 }
+
+/// A large paste of broken code stays cheap: each unknown name's
+/// did-you-mean once scanned every name in scope with a full edit
+/// distance (6,000 lets and 3,000 unknowns took 31 s in a debug build).
+/// Candidates are now ruled out by length and shared letters first, and a
+/// file stops suggesting after its first 200 unknown names.
+#[test]
+fn many_unknown_names_stay_cheap() {
+    let mut src = String::new();
+    for i in 0..6000 {
+        src.push_str(&format!("let value_{i} = {i}\n"));
+    }
+    for i in 0..3000 {
+        src.push_str(&format!("let use_{i} = valeu_{i} + missing_name_{i}\n"));
+    }
+    let (map, _) = SourceMap::single("big.strand", src);
+    let started = Instant::now();
+    let out = strand_compiler::compile(&map);
+    let elapsed = started.elapsed();
+    assert_eq!(out.errors(), 6000);
+    // The first 200 unknowns are 100 lines: each `valeu_i` gets `value_i`,
+    // no `missing_name_i` is close to anything.
+    let with_help = out.diagnostics.iter().filter(|d| d.help.is_some()).count();
+    assert_eq!(with_help, 100);
+    assert!(elapsed < Duration::from_secs(15), "{elapsed:?}");
+}

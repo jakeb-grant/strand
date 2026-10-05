@@ -1,0 +1,49 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::unknown_field
+
+  × `prefs` has no field `b`
+    ╭─[one_mistake.strand:10:22]
+  9 │   box {
+ 10 │     on click { prefs.b = 1 }
+    ·                      ┬
+    ·                      ╰── unknown field
+ 11 │     text "a" { color: <-> s }
+    ╰────
+
+check::two_way_prop
+
+  × `color` cannot be bound two-way
+    ╭─[one_mistake.strand:11:23]
+ 10 │     on click { prefs.b = 1 }
+ 11 │     text "a" { color: <-> s }
+    ·                       ─┬─
+    ·                        ╰── the element never writes it
+ 12 │   }
+    ╰────
+  help: `<->` is for props a widget writes back: `value`, `text`, `open`, `current`; bind this one
+        with `name: value`
+
+check::misplaced
+
+  × `bar` is a surface, declared at the top level
+    ╭─[one_mistake.strand:13:3]
+ 12 │   }
+ 13 │   bar X { edge: top }
+    ·   ─┬─
+    ·    ╰── not inside a tree
+ 14 │ }
+    ╰────
+  help: declare it on its own: `bar Name { … }`; inside a tree, `popup` anchors a surface
+
+check::unknown_prop
+
+  × unknown prop `edge` on `panel`
+    ╭─[one_mistake.strand:15:11]
+ 14 │ }
+ 15 │ panel P { edge: bottm }
+    ·           ──┬─
+    ·             ╰── not a prop of this element
+    ╰────

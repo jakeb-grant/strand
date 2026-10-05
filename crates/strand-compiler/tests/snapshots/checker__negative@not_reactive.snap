@@ -12,4 +12,38 @@ check::not_reactive
    ·           ╰── constant
  5 │ on change audio.sink.volume after 1.2s { shown = false }
    ╰────
-  help: watch a `state`, a `let` or a service field, such as `audio.sink.volume`
+  help: watch a `state`, a `let` that reads one, or a service field, such as `audio.sink.volume`
+
+check::not_reactive
+
+  × `on change` watches something that never changes
+    ╭─[not_reactive.strand:10:11]
+  9 │ enum Mode { a, b }
+ 10 │ on change c { shown = true }
+    ·           ┬
+    ·           ╰── `c` never changes
+ 11 │ on change f { shown = true }
+    ╰────
+  help: watch a `state`, a `let` that reads one, or a service field, such as `audio.sink.volume`
+
+check::not_reactive
+
+  × `on change` watches values, not functions
+    ╭─[not_reactive.strand:11:11]
+ 10 │ on change c { shown = true }
+ 11 │ on change f { shown = true }
+    ·           ┬
+    ·           ╰── a function
+ 12 │ on change Mode { shown = true }
+    ╰────
+
+check::not_reactive
+
+  × `on change` watches something that never changes
+    ╭─[not_reactive.strand:12:11]
+ 11 │ on change f { shown = true }
+ 12 │ on change Mode { shown = true }
+    ·           ──┬─
+    ·             ╰── `Mode` never changes
+    ╰────
+  help: watch a `state`, a `let` that reads one, or a service field, such as `audio.sink.volume`

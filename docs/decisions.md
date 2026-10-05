@@ -866,15 +866,25 @@ schema from `strand-compiler`).
   an error. `let x = … persist` and `state x persist = …` are parse errors
   with the fix (`syntax::persist`) rather than "expected a line break".
 - **2026-10-05 · wave2-check: parameter types where needed.** A component
-  parameter without a type or default is an error only where it is read
-  (the doc writes `Toast(n)`); `fn` parameters always need types.
+  parameter without a type or default (the doc writes `Toast(n)`) takes
+  the join of the argument types at its call sites, positional and named.
+  Components with such a parameter are checked after every other item, a
+  deferred component that calls another before its callee (so its calls
+  count), and keep their place in the HIR's item order. Callers that pass
+  types with no join are one `check::needs_type` at the parameter with
+  both call sites labelled; a parameter nothing passes a value to is an
+  error where it is read. `fn` parameters always need types.
 - **2026-10-05 · wave2-check: one mistake, one diagnostic.** Names and
   expressions that fail become `Ty::Error`, accepted everywhere; an action
   called in a binding, a field of an unknown base or a bare variant given
   to an unknown prop (`elipsis: end`) report once. `$fg-muted`, which the
   parser reads as a subtraction and warns about, becomes one checker error
   naming the token meant (`$fg.muted`) when one is near, and the warning is
-  dropped. Did-you-mean ties go to the alphabetically first name.
+  dropped. An unknown field in an assignment target is not also
+  read-only, a prop rejected for `<->` does not also check its target, an
+  unknown prop does not resolve a bare name given to it (`edge: bottm` on
+  `panel`), and a surface misplaced in a tree (`bar X { … }`) does not
+  read its name as a positional value.
 - **2026-10-05 · wave2-check: `strand check` type-checks.** It runs
   `compile` over the `find_files` module set, so the wave-1 notes that it
   reports syntax only, and the checker TODOs left in the compiler section
@@ -883,10 +893,118 @@ schema from `strand-compiler`).
   `play` targets, parameter types where they cannot be inferred), are done.
 - **2026-10-05 · wave2-check: whole-number literals.** `0` is a `float`
   unless its position expects an `int` (a prop, parameter, declared type
-  or a typed fn's value), so `state level = 0` may later hold `0.5`;
-  `int` widens to `float`, lengths and angles, never the reverse.
+  or a typed fn's value); `int` widens to `float`, lengths and angles,
+  never the reverse. An untyped `state` or `let` whose value is a whole
+  number (`state i = 0`) is an `int`, so design.md's selected-index and
+  count states index lists, fill `columns:` and feed `.take(n)`. When a
+  fraction is written to one (`i = 0.5`, `i += t`, `i /= 2`, `i *= 0.5`,
+  a `float` assigned to it, or a slider's `value: <-> i`) it is a `float`
+  instead: the checker runs again with it pinned (each pass pins at least
+  one more, capped at 8). A `float` where an `int` is expected says how
+  to fix it (`declare it `state i: int = …``, or round it: `i.round`).
 - **2026-10-05 · wave2-check: a file named like a service.** In
   `battery.low`, `battery` is the service, so a `battery.strand` that
   exports `low` could never be read: its export is an error asking to
   rename the file (likewise for builtin values and the config's global
   names), not a silent shadow either way.
+- **2026-10-05 · wave2-check (round 2): did-you-mean ranking.** For an
+  unknown name the variants of the enum the position expects are tried
+  before anything else in scope (`edge: tp` → `top`, never the time value
+  `t`), keyframes before other names for `play`, and another file's export
+  is offered as `file.name` (`dnd` → `toasts.dnd`); file stems are offered
+  only for `name.field`. A one-letter word is matched only by case, and a
+  longer word is never offered a one-letter name. Ties go to a plausible
+  typo (letters only dropped, only added or swapped: `slt` → `slot`),
+  then the closest length, then the alphabet. `text { text: s }` says the
+  value is positional. Each file computes at most 200 suggestions, and
+  candidates are ruled out by length and shared letters before the edit
+  distance.
+- **2026-10-05 · wave2-check (round 2): a settings record is written field
+  by field.** `prefs = …` for `state prefs from "….toml" { … }` is
+  `check::read_only` with the fix `prefs.accent = …`: a whole-record write
+  has no meaning against the overlay > file > default merge, which is per
+  field. `<->` to the whole record is refused the same way.
+- **2026-10-05 · wave2-check (round 2): shadowing is loud.** A name in
+  scope (a local or this file's `state`/`let`) that is also a variant of
+  the enum the position expects is `check::ambiguous` (`state top` and
+  `edge: top`), fixed by `Edge.top` or a rename. A component parameter
+  and a `state`/`let` of the same name in its body are one block's
+  redeclaration. A file's top-level `state`/`let` may not take a global
+  name (component, surface, enum, type, fn, tokens, keyframes, service):
+  the name would be a value in that file and an element everywhere.
+- **2026-10-05 · wave2-check (round 2): `on change` reactivity by kind.**
+  State, settings and services change; a `let` changes only if its value
+  reads something that does (`let c = 1` does not); fns, enums, types,
+  components, keyframes and token sets never do. A fn target says it is a
+  function rather than a constant.
+- **2026-10-05 · wave2-check (round 2): unreachable `match` arms.** A
+  variant or literal matched twice, or any arm after `_`, is
+  `check::unreachable_arm` (an error: an arm that can never run is a
+  mistake, like a missing one).
+- **2026-10-05 · wave2-check (round 2): file names that cannot be read.**
+  A file whose stem is not an identifier (`my-bar.strand`: `my-bar.x`
+  parses as a subtraction) and that exports something is
+  `check::file_name`, asking for the snake_case name.
+- **2026-10-05 · wave2-check (round 2): shader uniforms.** Until naga
+  reflection (M4) checks each `u_*` prop against the `.wgsl` file, a
+  uniform takes what WGSL uniforms can hold: numbers, percentages,
+  lengths, angles, durations, colours, and comma vectors of them. Text,
+  booleans, records and lists are errors.
+- **2026-10-05 · wave2-check (round 2): one catalogue with the scene.**
+  Every schema element is a `strand_scene::protocol::NodeKind` and every
+  element prop a scene `Prop`, except compiler-only `id` and the props
+  design.md names that the scene lacks (`tests/scene_catalogue.rs`). The
+  props the schema had invented, which design.md never names, are
+  dropped: `justify`, `shrink`, `exclusive` (surfaces; `keyboard:
+  exclusive` stays), `rows`, `axis`, `wrap`, `italic`, `min`, `max`,
+  `step`, `type` (input), `start` (arc), `loop`, `playing` (lottie),
+  `intensity`, `tint` (effect), `spread`, `gravity` (particles), with the
+  `Axis` and `InputKind` enums. A design.md update must come first to add
+  any of them back. `dash` (design.md: "Stroke styles: dash, trim, caps,
+  wavy") stays and is recorded in docs/architecture.md as a scene
+  addition (`Prop::Dash`) for strand-scene's owner.
+- **2026-10-05 · wave2-check (round 2): `Drop`.** External drops arrive as
+  `Drop { kind: DropKind (files | app | text), files: [path], app: App?,
+  text: text }` (design.md: "Files, apps and text from other programs
+  arrive as typed `Drop` values"). `on drop`'s payload stays `any`, so a
+  handler names the type it accepts: the `drag:` source's own type for
+  drags inside the shell (`on drop(p: Pin, at: int)`), `Drop` for other
+  programs.
+- **2026-10-05 · wave2-check (round 2): palette role names.** Strand
+  shortens Material 3's system role names; the mapping is 1:1 (M3 name in
+  brackets): `accent` (primary), `on_accent` (on_primary),
+  `accent_container` (primary_container), `on_accent_container`
+  (on_primary_container); `secondary`, `tertiary`, `error` and their
+  `on_*`, `*_container`, `on_*_container` as in M3; `bg` (background),
+  `on_bg` (on_background); `surface` (surface), `fg` (on_surface),
+  `surface_variant` (surface_variant), `fg_variant`
+  (on_surface_variant); `surface_dim`, `surface_bright` as in M3;
+  `surface_lowest` (surface_container_lowest), `surface_low`
+  (surface_container_low), `surface_container` (surface_container),
+  `surface_high` (surface_container_high), `surface_highest`
+  (surface_container_highest); `inverse_surface` (inverse_surface),
+  `inverse_fg` (inverse_on_surface), `inverse_accent` (inverse_primary);
+  `outline`, `outline_variant`, `shadow`, `scrim`, `surface_tint` as in
+  M3. Importers and `material()` fill them by this table.
+- **2026-10-05 · wave2-check (round 2): long declaration chains.** Lazy
+  first-use checking nests one set of frames per link of a `let`, `state`,
+  `fn` or token chain, so every lazy entry point (`Checker::force`, token
+  `entry_ty`) runs under `stacker::maybe_grow` (256 KiB red zone, 4 MiB
+  segments): depth is bounded by memory, not by the worker thread's
+  stack. 5,000-link chains and cycles check on a 2 MiB thread
+  (`tests/deep_chains.rs`).
+- **2026-10-05 · wave2-check (round 2): `strand check <file>`.** A file is
+  checked with the rest of its config, so its references to other files
+  resolve: the config is the default config directory if the file is in
+  it, else the file's directory. Only the diagnostics whose primary label
+  is in that file are reported (and the summary names the files it was
+  checked with). A file the module set leaves out (hidden, too deep) is
+  checked alone.
+- **2026-10-05 · wave2-check (round 2): schema docs, defaults and hash.**
+  `///` comments in schema text document the entry they precede and are
+  kept in `Schema::docs` under a `DocKey` (types, members, functions,
+  values, methods, elements, props and events, tokens; group props reach
+  the elements that include them); parameter defaults keep their source
+  text (`ParamSig::default`). `Schema::fingerprint()` is BLAKE3 chained
+  over every text `extend` was given, in order, for the compiled cache
+  key.

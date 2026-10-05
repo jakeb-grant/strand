@@ -12,7 +12,7 @@ check::assign_to_prop
    ·                  ╰── a bound prop
  7 │     on secondary { level = 0 }
    ╰────
-  help: bind the prop to a `state` (`width: w`) and assign the state instead
+  help: bind the prop to a `state` (`width: v`) and assign the state instead
 
 check::assign_to_prop
 
@@ -37,4 +37,4 @@ check::assign_to_prop
    ·                       ╰── a bound prop
  9 │   }
    ╰────
-  help: bind the prop to a `state` (`width: w`) and assign the state instead
+  help: bind the prop to a `state` (`opacity: v`) and assign the state instead

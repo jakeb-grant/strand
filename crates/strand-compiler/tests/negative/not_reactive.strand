@@ -3,3 +3,10 @@
 state shown = false
 on change 5 { shown = true }
 on change audio.sink.volume after 1.2s { shown = false }
+// A `let` over constants, a fn and an enum never change either.
+let c = 1
+fn f() -> float { 1 }
+enum Mode { a, b }
+on change c { shown = true }
+on change f { shown = true }
+on change Mode { shown = true }

@@ -6,3 +6,6 @@ component C {
     on scroll(dy) { audio.sink.volume -= dy * 0.05 }
   }
 }
+// A settings record is written field by field.
+state prefs from "~/.config/strand/prefs.toml" { accent: color = #7aa2f7; compact: bool = false }
+component Reset { box { on click { prefs = prefs } } }

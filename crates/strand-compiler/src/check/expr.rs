@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use super::{Binding, Checker, NODE_BOOLS};
+use crate::diagnostic::suggest;
 use crate::hir::{self, CallArg, Callee, DefKind, ExprKind, LocalKind, Target};
 use crate::syntax::Span;
 use crate::syntax::ast::{self, ArgKind, BinaryOp, UnaryOp};
@@ -14,7 +15,15 @@ pub(crate) enum NotWritable {
     Let(String),
     Param(String),
     BoundProp(String),
-    ReadOnlyField { owner: String, field: String },
+    ReadOnlyField {
+        owner: String,
+        field: String,
+    },
+    /// `prefs = …` for `state prefs from "….toml" { … }`.
+    SettingsRecord {
+        name: String,
+        field: String,
+    },
     Local(String),
     Other,
 }
@@ -263,15 +272,40 @@ impl<'a> Checker<'a> {
                 .help = Some("write `6s` or `200ms`".into());
             }
             _ => {
+                let help = (accepts_int(ty) && h.ty == Ty::FLOAT).then(|| self.int_help(h));
                 self.error(
                     "check::type_mismatch",
                     format!("{what} expects `{want}`, found `{found}`"),
                     h.span,
                     format!("this is `{found}`"),
-                );
+                )
+                .help = help;
             }
         }
         false
+    }
+
+    /// Help for a `float` where an `int` is expected.
+    fn int_help(&self, h: &hir::Expr) -> String {
+        if let ExprKind::Def(d) = h.kind {
+            let def = &self.defs[d.0 as usize];
+            let kw = match def.kind {
+                DefKind::State => Some("state"),
+                DefKind::Let => Some("let"),
+                _ => None,
+            };
+            if let Some(kw) = kw {
+                let n = &def.name;
+                return if self.float_pins.contains(&(def.file, def.span)) {
+                    format!(
+                        "a fraction is written to `{n}`, so it is a `float`; round it here: `{n}.round`"
+                    )
+                } else {
+                    format!("declare it `{kw} {n}: int = …`, or round it here: `{n}.round`")
+                };
+            }
+        }
+        "round it: `(…).round`, `.floor` or `.ceil`".into()
     }
 
     fn join_branches(&mut self, a: &hir::Expr, b: &hir::Expr, what: &str) -> Ty {
@@ -343,11 +377,42 @@ impl<'a> Checker<'a> {
     pub fn name_expr(&mut self, id: &ast::Ident, expected: Option<&Ty>) -> hir::Expr {
         let span = id.span;
         let name = id.name.as_str();
+        // Read before anything else is checked (a pending declaration
+        // forced below has names of its own).
+        let field_base = std::mem::take(&mut self.field_base);
         let mk = |kind, ty| hir::Expr { kind, ty, span };
+        let variant = self.expected_variant(name, expected);
+        let value = self.lookup_scope(name).or_else(|| {
+            self.file_scopes[self.module]
+                .get(name)
+                .map(|&d| Binding::Def(d))
+        });
+        if let (Some((e, _)), Some(b)) = (variant, value) {
+            // `state top = 5` and `edge: top`: never pick one silently.
+            let (file, decl) = match b {
+                Binding::Local(l) => (
+                    self.locals[l.0 as usize].file,
+                    self.locals[l.0 as usize].span,
+                ),
+                Binding::Def(d) => (self.defs[d.0 as usize].file, self.defs[d.0 as usize].span),
+            };
+            let en = self.types.enum_(e).name.clone();
+            self.error(
+                "check::ambiguous",
+                format!("`{name}` is both a name in scope and a variant of `{en}`"),
+                span,
+                "which one?",
+            )
+            .add_secondary(file, decl, format!("the name `{name}`"))
+            .help = Some(format!(
+                "write `{en}.{name}` for the variant, or rename the `{name}` declared here"
+            ));
+            return hir::Expr::error(span);
+        }
         if let Some(b) = self.lookup_scope(name) {
             return self.binding_expr(b, span);
         }
-        if let Some((e, v)) = self.expected_variant(name, expected) {
+        if let Some((e, v)) = variant {
             self.add_ref(span, Target::Variant(e, v));
             return mk(ExprKind::Variant(e, v), Ty::Enum(e));
         }
@@ -425,24 +490,16 @@ impl<'a> Checker<'a> {
             .help = Some(format!("read what it exports: `{name}.something`"));
             return hir::Expr::error(span);
         }
-        self.unknown_name(id, expected);
+        self.unknown_name(id, expected, field_base);
         hir::Expr::error(span)
     }
 
-    pub fn unknown_name(&mut self, id: &ast::Ident, expected: Option<&Ty>) {
-        let mut candidates = self.value_candidates();
-        if let Some(t) = expected {
-            let mut add = |t: &Ty| {
-                if let Ty::Enum(e) = t.non_null() {
-                    candidates.extend(self.types.enum_(*e).variants.iter().cloned());
-                }
-            };
-            match t {
-                Ty::Union(ts) => ts.iter().for_each(&mut add),
-                t => add(t),
-            }
-        }
-        let help = Self::did_you_mean(&id.name, &candidates);
+    fn unknown_name(&mut self, id: &ast::Ident, expected: Option<&Ty>, field_base: bool) {
+        let help = if self.may_suggest() {
+            self.name_suggestion(&id.name, expected, field_base)
+        } else {
+            None
+        };
         let label = match expected {
             Some(t @ Ty::Enum(_)) => format!("not a name, nor a variant of `{}`", self.show(t)),
             _ => "not found".to_string(),
@@ -454,6 +511,47 @@ impl<'a> Checker<'a> {
             label,
         )
         .help = help;
+    }
+
+    /// Did-you-mean for an unknown name: the variants of the enum the
+    /// position expects come first (`edge: tp` → `top`), then every name
+    /// in scope, then other files' exports (`dnd` → `toasts.dnd`).
+    fn name_suggestion(
+        &self,
+        word: &str,
+        expected: Option<&Ty>,
+        field_base: bool,
+    ) -> Option<String> {
+        let mut variants: Vec<&str> = Vec::new();
+        let mut add = |t: &Ty| {
+            if let Ty::Enum(e) = t.non_null() {
+                variants.extend(self.types.enum_(*e).variants.iter().map(String::as_str));
+            }
+        };
+        match expected {
+            Some(Ty::Union(ts)) => ts.iter().for_each(&mut add),
+            Some(t) => add(t),
+            None => {}
+        }
+        // `play shak`: the keyframes in the config.
+        if expected.is_some_and(|t| *t == Ty::opaque("Keyframes")) {
+            variants.extend(
+                self.globals
+                    .iter()
+                    .filter(|(_, d)| self.defs[d.0 as usize].kind == DefKind::Keyframes)
+                    .map(|(n, _)| n.as_str()),
+            );
+        }
+        if let Some(v) = suggest(word, variants) {
+            return Some(format!("did you mean `{v}`?"));
+        }
+        if let Some(v) = suggest(word, self.value_candidates(field_base)) {
+            return Some(format!("did you mean `{v}`?"));
+        }
+        if field_base {
+            return None;
+        }
+        self.export_suggestion(word)
     }
 
     pub fn binding_expr(&mut self, b: Binding, span: Span) -> hir::Expr {
@@ -471,7 +569,7 @@ impl<'a> Checker<'a> {
                     )
                     .add_secondary(lfile, lspan, "declared without a type")
                     .help = Some(format!(
-                        "write the type it takes, such as `{name}: Notification` or `{name}: float`"
+                        "nothing passes it a value, so its type cannot come from a caller; write the type it takes, such as `{name}: Notification` or `{name}: float`"
                     ));
                 }
                 let local = &self.locals[l.0 as usize];
@@ -576,6 +674,8 @@ impl<'a> Checker<'a> {
                 return self.export_expr(m, b, name, span);
             }
         }
+        // Only `name_expr` reads (and clears) it.
+        self.field_base = matches!(base.kind, ast::ExprKind::Name(_));
         let hb = self.expr(base, None);
         self.member(hb, base, name, optional, span)
     }
@@ -986,6 +1086,7 @@ impl<'a> Checker<'a> {
                     name: f.name.clone(),
                     ty: f.ty.clone(),
                     has_default: f.ty.is_optional(),
+                    default: None,
                     variadic: false,
                 })
                 .collect(),
@@ -1380,6 +1481,7 @@ impl<'a> Checker<'a> {
             name: n.into(),
             ty,
             has_default: false,
+            default: None,
             variadic: false,
         };
         let pred = Ty::Fn(Arc::new(FnSig::positional(vec![t.clone()], Ty::BOOL)));
@@ -2082,13 +2184,15 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Reports the variants a `match` misses.
+    /// Reports the variants a `match` misses, and arms no value can reach
+    /// (a variant or literal matched twice, anything after `_`).
     pub(crate) fn exhaustive(
         &mut self,
         scrutinee: &Ty,
         patterns: &[(hir::Pattern, Span)],
         span: Span,
     ) {
+        self.unreachable_arms(patterns);
         if patterns
             .iter()
             .any(|(p, _)| matches!(p, hir::Pattern::Wildcard | hir::Pattern::Error))
@@ -2139,16 +2243,84 @@ impl<'a> Checker<'a> {
         }
     }
 
+    fn unreachable_arms(&mut self, patterns: &[(hir::Pattern, Span)]) {
+        let key = |p: &hir::Pattern| -> Option<String> {
+            match p {
+                hir::Pattern::Variant(e, v) => Some(format!("{}.{v}", e.0)),
+                hir::Pattern::Literal(h) => match &h.kind {
+                    ExprKind::Bool(b) => Some(format!("b{b}")),
+                    ExprKind::Text(t) => Some(format!("t{t}")),
+                    ExprKind::Number { value, unit } => Some(format!("n{value}{unit:?}")),
+                    _ => None,
+                },
+                hir::Pattern::Wildcard | hir::Pattern::Error => None,
+            }
+        };
+        let mut seen: Vec<(String, Span)> = Vec::new();
+        let mut wildcard: Option<Span> = None;
+        let file = self.file();
+        for (p, span) in patterns {
+            if let Some(w) = wildcard {
+                self.error(
+                    "check::unreachable_arm",
+                    "this arm can never match",
+                    *span,
+                    "after `_`",
+                )
+                .add_secondary(file, w, "`_` matches everything first")
+                .help = Some("move `_` to the last arm, or remove this one".into());
+                continue;
+            }
+            if matches!(p, hir::Pattern::Wildcard) {
+                wildcard = Some(*span);
+                continue;
+            }
+            let Some(k) = key(p) else { continue };
+            if let Some((_, first)) = seen.iter().find(|(s, _)| *s == k) {
+                let first = *first;
+                self.error(
+                    "check::unreachable_arm",
+                    "this arm can never match",
+                    *span,
+                    "matched by an earlier arm",
+                )
+                .add_secondary(file, first, "already matched here")
+                .help = Some("remove the repeated arm, or merge their bodies".into());
+            } else {
+                seen.push((k, *span));
+            }
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Places
 
     /// Whether `e` can be assigned (or bound with `<->`).
     pub(crate) fn writable(&self, e: &hir::Expr) -> Result<(), NotWritable> {
+        self.writable_place(e, true)
+    }
+
+    /// `whole`: `e` is the whole target, not the base of a field or index
+    /// in it. A settings record is written field by field only: what a
+    /// whole-record write would mean against its TOML file (overlay, file
+    /// and defaults merge per field) is undefined.
+    fn writable_place(&self, e: &hir::Expr, whole: bool) -> Result<(), NotWritable> {
         match &e.kind {
             ExprKind::Def(d) => {
                 let def = &self.defs[d.0 as usize];
                 match def.kind {
-                    DefKind::State | DefKind::Settings => Ok(()),
+                    DefKind::State => Ok(()),
+                    DefKind::Settings if whole => {
+                        let field = match &def.ty {
+                            Ty::Record(r) => self.types.record(*r).fields.first(),
+                            _ => None,
+                        };
+                        Err(NotWritable::SettingsRecord {
+                            name: def.name.clone(),
+                            field: field.map_or_else(|| "field".into(), |f| f.name.clone()),
+                        })
+                    }
+                    DefKind::Settings => Ok(()),
                     DefKind::Let => Err(NotWritable::Let(def.name.clone())),
                     _ => Err(NotWritable::Other),
                 }
@@ -2178,16 +2350,18 @@ impl<'a> Checker<'a> {
                     Some((r, _)) if matches!(r.origin, crate::ty::Origin::User(..)) => {
                         // A plain record: writable through the state
                         // holding it.
-                        self.writable(base)
+                        self.writable_place(base, false)
                     }
                     Some((r, _)) => Err(NotWritable::ReadOnlyField {
                         owner: r.name.clone(),
                         field: name.clone(),
                     }),
+                    // An unknown field, already reported.
+                    None if e.ty.is_error() => Ok(()),
                     None => Err(NotWritable::Other),
                 }
             }
-            ExprKind::Index { base, .. } => self.writable(base),
+            ExprKind::Index { base, .. } => self.writable_place(base, false),
             ExprKind::Node(_) => Err(NotWritable::BoundProp("self".into())),
             ExprKind::Error => Ok(()),
             _ => Err(NotWritable::Other),
@@ -2212,11 +2386,23 @@ impl<'a> Checker<'a> {
                     "assigning would cut the binding; keep a `state` here and {verb} that, or change what the caller passes"
                 ),
             ),
+            NotWritable::BoundProp(n) if n == "self" => (
+                "check::assign_to_prop",
+                format!("cannot {verb} `self`: it is the element"),
+                "the element itself".to_string(),
+                "bind a prop to a `state` (`opacity: v`) and assign the state instead".to_string(),
+            ),
             NotWritable::BoundProp(n) => (
                 "check::assign_to_prop",
                 format!("cannot {verb} `{n}`: props are bindings"),
                 "a bound prop".to_string(),
-                "bind the prop to a `state` (`width: w`) and assign the state instead".to_string(),
+                format!("bind the prop to a `state` (`{n}: v`) and assign the state instead"),
+            ),
+            NotWritable::SettingsRecord { name, field } => (
+                "check::read_only",
+                format!("cannot {verb} the whole settings record `{name}`"),
+                "a settings file".to_string(),
+                format!("{verb} a field: `{name}.{field} = …`"),
             ),
             NotWritable::ReadOnlyField { owner, field } => (
                 "check::read_only",
@@ -2244,7 +2430,20 @@ impl<'a> Checker<'a> {
     pub(crate) fn is_reactive(&self, e: &hir::Expr) -> bool {
         use ExprKind as K;
         match &e.kind {
-            K::Def(_) | K::Service(_) | K::Value(_) | K::Node(_) | K::Token(_) | K::Error => true,
+            K::Def(d) => match self.defs[d.0 as usize].kind {
+                DefKind::State | DefKind::Settings | DefKind::Service(_) => true,
+                // A `let` changes when what it reads does (checked
+                // before it is read, so this does not recurse).
+                DefKind::Let => !self.constant_lets.contains(d),
+                DefKind::Component
+                | DefKind::Surface(_)
+                | DefKind::Fn
+                | DefKind::Enum(_)
+                | DefKind::Type(_)
+                | DefKind::Tokens
+                | DefKind::Keyframes => false,
+            },
+            K::Service(_) | K::Value(_) | K::Node(_) | K::Token(_) | K::Error => true,
             K::Local(l) => !matches!(self.locals[l.0 as usize].kind, LocalKind::Channel),
             K::Number { .. } | K::Text(_) | K::Color(_) | K::Bool(_) | K::Null => false,
             K::Variant(..) | K::EnumType(_) => false,

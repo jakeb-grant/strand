@@ -1,0 +1,15 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::type_mismatch
+
+  × an index expects `int`, found `float`
+    ╭─[whole_number.strand:9:16]
+  8 │     on click { i = 0.5 }
+  9 │     text names[i]
+    ·                ┬
+    ·                ╰── this is `float`
+ 10 │   }
+    ╰────
+  help: a fraction is written to `i`, so it is a `float`; round it here: `i.round`

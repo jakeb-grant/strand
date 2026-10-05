@@ -163,17 +163,90 @@ impl fmt::Display for Diagnostic {
 ///
 /// Uses optimal-string-alignment distance (a swap of two neighbouring
 /// letters counts once), allowing about one edit per three characters.
+/// A one-letter word is only matched by case (`X` → `x`), and a word of
+/// two or more letters is never offered a one-letter name (`tp` must not
+/// become `t`). Ties go, in order, to a plausible typo (letters only
+/// dropped, only added, or swapped: `slt` → `slot`, not `set`; `drak` →
+/// `dark`), then to the smallest
+/// length difference, then to the alphabetically first, so a suggestion
+/// never depends on the order a hash map lists its names in.
+/// Candidates whose length rules them out are skipped before any
+/// distance is computed, so long candidate lists stay cheap.
 pub fn suggest<'a>(word: &str, candidates: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
-    let limit = word.chars().count().div_ceil(3).max(1);
-    candidates
-        .into_iter()
-        .filter(|c| *c != word)
-        .map(|c| (strsim::osa_distance(word, c), c))
-        .filter(|(d, _)| *d <= limit)
-        // Ties go to the alphabetically first, so a suggestion never
-        // depends on the order a hash map lists its names in.
-        .min_by_key(|&(d, c)| (d, c))
-        .map(|(_, c)| c)
+    let len = word.chars().count();
+    let limit = len.div_ceil(3).max(1);
+    let ascii = word.is_ascii();
+    let mut word_letters = [0u16; 128];
+    for b in word.bytes() {
+        word_letters[usize::from(b & 0x7f)] += 1;
+    }
+    let mut letters = word_letters;
+    let mut best: Option<((usize, bool, usize), &'a str)> = None;
+    for c in candidates {
+        if c == word {
+            continue;
+        }
+        let clen = c.chars().count();
+        let diff = clen.abs_diff(len);
+        if diff > limit || (len >= 2 && clen == 1) {
+            continue;
+        }
+        // An edit adds, drops or changes one letter (a swap none), so the
+        // letters the two do not share bound the distance from below:
+        // most candidates are ruled out without the quadratic distance.
+        if ascii && c.is_ascii() {
+            let mut shared = 0;
+            for b in c.bytes() {
+                let n = &mut letters[usize::from(b)];
+                if *n > 0 {
+                    *n -= 1;
+                    shared += 1;
+                }
+            }
+            for b in c.bytes() {
+                let i = usize::from(b);
+                letters[i] = word_letters[i];
+            }
+            let unshared = (len - shared).max(clen - shared);
+            if unshared > limit && !c.eq_ignore_ascii_case(word) {
+                continue;
+            }
+        }
+        let distance = if c.eq_ignore_ascii_case(word) {
+            0
+        } else if len == 1 {
+            continue;
+        } else {
+            strsim::osa_distance(word, c)
+        };
+        if distance > limit {
+            continue;
+        }
+        let key = (distance, !plausible_typo(word, c), diff);
+        let better = match best {
+            None => true,
+            Some((k, b)) => key < k || (key == k && c < b),
+        };
+        if better {
+            best = Some((key, c));
+        }
+    }
+    best.map(|(_, c)| c)
+}
+
+/// Whether `a` and `b` differ only by added letters, only by dropped
+/// letters, or only by order (the same letters).
+fn plausible_typo(a: &str, b: &str) -> bool {
+    fn sub(short: &str, long: &str) -> bool {
+        let mut it = long.chars();
+        short.chars().all(|c| it.any(|l| l == c))
+    }
+    let sorted = |s: &str| {
+        let mut v: Vec<char> = s.chars().collect();
+        v.sort_unstable();
+        v
+    };
+    sub(a, b) || sub(b, a) || sorted(a) == sorted(b)
 }
 
 /// Formats "did you mean `x`?" if a candidate is close enough.
@@ -464,6 +537,21 @@ mod tests {
         assert_eq!(suggest("im", kws), Some("in"));
         assert_eq!(suggest("banana", kws), None);
         assert_eq!(suggest("state", kws), None);
+    }
+
+    #[test]
+    fn suggestions_prefer_plausible_typos() {
+        // A word of two or more letters never becomes a one-letter name.
+        assert_eq!(suggest("tp", ["t", "top"]), Some("top"));
+        assert_eq!(suggest("ed", ["e"]), None);
+        // One letter: only a change of case.
+        assert_eq!(suggest("y", ["t", "x"]), None);
+        assert_eq!(suggest("X", ["x", "K"]), Some("x"));
+        // A dropped letter beats a changed one.
+        assert_eq!(suggest("slt", ["set", "slot"]), Some("slot"));
+        // Then the closer length, then the alphabet.
+        assert_eq!(suggest("drak", ["dark", "drake"]), Some("dark"));
+        assert_eq!(suggest("ab", ["ac", "ad"]), Some("ac"));
     }
 
     #[test]

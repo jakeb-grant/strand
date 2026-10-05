@@ -1,0 +1,4 @@
+// expect: check::file_name
+// A file's exports are read as `file.name`, so its name must be one.
+// file: my-bar.strand
+export state shown = false

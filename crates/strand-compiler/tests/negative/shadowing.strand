@@ -1,0 +1,8 @@
+// expect: check::ambiguous, check::redeclared
+// Shadowing is loud: a name in scope that is also a variant of the
+// expected enum, a parameter declared again in its body, and a file's
+// state named like a component.
+state top = 5
+bar Top { edge: top }
+component Card(n: int) { let n = 2; box {} }
+state Card = 1

@@ -13,3 +13,14 @@ check::read_only
  6 │     on scroll(dy) { audio.sink.volume -= dy * 0.05 }
    ╰────
   help: only `state`, settings fields and `rw` service fields can be written
+
+check::read_only
+
+  × cannot assign the whole settings record `prefs`
+    ╭─[read_only.strand:11:36]
+ 10 │ state prefs from "~/.config/strand/prefs.toml" { accent: color = #7aa2f7; compact: bool = false }
+ 11 │ component Reset { box { on click { prefs = prefs } } }
+    ·                                    ──┬──
+    ·                                      ╰── a settings file
+    ╰────
+  help: assign a field: `prefs.accent = …`

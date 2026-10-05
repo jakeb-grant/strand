@@ -1,0 +1,46 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::ambiguous
+
+  × `top` is both a name in scope and a variant of `Edge`
+   ╭─[shadowing.strand:6:17]
+ 4 │ // state named like a component.
+ 5 │ state top = 5
+   ·       ─┬─
+   ·        ╰── the name `top`
+ 6 │ bar Top { edge: top }
+   ·                 ─┬─
+   ·                  ╰── which one?
+ 7 │ component Card(n: int) { let n = 2; box {} }
+   ╰────
+  help: write `Edge.top` for the variant, or rename the `top` declared here
+
+check::redeclared
+
+  × `n` is declared twice
+   ╭─[shadowing.strand:7:30]
+ 6 │ bar Top { edge: top }
+ 7 │ component Card(n: int) { let n = 2; box {} }
+   ·                ┬             ┬
+   ·                │             ╰── declared again here
+   ·                ╰── a parameter of the component
+ 8 │ state Card = 1
+   ╰────
+  help: rename one of them
+
+check::redeclared
+
+  × `Card` is declared twice
+   ╭─[shadowing.strand:8:7]
+ 6 │ bar Top { edge: top }
+ 7 │ component Card(n: int) { let n = 2; box {} }
+   ·           ──┬─
+   ·             ╰── a name the whole config shares
+ 8 │ state Card = 1
+   ·       ──┬─
+   ·         ╰── a `state` of this file
+   ╰────
+  help: rename the `state`: components, types and other global names cannot be reused by a file's
+        `state` or `let`

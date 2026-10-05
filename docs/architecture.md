@@ -309,8 +309,11 @@ Public interfaces other crates and later stages build on:
   file); `render_short(&[Diagnostic], &SourceMap)` gives one
   `file:line:col: severity[code]: message` line each, for the reload
   overlay's list and editors. `suggest`/`did_you_mean` give the shared
-  near-miss logic (ties go to the alphabetically first name, so a
-  suggestion never depends on hash-map order).
+  near-miss logic: optimal-string-alignment distance within about one
+  edit per three letters, one-letter words matched only by case, no
+  one-letter candidate for a longer word, ties to a plausible typo
+  (dropped, added or swapped letters), then the closest length, then the
+  alphabet (never hash-map order).
 - **Schema** (`strand_compiler::schema`): everything the language knows
   before reading a config, as data: element kinds (typed props with
   `two_way`/`inherited` flags and sub-blocks, positional argument type,
@@ -326,7 +329,24 @@ Public interfaces other crates and later stages build on:
   `Schema::extend(text) -> Result<(), Vec<SchemaError { line, message }>>`,
   and check with `compile_with(&map, &schema)`; the LSP reads the same
   table for completion and hover (M3, "service schemas drive type checking
-  and LSP hover").
+  and LSP hover"). `///` comments in schema text document the entry they
+  precede: `Schema::doc(&DocKey) -> Option<&str>` with `DocKey::{Type(name),
+  Member(type, member), Function(name), Value(name), Method(type, method),
+  Element(kind), Prop(kind, name) (also `on event`, `stroke.dash` and
+  scope names; group docs reach their elements), Token(path)}`;
+  `RecordDef::doc` mirrors `DocKey::Type`. A parameter's default keeps its
+  source text (`ParamSig::default: Option<String>`). `Schema::fingerprint()
+  -> [u8; 32]` is BLAKE3 chained over every text `extend` was given, in
+  order (the builtin first): the schema part of the compiled-output cache
+  key (source hash + compiler version + schema hash), so a service crate
+  that changes its schema invalidates configs compiled against the old
+  one. The schema's element kinds and props are the scene's
+  (`strand_scene::protocol::NodeKind`, `Prop`), checked by
+  `strand-compiler/tests/scene_catalogue.rs`; `id` is compiler-only.
+  **Scene addition pending (strand-scene's owner):** `Prop::Dash` for the
+  `dash` sub-prop of `stroke` (`stroke: 3, $accent { dash: 6, 4 }`, a
+  `(length, length)` pair, class `Effects`); the test lists it as pending
+  until the scene has it.
 - **Types** (`strand_compiler::ty`): `Ty` is `Error` (already reported,
   accepted everywhere), `Any`, `Null`, `Unit`, `Prim(Prim)` (`bool int float
   length percent angle duration color paint text path font shadow insets
@@ -349,7 +369,13 @@ Public interfaces other crates and later stages build on:
   global across the config's files; top-level `state`/`let` belong to their
   file and are reachable elsewhere (and from the CLI) only as `file.name`
   when exported; `state`/`let` in a tree belong to their component,
-  surface or list item.
+  surface or list item. Every lazily checked declaration runs under
+  `stacker::maybe_grow`, so checking is safe on small worker-thread
+  stacks (the LSP's, the reload compile's) however long a chain of
+  declarations is. An untyped `state`/`let` holding a whole number is an
+  `int` in the HIR unless a fraction is written to it (then `float`; the
+  checker re-runs internally, see decisions.md), and an untyped
+  component parameter has the joined type of its call sites' arguments.
 - **HIR** (`strand_compiler::hir`), the typed, resolved program the VM
   lowering, the reconciler and the LSP consume. `Program { files:
   Vec<FileHir { file, name, items }>, defs: Vec<Def>, locals: Vec<Local>,
@@ -397,6 +423,10 @@ and hands the watcher plain paths (`files`, `dirs`) through its constructor,
 and again on every rescan through a `rescan` callback the binary supplies.
 Directories past `MAX_DEPTH` that hold `.strand` files are listed in
 `Discovery::too_deep` so `strand check` can warn that they are not loaded.
+`strand check <file>` checks the file with the rest of its config (the
+default config directory if the file is in it, else the file's own
+directory, both through `find_files`) and reports only the diagnostics
+whose primary label is in that file.
 
 It is not the watch set. Per design.md ("Change sources") the watcher also
 watches `.wgsl` shader files, settings TOML (`state … from "…"`), wallpaper

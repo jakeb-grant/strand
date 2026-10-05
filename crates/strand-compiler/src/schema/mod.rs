@@ -11,7 +11,11 @@
 //! builtin ones.
 //!
 //! The declaration language, one item after another (`//` comments, `;` or
-//! line breaks between members):
+//! line breaks between members). A `///` comment documents the entry it
+//! precedes (record, field, method, event, function, value, element,
+//! prop, palette role or token) and is kept in [`Schema::docs`] under a
+//! [`DocKey`] for hover; parameter defaults keep their source text
+//! ([`ParamSig::default`](crate::ty::ParamSig::default)).
 //!
 //! ```text
 //! enum Edge { top, bottom, left, right }
@@ -130,6 +134,35 @@ pub struct Schema {
     pub elements: BTreeMap<String, ElementSchema>,
     /// Palette roles and base-tier tokens by path (`space.2`).
     pub tokens: BTreeMap<String, TokenSchema>,
+    /// `///` doc comments, by what they document (hover and completion).
+    pub docs: BTreeMap<DocKey, String>,
+    /// BLAKE3 over every text given to [`Schema::extend`], in order; see
+    /// [`Schema::fingerprint`].
+    fingerprint: [u8; 32],
+}
+
+/// What a schema doc comment documents.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DocKey {
+    /// A record, service, enum, alias or opaque type, by name.
+    Type(String),
+    /// A field, method or event of a record or service: (type, member).
+    Member(String, String),
+    /// A builtin function or action.
+    Function(String),
+    /// A builtin value (`t`).
+    Value(String),
+    /// A method on a builtin type (`methods color { … }`): (type, method).
+    Method(String, String),
+    /// An element kind or prop group.
+    Element(String),
+    /// A prop of an element (`stroke.dash` for a sub-prop), its event
+    /// (`on click`) or a name it brings into scope (`index`): (element,
+    /// name). Props an element includes from a group carry the group's
+    /// docs.
+    Prop(String, String),
+    /// A palette role or base-tier token path (`accent`, `space.2`).
+    Token(String),
 }
 
 /// A problem in schema text, with its line.
@@ -167,7 +200,27 @@ impl Schema {
     /// text, or in earlier calls. Entries with errors are skipped and
     /// reported; the rest are added.
     pub fn extend(&mut self, text: &str) -> Result<(), Vec<SchemaError>> {
+        let mut h = blake3::Hasher::new();
+        h.update(b"strand-schema\0");
+        h.update(&self.fingerprint);
+        h.update(&(text.len() as u64).to_le_bytes());
+        h.update(text.as_bytes());
+        self.fingerprint = *h.finalize().as_bytes();
         parse::extend(self, text)
+    }
+
+    /// The schema hash: BLAKE3 chained over the builtin text and every
+    /// text a service crate added with [`Schema::extend`], in order. The
+    /// compiled-output cache is keyed by source hash, compiler version and
+    /// this, so a service crate that changes its schema invalidates
+    /// configs compiled against the old one (design.md, live reload).
+    pub fn fingerprint(&self) -> [u8; 32] {
+        self.fingerprint
+    }
+
+    /// The doc comment of an entry, if it has one.
+    pub fn doc(&self, key: &DocKey) -> Option<&str> {
+        self.docs.get(key).map(String::as_str)
     }
 
     /// A service's record.
@@ -371,6 +424,95 @@ mod tests {
             Ty::List(_, true)
         ));
         assert!(ppd.method("cycle").unwrap().sigs[0].action);
+    }
+
+    #[test]
+    fn fingerprint_tracks_every_extension() {
+        let builtin = Schema::builtin();
+        let mut again = Schema::default();
+        let _ = again.extend(BUILTIN);
+        assert_eq!(builtin.fingerprint(), again.fingerprint(), "stable");
+        assert_ne!(builtin.fingerprint(), Schema::default().fingerprint());
+        let mut a = builtin.clone();
+        a.extend("service ppd { profile: text rw }").unwrap();
+        assert_ne!(a.fingerprint(), builtin.fingerprint());
+        let mut b = builtin.clone();
+        b.extend("service ppd { profile: text }").unwrap();
+        assert_ne!(a.fingerprint(), b.fingerprint());
+        // Order matters: the same texts in another order are another
+        // schema (a later text may refer to an earlier one).
+        let (x, y) = ("enum P { a }", "enum Q { b }");
+        let mut xy = Schema::default();
+        xy.extend(x).unwrap();
+        xy.extend(y).unwrap();
+        let mut yx = Schema::default();
+        yx.extend(y).unwrap();
+        yx.extend(x).unwrap();
+        assert_ne!(xy.fingerprint(), yx.fingerprint());
+    }
+
+    #[test]
+    fn doc_comments_and_defaults_are_kept() {
+        let mut s = Schema::builtin().clone();
+        s.extend(
+            "/// Power profiles.\n\
+             service ppd {\n\
+               /// The active profile.\n\
+               profile: text rw\n\
+               // not a doc\n\
+               /// Cycles to the next one.\n\
+               action cycle()\n\
+             }\n\
+             /// Formats a profile.\n\
+             fn fmt(p: text, upper: bool = false, sep: text = \" / \") -> text\n\
+             element ring: node {\n\
+               /// How full.\n\
+               value: float\n\
+             }\n\
+             tokens { /// Ring thickness.\n ring { width: length } }",
+        )
+        .unwrap();
+        let doc = |k: DocKey| s.doc(&k).map(str::to_string);
+        assert_eq!(
+            doc(DocKey::Type("ppd".into())).as_deref(),
+            Some("Power profiles.")
+        );
+        let ppd = s.types.record(s.service("ppd").unwrap());
+        assert_eq!(ppd.doc.as_deref(), Some("Power profiles."));
+        assert_eq!(
+            doc(DocKey::Member("ppd".into(), "profile".into())).as_deref(),
+            Some("The active profile.")
+        );
+        assert_eq!(
+            doc(DocKey::Member("ppd".into(), "cycle".into())).as_deref(),
+            Some("Cycles to the next one.")
+        );
+        assert_eq!(
+            doc(DocKey::Function("fmt".into())).as_deref(),
+            Some("Formats a profile.")
+        );
+        assert_eq!(
+            doc(DocKey::Prop("ring".into(), "value".into())).as_deref(),
+            Some("How full.")
+        );
+        assert_eq!(
+            doc(DocKey::Token("ring".into())).as_deref(),
+            Some("Ring thickness.")
+        );
+        let fmt = &s.functions["fmt"][0];
+        assert_eq!(fmt.params[1].default.as_deref(), Some("false"));
+        assert_eq!(fmt.params[2].default.as_deref(), Some("\" / \""));
+        assert_eq!(fmt.params[0].default, None);
+        // The builtin schema documents its entries; group props reach the
+        // elements that include them.
+        let b = Schema::builtin();
+        assert!(b.doc(&DocKey::Function("join".into())).is_some());
+        assert!(b.doc(&DocKey::Type("Drop".into())).is_some());
+        assert!(
+            b.doc(&DocKey::Member("apps".into(), "search".into()))
+                .is_some()
+        );
+        assert!(b.doc(&DocKey::Value("t".into())).is_some());
     }
 
     #[test]

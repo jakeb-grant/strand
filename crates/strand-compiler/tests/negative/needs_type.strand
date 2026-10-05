@@ -1,6 +1,7 @@
 // expect: check::needs_type
 // Parameter types are optional in the grammar; the checker needs them
-// where it cannot infer.
+// where it cannot infer: an untyped parameter nothing calls with a value
+// has no type to take.
 component Toast(n) { text n.summary }
 component Fine(dense = false) { box { opacity: dense ? 0.5 : 1 } }
 fn twice(x) -> float { x * 2 }

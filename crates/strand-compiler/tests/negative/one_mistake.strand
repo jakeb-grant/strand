@@ -1,0 +1,15 @@
+// expect: check::unknown_field, check::two_way_prop, check::unknown_prop, check::misplaced
+// One mistake, one diagnostic: an unknown field is not also read-only, a
+// rejected `<->` does not also check its target, an unknown prop does not
+// also resolve its value, and a misplaced surface does not read its name
+// as a value.
+state prefs from "~/.config/strand/prefs.toml" { a: int = 1 }
+state s = ""
+component C {
+  box {
+    on click { prefs.b = 1 }
+    text "a" { color: <-> s }
+  }
+  bar X { edge: top }
+}
+panel P { edge: bottm }

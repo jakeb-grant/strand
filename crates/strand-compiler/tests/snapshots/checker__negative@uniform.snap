@@ -1,0 +1,27 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::type_mismatch
+
+  × shader uniform `u_name` takes a number, length, angle, duration or colour, or a comma vector
+  │ of them
+   ╭─[uniform.strand:5:78]
+ 4 │ component Glow {
+ 5 │   shader "aurora.wgsl" { u_speed: 0.4; u_dir: 1, 0; u_tint: $accent; u_name: "aurora"; u_on: true }
+   ·                                                                              ────┬───
+   ·                                                                                  ╰── this is `text`
+ 6 │ }
+   ╰────
+
+check::type_mismatch
+
+  × shader uniform `u_on` takes a number, length, angle, duration or colour, or a comma vector of
+  │ them
+   ╭─[uniform.strand:5:94]
+ 4 │ component Glow {
+ 5 │   shader "aurora.wgsl" { u_speed: 0.4; u_dir: 1, 0; u_tint: $accent; u_name: "aurora"; u_on: true }
+   ·                                                                                              ──┬─
+   ·                                                                                                ╰── this is `bool`
+ 6 │ }
+   ╰────

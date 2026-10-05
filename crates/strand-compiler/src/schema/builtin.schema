@@ -10,7 +10,6 @@
 enum Edge { top, bottom, left, right }
 enum Anchor { center, top, bottom, left, right, top_left, top_right, bottom_left, bottom_right }
 enum Align { start, center, end, stretch, baseline }
-enum Axis { vertical, horizontal }
 enum Layer { background, bottom, top, overlay }
 enum Keyboard { none, on_demand, exclusive }
 enum Screens { all, focused }
@@ -30,8 +29,8 @@ enum Curve { linear, ease_in, ease_out, ease_in_out, in_back, out_back, out_elas
 enum Instant { instant }
 enum SpectrumStyle { bars, mirror, wave, line }
 enum EffectKind { lightning, sparks, shimmer, ripple, aurora }
-enum InputKind { text, password }
 enum Urgency { low, normal, critical }
+enum DropKind { files, app, text }
 enum Variant { tonal_spot, vibrant, expressive, neutral, monochrome, fidelity, content, rainbow, fruit_salad }
 
 // Values with no inner structure the language can see.
@@ -42,7 +41,7 @@ alias AppId = text
 // ---------------------------------------------------------------------------
 // Records
 
-// A node of the tree: `self`, or an element given an `id:`.
+/// A node of the tree: `self`, or an element given an `id:`.
 record Node {
   hover: bool
   pressed: bool
@@ -173,7 +172,18 @@ record App key id {
   action launch()
 }
 
-// A launcher search result: the app, its score and the matched ranges.
+/// What another program drops on an element (design.md, "Drag and drop"):
+/// files, an app or text, as `on drop(d: Drop, at: int)`. `kind` says
+/// which; the other fields are empty. A drag inside the shell delivers the
+/// `drag:` source's own value instead (`on drop(p: Pin, at: int)`).
+record Drop {
+  kind: DropKind
+  files: [path]
+  app: App?
+  text: text
+}
+
+/// A launcher search result: the app, its score and the matched ranges.
 record Hit key app.id {
   app: App
   score: float
@@ -207,7 +217,7 @@ record Canvas {
 service clock {
   today: Date
   now: Date
-  // Wakes only as often as the pattern changes (once a minute for %H:%M).
+  /// Wakes only as often as the pattern changes (once a minute for %H:%M).
   fn format(pattern: text) -> text
 }
 
@@ -261,7 +271,7 @@ service notifications {
 
 service apps {
   all: [App]
-  // Fuzzy match plus frecency; keeps its last result while searching.
+  /// Fuzzy match plus frecency; keeps its last result while searching.
   fn search(query: text) -> Async<[Hit]>
 }
 
@@ -271,7 +281,7 @@ service media {
   artist: text?
   album: text?
   art: text?
-  // Fraction of the track played, 0 to 1.
+  /// Fraction of the track played, 0 to 1.
   position: float
   elapsed: duration
   length: duration?
@@ -280,7 +290,7 @@ service media {
   action previous()
 }
 
-// Portal settings.
+/// Portal settings.
 service system {
   dark: bool
   accent: color?
@@ -323,7 +333,7 @@ service bluetooth {
   devices: [BluetoothDevice]
 }
 
-// The lock screen's PAM helper.
+/// The lock screen's PAM helper.
 service auth {
   busy: bool
   failed: bool
@@ -335,15 +345,15 @@ service auth {
 
 fn pct(fraction: float) -> text lift
 fn dur(duration: duration) -> text lift
-// Joins the parts that are not null.
+/// Joins the parts that are not null.
 fn join(sep: text, ...parts: any?) -> text
 
 fn material(seed: color, variant: Variant = tonal_spot, dark: bool = false, contrast: float = 0) -> Palette
 fn material(image: path, variant: Variant = tonal_spot, dark: bool = false, contrast: float = 0) -> Async<Palette>
 fn import(source: text) -> Palette
 
-// `oklch(from $surface, l: l + 0.12)`: `l`, `c`, `h` and `alpha` name the
-// source colour's channels inside the arguments.
+/// `oklch(from $surface, l: l + 0.12)`: `l`, `c`, `h` and `alpha` name the
+/// source colour's channels inside the arguments.
 fn oklch(from: color, l: float = l, c: float = c, h: angle = h, alpha: float = alpha) -> color
 fn oklch(l: float, c: float, h: angle, alpha: float = 1) -> color
 fn rgb(r: float, g: float, b: float, alpha: float = 1) -> color
@@ -382,11 +392,11 @@ fn min(a: float, b: float) -> float
 fn max(a: float, b: float) -> float
 fn clamp(x: float, lo: float, hi: float) -> float
 
-// Handlers only.
+/// Handlers only.
 action propagate()
 fn sleep(duration: duration) -> Async<unit>
 
-// Time signal: seconds, for `rotate: t * 20deg`.
+/// Time signal: seconds, for `rotate: t * 20deg`.
 value t: float
 
 // ---------------------------------------------------------------------------
@@ -434,12 +444,10 @@ group node {
   max_height: length
   size: length
   grow: float
-  shrink: float
   pad: insets
   margin: insets
   gap: length
   align: Align
-  justify: Align
   place: Place
   stagger: duration
   x: length
@@ -500,7 +508,6 @@ group surface: node {
   anchor: Anchor
   attach: Edge
   scrim: paint
-  exclusive: bool
   on show
   on hide
 }
@@ -510,18 +517,18 @@ element bar: surface { edge: Edge; let screen: Screen; flags surface }
 element panel: surface { flags surface }
 element osd: surface { flags surface }
 element lock: surface { flags surface }
-// Anchored to its parent element; nests (tray menus).
+/// Anchored to its parent element; nests (tray menus).
 element popup: surface { on dismiss }
 
 // Containers.
 element row: node {}
 element col: node {}
 element stack: node {}
-element grid: node { columns: int; rows: int }
-element scroll: node { axis: Axis }
-// Virtualised; arrow keys move the selection.
+element grid: node { columns: int }
+element scroll: node {}
+/// Virtualised; arrow keys move the selection.
 element list: node {}
-// Start, centre and end, with a truly centred middle.
+/// Start, centre and end, with a truly centred middle.
 element split: node {}
 element start: node { flags only_in split }
 element center: node { flags only_in split }
@@ -539,21 +546,16 @@ element text(text): node {
   mark_color: paint
   markup: Markup
   roll: bool
-  wrap: bool
-  italic: bool
   text_stroke: (length, paint)
   fill: paint
   flags leaf
 }
 element icon(text): node { flags leaf }
-// A null source shows nothing.
+/// A null source shows nothing.
 element image(text?): node { fit: Fit; flags leaf }
 element button(text): node {}
 element slider: node {
   value: float <->
-  min: float
-  max: float
-  step: float
   track: paint
   flags leaf
 }
@@ -562,13 +564,10 @@ element input: node {
   placeholder: text
   focus: bool
   nav: Node
-  type: InputKind
   flags leaf
 }
 element meter(float): node {
   value: float
-  min: float
-  max: float
   track: paint
   wave: float
   flags leaf
@@ -577,35 +576,31 @@ element segmented: node { options: any; value: any <->; flags leaf }
 element tooltip: node {}
 
 // Effects and media nodes.
-element arc: node { value: float; sweep: angle; start: angle; track: paint; flags leaf }
+element arc: node { value: float; sweep: angle; track: paint; flags leaf }
 element graph(float): node {
   history: duration
   fill: paint
   smooth: float
-  min: float
-  max: float
   flags leaf
 }
 element spectrum(AudioDevice): node { bars: int; smooth: float; style: SpectrumStyle; flags leaf }
 element shader(path): node { flags leaf uniforms }
 element canvas: node { draw: fn(Canvas); flags leaf }
 element svg(path): node { flags leaf selectors }
-element lottie(path): node { speed: float; loop: bool; playing: bool; flags leaf }
+element lottie(path): node { speed: float; flags leaf }
 element thumbnail(Window): node { fit: Fit; flags leaf }
-element effect(EffectKind): node { speed: float; intensity: float; tint: color; flags leaf }
+element effect(EffectKind): node { speed: float; flags leaf }
 element particles: node {
   rate: float
   life: duration
   sprite: Sprite
   glow: length
   speed: float
-  spread: angle
-  gravity: float
   flags leaf
 }
-// Animates each letter of its text; `index` is the letter's position.
+/// Animates each letter of its text; `index` is the letter's position.
 element letters: node { let index: int; let count: int }
-// Goo merge: children melt together within the given distance.
+/// Goo merge: children melt together within the given distance.
 element merge(length): node {}
 
 // ---------------------------------------------------------------------------

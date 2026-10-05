@@ -1,0 +1,27 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::unreachable_arm
+
+  × this arm can never match
+   ╭─[unreachable_arm.strand:5:38]
+ 4 │ state mode = Mode.a
+ 5 │ let n = match mode { a => 1, b => 2, a => 3, _ => 4, c => 5 }
+   ·                      ┬               ┬
+   ·                      │               ╰── matched by an earlier arm
+   ·                      ╰── already matched here
+   ╰────
+  help: remove the repeated arm, or merge their bodies
+
+check::unreachable_arm
+
+  × this arm can never match
+   ╭─[unreachable_arm.strand:5:54]
+ 4 │ state mode = Mode.a
+ 5 │ let n = match mode { a => 1, b => 2, a => 3, _ => 4, c => 5 }
+   ·                                              ┬       ┬
+   ·                                              │       ╰── after `_`
+   ·                                              ╰── `_` matches everything first
+   ╰────
+  help: move `_` to the last arm, or remove this one

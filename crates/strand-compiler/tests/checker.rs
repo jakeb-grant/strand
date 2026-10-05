@@ -332,6 +332,105 @@ fn contributed_service_schemas_check() {
     assert!(msgs[0].contains("did you mean `temp`?"), "{msgs:?}");
 }
 
+fn def_ty(p: &hir::Program, name: &str) -> String {
+    let d = p
+        .defs
+        .iter()
+        .find(|d| d.name == name)
+        .unwrap_or_else(|| panic!("no def {name}"));
+    show(p, &d.ty)
+}
+
+/// An untyped `state` or `let` holding a whole number is an `int`, so it
+/// can index, count and fill `int` props; once a fraction is written to
+/// it (directly, through a `float` it is set from, or a slider's `<->`)
+/// it is a `float`.
+#[test]
+fn whole_number_declarations_are_ints_until_a_fraction_arrives() {
+    let out = one("state i = 0\n\
+                   state xs: [text] = []\n\
+                   state cols = 7\n\
+                   state n = 3\n\
+                   state level = 0\n\
+                   state a = 0\n\
+                   state b = 0\n\
+                   state count = 0\n\
+                   component C {\n\
+                     col {\n\
+                       text xs[i]\n\
+                       grid { columns: cols }\n\
+                       text \"x\" { max_lines: cols }\n\
+                       for p in notifications.popups.take(n) { text p.summary }\n\
+                       slider { value: <-> level }\n\
+                       box { on click { a = a + 0.5; b = a; count += 1; i = i + 1 } }\n\
+                     }\n\
+                   }\n");
+    let p = &out.program;
+    for (name, ty) in [
+        ("i", "int"),
+        ("cols", "int"),
+        ("n", "int"),
+        ("count", "int"),
+        ("level", "float"),
+        ("a", "float"),
+        ("b", "float"),
+    ] {
+        assert_eq!(def_ty(p, name), ty, "{name}");
+    }
+    // An exported whole number reads as an `int` from another file.
+    let (out, map) = compile_files(&[
+        ("a.strand", "export let q = 1\n".into()),
+        ("b.strand", "let r: int = a.q\n".into()),
+    ]);
+    assert!(
+        out.diagnostics.is_empty(),
+        "{}",
+        render(&out.diagnostics, &map, Style::Plain)
+    );
+}
+
+/// An untyped component parameter takes its type from its callers
+/// (grammar.md's `component Toast(n) tokens { … }`).
+#[test]
+fn component_parameters_are_inferred_from_callers() {
+    let out = one("tokens base { radius { lg: 14px } }\n\
+                   component Toast(n) tokens { radius: $radius.lg } {\n\
+                     col { radius: $Toast.radius; text n.summary }\n\
+                   }\n\
+                   panel Toasts { for n in notifications.popups { Toast n } }\n\
+                   component Label(t) { text t }\n\
+                   component Wrap(x) { Label t: x }\n\
+                   bar Top { edge: top; Wrap \"hi\" }\n");
+    let p = &out.program;
+    let param_ty = |comp: &str| {
+        let c = p
+            .files
+            .iter()
+            .flat_map(|f| &f.items)
+            .find_map(|i| match i {
+                hir::Item::Component(c) if p.def(c.def).name == comp => Some(c),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no component {comp}"));
+        show(p, &p.locals[c.params[0].local.0 as usize].ty)
+    };
+    assert_eq!(param_ty("Toast"), "Notification");
+    // Through another inferred component, named or positional.
+    assert_eq!(param_ty("Wrap"), "text");
+    assert_eq!(param_ty("Label"), "text");
+    // The HIR keeps file order.
+    let names: Vec<&str> = p.files[0]
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            hir::Item::Component(c) => Some(p.def(c.def).name.as_str()),
+            hir::Item::Surface(s) => s.def.map(|d| p.def(d).name.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(names, ["Toast", "Toasts", "Label", "Wrap", "Top"]);
+}
+
 /// A whole-number literal is a `float` unless its position expects an
 /// `int`; a fn's value is such a position, and a typed fn may recurse.
 #[test]

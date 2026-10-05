@@ -1,0 +1,11 @@
+// expect: check::type_mismatch
+// `state i = 0` is an `int` until a fraction is written to it; then it is
+// a `float`, and an int position says how to round it.
+state i = 0
+state names: [text] = []
+component C {
+  box {
+    on click { i = 0.5 }
+    text names[i]
+  }
+}

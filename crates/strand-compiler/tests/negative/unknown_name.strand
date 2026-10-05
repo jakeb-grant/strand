@@ -6,3 +6,12 @@ state kind = volume
 state open = false
 let label = kind == volum ? "volume" : "brightness"
 let shown = opn && kind == brightness
+// The expected enum's variants come first, so `tp` is `top`, never the
+// one-letter time value `t`.
+bar Top { edge: tp }
+keyframes shake { 0%, 100% { x: 0 }; 50% { x: 4 } }
+component Shaker { box { on click { play shak } } }
+// Another file's export is offered by its path.
+let quiet = dnd
+// file: toasts.strand
+export state dnd = false

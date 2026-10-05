@@ -22,5 +22,41 @@ check::unknown_name
  8 │ let shown = opn && kind == brightness
    ·             ─┬─
    ·              ╰── not found
+ 9 │ // The expected enum's variants come first, so `tp` is `top`, never the
    ╰────
   help: did you mean `open`?
+
+check::unknown_name
+
+  × unknown name `tp`
+    ╭─[unknown_name.strand:11:17]
+ 10 │ // one-letter time value `t`.
+ 11 │ bar Top { edge: tp }
+    ·                 ─┬
+    ·                  ╰── not a name, nor a variant of `Edge`
+ 12 │ keyframes shake { 0%, 100% { x: 0 }; 50% { x: 4 } }
+    ╰────
+  help: did you mean `top`?
+
+check::unknown_name
+
+  × unknown name `shak`
+    ╭─[unknown_name.strand:13:42]
+ 12 │ keyframes shake { 0%, 100% { x: 0 }; 50% { x: 4 } }
+ 13 │ component Shaker { box { on click { play shak } } }
+    ·                                          ──┬─
+    ·                                            ╰── not found
+ 14 │ // Another file's export is offered by its path.
+    ╰────
+  help: did you mean `shake`?
+
+check::unknown_name
+
+  × unknown name `dnd`
+    ╭─[unknown_name.strand:15:13]
+ 14 │ // Another file's export is offered by its path.
+ 15 │ let quiet = dnd
+    ·             ─┬─
+    ·              ╰── not found
+    ╰────
+  help: did you mean `toasts.dnd`?

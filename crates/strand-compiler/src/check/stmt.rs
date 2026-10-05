@@ -163,11 +163,24 @@ impl<'a> Checker<'a> {
             self.not_writable(why, target.span, "assign");
         }
         let v = match op {
-            AssignOp::Set => self.expect(value, &t.ty, "this assignment"),
+            AssignOp::Set => {
+                let v = self.expr(value, Some(&t.ty));
+                if !self.widen(&t, &v.ty) {
+                    self.require(&v, &t.ty, "this assignment");
+                }
+                v
+            }
             _ => {
                 let v = self.expr(value, Some(&t.ty));
+                // `i += 0.5`, `i *= 0.5`, `i /= 2` make a whole-number
+                // state fractional.
+                let fraction = match op {
+                    AssignOp::Div => Ty::FLOAT,
+                    _ => v.ty.clone(),
+                };
+                let widened = self.widen(&t, &fraction);
                 let ok = match (t.ty.prim(), v.ty.prim()) {
-                    _ if t.ty.is_lenient() || v.ty.is_lenient() => true,
+                    _ if widened || t.ty.is_lenient() || v.ty.is_lenient() => true,
                     (Some(a), Some(b)) if a.is_numeric() && b.is_numeric() => {
                         matches!(op, AssignOp::Mul | AssignOp::Div) && b.is_scalar()
                             || self.types.assignable(&v.ty, &t.ty)
@@ -229,8 +242,9 @@ impl<'a> Checker<'a> {
 
     /// `play shake`: a keyframes name.
     pub(crate) fn play_target(&mut self, e: &'a ast::Expr) -> hir::Expr {
-        let h = self.expr(e, None);
-        if !h.ty.is_error() && h.ty != Ty::opaque("Keyframes") {
+        let keyframes = Ty::opaque("Keyframes");
+        let h = self.expr(e, Some(&keyframes));
+        if !h.ty.is_error() && h.ty != keyframes {
             let shown = self.show(&h.ty);
             self.error(
                 "check::type_mismatch",
@@ -279,23 +293,29 @@ impl<'a> Checker<'a> {
                 let mut ts = Vec::new();
                 for t in targets {
                     let h = self.expr(t, None);
-                    if !self.is_reactive(&h) {
-                        self.error(
-                            "check::not_reactive",
-                            "`on change` watches something that never changes",
-                            t.span,
-                            "constant",
-                        )
-                        .help = Some(
-                            "watch a `state`, a `let` or a service field, such as `audio.sink.volume`"
-                                .into(),
-                        );
-                    } else if matches!(h.ty, Ty::Fn(_)) {
+                    if matches!(h.ty, Ty::Fn(_)) {
                         self.error(
                             "check::not_reactive",
                             "`on change` watches values, not functions",
                             t.span,
                             "a function",
+                        );
+                    } else if !self.is_reactive(&h) {
+                        let label = match &h.kind {
+                            hir::ExprKind::Def(d) => {
+                                format!("`{}` never changes", self.defs[d.0 as usize].name)
+                            }
+                            _ => "constant".to_string(),
+                        };
+                        self.error(
+                            "check::not_reactive",
+                            "`on change` watches something that never changes",
+                            t.span,
+                            label,
+                        )
+                        .help = Some(
+                            "watch a `state`, a `let` that reads one, or a service field, such as `audio.sink.volume`"
+                                .into(),
                         );
                     }
                     ts.push(h);

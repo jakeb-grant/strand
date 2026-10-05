@@ -12,4 +12,4 @@ check::missing_key
    ·                ╰── items have no identity
  9 │     for p in pins key p.app { text p.label }
    ╰────
-  help: say what identifies an item: `for p in … key p`
+  help: say what identifies an item: `for p in … key p.app`
