@@ -8,8 +8,8 @@
 //! writes, nothing is dirty, nothing is scheduled
 //! ([`Runtime::next_deadline`] is `None`) and no work happens: true idle.
 //!
-//! Writes batch: [`Runtime::flush`] ends a tick, runs each dirty effect once
-//! in creation order and returns a [`Tick`] listing what changed, from which
+//! Writes batch: [`Runtime::flush`] ends a tick, runs dirty effects in
+//! creation order and returns a [`Tick`] listing what changed, from which
 //! the scene emitter builds one diff per tick for the render thread, which
 //! never waits on this one.
 //!
@@ -46,14 +46,15 @@ mod task;
 mod timer;
 
 pub use async_value::{Async, RequestId};
-pub use echo::{Generation, Received};
+pub use echo::{Generation, MAX_PENDING_ECHOES, Received};
 pub use error::{CyclePath, Error};
 pub use events::EventQueue;
 pub use keyed::reactive::{KeyedMemo, KeyedOps, KeyedSignal, KeyedSource, Snapshot};
 pub use keyed::{KeyedError, KeyedVec, VecDiff, keyed_diff};
 pub use runtime::{
-    Diagnostic, MAX_RUNS_PER_FLUSH, NodeId, NodeKind, Runtime, Scope, Stats, Tick, WeakRuntime,
+    Diagnostic, HARD_RUNS_PER_FLUSH, MAX_RUNS_PER_FLUSH, NodeId, NodeKind, Runtime, Scope, Stats,
+    Tick, WeakRuntime,
 };
 pub use signal::{Effect, Memo, Signal};
 pub use task::{Sleep, Task};
-pub use timer::{Debounced, Timer};
+pub use timer::{Debounced, MIN_EVERY_PERIOD, Timer};

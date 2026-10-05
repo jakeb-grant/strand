@@ -15,7 +15,7 @@
 //! its previous output, so keys and identity survive either way.
 
 use std::any::Any;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::fmt;
 use std::hash::Hash;
@@ -164,15 +164,6 @@ impl<K: Clone + 'static, T: Clone + 'static> NodeData for CellData<K, T> {
     fn as_any(&self) -> &dyn Any {
         self
     }
-    fn clone_value(&self) -> Option<Box<dyn Any>> {
-        Some(Box::new(self.log.try_borrow().ok()?.version()))
-    }
-    fn value_eq(&self, other: &dyn Any) -> bool {
-        match (other.downcast_ref::<u64>(), self.log.try_borrow()) {
-            (Some(o), Ok(l)) => l.version() == *o,
-            _ => false,
-        }
-    }
 }
 
 /// A keyed collection cell (`state xs: [T] key f = []`). Copyable handle.
@@ -230,53 +221,55 @@ where
         rt.dispose(self.id);
     }
 
-    /// Run a mutation and publish its diffs.
-    fn mutate<R>(
+    /// Run a mutation and publish the diffs it applied, even when it then
+    /// failed part-way (so the log always matches the items).
+    fn mutate(
         self,
         rt: &Runtime,
-        f: impl FnOnce(&mut KeyedVec<K, T>) -> Result<(Vec<VecDiff<K, T>>, R), Error>,
-    ) -> Result<R, Error> {
+        f: impl FnOnce(&mut KeyedVec<K, T>) -> (Vec<VecDiff<K, T>>, Result<(), Error>),
+    ) -> Result<(), Error> {
         rt.check_write_allowed(self.id)?;
-        let (diffs, r) = rt.with_data::<CellData<K, T>, _>(self.id, |d| {
+        let (changed, r) = rt.with_data::<CellData<K, T>, _>(self.id, |d| {
             let Ok(mut vec) = d.vec.try_borrow_mut() else {
-                return Err(Error::Reentrant);
+                return (false, Err(Error::Reentrant));
             };
-            let (diffs, r) = f(&mut vec)?;
+            let (diffs, r) = f(&mut vec);
+            let changed = !diffs.is_empty();
             let mut log = d.log.borrow_mut();
-            for diff in &diffs {
-                log.push(diff.clone());
+            for diff in diffs {
+                log.push(diff);
             }
-            Ok((diffs, r))
-        })??;
-        if !diffs.is_empty() {
+            (changed, r)
+        })?;
+        if changed {
             rt.cell_changed(self.id);
         }
-        Ok(r)
+        r
     }
 
     /// `xs.push(v)`.
     pub fn push(self, rt: &Runtime, value: T) -> Result<(), Error> {
-        self.mutate(rt, |v| Ok((vec![v.push(value)?], ())))
+        self.mutate(rt, |v| one(v.push(value).map(Some)))
     }
 
     /// `xs.insert(i, v)`.
     pub fn insert(self, rt: &Runtime, index: usize, value: T) -> Result<(), Error> {
-        self.mutate(rt, |v| Ok((vec![v.insert(index, value)?], ())))
+        self.mutate(rt, |v| one(v.insert(index, value).map(Some)))
     }
 
     /// `xs.remove_key(k)`.
     pub fn remove_key(self, rt: &Runtime, key: &K) -> Result<(), Error> {
-        self.mutate(rt, |v| Ok((vec![v.remove_key(key)?], ())))
+        self.mutate(rt, |v| one(v.remove_key(key).map(Some)))
     }
 
     /// `xs.move(k, to)`.
     pub fn move_key(self, rt: &Runtime, key: &K, to: usize) -> Result<(), Error> {
-        self.mutate(rt, |v| Ok((v.move_key(key, to)?.into_iter().collect(), ())))
+        self.mutate(rt, |v| one(v.move_key(key, to)))
     }
 
     /// `xs.update(k, f)`.
     pub fn update(self, rt: &Runtime, key: &K, f: impl FnOnce(&mut T)) -> Result<(), Error> {
-        self.mutate(rt, |v| Ok((v.update(key, f)?.into_iter().collect(), ())))
+        self.mutate(rt, |v| one(v.update(key, f)))
     }
 
     /// Replace the contents, keeping identity by key.
@@ -285,18 +278,26 @@ where
         rt: &Runtime,
         values: impl IntoIterator<Item = T>,
     ) -> Result<(), Error> {
-        self.mutate(rt, |v| Ok((v.replace_all(values)?, ())))
+        self.mutate(rt, |v| match v.replace_all(values) {
+            Ok(diffs) => (diffs, Ok(())),
+            Err(e) => (Vec::new(), Err(e.into())),
+        })
     }
 
-    /// Apply diffs published by a service.
+    /// Apply diffs published by a service, in order. If one is malformed,
+    /// the ones before it stay applied and are published (consumers and
+    /// derived collections stay consistent with the items) and the error is
+    /// returned; the rest of the batch is dropped.
     pub fn apply(self, rt: &Runtime, diffs: &[VecDiff<K, T>]) -> Result<(), Error> {
         self.mutate(rt, |v| {
             let mut applied = Vec::with_capacity(diffs.len());
             for d in diffs {
-                v.apply(d)?;
+                if let Err(e) = v.apply(d) {
+                    return (applied, Err(e.into()));
+                }
                 applied.push(d.clone());
             }
-            Ok((applied, ()))
+            (applied, Ok(()))
         })
     }
 
@@ -327,6 +328,16 @@ where
     }
 }
 
+/// One optional diff from a `KeyedVec` mutation, as `mutate` wants it.
+fn one<K, T>(
+    r: Result<Option<VecDiff<K, T>>, super::KeyedError>,
+) -> (Vec<VecDiff<K, T>>, Result<(), Error>) {
+    match r {
+        Ok(d) => (d.into_iter().collect(), Ok(())),
+        Err(e) => (Vec::new(), Err(e.into())),
+    }
+}
+
 // ----- derived ------------------------------------------------------------
 
 /// What a derived step produced.
@@ -342,7 +353,9 @@ struct DerivedData<K, U> {
     items: RefCell<Rc<Vec<(K, U)>>>,
     log: Rc<RefCell<DiffLog<K, U>>>,
     error: RefCell<Option<Error>>,
-    started: std::cell::Cell<bool>,
+    started: Cell<bool>,
+    /// Tells the step to rebuild from the source on its next call.
+    force_rebuild: Rc<Cell<bool>>,
 }
 
 impl<K, U> NodeData for DerivedData<K, U>
@@ -352,23 +365,6 @@ where
 {
     fn as_any(&self) -> &dyn Any {
         self
-    }
-
-    fn clone_value(&self) -> Option<Box<dyn Any>> {
-        let version = self.log.try_borrow().ok()?.version();
-        let error = self.error.try_borrow().ok()?.clone();
-        Some(Box::new((version, error)))
-    }
-
-    fn value_eq(&self, other: &dyn Any) -> bool {
-        match (
-            other.downcast_ref::<(u64, Option<Error>)>(),
-            self.log.try_borrow(),
-            self.error.try_borrow(),
-        ) {
-            (Some((v, e)), Ok(l), Ok(err)) => l.version() == *v && *err == *e,
-            _ => false,
-        }
     }
 
     fn run(&self, rt: &Runtime, _id: NodeId) -> RunOutcome {
@@ -391,22 +387,39 @@ where
             }
         };
         let had_error = self.error.borrow_mut().take().is_some();
-        let mut items = self.items.borrow_mut();
-        let mut log = self.log.borrow_mut();
         let first = !self.started.replace(true);
         let diffs = match step {
-            Step::Diffs(diffs) => {
+            Step::Diffs(mut diffs) => {
+                let mut items = self.items.borrow_mut();
                 let list = Rc::make_mut(&mut items);
-                for d in &diffs {
-                    // Operators emit valid diffs; a failure means a bug, so
-                    // fall back to a reset rather than diverge.
-                    if d.apply(list).is_err() {
-                        break;
+                let applied = diffs.iter().take_while(|d| d.apply(list).is_ok()).count();
+                if applied == diffs.len() {
+                    diffs
+                } else {
+                    // Operators emit valid diffs, so this is a bug; recover
+                    // without diverging: keep what applied, then rebuild
+                    // from the source and publish the keyed difference.
+                    diffs.truncate(applied);
+                    drop(items);
+                    self.force_rebuild.set(true);
+                    let rebuilt = match self.step.try_borrow_mut() {
+                        Ok(mut step) => step(rt),
+                        Err(_) => Err(Error::Reentrant),
+                    };
+                    let mut items = self.items.borrow_mut();
+                    match rebuilt {
+                        Ok(Step::Rebuild(new)) => {
+                            diffs.extend(keyed_diff(&items, &new));
+                            *items = Rc::new(new);
+                        }
+                        Ok(Step::Diffs(_)) => {}
+                        Err(e) => *self.error.borrow_mut() = Some(e),
                     }
+                    diffs
                 }
-                diffs
             }
             Step::Rebuild(new) => {
+                let mut items = self.items.borrow_mut();
                 let diffs = if first {
                     vec![VecDiff::Reset { items: new.clone() }]
                 } else {
@@ -416,6 +429,8 @@ where
                 diffs
             }
         };
+        let mut log = self.log.borrow_mut();
+        let had_error = had_error || self.error.borrow().is_some();
         let changed = !diffs.is_empty() || had_error || first;
         for d in diffs {
             log.push(d);
@@ -506,7 +521,12 @@ where
         version: u64,
     }
     let mut state: Option<St<P, O, K, T>> = None;
+    let force_rebuild = Rc::new(Cell::new(false));
+    let force = force_rebuild.clone();
     let step = move |rt: &Runtime| -> Result<Step<K, U>, Error> {
+        if force.replace(false) {
+            state = None;
+        }
         let snap = src.snapshot(rt)?;
         let p = params(rt)?;
         if let Some(st) = state.as_mut()
@@ -557,7 +577,8 @@ where
             items: RefCell::new(Rc::new(Vec::new())),
             log: Rc::new(RefCell::new(DiffLog::new())),
             error: RefCell::new(None),
-            started: std::cell::Cell::new(false),
+            started: Cell::new(false),
+            force_rebuild,
         })),
     );
     KeyedMemo {

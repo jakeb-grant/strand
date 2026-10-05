@@ -6,6 +6,12 @@
 //! protocols such as D-Bus `PropertiesChanged` that carry no tag) it is
 //! ignored, so a slider being dragged never snaps back to an older value.
 //! A value that matches no pending write is an outside change and wins.
+//!
+//! The write-rate guard covers the service path too: while a handler's
+//! writes to the cell are throttled, nothing is sent; the latest value is
+//! held and sent (with a fresh tag) when the window has room, so a feedback
+//! loop through a service is cut at 30 writes per second like a local one.
+//! At most [`MAX_PENDING_ECHOES`] unacknowledged writes are remembered.
 
 use std::collections::VecDeque;
 
@@ -26,6 +32,10 @@ pub enum Received {
     /// The report was the echo of a pending local write and was ignored.
     Echo,
 }
+
+/// Unacknowledged writes remembered per cell; older ones are forgotten (an
+/// outside value clears them anyway).
+pub const MAX_PENDING_ECHOES: usize = 64;
 
 struct EchoState<T> {
     next: u64,
@@ -61,16 +71,49 @@ impl<T: Clone + PartialEq + 'static> Signal<T> {
         }
     }
 
-    /// A local write destined for a service: applied now, remembered as
-    /// pending, and returned tag to send along with it.
-    pub fn write_tagged(self, rt: &Runtime, value: T) -> Result<Generation, Error> {
-        self.set(rt, value.clone())?;
-        Ok(self.with_echo(rt, |s| {
-            let g = Generation(s.next);
-            s.next += 1;
-            s.pending.push_back((g, value));
-            g
-        }))
+    /// A local write destined for a service. When the write-rate guard lets
+    /// it through, the value is applied, remembered as pending, and `send`
+    /// is called with it and its tag; the tag is returned. When this
+    /// handler is throttled, `Ok(None)` is returned and nothing is sent yet:
+    /// the latest held write is applied and sent when the window has room
+    /// (a newer write replaces it, and so does its `send`).
+    pub fn write_tagged(
+        self,
+        rt: &Runtime,
+        value: T,
+        send: impl FnOnce(&Runtime, &T, Generation) + 'static,
+    ) -> Result<Option<Generation>, Error> {
+        rt.check_write_allowed(self.id)?;
+        if !rt.exists(self.id) {
+            return Err(Error::Disposed(self.id));
+        }
+        let commit = move |rt: &Runtime, value: T| -> Result<Generation, Error> {
+            self.set_raw(rt, value.clone())?;
+            let g = self.with_echo(rt, |s| {
+                let g = Generation(s.next);
+                s.next += 1;
+                s.pending.push_back((g, value.clone()));
+                while s.pending.len() > MAX_PENDING_ECHOES {
+                    s.pending.pop_front();
+                }
+                g
+            });
+            send(rt, &value, g);
+            Ok(g)
+        };
+        if rt.rate_gate(self.id) {
+            commit(rt, value).map(Some)
+        } else {
+            let held = Box::new(value.clone());
+            rt.defer_write(
+                self.id,
+                Some(held),
+                Box::new(move |rt: &Runtime| {
+                    let _ = commit(rt, value);
+                }),
+            );
+            Ok(None)
+        }
     }
 
     /// Number of local writes the service has not echoed yet.

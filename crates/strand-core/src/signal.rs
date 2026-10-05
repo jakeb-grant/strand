@@ -75,15 +75,6 @@ impl<T: Clone + PartialEq + 'static> NodeData for SignalData<T> {
     fn as_any(&self) -> &dyn Any {
         self
     }
-    fn clone_value(&self) -> Option<Box<dyn Any>> {
-        Some(Box::new(self.value.try_borrow().ok()?.clone()))
-    }
-    fn value_eq(&self, other: &dyn Any) -> bool {
-        match (other.downcast_ref::<T>(), self.value.try_borrow()) {
-            (Some(o), Ok(v)) => *v == *o,
-            _ => false,
-        }
-    }
 }
 
 type ComputeFn<T> = Box<dyn Fn(&Runtime) -> Result<T, Error>>;
@@ -97,18 +88,6 @@ pub(crate) struct MemoData<T> {
 impl<T: Clone + PartialEq + 'static> NodeData for MemoData<T> {
     fn as_any(&self) -> &dyn Any {
         self
-    }
-    fn clone_value(&self) -> Option<Box<dyn Any>> {
-        Some(Box::new(self.value.try_borrow().ok()?.clone()))
-    }
-    fn value_eq(&self, other: &dyn Any) -> bool {
-        match (
-            other.downcast_ref::<Option<Result<T, Error>>>(),
-            self.value.try_borrow(),
-        ) {
-            (Some(o), Ok(v)) => *v == *o,
-            _ => false,
-        }
     }
     fn run(&self, rt: &Runtime, _id: NodeId) -> RunOutcome {
         let new = (self.f)(rt);
@@ -213,24 +192,49 @@ impl Runtime {
 
     /// `on change x { … }`: run `handler` when the value of `track`
     /// changes, never for its first value (boot or reload). `handler` runs
-    /// untracked.
-    pub fn on_change<T, F, H>(&self, track: F, mut handler: H) -> Effect
+    /// untracked, as a handler of the current owner: nodes it creates (a
+    /// load it starts) belong to the component, not to this effect.
+    pub fn on_change<T, F, H>(&self, track: F, handler: H) -> Effect
     where
         T: PartialEq + 'static,
         F: Fn(&Runtime) -> Result<T, Error> + 'static,
         H: FnMut(&Runtime, &T) -> Result<(), Error> + 'static,
     {
-        let mut prev: Option<T> = None;
+        self.on_change_keyed(|_| Ok(()), track, handler)
+    }
+
+    /// `on change` that tells a change of value from a change of identity.
+    /// `key` names what the tracked path points at (`audio.sink` for
+    /// `audio.sink.volume`); when the key changes the new value becomes the
+    /// baseline and `handler` does not run. So switching to a sink with a
+    /// different volume pops no OSD; changing the volume of the same sink
+    /// does.
+    pub fn on_change_keyed<K, KF, T, F, H>(&self, key: KF, track: F, mut handler: H) -> Effect
+    where
+        K: PartialEq + 'static,
+        KF: Fn(&Runtime) -> Result<K, Error> + 'static,
+        T: PartialEq + 'static,
+        F: Fn(&Runtime) -> Result<T, Error> + 'static,
+        H: FnMut(&Runtime, &T) -> Result<(), Error> + 'static,
+    {
+        let owner = self.current_owner();
+        let mut prev: Option<(K, T)> = None;
         self.effect(move |rt| {
+            let k = key(rt)?;
             let value = track(rt)?;
-            let first = prev.is_none();
-            let changed = prev.as_ref() != Some(&value);
-            if first || !changed {
-                prev = Some(value);
-                return Ok(());
-            }
-            let r = rt.untrack(|rt| handler(rt, &value));
-            prev = Some(value);
+            let fire = match &prev {
+                // First value: boot or reload.
+                None => false,
+                // Same identity, new value.
+                Some((pk, pv)) => *pk == k && *pv != value,
+            };
+            let r = if fire {
+                let writer = rt.current_writer().unwrap_or_default();
+                rt.run_handler(writer, owner, |rt| handler(rt, &value))
+            } else {
+                Ok(())
+            };
+            prev = Some((k, value));
             r
         })
     }
@@ -264,14 +268,22 @@ impl<T: Clone + PartialEq + 'static> Signal<T> {
     /// than 30 times a second is throttled (see [`crate::rate`]).
     pub fn set(self, rt: &Runtime, value: T) -> Result<(), Error> {
         rt.check_write_allowed(self.id)?;
-        if !rt.exists(self.id) {
-            return Err(Error::Disposed(self.id));
+        // Writing the current value is not a write, and does not count
+        // towards the rate limit, unless a throttled write is waiting (then
+        // this one supersedes it).
+        let same = rt.with_data::<SignalData<T>, _>(self.id, |d| {
+            d.value.try_borrow().is_ok_and(|v| *v == value)
+        })?;
+        if same && !rt.has_deferred(self.id) {
+            return Ok(());
         }
         if rt.rate_gate(self.id) {
             self.set_raw(rt, value).map(|_| ())
         } else {
+            let held = Box::new(value.clone());
             rt.defer_write(
                 self.id,
+                Some(held),
                 Box::new(move |rt: &Runtime| {
                     let _ = self.set_raw(rt, value);
                 }),
@@ -280,9 +292,14 @@ impl<T: Clone + PartialEq + 'static> Signal<T> {
         }
     }
 
-    /// Modify the value in place; notifies only if it changed.
+    /// Modify the value in place; notifies only if it changed. While this
+    /// handler's writes to the cell are throttled, `f` sees the value it
+    /// last wrote (read-your-writes), so `x += 1` is never lost.
     pub fn update(self, rt: &Runtime, f: impl FnOnce(&mut T)) -> Result<(), Error> {
-        let mut v = self.get_untracked(rt)?;
+        let mut v = match rt.deferred_value::<T>(self.id) {
+            Some(v) => v,
+            None => self.get_untracked(rt)?,
+        };
         f(&mut v);
         self.set(rt, v)
     }

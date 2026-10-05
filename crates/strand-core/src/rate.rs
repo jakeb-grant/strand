@@ -5,9 +5,15 @@
 //! many times inside one tick coalesces to one write, so loops inside one
 //! handler run never trip the guard. While throttled, the latest value is
 //! held and applied when the one-second window has room again, so the final
-//! value is never lost. Writes from outside a handler (services, CLI) are not
-//! counted; they coalesce per tick anyway.
+//! value is never lost (and `update` reads the held value, so `x += 1` loses
+//! no step). Writing the current value is not counted. Writes from outside a
+//! handler (services, CLI) are not counted; they coalesce per tick anyway.
+//!
+//! "One handler" is a stable identity: the effect, listener or timer node,
+//! inherited by tasks they spawn, or the handler site given to
+//! [`Runtime::spawn_for`]. A fresh task per event is still one writer.
 
+use std::any::Any;
 use std::collections::VecDeque;
 use std::time::Duration;
 
@@ -32,6 +38,8 @@ pub(crate) struct Deferred {
     pub(crate) cell: NodeId,
     pub(crate) writer: NodeId,
     pub(crate) due: Duration,
+    /// The value being held, for read-your-writes in `update`.
+    pub(crate) value: Option<Box<dyn Any>>,
     pub(crate) apply: Box<dyn FnOnce(&Runtime)>,
 }
 
@@ -86,8 +94,29 @@ impl Runtime {
         }
     }
 
+    /// True while a throttled write to `cell` is waiting.
+    pub(crate) fn has_deferred(&self, cell: NodeId) -> bool {
+        self.inner.throttled.borrow().iter().any(|d| d.cell == cell)
+    }
+
+    /// The value the running handler's throttled write to `cell` holds.
+    pub(crate) fn deferred_value<T: Clone + 'static>(&self, cell: NodeId) -> Option<T> {
+        let writer = self.inner.writer.get()?;
+        self.inner
+            .throttled
+            .borrow()
+            .iter()
+            .find(|d| d.cell == cell && d.writer == writer)
+            .and_then(|d| d.value.as_ref()?.downcast_ref::<T>().cloned())
+    }
+
     /// Hold a throttled write; a newer one from the same handler replaces it.
-    pub(crate) fn defer_write(&self, cell: NodeId, apply: Box<dyn FnOnce(&Runtime)>) {
+    pub(crate) fn defer_write(
+        &self,
+        cell: NodeId,
+        value: Option<Box<dyn Any>>,
+        apply: Box<dyn FnOnce(&Runtime)>,
+    ) {
         let Some(writer) = self.inner.writer.get() else {
             apply(self);
             return;
@@ -105,6 +134,7 @@ impl Runtime {
             cell,
             writer,
             due,
+            value,
             apply,
         });
     }

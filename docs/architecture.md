@@ -97,10 +97,18 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   `Create`/`Remove`/`Move` ops.
 - Mounting a component runs inside `rt.scope(..)`; unmounting is
   `scope.dispose(rt)`, which drops its nodes, timers and handlers.
-- Handlers are `rt.spawn(future)` (cancelled on unmount), timers
-  `rt.after/every(_dyn)`, `on change` is `rt.on_change(_after)`, service
-  events are `EventQueue`s, service `rw` writes use `write_tagged` and
-  reports come back through `receive`.
+- Handlers are `rt.spawn(future)` (cancelled on unmount; nodes a handler
+  creates belong to its component); the VM starting one coroutine per event
+  uses `rt.spawn_for(handler_site, fut)` so the 30 writes/s guard sees one
+  handler. Timers are `rt.after/every(_dyn)`, `on change` is
+  `rt.on_change(_after)` or, for service paths, `rt.on_change_keyed(key,
+  ..)` with the path's object as key (no firing on a sink switch). Service
+  events are `EventQueue`s. Service `rw` writes use `write_tagged(value,
+  send)` (throttled writes are held, then sent) and reports come back
+  through `receive`. `let x = svc.call(input)` returning `Async` is
+  `rt.async_memo(input, fetch)`.
+- Read-only graph introspection for the inspector, `strand watch` and the
+  LSP: `rt.sources/observers/owned(id)`.
 
 ### `strand-compiler`
 

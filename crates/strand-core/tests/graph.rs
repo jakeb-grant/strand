@@ -353,3 +353,185 @@ fn effects_created_in_reverse_order_still_settle_in_one_flush() {
     assert!(tick.errors.is_empty(), "{:?}", tick.errors);
     assert_eq!(cells[19].get(&rt), Ok(7));
 }
+
+#[test]
+fn effect_writing_upstream_of_a_new_dependency_stays_live() {
+    // The effect reads `m` for the first time, then writes `m`'s source.
+    let rt = Runtime::new();
+    let s = rt.signal(1);
+    let m = rt.memo(move |rt| Ok(s.get(rt)? * 2));
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let log = seen.clone();
+    rt.effect(move |rt| {
+        log.borrow_mut().push(m.get(rt)?);
+        let v = s.get_untracked(rt)?;
+        if v % 2 == 1 {
+            s.set(rt, v + 1)?;
+        }
+        Ok(())
+    });
+    rt.flush();
+    s.set(&rt, 10).unwrap();
+    rt.flush();
+    s.set(&rt, 20).unwrap();
+    rt.flush();
+    assert_eq!(*seen.borrow(), vec![2, 4, 20, 40]);
+}
+
+#[test]
+fn effect_sees_its_own_first_run_write() {
+    let rt = Runtime::new();
+    let s = rt.signal(0);
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let log = seen.clone();
+    rt.effect(move |rt| {
+        let v = s.get(rt)?;
+        log.borrow_mut().push(v);
+        if v == 0 {
+            s.set(rt, 1)?;
+        }
+        Ok(())
+    });
+    let tick = rt.flush();
+    assert!(tick.errors.is_empty(), "{:?}", tick.errors);
+    assert_eq!(*seen.borrow(), vec![0, 1]);
+}
+
+#[test]
+fn a_runtime_cycle_is_parked_not_retried_every_tick() {
+    let rt = Runtime::new();
+    let x = rt.signal(0);
+    let y = rt.signal(0);
+    rt.effect(move |rt| {
+        let v = x.get(rt)?;
+        y.set(rt, v + 1)
+    });
+    rt.effect(move |rt| {
+        let v = y.get(rt)?;
+        x.set(rt, v + 1)
+    });
+    let tick = rt.flush();
+    assert!(
+        tick.errors
+            .iter()
+            .any(|(_, e)| matches!(e, Error::Cycle(_)))
+    );
+    assert!(
+        tick.errors.len() <= 2,
+        "each loop member reported once: {:?}",
+        tick.errors
+    );
+    assert!(rt.is_idle(), "parked: no work until something writes");
+    let after = rt.stats().effect_runs;
+    assert!(rt.flush().errors.is_empty());
+    assert_eq!(rt.stats().effect_runs, after);
+    // An outside write wakes it again (and it is cut again).
+    x.set(&rt, 100).unwrap();
+    let tick = rt.flush();
+    assert!(
+        tick.errors
+            .iter()
+            .any(|(_, e)| matches!(e, Error::Cycle(_)))
+    );
+    assert!(rt.is_idle());
+}
+
+#[test]
+fn wide_fan_in_from_effect_chains_is_not_a_cycle() {
+    // `sum` reads 40 cells, each written by a chain of effects created in
+    // reverse order, so `sum` re-runs once per hop: more than
+    // MAX_RUNS_PER_FLUSH runs, but no feedback path.
+    let rt = Runtime::new();
+    let n = 40;
+    let cells: Vec<_> = (0..=n).map(|_| rt.signal(0)).collect();
+    let cs = cells.clone();
+    let runs = Rc::new(RefCell::new(0));
+    let r = runs.clone();
+    let sum = rt.signal(0);
+    rt.effect(move |rt| {
+        *r.borrow_mut() += 1;
+        let mut s = 0;
+        for c in &cs[1..] {
+            s += c.get(rt)?;
+        }
+        sum.set(rt, s)
+    });
+    for i in (0..n).rev() {
+        let (from, to) = (cells[i], cells[i + 1]);
+        rt.effect(move |rt| {
+            let v = from.get(rt)?;
+            to.set(rt, v)
+        });
+    }
+    rt.flush();
+    *runs.borrow_mut() = 0;
+    cells[0].set(&rt, 1).unwrap();
+    let tick = rt.flush();
+    assert!(tick.errors.is_empty(), "{:?}", tick.errors);
+    assert_eq!(sum.get(&rt), Ok(n as i32));
+    assert!(*runs.borrow() > MAX_RUNS_PER_FLUSH as usize);
+}
+
+#[test]
+fn memo_cycles_are_reported_in_the_tick() {
+    let rt = Runtime::new();
+    let cell: Rc<RefCell<Option<strand_core::Memo<i32>>>> = Rc::new(RefCell::new(None));
+    let c2 = cell.clone();
+    let a = rt.memo(move |rt| c2.borrow().ok_or(Error::failed("unset"))?.get(rt));
+    let b = rt.memo(move |rt| Ok(a.get(rt)? + 1));
+    *cell.borrow_mut() = Some(b);
+    rt.watch(b.id()).unwrap();
+    let tick = rt.flush();
+    let cycles = tick
+        .errors
+        .iter()
+        .filter(|(_, e)| matches!(e, Error::Cycle(_)))
+        .count();
+    assert_eq!(cycles, 1, "{:?}", tick.errors);
+}
+
+#[test]
+fn reentrant_flush_names_the_caller() {
+    let rt = Runtime::new();
+    let inner = Rc::new(RefCell::new(None));
+    let i = inner.clone();
+    let e = rt.effect(move |rt| {
+        *i.borrow_mut() = Some(rt.flush());
+        Ok(())
+    });
+    rt.flush();
+    let nested = inner.borrow_mut().take().unwrap();
+    assert_eq!(nested.errors, vec![(e.id(), Error::Reentrant)]);
+}
+
+#[test]
+fn a_watch_stops_when_its_target_is_disposed() {
+    let rt = Runtime::new();
+    let (scope, m) = rt.scope(|rt| {
+        let s = rt.signal(1);
+        rt.memo(move |rt| s.get(rt))
+    });
+    let w = rt.watch(m.id()).unwrap();
+    rt.flush();
+    scope.dispose(&rt);
+    let tick = rt.flush();
+    assert!(tick.changed.is_empty());
+    assert!(!rt.exists(w), "no leaked watch");
+}
+
+#[test]
+fn graph_introspection() {
+    let rt = Runtime::new();
+    let (scope, (a, m)) = rt.scope(|rt| {
+        let a = rt.signal(1);
+        let m = rt.memo(move |rt| Ok(a.get(rt)? * 2));
+        (a, m)
+    });
+    m.get(&rt).unwrap();
+    assert_eq!(rt.sources(m.id()), Ok(vec![a.id()]));
+    assert_eq!(rt.observers(a.id()), Ok(vec![m.id()]));
+    assert_eq!(rt.owned(scope.id()), Ok(vec![a.id(), m.id()]));
+    assert!(rt.root_owned().contains(&scope.id()));
+    scope.dispose(&rt);
+    assert_eq!(rt.sources(m.id()), Err(Error::Disposed(m.id())));
+}

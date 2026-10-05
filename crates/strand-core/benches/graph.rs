@@ -1,6 +1,8 @@
 //! M0 benchmark: a 10k-node reactive graph (mixed fan-in/fan-out, depth
-//! 20). Measures single-write propagation, full fan-out and an idle flush,
-//! and reports memory per node through a counting global allocator.
+//! 20). Measures single-write propagation, full fan-out, a narrow path (one
+//! chain of 20 memos, what a clock tick does), an equality cut-off (a write
+//! stopped after one memo) and an idle flush, and reports memory per node
+//! through a counting global allocator.
 //!
 //! Run: `cargo bench -p strand-core --bench graph`. Results go in
 //! `docs/benchmarks.md`.
@@ -15,6 +17,20 @@ use criterion::{BatchSize, Criterion};
 #[path = "support/graph_builder.rs"]
 mod graph_builder;
 use graph_builder::{NODES, Rng, build};
+use strand_core::{Memo, Runtime, Signal};
+
+/// `src -> first -> 19 more memos -> watch`: a chain of 20 memos.
+fn chain(rt: &Runtime, first: impl Fn(i64) -> i64 + 'static) -> Signal<i64> {
+    let src = rt.signal(0i64);
+    let mut prev: Memo<i64> = rt.memo(move |rt| src.get(rt).map(&first));
+    for _ in 1..20 {
+        let p = prev;
+        prev = rt.memo(move |rt| p.get(rt).map(|v| v.wrapping_add(1)));
+    }
+    rt.watch(prev.id()).unwrap();
+    rt.flush();
+    src
+}
 
 /// Counts live bytes and allocation calls.
 struct Counting;
@@ -128,6 +144,33 @@ fn benches(c: &mut Criterion) {
         b.iter(|| {
             v += 1;
             g.root.set(&g.rt, v).unwrap();
+            black_box(g.rt.flush());
+        })
+    });
+
+    // Localized propagation inside the same 10k-node runtime: one path of
+    // 20 memos (a clock tick), and a write cut off after one memo.
+    let path = chain(&g.rt, |v| v);
+    let cut = chain(&g.rt, |v| v / 1_000_000_000);
+    for (src, expect) in [(path, 20), (cut, 1)] {
+        let before = g.rt.stats().computations;
+        src.set(&g.rt, 1).unwrap();
+        g.rt.flush();
+        assert_eq!(g.rt.stats().computations - before, expect);
+    }
+    let mut v = 1i64;
+    group.bench_function("narrow_path_flush", |b| {
+        b.iter(|| {
+            v += 1;
+            path.set(&g.rt, v).unwrap();
+            black_box(g.rt.flush());
+        })
+    });
+    let mut v = 1i64;
+    group.bench_function("cutoff_flush", |b| {
+        b.iter(|| {
+            v += 1;
+            cut.set(&g.rt, v).unwrap();
             black_box(g.rt.flush());
         })
     });

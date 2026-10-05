@@ -4,10 +4,17 @@
 //! event emitted is delivered exactly once, in order, to every listener alive
 //! at delivery time, during the flush that follows the emit. Events emitted
 //! by a listener are delivered in the same flush.
+//!
+//! Listeners that re-emit to each other in a loop are a runtime cycle: past
+//! [`crate::MAX_RUNS_PER_FLUSH`] deliveries of one queue in one flush, if the
+//! deliveries and emits of this flush form a path back to the queue, the
+//! flush reports [`Error::Cycle`] (`queue -> listener -> queue …`) and parks
+//! the queue: its events stay queued (nothing is lost) and are delivered
+//! with the next emit to it.
 
 use std::any::Any;
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::marker::PhantomData;
 use std::rc::Rc;
@@ -55,7 +62,7 @@ impl<T: 'static> NodeData for EventsData<T> {
         self
     }
 
-    fn deliver(&self, rt: &Runtime, _id: NodeId, errors: &mut Vec<(NodeId, Error)>) -> bool {
+    fn deliver(&self, rt: &Runtime, id: NodeId, errors: &mut Vec<(NodeId, Error)>) -> bool {
         let events: Vec<T> = match self.queue.try_borrow_mut() {
             Ok(mut q) => q.drain(..).collect(),
             Err(_) => return false,
@@ -63,6 +70,11 @@ impl<T: 'static> NodeData for EventsData<T> {
         if events.is_empty() {
             return false;
         }
+        // For cycle paths: this queue reaches its listeners.
+        rt.inner
+            .flush_writes
+            .borrow_mut()
+            .extend(self.listeners.borrow().iter().map(|&l| (id, l)));
         for ev in &events {
             let listeners: Vec<NodeId> = self.listeners.borrow().clone();
             for l in listeners {
@@ -73,11 +85,9 @@ impl<T: 'static> NodeData for EventsData<T> {
                 let Ok(mut f) = listener.f.try_borrow_mut() else {
                     continue;
                 };
-                let prev_writer = rt.inner.writer.replace(Some(l));
-                let prev_owner = rt.inner.owner.replace(Some(l));
-                let r = rt.untrack(|rt| f(rt, ev));
-                rt.inner.owner.set(prev_owner);
-                rt.inner.writer.set(prev_writer);
+                // Nodes the listener creates belong to its component.
+                let owner = rt.owner_of(l).ok().flatten();
+                let r = rt.run_handler(l, owner, |rt| f(rt, ev));
                 if let Err(e) = r {
                     errors.push((l, e));
                 }
@@ -106,18 +116,27 @@ impl Runtime {
     }
 
     /// Deliver every queued event. Returns whether anything was delivered.
-    pub(crate) fn deliver_events(&self, errors: &mut Vec<(NodeId, Error)>) -> bool {
+    /// `runs` counts deliveries per queue in this flush (cycle guard).
+    pub(crate) fn deliver_events(
+        &self,
+        runs: &mut HashMap<NodeId, u32>,
+        errors: &mut Vec<(NodeId, Error)>,
+    ) -> bool {
         let mut any = false;
         loop {
             let mut queues = std::mem::take(&mut *self.inner.events_pending.borrow_mut());
             if queues.is_empty() {
                 return any;
             }
-            queues.dedup();
+            let mut seen = HashSet::new();
+            queues.retain(|q| seen.insert(*q));
             for q in queues {
-                if let Ok(data) = self.data(q) {
-                    any |= data.deliver(self, q, errors);
+                let Ok(data) = self.data(q) else { continue };
+                if self.cycle_cut(q, runs, errors) {
+                    // Parked: the events stay queued for the next emit.
+                    continue;
                 }
+                any |= data.deliver(self, q, errors);
             }
         }
     }
@@ -139,6 +158,11 @@ impl<T: 'static> EventQueue<T> {
             Err(_) => Err(Error::Reentrant),
         })??;
         rt.inner.events_pending.borrow_mut().push(self.id);
+        if rt.inner.flushing.get()
+            && let Some(w) = rt.current_writer()
+        {
+            rt.inner.flush_writes.borrow_mut().push((w, self.id));
+        }
         Ok(())
     }
 

@@ -350,7 +350,43 @@ impl<K: Clone + Eq, T: Clone> IncrementalOp<K, T> for Take<K, T> {
     }
 }
 
-/// `.sort_by(cmp)`: a stable sort (ties keep source order).
+/// A stable bottom-up merge sort that never panics, whatever `cmp` returns.
+/// `slice::sort_by` may panic when the comparator is not a total order
+/// (a float comparator meeting NaN from service data); this one only ever
+/// asks "is `b` strictly less than `a`?", which is always answerable.
+fn merge_sort(v: &mut Vec<usize>, mut cmp: impl FnMut(usize, usize) -> Ordering) {
+    let n = v.len();
+    if n < 2 {
+        return;
+    }
+    let mut buf = v.clone();
+    let mut width = 1;
+    while width < n {
+        let mut start = 0;
+        while start < n {
+            let mid = (start + width).min(n);
+            let end = (start + 2 * width).min(n);
+            let (mut a, mut b) = (start, mid);
+            for slot in &mut buf[start..end] {
+                let take_b = a >= mid || b < end && cmp(v[b], v[a]) == Ordering::Less;
+                if take_b {
+                    *slot = v[b];
+                    b += 1;
+                } else {
+                    *slot = v[a];
+                    a += 1;
+                }
+            }
+            start = end;
+        }
+        std::mem::swap(v, &mut buf);
+        width *= 2;
+    }
+}
+
+/// `.sort_by(cmp)`: a stable sort (ties keep source order). A comparator
+/// that is not a total order (NaN) never panics; the order is then
+/// unspecified but still a permutation that keeps every key.
 #[derive(Debug)]
 pub struct SortBy<K, T, C> {
     cmp: C,
@@ -426,7 +462,7 @@ where
                 self.src = items.clone();
                 let mut order: Vec<usize> = (0..items.len()).collect();
                 let Self { cmp, src, .. } = self;
-                order.sort_by(|&a, &b| cmp(&src[a].1, &src[b].1));
+                merge_sort(&mut order, |a, b| cmp(&src[a].1, &src[b].1));
                 self.order = order;
                 out.push(VecDiff::Reset {
                     items: self.order.iter().map(|&j| self.src[j].clone()).collect(),

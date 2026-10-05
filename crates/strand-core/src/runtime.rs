@@ -12,13 +12,20 @@
 //!   them actually changed value does the node become `Dirty` and recompute.
 //!   A recompute that produces an equal value does not dirty its observers:
 //!   that is the equality cut-off.
-//! * Effects run once per flush, in creation order (owners before the nodes
-//!   they own), and only after every write of the tick has been pushed, so no
-//!   effect ever sees a half-propagated graph.
+//! * Effects run in creation order (owners before the nodes they own), and
+//!   only after every write of the tick has been pushed, so no effect ever
+//!   sees a half-propagated graph. An effect re-triggered by a later
+//!   effect's write runs again in the same flush; a sink re-triggered past
+//!   [`MAX_RUNS_PER_FLUSH`] through a feedback path is a runtime cycle and
+//!   is parked.
+//! * Edges to sources a computation read for the first time are linked
+//!   after it ran; if something was written during the run, the node is
+//!   re-checked so a write it caused upstream of a new source can't leave
+//!   it clean above a dirty source (it would never run again).
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
@@ -100,14 +107,6 @@ pub(crate) trait NodeData: 'static {
     }
     /// Called once, outside any borrow, when the node is disposed.
     fn on_dispose(&self, _rt: &Runtime, _id: NodeId) {}
-    /// A copy of the current value, for watches to compare against.
-    fn clone_value(&self) -> Option<Box<dyn Any>> {
-        None
-    }
-    /// Whether the current value equals a copy from [`Self::clone_value`].
-    fn value_eq(&self, _other: &dyn Any) -> bool {
-        false
-    }
 }
 
 pub(crate) struct Node {
@@ -118,6 +117,9 @@ pub(crate) struct Node {
     pub(crate) computing: bool,
     /// Its closure is executing right now.
     pub(crate) running: bool,
+    /// Bumped whenever the node's value changes (a cell write or a derived
+    /// recompute that changed), so watches compare a counter, not a copy.
+    pub(crate) version: u32,
     pub(crate) seq: u64,
     pub(crate) data: Option<Rc<dyn NodeData>>,
     pub(crate) sources: Vec<NodeId>,
@@ -148,6 +150,12 @@ pub enum Diagnostic {
     Cancelled {
         /// The task.
         task: NodeId,
+    },
+    /// An `every` timer's period evaluated to zero; it is paused until the
+    /// period is positive again (a zero period would wake the host forever).
+    ZeroPeriod {
+        /// The timer.
+        timer: NodeId,
     },
 }
 
@@ -182,8 +190,16 @@ pub struct Stats {
 }
 
 /// An effect may be re-triggered within one flush by writes from later
-/// effects; past this many runs in one flush it is a runtime cycle.
+/// effects (and an event queue re-filled by listeners). Past this many runs
+/// in one flush the runtime looks for a feedback path through the writes of
+/// this flush; if there is one it is a runtime cycle: [`Error::Cycle`] names
+/// the path and the node is parked until something outside writes to it.
 pub const MAX_RUNS_PER_FLUSH: u32 = 16;
+
+/// A node re-triggered this many times in one flush is parked and reported
+/// even when no feedback path was found (a safety net; legitimate fan-in
+/// chains stay far below it).
+pub const HARD_RUNS_PER_FLUSH: u32 = MAX_RUNS_PER_FLUSH * 16;
 
 type Cleanup = Box<dyn FnOnce()>;
 
@@ -204,11 +220,14 @@ pub(crate) struct Inner {
     pub(crate) writer: Cell<Option<NodeId>>,
     pending: RefCell<Vec<NodeId>>,
     seq: Cell<u64>,
-    flushing: Cell<bool>,
+    pub(crate) flushing: Cell<bool>,
     tick: Cell<u64>,
     pub(crate) now: Cell<Duration>,
-    written: RefCell<Vec<NodeId>>,
-    flush_writes: RefCell<Vec<(NodeId, NodeId)>>,
+    pub(crate) written: RefCell<Vec<NodeId>>,
+    /// Bumped by every value change and disposal-driven dirtying; lets
+    /// `run_node` skip its stale-source check when nothing was written.
+    write_epoch: Cell<u64>,
+    pub(crate) flush_writes: RefCell<Vec<(NodeId, NodeId)>>,
     pub(crate) diagnostics: RefCell<Vec<Diagnostic>>,
     errors: RefCell<Vec<(NodeId, Error)>>,
     stats: Cell<Stats>,
@@ -217,6 +236,9 @@ pub(crate) struct Inner {
     pub(crate) throttled: RefCell<Vec<crate::rate::Deferred>>,
     pub(crate) events_pending: RefCell<Vec<NodeId>>,
     pub(crate) timers: RefCell<Vec<NodeId>>,
+    /// While timers catch up before a clock advance: the new time, at which
+    /// resumed timers start counting.
+    pub(crate) resume_at: Cell<Option<Duration>>,
     pub(crate) sleepers: RefCell<crate::task::Sleepers>,
     pub(crate) ready: Arc<crate::task::ReadyQueue>,
 }
@@ -308,6 +330,7 @@ impl Runtime {
                 tick: Cell::new(0),
                 now: Cell::new(Duration::ZERO),
                 written: RefCell::new(Vec::new()),
+                write_epoch: Cell::new(0),
                 flush_writes: RefCell::new(Vec::new()),
                 diagnostics: RefCell::new(Vec::new()),
                 errors: RefCell::new(Vec::new()),
@@ -317,6 +340,7 @@ impl Runtime {
                 throttled: RefCell::new(Vec::new()),
                 events_pending: RefCell::new(Vec::new()),
                 timers: RefCell::new(Vec::new()),
+                resume_at: Cell::new(None),
                 sleepers: RefCell::new(crate::task::Sleepers::default()),
                 ready: Arc::new(crate::task::ReadyQueue::default()),
             }),
@@ -344,6 +368,7 @@ impl Runtime {
             color,
             computing: false,
             running: false,
+            version: 0,
             seq,
             data,
             sources: Vec::new(),
@@ -391,6 +416,15 @@ impl Runtime {
         Ok(f(typed))
     }
 
+    /// True while `id` is `Check` or `Dirty` (queued to run or recompute).
+    pub(crate) fn is_stale(&self, id: NodeId) -> bool {
+        self.inner
+            .nodes
+            .borrow()
+            .get(id)
+            .is_some_and(|n| n.color != Color::Clean)
+    }
+
     /// True while `id` names a live node.
     pub fn exists(&self, id: NodeId) -> bool {
         self.inner.nodes.borrow().contains_key(id)
@@ -414,6 +448,46 @@ impl Runtime {
             .get(id)
             .map(|n| n.owner)
             .ok_or(Error::Disposed(id))
+    }
+
+    /// The nodes `id` read on its last run, in read order (graph
+    /// introspection for the inspector, `strand watch` and the LSP).
+    pub fn sources(&self, id: NodeId) -> Result<Vec<NodeId>, Error> {
+        self.inner
+            .nodes
+            .borrow()
+            .get(id)
+            .map(|n| n.sources.clone())
+            .ok_or(Error::Disposed(id))
+    }
+
+    /// The nodes that read `id` on their last run (no particular order).
+    pub fn observers(&self, id: NodeId) -> Result<Vec<NodeId>, Error> {
+        self.inner
+            .nodes
+            .borrow()
+            .get(id)
+            .map(|n| n.observers.clone())
+            .ok_or(Error::Disposed(id))
+    }
+
+    /// The nodes `id` owns (disposed with it), in creation order.
+    pub fn owned(&self, id: NodeId) -> Result<Vec<NodeId>, Error> {
+        if !self.exists(id) {
+            return Err(Error::Disposed(id));
+        }
+        Ok(self
+            .inner
+            .owned
+            .borrow()
+            .get(id)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    /// Nodes owned by no one (alive until [`Runtime::shutdown`]).
+    pub fn root_owned(&self) -> Vec<NodeId> {
+        self.inner.root_owned.borrow().clone()
     }
 
     /// Give a node a debug name used in cycle paths and diagnostics.
@@ -506,6 +580,23 @@ impl Runtime {
         Ok(r)
     }
 
+    /// Run a handler body: `writer` is its identity for the write-rate
+    /// guard, and nodes it creates belong to `owner` (the handler's
+    /// component), so they outlive this one invocation. Untracked.
+    pub(crate) fn run_handler<R>(
+        &self,
+        writer: NodeId,
+        owner: Option<NodeId>,
+        f: impl FnOnce(&Runtime) -> R,
+    ) -> R {
+        let prev_writer = self.inner.writer.replace(Some(writer));
+        let prev_owner = self.inner.owner.replace(owner);
+        let r = self.untrack(f);
+        self.inner.owner.set(prev_owner);
+        self.inner.writer.set(prev_writer);
+        r
+    }
+
     /// Create a scope owned by the current owner and run `f` inside it.
     pub fn scope<R>(&self, f: impl FnOnce(&Runtime) -> R) -> (Scope, R) {
         let id = self.create_node(NodeKind::Scope, Color::Clean, None);
@@ -570,6 +661,7 @@ impl Runtime {
 
     /// Called by every cell write that changed a value.
     pub(crate) fn cell_changed(&self, id: NodeId) {
+        self.bump_version(id);
         self.drop_deferred(id);
         self.inner.written.borrow_mut().push(id);
         if self.inner.flushing.get()
@@ -578,6 +670,13 @@ impl Runtime {
             self.inner.flush_writes.borrow_mut().push((w, id));
         }
         self.propagate(id, false);
+    }
+
+    fn bump_version(&self, id: NodeId) {
+        if let Some(n) = self.inner.nodes.borrow_mut().get_mut(id) {
+            n.version = n.version.wrapping_add(1);
+        }
+        self.inner.write_epoch.set(self.inner.write_epoch.get() + 1);
     }
 
     /// Error if a derived value is computing (writes there are forbidden).
@@ -600,7 +699,10 @@ impl Runtime {
         let mut path: Vec<NodeId> = stack[start..].to_vec();
         drop(stack);
         path.push(id);
-        Error::Cycle(Arc::new(self.path(path)))
+        let e = Error::Cycle(Arc::new(self.path(path)));
+        // Also report it in the tick: watches only see the memo's value.
+        self.record_error(id, e.clone());
+        e
     }
 
     /// Bring `id` up to date if it is `Check` or `Dirty`.
@@ -675,6 +777,8 @@ impl Runtime {
             self.dispose_owned(id);
         }
         let sources = self.inner.pool.borrow_mut().pop().unwrap_or_default();
+        let epoch = self.inner.write_epoch.get();
+        let written_before = self.inner.written.borrow().len();
         self.inner.tracking.borrow_mut().push(Frame {
             observer: Some(id),
             sources,
@@ -702,15 +806,45 @@ impl Runtime {
         if let Some(frame) = frame {
             self.set_sources(id, frame.sources);
         }
+        if self.inner.write_epoch.get() != epoch {
+            self.recheck_sources(id, written_before);
+        }
         if kind.is_derived() {
             self.bump(|s| s.computations += 1);
         } else {
             self.bump(|s| s.effect_runs += 1);
         }
         match outcome {
-            RunOutcome::Changed => self.propagate(id, true),
+            RunOutcome::Changed => {
+                if let Some(n) = self.inner.nodes.borrow_mut().get_mut(id) {
+                    n.version = n.version.wrapping_add(1);
+                }
+                self.propagate(id, true);
+            }
             RunOutcome::Unchanged => {}
             RunOutcome::Failed(e) => self.record_error(id, e),
+        }
+    }
+
+    /// Something was written while `id` ran. Observer edges to sources it
+    /// read for the first time only exist now, so a write made after such a
+    /// read (by `id` itself, or a disposal) did not reach it: if any source
+    /// is no longer clean, or is a cell written during the run, mark `id`
+    /// dirty again. This keeps the invariant that a dirty node's observers
+    /// are dirty or queued, so an effect never goes deaf.
+    fn recheck_sources(&self, id: NodeId, written_before: usize) {
+        let stale = {
+            let nodes = self.inner.nodes.borrow();
+            let written = self.inner.written.borrow();
+            let recent = written.get(written_before..).unwrap_or(&[]);
+            nodes.get(id).is_some_and(|n| {
+                n.sources.iter().any(|s| {
+                    nodes.get(*s).is_some_and(|src| src.color != Color::Clean) || recent.contains(s)
+                })
+            })
+        };
+        if stale {
+            self.mark_dirty_and_downstream(id);
         }
     }
 
@@ -758,7 +892,7 @@ impl Runtime {
                     nodes[id].sources.contains(&s)
                 };
                 if !kept && let Some(src) = nodes.get_mut(s) {
-                    src.observers.retain(|&o| o != id);
+                    unlink(&mut src.observers, id);
                 }
             }
             old
@@ -800,13 +934,20 @@ impl Runtime {
             return;
         }
         let owner = self.inner.nodes.borrow().get(id).and_then(|n| n.owner);
+        // Search from the back: short-lived nodes (finished handlers) are
+        // the most recently created.
+        let remove = |list: &mut Vec<NodeId>| {
+            if let Some(p) = list.iter().rposition(|&c| c == id) {
+                list.remove(p);
+            }
+        };
         match owner {
             Some(o) => {
                 if let Some(list) = self.inner.owned.borrow_mut().get_mut(o) {
-                    list.retain(|&c| c != id);
+                    remove(list);
                 }
             }
-            None => self.inner.root_owned.borrow_mut().retain(|&c| c != id),
+            None => remove(&mut self.inner.root_owned.borrow_mut()),
         }
         self.dispose_tree(vec![id]);
     }
@@ -859,7 +1000,7 @@ impl Runtime {
                 };
                 for &s in &node.sources {
                     if let Some(src) = nodes.get_mut(s) {
-                        src.observers.retain(|&o| o != n);
+                        unlink(&mut src.observers, n);
                     }
                 }
                 dropped.push(node);
@@ -884,7 +1025,8 @@ impl Runtime {
         drop(dropped);
     }
 
-    fn mark_dirty_and_downstream(&self, id: NodeId) {
+    pub(crate) fn mark_dirty_and_downstream(&self, id: NodeId) {
+        self.inner.write_epoch.set(self.inner.write_epoch.get() + 1);
         {
             let mut nodes = self.inner.nodes.borrow_mut();
             if let Some(n) = nodes.get_mut(id) {
@@ -940,18 +1082,26 @@ impl Runtime {
     /// Observe `target` (a memo, signal or collection) at the edge: when its
     /// value changes, the flush lists `target` in [`Tick::changed`]. This is
     /// how the scene emitter learns which props to put in the tick's diff
-    /// without a closure per prop. Disposing the returned id stops it.
+    /// without a closure per prop. Disposing the returned id stops it; it
+    /// also stops by itself once `target` is disposed.
     pub fn watch(&self, target: NodeId) -> Result<NodeId, Error> {
         let kind = self.kind(target)?;
         if kind.is_derived() {
             self.update_if_necessary(target)?;
         }
+        let version = self
+            .inner
+            .nodes
+            .borrow()
+            .get(target)
+            .map(|n| n.version)
+            .ok_or(Error::Disposed(target))?;
         let id = self.create_node(
             NodeKind::Watch,
             Color::Clean,
             Some(Rc::new(WatchData {
                 target,
-                last: RefCell::new(self.data(target)?.clone_value()),
+                last: Cell::new(version),
             })),
         );
         self.set_sources(id, vec![target]);
@@ -969,22 +1119,28 @@ impl Runtime {
             && self.inner.written.borrow().is_empty()
     }
 
-    /// End the tick: deliver events, poll woken handlers, run dirty sinks
-    /// (each once, in creation order) until quiescent, and report what
-    /// changed. Writes made by sinks during the flush are part of this tick.
+    /// End the tick: deliver events, poll woken handlers (each at most
+    /// once), run dirty sinks (in creation order) until quiescent, and
+    /// report what changed. Writes made by sinks during the flush are part
+    /// of this tick.
     pub fn flush(&self) -> Tick {
         let mut tick = Tick::default();
         if self.inner.flushing.replace(true) {
-            tick.errors.push((NodeId::default(), Error::Reentrant));
+            let at = self
+                .current_writer()
+                .or(self.current_owner())
+                .unwrap_or_default();
+            tick.errors.push((at, Error::Reentrant));
             return tick;
         }
         tick.seq = self.inner.tick.get() + 1;
         self.inner.tick.set(tick.seq);
         let mut runs: HashMap<NodeId, u32> = HashMap::new();
+        let mut polled: HashSet<NodeId> = HashSet::new();
         let mut errors = Vec::new();
-        'outer: loop {
-            let mut progressed = self.poll_ready_tasks();
-            progressed |= self.deliver_events(&mut errors);
+        loop {
+            let mut progressed = self.poll_ready_tasks(&mut polled);
+            progressed |= self.deliver_events(&mut runs, &mut errors);
             let mut batch = std::mem::take(&mut *self.inner.pending.borrow_mut());
             if batch.is_empty() {
                 if progressed {
@@ -998,24 +1154,19 @@ impl Runtime {
                 batch.sort_by_key(|&id| nodes[id].seq);
             }
             batch.dedup();
-            for (i, &id) in batch.iter().enumerate() {
-                let count = runs.entry(id).or_insert(0);
-                *count += 1;
-                if *count > MAX_RUNS_PER_FLUSH {
-                    let path = self.feedback_path(id);
-                    errors.push((id, Error::Cycle(Arc::new(path))));
-                    // Leave the rest queued for the next tick so a loop
-                    // can't freeze the logic thread.
-                    self.inner
-                        .pending
-                        .borrow_mut()
-                        .extend_from_slice(&batch[i..]);
-                    break 'outer;
-                }
-                let kind = match self.kind(id) {
-                    Ok(k) => k,
-                    Err(_) => continue,
+            for &id in &batch {
+                let kind = {
+                    let nodes = self.inner.nodes.borrow();
+                    match nodes.get(id) {
+                        Some(n) if n.color != Color::Clean => n.kind,
+                        // Disposed, already run or parked.
+                        _ => continue,
+                    }
                 };
+                if self.cycle_cut(id, &mut runs, &mut errors) {
+                    self.park(id);
+                    continue;
+                }
                 let before = self.inner.stats.get().effect_runs;
                 if let Err(e) = self.update_if_necessary(id) {
                     errors.push((id, e));
@@ -1024,15 +1175,24 @@ impl Runtime {
                 if ran {
                     tick.effects_run += 1;
                     if kind == NodeKind::Watch {
-                        if let Some(t) = self.watch_changed(id) {
-                            tick.changed.push(t);
+                        match self.watch_changed(id) {
+                            WatchOutcome::Changed(t) => tick.changed.push(t),
+                            WatchOutcome::Same => {}
+                            WatchOutcome::TargetGone => self.dispose(id),
                         }
                     }
                 }
             }
         }
         errors.extend(self.take_errors());
-        tick.errors = errors;
+        // A cycle seen on several runs is reported once.
+        let mut unique: Vec<(NodeId, Error)> = Vec::with_capacity(errors.len());
+        for e in errors {
+            if !unique.contains(&e) {
+                unique.push(e);
+            }
+        }
+        tick.errors = unique;
         let mut written = std::mem::take(&mut *self.inner.written.borrow_mut());
         written.sort();
         written.dedup();
@@ -1050,9 +1210,49 @@ impl Runtime {
         tick
     }
 
-    /// Find `effect -> cell -> ... -> effect` through the writes made during
-    /// this flush and the observer edges.
-    fn feedback_path(&self, start: NodeId) -> CyclePath {
+    /// Count a run (or delivery) of `id` in this flush. Past
+    /// [`MAX_RUNS_PER_FLUSH`] look for a feedback path through this flush's
+    /// writes; if there is one (or past [`HARD_RUNS_PER_FLUSH`]) report
+    /// [`Error::Cycle`] and return `true`: the caller parks the node.
+    pub(crate) fn cycle_cut(
+        &self,
+        id: NodeId,
+        runs: &mut HashMap<NodeId, u32>,
+        errors: &mut Vec<(NodeId, Error)>,
+    ) -> bool {
+        let count = runs.entry(id).or_insert(0);
+        *count += 1;
+        let count = *count;
+        if count <= MAX_RUNS_PER_FLUSH {
+            return false;
+        }
+        let path = self.feedback_path(id);
+        if path.is_none() && count <= HARD_RUNS_PER_FLUSH {
+            return false;
+        }
+        let path = path.unwrap_or_else(|| self.path(vec![id, id]));
+        errors.push((id, Error::Cycle(Arc::new(path))));
+        true
+    }
+
+    /// Stop a sink that is part of a runtime cycle until one of its inputs
+    /// is written again: bring its derived sources up to date (so a later
+    /// write reaches it) and mark it clean without running it.
+    fn park(&self, id: NodeId) {
+        let sources = self.sources(id).unwrap_or_default();
+        for s in sources {
+            if self.kind(s).is_ok_and(NodeKind::is_derived) {
+                let _ = self.update_if_necessary(s);
+            }
+        }
+        if let Some(n) = self.inner.nodes.borrow_mut().get_mut(id) {
+            n.color = Color::Clean;
+        }
+    }
+
+    /// Find `start -> cell -> ... -> start` through the writes and event
+    /// deliveries made during this flush and the observer edges.
+    fn feedback_path(&self, start: NodeId) -> Option<CyclePath> {
         let writes = self.inner.flush_writes.borrow().clone();
         let nodes = self.inner.nodes.borrow();
         let mut prev: HashMap<NodeId, NodeId> = HashMap::new();
@@ -1082,7 +1282,7 @@ impl Runtime {
         }
         drop(nodes);
         if !found {
-            return self.path(vec![start, start]);
+            return None;
         }
         let mut path = vec![start];
         let mut cur = prev[&start];
@@ -1092,7 +1292,7 @@ impl Runtime {
         }
         path.push(start);
         path.reverse();
-        self.path(path)
+        Some(self.path(path))
     }
 
     /// Advance the logic clock and end the tick: fire due timers, wake due
@@ -1108,7 +1308,14 @@ impl Runtime {
     /// Move the logic clock forward (never backward) and run everything that
     /// became due: timer bodies, sleeping handlers and throttled writes.
     /// Returns handler errors from timer bodies.
+    ///
+    /// Timers whose condition or duration changed since the last flush are
+    /// brought up to date first, so `hover = true` followed by
+    /// `tick(deadline)` pauses the timer instead of firing it. A pause counts
+    /// up to the previous time and a resume from `now`: a timer never counts
+    /// time its condition may not have held for.
     pub fn advance_to(&self, now: Duration) -> Vec<(NodeId, Error)> {
+        self.refresh_timers(now);
         if now > self.inner.now.get() {
             self.inner.now.set(now);
         }
@@ -1142,25 +1349,37 @@ impl Runtime {
 
 struct WatchData {
     target: NodeId,
-    /// The value last reported, so a value written and restored within one
-    /// tick is not reported.
-    last: RefCell<Option<Box<dyn Any>>>,
+    /// The target's version last reported. A value written and restored
+    /// within one tick may be reported again; that costs one redundant prop
+    /// update, where a copy of every watched value would cost memory.
+    last: Cell<u32>,
+}
+
+enum WatchOutcome {
+    Changed(NodeId),
+    Same,
+    TargetGone,
 }
 
 impl Runtime {
-    /// After a watch ran: its target if the value differs from the last
-    /// reported one.
-    fn watch_changed(&self, watch: NodeId) -> Option<NodeId> {
-        let data = self.data(watch).ok()?;
-        let w = data.as_any().downcast_ref::<WatchData>()?;
-        let target = self.data(w.target).ok()?;
-        let mut last = w.last.borrow_mut();
-        let same = last.as_deref().is_some_and(|l| target.value_eq(l));
-        if same {
-            return None;
+    /// After a watch ran: its target if its version moved since the last
+    /// report.
+    fn watch_changed(&self, watch: NodeId) -> WatchOutcome {
+        let Ok(data) = self.data(watch) else {
+            return WatchOutcome::Same;
+        };
+        let Some(w) = data.as_any().downcast_ref::<WatchData>() else {
+            return WatchOutcome::Same;
+        };
+        let version = self.inner.nodes.borrow().get(w.target).map(|n| n.version);
+        match version {
+            None => WatchOutcome::TargetGone,
+            Some(v) if v == w.last.get() => WatchOutcome::Same,
+            Some(v) => {
+                w.last.set(v);
+                WatchOutcome::Changed(w.target)
+            }
         }
-        *last = target.clone_value();
-        Some(w.target)
     }
 }
 
@@ -1174,5 +1393,13 @@ impl NodeData for WatchData {
         }
         rt.track(self.target);
         RunOutcome::Unchanged
+    }
+}
+
+/// Remove `id` from an observer list (each observer appears once; order
+/// does not matter).
+fn unlink(observers: &mut Vec<NodeId>, id: NodeId) {
+    if let Some(p) = observers.iter().rposition(|&o| o == id) {
+        observers.swap_remove(p);
     }
 }

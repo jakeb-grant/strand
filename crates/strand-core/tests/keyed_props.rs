@@ -303,3 +303,77 @@ fn lagging_consumer_gets_a_reset() {
         [VecDiff::Reset { .. }]
     ));
 }
+
+#[test]
+fn a_malformed_service_batch_keeps_derived_collections_consistent() {
+    let rt = Runtime::new();
+    let xs = rt.keyed(KeyedVec::from_values(|v: &Item| v.0, [(1, 1), (2, 2), (3, 3)]).unwrap());
+    let all = xs.filter(&rt, |_| true);
+    let s0 = all.snapshot(&rt).unwrap();
+    let r = xs.apply(
+        &rt,
+        &[
+            VecDiff::Insert {
+                index: 3,
+                key: 4,
+                value: (4, 4),
+            },
+            VecDiff::Remove { index: 9, key: 9 },
+        ],
+    );
+    assert!(r.is_err());
+    rt.flush();
+    // The prefix that applied is published, so every consumer agrees.
+    let src = xs.snapshot(&rt).unwrap();
+    let derived = all.snapshot(&rt).unwrap();
+    assert_eq!(src.len(), 4);
+    assert_eq!(derived.items(), src.items());
+    let mut mirror = s0.items().to_vec();
+    for d in derived.diffs_since(s0.version()).unwrap() {
+        d.apply(&mut mirror).unwrap();
+    }
+    assert_eq!(&mirror[..], src.items());
+}
+
+proptest! {
+    /// A comparator that is not a total order (NaN from service data)
+    /// never panics, on the reset path or the incremental one, and the
+    /// output always holds every key exactly once.
+    #[test]
+    fn sort_by_with_nan_never_panics(
+        initial in prop::collection::vec((any::<u8>(), prop::option::of(-5.0f64..5.0)), 0..40),
+        muts in prop::collection::vec((any::<u8>(), any::<usize>(), prop::option::of(-5.0f64..5.0)), 0..40),
+    ) {
+        type F = (u8, f64);
+        let f = |v: Option<f64>| v.unwrap_or(f64::NAN);
+        let rt = Runtime::new();
+        let mut seen = std::collections::HashSet::new();
+        let values: Vec<F> = initial
+            .into_iter()
+            .filter(|(k, _)| seen.insert(*k))
+            .map(|(k, v)| (k, f(v)))
+            .collect();
+        let xs = rt.keyed(KeyedVec::from_values(|v: &F| v.0, values).unwrap());
+        let sorted = xs.sort_by(&rt, |a: &F, b: &F| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
+        sorted.snapshot(&rt).unwrap();
+        for (k, i, v) in muts {
+            let cur = xs.get_untracked(&rt).unwrap();
+            if cur.is_empty() || k % 3 == 0 {
+                let _ = xs.push(&rt, (k, f(v)));
+            } else {
+                let key = cur.items()[i % cur.len()].0;
+                if k % 3 == 1 {
+                    xs.update(&rt, &key, |x| x.1 = f(v)).unwrap();
+                } else {
+                    xs.remove_key(&rt, &key).unwrap();
+                }
+            }
+            let out = sorted.snapshot(&rt).unwrap();
+            let mut got: Vec<u8> = out.keys().copied().collect();
+            let mut want: Vec<u8> = xs.get_untracked(&rt).unwrap().items().iter().map(|(k, _)| *k).collect();
+            got.sort_unstable();
+            want.sort_unstable();
+            prop_assert_eq!(got, want);
+        }
+    }
+}
