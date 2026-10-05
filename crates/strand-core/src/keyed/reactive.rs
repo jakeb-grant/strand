@@ -528,6 +528,7 @@ where
             }
         }
         // Rebuild: first run, params changed, log gap or a bad diff.
+        rt.bump(|s| s.rebuilds += 1);
         let mut op = make(&p);
         let mut out = Vec::new();
         op.apply(

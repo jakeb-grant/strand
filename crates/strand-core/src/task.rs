@@ -204,6 +204,7 @@ impl Runtime {
             rt: self.downgrade(),
             dur: d,
             deadline: None,
+            registration: None,
         }
     }
 
@@ -211,13 +212,45 @@ impl Runtime {
         let now = self.now();
         let due: Vec<Waker> = {
             let mut sleepers = self.inner.sleepers.borrow_mut();
-            let (due, keep): (Vec<_>, Vec<_>) = sleepers.drain(..).partition(|(d, _)| *d <= now);
-            *sleepers = keep;
-            due.into_iter().map(|(_, w)| w).collect()
+            let (due, keep): (Vec<_>, Vec<_>) =
+                sleepers.entries.drain(..).partition(|(d, _, _)| *d <= now);
+            sleepers.entries = keep;
+            due.into_iter().map(|(_, _, w)| w).collect()
         };
         for w in due {
             w.wake();
         }
+    }
+}
+
+/// Registered [`Sleep`]s: `(deadline, registration, waker)`.
+#[derive(Default)]
+pub(crate) struct Sleepers {
+    next: u64,
+    entries: Vec<(Duration, u64, Waker)>,
+}
+
+impl Sleepers {
+    pub(crate) fn earliest(&self) -> Option<Duration> {
+        self.entries.iter().map(|(d, _, _)| *d).min()
+    }
+    pub(crate) fn clear(&mut self) {
+        self.entries.clear();
+    }
+    fn register(&mut self, id: Option<u64>, deadline: Duration, waker: &Waker) -> u64 {
+        if let Some(id) = id
+            && let Some(e) = self.entries.iter_mut().find(|e| e.1 == id)
+        {
+            e.2.clone_from(waker);
+            return id;
+        }
+        let id = self.next;
+        self.next += 1;
+        self.entries.push((deadline, id, waker.clone()));
+        id
+    }
+    fn remove(&mut self, id: u64) {
+        self.entries.retain(|e| e.1 != id);
     }
 }
 
@@ -226,6 +259,18 @@ pub struct Sleep {
     rt: WeakRuntime,
     dur: Duration,
     deadline: Option<Duration>,
+    registration: Option<u64>,
+}
+
+impl Drop for Sleep {
+    /// A cancelled sleep leaves nothing scheduled (true idle).
+    fn drop(&mut self) {
+        if let (Some(id), Some(rt)) = (self.registration, self.rt.upgrade())
+            && let Ok(mut sleepers) = rt.inner.sleepers.try_borrow_mut()
+        {
+            sleepers.remove(id);
+        }
+    }
 }
 
 impl fmt::Debug for Sleep {
@@ -249,10 +294,12 @@ impl Future for Sleep {
         if now >= deadline {
             return Poll::Ready(());
         }
-        rt.inner
-            .sleepers
-            .borrow_mut()
-            .push((deadline, cx.waker().clone()));
+        let Ok(mut sleepers) = rt.inner.sleepers.try_borrow_mut() else {
+            // Never reached in practice; poll again next flush.
+            cx.waker().wake_by_ref();
+            return Poll::Pending;
+        };
+        self.registration = Some(sleepers.register(self.registration, deadline, cx.waker()));
         Poll::Pending
     }
 }

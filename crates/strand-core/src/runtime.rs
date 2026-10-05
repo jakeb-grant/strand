@@ -175,6 +175,8 @@ pub struct Stats {
     pub computations: u64,
     /// Sink runs since the runtime started.
     pub effect_runs: u64,
+    /// Derived collections recomputed from scratch instead of from diffs.
+    pub rebuilds: u64,
     /// Live nodes.
     pub nodes: usize,
 }
@@ -211,7 +213,7 @@ pub(crate) struct Inner {
     pub(crate) throttled: RefCell<Vec<crate::rate::Deferred>>,
     pub(crate) events_pending: RefCell<Vec<NodeId>>,
     pub(crate) timers: RefCell<Vec<NodeId>>,
-    pub(crate) sleepers: RefCell<Vec<(Duration, std::task::Waker)>>,
+    pub(crate) sleepers: RefCell<crate::task::Sleepers>,
     pub(crate) ready: Arc<crate::task::ReadyQueue>,
 }
 
@@ -309,7 +311,7 @@ impl Runtime {
                 throttled: RefCell::new(Vec::new()),
                 events_pending: RefCell::new(Vec::new()),
                 timers: RefCell::new(Vec::new()),
-                sleepers: RefCell::new(Vec::new()),
+                sleepers: RefCell::new(crate::task::Sleepers::default()),
                 ready: Arc::new(crate::task::ReadyQueue::default()),
             }),
         }
@@ -436,7 +438,7 @@ impl Runtime {
         s
     }
 
-    fn bump(&self, f: impl FnOnce(&mut Stats)) {
+    pub(crate) fn bump(&self, f: impl FnOnce(&mut Stats)) {
         let mut s = self.inner.stats.get();
         f(&mut s);
         self.inner.stats.set(s);
@@ -556,6 +558,7 @@ impl Runtime {
 
     /// Called by every cell write that changed a value.
     pub(crate) fn cell_changed(&self, id: NodeId) {
+        self.drop_deferred(id);
         self.inner.written.borrow_mut().push(id);
         if self.inner.flushing.get()
             && let Some(w) = self.inner.writer.get()
@@ -1099,8 +1102,8 @@ impl Runtime {
         if let Some(d) = self.timer_deadline() {
             consider(d);
         }
-        for (d, _) in self.inner.sleepers.borrow().iter() {
-            consider(*d);
+        if let Some(d) = self.inner.sleepers.borrow().earliest() {
+            consider(d);
         }
         for t in self.inner.throttled.borrow().iter() {
             consider(t.due);

@@ -77,6 +77,15 @@ impl Runtime {
         true
     }
 
+    /// A write that went through supersedes throttled writes still waiting
+    /// for the same cell (latest value wins).
+    pub(crate) fn drop_deferred(&self, cell: NodeId) {
+        let mut throttled = self.inner.throttled.borrow_mut();
+        if !throttled.is_empty() {
+            throttled.retain(|d| d.cell != cell);
+        }
+    }
+
     /// Hold a throttled write; a newer one from the same handler replaces it.
     pub(crate) fn defer_write(&self, cell: NodeId, apply: Box<dyn FnOnce(&Runtime)>) {
         let Some(writer) = self.inner.writer.get() else {
