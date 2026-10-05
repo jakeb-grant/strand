@@ -17,7 +17,7 @@ use strand_surface::{Monitor, SurfaceHost};
 
 use strand_scene::input::button;
 
-use crate::run::{ScreenInfo, ToLogic};
+use crate::run::{NodeEvent, ScreenInfo, ToLogic};
 
 #[derive(Debug)]
 pub struct Host {
@@ -215,9 +215,9 @@ impl Forward {
                 if *state != ButtonState::Released {
                     return;
                 }
-                let name = match *b {
-                    button::LEFT => "click",
-                    button::RIGHT => "secondary",
+                let event = match *b {
+                    button::LEFT => NodeEvent::Click,
+                    button::RIGHT => NodeEvent::Secondary,
                     _ => return,
                 };
                 let Some(down) = down else {
@@ -226,11 +226,7 @@ impl Forward {
                 let Some(&node) = under.iter().find(|n| down.contains(n)) else {
                     return;
                 };
-                self.send(ToLogic::Event {
-                    node,
-                    name,
-                    args: Vec::new(),
-                });
+                self.send(ToLogic::Event { node, event });
             }
             InputEvent::PointerAxis {
                 horizontal,
@@ -241,8 +237,10 @@ impl Forward {
                 let under = chain(*position);
                 self.send(ToLogic::Event {
                     node: under[0],
-                    name: "scroll",
-                    args: vec![vertical.pixels, horizontal.pixels],
+                    event: NodeEvent::Scroll {
+                        dy: vertical.pixels,
+                        dx: horizontal.pixels,
+                    },
                 });
             }
         }
@@ -509,7 +507,7 @@ mod tests {
             f.input(&e, &root_only);
         }
         let flag = |flag, on| ToLogic::Flag { node, flag, on };
-        let event = |name: &'static str, args: Vec<f64>| ToLogic::Event { node, name, args };
+        let event = |event: NodeEvent| ToLogic::Event { node, event };
         assert_eq!(
             drain(&mut el),
             vec![
@@ -521,9 +519,9 @@ mod tests {
                 flag(NodeFlag::Hover, true),
                 flag(NodeFlag::Pressed, true),
                 flag(NodeFlag::Pressed, false),
-                event("click", vec![]),
-                event("secondary", vec![]),
-                event("scroll", vec![15.0, 0.0]),
+                event(NodeEvent::Click),
+                event(NodeEvent::Secondary),
+                event(NodeEvent::Scroll { dy: 15.0, dx: 0.0 }),
                 flag(NodeFlag::Hover, false),
             ]
         );
@@ -602,8 +600,7 @@ mod tests {
                 flag(row, Hover, false),
                 ToLogic::Event {
                     node: root,
-                    name: "click",
-                    args: Vec::new()
+                    event: NodeEvent::Click
                 },
             ]
         );
@@ -618,8 +615,7 @@ mod tests {
             clicks,
             [ToLogic::Event {
                 node: row,
-                name: "click",
-                args: Vec::new()
+                event: NodeEvent::Click
             }]
         );
         // A release with no press (the press was on another surface):

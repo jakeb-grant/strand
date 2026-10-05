@@ -164,14 +164,50 @@ pub struct Report {
     /// Lines for the overlay and `strand watch`: kept over a changed
     /// default (`launcher.query: kept "fir" (default changed) [reset]`),
     /// ambiguous identities, handlers restarted with an `await` in flight.
+    /// The first two are also in [`Report::kept_over_default`] and
+    /// [`Report::ambiguous`], for readers that want the cells, not prose.
     pub notices: Vec<String>,
+    /// Cells kept although their default changed, with their value as
+    /// shown (the overlay's `[reset]`, the inspector's kept badge).
+    pub kept_over_default: Vec<KeptCell>,
+    /// Identity ambiguities that reset something (the warning text).
+    pub ambiguous: Vec<String>,
     /// Handlers restarted (their code changed).
     pub restarted: usize,
     /// In-flight handler tasks cancelled by the restart.
     pub cancelled: usize,
 }
 
+/// A state cell kept over a changed default.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeptCell {
+    /// The instance-qualified path (`launcher.query`,
+    /// `TopBar[<monitor>].expanded`): what `Instance::reset` takes.
+    pub path: String,
+    /// The kept value as shown (text quoted: `"fir"`).
+    pub shown: String,
+}
+
+impl KeptCell {
+    /// The notice line: `launcher.query: kept "fir" (default changed)
+    /// [reset]`.
+    pub fn notice(&self) -> String {
+        format!(
+            "{}: kept {} (default changed) [reset]",
+            self.path, self.shown
+        )
+    }
+}
+
 impl Report {
+    /// A cell kept over a changed default: recorded and noticed (once).
+    pub fn kept_over(&mut self, cell: KeptCell) {
+        self.notice(cell.notice());
+        if !self.kept_over_default.contains(&cell) {
+            self.kept_over_default.push(cell);
+        }
+    }
+
     /// Add a notice line (once).
     pub fn notice(&mut self, line: String) {
         if !self.notices.contains(&line) {

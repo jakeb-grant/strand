@@ -85,6 +85,42 @@ pub struct ScreenInfo {
     pub height: f64,
 }
 
+/// An input event on a node, as render resolved it (the node under the
+/// pointer). One variant per kind of event, each with its own payload:
+/// M2 adds keyboard input (`Key`, `Text`, `Activate`, for
+/// `keyboard: on_demand | exclusive` and the launcher) and M4 `Drop`
+/// (`on drop(p: T, at: int)`) as new variants, so the render → logic
+/// message stays the same.
+#[derive(Clone, Debug, PartialEq)]
+pub enum NodeEvent {
+    /// A left click (`on click`).
+    Click,
+    /// A right click (`on secondary`).
+    Secondary,
+    /// A scroll in logical pixels, positive down and right
+    /// (`on scroll(dy, dx)`).
+    Scroll { dy: f64, dx: f64 },
+}
+
+impl NodeEvent {
+    /// The `on` event name it is delivered as.
+    pub fn name(&self) -> &'static str {
+        match self {
+            NodeEvent::Click => "click",
+            NodeEvent::Secondary => "secondary",
+            NodeEvent::Scroll { .. } => "scroll",
+        }
+    }
+
+    /// The handler's arguments.
+    pub fn args(&self) -> Vec<Value> {
+        match self {
+            NodeEvent::Click | NodeEvent::Secondary => Vec::new(),
+            NodeEvent::Scroll { dy, dx } => vec![Value::float(*dy), Value::float(*dx)],
+        }
+    }
+}
+
 /// What the main thread tells the logic thread.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ToLogic {
@@ -93,13 +129,9 @@ pub enum ToLogic {
     Screens(Vec<ScreenInfo>),
     /// A monitor unplugged 30 s ago did not come back.
     Forget(String),
-    /// `on <name>` on a surface's node, with numeric arguments (`scroll`:
-    /// `dy, dx`).
-    Event {
-        node: NodeId,
-        name: &'static str,
-        args: Vec<f64>,
-    },
+    /// An input event on a node (`on click`, `on scroll(dy, dx)`, …),
+    /// delivered to its nearest handler.
+    Event { node: NodeId, event: NodeEvent },
     /// A surface's node is hovered or pressed (`on`) or no longer.
     Flag {
         node: NodeId,
@@ -305,6 +337,35 @@ pub struct Live {
     pub socket: Option<PathBuf>,
 }
 
+/// What a load attempt found wrong (held and unreadable files, its
+/// diagnostics with their sources).
+#[derive(Debug, Default)]
+struct Problems {
+    held: Vec<PathBuf>,
+    unreadable: Vec<(PathBuf, String)>,
+    diagnostics: Vec<strand_compiler::diagnostic::Diagnostic>,
+    sources: std::sync::Arc<strand_compiler::source::SourceMap>,
+}
+
+impl Problems {
+    fn of(o: &Outcome) -> Self {
+        Problems {
+            held: o.held.clone(),
+            unreadable: o.unreadable.clone(),
+            diagnostics: o.diagnostics.clone(),
+            sources: o.sources.clone(),
+        }
+    }
+
+    /// Put these on `o` in place of its own.
+    fn onto(&self, o: &mut Outcome) {
+        o.held = self.held.clone();
+        o.unreadable = self.unreadable.clone();
+        o.diagnostics = self.diagnostics.clone();
+        o.sources = self.sources.clone();
+    }
+}
+
 /// The logic thread's state between steps (see [`logic`]).
 struct Shell {
     inst: Instance,
@@ -320,10 +381,12 @@ struct Shell {
     /// unlock (its load went stale under a newer commit).
     deferred_hard: bool,
     /// Reload events waiting for the step that draws them (their total
-    /// time ends when its diff is sent).
-    events: Vec<(Json, Instant)>,
-    /// Clients waiting for the reload they asked for.
-    waiting: Vec<ipc::ClientId>,
+    /// time ends when its diff is sent), with the clients whose
+    /// `strand reload` each answers.
+    events: Vec<(Json, Instant, Vec<ipc::ClientId>)>,
+    /// The newest load attempt's problems: a deferred load replayed after
+    /// the unlock reports these, not its own older ones.
+    latest: Problems,
     /// The settings files last given to the watcher.
     watched: Vec<PathBuf>,
 }
@@ -337,8 +400,8 @@ impl Shell {
             ToLogic::Forget(id) => {
                 inst.forget_screen(&id);
             }
-            ToLogic::Event { node, name, args } => {
-                if name == "click"
+            ToLogic::Event { node, event } => {
+                if event == NodeEvent::Click
                     && let Some(c) = self.overlay.click(node, inst)
                 {
                     match c {
@@ -352,7 +415,7 @@ impl Shell {
                     }
                     return;
                 }
-                inst.event(node, name, args.into_iter().map(Value::float).collect());
+                inst.event(node, event.name(), event.args());
             }
             ToLogic::Flag { node, flag, on } => inst.set_flag(node, flag, on),
             ToLogic::Size {
@@ -388,6 +451,7 @@ impl Shell {
     /// A build committed meanwhile makes the deferred one stale: it is
     /// dropped (a deferred hard reload is still owed).
     fn commit(&mut self, l: Box<Loaded>) {
+        self.latest = Problems::of(&l.outcome);
         self.apply(l, true);
     }
 
@@ -428,6 +492,7 @@ impl Shell {
             }
             if let Some(b) = build.or_else(|| l.hard.then(|| self.build.clone())) {
                 self.build = b;
+                self.overlay.set_running(true);
             }
         }
         let commit = began.elapsed();
@@ -469,7 +534,9 @@ impl Shell {
         self.watch_settings();
         let mut ev = reload_event(&l, report.as_ref(), commit);
         ev["deferred"] = json!(deferred);
-        self.events.push((ev, l.saved.unwrap_or(l.started)));
+        let clients = std::mem::take(&mut l.clients);
+        self.events
+            .push((ev, l.saved.unwrap_or(l.started), clients));
         if deferred {
             self.deferred = Some(l);
         }
@@ -483,12 +550,17 @@ impl Shell {
         }
         if let Some(mut l) = self.deferred.take() {
             l.hard |= std::mem::take(&mut self.deferred_hard);
-            self.commit(l);
+            // Saves after it may have broken the config again (held back,
+            // the overlay up): the replay shows the newest attempt's
+            // problems, not the ones it had when it was deferred.
+            self.latest.onto(&mut l.outcome);
+            self.apply(l, true);
         } else if std::mem::take(&mut self.deferred_hard) {
             let now = Instant::now();
             let l = Loaded {
                 outcome: Outcome::default(),
                 requested: true,
+                clients: Vec::new(),
                 hard: true,
                 files: Vec::new(),
                 saved: None,
@@ -516,7 +588,12 @@ impl Shell {
     fn request(&mut self, id: ipc::ClientId, req: ipc::Request) {
         match req {
             ipc::Request::Reload { hard } => match &self.jobs {
-                Some(j) if j.send(Job::Reload { hard }).is_ok() => self.waiting.push(id),
+                Some(j)
+                    if j.send(Job::Reload {
+                        hard,
+                        client: Some(id),
+                    })
+                    .is_ok() => {}
                 _ => {
                     if let Some(s) = &mut self.server {
                         s.answer(
@@ -528,7 +605,10 @@ impl Shell {
             },
             ipc::Request::Reset { path } => {
                 let ans = match self.inst.reset(&path) {
-                    Ok(()) => json!({"ok": true}),
+                    Ok(()) => {
+                        self.overlay.forget_cell(&path, &self.inst);
+                        json!({"ok": true})
+                    }
                     Err(e) => json!({"ok": false, "error": e.to_string()}),
                 };
                 if let Some(s) = &mut self.server {
@@ -569,22 +649,20 @@ impl Shell {
         for n in &update.notices {
             log::info!("{n}");
         }
-        if !update.notices.is_empty() {
-            // Persisted cells kept over a changed default at boot.
-            let rows = update
-                .notices
-                .iter()
-                .map(|n| overlay::notice_line(n))
-                .collect();
+        if !update.notices.is_empty() || !update.kept.is_empty() {
+            // Persisted cells kept over a changed default at boot (their
+            // `[reset]` from the structured record), lowering's warnings.
+            let rows = overlay::kept_and_notices(&update.kept, &update.notices);
             self.overlay.note(rows, Instant::now(), &self.inst);
         }
         let now = Instant::now();
-        for (mut ev, since) in self.events.drain(..) {
+        for (mut ev, since, clients) in self.events.drain(..) {
             ev["timing"]["total_ms"] = json!(ms(now.saturating_duration_since(since)));
             log::info!("{}", ipc::describe(&ev).trim_end());
             if let Some(s) = &mut self.server {
                 s.broadcast(&ev);
-                for id in self.waiting.drain(..) {
+                // Each `strand reload` gets the event of its own load.
+                for id in clients {
                     s.answer(id, &json!({"ok": true, "event": ev.clone()}));
                 }
             }
@@ -755,9 +833,10 @@ pub fn logic(
         deferred: None,
         deferred_hard: false,
         events: Vec::new(),
-        waiting: Vec::new(),
+        latest: Problems::of(&boot),
         watched: Vec::new(),
     };
+    shell.overlay.set_running(boot.build.is_some());
     // The boot's diagnostics: a config broken at boot runs its last good
     // version (or nothing) with the overlay up.
     if boot.errors() > 0 || !boot.unreadable.is_empty() {
@@ -796,8 +875,10 @@ pub fn logic(
                 .map(|d| d.saturating_duration_since(now)),
         );
         also(queued.then_some(Duration::from_millis(50)));
-        if shell.deferred.is_some() || shell.deferred_hard {
-            also(Some(Duration::from_millis(250)));
+        // A step that closed the lock: the deferred load commits now
+        // (no polling while it stays shown: only a step can unlock).
+        if (shell.deferred.is_some() || shell.deferred_hard) && !shell.inst.lock_shown() {
+            also(Some(Duration::ZERO));
         }
         sleeper
             .sleep(timeout, wake.wall, wall, &mut inbox)
@@ -1139,8 +1220,7 @@ mod tests {
         });
         send(ToLogic::Event {
             node: a,
-            name: "click",
-            args: Vec::new(),
+            event: NodeEvent::Click,
         });
         m.until("a click", |s| s.texts() == ["DP-1 1 1"]);
         let two = || vec![screen("A", "DP-1"), screen("B", "HDMI-A-1")];
@@ -1149,8 +1229,7 @@ mod tests {
         let b = *m.scene.roots().iter().find(|&&r| r != a).unwrap();
         send(ToLogic::Event {
             node: b,
-            name: "click",
-            args: Vec::new(),
+            event: NodeEvent::Click,
         });
         m.until("a click on B", |s| {
             let mut t = s.texts();
@@ -1217,8 +1296,7 @@ mod tests {
         to_logic
             .send(ToLogic::Event {
                 node: root,
-                name: "click",
-                args: Vec::new(),
+                event: NodeEvent::Click,
             })
             .unwrap();
         m.until("a click", |s| s.texts() == ["n 1"]);
@@ -1392,10 +1470,19 @@ mod tests {
             std::io::BufRead::read_line(&mut events, &mut line).unwrap();
             serde_json::from_str::<Json>(&line).unwrap()
         };
+        // An edit that leaves the lock alone commits at once, lock shown.
+        std::fs::write(&file, src("lock a", "bar a2")).unwrap();
+        let ev = next_event();
+        assert_eq!(ev["deferred"], false, "{ev}");
+        m.until("the bar edit while locked", |s| {
+            s.texts().contains(&"bar a2".to_string())
+        });
         std::fs::write(&file, src("lock b", "bar b")).unwrap();
         let ev = next_event();
         assert_eq!(ev["deferred"], true, "{ev}");
         assert_eq!(ev["classes"], json!(["lock-deferred"]), "{ev}");
+        // Once a lock edit waits, a later save waits with it (the
+        // loader's sources carry the lock edit; decisions.md).
         // `strand reload --hard` while locked: answered at once,
         // deferred (and it absorbs the deferred save).
         let mut client =
@@ -1411,14 +1498,13 @@ mod tests {
         .unwrap();
         assert_eq!(ans["event"]["deferred"], true, "{ans}");
         let _ = next_event();
-        assert_eq!(m.texts(), ["bar a", "lock a"], "nothing committed yet");
+        assert_eq!(m.texts(), ["bar a2", "lock a"], "nothing committed yet");
         // Unlock: the newest deferred build lands, with both edits.
         let lock = m.scene.of_kind(strand_scene::NodeKind::Lock)[0];
         to_logic
             .send(ToLogic::Event {
                 node: lock,
-                name: "click",
-                args: Vec::new(),
+                event: NodeEvent::Click,
             })
             .unwrap();
         m.until("the bar edit", |s| s.texts().contains(&"bar c".to_string()));
@@ -1435,8 +1521,7 @@ mod tests {
         to_logic
             .send(ToLogic::Event {
                 node: bar,
-                name: "click",
-                args: Vec::new(),
+                event: NodeEvent::Click,
             })
             .unwrap();
         m.until("the lock edit", |s| {
@@ -1446,6 +1531,231 @@ mod tests {
         assert_eq!(t.join().unwrap(), Ok(()));
         drop(compiler);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A watcher on `socket`: the next event it hears.
+    fn watch(socket: &Path) -> impl FnMut() -> Json {
+        let mut events =
+            std::io::BufReader::new(std::os::unix::net::UnixStream::connect(socket).unwrap());
+        let ok = ipc::request(&mut events, &ipc::Request::Watch, Duration::from_secs(10)).unwrap();
+        assert_eq!(ok["ok"], true);
+        move || {
+            let mut line = String::new();
+            std::io::BufRead::read_line(&mut events, &mut line).unwrap();
+            serde_json::from_str::<Json>(&line).unwrap()
+        }
+    }
+
+    fn panels(s: &SceneMirror) -> usize {
+        s.of_kind(strand_scene::NodeKind::Panel).len()
+    }
+
+    /// design.md: "The fix commits and the overlay vanishes", also when
+    /// the fix is an undo back to the last good text (nothing to commit).
+    #[test]
+    fn a_revert_to_the_last_good_text_closes_the_overlay() {
+        let dir = temp_dir("revert");
+        let file = dir.join("bar.strand");
+        let good = "bar Top {\n  text \"a\"\n}\n";
+        std::fs::write(&file, good).unwrap();
+        let socket = dir.join("ipc.sock");
+        let (compiler, to_logic, t, mut m) = spawn_live(&dir, Some(socket.clone()));
+        m.until("the bar", |s| s.texts() == ["a"]);
+        let mut next_event = watch(&socket);
+        std::fs::write(&file, "bar Top {\n  txet \"a\"\n}\n").unwrap();
+        let ev = next_event();
+        assert_eq!(ev["diagnostics"][0]["severity"], "error", "{ev}");
+        m.until("the overlay", |s| panels(s) == 1);
+        std::fs::write(&file, good).unwrap();
+        let ev = next_event();
+        assert_eq!(ev["diagnostics"], json!([]), "{ev}");
+        assert_eq!(ev["held"], json!([]), "{ev}");
+        m.until("the overlay gone", |s| panels(s) == 0);
+        assert_eq!(m.texts(), ["a"]);
+        to_logic.send(ToLogic::Shutdown).unwrap();
+        assert_eq!(t.join().unwrap(), Ok(()));
+        drop(compiler);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A deferred lock edit replayed after the unlock does not take away
+    /// the overlay of a broken save made after it: the config on disk is
+    /// still broken.
+    #[test]
+    fn an_unlock_replay_keeps_the_newer_errors() {
+        let dir = temp_dir("lock-errors");
+        let src = |lock: &str, bar: &str, el: &str| {
+            format!(
+                "export state locked = true\nlock L {{\n  open: locked\n  on click {{ locked = false }}\n  text \"{lock}\"\n}}\nbar Top {{\n  {el} \"{bar}\"\n}}\n"
+            )
+        };
+        let file = dir.join("shell.strand");
+        std::fs::write(&file, src("lock a", "bar a", "text")).unwrap();
+        let socket = dir.join("ipc.sock");
+        let (compiler, to_logic, t, mut m) = spawn_live(&dir, Some(socket.clone()));
+        m.until("lock and bar", |s| s.texts().len() == 2);
+        let mut next_event = watch(&socket);
+        std::fs::write(&file, src("lock b", "bar b", "text")).unwrap();
+        assert_eq!(next_event()["deferred"], true);
+        std::fs::write(&file, src("lock b", "bar b", "txet")).unwrap();
+        let ev = next_event();
+        assert_eq!(ev["diagnostics"][0]["severity"], "error", "{ev}");
+        m.until("the overlay", |s| panels(s) == 1);
+        let lock = m.scene.of_kind(strand_scene::NodeKind::Lock)[0];
+        to_logic
+            .send(ToLogic::Event {
+                node: lock,
+                event: NodeEvent::Click,
+            })
+            .unwrap();
+        m.until("the deferred edit", |s| {
+            s.texts().contains(&"bar b".to_string())
+        });
+        let ev = next_event();
+        assert_eq!(ev["deferred"], false, "{ev}");
+        assert_eq!(ev["diagnostics"][0]["severity"], "error", "{ev}");
+        assert_eq!(ev["held"].as_array().map(Vec::len), Some(1), "{ev}");
+        // The replay's diff (the one with `bar b`) left the overlay up.
+        assert_eq!(panels(&m.scene), 1, "the config is still broken");
+        assert!(
+            m.texts().join("\n").contains("unknown element"),
+            "{:?}",
+            m.texts()
+        );
+        to_logic.send(ToLogic::Shutdown).unwrap();
+        assert_eq!(t.join().unwrap(), Ok(()));
+        drop(compiler);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// p95 of `v` (milliseconds).
+    fn p95(v: &[f64]) -> f64 {
+        let mut v = v.to_vec();
+        v.sort_by(f64::total_cmp);
+        let i = ((v.len() as f64 * 0.95).ceil() as usize).clamp(1, v.len()) - 1;
+        v[i]
+    }
+
+    /// Save to pixels through the real pipeline: each edit is written
+    /// in place, goes through the watcher (its 15 ms coalescing
+    /// included), the compiler worker and the logic thread, and its diff
+    /// is applied to a renderer and the bar painted (2560×40 at 1×).
+    /// Returns the token edits' and the markup edits' times (ms).
+    fn reload_latency(rounds: usize) -> (Vec<f64>, Vec<f64>) {
+        use std::sync::Arc;
+        use strand_scene::{NodeKind, PaintTarget, Painter, Scale, SceneOp, Size, SurfaceId};
+        let dir = temp_dir("latency");
+        let file = dir.join("bar.strand");
+        let src = |bg: &str, label: &str, extra: bool| {
+            format!(
+                "tokens base {{ bar.bg: {bg} }}\n\
+                 bar Top {{\n\
+                 \x20 state n = 0\n\
+                 \x20 edge: top; height: 40\n\
+                 \x20 bg: $bar.bg\n\
+                 \x20 on click {{ n += 1 }}\n\
+                 \x20 split {{\n\
+                 \x20   start  {{ text \"{label}\" }}\n\
+                 \x20   center {{ text clock.format(\"%H:%M\") }}\n\
+                 \x20   end    {{ text join(\"\", n) }}\n\
+                 {}\
+                 \x20 }}\n\
+                 }}\n",
+                if extra { "    text \"extra\"\n" } else { "" }
+            )
+        };
+        std::fs::write(&file, src("#204080", "m0", false)).unwrap();
+        let (compiler, to_logic, t, mut m) = spawn_live(&dir, None);
+        let font = std::fs::read(strand_text::test_font_path()).unwrap();
+        let engine = strand_text::TextEngine::new(FontConfig::isolated(vec![Arc::new(font)]));
+        let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+        let size = Size::new(2560, 40);
+        let mut px = vec![0u8; (size.w * size.h * 4) as usize];
+        let mut attached = false;
+        // Apply diffs until `done` holds for one, painting each; the
+        // time the matching one is painted.
+        let mut until = |m: &mut Mirror, done: &dyn Fn(&SceneDiff) -> bool| -> Instant {
+            loop {
+                let d = m
+                    .inbox
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("a diff");
+                m.scene.apply(&d).unwrap();
+                let hit = done(&d);
+                r.apply(d);
+                if !attached && let Some(&bar) = m.scene.of_kind(NodeKind::Bar).first() {
+                    r.attach_surface(SurfaceId(1), bar);
+                    attached = true;
+                }
+                let mut target =
+                    PaintTarget::new(&mut px, size, size.w * 4, Scale::ONE, 1).unwrap();
+                r.paint(SurfaceId(1), &mut target);
+                if hit {
+                    return Instant::now();
+                }
+            }
+        };
+        until(&mut m, &|_| true);
+        let (mut tokens, mut markup) = (Vec::new(), Vec::new());
+        let mut extra = false;
+        for i in 1..=rounds {
+            std::thread::sleep(Duration::from_millis(40));
+            // A token edit: the bar's colour.
+            let bg = format!("#{:02x}4080", (i * 7) % 256);
+            let saved = Instant::now();
+            std::fs::write(&file, src(&bg, &format!("m{i}"), extra)).unwrap();
+            let painted = until(&mut m, &|d| {
+                d.ops.iter().any(|o| matches!(o, SceneOp::SetTokens { .. }))
+            });
+            tokens.push(painted.duration_since(saved).as_secs_f64() * 1e3);
+            std::thread::sleep(Duration::from_millis(40));
+            // A markup edit: a node added or removed.
+            extra = !extra;
+            let saved = Instant::now();
+            std::fs::write(&file, src(&bg, &format!("m{i}"), extra)).unwrap();
+            let painted = until(&mut m, &|d| {
+                d.ops
+                    .iter()
+                    .any(|o| matches!(o, SceneOp::Create { .. } | SceneOp::Remove { .. }))
+            });
+            markup.push(painted.duration_since(saved).as_secs_f64() * 1e3);
+        }
+        to_logic.send(ToLogic::Shutdown).unwrap();
+        assert_eq!(t.join().unwrap(), Ok(()));
+        drop(compiler);
+        let _ = std::fs::remove_dir_all(dir);
+        (tokens, markup)
+    }
+
+    /// design.md, "Live reload": at p95 a token edit shows within 35 ms
+    /// of save and a markup edit within 50 ms. Measured save → painted
+    /// buffer through the real watcher, compiler worker, logic thread
+    /// and renderer (the compositor's present is not in it). Debug builds
+    /// are checked against twice the budget (unoptimised code); an
+    /// optimised build (`cargo test --release`) against the budget
+    /// itself. `STRAND_LATENCY_ROUNDS` sets the edits per kind (20).
+    #[test]
+    fn reload_latency_meets_its_budget() {
+        let rounds = std::env::var("STRAND_LATENCY_ROUNDS")
+            .ok()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(20);
+        let (tokens, markup) = reload_latency(rounds);
+        let (pt, pm) = (p95(&tokens), p95(&markup));
+        eprintln!(
+            "reload latency over {rounds} edits each: token p95 {pt:.1} ms (max {:.1}), markup p95 {pm:.1} ms (max {:.1})",
+            tokens.iter().copied().fold(0.0, f64::max),
+            markup.iter().copied().fold(0.0, f64::max),
+        );
+        let slack = if cfg!(debug_assertions) { 2.0 } else { 1.0 };
+        assert!(
+            pt <= 35.0 * slack,
+            "token edits: p95 {pt:.1} ms: {tokens:?}"
+        );
+        assert!(
+            pm <= 50.0 * slack,
+            "markup edits: p95 {pm:.1} ms: {markup:?}"
+        );
     }
 
     /// The scene as text with surfaces in a fixed order.

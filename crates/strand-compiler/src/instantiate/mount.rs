@@ -478,9 +478,18 @@ impl Ctx {
         };
         let path = format!("{owner}{}.{}", env.instance_path(), info.name);
         // The cell a reload keeps: same place in the instance tree, same
-        // owner and name.
+        // owner and name. A surface's scope is its own identity already,
+        // and its name is its namespace (`strand-<Name>`): renaming it
+        // recreates the surface with its state kept (design.md, "What
+        // each edit does"), so its cells are keyed without it.
         let scope_key = env.ident();
-        let key: Rc<str> = format!("{scope_key}#{owner}.{}", info.name).into();
+        let surface_owned = info
+            .owner
+            .is_some_and(|o| matches!(prog.def(o).kind, crate::hir::DefKind::Surface(_)));
+        let key: Rc<str> = match surface_owned {
+            true => format!("{scope_key}#.{}", info.name).into(),
+            false => format!("{scope_key}#{owner}.{}", info.name).into(),
+        };
         // The old cell and the program it was made by (a reload's old
         // program, or an older one for a bar parked across reloads).
         let carried = self
@@ -653,7 +662,10 @@ impl Ctx {
                             let shown = super::reload::shown_kept(&v, &prog.types);
                             self.report(|r| {
                                 r.class(EditClass::StateDefault);
-                                r.notice(format!("{path}: kept {shown} (default changed) [reset]"));
+                                r.kept_over(crate::reconcile::KeptCell {
+                                    path: path.clone(),
+                                    shown,
+                                });
                             });
                         }
                         Ok(strand_core::Redeclared::Adopted) => {
@@ -713,10 +725,12 @@ impl Ctx {
                 if let strand_core::Restore::KeptOverNewDefault(_) = &cell.restored
                     && let Ok(v) = cell.signal.get_untracked(rt)
                 {
-                    self.notices.borrow_mut().push(format!(
-                        "{path}: kept {} (default changed) [reset]",
-                        super::reload::shown_kept(&v, &prog.types)
-                    ));
+                    let cell = crate::reconcile::KeptCell {
+                        path: path.clone(),
+                        shown: super::reload::shown_kept(&v, &prog.types),
+                    };
+                    self.notices.borrow_mut().push(cell.notice());
+                    self.kept.borrow_mut().push(cell);
                 }
                 // Newly persisted in a reload: the value it had.
                 if matches!(cell.restored, strand_core::Restore::Default)
@@ -2190,6 +2204,7 @@ impl Ctx {
                 env.ident(),
                 self.sid(s.element.file, s.element.span)
             ));
+            self.note_surface(env.ident(), false);
             self.mount_block(rt, parent, None, |ctx, rt, frag| {
                 env.set_owner(rt.current_owner());
                 ctx.note_env(&env);
@@ -2205,6 +2220,8 @@ impl Ctx {
             .iter()
             .find(|p| p.prop == Some(SceneProp::Screens))
             .map(|p| p.value);
+        let tag = format!("s{}", self.sid(s.element.file, s.element.span));
+        self.note_surface(format!("{}/{tag}", env.ident()).into(), true);
         let (ctx, outer) = (self.clone(), env.clone());
         let list: ListFn = Box::new(move |rt| {
             let all = ctx.vm.host.read(rt, "screens", "all")?;
@@ -2275,7 +2292,7 @@ impl Ctx {
                 what: "bar on every screen".to_string(),
                 at: (s.element.file, s.element.span),
                 park: true,
-                tag: format!("s{}", self.sid(s.element.file, s.element.span)),
+                tag,
                 reads: (
                     pick.into_iter().collect(),
                     ["all", "focused"]

@@ -134,6 +134,26 @@ pub(crate) struct Carry {
     /// Persisted paths handed from an old cell to a new one: their
     /// "path in use" diagnostic is the handover, not a mistake.
     pub handover: Vec<String>,
+    /// Surfaces the new instance mounted: their scope ident (a bar's:
+    /// the prefix of its per-monitor idents) and whether it is a bar.
+    pub surfaces: Vec<(Rc<str>, bool)>,
+}
+
+impl Carry {
+    /// Why the old cell under `key` cannot be kept when its surface
+    /// changed between `bar` (one per monitor) and a single surface:
+    /// one monitor's cell cannot become the single surface's, nor the
+    /// other way round, without guessing.
+    pub(crate) fn surface_kind_change(&self, key: &str) -> Option<&'static str> {
+        self.surfaces.iter().find_map(|(ident, per_monitor)| {
+            let rest = key.strip_prefix(&**ident)?;
+            match (per_monitor, rest.chars().next()) {
+                (true, Some('#' | '/')) => Some("the surface is now a bar, one per monitor"),
+                (false, Some('[')) => Some("the bar is now a single surface"),
+                _ => None,
+            }
+        })
+    }
 }
 
 impl Ctx {
@@ -193,6 +213,13 @@ impl Ctx {
                 c.kept_nodes.insert(out.0);
                 Some(out)
             }
+            // A surface of another kind (`panel` → `osd`): a new node,
+            // the surface recreated (its children and state are kept by
+            // their own keys).
+            Some((_, k, _)) if k.is_surface() && kind.is_surface() => {
+                c.report.class(EditClass::Surface);
+                None
+            }
             _ => None,
         }
     }
@@ -248,6 +275,14 @@ impl Ctx {
     pub(crate) fn fresh_cell(&self, scope: Rc<str>, name: String) {
         if let Some(c) = self.carry.borrow_mut().as_mut() {
             c.fresh.push((scope, name));
+        }
+    }
+
+    /// A surface mounted under `ident` (a bar: per monitor, `ident` the
+    /// prefix of its instances' idents).
+    pub(crate) fn note_surface(&self, ident: Rc<str>, per_monitor: bool) {
+        if let Some(c) = self.carry.borrow_mut().as_mut() {
+            c.surfaces.push((ident, per_monitor));
         }
     }
 
@@ -343,7 +378,12 @@ impl Ctx {
             return Some(new_default.clone());
         }
         let shown = shown_kept(&cur, &to.types);
-        self.report(|r| r.notice(format!("{path}: kept {shown} (default changed) [reset]")));
+        self.report(|r| {
+            r.kept_over(crate::reconcile::KeptCell {
+                path: path.to_string(),
+                shown,
+            })
+        });
         Some(cur)
     }
 }

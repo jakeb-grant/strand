@@ -151,8 +151,12 @@ pub struct Update {
     pub errors: Vec<RuntimeError>,
     /// Write-rate throttling, cancelled handlers and other notices.
     pub diagnostics: Vec<Diagnostic>,
-    /// Persisted cells kept although their default changed.
+    /// Lowering's warnings and persisted cells kept although their
+    /// default changed, as lines.
     pub notices: Vec<String>,
+    /// The persisted cells kept over a changed default (also in
+    /// `notices`), for the overlay's `[reset]`.
+    pub kept: Vec<crate::reconcile::KeptCell>,
 }
 
 /// A live persisted cell and its path.
@@ -189,6 +193,8 @@ pub(crate) struct Ctx {
     /// Per-monitor bar lists: forget a parked monitor's bar by key.
     pub forgetters: RefCell<Vec<std::rc::Weak<Forget>>>,
     pub notices: RefCell<Vec<String>>,
+    /// Persisted cells kept over a changed default since the last tick.
+    pub kept: RefCell<Vec<crate::reconcile::KeptCell>>,
     play_seq: Cell<u32>,
     /// Reload identities and handler hashes of the program (`None`: made
     /// from a bare program, keyed by span).
@@ -438,6 +444,7 @@ impl Ctx {
             next_hold: Cell::new(0),
             blocked: RefCell::default(),
             notices: RefCell::default(),
+            kept: RefCell::default(),
             play_seq: Cell::new(0),
             identity,
             hashes,
@@ -776,6 +783,7 @@ impl Instance {
             scopes: Default::default(),
             fresh: Vec::new(),
             handover: Vec::new(),
+            surfaces: Vec::new(),
         });
         let old_root = self.root.take();
         let old_tokens = self.tokens.take();
@@ -793,6 +801,16 @@ impl Instance {
             em.free_dropped(&old_em);
             r
         };
+        // Recreated surfaces have new ids: the next reload finds them
+        // under those.
+        if !reduced.rekeyed.is_empty() {
+            let mut reg = ctx.registry.borrow_mut();
+            for (id, ..) in reg.nodes.values_mut() {
+                if let Some((_, new)) = reduced.rekeyed.iter().find(|(old, _)| old == id) {
+                    *id = *new;
+                }
+            }
+        }
         let mut report = std::mem::take(&mut carry.report);
         if reduced.created > 0 {
             report.class(EditClass::NodeAdded);
@@ -861,6 +879,9 @@ impl Instance {
                 report
                     .reset
                     .push((rec.path().to_string(), "renamed".to_string()));
+            } else if let Some(why) = carry.surface_kind_change(&key) {
+                report.class(EditClass::StateReset);
+                report.reset.push((rec.path().to_string(), why.to_string()));
             }
         }
         ctx.handover.borrow_mut().extend(carry.handover.drain(..));
@@ -875,6 +896,7 @@ impl Instance {
         old.em.borrow_mut().ops.clear();
         for w in build.identity.warnings() {
             report.notices.push(w.clone());
+            report.ambiguous.push(w.clone());
         }
         report
     }
@@ -1010,6 +1032,7 @@ impl Instance {
             errors,
             diagnostics: tick.diagnostics,
             notices: self.ctx.notices.borrow_mut().drain(..).collect(),
+            kept: self.ctx.kept.borrow_mut().drain(..).collect(),
         }
     }
 

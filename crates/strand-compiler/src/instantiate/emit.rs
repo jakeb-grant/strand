@@ -103,6 +103,8 @@ pub struct Reduced {
     pub patched: usize,
     /// Surfaces whose layer or namespace changed, or that were replaced.
     pub surfaces: usize,
+    /// Kept surfaces given a new id (recreated): `(old, new)`.
+    pub rekeyed: Vec<(NodeId, NodeId)>,
 }
 
 impl Emitter {
@@ -555,7 +557,8 @@ impl Emitter {
             .collect();
         rekey.sort();
         for id in rekey {
-            self.rekey(id);
+            let new = self.rekey(id);
+            r.rekeyed.push((id, new));
             r.surfaces += 1;
         }
         // Render's tree as the ops so far leave it: what is on the scene

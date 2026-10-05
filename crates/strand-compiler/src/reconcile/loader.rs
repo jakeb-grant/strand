@@ -56,6 +56,11 @@ pub struct Outcome {
     pub unreadable: Vec<(PathBuf, String)>,
     /// The build came from the last-good cache (a config broken at boot).
     pub from_cache: bool,
+    /// The previous attempt had problems (errors, held or unreadable
+    /// files) and this one has none: a save reverted to the last good
+    /// text, or a file readable again with its old text. Nothing may be
+    /// committed, but whoever shows the problems must hear they are gone.
+    pub cleared: bool,
     /// Time spent compiling.
     pub compile_time: Duration,
 }
@@ -84,6 +89,9 @@ pub struct Loader {
     /// files under them are kept, not dropped.
     unlisted: Vec<(PathBuf, String)>,
     cache_error: Option<String>,
+    /// The last attempt had errors, held or unreadable files (see
+    /// [`Outcome::cleared`]).
+    dirty: bool,
 }
 
 /// Compile attempts per batch at most (each held-back file costs one per
@@ -106,6 +114,7 @@ impl Loader {
             dirs: Vec::new(),
             unlisted: Vec::new(),
             cache_error: None,
+            dirty: false,
         }
     }
 
@@ -150,6 +159,7 @@ impl Loader {
         let files = match self.list() {
             Ok(f) => f,
             Err(e) => {
+                self.dirty = true;
                 return Outcome {
                     unreadable: vec![(self.root.clone(), e.to_string())],
                     ..Outcome::default()
@@ -228,10 +238,13 @@ impl Loader {
                 }
                 self.reconcile(false)
             }
-            Err(e) => Outcome {
-                unreadable: vec![(self.root.clone(), e.to_string())],
-                ..Outcome::default()
-            },
+            Err(e) => {
+                self.dirty = true;
+                Outcome {
+                    unreadable: vec![(self.root.clone(), e.to_string())],
+                    ..Outcome::default()
+                }
+            }
         }
     }
 
@@ -255,7 +268,22 @@ impl Loader {
         map
     }
 
+    /// [`Loader::attempt`], with [`Outcome::cleared`] filled in.
     fn reconcile(&mut self, force: bool) -> Outcome {
+        let mut out = self.attempt(force);
+        self.settle(&mut out);
+        out
+    }
+
+    /// Remember whether `out` had problems; it is `cleared` if the last
+    /// attempt had some and it has none.
+    fn settle(&mut self, out: &mut Outcome) {
+        let dirty = out.errors() > 0 || !out.held.is_empty() || !out.unreadable.is_empty();
+        out.cleared = self.dirty && !dirty;
+        self.dirty = dirty;
+    }
+
+    fn attempt(&mut self, force: bool) -> Outcome {
         let mut unreadable = Vec::new();
         let mut changed: BTreeSet<PathBuf> = BTreeSet::new();
         for (p, t) in &self.disk {

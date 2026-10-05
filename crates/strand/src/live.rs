@@ -46,6 +46,8 @@ pub struct Loaded {
     pub outcome: Outcome,
     /// `strand reload` asked for it.
     pub requested: bool,
+    /// The IPC clients whose `strand reload` this load answers.
+    pub clients: Vec<u64>,
     /// `strand reload --hard`.
     pub hard: bool,
     /// The module files the batch named.
@@ -65,9 +67,11 @@ pub struct Loaded {
 pub enum Job {
     /// The watcher sent something: drain its channel.
     Poll,
-    /// `strand reload [--hard]`.
+    /// `strand reload [--hard]`, from the IPC client `client` (answered
+    /// with the event of the load it causes).
     Reload {
         hard: bool,
+        client: Option<u64>,
     },
     /// Watch these referenced files (settings files the program mounts).
     Referenced(Vec<(PathBuf, Role)>),
@@ -233,11 +237,15 @@ fn run(
         }
         let mut batches: Vec<FileBatch> = Vec::new();
         let mut reload: Option<bool> = None;
+        let mut clients: Vec<u64> = Vec::new();
         let mut referenced: Option<Vec<(PathBuf, Role)>> = None;
         for j in queue {
             match j {
                 Job::Poll => {}
-                Job::Reload { hard } => reload = Some(reload.unwrap_or(false) || hard),
+                Job::Reload { hard, client } => {
+                    reload = Some(reload.unwrap_or(false) || hard);
+                    clients.extend(client);
+                }
                 Job::Referenced(r) => referenced = Some(r),
                 Job::Stop => return,
             }
@@ -301,17 +309,22 @@ fn run(
             log::warn!("last-good cache: {e}");
         }
         // The watcher's own re-listing after a reload, or a save that
-        // changed nothing the loader keeps: nothing to report.
+        // changed nothing the loader keeps: nothing to report. A save
+        // that reverts a broken one to the last good text changes
+        // nothing either, but the problems it clears are reported gone
+        // (`cleared`: the overlay closes, `strand watch` hears it).
         let quiet = outcome.build.is_none()
             && outcome.diagnostics.is_empty()
             && outcome.held.is_empty()
-            && outcome.unreadable.is_empty();
+            && outcome.unreadable.is_empty()
+            && !outcome.cleared;
         if quiet && reload.is_none() {
             continue;
         }
         let loaded = Loaded {
             outcome,
             requested: reload.is_some(),
+            clients,
             hard: reload == Some(true),
             files,
             saved,

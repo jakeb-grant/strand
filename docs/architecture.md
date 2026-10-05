@@ -26,22 +26,34 @@ plain `ScreenInfo`s, `monitor_forgotten` as `Forget(id)`), pointer input
 on the node under the pointer (`Renderer::hit`'s chain: `hover` along
 it and `pressed` on the chain under a press as `Flag`,
 `click`/`secondary` on the innermost node both the press and the release
-were over and `scroll` on the innermost node as `Event`, which logic
-bubbles to the nearest handler) and surface sizes to the logic
-thread over a calloop channel (`run::ToLogic`). Before the logic thread
+were over and `scroll` on the innermost node as `Event { node, event:
+NodeEvent }`, which logic bubbles to the nearest handler) and surface
+sizes to the logic thread over a calloop channel (`run::ToLogic`).
+`NodeEvent` is one variant per kind of input, each with its own payload
+(`Click`, `Secondary`, `Scroll { dy, dx }`; `name()` and `args()` are
+what `Instance::event` takes): M2 adds `Activate`, `Key { .. }` and
+`Text(String)` for keyboard focus and the launcher, M4 `Drop { payload,
+at }` for `on drop(p: T, at: int)`, as new variants of the same
+message. Before the logic thread
 starts, `live::Worker::spawn` starts the `strand-watch` watcher (module
 set from `find_files`, rescan callback calling it again), boots the
 `Loader` (the boot `Outcome`: a build, or a cached last good one, or
 none, with diagnostics) and starts the `strand-compile` thread, which
 compiles each watcher batch and `strand reload` off the logic thread and
 sends `live::FromWorker::{Loaded, Settings}` on a calloop channel; logic
-sends it `Job::{Reload { hard }, Referenced(settings files)}`. The
+sends it `Job::{Reload { hard, client }, Referenced(settings files)}`
+(the `Loaded` a reload causes carries the IPC clients it answers). A
+load that commits nothing but clears the last attempt's problems (a
+broken save reverted to the last good text, `Outcome::cleared`) is
+sent too, so the overlay closes and `strand watch` hears it. The
 persist store's `on_written` registers Strand's own writes with the
 watcher. The logic thread commits each `Loaded` (`Instance::reload`,
 `reload_hard`, held back while a lock is shown: the newest such load
-waits, absorbing older ones, and is committed after the unlock; a load
-committed meanwhile drops it), keeps the error overlay (diagnostics, and
-reload notices with their `[reset]`, which calls `Instance::reset`)
+waits, absorbing older ones, and is committed after the step that
+closes the lock, with the newest attempt's held files and diagnostics;
+a load committed meanwhile drops it), keeps the error overlay
+(diagnostics, and reload notices with their `[reset]`, which calls
+`Instance::reset`; rows about one cell replace each other)
 (`overlay.rs`, external nodes; 250 ms quiet) and freezes faulting
 components, and serves the IPC socket (`ipc.rs`) as sources on its loop;
 it owns the runtime, `SchemaHost::real`
@@ -601,15 +613,23 @@ Public interfaces other crates and later stages build on:
   kind change keeps them. `Hashes` are Merkle hashes per handler and
   timer over everything they reach (`fn`s, `let`s, types, keyframes,
   custom services; `locks()` over every `lock` subtree,
-  `changed_services(old)`). `Report { classes: Vec<EditClass>, kept,
-  reset, notices, restarted, cancelled }` is what a reload did, its
+  `changed_services(old)`; a group of declarations naming each other is
+  hashed once as a strongly connected component, linear in the def
+  graph). `Report { classes: Vec<EditClass>, kept, reset, notices,
+  kept_over_default: Vec<KeptCell { path, shown }>, ambiguous,
+  restarted, cancelled }` is what a reload did (`notices` is the prose;
+  `kept_over_default` and `ambiguous` are the same facts as data, for
+  the overlay's `[reset]`, `strand watch` and M5's inspector badges), its
   `EditClass` names the rows of design.md's edit table (`token`, `prop`,
   `node-added`, `node-removed`, `state-default`, `state-reset`,
   `handler`, `timer`, `surface`, `service`, `lock-deferred`, `hard`).
   `reconcile::loader::Loader::new(root, schema, cache_dir)` is the
   compiler worker's state: `boot()`, `changed([(path, exists)])`,
   `rescan()` each return an `Outcome { build, committed, held,
-  diagnostics, sources, unreadable, from_cache, compile_time }`: the
+  diagnostics, sources, unreadable, from_cache, cleared, compile_time }`
+  (`cleared`: the last attempt had errors, held or unreadable files and
+  this one has none, even when nothing changed against the last good
+  build): the
   largest consistent set of changed files committed, the rest held with
   the diagnostics of the whole attempt; a commit stores the sources under
   `Cache` (`$XDG_CACHE_HOME/strand/last-good/<config hash>`) keyed by
@@ -954,7 +974,9 @@ Public interfaces other crates and later stages build on:
   Arc<lower::Program>, Rc<dyn ServiceHost>, Storage)` mounts the
   program; `Instance::tick(now)` (or `flush()`) runs the core tick and
   returns an `Update { diff: SceneDiff, errors: Vec<RuntimeError>,
-  diagnostics, notices }`: one diff per tick, the boot one starting
+  diagnostics, notices, kept: Vec<KeptCell> }` (`kept`: persisted cells
+  kept over a changed default, also in `notices`): one diff per tick,
+  the boot one starting
   with `SetTokens { transition: Instant }`, later token tables with
   `Default`.
   - Each bound prop is one watched memo folding the base binding and
@@ -1064,15 +1086,21 @@ Public interfaces other crates and later stages build on:
     their ids (the diff is the new tree reduced against what render
     shows: props that changed with their own transitions, moves,
     creates, removes; a kept surface whose layer or namespace changed
-    gets a new id with its children moved under it), state cells are
+    gets a new id with its children moved under it; one of another
+    surface kind is a new node with its children and state kept), state
+    cells are
     reparented (a changed default adopted only where the value still
     held the old one, as a reload write; renamed or retyped cells and
-    `@reset` reset), handlers with an unchanged hash keep their tasks
+    `@reset` reset; a surface's cells are keyed by its scope, not its
+    name, so a renamed surface keeps them; a surface changed between
+    `bar` and a single surface resets its cells with a warning), handlers with an unchanged hash keep their tasks
     (others are disposed with the old instance, cancelling their
     `await`), timers and debounces rescale from the old countdown, a
     parked bar's cells wait for its monitor. While a `lock` is shown a
     build that changes a lock is not committed (`LockDeferred`); the
-    caller retries after `lock_shown()` turns false. `reload_hard(&Build)`
+    caller retries after `lock_shown()` turns false. Lock hashes are
+    compared with the running build's, so once a lock edit waits, every
+    later build carries it and waits too (decisions.md, wave2-runtime). `reload_hard(&Build)`
     unmounts everything (persisted cells flushed) and mounts afresh. The
     diff comes with the next `step`/`tick`/`flush`.
   - `Instance::freeze(&RuntimeError)` also outlines the frozen

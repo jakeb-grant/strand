@@ -189,3 +189,53 @@ fn handler_hashes_cover_a_whole_cycle() {
     assert_ne!(ha[0], hb[0], "the handler naming `a`");
     assert_ne!(ha[1], hb[1], "the handler naming `b`, which calls `a`");
 }
+
+/// Densely mutually recursive `fn`s hash in linear time (one strongly
+/// connected component, hashed once): 30 of them, each calling all the
+/// others, compile in well under a second; an edit to any member still
+/// changes the handler that names only the first.
+#[test]
+fn a_dense_cycle_of_fns_hashes_quickly() {
+    let n = 30;
+    let src = |k: usize| {
+        let mut s = String::new();
+        for i in 0..n {
+            let calls: Vec<String> = (0..n).map(|j| format!("f{j}(x - 1)")).collect();
+            let step = if i == n - 1 { k } else { 0 };
+            s.push_str(&format!(
+                "fn f{i}(x: int) -> int {{ x < {step} ? 0 : {} }}\n",
+                calls.join(" + ")
+            ));
+        }
+        s.push_str(
+            "state v = 0\nbar Top {\n  text join(\"\", v) {\n    on click { v = f0(3) }\n  }\n}\n",
+        );
+        s
+    };
+    let compile = |prev: Option<&Build>, k: usize| {
+        let t = std::time::Instant::now();
+        let b = build(prev, &[("bar.strand", &src(k))]);
+        (b, t.elapsed())
+    };
+    let (a, ta) = compile(None, 0);
+    let (b, tb) = compile(Some(&a), 1);
+    let check = std::time::Instant::now();
+    let _ = strand_compiler::compile(&{
+        let mut m = SourceMap::new();
+        m.add("bar.strand", src(1));
+        m
+    });
+    let tc = check.elapsed();
+    let hash = |b: &Build| -> u64 {
+        b.identity
+            .entries()
+            .find(|(l, ..)| l.starts_with("on "))
+            .map(|(_, f, sp, _)| b.hashes.get(f, sp).unwrap())
+            .unwrap()
+    };
+    assert_ne!(hash(&a), hash(&b), "an edit to the last member");
+    // The whole build (check, lower, identity, hashes) against the check
+    // alone: the hashes add little (they were factorial in the cycle).
+    let budget = tc * 3 + std::time::Duration::from_millis(100);
+    assert!(ta < budget && tb < budget, "{ta:?} {tb:?} (check {tc:?})");
+}

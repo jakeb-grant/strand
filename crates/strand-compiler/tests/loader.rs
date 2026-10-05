@@ -247,3 +247,39 @@ fn a_rescan_keeps_files_the_listing_cannot_read() {
     assert!(out.held.is_empty() && out.unreadable.is_empty());
     let _ = std::fs::remove_dir_all(d);
 }
+
+/// A broken save reverted to the last good text commits nothing (nothing
+/// changed) but says the problem is gone (`cleared`), as does a file
+/// readable again with its old text; a clean attempt after a clean one
+/// does not.
+#[test]
+fn a_revert_to_the_last_good_text_clears_the_problems() {
+    let d = dir("revert");
+    let bar = write(&d, "bar.strand", BAR);
+    write(&d, "clock.strand", CLOCK);
+    let mut l = loader(&d);
+    let boot = l.boot();
+    assert!(!boot.cleared);
+    // Broken, then the old bytes saved again.
+    std::fs::write(&bar, "bar Top {\n  Clokc { open: true }\n}\n").unwrap();
+    let out = l.changed([(bar.clone(), true)]);
+    assert!(out.errors() > 0 && !out.cleared);
+    std::fs::write(&bar, BAR).unwrap();
+    let out = l.changed([(bar.clone(), true)]);
+    assert!(out.build.is_none(), "nothing changed against the last good");
+    assert!(out.held.is_empty() && out.diagnostics.is_empty());
+    assert!(out.cleared, "the problem is gone");
+    // Saved again: nothing to clear any more.
+    let out = l.changed([(bar.clone(), true)]);
+    assert!(!out.cleared);
+    // Unreadable, then readable again with its old text.
+    std::fs::write(&bar, [0xff, 0xfe]).unwrap();
+    let out = l.changed([(bar.clone(), true)]);
+    assert_eq!(out.unreadable.len(), 1);
+    assert!(!out.cleared);
+    std::fs::write(&bar, BAR).unwrap();
+    let out = l.changed([(bar.clone(), true)]);
+    assert!(out.build.is_none() && out.unreadable.is_empty() && out.held.is_empty());
+    assert!(out.cleared);
+    let _ = std::fs::remove_dir_all(d);
+}

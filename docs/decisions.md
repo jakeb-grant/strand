@@ -2937,14 +2937,27 @@ A random-edit test over the design's shells checks every reload lands on
 the scene and token table of a cold boot (`crates/strand-compiler/tests/
 reload.rs::random_edits_land_on_a_cold_boot`, 10,000 edits run once).
 
-**2026-10-05 · Surfaces share one identity label.** `bar Top` edited to
-`panel Top` keeps its `Sid` (its state and its children's identities);
-the scene node is new because the kind changed. A kept surface whose
-`layer` or `name` (namespace) changed gets a new scene id in the reduced
-diff, its kept children moved under it and the old node removed after:
-the compositor cannot move a layer surface between layers, and render's
-`needs_recreate` already recreates on those, so the diff says what
-happens. This is design.md's "only that surface is recreated".
+**2026-10-05 · Surfaces share one identity label.** A surface edited to
+another kind keeps its `Sid` (its children's identities); the scene node
+is new because the kind changed, and the reload is classed `surface`. A
+kept surface whose `layer` or `name` (namespace) changed gets a new scene
+id in the reduced diff, its kept children moved under it and the old
+node removed after: the compositor cannot move a layer surface between
+layers, and render's `needs_recreate` already recreates on those, so
+the diff says what happens. This is design.md's "only that surface is
+recreated". (Corrected in fixer round 2: a surface's cells were keyed
+by its name, so a rename (its namespace) lost them, and the registry
+kept the old id of a recreated surface, so the next reload of it
+created a second node. Cells owned by a surface are now keyed by its
+scope alone, and recreated ids follow into the registry:
+`reload.rs::a_surface_namespace_or_kind_change_recreates_only_it_with_its_state`
+renames, re-layers and turns a panel into an `osd` with its state
+kept.) The exception is `bar` (one instance and one set of cells per
+monitor) to or from a single surface: picking one monitor's cells, or
+copying one surface's to every monitor, would be guessing, so those
+cells are reset and reported (`reset: the bar is now a single surface`,
+`the surface is now a bar, one per monitor`), never dropped silently:
+`a_bar_turned_panel_reports_its_state_reset`.
 
 **2026-10-05 · The loader compiles the whole program per batch.** The
 checker is whole-program (names are global across files), so "changed
@@ -3032,8 +3045,18 @@ out at once with `"deferred": true` (answering `strand reload`); a newer
 deferred load absorbs the older one (files, committed, requested, hard);
 a newer load that commits normally (the lock edit reverted) makes it
 stale and drops it, a deferred hard reload still owed; after the unlock
-the newest deferred load commits. Edits that do not touch a lock commit
-at once, lock shown or not.
+the newest deferred load commits. An edit that does not touch a lock
+commits at once while a lock is shown, unless a lock edit is already
+waiting: the loader has that edit in its sources (it compiled, so it is
+the last good text), every later build carries it, and so every later
+build waits with it until the unlock. (Corrected in fixer round 2: this
+paragraph said such edits always commit at once.) Keeping the old lock's
+text out of later builds would mean building programs from a mix of
+saved and unsaved text, a file at a time when the lock shares a file
+with the bar; the wait ends with the unlock. Proven by
+`run.rs::lock_edits_wait_for_the_unlock_and_then_land` (a bar edit
+commits at once while the lock shows; after a lock edit, a bar edit
+waits).
 
 **2026-10-05 · An unreadable file is held back, never removed.** A
 module whose saved bytes cannot be read (EACCES, not UTF-8, a dangling
@@ -3070,3 +3093,61 @@ shuts its writing side after a request (`nc -N`, `socat`) stays until its
 answers and events are written; the server stops polling it for reads.
 `strand watch` reads the `{"ok": true}` and the events through one
 buffered reader, so an event in the same read as the answer is kept.
+
+**2026-10-05 · A revert to the last good text closes the overlay.** A
+broken save fixed by undoing it (or an unreadable file readable again
+with its old bytes) changes nothing against the running build, so the
+loader commits nothing; it still reports `Outcome::cleared` when the
+last attempt had errors, held or unreadable files and this one has
+none, and the worker sends that load, so the overlay closes and `strand
+watch` gets an event with no held files and no diagnostics. design.md:
+"The fix commits and the overlay vanishes."
+
+**2026-10-05 · A deferred load replayed after the unlock shows the newest
+problems.** The logic thread keeps the newest attempt's held files,
+unreadable files and diagnostics; the deferred load committed after the
+unlock reports those (overlay and event), not the ones it had when it
+was deferred, so a broken save made while the lock showed keeps its
+overlay. The deferred load commits after the step that closes the lock
+(the loop runs again at once), with no polling while the lock stays up:
+only a step can unlock.
+
+**2026-10-05 · Each `strand reload` gets its own event.** `Job::Reload`
+carries the IPC client, and the `Loaded` it causes carries the clients
+it answers; an unrelated save committed in the same loop iteration no
+longer answers them.
+
+**2026-10-05 · Merkle hashes by strongly connected component.** The
+def graph (each code-holding declaration and the declarations its text
+names, separately with and without components for `lock`s) is walked
+with an iterative Tarjan; each component is hashed once over its
+members' texts in source order, with references inside it by position
+and outside it by their memoised hash, and each member's hash is the
+component's with its name. Every handler naming any member changes
+when any member's text does, and the cost is linear: 30 functions each
+calling all 30 hash in milliseconds
+(`reconcile.rs::a_dense_cycle_of_fns_hashes_quickly`; round 1's
+un-memoised cycle walk took 19 s at 10).
+
+**2026-10-05 · Reload latency is measured save → painted buffer.**
+`run.rs::reload_latency_meets_its_budget` saves token edits (a colour in
+`tokens`) and markup edits (a node added or removed) of a hello bar in
+place, through the real watcher (15 ms coalescing), compiler worker and
+logic thread, applies each diff to a `Renderer` and paints the 2560×40
+bar, and takes the time from the write to the painted buffer; the
+compositor's present (at most one refresh) is not in it. A debug build
+measures token p95 35–38 ms (watch 15.5, compile 1.5, commit 1.8, then
+a full repaint of the recoloured bar in unoptimised code, about 15 ms)
+and markup p95 25 ms. The test fails an optimised build at the budget
+(35 ms, 50 ms) and a debug build at twice it, so `cargo test` in CI
+catches a regression without failing on unoptimised paint. Portal and
+monitor changes "on the next frame" are not measured yet.
+
+**2026-10-05 · The overlay's rows.** It lists at most 40 rows and counts
+the rest in its header until it can scroll (M2 `scroll`). Reload notice
+rows about a cell are keyed by its path: a newer one replaces the older,
+a `[reset]` (click or IPC `reset`) removes them, and only the newest 40
+are kept. `[reset]` takes the cell from the report's structured
+`kept_over_default` (`KeptCell { path, shown }`), not from the notice
+text. With no last good config the header says "nothing is running
+yet".

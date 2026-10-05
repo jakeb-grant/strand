@@ -15,15 +15,18 @@ use std::time::{Duration, Instant};
 
 use strand_compiler::diagnostic::{Diagnostic, Severity};
 use strand_compiler::instantiate::Instance;
-use strand_compiler::reconcile::Report;
+use strand_compiler::reconcile::{KeptCell, Report};
 use strand_compiler::source::SourceMap;
 use strand_scene::{Color, Font, NodeId, NodeKind, Prop, PropValue};
 
 /// How long diagnostics must stand before the overlay opens.
 pub const QUIET: Duration = Duration::from_millis(250);
 
-/// Rows shown at most (the rest are counted in the header).
+/// Rows shown at most (the rest are counted in the header) until the
+/// panel can scroll (M2 `scroll`; decisions.md, wave2-runtime).
 const MAX_ROWS: usize = 40;
+/// Reload notice rows kept at most (the newest).
+const MAX_NOTES: usize = MAX_ROWS;
 const ROW_H: f32 = 18.0;
 const PAD: f32 = 12.0;
 const WIDTH: f32 = 960.0;
@@ -42,32 +45,57 @@ pub struct Line {
     /// The state cell a click on its `[reset]` resets
     /// (`launcher.query: kept "fir" (default changed) [reset]`).
     pub reset: Option<String>,
+    /// The state cell the row is about: a newer row for the same cell
+    /// replaces it, and resetting the cell removes it.
+    pub cell: Option<String>,
 }
 
-/// A reload notice as an overlay row: one that ends in `[reset]` resets
-/// the cell it names when clicked.
+/// A reload notice as an overlay row.
 pub fn notice_line(n: &str) -> Line {
-    let reset = n
-        .strip_suffix(" [reset]")
-        .and_then(|head| head.split_once(": kept "))
-        .map(|(path, _)| path.to_string());
     Line {
         text: n.to_string(),
         notice: true,
-        reset,
         ..Line::default()
     }
+}
+
+/// A cell kept over a changed default: its row, whose `[reset]` resets
+/// it.
+pub fn kept_line(k: &KeptCell) -> Line {
+    Line {
+        text: k.notice(),
+        notice: true,
+        reset: Some(k.path.clone()),
+        cell: Some(k.path.clone()),
+        ..Line::default()
+    }
+}
+
+/// The overlay rows of notices that came with `kept` cells: the kept
+/// cells' rows (from the structured record, not the text), then the
+/// other notices.
+pub fn kept_and_notices(kept: &[KeptCell], notices: &[String]) -> Vec<Line> {
+    let mut out: Vec<Line> = kept.iter().map(kept_line).collect();
+    let texts: Vec<String> = kept.iter().map(KeptCell::notice).collect();
+    out.extend(
+        notices
+            .iter()
+            .filter(|n| !texts.contains(n))
+            .map(|n| notice_line(n)),
+    );
+    out
 }
 
 /// The overlay rows of a reload's report: its notices (kept over a
 /// changed default, ambiguous identities, an `await` cancelled by a
 /// handler restart), the cells it reset and why.
 pub fn report_lines(r: &Report) -> Vec<Line> {
-    let mut out: Vec<Line> = r.notices.iter().map(|n| notice_line(n)).collect();
+    let mut out = kept_and_notices(&r.kept_over_default, &r.notices);
     for (cell, why) in &r.reset {
         out.push(Line {
             text: format!("{cell}: reset ({why})"),
             notice: true,
+            cell: Some(cell.clone()),
             ..Line::default()
         });
     }
@@ -200,6 +228,9 @@ pub struct Overlay {
     since: Option<Instant>,
     shown: Option<Shown>,
     dismissed: bool,
+    /// A last good config is running (else the header says nothing
+    /// runs yet).
+    running: bool,
 }
 
 impl Overlay {
@@ -213,18 +244,53 @@ impl Overlay {
         self.changed(now, inst);
     }
 
+    /// Whether a last good config is running (the header's wording).
+    pub fn set_running(&mut self, running: bool) {
+        self.running = running;
+    }
+
     /// Reload notices to list (after the errors) until dismissed; they
-    /// open the overlay after the same quiet period.
+    /// open the overlay after the same quiet period. A row about a cell
+    /// replaces the older row about it; the newest [`MAX_NOTES`] stay.
     pub fn note(&mut self, notes: Vec<Line>, now: Instant, inst: &Instance) {
         let mut any = false;
         for n in notes {
-            if !self.notes.contains(&n) {
-                self.notes.push(n);
-                any = true;
+            if self.notes.contains(&n) {
+                continue;
             }
+            if let Some(c) = &n.cell {
+                self.notes.retain(|o| o.cell.as_ref() != Some(c));
+            }
+            self.notes.push(n);
+            any = true;
+        }
+        if self.notes.len() > MAX_NOTES {
+            let extra = self.notes.len() - MAX_NOTES;
+            self.notes.drain(..extra);
         }
         if any {
             self.changed(now, inst);
+        }
+    }
+
+    /// The cell at `path` was reset (IPC `reset`, a `[reset]` click):
+    /// its rows no longer apply.
+    pub fn forget_cell(&mut self, path: &str, inst: &Instance) {
+        let before = self.notes.len();
+        self.notes.retain(|n| n.cell.as_deref() != Some(path));
+        if self.notes.len() != before {
+            self.refresh(inst);
+        }
+    }
+
+    /// Show the current list again (or hide it when empty).
+    fn refresh(&mut self, inst: &Instance) {
+        if self.lines.is_empty() && self.notes.is_empty() {
+            self.since = None;
+            self.hide(inst);
+        } else if self.shown.is_some() {
+            self.hide(inst);
+            self.show(inst);
         }
     }
 
@@ -288,15 +354,10 @@ impl Overlay {
         if let Some((_, line)) = shown.rows.iter().find(|(n, _)| *n == node) {
             let line = line.clone();
             if let Some(path) = &line.reset {
-                // Done with: its row goes.
-                self.notes.retain(|n| *n != line);
-                if self.lines.is_empty() && self.notes.is_empty() {
-                    self.since = None;
-                    self.hide(inst);
-                } else {
-                    self.hide(inst);
-                    self.show(inst);
-                }
+                // Done with: its rows go.
+                self.notes
+                    .retain(|n| *n != line && n.cell.as_deref() != Some(path));
+                self.refresh(inst);
                 return Some(Click::Reset(path.clone()));
             }
             return Some(match &line.at {
@@ -354,8 +415,13 @@ impl Overlay {
         };
         let title = if errors > 0 {
             format!(
-                "strand: {errors} error{} — the last good config is running; click a line to open it{more}",
+                "strand: {errors} error{} — {}; click a line to open it{more}",
                 if errors == 1 { "" } else { "s" },
+                if self.running {
+                    "the last good config is running"
+                } else {
+                    "nothing is running yet"
+                },
             )
         } else {
             format!("strand: reloaded with notices — click [reset] to go back to a default{more}")
@@ -642,16 +708,31 @@ mod tests {
         let (_rt, inst) = instance();
         let mut o = Overlay::default();
         let t0 = Instant::now();
-        let report = Report {
-            notices: vec!["launcher.query: kept \"fir\" (default changed) [reset]".into()],
+        let mut report = Report {
             reset: vec![("t.b".into(), "renamed".into())],
             ..Report::default()
         };
+        report.kept_over(KeptCell {
+            path: "launcher.query".into(),
+            shown: "\"fi\"".into(),
+        });
+        report.notice("x: ambiguous".into());
         let rows = report_lines(&report);
+        assert_eq!(rows.len(), 3, "{rows:?}");
         assert_eq!(rows[0].reset.as_deref(), Some("launcher.query"));
-        assert_eq!(rows[1].text, "t.b: reset (renamed)");
-        assert!(rows[1].reset.is_none() && rows.iter().all(|l| l.notice));
+        assert_eq!(rows[1].text, "x: ambiguous");
+        assert_eq!(rows[2].text, "t.b: reset (renamed)");
+        assert!(rows[1].reset.is_none() && rows[2].reset.is_none());
+        assert!(rows.iter().all(|l| l.notice));
         o.note(rows, t0, &inst);
+        // A newer value kept for the same cell replaces its row.
+        let mut newer = Report::default();
+        newer.kept_over(KeptCell {
+            path: "launcher.query".into(),
+            shown: "\"fir\"".into(),
+        });
+        o.note(report_lines(&newer), t0, &inst);
+        assert_eq!(o.lines().len(), 3, "{:?}", o.lines());
         // A clean reload in the meantime keeps them.
         o.set(Vec::new(), t0, &inst);
         o.tick(t0 + Duration::from_millis(100), &inst);
@@ -669,13 +750,31 @@ mod tests {
         );
         m.apply(&inst.flush().diff).unwrap();
         assert!(m.find_text("t.b: reset (renamed)").is_some());
-        assert_eq!(o.lines().len(), 1, "the reset row is gone");
+        assert_eq!(o.lines().len(), 2, "the reset row is gone");
+        // A cell reset over IPC loses its rows.
+        o.forget_cell("t.b", &inst);
+        m.apply(&inst.flush().diff).unwrap();
+        assert!(m.find_text("t.b: reset (renamed)").is_none());
+        assert_eq!(o.lines().len(), 1);
+        // Notices are capped (the newest stay).
+        o.note(
+            (0..MAX_NOTES + 5)
+                .map(|i| notice_line(&format!("n{i}")))
+                .collect(),
+            t0,
+            &inst,
+        );
+        assert_eq!(o.lines().len(), MAX_NOTES);
+        assert_eq!(
+            o.lines().last().map(|l| l.text.clone()),
+            Some(format!("n{}", MAX_NOTES + 4))
+        );
+        m.apply(&inst.flush().diff).unwrap();
         let close = m.find_text("×").unwrap();
         assert_eq!(o.click(close, &inst), Some(Click::Dismissed));
         assert!(o.lines().is_empty());
         m.apply(&inst.flush().diff).unwrap();
-        assert!(m.find_text("t.b: reset (renamed)").is_none());
-        assert_eq!(notice_line("x: ambiguous").reset, None);
+        assert!(m.find_text("x: ambiguous").is_none());
     }
 
     #[test]

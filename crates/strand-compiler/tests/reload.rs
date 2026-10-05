@@ -431,6 +431,92 @@ fn a_surface_layer_change_recreates_only_it() {
     shell.assert_cold_boot(&[("t.strand", &src("overlay"))]);
 }
 
+/// A surface's namespace (`name`) or kind (panel → osd) changes
+/// recreate only it, with its state kept (design.md, "What each edit
+/// does": state kept, yes); a layer change does too.
+#[test]
+fn a_surface_namespace_or_kind_change_recreates_only_it_with_its_state() {
+    let src = |kind: &str, name: &str, layer: &str| {
+        format!(
+            "bar Top {{ text \"bar\" }}\n{kind} {name} {{\n  layer: {layer}\n  state n = 0\n  text join(\"\", \"n\", n) {{ on click {{ n += 1 }} }}\n}}\n"
+        )
+    };
+    let first = src("panel", "P", "top");
+    let mut shell = boot(&[("t.strand", &first)]);
+    let bar = shell.scene.of_kind(NodeKind::Bar)[0];
+    let t = shell.scene.find_text("n0").unwrap();
+    shell.inst.event(t, "click", Vec::new());
+    shell.flush();
+    assert!(shell.scene.find_text("n1").is_some());
+    let surface = |s: &Shell| -> strand_scene::NodeId {
+        s.scene
+            .roots()
+            .iter()
+            .copied()
+            .find(|r| *r != bar)
+            .expect("the second surface")
+    };
+    for (kind, name, layer) in [
+        ("panel", "Q", "top"),
+        ("panel", "Q", "overlay"),
+        ("osd", "Q", "overlay"),
+    ] {
+        let before = surface(&shell);
+        let next = src(kind, name, layer);
+        let (report, ops) = shell.reload(&[("t.strand", &next)]);
+        assert!(
+            report.classes.contains(&EditClass::Surface),
+            "{kind} {name} {layer}: {report:?}"
+        );
+        assert!(report.reset.is_empty(), "{report:?}");
+        assert!(
+            ops.iter()
+                .any(|o| matches!(o, SceneOp::Remove { id } if *id == before)),
+            "{kind} {name} {layer}: {ops:#?}"
+        );
+        assert_ne!(surface(&shell), before, "recreated");
+        assert_eq!(shell.scene.of_kind(NodeKind::Bar), [bar], "the bar is kept");
+        assert!(
+            shell.scene.find_text("n1").is_some(),
+            "{kind} {name} {layer}: the state is kept\n{}",
+            shell.scene.render()
+        );
+    }
+    assert_eq!(shell.scene.of_kind(NodeKind::Osd).len(), 1);
+}
+
+/// A surface changed between `bar` (one per monitor) and a single
+/// surface cannot keep its state (which monitor's would it be?): the
+/// cells are reset, with a warning, never dropped silently.
+#[test]
+fn a_bar_turned_panel_reports_its_state_reset() {
+    let src = |kind: &str| {
+        format!(
+            "{kind} Top {{\n  state n = 0\n  text join(\"\", \"n\", n) {{ on click {{ n += 1 }} }}\n}}\n"
+        )
+    };
+    let mut shell = boot(&[("t.strand", &src("bar"))]);
+    let t = shell.scene.find_text("n0").unwrap();
+    shell.inst.event(t, "click", Vec::new());
+    shell.flush();
+    let (report, _) = shell.reload(&[("t.strand", &src("panel"))]);
+    assert!(
+        report.classes.contains(&EditClass::StateReset),
+        "{report:?}"
+    );
+    assert_eq!(report.reset.len(), 1, "{report:?}");
+    assert!(report.reset[0].0.ends_with(".n"), "{report:?}");
+    assert!(report.reset[0].1.contains("bar"), "{report:?}");
+    assert!(shell.scene.find_text("n0").is_some());
+    // And back: a panel's cell cannot be one monitor's either.
+    let t = shell.scene.find_text("n0").unwrap();
+    shell.inst.event(t, "click", Vec::new());
+    shell.flush();
+    let (report, _) = shell.reload(&[("t.strand", &src("bar"))]);
+    assert_eq!(report.reset.len(), 1, "{report:?}");
+    assert!(shell.scene.find_text("n0").is_some());
+}
+
 /// Per-monitor bars keep their own state across a reload.
 #[test]
 fn per_monitor_state_survives_a_reload() {
