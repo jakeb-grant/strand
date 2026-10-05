@@ -222,15 +222,19 @@ impl Runtime {
     {
         let mut prev: Option<(K, T)> = None;
         let effect = self.effect(move |rt| {
+            // A reload write upstream (`Signal::set_reloaded`): the next
+            // value read is a baseline, also when this run fails to read
+            // it (the mark only lasts this flush).
+            if rt.current_writer().is_some_and(|me| rt.take_rebaseline(me)) {
+                prev = None;
+            }
             let k = key(rt)?;
             let value = track(rt)?;
-            // A reload write upstream (`Signal::set_reloaded`): re-baseline.
-            let reloaded = rt.current_writer().is_some_and(|me| rt.take_rebaseline(me));
             let fire = match &prev {
                 // First value: boot or reload.
                 None => false,
                 // Same identity, new value.
-                Some((pk, pv)) => !reloaded && *pk == k && *pv != value,
+                Some((pk, pv)) => *pk == k && *pv != value,
             };
             let r = if fire {
                 let writer = rt.current_writer().unwrap_or_default();

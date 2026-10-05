@@ -108,10 +108,12 @@ pub(crate) trait NodeData: 'static {
     fn run(&self, _rt: &Runtime, _id: NodeId) -> RunOutcome {
         RunOutcome::Unchanged
     }
-    /// Deliver queued events (event queues only).
+    /// Deliver the events handed to it (listeners only).
     fn deliver(&self, _rt: &Runtime, _id: NodeId, _errors: &mut Vec<(NodeId, Error)>) -> bool {
         false
     }
+    /// Hand queued events to the listeners (event queues only).
+    fn distribute(&self, _rt: &Runtime, _id: NodeId) {}
     /// Called once, outside any borrow, when the node is disposed.
     fn on_dispose(&self, _rt: &Runtime, _id: NodeId) {}
     /// Nodes this one triggers without an observer edge (an event queue's
@@ -160,7 +162,7 @@ pub(crate) struct HandlerCtx {
 
 /// Flush work classes, in the order they run at one rank.
 const CLASS_TASK: u8 = 0;
-const CLASS_EVENTS: u8 = 1;
+const CLASS_LISTENER: u8 = 1;
 const CLASS_SINK: u8 = 2;
 
 /// A non-fatal report the host may show (the overlay, `strand watch`).
@@ -381,8 +383,9 @@ pub(crate) struct Inner {
     pub(crate) declared: RefCell<crate::order::Declared>,
     /// Sinks that have never run (their read edges don't exist yet).
     pub(crate) fresh: RefCell<foldhash::HashSet<NodeId>>,
-    /// Event queues holding events for suspended listeners.
-    pub(crate) backlogged: RefCell<Vec<NodeId>>,
+    /// Listeners with events to deliver (handed out by their queue, or
+    /// released from a freeze).
+    pub(crate) listeners_ready: RefCell<Vec<NodeId>>,
     /// Effects downstream of a reload write ([`Signal::set_reloaded`]):
     /// an `on change` handler among them re-baselines on its next run
     /// instead of firing. Cleared at the end of each flush (except for
@@ -542,7 +545,7 @@ impl Runtime {
                 learn_seen: RefCell::new(foldhash::HashSet::default()),
                 declared: RefCell::new(crate::order::Declared::default()),
                 fresh: RefCell::new(foldhash::HashSet::default()),
-                backlogged: RefCell::new(Vec::new()),
+                listeners_ready: RefCell::new(Vec::new()),
                 rebaseline: RefCell::new(foldhash::HashSet::default()),
                 strict_edges: Cell::new(false),
                 strict_seen: RefCell::new(foldhash::HashSet::default()),
@@ -852,12 +855,44 @@ impl Runtime {
 
     /// Run a handler body (untracked) as `h` describes.
     pub(crate) fn run_handler<R>(&self, h: HandlerCtx, f: impl FnOnce(&Runtime) -> R) -> R {
+        self.with_handler(h, |rt| rt.untrack(f))
+    }
+
+    /// Run a handler body as `h` describes, recording what it reads
+    /// without subscribing to it, and learn those reads as `reader`'s
+    /// (listeners, and the tasks of a handler: they are scheduled by rank,
+    /// not by observer edges, so an undeclared read must still rank them).
+    pub(crate) fn run_handler_tracked<R>(
+        &self,
+        h: HandlerCtx,
+        reader: NodeId,
+        f: impl FnOnce(&Runtime) -> R,
+    ) -> R {
+        let sources = self.inner.pool.borrow_mut().pop().unwrap_or_default();
+        self.inner.tracking.borrow_mut().push(Frame {
+            observer: Some(reader),
+            sources,
+        });
+        let r = self.with_handler(h, f);
+        let frame = self.inner.tracking.borrow_mut().pop();
+        if let Some(mut frame) = frame {
+            self.learn_reads(reader, &frame.sources);
+            frame.sources.clear();
+            let mut pool = self.inner.pool.borrow_mut();
+            if pool.len() < 64 {
+                pool.push(frame.sources);
+            }
+        }
+        r
+    }
+
+    fn with_handler<R>(&self, h: HandlerCtx, f: impl FnOnce(&Runtime) -> R) -> R {
         let owner = h.owner.filter(|&o| self.exists(o));
         let prev_writer = self.inner.writer.replace(Some(h.writer));
         let prev_owner = self.inner.owner.replace(owner);
         let prev_site = self.inner.site.replace(h.site);
         let prev_input = self.inner.input.replace(h.input);
-        let r = self.untrack(f);
+        let r = f(self);
         self.inner.input.set(prev_input);
         self.inner.site.set(prev_site);
         self.inner.owner.set(prev_owner);
@@ -1561,8 +1596,7 @@ impl Runtime {
     /// scope), and wake the host if anything is now due. `unfroze`: a
     /// suspension may have ended, so a timer may be overdue.
     fn release_held(&self, unfroze: bool) {
-        let backlogged = std::mem::take(&mut *self.inner.backlogged.borrow_mut());
-        if !unfroze && self.inner.held.borrow().is_empty() && backlogged.is_empty() {
+        if !unfroze && self.inner.held.borrow().is_empty() {
             return;
         }
         let held = std::mem::take(&mut *self.inner.held.borrow_mut());
@@ -1577,6 +1611,10 @@ impl Runtime {
             } else if self.kind(n) == Ok(NodeKind::Task) {
                 self.inner.ready.push_quiet(n);
                 requeued = true;
+            } else if self.kind(n) == Ok(NodeKind::Listener) {
+                // What it missed while frozen, in order.
+                self.inner.listeners_ready.borrow_mut().push(n);
+                requeued = true;
             } else if self.is_stale(n) {
                 self.inner.pending.borrow_mut().push(n);
                 requeued = true;
@@ -1584,14 +1622,6 @@ impl Runtime {
         }
         *self.inner.held_set.borrow_mut() = keep.iter().copied().collect();
         *self.inner.held.borrow_mut() = keep;
-        // Queues re-deliver what their released listeners missed; one that
-        // still has frozen listeners puts itself back on the list.
-        for q in backlogged {
-            if self.exists(q) {
-                self.inner.events_pending.borrow_mut().push(q);
-                requeued = true;
-            }
-        }
         // Released timers and sleeps count again from the next clock
         // advance: wake the host so it ticks.
         let restarted = unfroze && self.sync_frozen_timers();
@@ -1731,6 +1761,7 @@ impl Runtime {
     pub fn is_idle(&self) -> bool {
         self.inner.pending.borrow().is_empty()
             && self.inner.events_pending.borrow().is_empty()
+            && self.inner.listeners_ready.borrow().is_empty()
             && self.ready_is_empty()
             && self.inner.written.borrow().is_empty()
             && !self.inner.persist_failures.is_pending()
@@ -1738,9 +1769,9 @@ impl Runtime {
 
     /// End the tick: deliver events, poll woken handlers (each at most
     /// once) and run dirty sinks, all in topological order (see
-    /// [`Runtime::writes_to`]: a delivery at the highest rank of its queue
-    /// and listeners, a task at its own or its writer's; `on change`
-    /// handlers after the others have settled) until quiescent, and
+    /// [`Runtime::writes_to`]: each listener at its own rank, a task at its
+    /// own or its writer's; `on change` handlers after the others have
+    /// settled) until quiescent, and
     /// report what changed. Writes made by sinks during the flush are part
     /// of this tick.
     ///
@@ -1770,10 +1801,10 @@ impl Runtime {
         // read edges and the write edges handlers have made (see `order`),
         // so each sink, listener and woken task runs after everything that
         // writes what it reads, sinks once. At one rank, woken tasks come
-        // first (in wake order), then event deliveries (in emit order),
-        // then sinks (in creation order).
+        // first (in wake order), then listeners (in the order their events
+        // were handed out), then sinks (in creation order).
         let mut queue: BinaryHeap<Reverse<(u32, u8, u64, NodeId)>> = BinaryHeap::new();
-        // Tasks and event queues on the heap (each once).
+        // Tasks and listeners on the heap (each once).
         let mut scheduled: foldhash::HashSet<NodeId> = foldhash::HashSet::default();
         // Tasks woken again after their poll in this flush: the next one.
         let mut again: Vec<NodeId> = Vec::new();
@@ -1793,10 +1824,15 @@ impl Runtime {
                 }
             }
             start = false;
+            // Emits are handed to the listeners as soon as they are seen;
+            // each listener is delivered at its own rank.
             for q in self.take_pending_events() {
-                if scheduled.insert(q) {
+                self.distribute_queue(q, &mut runs, &mut errors);
+            }
+            for l in self.take_ready_listeners() {
+                if scheduled.insert(l) {
                     order += 1;
-                    queue.push(Reverse((self.delivery_rank(q), CLASS_EVENTS, order, q)));
+                    queue.push(Reverse((self.rank_of(l), CLASS_LISTENER, order, l)));
                 }
             }
             self.queue_pending(&mut queue);
@@ -1807,7 +1843,7 @@ impl Runtime {
                 let now_rank = if class == CLASS_TASK {
                     self.task_rank(id)
                 } else {
-                    self.delivery_rank(id)
+                    self.rank_of(id)
                 };
                 if now_rank != rank {
                     // A listener's or writer's rank changed since it was
@@ -1820,7 +1856,7 @@ impl Runtime {
                     polled.insert(id);
                     self.poll_task(id);
                 } else {
-                    self.deliver_queue(id, &mut runs, &mut errors);
+                    self.deliver_listener(id, &mut errors);
                 }
                 continue;
             }

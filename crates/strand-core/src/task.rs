@@ -374,7 +374,9 @@ impl Runtime {
         };
         let mut cx = Context::from_waker(&waker);
         let prev = self.inner.polling.replace(Some(id));
-        let poll = self.run_handler(ctx, |_| fut.as_mut().poll(&mut cx));
+        // What the body reads ranks its handler (the task polls at its
+        // writer's rank): an undeclared read is learned and reported.
+        let poll = self.run_handler_tracked(ctx, task.writer, |_| fut.as_mut().poll(&mut cx));
         self.inner.polling.set(prev);
         match poll {
             Poll::Ready(r) => {

@@ -2,11 +2,15 @@
 //! topological order, once per flush, and see final values.
 //!
 //! Random graphs of primary signals, memos, *handler-written cells* (an
-//! effect reads earlier nodes and writes the cell) and async memos (`let
-//! hits = svc.call(input)`: an internal effect starts a load that a task
-//! resolves, here at once), with reader effects, event listeners (one
-//! outside emit per flush) and `on change` handlers on top, all effects created in a random order (so
-//! creation order is not topological).
+//! effect reads earlier nodes and writes the cell), *listener-written
+//! cells* (a listener of the tick's event reads earlier nodes and writes
+//! the cell: `on notifications.received(n) { history.push(n) }`; with
+//! declarations only) and async memos (`let hits = svc.call(input)`: an
+//! internal effect starts a load that a task resolves, here at once), with
+//! reader effects, reading event listeners (one outside emit per flush)
+//! and `on change` handlers on top, all effects created in a random order
+//! (so creation order is not topological). Listeners of one queue may
+//! read what another listener of it (or an effect fed by one) writes.
 //!
 //! With every edge declared (`rt.reads_from` with the syntactic read set,
 //! every `Pick` branch included, and `rt.writes_to` for every write, as the
@@ -18,16 +22,18 @@
 //! * every reader that runs sees the flush's final values (glitch-free at
 //!   the edge), and every reader whose inputs changed ran (never deaf);
 //! * every listener gets the event once and sees final values, also of
-//!   cells a handler writes in the same flush;
+//!   cells a handler (an effect or another listener of the same event)
+//!   writes in the same flush;
 //! * `on change` fires at most once per flush, with the final value,
 //!   exactly when the value differs from the previous flush's (never in
 //!   the first flush).
 //!
-//! Without declarations (edges learned as they are seen), after a warm-up
-//! flush the same holds, except that a reader whose rank rose in a flush
-//! (a `Pick` switching to a higher-ranked branch) may run more than once
-//! and see an intermediate value; its last run still sees the final
-//! values.
+//! Without declarations (edges learned as they are seen, a listener's
+//! reads included), after a warm-up flush (with an event) the same holds,
+//! except that a reader whose rank rose in a flush (a `Pick` switching to
+//! a higher-ranked branch) may run more than once and see an intermediate
+//! value; its last run still sees the final values. A listener whose rank
+//! rose in a flush may have seen an intermediate value.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -49,6 +55,10 @@ enum Spec {
     /// An async memo over the sum of its inputs, resolving at once to
     /// `(sum + 2) mod 7`; read as its value (`-1` before the first).
     Fetched(Vec<usize>),
+    /// A cell written by a listener of the tick's event: the sum of its
+    /// inputs plus 3, mod 7. Only with declarations (a listener runs once
+    /// per event, so a learned edge would leave it stale).
+    Heard(Vec<usize>),
 }
 
 #[derive(Clone, Debug)]
@@ -59,6 +69,8 @@ enum Fx {
     OnChange(usize),
     /// The writer of the `Written` cell at this index.
     Writer(usize),
+    /// The listener writing the `Heard` cell at this index.
+    HeardWriter(usize),
     /// A listener of the tick's event queue (one outside emit per flush,
     /// made after the primary writes) reading nodes and checking them:
     /// `on notifications.received(n) { if !dnd { … } }`.
@@ -97,6 +109,7 @@ fn naive(specs: &[Spec], primary: &[i64]) -> Vec<i64> {
             }
             Spec::Written(ins) => (ins.iter().map(|&j| v[j]).sum::<i64>() + 1).rem_euclid(7),
             Spec::Fetched(ins) => (ins.iter().map(|&j| v[j]).sum::<i64>() + 2).rem_euclid(7),
+            Spec::Heard(ins) => (ins.iter().map(|&j| v[j]).sum::<i64>() + 3).rem_euclid(7),
         };
         v.push(x);
     }
@@ -128,6 +141,7 @@ fn case_strategy() -> impl Strategy<Value = Case> {
                     2 | 3 => Spec::Sum(idx.iter().map(|&j| j % avail).collect()),
                     4 if dynamic => Spec::Pick(pick(0), pick(1), pick(2)),
                     8 => Spec::Fetched(idx.iter().map(|&j| j % avail).collect()),
+                    9 | 5 if declare => Spec::Heard(idx.iter().map(|&j| j % avail).collect()),
                     _ => Spec::Written(idx.iter().map(|&j| j % avail).collect()),
                 });
             }
@@ -135,8 +149,11 @@ fn case_strategy() -> impl Strategy<Value = Case> {
             let mut effects: Vec<Fx> = specs
                 .iter()
                 .enumerate()
-                .filter(|(_, s)| matches!(s, Spec::Written(_)))
-                .map(|(i, _)| Fx::Writer(i))
+                .filter_map(|(i, s)| match s {
+                    Spec::Written(_) => Some(Fx::Writer(i)),
+                    Spec::Heard(_) => Some(Fx::HeardWriter(i)),
+                    _ => None,
+                })
                 .collect();
             for (kind, idx) in raw_fx {
                 effects.push(match kind {
@@ -220,7 +237,7 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
     };
     for spec in &case.specs {
         let h = match spec {
-            Spec::Primary | Spec::Written(_) => H::S(rt.signal(0)),
+            Spec::Primary | Spec::Written(_) | Spec::Heard(_) => H::S(rt.signal(0)),
             Spec::Sum(ins) => {
                 let hs = handles.clone();
                 let ins = ins.clone();
@@ -269,7 +286,7 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
                 let H::A(a) = h else { unreachable!() };
                 declare_reads(a.effect_id(), ins, &handles.borrow());
             }
-            Spec::Primary | Spec::Written(_) => {}
+            Spec::Primary | Spec::Written(_) | Spec::Heard(_) => {}
         }
         handles.borrow_mut().push(h);
     }
@@ -350,6 +367,27 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
                 }
                 w.id()
             }
+            Fx::HeardWriter(i) => {
+                let Spec::Heard(ins) = &case.specs[*i] else {
+                    unreachable!()
+                };
+                let ins2 = ins.clone();
+                let H::S(cell) = hs[*i] else { unreachable!() };
+                let hs2 = hs.clone();
+                let l = events
+                    .on(&rt, move |rt, _| {
+                        let mut s = 0;
+                        for &j in &ins2 {
+                            s += hs2[j].get(rt)?;
+                        }
+                        lg.borrow_mut().runs[e] += 1;
+                        cell.set(rt, (s + 3).rem_euclid(7))
+                    })
+                    .unwrap();
+                declare_reads(l, ins, &hs);
+                rt.writes_to(l, cell.id()).unwrap();
+                l
+            }
             Fx::OnChange(j) => {
                 let j = *j;
                 let hs2 = hs.clone();
@@ -374,6 +412,7 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
     let mut flushes: Vec<&[(usize, i64)]> = vec![&[]];
     flushes.extend(case.ticks.iter().map(Vec::as_slice));
     if !case.declare {
+        events.emit(&rt, 0).unwrap();
         let tick = rt.flush();
         prop_assert!(tick.errors.is_empty(), "{:?}", tick.errors);
         flushes.remove(0);
@@ -453,12 +492,16 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
                 Fx::Listener(ins) => {
                     // One event, one delivery.
                     prop_assert_eq!(l.runs[e], 1, "listener {} deliveries", e);
-                    // Declared: delivered after the writers of what it
-                    // reads (glitch-free at the edge). Learned: no order.
-                    if case.declare {
+                    // Delivered after the writers of what it reads
+                    // (glitch-free at the edge), unless it was ranked by
+                    // a read learned in this flush.
+                    if !rose {
                         let want: Vec<i64> = ins.iter().map(|&j| fin[j]).collect();
                         prop_assert_eq!(&l.seen[e][0], &want, "listener {} saw a glitch", e);
                     }
+                }
+                Fx::HeardWriter(_) => {
+                    prop_assert_eq!(l.runs[e], 1, "listener {} deliveries", e);
                 }
                 Fx::Writer(_) => {}
             }
@@ -977,4 +1020,210 @@ fn strict_edges_report_each_missing_declaration_once() {
     rt.reads_from(writer.id(), &[]).unwrap();
     assert!(rt.flush().diagnostics.is_empty());
     assert_eq!(rt.stats().learned_edges, 2);
+}
+
+#[test]
+fn a_sink_fed_by_one_listener_runs_once_whatever_its_siblings_read() {
+    // W0 reads s, writes c0; W reads c0, writes c; listener L1 on q reads
+    // c (rank 2); listener L2 on q writes d; sink S reads s and d. All
+    // declared. Delivering q's listeners together (at L1's rank) would run
+    // S with a stale d, then again.
+    let rt = Runtime::new();
+    let s = rt.signal(0i64);
+    let c0 = rt.signal(0i64);
+    let c = rt.signal(0i64);
+    let d = rt.signal(0i64);
+    let w0 = rt.effect(move |rt| c0.set(rt, s.get(rt)?));
+    rt.reads_from(w0.id(), &[s.id()]).unwrap();
+    rt.writes_to(w0.id(), c0.id()).unwrap();
+    let w = rt.effect(move |rt| c.set(rt, c0.get(rt)?));
+    rt.reads_from(w.id(), &[c0.id()]).unwrap();
+    rt.writes_to(w.id(), c.id()).unwrap();
+    let q = rt.events::<i64>();
+    let heard = Rc::new(RefCell::new(Vec::new()));
+    let h = heard.clone();
+    let l1 = q
+        .on(&rt, move |rt, &n| {
+            h.borrow_mut().push((n, c.get(rt)?));
+            Ok(())
+        })
+        .unwrap();
+    rt.reads_from(l1, &[c.id()]).unwrap();
+    let l2 = q.on(&rt, move |rt, &n| d.set(rt, n)).unwrap();
+    rt.reads_from(l2, &[]).unwrap();
+    rt.writes_to(l2, d.id()).unwrap();
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let sn = seen.clone();
+    let sink = rt.effect(move |rt| {
+        s.get(rt)?;
+        sn.borrow_mut().push(d.get(rt)?);
+        Ok(())
+    });
+    rt.reads_from(sink.id(), &[s.id(), d.id()]).unwrap();
+    rt.flush();
+    seen.borrow_mut().clear();
+    let before = rt.stats().reruns;
+    s.set(&rt, 1).unwrap();
+    q.emit(&rt, 7).unwrap();
+    let tick = rt.flush();
+    assert!(tick.errors.is_empty(), "{:?}", tick.errors);
+    assert_eq!(*seen.borrow(), vec![7], "one run, after L2 wrote d");
+    assert_eq!(rt.stats().reruns, before);
+    assert_eq!(*heard.borrow(), vec![(7, 1)], "L1 after W wrote c");
+}
+
+#[test]
+fn a_listener_sees_what_a_sibling_listener_wrote_through_an_effect() {
+    // `on q { x = n }` (A), effect S `y = x * 10`, `on q { log(y) }` (B),
+    // all declared: B is delivered after S, which runs after A, in either
+    // registration order. A listener reading what a sibling writes
+    // directly (C, registered before A) sees it too.
+    for b_first in [false, true] {
+        let rt = Runtime::new();
+        let x = rt.signal(0i64);
+        let y = rt.signal(0i64);
+        let q = rt.events::<i64>();
+        let seen_b = Rc::new(RefCell::new(Vec::new()));
+        let seen_c = Rc::new(RefCell::new(Vec::new()));
+        let listen_b = |rt: &Runtime| {
+            let sb = seen_b.clone();
+            let b = q
+                .on(rt, move |rt, &n| {
+                    sb.borrow_mut().push((n, y.get(rt)?));
+                    Ok(())
+                })
+                .unwrap();
+            rt.reads_from(b, &[y.id()]).unwrap();
+            let sc = seen_c.clone();
+            let c = q
+                .on(rt, move |rt, &n| {
+                    sc.borrow_mut().push((n, x.get(rt)?));
+                    Ok(())
+                })
+                .unwrap();
+            rt.reads_from(c, &[x.id()]).unwrap();
+        };
+        if b_first {
+            listen_b(&rt);
+        }
+        let a = q.on(&rt, move |rt, &n| x.set(rt, n)).unwrap();
+        rt.reads_from(a, &[]).unwrap();
+        rt.writes_to(a, x.id()).unwrap();
+        let s = rt.effect(move |rt| y.set(rt, x.get(rt)? * 10));
+        rt.reads_from(s.id(), &[x.id()]).unwrap();
+        rt.writes_to(s.id(), y.id()).unwrap();
+        if !b_first {
+            listen_b(&rt);
+        }
+        rt.flush();
+        q.emit(&rt, 3).unwrap();
+        q.emit(&rt, 4).unwrap();
+        let tick = rt.flush();
+        assert!(tick.errors.is_empty(), "{:?}", tick.errors);
+        assert_eq!(y.get_untracked(&rt), Ok(40));
+        // Each listener gets every event in order; state coalesces, so
+        // both deliveries of B see the final y.
+        assert_eq!(
+            *seen_b.borrow(),
+            vec![(3, 40), (4, 40)],
+            "b_first {b_first}"
+        );
+        assert_eq!(*seen_c.borrow(), vec![(3, 4), (4, 4)], "b_first {b_first}");
+        assert_eq!(rt.stats().reruns, 0);
+    }
+}
+
+#[test]
+fn an_undeclared_listener_read_is_learned_and_reported() {
+    use strand_core::Diagnostic;
+    // W reads s, writes dnd (declared); the listener reads dnd but
+    // declares nothing it reads. The first delivery may see the old dnd;
+    // the read is then reported and ranks the listener after W.
+    let rt = Runtime::new();
+    rt.set_strict_edges(true);
+    let s = rt.signal(0i64);
+    let dnd = rt.signal(0i64);
+    let w = rt.effect(move |rt| dnd.set(rt, s.get(rt)?));
+    rt.reads_from(w.id(), &[s.id()]).unwrap();
+    rt.writes_to(w.id(), dnd.id()).unwrap();
+    let q = rt.events::<i64>();
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let sn = seen.clone();
+    let l = q
+        .on(&rt, move |rt, &n| {
+            sn.borrow_mut().push((n, dnd.get(rt)?));
+            Ok(())
+        })
+        .unwrap();
+    rt.reads_from(l, &[]).unwrap();
+    rt.flush();
+    let mut diagnostics = Vec::new();
+    for i in 1..=3 {
+        s.set(&rt, i).unwrap();
+        q.emit(&rt, 42).unwrap();
+        diagnostics.extend(rt.flush().diagnostics);
+    }
+    assert_eq!(
+        diagnostics,
+        vec![Diagnostic::UndeclaredRead {
+            reader: l,
+            source: dnd.id()
+        }]
+    );
+    assert_eq!(rt.stats().learned_edges, 1);
+    assert!(rt.rank(l) > rt.rank(w.id()));
+    let seen = seen.borrow();
+    assert_eq!(&seen[1..], &[(42, 2), (42, 3)], "fresh from then on");
+}
+
+#[test]
+fn an_undeclared_read_after_an_await_ranks_the_handler() {
+    use strand_core::Diagnostic;
+    // `on received { await sleep(10ms); log(dnd) }` with dnd's read not
+    // declared: the task's read is the handler's.
+    let rt = Runtime::new();
+    rt.set_strict_edges(true);
+    let s = rt.signal(0i64);
+    let dnd = rt.signal(0i64);
+    let w = rt.effect(move |rt| dnd.set(rt, s.get(rt)?));
+    rt.reads_from(w.id(), &[s.id()]).unwrap();
+    rt.writes_to(w.id(), dnd.id()).unwrap();
+    let q = rt.events::<u32>();
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let sn = seen.clone();
+    let l = q
+        .on(&rt, move |rt, _| {
+            let sn = sn.clone();
+            let weak = rt.downgrade();
+            rt.spawn(async move {
+                let rt = weak.upgrade().ok_or(strand_core::Error::Cancelled)?;
+                rt.sleep(Duration::from_millis(10)).await;
+                sn.borrow_mut().push(dnd.get(&rt)?);
+                Ok(())
+            });
+            Ok(())
+        })
+        .unwrap();
+    rt.reads_from(l, &[]).unwrap();
+    rt.flush();
+    let mut diagnostics = Vec::new();
+    for i in 1..=2i64 {
+        q.emit(&rt, 1).unwrap();
+        diagnostics.extend(rt.flush().diagnostics);
+        s.set(&rt, i).unwrap();
+        diagnostics.extend(rt.tick(Duration::from_millis(20 * i as u64)).diagnostics);
+    }
+    assert_eq!(
+        diagnostics,
+        vec![Diagnostic::UndeclaredRead {
+            reader: l,
+            source: dnd.id()
+        }]
+    );
+    assert!(rt.rank(l) > rt.rank(w.id()));
+    assert_eq!(
+        seen.borrow().last(),
+        Some(&2),
+        "polled after W from then on"
+    );
 }

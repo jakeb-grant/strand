@@ -13,9 +13,9 @@
 //!   first, so an owner re-running disposes what it owns before that runs);
 //! * a cell or event queue written by a handler ranks above it
 //!   (`rank(cell) >= rank(writer) + 1`), and an event queue's listeners
-//!   rank with it or above (a listener also ranks with what it reads); a
-//!   queue is delivered at the highest rank of the queue and its
-//!   listeners, a woken task polled at its own or its writer's rank;
+//!   rank with it or above (a listener also ranks with what it reads);
+//!   each listener is delivered at its own rank, a woken task polled at
+//!   its own or its writer's rank;
 //! * `on change` handlers start at [`LATE_RANK`]: they run after every
 //!   ordinary sink has settled, so one outside write fires them once with
 //!   the final values.
@@ -81,13 +81,18 @@ pub(crate) struct Writes {
     feedback: foldhash::HashSet<NodeId>,
 }
 
-/// Declared read edges ([`Runtime::reads_from`]), both directions.
+/// Declared read edges ([`Runtime::reads_from`]), both directions, and
+/// the reads of handlers learned while they ran (a listener or a handler's
+/// task reads without subscribing, so its read edges are kept here).
 #[derive(Default)]
 pub(crate) struct Declared {
-    /// Reader -> the sources it declared.
+    /// Reader -> the sources it declared (or was seen reading).
     sources: foldhash::HashMap<NodeId, Vec<NodeId>>,
     /// Source -> the readers that declared it.
     readers: foldhash::HashMap<NodeId, foldhash::HashSet<NodeId>>,
+    /// Readers in `sources` only through learned reads (they never called
+    /// [`Runtime::reads_from`]).
+    learned_only: foldhash::HashSet<NodeId>,
 }
 
 impl Declared {
@@ -96,9 +101,24 @@ impl Declared {
     }
     pub(crate) fn declares(&self, reader: NodeId) -> bool {
         self.sources.contains_key(&reader)
+            && (self.learned_only.is_empty() || !self.learned_only.contains(&reader))
+    }
+    fn add(&mut self, reader: NodeId, sources: &[NodeId]) {
+        let list = self.sources.entry(reader).or_default();
+        for &s in sources {
+            if s != reader && !list.contains(&s) {
+                list.push(s);
+            }
+        }
+        for &s in sources {
+            if s != reader {
+                self.readers.entry(s).or_default().insert(reader);
+            }
+        }
     }
     /// Forget a disposed node.
     pub(crate) fn forget(&mut self, n: NodeId) {
+        self.learned_only.remove(&n);
         if let Some(sources) = self.sources.remove(&n) {
             for s in sources {
                 if let Some(r) = self.readers.get_mut(&s) {
@@ -229,20 +249,60 @@ impl Runtime {
         }
         {
             let mut declared = self.inner.declared.borrow_mut();
-            let list = declared.sources.entry(reader).or_default();
-            for &s in sources {
-                if s != reader && !list.contains(&s) {
-                    list.push(s);
-                }
-            }
-            for &s in sources {
-                if s != reader {
-                    declared.readers.entry(s).or_default().insert(reader);
-                }
-            }
+            declared.learned_only.remove(&reader);
+            declared.add(reader, sources);
         }
         self.rank_after_sources(reader);
         Ok(())
+    }
+
+    /// A handler that is scheduled by rank rather than by observer edges
+    /// (a listener; a task, through its handler) read `sources` while it
+    /// ran: keep the reads it had not declared as read edges, so it ranks
+    /// with them from now on (the first delivery may have seen a value
+    /// its writer had not yet written), and count and report them like a
+    /// sink's undeclared reads ([`Runtime::set_strict_edges`]) if it
+    /// declared its reads.
+    pub(crate) fn learn_reads(&self, reader: NodeId, sources: &[NodeId]) {
+        if sources.is_empty() || !self.exists(reader) {
+            return;
+        }
+        let (new, declared_reads): (Vec<NodeId>, bool) = {
+            let declared = self.inner.declared.borrow();
+            let list = declared.sources.get(&reader).map_or(&[][..], Vec::as_slice);
+            let new = if list.len() > 16 && sources.len() > 16 {
+                let set: foldhash::HashSet<NodeId> = list.iter().copied().collect();
+                sources
+                    .iter()
+                    .filter(|&&s| s != reader && !set.contains(&s))
+                    .copied()
+                    .collect()
+            } else {
+                sources
+                    .iter()
+                    .filter(|&&s| s != reader && !list.contains(&s))
+                    .copied()
+                    .collect()
+            };
+            (new, declared.declares(reader))
+        };
+        if new.is_empty() {
+            return;
+        }
+        if declared_reads {
+            self.bump(|s| s.learned_edges += new.len() as u64);
+            for &source in &new {
+                self.report_learned(reader, source, false);
+            }
+        }
+        {
+            let mut declared = self.inner.declared.borrow_mut();
+            if !declared.sources.contains_key(&reader) {
+                declared.learned_only.insert(reader);
+            }
+            declared.add(reader, &new);
+        }
+        self.rank_after_sources(reader);
     }
 
     /// A handler is writing `target` during a flush: queue the write edge
@@ -318,6 +378,9 @@ impl Runtime {
     /// declared its reads ([`Stats::learned_edges`](crate::Stats)).
     pub(crate) fn count_undeclared_reads(&self, id: NodeId) {
         let declared = self.inner.declared.borrow();
+        if !declared.declares(id) {
+            return;
+        }
         let Some(list) = declared.sources.get(&id) else {
             return;
         };
