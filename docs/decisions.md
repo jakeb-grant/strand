@@ -1068,3 +1068,43 @@ schema from `strand-compiler`).
   a parameter declared again in its body, and a file's `state` named
   like a global. A component `let` or a `for` binding that hides a
   file-level `state` is ordinary lexical scoping and is accepted.
+
+## wave2-lsp
+
+- **2026-10-05 · wave2-lsp: the formatter keeps the author's lines.**
+  `strand_compiler::fmt` normalises layout over the lossless token stream,
+  guided by the tree; it never joins or splits lines, so nothing is
+  wrapped and `edge: top; height: 36` or a one-line `when` stays as
+  written. design.md's examples put several props on one line and break
+  where it reads best, which no line-length rule reproduces; keeping the
+  breaks is what makes every design block a fixed point
+  (`tests/fmt.rs::fixtures_are_formatted`). It fixes indentation (two
+  spaces per block, from the line that opened it), spacing inside a line,
+  blank lines (at most one; none after `{` or before `}`), line endings
+  and redundant `;`.
+- **2026-10-05 · wave2-lsp: alignment the author made is kept.** design.md
+  aligns `when` blocks (`when ws.focused  {`), match arms (`mocha     =>`),
+  token values (`surface.hi:       $surface.mix(…)`), hanging props under
+  a block's first item (`col { width: 600 …` / `bg: …`) and trailing
+  comments, but not consistently (toasts' `when hover {` and `when
+  n.urgency == critical {` are not aligned), so aligning automatically
+  would rewrite the design's own examples. The rule: a `{`, `=>`, `=`, a
+  prop's value or a trailing comment that the author set apart with two
+  or more spaces keeps its column when the line still fits (comments by
+  absolute column, the rest relative to the line's indentation); a line of
+  a block whose `{` has more after it on its line keeps the column of that
+  first item if it was written there. Both rules are idempotent.
+- **2026-10-05 · wave2-lsp: formatting never changes meaning.** Whether a
+  `(` or `[` touches the word before it is kept (call or index versus a new
+  term, grammar.md "Calls touch"); two tokens are written together only if
+  they lex back the same (`? .` never becomes `?.`, `1 . 5` never `1.5`).
+  Every result is re-parsed and compared with the input's tree with spans
+  stripped (`fmt::shape`); a difference is `FormatError::Unstable` and the
+  file is left alone. A file with syntax errors is not formatted
+  (`FormatError::Syntax`): the editor shows the errors instead.
+- **2026-10-05 · wave2-lsp: `strand fmt [--check] [paths]`.** A directory
+  means its module set (`source::find_files`, as `strand check` loads it);
+  no path means the config directory. Files are rewritten through a
+  temporary file renamed over the canonical path, so a stowed symlink stays
+  a link and the watcher sees one `MOVED_TO`. `--check` writes nothing,
+  lists unformatted files and fails if there are any.

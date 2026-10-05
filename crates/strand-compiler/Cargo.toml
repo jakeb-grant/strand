@@ -16,6 +16,7 @@ stacker = "0.1.25"
 
 [dev-dependencies]
 insta = "1.49.0"
+proptest = "1.11.0"
 strand-scene.workspace = true
 
 [lints]

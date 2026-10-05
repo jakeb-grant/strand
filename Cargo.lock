@@ -1554,6 +1554,7 @@ dependencies = [
  "blake3",
  "insta",
  "miette",
+ "proptest",
  "stacker",
  "strand-core",
  "strand-scene",

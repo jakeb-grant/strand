@@ -16,11 +16,13 @@
 //!   data that service crates extend.
 //! - [`ty`]: types; [`check`]: name resolution and type checking, which
 //!   produce the typed [`hir`] the VM and the LSP consume.
+//! - [`fmt`]: the formatter behind `strand fmt` and LSP formatting.
 //!
 //! [`compile`] runs the front end over every file of a config.
 
 pub mod check;
 pub mod diagnostic;
+pub mod fmt;
 pub mod hir;
 pub mod schema;
 pub mod source;

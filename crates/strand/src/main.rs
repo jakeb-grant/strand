@@ -4,6 +4,7 @@
 
 mod check;
 mod demo;
+mod fmt;
 mod logging;
 
 use std::io::IsTerminal;
@@ -23,6 +24,11 @@ const COMMANDS: &[(&str, &str, &str)] = &[
         "M1",
     ),
     ("check", "check the config without running it [dir]", "M1"),
+    (
+        "fmt",
+        "format .strand files in place [--check] [paths]",
+        "M1",
+    ),
     ("watch", "stream reload events (--json)", "M1"),
     (
         "reload",
@@ -87,12 +93,20 @@ fn dispatch(args: &[String]) -> Result<Action, String> {
     }
 }
 
+/// A subcommand that reports through stderr text and a pass/fail flag.
+type Tool = fn(&[String], Style) -> (String, bool);
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().map(String::as_str) == Some("check") {
+    let tool: Option<Tool> = match args.first().map(String::as_str) {
+        Some("check") => Some(check::run),
+        Some("fmt") => Some(fmt::run),
+        _ => None,
+    };
+    if let Some(tool) = tool {
         let color = std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none();
         let style = if color { Style::Color } else { Style::Plain };
-        let (text, ok) = check::run(&args[1..], style);
+        let (text, ok) = tool(&args[1..], style);
         eprint!("{text}");
         return if ok {
             ExitCode::SUCCESS
