@@ -4,9 +4,20 @@
 
 use std::process::ExitCode;
 
+mod demo;
+mod logging;
+
+/// mimalloc for the whole runtime (`docs/design.md`, "Stack").
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 /// Subcommands the design commits to, with the milestone that delivers each.
 const COMMANDS: &[(&str, &str, &str)] = &[
-    ("run", "start the shell from the config directory", "M0"),
+    (
+        "run",
+        "start the shell from the config directory (--demo: the M0 hello bar)",
+        "M1",
+    ),
     ("check", "type-check the config without running it", "M1"),
     ("watch", "stream reload events (--json)", "M1"),
     (
@@ -44,10 +55,25 @@ fn usage() -> String {
     s
 }
 
-fn dispatch(args: &[String]) -> Result<String, String> {
+/// What a command line asks for.
+#[derive(Debug, PartialEq, Eq)]
+enum Action {
+    Print(String),
+    /// `strand run --demo`.
+    Demo,
+}
+
+fn dispatch(args: &[String]) -> Result<Action, String> {
     match args.first().map(String::as_str) {
-        None | Some("help" | "-h" | "--help") => Ok(usage()),
-        Some("-V" | "--version") => Ok(format!("strand {}\n", env!("CARGO_PKG_VERSION"))),
+        None | Some("help" | "-h" | "--help") => Ok(Action::Print(usage())),
+        Some("-V" | "--version") => Ok(Action::Print(format!(
+            "strand {}\n",
+            env!("CARGO_PKG_VERSION")
+        ))),
+        Some("run") if args[1..] == ["--demo"] => Ok(Action::Demo),
+        Some("run") if args[1..].iter().any(|a| a == "--demo") => {
+            Err("strand run --demo: takes no other arguments".into())
+        }
         Some(cmd) => match COMMANDS.iter().find(|(name, ..)| *name == cmd) {
             Some((name, _, milestone)) => {
                 Err(format!("strand {name}: not implemented yet ({milestone})"))
@@ -60,9 +86,20 @@ fn dispatch(args: &[String]) -> Result<String, String> {
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match dispatch(&args) {
-        Ok(out) => {
+        Ok(Action::Print(out)) => {
             print!("{out}");
             ExitCode::SUCCESS
+        }
+        Ok(Action::Demo) => {
+            let log = logging::LogConfig::from_env();
+            log.install();
+            match demo::run(&log) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(err) => {
+                    eprintln!("strand run: {err}");
+                    ExitCode::FAILURE
+                }
+            }
         }
         Err(err) => {
             eprintln!("{err}");
@@ -75,13 +112,15 @@ fn main() -> ExitCode {
 mod tests {
     use super::*;
 
-    fn run(args: &[&str]) -> Result<String, String> {
+    fn run(args: &[&str]) -> Result<Action, String> {
         dispatch(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>())
     }
 
     #[test]
     fn help_lists_every_command() {
-        let out = run(&[]).unwrap();
+        let Action::Print(out) = run(&[]).unwrap() else {
+            panic!("help prints");
+        };
         for (name, ..) in COMMANDS {
             assert!(out.contains(name), "help is missing `{name}`");
         }
@@ -93,6 +132,27 @@ mod tests {
             run(&["check"]).unwrap_err(),
             "strand check: not implemented yet (M1)"
         );
+    }
+
+    #[test]
+    fn run_demo_is_the_m0_bar() {
+        assert_eq!(run(&["run", "--demo"]).unwrap(), Action::Demo);
+        assert_eq!(
+            run(&["run"]).unwrap_err(),
+            "strand run: not implemented yet (M1)"
+        );
+        assert!(run(&["run", "--demo", "x"]).is_err());
+    }
+
+    #[test]
+    fn mimalloc_is_the_global_allocator() {
+        let b = Box::new([0u8; 64]);
+        let p = Box::into_raw(b);
+        // SAFETY: `p` is a live allocation; the query only reads metadata.
+        let ours = unsafe { libmimalloc_sys::mi_is_in_heap_region(p.cast()) };
+        // SAFETY: `p` came from `Box::into_raw` above.
+        drop(unsafe { Box::from_raw(p) });
+        assert!(ours, "the Box was not allocated by mimalloc");
     }
 
     #[test]

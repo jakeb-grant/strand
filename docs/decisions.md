@@ -488,3 +488,48 @@ memos read lazily by the emitter, not visibility.
 **2026-10-05 · Left for wave 2.** `persist` storage with a default hash and
 settings files are not in `strand-core` yet (they need file IO and the
 schema from `strand-compiler`).
+
+## m0
+
+- 2026-10-05 · m0: `strand run --demo` builds the hello bar's scene by
+  hand (`crates/strand/src/demo/scene.rs`), standing in for what the
+  compiler will emit. M0 layout is absolute placement, so `split`'s
+  `start`/`center`/`end` each span the bar and align their text (start
+  and end padded by `$space.3` = 12 px); taffy replaces this in M2. The
+  start and end texts are static placeholders until the window and
+  battery services (M3). Colours are literals (`#1e1e2e` / `#cdd6f4`)
+  until tokens and palettes are wired; the font is `$font.ui` written as
+  `"Inter, sans-serif" 13px 500`, which falls back to DejaVu Sans in the
+  dev container.
+- 2026-10-05 · m0: the demo has one `bar` node with the default `screens`
+  (every output), so the surface manager makes one layer surface per
+  monitor and render paints the one subtree at each output's scale.
+  Per-monitor instances with their own state (`Screens::Named`) arrive
+  with the language in M1. `strand run` without `--demo` stays "not
+  implemented (M1)": there is no config to run before the compiler.
+- 2026-10-05 · m0: the clock is a `strand-core` `Signal<i64>` of Unix
+  minutes, a `Memo` formatting it with chrono (`%H:%M`, local time) and an
+  `Effect` appending `SetProp(text)` to the tick's `SceneDiff`; the logic
+  thread sends at most one diff per tick over a calloop channel. It sleeps
+  on a `CLOCK_REALTIME` timerfd armed at the absolute next minute
+  (`TFD_TIMER_ABSTIME | TFD_TIMER_CANCEL_ON_SET`, so a clock step wakes it
+  to re-arm) plus `Runtime::next_deadline` and the runtime's wake hook.
+  The real `clock` service (M3) takes this over.
+- 2026-10-05 · m0: gate readings. Damage "per tick" is checked per
+  committed frame, i.e. per surface, on the damage actually submitted
+  (already widened by buffer age); the script also prints the sum over
+  both outputs. "No wakeups" is zero growth of voluntary + involuntary
+  context switches summed over every thread of the process from :03 to
+  :57 of a minute. PSS is `Pss:` of `smaps_rollup` after the bars are up
+  and two ticks have passed.
+- 2026-10-05 · m0 (gate fix in strand-surface): a freshly created shm
+  buffer starts as a copy of the buffer holding the newest frame
+  (copy-forward, a ~330 KB memcpy for a 1440p bar) and reports age 1.
+  Before this the first change after boot, when the compositor still held
+  the boot frame, was painted into a new buffer of age 0 and repainted
+  the whole bar (81,920 px² at 1.0, 102,400 px² at 1.25), failing the
+  damage gate on the first tick.
+- 2026-10-05 · m0: `STRAND_LOG` is a comma list of a level (`error`,
+  `warn` (default), `info`, `debug`, `trace`, `off`) and topics; `damage`
+  prints one `strand: damage surface=… buffer=WxH scale=… age=… area=…
+  rects=…` line per committed frame, which `scripts/m0-exit.sh` parses.
