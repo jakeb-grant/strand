@@ -15,7 +15,7 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::time::Duration;
 
-use strand_core::{KeyedSignal, KeyedVec, Memo, Signal};
+use strand_core::{KeyedMemo, KeyedSignal, KeyedVec, Memo, Signal};
 use strand_scene::{Color, TokenExpr};
 
 use crate::hir::{DefId, LocalId, NodeIdx};
@@ -650,6 +650,10 @@ pub enum Slot {
     /// with the list as one value for every other read (built once per
     /// change, however many bindings read it).
     Keyed(KeyedSignal<ValueKey, Value>, Memo<Value>),
+    /// A view `let` (`let shown = notifications.popups.filter(…).take(5)`):
+    /// core's incremental view, shared by every `for` over it and by
+    /// `shown.len`; with the list as one value for every other read.
+    View(KeyedMemo<ValueKey, Value>, Memo<Value>),
 }
 
 impl Slot {
@@ -658,7 +662,7 @@ impl Slot {
         match self {
             Slot::Signal(s) => s.get(rt),
             Slot::Memo(m) => m.get(rt),
-            Slot::Keyed(_, list) => list.get(rt),
+            Slot::Keyed(_, list) | Slot::View(_, list) => list.get(rt),
         }
     }
 
@@ -667,6 +671,7 @@ impl Slot {
             Slot::Signal(s) => s.id(),
             Slot::Memo(m) => m.id(),
             Slot::Keyed(k, _) => k.id(),
+            Slot::View(v, _) => v.id(),
         }
     }
 }
@@ -674,6 +679,11 @@ impl Slot {
 /// A keyed collection's items as a list value.
 pub fn list_of(v: &KeyedVec<ValueKey, Value>) -> Value {
     Value::list(v.items().iter().map(|(_, x)| x.clone()).collect())
+}
+
+/// A keyed view's items as a list value.
+pub fn list_of_items(v: &[(ValueKey, Value)]) -> Value {
+    Value::list(v.iter().map(|(_, x)| x.clone()).collect())
 }
 
 /// An empty keyed collection keyed by `path` (a record key, `state … key

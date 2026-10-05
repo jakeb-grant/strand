@@ -727,6 +727,24 @@ Public interfaces other crates and later stages build on:
   a body). Errors are values: a failing binding is an `Err` in its memo
   (the prop keeps its last good value), a failing handler an `Err` its
   task returns; `fn` and lambda calls nest at most `MAX_CALL_DEPTH` (200).
+  Handler frames are scoped: `Op::ScopeEnter`/`ScopeExit` around each
+  block that binds locals and around each `for`, whose `IterNext` drops
+  the previous iteration's locals, so a loop keeps a frame of constant
+  size; a lambda captures only its free locals (`lower::Lambda::free`).
+- **Time-bound values (M4 plan, not built yet).** `t`, `wave(…)` and
+  `noise(…)` read 0 (`noise` once) on the logic thread today, with one
+  `lower::time_signal` warning per name (`Program::warnings`, reported
+  as boot-tick notices). They are to travel like tokens: `Value` gains a
+  symbolic variant holding a `strand_scene` time expression (a
+  `TokenExpr`-like tree over `Time`, `Wave { period }`, `Noise { seed }`
+  leaves and the same arithmetic, so `t * 20deg` or `10 * wave(2s)`
+  stays an expression), arithmetic on it builds the tree as
+  `builtins::binary` already does for `TokenExpr`, and `convert` maps it
+  to a `PropValue` variant that render evaluates per frame (`t` per
+  node, from its appearance). A prop holding one is a frame-driven prop
+  for render's frame scheduling; nothing else in the emitter changes.
+  A time-bound value reaching logic (a handler, a comparison, `match`)
+  is an error value, as a token in arithmetic without numbers is now.
 - **Services** (`strand_compiler::vm::ServiceHost`): the VM's only way
   to services.
   - `read(rt, service, field)` and `call(rt, service, method, args)`
@@ -772,7 +790,7 @@ Public interfaces other crates and later stages build on:
     `notifications.clear()` or `ws.focus()`; `event(rt, service,
     event) -> EventQueue<Vec<Value>>` is the lossless queue `on
     notifications.received(n)` listens to.
-  - `acquire`/`release(service)`: a reader count. Every mounted
+  - `acquire`/`release(rt, service)`: a reader count. Every mounted
     component and the config's top level hold the services their body
     reads; a surface holds its body's services only while shown (its
     `open` is true, or it has no `open`), a hidden surface's content
@@ -783,7 +801,19 @@ Public interfaces other crates and later stages build on:
     (monitor unplugged) lets go of everything under it until it
     returns. The
     service starts on its first reader and stops 5 s after its last
-    leaves or goes invisible.
+    leaves or goes invisible: `rt` lets a host create a service's cells
+    lazily on `acquire` and arm the 5 s stop with core's timers on
+    `release` (also called from scope cleanup: no synchronous disposal
+    there).
+  - Several service crates, one host (M3 plan): `Instance::new` takes one
+    `Rc<dyn ServiceHost>`. The binary builds a composite host that
+    routes every call by its service name to the crate that serves it
+    (each M3 service crate implements `ServiceHost` for its own
+    services; `SchemaHost::real` answers the rest at their defaults, and
+    the clock and calendar stay there), unions `next_wake` (earliest)
+    and fans out `wake`. A service name belongs to exactly one member;
+    `declare`d custom services go to the member that implements their
+    source kind (`dbus`, `file`, `listen`, `poll`).
   - `declare(rt, name, record)` adds a custom service; `next_wake(rt) ->
     Option<SystemTime>` and `wake(rt, now)` let wall-clock services (the
     clock) wake the host loop only at minute boundaries (seconds only
@@ -851,9 +881,17 @@ Public interfaces other crates and later stages build on:
     captured values and the values of its read set; a keyed collection
     by its version) is the step's tracked parameters, whose change
     rebuilds that step. A lambda calling a service method falls back
-    to `keyed_memo`.
+    to `keyed_memo`. A `let` whose value is such a chain (or a chain on
+    another such `let`; `lower::Program::let_chains`) is one shared view
+    (`Slot::View`: the `KeyedMemo` and a lazy list memo), built once the
+    body's keyed `state`s are bound: `let shown = notifications.popups
+    .filter(…).take(5)` then `for n in shown` and `shown.len` follow
+    that view, so one new notification is one diff from the service to
+    the scene. The `for`'s key check looks through the `let`s to the
+    collection at the bottom.
   - Reads of a keyed collection (`xs.len`, `.first`, `.last`, `xs[i]`,
-    `xs.contains(x)` on a keyed `state` or a host's keyed field) are
+    `xs.contains(x)` on a keyed `state`, a view `let` or a host's keyed
+    field) are
     `Op::Keyed`: answered with core's `with`/`get_key`, never by
     building the list as a value. The list value (`Slot::Keyed`'s
     memo) is built lazily, only for reads that need the whole list.

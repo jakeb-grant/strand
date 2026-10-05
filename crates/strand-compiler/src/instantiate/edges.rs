@@ -27,6 +27,10 @@ fn slot_ids(slot: Slot, out: &mut Vec<CoreId>) {
             out.push(k.id());
             out.push(l.id());
         }
+        Slot::View(v, l) => {
+            out.push(v.id());
+            out.push(l.id());
+        }
     }
 }
 

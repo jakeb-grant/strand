@@ -19,7 +19,7 @@ use std::rc::Rc;
 use strand_core::{Error, KeyedMemo, KeyedOps, KeyedSource, Runtime};
 
 use super::Ctx;
-use crate::lower::{ChainOp, ChainRoot, ChunkId, For, ForKey};
+use crate::lower::{Chain, ChainOp, ChainRoot, ChunkId, For, ForKey, Program};
 use crate::ty::Ty;
 use crate::vm::Env;
 use crate::vm::value::{Slot, Value, ValueKey};
@@ -58,41 +58,26 @@ impl Ctx {
     ) -> Option<Derived> {
         let chain = f.chain.as_ref()?;
         let prog = self.vm.prog.clone();
-        // A lambda calling a service method reads more than its
-        // parameters can say: compare whole lists instead.
-        if chain.steps.iter().any(|(_, c)| {
-            prog.reads(*c)
-                .services
-                .iter()
-                .any(|(_, field)| field.is_none())
-        }) {
-            return None;
-        }
-        let maps = chain.steps.iter().any(|(op, _)| *op == ChainOp::Map);
-        let (root, own) = match &chain.root {
-            ChainRoot::Def(d) => {
-                let Some(Slot::Keyed(k, _)) = env.def(*d) else {
-                    return None;
-                };
-                let own = prog.state_keys.get(d).cloned().or_else(|| {
-                    match prog
-                        .def(*d)
-                        .ty
-                        .list_elem()
-                        .map(|(t, _)| t.non_null().clone())
-                    {
-                        Some(Ty::Record(r)) => prog.types.record(r).key.clone(),
-                        _ => None,
-                    }
-                });
-                (k, own)
-            }
-            ChainRoot::Service(s, field) => (self.vm.host.read_keyed(rt, s, field)?, None),
-        };
         // The loop's items are the collection's, by its keys: the `for`
         // must not ask for other keys (`map` keeps the source keys, so a
-        // mapped loop takes them as they are).
-        let same = match (&f.key, &chain.root) {
+        // mapped loop takes them as they are). Through view `let`s, the
+        // collection is the one at the bottom of the chain.
+        let (base, maps) = base_of(&prog, chain);
+        let own = match &base {
+            ChainRoot::Def(d) => prog.state_keys.get(d).cloned().or_else(|| {
+                match prog
+                    .def(*d)
+                    .ty
+                    .list_elem()
+                    .map(|(t, _)| t.non_null().clone())
+                {
+                    Some(Ty::Record(r)) => prog.types.record(r).key.clone(),
+                    _ => None,
+                }
+            }),
+            ChainRoot::Service(..) => None,
+        };
+        let same = match (&f.key, &base) {
             (ForKey::Expr(_), _) => false,
             _ if maps => true,
             (ForKey::Path(p), ChainRoot::Def(_)) => own.as_ref() == Some(p),
@@ -109,11 +94,59 @@ impl Ctx {
             self.module_of(f.file)
         )
         .into();
+        self.build_chain(rt, chain, env, &what)
+    }
+
+    /// The view a view `let` is ([`crate::lower::Program::let_chains`]),
+    /// if this can build it; its root is bound in `env` already.
+    pub(crate) fn let_view(
+        self: &Rc<Self>,
+        rt: &Runtime,
+        def: crate::hir::DefId,
+        env: &Rc<Env>,
+    ) -> Option<Derived> {
+        let prog = self.vm.prog.clone();
+        let chain = prog.let_chains.get(&def)?;
+        let what: Rc<str> = format!("let {}", prog.def(def).name).into();
+        self.build_chain(rt, chain, env, &what)
+    }
+
+    fn build_chain(
+        self: &Rc<Self>,
+        rt: &Runtime,
+        chain: &Chain,
+        env: &Rc<Env>,
+        what: &Rc<str>,
+    ) -> Option<Derived> {
+        let prog = self.vm.prog.clone();
+        // A lambda calling a service method reads more than its
+        // parameters can say: compare whole lists instead.
+        if chain.steps.iter().any(|(_, c)| {
+            prog.reads(*c)
+                .services
+                .iter()
+                .any(|(_, field)| field.is_none())
+        }) {
+            return None;
+        }
         let mut steps = chain.steps.iter();
-        let (op, arg) = steps.next()?;
-        let mut cur = self.chain_step(rt, root, *op, *arg, env, &what);
+        let mut cur = match &chain.root {
+            ChainRoot::Def(d) => match env.def(*d)? {
+                Slot::Keyed(k, _) => {
+                    let (op, arg) = steps.next()?;
+                    self.chain_step(rt, k, *op, *arg, env, what)
+                }
+                Slot::View(v, _) => v,
+                _ => return None,
+            },
+            ChainRoot::Service(s, field) => {
+                let k = self.vm.host.read_keyed(rt, s, field)?;
+                let (op, arg) = steps.next()?;
+                self.chain_step(rt, k, *op, *arg, env, what)
+            }
+        };
         for (op, arg) in steps {
-            cur = self.chain_step(rt, cur, *op, *arg, env, &what);
+            cur = self.chain_step(rt, cur, *op, *arg, env, what);
         }
         Some(cur)
     }
@@ -260,4 +293,20 @@ impl Ctx {
         }
         Ok(out)
     }
+}
+
+/// The collection at the bottom of `chain` (through view `let`s) and
+/// whether a `map` is on the way.
+fn base_of(prog: &Program, chain: &Chain) -> (ChainRoot, bool) {
+    let mut maps = chain.steps.iter().any(|(op, _)| *op == ChainOp::Map);
+    let mut root = chain.root.clone();
+    for _ in 0..64 {
+        let ChainRoot::Def(d) = &root else { break };
+        let Some(next) = prog.let_chains.get(d) else {
+            break;
+        };
+        maps |= next.steps.iter().any(|(op, _)| *op == ChainOp::Map);
+        root = next.root.clone();
+    }
+    (root, maps)
 }

@@ -51,6 +51,15 @@ pub struct Program {
     /// The `key` of keyed `state` collections (`state pins: [Pin] key
     /// app`), by declaration.
     pub state_keys: BTreeMap<DefId, Vec<String>>,
+    /// `let`s whose value is a chain of `.filter`/`.map`/`.take`/`.sort_by`
+    /// on a keyed collection (or on another such `let`): each is one
+    /// shared incremental view (`let shown = notifications.popups
+    /// .filter(…).take(5)`), which a `for` over it and `shown.len` follow.
+    pub let_chains: BTreeMap<DefId, Chain>,
+    /// Warnings found while lowering: a read of a time signal (`t`,
+    /// `wave(…)`, `noise(…)`), which does not animate until the renderer
+    /// evaluates time-bound values (M4); one per name, at its first use.
+    pub warnings: Vec<crate::diagnostic::Diagnostic>,
     /// Each chunk's syntactic read set, by chunk id (lambdas and called
     /// `fn`s included): what the instantiator declares with
     /// `rt.reads_from` ([`reads`]).
@@ -411,6 +420,8 @@ pub fn lower(program: &hir::Program, schema: &Schema) -> Program {
         owned: Vec::new(),
         services: Vec::new(),
         elem: None,
+        let_exprs: BTreeMap::new(),
+        time_warned: BTreeSet::new(),
     };
     for d in &program.defs {
         let module = program
@@ -437,7 +448,7 @@ pub fn lower(program: &hir::Program, schema: &Schema) -> Program {
     }
     for f in &program.files {
         for item in &f.items {
-            collect_keys(item, &mut l.out.state_keys);
+            collect_keys(item, &mut l.out.state_keys, &mut l.let_exprs);
         }
     }
     for f in &program.files {
@@ -471,6 +482,10 @@ pub(crate) struct Lowerer<'a> {
     /// The schema of the element whose children are being lowered, for
     /// its `when` and pose props.
     elem: Option<&'a crate::schema::ElementSchema>,
+    /// Every `let`'s value, for chains through `let`s.
+    let_exprs: BTreeMap<DefId, &'a hir::Expr>,
+    /// Time signals already warned about.
+    time_warned: BTreeSet<&'static str>,
 }
 
 impl Lowerer<'_> {
@@ -526,10 +541,7 @@ impl Lowerer<'_> {
                 }));
             }
             hir::Item::State(s) => out.push(Node::State(self.state(s))),
-            hir::Item::Let(l) => out.push(Node::Let {
-                def: l.def,
-                value: self.expr_chunk(&l.value),
-            }),
+            hir::Item::Let(l) => out.push(self.let_node(l)),
             hir::Item::Fn(f) => {
                 let body = self.fn_chunk(&f.body);
                 self.out.fns.insert(
@@ -696,11 +708,72 @@ impl Lowerer<'_> {
             hir::Node::Selector(_) => return None,
             hir::Node::Play(e) => Node::Play(self.expr_chunk(e)),
             hir::Node::State(s) => Node::State(self.state(s)),
-            hir::Node::Let(l) => Node::Let {
-                def: l.def,
-                value: self.expr_chunk(&l.value),
-            },
+            hir::Node::Let(l) => self.let_node(l),
         })
+    }
+
+    /// A `let`; one whose value is a keyed chain is also noted as a view.
+    fn let_node(&mut self, l: &hir::LetDecl) -> Node {
+        let value = self.expr_chunk(&l.value);
+        if let Some(chain) = self.chain(&l.value) {
+            self.out.let_chains.insert(l.def, chain);
+        }
+        Node::Let { def: l.def, value }
+    }
+
+    /// `d` is a `let` whose value is a keyed chain ([`Program::let_chains`]).
+    pub(crate) fn is_view(&self, d: DefId) -> bool {
+        self.view_depth(d, 0)
+    }
+
+    fn view_depth(&self, d: DefId, depth: usize) -> bool {
+        if depth > 64 || self.hir.def(d).kind != DefKind::Let {
+            return false;
+        }
+        let Some(e) = self.let_exprs.get(&d) else {
+            return false;
+        };
+        matches!(self.chain_shape(e, depth + 1), Some((_, n, via_let)) if n > 0 || via_let)
+    }
+
+    /// The root expression of `e`'s chain, its number of steps and whether
+    /// the root is a view `let`, if `e` is a keyed chain.
+    fn chain_shape<'e>(
+        &self,
+        e: &'e hir::Expr,
+        depth: usize,
+    ) -> Option<(&'e hir::Expr, usize, bool)> {
+        let mut n = 0;
+        let mut cur = e;
+        while let hir::ExprKind::Call {
+            callee: hir::Callee::Method { receiver, name, .. },
+            args,
+        } = &cur.kind
+        {
+            if !matches!(name.as_str(), "filter" | "map" | "take" | "sort_by") || args.len() != 1 {
+                return None;
+            }
+            n += 1;
+            cur = receiver;
+        }
+        if !matches!(cur.ty, Ty::List(_, true)) {
+            return None;
+        }
+        match &cur.kind {
+            hir::ExprKind::Def(d) => match self.hir.def(*d).kind {
+                DefKind::State => (n > 0).then_some((cur, n, false)),
+                DefKind::Let if self.view_depth(*d, depth) => Some((cur, n, true)),
+                _ => None,
+            },
+            hir::ExprKind::Field {
+                base,
+                optional: false,
+                ..
+            } if matches!(base.kind, hir::ExprKind::Service(_)) => {
+                (n > 0).then_some((cur, n, false))
+            }
+            _ => None,
+        }
     }
 
     fn element(&mut self, e: &hir::Element) -> Element {
@@ -769,8 +842,10 @@ impl Lowerer<'_> {
     }
 
     /// `root.filter(…).map(…).take(n).sort_by(…)` (one step at least) on
-    /// a keyed `state` or a service's keyed field.
+    /// a keyed `state` or a service's keyed field, or any such chain (none
+    /// at all included) on a view `let` ([`Program::let_chains`]).
     fn chain(&mut self, e: &hir::Expr) -> Option<Chain> {
+        self.chain_shape(e, 0)?;
         let mut steps = Vec::new();
         let mut cur = e;
         while let hir::ExprKind::Call {
@@ -782,25 +857,14 @@ impl Lowerer<'_> {
                 "filter" => ChainOp::Filter,
                 "map" => ChainOp::Map,
                 "take" => ChainOp::Take,
-                "sort_by" => ChainOp::SortBy,
-                _ => return None,
+                _ => ChainOp::SortBy,
             };
-            let [arg] = args.as_slice() else {
-                return None;
-            };
-            steps.push((op, arg));
+            steps.push((op, &args[0]));
             cur = receiver;
         }
-        if steps.is_empty() || !matches!(cur.ty, Ty::List(_, true)) {
-            return None;
-        }
         let root = match &cur.kind {
-            hir::ExprKind::Def(d) if self.hir.def(*d).kind == DefKind::State => ChainRoot::Def(*d),
-            hir::ExprKind::Field {
-                base,
-                name,
-                optional: false,
-            } => match &base.kind {
+            hir::ExprKind::Def(d) => ChainRoot::Def(*d),
+            hir::ExprKind::Field { base, name, .. } => match &base.kind {
                 hir::ExprKind::Service(s) => ChainRoot::Service(s.clone(), name.clone()),
                 _ => return None,
             },
@@ -976,7 +1040,11 @@ impl Lowerer<'_> {
     /// (`pins`, `pins.filter(…)`, `pins.take(3)`), if any.
     fn root_key(&self, e: &hir::Expr) -> Option<Vec<String>> {
         match &e.kind {
-            hir::ExprKind::Def(d) => self.out.state_keys.get(d).cloned(),
+            hir::ExprKind::Def(d) => match self.out.state_keys.get(d) {
+                Some(k) => Some(k.clone()),
+                None if self.is_view(*d) => self.let_exprs.get(d).and_then(|e| self.root_key(e)),
+                None => None,
+            },
             hir::ExprKind::Call {
                 callee: hir::Callee::Method { receiver, name, .. },
                 ..
@@ -991,31 +1059,65 @@ impl Lowerer<'_> {
         }
     }
 
+    /// Warn once per name about a time signal read (see
+    /// [`Program::warnings`]).
+    pub(crate) fn note_time(&mut self, name: &str, span: Span) {
+        let (name, what): (&'static str, &str) = match name {
+            "t" => ("t", "`t` reads 0"),
+            "wave" => ("wave", "`wave(…)` reads 0"),
+            "noise" => ("noise", "`noise(…)` is computed once, not per frame"),
+            _ => return,
+        };
+        if !self.time_warned.insert(name) {
+            return;
+        }
+        self.out.warnings.push(
+            crate::diagnostic::Diagnostic::warning(
+                "lower::time_signal",
+                format!("{what} for now: time-bound values do not animate yet"),
+            )
+            .with_label_in(self.file, span, "frozen")
+            .with_help("the renderer animates `t`, `wave` and `noise` from M4"),
+        );
+    }
+
     pub(crate) fn add_chunk(&mut self, c: Chunk) -> ChunkId {
         self.out.chunks.push(c);
         self.out.chunks.len() as ChunkId - 1
     }
 }
 
-fn collect_keys(item: &hir::Item, out: &mut BTreeMap<DefId, Vec<String>>) {
+/// The keys of keyed `state`s and the value of every `let`.
+fn collect_keys<'a>(
+    item: &'a hir::Item,
+    out: &mut BTreeMap<DefId, Vec<String>>,
+    lets: &mut BTreeMap<DefId, &'a hir::Expr>,
+) {
     fn state(s: &hir::StateDecl, out: &mut BTreeMap<DefId, Vec<String>>) {
         if let hir::StateInit::Value { key: Some(k), .. } = &s.init {
             out.insert(s.def, k.clone());
         }
     }
-    fn nodes(ns: &[hir::Node], out: &mut BTreeMap<DefId, Vec<String>>) {
+    fn nodes<'a>(
+        ns: &'a [hir::Node],
+        out: &mut BTreeMap<DefId, Vec<String>>,
+        lets: &mut BTreeMap<DefId, &'a hir::Expr>,
+    ) {
         for n in ns {
             match n {
                 hir::Node::State(s) => state(s, out),
-                hir::Node::Element(e) => nodes(&e.children, out),
-                hir::Node::If(i) => {
-                    nodes(&i.then, out);
-                    nodes(&i.else_, out);
+                hir::Node::Let(l) => {
+                    lets.insert(l.def, &l.value);
                 }
-                hir::Node::For(f) => nodes(&f.body, out),
+                hir::Node::Element(e) => nodes(&e.children, out, lets),
+                hir::Node::If(i) => {
+                    nodes(&i.then, out, lets);
+                    nodes(&i.else_, out, lets);
+                }
+                hir::Node::For(f) => nodes(&f.body, out, lets),
                 hir::Node::Match(m) => {
                     for (_, b) in &m.arms {
-                        nodes(b, out);
+                        nodes(b, out, lets);
                     }
                 }
                 _ => {}
@@ -1024,8 +1126,11 @@ fn collect_keys(item: &hir::Item, out: &mut BTreeMap<DefId, Vec<String>>) {
     }
     match item {
         hir::Item::State(s) => state(s, out),
-        hir::Item::Component(c) => nodes(&c.body, out),
-        hir::Item::Surface(s) => nodes(&s.element.children, out),
+        hir::Item::Let(l) => {
+            lets.insert(l.def, &l.value);
+        }
+        hir::Item::Component(c) => nodes(&c.body, out, lets),
+        hir::Item::Surface(s) => nodes(&s.element.children, out, lets),
         _ => {}
     }
 }

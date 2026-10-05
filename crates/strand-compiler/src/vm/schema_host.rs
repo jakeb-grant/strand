@@ -688,7 +688,7 @@ impl ServiceHost for SchemaHost {
             .copied()
     }
 
-    fn acquire(&self, service: &str) {
+    fn acquire(&self, _rt: &Runtime, service: &str) {
         *self
             .refs
             .borrow_mut()
@@ -696,7 +696,7 @@ impl ServiceHost for SchemaHost {
             .or_default() += 1;
     }
 
-    fn release(&self, service: &str) {
+    fn release(&self, _rt: &Runtime, service: &str) {
         *self
             .refs
             .borrow_mut()

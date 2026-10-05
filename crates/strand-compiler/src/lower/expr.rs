@@ -84,14 +84,10 @@ impl Lowerer<'_> {
             StmtKind::If { cond, then, else_ } => {
                 self.expr(c, cond);
                 let to_else = c.emit(Op::JumpIfFalse(0), span);
-                for s in then {
-                    self.stmt(c, s, false);
-                }
+                self.block(c, then, span);
                 let to_end = c.emit(Op::Jump(0), span);
                 c.patch(to_else);
-                for s in else_ {
-                    self.stmt(c, s, false);
-                }
+                self.block(c, else_, span);
                 c.patch(to_end);
             }
             StmtKind::For {
@@ -102,6 +98,9 @@ impl Lowerer<'_> {
                 self.expr(c, iter);
                 let zero = c.constant(Const::Num(0.0, Num::Int));
                 c.emit(Op::Const(zero), span);
+                // Each iteration drops the last one's locals, so a long
+                // loop keeps a frame of constant size.
+                c.emit(Op::ScopeEnter, span);
                 let top = c.here();
                 let next = c.emit(
                     Op::IterNext {
@@ -115,6 +114,7 @@ impl Lowerer<'_> {
                 }
                 c.emit(Op::Jump(top), span);
                 c.patch(next);
+                c.emit(Op::ScopeExit, span);
             }
             StmtKind::Match { scrutinee, arms } => {
                 self.expr(c, scrutinee);
@@ -125,9 +125,7 @@ impl Lowerer<'_> {
                     c.emit(Op::Match(pat), span);
                     let next = c.emit(Op::JumpIfFalse(0), span);
                     c.emit(Op::Pop, span);
-                    for s in body {
-                        self.stmt(c, s, false);
-                    }
+                    self.block(c, body, span);
                     ends.push(c.emit(Op::Jump(0), span));
                     c.patch(next);
                 }
@@ -142,6 +140,21 @@ impl Lowerer<'_> {
                 c.emit(Op::Play, span);
             }
             StmtKind::Error => {}
+        }
+    }
+
+    /// A statement block; one that binds locals is a scope, so they are
+    /// dropped at its end.
+    fn block(&mut self, c: &mut Chunk, body: &[hir::Stmt], span: Span) {
+        let scoped = body.iter().any(|s| matches!(s.kind, StmtKind::Let { .. }));
+        if scoped {
+            c.emit(Op::ScopeEnter, span);
+        }
+        for s in body {
+            self.stmt(c, s, false);
+        }
+        if scoped {
+            c.emit(Op::ScopeExit, span);
         }
     }
 
@@ -219,7 +232,9 @@ impl Lowerer<'_> {
             return None;
         }
         match &e.kind {
-            ExprKind::Def(d) if self.hir.def(*d).kind == DefKind::State => Some(KeyedRoot::Def(*d)),
+            ExprKind::Def(d) if self.hir.def(*d).kind == DefKind::State || self.is_view(*d) => {
+                Some(KeyedRoot::Def(*d))
+            }
             ExprKind::Field {
                 base,
                 name,
@@ -347,6 +362,7 @@ impl Lowerer<'_> {
                 c.emit(Op::Service(n), span);
             }
             ExprKind::Value(v) => {
+                self.note_time(v, span);
                 let n = c.name(v);
                 c.emit(Op::Value(n), span);
             }
@@ -469,10 +485,12 @@ impl Lowerer<'_> {
                     LambdaBody::Expr(b) => self.expr(&mut inner, b),
                     LambdaBody::Block(stmts) => self.block_value(&mut inner, stmts),
                 }
+                let free = free_locals(&inner, params);
                 let chunk = self.add_chunk(inner);
                 c.lambdas.push(Lambda {
                     params: params.clone(),
                     chunk,
+                    free,
                 });
                 let i = c.lambdas.len() as u32 - 1;
                 c.emit(Op::Closure(i), span);
@@ -527,6 +545,7 @@ impl Lowerer<'_> {
                 c.emit(Op::CallFn { def: *d, args: map }, span);
             }
             Callee::Builtin { name, overload } => {
+                self.note_time(name, span);
                 let sig = self
                     .schema
                     .functions
@@ -769,4 +788,27 @@ impl AssignOp {
             AssignOp::Div => Some(BinaryOp::Div),
         }
     }
+}
+
+/// The locals a lambda body reads that it does not bind itself: its own
+/// `Op::Local`s and its inner lambdas' free locals, less its parameters
+/// and `let`s.
+fn free_locals(inner: &Chunk, params: &[hir::LocalId]) -> Vec<hir::LocalId> {
+    let mut bound: BTreeSet<hir::LocalId> = params.iter().copied().collect();
+    let mut used = BTreeSet::new();
+    for op in &inner.ops {
+        match op {
+            Op::Local(l) => {
+                used.insert(*l);
+            }
+            Op::SetLocal(l) | Op::IterNext { binding: l, .. } => {
+                bound.insert(*l);
+            }
+            _ => {}
+        }
+    }
+    for l in &inner.lambdas {
+        used.extend(l.free.iter().copied());
+    }
+    used.difference(&bound).copied().collect()
 }

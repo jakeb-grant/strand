@@ -1701,6 +1701,57 @@ see wave2-core; the compiler supplies the field schema.)
   of a core test for it was dropped at the merge, so strand-core here is
   exactly wave2/core's, and the compiler side is proven by
   `tests/instantiate.rs::sinks_run_once_after_the_handlers_that_feed_them`.
+- **2026-10-05 · wave2-vm (fixer round 1): a chain in a `let` is one
+  view.** design.md's notification stack names its chain (`let shown =
+  notifications.popups.filter(…).take(5)`, then `for n in shown` and
+  `open: shown.len > 0`), and design.md promises the chain updates
+  incrementally. A `let` whose value is a `.filter`/`.map`/`.take`/
+  `.sort_by` chain on a keyed `state`, a service's keyed field or
+  another such `let` is lowered as a view (`Program::let_chains`) and
+  mounted as one core `KeyedMemo` shared by its readers
+  (`Slot::View`): a `for` over it follows its diffs, `shown.len` and
+  friends read it in place, any other read gets its list value. Views
+  are built after the body's `state`s are bound (a plain memo of the
+  same `let` stands in before that, for a `state` default that reads
+  it, and is disposed). A view this cannot build (a lambda calling a
+  service method) stays the plain memo.
+  `tests/instantiate.rs::a_let_chain_is_one_incremental_view`.
+- **2026-10-05 · wave2-vm (fixer round 1): one run of a timer at a
+  time.** design.md says handlers are cancellable coroutines but not
+  what a timer does when it fires while its last run is still suspended
+  at an `await`. A fire then is skipped (not queued, not cancelling the
+  running one): the reading most consistent with `every` as a poll, it
+  never piles up runs behind a slow or stuck `await` and never lets an
+  older run write after a newer one, and a run slower than the period
+  still finishes (cancelling would starve it). `on change` and service
+  events keep one run per firing: events are lossless by design, and
+  `on change … after T` already debounces.
+  `tests/instantiate.rs::a_timer_skips_fires_while_its_last_run_awaits`.
+- **2026-10-05 · wave2-vm (fixer round 1): scoped handler frames.**
+  Handler locals live in block scopes: `Op::ScopeEnter`/`ScopeExit`
+  around each block that binds a `let` and around each `for`, whose
+  `IterNext` drops the previous iteration's locals; a lambda captures
+  only the locals its body reads (`Lambda::free`), not the whole frame.
+  A 20,000-item handler loop reading an outer local went from seconds
+  (quadratic) to linear: `tests/instantiate.rs::handler_loops_are_linear`.
+- **2026-10-05 · wave2-vm (fixer round 1): frozen time signals are
+  warned about.** Until render evaluates time-bound values (M4), `t`
+  and `wave(…)` read 0 and `noise(…)` is computed once on the logic
+  thread. Lowering warns once per name at its first use
+  (`lower::time_signal` in `Program::warnings`, reported as boot-tick
+  notices), so the rice example's frozen spin is explained, not silent;
+  architecture.md sketches how a time-bound value stays symbolic through
+  `Value` into a scene `PropValue`.
+  `tests/vm.rs::time_signals_are_warned_about_once`.
+- **2026-10-05 · wave2-vm (fixer round 1): `ServiceHost` and M3.**
+  `acquire`/`release` take `&Runtime` (lazy service cells, the 5 s stop
+  on core timers); several service crates combine into one host as a
+  composite routing by service name (architecture.md), so
+  `Instance::new` keeps taking one `Rc<dyn ServiceHost>`. A failing
+  first read of a `for`'s list or an `if`/`match` selector is no longer
+  reported at mount: the list's or switch's effect reports it in the
+  same flush, located (`if`/`match` now have a site), so it appears once
+  (`tests/instantiate.rs::mount_failures_are_reported_once_located`).
 
 ## wave2-core
 

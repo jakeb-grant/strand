@@ -108,6 +108,9 @@ pub enum KeyedQuery {
 pub struct Lambda {
     pub params: Vec<LocalId>,
     pub chunk: ChunkId,
+    /// The locals its body (and the lambdas in it) reads: all a closure
+    /// captures from the frame that makes it.
+    pub free: Vec<LocalId>,
 }
 
 /// One instruction.
@@ -201,6 +204,10 @@ pub enum Op {
     Match(u32),
     /// Pop a value into a frame local.
     SetLocal(LocalId),
+    /// Open a block scope: remember the frame's length.
+    ScopeEnter,
+    /// Close the innermost block scope: drop the locals bound in it.
+    ScopeExit,
     /// Pop the value (and the place's index values below it) and write
     /// it (place index).
     Store {
@@ -208,7 +215,9 @@ pub enum Op {
         op: AssignOp,
     },
     /// `for x in xs` in a handler: the list and an index are on the
-    /// stack; bind the next item or pop both and jump to the end.
+    /// stack; drop the previous iteration's locals (back to the loop's
+    /// [`Op::ScopeEnter`]), then bind the next item or pop both and jump
+    /// to the end (the loop's [`Op::ScopeExit`]).
     IterNext {
         binding: LocalId,
         end: u32,

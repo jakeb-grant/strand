@@ -301,6 +301,8 @@ pub struct Vm {
     /// The config's top-level scope (file `state`s and `let`s).
     pub root: Rc<Env>,
     depth: Cell<u32>,
+    /// Function values called so far ([`Vm::calls`]).
+    calls: Cell<u64>,
     hooks: RefCell<Option<std::rc::Weak<dyn VmHooks>>>,
     /// Where errors raised since the last [`Vm::clear_faults`] came from:
     /// the failing op's file and span.
@@ -332,6 +334,7 @@ impl Vm {
             host,
             root: Env::root(),
             depth: Cell::new(0),
+            calls: Cell::new(0),
             hooks: RefCell::new(None),
             faults: RefCell::default(),
         })
@@ -453,6 +456,13 @@ impl Vm {
         }
     }
 
+    /// How many function values (lambdas, `fn` values) were called so
+    /// far: a `filter` over n items is n calls (tests of incremental
+    /// views).
+    pub fn calls(&self) -> u64 {
+        self.calls.get()
+    }
+
     /// Call a function value with arguments (lambdas given to `filter`,
     /// `sort_by`, `update`).
     pub fn call(
@@ -471,6 +481,7 @@ impl Vm {
             )));
         }
         self.depth.set(depth + 1);
+        self.calls.set(self.calls.get() + 1);
         let mut frame: Frame = c.captured.clone();
         for (p, a) in c.params.iter().zip(args) {
             frame.push((*p, a));

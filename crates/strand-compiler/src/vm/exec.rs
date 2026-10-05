@@ -68,6 +68,8 @@ pub(crate) struct Machine {
     stop: Option<usize>,
     stack: Vec<Value>,
     frame: Frame,
+    /// The frame's length at each open block scope ([`Op::ScopeEnter`]).
+    marks: Vec<usize>,
     closure: Option<Rc<Closure>>,
     env: Rc<Env>,
     ctx: Option<Rc<EventCtx>>,
@@ -116,6 +118,7 @@ impl Machine {
             stop: None,
             stack: Vec::new(),
             frame,
+            marks: Vec::new(),
             closure,
             env,
             ctx,
@@ -396,12 +399,14 @@ impl Machine {
                 }
                 Op::Closure(i) => {
                     let l = &chunk.lambdas[*i as usize];
-                    let mut captured = self
-                        .closure
-                        .as_ref()
-                        .map(|c| c.captured.clone())
-                        .unwrap_or_default();
-                    captured.extend(self.frame.iter().cloned());
+                    // Only the locals the body reads: a lambda made in a
+                    // loop costs what it uses, not the whole frame.
+                    let wanted = |id: &LocalId| l.free.binary_search(id).is_ok();
+                    let mut captured: Frame = Vec::new();
+                    if let Some(c) = &self.closure {
+                        captured.extend(c.captured.iter().filter(|(id, _)| wanted(id)).cloned());
+                    }
+                    captured.extend(self.frame.iter().filter(|(id, _)| wanted(id)).cloned());
                     self.stack.push(Value::Fn(Rc::new(Closure {
                         params: l.params.clone(),
                         chunk: l.chunk,
@@ -418,6 +423,12 @@ impl Machine {
                     let v = self.pop();
                     self.frame.push((*id, v));
                 }
+                Op::ScopeEnter => self.marks.push(self.frame.len()),
+                Op::ScopeExit => {
+                    if let Some(m) = self.marks.pop() {
+                        self.frame.truncate(m);
+                    }
+                }
                 Op::Store { place, op } => {
                     let value = self.pop();
                     let place = &chunk.places[*place as usize];
@@ -425,6 +436,9 @@ impl Machine {
                     store(vm, rt, place, indices, &self.env, *op, value)?;
                 }
                 Op::IterNext { binding, end } => {
+                    if let Some(&m) = self.marks.last() {
+                        self.frame.truncate(m);
+                    }
                     let i = self.stack.last().and_then(Value::as_f64).unwrap_or(0.0) as usize;
                     let len = self.stack.len();
                     let item = len
@@ -509,6 +523,7 @@ impl Machine {
         let cell = match root {
             KeyedRoot::Def(d) => match self.env.def(*d) {
                 Some(super::Slot::Keyed(k, _)) => Some(k),
+                Some(super::Slot::View(v, _)) => return view_query(rt, v, query, arg),
                 _ => None,
             },
             KeyedRoot::Service { service, field } => vm.host.read_keyed(
@@ -575,6 +590,30 @@ impl Machine {
             .filter(|s| matches!(s, PlaceSeg::Index))
             .count();
         self.pop_n(n as u32)
+    }
+}
+
+/// `shown.len`, `.first`, `.last`, `[i]`, `.contains(x)` on a view `let`,
+/// through the view's items (no list copy).
+fn view_query(
+    rt: &Runtime,
+    v: strand_core::KeyedMemo<ValueKey, Value>,
+    query: KeyedQuery,
+    arg: Option<Value>,
+) -> Result<Value, Error> {
+    let item = |v: Option<&(ValueKey, Value)>| v.map_or(Value::Null, |(_, x)| x.clone());
+    let arg = arg.unwrap_or(Value::Null);
+    match query {
+        KeyedQuery::Len => v.with(rt, |xs| Value::int(xs.len() as i64)),
+        KeyedQuery::First => v.with(rt, |xs| item(xs.first())),
+        KeyedQuery::Last => v.with(rt, |xs| item(xs.last())),
+        KeyedQuery::Index => {
+            let i = arg.as_f64().filter(|i| *i >= 0.0);
+            v.with(rt, |xs| item(i.and_then(|i| xs.get(i as usize))))
+        }
+        KeyedQuery::Contains => v.with(rt, |xs| {
+            Value::Bool(xs.iter().any(|(_, x)| builtins::equal(x, &arg)))
+        }),
     }
 }
 

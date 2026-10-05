@@ -489,6 +489,7 @@ impl Instance {
         for (name, record) in program.services.values() {
             host.declare(rt, name, *record);
         }
+        let warnings = program.warnings.clone();
         let vm = Vm::new(program, host);
         let ctx = Rc::new(Ctx {
             vm: vm.clone(),
@@ -502,7 +503,17 @@ impl Instance {
             holds: RefCell::default(),
             next_hold: Cell::new(0),
             blocked: RefCell::default(),
-            notices: RefCell::default(),
+            // Lowering's warnings (a frozen time signal), once, in the
+            // boot tick.
+            notices: RefCell::new(
+                warnings
+                    .iter()
+                    .map(|d| match &d.help {
+                        Some(h) => format!("{} ({h})", d.message),
+                        None => d.message.clone(),
+                    })
+                    .collect(),
+            ),
             play_seq: Cell::new(0),
         });
         let weak: std::rc::Weak<Ctx> = Rc::downgrade(&ctx);
@@ -853,6 +864,11 @@ impl Instance {
             }
         }
         Err(Error::failed(format!("nothing is exported as `{path}`")))
+    }
+
+    /// Function values the VM called so far ([`crate::vm::Vm::calls`]).
+    pub fn lambda_calls(&self) -> u64 {
+        self.ctx.vm.calls()
     }
 
     /// A top-level `state` or `let` of a file by module and name

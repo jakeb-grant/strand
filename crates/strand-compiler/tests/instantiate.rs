@@ -2308,3 +2308,164 @@ fn action_calls_declare_their_service_writes() {
     assert!(u.errors.is_empty(), "{:?}", u.errors);
     assert_eq!(shell.scene.texts(), ["0"]);
 }
+
+/// A handler loop costs time linear in its items: each iteration drops
+/// the previous one's locals (the frame stays small, so reading a local
+/// from before the loop is one short scan), and a lambda made in the loop
+/// captures only what it reads. Before, 20,000 items took seconds.
+#[test]
+fn handler_loops_are_linear() {
+    let src = "state xs: [int] = []\nstate total = 0\nbar B {\n  box { on click {\n    let base: int = 1\n    for x in xs {\n      let y = x + base\n      if y > 0 { let z = y\n        total += z }\n      total += [base].map(v => v + y)[0] ?? 0\n    }\n  } }\n}\n";
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let b = shell.scene.of_kind(NodeKind::Box)[0];
+    let mut run = |n: i64| {
+        let items = (0..n).map(Value::int).collect();
+        shell.inst.set_value("t", "xs", Value::list(items)).unwrap();
+        shell.inst.set_value("t", "total", Value::int(0)).unwrap();
+        shell.flush();
+        let start = std::time::Instant::now();
+        assert!(shell.inst.event(b, "click", Vec::new()));
+        let u = shell.flush();
+        let took = start.elapsed();
+        assert!(u.errors.is_empty(), "{:?}", u.errors);
+        // Σ (x + 1) twice, plus 1 per item for the lambda's `+ base`.
+        let want = n * (n + 1) + n;
+        assert_eq!(shell.inst.value_of("t", "total").unwrap(), Value::int(want));
+        took
+    };
+    let small = run(5_000);
+    let large = run(20_000);
+    assert!(
+        large < small * 10 + std::time::Duration::from_millis(50),
+        "4x the items took {:?} vs {:?}",
+        large,
+        small
+    );
+    assert!(large < std::time::Duration::from_secs(3), "{large:?}");
+}
+
+/// design.md's notification stack names its chain in a `let` (`let shown
+/// = notifications.popups.filter(…).take(5)`, then `for n in shown` and
+/// `open: shown.len > 0`): the `let` is one incremental view, so a new
+/// notification runs the filter once, for itself, and is one diff from
+/// the service to the scene, with no rebuild.
+#[test]
+fn a_let_chain_is_one_incremental_view() {
+    let files = [fixture("toasts.strand")];
+    let mut shell = boot(&refs(&files), desktop);
+    assert!(
+        shell.scene.find_text("Mail · New message").is_some(),
+        "{}",
+        shell.scene.render()
+    );
+    let many: Vec<Value> = (1..=200)
+        .map(|i| notification(&shell.host, i, "App", &format!("n{i}"), "normal"))
+        .collect();
+    shell
+        .host
+        .set(&shell.rt, "notifications.popups", Value::list(many.clone()))
+        .unwrap();
+    shell.flush();
+    assert!(shell.scene.find_text("App · n5").is_some());
+    assert!(shell.scene.find_text("App · n6").is_none(), "take(5)");
+    let n1 = shell.text_node("App · n1");
+    let (rebuilds, calls) = (shell.rt.stats().rebuilds, shell.inst.lambda_calls());
+    // One more at the end: the filter runs for it alone, `take` drops it.
+    let mut more = many.clone();
+    more.push(notification(&shell.host, 201, "App", "n201", "normal"));
+    shell
+        .host
+        .set(&shell.rt, "notifications.popups", Value::list(more.clone()))
+        .unwrap();
+    let u = shell.flush();
+    assert_eq!(shell.rt.stats().rebuilds, rebuilds, "one diff, no rebuild");
+    assert_eq!(shell.inst.lambda_calls() - calls, 1, "the new item only");
+    assert!(u.diff.is_empty(), "{:?}", u.diff);
+    // One at the front: shown, the others keep their nodes.
+    more.insert(0, notification(&shell.host, 0, "App", "n0", "normal"));
+    let calls = shell.inst.lambda_calls();
+    shell
+        .host
+        .set(&shell.rt, "notifications.popups", Value::list(more))
+        .unwrap();
+    shell.flush();
+    assert_eq!(shell.rt.stats().rebuilds, rebuilds);
+    assert_eq!(shell.inst.lambda_calls() - calls, 1);
+    assert!(shell.scene.find_text("App · n0").is_some());
+    assert!(shell.scene.find_text("App · n5").is_none());
+    assert_eq!(
+        shell.text_node("App · n1"),
+        n1,
+        "kept rows keep their nodes"
+    );
+    // `dnd` is the filter's parameter: changing it rebuilds the view.
+    shell.inst.set("toasts.dnd", Value::Bool(true)).unwrap();
+    shell.flush();
+    assert!(shell.scene.find_text("App · n0").is_none());
+}
+
+/// A timer runs one handler at a time: a fire while the last run is
+/// still suspended at an `await` is skipped, so a slow (or never
+/// settling) `await` neither piles up runs nor lets an older run write
+/// after a newer one.
+#[test]
+fn a_timer_skips_fires_while_its_last_run_awaits() {
+    let src = "state started = 0\nstate done = 0\nstate stuck = 0\nevery 1s { started += 1\n  await sleep(5s)\n  done += 1 }\nevery 1s { stuck += 1\n  await sleep(100000s) }\n";
+    let mut shell = boot(&[("t.strand", src)], |_, _| {});
+    let get = |shell: &Shell, n: &str| shell.inst.value_of("t", n).unwrap().as_f64().unwrap();
+    let mut nodes_at_20 = 0;
+    for s in 1..=200 {
+        let u = shell.at(f64::from(s));
+        assert!(u.errors.is_empty(), "{:?}", u.errors);
+        let (started, done) = (get(&shell, "started"), get(&shell, "done"));
+        assert!(
+            started - done <= 1.0,
+            "one run at a time: {started} vs {done}"
+        );
+        if s == 20 {
+            nodes_at_20 = shell.rt.stats().nodes;
+        }
+    }
+    assert_eq!(get(&shell, "stuck"), 1.0, "the stuck run is never doubled");
+    let started = get(&shell, "started");
+    assert!((30.0..=40.0).contains(&started), "{started}");
+    assert!(
+        shell.rt.stats().nodes <= nodes_at_20 + 2,
+        "{} vs {nodes_at_20}",
+        shell.rt.stats().nodes
+    );
+}
+
+/// A `for` whose keys collide and an `if` whose condition fails at mount
+/// are reported once each, located (file, span, scope), not again
+/// without a location.
+#[test]
+fn mount_failures_are_reported_once_located() {
+    let src = "state zero = 0\nbar B {\n  for n in notifications.popups key n.app.name { text n.summary }\n  if 1 / zero > 0 { text \"x\" }\n}\n";
+    let mut map = SourceMap::new();
+    map.add("t.strand", src.to_string());
+    let compiled = strand_compiler::compile(&map);
+    assert_eq!(compiled.errors(), 0, "{:#?}", compiled.diagnostics);
+    let program = Arc::new(lower::lower(
+        &compiled.program,
+        strand_compiler::schema::Schema::builtin(),
+    ));
+    let rt = Runtime::new();
+    let host = Rc::new(SchemaHost::mock(&rt, &program.types));
+    screens(&rt, &host, &["DP-1"]);
+    let a = notification(&host, 1, "Mail", "one", "normal");
+    let b = notification(&host, 2, "Mail", "two", "normal");
+    host.set(&rt, "notifications.popups", Value::list(vec![a, b]))
+        .unwrap();
+    let inst = Instance::new(&rt, program, host.clone(), Storage::none());
+    let u = inst.flush();
+    assert_eq!(u.errors.len(), 2, "{:#?}", u.errors);
+    for e in &u.errors {
+        assert!(e.file.is_some() && e.span.is_some(), "{e:#?}");
+    }
+    let whats: Vec<&str> = u.errors.iter().map(|e| e.what.as_str()).collect();
+    assert!(whats.iter().any(|w| w.starts_with("for n in")), "{whats:?}");
+    assert!(whats.iter().any(|w| w.starts_with("if in")), "{whats:?}");
+}

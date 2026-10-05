@@ -390,3 +390,31 @@ fn lambdas_take_named_arguments() {
     assert_eq!(get(&inst, "y"), Value::text("x:1"));
     assert_eq!(get(&inst, "z"), Value::text("w:2"));
 }
+
+/// Time signals do not animate before the renderer evaluates them (M4):
+/// a read of `t`, `wave(…)` or `noise(…)` is warned about once per name,
+/// at its first use, and reported once as a notice in the boot tick.
+#[test]
+fn time_signals_are_warned_about_once() {
+    let src = "let a = t * 2\nlet b = t + 1\nlet c = 10 * wave(2s)\nlet d = noise(3)\n";
+    let mut map = SourceMap::new();
+    map.add("t.strand", src.to_string());
+    let c = strand_compiler::compile(&map);
+    assert_eq!(c.errors(), 0, "{:#?}", c.diagnostics);
+    let p = Arc::new(lower::lower(
+        &c.program,
+        strand_compiler::schema::Schema::builtin(),
+    ));
+    let codes: Vec<_> = p.warnings.iter().map(|d| d.code).collect();
+    assert_eq!(codes, ["lower::time_signal"; 3], "{:#?}", p.warnings);
+    let first_t = p.warnings[0].primary_span().unwrap();
+    assert_eq!(&src[first_t.start as usize..first_t.end as usize], "t");
+    assert_eq!(first_t.start, 8, "the first `t`");
+    let rt = Runtime::new();
+    let host = Rc::new(SchemaHost::mock(&rt, &p.types));
+    let inst = Instance::new(&rt, p, host, strand_compiler::instantiate::Storage::none());
+    let u = inst.flush();
+    assert_eq!(u.notices.len(), 3, "{:?}", u.notices);
+    assert!(u.notices[0].contains("`t` reads 0"), "{:?}", u.notices);
+    assert!(inst.flush().notices.is_empty(), "once");
+}

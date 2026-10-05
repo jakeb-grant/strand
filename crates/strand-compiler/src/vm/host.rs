@@ -135,12 +135,15 @@ pub trait ServiceHost {
 
     /// A component (or surface, or the config) reading `service` was
     /// mounted, or a surface reading it was shown: the service starts on
-    /// its first reader (design.md, "Lifecycle").
-    fn acquire(&self, _service: &str) {}
+    /// its first reader (design.md, "Lifecycle"). `rt` lets a host create
+    /// the service's cells lazily, on this first reader.
+    fn acquire(&self, _rt: &Runtime, _service: &str) {}
 
     /// The matching unmount or hide: the service stops 5 s after its last
-    /// reader leaves or goes invisible.
-    fn release(&self, _service: &str) {}
+    /// reader leaves or goes invisible (a host arms that delay with core's
+    /// timers on `rt`). Called during scope cleanup too, so a host must
+    /// not dispose nodes synchronously from here.
+    fn release(&self, _rt: &Runtime, _service: &str) {}
 
     /// The next wall-clock time the host loop must wake for (the next
     /// minute boundary while a clock is shown); `None` when nothing is

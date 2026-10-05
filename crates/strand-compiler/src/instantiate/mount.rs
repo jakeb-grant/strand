@@ -178,7 +178,11 @@ impl Ctx {
             Node::Element(e) => self.mount_element(rt, e, env, frag, Vec::new()),
             Node::Surface(s) => self.mount_surface(rt, s, env, frag),
             Node::If {
-                cond, then, else_, ..
+                cond,
+                then,
+                else_,
+                file,
+                span,
             } => self.mount_switch(
                 rt,
                 *cond,
@@ -186,10 +190,22 @@ impl Ctx {
                 true,
                 env,
                 frag,
+                (*file, *span),
             ),
-            Node::Match { selector, arms, .. } => {
-                self.mount_switch(rt, *selector, arms.clone(), false, env, frag)
-            }
+            Node::Match {
+                selector,
+                arms,
+                file,
+                span,
+            } => self.mount_switch(
+                rt,
+                *selector,
+                arms.clone(),
+                false,
+                env,
+                frag,
+                (*file, *span),
+            ),
             Node::For(f) => self.mount_for(rt, f, env, frag),
             Node::Slot => {
                 let mut cur = Some(env.clone());
@@ -251,15 +267,55 @@ impl Ctx {
             };
             rt.set_name(m.id(), self.vm.prog.def(def).name.as_str());
             env.bind_def(def, Slot::Memo(m));
-            made.push((m.id(), value));
+            made.push((def, m, value));
         }
         for s in states {
             self.declare_state(rt, s, env);
         }
+        // View `let`s (`let shown = notifications.popups.filter(…)
+        // .take(5)`) become core's incremental views now that the keyed
+        // states they start from are bound, a view over another view of
+        // this body after it; the plain memo bound above stays only for a
+        // view this cannot build. A view declares its own edges.
+        let prog = self.vm.prog.clone();
+        let mut pending: Vec<DefId> = made
+            .iter()
+            .map(|(d, _, _)| *d)
+            .filter(|d| prog.let_chains.contains_key(d))
+            .collect();
+        let mut viewed = Vec::new();
+        while !pending.is_empty() {
+            let ready: Vec<DefId> = pending
+                .iter()
+                .copied()
+                .filter(|d| match prog.let_chains.get(d).map(|c| &c.root) {
+                    Some(crate::lower::ChainRoot::Def(r)) => !pending.contains(r),
+                    _ => true,
+                })
+                .collect();
+            if ready.is_empty() {
+                break;
+            }
+            pending.retain(|d| !ready.contains(d));
+            for d in ready {
+                if let Some(view) = self.let_view(rt, d, env) {
+                    let list = rt.memo(move |rt| view.with(rt, crate::vm::value::list_of_items));
+                    let _ = rt.reads_from(list.id(), &[view.id()]);
+                    rt.set_name(list.id(), prog.def(d).name.as_str());
+                    env.bind_def(d, Slot::View(view, list));
+                    viewed.push(d);
+                }
+            }
+        }
         // Every name of the body is bound now: declare what each `let`
         // reads (a `let` may read one declared after it).
-        for (id, value) in made {
-            self.declare_reads(rt, id, &[value], env, &[]);
+        for (d, id, value) in made {
+            if viewed.contains(&d) {
+                // Never read: the view took its place.
+                id.dispose(rt);
+                continue;
+            }
+            self.declare_reads(rt, id.id(), &[value], env, &[]);
         }
     }
 
@@ -561,7 +617,13 @@ impl Ctx {
             rt.set_name(s.id(), format!("{path}.{n}"));
         }
         let slot = Rc::new(crate::vm::SettingsSlot { fields, handle });
-        self.settings.borrow_mut().push(Rc::downgrade(&slot));
+        {
+            // Settings declared in a component or branch that was
+            // unmounted since leave dead entries: drop them first.
+            let mut all = self.settings.borrow_mut();
+            all.retain(|w| w.strong_count() > 0);
+            all.push(Rc::downgrade(&slot));
+        }
         let (sl, names): (Rc<crate::vm::SettingsSlot>, Vec<String>) = (
             slot.clone(),
             rec.fields.iter().map(|f| f.name.clone()).collect(),
@@ -748,7 +810,7 @@ impl Ctx {
                 return;
             }
             if is_open {
-                me.set_held(token, true);
+                me.set_held(rt, token, true);
                 if blocked.replace(false) {
                     me.block_services(rt, block.id(), false);
                 }
@@ -769,7 +831,7 @@ impl Ctx {
                         me.block_services(rt, block.id(), true);
                     }
                 }
-                me.set_held(token, false);
+                me.set_held(rt, token, false);
                 if prev.is_some() {
                     me.route(rt, ec.scene, "hide", Vec::new());
                 }
@@ -1021,6 +1083,7 @@ impl Ctx {
     /// selector gives an arm index): mounts the chosen branch now and
     /// swaps branches when the selector changes. A swapped-out branch is
     /// removed (render plays its `exit`) and its scope disposed.
+    #[allow(clippy::too_many_arguments)]
     fn mount_switch(
         self: &Rc<Self>,
         rt: &Runtime,
@@ -1029,6 +1092,7 @@ impl Ctx {
         two: bool,
         env: &Rc<Env>,
         parent: FragId,
+        at: (crate::source::FileId, crate::syntax::Span),
     ) {
         let frag = self.em.borrow_mut().new_frag(Some(parent), None);
         let (block, ()) = rt.scope(|_| ());
@@ -1061,25 +1125,31 @@ impl Ctx {
                 }
             })
         };
-        match rt.untrack(|rt| pick(rt)) {
-            Ok(which) => {
-                show(rt, which);
-                current.set(Some(which));
-            }
-            Err(e) => self.error("if/match", e),
+        // A failing first pick is not reported here: the effect below
+        // runs it again in this flush and reports it, located.
+        if let Ok(which) = rt.untrack(|rt| pick(rt)) {
+            show(rt, which);
+            current.set(Some(which));
         }
-        if let Ok(effect) = rt.with_owner(block.id(), |rt| {
-            rt.effect(move |rt| {
+        let what = format!(
+            "{} in {}",
+            if two { "if" } else { "match" },
+            self.module_of(at.0)
+        );
+        let env2 = env.clone();
+        let _ = rt.with_owner(block.id(), |rt| {
+            let effect = rt.effect(move |rt| {
                 let which = pick(rt)?;
                 if current.get() != Some(which) {
                     rt.untrack(|rt| show(rt, which));
                     current.set(Some(which));
                 }
                 Ok(())
-            })
-        }) {
-            self.declare_reads(rt, effect.id(), &[selector], env, &[]);
-        }
+            });
+            rt.set_name(effect.id(), what.as_str());
+            self.declare_reads(rt, effect.id(), &[selector], &env2, &[]);
+            self.site(rt, effect.id(), what, at.0, at.1, &env2, None);
+        });
     }
 
     /// A keyed list of instances: `for` items and per-monitor bars. Items
@@ -1314,7 +1384,9 @@ impl Ctx {
                 version.set(Some(v));
             }
             Ok(None) => {}
-            Err(e) => self.error(what.as_str(), e),
+            // The effect below reads again in this flush and reports
+            // the failure, located: not twice.
+            Err(_) => {}
         }
         let env2 = env.clone();
         let _ = rt.with_owner(block.id(), |rt| {
@@ -1583,7 +1655,7 @@ impl Ctx {
         services: &std::collections::BTreeSet<String>,
     ) {
         let token = self.hold(rt, Arc::new(services.clone()));
-        self.set_held(token, true);
+        self.set_held(rt, token, true);
     }
 
     /// Register the services a scope (the current owner) reads, not yet
@@ -1621,15 +1693,15 @@ impl Ctx {
                 acquired: false,
             },
         );
-        let weak = Rc::downgrade(self);
+        let (weak, wrt) = (Rc::downgrade(self), rt.downgrade());
         rt.on_cleanup(move || {
-            if let Some(ctx) = weak.upgrade() {
+            if let (Some(ctx), Some(rt)) = (weak.upgrade(), wrt.upgrade()) {
                 let gone = ctx.holds.borrow_mut().remove(&token);
                 if let Some(h) = gone
                     && h.acquired
                 {
                     for s in h.services.iter() {
-                        ctx.vm.host.release(s);
+                        ctx.vm.host.release(&rt, s);
                     }
                 }
             }
@@ -1638,7 +1710,7 @@ impl Ctx {
     }
 
     /// Acquire or release so a hold matches what it wants and its blocks.
-    fn sync_hold(&self, h: &mut super::Hold) {
+    fn sync_hold(&self, rt: &Runtime, h: &mut super::Hold) {
         let should = h.want && h.blocks == 0;
         if should == h.acquired {
             return;
@@ -1646,19 +1718,19 @@ impl Ctx {
         h.acquired = should;
         for s in h.services.iter() {
             if should {
-                self.vm.host.acquire(s);
+                self.vm.host.acquire(rt, s);
             } else {
-                self.vm.host.release(s);
+                self.vm.host.release(rt, s);
             }
         }
     }
 
     /// Hold (`true`) or let go of a registered scope's services.
-    pub(crate) fn set_held(&self, token: u64, on: bool) {
+    pub(crate) fn set_held(&self, rt: &Runtime, token: u64, on: bool) {
         let mut holds = self.holds.borrow_mut();
         if let Some(h) = holds.get_mut(&token) {
             h.want = on;
-            self.sync_hold(h);
+            self.sync_hold(rt, h);
         }
     }
 
@@ -1697,7 +1769,7 @@ impl Ctx {
             } else {
                 h.blocks = h.blocks.saturating_sub(1);
             }
-            self.sync_hold(h);
+            self.sync_hold(rt, h);
         }
         drop(holds);
         // A scope gone for good (a forgotten bar) leaves no block behind.
@@ -2094,10 +2166,18 @@ impl Ctx {
             loc.clone(),
         );
         let el = el.cloned();
+        // A fire while the previous run is still suspended at an `await`
+        // is skipped: one run of a timer at a time, so a slow `await`
+        // neither piles up runs nor lets an older run write after a newer
+        // one (docs/decisions.md, wave2-vm).
+        let last: Rc<Cell<Option<strand_core::Task>>> = Rc::default();
         let run = move |rt: &Runtime| {
+            if last.get().is_some_and(|t| !t.is_finished(rt)) {
+                return Ok(());
+            }
             let ctx = Ctx::event_ctx(el.as_ref(), "timer", Vec::new());
             let fut = vm.handler(rt, body, e.clone(), Frame::new(), ctx);
-            rt.spawn(me.reporting(l.clone(), fut));
+            last.set(Some(rt.spawn(me.reporting(l.clone(), fut))));
             Ok(())
         };
         let timer = match t.kind {
