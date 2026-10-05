@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 07f819c5c67c3355e8f7c1fd9e715e03c56058f2c6feea2e1eae69cf3b8f5434 # shrinks to initial = [(0, None), (1, None), (22, None), (2, None), (23, Some(0.0)), (3, Some(-2.777192599993214)), (80, None), (4, None), (5, None), (6, None), (24, Some(0.0)), (7, None), (8, None), (9, None), (10, Some(-0.2647792714891673)), (11, None), (12, None), (13, None), (14, None), (15, None), (16, None)], muts = []
+cc f69c09305f229f77d81ee12d6a91ace24c1d33fe7d34e0542db43a7b1a66f78b # shrinks to initial = [(6, None), (21, None), (7, None), (0, None), (1, None), (8, None), (9, None), (10, None), (11, None), (2, None), (12, None), (3, None)], muts = [(122, 0, None), (2, 0, None), (7, 25462526784, None), (80, 2929899122124086044, None), (11, 0, None), (2, 0, None), (233, 0, None), (80, 0, None), (0, 0, None), (61, 2120744743104085956, None)]

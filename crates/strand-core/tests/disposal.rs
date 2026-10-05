@@ -409,9 +409,14 @@ fn a_suspended_component_freezes_and_resumes() {
     rt.resume(component.id());
     rt.tick(Duration::from_millis(30));
     assert_eq!(seen.get(&rt), Ok(1));
+    assert_eq!(*got.borrow(), vec![1], "the frozen-time event, once");
+    // Its timer and sleep were paused with all their time left (10 ms and
+    // 5 ms): they count again from the host's first tick after the release.
+    assert_eq!(fired.get(&rt), Ok(0));
+    assert_eq!(resumed.get(&rt), Ok(0));
+    rt.tick(Duration::from_millis(40));
     assert_eq!(fired.get(&rt), Ok(1));
     assert_eq!(resumed.get(&rt), Ok(1));
-    assert_eq!(*got.borrow(), vec![1], "the frozen-time event, once");
     clicks.emit(&rt, ()).unwrap();
     notices.emit(&rt, 2).unwrap();
     rt.flush();
@@ -473,23 +478,33 @@ fn service_events_wait_for_a_frozen_listener_without_delaying_others() {
 }
 
 #[test]
-fn resume_wakes_the_host_for_held_work_and_overdue_timers() {
+fn a_frozen_timer_pauses_like_a_false_condition() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
     let rt = Runtime::new();
     let fired = rt.signal(0);
+    let ticks = rt.signal(0);
     let (component, _) = rt.scope(|rt| {
         rt.after(
             Duration::from_millis(110),
             |_| Ok(true),
             move |rt| fired.set(rt, 1),
+        );
+        rt.every(
+            Duration::from_millis(50),
+            |_| Ok(true),
+            move |rt| ticks.update(rt, |t| *t += 1),
         )
     });
     rt.flush();
+    rt.tick(Duration::from_millis(60));
+    assert_eq!(ticks.get(&rt), Ok(1));
     rt.suspend(component.id()).unwrap();
-    rt.tick(Duration::from_millis(200));
+    // Frozen for most of a minute: nothing counts, nothing is scheduled.
+    rt.tick(Duration::from_millis(50_000));
     assert_eq!(fired.get(&rt), Ok(0));
+    assert_eq!(ticks.get(&rt), Ok(1));
     assert_eq!(rt.next_deadline(), None);
     let woke = Arc::new(AtomicUsize::new(0));
     let w = woke.clone();
@@ -500,11 +515,207 @@ fn resume_wakes_the_host_for_held_work_and_overdue_timers() {
     assert_eq!(
         woke.load(Ordering::SeqCst),
         1,
-        "an overdue timer wakes the host"
+        "released timers wait for the host's clock: the host is woken"
     );
-    assert!(rt.next_deadline().is_some_and(|d| d <= rt.now()));
-    rt.tick(Duration::from_millis(200));
+    assert_eq!(rt.next_deadline(), None, "no deadline from a stale clock");
+    // The host ticks with its time; counting starts there. 60 ms were
+    // counted before the freeze: 50 ms of the `after` and 40 ms of the
+    // `every`'s period are left.
+    rt.tick(Duration::from_millis(50_000));
+    assert_eq!(rt.next_deadline(), Some(Duration::from_millis(50_040)));
+    rt.tick(Duration::from_millis(50_049));
+    assert_eq!(ticks.get(&rt), Ok(2));
+    assert_eq!(fired.get(&rt), Ok(0));
+    rt.tick(Duration::from_millis(50_050));
+    assert_eq!(fired.get(&rt), Ok(1), "fires 110 ms of unfrozen time in");
+}
+
+#[test]
+fn a_timer_created_or_restarted_while_frozen_waits_for_the_release() {
+    use std::time::Duration;
+    let rt = Runtime::new();
+    let x = rt.signal(0);
+    let fired = rt.signal(0);
+    let (component, _) = rt.scope(|_| ());
+    rt.suspend(component.id()).unwrap();
+    component
+        .run(&rt, |rt| {
+            rt.after(
+                Duration::from_millis(10),
+                |_| Ok(true),
+                move |rt| fired.update(rt, |f| *f += 1),
+            );
+            let d = rt.on_change_after(
+                move |rt| x.get(rt),
+                Duration::from_millis(10),
+                move |rt| fired.update(rt, |f| *f += 10),
+            );
+            d.timer.restart(rt).unwrap();
+        })
+        .unwrap();
+    rt.flush();
+    rt.tick(Duration::from_millis(100));
+    assert_eq!(fired.get(&rt), Ok(0));
+    assert_eq!(rt.next_deadline(), None);
+    rt.resume(component.id());
+    rt.tick(Duration::from_millis(100));
+    assert_eq!(rt.next_deadline(), Some(Duration::from_millis(110)));
+    rt.tick(Duration::from_millis(110));
+    assert_eq!(fired.get(&rt), Ok(11));
+}
+
+#[test]
+fn a_timer_released_while_the_host_slept_counts_from_the_hosts_clock() {
+    // `after 5s` in a component; 1 s counted, then frozen while the host
+    // sleeps (no ticks: the logic clock stands still), released, and the
+    // host's next tick comes at 100 s. 4 s are left from there.
+    use std::time::Duration;
+    const S: Duration = Duration::from_secs(1);
+    let rt = Runtime::new();
+    let fired = rt.signal(0);
+    let (component, _) = rt.scope(|rt| {
+        rt.after(5 * S, |_| Ok(true), move |rt| fired.set(rt, 1));
+    });
+    rt.tick(Duration::ZERO);
+    rt.tick(S);
+    rt.suspend(component.id()).unwrap();
+    rt.resume(component.id());
+    assert_eq!(rt.next_deadline(), None, "never a deadline in the past");
+    rt.tick(100 * S);
+    assert_eq!(fired.get(&rt), Ok(0), "frozen time is not counted");
+    assert_eq!(rt.next_deadline(), Some(104 * S));
+    rt.tick(104 * S - Duration::from_millis(1));
+    assert_eq!(fired.get(&rt), Ok(0));
+    rt.tick(104 * S);
     assert_eq!(fired.get(&rt), Ok(1));
+}
+
+#[test]
+fn await_sleep_in_a_frozen_handler_pauses_too() {
+    // on show { await sleep(5s); n.expire() }, frozen 1 s in for a minute.
+    use std::time::Duration;
+    const S: Duration = Duration::from_secs(1);
+    let rt = Runtime::new();
+    let expired = rt.signal(false);
+    let weak = rt.downgrade();
+    let (component, _) = rt.scope(|rt| {
+        rt.spawn(async move {
+            if let Some(rt) = weak.upgrade() {
+                rt.sleep(5 * S).await;
+                expired.set(&rt, true)?;
+            }
+            Ok(())
+        })
+    });
+    rt.tick(Duration::ZERO);
+    assert_eq!(rt.next_deadline(), Some(5 * S));
+    rt.tick(S);
+    rt.suspend(component.id()).unwrap();
+    assert_eq!(rt.next_deadline(), None, "a frozen sleep schedules nothing");
+    rt.tick(60 * S);
+    assert_eq!(expired.get(&rt), Ok(false));
+    rt.resume(component.id());
+    rt.tick(61 * S);
+    assert_eq!(expired.get(&rt), Ok(false), "4 s were left at the freeze");
+    assert_eq!(rt.next_deadline(), Some(65 * S));
+    rt.tick(65 * S);
+    assert_eq!(expired.get(&rt), Ok(true));
+}
+
+#[test]
+fn a_frozen_listener_keeps_a_bounded_backlog_and_counts_what_it_dropped() {
+    use strand_core::{Diagnostic, MAX_FROZEN_EVENTS};
+    let rt = Runtime::new();
+    let notices = rt.events::<usize>();
+    let got = Rc::new(RefCell::new(Vec::new()));
+    let g = got.clone();
+    let (component, listener) = rt.scope(|rt| {
+        notices
+            .on(rt, move |_, &n| {
+                g.borrow_mut().push(n);
+                Ok(())
+            })
+            .unwrap()
+    });
+    rt.suspend(component.id()).unwrap();
+    let total = MAX_FROZEN_EVENTS + 44;
+    for n in 0..total {
+        notices.emit(&rt, n).unwrap();
+        // Delivered one flush at a time, as a chatty service would.
+        let tick = rt.flush();
+        assert!(tick.diagnostics.is_empty());
+    }
+    assert!(got.borrow().is_empty());
+    rt.resume(component.id());
+    let tick = rt.flush();
+    assert_eq!(
+        tick.diagnostics,
+        vec![Diagnostic::EventsDropped {
+            queue: notices.id(),
+            listener,
+            dropped: 44,
+        }]
+    );
+    // The newest MAX_FROZEN_EVENTS, in order, once.
+    assert_eq!(*got.borrow(), (44..total).collect::<Vec<_>>());
+    notices.emit(&rt, total).unwrap();
+    let tick = rt.flush();
+    assert!(tick.diagnostics.is_empty(), "reported once");
+    assert_eq!(got.borrow().len(), MAX_FROZEN_EVENTS + 1);
+}
+
+#[test]
+fn a_frozen_listener_disposed_by_a_reload_still_reports_what_it_lost() {
+    use strand_core::{Diagnostic, MAX_FROZEN_EVENTS};
+    let rt = Runtime::new();
+    let notices = rt.events::<usize>();
+    let (component, listener) = rt.scope(|rt| notices.on(rt, |_, _| Ok(())).unwrap());
+    rt.suspend(component.id()).unwrap();
+    for n in 0..MAX_FROZEN_EVENTS + 3 {
+        notices.emit(&rt, n).unwrap();
+        rt.flush();
+    }
+    // The fixing reload replaces the component instead of resuming it.
+    component.dispose(&rt);
+    let tick = rt.flush();
+    assert_eq!(
+        tick.diagnostics,
+        vec![Diagnostic::EventsDropped {
+            queue: notices.id(),
+            listener,
+            dropped: 3,
+        }]
+    );
+    notices.emit(&rt, 0).unwrap();
+    assert!(rt.flush().diagnostics.is_empty(), "reported once");
+}
+
+#[test]
+fn frozen_state_coalesces_to_its_latest_value() {
+    let rt = Runtime::new();
+    let x = rt.signal(0);
+    let runs = Rc::new(RefCell::new(Vec::new()));
+    let r = runs.clone();
+    let (component, _) = rt.scope(|rt| {
+        rt.effect(move |rt| {
+            r.borrow_mut().push(x.get(rt)?);
+            Ok(())
+        })
+    });
+    rt.flush();
+    rt.suspend(component.id()).unwrap();
+    for v in 1..=1_000 {
+        x.set(&rt, v).unwrap();
+        rt.flush();
+    }
+    assert_eq!(rt.held().len(), 1, "held once, however often it is woken");
+    rt.resume(component.id());
+    rt.flush();
+    assert_eq!(
+        *runs.borrow(),
+        vec![0, 1_000],
+        "one run with the latest value"
+    );
 }
 
 #[test]

@@ -175,6 +175,90 @@ proptest! {
     }
 
     #[test]
+    fn keyed_diff_moves_the_fewest_items(
+        keys in prop::sample::subsequence((0u16..300).collect::<Vec<_>>(), 0..120),
+        dropped in prop::collection::vec(any::<prop::sample::Index>(), 0..20),
+        added in prop::collection::vec(300u16..400, 0..20),
+        order in any::<u64>(),
+        values in any::<u64>(),
+    ) {
+        let old: Vec<(u16, u64)> = keys.iter().map(|&k| (k, 0)).collect();
+        let mut new: Vec<(u16, u64)> = old.clone();
+        for d in &dropped {
+            if !new.is_empty() {
+                new.remove(d.index(new.len()));
+            }
+        }
+        for (i, &k) in added.iter().enumerate() {
+            if !new.iter().any(|(x, _)| *x == k) {
+                let at = (order as usize).wrapping_add(i * 31) % (new.len() + 1);
+                new.insert(at, (k, 0));
+            }
+        }
+        // Reorder a window and change some values.
+        let n = new.len();
+        if n > 1 {
+            let a = (order % n as u64) as usize;
+            let b = ((order >> 20) % n as u64) as usize;
+            let (lo, hi) = (a.min(b), a.max(b));
+            new[lo..=hi].reverse();
+            if order & 1 == 1 {
+                new.rotate_left(((order >> 40) % n as u64) as usize);
+            }
+        }
+        for (i, item) in new.iter_mut().enumerate() {
+            item.1 = (values >> (i % 64)) & 1;
+        }
+        let diffs = keyed_diff(&old, &new);
+        let mut cur = old.clone();
+        for d in &diffs {
+            d.apply(&mut cur).map_err(|e| TestCaseError::fail(format!("{e}: {d:?}")))?;
+        }
+        prop_assert_eq!(&cur, &new);
+        // Survivors in old order, as positions in `new`.
+        let kept: Vec<usize> = old
+            .iter()
+            .filter_map(|(k, _)| new.iter().position(|(x, _)| x == k))
+            .collect();
+        let mut lis: Vec<usize> = Vec::new();
+        for &v in &kept {
+            let l = lis.partition_point(|&t| t < v);
+            if l == lis.len() { lis.push(v) } else { lis[l] = v }
+        }
+        let moves = diffs.iter().filter(|d| matches!(d, VecDiff::Move { .. })).count();
+        prop_assert_eq!(moves, kept.len() - lis.len());
+        let removes = diffs.iter().filter(|d| matches!(d, VecDiff::Remove { .. })).count();
+        prop_assert_eq!(removes, old.len() - kept.len());
+        let inserts = diffs.iter().filter(|d| matches!(d, VecDiff::Insert { .. })).count();
+        prop_assert_eq!(inserts, new.len() - kept.len());
+    }
+
+    #[test]
+    fn key_lookups_match_a_scan(
+        muts in prop::collection::vec(mut_strategy(), 0..60),
+        probes in prop::collection::vec(0u8..40, 1..8),
+        clone_at in any::<usize>(),
+    ) {
+        let mut v = KeyedVec::new(|x: &Item| x.0);
+        let mut other: Option<KeyedVec<u8, Item>> = None;
+        for (step, m) in muts.iter().enumerate() {
+            mutate(&mut v, m);
+            // A clone shares the index until one of them mutates.
+            if step == clone_at % (muts.len().max(1)) {
+                other = Some(v.clone());
+            }
+            for vec in std::iter::once(&v).chain(other.as_ref()) {
+                for k in &probes {
+                    let scan = vec.items().iter().position(|(x, _)| x == k);
+                    prop_assert_eq!(vec.index_of(k), scan);
+                    prop_assert_eq!(vec.get(k), scan.map(|i| &vec.items()[i].1));
+                    prop_assert_eq!(vec.contains_key(k), scan.is_some());
+                }
+            }
+        }
+    }
+
+    #[test]
     fn reactive_chain_matches_naive(
         muts in prop::collection::vec(mut_strategy(), 0..30),
         flips in prop::collection::vec(any::<bool>(), 30),
@@ -239,6 +323,22 @@ fn keyed_vec_rejects_bad_operations() {
     assert_eq!(v.get(&1), Some(&(1, 10)), "reverted");
     assert_eq!(v.update(&1, |x| x.1 = 10), Ok(None), "unchanged value");
     assert_eq!(v.move_key(&1, 0), Ok(None));
+}
+
+#[test]
+fn reading_a_collection_inside_its_own_update_is_an_error_value() {
+    // The VM evaluating `xs.len` inside an `update` closure must not crash
+    // the logic thread.
+    let rt = Runtime::new();
+    let xs = rt.keyed(KeyedVec::from_values(|v: &Item| v.0, [(1, 1), (2, 2)]).unwrap());
+    let mut seen = None;
+    xs.update(&rt, &1, |v| {
+        seen = Some(xs.get_untracked(&rt).map(|l| l.len()));
+        v.1 = 5;
+    })
+    .unwrap();
+    assert_eq!(seen, Some(Err(strand_core::Error::Reentrant)));
+    assert_eq!(xs.get_key(&rt, &1).unwrap(), Some((1, 5)));
 }
 
 #[test]
@@ -558,4 +658,22 @@ fn a_fast_changing_keyed_memo_is_not_rate_throttled() {
         assert_eq!(bars.snapshot(&rt).unwrap().items()[7], (7, (7, i + 7)));
     }
     assert_eq!(rt.next_deadline(), None);
+}
+
+#[test]
+fn a_key_index_left_past_the_end_by_removals_still_finds_its_item() {
+    let mut v = KeyedVec::from_values(|x: &Item| x.0, (0..10).map(|k| (k, 0))).unwrap();
+    // The last item's entry says 9; six removals before it leave it at 3.
+    for k in 0..6 {
+        v.remove_key(&k).unwrap();
+    }
+    assert_eq!(v.index_of(&9), Some(3));
+    assert_eq!(v.get(&9), Some(&(9, 0)));
+    assert_eq!(v.index_of(&0), None);
+    // Inserts before an item shift it the other way.
+    for k in 20..25 {
+        v.insert(0, (k, 1)).unwrap();
+    }
+    assert_eq!(v.index_of(&8), Some(7));
+    assert!(v.push((8, 2)).is_err(), "still a duplicate");
 }

@@ -437,10 +437,11 @@ fn a_runtime_cycle_is_parked_not_retried_every_tick() {
 }
 
 #[test]
-fn wide_fan_in_from_effect_chains_is_not_a_cycle() {
+fn wide_fan_in_from_effect_chains_runs_once_per_flush() {
     // `sum` reads 40 cells, each written by a chain of effects created in
-    // reverse order, so `sum` re-runs once per hop: more than
-    // MAX_RUNS_PER_FLUSH runs, but no feedback path.
+    // reverse order (creation order is the worst order). The first flush
+    // learns the write edges without a false cycle; after it, one outside
+    // write runs every effect once, in topological order.
     let rt = Runtime::new();
     let n = 40;
     let cells: Vec<_> = (0..=n).map(|_| rt.signal(0)).collect();
@@ -448,7 +449,7 @@ fn wide_fan_in_from_effect_chains_is_not_a_cycle() {
     let runs = Rc::new(RefCell::new(0));
     let r = runs.clone();
     let sum = rt.signal(0);
-    rt.effect(move |rt| {
+    let summer = rt.effect(move |rt| {
         *r.borrow_mut() += 1;
         let mut s = 0;
         for c in &cs[1..] {
@@ -463,13 +464,21 @@ fn wide_fan_in_from_effect_chains_is_not_a_cycle() {
             to.set(rt, v)
         });
     }
-    rt.flush();
-    *runs.borrow_mut() = 0;
     cells[0].set(&rt, 1).unwrap();
     let tick = rt.flush();
     assert!(tick.errors.is_empty(), "{:?}", tick.errors);
     assert_eq!(sum.get(&rt), Ok(n as i32));
-    assert!(*runs.borrow() > MAX_RUNS_PER_FLUSH as usize);
+    assert!(*runs.borrow() <= 2, "{} runs while learning", runs.borrow());
+    assert_eq!(rt.rank(summer.id()), n as u32, "after the whole chain");
+    for v in 2..5 {
+        *runs.borrow_mut() = 0;
+        cells[0].set(&rt, v).unwrap();
+        let tick = rt.flush();
+        assert!(tick.errors.is_empty(), "{:?}", tick.errors);
+        assert_eq!(sum.get(&rt), Ok(v * n as i32));
+        assert_eq!(*runs.borrow(), 1, "once, after every writer");
+        assert_eq!(tick.effects_run, n + 1, "every effect once");
+    }
 }
 
 #[test]

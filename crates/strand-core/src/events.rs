@@ -16,7 +16,12 @@
 //! an input queue ([`Runtime::input_events`]) are dropped for it (a frozen
 //! component ignores clicks); events of any other queue are kept for it, in
 //! order, and delivered once it is released ([`Runtime::resume`], or moved
-//! out of the frozen scope), so a service event is never lost.
+//! out of the frozen scope), so a service event is not lost. The backlog is
+//! bounded: past [`crate::MAX_FROZEN_EVENTS`] per listener the oldest are
+//! dropped and the release reports [`Diagnostic::EventsDropped`] with the
+//! count (also when the listener is disposed instead of released: the
+//! events it still held go with it, the count of those it lost before is
+//! reported). (State needs no bound: a cell keeps only its latest value.)
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -26,7 +31,9 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 
 use crate::error::Error;
-use crate::runtime::{Color, HandlerCtx, NodeData, NodeId, NodeKind, Runtime};
+use crate::runtime::{
+    Color, Diagnostic, HandlerCtx, MAX_FROZEN_EVENTS, NodeData, NodeId, NodeKind, Runtime,
+};
 
 /// A lossless queue of `T` events. Copyable handle.
 pub struct EventQueue<T> {
@@ -53,11 +60,20 @@ struct EventsData<T> {
     /// delivered to the others, without `T: Clone`.
     queue: RefCell<VecDeque<Rc<T>>>,
     listeners: RefCell<Vec<NodeId>>,
-    /// Events kept for suspended listeners of a lossless queue, in order.
-    backlog: RefCell<Vec<(NodeId, VecDeque<Rc<T>>)>>,
+    /// Events kept for suspended listeners of a lossless queue, in order,
+    /// at most [`MAX_FROZEN_EVENTS`] each, with the count dropped.
+    backlog: RefCell<Vec<Backlog<T>>>,
     /// External input (`on click`, `on scroll`): listeners are input
     /// handlers, not counted by the write-rate guard.
     input: bool,
+}
+
+/// What a frozen listener missed.
+struct Backlog<T> {
+    listener: NodeId,
+    events: VecDeque<Rc<T>>,
+    /// Oldest events dropped past [`MAX_FROZEN_EVENTS`].
+    dropped: usize,
 }
 
 struct ListenerData<T> {
@@ -75,6 +91,10 @@ impl<T: 'static> NodeData for EventsData<T> {
         self
     }
 
+    fn downstream(&self) -> Vec<NodeId> {
+        self.listeners.borrow().clone()
+    }
+
     fn deliver(&self, rt: &Runtime, id: NodeId, errors: &mut Vec<(NodeId, Error)>) -> bool {
         let events: Vec<Rc<T>> = match self.queue.try_borrow_mut() {
             Ok(mut q) => q.drain(..).collect(),
@@ -82,14 +102,27 @@ impl<T: 'static> NodeData for EventsData<T> {
         };
         // Released listeners first get what they missed while frozen (it is
         // older than anything queued now).
-        let released: Vec<(NodeId, VecDeque<Rc<T>>)> = {
+        let released: Vec<Backlog<T>> = {
             let Ok(mut backlog) = self.backlog.try_borrow_mut() else {
                 return false;
             };
-            backlog.retain(|(l, _)| rt.exists(*l));
+            // A frozen listener disposed instead of resumed (the reload
+            // replaced its component): what it held is gone; what it had
+            // already lost is still reported.
+            backlog.retain(|b| {
+                let alive = rt.exists(b.listener);
+                if !alive && b.dropped > 0 {
+                    rt.diagnose(Diagnostic::EventsDropped {
+                        queue: id,
+                        listener: b.listener,
+                        dropped: b.dropped,
+                    });
+                }
+                alive
+            });
             let (released, frozen) = std::mem::take(&mut *backlog)
                 .into_iter()
-                .partition(|(l, _)| !rt.is_suspended(*l));
+                .partition(|b| !rt.is_suspended(b.listener));
             *backlog = frozen;
             released
         };
@@ -102,9 +135,16 @@ impl<T: 'static> NodeData for EventsData<T> {
             .flush_writes
             .borrow_mut()
             .extend(self.listeners.borrow().iter().map(|&l| (id, l)));
-        for (l, missed) in released {
-            for ev in missed {
-                self.run_listener(rt, l, &ev, errors);
+        for b in released {
+            if b.dropped > 0 {
+                rt.diagnose(Diagnostic::EventsDropped {
+                    queue: id,
+                    listener: b.listener,
+                    dropped: b.dropped,
+                });
+            }
+            for ev in b.events {
+                self.run_listener(rt, b.listener, &ev, errors);
             }
         }
         for ev in &events {
@@ -150,12 +190,23 @@ impl<T: 'static> EventsData<T> {
         }
     }
 
-    /// Keep `ev` for the suspended listener `l`.
+    /// Keep `ev` for the suspended listener `l`, dropping (and counting) the
+    /// oldest past [`MAX_FROZEN_EVENTS`].
     fn keep_for(&self, l: NodeId, ev: Rc<T>) {
         let mut backlog = self.backlog.borrow_mut();
-        match backlog.iter_mut().find(|(b, _)| *b == l) {
-            Some((_, q)) => q.push_back(ev),
-            None => backlog.push((l, VecDeque::from([ev]))),
+        match backlog.iter_mut().find(|b| b.listener == l) {
+            Some(b) => {
+                if b.events.len() >= MAX_FROZEN_EVENTS {
+                    b.events.pop_front();
+                    b.dropped += 1;
+                }
+                b.events.push_back(ev);
+            }
+            None => backlog.push(Backlog {
+                listener: l,
+                events: VecDeque::from([ev]),
+                dropped: 0,
+            }),
         }
     }
 
@@ -246,6 +297,7 @@ impl<T: 'static> EventQueue<T> {
             Err(_) => Err(Error::Reentrant),
         })??;
         rt.inner.events_pending.borrow_mut().push(self.id);
+        rt.note_write(self.id);
         if rt.inner.flushing.get()
             && let Some(w) = rt.current_writer()
         {
@@ -271,6 +323,7 @@ impl<T: 'static> EventQueue<T> {
             })),
         );
         rt.with_data::<EventsData<T>, _>(self.id, |d| d.listeners.borrow_mut().push(l))?;
+        rt.inherit_rank(l, self.id);
         Ok(l)
     }
 

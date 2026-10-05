@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 294c9dd4d148224e40ad98d3729f7a6e30efc05093d47fd241a8c7fb8ace8e9c # shrinks to case = Case { specs: [Primary, Written([0]), Primary, Primary, Primary, Primary, Primary], effects: [Reader([0]), Reader([0]), Reader([1, 0]), Reader([0]), Writer(1)], declare: false, ticks: [[(0, -1)]] }
+cc ef6f539ef798b53ad90591e865fda18e08f3bd0436430cc2c600f871f04c7622 # shrinks to case = Case { specs: [Primary, Primary, Written([0])], effects: [Writer(2), Reader([2])], declare: true, ticks: [[]] }
+cc 200900500d23aa4d24de2d40ac602aaa67b2f09815e43dba9024189bf17abfd6 # shrinks to case = Case { specs: [Primary, Primary, Primary, Primary, Primary, Primary, Primary, Primary, Primary, Primary, Primary, Fetched([0])], effects: [Reader([11])], declare: true, ticks: [[]] }

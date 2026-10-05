@@ -84,6 +84,7 @@ impl<T: Clone + PartialEq + 'static> Signal<T> {
         send: impl FnOnce(&Runtime, &T, Generation) + 'static,
     ) -> Result<Option<Generation>, Error> {
         rt.check_write_allowed(self.id)?;
+        rt.note_write(self.id);
         if !rt.exists(self.id) {
             return Err(Error::Disposed(self.id));
         }
@@ -110,9 +111,10 @@ impl<T: Clone + PartialEq + 'static> Signal<T> {
             rt.defer_write(
                 self.id,
                 Some(held),
-                Box::new(move |rt: &Runtime| {
+                Box::new(move |rt: &Runtime, _held| {
                     let _ = commit(rt, value);
                 }),
+                None,
             );
             Ok(None)
         }

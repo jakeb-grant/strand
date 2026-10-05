@@ -126,6 +126,8 @@ impl<T: Clone + PartialEq + 'static> Signal<Async<T>> {
     /// Read-modify-write without the rate gate.
     fn bookkeep<R>(self, rt: &Runtime, f: impl FnOnce(&mut Async<T>) -> R) -> Result<R, Error> {
         rt.check_write_allowed(self.id)?;
+        // Not rate-gated, but still a write edge for the flush order.
+        rt.note_write(self.id);
         let mut a = self.get_untracked(rt)?;
         let r = f(&mut a);
         self.set_raw(rt, a)?;
@@ -231,9 +233,17 @@ impl<T: Clone + PartialEq + 'static> AsyncMemo<T> {
     pub fn get_untracked(self, rt: &Runtime) -> Result<Async<T>, Error> {
         self.cell.get_untracked(rt)
     }
-    /// The node holding the value (for [`Runtime::watch`]).
+    /// The node holding the value (for [`Runtime::watch`], and what readers
+    /// declare in [`Runtime::reads_from`]).
     pub fn id(self) -> NodeId {
         self.cell.id()
+    }
+    /// The internal effect that tracks the input and starts loads: the VM
+    /// declares the input's syntactic read set on it
+    /// ([`Runtime::reads_from`]). Its write edge to the value is declared
+    /// by [`Runtime::async_memo`].
+    pub fn effect_id(self) -> NodeId {
+        self.effect.id()
     }
     /// Stop requesting and dispose the value; a running load is cancelled.
     pub fn dispose(self, rt: &Runtime) {
@@ -250,6 +260,11 @@ impl Runtime {
     /// cancellation worth reporting). The value is kept while loading. An
     /// `Err` from `input` becomes the cell's `.error`. Owned by the current
     /// owner. Read-only, like every `let`.
+    ///
+    /// The effect's write edge to the value is declared here, so a reader
+    /// that declares its reads runs after the load started (and, for a
+    /// load that is ready at once, resolved) in the same flush, once. The
+    /// VM declares the input's reads on [`AsyncMemo::effect_id`].
     pub fn async_memo<A, T, I, F, Fut>(&self, input: I, fetch: F) -> AsyncMemo<T>
     where
         A: 'static,
@@ -279,6 +294,9 @@ impl Runtime {
             }
             Ok(())
         });
+        // Both just created, so this cannot fail (and never closes a loop:
+        // nothing reads the cell yet).
+        let _ = self.writes_to(effect.id(), cell.id());
         AsyncMemo { cell, effect }
     }
 }

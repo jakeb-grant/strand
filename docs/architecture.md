@@ -233,10 +233,17 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   state kept across a monitor unplug, moves to its new owner before the old
   one is disposed (keyed cells keep their diff log, so items keep identity).
   A runtime fault freezes one component with `rt.suspend(scope)` (effects,
-  timers, listeners and tasks stop, state kept; service events are kept for
-  its listeners, input events dropped) and the fixing reload calls
+  listeners and tasks stop, timers pause as if their `while` were false,
+  state kept; service events are kept for its listeners up to
+  `MAX_FROZEN_EVENTS` each, the oldest dropped and counted in
+  `Diagnostic::EventsDropped`, also when the listener is disposed instead
+  of resumed; input events dropped; `await sleep(..)` inside it pauses too)
+  and the fixing reload calls
   `rt.resume(scope)`, or moves the live state out with `reparent` and
-  disposes the frozen scope (held work is released either way). Reloaded
+  disposes the frozen scope (held work is released either way). Released
+  timers and sleeps count again from the host's next `tick` (the logic
+  clock stands still while the host sleeps), and the release calls the
+  wake hook so the host ticks. Reloaded
   timers take over the old countdown with `new.rescale_from(rt, old)`
   (`Debounced::rescale_from` for `on change … after`).
 - Handlers: listeners, timers and `on change` handlers each get a handler
@@ -256,7 +263,43 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   service paths, `rt.on_change_keyed(key, ..)` with the path's object as
   key (no firing on a sink switch); `on change` handlers run after the
   tick's other effects settle, so they fire once per outside write.
-  Service events are `EventQueue`s.
+  Sinks run in a computed topological order (wave 2): ranks over read
+  edges, ownership and the write edges handlers make. The compiler must
+  declare both kinds of edge it lowers, before the first flush:
+  `rt.reads_from(node, &sources)` with the syntactic read set (every
+  branch: a conservative superset) of every binding (memo, derived
+  collection) and handler (effect, timer condition, `on change` tracked
+  expression, listener), even an empty one, and `rt.writes_to(handler,
+  target)` for every assignment and `emit`. With both, every sink runs
+  exactly once per flush with final values, the first flush (boot,
+  reload mounts) included. Undeclared edges are learned when first seen,
+  which can re-run a sink once in that flush; a sink that has never run
+  and declares nothing runs after all ranked sinks on its first run.
+  `rt.rank(id)` exposes the rank. `writes_to` returns
+  `Ok(WriteEdge::Ranked | WriteEdge::Feedback)` and errs only for a
+  disposed id: a write edge that closes a loop (a self-normalising `on
+  change x { if x > 10 { x = 10 } }`, two handlers normalising each other)
+  is a feedback edge bounded by the runtime cycle guard, not a static-cycle
+  error, and the outcome and ranks do not depend on whether reads or writes
+  are declared first (`rt.write_edge(w, t)` tells what an edge became).
+  Composite nodes: `rt.async_memo` declares its internal effect's write
+  edge to the value itself; the VM declares the input's read set on
+  `memo.effect_id()` and readers declare `memo.id()`. For `on change …
+  after T` (`Debounced`), the tracked expression's reads go on `d.effect`
+  and the body's writes on `d.timer`. Tasks woken from other threads (IO and
+  D-Bus replies) are polled at the start of the next flush, never between
+  sinks.
+  Service events are `EventQueue`s. Keyed collection writes from
+  graph-triggered handlers are rate-guarded too (wave 2): a throttled
+  handler writes to a held copy (with the list it started from) whose
+  changes land as one keyed diff, re-applied by key onto whatever other
+  writes (input handlers, service batches, other handlers) did meanwhile,
+  so the emitter only ever sees `VecDiff`s and no push is lost
+  (`Diagnostic::KeyedConflict` counts changes that no longer apply). The
+  VM reads collections without copying through `xs.with(rt, |v| ..)`
+  (tracked), `xs.with_untracked(rt, ..)` and `xs.get_key(rt, &k)`; a
+  `KeyedVec` clone (`get_untracked`) held across a write makes that write
+  copy the items and the key index.
   Service `rw` writes use `write_tagged(value, send)` (throttled writes are
   held, then sent) and reports come back through `receive`. `let x =
   svc.call(input)` returning `Async` is `rt.async_memo(input, fetch)`, a
@@ -268,6 +311,70 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   `rt.on_cleanup` of the component scope (and when hidden).
 - Read-only graph introspection for the inspector, `strand watch` and the
   LSP: `rt.sources/observers/owned(id)`, `rt.site_of(handler)`.
+- `state x = d persist` is `rt.persisted(&store, path, d, encode, decode)`
+  (wave 2): `store` is one `PersistStore::from_env()` per process
+  (`$XDG_STATE_HOME/strand/persist`, one file per cell path; its writes go
+  through one persist IO thread, so `fsync` never stalls a tick), and the
+  VM supplies a stable byte codec for its `Value`s. `path` names one live
+  cell: the cell's `file.name` path plus its instance identity when the
+  component has several, `bar[<make model description>].expanded` for a
+  `bar` on every monitor (the monitor identity of `strand-surface`), or
+  the item key for state on list items (`list[<key>].x`); any bytes are
+  allowed, the store escapes them. A second live cell on a path in use is
+  reported as `Diagnostic::PersistPathInUse` and waits: it does not write
+  while the first owns the file, and takes the path over when the first
+  is disposed (the reconciler may mount a replacement before disposing
+  the old instance): if it still holds the value it started from, it
+  continues from the old owner's last value (flushed first), else its own
+  value is written. It returns
+  a `Persisted` handle: the cell's `Signal`, the `Restore` decision
+  (default, stored, adopted new default, kept over a new default, failed),
+  and the calls the reconciler makes: on a reload that changes the
+  declared default, `persisted.redeclare(rt, new_default)` (adopt if the
+  value still holds the old default, else keep it, report once and
+  re-stamp; returns `Redeclared`), and for `@reset` / the overlay's
+  `[reset]`, `persisted.reset(rt)` (cancels a pending or queued write,
+  removes the file, sets the default). Warnings arrive as
+  `Diagnostic::PersistDefaultChanged` / `Diagnostic::PersistFailed` (write
+  failures in a later tick, with a wake-hook call; `rt.is_idle()` is false
+  while one waits to be reported). `rt.shutdown()` waits (bounded) for
+  queued writes.
+- `state prefs from "prefs.toml" { accent: color = #7aa2f7; … }` is
+  `rt.settings_file(&settings_store, path, fields)` (wave 2,
+  `strand_core::settings`): `settings_store` is
+  `persist_store.settings()` (overlays in `$XDG_STATE_HOME/strand/settings`,
+  writes on the persist IO thread), `path` the file resolved against the
+  config directory, and `fields` one `FieldSpec::new(name, default,
+  decode, encode)` per typed field, where `decode(&toml_edit::Item) ->
+  Result<V, String>` checks the field's type and `encode(&V) ->
+  toml_edit::Item` writes it back (`strand_core::settings::toml_edit` is
+  re-exported so the VM uses the same version). It returns a `Settings<V>`
+  handle: `signal(name)` is the field's ordinary `Signal` (UI writes, `<->`
+  bindings and `strand set prefs.compact true` write it; the write is saved
+  through `toml_edit` after 250 ms of quiet, keeping comments, spacing and
+  order, following symlinks, temp file plus rename in the target's
+  directory); `reload(rt)` is what the watcher calls when the file changes
+  (each field checked on its own, a syntax error keeps every last good
+  value, a deleted key springs back to its default; edits not yet on disk
+  and unsaved UI writes are never undone); `set_overlay(rt, name, v)` /
+  `clear_overlay(rt, name)` (the overlay's `[clear]`) manage the runtime
+  overlay, which wins over the file, which wins over the default. A
+  read-only target (no write permission, `EACCES`, `EROFS`: `/nix/store`)
+  gets its writes in the overlay instead. Reports are
+  `Diagnostic::Settings(SettingsNotice { file, field, issue })` with
+  `SettingsIssue::{Syntax, Unreadable, BadValue, Shadowed, ReadOnly,
+  WriteFailed, CorruptOverlay, TypeChanged}`; `Shadowed` displays as
+  `accent: file changed but runtime overlay wins [clear]`. Round 3 adds:
+  a last-good snapshot per file (`last_good_path()`, under
+  `settings/last-good/`) that a broken file falls back to at boot;
+  `layer(name) -> SettingsLayer::{Overlay, File, Default}` (inspector
+  provenance); `redeclare(rt, fields)` for live reload of the declaration
+  (fields matched by name keep their signals; a new default is adopted
+  only where nothing set the field; a changed `FieldSpec::with_type` type
+  resets that field; added fields are read, removed ones disposed); and
+  several handles on one declared file (one per mounted instance) adopt
+  each other's writes in the same tick. Off-thread reads: see
+  `strand-watch` below.
 
 ### `strand-compiler`
 
@@ -294,6 +401,27 @@ Public interfaces other crates and later stages build on:
   other wrapper nodes; payload structs use their wrapper's span. Trees are
   at most 256 levels deep (`docs/grammar.md`, "Error recovery"), so passes
   may recurse over them on a 2 MiB stack.
+- **Lowering into `strand-core`** (the VM's obligations): declare every
+  read set with `rt.reads_from(node, &sources)` (all branches, also when
+  empty) and every assignment and `emit` with `rt.writes_to(handler,
+  target)` as nodes are created, so effects run once per flush in
+  topological order from the first flush on; read keyed collections with
+  `with`/`with_untracked`/`get_key` instead of holding `KeyedVec` clones;
+  `writes_to` answering `WriteEdge::Feedback` is not an error (a
+  self-normalising handler is valid; only a static cycle among `let`s is a
+  load error); for `let x = svc.call(input)` declare the input's reads on
+  `memo.effect_id()`, for `on change … after T` the tracked reads on
+  `d.effect` and the body's writes on `d.timer`;
+  create persisted cells with an instance-qualified path and keep the
+  `Persisted` handle for `redeclare` (reload) and `reset` (`@reset`);
+  lower `state x from "file.toml" { typed fields }` to
+  `rt.settings_file(&store, resolved_path, fields)` with one `FieldSpec`
+  per field from the checked schema (the type's decode and encode over
+  `toml_edit::Item`, the declared default), keep the `Settings` handle,
+  call `reload` (or `reload_with`, see `strand-watch`) when the watcher
+  reports the file, call `redeclare` when a reload changes the
+  declaration, pass each field's type name with `FieldSpec::with_type`,
+  and give its path to the watcher. See the `strand-core` section.
 - **Identity and change detection.** AST `PartialEq` compares spans, which
   shift on every edit above a node. Reload identity and "did this handler
   change" use a span-insensitive structural hash over the texts of the
@@ -652,3 +780,17 @@ and the connection):
 
 Specified when their milestones start (M3, M1). Both only produce writes and
 events into `strand-core`.
+
+Settings files (fixed in wave 2 by `strand-core`): the watcher should not
+read a settings file twice or parse it on the logic thread. For each
+declared file it holds the `SettingsSources` from `Settings::sources()`
+(`Send`, cheap to clone). On a change event, on its own thread: `let m =
+sources.mark()` (Strand's own writes done or queued; must come *before*
+reading the bytes), read the bytes, hash them (an unchanged hash, such as
+Strand's own write, stops here), then `sources.read_from(m, Ok(text))`
+(also reads the overlay and probes writability) and post the
+`SettingsRead` to the logic thread, which calls
+`settings.reload_with(rt, read)` and only decodes. Strand's temp files next
+to a settings file are named `.<name>.tmp.<pid>.<n>` (renamed over the file:
+the watcher sees `MOVED_TO` for the file itself); its scratch-name filter
+should ignore that pattern, as it does editors' scratch names.
