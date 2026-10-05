@@ -915,6 +915,43 @@ mod tests {
         }
     }
 
+    /// A backend whose every watch fails (inotify limit reached).
+    struct Full;
+
+    impl Backend for Full {
+        fn watch(&mut self, _: &Path) -> Result<(), String> {
+            Err("inotify watch limit reached".into())
+        }
+        fn unwatch(&mut self, _: &Path) {}
+    }
+
+    #[test]
+    fn a_failed_watch_falls_back_to_polling() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        std::fs::write(root.join("a.strand"), "a").unwrap();
+        let mut core = Core::new(Full, Options::default(), Some(config(&root)));
+        assert!(core.has_polled_dirs());
+        let t0 = Instant::now();
+        let b = core.flush(core.deadline().unwrap()).unwrap();
+        assert_eq!(
+            b.notices,
+            vec![Notice::Polling {
+                dir: root.clone(),
+                reason: PollReason::WatchFailed("inotify watch limit reached".into()),
+            }]
+        );
+        // Same size, same mtime second: only a content comparison sees it.
+        std::fs::write(root.join("a.strand"), "b").unwrap();
+        core.poll(t0);
+        let b = core.flush(core.deadline().unwrap()).unwrap();
+        assert_eq!(b.changes.len(), 1);
+        assert_eq!(b.changes[0].hash, Some(blake3::hash(b"b")));
+        // Nothing changed: a poll produces no batch.
+        core.poll(t0);
+        assert!(core.flush(core.deadline().unwrap()).is_none());
+    }
+
     fn strand_files(dir: &Path) -> ModuleSet {
         let mut set = ModuleSet::default();
         let mut stack = vec![dir.to_path_buf()];

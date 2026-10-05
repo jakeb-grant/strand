@@ -787,3 +787,76 @@ schema from `strand-compiler`).
   only the newer stable reported. Bump the pin deliberately, fixing new
   lints in the same commit. CI also installs `pkg-config` and
   `libfontconfig1-dev` for parley's font discovery.
+
+## wave2-watch
+
+- **2026-10-05 · notify 8.2 without notify-debouncer-full.** notify's
+  inotify backend reports `CLOSE_WRITE` (`Access(Close(Write))`),
+  `MOVED_TO` (`Modify(Name(To))`) and overflow (`Flag::Rescan`), so raw
+  inotify is not needed. The debouncer is not used: it debounces per path
+  on a tick, which cannot express "15 ms after the last completed write
+  across all files" (save all = one batch), and its rename stitching is
+  unneeded because the watcher never follows renames: it marks the paths
+  an event names and decides at the end of the quiet period, by `lstat`
+  and BLAKE3, what each one is now. Watches are non-recursive, one per
+  directory, so depth (3, from `find_files`) and symlink handling stay
+  ours.
+- **2026-10-05 · What counts as an event.** Acted on: `CLOSE_WRITE`,
+  `MOVED_TO`, and `CREATE` of a symlink (`ln -s` makes no
+  `CLOSE_WRITE`). Removals (`DELETE`, `MOVED_FROM`, a watched directory
+  deleted or moved) mark a path for an existence check: a removal cannot
+  be half-written, and a module deleted for good must be reported.
+  `MODIFY` and a plain-file `CREATE` are never read; they only keep an
+  already-open batch waiting, so a slow multi-file save stays one batch.
+  A stream that never goes quiet is cut 500 ms after its first event.
+- **2026-10-05 · Removal grace 50 ms.** When the latest event on a
+  watched path was a removal the quiet period is 50 ms instead of 15, so
+  delete-and-create and Vim's rename-then-write are one `Modified`, never
+  `Removed` then `Created` (and never a missing-module error on the
+  reload overlay). Saves without a removal keep design.md's 15 ms.
+- **2026-10-05 · Scratch names.** design.md's `4913`, `*.swp`, `*~`,
+  `*___jb_*___`, plus `*.swo` and `*.swx` (Vim's next swap names when a
+  `.swp` exists). Hidden names are ignored in config and cache
+  directories, as `find_files` skips them; an explicitly watched hidden
+  file (`~/.wallpaper`) still works because explicit paths match exactly.
+  Other extensions in a config directory are not reported unless a path
+  is registered (`.wgsl` comes from the compiler's `shader "…"` paths).
+- **2026-10-05 · Symlinks hop by hop.** Each watched path is resolved one
+  component at a time; every symlink met (file or directory, up to 40)
+  is a hop, and the watcher watches each hop's directory plus the final
+  target's directory. An event on any hop re-resolves the file; a hop
+  that is a directory link of a module file, or of the config root, also
+  calls the module-set rescan. Watches are always on canonical
+  directories, so one inode is never watched under two paths. A link
+  swap whose new target has the same bytes is a no-op (BLAKE3).
+- **2026-10-05 · Read-only mounts are not watched.** A directory on a
+  read-only mount (`/nix/store`) cannot change in place; home-manager's
+  switch swaps the link, which the link's directory sees. This avoids an
+  inotify watch on the very busy `/nix/store`.
+- **2026-10-05 · Polling.** Directories on NFS, SMB/CIFS, 9p, Ceph, AFS,
+  Coda or FUSE (statfs magic), or whose inotify watch fails (limit
+  reached), are polled every second (`Options::poll_interval`): the
+  listing is compared (inode, size, times) and every watched file in the
+  directory is re-hashed, so attribute caching cannot hide an edit.
+  FUSE is polled because remote writes (sshfs, rclone) make no events.
+  Each polled directory is reported once as `Notice::Polling`.
+- **2026-10-05 · Cache trees are not hashed.** App, icon and font
+  directories report `Role::Cache(kind)` paths, `Modified` or `Removed`
+  by existence, with no hash: a font can be tens of MB and the cache
+  owner re-reads what it needs. A new sub-directory is watched up to the
+  tree's depth.
+- **2026-10-05 · Own writes.** `register_own_write(path, hash)` matches
+  the next completed write of that path (or of its resolved target) with
+  that hash, once; unmatched registrations expire after 10 s.
+- **2026-10-05 · Portal thread.** zbus is built with its `tokio` feature
+  (the services runtime, design.md) and the portal client runs on its own
+  current-thread runtime, so it works the same once `strand-services`
+  links zbus too. It subscribes to `SettingChanged` before `ReadOne`, so
+  no change is lost between them, falls back to `Read` (portal version 1,
+  value wrapped in one more variant), and always sends the boot batch,
+  empty when the bus or portal is missing; a portal that starts later is
+  still followed. `color-scheme` keeps the raw preference next to
+  `dark`; an `accent-color` component outside 0..=1 means unset.
+  Tests use a zbus mock portal on a private `dbus-daemon` the test
+  starts itself (python3-dbusmock is not installed); they skip when
+  `dbus-daemon` is missing unless `STRAND_REQUIRE_DBUS` is set.

@@ -86,9 +86,9 @@ Checking and runtime:
 - [ ] `persist` storage with default hash
 
 Live reload:
-- [ ] Directory inotify (depth 3), `CLOSE_WRITE` + `MOVED_TO` only, scratch-name filter, overflow rescan
-- [ ] Symlinks: canonicalise, watch link and target directories; NFS polling fallback
-- [ ] 15 ms coalesce; BLAKE3 no-op skip incl. own writes
+- [x] Directory inotify (depth 3), `CLOSE_WRITE` + `MOVED_TO` only, scratch-name filter, overflow rescan — `crates/strand-watch/tests/saves.rs` (the five save styles `save_in_place` (a half-written file is never read), `save_rename_over`, `save_backup_then_rename`, `save_delete_and_create`, `save_symlink_swap`, each exactly one batch; `scratch_files_are_ignored`, `modules_appear_and_disappear`), `crates/strand-watch/src/core.rs::tests::overflow_rescans_everything` (simulated overflow), `crates/strand-watch/src/watcher.rs::tests::translation_keeps_completed_writes_only`; notify 8.2 without the debouncer, see `docs/decisions.md` (wave2-watch)
+- [x] Symlinks: canonicalise, watch link and target directories; NFS polling fallback — `crates/strand-watch/tests/saves.rs` (`save_symlink_swap` (home-manager link swap), `stow_directory_link` (GNU stow dir link, restow), `wallpaper_link_and_target`, `polling_compares_content` (forced polling)), `crates/strand-watch/src/core.rs::tests::a_failed_watch_falls_back_to_polling`, `crates/strand-watch/src/paths.rs::tests` (`resolve_records_every_hop`, `network_and_read_only_filesystems`)
+- [x] 15 ms coalesce; BLAKE3 no-op skip incl. own writes — `crates/strand-watch/tests/saves.rs` (`save_all_is_one_batch`, `no_op_saves_are_skipped`, `own_writes_are_skipped`, `settings_file_created_later_and_edited`), `crates/strand-watch/src/core.rs::tests::busy_extends_only_an_open_batch`
 - [ ] Off-thread compile of changed modules + dependents; atomic commit of the largest consistent set
 - [ ] Last good tree kept; compiled cache keyed by source hash + compiler version + schema hash
 - [ ] Identity: source span → key/id → position; ambiguity resets with a warning (core side done: `Runtime::reparent` moves live state, keyed cells keep their diff log, handlers create nodes in their current component — `crates/strand-core/tests/disposal.rs::a_moved_scope_survives_its_old_parent`, `an_on_change_handler_moved_to_a_new_owner_creates_nodes_there`)
@@ -97,7 +97,7 @@ Live reload:
 - [ ] Merkle hashes over handler reachability
 - [ ] Error overlay after 250 ms quiet; did-you-mean; click to `$EDITOR`; runtime fault freezes one component outlined red (core side done: `Runtime::suspend/resume` — `crates/strand-core/tests/disposal.rs::a_suspended_component_freezes_and_resumes`, `resume_wakes_the_host_for_held_work_and_overdue_timers`, `an_effect_moved_out_of_a_suspended_scope_is_not_left_deaf`, `a_nested_scope_moved_out_of_a_suspended_parent_runs_again`, `a_frozen_task_woken_repeatedly_is_held_once`)
 - [x] Config `.strand` module-set discovery (`source::find_files`), used by `strand check` (the binary hands its result to the loader and watcher): depth 3 (deeper directories holding `.strand` files are warned about), hidden names skipped, symlinks followed breadth-first, canonical dedup, unreadable sub-directories and dangling `*.strand` links reported — `crates/strand/src/check.rs` (`finds_strand_files_to_depth_three`, `a_deeper_link_does_not_hide_the_real_directory`, `a_dangling_strand_link_is_reported`, `unreadable_subdirectories_do_not_stop_the_check`, `a_single_file_can_be_checked`)
-- [ ] Loader and `strand-watch` use `source::find_files` for the module set (the binary calls it and passes the paths in; `strand-watch` does not depend on the compiler); the watcher additionally watches `.wgsl`, settings files, wallpapers and `Discovery::dirs` (link targets)
+- [ ] Loader and `strand-watch` use `source::find_files` for the module set (the binary calls it and passes the paths in; `strand-watch` does not depend on the compiler); the watcher additionally watches `.wgsl`, settings files, wallpapers and `Discovery::dirs` (link targets) (watcher side done: `ConfigWatch { root, modules: ModuleSet { files, dirs }, rescan }` takes `Discovery` and a `find_files` callback, `watch_file` takes compiler-collected paths — `crates/strand-watch/tests/saves.rs` (`stow_directory_link`, `modules_appear_and_disappear`, `settings_file_created_later_and_edited`); the binary and loader wiring is pending)
 - [ ] `strand check`, `strand watch [--json]`, `strand reload [--hard]`, `@reset` (`strand check` parses and reports: `crates/strand/src/check.rs` tests; `@reset` parses: `snippets.strand`; checker, watch, reload pending)
 - [ ] Basic LSP in `strand-dev`: diagnostics, completion after `$` `.` `<->`, hover, rename
 - [ ] Reload fuzzer: five save styles, cold-boot equivalence
@@ -124,8 +124,8 @@ Exit: [ ] theme swap under 5 ms · [ ] contrast never below 3:1 · [ ] the four 
 - [ ] Contrast guard ≥3:1; crossfade fallback for light↔dark
 - [ ] Snap rules: fonts, padded shadow lists, layout lengths; `reduced_motion`
 - [ ] `material(seed:)`, `material(image:)` (128 px downscale off-thread, content-hash cache), importers (base16/24, Catppuccin, matugen, W3C) filling the full palette
-- [ ] Wallpaper path and its symlink target watched; the old palette holds until the new one is ready
-- [ ] Portal `system.dark`, `system.accent`, `system.contrast`
+- [ ] Wallpaper path and its symlink target watched; the old palette holds until the new one is ready (watching done: `crates/strand-watch/tests/saves.rs::wallpaper_link_and_target`; palette pending)
+- [ ] Portal `system.dark`, `system.accent`, `system.contrast` (source done: `strand_watch::PortalSettings`, `ReadOne` (or `Read`) at boot then `SettingChanged`, typed `SystemSetting`s — `crates/strand-watch/tests/portal.rs` (`boot_read_then_changes`, `version_one_portal_uses_read`, `a_late_portal_is_followed`); the graph writes are pending)
 - [ ] Last palette persisted; no default-colour flash at boot
 - [ ] Settings files: per-field validation, `toml_edit` write-back, symlink-following, read-only overlay
 - [ ] Widgets: `text`, `icon`, `image`, `box`, `button`, `slider`, `input`, `meter`, `segmented`, `popup`, `tooltip`
@@ -143,12 +143,12 @@ Exit: [ ] runs on Hyprland, niri and sway · [ ] 100 reloads with no reconnects 
 - [ ] audio (PipeWire), brightness (logind), battery (UPower), network (nmrs), bluetooth, tray (SNI + DBusMenu), notifications server, workspaces (`ext-workspace-v1` + IPC adapters), windows (`ext-foreign-toplevel-list`), apps (desktop entries, icons, nucleo fuzzy + frecency), portal settings, clock, calendar, media (MPRIS), cpu/memory
 - [ ] Hyprland, niri, sway IPC adapters (own implementations)
 - [ ] Service threads: one shared tokio current-thread runtime; PipeWire and the Wayland toplevel protocols on their own threads
-- [ ] Change sources beyond files: compositor reload (Hyprland socket2 `configreloaded`, niri `ConfigLoaded { failed }`) as `wm.config_reloaded`; `applications/`, `index.theme` and fontconfig dirs invalidate their caches
+- [ ] Change sources beyond files: compositor reload (Hyprland socket2 `configreloaded`, niri `ConfigLoaded { failed }`) as `wm.config_reloaded`; `applications/`, `index.theme` and fontconfig dirs invalidate their caches (watch side done: `CompositorEvent::ConfigReloaded { failed }` is the typed slot; `Watcher::watch_tree(dir, depth, CacheKind)` — `crates/strand-watch/tests/saves.rs::cache_trees_report_unhashed_paths`; adapters and cache owners pending)
 - [ ] No-code services `from dbus` checked against introspection; `from file|listen|poll`; `permit exec`
 - [ ] Service schemas drive type checking and LSP hover
 - [ ] The compiler collects the service paths a shell uses; only those services start (lazy start input)
 - [ ] Notification name conflict with dunst/mako fails clearly
-- [ ] python-dbusmock CI tier (UPower, NetworkManager, BlueZ, logind, notifications under `dbus-run-session`; PipeWire with a null sink; zbus mocks for the portal and tray)
+- [ ] python-dbusmock CI tier (UPower, NetworkManager, BlueZ, logind, notifications under `dbus-run-session`; PipeWire with a null sink; zbus mocks for the portal and tray) (portal mock on a private `dbus-daemon` done: `crates/strand-watch/tests/portal.rs`)
 
 ## M4 Power features (weeks 35–44)
 
