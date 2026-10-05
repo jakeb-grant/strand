@@ -1,0 +1,13 @@
+---
+source: crates/strand-compiler/tests/diagnostics.rs
+expression: report(src)
+---
+syntax::chained_comparison
+
+  × comparisons cannot be chained
+   ╭─[e.strand:1:15]
+ 1 │ let a = x < y < z
+   ·               ┬
+   ·               ╰── second comparison
+   ╰────
+  help: combine them with `&&`: `a < b && b < c`

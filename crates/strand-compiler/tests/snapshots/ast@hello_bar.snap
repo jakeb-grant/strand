@@ -1,0 +1,15 @@
+---
+source: crates/strand-compiler/tests/fixtures.rs
+expression: tree
+---
+file
+  bar Top
+    prop edge: top
+    prop height: 32
+    element split
+      element start
+        element text (?? (?. (. windows focused) title) "")
+      element center
+        element text (call (. clock format) "%H:%M")
+      element end
+        element text (call pct (. battery percent))

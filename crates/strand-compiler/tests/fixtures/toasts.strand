@@ -1,0 +1,37 @@
+// toasts.strand
+export state dnd = false persist
+let shown = notifications.popups.filter(n => !dnd || n.urgency == critical).take(5)
+
+panel Toasts {
+  screens: focused; layer: overlay; anchor: top_right; margin: $space.3; keyboard: none
+  open: shown.len > 0
+  col { width: 380; gap: $space.2
+    for n in shown { Toast n }                    // keyed by n.id automatically
+  }
+}
+
+component Toast(n: Notification) {
+  col { pad: $space.3; gap: $space.2; radius: $radius.lg; border: 1, $border
+        bg: $surface.alpha(0.88); blur: 24; shadow: $elevation.lg
+    enter { x: 420; opacity: 0 }
+    exit  { x: 420; opacity: 0; height: 0 }       // siblings slide up to fill the gap
+    when hover { bg: $surface.hi }
+    when n.urgency == critical { border: 1, $error }
+    after n.timeout ?? 6s while !hover && n.urgency != critical { n.expire() }
+    on click     { n.activate() }
+    on secondary { n.dismiss() }
+    row { gap: $space.2
+      image n.image ?? n.app.icon { size: 36; radius: $radius.sm }
+      col { grow: 1
+        text join(" · ", n.app.name, n.summary) { weight: 600; ellipsis: end }
+        text n.body { markup: basic; max_lines: 4; color: $fg.muted }
+      }
+      icon "window-close-symbolic" { size: 14; on click { n.dismiss() } }
+    }
+    if n.actions.len > 0 {
+      row { gap: $space.1
+        for a in n.actions { button a.label { grow: 1; on click { a.invoke() } } }
+      }
+    }
+  }
+}

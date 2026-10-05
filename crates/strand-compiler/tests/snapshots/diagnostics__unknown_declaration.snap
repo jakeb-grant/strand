@@ -1,0 +1,14 @@
+---
+source: crates/strand-compiler/tests/diagnostics.rs
+expression: report(src)
+---
+syntax::misplaced
+
+  × expected a declaration, found `componnet`
+   ╭─[e.strand:1:1]
+ 1 │ componnet Foo {
+   · ────┬────
+   ·     ╰── elements must be inside a surface or component
+ 2 │   text "hi"
+   ╰────
+  help: did you mean `component`?

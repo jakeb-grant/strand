@@ -1,0 +1,32 @@
+// theme.strand
+enum Look { auto, light, dark, wallpaper, mocha }
+export state look = auto persist
+state prefs from "~/.config/strand/prefs.toml" {
+  accent: color = #7aa2f7; wallpaper: path = "~/Pictures/wall.jpg"; compact: bool = false
+}
+let dark = match look { auto => system.dark, light => false, _ => true }
+let scheme: Palette = match look {
+  wallpaper => material(image: prefs.wallpaper, variant: tonal_spot, dark: dark)
+               ?? material(seed: prefs.accent, dark: dark),   // while quantising, or if missing
+  mocha     => import("catppuccin:mocha"),
+  _         => material(seed: system.accent ?? prefs.accent, dark: dark, contrast: system.contrast),
+}
+tokens base {
+  space  { 1: 4px; 2: 8px; 3: 12px; 4: 16px }
+  radius { sm: 6px; md: 10px; lg: 14px; xl: 20px; full: 999px }
+  font   { ui: "Inter" 13px 500; title: "Inter" 18px 600; caption: "Inter" 11px; mono: "JetBrains Mono" 12px }
+  motion { spatial: spring(700, 0.9); effects: spring(1600, 1); bouncy: spring(380, 0.75) }
+  elevation {
+    md: 0 2px 8px $shadow.alpha(0.25)
+    lg: 0 8px 24px $shadow.alpha(0.3), 0 1px 2px $shadow.alpha(0.2)
+    xl: 0 16px 48px $shadow.alpha(0.4)
+  }
+  surface.hi:       $surface.mix($fg, 8%)
+  fg.muted:         $fg.alpha(0.65)
+  fg.faint:         $fg.alpha(0.35)
+  accent.hover:     $accent.mix($on_accent, 8%)
+  accent.container: $accent.alpha(0.22)
+  border:           oklch(from $surface, l: l + 0.12)
+}
+tokens compact extends base { override space { 1: 2px; 2: 4px; 3: 8px; 4: 12px } }
+use tokens prefs.compact ? compact : base, palette scheme

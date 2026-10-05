@@ -1,0 +1,72 @@
+---
+source: crates/strand-compiler/tests/fixtures.rs
+expression: tree
+---
+file
+  export state dnd (= false) persist
+  let shown (= (call (. (call (. (. notifications popups) filter) (=> (params n) (|| (! dnd) (== (. n urgency) critical)))) take) 5))
+  panel Toasts
+    prop screens: focused
+    prop layer: overlay
+    prop anchor: top_right
+    prop margin: $space.3
+    prop keyboard: none
+    prop open: (> (. shown len) 0)
+    element col
+      prop width: 380
+      prop gap: $space.2
+      for n (in shown)
+        element Toast n
+  component Toast (params (n :Notification))
+    element col
+      prop pad: $space.3
+      prop gap: $space.2
+      prop radius: $radius.lg
+      prop border: (commas 1 $border)
+      prop bg: (call (. $surface alpha) 0.88)
+      prop blur: 24
+      prop shadow: $elevation.lg
+      enter
+        prop x: 420
+        prop opacity: 0
+      exit
+        prop x: 420
+        prop opacity: 0
+        prop height: 0
+      when hover
+        prop bg: $surface.hi
+      when (== (. n urgency) critical)
+        prop border: (commas 1 $error)
+      after (?? (. n timeout) 6s) (while (&& (! hover) (!= (. n urgency) critical)))
+        expr (call (. n expire))
+      on click
+        expr (call (. n activate))
+      on secondary
+        expr (call (. n dismiss))
+      element row
+        prop gap: $space.2
+        element image (?? (. n image) (. (. n app) icon))
+          prop size: 36
+          prop radius: $radius.sm
+        element col
+          prop grow: 1
+          element text (call join " · " (. (. n app) name) (. n summary))
+            prop weight: 600
+            prop ellipsis: end
+          element text (. n body)
+            prop markup: basic
+            prop max_lines: 4
+            prop color: $fg.muted
+        element icon "window-close-symbolic"
+          prop size: 14
+          on click
+            expr (call (. n dismiss))
+      if (> (. (. n actions) len) 0)
+        then
+          element row
+            prop gap: $space.1
+            for a (in (. n actions))
+              element button (. a label)
+                prop grow: 1
+                on click
+                  expr (call (. a invoke))

@@ -1,0 +1,19 @@
+// osd.strand. Media keys stay in the compositor: strand set audio.sink.volume +5%
+enum Kind { volume, brightness }
+state kind = volume
+state shown = false
+on change audio.sink.volume, audio.sink.muted { kind = volume; shown = true }
+on change brightness.level                    { kind = brightness; shown = true }
+on change audio.sink.volume, audio.sink.muted, brightness.level after 1.2s { shown = false }
+let level = kind == volume ? (audio.sink.muted ? 0 : audio.sink.volume) : brightness.level
+
+osd Level {                                       // focused monitor, overlay, click-through
+  anchor: bottom; margin: 0, 0, 96; open: shown
+  enter { opacity: 0; scale: 0.9 }
+  row { width: 260; pad: $space.3; gap: $space.3; align: center
+        radius: full; bg: $surface.alpha(0.8); blur: 24; shadow: $elevation.lg
+    icon kind == volume ? audio.sink.icon : "display-brightness-symbolic" { size: 20 }
+    meter level { grow: 1; height: 6; color: $accent; track: $fg.alpha(0.15) }
+    text pct(level) { width: 4ch; align: end; font: $font.mono }
+  }
+}

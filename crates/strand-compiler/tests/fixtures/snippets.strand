@@ -1,0 +1,204 @@
+// One-line snippets from design.md tables and prose, each in the smallest
+// valid context. Where the design writes `…` this file fills in a minimal
+// body; where it lists alternatives as `a | b | c`, each alternative is its
+// own line. Everything else is verbatim.
+
+// --- Good vs bad vs ugly ----------------------------------------------------
+
+bar Top { edge: top }
+
+component GoodTable {
+  box { bg: $accent }
+  text clock.format("%H:%M")
+  slider { value: <-> audio.sink.volume }
+  popup { open: <-> open }
+  col { font: $font.ui; color: $fg }
+  box { when hover {} }
+  text join(" · ", pct(x), dur(y))
+  box { margin: 8, 8, 0 }
+  list { for h in hits { text h.app.name } }
+}
+
+component Expire(n: Notification) {
+  after 6s while !hover { n.expire() }
+}
+
+// --- The rules ----------------------------------------------------------------
+
+component Rules {
+  Dot ws
+  Toast n { dense: true }
+  box { id: vol }
+  when vol.hover { bg: $accent }
+  for x in xs key x.id { text x.name }
+  on click { open = !open }
+  on scroll(dy) { audio.sink.volume -= dy * 0.05 }
+  on show { query = "" }
+  on change x { y = x }
+  on change x after 1.2s { shown = false }
+  every 1s while visible { ticks += 1 }
+}
+
+component Toast(n: Notification, dense: bool = false) {
+  col { slot }
+}
+
+state x = 0
+state prefs from "prefs.toml" { accent: color = #7aa2f7; compact: bool = false }
+
+// --- Reactivity and state -----------------------------------------------------
+
+type Pin { app: AppId; label: text }
+state pins: [Pin] key app = []
+let found = apps.search(q)
+let art = material(image: wallpaper) ?? fallback
+
+on notifications.received(n) { log.push(n) }
+
+component Pins {
+  on drop(p: Pin, at: int) { pins.move(p.app, at) }
+  on secondary { pins.remove_key(p.app); pins.insert(0, p); pins.update(p.app, q => q) }
+}
+
+// --- Styling, tokens and theming ----------------------------------------------
+
+tokens snippets {
+  $surface.hi: $surface.mix($fg, 8%)
+  $fg.muted: $fg.alpha(0.65)
+}
+
+component Toast2(n) tokens { radius: $radius.lg } {
+  col { radius: $Toast2.radius; pad: $space.2; font: $font.ui; bg: $surface }
+}
+
+component Switcher {
+  segmented { options: Look; value: <-> theme.look }
+  col {
+    set { $surface: $surface.alpha(0.5) }
+  }
+}
+
+// --- Layout, animation and input --------------------------------------------
+
+component Layout {
+  box { place: absolute }
+  box { when self.width < 300 { gap: 0 } }
+  box { hit: grow(6) }
+  box { width: 24 ~ $motion.bouncy }
+  box { width: 24 ~ 200ms }
+  box { width: 24 ~ instant }
+  panel_body { keyboard: none }
+  panel_body { keyboard: on_demand }
+  panel_body { keyboard: exclusive }
+  input { nav: results }
+  box { drag: pin }
+  pages current: page { page wifi { text "Wi-Fi" }; page bluetooth { text "Bluetooth" } }
+  box { tooltip: expr }
+}
+
+// --- Escape hatches ------------------------------------------------------------
+
+component Hatches {
+  shader "aurora.wgsl" { u_speed: 0.4; u_tint: $accent }
+  canvas { draw: (c) => c.line(0, 0, 10, 10) }
+}
+
+service ppd from dbus system "net.hadess.PowerProfiles" { profile: text rw = ActiveProfile }
+
+// --- Motion and visual effects: shape and geometry -------------------------------
+
+component Shape {
+  box { radius: 14, 14, 0, 0; corners: squircle }
+  popup { attach: top }
+  box { shape: cookie
+    when loading { shape: burst }
+  }
+  box { stroke: 3, $accent { trim: 0, progress; wave: 2, 18px; cap: round } }
+  arc { value: cpu.usage; sweep: 270deg; width: 4 }
+  merge 10 { box {}; box {} }
+}
+
+// --- Paint and light ---------------------------------------------------------
+
+component Paint {
+  box { bg: linear(45deg, $accent, $tertiary) }
+  box { bg: conic(from: 90deg, $accent, $secondary) }
+  box { border: 2, conic(from: t * 60deg, $accent, $secondary, $accent) }
+  box { glow: 12, $accent.alpha(0.6) }
+  box { inner_shadow: 0 2px 6px $shadow; rim: top, $fg.alpha(0.15) }
+  box { grain: 0.04 }
+  text "x" { text_stroke: 1, $bg; fill: linear(90deg, $accent, $tertiary) }
+  letters { y: 2 * wave(1s, phase: index * 0.1) }
+  popup { scrim: $shadow.alpha(0.3) }
+}
+
+// --- Filters and compositing --------------------------------------------------
+
+component Filters {
+  box { filter: grayscale(1) }
+  box { filter: saturate(1.3) }
+  box { filter: hue(30deg) }
+  box { filter: brightness(0.9) }
+  box { filter: tint($accent) }
+  box { blend: screen }
+  box { blend: add }
+  box { blend: multiply }
+  box { blend: overlay }
+  box { blend: difference }
+  box { mask: fade(bottom, 24) }
+  box { mask: radial(center, 40%) }
+  box { mask: shape(cookie) }
+  box { backdrop: blur(16) }
+  box { blur: 24 }
+  box { blur: 24; blur_fallback: tint }
+  box { blur: 24; blur_fallback: none }
+}
+
+// --- Motion and time -----------------------------------------------------------
+
+keyframes shake { 0%, 100% { x: 0 }; 25% { x: -4 }; 75% { x: 4 } }
+
+component Motion {
+  box { x: 4 ~ ease(out_back, 300ms) }
+  box { x: 4 ~ bezier(0.05, 0.9, 0.1, 1.05) }
+  box { enter: popin(0.8) }
+  box { enter: slide(top) }
+  box { enter: slidefade }
+  box { enter: fade }
+  box { y: wave(1.6s); x: t; scale: noise(x) }
+  box { on click { play shake } }
+  row { stagger: 30ms }
+  box { morph: "media" }
+  text pct(level) { roll: true }
+  box { jelly: 0.4 }
+  box { parallax: 6px; tilt: 8deg }
+}
+
+// --- Generative, data-driven and media ---------------------------------------
+
+component Media {
+  effect lightning { speed: 1 }
+  effect sparks { speed: 1 }
+  effect shimmer { speed: 1 }
+  effect ripple { speed: 1 }
+  effect aurora { speed: 1 }
+  particles { rate: 20; life: 1.2s; sprite: dot(3); glow: 6 }
+  if open { box { transition: wipe(left) } }
+  if open { box { transition: disc } }
+  if open { box { transition: dissolve } }
+  if open { box { transition: pixelate } }
+  spectrum audio.sink { bars: 48; smooth: 0.6; style: mirror }
+  graph cpu.usage { history: 60s; fill: $accent.alpha(0.2) }
+  meter media.position { wave: media.playing ? 3 : 0 }
+  image "spin.gif"
+  lottie "loader.json" { speed: 1 }
+  svg "icon.svg" { #needle { rotate: level * 270deg } }
+  image media.art { fit: cover; filter: blur(30) }
+  thumbnail w
+}
+
+// --- Live reload: @reset on a declaration --------------------------------------
+
+component Launcher2 {
+  @reset state query = ""
+}

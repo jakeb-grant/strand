@@ -1,0 +1,66 @@
+---
+source: crates/strand-compiler/tests/fixtures.rs
+expression: tree
+---
+file
+  export state open (= false)
+  state query (= "")
+  let hits (= (call (. apps search) query))
+  panel Launcher
+    prop screens: focused
+    prop layer: overlay
+    prop anchor: center
+    prop keyboard: exclusive
+    prop open: <-> open
+    enter
+      prop opacity: 0
+      prop scale: 0.96
+    on show
+      assign = query ""
+    element col
+      prop width: 600
+      prop pad: $space.3
+      prop gap: $space.2
+      prop radius: $radius.xl
+      prop clip: true
+      prop bg: (call (. $surface alpha) 0.82)
+      prop blur: 32
+      prop shadow: $elevation.xl
+      element input
+        prop text: <-> query
+        prop placeholder: "Search apps"
+        prop font: $font.title
+        prop focus: true
+        prop nav: results
+      element list
+        prop id: results
+        prop max_height: 420
+        for h (in hits)
+          element row
+            prop pad: $space.2
+            prop gap: $space.3
+            prop radius: $radius.md
+            prop align: center
+            when hover
+              prop bg: $surface.hi
+            when selected
+              prop bg: $accent.container
+            on activate
+              expr (call (. (. h app) launch))
+              assign = open false
+            element image (. (. h app) icon)
+              prop size: 32
+            element col
+              prop grow: 1
+              element text (. (. h app) name)
+                prop marks: (. h ranges)
+                prop mark_color: $accent
+                prop weight: 600
+              element text (?? (. (. h app) comment) "")
+                prop font: $font.caption
+                prop color: $fg.muted
+                prop ellipsis: end
+      if (&& (&& (== (. hits len) 0) (!= query "")) (! (. hits pending)))
+        then
+          element text "No matches"
+            prop color: $fg.muted

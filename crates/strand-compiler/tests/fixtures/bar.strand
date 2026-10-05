@@ -1,0 +1,83 @@
+// bar.strand: one instance per monitor; `screen` is in scope
+bar Top {
+  edge: top; height: 36; margin: $space.2, $space.2, 0
+  bg: $surface.alpha(0.72); blur: 24; radius: $radius.lg; shadow: $elevation.md
+  font: $font.ui; color: $fg                      // inherited by every child
+  split { pad: 0, $space.3                         // centre is truly centred
+    start { gap: $space.3
+      row { gap: $space.1
+        for ws in workspaces.on(screen) { Dot ws } // keyed by ws.id, no max
+      }
+      text windows.focused?.title ?? "" { color: $fg.muted; max_width: 40%; ellipsis: end }
+    }
+    center { Clock }
+    end { gap: $space.3
+      Volume
+      if battery.present { Battery }
+      for item in tray.items {
+        image item.icon { size: 16
+          on click     { item.activate() }
+          on secondary { item.menu.open() }
+        }
+      }
+    }
+  }
+}
+
+component Dot(ws: Workspace) {
+  box { size: 8; radius: full; bg: $fg.alpha(0.25); hit: grow(6)
+    when ws.occupied { bg: $fg.muted }
+    when ws.focused  { width: 24; bg: $accent }    // later `when` wins, like CSS
+    when ws.urgent   { bg: $error }
+    when hover       { bg: $accent.hover }
+    when pressed     { scale: 0.9 }
+    enter { width: 0; opacity: 0 }                 // exit mirrors enter
+    on click { ws.focus() }
+  }
+}
+
+component Volume {
+  row { gap: $space.1
+    on scroll(dy) { audio.sink.volume -= dy * 0.05 }
+    icon audio.sink.icon { on click { audio.sink.muted = !audio.sink.muted } }
+    if hover {                                     // the row's hover, latched while dragging
+      slider { width: 90; value: <-> audio.sink.volume
+               enter { width: 0; opacity: 0 } }
+    }
+  }
+}
+
+component Battery {
+  row { gap: $space.1
+    icon battery.icon
+    text join(" · ", pct(battery.percent), dur(battery.time_left))
+    when battery.percent < 0.15 && !battery.charging { color: $error }
+  }
+}
+
+component Clock {
+  state open = false                               // one per monitor
+  text clock.format("%a %d  %H:%M") {              // wakes once a minute
+    on click { open = !open }
+    popup { open: <-> open; Calendar }             // anchored here; Esc or click-away closes
+  }
+}
+
+component Calendar {
+  state month = clock.today.month_start()
+  col { pad: $space.3; gap: $space.2; bg: $surface; radius: $radius.lg; shadow: $elevation.lg
+    row { align: center
+      button "‹" { on click { month = month.add(months: -1) } }
+      text month.format("%B %Y") { grow: 1; align: center }
+      button "›" { on click { month = month.add(months: 1) } }
+    }
+    grid { columns: 7; gap: $space.1
+      for d in calendar.days(month) {
+        text d.date.format("%e") { width: 28; height: 28; align: center
+          when !d.in_month { color: $fg.faint }
+          when d.date == clock.today { bg: $accent; color: $on_accent; radius: full }
+        }
+      }
+    }
+  }
+}

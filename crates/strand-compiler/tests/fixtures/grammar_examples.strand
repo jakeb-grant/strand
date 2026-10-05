@@ -1,0 +1,81 @@
+// Examples from docs/grammar.md that design.md does not spell out.
+
+fn clamp01(x: float) -> float { x < 0 ? 0 : x > 1 ? 1 : x }
+
+fn label(n: int) -> text {
+  let s = n == 1 ? "item" : "items"
+  join(" ", n, s)
+}
+
+service temp from poll ["sensors", "-j"] every 5s { cpu: float = package }
+service ups from dbus system "org.freedesktop.UPower" "/org/freedesktop/UPower/devices/DisplayDevice" {
+  percent: float = Percentage
+  permit exec
+}
+service mood from file "~/.cache/mood.json" { level: int = level }
+service music from listen ["playerctl", "-F", "metadata"] { title: text? = title }
+permit exec "sensors", "playerctl"
+
+keyframes shake { 0%, 100% { x: 0 }; 25% { x: -4 }; 75% { x: 4 }; duration: 300ms }
+
+export let total = pins.len
+enum Side { left, right
+  top
+  bottom,
+}
+
+lock {
+  input { text: <-> password; on activate { auth.submit(password) } }
+}
+
+component Grammar(level: float, side: Side = left) {
+  state page = wifi
+  let lines = [
+    "a",
+    "b",
+  ]
+  text clock.today.month_start().add(months: -1).format("%B")
+  box { shadow: 0 (-2px) 8px $shadow.alpha(0.2), 0 1px 2px #00000040 }
+  box { margin: 8, 8, 0 ~ instant }
+  box { bg: oklch(from $accent, l: l + 0.12, c: c * 0.5) }
+  text match side { left => "L", right => "R", _ => "?" }
+  match side {
+    left => text "left"
+    right => { icon "go-next" }
+    _ => box {}
+  }
+  if level > 0.5 {
+    text "high"
+  } else if level > 0.2 {
+    text "mid"
+  }
+  else {
+    text "low"
+  }
+  for p in pins key p.app { text p.label }
+  on click {
+    let next = level + 0.1
+    if next > 1 { level = 1 } else { level = next }
+    match side { left => side = right, _ => side = left }
+    for p in pins { p.touch() }
+    await sleep(200ms)
+  }
+  on key(k) { propagate() }
+  text items
+    .filter(i => i.visible && !i.hidden)
+    .map((i: Item) => i.name)
+    .join(", ")
+  text a.b?.c ?? (d ?? "none")
+  text cond
+    ? "yes"
+    : "no"
+  every 1s while visible
+  {
+    ticks += 1
+  }
+  canvas { draw: (c) => {
+    c.fill($accent)
+    c.line(0, 0, width, height)
+  } }
+  text xs[0].name
+}

@@ -5,4 +5,13 @@
 //! `key`/`id`, then position). A broken save keeps the last good tree.
 //!
 //! See `docs/design.md`, "The proposed API" and "Live reload and real-time
-//! config changes". Lands in M1.
+//! config changes". The syntax is specified in `docs/grammar.md`.
+//!
+//! - [`syntax`]: lexer, parser and syntax tree with spans (M1).
+//! - [`diagnostic`]: errors with labels and did-you-mean fixes, rendered
+//!   with miette.
+
+pub mod diagnostic;
+pub mod syntax;
+
+pub use diagnostic::{Diagnostic, Severity};

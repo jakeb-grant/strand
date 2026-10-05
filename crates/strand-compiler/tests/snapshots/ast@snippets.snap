@@ -1,0 +1,302 @@
+---
+source: crates/strand-compiler/tests/fixtures.rs
+expression: tree
+---
+file
+  bar Top
+    prop edge: top
+  component GoodTable
+    element box
+      prop bg: $accent
+    element text (call (. clock format) "%H:%M")
+    element slider
+      prop value: <-> (. (. audio sink) volume)
+    element popup
+      prop open: <-> open
+    element col
+      prop font: $font.ui
+      prop color: $fg
+    element box
+      when hover
+    element text (call join " · " (call pct x) (call dur y))
+    element box
+      prop margin: (commas 8 8 0)
+    element list
+      for h (in hits)
+        element text (. (. h app) name)
+  component Expire (params (n :Notification))
+    after 6s (while (! hover))
+      expr (call (. n expire))
+  component Rules
+    element Dot ws
+    element Toast n
+      prop dense: true
+    element box
+      prop id: vol
+    when (. vol hover)
+      prop bg: $accent
+    for x (in xs) (key (. x id))
+      element text (. x name)
+    on click
+      assign = open (! open)
+    on scroll (params dy)
+      assign -= (. (. audio sink) volume) (* dy 0.05)
+    on show
+      assign = query ""
+    on change x
+      assign = y x
+    on change x (after 1.2s)
+      assign = shown false
+    every 1s (while visible)
+      assign += ticks 1
+  component Toast (params (n :Notification) (dense :bool (= false)))
+    element col
+      slot
+  state x (= 0)
+  state prefs from "prefs.toml"
+    field accent :color (= #7aa2f7ff)
+    field compact :bool (= false)
+  type Pin
+    field app :AppId
+    field label :text
+  state pins :[Pin] (key app) (= array)
+  let found (= (call (. apps search) q))
+  let art (= (?? (call material (image: wallpaper)) fallback))
+  on notifications.received (params n)
+    expr (call (. log push) n)
+  component Pins
+    on drop (params (p :Pin) (at :int))
+      expr (call (. pins move) (. p app) at)
+    on secondary
+      expr (call (. pins remove_key) (. p app))
+      expr (call (. pins insert) 0 p)
+      expr (call (. pins update) (. p app) (=> (params q) q))
+  tokens snippets
+    token $surface.hi (call (. $surface mix) $fg 8%)
+    token $fg.muted (call (. $fg alpha) 0.65)
+  component Toast2 (params n)
+    tokens
+      token radius $radius.lg
+    element col
+      prop radius: $Toast2.radius
+      prop pad: $space.2
+      prop font: $font.ui
+      prop bg: $surface
+  component Switcher
+    element segmented
+      prop options: Look
+      prop value: <-> (. theme look)
+    element col
+      set
+        token $surface (call (. $surface alpha) 0.5)
+  component Layout
+    element box
+      prop place: absolute
+    element box
+      when (< (. self width) 300)
+        prop gap: 0
+    element box
+      prop hit: (call grow 6)
+    element box
+      prop width: 24 (~ $motion.bouncy)
+    element box
+      prop width: 24 (~ 200ms)
+    element box
+      prop width: 24 (~ instant)
+    element panel_body
+      prop keyboard: none
+    element panel_body
+      prop keyboard: on_demand
+    element panel_body
+      prop keyboard: exclusive
+    element input
+      prop nav: results
+    element box
+      prop drag: pin
+    element pages (current: page)
+      element page wifi
+        element text "Wi-Fi"
+      element page bluetooth
+        element text "Bluetooth"
+    element box
+      prop tooltip: expr
+  component Hatches
+    element shader "aurora.wgsl"
+      prop u_speed: 0.4
+      prop u_tint: $accent
+    element canvas
+      prop draw: (=> (params c) (call (. c line) 0 0 10 10))
+  service ppd (from dbus system "net.hadess.PowerProfiles")
+    field profile :text rw (= ActiveProfile)
+  component Shape
+    element box
+      prop radius: (commas 14 14 0 0)
+      prop corners: squircle
+    element popup
+      prop attach: top
+    element box
+      prop shape: cookie
+      when loading
+        prop shape: burst
+    element box
+      prop stroke: (commas 3 $accent)
+        block
+          prop trim: (commas 0 progress)
+          prop wave: (commas 2 18px)
+          prop cap: round
+    element arc
+      prop value: (. cpu usage)
+      prop sweep: 270deg
+      prop width: 4
+    element merge 10
+      element box
+      element box
+  component Paint
+    element box
+      prop bg: (call linear 45deg $accent $tertiary)
+    element box
+      prop bg: (call conic (from: 90deg) $accent $secondary)
+    element box
+      prop border: (commas 2 (call conic (from: (* t 60deg)) $accent $secondary $accent))
+    element box
+      prop glow: (commas 12 (call (. $accent alpha) 0.6))
+    element box
+      prop inner_shadow: (spaced 0 2px 6px $shadow)
+      prop rim: (commas top (call (. $fg alpha) 0.15))
+    element box
+      prop grain: 0.04
+    element text "x"
+      prop text_stroke: (commas 1 $bg)
+      prop fill: (call linear 90deg $accent $tertiary)
+    element letters
+      prop y: (* 2 (call wave 1s (phase: (* index 0.1))))
+    element popup
+      prop scrim: (call (. $shadow alpha) 0.3)
+  component Filters
+    element box
+      prop filter: (call grayscale 1)
+    element box
+      prop filter: (call saturate 1.3)
+    element box
+      prop filter: (call hue 30deg)
+    element box
+      prop filter: (call brightness 0.9)
+    element box
+      prop filter: (call tint $accent)
+    element box
+      prop blend: screen
+    element box
+      prop blend: add
+    element box
+      prop blend: multiply
+    element box
+      prop blend: overlay
+    element box
+      prop blend: difference
+    element box
+      prop mask: (call fade bottom 24)
+    element box
+      prop mask: (call radial center 40%)
+    element box
+      prop mask: (call shape cookie)
+    element box
+      prop backdrop: (call blur 16)
+    element box
+      prop blur: 24
+    element box
+      prop blur: 24
+      prop blur_fallback: tint
+    element box
+      prop blur: 24
+      prop blur_fallback: none
+  keyframes shake
+    stop 0% 100%
+      prop x: 0
+    stop 25%
+      prop x: (neg 4)
+    stop 75%
+      prop x: 4
+  component Motion
+    element box
+      prop x: 4 (~ (call ease out_back 300ms))
+    element box
+      prop x: 4 (~ (call bezier 0.05 0.9 0.1 1.05))
+    element box
+      prop enter: (call popin 0.8)
+    element box
+      prop enter: (call slide top)
+    element box
+      prop enter: slidefade
+    element box
+      prop enter: fade
+    element box
+      prop y: (call wave 1.6s)
+      prop x: t
+      prop scale: (call noise x)
+    element box
+      on click
+        play shake
+    element row
+      prop stagger: 30ms
+    element box
+      prop morph: "media"
+    element text (call pct level)
+      prop roll: true
+    element box
+      prop jelly: 0.4
+    element box
+      prop parallax: 6px
+      prop tilt: 8deg
+  component Media
+    element effect lightning
+      prop speed: 1
+    element effect sparks
+      prop speed: 1
+    element effect shimmer
+      prop speed: 1
+    element effect ripple
+      prop speed: 1
+    element effect aurora
+      prop speed: 1
+    element particles
+      prop rate: 20
+      prop life: 1.2s
+      prop sprite: (call dot 3)
+      prop glow: 6
+    if open
+      then
+        element box
+          prop transition: (call wipe left)
+    if open
+      then
+        element box
+          prop transition: disc
+    if open
+      then
+        element box
+          prop transition: dissolve
+    if open
+      then
+        element box
+          prop transition: pixelate
+    element spectrum (. audio sink)
+      prop bars: 48
+      prop smooth: 0.6
+      prop style: mirror
+    element graph (. cpu usage)
+      prop history: 60s
+      prop fill: (call (. $accent alpha) 0.2)
+    element meter (. media position)
+      prop wave: (?: (. media playing) 3 0)
+    element image "spin.gif"
+    element lottie "loader.json"
+      prop speed: 1
+    element svg "icon.svg"
+      #needle
+        prop rotate: (* level 270deg)
+    element image (. media art)
+      prop fit: cover
+      prop filter: (call blur 30)
+    element thumbnail w
+  component Launcher2
+    state query @reset (= "")

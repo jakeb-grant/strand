@@ -1,0 +1,14 @@
+---
+source: crates/strand-compiler/tests/diagnostics.rs
+expression: report(src)
+---
+syntax::expected
+
+  × expected an expression, found `}`
+   ╭─[e.strand:2:13]
+ 1 │ component A {
+ 2 │   box { bg: }
+   ·             ┬
+   ·             ╰── expected an expression
+ 3 │ }
+   ╰────
