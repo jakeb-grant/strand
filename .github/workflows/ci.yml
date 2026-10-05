@@ -19,8 +19,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends sway grim fonts-dejavu-core pkg-config libfontconfig1-dev
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned to the dev container's toolchain so a new stable release's
+      # lints and deprecations cannot fail -D warnings on unchanged code.
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.97.0
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check

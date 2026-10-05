@@ -781,3 +781,9 @@ schema from `strand-compiler`).
   theme-swap render tests, wallpaper watching, service threads, compositor
   reload and cache-invalidation sources, `blur_fallback`, single-pixel
   buffers and `attach:` fillets, and the lock-screen VM tier.
+- **2026-10-05 · integration: CI toolchain pinned.** CI uses Rust 1.97.0,
+  the dev container's toolchain, instead of floating `stable`: the first
+  merged run failed on a deprecation (`fetch_update` → `try_update`) that
+  only the newer stable reported. Bump the pin deliberately, fixing new
+  lints in the same commit. CI also installs `pkg-config` and
+  `libfontconfig1-dev` for parley's font discovery.

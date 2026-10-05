@@ -190,11 +190,15 @@ impl FakeClock {
     /// Moves the time forward.
     pub fn advance(&self, by: Duration) {
         let by = u64::try_from(by.as_nanos()).unwrap_or(u64::MAX);
-        let _ = self
-            .now
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |t| {
-                Some(t.saturating_add(by))
-            });
+        let mut t = self.now.load(Ordering::SeqCst);
+        while let Err(seen) = self.now.compare_exchange_weak(
+            t,
+            t.saturating_add(by),
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        ) {
+            t = seen;
+        }
     }
 
     /// Every presentation recorded so far, oldest first.
