@@ -4,3 +4,8 @@ state pick = (x: float) => x * 2 persist
 state ok = 1 persist
 state early persist = 2
 let doubled = ok * 2 persist
+// A record is data only when every field is; opaque values are not data.
+type Holder { hits: Async<[text]>; n: int }
+state hs: [Holder] = [] persist
+state pal: Palette = material(seed: #7aa2f7) persist
+state prefs from "p.toml" { w: Holder? = null; s: Spring = spring(1, 1); n: int = 3 }

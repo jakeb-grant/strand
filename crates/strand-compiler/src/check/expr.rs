@@ -247,7 +247,18 @@ impl<'a> Checker<'a> {
         if self.types.assignable(&h.ty, ty) && !async_to_any {
             return true;
         }
-        let found = self.show(&h.ty);
+        // A whole-number literal is an `int` wherever one fits (decision
+        // "whole numbers are ints"), so a mismatch names it that way too.
+        let whole_literal = h.ty == Ty::FLOAT
+            && matches!(
+                h.kind,
+                ExprKind::Number { value, unit: None } if value.fract() == 0.0
+            );
+        let found = if whole_literal {
+            "int".to_string()
+        } else {
+            self.show(&h.ty)
+        };
         let want = self.show(ty);
         match &h.ty {
             Ty::Optional(inner) if self.types.assignable(inner, ty) => {
@@ -506,6 +517,18 @@ impl<'a> Checker<'a> {
     }
 
     fn unknown_name(&mut self, id: &ast::Ident, expected: Option<&Ty>, field_base: bool) {
+        // A name an element brings into scope (`screen` in a bar), used
+        // outside it: say where it lives before offering anything else.
+        if let Some(help) = self.element_scope_help(&id.name) {
+            self.error(
+                "check::unknown_name",
+                format!("unknown name `{}`", id.name),
+                id.span,
+                "not in scope here",
+            )
+            .help = Some(help);
+            return;
+        }
         let variant_help = self.builtin_variant_help(&id.name, expected);
         let label = match expected {
             Some(t @ Ty::Enum(_)) => format!("not a name, nor a variant of `{}`", self.show(t)),
@@ -526,6 +549,25 @@ impl<'a> Checker<'a> {
             label,
         )
         .help = help;
+    }
+
+    /// `screen` outside a `bar`: the elements whose blocks bring `name`
+    /// into scope.
+    fn element_scope_help(&self, name: &str) -> Option<String> {
+        let kinds: Vec<String> = self
+            .schema
+            .elements
+            .iter()
+            .filter(|(_, e)| e.scope.iter().any(|(n, _)| n == name))
+            .map(|(k, _)| format!("`{k}`"))
+            .collect();
+        if kinds.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "`{name}` is in scope only inside {}: use it in that element's block",
+            join_or(&kinds)
+        ))
     }
 
     /// A bare builtin variant where nothing expects its enum (`Side
@@ -588,6 +630,10 @@ impl<'a> Checker<'a> {
         if let Some(v) = suggest(word, variants) {
             return Some(format!("did you mean `{v}`?"));
         }
+        // Another file's private declaration of exactly this name.
+        if !field_base && let Some(help) = self.private_elsewhere(word) {
+            return Some(help);
+        }
         if let Some(v) = suggest(word, self.value_candidates(field_base)) {
             return Some(format!("did you mean `{v}`?"));
         }
@@ -595,6 +641,24 @@ impl<'a> Checker<'a> {
             return None;
         }
         self.export_suggestion(word)
+    }
+
+    /// `priv` read bare while another file declares it without `export`.
+    fn private_elsewhere(&self, word: &str) -> Option<String> {
+        let (m, d) = self
+            .file_scopes
+            .iter()
+            .enumerate()
+            .filter(|(m, _)| *m != self.module)
+            .find_map(|(m, scope)| scope.get(word).map(|d| (m, *d)))?;
+        if self.defs[d.0 as usize].exported {
+            return None;
+        }
+        let file = self.modules[m].name;
+        Some(format!(
+            "`{file}.{word}` exists but is private to {file}.strand; add `export` to reach it as `{file}.{word}`: `{}`",
+            self.export_form(d)
+        ))
     }
 
     pub fn binding_expr(&mut self, b: Binding, span: Span) -> hir::Expr {
@@ -716,11 +780,42 @@ impl<'a> Checker<'a> {
             {
                 return self.export_expr(m, b, name, span);
             }
+            // `battery.x` where `battery.strand` exports `x`: the file is
+            // named like a builtin, which its declaration already reports
+            // (`check::redeclared`); the service has no such member, so
+            // the read stays quiet rather than adding a second error.
+            if let Some(&m) = self.file_index.get(&b.name)
+                && m != self.module
+                && self.file_scopes[m]
+                    .get(&name.name)
+                    .is_some_and(|d| self.defs[d.0 as usize].exported)
+                && !self.builtin_has_member(&b.name, &name.name)
+            {
+                return hir::Expr::error(span);
+            }
         }
         // Only `name_expr` reads (and clears) it.
         self.field_base = matches!(base.kind, ast::ExprKind::Name(_));
         let hb = self.expr(base, None);
         self.member(hb, base, name, optional, span)
+    }
+
+    /// Whether the builtin service or value `base` has a field or method
+    /// `member`.
+    fn builtin_has_member(&self, base: &str, member: &str) -> bool {
+        let rec = match self.schema.services.get(base) {
+            Some(r) => Some(*r),
+            None => match self.schema.values.get(base).map(Ty::non_null) {
+                Some(Ty::Record(r)) => Some(*r),
+                Some(_) => None,
+                // Not a builtin at all (a global): let the lookup speak.
+                None => return true,
+            },
+        };
+        rec.is_some_and(|r| {
+            let rec = self.types.record(r);
+            rec.field(member).is_some() || rec.method(member).is_some()
+        })
     }
 
     fn variant_of(&mut self, e: crate::ty::EnumId, name: &ast::Ident, span: Span) -> hir::Expr {
@@ -778,8 +873,8 @@ impl<'a> Checker<'a> {
                 )
                 .add_secondary(df, ds, "declared here")
                 .help = Some(format!(
-                    "add `export` to its declaration: `export state {} = …`",
-                    name.name
+                    "add `export` to its declaration: `{}`",
+                    self.export_form(d)
                 ));
                 hir::Expr::error(span)
             }
@@ -1204,6 +1299,27 @@ impl<'a> Checker<'a> {
         hir::Expr::error(span)
     }
 
+    /// How declaration `d` reads with `export` added, in its own form:
+    /// `export state look = …`, `export state prefs from "…" { … }`,
+    /// `export fn f(…)`.
+    pub(super) fn export_form(&self, d: hir::DefId) -> String {
+        let def = &self.defs[d.0 as usize];
+        let n = &def.name;
+        match &def.kind {
+            DefKind::State => format!("export state {n} = …"),
+            DefKind::Settings => format!("export state {n} from \"…\" {{ … }}"),
+            DefKind::Let => format!("export let {n} = …"),
+            DefKind::Fn => format!("export fn {n}(…)"),
+            DefKind::Component => format!("export component {n}"),
+            DefKind::Enum(_) => format!("export enum {n} {{ … }}"),
+            DefKind::Type(_) => format!("export type {n} {{ … }}"),
+            DefKind::Tokens => format!("export tokens {n} {{ … }}"),
+            DefKind::Keyframes => format!("export keyframes {n} {{ … }}"),
+            DefKind::Service(_) => format!("export service {n} from …"),
+            DefKind::Surface(k) => format!("export {k} {n}"),
+        }
+    }
+
     /// A call of a user name that is not a function but hides a builtin
     /// function (`state blur = 4px` then `blur(16)`): an error naming the
     /// hidden builtin, never a silent call of it. `None` when no builtin
@@ -1224,7 +1340,7 @@ impl<'a> Checker<'a> {
         }
         self.error(
             "check::type_mismatch",
-            format!("`{name}` here is a `{shown}`, not a function"),
+            format!("`{name}` here is a value of type `{shown}`, not a function"),
             id.span,
             "cannot be called",
         )
@@ -1328,6 +1444,8 @@ impl<'a> Checker<'a> {
         for &i in &tried {
             let mark = (self.diags.len(), self.refs.len());
             let reported = self.reported.clone();
+            // A rolled-back attempt spends none of the did-you-mean budget.
+            let suggestions = self.suggestions_left.clone();
             self.speculating += 1;
             let (a, r) = self.call_args(&sigs[i], args, &what, span);
             self.speculating -= 1;
@@ -1339,6 +1457,7 @@ impl<'a> Checker<'a> {
             self.diags.truncate(mark.0);
             self.refs.truncate(mark.1);
             self.reported = reported;
+            self.suggestions_left = suggestions;
             if best.is_none_or(|(_, e)| errors < e) {
                 best = Some((i, errors));
             }
@@ -1385,8 +1504,12 @@ impl<'a> Checker<'a> {
                 {
                     Some(i) => Some(i),
                     None => {
-                        let names: Vec<String> =
-                            sig.params.iter().map(|p| p.name.clone()).collect();
+                        let names: Vec<String> = sig
+                            .params
+                            .iter()
+                            .filter(|p| !p.name.is_empty())
+                            .map(|p| p.name.clone())
+                            .collect();
                         let help = Self::did_you_mean(&n.name, &names).or_else(|| {
                             (!names.is_empty()).then(|| format!("it takes {}", list_names(&names)))
                         });
@@ -1457,7 +1580,7 @@ impl<'a> Checker<'a> {
             if filled[i] && !p.variadic {
                 self.error(
                     "check::duplicate_arg",
-                    format!("`{}` is given twice", p.name),
+                    format!("{} is given twice", p.label(i)),
                     a.span,
                     "given again here",
                 );
@@ -1475,7 +1598,7 @@ impl<'a> Checker<'a> {
                 }
                 v
             };
-            let arg_what = format!("`{}` of {what}", p.name);
+            let arg_what = format!("{} of {what}", p.label(i));
             if sig.lift && v.ty.is_optional() && !want.is_optional() {
                 lifted = true;
                 let inner = hir::Expr {
@@ -1495,19 +1618,20 @@ impl<'a> Checker<'a> {
         if channels {
             self.pop_scope();
         }
-        let missing: Vec<&str> = sig
+        let missing: Vec<(usize, &ParamSig)> = sig
             .params
             .iter()
+            .enumerate()
             .zip(&filled)
-            .filter(|(p, f)| !**f && !p.has_default && !p.variadic)
-            .map(|(p, _)| p.name.as_str())
+            .filter(|((_, p), f)| !**f && !p.has_default && !p.variadic)
+            .map(|(p, _)| p)
             .collect();
         if !missing.is_empty() {
             self.error(
                 "check::missing_arg",
                 format!(
                     "{what} needs {}",
-                    list_names(&missing.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+                    join_labels(&missing.iter().map(|(i, p)| p.label(*i)).collect::<Vec<_>>())
                 ),
                 span,
                 "missing argument",
@@ -2292,7 +2416,14 @@ impl<'a> Checker<'a> {
                 params: locals,
                 body: hbody,
             },
-            ty: Ty::Fn(Arc::new(FnSig::positional(tys, ret))),
+            ty: Ty::Fn(Arc::new(FnSig::named(
+                params
+                    .iter()
+                    .map(|p| p.name.name.clone())
+                    .zip(tys)
+                    .collect(),
+                ret,
+            ))),
             span,
         }
     }
@@ -2811,7 +2942,21 @@ fn accepts_int(t: &Ty) -> bool {
 
 fn list_names(names: &[String]) -> String {
     let quoted: Vec<String> = names.iter().map(|n| format!("`{n}`")).collect();
-    match quoted.as_slice() {
+    join_labels(&quoted)
+}
+
+/// `a, b or c` of labels already formatted.
+fn join_or(quoted: &[String]) -> String {
+    match quoted {
+        [] => String::new(),
+        [one] => one.clone(),
+        [init @ .., last] => format!("{} or {last}", init.join(", ")),
+    }
+}
+
+/// `a, b and c` of labels already formatted.
+fn join_labels(quoted: &[String]) -> String {
+    match quoted {
         [] => String::new(),
         [one] => one.clone(),
         [init @ .., last] => format!("{} and {last}", init.join(", ")),

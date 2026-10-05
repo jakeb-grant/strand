@@ -232,21 +232,32 @@ impl<'a> Checker<'a> {
     /// builtin). Shadowing a builtin service gets a warning, since
     /// `let battery = 5` turns `battery.percent` far away into a confusing
     /// error; a warning, so a service crate that adds a service never
-    /// breaks a config. `what` names the declaration (`let`, `state`,
-    /// `parameter`).
+    /// breaks a config. A `state` or `let` named like a builtin value
+    /// (`let t = 3`) warns too: every read of `t` in its scope silently
+    /// stops being the time signal. A builtin function hidden by a value
+    /// cannot be misread silently (a call of a non-function names the
+    /// hidden builtin, see `hides_builtin`), and one hidden by a function
+    /// is a deliberate replacement, so those stay silent, as do
+    /// parameters, `fn`s and types. `what` names the declaration (`let`,
+    /// `state`, `parameter`).
     pub(super) fn shadows_builtin(&mut self, name: &ast::Ident, what: &str) {
         let n = name.name.as_str();
-        if !self.schema.services.contains_key(n) {
+        let binding = matches!(what, "`let`" | "`state`");
+        let hidden = if self.schema.services.contains_key(n) {
+            "service"
+        } else if binding && self.schema.values.contains_key(n) {
+            "value"
+        } else {
             return;
-        }
+        };
         self.warning(
             "check::shadows_builtin",
-            format!("this {what} hides the builtin service `{n}`"),
+            format!("this {what} hides the builtin {hidden} `{n}`"),
             name.span,
-            "shadows a service",
+            format!("shadows a builtin {hidden}"),
         )
         .help = Some(format!(
-            "rename the {what}: in its scope `{n}` no longer reads the service"
+            "rename the {what}: in its scope `{n}` no longer reads the builtin {hidden}"
         ));
     }
 

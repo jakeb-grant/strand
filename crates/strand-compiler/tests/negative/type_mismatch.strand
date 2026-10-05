@@ -11,3 +11,5 @@ enum Look { light, dark }
 enum Other { x, y }
 state other = Other.x
 component Seg { segmented { options: Look; value: <-> other } }
+// A whole-number literal is an `int` in the message too.
+let label: text = 3

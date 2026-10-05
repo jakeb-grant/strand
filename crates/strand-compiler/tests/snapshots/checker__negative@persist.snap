@@ -12,7 +12,8 @@ check::persist
    ·                                     ╰── not plain data
  4 │ state ok = 1 persist
    ╰────
-  help: only plain data (numbers, text, colours, enums, records, lists) is stored
+  help: only plain data is stored: numbers, text, paths, colours, enums, and lists and records of
+        those
 
 syntax::persist
 
@@ -34,5 +35,56 @@ syntax::persist
  6 │ let doubled = ok * 2 persist
    ·                      ───┬───
    ·                         ╰── a `let` is derived, so there is nothing to store
+ 7 │ // A record is data only when every field is; opaque values are not data.
    ╰────
   help: to keep a value across restarts, make it `state doubled = … persist`
+
+check::persist
+
+  × `hs` cannot persist a `[Holder]`
+    ╭─[persist.strand:9:25]
+  8 │ type Holder { hits: Async<[text]>; n: int }
+  9 │ state hs: [Holder] = [] persist
+    ·                         ───┬───
+    ·                            ╰── not plain data
+ 10 │ state pal: Palette = material(seed: #7aa2f7) persist
+    ╰────
+  help: only plain data is stored: numbers, text, paths, colours, enums, and lists and records of
+        those
+
+check::persist
+
+  × `pal` cannot persist a `Palette`
+    ╭─[persist.strand:10:46]
+  9 │ state hs: [Holder] = [] persist
+ 10 │ state pal: Palette = material(seed: #7aa2f7) persist
+    ·                                              ───┬───
+    ·                                                 ╰── not plain data
+ 11 │ state prefs from "p.toml" { w: Holder? = null; s: Spring = spring(1, 1); n: int = 3 }
+    ╰────
+  help: only plain data is stored: numbers, text, paths, colours, enums, and lists and records of
+        those
+
+check::persist
+
+  × setting `w` cannot be a `Holder?`: a settings file holds plain data
+    ╭─[persist.strand:11:32]
+ 10 │ state pal: Palette = material(seed: #7aa2f7) persist
+ 11 │ state prefs from "p.toml" { w: Holder? = null; s: Spring = spring(1, 1); n: int = 3 }
+    ·                                ───┬───
+    ·                                   ╰── not plain data
+    ╰────
+  help: only plain data is stored: numbers, text, paths, colours, enums, and lists and records of
+        those
+
+check::persist
+
+  × setting `s` cannot be a `Spring`: a settings file holds plain data
+    ╭─[persist.strand:11:51]
+ 10 │ state pal: Palette = material(seed: #7aa2f7) persist
+ 11 │ state prefs from "p.toml" { w: Holder? = null; s: Spring = spring(1, 1); n: int = 3 }
+    ·                                                   ───┬──
+    ·                                                      ╰── not plain data
+    ╰────
+  help: only plain data is stored: numbers, text, paths, colours, enums, and lists and records of
+        those

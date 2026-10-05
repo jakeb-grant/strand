@@ -22,6 +22,7 @@
 //! checked on first use, which is also how static cycles are found.
 
 mod collect;
+mod cycles;
 mod expr;
 mod prepin;
 mod stmt;
@@ -77,6 +78,10 @@ impl Checked {
     }
 }
 
+/// Passes after which hand-offs are followed over-approximately (see
+/// [`check`]).
+pub const DEEP_FLOWS_AFTER: usize = 3;
+
 /// Resolves names and checks types across every file of a config.
 pub fn check<'a>(modules: &'a [Module<'a>], schema: &'a Schema) -> Checked {
     // An untyped `state`/`let` holding a whole number (`state i = 0`) is
@@ -91,12 +96,18 @@ pub fn check<'a>(modules: &'a [Module<'a>], schema: &'a Schema) -> Checked {
     // `<-> level`) are pinned before the first pass ([`prepin`]), so the
     // usual config is checked once.
     //
-    // There is no pass cap: every pass but the last pins at least one more
-    // declaration (or widens an inferred component parameter, see
+    // Every pass but the last pins at least one more declaration (or
+    // widens an inferred component parameter, see
     // [`Checker::param_pins`]), pins only grow and are bounded by the
-    // declarations, so the loop ends. A hand-off the checker does not
-    // follow (through a list, a record field) costs a pass, never a wrong
-    // type or a false error.
+    // declarations, so the loop ends. Hand-offs are followed through
+    // arithmetic, `?:`, `??`, `match`, list literals and indexing; one the
+    // checker does not follow precisely (a record field, `.first`) costs a
+    // pass. So that a long chain of those cannot cost one pass per link
+    // (quadratic), passes from [`DEEP_FLOWS_AFTER`] on record every
+    // whole-number declaration a written value reads anywhere as a source:
+    // over-approximate (such a config may get a `float` where an `int`
+    // would have done), but the closure then pins the rest of the chain at
+    // once.
     let mut pins: HashSet<DeclAt> = prepin::pre_pins(modules, schema);
     let mut param_pins: HashMap<DeclAt, Ty> = HashMap::new();
     let mut passes = 0;
@@ -105,6 +116,7 @@ pub fn check<'a>(modules: &'a [Module<'a>], schema: &'a Schema) -> Checked {
         c.float_pins = pins.clone();
         c.param_pins = param_pins.clone();
         passes += 1;
+        c.deep_flows = passes > DEEP_FLOWS_AFTER;
         c.run();
         let before = pins.len();
         pins.extend(c.widened.iter().copied());
@@ -365,6 +377,9 @@ pub(crate) struct Checker<'a> {
     /// The inferred component parameter whose argument is being checked
     /// (for the help on a bare builtin variant: `Side center`).
     pub infer_arg: Option<String>,
+    /// Follow hand-offs through every read, not only the precise forms
+    /// (a late pass, see [`check`]).
+    pub deep_flows: bool,
     /// Hand-offs between whole-number declarations this pass: `(target,
     /// source)` for `target = …source…` (see [`check`]).
     pub flows: Vec<(DeclAt, DeclAt)>,
@@ -435,6 +450,7 @@ impl<'a> Checker<'a> {
             infer_failed: HashSet::new(),
             deferred: Vec::new(),
             suggestions_left: vec![SUGGESTIONS_PER_FILE; modules.len()],
+            deep_flows: false,
             field_base: false,
             constant_lets: HashSet::new(),
             whole: HashSet::new(),
@@ -469,6 +485,7 @@ impl<'a> Checker<'a> {
         }
         self.deferred_components(&mut files);
         self.after(&files);
+        self.component_cycles(&files);
         self.out_files = files;
     }
 
@@ -824,6 +841,72 @@ impl<'a> Checker<'a> {
                 self.flow_sources(then, out);
                 self.flow_sources(else_, out);
             }
+            // `[a][0]`: an item of a list literal is one of its items.
+            hir::ExprKind::Index { base, .. } => self.flow_sources(base, out),
+            hir::ExprKind::List(items) => {
+                for i in items {
+                    self.flow_sources(i, out);
+                }
+            }
+            hir::ExprKind::Match { arms, .. } => {
+                for (_, a) in arms {
+                    self.flow_sources(a, out);
+                }
+            }
+            _ if self.deep_flows => self.deep_sources(e, out),
+            _ => {}
+        }
+    }
+
+    /// Every declaration `e` reads, wherever it reads it: the
+    /// over-approximate hand-offs of a late pass (see [`check`]).
+    fn deep_sources(&self, e: &hir::Expr, out: &mut Vec<DefId>) {
+        use hir::ExprKind as K;
+        match &e.kind {
+            K::Def(_) | K::Local(_) => self.flow_sources(e, out),
+            K::Field { base, .. } => self.deep_sources(base, out),
+            K::Call { callee, args } => {
+                match callee {
+                    hir::Callee::Fn(d) => {
+                        out.extend(self.value_sources.get(d).into_iter().flatten());
+                    }
+                    hir::Callee::Method { receiver, .. } => self.deep_sources(receiver, out),
+                    hir::Callee::Value(f) => self.deep_sources(f, out),
+                    _ => {}
+                }
+                for a in args {
+                    self.deep_sources(&a.value, out);
+                }
+            }
+            K::Index { base, index } => {
+                self.deep_sources(base, out);
+                self.deep_sources(index, out);
+            }
+            K::Unary { expr, .. } => self.deep_sources(expr, out),
+            K::Binary { lhs, rhs, .. } => {
+                self.deep_sources(lhs, out);
+                self.deep_sources(rhs, out);
+            }
+            K::Ternary { cond, then, else_ } => {
+                self.deep_sources(cond, out);
+                self.deep_sources(then, out);
+                self.deep_sources(else_, out);
+            }
+            K::Match { scrutinee, arms } => {
+                self.deep_sources(scrutinee, out);
+                for (_, a) in arms {
+                    self.deep_sources(a, out);
+                }
+            }
+            K::List(items) | K::Commas(items) | K::Spaced(items) => {
+                for i in items {
+                    self.deep_sources(i, out);
+                }
+            }
+            K::Lambda {
+                body: hir::LambdaBody::Expr(b),
+                ..
+            } => self.deep_sources(b, out),
             _ => {}
         }
     }

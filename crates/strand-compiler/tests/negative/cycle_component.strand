@@ -1,0 +1,10 @@
+// expect: check::cycle
+// A component that always contains itself would mount forever: a static
+// cycle, named by its path. Under `if`, `for`, `match` or a `popup` the
+// inner call waits for a condition, so it is not a cycle.
+component C { box { C } }
+component D { row { E } }
+component E { col { D } }
+component Tree(depth: int) { box { if depth > 0 { Tree depth - 1 } } }
+component Menu { button { popup { Menu } } }
+bar B { edge: top; height: 32; C; D; Tree 3; Menu }

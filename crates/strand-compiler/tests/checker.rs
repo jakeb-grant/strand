@@ -622,8 +622,9 @@ fn component_parameters_are_inferred_from_callers() {
     assert_eq!(param_ty("B"), "int");
     // A call inside such a cycle can come after the parameter's type was
     // joined: a fraction there widens it (`1` outside, `0.5` inside).
+    // (B's call is conditional: an unconditional one is a static cycle.)
     let out = one("component A(x) { text \"${x}\"; B x }\n\
-                   component B(y) { A 0.5 }\n\
+                   component B(y) { if y > 0 { A 0.5 } }\n\
                    bar Top { A 1 }\n");
     let p = &out.program;
     let a = p

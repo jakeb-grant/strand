@@ -58,15 +58,40 @@ check::unknown_name
  15 │ let quiet = dnd
     ·             ─┬─
     ·              ╰── not found
+ 16 │ // Another file's private declaration is named, with how to export it.
     ╰────
   help: did you mean `toasts.dnd`?
 
 check::unknown_name
 
+  × unknown name `hush`
+    ╭─[unknown_name.strand:17:14]
+ 16 │ // Another file's private declaration is named, with how to export it.
+ 17 │ let hushed = hush
+    ·              ──┬─
+    ·                ╰── not found
+ 18 │ // `screen` belongs to a bar (one per monitor), not to a variant.
+    ╰────
+  help: `toasts.hush` exists but is private to toasts.strand; add `export` to reach it as
+        `toasts.hush`: `export state hush = …`
+
+check::unknown_name
+
+  × unknown name `screen`
+    ╭─[unknown_name.strand:19:9]
+ 18 │ // `screen` belongs to a bar (one per monitor), not to a variant.
+ 19 │ let s = screen
+    ·         ───┬──
+    ·            ╰── not in scope here
+    ╰────
+  help: `screen` is in scope only inside `bar`: use it in that element's block
+
+check::unknown_name
+
   × unknown name `my-bar`
-   ╭─[toasts.strand:3:13]
- 2 │ // A kebab-case name is one unknown name, not two.
- 3 │ let kebab = my-bar.open
+   ╭─[toasts.strand:4:13]
+ 3 │ // A kebab-case name is one unknown name, not two.
+ 4 │ let kebab = my-bar.open
    ·             ───┬──
    ·                ╰── read as `my - bar`
    ╰────

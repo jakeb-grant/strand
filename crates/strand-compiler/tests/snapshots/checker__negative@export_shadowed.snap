@@ -11,12 +11,3 @@ check::redeclared
    ·               ╰── exported from a file named like it
    ╰────
   help: rename `battery.strand`; its exports are read as `file.name`
-
-check::unknown_field
-
-  × `battery` has no field `low`
-   ╭─[bar.strand:1:20]
- 1 │ let warn = battery.low
-   ·                    ─┬─
-   ·                     ╰── unknown field
-   ╰────

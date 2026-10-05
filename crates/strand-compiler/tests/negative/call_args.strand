@@ -3,3 +3,8 @@
 let a = spring(700)
 let b = ease(curve: out_back, time: 300ms)
 let c = pct("half")
+// A lambda's parameters keep their names in diagnostics.
+let inc = (a: int) => a + 1
+let bad: int = inc("x")
+// Calling a parameter that hides a builtin function names its type.
+component Fx(pct: int = 3) { text pct(0.5) }

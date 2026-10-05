@@ -1267,6 +1267,62 @@ see wave2-core; the compiler supplies the field schema.)
   first, and each entry replaces an earlier one at the same path whether
   plain or derived (a plain value no longer outranks a later derived
   override; `instantiate.rs::set_overrides_beat_component_token_defaults`).
+- **2026-10-05 · wave2-check (round 7): plain data is what the codecs
+  store.** `persist` and settings fields accept a type only when
+  `vm::persist` round-trips it (`TypeTable::is_data`): numbers, text,
+  paths, colours, enums, and lists, nullables and records of those, a
+  record checked field by field (a recursive `type Node { kids: [Node] }`
+  is data). Opaque values (`Palette`, `Spring`), fonts, shadows,
+  gradients (`paint`), insets, corners, `any`, functions and `Async` are
+  not: the encoder would silently store nothing. Each settings field gets
+  the same check (`check::persist`, "a settings file holds plain data").
+  The palette design.md persists for boot is the runtime's own, not a
+  user `persist`. A `for … key` needs a comparable value
+  (`TypeTable::is_comparable`): records are checked field by field there
+  too, but opaque values and fonts compare.
+- **2026-10-05 · wave2-check (round 7): a static cycle of components is an
+  error.** `component C { box { C } }`, or `C` → `D` → `C`, would mount
+  forever; design.md makes a static cycle a load error naming the path.
+  The checker builds the graph of component calls that mount
+  unconditionally (not under `if`/`else`, a `match` arm, a `for` or a
+  `popup`, which is shown on demand; a call's children count only when
+  the callee has a `slot`) and reports each cycle once, as `check::cycle`
+  ("static cycle: `D` → `E` → `D`"). `negative/cycle_component.strand`.
+- **2026-10-05 · wave2-check (round 7): hiding the time signal warns.**
+  Round 5's prelude stays: a parameter, `fn` or type may shadow any
+  builtin silently, and a function hidden by a value is named when
+  called. A `state` or `let` named like a builtin *value* (`let t = 3`)
+  now gets the `check::shadows_builtin` warning services get, since every
+  read of `t` in its scope silently stops being the time signal. Builtin
+  functions are left out: hidden by a value they cannot be misread
+  silently, and hidden by a function (`let pct = (x: float) => …`) they
+  are a deliberate replacement; `state min = 0` beside a slider is common
+  and must not warn.
+- **2026-10-05 · wave2-check (round 7): hand-offs through lists, then
+  over-approximately.** A whole-number state handed on through a list
+  literal or an index (`a1 = [a0][0]`) or a `match` is followed like a
+  direct hand-off. Other forms (`[a0].first ?? 0`) cost a pass each, so
+  from the fourth pass on (`DEEP_FLOWS_AFTER`) every whole-number
+  declaration a written value reads anywhere counts as a source; the
+  pins then close over the rest of the chain at once. This may make such
+  a declaration a `float` where an `int` would have done, only in a
+  config that already needed three extra passes; an 800-link chain of
+  either form checks in well under a second
+  (`robustness.rs::long_whole_number_hand_off_chains_stay_cheap`).
+- **2026-10-05 · wave2-check (round 7): diagnostics wording.** Lambda
+  parameters keep their names in signatures (`` `a` of the function
+  expects `int` ``); unnamed ones (a function type) read "argument 1". A
+  whole-number literal reads `int` in a mismatch. The not-exported help
+  writes the declaration's own form (`export state prefs from "…" { … }`).
+  A bare name that is another file's private declaration says so, with
+  the `export` to add. A name an element brings into scope (`screen`),
+  used outside it, says which element holds it before any variant help.
+  An assignment whose target is not writable drops the nullable report
+  on its path (one mistake, one diagnostic), and `battery.x` read from a
+  file named like the service is reported once, where it is exported.
+  String interpolation does not exist (grammar.md: strings have no
+  interpolation), so `"n {apps.search(q)}"` is plain text and needs no
+  Async check.
 
 ## wave2-vm
 

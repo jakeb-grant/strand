@@ -1,0 +1,31 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::cycle
+
+  × static cycle: `C` → `C`
+   ╭─[cycle_component.strand:5:21]
+ 4 │ // inner call waits for a condition, so it is not a cycle.
+ 5 │ component C { box { C } }
+   ·           ┬         ┬
+   ·           │         ╰── mounts `C` again, unconditionally
+   ·           ╰── the component `C`
+ 6 │ component D { row { E } }
+   ╰────
+  help: a component cannot always contain itself; render the inner one under an `if` or `for`
+
+check::cycle
+
+  × static cycle: `D` → `E` → `D`
+   ╭─[cycle_component.strand:7:21]
+ 5 │ component C { box { C } }
+ 6 │ component D { row { E } }
+   ·           ┬
+   ·           ╰── the component `D`
+ 7 │ component E { col { D } }
+   ·                     ┬
+   ·                     ╰── mounts `D` again, unconditionally
+ 8 │ component Tree(depth: int) { box { if depth > 0 { Tree depth - 1 } } }
+   ╰────
+  help: a component cannot always contain itself; render the inner one under an `if` or `for`

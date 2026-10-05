@@ -4,7 +4,9 @@
 enum Look { light, dark }
 export state look = light
 state secret = 1
+state prefs from "prefs.toml" { dim: bool = false }
 // file: bar.strand
 let a = theme.secret
 let b = theme.lok
 let c = theme.look
+let d = theme.prefs

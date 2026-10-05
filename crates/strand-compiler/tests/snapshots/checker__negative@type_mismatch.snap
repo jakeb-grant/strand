@@ -45,4 +45,15 @@ check::type_mismatch
     ·                                      ──┬─             ──┬──
     ·                                        │                ╰── this is `Other`
     ·                                        ╰── the options are `Look`
+ 14 │ // A whole-number literal is an `int` in the message too.
+    ╰────
+
+check::type_mismatch
+
+  × `label` expects `text`, found `int`
+    ╭─[type_mismatch.strand:15:19]
+ 14 │ // A whole-number literal is an `int` in the message too.
+ 15 │ let label: text = 3
+    ·                   ┬
+    ·                   ╰── this is `int`
     ╰────
