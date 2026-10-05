@@ -530,13 +530,13 @@ impl Ctx {
                 }
                 let sig = cell.signal;
                 // Kept for `@reset` (and the reconciler's `redeclare`).
-                self.persisted.borrow_mut().push((path.clone(), cell));
+                self.persisted
+                    .borrow_mut()
+                    .insert(sig.id(), (path.clone(), cell));
                 let weak = Rc::downgrade(self);
                 rt.on_cleanup(move || {
                     if let Some(ctx) = weak.upgrade() {
-                        ctx.persisted
-                            .borrow_mut()
-                            .retain(|(_, p)| p.signal.id() != sig.id());
+                        ctx.persisted.borrow_mut().remove(&sig.id());
                     }
                 });
                 sig

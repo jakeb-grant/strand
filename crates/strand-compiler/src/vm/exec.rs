@@ -854,27 +854,62 @@ fn read_place(
     Ok(v)
 }
 
-/// Write `value` (combined with `op`) at `place`.
-/// Whether a declaration's type is `int` (or `int?`).
-fn is_int_ty(ty: &crate::ty::Ty) -> bool {
+/// A plain number written where the declared type is `int` or `float`
+/// takes that type's tag, whatever arithmetic produced it: a whole
+/// number becomes an `int`, an `int` widened into a `float` becomes a
+/// `float`. The tag is part of `Value` equality, so without this a
+/// write of the same number could count as a change (`on change` would
+/// fire, bindings would recompute). Applied to the written leaf at any
+/// path depth (`r.count = …`, `xs[i] = …`), not to a whole record or
+/// list written at once.
+fn conform(ty: Option<&crate::ty::Ty>, v: Value) -> Value {
     use crate::ty::{Prim, Ty};
-    match ty {
-        Ty::Prim(Prim::Int) => true,
-        Ty::Optional(t) => is_int_ty(t),
-        _ => false,
+    let mut ty = ty;
+    while let Some(Ty::Optional(t)) = ty {
+        ty = Some(t);
+    }
+    match (ty, v) {
+        (Some(Ty::Prim(Prim::Int)), Value::Num(n, Num::Float))
+            if n.is_finite() && n.fract() == 0.0 =>
+        {
+            Value::Num(n, Num::Int)
+        }
+        (Some(Ty::Prim(Prim::Float)), Value::Num(n, Num::Int)) => Value::Num(n, Num::Float),
+        (_, v) => v,
     }
 }
 
-/// A whole plain number written to an `int` state is stored as an
-/// `int`, whatever arithmetic produced it, so int-ness does not leak
-/// into equality, the inspector or later arithmetic.
-fn as_int(v: Value) -> Value {
-    match v {
-        Value::Num(n, Num::Float) if n.is_finite() && n.fract() == 0.0 => Value::Num(n, Num::Int),
-        v => v,
+/// The declared type of field `name` of a value of type `ty`.
+fn field_ty<'a>(
+    vm: &'a Vm,
+    ty: Option<&'a crate::ty::Ty>,
+    name: &str,
+) -> Option<&'a crate::ty::Ty> {
+    use crate::ty::Ty;
+    match ty? {
+        Ty::Optional(t) => field_ty(vm, Some(t), name),
+        Ty::Record(id) => vm
+            .types()
+            .record(*id)
+            .fields
+            .iter()
+            .find(|f| f.name == name)
+            .map(|f| &f.ty),
+        _ => None,
     }
 }
 
+/// The declared type of the items of a list of type `ty`.
+fn item_ty(ty: Option<&crate::ty::Ty>) -> Option<&crate::ty::Ty> {
+    use crate::ty::Ty;
+    match ty? {
+        Ty::Optional(t) => item_ty(Some(t)),
+        Ty::List(t, _) => Some(t),
+        _ => None,
+    }
+}
+
+/// Write `value` (combined with `op`) at `place`.
 pub(crate) fn store(
     vm: &Rc<Vm>,
     rt: &Runtime,
@@ -895,8 +930,9 @@ pub(crate) fn store(
                     let Some(sig) = fields.field(name) else {
                         return Err(fail(format!("settings have no field `{name}`")));
                     };
+                    let ty = field_ty(vm, Some(&vm.prog.def(*d).ty), name);
                     let cur = sig.get_untracked(rt)?;
-                    let new = set_in(vm, &cur, rest, &indices, op, value)?;
+                    let new = set_in(vm, &cur, ty, rest, &indices, op, value)?;
                     sig.set(rt, new)
                 }
                 // A whole record: each field.
@@ -907,7 +943,7 @@ pub(crate) fn store(
                     let def = vm.types().record(r.ty);
                     for (f, v) in def.fields.iter().zip(&r.fields) {
                         if let Some(sig) = fields.field(&f.name) {
-                            sig.set(rt, v.clone())?;
+                            sig.set(rt, conform(Some(&f.ty), v.clone()))?;
                         }
                     }
                     Ok(())
@@ -925,18 +961,18 @@ pub(crate) fn store(
                 // `xs = [...]` replaces by key; `xs[i].done = true` updates
                 // the item at `i` by its key.
                 let cur = rt.untrack(|rt| slot.get(rt))?;
-                let new = set_in(vm, &cur, &place.segs, &indices, op, value)?;
+                let ty = Some(&vm.prog.def(*d).ty);
+                let new = set_in(vm, &cur, ty, &place.segs, &indices, op, value)?;
                 let items = new.as_list().map(<[Value]>::to_vec).unwrap_or_default();
                 return k.replace_all(rt, items);
             }
             let super::Slot::Signal(sig) = slot else {
                 return Err(fail(format!("`{}` is not state", vm.prog.def(*d).name)));
             };
-            let whole = place.segs.is_empty() && is_int_ty(&vm.prog.def(*d).ty);
+            let ty = Some(&vm.prog.def(*d).ty);
             let mut result = Ok(());
             sig.update(rt, |cur| {
-                match set_in(vm, cur, &place.segs, &indices, op, value) {
-                    Ok(new) if whole => *cur = as_int(new),
+                match set_in(vm, cur, ty, &place.segs, &indices, op, value) {
                     Ok(new) => *cur = new,
                     Err(e) => result = Err(e),
                 }
@@ -975,19 +1011,23 @@ pub(crate) fn store(
     }
 }
 
+/// `cur` with `value` (combined with `op`) written at `segs`; `ty` is
+/// `cur`'s declared type, when known, which the written leaf conforms to.
 fn set_in(
     vm: &Vm,
     cur: &Value,
+    ty: Option<&crate::ty::Ty>,
     segs: &[PlaceSeg],
     indices: &[Value],
     op: AssignOp,
     value: Value,
 ) -> Result<Value, Error> {
     let Some((seg, rest)) = segs.split_first() else {
-        return match op.binary() {
-            None => Ok(value),
-            Some(b) => builtins::binary(b, cur, &value),
+        let new = match op.binary() {
+            None => value,
+            Some(b) => builtins::binary(b, cur, &value)?,
         };
+        return Ok(conform(ty, new));
     };
     match seg {
         PlaceSeg::Field(name) => {
@@ -999,7 +1039,8 @@ fn set_in(
                 return Err(fail(format!("`{}` has no field `{name}`", def.name)));
             };
             let mut fields = r.fields.clone();
-            fields[i] = set_in(vm, &fields[i], rest, indices, op, value)?;
+            let fty = Some(&def.fields[i].ty);
+            fields[i] = set_in(vm, &fields[i], fty, rest, indices, op, value)?;
             Ok(Value::record(r.ty, fields))
         }
         PlaceSeg::Index => {
@@ -1013,7 +1054,7 @@ fn set_in(
             }
             let mut items = list.to_vec();
             let at = at as usize;
-            items[at] = set_in(vm, &items[at], rest, more, op, value)?;
+            items[at] = set_in(vm, &items[at], item_ty(ty), rest, more, op, value)?;
             Ok(Value::list(items))
         }
     }

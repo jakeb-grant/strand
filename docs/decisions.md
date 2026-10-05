@@ -1755,7 +1755,13 @@ see wave2-core; the compiler supplies the field schema.)
   which the crate graph forbids). They publish typed cells, keyed
   collections and `EventQueue`s into `strand-core`; the `Value`
   adapters and the composite live in the binary (or, if generic over
-  `#[derive(Store)]`, in `strand-compiler` behind a core trait). A failing
+  `#[derive(Store)]`, in `strand-compiler` behind a core trait). Amended
+  again in fixer round 3: services run on their own threads and core's
+  `Runtime` is not `Send`, so a service sends `Send` patches (generated
+  by `#[derive(Store)]`) over a channel to a logic-side store that owns
+  the cells; actions and methods go to the service thread as messages
+  and their results come back as patches completing an `Async`; the
+  `ServiceHost` adapter wraps the logic-side store. A failing
   first read of a `for`'s list or an `if`/`match` selector is no longer
   reported at mount: the list's or switch's effect reports it in the
   same flush, located (`if`/`match` now have a site), so it appears once
@@ -1784,6 +1790,24 @@ see wave2-core; the compiler supplies the field schema.)
   of 16; `unmounted_settings_are_pruned`), and a chain step whose lambda
   reads a view `let` depends on the view's version, as for a keyed
   `state`, not on a comparison of its whole list.
+- **2026-10-05 · wave2-vm (fixer round 3): a written number takes its
+  declared tag.** The `int`/`float` tag of a plain number is part of
+  `Value` equality, so a whole `int` widened into a `float` state (`f =
+  n`, then `f = 2.0`) counted as a change and fired `on change` twice.
+  The round-2 backstop (whole numbers into an `int` state) is replaced
+  by one rule: the leaf a write lands in, at any path depth (`f = …`,
+  `r.w = …`, `xs[i] = …`, a settings field, a `<->` write), takes the
+  tag of its declared type, `int` (whole numbers only) or `float`; a
+  whole record or list written at once is not walked. Division of any
+  two plain numbers is a `float` (an `int` divided by a `float` kept the
+  `int` tag holding a fraction). Persisted cells are kept by signal id,
+  so an unmount removes its cell in O(1) rather than scanning the list.
+  `tests/instantiate.rs::a_float_state_ignores_the_int_tag`,
+  `path_writes_conform_to_the_field_type`,
+  `a_step_reading_a_view_let_follows_the_view`,
+  `unmounted_persisted_cells_are_removed`; `vm::builtins` unit
+  `units_follow_the_checker`; `tests/checker.rs` pins handler `let`
+  types.
 
 ## wave2-core
 

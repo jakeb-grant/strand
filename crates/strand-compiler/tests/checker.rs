@@ -214,6 +214,18 @@ fn expressions_carry_types_and_spans() {
         panic!("{:?}", v.kind)
     };
     assert_eq!(show(p, &lhs.ty), "text?");
+    // A whole-number handler `let` is an `int`, like a top-level one; a
+    // fractional one stays a `float`.
+    let out = one(
+        "state open = false\nbar B { box { on click { let y = 1\n let z = 1.5\n open = y > z } } }\n",
+    );
+    let p = &out.program;
+    let local = |n: &str| {
+        let l = p.locals.iter().find(|l| l.name == n).unwrap();
+        show(p, &l.ty)
+    };
+    assert_eq!(local("y"), "int");
+    assert_eq!(local("z"), "float");
 }
 
 #[test]

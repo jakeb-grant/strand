@@ -809,16 +809,24 @@ Public interfaces other crates and later stages build on:
     `Rc<dyn ServiceHost>`, and `ServiceHost` (with `Value`, `RecordId`
     and the rest of the VM's dynamic types) stays in `strand-compiler`:
     `strand-services` depends only on `strand-core` (crate graph) and
-    never sees `Value`. Each M3 service publishes typed state into
-    `strand-core` (`Signal<T>`/`Memo<T>` per field, `KeyedSignal` for
-    keyed lists, an `EventQueue<T>` per event, plain Rust methods for
-    actions and `fn`/async methods), the `#[service]`/`#[derive(Store)]`
-    contract features.md plans. The adapter from those typed stores to
-    `ServiceHost` lives on the language side: the binary (`strand`, which
-    depends on both) gives each service one `ServiceHost` implementation
-    that converts between its typed cells and `Value` (a `Memo<Value>`
-    over each typed field, so a binding still depends on exactly that
-    field; writes and actions converted back and sent to the service),
+    never sees `Value`. A service runs on its own thread (tokio, or
+    PipeWire's), and core's `Runtime` is `Rc`-based and not `Send`, so a
+    service never holds logic-thread cells. The split, per service
+    (the `#[service]`/`#[derive(Store)]` contract features.md plans):
+    `#[derive(Store)]` generates a `Send` patch type (one variant per
+    field, keyed-list diffs, events) that the service thread sends over
+    a channel; a logic-side store, built on the logic thread, applies
+    those patches to its cells (`Signal<T>` per field, `KeyedSignal` for
+    keyed lists, an `EventQueue<T>` per event). Writes, actions and
+    `fn`/async methods go the other way as messages to the service
+    thread; a method's result comes back as a patch that completes the
+    `Async` the call returned. The adapter from those logic-side stores
+    to `ServiceHost` lives on the language side: the binary (`strand`,
+    which depends on both) gives each service one `ServiceHost`
+    implementation that wraps its logic-side store and converts between
+    its typed cells and `Value` (a `Memo<Value>` over each typed field,
+    so a binding still depends on exactly that field; writes and actions
+    converted back and sent to the service thread),
     and a composite host routes every call by service name to the member
     that serves it (`SchemaHost::real` answers the rest at their
     defaults, and the clock and calendar stay there), unions `next_wake`

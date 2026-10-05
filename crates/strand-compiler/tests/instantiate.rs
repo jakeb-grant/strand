@@ -2535,3 +2535,120 @@ fn mount_failures_are_reported_once_located() {
     assert!(whats.iter().any(|w| w.starts_with("for n in")), "{whats:?}");
     assert!(whats.iter().any(|w| w.starts_with("if in")), "{whats:?}");
 }
+
+/// A plain number written to a `float` state is stored as a `float`,
+/// whatever produced it: writing the same number again (`f = n` with an
+/// `int` `n`, then `f = 2.0`) is no change, so `on change` fires once.
+#[test]
+fn a_float_state_ignores_the_int_tag() {
+    let src = "state f: float = 0.0\nstate fired = 0\non change f { fired += 1 }\nbar B {\n  box { on click { let n = 2\n f = n } }\n  box { on scroll(dy) { f = 2.0 } }\n}\n";
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let b = shell.scene.of_kind(NodeKind::Box)[0];
+    let c = shell.scene.of_kind(NodeKind::Box)[1];
+    assert!(shell.inst.event(b, "click", Vec::new()));
+    assert!(shell.flush().errors.is_empty());
+    let v = shell.inst.value_of("t", "f").unwrap();
+    assert!(matches!(v, Value::Num(n, Num::Float) if n == 2.0), "{v:?}");
+    assert!(shell.inst.event(c, "scroll", vec![Value::float(1.0)]));
+    assert!(shell.flush().errors.is_empty());
+    assert_eq!(shell.inst.value_of("t", "fired").unwrap(), Value::int(1));
+}
+
+/// A number written through a path takes the declared type of the field
+/// or item it lands in: an `int` written to a `float` field or item is
+/// stored as a `float`.
+#[test]
+fn path_writes_conform_to_the_field_type() {
+    let src = "type Count { n: int; w: float }\nstate c = Count(n: 0, w: 0.0)\nstate ws: [float] = [0.0, 0.0]\nbar B { box { on click { let k = 2\n c.n = k\n c.w = k\n ws[1] = k } } }\n";
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let b = shell.scene.of_kind(NodeKind::Box)[0];
+    assert!(shell.inst.event(b, "click", Vec::new()));
+    let u = shell.flush();
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    let Value::Record(r) = shell.inst.value_of("t", "c").unwrap() else {
+        panic!("not a record")
+    };
+    assert!(
+        matches!(r.fields[0], Value::Num(n, Num::Int) if n == 2.0),
+        "{:?}",
+        r.fields
+    );
+    assert!(
+        matches!(r.fields[1], Value::Num(n, Num::Float) if n == 2.0),
+        "{:?}",
+        r.fields
+    );
+    let ws = shell.inst.value_of("t", "ws").unwrap();
+    let ws = ws.as_list().unwrap();
+    assert!(
+        matches!(ws[1], Value::Num(n, Num::Float) if n == 2.0),
+        "{ws:?}"
+    );
+}
+
+/// A chain step that reads a view `let` compares the view by its
+/// version: it runs again when the view changes (an item's `pinned`
+/// flips), and not when the source changes outside the view.
+#[test]
+fn a_step_reading_a_view_let_follows_the_view() {
+    let src = "type Row { id: int; label: text; pinned: bool }\nstate rows: [Row] key id = [Row(id: 1, label: \"a\", pinned: false), Row(id: 2, label: \"b\", pinned: false)]\nstate ys: [Row] key id = [Row(id: 10, label: \"y\", pinned: false)]\nlet pinned = rows.filter(r => r.pinned)\nbar B {\n  for y in ys.filter(y => pinned.len > 0 && y.id > 0) { text y.label }\n  box { on click { rows.update(1, r => Row(id: r.id, label: r.label, pinned: !r.pinned)) } }\n  box { on scroll(dy) { rows.update(2, r => Row(id: r.id, label: join(\"\", r.label, \"b\"), pinned: false)) } }\n}\n";
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    assert!(shell.scene.find_text("y").is_none());
+    let boxes = shell.scene.of_kind(NodeKind::Box);
+    let (pin, edit) = (boxes[0], boxes[1]);
+    // `pinned` flips: the update's lambda, `rows`'s filter for row 1 and
+    // `ys`'s step for its one item.
+    let calls = shell.inst.lambda_calls();
+    assert!(shell.inst.event(pin, "click", Vec::new()));
+    assert!(shell.flush().errors.is_empty());
+    assert!(
+        shell.scene.find_text("y").is_some(),
+        "{}",
+        shell.scene.render()
+    );
+    assert_eq!(shell.inst.lambda_calls() - calls, 3);
+    // An edit outside the view: the update's lambda and `rows`'s filter
+    // for row 2 only; `ys`'s step does not run.
+    for _ in 0..3 {
+        let calls = shell.inst.lambda_calls();
+        assert!(shell.inst.event(edit, "scroll", vec![Value::float(1.0)]));
+        assert!(shell.flush().errors.is_empty());
+        assert_eq!(shell.inst.lambda_calls() - calls, 2);
+    }
+    // Flipped back: the step runs again and the item goes.
+    let calls = shell.inst.lambda_calls();
+    assert!(shell.inst.event(pin, "click", Vec::new()));
+    assert!(shell.flush().errors.is_empty());
+    assert!(shell.scene.find_text("y").is_none());
+    assert_eq!(shell.inst.lambda_calls() - calls, 3);
+}
+
+/// Mounting and unmounting a component with a persisted `state` many
+/// times removes each cell on unmount (O(1) each, by signal id), so
+/// only the live ones stay.
+#[test]
+fn unmounted_persisted_cells_are_removed() {
+    let dir = temp_dir("persist-churn");
+    let storage = Storage::in_dirs(dir.join("state"), dir.join("config"));
+    let src = "state on = true\ncomponent C {\n  state n = 0 persist\n  text join(\" \", n)\n}\nbar B { box { on click { on = !on } }\n  if on { C } }\n";
+    let one = |rt: &Runtime, host: &SchemaHost| screens(rt, host, &["DP-1"]);
+    let mut shell = boot_with(&[("t.strand", src)], one, storage.clone());
+    assert_eq!(shell.inst.persisted_len(), 1);
+    let b = shell.scene.of_kind(NodeKind::Box)[0];
+    for i in 0..200 {
+        assert!(shell.inst.event(b, "click", Vec::new()));
+        assert!(shell.flush().errors.is_empty());
+        assert_eq!(shell.inst.persisted_len(), i % 2);
+    }
+    drop(shell);
+    if let Some(p) = &storage.persist {
+        assert!(p.sync(Duration::from_secs(5)));
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}

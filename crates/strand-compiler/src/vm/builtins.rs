@@ -225,7 +225,7 @@ pub(crate) fn binary(op: BinaryOp, a: &Value, b: &Value) -> Result<Value, Error>
             let scalar = |u: &Num| matches!(u, Num::Int | Num::Float);
             let unit = match op {
                 Div => match (u, v) {
-                    (Num::Int, Num::Int) => Num::Float,
+                    (a, b) if scalar(a) && scalar(b) => Num::Float,
                     (d, s) if scalar(s) => *d,
                     _ => Num::Float,
                 },
@@ -800,6 +800,12 @@ mod tests {
         assert_eq!(r, Value::int(5));
         let r = binary(BinaryOp::Div, &Value::int(3), &Value::int(2)).unwrap();
         assert_eq!(r, Value::float(1.5));
+        let r = binary(BinaryOp::Div, &Value::int(2), &Value::float(4.0)).unwrap();
+        assert!(matches!(r, Value::Num(x, Num::Float) if x == 0.5));
+        let r = binary(BinaryOp::Div, &Value::float(1.0), &Value::int(4)).unwrap();
+        assert!(matches!(r, Value::Num(x, Num::Float) if x == 0.25));
+        let r = binary(BinaryOp::Div, &Value::Num(90.0, Num::Deg), &Value::int(2)).unwrap();
+        assert!(matches!(r, Value::Num(x, Num::Deg) if x == 45.0));
         assert!(binary(BinaryOp::Div, &Value::int(1), &Value::int(0)).is_err());
         assert_eq!(
             binary(BinaryOp::Eq, &Value::int(1), &Value::float(1.0)).unwrap(),

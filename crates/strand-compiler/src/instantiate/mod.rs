@@ -158,9 +158,10 @@ pub(crate) struct Ctx {
     pub vm: Rc<Vm>,
     pub em: RefCell<Emitter>,
     pub storage: Storage,
-    /// Live persisted cells by path (`@reset`, the reconciler's
-    /// `redeclare`).
-    pub persisted: RefCell<Vec<(String, strand_core::Persisted<Value>)>>,
+    /// Live persisted cells with their paths (`@reset`, the reconciler's
+    /// `redeclare`), by signal id so an unmount removes its cell in O(1).
+    pub persisted:
+        RefCell<std::collections::HashMap<CoreId, (String, strand_core::Persisted<Value>)>>,
     pub errors: RefCell<Vec<RuntimeError>>,
     /// Bindings, handlers and timers by core id, for locating their
     /// errors (removed when their scope goes).
@@ -459,11 +460,11 @@ impl Storage {
     }
 }
 
-/// The seed of the palette a config without `use palette` gets: the
-/// design's default accent.
 /// The mounted-settings list is first pruned at this length.
 pub(crate) const SETTINGS_PRUNE_MIN: usize = 16;
 
+/// The seed of the palette a config without `use palette` gets: the
+/// design's default accent.
 pub const DEFAULT_SEED: &str = "#7aa2f7";
 
 /// A program running on a runtime. See the module docs.
@@ -891,6 +892,11 @@ impl Instance {
         self.ctx.settings.borrow().len()
     }
 
+    /// Live persisted cells (tests and the inspector).
+    pub fn persisted_len(&self) -> usize {
+        self.ctx.persisted.borrow().len()
+    }
+
     /// A top-level `state` or `let` of a file by module and name
     /// (exported or not; tests and the inspector).
     pub fn value_of(&self, module: &str, name: &str) -> Result<Value, Error> {
@@ -1027,7 +1033,7 @@ impl Instance {
     pub fn reset(&self, path: &str) -> Result<(), Error> {
         let cells = self.ctx.persisted.borrow();
         let mut found = false;
-        for (p, cell) in cells.iter() {
+        for (p, cell) in cells.values() {
             if p == path {
                 cell.reset(&self.rt)?;
                 found = true;
