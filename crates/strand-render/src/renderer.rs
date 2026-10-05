@@ -329,14 +329,19 @@ impl Renderer {
 
     /// Drops text no surface wants any more: slots for a width or scale
     /// a surface has left. A slot drawn as a stand-in (its node's wanted
-    /// slot has no layout yet) is kept until the wanted one arrives.
+    /// slot has no layout yet) is kept until the wanted one arrives; a
+    /// poisoned slot never gets one, so it keeps no stand-ins.
     fn prune_texts(&mut self) {
         let mut keep: HashSet<TextSlot> = HashSet::new();
         let mut standing_in: HashSet<NodeId> = HashSet::new();
         for s in self.surfaces.values() {
             for slot in &s.wanted {
                 keep.insert(*slot);
-                if self.texts.get(slot).is_none_or(|t| t.layout.is_none()) {
+                if self
+                    .texts
+                    .get(slot)
+                    .is_none_or(|t| t.layout.is_none() && !t.poisoned)
+                {
                     standing_in.insert(slot.node);
                 }
             }
@@ -1132,6 +1137,49 @@ mod tests {
         assert!(r.wait_for_text(Duration::from_secs(10)));
         assert!(text_at(&r, a).layout.is_some());
         assert!(!text_at(&r, a).poisoned);
+    }
+
+    /// A poisoned slot never gets a layout, so it does not hold on to the
+    /// node's layouts at other widths as stand-ins: when the other surface
+    /// goes, its layout goes too.
+    #[test]
+    fn a_poisoned_slot_keeps_no_stand_ins() {
+        let mut r = Renderer::new(worker());
+        let (d, root, txt) = aligned_text("12:59", "center");
+        assert!(r.apply(d).is_empty());
+        r.attach_surface(SurfaceId(1), root);
+        r.attach_surface(SurfaceId(2), root);
+        r.configure_surface(SurfaceId(1), Size::new(200, 20), Scale::ONE);
+        r.configure_surface(SurfaceId(2), Size::new(120, 20), Scale::ONE);
+        for id in [1, 2] {
+            r.flatten_surface(SurfaceId(id));
+        }
+        // The engine crashes on the wide one's request.
+        let wide = Some(200f32.to_bits());
+        let key = r
+            .texts
+            .iter()
+            .find(|(s, _)| s.node == txt && s.width == wide)
+            .and_then(|(_, t)| t.requested.as_ref())
+            .unwrap()
+            .0;
+        r.deliver(TextLayout::reset(key, Scale::ONE));
+        for id in [1, 2] {
+            r.surfaces.get_mut(&SurfaceId(id)).unwrap().cache = None;
+            r.flatten_surface(SurfaceId(id));
+        }
+        assert!(r.wait_for_text(Duration::from_secs(10)));
+        let slot = |r: &Renderer, w: f32| {
+            r.texts
+                .iter()
+                .find(|(s, _)| s.width == Some(w.to_bits()))
+                .map(|(_, t)| (t.poisoned, t.layout.is_some()))
+        };
+        assert_eq!(slot(&r, 200.0), Some((true, false)));
+        assert_eq!(slot(&r, 120.0), Some((false, true)));
+        r.detach_surface(SurfaceId(2));
+        assert_eq!(slot(&r, 120.0), None, "kept as a stand-in for nothing");
+        assert_eq!(r.texts.len(), 1);
     }
 
     /// A layout missing glyphs for want of atlas room is retried a bounded

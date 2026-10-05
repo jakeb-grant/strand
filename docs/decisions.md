@@ -559,3 +559,23 @@ schema from `strand-compiler`).
 - 2026-10-05 · m0: `strand run --demo` exits 0 when the compositor goes
   away (the Wayland connection reports a broken pipe or reset), and with
   the logic thread's error as soon as that thread's channel closes.
+- 2026-10-05 · m0: the demo's one `bar` node shown on every output is
+  an M0 shortcut, not the M1 model. In M1, `strand run` forwards the
+  `SurfaceHost` `monitor_*` hooks to logic as the `screens` service and
+  pins one `bar` instance per monitor (`Screens::Named`); state survives
+  an unplug through `rt.reparent`. It also adds a render → logic channel
+  for `InputEvent`s and layout facts. The per-width text slots in render
+  exist because of the shared node; their M2 costs are under "Later" in
+  `architecture.md` (render).
+- 2026-10-05 · m0: the 34 MB PSS gate is asserted on a release build
+  (`cargo test --release -p strand --test demo`, and
+  `scripts/m0-exit.sh`). A debug run of `demo.rs` is held to a separate
+  40 MB debug ceiling: debug builds carry about 9 MB that release does
+  not.
+- 2026-10-05 · m0 (test fix in strand-surface):
+  `commits_lock_to_the_refresh_rate` checks presentation timestamps from
+  the compositor, recorded by a `FakeClock`, so each frame is on a later
+  refresh than the one before. It no longer derives a bound from
+  wall-clock time × 60. Headless sway reports `seq` 0 and refresh 0, so
+  the test assumes 60 Hz with 2 ms slack and compares `seq` only when it
+  moves.

@@ -110,8 +110,11 @@ collection, the runtime, thread stacks, mimalloc overhead), 4.5 MB the
 binary's own text and data, 1.1 MB the shm buffers (two per surface,
 2560×32×4 and 2560×40×4 bytes, shared with sway), the rest libc, fontconfig
 caches and DejaVuSans.ttf. That is under the design's 29–34 MB estimate
-for "bar only, 2×1440p". A debug build measures about 31 MB, so the gate
-is measured on release only.
+for "bar only, 2×1440p". A debug build measures about 31 MB (about 9 MB of
+debug-only overhead), so `crates/strand/tests/demo.rs` holds the 34 MB
+gate only when it runs in release (`cargo test --release -p strand --test
+demo`) and a debug run to a separate 40 MB debug ceiling; this script
+measures the release binary.
 
 **Wakeups.** Across a minute tick the whole process does 5 context
 switches: 1 on the logic thread (its timerfd), 1 on the text worker
@@ -177,6 +180,22 @@ The script now waits for boot to go quiet before counting, gates the
 per-tick total and centring, and runs the third-output scenario; the six
 boots above had no correction frame.
 
+Review round 2 changes (no gate number moved):
+
+- **Refresh-rate test.** The strand-surface test
+  `commits_lock_to_the_refresh_rate` flaked about 1 run in 3 on an idle
+  machine. It derived its bound from wall-clock time × 60. It now reads
+  the compositor's presentation timestamps through a recording
+  `FakeClock`: each frame is presented on a later refresh than the one
+  before, and 100 changes are coalesced. It passed 9 of 9 full
+  `--test sway` runs, 3 of them with 3 cores busy.
+- **Poisoned text slot.** In strand-render, a text slot the engine
+  crashed on (poisoned) no longer keeps its node's layouts for other
+  widths as stand-ins (`a_poisoned_slot_keeps_no_stand_ins`).
+- **demo.rs.** The 34 MB PSS gate is asserted in release, and a debug run
+  is held to a 40 MB debug ceiling. The hotplug step waits for the new
+  bar's own 1920x32 frame.
+
 ## strand-core 10k-node benchmark
 
 `cargo bench -p strand-core --bench graph`, from the first measurement
@@ -198,19 +217,27 @@ These match the numbers recorded by the core track within noise.
 
 ## Open
 
-- The budgets are enforced on every `cargo test` where sway and grim are
-  installed (`crates/strand/tests/demo.rs` asserts PSS ≤ 34 MB, idle and
-  alignment), but the CI image has neither, so in CI the test prints
-  SKIPPED and the design's "build fails above 34 MB on every push" does
-  not hold yet. Proposed to the owner of `.github/workflows/ci.yml`: a
-  step `sudo apt-get install -y sway grim fonts-dejavu-core` before
-  `cargo test`. Tracked as an unticked item under M3 in
-  `docs/features.md`.
+- The budgets are checked on every `cargo test` where sway and grim are
+  installed. `crates/strand/tests/demo.rs` checks idle and alignment,
+  and PSS: 34 MB in release, 40 MB as the debug ceiling. The CI image
+  has neither tool, so in CI that test and the strand-surface sway tests
+  print SKIPPED, and the design's "build fails above 34 MB on every push"
+  does not hold yet. It has to hold before M1 links in the compiler, VM
+  and watcher. Proposed to the lead, who owns
+  `.github/workflows/ci.yml`: add `sudo apt-get install -y sway grim
+  fonts-dejavu-core` before `cargo test`, then `cargo test --release -p
+  strand --test demo`. Tracked as an unticked M0 item in
+  `docs/features.md`, so M0 is not closed until CI has it.
 - Measured on sway with pixman only. Compositors that release shm buffers
   right after upload (GPU renderers) reuse the same buffer at age 1, which
   the copy-forward path does not change.
-- Monitors are not yet forwarded to logic as the `screens` service, and
-  the demo uses one `bar` node on every output rather than one instance
-  per monitor; both arrive with the language (M1).
+- Monitors are not yet forwarded to logic as the `screens` service. The
+  demo has no render → logic channel, and it uses one `bar` node on every
+  output rather than one instance per monitor. That is a demo shortcut,
+  not the M1 model; it is tracked as an M1 item in `docs/features.md`.
+  The per-width text layouts in render exist because of the shared node.
+  Their M2 costs, a reshape per frame for a springing width and a
+  correction frame after a reconfigure, are recorded under "Later" in
+  `docs/architecture.md`.
 - The bar's colours are literals and its layout absolute until tokens and
   taffy (M2); the start and end texts are placeholders until M3 services.

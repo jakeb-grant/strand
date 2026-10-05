@@ -3,8 +3,10 @@
 //! with its clock centred, no wakeups while idle, then a third output of
 //! another width at scale 1 (hotplugged) whose bar is aligned to its own
 //! width. Skipped, loudly, when sway or grim is not installed.
-//! `scripts/m0-exit.sh` measures the full M0 gates on a release build (a
-//! whole minute, the tick's damage).
+//! The 34 MB gate is asserted when the test runs in release (`cargo test
+//! --release -p strand --test demo`); a debug run is held to a looser
+//! debug ceiling. `scripts/m0-exit.sh` measures the full M0 gates on a
+//! release build (a whole minute, the tick's damage).
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -157,8 +159,22 @@ fn damage_lines(log: &Path) -> Vec<String> {
 }
 
 /// The M0 memory gate (`docs/design.md`: the build fails above 34 MB for
-/// the two-monitor bar).
+/// the two-monitor bar), held on a release build (`cargo test --release`).
 const PSS_GATE_KB: u64 = 34 * 1024;
+
+/// A debug build carries about 9 MB more than release (30–31 MB against
+/// 21–22 MB in M0): its own, looser ceiling, so debug-only growth does not
+/// pass for a budget breach. The gate itself is checked in release.
+const DEBUG_PSS_CEILING_KB: u64 = 40 * 1024;
+
+/// The PSS limit for the binary under test and its name.
+fn pss_limit() -> (u64, &'static str) {
+    if cfg!(debug_assertions) {
+        (DEBUG_PSS_CEILING_KB, "debug ceiling")
+    } else {
+        (PSS_GATE_KB, "M0 gate")
+    }
+}
 
 fn pss_kb(pid: u32) -> u64 {
     let rollup = std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup")).unwrap();
@@ -303,11 +319,9 @@ fn demo_bar_on_two_outputs_then_idle() {
 
     // The memory gate, on the two-monitor bar.
     let pss = pss_kb(pid);
-    eprintln!("strand PSS with two 2560x1440 bars: {pss} kB");
-    assert!(
-        pss <= PSS_GATE_KB,
-        "PSS {pss} kB over the {PSS_GATE_KB} kB gate"
-    );
+    let (limit, what) = pss_limit();
+    eprintln!("strand PSS with two 2560x1440 bars: {pss} kB ({what} {limit} kB)");
+    assert!(pss <= limit, "PSS {pss} kB over the {limit} kB {what}");
 
     // Idle: no thread of the process wakes. Skip a window that would
     // contain a minute boundary (the clock tick is the one wakeup).
@@ -336,15 +350,26 @@ fn demo_bar_on_two_outputs_then_idle() {
         "1",
     ])
     .unwrap();
-    painted(&mut strand, frames + 1);
+    // Its own first frame, not just any frame (a minute tick may land
+    // meanwhile).
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !damage_lines(&log)
+        .iter()
+        .any(|l| l.contains("buffer=1920x32 "))
+    {
+        assert!(
+            strand.0.try_wait().unwrap().is_none(),
+            "strand exited: {}",
+            std::fs::read_to_string(&log).unwrap_or_default()
+        );
+        assert!(
+            Instant::now() < deadline,
+            "no bar on HEADLESS-3: {:?}",
+            damage_lines(&log)
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
     std::thread::sleep(Duration::from_millis(700));
-    assert!(
-        damage_lines(&log)
-            .iter()
-            .any(|l| l.contains("buffer=1920x32 ")),
-        "{:?}",
-        damage_lines(&log)
-    );
     Shot::take(&sway, "HEADLESS-3").assert_aligned("HEADLESS-3", 1.0);
     Shot::take(&sway, "HEADLESS-1").assert_aligned("HEADLESS-1", 1.0);
     Shot::take(&sway, "HEADLESS-2").assert_aligned("HEADLESS-2", 1.25);
