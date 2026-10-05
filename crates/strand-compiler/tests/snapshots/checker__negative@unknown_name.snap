@@ -61,6 +61,17 @@ check::unknown_name
     ╰────
   help: did you mean `toasts.dnd`?
 
+check::unknown_name
+
+  × unknown name `my-bar`
+   ╭─[toasts.strand:3:13]
+ 2 │ // A kebab-case name is one unknown name, not two.
+ 3 │ let kebab = my-bar.open
+   ·             ───┬──
+   ·                ╰── read as `my - bar`
+   ╰────
+  help: names are snake_case: `my_bar`
+
 fix [check::unknown_name] unknown_name.strand: `volum` -> `volume`
 fix [check::unknown_name] unknown_name.strand: `opn` -> `open`
 fix [check::unknown_name] unknown_name.strand: `tp` -> `top`

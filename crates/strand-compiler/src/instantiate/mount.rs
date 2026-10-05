@@ -66,6 +66,9 @@ enum ListSource {
     /// A keyed collection (a keyed `state`, a service's keyed field):
     /// its own diffs, item by item.
     Keyed(strand_core::KeyedSignal<ValueKey, Value>),
+    /// An incremental view over a keyed collection (`xs.filter(…)`):
+    /// its own diffs, item by item.
+    Derived(strand_core::KeyedMemo<ValueKey, Value>),
 }
 
 /// One mounted item of a keyed list.
@@ -114,6 +117,9 @@ struct Keyed {
     at: (crate::source::FileId, crate::syntax::Span),
     /// Items that leave are parked, not unmounted (per-monitor bars).
     park: bool,
+    /// What a [`ListSource::Memo`] reads: chunks evaluated in the list's
+    /// scope, and nodes it reads directly (declared edges).
+    reads: (Vec<ChunkId>, Vec<strand_core::NodeId>),
 }
 
 impl Ctx {
@@ -171,7 +177,9 @@ impl Ctx {
         match n {
             Node::Element(e) => self.mount_element(rt, e, env, frag, Vec::new()),
             Node::Surface(s) => self.mount_surface(rt, s, env, frag),
-            Node::If { cond, then, else_ } => self.mount_switch(
+            Node::If {
+                cond, then, else_, ..
+            } => self.mount_switch(
                 rt,
                 *cond,
                 vec![then.clone(), else_.clone()],
@@ -179,7 +187,7 @@ impl Ctx {
                 env,
                 frag,
             ),
-            Node::Match { selector, arms } => {
+            Node::Match { selector, arms, .. } => {
                 self.mount_switch(rt, *selector, arms.clone(), false, env, frag)
             }
             Node::For(f) => self.mount_for(rt, f, env, frag),
@@ -234,19 +242,24 @@ impl Ctx {
         let mut lets = Vec::new();
         let mut states = Vec::new();
         collect_decls(nodes, &mut lets, &mut states);
+        let mut made = Vec::with_capacity(lets.len());
         for (def, value) in lets {
             let (vm, e) = (self.vm.clone(), env.clone());
-            if let Some(m) = self.async_let(rt, def, value, env) {
-                rt.set_name(m.id(), self.vm.prog.def(def).name.as_str());
-                env.bind_def(def, Slot::Memo(m));
-                continue;
-            }
-            let m = rt.memo(move |rt| vm.eval(rt, value, &e));
+            let m = match self.async_let(rt, def, value, env) {
+                Some(m) => m,
+                None => rt.memo(move |rt| vm.eval(rt, value, &e)),
+            };
             rt.set_name(m.id(), self.vm.prog.def(def).name.as_str());
             env.bind_def(def, Slot::Memo(m));
+            made.push((m.id(), value));
         }
         for s in states {
             self.declare_state(rt, s, env);
+        }
+        // Every name of the body is bound now: declare what each `let`
+        // reads (a `let` may read one declared after it).
+        for (id, value) in made {
+            self.declare_reads(rt, id, &[value], env, &[]);
         }
     }
 
@@ -276,8 +289,14 @@ impl Ctx {
         let (vm, e) = (self.vm.clone(), env.clone());
         let owner = rt.current_owner();
         let weak = rt.downgrade();
+        let me = Rc::downgrade(self);
         let cell: Rc<Cell<Option<strand_core::AsyncMemo<Value>>>> = Rc::default();
+        // Handlers awaiting the `let` while it is pending: woken when it
+        // settles.
+        let waiters: Rc<RefCell<Vec<std::task::Waker>>> = Rc::default();
+        let w_outer = waiters.clone();
         Some(rt.memo(move |rt| {
+            let waiters = w_outer.clone();
             let am = match cell.get() {
                 Some(am) => am,
                 None => {
@@ -316,16 +335,66 @@ impl Ctx {
                         Some(o) => rt.with_owner(o, make),
                         None => Ok(make(rt)),
                     })?;
+                    // The input's reads go on the load's effect; readers
+                    // of the `let` read the async memo.
+                    if let Some(ctx) = me.upgrade() {
+                        ctx.declare_reads(rt, am.effect_id(), &[value], &e, &[]);
+                    }
+                    // Wakes the awaiters once the load settles.
+                    let w = waiters.clone();
+                    let settle = move |rt: &Runtime| {
+                        if !am.get(rt)?.pending() {
+                            for w in w.borrow_mut().drain(..) {
+                                w.wake();
+                            }
+                        }
+                        Ok(())
+                    };
+                    rt.untrack(|rt| {
+                        let make = |rt: &Runtime| rt.effect(settle);
+                        let fx = match owner {
+                            Some(o) => rt.with_owner(o, make),
+                            None => Ok(make(rt)),
+                        };
+                        if let Ok(fx) = fx {
+                            let _ = rt.reads_from(fx.id(), &[am.id()]);
+                        }
+                    });
                     cell.set(Some(am));
                     am
                 }
             };
             let a = am.get(rt)?;
+            // `await hits` while a load runs waits for it to settle (and
+            // every handler awaiting it gets the same result).
+            let op = a.pending().then(|| {
+                let (weak, waiters) = (weak.clone(), waiters.clone());
+                let fut = std::future::poll_fn(move |cx| {
+                    let Some(rt) = weak.upgrade() else {
+                        return std::task::Poll::Ready(Err("the runtime is gone".to_string()));
+                    };
+                    match am.get_untracked(&rt) {
+                        Ok(a) if a.pending() => {
+                            let mut w = waiters.borrow_mut();
+                            if !w.iter().any(|x| x.will_wake(cx.waker())) {
+                                w.push(cx.waker().clone());
+                            }
+                            std::task::Poll::Pending
+                        }
+                        Ok(a) => std::task::Poll::Ready(match (a.error(), a.value()) {
+                            (Some(e), _) => Err(e.to_string()),
+                            (None, v) => Ok(v.cloned().unwrap_or(Value::Null)),
+                        }),
+                        Err(e) => std::task::Poll::Ready(Err(e.to_string())),
+                    }
+                });
+                Rc::new(crate::vm::value::PendingOp::new(Box::pin(fut)))
+            });
             Ok(Value::Async(Rc::new(crate::vm::value::AsyncValue {
                 value: a.value().cloned(),
                 pending: a.pending(),
                 error: a.error().map(|e| e.to_string().into()),
-                op: None,
+                op,
             })))
         }))
     }
@@ -380,6 +449,7 @@ impl Ctx {
             let k = rt.keyed(kv);
             rt.set_name(k.id(), path.as_str());
             let list = rt.memo(move |rt| k.with(rt, crate::vm::value::list_of));
+            let _ = rt.reads_from(list.id(), &[k.id()]);
             env.bind_def(s.def, Slot::Keyed(k, list));
             return;
         }
@@ -508,6 +578,8 @@ impl Ctx {
             Ok(Value::record(record, values))
         });
         rt.set_name(memo.id(), path);
+        let ids: Vec<_> = slot.fields.iter().map(|(_, f)| f.id()).collect();
+        let _ = rt.reads_from(memo.id(), &ids);
         env.bind_settings(def, slot);
         env.bind_def(def, Slot::Memo(memo));
     }
@@ -565,6 +637,9 @@ impl Ctx {
         extra: Vec<(SceneProp, PropValue)>,
         services: Option<&Arc<std::collections::BTreeSet<String>>>,
     ) {
+        // A nested surface (a `popup` in a bar) holds what its children
+        // read while it is shown.
+        let services = services.or(e.services.as_ref());
         let kind = match &e.kind {
             ElementKind::Builtin(k) => *k,
             ElementKind::Component(d) => return self.mount_component(rt, *d, e, env, parent),
@@ -576,7 +651,9 @@ impl Ctx {
         state.scene.set(Some(id));
         for &l in &e.scope {
             if env.local(l).is_none() {
-                env.bind_local(l, Slot::Memo(rt.memo(|_| Ok(Value::int(0)))));
+                let m = rt.memo(|_| Ok(Value::int(0)));
+                let _ = rt.reads_from(m.id(), &[]);
+                env.bind_local(l, Slot::Memo(m));
             }
         }
         {
@@ -662,6 +739,7 @@ impl Ctx {
         let (block, ()) = rt.scope(|_| ());
         let token = self.hold(rt, services);
         let mounted = Rc::new(Cell::new(false));
+        let blocked = Rc::new(Cell::new(false));
         let shown: Rc<Cell<Option<bool>>> = Rc::default();
         let (me, env) = (self.clone(), env.clone());
         let show = move |rt: &Runtime, is_open: bool| {
@@ -671,6 +749,9 @@ impl Ctx {
             }
             if is_open {
                 me.set_held(token, true);
+                if blocked.replace(false) {
+                    me.block_services(rt, block.id(), false);
+                }
                 if !mounted.replace(true) {
                     let _ = rt.with_owner(block.id(), |rt| {
                         me.mount_nodes(rt, &content, &env, inner, Some(&ec));
@@ -682,6 +763,11 @@ impl Ctx {
             } else {
                 if mounted.get() {
                     let _ = rt.suspend(block.id());
+                    // Components in the content let go of their services
+                    // too, and nested surfaces of theirs.
+                    if !blocked.replace(true) {
+                        me.block_services(rt, block.id(), true);
+                    }
                 }
                 me.set_held(token, false);
                 if prev.is_some() {
@@ -704,6 +790,7 @@ impl Ctx {
                     rt.untrack(|rt| show(rt, o));
                     Ok(())
                 });
+                let _ = rt.reads_from(effect.id(), &[memo.id()]);
                 rt.set_name(effect.id(), "surface open");
             }
         }
@@ -881,6 +968,16 @@ impl Ctx {
         });
         let what: Rc<str> = format!("{}.{}", kind.name(), prop.name()).into();
         rt.set_name(memo.id(), &*what);
+        let mut chunks = Vec::new();
+        for s in sources.iter() {
+            chunks.extend(s.cond);
+            match &s.value {
+                SourceValue::Chunk(c, _) => chunks.push(*c),
+                SourceValue::Pose(props) => chunks.extend(props.iter().map(|p| p.value)),
+                SourceValue::Tokens(defs) => chunks.extend(defs.iter().map(|d| d.value)),
+            }
+        }
+        self.declare_reads(rt, memo.id(), &chunks, env, &[]);
         let site = Rc::new(super::Site {
             what,
             file: at.0,
@@ -971,7 +1068,7 @@ impl Ctx {
             }
             Err(e) => self.error("if/match", e),
         }
-        let _ = rt.with_owner(block.id(), |rt| {
+        if let Ok(effect) = rt.with_owner(block.id(), |rt| {
             rt.effect(move |rt| {
                 let which = pick(rt)?;
                 if current.get() != Some(which) {
@@ -980,7 +1077,9 @@ impl Ctx {
                 }
                 Ok(())
             })
-        });
+        }) {
+            self.declare_reads(rt, effect.id(), &[selector], env, &[]);
+        }
     }
 
     /// A keyed list of instances: `for` items and per-monitor bars. Items
@@ -999,16 +1098,21 @@ impl Ctx {
             what,
             at,
             park,
+            reads,
         } = k;
         let frag = self.em.borrow_mut().new_frag(Some(parent), None);
         let (block, ()) = rt.scope(|_| ());
+        let list_id: Cell<Option<strand_core::NodeId>> = Cell::new(None);
         let Ok(read) = rt.with_owner(block.id(), |rt| -> ReadDiffs {
             match source {
                 ListSource::Memo(list) => {
                     let keyed =
                         rt.keyed_memo(|t: &(ValueKey, Value)| t.0.clone(), move |rt| list(rt));
                     rt.set_name(keyed.id(), what.as_str());
+                    self.declare_reads(rt, keyed.id(), &reads.0, env, &reads.1);
                     self.site(rt, keyed.id(), what.as_str(), at.0, at.1, env, None);
+                    let kid = keyed.id();
+                    list_id.set(Some(kid));
                     Rc::new(move |rt: &Runtime, since: Option<u64>| {
                         let snap = keyed.snapshot(rt)?;
                         if since == Some(snap.version()) {
@@ -1022,13 +1126,27 @@ impl Ctx {
                         Ok(Some((snap.version(), diffs)))
                     })
                 }
-                ListSource::Keyed(cell) => Rc::new(move |rt: &Runtime, since: Option<u64>| {
-                    let snap = cell.snapshot(rt)?;
-                    if since == Some(snap.version()) {
-                        return Ok(None);
-                    }
-                    Ok(Some((snap.version(), snap.diffs_or_reset(since))))
-                }),
+                ListSource::Derived(view) => {
+                    list_id.set(Some(view.id()));
+                    self.site(rt, view.id(), what.as_str(), at.0, at.1, env, None);
+                    Rc::new(move |rt: &Runtime, since: Option<u64>| {
+                        let snap = view.snapshot(rt)?;
+                        if since == Some(snap.version()) {
+                            return Ok(None);
+                        }
+                        Ok(Some((snap.version(), snap.diffs_or_reset(since))))
+                    })
+                }
+                ListSource::Keyed(cell) => {
+                    list_id.set(Some(cell.id()));
+                    Rc::new(move |rt: &Runtime, since: Option<u64>| {
+                        let snap = cell.snapshot(rt)?;
+                        if since == Some(snap.version()) {
+                            return Ok(None);
+                        }
+                        Ok(Some((snap.version(), snap.diffs_or_reset(since))))
+                    })
+                }
             }
         }) else {
             return;
@@ -1083,7 +1201,7 @@ impl Ctx {
                 }
                 let scope = ctx.em.borrow_mut().park(it.frag);
                 if let Some(s) = scope {
-                    ctx.park_services(rt, s.id(), true);
+                    ctx.block_services(rt, s.id(), true);
                     let _ = rt.suspend(s.id());
                 }
                 parked.borrow_mut().insert(it.key.clone(), it);
@@ -1100,7 +1218,7 @@ impl Ctx {
                             let scope = ctx.em.borrow_mut().unpark(it.frag, at);
                             set_value(rt, &it, value);
                             if let Some(s) = scope {
-                                ctx.park_services(rt, s.id(), false);
+                                ctx.block_services(rt, s.id(), false);
                                 rt.resume(s.id());
                             }
                             it
@@ -1208,6 +1326,7 @@ impl Ctx {
                 Ok(())
             });
             rt.set_name(effect.id(), what.as_str());
+            let _ = rt.reads_from(effect.id(), &list_id.get().into_iter().collect::<Vec<_>>());
             self.site(rt, effect.id(), what.as_str(), at.0, at.1, &env2, None);
         });
     }
@@ -1281,6 +1400,7 @@ impl Ctx {
     fn mount_for(self: &Rc<Self>, rt: &Runtime, f: &For, env: &Rc<Env>, parent: FragId) {
         let source = match self.keyed_source(rt, f, env) {
             Some(k) => ListSource::Keyed(k),
+            None if let Some(view) = self.keyed_chain(rt, f, env) => ListSource::Derived(view),
             None => {
                 let (ctx, e) = (self.clone(), env.clone());
                 let (iter, key, binding) = (f.iter, f.key.clone(), f.binding);
@@ -1327,6 +1447,15 @@ impl Ctx {
                 ),
                 at: (f.file, f.span),
                 park: false,
+                reads: (
+                    std::iter::once(f.iter)
+                        .chain(match &f.key {
+                            ForKey::Expr(c) => Some(*c),
+                            _ => None,
+                        })
+                        .collect(),
+                    Vec::new(),
+                ),
             },
         );
     }
@@ -1411,20 +1540,34 @@ impl Ctx {
             .collect();
         self.mount_block(rt, parent, None, |ctx, rt, frag| {
             env.set_owner(rt.current_owner());
+            let mut defaults = Vec::new();
             for ((local, default), arg) in comp.params.iter().zip(args) {
                 let vm = ctx.vm.clone();
                 let m = match (arg, default) {
                     (Some(c), _) => {
                         let e = caller.clone();
-                        rt.memo(move |rt| vm.eval(rt, c, &e))
+                        let m = rt.memo(move |rt| vm.eval(rt, c, &e));
+                        ctx.declare_reads(rt, m.id(), &[c], caller, &[]);
+                        m
                     }
                     (None, Some(d)) => {
                         let (e, d) = (env.clone(), *d);
-                        rt.memo(move |rt| vm.eval(rt, d, &e))
+                        let m = rt.memo(move |rt| vm.eval(rt, d, &e));
+                        defaults.push((m.id(), d));
+                        m
                     }
-                    (None, None) => rt.memo(|_| Ok(Value::Null)),
+                    (None, None) => {
+                        let m = rt.memo(|_| Ok(Value::Null));
+                        let _ = rt.reads_from(m.id(), &[]);
+                        m
+                    }
                 };
                 env.bind_local(*local, Slot::Memo(m));
+            }
+            // Defaults may read other parameters: declared once all are
+            // bound.
+            for (id, d) in defaults.drain(..) {
+                ctx.declare_reads(rt, id, &[d], &env, &[]);
             }
             ctx.acquire(rt, &comp.body.services);
             ctx.declare(rt, &comp.body.nodes, &env);
@@ -1445,8 +1588,9 @@ impl Ctx {
 
     /// Register the services a scope (the current owner) reads, not yet
     /// held; released when the scope goes. [`Ctx::set_held`] holds them
-    /// (a surface shown) or lets go (hidden), and a parked bar lets go of
-    /// everything under it ([`Ctx::park_services`]).
+    /// (a surface shown) or lets go (hidden), and a scope under a hidden
+    /// surface's content or a parked bar lets go of them until it is
+    /// shown or back ([`Ctx::block_services`]).
     pub(crate) fn hold(
         self: &Rc<Self>,
         rt: &Runtime,
@@ -1454,13 +1598,27 @@ impl Ctx {
     ) -> u64 {
         let token = self.next_hold.get();
         self.next_hold.set(token + 1);
+        let scope = rt.current_owner();
+        let blocks = {
+            let blocked = self.blocked.borrow();
+            let mut n = 0;
+            if !blocked.is_empty() {
+                let mut cur = scope;
+                while let Some(c) = cur {
+                    n += blocked.get(&c).copied().unwrap_or(0);
+                    cur = rt.owner_of(c).ok().flatten();
+                }
+            }
+            n
+        };
         self.holds.borrow_mut().insert(
             token,
             super::Hold {
-                scope: rt.current_owner(),
+                scope,
                 services,
-                held: false,
-                parked: false,
+                want: false,
+                blocks,
+                acquired: false,
             },
         );
         let weak = Rc::downgrade(self);
@@ -1468,7 +1626,7 @@ impl Ctx {
             if let Some(ctx) = weak.upgrade() {
                 let gone = ctx.holds.borrow_mut().remove(&token);
                 if let Some(h) = gone
-                    && h.held
+                    && h.acquired
                 {
                     for s in h.services.iter() {
                         ctx.vm.host.release(s);
@@ -1479,23 +1637,15 @@ impl Ctx {
         token
     }
 
-    /// Hold (`true`) or let go of a registered scope's services.
-    pub(crate) fn set_held(&self, token: u64, on: bool) {
-        let mut holds = self.holds.borrow_mut();
-        let Some(h) = holds.get_mut(&token) else {
-            return;
-        };
-        if h.parked {
-            // Parked: it takes the visibility on return.
-            h.parked = on;
+    /// Acquire or release so a hold matches what it wants and its blocks.
+    fn sync_hold(&self, h: &mut super::Hold) {
+        let should = h.want && h.blocks == 0;
+        if should == h.acquired {
             return;
         }
-        if h.held == on {
-            return;
-        }
-        h.held = on;
+        h.acquired = should;
         for s in h.services.iter() {
-            if on {
+            if should {
                 self.vm.host.acquire(s);
             } else {
                 self.vm.host.release(s);
@@ -1503,9 +1653,30 @@ impl Ctx {
         }
     }
 
-    /// A bar parked (`true`) or back: every scope under `root` lets go of
-    /// its services, and takes them again on return.
-    pub(crate) fn park_services(&self, rt: &Runtime, root: strand_core::NodeId, park: bool) {
+    /// Hold (`true`) or let go of a registered scope's services.
+    pub(crate) fn set_held(&self, token: u64, on: bool) {
+        let mut holds = self.holds.borrow_mut();
+        if let Some(h) = holds.get_mut(&token) {
+            h.want = on;
+            self.sync_hold(h);
+        }
+    }
+
+    /// Every scope under `root` lets go of its services (`true`: a surface
+    /// hidden, a bar parked) or takes them again (`false`).
+    pub(crate) fn block_services(&self, rt: &Runtime, root: strand_core::NodeId, block: bool) {
+        {
+            let mut blocked = self.blocked.borrow_mut();
+            let n = blocked.entry(root).or_insert(0);
+            if block {
+                *n += 1;
+            } else {
+                *n = n.saturating_sub(1);
+                if *n == 0 {
+                    blocked.remove(&root);
+                }
+            }
+        }
         let mut holds = self.holds.borrow_mut();
         for h in holds.values_mut() {
             let Some(scope) = h.scope else { continue };
@@ -1521,24 +1692,16 @@ impl Ctx {
             if !under {
                 continue;
             }
-            match (park, h.held, h.parked) {
-                (true, true, _) => {
-                    h.held = false;
-                    h.parked = true;
-                    for s in h.services.iter() {
-                        self.vm.host.release(s);
-                    }
-                }
-                (false, _, true) => {
-                    h.parked = false;
-                    h.held = true;
-                    for s in h.services.iter() {
-                        self.vm.host.acquire(s);
-                    }
-                }
-                _ => {}
+            if block {
+                h.blocks += 1;
+            } else {
+                h.blocks = h.blocks.saturating_sub(1);
             }
+            self.sync_hold(h);
         }
+        drop(holds);
+        // A scope gone for good (a forgotten bar) leaves no block behind.
+        self.blocked.borrow_mut().retain(|&id, _| rt.exists(id));
     }
 
     /// A surface: once, or for a `bar`, once per monitor of the `screens`
@@ -1646,6 +1809,13 @@ impl Ctx {
                 what: "bar on every screen".to_string(),
                 at: (s.element.file, s.element.span),
                 park: true,
+                reads: (
+                    pick.into_iter().collect(),
+                    ["all", "focused"]
+                        .into_iter()
+                        .flat_map(|f| self.vm.host.sources(rt, "screens", Some(f)))
+                        .collect(),
+                ),
             },
         );
     }
@@ -1718,7 +1888,10 @@ impl Ctx {
                     rt.spawn_input(Some(site), me.reporting(loc.clone(), fut));
                     Ok(())
                 });
-                if r.is_ok() {
+                // The body's tasks write as the site.
+                self.declare_writes(rt, site, body, env);
+                if let Ok(l) = r {
+                    let _ = rt.reads_from(l, &[]);
                     let mut em = self.em.borrow_mut();
                     if let Some(entry) = em.nodes.get_mut(&el.scene) {
                         // Several `on click` on one element all run, in
@@ -1744,15 +1917,25 @@ impl Ctx {
                 );
                 let (e, me) = (env.clone(), self.clone());
                 let el = el.cloned();
-                let _ = q.on(rt, move |rt, args: &Vec<Value>| {
+                let r = q.on(rt, move |rt, args: &Vec<Value>| {
                     let frame: Frame = params.iter().copied().zip(args.iter().cloned()).collect();
                     let ctx = Ctx::event_ctx(el.as_ref(), &ev, args.clone());
                     let fut = vm.handler(rt, body, e.clone(), frame, ctx);
                     rt.spawn_for(site, me.reporting(loc.clone(), fut));
                     Ok(())
                 });
+                self.declare_writes(rt, site, body, env);
+                if let Ok(l) = r {
+                    let _ = rt.reads_from(l, &[]);
+                }
             }
             Event::Change { targets, debounce } => {
+                // What the tracked expression reads: each target and the
+                // item whose identity re-baselines it.
+                let tracked: Vec<ChunkId> = targets
+                    .iter()
+                    .flat_map(|(t, k)| std::iter::once(*t).chain(*k))
+                    .collect();
                 let targets = targets.clone();
                 let (ctx, e) = (self.clone(), env.clone());
                 let track = move |rt: &Runtime| -> Result<Value, Error> {
@@ -1791,12 +1974,17 @@ impl Ctx {
                     rt.spawn(me.reporting(l.clone(), fut));
                 };
                 let id = match debounce {
-                    None => rt
-                        .on_change_keyed(key, track, move |rt, _| {
-                            start(rt);
-                            Ok(())
-                        })
-                        .id(),
+                    None => {
+                        let id = rt
+                            .on_change_keyed(key, track, move |rt, _| {
+                                start(rt);
+                                Ok(())
+                            })
+                            .id();
+                        self.declare_reads(rt, id, &tracked, env, &[]);
+                        self.declare_writes(rt, id, body, env);
+                        id
+                    }
                     Some(d) => {
                         // The debounce follows a reactive duration: a new
                         // duration replaces the debounce, taking over a
@@ -1831,6 +2019,13 @@ impl Ctx {
                                 Some(o) => rt.with_owner(o, make),
                                 None => Ok(make(rt)),
                             })?;
+                            // The tracked reads on the debounce's effect,
+                            // the body's writes on its timer.
+                            rt.untrack(|rt| {
+                                ctx.declare_reads(rt, new.effect.id(), &tracked, &e, &[]);
+                                ctx.declare_writes(rt, new.timer.id(), body, &e);
+                                let _ = rt.reads_from(new.timer.id(), &[]);
+                            });
                             if let Some((_, old)) = current.take() {
                                 let _ = new.rescale_from(rt, old);
                                 old.dispose(rt);
@@ -1838,6 +2033,7 @@ impl Ctx {
                             current.set(Some((delay, new)));
                             Ok(())
                         });
+                        self.declare_reads(rt, effect.id(), &[d], env, &[]);
                         effect.id()
                     }
                 };
@@ -1909,6 +2105,10 @@ impl Ctx {
             TimerKind::Every => rt.every_dyn(dur, cond, run),
         };
         rt.set_name(timer.id(), name.as_str());
+        let mut reads = vec![t.duration];
+        reads.extend(t.while_);
+        self.declare_reads(rt, timer.id(), &reads, env, &[]);
+        self.declare_writes(rt, timer.id(), t.body, env);
         self.site(rt, timer.id(), name, t.file, t.span, env, scene);
     }
 }

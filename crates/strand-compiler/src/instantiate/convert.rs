@@ -328,7 +328,9 @@ pub fn transition(types: &TypeTable, v: &Value) -> Transition {
     }
 }
 
-/// A token table entry: plain (no token inside) or derived.
+/// A token table entry: plain (no token inside) or derived. Sets the token at `path`, replacing whatever an earlier entry (the
+/// palette, a component default, a set further down the chain) put
+/// there, plain or derived.
 pub fn token_entry(types: &TypeTable, table: &mut TokenTable, path: &str, ty: &Ty, v: &Value) {
     let pv = prop_value(types, ty, v);
     if matches!(pv, PropValue::Unset) {
@@ -339,8 +341,10 @@ pub fn token_entry(types: &TypeTable, table: &mut TokenTable, path: &str, ty: &T
             PropValue::Token(e) => e,
             pv => TokenExpr::value(pv),
         };
+        table.tokens.remove(path);
         table.insert_derived(path, e);
     } else {
+        table.derived.remove(path);
         table.insert(path, pv);
     }
 }

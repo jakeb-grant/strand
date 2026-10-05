@@ -629,11 +629,11 @@ So Strand watches directories and acts only on `CLOSE_WRITE` and `MOVED_TO`, nev
 
 **Symlinked dotfiles.** GNU stow can make `~/.config/strand` itself a link into `~/dotfiles`, so Strand canonicalises each loaded file and also watches the target's directory. home-manager links into the read-only `/nix/store`; `home-manager switch` swaps the link, which the link-directory watch sees. NFS emits no events and falls back to polling with content comparison.
 
-Crates: [`notify`](https://docs.rs/notify/latest/notify/) 8.2 and [`notify-debouncer-full`](https://docs.rs/notify-debouncer-full/latest/notify_debouncer_full/) 0.7, which stitches renames together and drops duplicates. `notify` 9 is still a release candidate.
+Crate: raw inotify through [`rustix`](https://docs.rs/rustix/latest/rustix/fs/inotify/) (`fs::inotify`, polled with `poll(2)` next to an eventfd), not [`notify`](https://docs.rs/notify/latest/notify/) 8.2: `notify` adds `IN_OPEN` and `IN_ATTRIB` to every watch, so every file any process opens in a watched directory (fonts, icons, `~/.config`) would wake an idle shell, and it silently drops the watches below a moved directory. The watch mask is `CLOSE_WRITE`, `MOVED_TO`, `MOVED_FROM`, `CREATE`, `DELETE`, `DELETE_SELF`, `MOVE_SELF` and `MODIFY` (the last only keeps an open batch waiting). No debouncer: [`notify-debouncer-full`](https://docs.rs/notify-debouncer-full/latest/notify_debouncer_full/) debounces each file on its own timer, but "save all" needs one quiet period across all files, and Strand never follows renames (it re-checks each named path by `lstat` and hash when the quiet period ends), so its rename stitching is not needed (`docs/decisions.md`, wave2-watch). A missing watched directory is waited for from its nearest existing ancestor, and the config directory's parent is watched, so a directory that is deleted and recreated is not lost. Every ancestor of a watched directory holds a light watch (its children moved or deleted, nothing else), so moving a directory higher up is seen too.
 
 ### The pipeline
 
-1. **Coalesce.** Wait 15 ms after the last completed write, so "save all" is one batch.
+1. **Coalesce.** Wait 15 ms after the last completed write, so "save all" is one batch. When the latest event removed a watched file the wait is 50 ms, so delete-then-create is one edit; a batch never stays open more than 500 ms.
 2. **Skip no-ops.** Hash each file with BLAKE3. Unchanged content stops here, including Strand's own writes, whose hashes are pre-registered.
 3. **Compile off-thread.** A worker parses, type-checks and lowers only changed modules and their dependents. Rendering continues.
 4. **Commit atomically.** Commit the largest changed set that type-checks with everything that references it, and hold back the rest. One tick, no blank frame, no teardown.
@@ -727,7 +727,7 @@ Services are typed Rust structs that start lazily when a shell first references 
 | freedesktop-desktop-entry 0.8, freedesktop-icons 0.4 | Launcher data and icons | Watched live |
 | nucleo 0.5 | Fuzzy matching with match ranges | Releases stalled since 2024; wrap it, fork if needed |
 | swayipc-async 3.0; own Hyprland and niri IPC | Compositor adapters | `hyprland` and `niri-ipc` crates are GPL-3.0; their IPC is simple JSON over a socket |
-| notify 8.2, notify-debouncer-full 0.7, blake3 | Live reload | Directory watches; see live reload |
+| rustix inotify, blake3 | Live reload | Directory watches without `IN_OPEN`; see live reload |
 | taffy 0.14, parley 0.11, swash | Layout and text | taffy runs on the render thread |
 | vello\_cpu, vello\_gpu 0.3, wgpu 30, naga | Rendering and shaders | Behind our own scene IR |
 | material-colors 0.5, palette 0.7, tinted-builder | Palettes and importers | Material spec version pinned |

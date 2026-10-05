@@ -12,7 +12,7 @@
 
 use std::time::SystemTime;
 
-use strand_core::{Error, EventQueue, KeyedSignal, Runtime};
+use strand_core::{Error, EventQueue, KeyedSignal, NodeId, Runtime};
 
 use super::value::{Value, ValueKey};
 
@@ -40,6 +40,26 @@ pub trait ServiceHost {
 
     /// The value of `service.field`, tracked.
     fn read(&self, rt: &Runtime, service: &str, field: &str) -> Result<Value, Error>;
+
+    /// The core nodes a read of `service.field` depends on (`None`: of
+    /// the service as a whole, as a method call such as `clock.format(p)`
+    /// reads it): what the VM declares with `rt.reads_from` before the
+    /// first flush, so sinks reading services are ranked from the start
+    /// (architecture.md, "Lowering into strand-core"). A conservative
+    /// superset is fine. The default (none) leaves the edges to be learned
+    /// on first run.
+    fn sources(&self, _rt: &Runtime, _service: &str, _field: Option<&str>) -> Vec<NodeId> {
+        Vec::new()
+    }
+
+    /// The graph cells an action of `service` can write (`n.expire()`
+    /// changes `notifications.popups`), declared as write edges of the
+    /// handlers that call it so their readers are ranked after them from
+    /// the first flush. The default: every field of the service
+    /// ([`ServiceHost::sources`]), a superset.
+    fn action_writes(&self, rt: &Runtime, service: &str) -> Vec<NodeId> {
+        self.sources(rt, service, None)
+    }
 
     /// A list field published as a keyed collection
     /// (`notifications.popups`, `workspaces.all`): a `for` over it follows

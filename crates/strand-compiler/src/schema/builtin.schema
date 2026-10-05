@@ -1,7 +1,9 @@
 // The builtin schema: the elements, services, functions and tokens of
 // docs/design.md, as data. The language is described in schema/mod.rs.
-// Services are types only until M3 brings the real ones; a service crate
-// adds its own entries with `Schema::extend`.
+// Services are types only until M3 brings the real ones. They and the
+// records only services hand out are `provisional`: a service crate's
+// `Schema::extend` text that declares the same name replaces the stub once,
+// in place; everything else an extension adds must be new.
 
 // ---------------------------------------------------------------------------
 // Enums used by props and functions. Variants are written bare in source
@@ -87,7 +89,7 @@ record Key {
 }
 
 /// A date and time of day, such as `clock.today`.
-record Date {
+provisional record Date {
   /// The year.
   year: int
   /// The month, 1 to 12.
@@ -105,7 +107,7 @@ record Date {
 }
 
 /// A cell of a month grid, from `calendar.days(month)`.
-record Day key date {
+provisional record Day key date {
   /// The day's date.
   date: Date
   /// It falls in the month asked for; the grid is padded with the days
@@ -121,7 +123,7 @@ record Day key date {
 /// ` #2` for a second identical one): what a `bar` instance is keyed and
 /// pinned by, kept across a replug to another port. `name` is the
 /// connector (`DP-1`).
-record Screen key id {
+provisional record Screen key id {
   /// Its identity: make, model and description, with ` #2` for a second
   /// identical one. Kept across a replug to another port.
   id: text
@@ -144,7 +146,7 @@ record Screen key id {
 }
 
 /// A toplevel window, from `ext-foreign-toplevel-list`.
-record Window key id {
+provisional record Window key id {
   /// Its identity.
   id: text
   /// Its title: `windows.focused?.title`.
@@ -170,7 +172,7 @@ record Window key id {
 }
 
 /// A workspace, from `ext-workspace-v1`, keyed by `id`.
-record Workspace key id {
+provisional record Workspace key id {
   /// Its identity.
   id: int
   /// Its name.
@@ -190,7 +192,7 @@ record Workspace key id {
 }
 
 /// An audio sink or source, from PipeWire.
-record AudioDevice key id {
+provisional record AudioDevice key id {
   /// Its PipeWire id.
   id: int
   /// Its node name.
@@ -210,13 +212,13 @@ record AudioDevice key id {
 }
 
 /// A tray item's menu (DBusMenu).
-record TrayMenu {
+provisional record TrayMenu {
   /// Opens it as a popup: `on secondary { item.menu.open() }`.
   action open()
 }
 
 /// An item in the system tray (StatusNotifierItem), keyed by `id`.
-record TrayItem key id {
+provisional record TrayItem key id {
   /// Its identity.
   id: text
   /// Its title.
@@ -238,7 +240,7 @@ record TrayItem key id {
 }
 
 /// The app that sent a notification.
-record NotificationApp {
+provisional record NotificationApp {
   /// The app's name.
   name: text
   /// The app's icon.
@@ -246,7 +248,7 @@ record NotificationApp {
 }
 
 /// A button a notification offers.
-record NotificationAction key id {
+provisional record NotificationAction key id {
   /// Its identity.
   id: text
   /// Its label: `button a.label`.
@@ -256,7 +258,7 @@ record NotificationAction key id {
 }
 
 /// A desktop notification, keyed by `id`.
-record Notification key id {
+provisional record Notification key id {
   /// Its identity.
   id: int
   /// The app that sent it.
@@ -285,7 +287,7 @@ record Notification key id {
 }
 
 /// An installed app, from its desktop entry (watched live).
-record App key id {
+provisional record App key id {
   /// Its desktop entry id.
   id: AppId
   /// Its name.
@@ -316,7 +318,7 @@ record Drop {
 }
 
 /// A launcher search result: the app, its score and the matched ranges.
-record Hit key app.id {
+provisional record Hit key app.id {
   /// The app found.
   app: App
   /// Its score: fuzzy match plus frecency.
@@ -326,7 +328,7 @@ record Hit key app.id {
 }
 
 /// A paired Bluetooth device, keyed by `address`.
-record BluetoothDevice key address {
+provisional record BluetoothDevice key address {
   /// Its address.
   address: text
   /// Its name.
@@ -370,7 +372,7 @@ record Canvas {
 
 /// The date and time. Reading it wakes the shell only as often as what is
 /// read changes.
-service clock {
+provisional service clock {
   /// Today's date: `clock.today.month_start()`.
   today: Date
   /// The current date and time.
@@ -380,14 +382,14 @@ service clock {
 }
 
 /// Month grids for calendars.
-service calendar {
+provisional service calendar {
   /// The days of the weeks that cover `month`, padded with days of the
   /// months around it: `for d in calendar.days(month)`.
   fn days(month: Date) -> [Day]
 }
 
 /// The battery, from UPower.
-service battery {
+provisional service battery {
   /// A battery is present: `if battery.present { Battery }`.
   present: bool
   /// Charge, 0 to 1: `pct(battery.percent)`.
@@ -403,7 +405,7 @@ service battery {
 }
 
 /// Toplevel windows, from `ext-foreign-toplevel-list`.
-service windows {
+provisional service windows {
   /// The focused window, if any: `windows.focused?.title`.
   focused: Window?
   /// Every window, keyed by `id`.
@@ -412,7 +414,7 @@ service windows {
 
 /// Workspaces, from `ext-workspace-v1`; Hyprland, niri and sway IPC fill
 /// in what the protocol does not cover yet.
-service workspaces {
+provisional service workspaces {
   /// Every workspace, keyed by `id`.
   all: [Workspace]
   /// The focused workspace, if any.
@@ -422,7 +424,7 @@ service workspaces {
 }
 
 /// Audio devices, from PipeWire.
-service audio {
+provisional service audio {
   /// The default output: `audio.sink.volume`, `audio.sink.muted`.
   sink: AudioDevice
   /// The default input.
@@ -434,7 +436,7 @@ service audio {
 }
 
 /// The screen backlight, set through logind (no root or udev rules).
-service brightness {
+provisional service brightness {
   /// Backlight level, 0 to 1. Writable.
   level: float rw
   /// A backlight was found.
@@ -442,14 +444,14 @@ service brightness {
 }
 
 /// The system tray (a StatusNotifierItem host with DBusMenu).
-service tray {
+provisional service tray {
   /// The tray's items, keyed by `id`: `for item in tray.items`.
   items: [TrayItem]
 }
 
 /// The notification server: the shell owns the freedesktop notification
 /// name, and says so clearly if another daemon (dunst, mako) has it.
-service notifications {
+provisional service notifications {
   /// The notifications to show now; each leaves when it expires or is
   /// dismissed.
   popups: [Notification]
@@ -465,7 +467,7 @@ service notifications {
 }
 
 /// Installed apps, from desktop entries (watched live).
-service apps {
+provisional service apps {
   /// Every installed app, keyed by `id`.
   all: [App]
   /// Fuzzy match plus frecency; keeps its last result while searching.
@@ -473,7 +475,7 @@ service apps {
 }
 
 /// The active media player, over MPRIS.
-service media {
+provisional service media {
   /// Something is playing.
   playing: bool
   /// The track's title.
@@ -499,7 +501,7 @@ service media {
 }
 
 /// Portal settings.
-service system {
+provisional service system {
   /// The desktop prefers a dark style.
   dark: bool
   /// The desktop's accent colour, if it sets one.
@@ -514,7 +516,7 @@ service system {
 }
 
 /// Processor load.
-service cpu {
+provisional service cpu {
   /// Load over every core, 0 to 1: `graph cpu.usage`.
   usage: float
   /// The load of each core, 0 to 1.
@@ -524,7 +526,7 @@ service cpu {
 }
 
 /// Memory use.
-service memory {
+provisional service memory {
   /// The fraction in use, 0 to 1.
   usage: float
   /// Memory in use.
@@ -534,7 +536,7 @@ service memory {
 }
 
 /// Monitors.
-service screens {
+provisional service screens {
   /// Every monitor, keyed by `name`.
   all: [Screen]
   /// The monitor with keyboard focus.
@@ -542,7 +544,7 @@ service screens {
 }
 
 /// The compositor.
-service wm {
+provisional service wm {
   /// Its name, such as `Hyprland`, `niri` or `sway`.
   name: text
   /// The compositor reloaded its config.
@@ -550,7 +552,7 @@ service wm {
 }
 
 /// The network, from NetworkManager.
-service network {
+provisional service network {
   /// A network connection is up.
   connected: bool
   /// The Wi-Fi network joined, if any.
@@ -562,7 +564,7 @@ service network {
 }
 
 /// Bluetooth, from BlueZ.
-service bluetooth {
+provisional service bluetooth {
   /// The adapter is on. Writable.
   powered: bool rw
   /// Paired devices, keyed by `address`.
@@ -570,7 +572,7 @@ service bluetooth {
 }
 
 /// The lock screen's PAM helper.
-service auth {
+provisional service auth {
   /// A password is being checked.
   busy: bool
   /// The last password was wrong.
@@ -948,14 +950,14 @@ element pages: node {
   current: any <->
 }
 /// A page of `pages`, shown when its value is `current`.
-element page(any): node { flags only_in pages }
+element page(any -> name): node { flags only_in pages }
 
 // Widgets.
 
 /// A plain box to style.
 element box: node {}
 /// Text: `text clock.format("%a %d  %H:%M")`.
-element text(text): node {
+element text(text -> text): node {
   /// Where overflowing text is cut with `…`: `ellipsis: end`.
   ellipsis: Ellipsis
   /// At most this many lines.
@@ -975,15 +977,15 @@ element text(text): node {
   flags leaf
 }
 /// An icon by name from the icon theme: `icon "window-close-symbolic"`.
-element icon(text): node { flags leaf }
+element icon(text -> source): node { flags leaf }
 /// A null source shows nothing.
-element image(text?): node {
+element image(text? -> source): node {
   /// How the image fills its box: `cover`, `contain`, `fill` or `none`.
   fit: Fit
   flags leaf
 }
 /// A button with a label: `button "‹" { on click { … } }`.
-element button(text): node {}
+element button(text -> text): node {}
 /// A slider: `slider { value: <-> audio.sink.volume }`.
 element slider: node {
   /// Its value, 0 to 1, bound two-way.
@@ -1007,7 +1009,7 @@ element input: node {
   flags leaf
 }
 /// A bar filled to a fraction: `meter level`.
-element meter(float): node {
+element meter(float -> value): node {
   /// The fraction filled, 0 to 1.
   value: float
   /// The paint of the unfilled part.
@@ -1041,7 +1043,7 @@ element arc: node {
 }
 /// A sparkline with its own history: `graph cpu.usage { history: 60s }`.
 /// Only the new column repaints.
-element graph(float): node {
+element graph(float -> value): node {
   /// How much history it keeps and shows.
   history: duration
   /// The paint under the line.
@@ -1052,7 +1054,7 @@ element graph(float): node {
 }
 /// An audio spectrum: `spectrum audio.sink { bars: 48; style: mirror }`.
 /// It stops while the audio is silent.
-element spectrum(AudioDevice): node {
+element spectrum(AudioDevice -> source): node {
   /// How many bars.
   bars: int
   /// Smoothing, 0 to 1.
@@ -1063,7 +1065,7 @@ element spectrum(AudioDevice): node {
 }
 /// Your own WGSL shader: `shader "aurora.wgsl" { u_speed: 0.4 }`. Props
 /// named `u_…` are its uniforms; it is checked with naga and hot-reloaded.
-element shader(path): node { flags leaf uniforms }
+element shader(path -> source): node { flags leaf uniforms }
 /// Draws with code: `canvas { draw: (c) => … }`.
 element canvas: node {
   /// Draws on the canvas.
@@ -1071,21 +1073,21 @@ element canvas: node {
   flags leaf
 }
 /// An SVG whose layers bind by id: `svg "icon.svg" { #needle { … } }`.
-element svg(path): node { flags leaf selectors }
+element svg(path -> source): node { flags leaf selectors }
 /// A Lottie animation: `lottie "loader.json" { speed: 1 }`.
-element lottie(path): node {
+element lottie(path -> source): node {
   /// Playback speed; 1 is normal.
   speed: float
   flags leaf
 }
 /// A live thumbnail of a window: `thumbnail w`.
-element thumbnail(Window): node {
+element thumbnail(Window -> source): node {
   /// How the thumbnail fills its box.
   fit: Fit
   flags leaf
 }
 /// A built-in effect: `effect sparks { … }`.
-element effect(EffectKind): node {
+element effect(EffectKind -> style): node {
   /// How fast it runs; 1 is normal.
   speed: float
   flags leaf
@@ -1112,7 +1114,7 @@ element letters: node {
   let count: int
 }
 /// Goo merge: children melt together within the given distance.
-element merge(length): node {}
+element merge(length -> value): node {}
 
 // ---------------------------------------------------------------------------
 // Tokens. The palette maps 1:1 onto Material 3 system roles (primary is

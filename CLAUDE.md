@@ -49,3 +49,8 @@ WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 \
 
 Always kill the sway you started. The machine has 4 CPUs; avoid running
 more than one heavy `cargo` build at a time per task.
+
+The portal tests (`crates/strand-watch/tests/portal.rs`) start a private
+`dbus-daemon`; they skip when it is missing unless `STRAND_REQUIRE_DBUS`
+or `CI` is set, so CI installs `dbus` and fails instead of skipping (as
+`STRAND_REQUIRE_SWAY` does for the Wayland tiers).

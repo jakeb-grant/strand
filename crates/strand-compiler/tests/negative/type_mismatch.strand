@@ -6,3 +6,8 @@ component C {
     after 6 while shown { shown = false }
   }
 }
+// A segmented's value is one of its options.
+enum Look { light, dark }
+enum Other { x, y }
+state other = Other.x
+component Seg { segmented { options: Look; value: <-> other } }

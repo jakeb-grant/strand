@@ -78,6 +78,31 @@ pub enum Pattern {
     Error,
 }
 
+/// A keyed collection read in place ([`Op::Keyed`]): a keyed `state`
+/// or a service's keyed field.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum KeyedRoot {
+    Def(DefId),
+    /// Service and field, as name indices.
+    Service {
+        service: u32,
+        field: u32,
+    },
+}
+
+/// What [`Op::Keyed`] asks of a keyed collection, through core's
+/// accessors instead of a copy of the list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyedQuery {
+    Len,
+    First,
+    Last,
+    /// `xs[i]`: the index is on the stack.
+    Index,
+    /// `xs.contains(x)`: the value is on the stack (found by its key).
+    Contains,
+}
+
 /// A lambda made by [`Op::Closure`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Lambda {
@@ -190,6 +215,14 @@ pub enum Op {
     },
     /// Pop an `Async` and suspend until it settles; push its value.
     Await,
+    /// `xs.len`, `xs.first`, `xs.last`, `xs[i]`, `xs.contains(x)` on a
+    /// keyed collection: answered by core's accessors (`with`,
+    /// `get_key`), never by copying the list; a plain list is read as
+    /// usual.
+    Keyed {
+        root: KeyedRoot,
+        query: KeyedQuery,
+    },
     /// `play shake`: pop the keyframes value and play it on the node.
     Play,
     /// A runtime error with a message (a name index): a `match` with no
@@ -213,6 +246,10 @@ pub struct Chunk {
     pub file: FileId,
     /// Holds an `await`: runs as a coroutine.
     pub awaits: bool,
+    /// The services whose state the action calls in this chunk can change
+    /// (`n.dismiss()` on a `Notification`: `notifications`), for the
+    /// handler's declared write edges.
+    pub actions: Vec<String>,
 }
 
 impl Chunk {
@@ -286,6 +323,7 @@ impl Chunk {
                     | Op::CallFn { .. }
                     | Op::CallValue { .. }
                     | Op::Await
+                    | Op::Keyed { .. }
             )
         })
     }

@@ -1,15 +1,20 @@
 //! Expressions and statements to bytecode.
 
+use std::collections::BTreeSet;
+
 use crate::hir::{
-    self, AssignOp, BinaryOp, CallArg, Callee, ExprKind, LambdaBody, LocalKind, Pattern as HPat,
-    StmtKind, UnaryOp, Unit,
+    self, AssignOp, BinaryOp, CallArg, Callee, DefId, DefKind, ExprKind, LambdaBody, LocalKind,
+    Pattern as HPat, StmtKind, UnaryOp, Unit,
 };
 use crate::syntax::Span;
 use crate::ty::Ty;
 use crate::vm::value::Num;
 
 use super::Lowerer;
-use super::code::{ArgMap, Chunk, ChunkId, Const, Lambda, Op, Pattern, Place, PlaceRoot, PlaceSeg};
+use super::code::{
+    ArgMap, Chunk, ChunkId, Const, KeyedQuery, KeyedRoot, Lambda, Op, Pattern, Place, PlaceRoot,
+    PlaceSeg,
+};
 
 /// List methods that change the collection they are called on.
 pub(crate) const MUTATIONS: &[&str] = &[
@@ -207,6 +212,32 @@ impl Lowerer<'_> {
         Some(Place { root, segs })
     }
 
+    /// A keyed collection read in place: a keyed `state` (`pins`) or a
+    /// service's keyed field (`notifications.popups`). Notes the service.
+    pub(crate) fn keyed_root(&mut self, c: &mut Chunk, e: &hir::Expr) -> Option<KeyedRoot> {
+        if !matches!(e.ty, Ty::List(_, true)) {
+            return None;
+        }
+        match &e.kind {
+            ExprKind::Def(d) if self.hir.def(*d).kind == DefKind::State => Some(KeyedRoot::Def(*d)),
+            ExprKind::Field {
+                base,
+                name,
+                optional: false,
+            } => match &base.kind {
+                ExprKind::Service(s) => {
+                    self.note_service(s);
+                    Some(KeyedRoot::Service {
+                        service: c.name(s),
+                        field: c.name(name),
+                    })
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     fn note_service(&mut self, s: &str) {
         if let Some(top) = self.services.last_mut() {
             top.insert(s.to_string());
@@ -331,6 +362,51 @@ impl Lowerer<'_> {
             ExprKind::Token(p) => {
                 let n = c.name(p);
                 c.emit(Op::Token(n), span);
+            }
+            ExprKind::Field {
+                base,
+                name,
+                optional: false,
+            } if matches!(name.as_str(), "len" | "first" | "last")
+                && self.keyed_root(c, base).is_some() =>
+            {
+                let root = self.keyed_root(c, base).unwrap_or(KeyedRoot::Def(DefId(0)));
+                let query = match name.as_str() {
+                    "len" => KeyedQuery::Len,
+                    "first" => KeyedQuery::First,
+                    _ => KeyedQuery::Last,
+                };
+                c.emit(Op::Keyed { root, query }, span);
+            }
+            ExprKind::Index { base, index } if self.keyed_root(c, base).is_some() => {
+                let root = self.keyed_root(c, base).unwrap_or(KeyedRoot::Def(DefId(0)));
+                self.expr(c, index);
+                c.emit(
+                    Op::Keyed {
+                        root,
+                        query: KeyedQuery::Index,
+                    },
+                    span,
+                );
+            }
+            ExprKind::Call {
+                callee: Callee::Method { receiver, name, .. },
+                args,
+            } if name == "contains"
+                && args.len() == 1
+                && self.keyed_root(c, receiver).is_some() =>
+            {
+                let root = self
+                    .keyed_root(c, receiver)
+                    .unwrap_or(KeyedRoot::Def(DefId(0)));
+                self.expr(c, &args[0].value);
+                c.emit(
+                    Op::Keyed {
+                        root,
+                        query: KeyedQuery::Contains,
+                    },
+                    span,
+                );
             }
             ExprKind::Field {
                 base,
@@ -495,6 +571,13 @@ impl Lowerer<'_> {
                 }
                 self.expr(c, receiver);
                 let (arity, variadic, action) = self.method_sig(&receiver.ty, name, *overload);
+                if action {
+                    for s in self.action_services(&receiver.ty) {
+                        if !c.actions.contains(&s) {
+                            c.actions.push(s);
+                        }
+                    }
+                }
                 let arity = arity.unwrap_or(args.len());
                 let map = self.push_args(c, args, arity, variadic.map(usize::from));
                 let n = c.name(name);
@@ -531,6 +614,51 @@ impl Lowerer<'_> {
     }
 
     /// Arity, variadic parameter and whether it is an action, for a method.
+    /// The services an action on a value of type `recv` can change: the
+    /// service itself (`notifications.clear()`), or every service whose
+    /// fields reach the record (`n.expire()` on a `Notification`). A
+    /// superset is fine: these become declared write edges.
+    fn action_services(&self, recv: &Ty) -> Vec<String> {
+        fn inner(t: &Ty) -> Option<&Ty> {
+            match t {
+                Ty::List(t, _) | Ty::Optional(t) | Ty::Async(t) => Some(t),
+                _ => None,
+            }
+        }
+        let mut t = recv;
+        while let Some(i) = inner(t) {
+            t = i;
+        }
+        let Ty::Record(target) = t else {
+            return Vec::new();
+        };
+        let types = &self.hir.types;
+        let mut out = Vec::new();
+        for (name, &root) in &self.schema.services {
+            let mut seen = BTreeSet::new();
+            let mut stack = vec![root];
+            while let Some(r) = stack.pop() {
+                if !seen.insert(r) {
+                    continue;
+                }
+                if r == *target {
+                    out.push(name.clone());
+                    break;
+                }
+                for f in &types.record(r).fields {
+                    let mut ft = &f.ty;
+                    while let Some(i) = inner(ft) {
+                        ft = i;
+                    }
+                    if let Ty::Record(x) = ft {
+                        stack.push(*x);
+                    }
+                }
+            }
+        }
+        out
+    }
+
     fn method_sig(
         &self,
         recv: &Ty,

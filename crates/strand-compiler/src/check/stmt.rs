@@ -22,9 +22,12 @@ impl<'a> Checker<'a> {
         let mut out: Vec<hir::Stmt> = Vec::with_capacity(items.len());
         for (i, s) in items.iter().enumerate() {
             let last = i + 1 == items.len();
-            out.push(match (&s.kind, ret) {
-                (ast::StmtKind::Expr(e), Some(r)) if last => hir::Stmt {
-                    kind: StmtKind::Expr(self.expr(e, Some(r))),
+            out.push(match &s.kind {
+                // The fn's value.
+                ast::StmtKind::Expr(e) if last => hir::Stmt {
+                    kind: StmtKind::Expr(
+                        self.named_value("a `fn`'s result", ret, |c| c.expr(e, ret)),
+                    ),
                     span: s.span,
                 },
                 _ => self.stmt(s),
@@ -40,7 +43,21 @@ impl<'a> Checker<'a> {
         let kind = match &s.kind {
             ast::StmtKind::Let(l) => self.stmt_let(l),
             ast::StmtKind::Assign { target, op, value } => self.assign(target, *op, value),
-            ast::StmtKind::Expr(e) => StmtKind::Expr(self.expr(e, None)),
+            ast::StmtKind::Expr(e) => {
+                let h = self.expr(e, None);
+                if self.ctx.handler && matches!(h.ty, Ty::Async(_)) {
+                    // `on click { sleep(1s) }` almost always meant to wait.
+                    let shown = self.show(&h.ty);
+                    self.error(
+                        "check::async",
+                        format!("this `{shown}` is dropped"),
+                        h.span,
+                        "never awaited or kept",
+                    )
+                    .help = Some("`await` it, or assign the result".into());
+                }
+                StmtKind::Expr(h)
+            }
             ast::StmtKind::If(i) => self.stmt_if(i),
             ast::StmtKind::For(f) => self.stmt_for(f),
             ast::StmtKind::Match(m) => self.stmt_match(m),
@@ -56,8 +73,12 @@ impl<'a> Checker<'a> {
             {
                 let declared = l.ty.as_ref().map(|t| self.resolve_type(t));
                 let value = match &declared {
-                    Some(t) => self.expect(&l.value, t, &format!("`{}`", l.name.name)),
-                    None => self.expr(&l.value, None),
+                    Some(t) => {
+                        let h = self.let_value(&l.value, Some(t));
+                        self.require(&h, t, &format!("`{}`", l.name.name));
+                        h
+                    }
+                    None => self.let_value(&l.value, None),
                 };
                 if l.export.is_some() {
                     self.error(
@@ -69,6 +90,14 @@ impl<'a> Checker<'a> {
                 }
                 let untyped = declared.is_none();
                 let ty = declared.unwrap_or_else(|| value.ty.clone());
+                if let Some(prev) = self
+                    .scopes
+                    .last()
+                    .and_then(|s| s.iter().find(|(n, _)| *n == l.name.name).map(|(_, b)| *b))
+                {
+                    self.redeclared_binding(&l.name, prev);
+                }
+                self.shadows_builtin(&l.name, "`let`");
                 let local = self.bind_local(&l.name.name, ty, l.name.span, LocalKind::Let);
                 if untyped {
                     // `let t = a; b = t` hands `a` to `b` (see `check`).
@@ -241,6 +270,27 @@ impl<'a> Checker<'a> {
                         .find_record("Node")
                         .is_some_and(|r| self.types.record(r).field(&name.name).is_some());
                     (!node_field).then_some(name.name.as_str())
+                }
+                // `vol.opacity = 1` with `id: vol`: a prop of that node,
+                // one error rather than also "no field `opacity`".
+                ast::ExprKind::Name(b) => {
+                    let is_node = matches!(
+                        self.lookup_scope(&b.name),
+                        Some(super::Binding::Local(l))
+                            if matches!(self.locals[l.0 as usize].kind, LocalKind::NodeId(_))
+                    );
+                    let n = name.name.as_str();
+                    let node_field = self
+                        .types
+                        .find_record("Node")
+                        .is_some_and(|r| self.types.record(r).field(n).is_some());
+                    if is_node
+                        && !node_field
+                        && self.schema.elements.values().any(|e| e.prop(n).is_some())
+                    {
+                        return Some(n.to_string());
+                    }
+                    None
                 }
                 _ => None,
             },

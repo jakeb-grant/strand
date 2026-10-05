@@ -91,6 +91,7 @@ impl<'a> Checker<'a> {
                 .as_ref()
                 .and_then(|s| s.params.get(i))
                 .map_or(Ty::Error, |p| p.ty.clone());
+            self.shadows_builtin(&p.name, "parameter");
             let local = self.bind_local(&p.name.name, ty.clone(), p.name.span, LocalKind::Param);
             self.add_ref(p.name.span, Target::Local(local));
             // No type, no default and nothing inferred from callers (none
@@ -385,6 +386,7 @@ impl<'a> Checker<'a> {
         }
         let cond = self.expect(&w.cond, &Ty::BOOL, "`when`");
         let (props, _) = self.tree_items(&w.body.items, Place::Props);
+        self.duplicate_props(&props);
         Some(Node::When(hir::When { cond, props, span }))
     }
 
@@ -804,6 +806,16 @@ impl<'a> Checker<'a> {
             // `bar X { … }` misplaced in a tree: `X` is the surface's
             // name, already part of the one error.
             Some(ast::HeadArg::Positional(_)) if schema.flags.surface => None,
+            // `page wifi` outside `pages`: already one `misplaced` error;
+            // with no `pages` there is no enum to read the name in.
+            Some(ast::HeadArg::Positional(e))
+                if kind == "page" && self.pages_current.is_empty() =>
+            {
+                if !matches!(e.kind, ast::ExprKind::Name(_)) {
+                    self.expr(e, None);
+                }
+                None
+            }
             Some(ast::HeadArg::Positional(e)) => {
                 let want = if kind == "page" {
                     self.pages_current.last().cloned().or(Some(Ty::Any))
@@ -828,6 +840,103 @@ impl<'a> Checker<'a> {
         };
         self.ctx = saved;
         (id, node, arg)
+    }
+
+    /// A prop set twice in one element (`value: <-> v; value: 0.3`): the
+    /// second silently wins, so it is a redeclaration.
+    fn duplicate_props(&mut self, props: &[hir::Prop]) {
+        for (i, p) in props.iter().enumerate() {
+            if let Some(first) = props[..i].iter().find(|q| q.name == p.name) {
+                let (file, first_span) = (self.file(), first.span);
+                self.error(
+                    "check::redeclared",
+                    format!("`{}` is set twice", p.name),
+                    p.span,
+                    "set again here",
+                )
+                .add_secondary(file, first_span, "first set here")
+                .help = Some("keep one of them".into());
+            }
+        }
+    }
+
+    /// `meter 0.5 { value: 0.7 }`: the positional is the prop it fills
+    /// (`ElementSchema::arg_prop`, which lowering reads too), so setting
+    /// both is a prop set twice.
+    fn positional_set_twice(
+        &mut self,
+        kind: &str,
+        schema: &crate::schema::ElementSchema,
+        arg: &hir::Expr,
+        props: &[hir::Prop],
+    ) {
+        let Some(filled) = schema.arg_prop.as_deref() else {
+            return;
+        };
+        if schema.prop(filled).is_none() {
+            return;
+        }
+        if let Some(p) = props.iter().find(|p| p.name == filled) {
+            let file = self.file();
+            self.error(
+                "check::redeclared",
+                format!("`{filled}` is set twice"),
+                p.span,
+                "set again here",
+            )
+            .add_secondary(
+                file,
+                arg.span,
+                format!("the positional value is `{kind}`'s `{filled}`"),
+            )
+            .help = Some(format!(
+                "`{kind}` takes its {filled} positionally: keep one of them"
+            ));
+        }
+    }
+
+    /// `segmented { options: Look; value: <-> look }`: the value is one of
+    /// the options, so it has the enum's type (or the list's item type).
+    fn segmented_value(&mut self, props: &[hir::Prop]) {
+        let Some(options) = props.iter().find(|p| p.name == "options") else {
+            return;
+        };
+        let want = match &options.value.ty {
+            Ty::EnumType(e) => Ty::Enum(*e),
+            Ty::List(elem, _) => (**elem).clone(),
+            t if t.is_lenient() => return,
+            t => {
+                let shown = self.show(t);
+                self.error(
+                    "check::type_mismatch",
+                    "`options` takes an enum or a list",
+                    options.value.span,
+                    format!("this is `{shown}`"),
+                )
+                .help = Some("name the enum: `options: Look`, or give a list".into());
+                return;
+            }
+        };
+        let Some(value) = props.iter().find(|p| p.name == "value") else {
+            return;
+        };
+        let got = &value.value.ty;
+        if got.is_lenient() || want.is_lenient() {
+            return;
+        }
+        let same = self.types.assignable(got, &want)
+            && (!value.two_way || self.types.assignable(&want, got));
+        if !same {
+            let (a, b) = (self.show(got), self.show(&want));
+            let (file, ospan) = (self.file(), options.value.span);
+            self.error(
+                "check::type_mismatch",
+                format!("`value` is one of the options, so it is `{b}`, but this is `{a}`"),
+                value.value.span,
+                format!("this is `{a}`"),
+            )
+            .add_secondary(file, ospan, format!("the options are `{b}`"));
+        }
     }
 
     #[inline(never)]
@@ -866,6 +975,13 @@ impl<'a> Checker<'a> {
         }
         self.nodes.pop();
         props.extend(block_props);
+        self.duplicate_props(&props);
+        if let Some(a) = &arg {
+            self.positional_set_twice(kind, schema, a, &props);
+        }
+        if kind == "segmented" {
+            self.segmented_value(&props);
+        }
         self.element_tail(kind, schema, &children);
         Node::Element(hir::Element {
             node,
@@ -1713,13 +1829,13 @@ impl<'a> Checker<'a> {
                 persist,
             } => {
                 let declared = ty.as_ref().map(|t| self.resolve_type(t));
-                let h = match &declared {
-                    Some(t) => self.expect(value, t, "the default"),
+                let h = self.named_value("a `state`", declared.as_ref(), |c| match &declared {
+                    Some(t) => c.expect(value, t, "the default"),
                     None => {
-                        let hint = self.whole_hint(id, value);
-                        self.expr(value, hint.as_ref())
+                        let hint = c.whole_hint(id, value);
+                        c.expr(value, hint.as_ref())
                     }
-                };
+                });
                 if declared.is_none() {
                     self.inferable(&h.ty, &s.name, value.span, "state");
                     self.record_value_sources(id, &h);
@@ -1924,10 +2040,14 @@ impl<'a> Checker<'a> {
     pub(super) fn let_decl(&mut self, id: DefId, l: &'a ast::Let, reset: bool) -> hir::LetDecl {
         let declared = l.ty.as_ref().map(|t| self.resolve_type(t));
         let value = match &declared {
-            Some(t) => self.expect(&l.value, t, &format!("`{}`", l.name.name)),
+            Some(t) => {
+                let h = self.let_value(&l.value, Some(t));
+                self.require(&h, t, &format!("`{}`", l.name.name));
+                h
+            }
             None => {
                 let hint = self.whole_hint(id, &l.value);
-                self.expr(&l.value, hint.as_ref())
+                self.let_value(&l.value, hint.as_ref())
             }
         };
         if declared.is_none() {
@@ -1962,6 +2082,7 @@ impl<'a> Checker<'a> {
             .iter()
             .zip(&params)
             .map(|(p, s)| {
+                self.shadows_builtin(&p.name, "parameter");
                 let l = self.bind_local(&p.name.name, s.ty.clone(), p.name.span, LocalKind::Param);
                 self.add_ref(p.name.span, Target::Local(l));
                 l

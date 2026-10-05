@@ -1,8 +1,10 @@
-// expect: check::unknown_field, check::two_way_prop, check::unknown_prop, check::misplaced, syntax::expected
+// expect: check::unknown_field, check::two_way_prop, check::unknown_prop, check::misplaced, syntax::expected, check::type_mismatch
 // One mistake, one diagnostic: an unknown field is not also read-only, a
 // rejected `<->` does not also check its target, an unknown prop does not
 // also resolve its value, a misplaced surface does not read its name as a
-// value, and a fn whose body did not parse does not also lack a value.
+// value, a fn whose body did not parse does not also lack a value, a
+// lambda whose result is wrong is not also the wrong function, and a
+// misplaced `page` does not also read its name.
 state prefs from "~/.config/strand/prefs.toml" { a: int = 1 }
 state s = ""
 component C {
@@ -14,3 +16,9 @@ component C {
 }
 panel P { edge: bottm }
 fn get() = 1
+type Pin { id: text; n: int }
+state pins: [Pin] key id = []
+component D {
+  box { on click { pins.update("a", p => 3) } }
+  page wifi { }
+}

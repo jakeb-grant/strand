@@ -6,3 +6,17 @@ let art = material(image: prefs.wallpaper)
 let palette: Palette = art
 let fine: Palette = art ?? material(seed: $accent)
 let title = apps.search("x").first
+// Element reads forget the loading state; list transforms keep it, so a
+// plain list still needs `??`. `any` parameters take no loading value.
+state q = ""
+let hits = apps.search(q)
+let top: [Hit] = hits.take(3)
+let fine_top: [Hit] = hits.take(3) ?? []
+let names = join(", ", apps.search(q))
+component Count {
+  let n = hits.len
+  text join(" ", n)
+  col { for h in hits.filter(h => h.app.name != "") { text h.app.name } }
+}
+// A handler that drops an `Async` almost always meant to wait for it.
+component Wait { box { on click { sleep(1s); apps.search(q) } } }

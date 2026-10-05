@@ -10,11 +10,16 @@
 
 pub mod code;
 mod expr;
+pub mod reads;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-pub use code::{ArgMap, Chunk, ChunkId, Const, Lambda, Op, Pattern, Place, PlaceRoot, PlaceSeg};
+pub use code::{
+    ArgMap, Chunk, ChunkId, Const, KeyedQuery, KeyedRoot, Lambda, Op, Pattern, Place, PlaceRoot,
+    PlaceSeg,
+};
+pub use reads::{Reads, WriteTarget};
 use strand_scene::{NodeKind, Prop as SceneProp};
 
 use crate::hir::{self, DefId, DefKind, LocalId, LocalKind, NodeIdx, PoseKind, TimerKind};
@@ -46,6 +51,13 @@ pub struct Program {
     /// The `key` of keyed `state` collections (`state pins: [Pin] key
     /// app`), by declaration.
     pub state_keys: BTreeMap<DefId, Vec<String>>,
+    /// Each chunk's syntactic read set, by chunk id (lambdas and called
+    /// `fn`s included): what the instantiator declares with
+    /// `rt.reads_from` ([`reads`]).
+    pub reads: Vec<Reads>,
+    /// Each chunk's assignment targets, by chunk id: what a handler
+    /// running it declares with `rt.writes_to`.
+    pub writes: Vec<Vec<WriteTarget>>,
 }
 
 /// What the VM needs to know about a declaration.
@@ -138,6 +150,9 @@ pub enum Node {
         cond: ChunkId,
         then: Arc<Vec<Node>>,
         else_: Arc<Vec<Node>>,
+        /// Where it is written (reload identity).
+        file: FileId,
+        span: Span,
     },
     For(For),
     /// A tree `match`: `selector` gives the index of the arm to mount
@@ -145,6 +160,8 @@ pub enum Node {
     Match {
         selector: ChunkId,
         arms: Vec<Arc<Vec<Node>>>,
+        file: FileId,
+        span: Span,
     },
     Slot,
     State(State),
@@ -208,6 +225,10 @@ pub struct Element {
     pub scope: Vec<LocalId>,
     pub span: Span,
     pub file: FileId,
+    /// For a surface element (`popup`, `panel`, a `bar`): the services its
+    /// children read, held only while it is shown. A nested surface's
+    /// reads do not count for the body around it.
+    pub services: Option<Arc<BTreeSet<String>>>,
 }
 
 /// A prop binding.
@@ -241,10 +262,40 @@ pub struct TwoWay {
 pub struct For {
     pub binding: LocalId,
     pub iter: ChunkId,
+    /// `xs.filter(…).take(5)` on a keyed collection: the steps, so the
+    /// loop follows core's incremental views instead of comparing whole
+    /// lists (design.md: they "update incrementally and keep keys").
+    pub chain: Option<Chain>,
     pub key: ForKey,
     pub body: Body,
     pub file: FileId,
     pub span: Span,
+}
+
+/// A chain of list steps on a keyed collection.
+#[derive(Clone, Debug)]
+pub struct Chain {
+    pub root: ChainRoot,
+    /// Each step with its argument's chunk (a lambda, or `take`'s count),
+    /// in source order.
+    pub steps: Vec<(ChainOp, ChunkId)>,
+}
+
+/// Where a [`Chain`] starts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChainRoot {
+    /// A keyed `state`.
+    Def(DefId),
+    /// A service's keyed field: service and field.
+    Service(String, String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChainOp {
+    Filter,
+    Map,
+    Take,
+    SortBy,
 }
 
 /// How a `for` item is identified.
@@ -263,6 +314,9 @@ pub struct State {
     pub def: DefId,
     pub init: StateInit,
     pub persist: bool,
+    /// `@reset`: a reload starts it from its default instead of keeping
+    /// its value (a persisted one forgets what it stored).
+    pub reset: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -316,6 +370,17 @@ impl Program {
 
     pub fn def(&self, id: DefId) -> &DefInfo {
         &self.defs[id.0 as usize]
+    }
+
+    /// The read set of `chunk` (empty for an unknown chunk).
+    pub fn reads(&self, chunk: ChunkId) -> &Reads {
+        static EMPTY: std::sync::LazyLock<Reads> = std::sync::LazyLock::new(Reads::default);
+        self.reads.get(chunk as usize).unwrap_or(&EMPTY)
+    }
+
+    /// The write targets of `chunk`.
+    pub fn writes(&self, chunk: ChunkId) -> &[WriteTarget] {
+        self.writes.get(chunk as usize).map_or(&[], Vec::as_slice)
     }
 
     pub fn local(&self, id: LocalId) -> &LocalInfo {
@@ -390,6 +455,7 @@ pub fn lower(program: &hir::Program, schema: &Schema) -> Program {
         fp.services = l.end_body(Vec::new(), false).services;
         l.out.files.push(fp);
     }
+    reads::compute(&mut l.out);
     l.out
 }
 
@@ -437,6 +503,11 @@ impl Lowerer<'_> {
             hir::Item::Surface(s) => {
                 self.begin_body();
                 let element = self.element(&s.element);
+                // A top-level surface holds what its props and children
+                // read while it is shown.
+                if let (Some(own), Some(top)) = (&element.services, self.services.last_mut()) {
+                    top.extend(own.iter().cloned());
+                }
                 let body = self.end_body(Vec::new(), false);
                 let kind = match &element.kind {
                     ElementKind::Builtin(k) => *k,
@@ -569,9 +640,12 @@ impl Lowerer<'_> {
                 cond: self.expr_chunk(&i.cond),
                 then: Arc::new(self.nodes(&i.then)),
                 else_: Arc::new(self.nodes(&i.else_)),
+                file: self.file,
+                span: i.span,
             },
             hir::Node::For(f) => {
                 let iter = self.expr_chunk(&f.iter);
+                let chain = self.chain(&f.iter);
                 let key = match &f.key {
                     Some(k) => ForKey::Expr(self.expr_chunk(k)),
                     None => match self.root_key(&f.iter) {
@@ -588,6 +662,7 @@ impl Lowerer<'_> {
                 Node::For(For {
                     binding: f.binding,
                     iter,
+                    chain,
                     key,
                     body: self.body(&f.body),
                     file: self.file,
@@ -602,7 +677,12 @@ impl Lowerer<'_> {
                     .iter()
                     .map(|(_, body)| Arc::new(self.nodes(body)))
                     .collect();
-                Node::Match { selector, arms }
+                Node::Match {
+                    selector,
+                    arms,
+                    file: self.file,
+                    span: m.span,
+                }
             }
             hir::Node::Handler(h) => Node::Handler(self.handler(h)),
             hir::Node::Timer(t) => Node::Timer(self.timer(t)),
@@ -637,9 +717,11 @@ impl Lowerer<'_> {
         };
         let arg = e.arg.as_ref().map(|a| {
             let (name, prop) = match &kind {
-                ElementKind::Builtin(k) => {
-                    let p = positional_prop(*k);
-                    (p.name().to_string(), Some(p))
+                // The schema names the prop a positional fills.
+                ElementKind::Builtin(_) => {
+                    let name = schema.and_then(|s| s.arg_prop.clone()).unwrap_or_default();
+                    let prop = SceneProp::from_name(&name);
+                    (name, prop)
                 }
                 ElementKind::Component(d) => (self.first_param(*d), None),
                 ElementKind::Unknown(_) => (String::new(), None),
@@ -664,9 +746,14 @@ impl Lowerer<'_> {
                 .collect(),
             None => Vec::new(),
         };
+        let surface = matches!(kind, ElementKind::Builtin(k) if k.is_surface());
+        if surface {
+            self.services.push(BTreeSet::new());
+        }
         let outer = std::mem::replace(&mut self.elem, schema);
         let children = Arc::new(self.nodes(&e.children));
         self.elem = outer;
+        let services = surface.then(|| Arc::new(self.services.pop().unwrap_or_default()));
         Element {
             node: e.node,
             kind,
@@ -677,7 +764,54 @@ impl Lowerer<'_> {
             scope,
             span: e.span,
             file: self.file,
+            services,
         }
+    }
+
+    /// `root.filter(…).map(…).take(n).sort_by(…)` (one step at least) on
+    /// a keyed `state` or a service's keyed field.
+    fn chain(&mut self, e: &hir::Expr) -> Option<Chain> {
+        let mut steps = Vec::new();
+        let mut cur = e;
+        while let hir::ExprKind::Call {
+            callee: hir::Callee::Method { receiver, name, .. },
+            args,
+        } = &cur.kind
+        {
+            let op = match name.as_str() {
+                "filter" => ChainOp::Filter,
+                "map" => ChainOp::Map,
+                "take" => ChainOp::Take,
+                "sort_by" => ChainOp::SortBy,
+                _ => return None,
+            };
+            let [arg] = args.as_slice() else {
+                return None;
+            };
+            steps.push((op, arg));
+            cur = receiver;
+        }
+        if steps.is_empty() || !matches!(cur.ty, Ty::List(_, true)) {
+            return None;
+        }
+        let root = match &cur.kind {
+            hir::ExprKind::Def(d) if self.hir.def(*d).kind == DefKind::State => ChainRoot::Def(*d),
+            hir::ExprKind::Field {
+                base,
+                name,
+                optional: false,
+            } => match &base.kind {
+                hir::ExprKind::Service(s) => ChainRoot::Service(s.clone(), name.clone()),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        steps.reverse();
+        let steps = steps
+            .into_iter()
+            .map(|(op, arg)| (op, self.expr_chunk(&arg.value)))
+            .collect();
+        Some(Chain { root, steps })
     }
 
     fn first_param(&self, d: DefId) -> String {
@@ -769,6 +903,7 @@ impl Lowerer<'_> {
             def: s.def,
             init,
             persist: s.persist,
+            reset: s.reset,
         }
     }
 
@@ -892,19 +1027,6 @@ fn collect_keys(item: &hir::Item, out: &mut BTreeMap<DefId, Vec<String>>) {
         hir::Item::Component(c) => nodes(&c.body, out),
         hir::Item::Surface(s) => nodes(&s.element.children, out),
         _ => {}
-    }
-}
-
-/// The prop a builtin element's positional argument fills: `text x` is
-/// its `text`, `icon x` and `image x` their `source`, `meter x` its
-/// `value` (see `docs/decisions.md`, wave2-vm).
-pub fn positional_prop(kind: NodeKind) -> SceneProp {
-    match kind {
-        NodeKind::Text | NodeKind::Button | NodeKind::Letters => SceneProp::Text,
-        NodeKind::Meter | NodeKind::Graph | NodeKind::Merge => SceneProp::Value,
-        NodeKind::Effect => SceneProp::Style,
-        NodeKind::Page => SceneProp::Name,
-        _ => SceneProp::Source,
     }
 }
 

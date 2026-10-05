@@ -10,10 +10,9 @@ use lsp_types::{
     MarkupKind, Range, TextEdit,
 };
 use strand_compiler::FileId;
-use strand_compiler::check::LIST_METHODS;
 use strand_compiler::hir::{Callee, DefKind, ExprKind, Program, Target};
-use strand_compiler::schema::{DocKey, Schema};
-use strand_compiler::ty::{Prim, Ty, TypeTable};
+use strand_compiler::schema::{self, DocKey, MemberKind, Schema};
+use strand_compiler::ty::{Ty, TypeTable};
 
 use crate::ctx::{self, Block, line_before, word_before, word_end};
 use crate::describe;
@@ -379,128 +378,57 @@ impl<'a> Completer<'a> {
         }
     }
 
-    /// Fields and methods of a value of type `t`.
+    /// Fields and methods of a value of type `t`, from the schema's member
+    /// table (`schema::members_of`, the one the checker types `x.name`
+    /// by). Inside `<->` only fields that can be written, or that lead to
+    /// one, are offered; a state's own record fields are all writable.
     fn members_of(&mut self, t: &Ty, range: Range, writable: bool, state: bool) {
         let types = self.types();
         let edit = |s: &str| Some((range, s.to_string()));
         match t {
-            Ty::Optional(inner) => self.members_of(inner, range, writable, state),
-            Ty::Async(inner) => {
-                if !writable {
-                    for (n, ty) in [
-                        ("pending", Ty::BOOL),
-                        ("error", Ty::TEXT.optional()),
-                        ("value", (**inner).clone().optional()),
-                    ] {
-                        let detail = format!("{n}: {}", describe::ty(types, &ty));
-                        self.push(
-                            n,
-                            CompletionItemKind::FIELD,
-                            Some(detail),
-                            None,
-                            edit(n),
-                            "0",
-                        );
-                    }
-                }
-                if inner.list_elem().is_some() {
-                    self.members_of(inner, range, writable, state);
-                }
-            }
-            Ty::List(elem, _) => {
-                if writable {
+            Ty::Optional(inner) => return self.members_of(inner, range, writable, state),
+            Ty::EnumType(e) => return self.variants_of(*e, range),
+            Ty::Async(inner) if writable => {
+                if inner.list_elem().is_none() {
                     return;
                 }
-                for (n, ty) in [
-                    ("len", Ty::INT),
-                    ("first", (**elem).clone().optional()),
-                    ("last", (**elem).clone().optional()),
-                ] {
-                    let detail = format!("{n}: {}", describe::ty(types, &ty));
-                    self.push(
-                        n,
-                        CompletionItemKind::FIELD,
-                        Some(detail),
-                        None,
-                        edit(n),
-                        "0",
-                    );
-                }
-                for m in LIST_METHODS {
-                    self.push(
-                        *m,
-                        CompletionItemKind::METHOD,
-                        Some(format!("list method of [{}]", describe::ty(types, elem))),
-                        None,
-                        edit(m),
-                        "1",
-                    );
-                }
+                return self.members_of(inner, range, writable, state);
             }
-            Ty::Record(r) => {
-                let rec = types.record(*r).clone();
-                for f in &rec.fields {
-                    if writable && !state && !f.rw && !leads_to_rw(types, &f.ty, 3) {
+            Ty::List(..) if writable => return,
+            Ty::Prim(_) | Ty::Opaque(_) if writable => return,
+            _ => {}
+        }
+        let record = matches!(t, Ty::Record(_));
+        for m in schema::members_of(t, self.schema, types) {
+            match m.kind {
+                MemberKind::Field => {
+                    if writable && !(state && record) && !m.writes && !leads_to_rw(types, &m.ty, 3)
+                    {
                         continue;
                     }
                     let detail = format!(
                         "{}: {}{}",
-                        f.name,
-                        describe::ty(types, &f.ty),
-                        if f.rw { " rw" } else { "" }
+                        m.name,
+                        describe::ty(types, &m.ty),
+                        if m.writes { " rw" } else { "" }
                     );
-                    let d = self
-                        .schema
-                        .doc(&DocKey::Member(rec.name.clone(), f.name.clone()));
                     self.push(
-                        f.name.clone(),
+                        m.name.clone(),
                         CompletionItemKind::FIELD,
                         Some(detail),
-                        d,
-                        edit(&f.name),
+                        m.doc.as_deref(),
+                        edit(&m.name),
                         "0",
                     );
                 }
-                if !writable {
-                    for m in &rec.methods {
-                        for s in &m.sigs {
-                            let detail = describe::sig(types, &m.name, s);
-                            let d = self
-                                .schema
-                                .doc(&DocKey::Member(rec.name.clone(), m.name.clone()));
-                            self.push_method(m.name.clone(), detail, d, edit(&m.name));
-                        }
-                    }
-                }
-            }
-            Ty::Prim(p) if !writable => {
-                if matches!(p, Prim::Text | Prim::Path) {
-                    self.push(
-                        "len",
-                        CompletionItemKind::FIELD,
-                        Some("len: int".into()),
-                        None,
-                        edit("len"),
-                        "0",
-                    );
-                }
-                let ty_name = match p {
-                    Prim::Path => "text",
-                    Prim::Int => "float",
-                    p => p.name(),
-                };
-                for m in self.schema.methods_of(ty_name) {
+                MemberKind::Method if !writable => {
                     for s in &m.sigs {
                         let detail = describe::sig(types, &m.name, s);
-                        let d = self
-                            .schema
-                            .doc(&DocKey::Method(ty_name.into(), m.name.clone()));
-                        self.push_method(m.name.clone(), detail, d, edit(&m.name));
+                        self.push_method(m.name.clone(), detail, m.doc.as_deref(), edit(&m.name));
                     }
                 }
+                MemberKind::Method => {}
             }
-            Ty::EnumType(e) => self.variants_of(*e, range),
-            _ => {}
         }
     }
 

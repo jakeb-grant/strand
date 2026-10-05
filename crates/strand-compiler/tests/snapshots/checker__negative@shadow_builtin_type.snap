@@ -1,0 +1,26 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::redeclared
+
+  × `color` is a builtin type
+   ╭─[shadow_builtin_type.strand:4:6]
+ 3 │ // annotations keep meaning the builtin.
+ 4 │ type color { r: int }
+   ·      ──┬──
+   ·        ╰── already taken
+ 5 │ let tint: color = $accent
+   ╰────
+  help: choose another name: the language's own types cannot be redeclared
+
+check::type_mismatch
+
+  × `align` expects `builtin Align`, found `Align`
+    ╭─[shadow_builtin_type.strand:10:16]
+  9 │ component C(a: Align = left) {
+ 10 │   row { align: a }
+    ·                ┬
+    ·                ╰── this is `Align`
+ 11 │ }
+    ╰────

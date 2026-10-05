@@ -28,8 +28,6 @@ mod stmt;
 mod tokens;
 mod tree;
 
-pub use expr::LIST_METHODS;
-
 use std::collections::{HashMap, HashSet};
 
 use crate::diagnostic::{Diagnostic, suggest};
@@ -214,6 +212,9 @@ pub(crate) struct Ctx {
     pub owner: Option<DefId>,
     /// In a prop value: raw colours are linted.
     pub prop: bool,
+    /// In a `let`'s value: raw colours are collected in
+    /// [`Checker::let_colours`], linted if the `let` holds a colour.
+    pub let_value: bool,
     /// Checking a token definition (an index into the token entries).
     pub token_entry: Option<usize>,
 }
@@ -382,6 +383,16 @@ pub(crate) struct Checker<'a> {
     pub new_param_pins: HashMap<DeclAt, Ty>,
     /// Components whose inferred parameters have been joined.
     pub inferred: HashSet<DefId>,
+    /// Overload attempts in progress ([`Checker::call_overloads`]).
+    pub speculating: u32,
+    /// Diagnostics and references of declarations first checked during an
+    /// overload attempt: they belong to the declaration, not the attempt,
+    /// so a failed attempt does not drop them.
+    pub kept: Vec<Diagnostic>,
+    pub kept_refs: Vec<Reference>,
+    /// Raw colours in the `let` values being checked (see
+    /// [`Checker::let_colour_lint`]).
+    pub let_colours: Vec<Span>,
 }
 
 impl<'a> Checker<'a> {
@@ -436,6 +447,10 @@ impl<'a> Checker<'a> {
             param_pins: HashMap::new(),
             new_param_pins: HashMap::new(),
             inferred: HashSet::new(),
+            speculating: 0,
+            kept: Vec::new(),
+            kept_refs: Vec::new(),
+            let_colours: Vec::new(),
         }
     }
 
@@ -638,6 +653,7 @@ impl<'a> Checker<'a> {
         else {
             return;
         };
+        let mark = (self.diags.len(), self.refs.len());
         self.stack.push(id);
         let done = self.with_place(p.module, p.scope_depth, p.node_depth, p.ctx, |c| {
             match p.what {
@@ -649,6 +665,28 @@ impl<'a> Checker<'a> {
         self.stack.pop();
         self.done.insert(id, done);
         self.lazy[id.0 as usize] = LazyState::Done;
+        self.keep_from(mark);
+    }
+
+    /// A declaration checked lazily while an overload attempt is in
+    /// progress is checked once: its diagnostics and references since
+    /// `mark` are set aside, so the attempt failing does not drop them.
+    pub(crate) fn keep_from(&mut self, mark: (usize, usize)) {
+        if self.speculating > 0 {
+            let d = self.diags.split_off(mark.0.min(self.diags.len()));
+            self.kept.extend(d);
+            let r = self.refs.split_off(mark.1.min(self.refs.len()));
+            self.kept_refs.extend(r);
+        }
+    }
+
+    /// Puts the set-aside diagnostics and references back once no
+    /// overload attempt is in progress.
+    pub(crate) fn release_kept(&mut self) {
+        if self.speculating == 0 {
+            self.diags.append(&mut self.kept);
+            self.refs.append(&mut self.kept_refs);
+        }
     }
 
     /// Takes the HIR of a declaration, checking it if nobody has yet.
@@ -967,6 +1005,16 @@ impl<'a> Checker<'a> {
                     );
                 }
                 if let [one] = name.as_slice() {
+                    // The language's own types first: a `type color` is a
+                    // redeclaration, reported where it is declared.
+                    let own = match *one {
+                        "any" => Some(Ty::Any),
+                        "unit" => Some(Ty::Unit),
+                        n => crate::ty::Prim::from_name(n).map(Ty::Prim),
+                    };
+                    if let Some(t) = own {
+                        return t;
+                    }
                     if let Some(id) = self.globals.get(*one).copied() {
                         match self.defs[id.0 as usize].kind {
                             DefKind::Enum(e) => {

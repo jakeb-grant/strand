@@ -55,7 +55,7 @@ impl From<SurfaceError> for DemoError {
 
 /// Apply one logic tick's diff and hand surface changes to the manager
 /// (render loop steps 0 and 3).
-fn apply(state: &mut State<Host>, diff: SceneDiff) {
+pub(crate) fn apply(state: &mut State<Host>, diff: SceneDiff) {
     for error in state.host_mut().renderer.apply(diff) {
         log::error!("scene: {error:?}");
     }
@@ -75,7 +75,7 @@ pub const FIRST_FRAME_TEXT_WAIT: Duration = Duration::from_millis(500);
 
 /// The Wayland connection is gone (the compositor quit or crashed): the
 /// normal end of a shell's life, not a failure.
-fn connection_closed(e: &SurfaceError) -> bool {
+pub(crate) fn connection_closed(e: &SurfaceError) -> bool {
     let SurfaceError::EventLoop(e) = e else {
         return false;
     };

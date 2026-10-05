@@ -1,0 +1,21 @@
+// expect: check::shadows_builtin, check::type_mismatch
+// Builtin names are a prelude: a declaration shadows a builtin function,
+// value or type in its scope. Shadowing a builtin service is a warning:
+// `let battery = 5` would turn `battery.percent` into a confusing error
+// far away.
+let battery = 5
+state clock = 0
+component C(audio: float) {
+  let media = 1
+  box { on click { let wm = 2 } }
+}
+fn notifications(x: float) -> float { x }
+// Calling a parameter that hides a builtin function names the builtin.
+component Card(blur: length = 24) {
+  let soft = blur(16)
+  box { width: blur }
+}
+// A file's `state` or `let` is a user binding too: called, it hides the
+// builtin just the same, never silently calling it.
+state noise = 4px
+let grain = noise(1)

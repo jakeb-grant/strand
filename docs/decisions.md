@@ -835,7 +835,8 @@ see wave2-core; the compiler supplies the field schema.)
   last value (empty before the first). Any other use of an `Async<T>` where
   `T` is expected is an error whose fix is `?? fallback`; `.pending`,
   `.error` (`text?`) and `.value` (`T?`) are its own members. `??` takes
-  the inner type of an `Async` or a `T?`.
+  the inner type of an `Async` or a `T?`. *Narrowed (fixer round 4,
+  below): only `.len` and `for` read through.*
 - **2026-10-05 · wave2-check: events and node booleans need an element.**
   A component body has no node of its own, so `when`, `hover`, `self`,
   poses and element events (`on click`) directly in it are errors pointing
@@ -865,7 +866,8 @@ see wave2-core; the compiler supplies the field schema.)
 - **2026-10-05 · wave2-check: the raw-colour lint covers prop values
   only:** props, `when` and pose blocks and component arguments. Settings
   defaults, `let`s, token values and `set { }` right-hand sides are exempt
-  (they are where colours are meant to live).
+  (they are where colours are meant to live). *Narrowed (fixer round 4,
+  below): a `let` that holds a colour is linted too.*
 - **2026-10-05 · wave2-check: `persist`.** It stores plain data (numbers,
   text, colours, enums, records, lists), so a function or `Async` state is
   an error. `let x = … persist` and `state x persist = …` are parse errors
@@ -1074,6 +1076,198 @@ see wave2-core; the compiler supplies the field schema.)
   like a global. A component `let` or a `for` binding that hides a
   file-level `state` is ordinary lexical scoping and is accepted.
 
+- **2026-10-05 · wave2-check (round 4): `Async` lists read through
+  `.len` and `for` only.** design.md's launcher reads `hits.len` and
+  loops `for h in hits`; those see the last result (empty before the
+  first). The list transforms `filter`, `map`, `sort_by`, `take`, `skip`
+  and `reverse` on an `Async<[T]>` give an `Async<[U]>`, so `.pending`
+  and `.error` survive and a plain list still needs `??`
+  (`hits.take(3) ?? []`); the VM keeps the source's pending and error on
+  the result. Element reads (`.first`, `.last`), other list methods
+  (`join`, `find`, `contains`…) and an `Async` passed to an `any`
+  parameter (`join(", ", hits)`) are `check::async`, since each would
+  forget the loading state.
+- **2026-10-05 · wave2-check (round 4): overloads are chosen by shape.** A
+  call picks its overload before checking any argument: named parameters,
+  a `from` argument, the positional count and the required parameters
+  (`material(seed:)` vs `material(image:)`, `oklch(from …)` vs `oklch(l,
+  c, h)`). Only calls the shape cannot tell apart (`radial(center, 40%)`
+  vs `radial(#000, #fff)`) try overloads in turn, at most two nested
+  levels deep (deeper, the first that fits is taken), so nested overloaded
+  calls check in polynomial time (bounded speculation: about k²·n³ for k
+  overloads nested n deep, not exponential; corrected in round 5, which
+  earlier said linear). A declaration (or token) first read inside an
+  attempt is checked once, and its diagnostics and references are kept
+  whatever the attempt's outcome, so an unknown name there is never lost
+  (`negative/overload_lazy.strand`,
+  `robustness.rs::nested_overloaded_calls_stay_cheap`).
+- **2026-10-05 · wave2-check (round 4): builtin names are not shadowed.**
+  (Replaced by round 5: builtin names are a prelude.) A top-level,
+  component or handler `state`/`let`, or a component or fn parameter,
+  named like a builtin service (`battery`), value (`t`) or function
+  (`pct`, `blur`) is `check::redeclared`: it would hide the builtin
+  without a word, and the mistake would surface far away
+  (`battery.percent` failing on a number). This follows the
+  service-named-file rule. `for` bindings and lambda parameters are
+  exempt: they are short-lived and local to one expression or loop, as
+  round 3 decided for ordinary lexical scoping. A handler `let` declared
+  twice in one block, and a prop set twice in one element (`value: <-> v;
+  value: 0.3`), are `check::redeclared` too.
+- **2026-10-05 · wave2-check (round 4): a `let` holding a colour is
+  linted.** (Widened by round 5 to every declaration that hands a colour
+  on.) `let c = #ff0000` then `bg: c` would bypass the raw-colour
+  lint, so a raw colour in a `let` whose type is a colour or paint (or a
+  list or nullable of them) gets the same `check::raw_color` warning.
+  Settings defaults, token values and `material(seed: …)` arguments stay
+  exempt.
+- **2026-10-05 · wave2-check (round 4): `segmented`'s value is an
+  option.** `options: Look` (an enum) makes `value` a `Look`; a list of
+  `T` makes it a `T`. A `value` of another type is `check::type_mismatch`
+  pointing at the options. The schema keeps `any` for both props (the
+  check is the element's, like `page` names taking `pages.current`'s
+  type); a general "type from a sibling prop" schema feature waits for a
+  second element that needs it.
+- **2026-10-05 · wave2-check (round 4): extensions add, never replace.**
+  `Schema::extend` refuses an element, group, alias, value, palette role
+  or token that already exists, and a function overload whose parameters
+  (names and types) match an existing one, with "declared twice": a
+  service crate cannot silently change a builtin (`element text(int)`).
+  (Round 5: records and services too, the same rule for method
+  overloads, a `provisional` exception for service stubs, and atomicity.)
+- **2026-10-05 · wave2-check (round 4): one error for a kebab name.**
+  `my-bar.open`, with neither `my` nor `bar` known and no spaces around
+  the `-`, is one `check::unknown_name` for `my-bar` (naming the
+  snake_case spelling, or the file to rename) rather than two, and a
+  write to an `id:` node's prop (`vol.opacity = 1`) is one
+  `check::assign_to_prop`.
+- **2026-10-05 · wave2-check (round 5): builtin names are a prelude.**
+  grammar.md says there are no reserved words, and a service crate that
+  adds a function or service must not break configs that already use the
+  name. So a `state`, `let`, parameter, `fn`, `type` or `enum` named like
+  a builtin function, value or type shadows it in its scope, silently
+  (`component Avatar(shape: Shape = circle, blur: length = 0)`, `fn
+  ease_out(t: float)`, a user `enum Place`). Where the shadowing is
+  observed it is named: calling a shadowing non-function (`blur(16)` with
+  a `length` parameter `blur`) is `check::type_mismatch` with the help
+  "`blur` in scope hides the builtin `blur`". Shadowing a builtin
+  *service* (`let battery = 5`) is a `check::shadows_builtin` warning,
+  not an error, for every kind of declaration (`fn battery` included):
+  the confusing far-away failure is flagged, and a new service from a
+  crate only warns. A component or surface named like a builtin element
+  stays an error (the tree resolves builtin elements first, so it could
+  never be placed), as does a user `service` named like a builtin one.
+  (Round 6: calls follow the rule for top-level bindings too; the
+  language's own type names are not part of the prelude.)
+- **2026-10-05 · wave2-check (round 5): component tokens are overridden
+  loudly.** `component Toast(n) tokens { radius: $radius.lg }` defines
+  `$Toast.radius`, a knob (design.md). A `tokens` set entry with that path
+  is a redefinition: without `override` it is `check::override_needed`
+  pointing at the component; `override Toast.radius: …` is accepted and
+  checked against the component token's type, and a misspelt one is
+  `check::unknown_token` with did-you-mean. A read of `$Toast.radius`
+  outside a set is typed by the component's own entry, never by whichever
+  set happens to define the path first.
+- **2026-10-05 · wave2-check (round 5): the raw-colour lint covers every
+  named value.** Round 4 linted a `let` but not the same bypass through
+  `state sc = #ff0000`, a `fn red() -> color { #ff0000 }` or a parameter
+  default `C(c: color = #0000ff)`. One rule now: a raw colour in a prop,
+  or in a declaration that hands it on as a colour (a `let`, a `state`'s
+  initial value, a `fn`'s result, a component parameter default), is
+  `check::raw_color`. Settings defaults, token values and `material(seed:
+  …)` arguments (in a prop too) are exempt. Reading a role of a computed
+  `Palette` inline (`material(…).accent`) stays unsupported in M1, an
+  interpretation rather than design.md's words (design.md describes the
+  palette tier as a typed schema of Material 3 roles): there is no field
+  access on a `Palette` value yet; roles are read as tokens after `use
+  palette`.
+- **2026-10-05 · wave2-check (round 5): a dropped `Async` is an error.**
+  An expression statement in a handler whose value is `Async<T>`
+  (`on click { sleep(1s) }`) is `check::async` with the help "`await` it,
+  or assign the result": it almost always meant to wait (design.md,
+  "Errors, not surprises").
+- **2026-10-05 · wave2-check (round 5): `await` on a list transform
+  waits.** `await hits.take(2)` while `hits` is loading waits for the
+  load and then applies the transform: the VM gives the derived `Async`
+  its own pending operation over the source's (weak handles to the VM and
+  runtime), rather than rejecting it in the checker
+  (`vm.rs::await_waits_for_a_transformed_load`).
+- **2026-10-05 · wave2-check (round 5): one more prop set twice.** The
+  positional is the prop it fills, so `meter 0.5 { value: 0.7 }` is
+  `check::redeclared`; so is a prop set twice in one `when` block. A
+  lambda whose result was already reported against the expected type
+  takes that type, so the call does not report the same mistake again;
+  `page wifi` outside `pages` is one `check::misplaced`.
+- **2026-10-05 · wave2-check (round 5): `from` parameters.** `from x`
+  (the relative-colour source) or `from: x` fills a `from` parameter; a
+  positional argument never does when telling overloads apart by shape,
+  and a defaulted `from` before a variadic (`conic(from: angle = 0,
+  ...stops)`) is given by name only, so `conic($accent, $secondary)` is
+  two stops.
+- **2026-10-05 · wave2-check (round 5): schema extensions are atomic, and
+  stubs are provisional.** `Schema::extend` stages the text on a copy and
+  swaps it in only when every item is valid, fingerprint included. A
+  record or service that already exists is refused and left untouched
+  (round 4 still overwrote its members). The builtin's service stubs and
+  the records only services hand out are `provisional`: the first
+  extension that declares the name replaces the stub in place (same id,
+  its members and docs dropped), once. Method overloads follow the same
+  "same parameters is declared twice" rule as functions.
+- **2026-10-05 · wave2-check (round 5): one member table.** List and
+  `Async` members (`len`, `first`, `filter`, `take`, `remove_key`,
+  `pending`, `value`, …) moved out of the checker's match arms into
+  `schema::members` (`list_members`, `async_members`, `members_of`), which
+  the checker types `x.name(…)` by and which the LSP lists after `.` with
+  docs; generic schema syntax can come later without changing the API.
+- **2026-10-05 · wave2-check (round 6): user bindings come before
+  builtins at a call too.** Round 5 made builtin names a prelude but a
+  call still looked up builtin functions before the file's top-level
+  `state`/`let` (and before globals other than `fn`, `type` and
+  component), so `let pct = x => x * 2` was read as the lambda and called
+  as the builtin, and a crate adding `fn ring` silently redirected
+  `ring(1)`. A call now resolves a block or parameter name, then the
+  file's `state`/`let`, then every global, and only then the builtins.
+  Calling a non-function user name that hides a builtin function (`state
+  noise = 4px` then `noise(1)`, an `enum wave`) is `check::type_mismatch`
+  with the "hides the builtin" help, wherever it is declared.
+- **2026-10-05 · wave2-check (round 6): the language's own types are not
+  a prelude.** `type color { … }` made every `color` annotation the
+  user's record and printed "expects `color`, found `color`". No crate
+  adds primitive types (`int`, `float`, `bool`, `text`, `color`, `paint`,
+  `path`, `length`, `percent`, `angle`, `duration`, `font`, `shadow`,
+  `insets`, `corners`, `any`, `unit`, `Async`), so redeclaring one is
+  `check::redeclared` and annotations keep the builtin (one diagnostic).
+  Schema records and enums stay a prelude (crates add those); where a
+  config type hides one, the hidden one is printed `builtin Align`
+  ("`align` expects `builtin Align`, found `Align`").
+- **2026-10-05 · wave2-check (round 6): a config `service` named like a
+  builtin one stays an error.** Unlike other names, a service is
+  identified by its name at runtime (`Value::Service(name)`; the host
+  serves reads by name), so a config `service weather` beside a
+  contributed `service weather` would read the crate's data. It stays
+  `check::redeclared`, and the cost is stated where crate authors look
+  (architecture.md, `Schema::extend`): contributing a service name a
+  config already declares breaks that config, so crates should namespace
+  new service names. Revisit when M3 gives config services their own
+  identity.
+- **2026-10-05 · wave2-check (round 6): the positional's prop is schema
+  data.** `element meter(float -> value)`: an element's positional names
+  the prop it fills (`ElementSchema::arg_prop`, required whenever there
+  is a positional). Lowering and the checker's "set twice" rule read it
+  from there, replacing two hard-coded copies of the wave2-vm table
+  (`letters` has no positional, so it fills nothing).
+- **2026-10-05 · wave2-check (round 6): record keys are checked.**
+  `Schema::extend` ends by resolving every record's `key` path across all
+  records, so `record Foo key nope { … }` and a stub replacement that
+  breaks a builtin key (`record App { name: text }` under `Hit key
+  app.id`) are refused (atomically) instead of silently losing keyed
+  identity.
+- **2026-10-05 · wave2-check (round 6): set overrides win at runtime.**
+  The token table took component token defaults after the `use tokens`
+  chain, so `override Toast.radius` was overwritten. Defaults now go in
+  first, and each entry replaces an earlier one at the same path whether
+  plain or derived (a plain value no longer outranks a later derived
+  override; `instantiate.rs::set_overrides_beat_component_token_defaults`).
+
 ## wave2-lsp
 
 - **2026-10-05 · wave2-lsp: the formatter keeps the author's lines.**
@@ -1168,10 +1362,12 @@ see wave2-core; the compiler supplies the field schema.)
   reads the type of the expression before it from the typed tree (the
   checker keeps a field's base typed when the field is unknown). An
   enum's name, a file stem and a schema enum complete their variants and
-  exports. Members are fields, methods, `Async`'s `pending`/`error`/
-  `value` and list members; the list methods are the checker's own
-  (`strand_compiler::check::LIST_METHODS`, public since round 2, so
-  there is no copy to drift). With the cursor
+  exports. Members are what `strand_compiler::schema::members_of`
+  gives for the type (fields, methods, `Async`'s `pending`/`error`/
+  `value`, list members), the table the checker types `x.name` by, so
+  there is no copy to drift; hover over a method reads the same table
+  (since the merge of wave2-check round 5, which replaced the earlier
+  `check::LIST_METHODS`). With the cursor
   right after a dot and a name after it (`battery.|present`), that name is
   the member being completed. In a component call's block, children and
   their keywords are offered only if the component has a `slot`;
@@ -1302,7 +1498,9 @@ see wave2-core; the compiler supplies the field schema.)
   `name`; every other element (`icon`, `image`, `svg`, `lottie`,
   `shader`, `spectrum`, `thumbnail`) fills `source`. A record (a
   `Window` for `thumbnail`, an `AudioDevice` for `spectrum`) is sent as
-  its key's text.
+  its key's text (Since wave2-check round 6 this table is schema data:
+  `element meter(float -> value)`.)
+
 - **2026-10-05 · wave2-vm: palettes before M2.** `material(seed:)` is a
   deterministic stand-in for Material 3 (`vm/palette.rs`): five tonal
   palettes in OKLCH from the seed's hue and chroma, every role at its M3
@@ -1467,8 +1665,8 @@ see wave2-core; the compiler supplies the field schema.)
   `rt.keyed_memo`. Every mounted item has its own value cell, set from
   `VecDiff::Update`, so one changed row re-runs one row's bindings
   (`tests/instantiate.rs::one_item_change_reruns_one_item`: 2,000 rows).
-  Chains of `.filter`/`.map`/`.take`/`.sort_by` stay whole-list until
-  they lower to core's incremental views with virtualised lists (M4).
+  Chains of `.filter`/`.map`/`.take`/`.sort_by` on a keyed collection
+  follow core's incremental views (see "keyed chains" below).
 - **2026-10-05 · wave2-vm: located runtime errors.** Errors are
   `RuntimeError`s carrying the failing operation's file and span (the
   innermost chunk that raised it), the scene node, the component and
@@ -1497,6 +1695,127 @@ see wave2-core; the compiler supplies the field schema.)
   `strand set` whose value does not fit the declared type is refused
   with an error; a widget's `f32` becomes the `f64` with the shortest
   decimal that round-trips it (a slider's 0.8 is 0.8).
+- **2026-10-05 · wave2-vm: declared edges.** The compiler declares
+  every read and write set it can see in the source before the first
+  flush (`lower::reads`, `instantiate::edges`), as architecture.md asks:
+  a conservative superset (every branch; a lambda's and a called `fn`'s
+  reads count for the chunk that makes or calls it; an element
+  instance's six flags; a service method call reads the whole service,
+  `ServiceHost::sources(rt, s, None)`). Handler bodies' reads are not
+  declared on their sites (tasks do not track reads); their writes
+  are, on the site, the `on change` effect, the timer or the
+  debounce's timer. Proving it took one core change, made here because
+  the compiler cannot meet the "once per flush" promise without it:
+  tasks spawned by event listeners are polled before the next sink (the
+  flush polled them one sink late, so an `if` reading what an `on
+  click` wrote ran before and after it). The core track should own it
+  from here (`crates/strand-core/src/runtime.rs`, `flush`).
+  `tests/instantiate.rs::sinks_run_once_after_the_handlers_that_feed_them`
+  fails without the declarations.
+- **2026-10-05 · wave2-vm: keyed chains.** design.md says `.filter`,
+  `.map`, `.take` and `.sort_by` "update incrementally and keep keys".
+  A `for` over such a chain rooted at a keyed `state` or a service's
+  keyed field is core's incremental views. Core's operators take pure
+  closures plus tracked parameters; a VM lambda is not pure (it can
+  read state), so a step's parameters are its lambda (compared by code
+  and captured values, not closure identity) and the values of
+  everything the lambda reads besides its item (a keyed collection by
+  its version, not a copy). Changing one of those rebuilds the step,
+  which is what recomputing the lambda over every item would do. A
+  lambda calling a service method (whose reads the VM cannot name)
+  falls back to whole-list comparison. `map` keeps the source keys, so
+  a mapped loop uses them even when the mapped item has a key field of
+  its own; a loop with its own `key e` is never a chain. A lambda that
+  fails is reported once and the item is filtered out, mapped to null
+  or sorted as equal. `sort_by` compares keys with a total order (NaN
+  after every number, kinds by kind), so a sort never panics.
+- **2026-10-05 · wave2-vm: keyed reads.** `.len`, `.first`, `.last`,
+  `[i]` and `.contains(x)` on a keyed collection compile to `Op::Keyed`
+  and use core's accessors; `contains` looks the value's key up and
+  compares the item found. The collection's list value is a lazy memo
+  built only for reads that need the whole list (passing it to a `fn`,
+  `join`, `.filter` outside a `for`).
+- **2026-10-05 · wave2-vm: `await` on a pending value.** An async
+  `let` that is pending carries an operation that settles with the
+  load; `await` on it suspends until then. An awaited operation keeps
+  its result, so every awaiter (two handlers on one `let`) gets the same
+  value. A pending value with nothing to wait on is an error value
+  ("nothing to await"), never null or a stale value.
+- **2026-10-05 · wave2-vm: faults at the top level.** design.md: "a
+  runtime fault freezes only its own component". A file's own `let`s,
+  handlers and timers belong to no component; freezing their scope would
+  freeze the whole program, so their errors carry no scope and
+  `Instance::freeze` declines them (they are still located and
+  outlined).
+- **2026-10-05 · wave2-vm: visibility reaches everything under a
+  surface.** A hidden surface's content lets go of every service held
+  under it (its components, surfaces nested in it), and a nested
+  surface (`popup` in a `bar`) holds what its children read only while
+  it is open; its reads no longer count for the enclosing body. A
+  surface's props (`open:`) still count for the body around it, since
+  they are evaluated while it is hidden.
+- **2026-10-05 · wave2-vm: the wall clock every step.** `Instance::step`
+  sets the clock to the wall time on every step instead of only when
+  the next minute is due: a wall clock set back (by hand or by NTP)
+  would otherwise freeze the clock until it caught up, and a clock
+  reader mounted later (a popup opened) would show the time of the last
+  wake. Setting equal minute and second values is a no-op for the
+  graph. Date arithmetic (`d.add(months:, years:)`) and `noise` use
+  checked or wrapping arithmetic: a huge config value is an error value
+  or a wrapped cell, not an overflow panic.
+- **2026-10-05 · wave2-vm: `strand run` before hit testing.** The
+  binary is wired as architecture.md's host-loop recipe says, made on
+  this branch because the user asked for the carried items to be fixed
+  in this wave (it touches `crates/strand`, which no other wave-2 track
+  changes beyond `main.rs`'s command table). Two interpretations until
+  M2 and M3: input and layout facts are per surface (the pointer over a
+  surface is its node's `hover`, a release is `click`/`secondary`, a
+  scroll `scroll(dy, dx)`, the surface's logical size its node's
+  `width`/`height`), since render does not hit-test inside surfaces or
+  lay them out yet; and `screens.focused` (and `Screen.focused`) is the
+  first monitor in plug order until a compositor service reports
+  focus. A config with errors is printed and not run (the overlay over
+  a last good tree is the live-reload track's). A left button held on
+  a surface is its node's `pressed` (cleared on release and on leave);
+  buttons other than left and right have no design event and send
+  nothing (round 2 sent a middle click as `on middle`, which the
+  design does not have). A monitor back within 30 s keeps its place in
+  `screens.all` (so `screens.focused` does not move to another monitor
+  on a replug); a forgotten one comes back last.
+- **2026-10-05 · wave2-vm: `strand run` shutdown and sleep (review
+  round 3).** SIGINT, SIGTERM and the compositor going away all end a
+  run the same way: the main thread sends `ToLogic::Shutdown` and joins
+  the logic thread, which unmounts the instance, runs
+  `Runtime::shutdown` (waiting for the persist queue, bounded) and
+  drops its stores, so a `persist` or `prefs.toml` write made in the
+  last 250 ms before logout or Ctrl-C reaches the disk. The signals are
+  blocked in every thread (the mask is set before any thread starts)
+  and read from a `signalfd` on the main loop; calloop's own signal
+  source needs `nix`, which is not in the tree. The logic thread
+  sleeps in a calloop loop of its own: the main thread's messages, a
+  ping for the runtime's wake hook (which therefore holds no sender:
+  the thread also ends when every sender is gone), the logic clock's
+  deadline as the dispatch timeout, and the M0 demo's `CLOCK_REALTIME`
+  timerfd armed at the wall-clock wake with `TFD_TIMER_ABSTIME |
+  TFD_TIMER_CANCEL_ON_SET`, so after a suspend or a clock step the
+  clock shows the new time at once (round 2 slept on a monotonic
+  countdown, up to a minute late). A clock set back between the step
+  and arming the timer (which `CANCEL_ON_SET` does not report) is
+  caught by comparing the wall time after arming with the step's.
+  With no state directory, persisted state is not kept but settings
+  files still are (their overlays in a temporary directory).
+- **2026-10-05 · wave2-vm: action writes (review round 3).** A handler
+  that calls a service action (`n.expire()`, `notifications.clear()`)
+  declares a write of what the action can change, from the first
+  flush: lowering records the services an action's receiver belongs to
+  (the service itself, or every service whose fields reach the item's
+  record) and the instantiator asks `ServiceHost::action_writes(rt,
+  service)`, by default every field of the service (a superset).
+  `tests/instantiate.rs::action_calls_declare_their_service_writes`.
+  The core change above (tasks spawned by listeners polled before the
+  next sink) now has a core test of its own,
+  `crates/strand-core/tests/order_props.rs::a_cell_written_by_a_task_a_listener_spawns_is_read_once_per_flush`,
+  which fails without it.
 
 ## wave2-core
 
@@ -1815,3 +2134,242 @@ sweep only matches `.<name>.tmp.<pid>.<n>`. `rt.is_idle()` is false while
 an IO thread's failure waits to be reported. `KeyedSignal::get_untracked`
 inside the collection's own `update` returns `Error::Reentrant` instead of
 panicking.
+
+## wave2-watch
+
+- **2026-10-05 · Raw inotify (rustix), not notify, and no debouncer.**
+  The spec allows raw inotify where notify cannot express the event set,
+  and notify 8.2 cannot: it always adds `IN_OPEN` and `IN_ATTRIB` to
+  every watch, so every open of any file in a watched directory by any
+  process (each font an app loads in a `watch_tree` font directory, every
+  read in `~/.config`, which is watched as the config root's parent)
+  would wake its thread and ours, against design.md's "an idle shell
+  does zero work". It also removes, on a watched directory's
+  `MOVED_FROM` or delete, every watch whose path starts with it, behind
+  the caller's back. `rustix::fs::inotify` (rustix is already a
+  dependency) with the mask `CLOSE_WRITE | MOVED_TO | MOVED_FROM |
+  CREATE | DELETE | DELETE_SELF | MOVE_SELF | MODIFY | ONLYDIR |
+  EXCL_UNLINK` queues nothing for reads (`reading_a_watched_file_queues_no_events`).
+  The watcher thread `poll(2)`s the inotify fd and an eventfd that control
+  calls write, so there is one thread and no wake-up without work. The
+  wd-to-path map lives with core, which decides when watches go.
+  `Q_OVERFLOW` is a full rescan; an `IGNORED` for a still-mapped
+  descriptor is a removal. If `inotify_init` fails
+  (`max_user_instances` reached, common with Electron apps), every
+  directory is polled and reported as `Polling { WatchFailed }` instead
+  of the watcher failing to start. The debouncer is not used: it
+  debounces per path on a tick, which cannot express "15 ms after the
+  last completed write across all files" (save all = one batch), and its
+  rename stitching is unneeded because the watcher never follows renames:
+  it marks the paths an event names and decides at the end of the quiet
+  period, by `lstat` and BLAKE3, what each one is now. Watches are
+  non-recursive, one per directory, so depth (3, from `find_files`) and
+  symlink handling stay ours.
+- **2026-10-05 · What counts as an event.** Acted on: `CLOSE_WRITE`,
+  `MOVED_TO`, and a `CREATE` that no `CLOSE_WRITE` will follow: a
+  symlink (`ln -s`), a hard link (`ln`, a regular file with more than
+  one link), or a FIFO, socket or device node. A `CREATE` or `MOVED_TO`
+  of a symlink to a directory in a config directory (GNU stow folding in
+  a sub-directory) rescans the module set. Removals (`DELETE`, `MOVED_FROM`, a watched directory
+  deleted or moved) mark a path for an existence check: a removal cannot
+  be half-written, and a module deleted for good must be reported.
+  `MODIFY` and a plain-file `CREATE` are never read; they only keep an
+  already-open batch waiting, so a slow multi-file save stays one batch.
+  A stream that never goes quiet is cut 500 ms after its first event.
+- **2026-10-05 · Removal grace 50 ms.** When the latest event on a
+  watched path was a removal the quiet period is 50 ms instead of 15, so
+  delete-and-create and Vim's rename-then-write are one `Modified`, never
+  `Removed` then `Created` (and never a missing-module error on the
+  reload overlay). Saves without a removal keep design.md's 15 ms.
+- **2026-10-05 · Scratch names.** design.md's `4913`, `*.swp`, `*~`,
+  `*___jb_*___`, plus `*.swo` and `*.swx` (Vim's next swap names when a
+  `.swp` exists). Hidden names are ignored in config and cache
+  directories, as `find_files` skips them; an explicitly watched hidden
+  file (`~/.wallpaper`) still works because explicit paths match exactly.
+  Other extensions in a config directory are not reported unless a path
+  is registered (`.wgsl` comes from the compiler's `shader "…"` paths).
+- **2026-10-05 · Symlinks hop by hop.** Each watched path is resolved one
+  component at a time; every symlink met (file or directory, up to 40)
+  is a hop, and the watcher watches each hop's directory plus the final
+  target's directory. An event on any hop re-resolves the file; a hop
+  that is a directory link of a module file, or of the config root, also
+  calls the module-set rescan. Watches are always on canonical
+  directories, so one inode is never watched under two paths. A link
+  swap whose new target has the same bytes is still reported as
+  `Modified` with the unchanged hash and the new `canonical`: design.md
+  counts a link swap as an edit, and the loader must stop pointing
+  diagnostics and click-to-`$EDITOR` at a store path that may be
+  garbage-collected; it skips the recompile by hash.
+- **2026-10-05 · Immutable stores are not watched.** A directory under
+  `/nix/store` or `/gnu/store` on a read-only mount cannot change in
+  place; home-manager's switch swaps the link, which the link's directory
+  sees. Other read-only mounts are watched (a read-only bind mount of a
+  writable tree still gets events), and a network or FUSE filesystem is
+  polled even when mounted read-only (the server's copy still changes):
+  the filesystem type is checked before the read-only flag. A polled
+  file that exists but cannot be opened is compared by `stat` stamp, as
+  it was stored, so it is not re-checked on every poll.
+- **2026-10-05 · Polling.** Directories on NFS, SMB/CIFS, 9p, Ceph, AFS,
+  Coda or FUSE (statfs magic), or whose inotify watch fails (limit
+  reached), are polled every second (`Options::poll_interval`): the
+  listing is compared (inode, size, times), and a watched file in the
+  directory is re-hashed only when its stamp changed. The stamp is taken
+  after an `open` (`O_NONBLOCK`) and `fstat`, which on NFS revalidates
+  the attribute cache (close-to-open consistency), so a stale cache does
+  not hide an edit and a 20 MB wallpaper on an NFS home is not re-read
+  every second. As a backstop, every 30 s (`Options::content_sweep`)
+  watched files up to 1 MiB (`Options::sweep_max_bytes`) are re-hashed
+  whatever their stamp; larger ones are compared by stamp only. FUSE is
+  polled because remote writes (sshfs, rclone) make no events. Each
+  polled directory is reported once as `Notice::Polling`; a polled
+  directory that exists but cannot be listed keeps its last listing and
+  is polled quietly instead of being dropped and re-added every poll.
+- **2026-10-05 · Cache trees are not hashed.** App, icon and font
+  directories report `Role::Cache(kind)` paths, `Modified` or `Removed`
+  by existence, with no hash: a font can be tens of MB and the cache
+  owner re-reads what it needs. A new sub-directory is watched up to the
+  tree's depth.
+- **2026-10-05 · Own writes.** `register_own_write(path, hash)` matches
+  the next completed write of that path (or of its resolved target) with
+  that hash, once; unmatched registrations expire after 10 s (pruned on
+  every registration and every batch). When a match is found, earlier
+  registrations for the same file are dropped too: Strand writing a file
+  several times in one quiet period (a slider) leaves only the last
+  content on disk, and the superseded hashes must not swallow a later
+  user save (an editor undo) with those bytes.
+- **2026-10-05 · Portal client.** zbus is built with its `tokio`
+  feature (the services runtime, design.md). The async core is
+  `strand_watch::follow(&Connection, EventSink)`, so `strand-services`
+  can host it on the shared current-thread runtime and session
+  connection; `PortalSettings::spawn` is a convenience that runs it on
+  its own thread and runtime (tests, or before services exist). It
+  subscribes to `SettingChanged` and to owner changes of
+  `org.freedesktop.portal.Desktop` before reading, so no change is lost
+  between them. The three keys are read concurrently (`ReadOne`, falling
+  back to `Read` for portal version 1, value wrapped in one more
+  variant), each under a 500 ms limit (`BOOT_READ_TIMEOUT`); connecting
+  and subscribing have a 2 s limit. The boot batch (`at_boot: true`) is
+  always sent, with what arrived in time, empty when the bus or portal
+  is missing. A key that missed the limit is read again without the
+  short limit (zbus's own 25 s) and sent with `at_boot: false`. When the
+  portal starts or restarts later (a new name owner), all three keys are
+  re-read and sent with `at_boot: false`: they are real changes against
+  the defaults logic holds, and a value equal to the current one changes
+  nothing in the graph. Dropping `PortalSettings` cancels the whole task,
+  including outstanding calls, so shutdown never waits on a hung portal.
+  `color-scheme` keeps the raw preference next to `dark`; an
+  `accent-color` component outside 0..=1 means unset. Tests use a zbus
+  mock portal on a private `dbus-daemon` the test starts itself
+  (python3-dbusmock is not installed); they skip when `dbus-daemon` is
+  missing unless `STRAND_REQUIRE_DBUS` or `CI` is set, and CI sets the
+  former and installs `dbus`, so the tier cannot pass silently there. A
+  `SettingChanged` that arrives while a late or restart re-read is in
+  flight wins: the read's value for that key is dropped, since the
+  signal is at least as new as the read's answer and sending the read
+  after it would revert the change (dark mode flipping back).
+- **2026-10-05 · Missing and replaced directories.** A directory the
+  watcher wants (a config directory, a referenced file's directory, a
+  link's directory, a cache tree root) that does not exist is replaced
+  by its nearest existing ancestor, and the first missing path below it
+  is remembered; when that path appears (a directory, or a link), the
+  files below it are re-resolved, re-watched and re-checked, and the
+  module set is rescanned if the config lies below it. The config
+  directory's parent is always watched and the root itself triggers a
+  rescan, so a config directory that is deleted and recreated (dotfile
+  scripts, `mv new strand`) is watched again. Directory removals
+  (`IN_DELETE` of a directory, `DELETE_SELF`) are removals; a creation
+  event for a path already watched with the same inode changes nothing.
+  A watched directory that is moved or deleted takes every watch below
+  it along: a moved directory's descriptors follow the inodes, so the
+  paths they were added under are stale for the whole subtree. The
+  watcher drops them all (`MOVE_SELF`, `MOVED_FROM`, `DELETE_SELF`) and,
+  at the flush, re-resolves, re-watches and re-hashes every file below,
+  so `mv cfg cfg.bak; mv cfg.new cfg` reports the changed files in
+  sub-directories and nothing written in `cfg.bak` is reported under
+  the old names. As a backstop, each flush re-checks the inode of every
+  watched directory and re-watches one that changed. Watch, then list:
+  when a flush adds a watch on a config or cache-tree directory, the
+  module set (or tree) is listed once more after the next quiet period,
+  because the rescan listed that directory before its watch existed and
+  a file created in between (a slow `cp -r`, a `git checkout`) made no
+  event. The second listing adds no new watch, so it ends there, and an
+  unchanged set sends no batch. The same holds at boot (the caller's
+  `find_files` ran before `spawn` added any watch: the set is listed
+  again at the first quiet period) and for a new cache tree (walked
+  again once watched).
+- **2026-10-05 · Registrations per role.** A referenced path can be
+  wanted for several reasons (two `state … from "prefs.toml"`, a
+  wallpaper also shown by an `image`), so registrations are counted per
+  (path, role) and `unwatch_file(path, role)` drops one. Module-set
+  membership is separate from registrations, so registering or
+  unregistering a module file never changes its module status. A change
+  is reported once per role (`changes` sorted by path, then role).
+  `set_referenced(pairs)` replaces every registration with the set the
+  compiler collected from the whole program, so the loader does not diff
+  path sets itself.
+- **2026-10-05 · Only regular files are read.** A watched path is
+  `stat`ed, opened with `O_NONBLOCK`, `fstat`ed, and hashed only if it is
+  a regular file, streaming (`blake3::Hasher::update_reader`), so a FIFO
+  cannot block the watcher thread (or `watch_file`, which waits for it),
+  `/dev/zero` cannot exhaust memory, and a 50 MB wallpaper is not
+  buffered whole. Anything else is reported once with
+  `error: Some(InvalidInput)` and no hash.
+- **2026-10-05 · Batch timestamps.** `FileBatch` carries `first_event`
+  and `last_event` (the event that last kept the quiet period open) and
+  `SystemBatch` carries `received`, so the reload-latency benchmark and
+  `strand watch --json` can separate the watcher's quiet period from
+  compile and commit time.
+- **2026-10-05 · `ConfigReloaded { failed: Option<bool> }`.** niri's
+  `ConfigLoaded { failed }` gives `Some(failed)`; Hyprland's
+  `configreloaded` says nothing about success, so its adapter sends
+  `None` rather than inventing `false`.
+- **2026-10-05 · Watch, then read, for every baseline.** A file's
+  baseline hash is read after its directory watch exists (module files
+  at `spawn`, `watch_file`, `set_referenced`): the entry is created
+  resolved but unread, the watches are synced, then the file is hashed
+  without reporting anything. A save in between is either in the
+  baseline or makes an event; reading first left a stale baseline, so a
+  later undo to the old bytes was dropped as a no-op.
+- **2026-10-05 · Loaded hashes.** The loader reads referenced files
+  before it knows to register them (the compiler collects the paths), so
+  a save between its read and `set_referenced` would be lost.
+  `set_referenced` takes `Referenced { path, role, loaded }`, built from
+  `(path, role)` or `(path, role, hash)`; when `loaded` differs from
+  what the watcher holds, the baseline becomes `loaded` and the path is
+  re-checked at the next quiet period, so the file is compared with what
+  the loader holds. Every role of that path sees the change (a module
+  also registered as `Other` gets a redundant `Modified`, which a hash
+  check on the logic side ignores). `watch_file` stays "register, then
+  read".
+- **2026-10-05 · Own writes are registered synchronously.**
+  `register_own_write` pushes into a list shared with the watcher thread
+  (`Arc<Mutex<_>>`) instead of queueing a control message, so a flush
+  already under way when Strand writes sees the registration. Strand's
+  own writes are atomic (temporary file renamed over the path); an
+  in-place write can be read half done and that content is reported.
+- **2026-10-05 · Files linked in complete.** A `CREATE` of a regular
+  file with one link and non-zero length is a completed write: its bytes
+  existed before its name (`O_TMPFILE` + `linkat`, as systemd's
+  `link_tmpfile` does; its `CLOSE_WRITE` is reported under the unnamed
+  `#<ino>`, if at all). An empty new file still waits for `CLOSE_WRITE`;
+  a write still in progress extends the batch with `MODIFY`.
+- **2026-10-05 · Light ancestor watches.** A watched directory's inotify
+  descriptor follows its inode, so moving an unwatched ancestor
+  (`mv ~/x ~/w` with only `~/x/y/z` watched) made no event and the file
+  kept being reported under its old path. Every ancestor of a directory
+  watched in full now holds a light watch (`MOVED_FROM`, `DELETE`,
+  `DELETE_SELF`, `MOVE_SELF` only, no writes or creations), so the move
+  forgets the watches below, re-resolves and reports `Removed`; the
+  ancestor then becomes the full watch waiting for the path to return.
+  Writes in `~` or `/` queue nothing; renames and deletions there wake
+  the thread for a map lookup and no batch. Ancestor watches are best
+  effort and silent: on a network or read-only filesystem, or past the
+  watch limit, they are skipped (polled directories already notice a
+  vanished directory when listing fails). A periodic inode audit was
+  rejected: it would wake an idle shell.
+- **2026-10-05 · Backend errors do not spin.** A failing `poll(2)` is
+  retried after a pause that doubles from 10 ms up to `poll_interval`,
+  and each distinct error is reported once. A failing inotify `read`
+  (not `EAGAIN`) leaves the fd readable, so the watcher drops inotify,
+  polls every directory (each reported once as `WatchFailed`) and
+  rescans everything (`RescanReason::Overflow`: events were lost).

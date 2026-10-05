@@ -5,3 +5,5 @@ tokens compact extends base {
   override spcae { 1: 2px }
   override fg.mutde: $fg.alpha(0.5)
 }
+component Toast(n: int) tokens { radius: $radius.lg } { col { radius: $Toast.radius } }
+tokens extra { override Toast.raduis: 3px }

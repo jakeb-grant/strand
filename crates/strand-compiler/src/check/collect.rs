@@ -86,10 +86,12 @@ impl<'a> Checker<'a> {
                     ast::StateInit::Value { .. } => DefKind::State,
                 };
                 let pending = self.pending(LazyAst::State(s, reset));
+                self.shadows_builtin(&s.name, "`state`");
                 self.declare_file(&s.name, kind, s.export.is_some(), pending);
             }
             ItemKind::Let(l) => {
                 let pending = self.pending(LazyAst::Let(l, reset));
+                self.shadows_builtin(&l.name, "`let`");
                 self.declare_file(&l.name, DefKind::Let, l.export.is_some(), pending);
             }
             ItemKind::Enum(e) => {
@@ -105,6 +107,7 @@ impl<'a> Checker<'a> {
                     }
                     seen.push(&v.name);
                 }
+                self.builtin_type_name(&e.name);
                 let id = self.types.add_enum(EnumDef {
                     name: e.name.name.clone(),
                     variants: e.variants.iter().map(|v| v.name.clone()).collect(),
@@ -118,6 +121,7 @@ impl<'a> Checker<'a> {
                 );
             }
             ItemKind::Type(t) => {
+                self.builtin_type_name(&t.name);
                 let id = self
                     .types
                     .add_record(RecordDef::new(t.name.name.clone(), user(t.name.span)));
@@ -186,6 +190,67 @@ impl<'a> Checker<'a> {
         .help = Some(help);
     }
 
+    /// A binding already in the innermost scope, declared again there.
+    pub(super) fn redeclared_binding(&mut self, name: &ast::Ident, prev: Binding) {
+        match prev {
+            Binding::Def(d) => self.redeclared(name, d, "block"),
+            Binding::Local(l) => {
+                let local = &self.locals[l.0 as usize];
+                let (lf, ls) = (local.file, local.span);
+                self.error(
+                    "check::redeclared",
+                    format!("`{}` is declared twice", name.name),
+                    name.span,
+                    "declared again here",
+                )
+                .add_secondary(lf, ls, "first declared here")
+                .help = Some("rename one of them".into());
+            }
+        }
+    }
+
+    /// The language's own type names (`color`, `length`, `Async`, …) are
+    /// not a prelude: no crate adds them, and a `type color` would make
+    /// every `color` annotation mean something else. A redeclaration
+    /// (annotations keep the builtin, so it is the only diagnostic).
+    fn builtin_type_name(&mut self, name: &ast::Ident) {
+        let n = name.name.as_str();
+        if crate::ty::Prim::from_name(n).is_none() && !matches!(n, "any" | "unit" | "Async") {
+            return;
+        }
+        self.error(
+            "check::redeclared",
+            format!("`{n}` is a builtin type"),
+            name.span,
+            "already taken",
+        )
+        .help = Some("choose another name: the language's own types cannot be redeclared".into());
+    }
+
+    /// Builtin names are a prelude: a `state`, `let`, parameter, `fn`,
+    /// type or component named like a builtin function, value or type
+    /// shadows it in its scope (a call that then fails names the hidden
+    /// builtin). Shadowing a builtin service gets a warning, since
+    /// `let battery = 5` turns `battery.percent` far away into a confusing
+    /// error; a warning, so a service crate that adds a service never
+    /// breaks a config. `what` names the declaration (`let`, `state`,
+    /// `parameter`).
+    pub(super) fn shadows_builtin(&mut self, name: &ast::Ident, what: &str) {
+        let n = name.name.as_str();
+        if !self.schema.services.contains_key(n) {
+            return;
+        }
+        self.warning(
+            "check::shadows_builtin",
+            format!("this {what} hides the builtin service `{n}`"),
+            name.span,
+            "shadows a service",
+        )
+        .help = Some(format!(
+            "rename the {what}: in its scope `{n}` no longer reads the service"
+        ));
+    }
+
     pub(super) fn declare_global(
         &mut self,
         name: &ast::Ident,
@@ -193,21 +258,28 @@ impl<'a> Checker<'a> {
         ty: Ty,
         lazy: LazyState<'a>,
     ) -> DefId {
+        // Builtin elements are resolved before components in a tree, so a
+        // component named like one could never be placed; two services
+        // under one name would be ambiguous. Other builtin names are a
+        // prelude the declaration shadows (see `shadows_builtin`).
         let builtin = match &kind {
             DefKind::Component | DefKind::Surface(_) => {
                 self.schema.element(&name.name).map(|_| "a builtin element")
             }
-            DefKind::Type(_) | DefKind::Enum(_) => {
-                self.schema.named_type(&name.name).map(|_| "a builtin type")
-            }
             DefKind::Service(_) => self.schema.service(&name.name).map(|_| "a builtin service"),
-            DefKind::Fn => self
-                .schema
-                .functions
-                .contains_key(&name.name)
-                .then_some("a builtin function"),
             _ => None,
         };
+        match &kind {
+            DefKind::Fn | DefKind::Type(_) | DefKind::Enum(_) | DefKind::Component => {
+                let what = match &kind {
+                    DefKind::Fn => "`fn`",
+                    DefKind::Component => "component",
+                    _ => "type",
+                };
+                self.shadows_builtin(name, what);
+            }
+            _ => {}
+        }
         if let Some(what) = builtin {
             self.error(
                 "check::redeclared",
@@ -289,11 +361,17 @@ impl<'a> Checker<'a> {
                 .last()
                 .and_then(|s| s.iter().find(|(n, _)| *n == name.name).map(|(_, b)| *b))
             {
-                if let Binding::Def(prev) = prev {
-                    self.redeclared(name, prev, "block");
-                }
+                self.redeclared_binding(name, prev);
                 continue;
             }
+            self.shadows_builtin(
+                name,
+                if matches!(kind, DefKind::Let) {
+                    "`let`"
+                } else {
+                    "`state`"
+                },
+            );
             let def = Def {
                 name: name.name.clone(),
                 kind,
@@ -453,7 +531,9 @@ impl<'a> Checker<'a> {
             }
             let declared = p.ty.as_ref().map(|t| self.resolve_type(t));
             let default = p.default.as_ref().map(|d| {
-                let e = self.expr(d, declared.as_ref());
+                let e = self.named_value("a parameter default", declared.as_ref(), |c| {
+                    c.expr(d, declared.as_ref())
+                });
                 if let Some(t) = &declared {
                     self.require(&e, t, "the default");
                 }

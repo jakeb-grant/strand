@@ -15,7 +15,7 @@
 //!   and with the real [`clock`] the hello bar's runtime).
 //! - [`persist`]: `persist` storage with the default's hash.
 
-mod builtins;
+pub(crate) mod builtins;
 pub mod clock;
 mod exec;
 pub mod host;
@@ -201,8 +201,13 @@ impl Env {
 
     /// The core scope a runtime fault in this scope freezes: the
     /// instance of the innermost component (or the surface instance, or
-    /// `for` item at the top level) this scope belongs to.
+    /// `for` item at the top level) this scope belongs to. `None` at
+    /// the config's top level (a file's `let`s, handlers and timers):
+    /// freezing that would freeze the whole program, and design.md says a
+    /// fault freezes only its own component, so a top-level fault is
+    /// outlined but nothing is frozen.
     pub fn fault_scope(self: &Rc<Self>) -> Option<strand_core::NodeId> {
+        self.parent.as_ref()?;
         let mut cur = self.clone();
         loop {
             let Some(p) = cur.parent.clone() else {

@@ -1,0 +1,60 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::unknown_name
+
+  × unknown name `nosuchname`
+   ╭─[overload_lazy.strand:5:11]
+ 4 │ let c = oklch(bad, 0.1, 30)
+ 5 │ let bad = nosuchname + 1
+   ·           ─────┬────
+   ·                ╰── not found
+ 6 │ component C { box { bg: oklch(w, 0.1, 30) } }
+   ╰────
+
+check::unknown_name
+
+  × unknown name `batery`
+   ╭─[overload_lazy.strand:7:9]
+ 6 │ component C { box { bg: oklch(w, 0.1, 30) } }
+ 7 │ let w = batery.percent
+   ·         ───┬──
+   ·            ╰── not found
+ 8 │ let pal = material(image: lost)
+   ╰────
+  help: did you mean `battery`?
+
+check::unknown_name
+
+  × unknown name `undefined_thing`
+    ╭─[overload_lazy.strand:9:12]
+  8 │ let pal = material(image: lost)
+  9 │ let lost = undefined_thing
+    ·            ───────┬───────
+    ·                   ╰── not found
+ 10 │ let c2 = oklch(txt, 0.1, 30)
+    ╰────
+
+check::type_mismatch
+
+  × `l` of `oklch` expects `float`, found `text`
+    ╭─[overload_lazy.strand:10:16]
+  9 │ let lost = undefined_thing
+ 10 │ let c2 = oklch(txt, 0.1, 30)
+    ·                ─┬─
+    ·                 ╰── this is `text`
+ 11 │ let txt = pct("x")
+    ╰────
+
+check::type_mismatch
+
+  × `fraction` of `pct` expects `float`, found `text`
+    ╭─[overload_lazy.strand:11:15]
+ 10 │ let c2 = oklch(txt, 0.1, 30)
+ 11 │ let txt = pct("x")
+    ·               ─┬─
+    ·                ╰── this is `text`
+    ╰────
+
+fix [check::unknown_name] overload_lazy.strand: `batery` -> `battery`

@@ -19,6 +19,27 @@ Channels are the only coupling between threads. Logic → render is one
 (`self.width` for container queries). No locks are shared across threads on a
 hot path.
 
+`strand run [dir]` (`crates/strand/src/run.rs`) is this wiring: the main
+thread's surface host forwards the monitor hooks (`screens` as a list of
+plain `ScreenInfo`s, `monitor_forgotten` as `Forget(id)`), surface-level
+input (`hover` and `pressed` as `Flag`, `click`/`secondary`/`scroll` as
+`Event`) and surface sizes to the logic thread over a calloop channel
+(`run::ToLogic`); the logic thread owns the runtime, `SchemaHost::real`
+and the `Instance`, loops on `Instance::step`, sends each non-empty diff
+on a calloop channel, and sleeps in a calloop loop of its own until a
+message, the runtime's wake hook (a ping, so the hook holds no sender
+and the thread ends when the main thread's senders are gone), the logic
+clock's `Wake::deadline` (the dispatch timeout) or `Wake::wall` on a
+`CLOCK_REALTIME` timerfd (`TFD_TIMER_ABSTIME | TFD_TIMER_CANCEL_ON_SET`:
+a resume or a clock step wakes it at once). SIGINT, SIGTERM (a
+`signalfd` on the main loop, the signals blocked in every thread) and
+the compositor going away send `ToLogic::Shutdown`; the main thread
+joins the logic thread, which unmounts the instance, runs
+`Runtime::shutdown` and drops its stores, so debounced persist and
+settings writes reach the disk before the process exits. Until render
+hit-tests and lays out inside surfaces (M2), input and size facts
+address the surface's node.
+
 ## Crate graph
 
 ```
@@ -28,7 +49,8 @@ strand-scene      shared vocabulary: ids, geometry, colour, scene protocol, Pain
   |   strand-render ── strand-text
   strand-core ── strand-compiler ── strand-dev (LSP, inspector)
      ^
-     strand-services, strand-watch
+     strand-services ──> strand-watch (EventSink, CompositorEvent; portal follow;
+                                       strand-watch depends on no Strand crate)
 strand (binary) wires everything.
 ```
 
@@ -288,7 +310,10 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   after T` (`Debounced`), the tracked expression's reads go on `d.effect`
   and the body's writes on `d.timer`. Tasks woken from other threads (IO and
   D-Bus replies) are polled at the start of the next flush, never between
-  sinks.
+  sinks. Tasks that event listeners spawn (`on click`, `on
+  notifications.received`) are polled as soon as the listeners ran,
+  before the next sink, so a sink reading what such a handler writes
+  synchronously runs after it, once.
   Service events are `EventQueue`s. Keyed collection writes from
   graph-triggered handlers are rate-guarded too (wave 2): a throttled
   handler writes to a held copy (with the list it started from) whose
@@ -423,6 +448,21 @@ Public interfaces other crates and later stages build on:
   reports the file, call `redeclare` when a reload changes the
   declaration, pass each field's type name with `FieldSpec::with_type`,
   and give its path to the watcher. See the `strand-core` section.
+  How the compiler meets this: `lower::reads` computes every chunk's
+  syntactic read set (`Program::reads(chunk)`: `state`s, `let`s,
+  settings fields, scope locals, service fields, element instances;
+  the lambdas a chunk makes and the `fn`s it calls included) and
+  write set (`Program::writes(chunk)`: assignment and list-mutation
+  targets, and the services its action calls can change). The instantiator resolves those names to core nodes in the
+  scope a chunk is mounted in (`ServiceHost::sources` names a service
+  field's nodes) and declares them as each node is created: binding
+  memos, `let`s (after every name of the body is bound), component
+  parameters, derived lists and their effects, `if`/`match` effects,
+  timers (duration and `while`), `on change` effects (tracked targets),
+  listeners (empty), the token table; writes on the handler site (`on
+  click`, `on svc.event`), the `on change` effect, the timer, and for
+  a debounce `d.effect`/`d.timer`, for an async `let`
+  `memo.effect_id()`.
 - **Identity and change detection.** AST `PartialEq` compares spans, which
   shift on every edit above a node. Reload identity and "did this handler
   change" use a span-insensitive structural hash over the texts of the
@@ -465,10 +505,37 @@ Public interfaces other crates and later stages build on:
   language (`schema/builtin.schema`, described in the module docs) and
   parsed once by `Schema::builtin() -> &'static Schema`. Service crates
   contribute their schemas the same way: clone the builtin, call
-  `Schema::extend(text) -> Result<(), Vec<SchemaError { line, message }>>`,
-  and check with `compile_with(&map, &schema)`; the LSP reads the same
+  `Schema::extend(text) -> Result<(), Vec<SchemaError { line, message }>>`
+  (it adds and never replaces: an existing element, group, type, alias,
+  value, palette role or token, or a function or method overload with the
+  same parameters, is a "declared twice" error; every record's `key` path
+  must name a field, re-checked across all records after the extension;
+  it is atomic, so on error nothing is added and the fingerprint is
+  unchanged), and check with
+  `compile_with(&map, &schema)`. The builtin's service stubs, and the
+  records only services hand out (`Window`, `Notification`, `Date`, …),
+  are declared `provisional service` / `provisional record`: the first
+  extension that declares the same name replaces the stub in place (same
+  `RecordId`, so `[Window]` fields of other services see the real one; the
+  stub's members and docs go) and the name stops being provisional, so a
+  second contribution is "declared twice" (`Schema::provisional:
+  BTreeSet<String>`). Configs see contributed names as a prelude
+  their own declarations shadow, with one exception: a config `service`
+  named like a builtin or contributed service is `check::redeclared`
+  (services are identified by name at runtime), so a crate that adds a
+  service name a config already declares breaks that config; namespace
+  new service names. An element's positional names the prop it fills,
+  `element meter(float -> value)` (`ElementSchema::arg_prop`), which the
+  checker and lowering both read. The LSP reads the same
   table for completion and hover (M3, "service schemas drive type checking
-  and LSP hover"). `///` comments in schema text document the entry they
+  and LSP hover"). Members after `.` come from one table the checker
+  itself types `x.name` and `x.name(…)` by: `schema::members_of(&Ty,
+  &Schema, &TypeTable) -> Vec<MemberInfo { name, kind: Field | Method, ty,
+  sigs, writes, doc }>` (records and services from the schema with their
+  docs, builtin-type methods, and the generic list and `Async` members —
+  `len`, `first`, `filter`, `take`, `remove_key`, `pending`, `value`, … —
+  built for the item type; `list_members`, `async_members`,
+  `ASYNC_TRANSFORMS`). `///` comments in schema text document the entry they
   precede: `Schema::doc(&DocKey) -> Option<&str>` with `DocKey::{Type(name),
   Member(type, member), Function(name), Value(name), Method(type, method),
   Element(kind), Prop(kind, name) (also `on event`, `stroke.dash` and
@@ -565,7 +632,7 @@ Public interfaces other crates and later stages build on:
   State, Let, Handler, Timer, When, Pose, Set, Play}`. An `Element`'s
   props carry their scene `Prop` and schema type (the positional argument
   is the prop it fills: `text`'s `text`, `icon`/`image`'s `source`,
-  `meter`'s `value`); a `<->` prop carries its `TwoWay` place. A `Body`
+  `meter`'s `value`, from `ElementSchema::arg_prop`); a `<->` prop carries its `TwoWay` place. A `Body`
   (component, surface, `for` item) lists the elements it owns and the
   services it reads.
 - **VM** (`strand_compiler::vm`): `Value` is the dynamic value
@@ -591,6 +658,19 @@ Public interfaces other crates and later stages build on:
     (`fn` methods: `clock.format`, `calendar.days`, `workspaces.on`)
     must read through the graph (a `Signal<Value>` per field) so
     bindings depend on exactly that field.
+  - `sources(rt, service, field: Option<&str>) -> Vec<NodeId>`: the
+    core nodes a read of `service.field` (or of the service as a whole,
+    `None`: a method such as `clock.format`) depends on, which the VM
+    declares with `rt.reads_from` before the first flush. A superset is
+    fine; the default (none) leaves those edges to be learned on first
+    run.
+  - `action_writes(rt, service) -> Vec<NodeId>`: the cells an action of
+    `service` can write (`n.expire()` changes `notifications.popups`),
+    declared with `rt.writes_to` on every handler that calls one, so
+    readers are ranked after it from the first flush. Lowering names
+    the service from the receiver's type (the service itself, or every
+    service whose fields reach the item's record). The default is
+    `sources(rt, service, None)`, every field: a superset.
   - `read_keyed(rt, service, field) -> Option<KeyedSignal<ValueKey,
     Value>>`: a list field published as a core keyed collection
     (`notifications.popups`, `workspaces.all`). A `for` directly over
@@ -620,8 +700,13 @@ Public interfaces other crates and later stages build on:
   - `acquire`/`release(service)`: a reader count. Every mounted
     component and the config's top level hold the services their body
     reads; a surface holds its body's services only while shown (its
-    `open` is true, or it has no `open`), and a parked bar (monitor
-    unplugged) lets go of everything under it until it returns. The
+    `open` is true, or it has no `open`), a hidden surface's content
+    (components in it, surfaces nested in it) lets go of everything it
+    holds, a surface nested in another (`popup` in a `bar`) holds its
+    own children's reads only while it is shown (they do not count for
+    the body around it: `lower::Element::services`), and a parked bar
+    (monitor unplugged) lets go of everything under it until it
+    returns. The
     service starts on its first reader and stops 5 s after its last
     leaves or goes invisible.
   - `declare(rt, name, record)` adds a custom service; `next_wake(rt) ->
@@ -683,9 +768,26 @@ Public interfaces other crates and later stages build on:
     `rt.keyed_memo` over the list keyed by `key e` or the item record's
     key. `Move` becomes scene `Move`s; a `Reset` is reconciled by key,
     moving only the items outside the longest run already in order.
-    `.filter`/`.map`/`.take`/`.sort_by` chains are whole-list until they
-    lower to core's incremental keyed views (M4, with virtualised
-    lists).
+    A chain of `.filter`/`.map`/`.take`/`.sort_by` on a keyed `state`
+    or a host's keyed field (`lower::For::chain`) is core's incremental
+    views (`KeyedOps::{filter_with, map_with, take_with,
+    sort_by_with}`) fed by the source's diffs: each lambda runs per
+    item through the VM, and what it reads besides the item (its
+    captured values and the values of its read set; a keyed collection
+    by its version) is the step's tracked parameters, whose change
+    rebuilds that step. A lambda calling a service method falls back
+    to `keyed_memo`.
+  - Reads of a keyed collection (`xs.len`, `.first`, `.last`, `xs[i]`,
+    `xs.contains(x)` on a keyed `state` or a host's keyed field) are
+    `Op::Keyed`: answered with core's `with`/`get_key`, never by
+    building the list as a value. The list value (`Slot::Keyed`'s
+    memo) is built lazily, only for reads that need the whole list.
+  - `await` on an `Async` waits for its operation: a `sleep`, or for an
+    async `let` that is pending, the load settling (a settle effect
+    wakes the awaiters). The operation is shared by every copy of the
+    value, so several handlers awaiting it get the same result.
+    `await` on a pending value with nothing to wait on is an error
+    value, never a silent null.
   - A `bar` is a keyed instance per `screens.all` item that its own
     `screens:` picks (a connector or monitor id, a list of them,
     `focused`, `all`), keyed by the monitor's identity (`Screen.id`:
@@ -714,9 +816,13 @@ Public interfaces other crates and later stages build on:
     (FileId, NodeIdx, Span)` maps a scene node back to its element (the
     overlay's click to `$EDITOR`, inspector provenance), and
     `Instance::freeze(&err)` suspends the faulting component's instance
-    scope (`thaw` resumes it after the fixing reload).
-  - The host loop: `Instance::step(now, wall) -> (Update, Wake)` wakes
-    wall-clock services that are due, ticks the logic clock to `now`
+    scope (`thaw` resumes it after the fixing reload). A fault at the
+    config's top level (a file's `let`, handler or timer) has no scope:
+    it is outlined, nothing is frozen.
+  - The host loop: `Instance::step(now, wall) -> (Update, Wake)` sets
+    wall-clock services to `wall` (every step: a wall clock that jumps
+    back is followed, and a clock reader mounted by the step sees the
+    time now), ticks the logic clock to `now`
     and says when to come back (`Wake { deadline, wall }`,
     `sleep_for(now, wall_now)`). The `strand run` logic thread is: feed
     the `screens` service from the surface layer's monitor hooks
@@ -730,8 +836,10 @@ Public interfaces other crates and later stages build on:
     `set_size(node, w, h)` (layout facts for `self.width`) and
     `write(node, prop, PropValue)` (`<->` writes, outside any handler,
     checked against the place's type); call `step` and send the diff to
-    render; sleep for `Wake::sleep_for`, input, a monitor hook or the
-    runtime's wake hook, whichever comes first. These take scene
+    render; sleep until `Wake::deadline` (logic clock), `Wake::wall`
+    (on a realtime timer, so a suspend or clock step does not delay
+    it), input, a monitor hook or the runtime's wake hook, whichever
+    comes first. These take scene
     `NodeId`s; render produces them when hit testing lands (M2).
   - `get`/`set(path)` read and write exported `file.name` values and
     fields inside them (`theme.prefs.compact`; the CLI), `set` checked
@@ -907,7 +1015,7 @@ at a time against that schema, `hir::Program` (`refs`/`reference_at`,
 defs, locals, `tokens`, the typed tree) for hover, definition, rename and
 completion, `Schema::doc` (of the same schema) for completion and hover
 text, `Diagnostic::suggestions` for quick fixes,
-`check::LIST_METHODS` for the methods every list has, `fmt::format` for
+`schema::members_of` for what `x.` offers, `fmt::format` for
 formatting, and `source::find_files` for which files a document is
 checked with (the rule of `strand check <file>`: the default config
 directory if the file is in it, else a workspace folder that is itself a
@@ -925,10 +1033,96 @@ config directory.
 The inspector joins it in M5; tree-sitter highlighting is not built yet
 (see `docs/decisions.md`, wave2-lsp).
 
-### `strand-services`, `strand-watch`
+### `strand-services`
 
-Specified when their milestones start (M3, M1). Both only produce writes and
-events into `strand-core`.
+Specified when M3 starts. It only produces writes and events into
+`strand-core`.
+
+### `strand-watch`
+
+Produces typed events, never parsed content; logic turns them into writes.
+It does not depend on `strand-compiler` or `strand-core`.
+
+- **One channel.** `strand_watch::channel() -> (EventSink, Receiver<
+  ChangeEvent>)`; `EventSink` is `Clone + Send` and
+  `.with_waker(Fn())` calls a waker after each send (a calloop `Ping` on
+  the logic loop). `ChangeEvent` is `Files(FileBatch)`,
+  `System(SystemBatch)` or `Compositor(CompositorEvent)`.
+- **Files.** `Watcher::spawn(Option<ConfigWatch>, Options, EventSink)`
+  runs the `strand-watch` thread (one thread: a raw inotify fd and a
+  control eventfd under `poll(2)`; with no inotify instance, everything
+  is polled).
+  `ConfigWatch { root, modules: ModuleSet { files, dirs }, rescan }` is
+  `source::find_files`'s `Discovery` (`files`, `dirs`) plus a
+  `FnMut() -> io::Result<ModuleSet>` the binary implements with
+  `find_files`; the watcher calls it when a `.strand` name, a directory
+  or a directory link appears or vanishes in a config directory, a
+  directory link on the way is swapped, the config directory itself is
+  replaced, or on a rescan. When `spawn` returns, every watch is in place
+  and every module file's baseline hash was read after its watch:
+  start the watcher, then load. The `modules` passed in were listed
+  before the watches existed, so the watcher lists the set once more at
+  the first quiet period and reports a module created in between as
+  `Created` (nothing when the set is unchanged). Referenced paths come
+  from the compiler: after each reload the loader calls
+  `set_referenced(impl IntoIterator<Item = impl Into<Referenced>>)`,
+  each item `(path, role)` or `(path, role, hash)` with `hash` the
+  `hash_bytes` of what the loader read, for every `(path,
+  Role::{Shader, Settings, Wallpaper, Other})` the program references;
+  it replaces all registrations, and a file that no longer holds the
+  bytes its `hash` names (saved between the read and the call) is
+  reported. `watch_file(path, role)` / `unwatch_file(path, role)` add or
+  drop one (counted per path and role); `watch_file` is register, then
+  read. Module-set membership is separate, so a
+  module file registered for another role stays a module. Neither a
+  referenced file nor its directory need exist yet. Cache sources come
+  through `watch_tree(dir, depth, CacheKind::{Apps, Icons, Fonts})`.
+  `register_own_write(path, hash_bytes(&bytes))` before Strand writes a
+  file (settings write-back) makes the matching write silent; the
+  registration is in place when it returns. Own writes must be atomic
+  (temporary file renamed over the path): an in-place write can be read
+  half done. Every ancestor of a watched directory holds a light watch
+  (moves and deletions of its children only), so moving any directory
+  on the way reports the files below as `Removed`.
+  `rescan()` is `strand reload`.
+- **`FileBatch { changes, rescan, notices, first_event, last_event }`.**
+  One batch per quiet period: 15 ms after the last completed write
+  (`CLOSE_WRITE`, `MOVED_TO`, a new symlink or hard link; 50 ms when the
+  latest event removed a watched file; at most 500 ms after the first
+  event). `changes` is sorted by path then role, each `FileChange {
+  path, canonical, kind: Created|Modified|Removed, hash:
+  Option<blake3::Hash>, role, error }`, one per role the path is watched
+  for; unchanged hashes and own writes are dropped before sending, so
+  every change is real. A `Modified` whose hash is unchanged means a
+  link now resolves elsewhere: skip the recompile, update the path.
+  `path` is the path as registered (module files as `find_files`
+  returned them, under the config root even when a directory link points
+  elsewhere); `canonical` is the resolved target. Only regular files are
+  hashed; anything else (a FIFO, a device) has `error:
+  Some(InvalidInput)`. Cache-tree entries are not hashed. `rescan` is
+  `Some(Overflow | Requested)` for a full rescan; `notices` reports
+  polled directories and rescan-callback failures. `first_event` and
+  `last_event` (`Instant`) let latency measurements subtract the quiet
+  period.
+- **System settings.** `strand_watch::follow(&zbus::Connection,
+  EventSink)` is the async portal client; `strand-services` runs it on
+  the shared tokio current-thread runtime and session connection.
+  `PortalSettings::spawn(Bus::Session, sink)` runs the same on its own
+  `strand-portal` thread and connection. It sends one `SystemBatch {
+  settings, at_boot: true, received }` within `BOOT_READ_TIMEOUT` (500
+  ms; empty when there is no portal; `on change` must not fire for it),
+  then one batch per `SettingChanged`, plus `at_boot: false` batches for
+  boot reads that came late and for a full re-read whenever the portal
+  starts or restarts: `SystemSetting::Dark { dark, scheme }`,
+  `Accent(Option<[f64; 3]>)`, `Contrast(Normal | High)`, each with
+  `.path()` = `system.dark` / `system.accent` / `system.contrast`.
+- **Compositor.** `CompositorEvent::ConfigReloaded { failed:
+  Option<bool> }` is `wm.config_reloaded` (`None` from Hyprland, which
+  does not say). The M3 Hyprland and niri adapters live in
+  `strand-services` (design.md's services table lists them) and send it
+  through a clone of the same `EventSink`, so `strand-services` depends
+  on `strand-watch` for `EventSink` and `CompositorEvent`; `strand-watch`
+  depends on neither `strand-services` nor `strand-core`.
 
 Settings files (fixed in wave 2 by `strand-core`): the watcher should not
 read a settings file twice or parse it on the logic thread. For each

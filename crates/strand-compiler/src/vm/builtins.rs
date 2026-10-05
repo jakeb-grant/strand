@@ -278,6 +278,43 @@ fn compare(a: &Value, b: &Value) -> Option<Ordering> {
     }
 }
 
+/// A total order over values for `sort_by`: numbers by `total_cmp`
+/// (NaN after every other number), values of different kinds by kind,
+/// records field by field.
+pub(crate) fn total_compare(a: &Value, b: &Value) -> Ordering {
+    fn kind(v: &Value) -> u8 {
+        match v {
+            Value::Null => 0,
+            Value::Bool(_) => 1,
+            Value::Num(..) => 2,
+            Value::Text(_) => 3,
+            Value::Enum(..) => 4,
+            Value::Record(_) => 5,
+            _ => 6,
+        }
+    }
+    match (a, b) {
+        (Value::Num(x, _), Value::Num(y, _)) => {
+            // -0 and 0 are one key; every NaN is one key, after the rest.
+            let n = |f: f64| if f.is_nan() { f64::NAN.abs() } else { f + 0.0 };
+            n(*x).total_cmp(&n(*y))
+        }
+        (Value::Text(x), Value::Text(y)) => x.cmp(y),
+        (Value::Bool(x), Value::Bool(y)) => x.cmp(y),
+        (Value::Enum(_, x), Value::Enum(_, y)) => x.cmp(y),
+        (Value::Record(x), Value::Record(y)) => {
+            for (a, b) in x.fields.iter().zip(&y.fields) {
+                match total_compare(a, b) {
+                    Ordering::Equal => {}
+                    o => return o,
+                }
+            }
+            x.fields.len().cmp(&y.fields.len())
+        }
+        _ => kind(a).cmp(&kind(b)),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Builtin functions
 
@@ -304,7 +341,10 @@ pub fn noise(x: f64) -> f64 {
     let i = x.floor();
     let f = x - i;
     let s = f * f * (3.0 - 2.0 * f);
-    let (a, b) = (hash(i as i64), hash(i as i64 + 1));
+    // `as` saturates for huge `x`; the next cell wraps instead of
+    // overflowing.
+    let i = i as i64;
+    let (a, b) = (hash(i), hash(i.wrapping_add(1)));
     a + (b - a) * s
 }
 
@@ -458,12 +498,10 @@ pub(crate) fn call(
                 value: None,
                 pending: true,
                 error: None,
-                op: Some(Rc::new(PendingOp {
-                    fut: std::cell::RefCell::new(Some(Box::pin(async move {
-                        sleep.await;
-                        Ok(Value::Unit)
-                    }))),
-                })),
+                op: Some(Rc::new(PendingOp::new(Box::pin(async move {
+                    sleep.await;
+                    Ok(Value::Unit)
+                })))),
             }))
         }
         "propagate" => {
@@ -505,10 +543,31 @@ pub(crate) fn method(
         Value::Text(t) => text_method(t, name, &args),
         Value::Num(n, u) => num_method(*n, *u, name, &args),
         Value::List(items) => list_method(vm, rt, items, name, args),
-        Value::Async(a) => match &a.value {
-            Some(Value::List(items)) => list_method(vm, rt, items, name, args),
-            _ => list_method(vm, rt, &[], name, args),
-        },
+        Value::Async(a) => {
+            let again = a.op.as_ref().map(|_| Args {
+                params: args.params.clone(),
+                rest: args.rest.clone(),
+            });
+            let out = match &a.value {
+                Some(Value::List(items)) => list_method(vm, rt, items, name, args)?,
+                _ => list_method(vm, rt, &[], name, args)?,
+            };
+            // A transform of a loading list is still loading (the
+            // checker types it `Async<[U]>`): `.pending` and `.error`
+            // carry over, so `?? fallback` still covers them, and `await`
+            // on it waits for the source, then applies the transform.
+            Ok(if matches!(out, Value::List(_)) {
+                let op = again.map(|args| derived_op(vm, rt, a, name, args));
+                Value::Async(Rc::new(AsyncValue {
+                    value: a.value.as_ref().map(|_| out),
+                    pending: a.pending,
+                    error: a.error.clone(),
+                    op,
+                }))
+            } else {
+                out
+            })
+        }
         Value::Record(r) => {
             let def = vm.types().record(r.ty);
             if def.name == "Date" {
@@ -520,6 +579,33 @@ pub(crate) fn method(
         }
         _ => Ok(Value::Null),
     }
+}
+
+/// What `await` waits on for `source.name(args)` (`hits.take(2)`): the
+/// source's load, then the transform of its result. Weak handles, so a
+/// value kept in state does not keep the VM or the runtime alive.
+fn derived_op(
+    vm: &Rc<Vm>,
+    rt: &Runtime,
+    source: &Rc<AsyncValue>,
+    name: &str,
+    args: Args,
+) -> Rc<PendingOp> {
+    let (vm, rt) = (Rc::downgrade(vm), rt.downgrade());
+    let (source, name) = (Value::Async(source.clone()), name.to_string());
+    Rc::new(PendingOp::new(Box::pin(async move {
+        let settled = super::exec::await_value(source)
+            .await
+            .map_err(|e| e.to_string())?;
+        let (Some(vm), Some(rt)) = (vm.upgrade(), rt.upgrade()) else {
+            return Err("the program was unloaded".to_string());
+        };
+        let items = match &settled {
+            Value::List(items) => items.as_slice(),
+            _ => &[],
+        };
+        list_method(&vm, &rt, items, &name, args).map_err(|e| e.to_string())
+    })))
 }
 
 fn color_method(recv: &Value, name: &str, args: &Args) -> Result<Value, Error> {
@@ -635,7 +721,9 @@ fn list_method(
                 .iter()
                 .map(|v| Ok((vm.call(rt, &f, vec![v.clone()])?, v.clone())))
                 .collect::<Result<_, Error>>()?;
-            keyed.sort_by(|a, b| compare(&a.0, &b.0).unwrap_or(Ordering::Equal));
+            // A total order (NaN and mixed kinds included): the
+            // standard sort may panic on one that is not.
+            keyed.sort_by(|a, b| total_compare(&a.0, &b.0));
             Value::list(keyed.into_iter().map(|(_, v)| v).collect())
         }
         "take" => {
@@ -728,6 +816,35 @@ mod tests {
             assert!((noise(x + 1e-6) - n).abs() < 1e-3);
         }
         assert_eq!(noise(2.0), noise(2.0));
+        // Huge inputs saturate the cell index: no overflow panic.
+        for x in [1e23, -1e23, f64::MAX, f64::MIN, 9.3e18] {
+            assert!((0.0..=1.0).contains(&noise(x)), "{x}");
+        }
+    }
+
+    #[test]
+    fn sort_keys_are_totally_ordered() {
+        // NaN keys mixed with numbers, text and null: the comparator must
+        // be a total order or the standard sort may panic.
+        let mut keys: Vec<Value> = (0..200)
+            .map(|i| match i % 5 {
+                0 => Value::float(f64::NAN),
+                1 => Value::float(-(i as f64)),
+                2 => Value::Null,
+                3 => Value::text(format!("{i}")),
+                _ => Value::float(i as f64 * 0.5),
+            })
+            .collect();
+        keys.sort_by(total_compare);
+        assert!(keys[0].is_null());
+        let nums: Vec<f64> = keys.iter().filter_map(Value::as_f64).collect();
+        let firstnan = nums.iter().position(|n| n.is_nan()).unwrap();
+        assert!(nums[firstnan..].iter().all(|n| n.is_nan()));
+        assert!(nums[..firstnan].windows(2).all(|w| w[0] <= w[1]));
+        assert_eq!(
+            total_compare(&Value::float(-0.0), &Value::float(0.0)),
+            Ordering::Equal
+        );
     }
 
     #[test]

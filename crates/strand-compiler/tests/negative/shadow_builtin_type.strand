@@ -1,0 +1,11 @@
+// expect: check::redeclared, check::type_mismatch
+// The language's own types (`color`, `length`, …) cannot be redeclared;
+// annotations keep meaning the builtin.
+type color { r: int }
+let tint: color = $accent
+// A schema type hidden by the config's own is shown as `builtin Align`,
+// so the mismatch never reads "expects `Align`, found `Align`".
+enum Align { left, right }
+component C(a: Align = left) {
+  row { align: a }
+}

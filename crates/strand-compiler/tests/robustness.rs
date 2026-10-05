@@ -439,6 +439,31 @@ fn many_unknown_names_stay_cheap() {
     assert!(elapsed < Duration::from_secs(15), "{elapsed:?}");
 }
 
+/// Overloaded calls nested deep check in linear time: the overload is
+/// chosen by the call's shape (`material(image: …)`), and calls the shape
+/// cannot tell apart (`radial(x, 40%)`) try overloads only a bounded depth
+/// deep. Each level once cost three checks of everything below it.
+#[test]
+fn nested_overloaded_calls_stay_cheap() {
+    let depth = 24;
+    let mut image = String::from("\"a.png\"");
+    let mut mask = String::from("center");
+    let mut colour = String::from("$accent");
+    for _ in 0..depth {
+        image = format!("material(image: {image})");
+        mask = format!("radial({mask}, 40%)");
+        colour = format!("oklch(from {colour}, l: l + 0.01)");
+    }
+    let src = format!("let p = {image}\nlet m = {mask}\nlet c = {colour}\n");
+    let (map, _) = SourceMap::single("deep.strand", src);
+    let started = Instant::now();
+    let out = strand_compiler::compile(&map);
+    let elapsed = started.elapsed();
+    // `image:` takes a path, not a palette, at every level but the last.
+    assert!(out.errors() > 0);
+    assert!(elapsed < Duration::from_secs(2), "{elapsed:?}");
+}
+
 /// Components whose parameters are inferred from callers are ordered in
 /// linear time: a chain of 3,000 (each calling the next) checks about as
 /// fast as the same chain with typed parameters.
