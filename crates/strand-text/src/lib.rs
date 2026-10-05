@@ -15,8 +15,8 @@ mod atlas;
 mod engine;
 mod worker;
 
-pub use atlas::{AtlasConfig, AtlasSlot, AtlasUpload, PageId, PageLease};
-pub use engine::{FontConfig, SUBPIXEL_STEPS, TextEngine};
+pub use atlas::{AtlasConfig, AtlasSlot, AtlasUpload, MAX_PAGE_SIZE, PageId, PageLease};
+pub use engine::{FontConfig, MAX_FONT_PX, SUBPIXEL_STEPS, TextEngine};
 pub use worker::{TextError, TextWorker, Waker};
 
 use strand_scene::{Font, LogicalSize, Rect, Scale};
@@ -96,6 +96,20 @@ pub struct TextLayout {
 }
 
 impl TextLayout {
+    /// A layout with no glyphs (the reply when shaping failed).
+    pub fn empty(key: TextKey, scale: Scale) -> Self {
+        Self {
+            key,
+            scale,
+            size: LogicalSize::default(),
+            baseline: 0.0,
+            ink: Rect::default(),
+            runs: Vec::new(),
+            uploads: Vec::new(),
+            leases: Vec::new(),
+        }
+    }
+
     /// Number of atlas pages this layout keeps alive.
     pub fn pages_leased(&self) -> usize {
         self.leases.len()

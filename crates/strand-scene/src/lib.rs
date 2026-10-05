@@ -9,6 +9,7 @@ pub mod geometry;
 pub mod id;
 pub mod paint;
 pub mod protocol;
+pub mod tokens;
 
 pub use color::{Color, LinearRgb, Oklab, Oklch};
 pub use damage::{Damage, MAX_RECTS};
@@ -17,5 +18,6 @@ pub use id::{NodeId, NodeIdAllocator, SurfaceId};
 pub use paint::{BYTES_PER_PIXEL, PaintTarget, Painter, TargetError};
 pub use protocol::{
     Border, Corners, Easing, Font, GradientStop, Insets, Length, NodeKind, Paint, Prop, PropClass,
-    PropValue, SceneDiff, SceneOp, Shadow, TokenTable, Transition,
+    PropValue, SceneDiff, SceneOp, Shadow, Transition,
 };
+pub use tokens::{BinOp, Channel, TokenExpr, TokenMethod, TokenTable};

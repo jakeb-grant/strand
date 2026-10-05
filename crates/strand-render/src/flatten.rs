@@ -5,14 +5,15 @@
 //! their parent and sized by `width`/`height`/`size` (text nodes by their
 //! shaped layout). Flex layout with taffy replaces it in M2.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use strand_scene::{
-    Border, Color, Corners, Font, Length, LogicalRect, NodeId, NodeKind, Paint, Prop, PropValue,
-    Rect, Scale, Shadow, Size,
+    Border, Color, Corners, Damage, Font, Length, LogicalRect, NodeId, NodeKind, Paint, Prop,
+    PropValue, Rect, Scale, Shadow, Size,
 };
 use strand_text::{TextAlign, TextLayout, TextStyle};
 use vello_cpu::kurbo::{self, BezPath, RoundedRect, RoundedRectRadii, Shape};
@@ -21,6 +22,14 @@ use crate::tree::{Node, SceneTree};
 
 /// Curve flattening tolerance in physical pixels.
 const TOLERANCE: f64 = 0.1;
+
+/// Largest magnitude, in logical pixels, of any length or offset read from
+/// props. Non-finite values count as unset; finite ones are clamped here so
+/// no downstream arithmetic overflows.
+const MAX_LOGICAL: f32 = 1e6;
+
+/// Largest shadow blur, logical pixels.
+const MAX_BLUR: f32 = 1000.0;
 
 /// What a text node needs shaped.
 #[derive(Clone, Debug, PartialEq)]
@@ -41,11 +50,15 @@ pub enum Item {
     /// A blurred rounded rect, clipped to outside the casting box.
     Shadow {
         rect: kurbo::Rect,
-        radius: f32,
+        /// Corner radii clockwise from top-left. When they differ, each
+        /// quadrant is drawn with its own corner's radius.
+        radii: [f32; 4],
         std_dev: f32,
         color: Color,
         /// Area the shadow may cover minus the casting box (even-odd).
         clip: BezPath,
+        /// The area the shadow may cover.
+        extent: kurbo::Rect,
     },
     Fill {
         shape: FillShape,
@@ -73,8 +86,9 @@ pub enum FillShape {
     Path(BezPath),
 }
 
-/// A display item with the physical rectangle it can touch (push/pop items
-/// span the whole surface, so culling never unbalances them).
+/// A display item with the physical rectangle it can touch. A push item's
+/// bounds cover its whole group, so the painter can skip the group (to the
+/// matching pop) when it misses the damage.
 #[derive(Clone, Debug)]
 pub struct DisplayItem {
     pub item: Item,
@@ -94,6 +108,8 @@ pub struct Flattened {
     pub records: HashMap<NodeId, NodeRecord>,
     /// Text nodes and the shaping they need at this scale.
     pub text: Vec<(NodeId, TextSpec)>,
+    /// Where the surface root paints fully opaque pixels.
+    pub opaque: Damage,
 }
 
 #[derive(Clone)]
@@ -152,21 +168,66 @@ struct Flattener<'a> {
     out: &'a mut Flattened,
 }
 
+/// A finite value clamped to `±MAX_LOGICAL`; non-finite is `None`.
+fn finite(v: f32) -> Option<f32> {
+    v.is_finite().then(|| v.clamp(-MAX_LOGICAL, MAX_LOGICAL))
+}
+
+/// `finite`, with non-finite values read as 0.
+fn finite_or_zero(v: f32) -> f32 {
+    finite(v).unwrap_or(0.0)
+}
+
 fn number(v: Option<&PropValue>) -> Option<f32> {
     match v? {
-        PropValue::Number(n) => Some(*n),
-        PropValue::Length(Length::Px(n)) => Some(*n),
+        PropValue::Number(n) => finite(*n),
+        PropValue::Length(Length::Px(n)) => finite(*n),
         _ => None,
     }
 }
 
 fn length(v: Option<&PropValue>, reference: f32) -> Option<f32> {
     match v? {
-        PropValue::Number(n) => Some(*n),
-        PropValue::Length(Length::Px(n)) => Some(*n),
-        PropValue::Length(Length::Percent(p)) => Some(reference * p / 100.0),
+        PropValue::Number(n) => finite(*n),
+        PropValue::Length(Length::Px(n)) => finite(*n),
+        PropValue::Length(Length::Percent(p)) => finite(reference * p / 100.0),
         _ => None,
     }
+}
+
+/// A font safe to shape: non-finite or non-positive sizes fall back to the
+/// default size.
+fn sane_font(mut f: Font) -> Font {
+    if !(f.size.is_finite() && f.size > 0.0) {
+        f.size = Font::default().size;
+    }
+    f.size = f.size.min(MAX_LOGICAL);
+    f.weight = f.weight.clamp(1, 1000);
+    f
+}
+
+fn opaque_paint(p: &Paint) -> bool {
+    match p {
+        Paint::Solid(c) => c.clamped().a >= 1.0,
+        Paint::Linear { stops, .. } | Paint::Radial { stops } | Paint::Conic { stops, .. } => {
+            !stops.is_empty() && stops.iter().all(|s| s.color.clamped().a >= 1.0)
+        }
+    }
+}
+
+/// The fully opaque part of a filled rounded rect: the box minus its
+/// corner squares, as a horizontal and a vertical band.
+fn opaque_bands(phys: Rect, r: &RoundedRectRadii) -> Damage {
+    let c = |v: f64| v.ceil().clamp(0.0, u32::MAX as f64) as i64;
+    let (l, t, rr, b) = (phys.left(), phys.top(), phys.right(), phys.bottom());
+    let top = c(r.top_left.max(r.top_right));
+    let bottom = c(r.bottom_left.max(r.bottom_right));
+    let left = c(r.top_left.max(r.bottom_left));
+    let right = c(r.top_right.max(r.bottom_right));
+    let mut d = Damage::new();
+    d.add(Rect::from_edges(l, t + top, rr, b - bottom));
+    d.add(Rect::from_edges(l + left, t, rr - right, b));
+    d
 }
 
 fn paint_of(v: Option<&PropValue>) -> Option<Paint> {
@@ -178,10 +239,16 @@ fn paint_of(v: Option<&PropValue>) -> Option<Paint> {
 }
 
 fn corners_of(v: Option<&PropValue>) -> Corners {
-    match v {
+    let c = match v {
         Some(PropValue::Corners(c)) => *c,
         Some(PropValue::Number(n)) | Some(PropValue::Length(Length::Px(n))) => Corners::all(*n),
         _ => Corners::default(),
+    };
+    Corners {
+        top_left: finite_or_zero(c.top_left),
+        top_right: finite_or_zero(c.top_right),
+        bottom_right: finite_or_zero(c.bottom_right),
+        bottom_left: finite_or_zero(c.bottom_left),
     }
 }
 
@@ -318,17 +385,21 @@ fn hash_item(h: &mut impl Hasher, item: &Item) {
         Item::PopOpacity => 3u8.hash(h),
         Item::Shadow {
             rect,
-            radius,
+            radii,
             std_dev,
             color,
             clip,
+            extent,
         } => {
             4u8.hash(h);
             hash_rect(h, *rect);
-            hash_f32(h, *radius);
+            for r in radii {
+                hash_f32(h, *r);
+            }
             hash_f32(h, *std_dev);
             hash_color(h, color);
             hash_path(h, clip);
+            hash_rect(h, *extent);
         }
         Item::Fill {
             shape,
@@ -362,21 +433,33 @@ fn hash_item(h: &mut impl Hasher, item: &Item) {
     }
 }
 
-impl Flattener<'_> {
+impl<'a> Flattener<'a> {
     fn push(&mut self, item: Item, bounds: Rect, sig: &mut DefaultHasher, ink: &mut Rect) {
         hash_item(sig, &item);
         *ink = ink.union(bounds);
         self.out.items.push(DisplayItem { item, bounds });
     }
 
-    fn marker(&mut self, item: Item) {
+    /// Pushes a group marker; returns its index so a push marker's bounds
+    /// can be set to its group's once known.
+    fn marker(&mut self, item: Item) -> usize {
         let bounds = self.surface;
         self.out.items.push(DisplayItem { item, bounds });
+        self.out.items.len() - 1
     }
 
-    fn node(&mut self, node: &Node, parent: LogicalRect, inh: &Inherited, root: bool) {
+    /// Flattens `node` and its subtree; returns the subtree's ink bounds
+    /// (clipped by ancestors).
+    fn node(&mut self, node: &'a Node, parent: LogicalRect, inh: &Inherited, root: bool) -> Rect {
         let s = self.scale.as_f64();
-        let get = |p: Prop| node.get(p);
+        // Token references resolve against the current table once per node.
+        let tokens = &self.tree.tokens;
+        let props: Vec<(Prop, Cow<'a, PropValue>)> = node
+            .props
+            .iter()
+            .filter_map(|e| tokens.resolve(&e.value).map(|v| (e.prop, v)))
+            .collect();
+        let get = |p: Prop| props.iter().find(|(q, _)| *q == p).map(|(_, v)| v.as_ref());
 
         // Inherited props.
         let color = match get(Prop::Color) {
@@ -384,7 +467,7 @@ impl Flattener<'_> {
             _ => inh.color,
         };
         let mut font = match get(Prop::Font) {
-            Some(PropValue::Font(f)) => f.clone(),
+            Some(PropValue::Font(f)) => sane_font(f.clone()),
             _ => inh.font.clone(),
         };
         if let Some(w) = number(get(Prop::Weight)) {
@@ -402,7 +485,9 @@ impl Flattener<'_> {
                 Some(PropValue::Keyword(k)) if k == "end" => TextAlign::End,
                 _ => TextAlign::Start,
             };
-            let max_width = explicit_w.or(length(get(Prop::MaxWidth), parent.w));
+            let max_width = explicit_w
+                .or(length(get(Prop::MaxWidth), parent.w))
+                .map(|w| w.max(0.0));
             self.out.text.push((
                 node.id,
                 TextSpec {
@@ -437,7 +522,7 @@ impl Flattener<'_> {
         let frame = kurbo_rect(phys);
         let opacity = number(get(Prop::Opacity)).unwrap_or(1.0).clamp(0.0, 1.0);
         if opacity <= 0.0 {
-            return;
+            return Rect::default();
         }
 
         let mut sig = DefaultHasher::new();
@@ -445,9 +530,7 @@ impl Flattener<'_> {
         hash_f32(&mut sig, opacity);
         let mut ink = Rect::default();
 
-        if opacity < 1.0 {
-            self.marker(Item::PushOpacity(opacity));
-        }
+        let opacity_group = (opacity < 1.0).then(|| self.marker(Item::PushOpacity(opacity)));
         let r = radii(
             corners_of(get(Prop::Radius)),
             frame.width(),
@@ -465,6 +548,9 @@ impl Flattener<'_> {
         }
         // Background.
         if has_area && let Some(paint) = paint_of(get(Prop::Bg)) {
+            if root && opacity >= 1.0 && opaque_paint(&paint) {
+                self.out.opaque = opaque_bands(phys, &r).clipped(self.surface);
+            }
             let shape = if radii_zero(&r) {
                 FillShape::Rect(frame)
             } else {
@@ -484,9 +570,10 @@ impl Flattener<'_> {
         // Border, drawn inside the box.
         if has_area
             && let Some(PropValue::Border(Border { width, paint })) = get(Prop::Border)
-            && *width > 0.0
+            && let Some(width) = finite(*width)
+            && width > 0.0
         {
-            let bw = (*width as f64 * s).round().max(1.0);
+            let bw = (width as f64 * s).round().max(1.0);
             let inner = frame.inflate(-bw, -bw);
             let mut path = box_path.clone();
             if inner.width() > 0.0 && inner.height() > 0.0 {
@@ -554,10 +641,11 @@ impl Flattener<'_> {
         (inh.ctx, node.epoch).hash(&mut ctx);
         hash_f32(&mut ctx, opacity);
         let mut child_clip = inh.clip;
+        let mut clip_group = None;
         if clips {
             hash_path(&mut ctx, &box_path);
             child_clip = phys.intersect(inh.clip).unwrap_or_default();
-            self.marker(Item::PushClip(box_path));
+            clip_group = Some(self.marker(Item::PushClip(box_path)));
         }
         let child_inh = Inherited {
             color,
@@ -565,19 +653,24 @@ impl Flattener<'_> {
             ctx: ctx.finish(),
             clip: child_clip,
         };
+        let mut children = Rect::default();
         if !(clips && child_clip.is_empty()) {
             for c in &node.children {
                 if let Some(child) = self.tree.get(*c) {
-                    self.node(child, rect, &child_inh, false);
+                    children = children.union(self.node(child, rect, &child_inh, false));
                 }
             }
         }
-        if clips {
+        if let Some(i) = clip_group {
+            self.out.items[i].bounds = children;
             self.marker(Item::PopClip);
         }
-        if opacity < 1.0 {
+        let subtree = bounds.union(children);
+        if let Some(i) = opacity_group {
+            self.out.items[i].bounds = subtree;
             self.marker(Item::PopOpacity);
         }
+        subtree
     }
 
     fn shadow(
@@ -590,25 +683,31 @@ impl Flattener<'_> {
         ink: &mut Rect,
     ) {
         let s = self.scale.as_f64();
-        if sh.color.a <= 0.0 {
+        if sh.color.a.is_nan() || sh.color.a <= 0.0 {
             return;
         }
-        let spread = sh.spread as f64 * s;
+        let spread = finite_or_zero(sh.spread) as f64 * s;
+        let (dx, dy) = (
+            finite_or_zero(sh.x) as f64 * s,
+            finite_or_zero(sh.y) as f64 * s,
+        );
         let rect = frame
-            .with_origin((frame.x0 + sh.x as f64 * s, frame.y0 + sh.y as f64 * s))
+            .with_origin((frame.x0 + dx, frame.y0 + dy))
             .inflate(spread, spread);
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
         }
-        let radius = (r
-            .top_left
-            .max(r.top_right)
-            .max(r.bottom_right)
-            .max(r.bottom_left)
-            + spread)
-            .clamp(0.0, rect.width().min(rect.height()) / 2.0);
+        let limit = rect.width().min(rect.height()) / 2.0;
+        let corner = |v: f64| (v + spread).min(limit).max(0.0) as f32;
+        let radii = [
+            corner(r.top_left),
+            corner(r.top_right),
+            corner(r.bottom_right),
+            corner(r.bottom_left),
+        ];
         // CSS blur radius is twice the Gaussian standard deviation.
-        let std_dev = (sh.blur as f64 * s / 2.0).max(0.0);
+        let blur = finite_or_zero(sh.blur).clamp(0.0, MAX_BLUR) as f64;
+        let std_dev = blur * s / 2.0;
         let reach = (3.0 * std_dev).ceil() + 1.0;
         let extent = rect.inflate(reach, reach);
         let mut clip = extent.to_path(TOLERANCE);
@@ -616,10 +715,11 @@ impl Flattener<'_> {
         self.push(
             Item::Shadow {
                 rect,
-                radius: radius as f32,
+                radii,
                 std_dev: std_dev as f32,
                 color: sh.color,
                 clip,
+                extent,
             },
             cover(extent),
             sig,

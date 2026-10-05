@@ -199,3 +199,97 @@ fn system_fonts_resolve_generic_families() {
     let l = e.layout(&req);
     assert_eq!(l.glyphs().count(), 6);
 }
+
+/// Values from user expressions (`13/0`) or services must never hang or
+/// kill shaping.
+#[test]
+fn non_finite_sizes_and_widths_are_safe() {
+    let mut e = TextEngine::new(config());
+    let bad = [f32::INFINITY, f32::NEG_INFINITY, f32::NAN, 1e30, -5.0, 0.0];
+    let mut key = 0;
+    for v in bad {
+        key += 1;
+        let l = e.layout(&request(key, "12:59", v, Scale::ONE));
+        assert!(l.size.w.is_finite() && l.size.h.is_finite(), "size {v}");
+        for w in bad {
+            key += 1;
+            let mut r = request(key, "a b c d", 13.0, Scale::ONE);
+            r.max_width = Some(w);
+            r.style.line_height = Some(v);
+            let l = e.layout(&r);
+            assert!(l.size.w.is_finite(), "width {w}");
+        }
+    }
+    // A huge size is capped, not dropped.
+    let l = e.layout(&request(1000, "8", 1e30, Scale::ONE));
+    assert!(
+        l.ink.h as f32 <= MAX_FONT_PX && l.ink.h > 100,
+        "{:?}",
+        l.ink
+    );
+}
+
+/// A lock-screen clock: 200 px at 2× needs glyphs bigger than an atlas page.
+#[test]
+fn oversized_glyphs_draw() {
+    let mut e = TextEngine::new(config());
+    let l = e.layout(&request(1, "12:59", 200.0, Scale::new(240).unwrap()));
+    assert_eq!(l.glyphs().count(), 5);
+    assert!(l.glyphs().filter(|g| g.slot.h > 256).count() == 4, "digits");
+    for g in l.glyphs() {
+        let up = l
+            .uploads
+            .iter()
+            .find(|u| u.page == g.slot.page && (u.x, u.y) == (g.slot.x, g.slot.y))
+            .unwrap();
+        assert!(up.page_size as u32 > g.slot.h.max(g.slot.w) as u32);
+        assert!(up.alpha.contains(&255));
+    }
+}
+
+/// Dropping a scale's atlas makes the next layout at that scale upload its
+/// glyphs again, on pages whose generations were never used before.
+#[test]
+fn dropped_scale_reuploads() {
+    let mut e = TextEngine::new(config());
+    let a = e.layout(&request(1, "12:59", 13.0, Scale::ONE));
+    assert!(
+        e.layout(&request(2, "12:59", 13.0, Scale::ONE))
+            .uploads
+            .is_empty()
+    );
+    e.drop_scale(Scale::ONE);
+    assert_eq!(e.atlas_pages(Scale::ONE), 0);
+    let b = e.layout(&request(3, "12:59", 13.0, Scale::ONE));
+    assert_eq!(b.uploads.len(), a.uploads.len());
+    for (x, y) in a.uploads.iter().zip(&b.uploads) {
+        assert_ne!(x.page.generation, y.page.generation);
+    }
+}
+
+/// Cancelled requests that are still queued are skipped.
+#[test]
+fn worker_skips_cancelled_requests() {
+    let w = TextWorker::spawn(config()).unwrap();
+    // Keep the worker busy so the rest queue up behind it.
+    w.request(request(1, &"x".repeat(2000), 13.0, Scale::ONE))
+        .unwrap();
+    for k in 2..20 {
+        w.request(request(k, "12:59", 13.0, Scale::ONE)).unwrap();
+        if k < 19 {
+            w.cancel(TextKey(k)).unwrap();
+        }
+    }
+    let mut got = Vec::new();
+    while let Some(l) = w.recv_timeout(Duration::from_secs(10)).unwrap() {
+        got.push(l.key.0);
+        if l.key.0 == 19 {
+            break;
+        }
+    }
+    assert_eq!(got.first(), Some(&1));
+    assert_eq!(got.last(), Some(&19));
+    // Requests queued behind the first one were drained and skipped; at
+    // most the ones that arrived before the drain could have run.
+    assert!(got.len() < 18, "{got:?}");
+}

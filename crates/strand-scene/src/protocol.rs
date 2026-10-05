@@ -1,11 +1,11 @@
 //! The scene protocol: one [`SceneDiff`] per logic tick, describing edits to
 //! the retained tree the render thread owns.
 
-use std::collections::BTreeMap;
 use std::time::Duration;
 
 use crate::color::Color;
 use crate::id::NodeId;
+use crate::tokens::{TokenExpr, TokenTable};
 
 macro_rules! named_enum {
     (
@@ -76,6 +76,25 @@ named_enum! {
         Segmented = "segmented",
         Tooltip = "tooltip",
         Canvas = "canvas",
+        // Structure.
+        /// `pages current: page { page wifi {…} }`.
+        Pages = "pages",
+        Page = "page",
+        // Effects, data and media.
+        Arc = "arc",
+        Graph = "graph",
+        Spectrum = "spectrum",
+        Particles = "particles",
+        /// `effect lightning | sparks | shimmer | ripple | aurora { … }`.
+        Effect = "effect",
+        Shader = "shader",
+        Svg = "svg",
+        Lottie = "lottie",
+        Thumbnail = "thumbnail",
+        /// Per-letter animation: `letters { y: 2 * wave(1s, phase: index * 0.1) }`.
+        Letters = "letters",
+        /// Goo merge around siblings: `merge 10 { … }`.
+        Merge = "merge",
     }
 }
 
@@ -167,6 +186,12 @@ props! {
     Shape = "shape": Spatial,
     Stroke = "stroke": Effects,
     Track = "track": Effects,
+    /// Fill of text glyphs or a graph: `fill: linear(…)`.
+    Fill = "fill": Effects,
+    BlurFallback = "blur_fallback": Snap,
+    /// Stroke trim range: `trim: 0, progress`.
+    Trim = "trim": Effects,
+    Cap = "cap": Snap,
     // Text.
     Text = "text": Snap,
     Font = "font": Snap,
@@ -177,6 +202,7 @@ props! {
     Marks = "marks": Snap,
     MarkColor = "mark_color": Effects,
     Roll = "roll": Snap,
+    TextStroke = "text_stroke": Effects,
     // Widgets and input.
     Value = "value": Spatial,
     Placeholder = "placeholder": Snap,
@@ -191,6 +217,33 @@ props! {
     Morph = "morph": Snap,
     Stagger = "stagger": Snap,
     Wave = "wave": Spatial,
+    Jelly = "jelly": Effects,
+    Parallax = "parallax": Spatial,
+    Tilt = "tilt": Spatial,
+    // Poses, structure and motion. `enter`/`exit` hold a
+    // [`PropValue::Pose`] (or a preset keyword such as `popin`); render
+    // stores them now and plays them in M2.
+    Enter = "enter": Snap,
+    Exit = "exit": Snap,
+    /// `transition: wipe(left) | disc | dissolve | pixelate`.
+    Transition = "transition": Snap,
+    /// `pages current: page`.
+    Current = "current": Snap,
+    /// `play shake` (keyframes).
+    Play = "play": Snap,
+    // Data, effects and media nodes.
+    /// `arc { sweep: 270deg }`.
+    Sweep = "sweep": Spatial,
+    Bars = "bars": Snap,
+    Smooth = "smooth": Snap,
+    Style = "style": Snap,
+    History = "history": Snap,
+    Rate = "rate": Snap,
+    Life = "life": Snap,
+    Sprite = "sprite": Snap,
+    Speed = "speed": Snap,
+    /// `canvas { draw: (c) => … }`.
+    Draw = "draw": Snap,
 }
 
 /// A length in logical pixels or relative to a reference.
@@ -324,8 +377,9 @@ impl Default for Font {
     }
 }
 
-/// A typed prop value. Token references are resolved by the logic thread
-/// before values cross the channel (M0); see `docs/decisions.md`.
+/// A typed prop value. Values bound to tokens arrive as
+/// [`PropValue::Token`] and are evaluated by the render thread against the
+/// current [`TokenTable`] (see [`TokenTable::resolve`]).
 #[derive(Clone, Debug, PartialEq)]
 pub enum PropValue {
     /// Reverts the prop to its default (a `when` stopped applying and no
@@ -349,6 +403,53 @@ pub enum PropValue {
     Angle(f32),
     Duration(Duration),
     List(Vec<PropValue>),
+    /// A token reference or expression (`$accent`, `$fg.alpha(0.65)`,
+    /// `border: 1, $border`), evaluated by render every frame.
+    Token(TokenExpr),
+    /// A spring or timed curve as a value (`$motion.spatial:
+    /// spring(700, 0.9)`); `Transition::Default` resolves through these.
+    Transition(Transition),
+    /// An `enter { … }` / `exit { … }` pose: the props a node animates in
+    /// from or out to.
+    Pose(Vec<(Prop, PropValue)>),
+}
+
+impl PropValue {
+    /// Every colour inside the value, depth first in field order. This is
+    /// the order [`TokenExpr::Template`] fills colours in.
+    pub fn colors_mut(&mut self) -> Vec<&mut Color> {
+        let mut out = Vec::new();
+        self.collect_colors(&mut out);
+        out
+    }
+
+    fn collect_colors<'a>(&'a mut self, out: &mut Vec<&'a mut Color>) {
+        fn paint<'a>(p: &'a mut Paint, out: &mut Vec<&'a mut Color>) {
+            match p {
+                Paint::Solid(c) => out.push(c),
+                Paint::Linear { stops, .. }
+                | Paint::Radial { stops }
+                | Paint::Conic { stops, .. } => out.extend(stops.iter_mut().map(|s| &mut s.color)),
+            }
+        }
+        match self {
+            PropValue::Color(c) => out.push(c),
+            PropValue::Paint(p) => paint(p, out),
+            PropValue::Border(b) => paint(&mut b.paint, out),
+            PropValue::Shadow(list) => out.extend(list.iter_mut().map(|s| &mut s.color)),
+            PropValue::List(items) => {
+                for v in items {
+                    v.collect_colors(out);
+                }
+            }
+            PropValue::Pose(props) => {
+                for (_, v) in props {
+                    v.collect_colors(out);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Named easing curves are cubic béziers; see [`Easing::named`].
@@ -406,23 +507,6 @@ pub enum Transition {
     Duration { duration: Duration, easing: Easing },
     /// `~ instant`.
     Instant,
-}
-
-/// Resolved token values, keyed by path without the `$` (`"accent"`,
-/// `"space.2"`). Replaced wholesale by [`SceneOp::SetTokens`].
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct TokenTable {
-    pub tokens: BTreeMap<String, PropValue>,
-}
-
-impl TokenTable {
-    pub fn get(&self, path: &str) -> Option<&PropValue> {
-        self.tokens.get(path)
-    }
-
-    pub fn insert(&mut self, path: impl Into<String>, value: PropValue) {
-        self.tokens.insert(path.into(), value);
-    }
 }
 
 /// One edit to the retained tree.
@@ -520,6 +604,65 @@ mod tests {
         assert_eq!(Prop::from_name("background"), None);
         assert!(NodeKind::Bar.is_surface());
         assert!(!NodeKind::Row.is_surface());
+        // The design catalogue's props and kinds are all known.
+        for p in [
+            "fill",
+            "text_stroke",
+            "blur_fallback",
+            "enter",
+            "exit",
+            "sweep",
+            "transition",
+            "tilt",
+        ] {
+            assert!(Prop::from_name(p).is_some(), "{p}");
+        }
+        for k in [
+            "arc",
+            "graph",
+            "spectrum",
+            "particles",
+            "svg",
+            "lottie",
+            "thumbnail",
+            "pages",
+            "page",
+            "letters",
+            "merge",
+            "effect",
+            "shader",
+        ] {
+            assert!(NodeKind::from_name(k).is_some(), "{k}");
+        }
+        let mut names: Vec<_> = Prop::ALL.iter().map(|p| p.name()).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), Prop::ALL.len(), "prop names are unique");
+    }
+
+    #[test]
+    fn colors_are_visited_in_field_order() {
+        let mut v = PropValue::List(vec![
+            PropValue::Border(Border {
+                width: 1.0,
+                paint: Paint::Solid(Color::BLACK),
+            }),
+            PropValue::Paint(Paint::Linear {
+                angle: 0.0,
+                stops: vec![
+                    GradientStop {
+                        offset: 0.0,
+                        color: Color::WHITE,
+                    },
+                    GradientStop {
+                        offset: 1.0,
+                        color: Color::TRANSPARENT,
+                    },
+                ],
+            }),
+        ]);
+        let got: Vec<Color> = v.colors_mut().into_iter().map(|c| *c).collect();
+        assert_eq!(got, [Color::BLACK, Color::WHITE, Color::TRANSPARENT]);
     }
 
     #[test]

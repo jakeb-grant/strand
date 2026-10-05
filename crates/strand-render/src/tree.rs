@@ -14,7 +14,14 @@ pub enum SceneError {
     Cycle(NodeId),
     /// A non-surface node was created or moved without a parent.
     MissingParent(NodeId),
+    /// `Create` named a slot index far beyond the live ones (ids are
+    /// allocated densely, so this is a bug, and honouring it would
+    /// allocate without bound).
+    InvalidId(NodeId),
 }
+
+/// How far past the current slot count a new id's index may reach.
+pub const MAX_INDEX_GAP: usize = 1 << 16;
 
 impl std::fmt::Display for SceneError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -23,6 +30,7 @@ impl std::fmt::Display for SceneError {
             Self::DuplicateNode(id) => write!(f, "node {id:?} already exists"),
             Self::Cycle(id) => write!(f, "moving {id:?} would create a cycle"),
             Self::MissingParent(id) => write!(f, "non-surface node {id:?} has no parent"),
+            Self::InvalidId(id) => write!(f, "node id {id:?} is far beyond the allocated range"),
         }
     }
 }
@@ -170,6 +178,9 @@ impl SceneTree {
         index: u32,
     ) -> Result<(), SceneError> {
         let i = id.index as usize;
+        if i > self.slots.len() + MAX_INDEX_GAP {
+            return Err(SceneError::InvalidId(id));
+        }
         if self.slots.get(i).is_some_and(Option::is_some) {
             return Err(SceneError::DuplicateNode(id));
         }
@@ -317,7 +328,8 @@ mod tests {
                 parent: Some(id(3)),
                 index: 0,
             }) // cycle
-            .set(id(3), Prop::Bg, PropValue::Color(Color::WHITE));
+            .set(id(3), Prop::Bg, PropValue::Color(Color::WHITE))
+            .create(NodeId::new(u32::MAX, 0), NodeKind::Box, Some(id(0)), 0); // absurd id
         let errs = t.apply(d);
         assert_eq!(
             errs,
@@ -326,8 +338,10 @@ mod tests {
                 SceneError::UnknownNode(NodeId::new(3, 7)),
                 SceneError::MissingParent(id(9)),
                 SceneError::Cycle(id(1)),
+                SceneError::InvalidId(NodeId::new(u32::MAX, 0)),
             ]
         );
+        assert!(t.slots.len() < 100);
         assert_eq!(
             t.get(id(3)).unwrap().get(Prop::Bg),
             Some(&PropValue::Color(Color::WHITE))

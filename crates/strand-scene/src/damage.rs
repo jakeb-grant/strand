@@ -177,7 +177,8 @@ fn union_area(rects: &[Rect]) -> u64 {
                 .take(n)
                 .any(|r| r.left() <= x0 && r.right() >= x1 && r.top() <= y0 && r.bottom() >= y1);
             if covered {
-                area += ((x1 - x0) * (y1 - y0)) as u64;
+                let cell = (x1 - x0) as u128 * (y1 - y0) as u128;
+                area = area.saturating_add(u64::try_from(cell).unwrap_or(u64::MAX));
             }
         }
     }
@@ -194,8 +195,8 @@ fn merge_cheapest(buf: &mut [Rect; MAX_RECTS + 1], n: usize) -> usize {
         for j in i + 1..n {
             let (a, b) = (buf[i], buf[j]);
             let overlap = a.intersect(b).map_or(0, Rect::area);
-            let covered = a.area() + b.area() - overlap;
-            let cost = a.union(b).area() - covered;
+            let covered = a.area().saturating_add(b.area()).saturating_sub(overlap);
+            let cost = a.union(b).area().saturating_sub(covered);
             if cost < best_cost {
                 best_cost = cost;
                 best = (i, j);

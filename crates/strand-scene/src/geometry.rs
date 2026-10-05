@@ -63,8 +63,8 @@ impl Rect {
     pub fn from_edges(x0: i64, y0: i64, x1: i64, y1: i64) -> Self {
         let cx0 = x0.clamp(i32::MIN as i64, i32::MAX as i64);
         let cy0 = y0.clamp(i32::MIN as i64, i32::MAX as i64);
-        let w = (x1 - cx0).clamp(0, u32::MAX as i64) as u32;
-        let h = (y1 - cy0).clamp(0, u32::MAX as i64) as u32;
+        let w = x1.saturating_sub(cx0).clamp(0, u32::MAX as i64) as u32;
+        let h = y1.saturating_sub(cy0).clamp(0, u32::MAX as i64) as u32;
         Self::new(cx0 as i32, cy0 as i32, w, h)
     }
 
@@ -376,6 +376,21 @@ impl Scale {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extreme_edges_saturate() {
+        let r = Rect::from_edges(i64::MIN, -10, i64::MAX, i64::MAX);
+        assert_eq!((r.x, r.y), (i32::MIN, -10));
+        assert_eq!((r.w, r.h), (u32::MAX, u32::MAX));
+        let r = Rect::from_edges(i64::MAX, 0, i64::MIN, 1);
+        assert!(r.is_empty());
+        let mut d = crate::Damage::new();
+        for i in 0..12 {
+            d.add(Rect::from_edges(i * 3, 0, i64::MAX, i64::MAX));
+            d.add(Rect::new(-(i as i32) * 50, 5, 4, 4));
+        }
+        assert!(d.len() <= crate::MAX_RECTS);
+    }
 
     #[test]
     fn rect_edges_and_intersection() {

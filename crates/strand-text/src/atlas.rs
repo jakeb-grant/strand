@@ -10,11 +10,13 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use strand_scene::Scale;
 
 /// Identifies one page of one per-scale atlas. `generation` changes every
-/// time the page is reset, so a mirror can tell stale contents apart.
+/// time the page is (re)created or reset, and is unique in the process, so
+/// a mirror can tell stale contents apart even across dropped atlases.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PageId {
     pub scale: Scale,
@@ -33,7 +35,8 @@ pub struct AtlasSlot {
 }
 
 /// New pixels for a page region. Pages are square, `page_size` pixels on a
-/// side, one byte of coverage per pixel, rows of `w` bytes.
+/// side (larger than [`AtlasConfig::page_size`] for a page dedicated to an
+/// oversized glyph), one byte of coverage per pixel, rows of `w` bytes.
 #[derive(Clone, PartialEq, Eq)]
 pub struct AtlasUpload {
     pub page: PageId,
@@ -66,6 +69,16 @@ pub struct AtlasConfig {
     /// Pages per scale before least-recently-used pages are evicted. Pages
     /// beyond this are only allocated while every page is leased.
     pub max_pages: usize,
+}
+
+/// Largest page side; a glyph mask bigger than this minus one pixel of
+/// padding is not drawn (font sizes are capped well below it).
+pub const MAX_PAGE_SIZE: u16 = 2048;
+
+static NEXT_GENERATION: AtomicU32 = AtomicU32::new(1);
+
+fn next_generation() -> u32 {
+    NEXT_GENERATION.fetch_add(1, Ordering::Relaxed)
 }
 
 impl Default for AtlasConfig {
@@ -113,6 +126,8 @@ struct Shelf {
 #[derive(Debug)]
 struct Page {
     id: PageId,
+    /// Side in pixels.
+    size: u16,
     lease: Arc<PageId>,
     shelves: Vec<Shelf>,
     next_y: u16,
@@ -120,9 +135,15 @@ struct Page {
 }
 
 impl Page {
-    fn new(id: PageId) -> Self {
+    fn new(scale: Scale, index: u32, size: u16) -> Self {
+        let id = PageId {
+            scale,
+            index,
+            generation: next_generation(),
+        };
         Self {
             id,
+            size,
             lease: Arc::new(id),
             shelves: Vec::new(),
             next_y: 0,
@@ -134,15 +155,17 @@ impl Page {
         Arc::strong_count(&self.lease) > 1
     }
 
-    fn reset(&mut self) {
-        self.id.generation = self.id.generation.wrapping_add(1);
+    fn reset(&mut self, size: u16) {
+        self.id.generation = next_generation();
+        self.size = size;
         self.lease = Arc::new(self.id);
         self.shelves.clear();
         self.next_y = 0;
     }
 
     /// Shelf packing with one pixel of padding on the right and bottom.
-    fn alloc(&mut self, size: u16, w: u16, h: u16) -> Option<(u16, u16)> {
+    fn alloc(&mut self, w: u16, h: u16) -> Option<(u16, u16)> {
+        let size = self.size;
         let (pw, ph) = (w.checked_add(1)?, h.checked_add(1)?);
         if pw > size || ph > size {
             return None;
@@ -214,17 +237,30 @@ impl GlyphAtlas {
     }
 
     /// Finds room for a `w × h` mask. Pages used by the current request
-    /// (stamped `now`) and leased pages are never evicted.
+    /// (stamped `now`) and leased pages are never evicted. A mask too big
+    /// for a regular page gets a page of its own, sized to fit, which is
+    /// leased and evicted like any other. `None` if nothing fits; such
+    /// failures are not cached, so a later request retries.
     pub fn allocate(&mut self, w: u16, h: u16, now: u64) -> Option<AtlasSlot> {
-        let size = self.config.page_size;
-        // Most recently used first: keeps hot glyphs together.
-        let mut order: Vec<usize> = (0..self.pages.len()).collect();
-        order.sort_by_key(|&i| std::cmp::Reverse(self.pages[i].last_used));
-        for i in order {
-            if let Some((x, y)) = self.pages[i].alloc(size, w, h) {
-                return Some(self.slot(i, x, y, w, h, now));
-            }
+        let needed = w.max(h).checked_add(1)?;
+        if needed > MAX_PAGE_SIZE {
+            return None;
         }
+        let regular = self.config.page_size;
+        let size = if needed <= regular {
+            // Most recently used first: keeps hot glyphs together.
+            let mut order: Vec<usize> = (0..self.pages.len()).collect();
+            order.sort_by_key(|&i| std::cmp::Reverse(self.pages[i].last_used));
+            for i in order {
+                if let Some((x, y)) = self.pages[i].alloc(w, h) {
+                    return Some(self.slot(i, x, y, w, h, now));
+                }
+            }
+            regular
+        } else {
+            // Round up so a page can be reused for similar sizes.
+            needed.div_ceil(64).saturating_mul(64).min(MAX_PAGE_SIZE)
+        };
         let index = if self.pages.len() < self.config.max_pages {
             None
         } else {
@@ -240,21 +276,42 @@ impl GlyphAtlas {
                 let old = self.pages[i].id;
                 self.glyphs
                     .retain(|_, g| g.slot.is_none_or(|s| s.page.index != old.index));
-                self.pages[i].reset();
+                self.pages[i].reset(size);
                 i
             }
             None => {
                 let i = self.pages.len();
-                self.pages.push(Page::new(PageId {
-                    scale: self.scale,
-                    index: i as u32,
-                    generation: 0,
-                }));
+                self.pages.push(Page::new(self.scale, i as u32, size));
                 i
             }
         };
-        let (x, y) = self.pages[i].alloc(size, w, h)?;
+        let (x, y) = self.pages[i].alloc(w, h)?;
         Some(self.slot(i, x, y, w, h, now))
+    }
+
+    /// Frees pages above `max_pages` that were only allocated while every
+    /// page was leased, once they are no longer leased. Pages are removed
+    /// from the end so indices stay stable.
+    pub fn trim(&mut self, now: u64) {
+        while self.pages.len() > self.config.max_pages {
+            let Some(last) = self.pages.last() else {
+                break;
+            };
+            if last.leased() || last.last_used == now {
+                break;
+            }
+            let index = last.id.index;
+            self.glyphs
+                .retain(|_, g| g.slot.is_none_or(|s| s.page.index != index));
+            self.pages.pop();
+        }
+    }
+
+    /// Side of the page `page` lives on.
+    pub fn page_size_of(&self, page: PageId) -> u16 {
+        self.pages
+            .get(page.index as usize)
+            .map_or(self.config.page_size, |p| p.size)
     }
 
     fn slot(&mut self, i: usize, x: u16, y: u16, w: u16, h: u16, now: u64) -> AtlasSlot {
@@ -266,10 +323,6 @@ impl GlyphAtlas {
             w,
             h,
         }
-    }
-
-    pub fn page_size(&self) -> u16 {
-        self.config.page_size
     }
 
     pub fn page_count(&self) -> usize {
@@ -351,7 +404,7 @@ mod tests {
         // Time 3 needs a page: page 0 is least recently used.
         let s2 = a.allocate(30, 30, 3).unwrap();
         assert_eq!(s2.page.index, s0.page.index);
-        assert_eq!(s2.page.generation, s0.page.generation + 1);
+        assert_ne!(s2.page.generation, s0.page.generation);
         assert!(a.get(&key(0)).is_none(), "evicted glyphs leave the cache");
 
         // Lease both pages: the atlas must grow past max_pages instead.
@@ -363,8 +416,28 @@ mod tests {
     }
 
     #[test]
-    fn too_big_glyphs_fail() {
+    fn oversized_glyphs_get_their_own_page() {
+        let mut a = atlas(2);
+        let big = a.allocate(100, 40, 1).unwrap();
+        assert_eq!(a.page_size_of(big.page), 128);
+        // Regular glyphs still go on regular pages.
+        assert!(a.allocate(5, 5, 1).is_some());
+        assert!(a.allocate(MAX_PAGE_SIZE, 1, 1).is_none());
+    }
+
+    #[test]
+    fn surplus_pages_are_trimmed_once_released() {
         let mut a = atlas(1);
-        assert!(a.allocate(32, 4, 1).is_none());
+        let s0 = a.allocate(30, 30, 1).unwrap();
+        let lease = a.touch(s0.page, 1);
+        let s1 = a.allocate(30, 30, 2).unwrap();
+        assert_eq!((s1.page.index, a.page_count()), (1, 2));
+        a.trim(3);
+        assert_eq!(a.page_count(), 1, "the surplus page is unleased");
+        drop(lease);
+        // A recreated page never reuses a generation.
+        let s2 = a.allocate(30, 30, 4).unwrap();
+        assert_ne!(s2.page, s1.page);
+        assert_ne!(s2.page.generation, s1.page.generation);
     }
 }

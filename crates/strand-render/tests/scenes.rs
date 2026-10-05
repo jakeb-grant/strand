@@ -320,6 +320,32 @@ fn shapes_match_reference() {
         l[2] < r[2] || l[1] < r[1],
         "gradient runs left to right: {l:?} {r:?}"
     );
+    // Conic from 0deg: starts at 12 o'clock and runs clockwise, so just
+    // right of the top is the first stop, just left of it the last, and
+    // 3 o'clock is a quarter of the way along (interpolated in OKLab).
+    let near = |got: [u8; 4], want: Color, tol: u8| {
+        let w = want.clamped();
+        let exp = [w.b, w.g, w.r].map(|v| (v * 255.0).round() as u8);
+        got[..3].iter().zip(exp).all(|(g, e)| g.abs_diff(e) <= tol)
+    };
+    let (first, last) = (hex("#89dceb"), hex("#1e66f5"));
+    let (cx, cy) = (200, 96);
+    assert!(
+        near(buf.px(cx + 2, cy - 18), first, 12),
+        "clockwise of 12: {:?}",
+        buf.px(cx + 2, cy - 18)
+    );
+    assert!(
+        near(buf.px(cx - 3, cy - 18), last, 12),
+        "counter-clockwise of 12: {:?}",
+        buf.px(cx - 3, cy - 18)
+    );
+    let quarter = first.lerp_oklab(last, 0.25);
+    assert!(
+        near(buf.px(cx + 18, cy), quarter, 6),
+        "3 o'clock: {:?} vs {quarter:?}",
+        buf.px(cx + 18, cy)
+    );
     assert_matches_ref("shapes", &buf, TOLERANCE);
 }
 

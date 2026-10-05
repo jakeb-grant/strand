@@ -1,6 +1,8 @@
 //! The paint contract between the surface manager (caller) and the render
 //! thread (implementor).
 
+use std::time::Duration;
+
 use crate::damage::Damage;
 use crate::geometry::{Rect, Scale, Size};
 use crate::id::SurfaceId;
@@ -19,8 +21,14 @@ pub struct PaintTarget<'a> {
     /// Bytes per row; at least `size.w * 4`.
     pub stride: u32,
     pub scale: Scale,
-    /// Buffer age: 0 = unknown contents, 1 = last frame, ...
+    /// Buffer age: 0 = unknown contents, 1 = last frame, ... counted in
+    /// commits of this surface (see [`Painter::paint`]).
     pub age: u8,
+    /// When this frame is expected on screen: the predicted presentation
+    /// time on the `wp_presentation` clock (`CLOCK_MONOTONIC`). Springs and
+    /// time signals are sampled at it; tests pass fixed values.
+    /// [`PaintTarget::new`] sets zero; use [`PaintTarget::at`].
+    pub time: Duration,
 }
 
 /// Why a [`PaintTarget`] cannot be painted.
@@ -62,6 +70,7 @@ impl<'a> PaintTarget<'a> {
             stride,
             scale,
             age,
+            time: Duration::ZERO,
         };
         target.validate()?;
         Ok(target)
@@ -86,6 +95,12 @@ impl<'a> PaintTarget<'a> {
         Ok(())
     }
 
+    /// Sets the frame's presentation time.
+    pub fn at(mut self, time: Duration) -> Self {
+        self.time = time;
+        self
+    }
+
     /// The whole buffer as a rectangle.
     pub fn bounds(&self) -> Rect {
         Rect::from_size(self.size)
@@ -95,11 +110,25 @@ impl<'a> PaintTarget<'a> {
 /// Implemented by the render thread, called by the surface manager.
 pub trait Painter {
     /// Paint everything that changed for `surface` and return the damage,
-    /// already widened to cover the buffer's age.
+    /// already widened to cover the buffer's age and clipped to the buffer.
+    ///
+    /// Buffer-age contract: a non-empty result is a new frame and the
+    /// caller must commit that buffer (with exactly this damage); an empty
+    /// result means nothing was drawn and nothing was recorded, so the
+    /// caller must not count a commit for it. Ages are counted in commits
+    /// of this surface.
     fn paint(&mut self, surface: SurfaceId, target: &mut PaintTarget<'_>) -> Damage;
-    /// True while a spring or time signal on this surface is unsettled;
-    /// the surface manager requests frame callbacks only while true.
+    /// True while something on this surface is dirty or a spring or time
+    /// signal is unsettled; the surface manager requests frame callbacks
+    /// only while true.
     fn wants_frame(&self, surface: SurfaceId) -> bool;
+    /// The part of the last painted frame that is fully opaque, in
+    /// physical pixels, for `set_opaque_region`. Empty when nothing is
+    /// known to be opaque.
+    fn opaque_region(&self, surface: SurfaceId) -> Damage {
+        let _ = surface;
+        Damage::new()
+    }
 }
 
 #[cfg(test)]

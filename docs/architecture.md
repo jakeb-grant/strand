@@ -54,16 +54,30 @@ be built and tested without the language, and the language without pixels.
       pub pixels: &'a mut [u8],   // ARGB8888 premultiplied, little-endian (wl_shm)
       pub size: Size, pub stride: u32, pub scale: Scale,
       pub age: u8,                // buffer age: 0 = unknown contents, 1 = last frame, ...
+      pub time: Duration,         // predicted presentation time (wp_presentation clock)
   }
   pub trait Painter {
       /// Paint everything that changed for `surface` and return the damage,
-      /// already widened to cover the buffer's age.
+      /// already widened to cover the buffer's age and clipped to the buffer.
       fn paint(&mut self, surface: SurfaceId, target: &mut PaintTarget<'_>) -> Damage;
-      /// True while a spring or time signal on this surface is unsettled;
-      /// the surface manager requests frame callbacks only while true.
+      /// True while something is dirty or a spring or time signal on this
+      /// surface is unsettled; the surface manager requests frame callbacks
+      /// only while true.
       fn wants_frame(&self, surface: SurfaceId) -> bool;
+      /// Fully opaque part of the last painted frame, for set_opaque_region.
+      fn opaque_region(&self, surface: SurfaceId) -> Damage { Damage::new() }
   }
   ```
+
+  Buffer-age rule: a non-empty `paint` result is a new frame and the
+  caller must commit that buffer with exactly that damage; an empty result
+  means nothing was drawn or recorded, so the caller does not commit (or,
+  if it commits anyway, does not count it). `age` counts commits of that
+  surface. If a painted buffer cannot be committed, call
+  `Renderer::invalidate(surface)`. `PaintTarget::new` sets `time` to zero;
+  the surface manager sets it (`.at(t)`) and tests pass fixed values so
+  springs sample deterministic timestamps. The input region (shadows grow
+  the buffer but not the input region) joins this trait with M2 layout.
 
 - **Scene protocol** (logic → render, one batch per tick): `SceneDiff`
   holding ordered `SceneOp`s over a retained tree: `Create { id, kind,
@@ -76,6 +90,16 @@ be built and tested without the language, and the language without pixels.
   take `parent: Option<NodeId>` (`None` for surface roots) and
   `PropValue::Unset` reverts a prop to its default. Render maps a surface
   root to Wayland surfaces with `Renderer::attach_surface(SurfaceId, NodeId)`.
+  Token-bound values travel unresolved as `PropValue::Token(TokenExpr)`
+  (`$path`, colour methods `alpha`/`mix`/`lighten`/`darken`,
+  `oklch(from …)` with channel arithmetic, and `Template` for composite
+  values whose colours are tokens, such as `border: 1, $border`). The
+  `TokenTable` sent by `SetTokens` holds plain values (palette roots,
+  scales, fonts, `PropValue::Transition` springs for `$motion.*`) and
+  derived tokens as expressions; render evaluates references at flatten
+  time, every frame, so only palette roots need to spring. Logic still
+  resolves which theme and overrides apply. `enter`/`exit` are props whose
+  value is a `PropValue::Pose` (prop/value pairs) or a preset keyword.
 
 ### `strand-core`
 
@@ -103,7 +127,15 @@ scale and LRU-bounded. Render draws the last delivered layout.
 Each `TextLayout` also carries the `AtlasUpload`s (alpha pixels) for glyphs
 rasterised while producing it, which render applies to its mirror of the
 atlas in arrival order, and leases on the atlas pages it uses, so the worker
-never recycles a page a live layout draws from.
+never recycles a page a live layout draws from. Page generations are unique
+in the process, so a mirror never confuses a recreated page with an old
+one. Two more messages share the request channel, in order:
+`cancel(key)` (skip a still-queued request; render sends it when a request
+is superseded) and `drop_scale(scale)` (free that scale's atlas; render
+sends it when no surface uses the scale and drops its mirror pages at the
+same time, so a returning scale re-uploads its glyphs). The worker drains
+its queue before shaping and survives a panicking request (it answers with
+an empty layout and starts a fresh engine).
 
 ### `strand-surface`
 

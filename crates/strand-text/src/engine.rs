@@ -20,6 +20,11 @@ use swash::{CacheKey, FontRef};
 use crate::atlas::{AtlasConfig, AtlasUpload, CachedGlyph, GlyphAtlas, GlyphKey, PageId};
 use crate::{GlyphRun, PlacedGlyph, TextAlign, TextLayout, TextRequest};
 
+/// Largest font size shaped, in physical pixels; larger requests are
+/// shaped at this size so one value from a bad expression cannot stall the
+/// worker or exhaust memory.
+pub const MAX_FONT_PX: f32 = 1024.0;
+
 /// Horizontal subpixel positions per pixel. Glyph origins are snapped to a
 /// quarter pixel horizontally and a whole pixel vertically.
 pub const SUBPIXEL_STEPS: u8 = 4;
@@ -139,12 +144,37 @@ impl TextEngine {
         self.atlases.get(&scale).map_or(0, GlyphAtlas::glyph_count)
     }
 
+    /// Drops the atlas for `scale` (no output uses it any more). Glyphs at
+    /// that scale are rasterised and uploaded again if it comes back.
+    pub fn drop_scale(&mut self, scale: Scale) {
+        self.atlases.remove(&scale);
+    }
+
     /// Shapes `req.text` and rasterises any glyphs the atlas lacks.
+    /// Non-finite or out-of-range sizes, widths and weights are replaced by
+    /// safe values first (they can come from user expressions).
     pub fn layout(&mut self, req: &TextRequest) -> TextLayout {
         self.clock += 1;
         let now = self.clock;
         let scale = req.scale;
         let s = scale.as_f32();
+        let default = strand_scene::Font::default();
+        let size = req.style.font.size;
+        let size = if size.is_finite() && size > 0.0 {
+            size.min(MAX_FONT_PX / s)
+        } else {
+            default.size
+        };
+        let weight = req.style.font.weight.clamp(1, 1000) as f32;
+        let line_height = req
+            .style
+            .line_height
+            .filter(|l| l.is_finite() && *l > 0.0)
+            .map(|l| l.min(100.0));
+        let max_width = req
+            .max_width
+            .filter(|w| w.is_finite() && *w >= 0.0)
+            .map(|w| (w * s).min(1e7));
 
         let mut builder = self
             .layout_cx
@@ -152,15 +182,13 @@ impl TextEngine {
         builder.push_default(StyleProperty::FontFamily(FontFamily::Source(
             req.style.font.family.as_str().into(),
         )));
-        builder.push_default(StyleProperty::FontSize(req.style.font.size));
-        builder.push_default(StyleProperty::FontWeight(FontWeight::new(
-            req.style.font.weight as f32,
-        )));
-        if let Some(lh) = req.style.line_height {
+        builder.push_default(StyleProperty::FontSize(size));
+        builder.push_default(StyleProperty::FontWeight(FontWeight::new(weight)));
+        if let Some(lh) = line_height {
             builder.push_default(StyleProperty::LineHeight(LineHeight::FontSizeRelative(lh)));
         }
         let mut layout: parley::Layout<()> = builder.build(&req.text);
-        layout.break_all_lines(req.max_width.map(|w| w * s));
+        layout.break_all_lines(max_width);
         let alignment = match req.style.align {
             TextAlign::Start => Alignment::Start,
             TextAlign::Center => Alignment::Center,
@@ -172,6 +200,7 @@ impl TextEngine {
             .atlases
             .entry(scale)
             .or_insert_with(|| GlyphAtlas::new(scale, self.atlas_config));
+        atlas.trim(now);
         let mut runs = Vec::new();
         let mut uploads = Vec::new();
         let mut leases = Vec::new();
@@ -244,6 +273,9 @@ impl TextEngine {
                                 skew,
                                 now,
                             );
+                            // An atlas allocation failure is not cached:
+                            // a later request retries once pages free up.
+                            let Some(c) = c else { continue };
                             atlas.insert(key, c);
                             c
                         }
@@ -291,12 +323,12 @@ fn rasterise(
     embolden: bool,
     skew: f32,
     now: u64,
-) -> CachedGlyph {
-    let empty = CachedGlyph {
+) -> Option<CachedGlyph> {
+    let empty = Some(CachedGlyph {
         slot: None,
         left: 0,
         top: 0,
-    };
+    });
     let Ok(glyph) = u16::try_from(glyph) else {
         return empty;
     };
@@ -324,25 +356,19 @@ fn rasterise(
     if w == 0 || h == 0 {
         return empty;
     }
-    let Some(slot) = atlas.allocate(w, h, now) else {
-        return empty;
-    };
+    let slot = atlas.allocate(w, h, now)?;
     uploads.push(AtlasUpload {
         page: slot.page,
-        page_size: atlas_page_size(atlas),
+        page_size: atlas.page_size_of(slot.page),
         x: slot.x,
         y: slot.y,
         w,
         h,
         alpha: image.data.clone(),
     });
-    CachedGlyph {
+    Some(CachedGlyph {
         slot: Some(slot),
         left: p.left,
         top: p.top,
-    }
-}
-
-fn atlas_page_size(atlas: &GlyphAtlas) -> u16 {
-    atlas.page_size()
+    })
 }

@@ -431,8 +431,19 @@ fn worker_backend_keeps_last_layout_until_delivery() {
     r.apply(set_text(clock, "13:00"));
     assert!(r.text_pending());
     assert!(r.wants_frame(BAR));
-    assert!(r.wait_for_text(Duration::from_secs(10)));
-    let d = buf.paint(&mut r, BAR, 1);
+    // Painting while shaping is in flight draws nothing new and must not
+    // keep frame callbacks going: delivery marks the surface dirty.
+    let early = buf.paint(&mut r, BAR, 1);
+    let d = if r.text_pending() {
+        assert!(early.is_empty(), "{early:?}");
+        assert!(!r.wants_frame(BAR), "no frames while waiting for text");
+        assert!(r.wait_for_text(Duration::from_secs(10)));
+        assert!(r.wants_frame(BAR), "delivery asks for a frame");
+        buf.paint(&mut r, BAR, 1)
+    } else {
+        // The layout arrived before the paint polled for it.
+        early
+    };
     assert!(d.area() > 0 && d.area() <= 2000, "{d:?}");
     let (_, full) = fresh(bar("13:00").0, 2560, 36, Scale::ONE);
     assert!(buf.pixels == full.pixels);
@@ -492,4 +503,360 @@ fn shared_tree_on_mixed_dpi_outputs() {
     let (_, full_b) = fresh(bar("13:00").0, 3840, 54, s15);
     assert!(a.pixels == full_a.pixels);
     assert!(b.pixels == full_b.pixels);
+}
+
+fn worker_renderer() -> Renderer {
+    use std::sync::Arc;
+    use strand_render::TextBackend;
+    use strand_text::{FontConfig, TextWorker, test_font_path};
+    let data = std::fs::read(test_font_path()).unwrap();
+    let worker = TextWorker::spawn(FontConfig::isolated(vec![Arc::new(data)])).unwrap();
+    Renderer::new(TextBackend::Worker(worker))
+}
+
+/// Unplugging the only output at a scale and plugging one back in must
+/// bring text back: the worker's atlas for that scale is dropped together
+/// with the render thread's mirror, so glyphs are uploaded again.
+#[test]
+fn text_survives_output_hotplug() {
+    use std::time::Duration;
+    for worker in [false, true] {
+        let mut r = if worker {
+            worker_renderer()
+        } else {
+            renderer()
+        };
+        let (diff, _) = bar("12:59");
+        r.apply(diff);
+        let root = r.tree().roots()[0];
+        r.attach_surface(SurfaceId(1), root);
+        r.configure_surface(SurfaceId(1), Size::new(2560, 36), Scale::ONE);
+        assert!(r.wait_for_text(Duration::from_secs(10)));
+        let mut a = Buffer::new(2560, 36, Scale::ONE);
+        a.paint(&mut r, SurfaceId(1), 0);
+        r.detach_surface(SurfaceId(1));
+
+        r.attach_surface(SurfaceId(2), root);
+        r.configure_surface(SurfaceId(2), Size::new(2560, 36), Scale::ONE);
+        assert!(r.wait_for_text(Duration::from_secs(10)));
+        let mut b = Buffer::new(2560, 36, Scale::ONE);
+        b.paint(&mut r, SurfaceId(2), 0);
+        let (_, want) = fresh(bar("12:59").0, 2560, 36, Scale::ONE);
+        assert!(a.pixels == want.pixels, "worker: {worker}");
+        assert!(
+            b.pixels == want.pixels,
+            "text after replug (worker: {worker})"
+        );
+    }
+}
+
+/// Moving a surface to an output of another scale frees the old scale's
+/// text state, and coming back works.
+#[test]
+fn rescaling_frees_and_restores_text() {
+    let (diff, _) = bar("12:59");
+    let (mut r, _) = fresh(diff, 2560, 36, Scale::ONE);
+    let s2 = Scale::new(240).unwrap();
+    let mut b = Buffer::new(5120, 72, s2);
+    b.paint(&mut r, BAR, 0);
+    let mut a = Buffer::new(2560, 36, Scale::ONE);
+    a.paint(&mut r, BAR, 0);
+    let (_, want) = fresh(bar("12:59").0, 2560, 36, Scale::ONE);
+    assert!(a.pixels == want.pixels);
+}
+
+/// The buffer-age contract: an empty paint is not a frame. A caller that
+/// skips the commit on empty damage stays in step with the renderer.
+#[test]
+fn empty_paints_are_not_frames() {
+    let (diff, clock) = bar("12:59");
+    let mut r = renderer();
+    r.apply(diff);
+    r.attach_surface(BAR, r.tree().roots()[0]);
+    let mut a = Buffer::new(2560, 36, Scale::ONE);
+    let mut b = Buffer::new(2560, 36, Scale::ONE);
+    let status = NodeId::new(clock.index + 1, 0);
+    // Double buffering, committing only non-empty paints.
+    assert!(!a.paint(&mut r, BAR, 0).is_empty()); // commit 1 (A)
+    assert!(!b.paint(&mut r, BAR, 0).is_empty()); // commit 2 (B, age 0)
+    assert!(a.paint(&mut r, BAR, 2).is_empty(), "A is current: no frame");
+    // Commit 3: the status text changes, painted into A.
+    r.apply(set_text(status, "12%"));
+    assert!(!a.paint(&mut r, BAR, 2).is_empty());
+    assert!(a.paint(&mut r, BAR, 1).is_empty(), "idle: no frame");
+    // Commit 4: the clock ticks, painted into B, which last saw commit 2
+    // and so must also repaint the status text from commit 3.
+    r.apply(set_text(clock, "13:00"));
+    let d = b.paint(&mut r, BAR, 2);
+    assert!(d.area() <= 2 * 2000, "{d:?}");
+    let mut want = bar("13:00").0;
+    want.set(status, Prop::Text, text("12%"));
+    let (_, want) = fresh(want, 2560, 36, Scale::ONE);
+    assert!(b.pixels == want.pixels);
+    assert!(r.opaque_region(BAR).is_empty(), "translucent bar");
+}
+
+/// Reverting text before the layout for the intermediate value arrives
+/// must not show the intermediate value.
+#[test]
+fn reverted_text_does_not_flash_the_stale_layout() {
+    use std::time::Duration;
+    let mut r = worker_renderer();
+    let (diff, clock) = bar("AAAA");
+    r.apply(diff);
+    r.attach_surface(BAR, r.tree().roots()[0]);
+    r.configure_surface(BAR, Size::new(2560, 36), Scale::ONE);
+    assert!(r.wait_for_text(Duration::from_secs(10)));
+    let mut buf = Buffer::new(2560, 36, Scale::ONE);
+    buf.paint(&mut r, BAR, 0);
+    r.apply(set_text(clock, "WWWWWW"));
+    r.apply(set_text(clock, "AAAA"));
+    assert!(r.wait_for_text(Duration::from_secs(10)));
+    // Let any reply for the cancelled request arrive and be discarded.
+    std::thread::sleep(Duration::from_millis(50));
+    r.update();
+    buf.paint(&mut r, BAR, 1);
+    let (_, want) = fresh(bar("AAAA").0, 2560, 36, Scale::ONE);
+    assert!(buf.pixels == want.pixels);
+}
+
+/// Cost follows damage, not buffer size: a clock tick on a 4K surface
+/// rasterises a few cells, and stays bit-identical to a full repaint.
+#[test]
+fn clock_tick_on_4k_rasterises_only_the_damage() {
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Lock,
+        None,
+        vec![
+            (Prop::Bg, color("#1e1e2e")),
+            (Prop::Color, color("#cdd6f4")),
+            (Prop::Font, PropValue::Font(font(96.0))),
+        ],
+    );
+    let clock = b.node(
+        NodeKind::Text,
+        Some(root),
+        vec![
+            (Prop::X, num(1700.0)),
+            (Prop::Y, num(900.0)),
+            (Prop::Text, text("12:59")),
+        ],
+    );
+    let scene = b.diff;
+    let (mut r, mut buf) = fresh(scene.clone(), 3840, 2160, Scale::ONE);
+    assert_eq!(r.opaque_region(BAR).rects(), &[Rect::new(0, 0, 3840, 2160)]);
+    r.apply(set_text(clock, "13:00"));
+    let d = buf.paint(&mut r, BAR, 1);
+    let px = r.last_raster_pixels();
+    assert!(d.area() > 0 && d.area() < 40_000, "{d:?}");
+    assert!(
+        px <= 8 * 256 * 64,
+        "rasterised {px} px for {} px of damage",
+        d.area()
+    );
+    let mut full_r = renderer();
+    full_r.apply(scene);
+    full_r.apply(set_text(clock, "13:00"));
+    full_r.attach_surface(BAR, full_r.tree().roots()[0]);
+    let mut full = Buffer::new(3840, 2160, Scale::ONE);
+    full.paint(&mut full_r, BAR, 0);
+    assert!(buf.pixels == full.pixels);
+}
+
+/// Values from user expressions (`13/0`) or services must never panic the
+/// render thread or produce bogus damage.
+#[test]
+fn non_finite_and_huge_values_are_safe() {
+    let bad = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 1e30, -1e30];
+    let numeric = [
+        Prop::X,
+        Prop::Y,
+        Prop::Width,
+        Prop::Height,
+        Prop::Size,
+        Prop::Opacity,
+        Prop::Radius,
+        Prop::MaxWidth,
+        Prop::Weight,
+    ];
+    for v in bad {
+        let mut b = Builder::default();
+        let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+        let mut props: Vec<(Prop, PropValue)> = numeric.iter().map(|p| (*p, num(v))).collect();
+        props.push((Prop::Bg, color("#89b4fa")));
+        props.push((
+            Prop::Shadow,
+            PropValue::Shadow(vec![Shadow {
+                x: v,
+                y: v,
+                blur: v,
+                spread: v,
+                color: hex("#000000").with_alpha(0.5),
+            }]),
+        ));
+        props.push((
+            Prop::Border,
+            PropValue::Border(Border {
+                width: v,
+                paint: Paint::Linear {
+                    angle: v,
+                    stops: vec![
+                        GradientStop {
+                            offset: v,
+                            color: Color::new(v, 0.5, 0.5, 1.0),
+                        },
+                        GradientStop {
+                            offset: 1.0,
+                            color: Color::WHITE,
+                        },
+                    ],
+                },
+            }),
+        ));
+        props.push((Prop::Clip, PropValue::Bool(true)));
+        let boxed = b.node(NodeKind::Box, Some(root), props);
+        b.node(
+            NodeKind::Text,
+            Some(boxed),
+            vec![
+                (Prop::Text, text("12:59")),
+                (Prop::Width, num(v)),
+                (
+                    Prop::Font,
+                    PropValue::Font(Font {
+                        size: v,
+                        ..font(13.0)
+                    }),
+                ),
+            ],
+        );
+        // A shadow on an ordinary box, one field at a time.
+        for field in 0..4 {
+            let mut sh = Shadow {
+                x: 0.0,
+                y: 2.0,
+                blur: 8.0,
+                spread: 0.0,
+                color: hex("#000000").with_alpha(0.5),
+            };
+            match field {
+                0 => sh.x = v,
+                1 => sh.y = v,
+                2 => sh.blur = v,
+                _ => sh.spread = v,
+            }
+            b.node(
+                NodeKind::Box,
+                Some(root),
+                vec![
+                    (Prop::X, num(10.0)),
+                    (Prop::Size, num(10.0)),
+                    (
+                        Prop::Radius,
+                        PropValue::Corners(Corners {
+                            top_left: v,
+                            ..Corners::all(4.0)
+                        }),
+                    ),
+                    (Prop::Shadow, PropValue::Shadow(vec![sh])),
+                ],
+            );
+        }
+        let (mut r, mut buf) = fresh(b.diff, 400, 36, Scale::ONE);
+        let d = buf.paint(&mut r, BAR, 1);
+        assert!(d.area() <= 400 * 36, "{v}: {d:?}");
+        assert!(!r.wants_frame(BAR), "{v}: settles");
+    }
+}
+
+/// Per-corner radii shape the shadow too: a card rounded only on top
+/// casts a square-cornered shadow at the bottom.
+#[test]
+fn shadows_follow_per_corner_radii() {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Panel, None, vec![(Prop::Bg, color("#ffffff"))]);
+    b.node(
+        NodeKind::Box,
+        Some(root),
+        vec![
+            (Prop::X, num(20.0)),
+            (Prop::Y, num(20.0)),
+            (Prop::Size, num(60.0)),
+            (
+                Prop::Radius,
+                PropValue::Corners(Corners {
+                    top_left: 20.0,
+                    top_right: 20.0,
+                    bottom_right: 0.0,
+                    bottom_left: 0.0,
+                }),
+            ),
+            (Prop::Bg, color("#ffffff")),
+            (
+                Prop::Shadow,
+                PropValue::Shadow(vec![Shadow {
+                    x: 0.0,
+                    y: 0.0,
+                    blur: 2.0,
+                    spread: 3.0,
+                    color: hex("#000000"),
+                }]),
+            ),
+        ],
+    );
+    let (_, buf) = fresh(b.diff, 100, 100, Scale::ONE);
+    // Just outside the bottom-right corner, inside the spread: dark for a
+    // square corner. Just outside the top-right corner: light (rounded).
+    let br = buf.px(81, 81);
+    let tr = buf.px(81, 18);
+    assert!(br[0] < 0x40, "square bottom corner: {br:?}");
+    assert!(tr[0] > 0xc0, "rounded top corner: {tr:?}");
+}
+
+/// Props bound to tokens are evaluated by render: a palette change
+/// repaints exactly the nodes using the derived token, with no prop
+/// re-sent by logic.
+#[test]
+fn token_bound_props_follow_the_table() {
+    let mut table = TokenTable::default();
+    table.insert("accent", color("#89b4fa"));
+    table.insert_derived(
+        "accent.container",
+        TokenExpr::path("accent").call(TokenMethod::Alpha, vec![TokenExpr::value(num(0.5))]),
+    );
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    b.node(
+        NodeKind::Box,
+        Some(root),
+        vec![
+            (Prop::X, num(10.0)),
+            (Prop::Size, num(10.0)),
+            (
+                Prop::Bg,
+                PropValue::Token(TokenExpr::path("accent.container")),
+            ),
+            (
+                Prop::Enter,
+                PropValue::Pose(vec![(Prop::Opacity, num(0.0)), (Prop::Width, num(0.0))]),
+            ),
+        ],
+    );
+    b.diff.push(SceneOp::SetTokens {
+        table: table.clone(),
+    });
+    let (mut r, mut buf) = fresh(b.diff, 100, 20, Scale::ONE);
+    let blue = buf.px(15, 5);
+    assert!(blue[0] > blue[2], "accent is blue: {blue:?}");
+
+    table.insert("accent", color("#f38ba8"));
+    let mut d = SceneDiff::new();
+    d.push(SceneOp::SetTokens { table });
+    r.apply(d);
+    assert!(r.wants_frame(BAR));
+    let dmg = buf.paint(&mut r, BAR, 1);
+    assert_eq!(dmg.rects(), &[Rect::new(10, 0, 10, 10)]);
+    let pink = buf.px(15, 5);
+    assert!(pink[2] > pink[0], "accent is pink: {pink:?}");
 }

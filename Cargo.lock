@@ -439,7 +439,6 @@ dependencies = [
  "hashbrown",
  "log",
  "peniko",
- "png",
  "skrifa",
  "smallvec",
  "vello_common",
@@ -1251,7 +1250,6 @@ version = "0.0.0"
 dependencies = [
  "criterion",
  "png",
- "strand-core",
  "strand-scene",
  "strand-text",
  "vello_cpu",
@@ -1418,7 +1416,6 @@ dependencies = [
  "guillotiere",
  "log",
  "peniko",
- "png",
  "smallvec",
  "thiserror",
 ]
@@ -1432,7 +1429,6 @@ dependencies = [
  "bytemuck",
  "glifo",
  "hashbrown",
- "png",
  "vello_common",
 ]
 

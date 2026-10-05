@@ -1,6 +1,8 @@
 //! Clock-tick repaint: a 2560×36 bar whose clock text changes every
 //! iteration, painted into a buffer of age 1 (only the damage repaints).
-//! Compared with a full repaint of the same bar.
+//! Compared with a full repaint of the same bar, and with the same tick on
+//! a 3840×2160 surface (a lock screen): cost must follow the damage, not
+//! the buffer size.
 
 use std::hint::black_box;
 use std::sync::Arc;
@@ -12,7 +14,7 @@ use strand_text::{FontConfig, TEST_FONT_FAMILY, TextEngine, test_font_path};
 
 const BAR: SurfaceId = SurfaceId(1);
 
-fn setup() -> (Renderer, NodeId, Vec<u8>) {
+fn setup(w: u32, h: u32) -> (Renderer, NodeId, Vec<u8>) {
     let data = std::fs::read(test_font_path()).expect("vendored test font");
     let engine = TextEngine::new(FontConfig::isolated(vec![Arc::new(data)]));
     let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
@@ -69,30 +71,36 @@ fn setup() -> (Renderer, NodeId, Vec<u8>) {
     }
     r.apply(d);
     r.attach_surface(BAR, id(0));
-    let mut pixels = vec![0u8; 2560 * 36 * 4];
-    let mut t = PaintTarget::new(&mut pixels, Size::new(2560, 36), 2560 * 4, Scale::ONE, 0)
-        .expect("valid target");
+    let mut pixels = vec![0u8; (w * h * 4) as usize];
+    let mut t =
+        PaintTarget::new(&mut pixels, Size::new(w, h), w * 4, Scale::ONE, 0).expect("valid target");
     r.paint(BAR, &mut t);
     (r, id(7), pixels)
 }
 
-fn bench(c: &mut Criterion) {
-    let (mut r, clock, mut pixels) = setup();
+fn tick(c: &mut Criterion, w: u32, h: u32) {
+    let (mut r, clock, mut pixels) = setup(w, h);
     let times = ["12:59", "13:00"];
     let mut n = 0usize;
-    c.bench_function("clock_tick_repaint_2560x36", |b| {
+    c.bench_function(&format!("clock_tick_repaint_{w}x{h}"), |b| {
         b.iter(|| {
             n += 1;
             let mut d = SceneDiff::new();
             d.set(clock, Prop::Text, PropValue::Text(times[n % 2].into()));
             r.apply(d);
-            let mut t = PaintTarget::new(&mut pixels, Size::new(2560, 36), 2560 * 4, Scale::ONE, 1)
+            let mut t = PaintTarget::new(&mut pixels, Size::new(w, h), w * 4, Scale::ONE, 1)
                 .expect("valid target");
             let damage = r.paint(BAR, &mut t);
             assert!(damage.area() <= 2000);
             black_box(damage)
         })
     });
+}
+
+fn bench(c: &mut Criterion) {
+    tick(c, 2560, 36);
+    tick(c, 3840, 2160);
+    let (mut r, _, mut pixels) = setup(2560, 36);
     c.bench_function("idle_paint_2560x36", |b| {
         b.iter(|| {
             let mut t = PaintTarget::new(&mut pixels, Size::new(2560, 36), 2560 * 4, Scale::ONE, 1)

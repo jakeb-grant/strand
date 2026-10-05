@@ -8,10 +8,11 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
-strand-core.workspace = true
 strand-scene.workspace = true
 strand-text.workspace = true
-vello_cpu = { version = "0.3", features = ["f32_pipeline"] }
+# Single-threaded f32 pipeline only: no worker threads (vello's filters
+# panic multi-threaded), and none of the default png/text extras.
+vello_cpu = { version = "0.3", default-features = false, features = ["std", "f32_pipeline"] }
 
 [dev-dependencies]
 png = "0.18"

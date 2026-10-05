@@ -5,13 +5,14 @@
 //! premultiplied BGRA8 in memory. Compositing is per channel, so painting
 //! every colour with red and blue swapped produces BGRA bytes directly,
 //! without a conversion pass. The damaged rectangles are cleared and the
-//! scene is drawn source-over under a clip of exactly those rectangles, so
-//! pixels outside the damage keep the buffer's previous contents.
+//! scene is drawn source-over under a clip of exactly those rectangles, one
+//! fixed-grid cell at a time, so pixels outside the damage keep the
+//! buffer's previous contents and cost follows the damage.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use strand_scene::{Color, Damage, Paint, PaintTarget, Rect, Scale};
+use strand_scene::{Color, Damage, GradientStop, Paint, PaintTarget, Rect, Scale};
 use strand_text::{AtlasUpload, PageId};
 use vello_cpu::color::{AlphaColor, ColorSpaceTag, PremulRgba8, Srgb};
 use vello_cpu::kurbo::{self, Affine};
@@ -93,24 +94,61 @@ fn bgra(c: Color) -> AlphaColor<Srgb> {
     AlphaColor::new([c.b, c.g, c.r, c.a])
 }
 
-fn stops(stops: &[strand_scene::GradientStop]) -> Vec<(f32, AlphaColor<Srgb>)> {
-    stops
+/// Samples between adjacent stops, so vello's per-channel sRGB
+/// interpolation follows the OKLab ramp design asks for.
+const GRADIENT_SAMPLES: usize = 8;
+
+/// Gradient stops for vello. Colours are interpolated in premultiplied
+/// OKLab by sampling each segment, then handed over with red and blue
+/// swapped; vello interpolates per channel in sRGB between the samples,
+/// which is symmetric in red and blue, so the swap stays valid.
+fn stops(stops: &[GradientStop]) -> Vec<(f32, AlphaColor<Srgb>)> {
+    let clean: Vec<GradientStop> = stops
         .iter()
-        .map(|s| (s.offset.clamp(0.0, 1.0), bgra(s.color)))
-        .collect()
+        .map(|s| GradientStop {
+            offset: if s.offset.is_finite() {
+                s.offset.clamp(0.0, 1.0)
+            } else {
+                0.0
+            },
+            color: s.color.clamped(),
+        })
+        .collect();
+    let mut out = Vec::with_capacity(clean.len() * GRADIENT_SAMPLES);
+    for (i, s) in clean.iter().enumerate() {
+        out.push((s.offset, bgra(s.color)));
+        let Some(next) = clean.get(i + 1) else { break };
+        if next.offset <= s.offset {
+            continue;
+        }
+        for k in 1..GRADIENT_SAMPLES {
+            let t = k as f32 / GRADIENT_SAMPLES as f32;
+            let offset = s.offset + (next.offset - s.offset) * t;
+            out.push((offset, bgra(s.color.lerp_oklab(next.color, t))));
+        }
+    }
+    out
 }
 
-fn gradient(mut g: Gradient, s: &[strand_scene::GradientStop]) -> PaintType {
-    // Interpolate per channel in sRGB: symmetric in red and blue, so the
-    // swap stays valid. (A perceptual space would mix the swapped channels.)
+fn gradient(mut g: Gradient, s: &[GradientStop]) -> PaintType {
     g.interpolation_cs = ColorSpaceTag::Srgb;
     g.extend = Extend::Pad;
     PaintType::Gradient(g.with_stops(stops(s).as_slice()))
 }
 
-fn paint_type(p: &Paint, frame: kurbo::Rect) -> PaintType {
+fn finite_angle(deg: f32) -> f64 {
+    if deg.is_finite() {
+        (deg % 360.0) as f64
+    } else {
+        0.0
+    }
+}
+
+/// The vello paint for `p` filling `frame`, and the paint transform it
+/// needs (relative to the current transform).
+fn paint_type(p: &Paint, frame: kurbo::Rect) -> (PaintType, Affine) {
     let center = frame.center();
-    match p {
+    let paint = match p {
         Paint::Solid(c) => PaintType::Solid(bgra(*c)),
         Paint::Linear { stops: s, .. }
         | Paint::Radial { stops: s }
@@ -125,7 +163,7 @@ fn paint_type(p: &Paint, frame: kurbo::Rect) -> PaintType {
         Paint::Linear { angle, stops: s } => {
             // CSS: 0deg points up, angles run clockwise, and the gradient
             // line is long enough for the corners to hit the end colours.
-            let a = (*angle as f64).to_radians();
+            let a = finite_angle(*angle).to_radians();
             let (sin, cos) = a.sin_cos();
             let len = (frame.width() * sin).abs() + (frame.height() * cos).abs();
             let d = kurbo::Vec2::new(sin, -cos) * (len / 2.0);
@@ -136,48 +174,44 @@ fn paint_type(p: &Paint, frame: kurbo::Rect) -> PaintType {
             gradient(Gradient::new_radial(center, r as f32), s)
         }
         Paint::Conic { from, stops: s } => {
-            // CSS conic angles start at the top; kurbo's at +x.
-            let start = (*from - 90.0).to_radians();
-            gradient(
-                Gradient::new_sweep(center, start, start + std::f32::consts::TAU),
-                s,
-            )
+            // A full turn starting at +x; the paint transform turns that
+            // start to CSS's `from`, measured clockwise from the top (y
+            // grows down, so a positive rotation is clockwise on screen).
+            let g = gradient(Gradient::new_sweep(center, 0.0, std::f32::consts::TAU), s);
+            let turn = (finite_angle(*from) - 90.0).to_radians();
+            return (g, Affine::rotate_about(turn, center));
         }
-    }
+    };
+    (paint, Affine::IDENTITY)
 }
 
-/// Render contexts kept for distinct buffer sizes.
-const MAX_CONTEXTS: usize = 4;
+/// Width of a raster cell: one vello wide tile.
+pub const CELL_W: u32 = 256;
+/// Height of a raster cell.
+pub const CELL_H: u32 = 64;
+
+/// Render contexts kept for distinct cell sizes (edge cells are smaller).
+const MAX_CONTEXTS: usize = 8;
 
 /// Owns the vello contexts and scratch space between frames.
 #[derive(Debug, Default)]
 pub struct Raster {
-    /// One context per buffer size in use (outputs of different sizes
-    /// would otherwise reallocate it every frame), most recent first.
+    /// One context per cell size in use, most recent first.
     contexts: Vec<RenderContext>,
     resources: Option<Resources>,
     scratch: Vec<u8>,
+    /// Pixels the last `paint` handed to vello (cells × cell area).
+    rasterised: u64,
 }
 
 impl Raster {
-    /// Paints `items` into `target`, touching only pixels inside `damage`.
-    /// Returns false if the target is too large for vello_cpu (dimensions
-    /// above `u16::MAX`).
-    pub fn paint(
-        &mut self,
-        items: &[DisplayItem],
-        damage: &Damage,
-        atlas: &AtlasMirror,
-        scale: Scale,
-        target: &mut PaintTarget<'_>,
-    ) -> bool {
-        let (Ok(w), Ok(h)) = (u16::try_from(target.size.w), u16::try_from(target.size.h)) else {
-            return false;
-        };
-        if w == 0 || h == 0 || damage.is_empty() || target.validate().is_err() {
-            return true;
-        }
-        let damage = damage.clipped(target.bounds());
+    /// Pixels the last [`Raster::paint`] rasterised. Tracks damage, not
+    /// buffer size.
+    pub fn rasterised(&self) -> u64 {
+        self.rasterised
+    }
+
+    fn context(&mut self, w: u16, h: u16) -> &mut RenderContext {
         match self
             .contexts
             .iter()
@@ -188,78 +222,148 @@ impl Raster {
                 self.contexts.insert(0, c);
             }
             None => {
+                // Single-threaded explicitly: feature unification could
+                // otherwise turn on vello's worker threads, and its filters
+                // panic when rendering multi-threaded.
+                let settings = RenderSettings {
+                    num_threads: 0,
+                    ..RenderSettings::default()
+                };
                 self.contexts
-                    .insert(0, RenderContext::new_with(w, h, RenderSettings::default()));
+                    .insert(0, RenderContext::new_with(w, h, settings));
                 self.contexts.truncate(MAX_CONTEXTS);
             }
         }
-        let ctx = &mut self.contexts[0];
-        ctx.reset();
-        let resources = self.resources.get_or_insert_with(Resources::new);
+        &mut self.contexts[0]
+    }
 
-        clear(target, &damage);
-
-        // Clip to exactly the damage, one disjoint rectangle at a time.
-        // Pixel-aligned rect clips leave coverage inside them untouched, so
-        // a partial repaint is bit-identical to a full one; a multi-rect clip
-        // path would round differently where layers composite through it.
-        for clip in disjoint(&damage) {
-            ctx.push_clip_rect(&to_kurbo(clip));
-            draw(ctx, items, clip, atlas, scale);
-            ctx.pop_clip();
+    /// Paints `items` into `target`, touching only pixels inside `damage`.
+    ///
+    /// The buffer is split into a fixed grid of [`CELL_W`] × [`CELL_H`]
+    /// cells, and only cells the damage touches are rasterised, each by a
+    /// context of the cell's size with the scene translated by the cell's
+    /// origin. vello's cost is proportional to the pixmap it renders into,
+    /// so a clock tick costs the same on a 4K lock screen as on a bar.
+    /// Because the grid is fixed, a pixel is always rasterised by the same
+    /// cell with the same translation, which keeps a partial repaint
+    /// bit-identical to a full one.
+    pub fn paint(
+        &mut self,
+        items: &[DisplayItem],
+        damage: &Damage,
+        atlas: &AtlasMirror,
+        scale: Scale,
+        target: &mut PaintTarget<'_>,
+    ) {
+        self.rasterised = 0;
+        if target.size.is_empty() || target.validate().is_err() {
+            return;
         }
-        ctx.flush();
-
-        // The f32 pipeline: the u8 one rounds differently where a shape is
-        // composited through a clip edge than where it is not, so a partial
-        // repaint would differ from a full one by ±1 near damage borders.
+        let damage = damage.clipped(target.bounds());
+        let Some(bbox) = damage.bounds() else {
+            return;
+        };
+        // Pixel-aligned rect clips leave coverage inside them untouched; a
+        // multi-rect clip path would round differently where layers
+        // composite through it.
+        let parts = disjoint(&damage);
+        let (cw, ch) = (CELL_W as i64, CELL_H as i64);
         let settings = RasterizerSettings {
             target_init: TargetInit::SrcOver,
+            // The f32 pipeline: the u8 one rounds differently where a shape
+            // is composited through a clip edge than where it is not.
             render_mode: RenderMode::OptimizeQuality,
             ..RasterizerSettings::default()
         };
-        let row = w as usize * 4;
-        let stride = target.stride as usize;
-        if stride == row {
-            let len = row * h as usize;
-            if let Some(pm) = PixmapMut::new(w, h, &mut target.pixels[..len]) {
-                ctx.render_with(pm, resources, settings);
-            }
-        } else {
-            // Padded rows: render through a tightly packed copy.
-            self.scratch.resize(row * h as usize, 0);
-            for y in 0..h as usize {
-                self.scratch[y * row..(y + 1) * row]
-                    .copy_from_slice(&target.pixels[y * stride..y * stride + row]);
-            }
-            if let Some(pm) = PixmapMut::new(w, h, &mut self.scratch) {
-                ctx.render_with(pm, resources, settings);
-            }
-            for r in damage.rects() {
-                let (x0, x1) = (r.left() as usize * 4, r.right() as usize * 4);
-                for y in r.top() as usize..r.bottom() as usize {
-                    target.pixels[y * stride + x0..y * stride + x1]
-                        .copy_from_slice(&self.scratch[y * row + x0..y * row + x1]);
+        for cy in bbox.top().div_euclid(ch)..(bbox.bottom() + ch - 1).div_euclid(ch) {
+            for cx in bbox.left().div_euclid(cw)..(bbox.right() + cw - 1).div_euclid(cw) {
+                let Some(cell) = Rect::from_edges(cx * cw, cy * ch, (cx + 1) * cw, (cy + 1) * ch)
+                    .intersect(target.bounds())
+                else {
+                    continue;
+                };
+                let clips: Vec<Rect> = parts.iter().filter_map(|p| p.intersect(cell)).collect();
+                if clips.is_empty() {
+                    continue;
+                }
+                // Cells are at most CELL_W × CELL_H.
+                let (w, h) = (cell.w as u16, cell.h as u16);
+                self.rasterised += cell.area();
+                let base = Affine::translate((-(cell.x as f64), -(cell.y as f64)));
+                let ctx = self.context(w, h);
+                ctx.reset();
+                ctx.set_transform(base);
+                for clip in &clips {
+                    ctx.push_clip_rect(&to_kurbo(*clip));
+                    draw(ctx, items, *clip, atlas, scale, base);
+                    ctx.pop_clip();
+                }
+                ctx.flush();
+                let row = cell.w as usize * 4;
+                self.scratch.clear();
+                self.scratch.resize(row * cell.h as usize, 0);
+                let resources = self.resources.get_or_insert_with(Resources::new);
+                let ctx = &mut self.contexts[0];
+                if let Some(pm) = PixmapMut::new(w, h, &mut self.scratch) {
+                    ctx.render_with(pm, resources, settings);
+                }
+                // Release image references so atlas pages can be updated
+                // in place.
+                ctx.reset();
+                let stride = target.stride as usize;
+                for c in &clips {
+                    let lx0 = (c.left() - cell.left()) as usize * 4;
+                    let lx1 = (c.right() - cell.left()) as usize * 4;
+                    let (x0, x1) = (c.left() as usize * 4, c.right() as usize * 4);
+                    for y in c.top()..c.bottom() {
+                        let ly = (y - cell.top()) as usize;
+                        let y = y as usize;
+                        target.pixels[y * stride + x0..y * stride + x1]
+                            .copy_from_slice(&self.scratch[ly * row + lx0..ly * row + lx1]);
+                    }
                 }
             }
         }
-        // Release image references so atlas pages can be updated in place.
-        ctx.reset();
-        true
     }
 }
 
-/// Encodes the display items that touch `clip`.
+/// Index just past the pop matching the push at `i`.
+fn skip_group(items: &[DisplayItem], i: usize) -> usize {
+    let mut depth = 0usize;
+    for (j, d) in items.iter().enumerate().skip(i) {
+        match d.item {
+            Item::PushClip(_) | Item::PushOpacity(_) => depth += 1,
+            Item::PopClip | Item::PopOpacity => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return j + 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    items.len()
+}
+
+/// Encodes the display items that touch `clip`. `base` maps surface
+/// coordinates to the cell being rasterised.
 fn draw(
     ctx: &mut RenderContext,
     items: &[DisplayItem],
     clip: Rect,
     atlas: &AtlasMirror,
     scale: Scale,
+    base: Affine,
 ) {
     let touches = |b: &Rect| clip.intersects(*b);
-    for d in items {
+    let mut i = 0;
+    while i < items.len() {
+        let d = &items[i];
+        i += 1;
         match &d.item {
+            Item::PushClip(_) | Item::PushOpacity(_) if !touches(&d.bounds) => {
+                i = skip_group(items, i - 1);
+            }
             Item::PushClip(p) => ctx.push_clip_path(p),
             Item::PopClip => ctx.pop_clip(),
             Item::PushOpacity(o) => ctx.push_opacity_layer(*o),
@@ -267,16 +371,38 @@ fn draw(
             _ if !touches(&d.bounds) => {}
             Item::Shadow {
                 rect,
-                radius,
+                radii,
                 std_dev,
                 color,
                 clip,
+                extent,
             } => {
                 ctx.set_fill_rule(Fill::EvenOdd);
                 ctx.push_clip_path(clip);
                 ctx.set_fill_rule(Fill::NonZero);
                 ctx.set_paint(bgra(*color));
-                ctx.fill_blurred_rounded_rect(rect, *radius, *std_dev, false);
+                if radii.iter().all(|r| *r == radii[0]) {
+                    ctx.fill_blurred_rounded_rect(rect, radii[0], *std_dev, false);
+                } else {
+                    // vello blurs one radius per rect: draw each quadrant
+                    // with its own corner's radius, split on whole pixels
+                    // so the seams do not antialias.
+                    let (mx, my) = (rect.center().x.round(), rect.center().y.round());
+                    let quads = [
+                        kurbo::Rect::new(extent.x0, extent.y0, mx, my),
+                        kurbo::Rect::new(mx, extent.y0, extent.x1, my),
+                        kurbo::Rect::new(mx, my, extent.x1, extent.y1),
+                        kurbo::Rect::new(extent.x0, my, mx, extent.y1),
+                    ];
+                    for (q, r) in quads.iter().zip(radii) {
+                        if q.width() <= 0.0 || q.height() <= 0.0 {
+                            continue;
+                        }
+                        ctx.push_clip_rect(q);
+                        ctx.fill_blurred_rounded_rect(rect, *r, *std_dev, false);
+                        ctx.pop_clip();
+                    }
+                }
                 ctx.pop_clip();
             }
             Item::Fill {
@@ -284,17 +410,23 @@ fn draw(
                 paint,
                 frame,
             } => {
-                ctx.set_paint(paint_type(paint, *frame));
+                let (p, t) = paint_type(paint, *frame);
+                ctx.set_paint(p);
+                ctx.set_paint_transform(t);
                 match shape {
                     FillShape::Rect(r) => ctx.fill_rect(r),
                     FillShape::Path(p) => ctx.fill_path(p),
                 }
+                ctx.reset_paint_transform();
             }
             Item::Border { path, paint, frame } => {
-                ctx.set_paint(paint_type(paint, *frame));
+                let (p, t) = paint_type(paint, *frame);
+                ctx.set_paint(p);
+                ctx.set_paint_transform(t);
                 ctx.set_fill_rule(Fill::EvenOdd);
                 ctx.fill_path(path);
                 ctx.set_fill_rule(Fill::NonZero);
+                ctx.reset_paint_transform();
             }
             Item::Glyphs {
                 x,
@@ -315,7 +447,9 @@ fn draw(
                 } else {
                     ImageQuality::Medium
                 };
-                ctx.set_transform(Affine::translate((*x as f64, *y as f64)) * Affine::scale(k));
+                ctx.set_transform(
+                    base * Affine::translate((*x as f64, *y as f64)) * Affine::scale(k),
+                );
                 for g in layout.glyphs() {
                     let Some(page) = atlas.page(g.slot.page) else {
                         continue;
@@ -351,7 +485,7 @@ fn draw(
                 }
                 ctx.reset_tint();
                 ctx.reset_paint_transform();
-                ctx.reset_transform();
+                ctx.set_transform(base);
             }
         }
     }
@@ -415,17 +549,6 @@ fn disjoint(damage: &Damage) -> Vec<Rect> {
         open = next_open;
     }
     out
-}
-
-/// Zeroes the damaged pixels (transparent) before drawing over them.
-fn clear(target: &mut PaintTarget<'_>, damage: &Damage) {
-    let stride = target.stride as usize;
-    for r in damage.rects() {
-        let (x0, x1) = (r.left() as usize * 4, r.right() as usize * 4);
-        for y in r.top() as usize..r.bottom() as usize {
-            target.pixels[y * stride + x0..y * stride + x1].fill(0);
-        }
-    }
 }
 
 #[cfg(test)]
