@@ -279,6 +279,9 @@ impl Runtime {
         self.inner.learn_seen.borrow_mut().clear();
         for (writer, target) in queue {
             if self.exists(writer) && self.exists(target) {
+                if self.write_edge(writer, target).is_none() {
+                    self.bump(|s| s.learned_edges += 1);
+                }
                 self.learn(writer, target);
             }
         }
@@ -306,6 +309,28 @@ impl Runtime {
         }
         w.prune(self);
         ok
+    }
+
+    /// `id`'s sources changed: count the ones it did not declare, if it
+    /// declared its reads ([`Stats::learned_edges`](crate::Stats)).
+    pub(crate) fn count_undeclared_reads(&self, id: NodeId) {
+        let declared = self.inner.declared.borrow();
+        let Some(list) = declared.sources.get(&id) else {
+            return;
+        };
+        let nodes = self.inner.nodes.borrow();
+        let Some(n) = nodes.get(id) else { return };
+        let undeclared = if list.len() > 16 && n.sources.len() > 16 {
+            let set: foldhash::HashSet<NodeId> = list.iter().copied().collect();
+            n.sources.iter().filter(|s| !set.contains(s)).count()
+        } else {
+            n.sources.iter().filter(|s| !list.contains(s)).count()
+        } as u64;
+        drop(nodes);
+        drop(declared);
+        if undeclared > 0 {
+            self.bump(|s| s.learned_edges += undeclared);
+        }
     }
 
     /// `id` was just created by (or moved to) `owner`: it ranks no lower.

@@ -1130,3 +1130,66 @@ fn redeclare_keeps_a_live_value_the_broken_file_could_not_take() {
     assert_eq!(get(&rt, &s, "compact"), V::Bool(true));
     assert_eq!(get(&rt, &s, "dense"), V::Bool(true));
 }
+
+#[test]
+fn own_writes_are_reported_with_the_bytes_that_land() {
+    // The watcher pre-registers the hash of Strand's own writes ("Live
+    // reload" step 2): the observer gets each file's exact new content
+    // before it becomes visible.
+    use std::sync::{Arc, Mutex};
+    type Seen = Vec<(PathBuf, PathBuf, Option<Vec<u8>>)>;
+    let tmp = TempDir::new("own-writes");
+    let dotfiles = tmp.0.join("dotfiles");
+    fs::create_dir_all(&dotfiles).unwrap();
+    let real = dotfiles.join("prefs.toml");
+    fs::write(&real, "# mine\ncompact = false\n").unwrap();
+    let link = tmp.config("prefs.toml");
+    symlink("../dotfiles/prefs.toml", &link).unwrap();
+    let seen: Arc<Mutex<Seen>> = Arc::default();
+    let rt = Runtime::new();
+    let store = tmp.store();
+    let log = seen.clone();
+    store.on_written(move |w| {
+        // Not visible yet: the rename comes after the observer.
+        if let Some(c) = w.content {
+            assert_ne!(fs::read(w.target).ok().as_deref(), Some(c));
+        }
+        log.lock().unwrap().push((
+            w.path.to_path_buf(),
+            w.target.to_path_buf(),
+            w.content.map(<[u8]>::to_vec),
+        ));
+    });
+    let s = prefs(&rt, &store, &link);
+    rt.flush();
+    let d = write(
+        &rt,
+        &s,
+        &store,
+        "compact",
+        V::Bool(true),
+        Duration::from_millis(10),
+    );
+    assert!(d.is_empty(), "{d:?}");
+    let on_disk = fs::read(&real).unwrap();
+    assert_eq!(on_disk, b"# mine\ncompact = true\n");
+    let seen = seen.lock().unwrap();
+    let own: Vec<_> = seen.iter().filter(|(p, _, _)| *p == link).collect();
+    assert_eq!(own.len(), 1, "{seen:?}");
+    assert_eq!(
+        own[0].1,
+        fs::canonicalize(&real).unwrap(),
+        "the target, symlinks followed"
+    );
+    assert_eq!(own[0].2.as_deref(), Some(&on_disk[..]));
+    // Every other file it wrote (the last-good snapshot) is reported with
+    // what is on disk too: the last report per file is its content now.
+    let mut last = std::collections::HashMap::new();
+    for (_, target, content) in seen.iter() {
+        last.insert(target.clone(), content.clone());
+    }
+    assert!(last.len() >= 2, "{seen:?}");
+    for (target, content) in last {
+        assert_eq!(fs::read(&target).ok(), content, "{target:?}");
+    }
+}

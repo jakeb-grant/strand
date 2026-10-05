@@ -647,6 +647,40 @@ impl<K, U> KeyedMemo<K, U> {
     }
 }
 
+impl<K, U> KeyedMemo<K, U>
+where
+    K: Clone + Eq + Hash + 'static,
+    U: Clone + PartialEq + 'static,
+{
+    /// Borrow the items (tracked, brought up to date) without copying
+    /// them: the VM's read path for `for n in shown`, `shown.len`.
+    pub fn with<R>(self, rt: &Runtime, f: impl FnOnce(&[(K, U)]) -> R) -> Result<R, Error> {
+        let snap = self.snapshot(rt)?;
+        Ok(f(snap.items()))
+    }
+
+    /// [`KeyedMemo::with`] without tracking (handler bodies).
+    pub fn with_untracked<R>(
+        self,
+        rt: &Runtime,
+        f: impl FnOnce(&[(K, U)]) -> R,
+    ) -> Result<R, Error> {
+        rt.untrack(|rt| self.with(rt, f))
+    }
+
+    /// The item with `key` (cloned), untracked. A derived collection keeps
+    /// no key index (its output is patched per diff, and an index would
+    /// double its upkeep for a read most lists never make), so this is a
+    /// scan, O(n): about 1 µs per 1,000 rows. Selecting by key in a
+    /// filtered list once per keypress is well within budget; a hot loop
+    /// that looks up many keys should read [`KeyedMemo::with`] once.
+    pub fn get_key(self, rt: &Runtime, key: &K) -> Result<Option<U>, Error> {
+        self.with_untracked(rt, |items| {
+            items.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
+        })
+    }
+}
+
 impl<K, U> KeyedSource<K, U> for KeyedMemo<K, U>
 where
     K: Clone + Eq + Hash + 'static,

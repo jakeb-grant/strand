@@ -801,3 +801,38 @@ fn a_declared_debounced_writer_orders_its_readers() {
     rt.tick(Duration::from_millis(110));
     assert_eq!(*seen.borrow(), vec![(8, 9)], "once, with final values");
 }
+
+#[test]
+fn stats_count_learned_edges_and_reruns() {
+    // What the compiler and VM tests assert after lowering real fixtures:
+    // a fully declared graph learns nothing and runs every sink once; a
+    // missing declaration shows up in `learned_edges` (and here, since the
+    // reader ran before its writer, in `reruns`).
+    let build = |declare: bool| {
+        let rt = Runtime::new();
+        let x = rt.signal(1);
+        let cell = rt.signal(0);
+        let reader = rt.effect(move |rt| cell.get(rt).map(|_| ()));
+        let writer = rt.effect(move |rt| cell.set(rt, x.get(rt)? * 10));
+        if declare {
+            rt.reads_from(reader.id(), &[cell.id()]).unwrap();
+            rt.reads_from(writer.id(), &[x.id()]).unwrap();
+            rt.writes_to(writer.id(), cell.id()).unwrap();
+        } else {
+            // Reads declared, but the read set misses `x` and the write is
+            // not declared.
+            rt.reads_from(reader.id(), &[cell.id()]).unwrap();
+            rt.reads_from(writer.id(), &[]).unwrap();
+        }
+        rt.flush();
+        x.set(&rt, 2).unwrap();
+        rt.flush();
+        rt.stats()
+    };
+    let declared = build(true);
+    assert_eq!(declared.learned_edges, 0);
+    assert_eq!(declared.reruns, 0);
+    let missing = build(false);
+    assert_eq!(missing.learned_edges, 2, "the write edge and the read of x");
+    assert_eq!(missing.reruns, 1, "the reader ran before the learned edge");
+}

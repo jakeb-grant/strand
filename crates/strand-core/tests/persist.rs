@@ -130,6 +130,20 @@ fn a_changed_value_is_kept_over_a_new_default_and_reported_once() {
 }
 
 #[test]
+fn a_stored_value_that_equals_the_new_default_is_adopted_silently() {
+    // Saved 60 under default 40; the default is now 60: the value *is* the
+    // default, so nothing is "kept over" it (the same as a live reload).
+    let tmp = TempDir::new("equals-new-default");
+    let store = tmp.store();
+    store.save("osd.level", b"40", b"60").unwrap();
+    let (restored, value, diags) = session(&store, 60, &[]);
+    assert_eq!(restored, Restore::Adopted);
+    assert_eq!(value, 60);
+    assert!(diags.is_empty(), "{diags:?}");
+    assert_eq!(store.load("osd.level"), Ok(None), "the stale file is gone");
+}
+
+#[test]
 fn a_corrupt_file_gives_the_default_and_a_warning() {
     let tmp = TempDir::new("corrupt");
     let store = tmp.store();
@@ -624,4 +638,151 @@ fn temp_files_left_by_a_crash_are_swept() {
     session(&store, 40, &[5]);
     assert!(!dead.exists(), "a dead process's temp file is removed");
     assert!(ours.exists(), "ours is left alone");
+}
+
+#[test]
+fn a_write_then_unmount_in_the_same_tick_is_saved() {
+    let tmp = TempDir::new("unmount-same-tick");
+    let store = tmp.store();
+    let rt = Runtime::new();
+    let (scope, p) = rt.scope(|rt| rt.persisted_value(&store, "osd.level", 40i64));
+    rt.flush();
+    // No flush between the write and the unmount: the tracking effect
+    // never saw 5.
+    p.signal.set(&rt, 5).unwrap();
+    scope.dispose(&rt);
+    rt.flush();
+    assert!(store.sync(Duration::from_secs(5)));
+    assert_eq!(store.load("osd.level").unwrap().unwrap().value, b"5");
+    rt.shutdown();
+}
+
+#[test]
+fn a_write_then_shutdown_without_a_flush_is_saved() {
+    let tmp = TempDir::new("shutdown-no-flush");
+    let store = tmp.store();
+    // A root-level cell: it is disposed before root cleanups run.
+    let rt = Runtime::new();
+    let p = rt.persisted_value(&store, "osd.level", 40i64);
+    rt.flush();
+    p.signal.set(&rt, 6).unwrap();
+    rt.shutdown();
+    assert_eq!(store.load("osd.level").unwrap().unwrap().value, b"6");
+    // And one inside a component scope.
+    let rt = Runtime::new();
+    let (_scope, p) = rt.scope(|rt| rt.persisted_value(&store, "osd.level", 40i64));
+    rt.flush();
+    p.signal.set(&rt, 8).unwrap();
+    rt.shutdown();
+    assert_eq!(store.load("osd.level").unwrap().unwrap().value, b"8");
+}
+
+#[test]
+fn a_write_then_drop_without_a_flush_is_saved() {
+    let tmp = TempDir::new("drop-no-flush");
+    let store = tmp.store();
+    {
+        let rt = Runtime::new();
+        let p = rt.persisted_value(&store, "osd.level", 40i64);
+        rt.flush();
+        p.signal.set(&rt, 9).unwrap();
+    }
+    assert!(store.sync(Duration::from_secs(5)));
+    assert_eq!(store.load("osd.level").unwrap().unwrap().value, b"9");
+}
+
+#[test]
+fn a_write_in_the_tick_that_closes_its_owner_is_saved() {
+    // `if open { state level = 40 persist }` and a handler doing
+    // `level = 5; open = false`: the `if` re-runs first and disposes the
+    // branch before the persist effect inside sees 5.
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let tmp = TempDir::new("owner-closes");
+    let store = tmp.store();
+    let rt = Runtime::new();
+    let open = rt.signal(true);
+    let cell = Rc::new(RefCell::new(None));
+    let slot = cell.clone();
+    let st = store.clone();
+    rt.effect(move |rt| {
+        if open.get(rt)? {
+            *slot.borrow_mut() = Some(rt.persisted_value(&st, "osd.level", 40i64).signal);
+        } else {
+            *slot.borrow_mut() = None;
+        }
+        Ok(())
+    });
+    rt.flush();
+    let level = cell.borrow().unwrap();
+    level.set(&rt, 5).unwrap();
+    open.set(&rt, false).unwrap();
+    let mut t = Duration::from_millis(10);
+    rt.tick(t);
+    t += PERSIST_DEBOUNCE * 2;
+    rt.tick(t);
+    assert!(store.sync(Duration::from_secs(5)));
+    assert_eq!(store.load("osd.level").unwrap().unwrap().value, b"5");
+    // Reopened: the branch starts from the saved value.
+    open.set(&rt, true).unwrap();
+    rt.tick(t + Duration::from_millis(10));
+    let level = cell.borrow().unwrap();
+    assert_eq!(level.get(&rt).unwrap(), 5);
+    rt.shutdown();
+}
+
+#[test]
+fn a_write_to_a_frozen_component_is_saved_when_it_is_replaced() {
+    let tmp = TempDir::new("frozen-replaced");
+    let store = tmp.store();
+    let rt = Runtime::new();
+    let (scope, p) = rt.scope(|rt| rt.persisted_value(&store, "osd.level", 40i64));
+    rt.flush();
+    rt.suspend(scope.id()).unwrap();
+    // Its tracking effect is held while frozen.
+    p.signal.set(&rt, 12).unwrap();
+    let mut t = Duration::from_millis(10);
+    rt.tick(t);
+    t += PERSIST_DEBOUNCE * 2;
+    rt.tick(t);
+    scope.dispose(&rt);
+    assert!(store.sync(Duration::from_secs(5)));
+    assert_eq!(store.load("osd.level").unwrap().unwrap().value, b"12");
+    rt.shutdown();
+}
+
+#[test]
+fn own_writes_and_removals_are_reported_to_the_observer() {
+    use std::sync::{Arc, Mutex};
+    let tmp = TempDir::new("observer");
+    let store = tmp.store();
+    type Seen = Vec<(PathBuf, Option<Vec<u8>>)>;
+    let seen: Arc<Mutex<Seen>> = Arc::default();
+    let log = seen.clone();
+    store.on_written(move |w| {
+        assert_eq!(
+            fs::canonicalize(w.path.parent().unwrap()).unwrap(),
+            w.target.parent().unwrap()
+        );
+        log.lock()
+            .unwrap()
+            .push((w.path.to_path_buf(), w.content.map(<[u8]>::to_vec)));
+    });
+    let rt = Runtime::new();
+    let p = rt.persisted_value(&store, "osd.level", 40i64);
+    rt.flush();
+    p.signal.set(&rt, 3).unwrap();
+    rt.tick(Duration::from_millis(10));
+    rt.tick(Duration::from_millis(10) + PERSIST_DEBOUNCE);
+    assert!(store.sync(Duration::from_secs(5)));
+    let file = store.file_of("osd.level").unwrap();
+    let on_disk = fs::read(&file).unwrap();
+    assert_eq!(
+        seen.lock().unwrap().clone(),
+        vec![(file.clone(), Some(on_disk))]
+    );
+    p.reset(&rt).unwrap();
+    assert!(store.sync(Duration::from_secs(5)));
+    assert_eq!(seen.lock().unwrap().last().cloned(), Some((file, None)));
+    rt.shutdown();
 }

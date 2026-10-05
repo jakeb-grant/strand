@@ -29,8 +29,15 @@ shared with another build), criterion medians:
 | Idle check | `is_idle()` + `next_deadline()` | 20 ns |
 | Build | create 10k nodes + 522 watches, first compute | 3.4 ms |
 
-Wave 2 (core: sinks from a rank-ordered queue, woken tasks and events
-checked before each sink, ranks in a side map), same machine, medians:
+Wave 1 round 3 spot check (9d93dac: late `on change` phase, logic-step
+epoch, released suspensions): single write 1.45 ms, narrow path 1.63 µs,
+idle flush 61 ns, idle check 22 ns, memory 347 B / 5.5 allocations per
+node: unchanged within noise. Late `on change` handlers live in a side
+set, not a node flag, so the node slot stays the same size.
+
+Wave 2 (8a6c5ab, core: sinks from a rank-ordered queue, woken tasks and
+events checked before each sink, ranks in a side map), same machine,
+medians:
 
 | Case | Time |
 | --- | --- |
@@ -47,7 +54,7 @@ That is within 2–5% of round 3 on the propagation cases (the cost of a
 heap instead of one sort per batch, and of looking for woken handlers
 between sinks), with this machine's noise of a few percent.
 
-Wave 2 review round 1 (declared reads and the provisional phase, foreign
+Wave 2 review round 1 (915a084: declared reads and the provisional phase, foreign
 wakes kept apart, write edges in hash sets, held writes indexed, persist
 IO thread), same machine, medians (another agent shares the 4 CPUs; runs
 vary by up to 10–25% on the µs cases, the numbers are from quiet runs):
@@ -63,11 +70,49 @@ vary by up to 10–25% on the µs cases, the numbers are from quiet runs):
 | Build | 3.52 ms |
 | Memory | 347 B and 5.54 allocations per node (unchanged: "never ran" and declared reads live in side sets) |
 
-Round 3 spot check (late `on change` phase, logic-step epoch, released
-suspensions): single write 1.45 ms, narrow path 1.63 µs, idle flush 61 ns,
-idle check 22 ns, memory 347 B / 5.5 allocations per node: unchanged within
-noise. Late `on change` handlers live in a side set, not a node flag, so the
-node slot stays the same size.
+Review rounds 2 and 3 (77cf7be, 2eb240e) did not touch the flush hot path
+(settings files, persist hand-over, feedback-edge bookkeeping on
+`writes_to`/`reads_from`, and `is_idle`, measured above), so the round 1
+numbers stood for them.
+
+Wave 2 review round 4 (the commit after 2eb240e that adds the `ranked_*`
+cases: `Stats::reruns` / `learned_edges` counting, and `set_sources`
+skipping the rank walk when a source list did not change). Same machine,
+medians, measured while another agent was building on the shared CPUs:
+everything ran about 5–15% slower than the quiet round 1 runs. An A/B on
+this commit with the two new counters removed gave the same numbers
+within noise (single write 1.76 vs 1.66 ms, full fan-out 2.28 vs
+2.35 ms), so the difference is the machine and not the change.
+
+| Case | Time |
+| --- | --- |
+| Single write + flush | 1.68 ms |
+| Full fan-out + flush | 2.45 ms |
+| Narrow path + flush | 2.00 µs |
+| Equality cut-off + flush | 0.81 µs |
+| Idle flush | 44 ns |
+| Idle check | 7.4 ns |
+| Build | 4.0 ms |
+| Memory | 347 B and 5.54 allocations per node |
+
+**Ranked.** The cases above run with an empty rank map, the state before
+any handler declares or performs a write. Every real program leaves that
+state on its first handler write. `ranked_*` builds the same graph,
+then adds one effect that writes a layer-0 signal (declared with
+`writes_to`, as the compiler does) and 100 effects that read the written
+cell (declared with `reads_from`), so ranks reach into the graph.
+Measured in the same run:
+
+| Case | Time | vs. unranked |
+| --- | --- | --- |
+| Single write + flush (a signal other than the written one) | 1.71 ms | +1.5% |
+| Full fan-out + flush | 2.47 ms | +1.1% |
+| Handler write + tick (the writer, its 100 readers, ~6,900 memos and 520 changed watches; the clock moves 100 ms per iteration to stay under the 30 writes/s guard) | 2.16 ms | n/a |
+
+The bench asserts that the handler write runs every sink once
+(`reruns` unchanged) and learns no edge. Before `set_sources` skipped the
+rank walk for an unchanged source list, review round 4 measured the
+ranked fan-out at 3–10% over unranked (2.33–2.42 ms vs 2.18–2.35 ms).
 
 The "single write" case recomputes about half of this deliberately
 over-connected graph, so it measures fan-out twice; the narrow-path and
@@ -123,7 +168,7 @@ cheap to clone). The chain case is a 2,000-row cell feeding
 emitter that holds the last snapshot of each and reads `diffs_since` every
 tick (so every write to a list copies it once: the snapshot shares it).
 
-Measured 2026-10-05 (wave 2, core), same machine, criterion medians.
+Measured 2026-10-05 (wave 2, core, 1cf4c18), same machine, criterion medians.
 "Before" is wave 1 (linear key scans, O(n²) `keyed_diff`):
 
 | Case | Before | After |
@@ -142,7 +187,7 @@ Measured 2026-10-05 (wave 2, core), same machine, criterion medians.
 | `keyed_memo`, one row of a plain list changed + flush | 105 µs | 50 µs |
 | `keyed_memo`, plain list rotated by one + flush | 1.47 ms | 122 µs |
 
-Review round 1 re-run (held keyed copies rebase instead of being
+Review round 1 re-run (915a084: held keyed copies rebase instead of being
 superseded; the in-place path is unchanged), same machine: get by key
 10.2 ns, update by key 24.9 ns, `keyed_diff` identical 5.2 µs / one move
 76 µs / 10+10 39 µs / reversed 97 µs / shuffled 172 µs, chain update

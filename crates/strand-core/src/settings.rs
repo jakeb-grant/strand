@@ -45,9 +45,11 @@
 //!   once per monitor): each has its own signals, and a write through one
 //!   is adopted by the others in the same tick, without a reload.
 //!
-//! The watcher calls [`Settings::reload`] when the file changes, or reads
-//! on its own thread with [`SettingsSources`] and hands the result to
-//! [`Settings::reload_with`], so the logic thread only decodes. A reload
+//! The logic thread calls [`Settings::reload`] when the watcher reports a
+//! changed hash (the watcher never parses; Strand's own writes reach it as
+//! pre-registered hashes through [`SettingsStore::on_written`]). A thread
+//! allowed to parse can instead read with [`SettingsSources`] and hand the
+//! result to [`Settings::reload_with`], so the logic thread only decodes. A reload
 //! never undoes a write of Strand's own that may not be in what it read
 //! (still queued, in flight, or written after the read began), and leaves a
 //! field the user wrote since the last write-out alone (that write is
@@ -67,8 +69,8 @@ use toml_edit::{DocumentMut, Item};
 
 use crate::error::Error;
 use crate::persist::{
-    FailSink, PERSIST_DEBOUNCE, PersistError, PersistStore, create_private_dir, escape_name,
-    io_error, quarantine, quarantine_path, sweep_temps, temp_next_to,
+    FailSink, Observers, PERSIST_DEBOUNCE, PersistError, PersistStore, create_private_dir,
+    escape_name, io_error, quarantine, quarantine_path, sweep_temps, temp_next_to,
 };
 use crate::runtime::{Diagnostic, NodeId, Runtime};
 use crate::signal::Signal;
@@ -108,6 +110,12 @@ impl SettingsStore {
             io: PersistStore::new(dir.clone()),
             dir,
         }
+    }
+
+    /// [`PersistStore::on_written`] for the IO thread this store writes
+    /// through: settings files, overlays and last-good snapshots.
+    pub fn on_written(&self, f: impl Fn(&crate::persist::OwnWrite<'_>) + Send + Sync + 'static) {
+        self.io.on_written(f);
     }
 
     /// A store keeping overlays in `dir` and writing through `io`'s thread
@@ -378,7 +386,8 @@ impl SettingsJob {
 }
 
 /// Run a settings job on the IO thread; it reports its own outcome.
-pub(crate) fn perform(key: &Path, job: &SettingsJob) {
+pub(crate) fn perform(key: &Path, job: &SettingsJob, observe: &Observers<'_>) {
+    let edit_toml = |path: &Path, edits: &[Edit], mode| edit_toml(path, edits, mode, observe);
     match &job.target {
         Target::Snapshot => {
             let _ = edit_toml(key, &job.edits, Mode::Snapshot);
@@ -502,7 +511,12 @@ fn apply_edits(doc: &mut DocumentMut, edits: &[Edit]) {
 /// target's permissions), `fsync`, rename, directory `fsync`. Strand's own
 /// files (overlay, snapshot) live in a private directory and are removed
 /// once they hold nothing.
-fn edit_toml(path: &Path, edits: &[Edit], mode: Mode) -> Result<Option<Quarantined>, EditError> {
+fn edit_toml(
+    path: &Path,
+    edits: &[Edit],
+    mode: Mode,
+    observe: &Observers<'_>,
+) -> Result<Option<Quarantined>, EditError> {
     let target = resolve_links(path);
     if mode == Mode::File && probe_read_only(&target) {
         return Err(EditError::ReadOnly);
@@ -540,6 +554,9 @@ fn edit_toml(path: &Path, edits: &[Edit], mode: Mode) -> Result<Option<Quarantin
     } else {
         create_private_dir(&dir).map_err(EditError::Io)?;
         if doc.is_empty() {
+            if target.exists() {
+                observe.report(path, &target, None);
+            }
             return match fs::remove_file(&target) {
                 Ok(()) => Ok(quarantined),
                 Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(quarantined),
@@ -548,13 +565,15 @@ fn edit_toml(path: &Path, edits: &[Edit], mode: Mode) -> Result<Option<Quarantin
         }
     }
     let temp = temp_next_to(&dir, &target);
+    let content = doc.to_string();
     let written = (|| {
         let mut f = fs::File::create(&temp)?;
         if let Ok(m) = fs::metadata(&target) {
             f.set_permissions(m.permissions())?;
         }
-        f.write_all(doc.to_string().as_bytes())?;
+        f.write_all(content.as_bytes())?;
         f.sync_all()?;
+        observe.report(path, &target, Some(content.as_bytes()));
         fs::rename(&temp, &target)
     })();
     if let Err(e) = written {

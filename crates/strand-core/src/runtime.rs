@@ -282,6 +282,17 @@ pub struct Stats {
     pub effect_runs: u64,
     /// Derived collections recomputed from scratch instead of from diffs.
     pub rebuilds: u64,
+    /// Ordering edges the runtime had to learn because nobody declared
+    /// them: a write edge seen on a write (no `rt.writes_to`), and a read
+    /// by a node that declared its reads (`rt.reads_from`) of a source it
+    /// did not declare. Zero after lowering means the compiler declared
+    /// every edge it should.
+    pub learned_edges: u64,
+    /// Sink runs beyond a sink's first in the same flush: a feedback loop
+    /// going round (a self-normalising handler), or a sink that ran before
+    /// a learned edge ranked it higher. Zero for a declared graph without
+    /// feedback edges.
+    pub reruns: u64,
     /// Live nodes.
     pub nodes: usize,
 }
@@ -383,6 +394,9 @@ pub(crate) struct Inner {
     pub(crate) persist_paths: RefCell<HashMap<std::path::PathBuf, crate::persist::PathSlot>>,
     /// Stores used by persisted cells (synced at shutdown).
     pub(crate) persist_stores: RefCell<Vec<crate::persist::PersistStore>>,
+    /// Every persisted cell's writer (dead ones pruned as it grows), so
+    /// shutdown and drop can queue values no tracking run saw.
+    pub(crate) persist_writers: RefCell<Vec<std::rc::Weak<dyn crate::persist::Waiter>>>,
     /// Live settings-file handles, by overlay path (one per store and
     /// declared file): a write through one is adopted by the others.
     pub(crate) settings_files: RefCell<Vec<crate::settings::Registered>>,
@@ -401,6 +415,17 @@ pub struct Runtime {
 /// don't keep it alive.
 #[derive(Clone)]
 pub struct WeakRuntime(Weak<Inner>);
+
+impl Drop for Runtime {
+    /// Dropping the last handle without [`Runtime::shutdown`]: persisted
+    /// values written since their tracking effects last ran are still
+    /// queued (the stores drain their queues when they go).
+    fn drop(&mut self) {
+        if Rc::strong_count(&self.inner) == 1 && !std::thread::panicking() {
+            self.capture_persist();
+        }
+    }
+}
 
 impl WeakRuntime {
     /// The runtime, if it is still alive.
@@ -506,6 +531,7 @@ impl Runtime {
                 persist_failures: Arc::new(crate::persist::FailSink::new(ready.clone())),
                 persist_paths: RefCell::new(HashMap::new()),
                 persist_stores: RefCell::new(Vec::new()),
+                persist_writers: RefCell::new(Vec::new()),
                 settings_files: RefCell::new(Vec::new()),
                 ready,
             }),
@@ -1085,7 +1111,8 @@ impl Runtime {
         let Some(node) = nodes.get_mut(id) else {
             return;
         };
-        let mut spare = if node.sources == new {
+        let changed = node.sources != new;
+        let mut spare = if !changed {
             new
         } else {
             let old = std::mem::replace(&mut node.sources, new);
@@ -1135,9 +1162,13 @@ impl Runtime {
                 pool.push(spare);
             }
         }
-        // A new read edge from a higher-ranked source lifts this node.
-        if !self.inner.ranks.borrow().is_empty() {
-            self.rank_after_sources(id);
+        // A new read edge from a higher-ranked source lifts this node (an
+        // unchanged list needs nothing: raises reach observers already).
+        if changed {
+            self.count_undeclared_reads(id);
+            if !self.inner.ranks.borrow().is_empty() {
+                self.rank_after_sources(id);
+            }
         }
     }
 
@@ -1574,6 +1605,9 @@ impl Runtime {
     /// Dispose every node and run root cleanups. Breaks reference cycles
     /// between the runtime and futures or closures that captured it.
     pub fn shutdown(&self) {
+        // Persisted values written in this tick but not yet seen by their
+        // tracking effects, before anything is disposed.
+        self.capture_persist();
         let roots = std::mem::take(&mut *self.inner.root_owned.borrow_mut());
         self.dispose_tree(roots, None);
         let cleanups = std::mem::take(&mut *self.inner.root_cleanups.borrow_mut());
@@ -1661,6 +1695,7 @@ impl Runtime {
         self.inner.tick.set(tick.seq);
         self.inner.epoch.set(self.inner.epoch.get() + 1);
         let mut runs: HashMap<NodeId, u32> = HashMap::new();
+        let mut ran_once: foldhash::HashSet<NodeId> = foldhash::HashSet::default();
         let mut polled: HashSet<NodeId> = HashSet::new();
         let mut errors = Vec::new();
         // Sinks by (rank, creation order): a computed topological order of
@@ -1725,6 +1760,9 @@ impl Runtime {
             let ran = self.inner.stats.get().effect_runs > before;
             if ran {
                 tick.effects_run += 1;
+                if !ran_once.insert(id) {
+                    self.bump(|s| s.reruns += 1);
+                }
                 if kind == NodeKind::Watch {
                     match self.watch_changed(id) {
                         WatchOutcome::Changed(t) => tick.changed.push(t),

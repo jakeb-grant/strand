@@ -24,9 +24,10 @@
 //! used, with [`Diagnostic::PersistFailed`]. Writes are atomic (temp file,
 //! `fsync`, rename, directory `fsync`), so a crash never leaves a torn
 //! file, done on the store's IO thread (never on the logic tick), and
-//! debounced by [`PERSIST_DEBOUNCE`] of logic time; a pending write is
-//! queued when the cell's owner is disposed (unmount, shutdown) or the
-//! runtime is dropped. [`Persisted::redeclare`] follows a default changed
+//! debounced by [`PERSIST_DEBOUNCE`] of logic time; the cell's live value
+//! is queued when its owner is disposed (unmount), at shutdown and when the
+//! last runtime handle is dropped, so a write made in the same tick as the
+//! unmount is not lost. [`Persisted::redeclare`] follows a default changed
 //! by a live reload and [`Persisted::reset`] is `@reset`.
 
 use std::cell::{Cell, RefCell};
@@ -180,6 +181,47 @@ pub const PERSIST_SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
 const STALE_TEMP: Duration = Duration::from_secs(60);
 
 type IoHook = Arc<dyn Fn(&Path) + Send + Sync>;
+type WriteObserver = Arc<dyn Fn(&OwnWrite<'_>) + Send + Sync>;
+
+/// A file the store's IO thread is about to change: what
+/// [`PersistStore::on_written`] observers receive, so the watcher can
+/// pre-register the hash of Strand's own writes ("Live reload", step 2 in
+/// the design) and stop at its no-op check instead of reloading them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OwnWrite<'a> {
+    /// The file as queued: a persisted cell's file, a settings file's
+    /// declared path, a settings overlay or a last-good snapshot.
+    pub path: &'a Path,
+    /// The file actually replaced: `path` with symlinks followed, as an
+    /// absolute path with a canonical directory (the same file as `path`
+    /// when it is not a link).
+    pub target: &'a Path,
+    /// The complete new content of `target`, byte for byte; `None` when
+    /// the file is removed (or moved aside as corrupt).
+    pub content: Option<&'a [u8]>,
+}
+
+/// Calls the store's observers (none set: nothing).
+pub(crate) struct Observers<'a>(Option<&'a WriteObserver>);
+
+impl Observers<'_> {
+    pub(crate) fn report(&self, path: &Path, target: &Path, content: Option<&[u8]>) {
+        let Some(f) = self.0 else {
+            return;
+        };
+        // The target's directory made canonical (the file itself may not
+        // exist yet).
+        let canonical = match (target.parent(), target.file_name()) {
+            (Some(dir), Some(name)) => fs::canonicalize(dir).ok().map(|d| d.join(name)),
+            _ => None,
+        };
+        f(&OwnWrite {
+            path,
+            target: canonical.as_deref().unwrap_or(target),
+            content,
+        });
+    }
+}
 
 struct StoreInner {
     shared: Arc<Shared>,
@@ -210,6 +252,8 @@ struct Shared {
     changed: Condvar,
     /// Called before every queued operation (tests: a slow disk).
     io_hook: Option<IoHook>,
+    /// [`PersistStore::on_written`].
+    observer: Mutex<Option<WriteObserver>>,
 }
 
 #[derive(Default)]
@@ -368,23 +412,36 @@ impl Shared {
     }
 
     fn perform(&self, file: &Path, op: &Op) -> Result<(), PersistError> {
+        let observer = self
+            .observer
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let observe = &Observers(observer.as_ref());
         match op {
             Op::Write {
                 default_hash,
                 value,
-            } => write_file(&self.dir, file, *default_hash, value),
-            Op::Remove => match fs::remove_file(file) {
-                Ok(()) => Ok(()),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(e) => Err(io_error(file, &e)),
-            },
+            } => write_file(&self.dir, file, *default_hash, value, observe),
+            Op::Remove => {
+                if !file.exists() {
+                    return Ok(());
+                }
+                observe.report(file, file, None);
+                match fs::remove_file(file) {
+                    Ok(()) => Ok(()),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    Err(e) => Err(io_error(file, &e)),
+                }
+            }
             Op::Quarantine => {
+                observe.report(file, file, None);
                 quarantine(file);
                 Ok(())
             }
             // Reports its own outcome (notices and failures).
             Op::Settings(job) => {
-                crate::settings::perform(file, job);
+                crate::settings::perform(file, job, observe);
                 Ok(())
             }
         }
@@ -418,10 +475,30 @@ impl PersistStore {
                     queue: Mutex::new(Queue::default()),
                     changed: Condvar::new(),
                     io_hook,
+                    observer: Mutex::new(None),
                 }),
                 worker: Mutex::new(None),
             }),
         }
+    }
+
+    /// Observe every file this store's IO thread writes or removes
+    /// (persisted cells, settings files, overlays, last-good snapshots):
+    /// `f` runs on the IO thread with the complete new content once it is
+    /// on disk under a temp name and *before* the rename that makes it
+    /// visible, so a watcher that registers the content's hash here sees
+    /// the hash before the change event (design, "Live reload" step 2:
+    /// Strand's own writes are pre-registered). If the rename then fails,
+    /// the bytes never appear and the failure is reported as usual. One
+    /// observer per store; a later call replaces it. Keep `f` short: the
+    /// IO thread waits for it.
+    pub fn on_written(&self, f: impl Fn(&OwnWrite<'_>) + Send + Sync + 'static) {
+        *self
+            .inner
+            .shared
+            .observer
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(f));
     }
 
     /// `$XDG_STATE_HOME/strand/persist`, or `$HOME/.local/state/strand/
@@ -694,8 +771,9 @@ impl PersistStore {
         let Ok(file) = self.file_of(path) else {
             return Restore::Failed(PersistError::EmptyPath);
         };
-        if value_hash(&stored.value) == stored.default_hash {
-            // Never changed from the old default: take the new one. The
+        if value_hash(&stored.value) == stored.default_hash || stored.value == default {
+            // Never changed from the old default, or already the new one:
+            // take the new default (as `Persisted::redeclare` does). The
             // stale file would only say the same again next time.
             self.enqueue(file, Op::Remove, report);
             return Restore::Adopted;
@@ -755,6 +833,7 @@ fn write_file(
     file: &Path,
     default_hash: u64,
     value: &[u8],
+    observe: &Observers<'_>,
 ) -> Result<(), PersistError> {
     create_private_dir(dir)?;
     let mut body = format!(
@@ -768,6 +847,7 @@ fn write_file(
         let mut f = fs::File::create(&temp)?;
         f.write_all(&body)?;
         f.sync_all()?;
+        observe.report(file, file, Some(&body));
         fs::rename(&temp, file)
     })();
     if let Err(e) = written {
@@ -936,11 +1016,16 @@ pub(crate) struct PathSlot {
 }
 
 /// A persisted cell waiting for its path.
-trait Waiter {
+pub(crate) trait Waiter {
     fn cell(&self) -> NodeId;
     /// The path is now this cell's: take what the file holds (after the old
     /// owner's last write) or write its own value.
     fn promote(&self, rt: &Runtime);
+    /// Read the cell's live value and queue it if the file does not hold
+    /// it yet: at unmount and shutdown, when the tracking effect may not
+    /// have seen the last write (the owner went in the same tick, or the
+    /// effect is held by a frozen component).
+    fn capture(&self, rt: &Runtime);
 }
 
 /// Write-behind for one persisted cell.
@@ -1000,6 +1085,13 @@ impl<T> Writer<T> {
 impl<T: Clone + PartialEq + 'static> Waiter for Writer<T> {
     fn cell(&self) -> NodeId {
         self.cell
+    }
+
+    fn capture(&self, rt: &Runtime) {
+        if let Ok(v) = self.signal.get_untracked(rt) {
+            self.note(&v);
+        }
+        self.flush();
     }
 
     fn promote(&self, rt: &Runtime) {
@@ -1177,10 +1269,11 @@ impl Runtime {
     /// `.<name>.corrupt`) starts from the default and reports
     /// [`Diagnostic::PersistFailed`]. Changes are queued for the store's IO
     /// thread [`PERSIST_DEBOUNCE`] after the last one (logic time, so the
-    /// host's `tick` drives it); a pending change is queued when the
-    /// current owner is disposed, at [`Runtime::shutdown`] (which waits
-    /// for the queue, bounded by [`PERSIST_SHUTDOWN_WAIT`]) and when the
-    /// runtime is dropped. Write failures arrive as
+    /// host's `tick` drives it); the live value (also one written in the
+    /// same tick) is queued when the current owner is disposed, at
+    /// [`Runtime::shutdown`] (which waits for the queue, bounded by
+    /// [`PERSIST_SHUTDOWN_WAIT`]) and when the last runtime handle is
+    /// dropped. Write failures arrive as
     /// [`Diagnostic::PersistFailed`] in a later tick.
     pub fn persisted<T, E, D>(
         &self,
@@ -1299,8 +1392,15 @@ impl Runtime {
             active: Cell::new(active),
             report,
         });
+        let waiter: Weak<dyn Waiter> = Rc::downgrade(&writer) as Weak<Writer<T>>;
+        {
+            let mut live = self.inner.persist_writers.borrow_mut();
+            if live.len().is_power_of_two() {
+                live.retain(|w| w.strong_count() > 0);
+            }
+            live.push(waiter.clone());
+        }
         if !active && let Some(slot) = self.inner.persist_paths.borrow_mut().get_mut(&writer.file) {
-            let waiter: Weak<dyn Waiter> = Rc::downgrade(&writer) as Weak<Writer<T>>;
             slot.waiting.push(waiter);
         }
         let w = writer.clone();
@@ -1325,10 +1425,13 @@ impl Runtime {
             let Some(w) = flusher.upgrade() else {
                 return;
             };
-            w.flush();
             let Some(rt) = rt.upgrade() else {
+                w.flush();
                 return;
             };
+            // Cleanups run before the nodes go: the cell is still readable,
+            // so a write its tracking effect never saw is not lost.
+            w.capture(&rt);
             let next = {
                 let mut bound = rt.inner.persist_paths.borrow_mut();
                 let Some(slot) = bound.get_mut(&w.file) else {
@@ -1376,6 +1479,22 @@ impl Runtime {
         T: PersistValue + Clone + PartialEq + 'static,
     {
         self.persisted(store, path, default, T::encode, T::decode)
+    }
+
+    /// Queue every live persisted cell's current value that the file does
+    /// not hold yet (shutdown and dropping the last handle: root-level
+    /// cells are disposed before root cleanups run).
+    pub(crate) fn capture_persist(&self) {
+        let live: Vec<_> = self
+            .inner
+            .persist_writers
+            .borrow()
+            .iter()
+            .filter_map(Weak::upgrade)
+            .collect();
+        for w in live {
+            w.capture(self);
+        }
     }
 
     /// Wait (bounded) for the persist stores this runtime used to write

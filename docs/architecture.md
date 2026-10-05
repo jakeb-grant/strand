@@ -12,6 +12,7 @@ file fixes boundaries; each crate is free inside its own boundary.
 | Compiler worker | `strand-compiler` | Parse, check, lower changed modules off-thread | Mutate live state (it hands a compiled `Program` to logic) |
 | Text worker | `strand-text` | parley shaping, swash rasterisation, per-scale glyph atlases | Block render: a painted surface keeps drawing its last layout (or a realigned stand-in from another scale or width) until the new one arrives |
 | Watcher | `strand-watch` | inotify, portal, IPC socket | Parse files (it sends paths and hashes) |
+| Persist IO (one per `PersistStore`) | `strand-core` | Atomic writes of persisted cells, settings-file edits, settings overlays and last-good snapshots; reports each file it is about to change to `PersistStore::on_written` | Run on the logic tick or block logic (failures come back as diagnostics in a later tick) |
 | Services | `strand-services` | tokio current-thread runtime; PipeWire and toplevel get their own threads | Block logic: they send state diffs and events |
 
 Channels are the only coupling between threads. Logic → render is one
@@ -337,8 +338,20 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   removes the file, sets the default). Warnings arrive as
   `Diagnostic::PersistDefaultChanged` / `Diagnostic::PersistFailed` (write
   failures in a later tick, with a wake-hook call; `rt.is_idle()` is false
-  while one waits to be reported). `rt.shutdown()` waits (bounded) for
-  queued writes.
+  while one waits to be reported). A write is never lost to the debounce:
+  unmount, `rt.shutdown()` and dropping the last `Runtime` handle read the
+  cell's live value and queue it, even when the owner went in the same
+  tick as the write; `rt.shutdown()` waits (bounded) for queued writes.
+- Strand's own writes, for the watcher (wave 2):
+  `persist_store.on_written(|w: &OwnWrite| ..)` (also on
+  `SettingsStore`) runs on the persist IO thread for every file it is
+  about to replace or remove, with `w.path` (as queued: the declared
+  settings path, an overlay, a snapshot or a cell file), `w.target` (symlinks
+  followed, canonical directory) and `w.content` (the exact new bytes, or
+  `None` for a removal), after the temp file is complete and before the
+  rename makes it visible. The binary hashes `content` (BLAKE3) and hands
+  the hash to `strand-watch` as pre-registered for `target`, so the
+  watcher's no-op check stops there.
 - `state prefs from "prefs.toml" { accent: color = #7aa2f7; … }` is
   `rt.settings_file(&settings_store, path, fields)` (wave 2,
   `strand_core::settings`): `settings_store` is
@@ -373,7 +386,7 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   only where nothing set the field; a changed `FieldSpec::with_type` type
   resets that field; added fields are read, removed ones disposed); and
   several handles on one declared file (one per mounted instance) adopt
-  each other's writes in the same tick. Off-thread reads: see
+  each other's writes in the same tick. Watcher hand-off: see
   `strand-watch` below.
 
 ### `strand-compiler`
@@ -403,7 +416,14 @@ Public interfaces other crates and later stages build on:
   empty) and every assignment and `emit` with `rt.writes_to(handler,
   target)` as nodes are created, so effects run once per flush in
   topological order from the first flush on; read keyed collections with
-  `with`/`with_untracked`/`get_key` instead of holding `KeyedVec` clones;
+  `with`/`with_untracked`/`get_key` instead of holding `KeyedVec` clones
+  (derived collections, `KeyedMemo`, have the same three reads over an
+  Rc-shared slice; they keep no key index, so their `get_key` is an O(n)
+  scan, fine once per event, not inside a loop over the rows);
+  check the lowering in tests: after lowering real fixtures and running a
+  few flushes, `rt.stats().learned_edges` (edges nobody declared) and
+  `rt.stats().reruns` (sinks run twice in one flush) are 0 unless the
+  program has a feedback edge;
   `writes_to` answering `WriteEdge::Feedback` is not an error (a
   self-normalising handler is valid; only a static cycle among `let`s is a
   load error); for `let x = svc.call(input)` declare the input's reads on
@@ -415,8 +435,7 @@ Public interfaces other crates and later stages build on:
   `rt.settings_file(&store, resolved_path, fields)` with one `FieldSpec`
   per field from the checked schema (the type's decode and encode over
   `toml_edit::Item`, the declared default), keep the `Settings` handle,
-  call `reload` (or `reload_with`, see `strand-watch`) when the watcher
-  reports the file, call `redeclare` when a reload changes the
+  call `reload` when the watcher reports the file (see `strand-watch`), call `redeclare` when a reload changes the
   declaration, pass each field's type name with `FieldSpec::with_type`,
   and give its path to the watcher. See the `strand-core` section.
 - **Identity and change detection.** AST `PartialEq` compares spans, which
@@ -580,16 +599,22 @@ and the connection):
 Specified when their milestones start (M3, M1). Both only produce writes and
 events into `strand-core`.
 
-Settings files (fixed in wave 2 by `strand-core`): the watcher should not
-read a settings file twice or parse it on the logic thread. For each
-declared file it holds the `SettingsSources` from `Settings::sources()`
-(`Send`, cheap to clone). On a change event, on its own thread: `let m =
-sources.mark()` (Strand's own writes done or queued; must come *before*
-reading the bytes), read the bytes, hash them (an unchanged hash, such as
-Strand's own write, stops here), then `sources.read_from(m, Ok(text))`
-(also reads the overlay and probes writability) and post the
-`SettingsRead` to the logic thread, which calls
-`settings.reload_with(rt, read)` and only decodes. Strand's temp files next
+Settings files (fixed in wave 2 by `strand-core`; the Threads table holds:
+the watcher reads and hashes, it never parses). On a change event the
+watcher hashes the file (BLAKE3). An unchanged hash stops there, and that
+includes Strand's own writes: the binary registers
+`persist_store.on_written(..)` and passes the hash of each `OwnWrite`'s
+`content` to the watcher as pre-registered for its `target` (and its
+`path`, when that is a link), before the rename makes the content
+visible, so the change event finds the hash already known. A changed hash
+goes to the logic thread as (path, hash), and the logic thread calls
+`settings.reload(rt)` on every `Settings` handle declared on that path.
+`reload` takes the write mark before it reads, so a write of Strand's
+that lands meanwhile is never undone. `Settings::sources()`,
+`SettingsSources::read_from` and `Settings::reload_with` stay available
+for a thread that is allowed to parse, such as the compiler worker, in
+case reading on the logic thread ever shows up in a profile. The watcher
+does not call them. Strand's temp files next
 to a settings file are named `.<name>.tmp.<pid>.<n>` (renamed over the file:
 the watcher sees `MOVED_TO` for the file itself); its scratch-name filter
 should ignore that pattern, as it does editors' scratch names.

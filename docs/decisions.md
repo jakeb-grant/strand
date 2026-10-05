@@ -1110,3 +1110,68 @@ sweep only matches `.<name>.tmp.<pid>.<n>`. `rt.is_idle()` is false while
 an IO thread's failure waits to be reported. `KeyedSignal::get_untracked`
 inside the collection's own `update` returns `Error::Reentrant` instead of
 panicking.
+
+**2026-10-05 · Persisted writes are read at unmount (review round 4).**
+Round 1 queued only what the cell's tracking effect had noted, so a write
+whose owner went before that effect ran was lost: `if open { state level
+persist }` with `level = 5; open = false` in one handler (the `if`
+re-runs first and disposes the branch), a write followed by `shutdown`
+without a flush, and a write to a frozen component (its tracking effect
+is held) that is then replaced. The unmount cleanup now reads the cell's
+live value (cleanups run before nodes are removed) and queues it if the
+file does not hold it; `shutdown` does the same for every live persisted
+cell before disposing anything (root-level cells are disposed before root
+cleanups run), and dropping the last `Runtime` handle without `shutdown`
+does it too (an `impl Drop for Runtime` that acts only for the last strong
+handle and not while panicking). Also, a stored value that already equals
+the new declared default is adopted silently at boot, as
+`Persisted::redeclare` does on a live reload (round 1 reported it as "kept
+(default changed)").
+
+**2026-10-05 · Strand's own writes are pre-registered (review round 4).**
+Design, "Live reload" step 2: unchanged content stops at the hash check,
+"including Strand's own writes, whose hashes are pre-registered". Only the
+persist IO thread knows the bytes of a settings edit (it applies the
+`toml_edit` edits to whatever the file holds at that moment), so
+`PersistStore::on_written` (and `SettingsStore::on_written`) observes
+every file the IO thread replaces or removes: `OwnWrite { path, target,
+content }`, called after the temp file is complete and `fsync`ed and
+*before* the rename, so a registration made in the callback always comes
+before the watcher's change event. If the rename then fails, the
+registered hash never appears on disk; the watcher should treat a
+registration as one-shot. The callback runs on the IO thread and must be
+short.
+
+**2026-10-05 · The watcher does not parse settings files (review round
+4).** Supersedes round 3 (c), which had strand-watch call
+`SettingsSources::read_from` on its own thread. That parses TOML and
+probes writability, which contradicts the Threads table ("Watcher. Never
+does: Parse files (it sends paths and hashes)"), a boundary the watch
+track builds against. The boundary stays: the watcher sends (path,
+hash), and the logic thread calls `Settings::reload`. A settings file is
+small and is read once per real change; Strand's own writes no longer
+come back at all, because their hashes are pre-registered. `sources()`,
+`read_from` and `reload_with` remain for a thread allowed to parse (the
+compiler worker), should a profile ever ask for it.
+
+**2026-10-05 · Lowering can be checked (review round 4).** "Once per
+flush" depends on the compiler declaring every read and write edge, and
+a missing declaration used to fail silently, as a possible double run.
+`Stats::learned_edges` counts edges the runtime had to learn: write edges
+seen without `writes_to`, and reads by a node that declared its reads
+(`reads_from`) of a source it did not declare. Nodes that declare
+nothing, such as runtime-internal effects, are not counted, so the
+counter speaks only about the compiler's declarations. `Stats::reruns`
+counts sink runs beyond the first in one flush. Compiler and VM tests
+assert both are 0 after lowering real fixtures without feedback edges.
+`set_sources` also skips the rank walk when a node's source list did not
+change (rank raises already reach observers), which takes back most of
+the cost of a populated rank map (`docs/benchmarks.md`, "ranked").
+
+**2026-10-05 · Derived collections read by key (review round 4).**
+`KeyedMemo` gets `with`, `with_untracked` and `get_key`, matching
+`KeyedSignal`. A derived collection keeps no key index: its output is
+patched per diff, and an index would double that upkeep for a read most
+lists never make. Its `get_key` is therefore a documented O(n) scan
+(about 1 µs per 1,000 rows), fine for selecting by key once per event.
+A loop over many keys should read `with` once.
