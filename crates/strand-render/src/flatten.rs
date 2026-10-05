@@ -511,7 +511,19 @@ impl Flattener<'_> {
         }
         // Text.
         if let Some(l) = layout {
-            let bounds = l.ink.translate(phys.x, phys.y);
+            // A layout from another scale is drawn resampled (see raster).
+            let k = self.scale.as_f64() / l.scale.as_f64();
+            let bounds = if k == 1.0 {
+                l.ink.translate(phys.x, phys.y)
+            } else {
+                cover(kurbo::Rect::new(
+                    phys.x as f64 + l.ink.left() as f64 * k,
+                    phys.y as f64 + l.ink.top() as f64 * k,
+                    phys.x as f64 + l.ink.right() as f64 * k,
+                    phys.y as f64 + l.ink.bottom() as f64 * k,
+                ))
+                .inflate(1)
+            };
             if !bounds.is_empty() {
                 self.push(
                     Item::Glyphs {

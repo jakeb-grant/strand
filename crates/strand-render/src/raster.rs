@@ -146,10 +146,15 @@ fn paint_type(p: &Paint, frame: kurbo::Rect) -> PaintType {
     }
 }
 
-/// Owns the vello context and scratch space between frames.
+/// Render contexts kept for distinct buffer sizes.
+const MAX_CONTEXTS: usize = 4;
+
+/// Owns the vello contexts and scratch space between frames.
 #[derive(Debug, Default)]
 pub struct Raster {
-    ctx: Option<RenderContext>,
+    /// One context per buffer size in use (outputs of different sizes
+    /// would otherwise reallocate it every frame), most recent first.
+    contexts: Vec<RenderContext>,
     resources: Option<Resources>,
     scratch: Vec<u8>,
 }
@@ -173,13 +178,23 @@ impl Raster {
             return true;
         }
         let damage = damage.clipped(target.bounds());
-        let ctx = match &mut self.ctx {
-            Some(c) if c.width() == w && c.height() == h => {
-                c.reset();
-                c
+        match self
+            .contexts
+            .iter()
+            .position(|c| c.width() == w && c.height() == h)
+        {
+            Some(i) => {
+                let c = self.contexts.remove(i);
+                self.contexts.insert(0, c);
             }
-            slot => slot.insert(RenderContext::new_with(w, h, RenderSettings::default())),
-        };
+            None => {
+                self.contexts
+                    .insert(0, RenderContext::new_with(w, h, RenderSettings::default()));
+                self.contexts.truncate(MAX_CONTEXTS);
+            }
+        }
+        let ctx = &mut self.contexts[0];
+        ctx.reset();
         let resources = self.resources.get_or_insert_with(Resources::new);
 
         clear(target, &damage);

@@ -87,6 +87,16 @@ impl SceneTree {
         self.get(id).is_some()
     }
 
+    /// The surface root above `id` (itself for a root).
+    pub fn root_of(&self, mut id: NodeId) -> Option<NodeId> {
+        loop {
+            match self.get(id)?.parent {
+                Some(p) => id = p,
+                None => return Some(id),
+            }
+        }
+    }
+
     pub fn roots(&self) -> &[NodeId] {
         &self.roots
     }

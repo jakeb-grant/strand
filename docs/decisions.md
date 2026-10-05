@@ -68,3 +68,8 @@ Each track appends under its own heading.
   corners shrink like CSS when they would overlap, so `radius: full` is a
   pill. A text layout shaped for another scale is drawn resampled until the
   re-shaped one arrives.
+- 2026-10-05 · render: text state is kept per node *and* scale, so one
+  tree shown on outputs of different scales holds a sharp layout for each
+  instead of re-shaping back and forth. Scene edits and text deliveries
+  only mark the surfaces whose root they touch as dirty (`SetTokens` marks
+  all), so other outputs request no frame callbacks.

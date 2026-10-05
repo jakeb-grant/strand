@@ -438,3 +438,58 @@ fn worker_backend_keeps_last_layout_until_delivery() {
     assert!(buf.pixels == full.pixels);
     assert!(!r.wants_frame(BAR));
 }
+
+/// Edits only wake the surfaces whose subtree they touch.
+#[test]
+fn edits_only_dirty_their_own_surface() {
+    let (left, clock) = bar("12:59");
+    let mut r = renderer();
+    r.apply(left);
+    let other = NodeId::new(1000, 0);
+    let mut d = SceneDiff::new();
+    d.create(other, NodeKind::Bar, None, 1)
+        .set(other, Prop::Bg, color("#000000"));
+    r.apply(d);
+    r.attach_surface(SurfaceId(1), r.tree().roots()[0]);
+    r.attach_surface(SurfaceId(2), other);
+    let mut a = Buffer::new(2560, 36, Scale::ONE);
+    let mut c = Buffer::new(100, 36, Scale::ONE);
+    a.paint(&mut r, SurfaceId(1), 0);
+    c.paint(&mut r, SurfaceId(2), 0);
+    assert!(!r.wants_frame(SurfaceId(1)) && !r.wants_frame(SurfaceId(2)));
+    r.apply(set_text(clock, "13:00"));
+    assert!(r.wants_frame(SurfaceId(1)));
+    assert!(!r.wants_frame(SurfaceId(2)), "the other output stays idle");
+}
+
+/// One tree shown on outputs of different scales keeps a layout per scale
+/// (no re-shaping ping-pong) and each output matches a single-output render.
+#[test]
+fn shared_tree_on_mixed_dpi_outputs() {
+    let (diff, clock) = bar("12:59");
+    let mut r = renderer();
+    r.apply(diff);
+    let root = r.tree().roots()[0];
+    let s15 = Scale::new(180).unwrap();
+    r.attach_surface(SurfaceId(1), root);
+    r.attach_surface(SurfaceId(2), root);
+    let mut a = Buffer::new(2560, 36, Scale::ONE);
+    let mut b = Buffer::new(3840, 54, s15);
+    for _ in 0..2 {
+        a.paint(&mut r, SurfaceId(1), 1);
+        b.paint(&mut r, SurfaceId(2), 1);
+    }
+    assert!(!r.wants_frame(SurfaceId(1)) && !r.wants_frame(SurfaceId(2)));
+    r.apply(set_text(clock, "13:00"));
+    let da = a.paint(&mut r, SurfaceId(1), 1);
+    let db = b.paint(&mut r, SurfaceId(2), 1);
+    assert!(
+        da.area() <= 2000 && db.area() <= 2000 * 9 / 4,
+        "{da:?} {db:?}"
+    );
+    assert!(!r.wants_frame(SurfaceId(1)) && !r.wants_frame(SurfaceId(2)));
+    let (_, full_a) = fresh(bar("13:00").0, 2560, 36, Scale::ONE);
+    let (_, full_b) = fresh(bar("13:00").0, 3840, 54, s15);
+    assert!(a.pixels == full_a.pixels);
+    assert!(b.pixels == full_b.pixels);
+}

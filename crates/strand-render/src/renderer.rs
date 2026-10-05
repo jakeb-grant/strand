@@ -5,7 +5,9 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use strand_scene::{Damage, NodeId, PaintTarget, Painter, Scale, SceneDiff, Size, SurfaceId};
+use strand_scene::{
+    Damage, NodeId, PaintTarget, Painter, Scale, SceneDiff, SceneOp, Size, SurfaceId,
+};
 use strand_text::{TextEngine, TextError, TextKey, TextLayout, TextRequest, TextWorker};
 
 use crate::flatten::{Flattened, NodeRecord, TextSpec, flatten};
@@ -55,8 +57,10 @@ pub struct Renderer {
     tree: SceneTree,
     surfaces: BTreeMap<SurfaceId, SurfaceState>,
     text: TextBackend,
-    texts: HashMap<NodeId, TextState>,
-    pending: HashMap<TextKey, NodeId>,
+    /// Text per node and scale: a node shown on outputs of different scales
+    /// keeps one layout per scale.
+    texts: HashMap<(NodeId, Scale), TextState>,
+    pending: HashMap<TextKey, (NodeId, Scale)>,
     next_key: u64,
     atlas: AtlasMirror,
     raster: Raster,
@@ -118,16 +122,46 @@ impl Renderer {
         self.last_damage.remove(&surface);
         let scales: Vec<Scale> = self.surfaces.values().map(|s| s.scale).collect();
         self.atlas.retain_scales(|s| scales.contains(&s));
+        self.texts.retain(|(_, s), _| scales.contains(s));
+        self.pending.retain(|_, (_, s)| scales.contains(s));
     }
 
     /// Applies one tick's diff. Failed ops are returned; the rest apply.
     pub fn apply(&mut self, diff: SceneDiff) -> Vec<SceneError> {
-        let errors = self.tree.apply(diff);
+        let mut errors = Vec::new();
+        // Surfaces whose subtree an op touches; `None` means all of them.
+        let mut touched: Option<Vec<NodeId>> = Some(Vec::new());
+        for op in diff.ops {
+            let mut roots = Vec::new();
+            match &op {
+                SceneOp::Create { id, parent, .. } => {
+                    roots.push(parent.and_then(|p| self.tree.root_of(p)).unwrap_or(*id));
+                }
+                SceneOp::Remove { id } | SceneOp::SetProp { id, .. } => {
+                    roots.extend(self.tree.root_of(*id));
+                }
+                SceneOp::Move { id, parent, .. } => {
+                    roots.extend(self.tree.root_of(*id));
+                    roots.push(parent.and_then(|p| self.tree.root_of(p)).unwrap_or(*id));
+                }
+                SceneOp::SetTokens { .. } => touched = None,
+            }
+            match self.tree.apply_op(op) {
+                Ok(()) => {
+                    if let Some(t) = &mut touched {
+                        t.extend(roots);
+                    }
+                }
+                Err(e) => errors.push(e),
+            }
+        }
         let tree = &self.tree;
-        self.texts.retain(|id, _| tree.contains(*id));
-        self.pending.retain(|_, id| tree.contains(*id));
+        self.texts.retain(|(id, _), _| tree.contains(*id));
+        self.pending.retain(|_, (id, _)| tree.contains(*id));
         for s in self.surfaces.values_mut() {
-            s.dirty = true;
+            if touched.as_ref().is_none_or(|t| t.contains(&s.root)) {
+                s.dirty = true;
+            }
         }
         self.update();
         errors
@@ -200,10 +234,10 @@ impl Renderer {
         for up in &layout.uploads {
             self.atlas.apply(up);
         }
-        let Some(node) = self.pending.remove(&layout.key) else {
+        let Some(slot) = self.pending.remove(&layout.key) else {
             return;
         };
-        let Some(state) = self.texts.get_mut(&node) else {
+        let Some(state) = self.texts.get_mut(&slot) else {
             return;
         };
         if state.requested.as_ref().map(|(k, _)| *k) != Some(layout.key) {
@@ -213,9 +247,25 @@ impl Renderer {
             state.shaped = Some(spec);
             state.layout = Some(Arc::new(layout));
         }
+        let root = self.tree.root_of(slot.0);
         for s in self.surfaces.values_mut() {
-            s.dirty = true;
+            if Some(s.root) == root && s.scale == slot.1 {
+                s.dirty = true;
+            }
         }
+    }
+
+    /// The layouts to draw at `scale`: each node's layout for that scale,
+    /// or, while that is being shaped, one for another scale (resampled).
+    fn layouts_for(&self, scale: Scale) -> HashMap<NodeId, Arc<TextLayout>> {
+        let mut out: HashMap<NodeId, Arc<TextLayout>> = HashMap::new();
+        for ((id, s), t) in &self.texts {
+            let Some(l) = &t.layout else { continue };
+            if *s == scale || !out.contains_key(id) {
+                out.insert(*id, l.clone());
+            }
+        }
+        out
     }
 
     /// Flattens a surface, issuing text requests for changed text. With the
@@ -226,11 +276,7 @@ impl Renderer {
             let Some(s) = self.surfaces.get(&id) else {
                 return Flattened::default();
             };
-            let layouts: HashMap<NodeId, Arc<TextLayout>> = self
-                .texts
-                .iter()
-                .filter_map(|(id, t)| Some((*id, t.layout.clone()?)))
-                .collect();
+            let layouts = self.layouts_for(s.scale);
             let f = flatten(&self.tree, s.root, s.size, s.scale, &layouts);
             if !self.request_text(&f.text) {
                 return f;
@@ -239,11 +285,7 @@ impl Renderer {
         let Some(s) = self.surfaces.get(&id) else {
             return Flattened::default();
         };
-        let layouts: HashMap<NodeId, Arc<TextLayout>> = self
-            .texts
-            .iter()
-            .filter_map(|(id, t)| Some((*id, t.layout.clone()?)))
-            .collect();
+        let layouts = self.layouts_for(s.scale);
         flatten(&self.tree, s.root, s.size, s.scale, &layouts)
     }
 
@@ -252,7 +294,8 @@ impl Renderer {
     fn request_text(&mut self, needs: &[(NodeId, TextSpec)]) -> bool {
         let mut delivered = false;
         for (node, spec) in needs {
-            let state = self.texts.entry(*node).or_default();
+            let slot = (*node, spec.scale);
+            let state = self.texts.entry(slot).or_default();
             if state.shaped.as_ref() == Some(spec)
                 || state.requested.as_ref().is_some_and(|(_, s)| s == spec)
             {
@@ -274,8 +317,8 @@ impl Renderer {
             match &mut self.text {
                 TextBackend::Worker(w) => {
                     if w.request(req).is_ok() {
-                        self.pending.insert(key, *node);
-                    } else if let Some(state) = self.texts.get_mut(node) {
+                        self.pending.insert(key, slot);
+                    } else if let Some(state) = self.texts.get_mut(&slot) {
                         // No worker: keep the last layout, stop asking.
                         state.shaped = Some(spec.clone());
                         state.requested = None;
@@ -283,7 +326,7 @@ impl Renderer {
                 }
                 TextBackend::Inline(engine) => {
                     let layout = engine.layout(&req);
-                    self.pending.insert(key, *node);
+                    self.pending.insert(key, slot);
                     self.deliver(layout);
                     delivered = true;
                 }
