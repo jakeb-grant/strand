@@ -29,6 +29,7 @@
 //!   event received(n: Notification)      // `on svc.received(n)`
 //! }
 //! service battery { … }                  // a record that is a global name
+//! handle record Node { … }               // a runtime handle, not data
 //! provisional service audio { … }        // a stub one extension replaces
 //! fn pct(x: float) -> text lift          // `lift`: null in, null out
 //! fn join(sep: text, ...parts: any?) -> text
@@ -36,6 +37,7 @@
 //! methods color { fn alpha(a: float) -> color }   // methods on a builtin type
 //! group node { … }                       // props, events shared by elements
 //! element text(text -> text): node { ellipsis: Ellipsis; on click; let index: int; flags leaf }
+//!                                        // flags: leaf surface uniforms selectors on_demand only_in <el>
 //!                                        // `(T -> prop)`: the positional's type and the prop it fills
 //! palette { surface; fg; accent }        // colour roles
 //! tokens { space { 1: length }; surface.hi: color }
@@ -86,6 +88,9 @@ pub struct ElementFlags {
     pub uniforms: bool,
     /// Holds `#id { … }` selectors (`svg`).
     pub selectors: bool,
+    /// Mounts its children only on demand (`popup` when opened, `tooltip`
+    /// on hover, `page` while current), like an `if` branch.
+    pub on_demand: bool,
 }
 
 /// An element kind: its positional argument, props, events and the names

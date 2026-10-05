@@ -1,10 +1,27 @@
 // expect: check::cycle
 // A component that always contains itself would mount forever: a static
-// cycle, named by its path. Under `if`, `for`, `match` or a `popup` the
-// inner call waits for a condition, so it is not a cycle.
-component C { box { C } }
+// cycle, named by its path and reported once however many calls close it.
+// Under `if`, `for`, `match`, a `page`, a `tooltip` or a `popup` the inner
+// call waits for a condition, so it is not a cycle; nor is a call placed in
+// a callee whose `slot` is itself conditional.
+component C { row { C; C } }
 component D { row { E } }
 component E { col { D } }
 component Tree(depth: int) { box { if depth > 0 { Tree depth - 1 } } }
 component Menu { button { popup { Menu } } }
-bar B { edge: top; height: 32; C; D; Tree 3; Menu }
+component Hint { button { tooltip { Hint } } }
+enum Sub { root, nested }
+component Folders(sub: Sub = root) {
+  pages current: sub { page root { text "root" }; page nested { Folders { sub: root } } }
+}
+// Slots: a conditional slot breaks the cycle, an unconditional one (even
+// through another component's unconditional slot) does not.
+component Maybe(show: bool = false) { box { if show { slot } } }
+component Lazy(depth: int = 0) { Maybe { show: depth < 3; Lazy { depth: depth + 1 } } }
+component Pop { button { popup { slot } } }
+component Popped { Pop { Popped } }
+component Frame { box { slot } }
+component Framed { Frame { Framed } }
+component Outer { Frame { slot } }
+component Wrapped { Outer { Wrapped } }
+bar B { edge: top; height: 32; C; D; Tree 3; Menu; Hint; Folders; Lazy; Popped; Framed; Wrapped }

@@ -1274,7 +1274,10 @@ see wave2-core; the compiler supplies the field schema.)
   record checked field by field (a recursive `type Node { kids: [Node] }`
   is data). Opaque values (`Palette`, `Spring`), fonts, shadows,
   gradients (`paint`), insets, corners, `any`, functions and `Async` are
-  not: the encoder would silently store nothing. Each settings field gets
+  not: the encoder would silently store nothing. Since round 8, neither
+  are runtime handles (`handle record Node`, `Canvas`: `RecordDef::handle`)
+  nor live service items (records that declare an `action`: `Window`,
+  `App`, `Notification`). Each settings field gets
   the same check (`check::persist`, "a settings file holds plain data").
   The palette design.md persists for boot is the runtime's own, not a
   user `persist`. A `for … key` needs a comparable value
@@ -1284,10 +1287,13 @@ see wave2-core; the compiler supplies the field schema.)
   error.** `component C { box { C } }`, or `C` → `D` → `C`, would mount
   forever; design.md makes a static cycle a load error naming the path.
   The checker builds the graph of component calls that mount
-  unconditionally (not under `if`/`else`, a `match` arm, a `for` or a
-  `popup`, which is shown on demand; a call's children count only when
-  the callee has a `slot`) and reports each cycle once, as `check::cycle`
-  ("static cycle: `D` → `E` → `D`"). `negative/cycle_component.strand`.
+  unconditionally (not under `if`/`else`, a `match` arm, a `for`, or an
+  element flagged `on_demand` in the schema: a `popup`, a `tooltip`, a
+  `page`, since hidden pages unmount; a call's children count only when
+  the callee mounts its `slot` unconditionally by the same rules, round
+  8) and reports each cycle once, as `check::cycle` ("static cycle: `D` →
+  `E` → `D`"), however many calls close it.
+  `negative/cycle_component.strand`.
 - **2026-10-05 · wave2-check (round 7): hiding the time signal warns.**
   Round 5's prelude stays: a parameter, `fn` or type may shadow any
   builtin silently, and a function hidden by a value is named when
@@ -1303,10 +1309,18 @@ see wave2-core; the compiler supplies the field schema.)
   literal or an index (`a1 = [a0][0]`) or a `match` is followed like a
   direct hand-off. Other forms (`[a0].first ?? 0`) cost a pass each, so
   from the fourth pass on (`DEEP_FLOWS_AFTER`) every whole-number
-  declaration a written value reads anywhere counts as a source; the
-  pins then close over the rest of the chain at once. This may make such
-  a declaration a `float` where an `int` would have done, only in a
-  config that already needed three extra passes; an 800-link chain of
+  declaration a written value reads where a fraction could pass counts
+  as a source; the pins then close over the rest of the chain at once.
+  Round 8 bounds "where a fraction could pass": not into a value that
+  holds no number (a comparison, `&&`, text), a member with a fixed type
+  (`.len`, `.count(…)`, `.round()`, a record's declared field), an index
+  operand, a `match` scrutinee or a `?:` condition, so `sel = a5.round()`
+  stays an `int` however long a chain elsewhere is
+  (`robustness.rs::late_pass_hand_offs_stop_at_whole_results`). What is
+  left may still make a declaration a `float` where an `int` would have
+  done (`a1 = [a0].map(x => x * k).first ?? 0` with a fractional `k`
+  elsewhere), only in a config that already needed three extra passes;
+  an 800-link chain of
   either form checks in well under a second
   (`robustness.rs::long_whole_number_hand_off_chains_stay_cheap`).
 - **2026-10-05 · wave2-check (round 7): diagnostics wording.** Lambda
@@ -1323,6 +1337,31 @@ see wave2-core; the compiler supplies the field schema.)
   String interpolation does not exist (grammar.md: strings have no
   interpolation), so `"n {apps.search(q)}"` is plain text and needs no
   Async check.
+- **2026-10-05 · wave2-check (round 8): lambdas take named arguments.**
+  Giving lambda parameters their names (round 7) also lets a call name
+  them: `let f = (a: int, b: text) => …; f(b: "x", a: 1)` binds by name,
+  in any order, like a `fn` call. This removes a concept rather than
+  adding one (a lambda value and a `fn` are called the same way), and
+  lowering already reorders through `CallArg::param`
+  (`vm.rs::lambdas_take_named_arguments`). A function *type*
+  (`fn(int) -> text`) still has no names, so a parameter of that type is
+  called positionally.
+- **2026-10-05 · wave2-check (round 8): live service items are not
+  persisted.** A `Window`, `App`, `Notification`, `Workspace` or
+  `AudioDevice` read back after a restart would be a snapshot whose
+  actions (`focus()`, `close()`) target an item that may be gone. Since
+  `persist` holds plain data, a record that declares any `action` is not
+  data (`TypeTable::is_data`), and the help says to store its key
+  instead (`state pinned: [AppId] persist`). A `for … key` may still use
+  such records (they compare). Runtime handles (`Node`, `Canvas`) are
+  marked in the schema language with `handle record`, so a service
+  crate can mark its own.
+- **2026-10-05 · wave2-check (round 8): on-demand elements are schema
+  data.** Which builtin elements mount their children only on demand
+  (`popup` when opened, `tooltip` on hover, `page` while current) is the
+  element flag `on_demand` (`ElementFlags::on_demand`), not a list in the
+  checker, so an element a service schema contributes can say so too. The
+  cycle check treats such an element like an `if` branch.
 
 ## wave2-vm
 

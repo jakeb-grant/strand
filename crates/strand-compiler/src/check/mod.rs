@@ -39,7 +39,7 @@ use crate::schema::{ElementSchema, Schema};
 use crate::source::FileId;
 use crate::syntax::Span;
 use crate::syntax::ast;
-use crate::ty::{Ty, TypeTable};
+use crate::ty::{Prim, Ty, TypeTable};
 
 /// Runs `f`, first moving to a fresh heap-allocated stack segment if
 /// little of the current one is left. Every lazily checked entry point
@@ -858,19 +858,39 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Every declaration `e` reads, wherever it reads it: the
-    /// over-approximate hand-offs of a late pass (see [`check`]).
+    /// The declarations whose value `e` may hand on, wherever it reads
+    /// them: the over-approximate hand-offs of a late pass (see [`check`]).
+    /// It stops where no fraction can pass: at values that hold no number
+    /// (comparisons, `&&`, text), at members with a fixed type (`.len`,
+    /// `.round()`, `.count(…)`), and at operands that only select (an
+    /// index, a match scrutinee, a `?:` condition).
     fn deep_sources(&self, e: &hir::Expr, out: &mut Vec<DefId>) {
         use hir::ExprKind as K;
+        if !holds_number(&e.ty) {
+            return;
+        }
         match &e.kind {
             K::Def(_) | K::Local(_) => self.flow_sources(e, out),
-            K::Field { base, .. } => self.deep_sources(base, out),
+            K::Field { base, name, .. } => {
+                if self.member_carries(&base.ty, name, None) {
+                    self.deep_sources(base, out);
+                }
+            }
             K::Call { callee, args } => {
                 match callee {
                     hir::Callee::Fn(d) => {
                         out.extend(self.value_sources.get(d).into_iter().flatten());
                     }
-                    hir::Callee::Method { receiver, .. } => self.deep_sources(receiver, out),
+                    hir::Callee::Method {
+                        receiver,
+                        name,
+                        overload,
+                    } => {
+                        if !self.member_carries(&receiver.ty, name, Some(*overload)) {
+                            return;
+                        }
+                        self.deep_sources(receiver, out);
+                    }
                     hir::Callee::Value(f) => self.deep_sources(f, out),
                     _ => {}
                 }
@@ -878,22 +898,27 @@ impl<'a> Checker<'a> {
                     self.deep_sources(&a.value, out);
                 }
             }
-            K::Index { base, index } => {
-                self.deep_sources(base, out);
-                self.deep_sources(index, out);
-            }
+            K::Index { base, .. } => self.deep_sources(base, out),
             K::Unary { expr, .. } => self.deep_sources(expr, out),
-            K::Binary { lhs, rhs, .. } => {
+            K::Binary {
+                op:
+                    hir::BinaryOp::Add
+                    | hir::BinaryOp::Sub
+                    | hir::BinaryOp::Mul
+                    | hir::BinaryOp::Div
+                    | hir::BinaryOp::Rem
+                    | hir::BinaryOp::Coalesce,
+                lhs,
+                rhs,
+            } => {
                 self.deep_sources(lhs, out);
                 self.deep_sources(rhs, out);
             }
-            K::Ternary { cond, then, else_ } => {
-                self.deep_sources(cond, out);
+            K::Ternary { then, else_, .. } => {
                 self.deep_sources(then, out);
                 self.deep_sources(else_, out);
             }
-            K::Match { scrutinee, arms } => {
-                self.deep_sources(scrutinee, out);
+            K::Match { arms, .. } => {
                 for (_, a) in arms {
                     self.deep_sources(a, out);
                 }
@@ -909,6 +934,34 @@ impl<'a> Checker<'a> {
             } => self.deep_sources(b, out),
             _ => {}
         }
+    }
+
+    /// True if member `name` of a `recv` hands on the receiver's items
+    /// (`.first`, `.filter(…)`, `.map(…)`), false if its type is fixed
+    /// (`.len`, `.count(…)`, `.round()`, a record's declared field).
+    fn member_carries(&self, recv: &Ty, name: &str, overload: Option<usize>) -> bool {
+        const MARK: &str = "\u{0}item";
+        let generic = match recv {
+            Ty::Optional(inner) => return self.member_carries(inner, name, overload),
+            Ty::List(_, keyed) => Ty::List(Box::new(Ty::opaque(MARK)), *keyed),
+            Ty::Async(inner) => match &**inner {
+                Ty::List(_, keyed) => {
+                    Ty::Async(Box::new(Ty::List(Box::new(Ty::opaque(MARK)), *keyed)))
+                }
+                _ => Ty::Async(Box::new(Ty::opaque(MARK))),
+            },
+            Ty::Error => return true,
+            _ => return false,
+        };
+        let members = crate::schema::members_of(&generic, self.schema, &self.types);
+        let Some(m) = members.iter().find(|m| m.name == name) else {
+            return true;
+        };
+        let ty = match overload {
+            Some(i) => m.sigs.get(i).map_or(Ty::Error, |s| s.ret.clone()),
+            None => m.ty.clone(),
+        };
+        ty == Ty::Error || mentions_opaque(&ty, MARK)
     }
 
     /// The whole-number declarations `e` reads, deduplicated (what
@@ -1101,5 +1154,30 @@ impl<'a> Checker<'a> {
     /// The element schema for kind `name`.
     pub fn element_schema(&self, name: &str) -> Option<&'a ElementSchema> {
         self.schema.element(name)
+    }
+}
+
+/// True if a value of this type may hold a number a fraction could reach.
+fn holds_number(ty: &Ty) -> bool {
+    match ty {
+        Ty::Error | Ty::Any | Ty::Prim(Prim::Int | Prim::Float) => true,
+        Ty::Optional(t) | Ty::List(t, _) | Ty::Async(t) => holds_number(t),
+        Ty::Tuple(ts) | Ty::Union(ts) => ts.iter().any(holds_number),
+        Ty::Fn(sig) => holds_number(&sig.ret),
+        _ => false,
+    }
+}
+
+/// True if `ty` mentions the opaque type `name`.
+fn mentions_opaque(ty: &Ty, name: &str) -> bool {
+    match ty {
+        Ty::Opaque(n) => &**n == name,
+        Ty::Optional(t) | Ty::List(t, _) | Ty::Async(t) => mentions_opaque(t, name),
+        Ty::Tuple(ts) | Ty::Union(ts) => ts.iter().any(|t| mentions_opaque(t, name)),
+        Ty::Fn(sig) => {
+            mentions_opaque(&sig.ret, name)
+                || sig.params.iter().any(|p| mentions_opaque(&p.ty, name))
+        }
+        _ => false,
     }
 }

@@ -13,7 +13,7 @@ use crate::syntax::ast::{self, ItemKind};
 use crate::ty::{FieldDef, FnSig, Origin, ParamSig, Prim, RecordDef, Ty};
 
 /// Why `persist` and settings files refuse a type.
-const PLAIN_DATA_HELP: &str = "only plain data is stored: numbers, text, paths, colours, enums, and lists and records of those";
+const PLAIN_DATA_HELP: &str = "only plain data is stored: numbers, text, paths, colours, enums, and lists and records of those; for a node or a live item (a window, an app) store its key instead";
 
 /// What a tree block may hold.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

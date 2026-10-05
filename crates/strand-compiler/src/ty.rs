@@ -223,9 +223,11 @@ impl TypeTable {
     /// True if values of this type can be stored with `persist` or in a
     /// settings file: what the codecs in `vm::persist` round-trip
     /// (numbers, text, paths, colours, enums, and records and lists of
-    /// those). Functions, nodes, pending loads, opaque values (`Palette`,
-    /// `Spring`), fonts, shadows and gradients are not data; a record is
-    /// data when every field is.
+    /// those). Functions, pending loads, opaque values (`Palette`,
+    /// `Spring`), fonts, shadows and gradients are not data, nor are
+    /// `handle` records (`Node`, `Canvas`) or records with actions (live
+    /// service items: `Window`, `App`); any other record is data when every
+    /// field is.
     pub fn is_data(&self, ty: &Ty) -> bool {
         self.data_walk(ty, true, &mut Vec::new())
     }
@@ -254,9 +256,16 @@ impl TypeTable {
                     // the fields already being walked decide.
                     return true;
                 }
+                let rec = self.record(*r);
+                // A runtime handle, or a live service item whose actions
+                // act on something that may be gone after a restart.
+                if stored
+                    && (rec.handle || rec.methods.iter().any(|m| m.sigs.iter().any(|s| s.action)))
+                {
+                    return false;
+                }
                 seen.push(*r);
-                let ok = self
-                    .record(*r)
+                let ok = rec
                     .fields
                     .iter()
                     .all(|f| self.data_walk(&f.ty, stored, seen));
@@ -388,6 +397,9 @@ pub struct RecordDef {
     /// The identity of items of this record, as a field path (`id`,
     /// `app.id`): lists of it are keyed.
     pub key: Option<Vec<String>>,
+    /// Values are live runtime handles (`Node`, `Canvas`), not data:
+    /// they compare, but `persist` and settings files cannot store them.
+    pub handle: bool,
     pub origin: Origin,
     pub doc: Option<String>,
 }
@@ -400,6 +412,7 @@ impl RecordDef {
             methods: Vec::new(),
             events: Vec::new(),
             key: None,
+            handle: false,
             origin,
             doc: None,
         }

@@ -46,7 +46,7 @@ alias AppId = text
 // Records
 
 /// A node of the tree: `self`, or an element given an `id:`.
-record Node {
+handle record Node {
   hover: bool
   pressed: bool
   focused: bool
@@ -209,7 +209,7 @@ provisional record BluetoothDevice key address {
   action disconnect()
 }
 
-record Canvas {
+handle record Canvas {
   width: float
   height: float
   fn fill(paint: paint)
@@ -527,7 +527,7 @@ element panel: surface { flags surface }
 element osd: surface { flags surface }
 element lock: surface { flags surface }
 /// Anchored to its parent element; nests (tray menus).
-element popup: surface { on dismiss }
+element popup: surface { on dismiss; flags on_demand }
 
 // Containers.
 element row: node {}
@@ -544,7 +544,7 @@ element center: node { flags only_in split }
 element end: node { flags only_in split }
 element spacer: node { flags leaf }
 element pages: node { current: any <-> }
-element page(any -> name): node { flags only_in pages }
+element page(any -> name): node { flags only_in pages on_demand }
 
 // Widgets.
 element box: node {}
@@ -583,7 +583,7 @@ element meter(float -> value): node {
   flags leaf
 }
 element segmented: node { options: any; value: any <->; flags leaf }
-element tooltip: node {}
+element tooltip: node { flags on_demand }
 
 // Effects and media nodes.
 element arc: node { value: float; sweep: angle; track: paint; flags leaf }

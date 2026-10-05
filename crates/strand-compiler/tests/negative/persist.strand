@@ -9,3 +9,10 @@ type Holder { hits: Async<[text]>; n: int }
 state hs: [Holder] = [] persist
 state pal: Palette = material(seed: #7aa2f7) persist
 state prefs from "p.toml" { w: Holder? = null; s: Spring = spring(1, 1); n: int = 3 }
+// Runtime handles and live service items are not data either.
+state last: Node? = null persist
+state ns: [Node] = [] persist
+type NodeHolder { n: Node; label: text }
+state nh: NodeHolder? = null persist
+state win: Window? = null persist
+state handles from "h.toml" { who: Node? = null; app: App? = null; count: int = 0 }

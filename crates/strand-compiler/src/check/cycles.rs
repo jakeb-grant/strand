@@ -1,54 +1,84 @@
 //! Static cycles of components: `component C { box { C } }`, or `C` →
 //! `D` → `C`, each mounting the next unconditionally, would mount forever.
-//! A call under `if`/`else`, a `match` arm, a `for` or a `popup` (shown on
-//! demand) breaks the cycle; a component call's children count only when
-//! the callee has a `slot` to place them in.
+//! A call under `if`/`else`, a `match` arm, a `for`, or an element that
+//! mounts its children on demand (schema flag `on_demand`: a `popup`, a
+//! `tooltip`, a `page`, since hidden pages unmount) breaks the cycle. A
+//! component call's children count only when the callee mounts its `slot`
+//! unconditionally by the same rules.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::Checker;
 use crate::hir::{self, DefId, ElementKind, Node};
+use crate::schema::Schema;
 use crate::syntax::Span;
+
+/// The unconditional component calls of `body`, in source order, and
+/// whether it reaches its `slot` unconditionally. `slot` says which
+/// components mount their own slot unconditionally.
+fn walk(body: &[Node], schema: &Schema, slot: &HashMap<DefId, bool>) -> (Vec<(DefId, Span)>, bool) {
+    let mut calls = Vec::new();
+    let mut reaches_slot = false;
+    let mut work: Vec<&Node> = body.iter().rev().collect();
+    while let Some(n) = work.pop() {
+        let e = match n {
+            Node::Element(e) => e,
+            Node::Slot(_) => {
+                reaches_slot = true;
+                continue;
+            }
+            // `if`, `match` and `for` mount on a condition; the rest hold
+            // no elements.
+            _ => continue,
+        };
+        let walk_children = match &e.kind {
+            ElementKind::Component(d) => {
+                calls.push((*d, e.span));
+                slot.get(d).copied().unwrap_or(false)
+            }
+            ElementKind::Builtin(k) => !schema.element(k).is_some_and(|s| s.flags.on_demand),
+            ElementKind::Unknown(_) => false,
+        };
+        if walk_children {
+            work.extend(e.children.iter().rev());
+        }
+    }
+    (calls, reaches_slot)
+}
 
 impl Checker<'_> {
     /// Reports each static cycle of component calls once, as
     /// `check::cycle` naming the path.
     pub(super) fn component_cycles(&mut self, files: &[hir::FileHir]) {
-        let mut slot: HashMap<DefId, bool> = HashMap::new();
         let mut bodies: Vec<(DefId, &[Node])> = Vec::new();
         for f in files {
             for item in &f.items {
                 if let hir::Item::Component(c) = item {
-                    slot.insert(c.def, c.has_slot);
                     bodies.push((c.def, &c.body));
                 }
             }
         }
-        // Unconditional calls, in source order: (callee, call span).
-        let mut edges: HashMap<DefId, Vec<(DefId, Span)>> = HashMap::new();
-        for (def, body) in &bodies {
-            let mut out = Vec::new();
-            let mut work: Vec<&Node> = body.iter().rev().collect();
-            while let Some(n) = work.pop() {
-                let Node::Element(e) = n else {
-                    // `if`, `match` and `for` mount on a condition; the
-                    // rest hold no elements.
-                    continue;
-                };
-                let walk_children = match &e.kind {
-                    ElementKind::Component(d) => {
-                        out.push((*d, e.span));
-                        slot.get(d).copied().unwrap_or(false)
-                    }
-                    ElementKind::Builtin(k) => k != "popup",
-                    ElementKind::Unknown(_) => false,
-                };
-                if walk_children {
-                    work.extend(e.children.iter().rev());
+        // Which components mount their slot unconditionally: a least
+        // fixpoint, since a slot placed inside another component's call
+        // mounts only if that one's slot does.
+        let mut slot: HashMap<DefId, bool> = bodies.iter().map(|(d, _)| (*d, false)).collect();
+        loop {
+            let mut changed = false;
+            for (def, body) in &bodies {
+                if !slot[def] && walk(body, self.schema, &slot).1 {
+                    slot.insert(*def, true);
+                    changed = true;
                 }
             }
-            edges.insert(*def, out);
+            if !changed {
+                break;
+            }
         }
+        // Unconditional calls, in source order: (callee, call span).
+        let edges: HashMap<DefId, Vec<(DefId, Span)>> = bodies
+            .iter()
+            .map(|(def, body)| (*def, walk(body, self.schema, &slot).0))
+            .collect();
         // Iterative DFS: a back edge to a node on the stack closes a
         // cycle, read off the stack.
         #[derive(Clone, Copy, PartialEq)]
@@ -59,6 +89,7 @@ impl Checker<'_> {
         }
         let mut mark: HashMap<DefId, Mark> = bodies.iter().map(|(d, _)| (*d, Mark::New)).collect();
         let mut cycles: Vec<(Vec<DefId>, Span)> = Vec::new();
+        let mut seen: HashSet<Vec<DefId>> = HashSet::new();
         for (root, _) in &bodies {
             if mark[root] != Mark::New {
                 continue;
@@ -81,7 +112,14 @@ impl Checker<'_> {
                     Some(Mark::Open) => {
                         let from = stack.iter().position(|(s, _)| *s == next).unwrap_or(0);
                         let path: Vec<DefId> = stack[from..].iter().map(|(s, _)| *s).collect();
-                        cycles.push((path, span));
+                        // One report per cycle (`row { C; C }` closes it
+                        // twice): keyed by its rotation from the least id.
+                        let least = (0..path.len()).min_by_key(|&i| path[i].0).unwrap_or(0);
+                        let mut canon = path[least..].to_vec();
+                        canon.extend_from_slice(&path[..least]);
+                        if seen.insert(canon) {
+                            cycles.push((path, span));
+                        }
                     }
                     _ => {}
                 }
@@ -113,7 +151,7 @@ impl Checker<'_> {
             )
             .add_secondary(ff, fs, format!("the component `{fname}`"))
             .help = Some(
-                "a component cannot always contain itself; render the inner one under an `if` or `for`"
+                "a component cannot always contain itself; render the inner one under an `if`, `for`, `match`, a `page`, a `tooltip` or a `popup`"
                     .into(),
             );
             self.module = saved;

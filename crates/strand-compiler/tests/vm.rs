@@ -379,3 +379,14 @@ fn the_real_host_records_no_actions() {
     }
     assert!(host.actions().is_empty());
 }
+
+/// A lambda's parameters have names, so a call may name them, in any
+/// order (decisions.md, wave2-check round 8).
+#[test]
+fn lambdas_take_named_arguments() {
+    let (_, _, inst) = run(
+        "let f = (a: int, b: text) => join(\":\", b, a)\nlet y = f(b: \"x\", a: 1)\nlet z = f(2, b: \"w\")\n",
+    );
+    assert_eq!(get(&inst, "y"), Value::text("x:1"));
+    assert_eq!(get(&inst, "z"), Value::text("w:2"));
+}

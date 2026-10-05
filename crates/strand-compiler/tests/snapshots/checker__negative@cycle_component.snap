@@ -5,27 +5,57 @@ expression: rendered
 check::cycle
 
   × static cycle: `C` → `C`
-   ╭─[cycle_component.strand:5:21]
- 4 │ // inner call waits for a condition, so it is not a cycle.
- 5 │ component C { box { C } }
+   ╭─[cycle_component.strand:7:21]
+ 6 │ // a callee whose `slot` is itself conditional.
+ 7 │ component C { row { C; C } }
    ·           ┬         ┬
    ·           │         ╰── mounts `C` again, unconditionally
    ·           ╰── the component `C`
- 6 │ component D { row { E } }
+ 8 │ component D { row { E } }
    ╰────
-  help: a component cannot always contain itself; render the inner one under an `if` or `for`
+  help: a component cannot always contain itself; render the inner one under an `if`, `for`,
+        `match`, a `page`, a `tooltip` or a `popup`
 
 check::cycle
 
   × static cycle: `D` → `E` → `D`
-   ╭─[cycle_component.strand:7:21]
- 5 │ component C { box { C } }
- 6 │ component D { row { E } }
-   ·           ┬
-   ·           ╰── the component `D`
- 7 │ component E { col { D } }
-   ·                     ┬
-   ·                     ╰── mounts `D` again, unconditionally
- 8 │ component Tree(depth: int) { box { if depth > 0 { Tree depth - 1 } } }
-   ╰────
-  help: a component cannot always contain itself; render the inner one under an `if` or `for`
+    ╭─[cycle_component.strand:9:21]
+  7 │ component C { row { C; C } }
+  8 │ component D { row { E } }
+    ·           ┬
+    ·           ╰── the component `D`
+  9 │ component E { col { D } }
+    ·                     ┬
+    ·                     ╰── mounts `D` again, unconditionally
+ 10 │ component Tree(depth: int) { box { if depth > 0 { Tree depth - 1 } } }
+    ╰────
+  help: a component cannot always contain itself; render the inner one under an `if`, `for`,
+        `match`, a `page`, a `tooltip` or a `popup`
+
+check::cycle
+
+  × static cycle: `Framed` → `Framed`
+    ╭─[cycle_component.strand:24:28]
+ 23 │ component Frame { box { slot } }
+ 24 │ component Framed { Frame { Framed } }
+    ·           ───┬──           ───┬──
+    ·              │                ╰── mounts `Framed` again, unconditionally
+    ·              ╰── the component `Framed`
+ 25 │ component Outer { Frame { slot } }
+    ╰────
+  help: a component cannot always contain itself; render the inner one under an `if`, `for`,
+        `match`, a `page`, a `tooltip` or a `popup`
+
+check::cycle
+
+  × static cycle: `Wrapped` → `Wrapped`
+    ╭─[cycle_component.strand:26:29]
+ 25 │ component Outer { Frame { slot } }
+ 26 │ component Wrapped { Outer { Wrapped } }
+    ·           ───┬───           ───┬───
+    ·              │                 ╰── mounts `Wrapped` again, unconditionally
+    ·              ╰── the component `Wrapped`
+ 27 │ bar B { edge: top; height: 32; C; D; Tree 3; Menu; Hint; Folders; Lazy; Popped; Framed; Wrapped }
+    ╰────
+  help: a component cannot always contain itself; render the inner one under an `if`, `for`,
+        `match`, a `page`, a `tooltip` or a `popup`
