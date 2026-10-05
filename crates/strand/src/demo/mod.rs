@@ -7,7 +7,10 @@ pub mod host;
 pub mod logic;
 pub mod scene;
 
+use std::cell::Cell;
 use std::fmt;
+use std::rc::Rc;
+use std::time::Duration;
 
 use calloop::channel::Event;
 use strand_render::{Renderer, TextBackend};
@@ -63,14 +66,46 @@ fn apply(state: &mut State<Host>, diff: SceneDiff) {
     state.poll();
 }
 
-/// Run the demo bar until the compositor goes away.
+/// How long a new bar holds its first frame for text being shaped. The
+/// renderer's default (50 ms) can run out at boot under load, while the
+/// text worker loads fonts; the bar then shows a stand-in layout and
+/// repaints its text a moment later. Half a second is still well before
+/// anyone looks for the bar.
+pub const FIRST_FRAME_TEXT_WAIT: Duration = Duration::from_millis(500);
+
+/// The Wayland connection is gone (the compositor quit or crashed): the
+/// normal end of a shell's life, not a failure.
+fn connection_closed(e: &SurfaceError) -> bool {
+    let SurfaceError::EventLoop(e) = e else {
+        return false;
+    };
+    let mut cause: Option<&(dyn std::error::Error + 'static)> = Some(e);
+    while let Some(c) = cause {
+        if let Some(io) = c.downcast_ref::<std::io::Error>()
+            && matches!(
+                io.kind(),
+                std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::UnexpectedEof
+            )
+        {
+            return true;
+        }
+        cause = c.source();
+    }
+    false
+}
+
+/// Run the demo bar until the compositor goes away (then `Ok`), or until
+/// the logic thread fails (then its error).
 pub fn run(log: &LogConfig) -> Result<(), DemoError> {
     // Text worker, waking the main loop when layouts arrive (step 1–2).
     let (ping, ping_source) = calloop::ping::make_ping()?;
     let worker =
         TextWorker::spawn_with_waker(FontConfig::default(), Some(Box::new(move || ping.ping())))
             .map_err(DemoError::Text)?;
-    let renderer = Renderer::new(TextBackend::Worker(worker));
+    let mut renderer = Renderer::new(TextBackend::Worker(worker));
+    renderer.set_first_frame_wait(FIRST_FRAME_TEXT_WAIT);
     let mut mgr = SurfaceManager::connect(Host::new(renderer, log.damage), Config::default())?;
     let handle = mgr.loop_handle();
     handle
@@ -85,22 +120,33 @@ pub fn run(log: &LogConfig) -> Result<(), DemoError> {
     let logic = std::thread::Builder::new()
         .name("strand-logic".into())
         .spawn(move || logic::run(tx))?;
+    // The sender drops when the logic thread returns or panics, before
+    // std marks the thread finished: the loop ends on that, not on
+    // `is_finished`, so it never blocks on a loop nothing will wake.
+    let hung_up = Rc::new(Cell::new(false));
+    let flag = Rc::clone(&hung_up);
     handle
-        .insert_source(rx, |event, _, state| match event {
+        .insert_source(rx, move |event, _, state| match event {
             Event::Msg(diff) => apply(state, diff),
-            Event::Closed => log::error!("logic thread hung up"),
+            Event::Closed => flag.set(true),
         })
         .map_err(|e| DemoError::Io(std::io::Error::other(e.error)))?;
 
-    loop {
-        if logic.is_finished() {
-            return match logic.join() {
-                Ok(Ok(())) => Err(DemoError::Logic("ended".into())),
-                Ok(Err(e)) => Err(DemoError::Logic(e.to_string())),
-                Err(_) => Err(DemoError::Logic("panicked".into())),
-            };
+    while !hung_up.get() {
+        match mgr.dispatch(None) {
+            Ok(()) => {}
+            Err(e) if connection_closed(&e) => {
+                log::info!("the compositor went away: {e}");
+                return Ok(());
+            }
+            Err(e) => return Err(e.into()),
         }
-        mgr.dispatch(None)?;
+    }
+    // The thread is past its last send: joining does not block for long.
+    match logic.join() {
+        Ok(Ok(())) => Err(DemoError::Logic("ended".into())),
+        Ok(Err(e)) => Err(DemoError::Logic(e.to_string())),
+        Err(_) => Err(DemoError::Logic("panicked".into())),
     }
 }
 
@@ -114,6 +160,20 @@ mod tests {
     use super::*;
 
     const GATE: u64 = 2000;
+
+    #[test]
+    fn a_closed_connection_is_a_normal_end() {
+        let gone =
+            |kind| SurfaceError::EventLoop(calloop::Error::IoError(std::io::Error::from(kind)));
+        assert!(connection_closed(&gone(std::io::ErrorKind::BrokenPipe)));
+        assert!(connection_closed(&gone(
+            std::io::ErrorKind::ConnectionReset
+        )));
+        assert!(!connection_closed(&gone(
+            std::io::ErrorKind::PermissionDenied
+        )));
+        assert!(!connection_closed(&SurfaceError::MissingGlobal("wl_shm")));
+    }
 
     fn renderer() -> Renderer {
         let font = std::fs::read(test_font_path()).unwrap();

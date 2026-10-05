@@ -3,26 +3,32 @@
 Measured 2026-10-05 on the dev container (Intel Xeon @ 2.10 GHz, 4 vCPUs
 shared with another build), headless sway 1.x with the pixman renderer,
 release build of `strand run --demo` (thin LTO, one codegen unit,
-mimalloc). Reproduce with `scripts/m0-exit.sh` (about 3 minutes plus the
-benchmark; `--no-bench` skips it). The script exits non-zero when a gate
-fails.
+mimalloc). Reproduce with `scripts/m0-exit.sh` (about 4 minutes plus the
+benchmark; `--no-bench` skips it, `--no-third` the hotplug scenario). The
+script exits non-zero when a gate fails. Numbers below are from review
+round 1: one full run plus five more boots with `--ticks 1 --no-third`.
 
 ## Result
 
 | Gate | Budget | Measured | |
 | --- | --- | --- | --- |
-| PSS, bar on 2 × 2560×1440 (scales 1.0 and 1.25) | ≤ 34 MB | **21.3–21.4 MB** (21,818 / 21,905 kB in two runs) after two ticks; 20.7 MB right after boot | pass |
-| Wakeups between minute ticks | 0 | **0** context switches over :03 → :57, in each of four measured minutes (two runs) | pass |
-| Damage per clock tick | ≤ 2,000 px² | **444–456 px²** at 1.0 (37–38×12), **705 px²** at 1.25 (47×15); at most 1,161 px² for both outputs together | pass |
+| PSS, bar on 2 × 2560×1440 (scales 1.0 and 1.25) | ≤ 34 MB | **21.3–21.6 MB** (21,834–22,066 kB in six runs) after the ticks; 20.6–20.8 MB right after boot | pass |
+| Wakeups between minute ticks | 0 | **0** context switches over :03 → :57, in each of seven measured minutes (six runs) | pass |
+| Damage per clock tick | ≤ 2,000 px² | **444–456 px²** at 1.0 (37–38×12), **690–705 px²** at 1.25 (46–47×15); 1,134–1,161 px² for both outputs together, also gated | pass |
 
-Every frame after boot, including the first tick (age 1, 444 / 705 px²),
-is within the damage gate (`target/m0-exit/strand.log` after a run lists them).
+In all six boots the two boot frames were the only full repaints: every
+later frame, the first tick included (age 1), stayed within the gate, and
+every tick's damage was centred on its bar. After hotplugging a third
+output of another width at the same scale (HEADLESS-3, 1920×1080 at 1.0)
+only the new bar painted, and the next tick repainted 456 / 705 / 444 px²
+on the three bars, each centred (clock at x = 1262, 1257 and 942).
 
 ![The demo bar at scale 1.0](images/m0-bar.png)
 
 `docs/images/m0-bar.png` is the bar on HEADLESS-1 (1.0, 2560×32);
 `docs/images/m0-bar-125.png` the one on HEADLESS-2 (1.25, 2560×40
-physical). Both are grim captures from the script run.
+physical); `docs/images/m0-bar-1920.png` the hotplugged HEADLESS-3 (1.0,
+1920×32). All are grim captures from the script run.
 
 ## What runs
 
@@ -33,9 +39,11 @@ as `architecture.md` says:
 
 - **Logic thread** (`crates/strand/src/demo/logic.rs`): a `strand-core`
   runtime with the minute as a `Signal<i64>`, a `Memo` formatting it and
-  an `Effect` (the scene emitter) appending a `SetProp(text)` to the
-  tick's `SceneDiff`. At most one diff per tick goes over a calloop
-  channel. The thread sleeps in `epoll` on a `CLOCK_REALTIME` timerfd
+  the scene emitter, which watches the memo (`rt.watch`) and turns
+  `Tick::changed` into a `SetProp(text)` in the tick's `SceneDiff`, the
+  path `architecture.md` fixes for the compiler's emitter (and the one the
+  benchmark's "narrow path + watch" case measures). At most one diff per
+  tick goes over a calloop channel. The thread sleeps in `epoll` on a `CLOCK_REALTIME` timerfd
   armed at the absolute next minute (`TFD_TIMER_ABSTIME |
   TFD_TIMER_CANCEL_ON_SET`; `crates/strand/src/demo/clock.rs`), plus the
   runtime's own deadline and wake hook (unused by the demo).
@@ -54,29 +62,45 @@ as `architecture.md` says:
    HEADLESS-1 at 2560×1440 scale 1, then `swaymsg create_output` and
    `output HEADLESS-2 resolution 2560x1440 scale 1.25`.
 2. Runs `STRAND_LOG=damage strand run --demo`, which prints one line per
-   committed frame: surface, buffer size, scale, buffer age and the damage
+   painted frame: surface, buffer size, scale, buffer age and the damage
    submitted with `damage_buffer` (already widened by buffer age) with its
-   exact area (`Damage::area`, overlaps counted once).
+   exact area (`Damage::area`, overlaps counted once); a `dropped` line
+   follows if that frame's commit fails (none did). Boot is over once no
+   new frame has been logged for 500 ms.
 3. **Wakeups**: from second :03 to :57 of a minute (so no tick is inside),
    sums `voluntary_ctxt_switches + nonvoluntary_ctxt_switches` over every
    `/proc/<pid>/task/*/status` at both ends, and prints them per thread.
    Two such windows are measured.
 4. **Damage**: the frames logged after each minute boundary; the gate is
-   per committed frame (one per surface), and the script also gates the
-   largest frame over everything after boot.
+   applied per frame (one per surface) and to the tick's total over all
+   outputs, every frame after boot is held to it, and each tick's damage
+   must be centred on its bar (within 5% of the width), which catches a
+   clock laid out for another width.
 5. **PSS**: `Pss:` from `/proc/<pid>/smaps_rollup` after the two ticks,
    plus a per-mapping breakdown from `smaps`.
-6. grim captures of both bars, then `cargo bench -p strand-core --bench
-   graph`.
+6. grim captures of both bars.
+7. **Third output**: hotplugs HEADLESS-3 at 1920×1080, scale 1.0 (the
+   same scale as HEADLESS-1, another width): only the new bar may paint,
+   then the next tick must give one centred frame per bar within the
+   gate. Then `cargo bench -p strand-core --bench graph`.
 
 Automated tests cover the same ground in `cargo test` without the full
-minute: `crates/strand/tests/demo.rs` (the binary on sway with two outputs,
-the clock drawn, zero context switches over 2 s of idle),
+minute: `crates/strand/tests/demo.rs` (the debug binary on sway with two
+2560×1440 outputs at 1.0 and 1.25: PSS ≤ 34 MB (about 31 MB in debug),
+both bars' clock centred and end text at the edge on grim captures, zero
+context switches over 2 s of idle, then a hotplugged 1920×1080 output at
+1.0 aligned to its own width while the others stay put; it prints a
+loud SKIPPED when sway or grim is missing),
+`crates/strand-render` (`one_text_on_two_widths_at_one_scale_aligns_on_each`,
+`new_surface_of_another_width_waits_for_its_own_layout`,
+`stand_in_of_another_width_is_realigned`),
 `crates/strand/src/demo/mod.rs` (`a_minute_tick_repaints_at_most_2000_px2`:
 offline, 2560 px wide at 1.0 and 1.25, tick damage ≤ 2,000 px² and the
 incremental frames equal a full repaint), `crates/strand/src/demo/clock.rs`
 and `logic.rs` (minute boundaries, the timerfd, one diff with one prop per
-tick, equality cut-off, idle with no deadline).
+tick, equality cut-off, idle with no deadline, and the real thread loop
+on a 200 ms period: one diff per boundary, never early, ending once the
+receiver hangs up).
 
 ## Details
 
@@ -121,9 +145,42 @@ first, repaints ≤ 4 × 20 × 20 px²); the existing
 `renders_pixels_with_exact_damage` still checks that every buffer holds
 the frame its age claims.
 
+## Missed in review: one bar layout for every width
+
+Review round 1 found two failures the first measurement setup could not
+see, both from one cause in `strand-render`: text layouts were cached per
+(node, scale), but `center` and `end` alignment happen inside the shaped
+line box, whose width is the surface's. The demo shows one bar node on
+every output, so:
+
+- two outputs at the **same scale but different widths** (2560 and 1920
+  at 1.0, the most common pair) drew whichever width was shaped last on
+  both bars: on one, the clock sat off-centre and the end text was drawn
+  off-screen. The gate setup (two 2560 outputs at different scales) and
+  the old `demo.rs` (two 1280 outputs at different scales) never had two
+  widths at one scale.
+- at boot, the 1.25 bar's first frame could borrow the 1.0 bar's layout
+  (shaped for 2560 logical px against its 2048) as a stand-in while its
+  own was shaped; a correction frame followed (3,738 px²), and because the
+  next buffer had age 2 the first tick on that output repainted tick ∪
+  correction = 3,738 px², over the gate. About 1 boot in 5–10 under load;
+  the previous report's clean first tick was a lucky run.
+
+Fix (gate fix in `strand-render`, see `docs/decisions.md`, m0): layouts
+are keyed by node, scale and line box width; a surface draws the one for
+its own scale and width; a not-yet-painted surface holds its first frame
+until that exact layout arrives (up to the first-frame wait, 500 ms in
+the demo); a stand-in from another scale or width, drawn only by a
+surface that already painted, is resampled and shifted so its alignment
+lands where the right one's would; slots no surface wants are pruned.
+The script now waits for boot to go quiet before counting, gates the
+per-tick total and centring, and runs the third-output scenario; the six
+boots above had no correction frame.
+
 ## strand-core 10k-node benchmark
 
-`cargo bench -p strand-core --bench graph` in the same run (criterion
+`cargo bench -p strand-core --bench graph`, from the first measurement
+run (strand-core is unchanged since; criterion
 median; graph and cases described in `docs/benchmarks.md`):
 
 | Case | Time |
@@ -141,9 +198,14 @@ These match the numbers recorded by the core track within noise.
 
 ## Open
 
-- The budgets run from `scripts/m0-exit.sh` by hand; the design's "build
-  fails above 34 MB on every push" needs the CI container to have sway and
-  grim (not yet).
+- The budgets are enforced on every `cargo test` where sway and grim are
+  installed (`crates/strand/tests/demo.rs` asserts PSS ≤ 34 MB, idle and
+  alignment), but the CI image has neither, so in CI the test prints
+  SKIPPED and the design's "build fails above 34 MB on every push" does
+  not hold yet. Proposed to the owner of `.github/workflows/ci.yml`: a
+  step `sudo apt-get install -y sway grim fonts-dejavu-core` before
+  `cargo test`. Tracked as an unticked item under M3 in
+  `docs/features.md`.
 - Measured on sway with pixman only. Compositors that release shm buffers
   right after upload (GPU renderers) reuse the same buffer at age 1, which
   the copy-forward path does not change.

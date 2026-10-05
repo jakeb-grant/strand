@@ -40,6 +40,46 @@ pub struct TextSpec {
     pub scale: Scale,
 }
 
+/// A delivered layout of a text node and the line box width it was shaped
+/// for. A node shown on several surfaces can have one per scale and width:
+/// alignment (`center`, `end`) happens inside the line box, so a layout
+/// shaped for one width is wrong on a surface of another.
+#[derive(Clone, Debug)]
+pub struct Shaped {
+    pub layout: Arc<TextLayout>,
+    pub max_width: Option<f32>,
+}
+
+/// The layout to draw for a node whose spec wants `scale` and `max_width`,
+/// and the logical x shift that re-aligns it. Prefers an exact match, then
+/// the same width at another scale (drawn resampled), then a stand-in of
+/// another width, shifted so its `center`/`end` alignment lands where the
+/// right width's would.
+fn pick_layout(
+    shaped: &[Shaped],
+    scale: Scale,
+    max_width: Option<f32>,
+    align: TextAlign,
+) -> Option<(Arc<TextLayout>, f32)> {
+    let same_w = |c: &&Shaped| c.max_width == max_width;
+    let same_s = |c: &&Shaped| c.layout.scale == scale;
+    let c = shaped
+        .iter()
+        .find(|c| same_w(c) && same_s(c))
+        .or_else(|| shaped.iter().find(same_w))
+        .or_else(|| shaped.iter().find(same_s))
+        .or_else(|| shaped.first())?;
+    let shift = match (c.max_width, max_width) {
+        (Some(old), Some(new)) => match align {
+            TextAlign::Center => (new - old) / 2.0,
+            TextAlign::End => new - old,
+            _ => 0.0,
+        },
+        _ => 0.0,
+    };
+    Some((c.layout.clone(), shift))
+}
+
 /// One drawing command in physical pixels.
 #[derive(Clone, Debug)]
 pub enum Item {
@@ -128,13 +168,13 @@ struct Inherited<'a> {
 }
 
 /// Flattens the subtree under `root` for a surface of `size` at `scale`.
-/// `layouts` holds the last delivered text layout per node.
+/// `layouts` holds the delivered text layouts per node (see [`Shaped`]).
 pub fn flatten(
     tree: &SceneTree,
     root: NodeId,
     size: Size,
     scale: Scale,
-    layouts: &HashMap<NodeId, Arc<TextLayout>>,
+    layouts: &HashMap<NodeId, Vec<Shaped>>,
 ) -> Flattened {
     let mut out = Flattened::default();
     let Some(node) = tree.get(root) else {
@@ -180,7 +220,7 @@ struct Flattener<'a> {
     tree: &'a SceneTree,
     scale: Scale,
     surface: Rect,
-    layouts: &'a HashMap<NodeId, Arc<TextLayout>>,
+    layouts: &'a HashMap<NodeId, Vec<Shaped>>,
     out: &'a mut Flattened,
 }
 
@@ -654,14 +694,19 @@ impl<'a> Flattener<'a> {
                     scale: self.scale,
                 },
             ));
-            layout = self.layouts.get(&node.id).cloned();
+            layout = self
+                .layouts
+                .get(&node.id)
+                .and_then(|l| pick_layout(l, self.scale, max_width, align));
         }
 
         // Geometry.
         let rect = if root {
             parent
         } else {
-            let (lw, lh) = layout.as_ref().map_or((0.0, 0.0), |l| (l.size.w, l.size.h));
+            let (lw, lh) = layout
+                .as_ref()
+                .map_or((0.0, 0.0), |(l, _)| (l.size.w, l.size.h));
             let x = parent.x + length(get(Prop::X), parent.w).unwrap_or(0.0);
             let y = parent.y + length(get(Prop::Y), parent.h).unwrap_or(0.0);
             LogicalRect::new(
@@ -750,16 +795,18 @@ impl<'a> Flattener<'a> {
             );
         }
         // Text.
-        if let Some(l) = layout {
-            // A layout from another scale is drawn resampled (see raster).
+        if let Some((l, shift)) = layout {
+            // A layout from another scale is drawn resampled (see raster);
+            // one shaped for another line box width is shifted to re-align.
+            let x = phys.x + (shift as f64 * s).round().clamp(-1e7, 1e7) as i32;
             let k = self.scale.as_f64() / l.scale.as_f64();
             let bounds = if k == 1.0 {
-                l.ink.translate(phys.x, phys.y)
+                l.ink.translate(x, phys.y)
             } else {
                 cover(kurbo::Rect::new(
-                    phys.x as f64 + l.ink.left() as f64 * k,
+                    x as f64 + l.ink.left() as f64 * k,
                     phys.y as f64 + l.ink.top() as f64 * k,
-                    phys.x as f64 + l.ink.right() as f64 * k,
+                    x as f64 + l.ink.right() as f64 * k,
                     phys.y as f64 + l.ink.bottom() as f64 * k,
                 ))
                 .inflate(1)
@@ -767,7 +814,7 @@ impl<'a> Flattener<'a> {
             if !bounds.is_empty() {
                 self.push(
                     Item::Glyphs {
-                        x: phys.x,
+                        x,
                         y: phys.y,
                         layout: l,
                         color,
@@ -904,6 +951,82 @@ mod tests {
             .set(id(1), Prop::Bg, PropValue::Color(Color::BLACK));
         assert!(t.apply(d).is_empty());
         t
+    }
+
+    /// A layout shaped for another line box width stands in shifted so its
+    /// alignment lands where the right width's would; one of the right
+    /// width (even at another scale) is preferred.
+    #[test]
+    fn stand_in_of_another_width_is_realigned() {
+        use strand_text::{FontConfig, TextEngine, TextKey, TextRequest, test_font_path};
+        let data = std::fs::read(test_font_path()).unwrap();
+        let mut engine = TextEngine::new(FontConfig::isolated(vec![Arc::new(data)]));
+        let mut t = SceneTree::new();
+        let mut d = SceneDiff::new();
+        d.create(id(0), NodeKind::Bar, None, 0)
+            .create(id(1), NodeKind::Text, Some(id(0)), 0)
+            .set(id(1), Prop::Text, PropValue::Text("12:59".into()))
+            .set(
+                id(1),
+                Prop::Width,
+                PropValue::Length(Length::Percent(100.0)),
+            );
+        assert!(t.apply(d).is_empty());
+        let x_of = |t: &SceneTree, size: Size, layouts: &HashMap<NodeId, Vec<Shaped>>| {
+            let f = flatten(t, id(0), size, Scale::ONE, layouts);
+            let spec = f.text[0].1.clone();
+            let x = f.items.iter().find_map(|i| match &i.item {
+                Item::Glyphs { x, .. } => Some(*x),
+                _ => None,
+            });
+            (spec, x)
+        };
+        for (align, want) in [("start", 0), ("center", -50), ("end", -100)] {
+            t.apply_op(SceneOp::SetProp {
+                id: id(1),
+                prop: Prop::Align,
+                value: PropValue::Keyword(align.into()),
+                transition: Transition::Instant,
+            })
+            .unwrap();
+            // Shaped for a 300 px wide surface.
+            let (spec, _) = x_of(&t, Size::new(300, 20), &HashMap::new());
+            let wide = Arc::new(engine.layout(&TextRequest {
+                key: TextKey(1),
+                text: spec.text.clone(),
+                style: spec.style.clone(),
+                max_width: spec.max_width,
+                scale: Scale::ONE,
+            }));
+            let mut layouts = HashMap::new();
+            layouts.insert(
+                id(1),
+                vec![Shaped {
+                    layout: wide.clone(),
+                    max_width: Some(300.0),
+                }],
+            );
+            assert_eq!(x_of(&t, Size::new(300, 20), &layouts).1, Some(0));
+            // Drawn on a 200 px surface until its own layout arrives.
+            assert_eq!(
+                x_of(&t, Size::new(200, 20), &layouts).1,
+                Some(want),
+                "{align}"
+            );
+            // The right width at another scale wins over the wrong width.
+            let other = Shaped {
+                layout: Arc::new(engine.layout(&TextRequest {
+                    key: TextKey(2),
+                    text: spec.text.clone(),
+                    style: spec.style.clone(),
+                    max_width: Some(200.0),
+                    scale: Scale::new(240).unwrap(),
+                })),
+                max_width: Some(200.0),
+            };
+            layouts.get_mut(&id(1)).unwrap().push(other);
+            assert_eq!(x_of(&t, Size::new(200, 20), &layouts).1, Some(0), "{align}");
+        }
     }
 
     #[test]

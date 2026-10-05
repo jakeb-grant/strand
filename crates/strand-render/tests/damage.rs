@@ -1335,3 +1335,77 @@ fn atlas_mirror_stays_bounded() {
         r.atlas_mirror_bytes(Scale::ONE)
     );
 }
+
+/// A bar with its clock centred in a full-width text (the demo's `split`).
+fn centred_bar(clock: &str) -> SceneDiff {
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Bar,
+        None,
+        vec![
+            (Prop::Bg, color("#1e1e2e")),
+            (Prop::Color, color("#cdd6f4")),
+            (Prop::Font, PropValue::Font(font(13.0))),
+        ],
+    );
+    b.node(
+        NodeKind::Text,
+        Some(root),
+        vec![
+            (Prop::Y, num(10.0)),
+            (Prop::Width, PropValue::Length(Length::Percent(100.0))),
+            (Prop::Align, PropValue::Keyword("center".into())),
+            (Prop::Text, text(clock)),
+        ],
+    );
+    b.diff
+}
+
+/// With the text worker: a surface added at the same scale as a painted
+/// one but another width (a 1920 monitor next to a 2560 one) holds its
+/// first frame for its own layout, since the other width's is aligned
+/// for the wrong line box, and then shows exactly a fresh render; the
+/// first surface keeps its own layout and does not repaint.
+#[test]
+fn new_surface_of_another_width_waits_for_its_own_layout() {
+    use std::time::Duration;
+    const WIDE: SurfaceId = SurfaceId(1);
+    const NARROW: SurfaceId = SurfaceId(2);
+    let mut r = worker_renderer();
+    r.set_first_frame_wait(Duration::from_secs(30));
+    assert!(r.apply(centred_bar("12:59")).is_empty());
+    let root = r.tree().roots()[0];
+    r.attach_surface(WIDE, root);
+    r.configure_surface(WIDE, Size::new(2560, 32), Scale::ONE);
+    assert!(r.wait_for_text(Duration::from_secs(10)));
+    let mut wide = Buffer::new(2560, 32, Scale::ONE);
+    wide.paint(&mut r, WIDE, 0);
+
+    r.attach_surface(NARROW, root);
+    r.configure_surface(NARROW, Size::new(1920, 32), Scale::ONE);
+    assert!(!r.wants_frame(NARROW), "no first frame with a stand-in");
+    assert!(r.frame_deadline(NARROW).is_some());
+    assert!(r.wait_for_text(Duration::from_secs(10)));
+    assert!(r.wants_frame(NARROW));
+    assert!(!r.wants_frame(WIDE), "the wide bar keeps its layout");
+    let mut narrow = Buffer::new(1920, 32, Scale::ONE);
+    narrow.paint(&mut r, NARROW, 0);
+    let (_, want) = fresh(centred_bar("12:59"), 1920, 32, Scale::ONE);
+    assert!(narrow.pixels == want.pixels, "the narrow bar is centred");
+
+    // A tick: each bar repaints only its own clock, centred on it.
+    let clock = r.tree().get(root).unwrap().children[0];
+    let mut d = SceneDiff::new();
+    d.set(clock, Prop::Text, text("13:00"));
+    assert!(r.apply(d).is_empty());
+    assert!(r.wait_for_text(Duration::from_secs(10)));
+    for (id, buf, w) in [(WIDE, &mut wide, 2560), (NARROW, &mut narrow, 1920)] {
+        let d = buf.paint(&mut r, id, 1);
+        let b = d.bounds().unwrap();
+        let c = b.x + b.w as i32 / 2;
+        assert!((c - w / 2).abs() < 8, "{w}: damage {b:?} off centre");
+        assert!(d.area() <= 2000, "{w}: {}", d.area());
+        let (_, want) = fresh(centred_bar("13:00"), w as u32, 32, Scale::ONE);
+        assert!(buf.pixels == want.pixels, "{w}: tick differs from fresh");
+    }
+}

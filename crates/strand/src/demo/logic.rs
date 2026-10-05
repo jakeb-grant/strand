@@ -1,7 +1,9 @@
 //! The logic thread of the demo: a `strand-core` runtime holding the clock
-//! as a `Signal`, a `Memo` formatting it and an `Effect` (the scene emitter)
-//! turning each change into a `SceneDiff`, sent to the main thread once per
-//! tick (`docs/architecture.md`, "Threads").
+//! as a `Signal`, a `Memo` formatting it and the scene emitter at the edge,
+//! which watches the memo (`rt.watch`) and turns `Tick::changed` into
+//! `SetProp`s, as `docs/architecture.md` specifies for the compiler's
+//! emitter. One `SceneDiff` per tick goes to the main thread
+//! (`docs/architecture.md`, "Threads").
 //!
 //! The thread sleeps in `epoll` on a wall-clock timerfd armed for the next
 //! minute boundary, plus whatever the runtime itself schedules
@@ -9,15 +11,14 @@
 
 use std::cell::RefCell;
 use std::io;
-use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use calloop::generic::Generic;
 use calloop::{EventLoop, Interest, Mode, PostAction};
-use strand_core::{Runtime, Signal};
-use strand_scene::SceneDiff;
+use strand_core::{Memo, NodeId, Runtime, Signal};
+use strand_scene::{Prop, PropValue, SceneDiff};
 
-use super::clock::{Fired, WallTimer};
+use super::clock::{Fired, MINUTE, WallTimer};
 use super::scene;
 
 /// `clock.format("%H:%M")` for a Unix minute, in local time.
@@ -34,7 +35,10 @@ pub fn format_local(minute: i64) -> String {
 pub struct Logic {
     rt: Runtime,
     minute: Signal<i64>,
-    out: Rc<RefCell<SceneDiff>>,
+    /// Watched memos and the scene prop each one is bound to.
+    bindings: Vec<(Memo<String>, strand_scene::NodeId, Prop)>,
+    /// The boot diff, sent with the first tick.
+    boot: RefCell<SceneDiff>,
 }
 
 impl std::fmt::Debug for Logic {
@@ -44,23 +48,27 @@ impl std::fmt::Debug for Logic {
 }
 
 impl Logic {
-    /// Build the graph: `minute` (state) → `clock` text (memo) → the
-    /// emitter (effect). The first tick emits the whole bar.
-    pub fn new(minute: i64, format: impl Fn(i64) -> String + 'static) -> Self {
+    /// Build the graph: `minute` (state) → `clock` text (memo), watched by
+    /// the emitter. The first tick emits the whole bar with the clock.
+    pub fn new(
+        minute: i64,
+        format: impl Fn(i64) -> String + 'static,
+    ) -> Result<Self, strand_core::Error> {
         let rt = Runtime::new();
         let minute = rt.signal(minute);
         rt.set_name(minute.id(), "clock.minute");
         let text = rt.memo(move |rt| Ok(format(minute.get(rt)?)));
         rt.set_name(text.id(), "clock.format(\"%H:%M\")");
-        let out = Rc::new(RefCell::new(scene::bar()));
-        let sink = Rc::clone(&out);
-        let emitter = rt.effect(move |rt| {
-            let text = text.get(rt)?;
-            sink.borrow_mut().ops.extend(scene::clock(&text).ops);
-            Ok(())
-        });
-        rt.set_name(emitter.id(), "scene emitter");
-        Self { rt, minute, out }
+        let watch = rt.watch(text.id())?;
+        rt.set_name(watch, "scene emitter: clock text");
+        let mut boot = scene::bar();
+        boot.ops.extend(scene::clock(&text.get_untracked(&rt)?).ops);
+        Ok(Self {
+            rt,
+            minute,
+            bindings: vec![(text, scene::CLOCK, Prop::Text)],
+            boot: RefCell::new(boot),
+        })
     }
 
     pub fn runtime(&self) -> &Runtime {
@@ -83,8 +91,26 @@ impl Logic {
         for d in &tick.diagnostics {
             log::warn!("logic: {d:?}");
         }
-        let diff = std::mem::take(&mut *self.out.borrow_mut());
+        let mut diff = std::mem::take(&mut *self.boot.borrow_mut());
+        for changed in &tick.changed {
+            self.emit(*changed, &mut diff);
+        }
         (!diff.is_empty()).then_some(diff)
+    }
+
+    /// The `SetProp` for a watched memo that changed.
+    fn emit(&self, changed: NodeId, diff: &mut SceneDiff) {
+        for (memo, node, prop) in &self.bindings {
+            if memo.id() != changed {
+                continue;
+            }
+            match memo.get_untracked(&self.rt) {
+                Ok(text) => {
+                    diff.set(*node, *prop, PropValue::Text(text));
+                }
+                Err(e) => log::error!("logic: {}: {e:?}", self.rt.name(changed)),
+            }
+        }
     }
 
     /// When the runtime next needs a tick without outside input.
@@ -106,10 +132,20 @@ impl DiffSink for calloop::channel::Sender<SceneDiff> {
 }
 
 /// Run the logic thread until the main thread hangs up.
-pub fn run(mut sink: impl DiffSink) -> io::Result<()> {
+pub fn run(sink: impl DiffSink) -> io::Result<()> {
+    run_with(sink, MINUTE, format_local)
+}
+
+/// [`run`] with the clock ticking every `period` (aligned to wall-clock
+/// multiples of it) and formatted by `format`; tests use short periods.
+pub fn run_with(
+    mut sink: impl DiffSink,
+    period: Duration,
+    format: impl Fn(i64) -> String + 'static,
+) -> io::Result<()> {
     let timer = WallTimer::new()?;
-    let minute = timer.arm_next_minute()?;
-    let logic = Logic::new(minute, format_local);
+    let minute = timer.arm_next(period)?;
+    let logic = Logic::new(minute, format).map_err(|e| io::Error::other(format!("{e:?}")))?;
 
     let mut event_loop: EventLoop<'_, Logic> = EventLoop::try_new().map_err(io::Error::other)?;
     let handle = event_loop.handle();
@@ -125,7 +161,7 @@ pub fn run(mut sink: impl DiffSink) -> io::Result<()> {
             |_, timer, logic: &mut Logic| {
                 match timer.read()? {
                     Fired::Expired | Fired::ClockChanged => {
-                        let minute = timer.arm_next_minute()?;
+                        let minute = timer.arm_next(period)?;
                         logic.set_minute(minute);
                     }
                     Fired::Nothing => {}
@@ -178,7 +214,7 @@ mod tests {
 
     #[test]
     fn first_tick_emits_the_bar_with_the_clock() {
-        let logic = Logic::new(12 * 60 + 34, fmt);
+        let logic = Logic::new(12 * 60 + 34, fmt).unwrap();
         let boot = logic.tick(Duration::ZERO).unwrap();
         assert!(matches!(
             boot.ops.first(),
@@ -193,7 +229,7 @@ mod tests {
 
     #[test]
     fn a_minute_tick_is_one_diff_with_one_text_prop() {
-        let logic = Logic::new(0, fmt);
+        let logic = Logic::new(0, fmt).unwrap();
         logic.tick(Duration::ZERO).unwrap();
         logic.set_minute(1);
         let diff = logic.tick(Duration::from_secs(60)).unwrap();
@@ -208,17 +244,29 @@ mod tests {
     fn equal_text_is_cut_off_at_the_memo() {
         // A format that ignores the minute: the memo recomputes but its
         // value does not change, so the emitter does not run.
-        let logic = Logic::new(0, |_| "same".into());
+        let logic = Logic::new(0, |_| "same".into()).unwrap();
         logic.tick(Duration::ZERO).unwrap();
         logic.set_minute(5);
         assert_eq!(logic.tick(Duration::from_secs(1)), None);
     }
 
+    /// `%H:%M` of the local time: the UTC minute moved by the local
+    /// offset at that instant, zero-padded.
     #[test]
     fn local_format_is_hours_and_minutes() {
-        let s = format_local(29_000_000);
-        assert_eq!(s.len(), 5, "{s}");
-        assert_eq!(s.as_bytes()[2], b':');
+        use chrono::{Local, Offset, TimeZone};
+        for minute in [0, 29_000_000, 29_000_000 + 9 * 60 + 5, 29_001_234] {
+            let offset = Local
+                .timestamp_opt(minute * 60, 0)
+                .earliest()
+                .unwrap()
+                .offset()
+                .fix()
+                .local_minus_utc() as i64;
+            let local = (minute * 60 + offset).div_euclid(60).rem_euclid(24 * 60);
+            let want = format!("{:02}:{:02}", local / 60, local % 60);
+            assert_eq!(format_local(minute), want);
+        }
     }
 
     struct Collect(std::sync::mpsc::Sender<SceneDiff>);
@@ -228,16 +276,38 @@ mod tests {
         }
     }
 
+    fn realtime_ns() -> i128 {
+        let t = super::super::clock::realtime_now();
+        t.tv_sec as i128 * 1_000_000_000 + t.tv_nsec as i128
+    }
+
+    /// The real loop on a 200 ms "minute": the boot diff at once, then one
+    /// diff per boundary, never before it, with the next period's text;
+    /// once the receiver is gone the next firing ends the thread with Ok.
     #[test]
-    fn the_thread_sends_the_boot_diff_and_ends_when_hung_up() {
+    fn the_thread_ticks_at_each_boundary_and_ends_when_hung_up() {
+        const P: Duration = Duration::from_millis(200);
         let (tx, rx) = std::sync::mpsc::channel();
-        let thread = std::thread::spawn(move || run(Collect(tx)));
+        let thread = std::thread::spawn(move || run_with(Collect(tx), P, |m| m.to_string()));
         let boot = rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert_eq!(texts(&boot).len(), 1);
+        let mut last: i64 = texts(&boot)[0].parse().unwrap();
+        for _ in 0..2 {
+            let diff = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            let now = realtime_ns();
+            assert_eq!(diff.ops.len(), 1, "{diff:?}");
+            // The next period (a later one only if the thread was starved).
+            let period: i64 = texts(&diff)[0].parse().unwrap();
+            assert!(period > last, "{period} after {last}");
+            last = period;
+            // Not before the boundary that starts this period.
+            assert!(now >= period as i128 * P.as_nanos() as i128);
+        }
         drop(rx);
-        // The next send (at the next minute) fails and the thread ends;
-        // that can be up to a minute away, so only check it is alive and
-        // not finished with an error.
-        assert!(!thread.is_finished() || thread.join().unwrap().is_ok());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !thread.is_finished() {
+            assert!(Instant::now() < deadline, "did not end after hang-up");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(thread.join().unwrap().is_ok());
     }
 }

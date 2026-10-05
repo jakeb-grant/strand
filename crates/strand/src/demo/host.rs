@@ -1,6 +1,7 @@
 //! The surface host: `strand-surface` calls it, it forwards to the
 //! renderer (`docs/architecture.md`, "Render loop"), and under
-//! `STRAND_LOG=damage` it logs the damage of every committed frame.
+//! `STRAND_LOG=damage` it logs the damage of every painted frame, and a
+//! `dropped` line for a painted frame whose commit then failed.
 
 use std::time::Instant;
 
@@ -32,7 +33,8 @@ impl Painter for Host {
                 .iter()
                 .map(|r| format!("{}x{}+{}+{}", r.w, r.h, r.x, r.y))
                 .collect();
-            // One line per committed frame, parsed by scripts/m0-exit.sh.
+            // One line per painted frame, parsed by scripts/m0-exit.sh;
+            // strand-surface commits it unless `frame_dropped` follows.
             eprintln!(
                 "strand: damage surface={} buffer={}x{} scale={} age={} area={} rects={}",
                 surface.0,
@@ -81,6 +83,9 @@ impl SurfaceHost for Host {
     }
 
     fn frame_dropped(&mut self, surface: SurfaceId) {
+        if self.log_damage {
+            eprintln!("strand: dropped surface={}", surface.0);
+        }
         self.renderer.invalidate(surface);
     }
 }

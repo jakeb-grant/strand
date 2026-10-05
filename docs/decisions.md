@@ -508,17 +508,20 @@ schema from `strand-compiler`).
   with the language in M1. `strand run` without `--demo` stays "not
   implemented (M1)": there is no config to run before the compiler.
 - 2026-10-05 · m0: the clock is a `strand-core` `Signal<i64>` of Unix
-  minutes, a `Memo` formatting it with chrono (`%H:%M`, local time) and an
-  `Effect` appending `SetProp(text)` to the tick's `SceneDiff`; the logic
-  thread sends at most one diff per tick over a calloop channel. It sleeps
+  minutes, a `Memo` formatting it with chrono (`%H:%M`, local time) and
+  the scene emitter at the edge, which (as `architecture.md` specifies
+  for the compiler's emitter) calls `rt.watch(memo.id())` and turns
+  `Tick::changed` into `SetProp(text)` in the tick's `SceneDiff`, rather
+  than a writing `Effect`; the logic thread sends at most one diff per
+  tick over a calloop channel. It sleeps
   on a `CLOCK_REALTIME` timerfd armed at the absolute next minute
   (`TFD_TIMER_ABSTIME | TFD_TIMER_CANCEL_ON_SET`, so a clock step wakes it
   to re-arm) plus `Runtime::next_deadline` and the runtime's wake hook.
   The real `clock` service (M3) takes this over.
-- 2026-10-05 · m0: gate readings. Damage "per tick" is checked per
-  committed frame, i.e. per surface, on the damage actually submitted
-  (already widened by buffer age); the script also prints the sum over
-  both outputs. "No wakeups" is zero growth of voluntary + involuntary
+- 2026-10-05 · m0: gate readings. Damage "per tick" is checked both per
+  committed frame (per surface) and as the sum over all outputs at a
+  tick, on the damage actually submitted (already widened by buffer
+  age); every frame after boot is also held to the gate. "No wakeups" is zero growth of voluntary + involuntary
   context switches summed over every thread of the process from :03 to
   :57 of a minute. PSS is `Pss:` of `smaps_rollup` after the bars are up
   and two ticks have passed.
@@ -532,4 +535,27 @@ schema from `strand-compiler`).
 - 2026-10-05 · m0: `STRAND_LOG` is a comma list of a level (`error`,
   `warn` (default), `info`, `debug`, `trace`, `off`) and topics; `damage`
   prints one `strand: damage surface=… buffer=WxH scale=… age=… area=…
-  rects=…` line per committed frame, which `scripts/m0-exit.sh` parses.
+  rects=…` line per painted frame, plus `strand: dropped surface=…` when
+  that frame's commit then fails; `scripts/m0-exit.sh` parses both.
+- 2026-10-05 · m0 (gate fix in strand-render): text layouts are keyed by
+  node, scale **and line box width** (`max_width`), not node and scale.
+  `center`/`end` alignment happens inside the shaped line box, so one bar
+  node on two outputs of the same scale but different widths (2560 and
+  1920 at 1.0, the common pair) drew whichever width was shaped last on
+  both: the clock off-centre and the end text off-screen on one bar. The
+  same cache let the 1.25 bar's first frame borrow the 1.0 bar's layout
+  shaped for 2560 logical px, a boot correction frame that a later tick
+  then repainted with (3,738 px², over the gate) about 1 boot in 5–10.
+  Now each surface draws the layout for its own scale and width; a
+  surface not yet painted holds its first frame for exactly that layout
+  (up to the first-frame wait), and a painted one, while its layout is
+  re-shaped, draws a stand-in from another scale or width resampled and
+  shifted so its alignment lands where the right one's would. Slots no
+  surface wants are pruned.
+- 2026-10-05 · m0: the demo holds a new bar's first frame up to 500 ms
+  for its text (the renderer's default is 50 ms), so a boot under load,
+  while the text worker loads fonts, still paints text-complete first
+  frames instead of a stand-in corrected a moment later.
+- 2026-10-05 · m0: `strand run --demo` exits 0 when the compositor goes
+  away (the Wayland connection reports a broken pipe or reset), and with
+  the logic thread's error as soon as that thread's channel closes.

@@ -9,24 +9,37 @@
 
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::time::Duration;
 
 use rustix::time::{
     ClockId, Itimerspec, TimerfdClockId, TimerfdFlags, TimerfdTimerFlags, Timespec, clock_gettime,
     timerfd_create, timerfd_settime,
 };
 
-/// Whole minutes since the Unix epoch of a wall-clock time (floored, so
-/// times before 1970 still land in the right minute).
-pub fn minute_of(now: Timespec) -> i64 {
-    now.tv_sec.div_euclid(60)
+/// One minute, the clock's tick period.
+pub const MINUTE: Duration = Duration::from_secs(60);
+
+fn nanos(t: Timespec) -> i128 {
+    t.tv_sec as i128 * 1_000_000_000 + t.tv_nsec as i128
 }
 
-/// The first minute boundary strictly after `now`.
-pub fn next_minute_boundary(now: Timespec) -> Timespec {
+fn timespec(ns: i128) -> Timespec {
     Timespec {
-        tv_sec: (minute_of(now) + 1) * 60,
-        tv_nsec: 0,
+        tv_sec: ns.div_euclid(1_000_000_000) as i64,
+        tv_nsec: ns.rem_euclid(1_000_000_000) as _,
     }
+}
+
+/// Whole periods since the Unix epoch of a wall-clock time (floored, so
+/// times before 1970 still land in the right period).
+pub fn period_of(now: Timespec, period: Duration) -> i64 {
+    nanos(now).div_euclid(period.as_nanos().max(1) as i128) as i64
+}
+
+/// The first period boundary strictly after `now`.
+pub fn next_boundary(now: Timespec, period: Duration) -> Timespec {
+    let p = period.as_nanos().max(1) as i128;
+    timespec((period_of(now, period) as i128 + 1) * p)
 }
 
 /// The current wall-clock time.
@@ -77,12 +90,24 @@ impl WallTimer {
         Ok(())
     }
 
-    /// Arm for the next minute boundary after the current time and return
-    /// the current minute ([`minute_of`]).
-    pub fn arm_next_minute(&self) -> io::Result<i64> {
-        let now = realtime_now();
-        self.arm_at(next_minute_boundary(now))?;
-        Ok(minute_of(now))
+    /// Arm for the next `period` boundary after the current time and
+    /// return the current period ([`period_of`]).
+    ///
+    /// `CANCEL_ON_SET` only reports clock changes made after the
+    /// `timerfd_settime`, so a step between reading the time and arming
+    /// would go unseen: the time is read again after arming, and if it
+    /// moved backwards or into another period, the timer is re-armed.
+    pub fn arm_next(&self, period: Duration) -> io::Result<i64> {
+        let mut now = realtime_now();
+        for _ in 0..4 {
+            self.arm_at(next_boundary(now, period))?;
+            let after = realtime_now();
+            if nanos(after) >= nanos(now) && period_of(after, period) == period_of(now, period) {
+                break;
+            }
+            now = after;
+        }
+        Ok(period_of(now, period))
     }
 
     /// Consume the readiness of the fd.
@@ -106,13 +131,21 @@ impl AsFd for WallTimer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     fn ts(sec: i64, nsec: i64) -> Timespec {
         Timespec {
             tv_sec: sec,
             tv_nsec: nsec,
         }
+    }
+
+    fn minute_of(t: Timespec) -> i64 {
+        period_of(t, MINUTE)
+    }
+
+    fn next_minute_boundary(t: Timespec) -> Timespec {
+        next_boundary(t, MINUTE)
     }
 
     #[test]
@@ -124,19 +157,26 @@ mod tests {
         // Before the epoch, floored.
         assert_eq!(minute_of(ts(-1, 0)), -1);
         assert_eq!(next_minute_boundary(ts(-1, 0)), ts(0, 0));
+        // Sub-second periods (tests run the logic thread on them).
+        let p = Duration::from_millis(250);
+        assert_eq!(period_of(ts(1, 300_000_000), p), 5);
+        assert_eq!(next_boundary(ts(1, 300_000_000), p), ts(1, 500_000_000));
+        assert_eq!(next_boundary(ts(1, 750_000_000), p), ts(2, 0));
     }
 
     #[test]
     fn timer_sleeps_until_its_absolute_time() {
         let timer = WallTimer::new().unwrap();
         assert_eq!(timer.read().unwrap(), Fired::Nothing);
+        // Monotonic start first: a preemption before reading the wall
+        // clock can only lengthen the measured wait.
+        let start = Instant::now();
         let now = realtime_now();
         let mut at = ts(now.tv_sec, now.tv_nsec + 80_000_000);
         if at.tv_nsec >= 1_000_000_000 {
             at.tv_sec += 1;
             at.tv_nsec -= 1_000_000_000;
         }
-        let start = Instant::now();
         timer.arm_at(at).unwrap();
         let mut fds = [rustix::event::PollFd::new(
             &timer,
@@ -146,6 +186,7 @@ mod tests {
         assert_eq!(n, 1);
         let waited = start.elapsed();
         assert!(waited >= Duration::from_millis(70), "{waited:?}");
+        assert!(nanos(realtime_now()) >= nanos(at));
         assert_eq!(timer.read().unwrap(), Fired::Expired);
         assert_eq!(timer.read().unwrap(), Fired::Nothing);
     }

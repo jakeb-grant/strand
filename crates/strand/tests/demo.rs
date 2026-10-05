@@ -1,7 +1,10 @@
-//! `strand run --demo` end to end on a headless sway with two outputs (the
-//! second at scale 1.25): a bar on each, the clock drawn, and no wakeups
-//! while idle. Skipped when sway is not installed. `scripts/m0-exit.sh`
-//! measures the full M0 gates (PSS, a whole minute, the tick's damage).
+//! `strand run --demo` end to end on a headless sway: two 2560x1440 outputs
+//! (the second at scale 1.25) within the 34 MB PSS budget, a bar on each
+//! with its clock centred, no wakeups while idle, then a third output of
+//! another width at scale 1 (hotplugged) whose bar is aligned to its own
+//! width. Skipped, loudly, when sway or grim is not installed.
+//! `scripts/m0-exit.sh` measures the full M0 gates on a release build (a
+//! whole minute, the tick's damage).
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -32,9 +35,13 @@ impl Drop for Sway {
 
 impl Sway {
     fn start() -> Option<Self> {
-        if Command::new("sway").arg("--version").output().is_err() {
-            eprintln!("skipping: sway is not installed");
-            return None;
+        for tool in ["sway", "swaymsg", "grim"] {
+            if Command::new(tool).arg("--version").output().is_err() {
+                eprintln!(
+                    "\n*** SKIPPED: {tool} is not installed; the M0 PSS, idle and alignment checks did not run ***\n"
+                );
+                return None;
+            }
         }
         // Short: the IPC socket path must fit in sun_path.
         let dir = std::env::temp_dir().join(format!("strand-demo-{}", std::process::id()));
@@ -43,7 +50,7 @@ impl Sway {
         let cfg = dir.join("sway.cfg");
         std::fs::write(
             &cfg,
-            "xwayland disable\noutput HEADLESS-1 resolution 1280x720 scale 1\n",
+            "xwayland disable\noutput HEADLESS-1 resolution 2560x1440 position 0 0 scale 1\n",
         )
         .unwrap();
         let log = std::fs::File::create(dir.join("sway.log")).unwrap();
@@ -149,6 +156,92 @@ fn damage_lines(log: &Path) -> Vec<String> {
         .collect()
 }
 
+/// The M0 memory gate (`docs/design.md`: the build fails above 34 MB for
+/// the two-monitor bar).
+const PSS_GATE_KB: u64 = 34 * 1024;
+
+fn pss_kb(pid: u32) -> u64 {
+    let rollup = std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup")).unwrap();
+    rollup
+        .lines()
+        .find_map(|l| l.strip_prefix("Pss:"))
+        .and_then(|v| v.split_whitespace().next())
+        .and_then(|v| v.parse().ok())
+        .unwrap()
+}
+
+/// A screenshot of one output's top bar as RGB rows.
+struct Shot {
+    w: usize,
+    h: usize,
+    rgb: Vec<u8>,
+}
+
+impl Shot {
+    fn take(sway: &Sway, output: &str) -> Shot {
+        let path = sway.dir.join(format!("{output}.ppm"));
+        assert!(
+            sway.grim(&["-t", "ppm", "-o", output], &path),
+            "grim {output}"
+        );
+        let ppm = std::fs::read(&path).unwrap();
+        // Binary PPM: "P6\n<w> <h>\n255\n" then RGB.
+        let mut nl = ppm.iter().enumerate().filter(|(_, b)| **b == b'\n');
+        let (a, b, c) = (
+            nl.next().unwrap().0,
+            nl.next().unwrap().0,
+            nl.next().unwrap().0,
+        );
+        let dims = std::str::from_utf8(&ppm[a + 1..b]).unwrap();
+        let mut it = dims.split_whitespace().map(|v| v.parse::<usize>().unwrap());
+        let (w, h) = (it.next().unwrap(), it.next().unwrap());
+        Shot {
+            w,
+            h,
+            rgb: ppm[c + 1..].to_vec(),
+        }
+    }
+
+    fn px(&self, x: usize, y: usize) -> [u8; 3] {
+        let i = (y * self.w + x) * 3;
+        [self.rgb[i], self.rgb[i + 1], self.rgb[i + 2]]
+    }
+
+    /// Some pixel in columns `xs` of the bar (`bar_h` rows) is light text.
+    fn lit(&self, xs: std::ops::Range<usize>, bar_h: usize) -> bool {
+        xs.into_iter()
+            .any(|x| (0..bar_h).any(|y| self.px(x, y)[0] > 0x90))
+    }
+
+    /// The bar shows its clock centred, its end text at the right edge and
+    /// nothing in between (a layout aligned for another width would put
+    /// the clock or the end text elsewhere).
+    fn assert_aligned(&self, output: &str, scale: f64) {
+        let bar_h = (32.0 * scale).round() as usize;
+        assert!(self.h > bar_h, "{output}: {}x{}", self.w, self.h);
+        let (w, c) = (self.w, self.w / 2);
+        let near = (60.0 * scale) as usize;
+        let edge = (110.0 * scale) as usize;
+        assert_eq!(
+            self.px(c, 1),
+            [0x1e, 0x1e, 0x2e],
+            "{output}: bar background"
+        );
+        assert!(
+            self.lit(c - near..c + near, bar_h),
+            "{output}: no clock at the centre"
+        );
+        assert!(
+            self.lit(w - edge..w - 1, bar_h),
+            "{output}: no end text at the edge"
+        );
+        assert!(
+            !self.lit(edge..c - near, bar_h) && !self.lit(c + near..w - edge, bar_h),
+            "{output}: text drawn away from start, centre and end"
+        );
+    }
+}
+
 #[test]
 fn demo_bar_on_two_outputs_then_idle() {
     let Some(sway) = Sway::start() else {
@@ -159,7 +252,10 @@ fn demo_bar_on_two_outputs_then_idle() {
         "output",
         "HEADLESS-2",
         "resolution",
-        "1280x720",
+        "2560x1440",
+        "position",
+        "2560",
+        "0",
         "scale",
         "1.25",
     ])
@@ -176,53 +272,45 @@ fn demo_bar_on_two_outputs_then_idle() {
         .unwrap();
     let pid = child.id();
     let mut strand = Proc(child);
+    let painted = |strand: &mut Proc, n: usize| {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while damage_lines(&log).len() < n {
+            assert!(
+                strand.0.try_wait().unwrap().is_none(),
+                "strand exited: {}",
+                std::fs::read_to_string(&log).unwrap_or_default()
+            );
+            assert!(Instant::now() < deadline, "bars did not paint");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
 
-    // One full frame per output: 1280×32 at 1.0, 1280×40 at 1.25.
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while damage_lines(&log).len() < 2 {
-        assert!(
-            strand.0.try_wait().unwrap().is_none(),
-            "strand exited: {}",
-            std::fs::read_to_string(&log).unwrap_or_default()
-        );
-        assert!(Instant::now() < deadline, "bars did not paint");
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    // One full frame per output: 2560×32 at 1.0, 2560×40 at 1.25.
+    painted(&mut strand, 2);
     let boot = damage_lines(&log);
     assert!(
-        boot.iter().any(|l| l.contains("buffer=1280x32 ")),
+        boot.iter().any(|l| l.contains("buffer=2560x32 ")),
         "{boot:?}"
     );
     assert!(
-        boot.iter().any(|l| l.contains("buffer=1280x40 ")),
+        boot.iter().any(|l| l.contains("buffer=2560x40 ")),
         "{boot:?}"
     );
+    // Let late text settle before looking.
+    std::thread::sleep(Duration::from_millis(700));
+    Shot::take(&sway, "HEADLESS-1").assert_aligned("HEADLESS-1", 1.0);
+    Shot::take(&sway, "HEADLESS-2").assert_aligned("HEADLESS-2", 1.25);
 
-    // The clock is drawn in the middle of the first bar: some pixel there
-    // is light text on the dark background.
-    let shot = sway.dir.join("bar.ppm");
-    assert!(sway.grim(&["-t", "ppm", "-g", "0,0 1280x32"], &shot));
-    let ppm = std::fs::read(&shot).unwrap();
-    // Binary PPM: "P6\n1280 32\n255\n" then RGB.
-    let header_end = ppm
-        .iter()
-        .enumerate()
-        .filter(|(_, b)| **b == b'\n')
-        .nth(2)
-        .unwrap()
-        .0
-        + 1;
-    let px = |x: usize, y: usize| {
-        let i = header_end + (y * 1280 + x) * 3;
-        [ppm[i], ppm[i + 1], ppm[i + 2]]
-    };
-    assert_eq!(px(400, 2), [0x1e, 0x1e, 0x2e], "bar background");
-    let lit = (600..680).any(|x| (6..26).any(|y| px(x, y)[0] > 0x90));
-    assert!(lit, "no clock text in the centre");
+    // The memory gate, on the two-monitor bar.
+    let pss = pss_kb(pid);
+    eprintln!("strand PSS with two 2560x1440 bars: {pss} kB");
+    assert!(
+        pss <= PSS_GATE_KB,
+        "PSS {pss} kB over the {PSS_GATE_KB} kB gate"
+    );
 
     // Idle: no thread of the process wakes. Skip a window that would
     // contain a minute boundary (the clock tick is the one wakeup).
-    std::thread::sleep(Duration::from_millis(300));
     if seconds_into_minute() >= 56 {
         std::thread::sleep(Duration::from_secs(6));
     }
@@ -232,5 +320,33 @@ fn demo_bar_on_two_outputs_then_idle() {
     let after = switches(pid);
     assert_eq!(after - before, 0, "woke while idle");
     assert_eq!(damage_lines(&log).len(), frames, "painted while idle");
+
+    // A third monitor, at scale 1 like the first but narrower: the shared
+    // bar node needs a layout per width, and the first bar must not move.
+    sway.msg(&["create_output"]).unwrap();
+    sway.msg(&[
+        "output",
+        "HEADLESS-3",
+        "resolution",
+        "1920x1080",
+        "position",
+        "4608",
+        "0",
+        "scale",
+        "1",
+    ])
+    .unwrap();
+    painted(&mut strand, frames + 1);
+    std::thread::sleep(Duration::from_millis(700));
+    assert!(
+        damage_lines(&log)
+            .iter()
+            .any(|l| l.contains("buffer=1920x32 ")),
+        "{:?}",
+        damage_lines(&log)
+    );
+    Shot::take(&sway, "HEADLESS-3").assert_aligned("HEADLESS-3", 1.0);
+    Shot::take(&sway, "HEADLESS-1").assert_aligned("HEADLESS-1", 1.0);
+    Shot::take(&sway, "HEADLESS-2").assert_aligned("HEADLESS-2", 1.25);
     drop(strand);
 }
