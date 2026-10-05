@@ -31,6 +31,23 @@ fn binary_op(kind: K) -> Option<(BinaryOp, u8, bool)> {
 
 const COMPARE: u8 = 5;
 
+/// Tokens that need something after them: a line ending in one reads its
+/// right-hand side from the next line (`docs/grammar.md`, rule 4).
+pub(crate) fn demands_operand(kind: K) -> bool {
+    binary_op(kind).is_some()
+        || matches!(
+            kind,
+            K::TwoWay
+                | K::Tilde
+                | K::Comma
+                | K::Question
+                | K::Colon
+                | K::Eq
+                | K::FatArrow
+                | K::Bang
+        )
+}
+
 /// Parses the text of a `#…` colour.
 fn parse_color(hex: &str) -> Option<[u8; 4]> {
     if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -205,17 +222,25 @@ impl Parser<'_> {
                 op.span.to(self.cur().span),
                 format!("this subtracts `{operand}` from the term before it"),
             )
-            .with_help(format!(
-                "write `({sign}{operand})` for a separate term, \
-                 or put a space after the sign (`{sign} {operand}`) to {}",
-                if sign == "-" { "subtract" } else { "add" }
-            )),
+            .with_help(if sign == "-" {
+                format!(
+                    "write `(-{operand})` for a separate term, \
+                     or put a space after the sign (`- {operand}`) to subtract"
+                )
+            } else {
+                // There is no unary `+`: a positive term is written bare.
+                format!(
+                    "write `{operand}` (no sign) for a separate term, \
+                     or put a space after the sign (`+ {operand}`) to add"
+                )
+            }),
         );
     }
 
     /// A full expression, including lambdas.
     pub(crate) fn expr(&mut self) -> Expr {
         if !self.enter() {
+            self.skip_group();
             return self.error_expr();
         }
         let e = if self.at_lambda() {
@@ -466,6 +491,9 @@ impl Parser<'_> {
     }
 
     fn primary(&mut self) -> Expr {
+        if self.prev_kind().is_some_and(demands_operand) && self.dangling_at_line_end() {
+            return self.error_expr();
+        }
         let t = self.cur();
         let kind = match t.kind {
             K::Number => {
@@ -608,6 +636,7 @@ impl Parser<'_> {
             });
         }
         let span = self.finish(t.span.start);
+        self.check_kebab_token(span);
         Expr {
             kind: ExprKind::Token(TokenKey {
                 dollar: true,
@@ -616,6 +645,31 @@ impl Parser<'_> {
             }),
             span,
         }
+    }
+
+    /// `$fg-muted` (touching `-` and word) is `$fg - muted`; token names
+    /// are snake_case, so it was almost certainly meant as one name.
+    fn check_kebab_token(&mut self, path: Span) {
+        let (dash, word) = (self.cur(), self.nth(1));
+        if dash.kind != K::Minus || dash.ws_before || word.kind != K::Ident || word.ws_before {
+            return;
+        }
+        let written = format!("{}-{}", self.text_span(path), self.text(word));
+        self.diags.push(
+            Diagnostic::warning(
+                "syntax::kebab_case",
+                format!("`{written}` subtracts `{}` from a token", self.text(word)),
+            )
+            .with_label(path.to(word.span), "read as a subtraction")
+            .with_help(format!(
+                "names are snake_case: `{}`; or put spaces around `-` to subtract",
+                written.replace('-', "_")
+            )),
+        );
+    }
+
+    fn text_span(&self, span: Span) -> &str {
+        span.text(self.src)
     }
 
     /// `(args)` of a call or attribute; the current token is `(`.
@@ -698,6 +752,7 @@ impl Parser<'_> {
     pub(crate) fn ty(&mut self) -> Type {
         let start = self.cur().span.start;
         if !self.enter() {
+            self.skip_group();
             return Type {
                 kind: TypeKind::Error,
                 span: Span::at(self.prev_end()),
@@ -779,7 +834,7 @@ impl Parser<'_> {
                 PatternKind::Literal(self.unary())
             }
             _ => {
-                self.expected("a pattern");
+                self.expected_at_token("a pattern");
                 PatternKind::Error
             }
         };
@@ -818,6 +873,11 @@ impl Parser<'_> {
                 let before = p.pos;
                 let start = p.cur().span.start;
                 let pattern = p.pattern();
+                if p.pos == before {
+                    // Not an arm at all (and reported): skip it.
+                    p.skip_stray();
+                    continue;
+                }
                 p.expect(K::FatArrow);
                 let body = arm_body(p);
                 let start = start.min(pattern.span.start);
@@ -827,7 +887,7 @@ impl Parser<'_> {
                     span: p.finish(start),
                 });
                 if p.pos == before {
-                    p.bump();
+                    p.skip_stray();
                     continue;
                 }
                 if !(p.at(K::Comma) || p.at_item_end()) {

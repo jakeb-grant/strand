@@ -29,6 +29,7 @@ strand-scene      shared vocabulary: ids, geometry, colour, scene protocol, Pain
   strand-core ── strand-compiler ── strand-dev (LSP, inspector)
      ^
      strand-services, strand-watch
+                      strand-watch ──> strand-compiler (source::find_files only)
 strand (binary) wires everything.
 ```
 
@@ -127,13 +128,22 @@ Public interfaces other crates and later stages build on:
 ### Config files
 
 `strand_compiler::source::find_files(dir) -> io::Result<Discovery { files,
-errors }>` defines which files a config loads: `.strand` files at most
-`MAX_DEPTH = 3` directories below the config directory, names starting with
-`.` skipped (files and directories), symlinks followed, files deduplicated
-by canonical path, unreadable sub-directories reported in `errors` and
-skipped. `strand check`, the loader and `strand-watch` all use this rule (the
-watcher calls it or matches it exactly), so they never disagree on the file
-set.
+dirs, errors }>` defines the **`.strand` module set** of a config, and only
+that: `.strand` files at most `MAX_DEPTH = 3` directories below the config
+directory, names starting with `.` skipped (files and directories), symlinks
+followed, a breadth-first walk with directories and files deduplicated by
+canonical path (so each is claimed at its shallowest path), unreadable
+sub-directories and dangling `*.strand` links reported in `errors` and
+skipped. `dirs` lists the canonical path of every directory scanned, link
+targets included. `strand check` uses it today; the loader and `strand-watch`
+must call it (not reimplement it), so they never disagree on the module set.
+
+It is not the watch set. Per design.md ("Change sources") the watcher also
+watches `.wgsl` shader files, settings TOML (`state … from "…"`), wallpaper
+and other referenced paths, and the canonical target directories of linked
+files and directories (`Discovery::dirs`, plus the parent directory of each
+canonical file path). Paths referenced from code come from the compiler
+(service and file paths it collects), not from this scan.
 
 ### `strand-text`
 

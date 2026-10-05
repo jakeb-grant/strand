@@ -7,7 +7,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use strand_compiler::diagnostic::{Style, render};
-use strand_compiler::syntax::{Span, dump, lexer, parse};
+use strand_compiler::syntax::{dump, lexer, parse};
 use strand_compiler::{FileId, SourceMap};
 
 /// splitmix64: small, deterministic, good enough to drive edits.
@@ -195,7 +195,9 @@ fn mutate(rng: &mut Rng, src: &mut String) {
     }
 }
 
-fn check(src: &str, render_too: bool) -> Duration {
+/// Parses `src` with every invariant checked; returns how long parsing
+/// took and the diagnostic codes.
+fn check(src: &str, render_too: bool) -> (Duration, Vec<&'static str>) {
     let started = Instant::now();
     let result = catch_unwind(AssertUnwindSafe(|| parse(FileId::default(), src)));
     let elapsed = started.elapsed();
@@ -230,16 +232,14 @@ fn check(src: &str, render_too: bool) -> Duration {
             node.label
         );
         if let Some(parent) = parent {
-            if node.span != Span::default() {
-                assert!(
-                    parent.span.contains(node.span),
-                    "`{}` {:?} escapes `{}` {:?}\n----\n{src}\n----",
-                    node.label,
-                    node.span,
-                    parent.label,
-                    parent.span
-                );
-            }
+            assert!(
+                parent.span.contains(node.span),
+                "`{}` {:?} escapes `{}` {:?}\n----\n{src}\n----",
+                node.label,
+                node.span,
+                parent.label,
+                parent.span
+            );
         }
     });
     if render_too {
@@ -252,7 +252,7 @@ fn check(src: &str, render_too: bool) -> Duration {
         }));
         assert!(out.is_ok(), "rendering panicked on:\n----\n{src}\n----");
     }
-    elapsed
+    (elapsed, parsed.diagnostics.iter().map(|d| d.code).collect())
 }
 
 fn env_u64(name: &str) -> Option<u64> {
@@ -275,7 +275,7 @@ fn ten_thousand_random_edits() {
         if rng.below(4) == 0 {
             mutate(&mut rng, &mut src);
         }
-        worst = worst.max(check(&src, i % 50 == 0));
+        worst = worst.max(check(&src, i % 50 == 0).0);
     }
     let total = started.elapsed();
     eprintln!("{iters} edits: total {total:?}, worst parse {worst:?}");
@@ -306,10 +306,18 @@ fn random_bytes() {
 #[test]
 fn pathological_nesting_reports_instead_of_overflowing() {
     let n = 100_000;
-    let cases = [
+    // Unclosed brackets that cannot start an item are skipped as junk,
+    // not nested into, so they report something other than `too_deep`.
+    for src in [
         "(".repeat(n),
         "[".repeat(n),
         format!("component X {}", "{".repeat(n)),
+    ] {
+        let (elapsed, codes) = check(&src, false);
+        assert!(!codes.is_empty(), "nothing reported for {}", &src[..20]);
+        assert!(elapsed < Duration::from_secs(5));
+    }
+    let cases = [
         format!("component X {{ {} }}", "box {".repeat(n)),
         format!("let x = {}1", "!".repeat(n)),
         format!("let x = {}1", "-".repeat(n)),
@@ -333,9 +341,16 @@ fn pathological_nesting_reports_instead_of_overflowing() {
             .stack_size(2 * 1024 * 1024)
             .spawn(move || check(&src2, false))
             .unwrap();
-        let elapsed = handle
+        let (elapsed, codes) = handle
             .join()
             .unwrap_or_else(|_| panic!("panicked on {}", &src[..60]));
+        // Deep input is reported, never silently cut off, and once.
+        assert!(
+            codes.contains(&"syntax::too_deep"),
+            "{codes:?} on {}",
+            &src[..60]
+        );
+        assert!(codes.len() <= 2, "{codes:?} on {}", &src[..60]);
         assert!(
             elapsed < Duration::from_secs(5),
             "{elapsed:?} on {}",

@@ -85,6 +85,12 @@ Interpretations of ambiguities in `design.md`, one short entry each.
   sub-directories reported and skipped. A file argument checks that file.
   `strand check` and the watcher use it, so they load the same set. Until
   the checker lands `strand check` reports syntax diagnostics only.
+  Round 2: the walk is breadth-first and directories are deduplicated by
+  canonical path too, so a deeper link to a directory never hides its real,
+  shallower path; a dangling `*.strand` link is an error, other dangling
+  links are ignored. It defines the module set only; `Discovery::dirs`
+  (canonical directories scanned) is there for the watcher, which also
+  watches shaders, settings files and wallpapers.
 - **2026-10-05 · Diagnostics live at `strand_compiler::diagnostic`,** not
   under `syntax`, because the checker and reconciler will share them. Each
   label carries a `FileId` (into a `SourceMap`) and a file-local `Span`, so
@@ -97,9 +103,12 @@ Interpretations of ambiguities in `design.md`, one short entry each.
   `enterr { … }` are valid element syntax, so the parser cannot flag them
   without the element list. The wave-2 checker's unknown-element
   did-you-mean must include the tree and top-level keywords as candidates
-  (TODO for `check`). `stat x = 0` (an element followed by more than an
-  element holds) is flagged by the parser; at the top level it is one
-  error.
+  (`when`, `if`, `else`, `match`, `for`, `enter`, `exit`, `slot`, `set`,
+  `play`, …; TODO for `check`). `stat x = 0` (an element followed by more
+  than an element holds) is flagged by the parser; at the top level it is
+  one error, and only when one edit away (`text "x"` at the top level is a
+  misplaced element, not a misspelt `let`). `els { … }` (or `els if`)
+  directly after an `if` body is flagged by the parser and read as `else`.
 - **2026-10-05 · Transitions and poses on `if` branches and pages.**
   design.md puts `transition: wipe(left)` "on `if`, `pages` and image
   swaps", but `if` has no prop position. A branch's transition or pose is
@@ -113,3 +122,23 @@ Interpretations of ambiguities in `design.md`, one short entry each.
   byte for byte (a test enforces it). Table snippets are placed in minimal
   context; doc ellipses `…` are filled and `a | b` alternatives (notation,
   not syntax) become separate lines.
+- **2026-10-05 · A dangling operator before a new prop ends the line.**
+  Rule 4 (a trailing operator continues the expression) yields when the
+  next line starts with a name touching `:` (`color:`, `$fg:`, `a.b:`):
+  `value: <->`, `width: 24 ~`, `margin: 8, 8,`, `opacity: a ??` then report
+  `syntax::missing_value` at the end of the line. A ternary branch on the
+  next line must space its `:` (`b : c`) to continue.
+- **2026-10-05 · Spaced values are for shadows and fonts.** The grammar
+  accepts space-separated groups in any prop value (`Spaced`), because a
+  shadow list (`0 2px 8px #0004, …`) and the font shorthand (`"Inter" 13px
+  500`) need them. The checker must accept `Spaced` only for shadow-list
+  and font-typed props and elsewhere report an error suggesting commas
+  (`margin: 8 8 0` → `8, 8, 0`, design.md "Bad" table).
+- **2026-10-05 · Kebab-case names.** `max-width:` at the start of an item is
+  `syntax::kebab_case` with "names are snake_case: `max_width`", parsed as
+  that prop. A touching `$fg-muted` is only a warning (it is a valid
+  subtraction); the checker's unknown-token error will usually follow.
+- **2026-10-05 · Allman braces.** An element's body `{` on the next line
+  is an error (rule 6) but kept as the body; any other `{` that starts no
+  item is skipped with its block. Either way the braces stay in step and
+  there is one diagnostic.

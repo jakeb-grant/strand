@@ -163,9 +163,16 @@ in full:
    sign continues the line as subtraction. With that rule no continuation
    token is ambiguous.
 
-4. **A line that ends with a binary operator, `,`, `=`, `=>`, `<->`, `~`
-   or a ternary's `?` or `:` also continues**, because those tokens need a
-   right-hand side and the parser simply reads it from the next line.
+4. **A line that ends with a binary operator, `,`, `=`, `=>`, `<->`, `~`,
+   `!` or a ternary's `?` or `:` also continues**, because those tokens need
+   a right-hand side and the parser simply reads it from the next line —
+   **unless the next line starts a prop, field or token entry**: a name
+   (`color`, `$fg`, `radius.lg`) directly touching `:`. Then the dangling
+   line is unfinished: `value: <->`, `width: 24 ~`, `margin: 8, 8,` or
+   `opacity: a ??` followed by `color: …` reports `syntax::missing_value`
+   at the end of the dangling line, and the next line is its own item. A
+   ternary branch on the next line is unaffected when its `:` is spaced
+   (`a ?` / `b : c`); a touching `b: c` there reads as a new prop.
 
 5. **Everything else stops at a line break.** In particular a call's `(`, an
    index's `[`, a positional argument, a space-separated value term and an
@@ -621,6 +628,16 @@ diagnostic and resynchronises:
 
 - In a block, an item that fails skips to the next `;`, line break or
   closing `}` at its own brace depth, then continues with the next item.
+  A token that cannot start an item is reported on itself (not as "a line
+  break" at the end of the line before) and skipped up to the next token on
+  its line that could start one. A `{` that starts nothing is skipped with
+  its whole block so the braces stay in step (`syntax::brace_line`); an
+  element's body `{` on the next line (Allman style) is reported the same
+  way but kept as the element's body, so its contents are still checked.
+- `max-width:` (words joined by touching `-`, then `:`) is reported as
+  `syntax::kebab_case` ("names are snake_case: `max_width`") and parsed as
+  that prop; a touching `$fg-muted` warns the same way and parses as the
+  subtraction it is.
 - An expression that cannot start yields an error node without consuming
   the token, so the enclosing list or block decides how to recover.
 - A missing `}` is reported once, at the unclosed `{`, when the file ends
@@ -636,7 +653,16 @@ diagnostic and resynchronises:
   `syntax::too_deep` error. A per-file step budget guarantees termination.
 - Unknown words where a keyword was expected get a did-you-mean from the
   keywords valid at that position (`componnet` → `component`,
-  `on chnage a` → `change`, `for x im xs` → `in`, `dbsu` → `dbus`).
+  `on chnage a` → `change`, `for x im xs` → `in`, `dbsu` → `dbus`), and
+  so do clause keywords: `for … kye` → `key`, `state p: T kye` → `key`,
+  `state q = 1 persits` → `persist`, `state s frm` → `from`,
+  `tokens c extnd` → `extends`, `on change a aftr` → `after`, a field's
+  `rx` → `rw`, and `if … { } els { }` → `else`. The misspelt clause keyword
+  is then treated as the keyword. At the top level a misplaced element is
+  only called a misspelt keyword when it is one edit away (`stat` →
+  `state`, but not `text` → `let`).
+- Nesting past the limit skips the too-deep bracketed group whole, so the
+  enclosing levels still close and there is one error.
 
 ## Constructs by design section
 

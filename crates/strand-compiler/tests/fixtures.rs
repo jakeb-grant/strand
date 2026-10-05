@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use strand_compiler::diagnostic::{Style, render};
-use strand_compiler::syntax::{Span, dump, lexer, parse};
+use strand_compiler::syntax::{dump, lexer, parse};
 use strand_compiler::{FileId, SourceMap};
 
 fn fixtures() -> Vec<PathBuf> {
@@ -118,17 +118,15 @@ fn fixture_spans_nest() {
                 node.label
             );
             if let Some(parent) = parent {
-                if node.span != Span::default() {
-                    assert!(
-                        parent.span.contains(node.span),
-                        "{}: `{}` {:?} escapes parent `{}` {:?}",
-                        path.display(),
-                        node.label,
-                        node.span,
-                        parent.label,
-                        parent.span
-                    );
-                }
+                assert!(
+                    parent.span.contains(node.span),
+                    "{}: `{}` {:?} escapes parent `{}` {:?}",
+                    path.display(),
+                    node.label,
+                    node.span,
+                    parent.label,
+                    parent.span
+                );
             }
             if !node.inline && node.label.starts_with("element ") {
                 let kind = node.label.trim_start_matches("element ");

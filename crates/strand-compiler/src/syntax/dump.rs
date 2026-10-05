@@ -142,6 +142,8 @@ fn entries(block: &Block<TokenEntry>) -> impl Iterator<Item = TreeNode> + '_ {
 
 fn item(it: &Item) -> TreeNode {
     let mut n = item_kind(&it.kind, it.span);
+    // The item's span covers its attributes (a field's own span does not).
+    n.span = it.span;
     let attrs: Vec<TreeNode> = it
         .attrs
         .iter()
@@ -165,10 +167,12 @@ fn params(ps: &[Param], span: Span) -> TreeNode {
     TreeNode::sexpr("params", span, ps.iter().map(param).collect())
 }
 
-fn params_span(ps: &[Param]) -> Span {
+/// The span of a parameter list (which has no node of its own); an empty
+/// list sits at the start of the node that holds it, `owner`.
+fn params_span(ps: &[Param], owner: Span) -> Span {
     match (ps.first(), ps.last()) {
         (Some(a), Some(b)) => a.span.to(b.span),
-        _ => Span::default(),
+        _ => Span::at(owner.start),
     }
 }
 
@@ -192,7 +196,7 @@ fn item_kind(kind: &ItemKind, span: Span) -> TreeNode {
         ItemKind::Component(c) => {
             let mut n = TreeNode::node(format!("component {}", c.name.name), span);
             if let Some(ps) = &c.params {
-                n = n.with(params(ps, params_span(ps)));
+                n = n.with(params(ps, params_span(ps, span)));
             }
             if let Some(t) = &c.tokens {
                 n = n.with(TreeNode::node("tokens", t.span).with_all(entries(t)));
@@ -245,7 +249,7 @@ fn item_kind(kind: &ItemKind, span: Span) -> TreeNode {
         ItemKind::Field(f) => field(f),
         ItemKind::Fn(f) => {
             let mut n = TreeNode::node(format!("fn {}", f.name.name), span)
-                .with(params(&f.params, params_span(&f.params)));
+                .with(params(&f.params, params_span(&f.params, span)));
             if let Some(r) = &f.ret {
                 n = n.with(TreeNode::sexpr("->", r.span, vec![ty(r)]));
             }
@@ -330,7 +334,7 @@ fn item_kind(kind: &ItemKind, span: Span) -> TreeNode {
                 Event::Named { path, params: ps } => {
                     let mut n = TreeNode::node(format!("on {}", ident_path(path)), span);
                     if let Some(ps) = ps {
-                        n = n.with(params(ps, params_span(ps)));
+                        n = n.with(params(ps, params_span(ps, span)));
                     }
                     n
                 }
@@ -568,7 +572,7 @@ pub fn expr(e: &Expr) -> TreeNode {
                     TreeNode::sexpr("block", b.span, stmts(b).map(inline_all).collect())
                 }
             };
-            TreeNode::sexpr("=>", span, vec![params(ps, params_span(ps)), body])
+            TreeNode::sexpr("=>", span, vec![params(ps, params_span(ps, span)), body])
         }
         ExprKind::Match(m) => {
             let mut children = vec![expr(&m.scrutinee)];

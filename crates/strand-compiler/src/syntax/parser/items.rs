@@ -130,15 +130,28 @@ impl Parser<'_> {
             K::Ident => {}
             K::Hash if ctx != Ctx::Top => return self.selector(),
             K::Number if ctx == Ctx::Keyframes => return self.keyframe_stop(),
+            // A stray `{` is reported by the block loop, which skips it whole.
+            K::LBrace => return ItemKind::Error,
             _ => {
                 let want = match ctx {
                     Ctx::Top => "a declaration",
                     Ctx::Tree | Ctx::Keyframes => "a prop, element or `when`/`if`/`for`/`on`",
                     Ctx::Service => "a field such as `name: text = Prop`",
                 };
-                self.expected(want);
+                self.expected_at_token(want);
                 return ItemKind::Error;
             }
+        }
+        if let Some(name) = (ctx != Ctx::Service).then(|| self.kebab_name()).flatten() {
+            let prop = self.prop_after_name(name);
+            if ctx == Ctx::Top {
+                self.misplaced(
+                    t.span,
+                    "props",
+                    "must be inside a surface, component or element",
+                );
+            }
+            return ItemKind::Prop(prop);
         }
         let word = self.text(t);
         if self.nth_kind(1) == K::Colon {
@@ -307,7 +320,11 @@ impl Parser<'_> {
                         format!("expected a declaration, found `{word}`"),
                     )
                     .with_label(t.span, "elements must be inside a surface or component");
-                    let help = did_you_mean(word, TOP_KEYWORDS.iter().copied());
+                    // Only a one-edit slip is a misspelt keyword; `text`
+                    // or `icon` here is a misplaced element, not `let`/`on`.
+                    let help = suggest(word, TOP_KEYWORDS.iter().copied())
+                        .filter(|kw| strsim::osa_distance(word, kw) == 1)
+                        .map(|kw| format!("did you mean `{kw}`?"));
                     if let Some(h) = &help {
                         d = d.with_help(h.clone());
                     }
@@ -329,6 +346,42 @@ impl Parser<'_> {
     /// `name: value ~ transition { … }` or `name: <-> place`.
     fn prop(&mut self) -> Prop {
         let name = self.ident("a prop name");
+        self.prop_after_name(name)
+    }
+
+    /// `max-width:` (words joined by `-`, touching, then `:`): names are
+    /// snake_case, so report it and return the name it meant, having
+    /// consumed it. The `:` is left for the prop.
+    fn kebab_name(&mut self) -> Option<Ident> {
+        let mut i = 0;
+        loop {
+            let (dash, word) = (self.nth(i + 1), self.nth(i + 2));
+            if dash.kind != K::Minus || dash.ws_before || word.kind != K::Ident || word.ws_before {
+                break;
+            }
+            i += 2;
+        }
+        let colon = self.nth(i + 1);
+        if i == 0 || colon.kind != K::Colon || colon.ws_before {
+            return None;
+        }
+        let start = self.cur().span.start;
+        for _ in 0..=i {
+            self.bump();
+        }
+        let span = self.finish(start);
+        let written = span.text(self.src);
+        let name = written.replace('-', "_");
+        self.push_error(
+            Diagnostic::error("syntax::kebab_case", format!("`{written}` is not a name"))
+                .with_label(span, "`-` is subtraction, not part of a name")
+                .with_help(format!("names are snake_case: `{name}`")),
+        );
+        Some(Ident { name, span })
+    }
+
+    /// The rest of a prop after its name: `: value ~ transition { … }`.
+    fn prop_after_name(&mut self, name: Ident) -> Prop {
         self.bump(); // ':'
         if let Some(value) = self.missing_value(&name.name) {
             return Prop {
@@ -386,8 +439,24 @@ impl Parser<'_> {
                 HeadArg::Positional(self.expr())
             });
         }
-        let block =
-            (self.same_line() && self.at(K::LBrace)).then(|| self.tree_block("the element body"));
+        let block = if self.same_line() && self.at(K::LBrace) {
+            Some(self.tree_block("the element body"))
+        } else if self.at(K::LBrace) && self.nl_significant() {
+            // Allman style: the body is clearly this element's, so keep it
+            // (and check it) rather than desynchronising the braces.
+            let t = self.cur();
+            self.push_error(
+                Diagnostic::error(
+                    "syntax::brace_line",
+                    "an element's `{` must be on the same line as the element",
+                )
+                .with_label(t.span, "on its own line")
+                .with_help(format!("move it up: `{} {{`", kind.name)),
+            );
+            Some(self.tree_block("the element body"))
+        } else {
+            None
+        };
         let spaced_call = matches!(self.kind(), K::LParen | K::LBracket) && self.cur().ws_before;
         if report_typo && !self.at_item_end() && !spaced_call {
             // `stat x = 0` reads as element `stat`; say what was meant.
@@ -401,6 +470,29 @@ impl Parser<'_> {
             }
         }
         Element { kind, arg, block }
+    }
+
+    /// At a clause position: when the next word on this line is a near
+    /// miss of one of `kws` (`kye` for `key`), reports it with a
+    /// did-you-mean, skips it, and returns the keyword meant, so parsing
+    /// goes on as if it were spelt right.
+    fn clause_typo(&mut self, kws: &[&'static str]) -> Option<&'static str> {
+        if !(self.same_line() && self.at(K::Ident)) {
+            return None;
+        }
+        let word = self.text(self.cur());
+        if kws.contains(&word) {
+            return None;
+        }
+        let kw = suggest(word, kws.iter().copied())?;
+        let list = kws
+            .iter()
+            .map(|k| format!("`{k}`"))
+            .collect::<Vec<_>>()
+            .join(" or ");
+        self.expected_with(&list, Some(format!("did you mean `{kw}`?")));
+        self.bump();
+        Some(kw)
     }
 
     fn when(&mut self) -> ItemKind {
@@ -464,10 +556,12 @@ impl Parser<'_> {
             let cond = self.expr();
             let then = body(self);
             chain.push((start, cond, then));
-            if !self.at_kw("else") {
+            if !self.at_kw("else") && !self.else_typo() {
                 break;
             }
-            self.bump();
+            if self.at_kw("else") {
+                self.bump();
+            }
             if !self.at_kw("if") {
                 last_else = Some(Else::Block(body(self)));
                 break;
@@ -500,16 +594,44 @@ impl Parser<'_> {
         }
     }
 
+    /// `els { … }` right after an `if` body: a misspelt `else` (it would
+    /// otherwise parse as an element). Reports and skips it.
+    fn else_typo(&mut self) -> bool {
+        if !(self.at(K::Ident) && matches!(self.nth_kind(1), K::LBrace | K::Ident)) {
+            return false;
+        }
+        let word = self.text(self.cur());
+        if strsim::osa_distance(word, "else") != 1 {
+            return false;
+        }
+        if self.nth_kind(1) == K::Ident && self.text(self.nth(1)) != "if" {
+            return false;
+        }
+        let t = self.bump();
+        self.push_error(
+            Diagnostic::error(
+                "syntax::expected",
+                format!("expected `else`, found `{word}`"),
+            )
+            .with_label(t.span, "after an `if` body")
+            .with_help("did you mean `else`?"),
+        );
+        true
+    }
+
     /// `for x in xs key e { … }`.
     pub(crate) fn for_<T>(&mut self, body: &mut impl FnMut(&mut Self) -> Block<T>) -> For<T> {
         self.bump(); // for
         let binding = self.ident("a loop variable");
         self.expect_kw("in");
         let iter = self.expr();
-        let key = (self.same_line() && self.at_kw("key")).then(|| {
-            self.bump();
-            self.expr()
-        });
+        let key = ((self.same_line() && self.at_kw("key")) || self.clause_typo(&["key"]).is_some())
+            .then(|| {
+                if self.at_kw("key") {
+                    self.bump();
+                }
+                self.expr()
+            });
         For {
             binding,
             iter,
@@ -529,8 +651,12 @@ impl Parser<'_> {
             while self.eat(K::Comma).is_some() {
                 targets.push(self.expr());
             }
-            let debounce = (self.same_line() && self.at_kw("after")).then(|| {
-                self.bump();
+            let debounce = ((self.same_line() && self.at_kw("after"))
+                || self.clause_typo(&["after"]).is_some())
+            .then(|| {
+                if self.at_kw("after") {
+                    self.bump();
+                }
                 self.expr()
             });
             Event::Change { targets, debounce }
@@ -640,8 +766,15 @@ impl Parser<'_> {
     fn state(&mut self, export: Option<Span>) -> ItemKind {
         self.bump(); // state
         let name = self.ident("a state name");
-        if self.at_kw("from") {
-            self.bump();
+        let typo = if self.at_kw("from") {
+            None
+        } else {
+            self.clause_typo(&["from", "key"])
+        };
+        if self.at_kw("from") || typo == Some("from") {
+            if typo.is_none() {
+                self.bump();
+            }
             let path = if self.at(K::String) {
                 let t = self.bump();
                 self.string_lit(t)
@@ -660,8 +793,15 @@ impl Parser<'_> {
             });
         }
         let ty = self.eat(K::Colon).map(|_| self.ty());
-        let key = (self.same_line() && self.at_kw("key")).then(|| {
-            self.bump();
+        let typo = match typo {
+            Some(kw) => Some(kw),
+            None if ty.is_some() && !self.at_kw("key") => self.clause_typo(&["key"]),
+            None => None,
+        };
+        let key = (typo == Some("key") || (self.same_line() && self.at_kw("key"))).then(|| {
+            if typo.is_none() {
+                self.bump();
+            }
             self.expr()
         });
         let value = if self.eat(K::Eq).is_some() {
@@ -673,7 +813,12 @@ impl Parser<'_> {
             );
             self.error_expr()
         };
-        let persist = (self.same_line() && self.at_kw("persist")).then(|| self.bump().span);
+        let persist = if self.same_line() && self.at_kw("persist") {
+            Some(self.bump().span)
+        } else {
+            let at = self.cur().span;
+            self.clause_typo(&["persist"]).map(|_| at)
+        };
         ItemKind::State(State {
             export,
             name,
@@ -719,8 +864,10 @@ impl Parser<'_> {
                     if p.at(K::Ident) {
                         variants.push(p.ident("a variant"));
                     } else {
-                        p.expected("a variant name");
-                        p.bump();
+                        if !p.at(K::LBrace) {
+                            p.expected_at_token("a variant name");
+                        }
+                        p.skip_stray();
                         continue;
                     }
                     if !(p.at(K::Comma) || p.at_item_end()) {
@@ -757,7 +904,12 @@ impl Parser<'_> {
             }
         };
         let start = start.min(name.span.start);
-        let rw = (self.same_line() && self.at_kw("rw")).then(|| self.bump().span);
+        let rw = if self.same_line() && self.at_kw("rw") {
+            Some(self.bump().span)
+        } else {
+            let at = self.cur().span;
+            self.clause_typo(&["rw"]).map(|_| at)
+        };
         let default = (self.same_line() && self.at(K::Eq)).then(|| {
             self.bump();
             self.expr()
@@ -792,8 +944,12 @@ impl Parser<'_> {
     fn tokens_decl(&mut self) -> ItemKind {
         self.bump();
         let name = self.ident("a token set name");
-        let extends = (self.same_line() && self.at_kw("extends")).then(|| {
-            self.bump();
+        let extends = ((self.same_line() && self.at_kw("extends"))
+            || self.clause_typo(&["extends"]).is_some())
+        .then(|| {
+            if self.at_kw("extends") {
+                self.bump();
+            }
             self.ident("the token set to extend")
         });
         ItemKind::Tokens(TokensDecl {
@@ -1079,7 +1235,10 @@ impl Parser<'_> {
             }
         }
         if !self.starts_expr() {
-            self.expected("a statement");
+            // A stray `{` is reported by the block loop, which skips it whole.
+            if !self.at(K::LBrace) {
+                self.expected_at_token("a statement");
+            }
             return StmtKind::Error;
         }
         let target = self.expr();

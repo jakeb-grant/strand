@@ -42,24 +42,27 @@ Language (`docs/grammar.md`):
 - [ ] `when cond { props }`; `hover`, `pressed`, `focused`, `selected`; `id:` and `other.hover`; later `when` wins (syntax done: `crates/strand-compiler/tests/fixtures.rs` (`bar.strand`); evaluation order pending)
 - [ ] `if`/`else`, `match`, `for x in xs [key e]`; plain data without a key is an error (syntax done: `crates/strand-compiler/tests/grammar_rules.rs`, `grammar_examples.strand`; missing-key error is the checker's)
 - [ ] `enter {}` / `exit {}` poses; exit mirrors enter (syntax done: `crates/strand-compiler/tests/fixtures.rs` (`toasts.strand`); mirroring is runtime)
-- [x] Events: `on click`, `on secondary`, `on scroll(dy)`, `on show`, `on activate`, `on drop(p: T, at: int)`, `on change a, b [after T]`, `on notifications.received(n)` — `crates/strand-compiler/tests/fixtures.rs` (`osd.strand`, `snippets.strand`), `crates/strand-compiler/tests/diagnostics.rs::did_you_mean_keywords`
+- [x] Events (syntax only; `on change` semantics are under Checking and runtime): `on click`, `on secondary`, `on scroll(dy)`, `on show`, `on activate`, `on drop(p: T, at: int)`, `on change a, b [after T]`, `on notifications.received(n)` — `crates/strand-compiler/tests/fixtures.rs` (`osd.strand`, `snippets.strand`), `crates/strand-compiler/tests/diagnostics.rs::did_you_mean_keywords`
 - [ ] Timers: `after T while cond { }`, `every T while cond { }` (syntax done: `crates/strand-compiler/tests/fixtures.rs` (`toasts.strand`, `snippets.strand`); pausing timers are runtime)
 - [ ] Two-way binding `prop: <-> target` (syntax done: `crates/strand-compiler/tests/grammar_rules.rs::commas_spaces_and_transitions_in_values`; writable-target check pending)
-- [x] Expressions: `?.`, `??`, ternary, lambdas `x => e`, method calls, named args `f(months: -1)`, `match` expressions — `crates/strand-compiler/tests/grammar_rules.rs` (`precedence`, `lambdas`, `named_and_from_arguments`, `match_arms_split_on_commas_or_lines`)
-- [x] Spring override `prop: value ~ $motion.bouncy | ~ 200ms | ~ instant | ~ ease(..) | ~ bezier(..)` — `crates/strand-compiler/tests/fixtures.rs` (`snippets.strand`), `crates/strand-compiler/tests/grammar_rules.rs::commas_spaces_and_transitions_in_values`
-- [x] Token declarations (syntax only; override rules are under Checking): `tokens base { … }`, `extends`, `override`, `use tokens … , palette …`, `set { $x: … }` — `crates/strand-compiler/tests/fixtures.rs` (`theme.strand`, `snippets.strand`), `crates/strand-compiler/tests/grammar_rules.rs::tokens_keys`
+- [x] Expressions (syntax only; `??`/`?.` with `Async` are under Checking and runtime): `?.`, `??`, ternary, lambdas `x => e`, method calls, named args `f(months: -1)`, `match` expressions — `crates/strand-compiler/tests/grammar_rules.rs` (`precedence`, `lambdas`, `named_and_from_arguments`, `match_arms_split_on_commas_or_lines`)
+- [x] Spring override (syntax only; per-prop transitions are under M2) `prop: value ~ $motion.bouncy | ~ 200ms | ~ instant | ~ ease(..) | ~ bezier(..)` — `crates/strand-compiler/tests/fixtures.rs` (`snippets.strand`), `crates/strand-compiler/tests/grammar_rules.rs::commas_spaces_and_transitions_in_values`
+- [x] Token declarations (syntax only; override rules are under Checking, `set { }` under M2 tokens): `tokens base { … }`, `extends`, `override`, `use tokens … , palette …`, `set { $x: … }` — `crates/strand-compiler/tests/fixtures.rs` (`theme.strand`, `snippets.strand`), `crates/strand-compiler/tests/grammar_rules.rs::tokens_keys`
 - [x] `service x from dbus system "…" { field: type rw = Prop }`, `from file|listen|poll`, `permit exec` — `crates/strand-compiler/tests/fixtures.rs` (`grammar_examples.strand`, `snippets.strand`), `crates/strand-compiler/tests/diagnostics.rs::did_you_mean_keywords`
 - [ ] `fn` (pure), `keyframes`, `shader "x.wgsl" { uniforms }`, `canvas { draw: … }` (syntax done: `crates/strand-compiler/tests/fixtures.rs` (`grammar_examples.strand`, `snippets.strand`); purity check pending)
-- [x] Parser recovery: never panics; every error has file, line, caret, label — `crates/strand-compiler/tests/robustness.rs` (10,000 random edits with span nesting checked, pathological nesting), `crates/strand-compiler/tests/diagnostics.rs` (`unclosed_enum_and_match_stop_at_the_next_declaration`, `missing_brace_hint_stays_inside_the_unclosed_block`)
+- [x] Parser recovery: never panics; every error has file, line, caret, label — `crates/strand-compiler/tests/robustness.rs` (10,000 random edits with span nesting checked, pathological nesting), `crates/strand-compiler/tests/diagnostics.rs` (`unclosed_enum_and_match_stop_at_the_next_declaration`, `missing_brace_hint_stays_inside_the_unclosed_block`, `every_error_has_a_located_label` (multi-line), `errors_do_not_cascade` (Allman `{`)), `crates/strand-compiler/tests/grammar_rules.rs::a_dot_or_colon_ending_a_line_does_not_take_the_next_line` (dangling `<->`, `~`, `,`, `??`)
+- [x] Did-you-mean for clause keywords (`key`, `persist`, `from`, `extends`, `after`, `rw`, `else`) and snake_case fixes for `max-width:` / `$fg-muted` — `crates/strand-compiler/tests/diagnostics.rs` (`did_you_mean_keywords`, `a_misspelt_clause_keyword_does_not_ask_for_a_value`, `misplaced_elements_are_not_misspelt_keywords`)
 - [x] Diagnostics carry file identity (`FileId` + `SourceMap`); one diagnostic can label several files; rendering capped per file — `crates/strand-compiler/src/diagnostic.rs` (tests `labels_in_other_files_render_there`, `rendering_is_capped_per_file`), `crates/strand-compiler/tests/diagnostics.rs::diagnostics_carry_their_file`
 - [ ] Formatter (`strand fmt` / LSP formatting) and format-on-save that never flashes the error overlay
 - [ ] tree-sitter grammar for `.strand` in `strand-dev` (editor highlighting), kept in step with `docs/grammar.md`
 
 Checking and runtime:
 - [ ] Name resolution across files, no imports; `file.name` export paths
-- [ ] Type checker: records, enums, `Async<T>` vs `T`, nullable `?`, durations, colours, lengths
+- [ ] Type checker: records, enums, `Async<T>` vs `T`, nullable `?`, durations, colours, lengths; space-separated (`Spaced`) values only in shadow-list and font props, elsewhere an error suggesting commas (`margin: 8 8 0` → `8, 8, 0`)
+- [ ] `??` covers a pending or failed `Async` (and null); `?.` short-circuits on null
+- [ ] `on change a, b` never fires at boot, on reload or on a sink switch; `after T` debounces (the OSD example)
 - [ ] Errors: unknown name with did-you-mean; redeclaration across files; assignment to `let` or bound prop; static cycles name the path
-- [ ] Unknown-element did-you-mean includes tree and top-level keywords (`whn hover { … }` → `when`, `enterr { … }` → `enter`)
+- [ ] Unknown-element did-you-mean includes tree and top-level keywords (`whn hover { … }` → `when`, `enterr { … }` → `enter`, and `exit`, `slot`, `set`, `play`, `else`; the parser already catches `els { }` right after an `if` body)
 - [ ] Loud token overrides: redefining a token needs `override`; a misspelt `override` is an unknown-name error, not a new token
 - [ ] Lint: a raw hex colour in a prop warns (use a token); defaults in settings files are exempt
 - [ ] Bytecode lowering + VM evaluating bindings against `strand-core` signals
@@ -82,7 +85,8 @@ Live reload:
 - [ ] Edit table: token swap, prop patch animates, node add/remove poses, state default adoption rules, name/type change resets one cell, handler restart, timer rescale, surface recreate, service restart, lock deferral
 - [ ] Merkle hashes over handler reachability
 - [ ] Error overlay after 250 ms quiet; did-you-mean; click to `$EDITOR`; runtime fault freezes one component outlined red
-- [x] Config file discovery shared by `strand check`, loader and watcher: depth 3, hidden names skipped, symlinks followed, canonical dedup, unreadable sub-directories reported — `crates/strand/src/check.rs` (`finds_strand_files_to_depth_three`, `unreadable_subdirectories_do_not_stop_the_check`, `a_single_file_can_be_checked`)
+- [x] Config `.strand` module-set discovery (`source::find_files`), used by `strand check` (the loader and watcher must call it): depth 3, hidden names skipped, symlinks followed breadth-first, canonical dedup, unreadable sub-directories and dangling `*.strand` links reported — `crates/strand/src/check.rs` (`finds_strand_files_to_depth_three`, `a_deeper_link_does_not_hide_the_real_directory`, `a_dangling_strand_link_is_reported`, `unreadable_subdirectories_do_not_stop_the_check`, `a_single_file_can_be_checked`)
+- [ ] Loader and `strand-watch` use `source::find_files` for the module set; the watcher additionally watches `.wgsl`, settings files, wallpapers and `Discovery::dirs` (link targets)
 - [ ] `strand check`, `strand watch [--json]`, `strand reload [--hard]`, `@reset` (`strand check` parses and reports: `crates/strand/src/check.rs` tests; `@reset` parses: `snippets.strand`; checker, watch, reload pending)
 - [ ] Basic LSP in `strand-dev`: diagnostics, completion after `$` `.` `<->`, hover, rename
 - [ ] Reload fuzzer: five save styles, cold-boot equivalence
@@ -97,10 +101,12 @@ Exit: [ ] theme swap under 5 ms · [ ] contrast never below 3:1 · [ ] the four 
 - [ ] Event routing: events go to the innermost handler; `propagate()` passes one on; `keyboard: none | on_demand | exclusive` sets focus
 - [ ] `hover` stays latched on the pressed node while dragging
 - [ ] Springs on every visual prop; `$motion.spatial` vs `$motion.effects`; retarget keeps velocity
+- [ ] Per-prop `~` transitions (`~ $motion.bouncy`, `~ 200ms`, `~ instant`, `~ ease(..)`, `~ bezier(..)`) reach SceneOp `transition`
 - [ ] Paint-only props never relayout; size springs relayout only under nearest size-stable ancestor
 - [ ] FLIP reordering; `enter`/`exit` on surfaces, `if` branches, list items, pages
 - [ ] Inherited props (`font`, `color`)
 - [ ] Token graph: palette → base → component tiers; derived tokens stay derived; cycles error; gamut mapping
+- [ ] `set { $x: … }` subtree token overrides; `$x` on the right-hand side is the inherited value, not a cycle
 - [ ] Token methods `alpha`, `mix`, `lighten`, `darken`, `oklch(from …)`
 - [ ] Theme swap springs palette roots in OKLab; per-frame token re-evaluation on render thread
 - [ ] Contrast guard ≥3:1; crossfade fallback for light↔dark

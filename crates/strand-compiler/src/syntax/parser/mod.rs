@@ -466,6 +466,80 @@ impl<'s> Parser<'s> {
         self.push_error(d);
     }
 
+    /// Reports "expected `what`, found …" on the current token itself, even
+    /// at the start of a line. For the start of an item, where a line break
+    /// is normal and the bad token is what to point at.
+    pub(crate) fn expected_at_token(&mut self, what: &str) {
+        let t = self.cur();
+        if t.kind == K::Unknown {
+            return; // the lexer already reported it
+        }
+        if t.kind == K::Eof {
+            self.expected(what);
+            return;
+        }
+        let found = match t.kind {
+            K::Ident | K::Number | K::Dollar | K::At | K::Hash => format!("`{}`", self.text(t)),
+            k => k.describe().into(),
+        };
+        self.push_error(
+            Diagnostic::error(
+                "syntax::expected",
+                format!("expected {what}, found {found}"),
+            )
+            .with_label(t.span, format!("expected {what}")),
+        );
+    }
+
+    /// The current token starts a new line that begins a prop, field or
+    /// token entry: a name directly touching `:` (`color:`, `$fg:`,
+    /// `radius.lg:`). Such a line never continues the previous one.
+    pub(crate) fn at_entry_line(&self) -> bool {
+        if !self.on_new_line() {
+            return false;
+        }
+        let mut i = 0;
+        if !matches!(self.nth_kind(0), K::Ident | K::Dollar) {
+            return false;
+        }
+        loop {
+            i += 1;
+            let t = self.nth(i);
+            if t.ws_before {
+                return false;
+            }
+            match t.kind {
+                K::Colon => return true,
+                K::Dot if matches!(self.nth_kind(i + 1), K::Ident | K::Number) => i += 1,
+                _ => return false,
+            }
+        }
+    }
+
+    /// Where an operand is required: if a line break and a new prop come
+    /// first (`value: <->` then `color: …`), the line ended without its
+    /// right-hand side. Reports it at the end of the line and returns true;
+    /// the next line is left to be its own item.
+    pub(crate) fn dangling_at_line_end(&mut self) -> bool {
+        if !self.at_entry_line() {
+            return false;
+        }
+        let op = self
+            .pos
+            .checked_sub(1)
+            .map_or("", |i| self.text(self.toks[i]));
+        let at = Span::at(self.prev_end());
+        self.push_error(
+            Diagnostic::error(
+                "syntax::missing_value",
+                format!("`{op}` at the end of the line has nothing after it"),
+            )
+            .with_label(at, "expected a value here, on the same line")
+            .with_help("the next line starts a new prop, so this line ends here"),
+        );
+        true
+    }
+
     /// Consumes `kind` or reports it missing.
     pub(crate) fn expect(&mut self, kind: TokenKind) -> Option<Tok> {
         if let Some(t) = self.eat(kind) {
@@ -613,13 +687,9 @@ impl<'s> Parser<'s> {
             let start = self.cur().span.start;
             let it = item(self);
             if self.pos == before {
-                // The item consumed nothing: report (once) and skip a token.
-                if self.at(K::Unknown) {
-                    self.bump();
-                } else {
-                    self.expected("an item");
-                    self.bump();
-                }
+                // The item consumed nothing (and reported why): skip what
+                // cannot start an item, keeping braces balanced.
+                self.skip_stray();
                 out.push(error_item(self.finish(start)));
                 continue;
             }
@@ -670,13 +740,14 @@ impl<'s> Parser<'s> {
         let mut d = Diagnostic::error("syntax::unclosed", "unclosed `{`")
             .with_label(open.span, "this `{` has no matching `}`")
             .with_secondary(cut, cut_label);
-        // Only a sloppy `}` inside the unclosed block can explain it; the
-        // most recent one is the closest to the cut.
+        // Only a sloppy `}` inside the unclosed block can explain it. In a
+        // cascade each `}` closes the block one level out, so the innermost
+        // suspect (the one opened last) is where the `}` went missing.
         let suspect = self
             .suspects
             .iter()
-            .rev()
-            .find(|s| s.start > open.span.start)
+            .filter(|s| s.start > open.span.start)
+            .max_by_key(|s| s.start)
             .copied();
         if let Some(s) = suspect {
             d = d.with_secondary(
@@ -704,6 +775,61 @@ impl<'s> Parser<'s> {
         let word = self.text(t);
         (DECL_STARTS.contains(&word) || also_items && matches!(word, "let" | "state"))
             && self.nth_kind(1) == K::Ident
+    }
+
+    /// Skips what cannot start an item. A `{` on its own line (Allman
+    /// style after a prop) takes its whole block with it, so the braces
+    /// stay in step; other junk is skipped up to the next token on its line
+    /// that could start an item (`; ) height: 4` keeps `height: 4`).
+    pub(crate) fn skip_stray(&mut self) {
+        match self.kind() {
+            K::LBrace => {
+                let t = self.bump();
+                self.push_error(
+                    Diagnostic::error("syntax::brace_line", "this `{` belongs to nothing")
+                        .with_label(t.span, "a block cannot start an item")
+                        .with_help(
+                            "an element's or prop's `{` must be on the same line as the \
+                             element or prop",
+                        ),
+                );
+                self.skip_balanced();
+            }
+            _ => {
+                self.bump();
+                while !self.on_new_line()
+                    && !matches!(
+                        self.kind(),
+                        K::Ident | K::At | K::Hash | K::LBrace | K::RBrace | K::Semi | K::Eof
+                    )
+                {
+                    self.bump();
+                }
+            }
+        }
+    }
+
+    /// Too deep to parse what starts here: skip it whole when it is a
+    /// bracketed group, so each enclosing level still finds its closing
+    /// bracket and the one `too_deep` error is the only one.
+    pub(crate) fn skip_group(&mut self) {
+        if !matches!(self.kind(), K::LParen | K::LBracket | K::LBrace) {
+            return;
+        }
+        let mut depth = 0usize;
+        loop {
+            match self.bump().kind {
+                K::Eof => break,
+                K::LParen | K::LBracket | K::LBrace => depth += 1,
+                K::RParen | K::RBracket | K::RBrace => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     /// Skips a balanced `{ … }` whose `{` was just consumed.

@@ -9,7 +9,7 @@
 //! directory", shared by `strand check`, the loader and the watcher so they
 //! can never load different sets (`docs/architecture.md`, "Config files").
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -83,23 +83,32 @@ pub const MAX_DEPTH: usize = 3;
 pub struct Discovery {
     /// Every `.strand` file, sorted, as found under the directory (so
     /// diagnostics show the path the user knows). A file reachable by
-    /// several paths appears once, under the path that sorts first.
+    /// several paths appears once, under its shallowest path (the one that
+    /// sorts first among equally deep ones).
     pub files: Vec<PathBuf>,
+    /// The canonical path of every directory scanned, `dir` included: where
+    /// the `.strand` set can change. Link targets outside `dir` appear here
+    /// under their real location, so a watcher can watch them.
+    pub dirs: Vec<PathBuf>,
     /// Directories or entries that could not be read, with the reason.
-    /// They are reported, and the scan carries on past them.
+    /// They are reported, and the scan carries on past them. A dangling
+    /// link named `*.strand` is one of these: it was meant to be loaded.
     pub errors: Vec<(PathBuf, std::io::Error)>,
 }
 
 /// Finds the `.strand` files of a config directory.
 ///
-/// The rules, which the watcher must match exactly:
+/// The rules, which the loader and the watcher must share (they call this):
 /// - files ending in `.strand`, at most [`MAX_DEPTH`] directories below
 ///   `dir` (`dir/a/b/c/x.strand` is loaded; one level deeper is not);
 /// - names starting with `.` are skipped, files and directories alike;
-/// - symlinks are followed (stowed dotfiles), and files are deduplicated
-///   by canonical path so a file reached through two links loads once;
-/// - an unreadable sub-directory is recorded in [`Discovery::errors`] and
-///   skipped; the rest of the tree is still scanned.
+/// - symlinks are followed (stowed dotfiles). The walk is breadth-first and
+///   directories and files are deduplicated by canonical path, so each is
+///   first reached at its shallowest depth and loads once, however many
+///   links point at it;
+/// - an unreadable sub-directory, or a dangling `*.strand` link, is
+///   recorded in [`Discovery::errors`] and skipped; the rest of the tree is
+///   still scanned.
 ///
 /// If `dir` is itself a file, it is the only file. Reading `dir` itself
 /// failing is the returned error.
@@ -108,26 +117,58 @@ pub fn find_files(dir: &Path) -> std::io::Result<Discovery> {
     let meta = std::fs::metadata(dir)?;
     if meta.is_file() {
         found.files.push(dir.to_path_buf());
+        if let Some(parent) = std::fs::canonicalize(dir)
+            .ok()
+            .and_then(|c| c.parent().map(Path::to_path_buf))
+        {
+            found.dirs.push(parent);
+        }
         return Ok(found);
     }
-    let entries = std::fs::read_dir(dir)?;
-    let mut seen = HashSet::new();
+    let root = std::fs::read_dir(dir)?;
+    let mut seen_files = HashSet::new();
     let mut seen_dirs = HashSet::new();
-    if let Ok(canon) = std::fs::canonicalize(dir) {
-        seen_dirs.insert(canon);
+    let canon = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    seen_dirs.insert(canon.clone());
+    found.dirs.push(canon);
+    // Breadth-first: every directory at depth d is queued before any at
+    // depth d + 1, so the shallowest path to a directory claims it.
+    let mut queue = VecDeque::from([(dir.to_path_buf(), 0usize, Some(root))]);
+    while let Some((path, depth, entries)) = queue.pop_front() {
+        let entries = match entries {
+            Some(e) => e,
+            None => match std::fs::read_dir(&path) {
+                Ok(e) => e,
+                Err(e) => {
+                    found.errors.push((path, e));
+                    continue;
+                }
+            },
+        };
+        scan(
+            entries,
+            &path,
+            depth,
+            &mut found,
+            &mut seen_files,
+            &mut seen_dirs,
+            &mut queue,
+        );
     }
-    walk(entries, dir, 0, &mut found, &mut seen, &mut seen_dirs);
     found.files.sort();
     Ok(found)
 }
 
-fn walk(
+type Queue = VecDeque<(PathBuf, usize, Option<std::fs::ReadDir>)>;
+
+fn scan(
     entries: std::fs::ReadDir,
     dir: &Path,
     depth: usize,
     found: &mut Discovery,
-    seen: &mut HashSet<PathBuf>,
+    seen_files: &mut HashSet<PathBuf>,
     seen_dirs: &mut HashSet<PathBuf>,
+    queue: &mut Queue,
 ) {
     // Sorted, so which alias of a linked file wins is deterministic.
     let mut paths = Vec::new();
@@ -145,28 +186,33 @@ fn walk(
         {
             continue;
         }
+        let is_strand = path.extension().is_some_and(|e| e == "strand");
         // `metadata` follows symlinks.
-        let Ok(meta) = std::fs::metadata(&path) else {
-            continue; // dangling link
+        let meta = match std::fs::metadata(&path) {
+            Ok(m) => m,
+            Err(e) => {
+                // A dangling `bar.strand` link was meant to be loaded.
+                if is_strand {
+                    found.errors.push((path, e));
+                }
+                continue;
+            }
         };
         if meta.is_dir() {
             if depth >= MAX_DEPTH {
                 continue;
             }
-            // A link back up the tree would otherwise be walked again.
-            if let Ok(canon) = std::fs::canonicalize(&path) {
-                if !seen_dirs.insert(canon) {
-                    continue;
-                }
+            // A link back up the tree, or a second link to a directory,
+            // would otherwise be walked again.
+            let canon = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+            if seen_dirs.insert(canon.clone()) {
+                found.dirs.push(canon);
+                queue.push_back((path, depth + 1, None));
             }
-            match std::fs::read_dir(&path) {
-                Ok(sub) => walk(sub, &path, depth + 1, found, seen, seen_dirs),
-                Err(e) => found.errors.push((path, e)),
-            }
-        } else if meta.is_file() && path.extension().is_some_and(|e| e == "strand") {
+        } else if meta.is_file() && is_strand {
             match std::fs::canonicalize(&path) {
                 Ok(canon) => {
-                    if seen.insert(canon) {
+                    if seen_files.insert(canon) {
                         found.files.push(path);
                     }
                 }

@@ -203,6 +203,43 @@ mod tests {
     }
 
     #[test]
+    fn a_deeper_link_does_not_hide_the_real_directory() {
+        // With a sorted depth-first walk, `a/b/link` reached `z` first at
+        // depth 3, and `z/sub` (depth 4 through the link) was then never
+        // scanned: stowing a link silently dropped a module.
+        let t = TempDir::new();
+        t.write("z/sub/deep.strand", "");
+        t.write("top.strand", "");
+        std::fs::create_dir_all(t.0.join("a/b")).unwrap();
+        std::os::unix::fs::symlink("../../z", t.0.join("a/b/link")).unwrap();
+        let found = find_files(&t.0).unwrap();
+        assert!(found.errors.is_empty(), "{:?}", found.errors);
+        let names: Vec<_> = found
+            .files
+            .iter()
+            .map(|p| p.strip_prefix(&t.0).unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["top.strand", "z/sub/deep.strand"]);
+        // The canonical directories scanned include the link target once.
+        let z = std::fs::canonicalize(t.0.join("z")).unwrap();
+        assert_eq!(found.dirs.iter().filter(|d| **d == z).count(), 1);
+    }
+
+    #[test]
+    fn a_dangling_strand_link_is_reported() {
+        let t = TempDir::new();
+        t.write("ok.strand", "state x = 1\n");
+        std::os::unix::fs::symlink(t.0.join("gone.strand"), t.0.join("bar.strand")).unwrap();
+        std::os::unix::fs::symlink(t.0.join("gone.txt"), t.0.join("notes.txt")).unwrap();
+        let found = find_files(&t.0).unwrap();
+        assert_eq!(found.errors.len(), 1, "{:?}", found.errors);
+        assert!(found.errors[0].0.ends_with("bar.strand"));
+        let report = check_dir(&t.0, Style::Plain).unwrap();
+        assert!(!report.ok());
+        assert!(report.text.contains("bar.strand"), "{}", report.text);
+    }
+
+    #[test]
     fn unreadable_subdirectories_do_not_stop_the_check() {
         use std::os::unix::fs::PermissionsExt;
         let t = TempDir::new();

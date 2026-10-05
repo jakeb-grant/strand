@@ -60,6 +60,39 @@ fn did_you_mean_keywords() {
             "component A { text pct (x) }",
             "to call or index, remove the space before `(`",
         ),
+        // Clause keywords.
+        (
+            "component A { for x in xs kye x.id { text x } }",
+            "did you mean `key`?",
+        ),
+        ("state p: [P] kye app = []", "did you mean `key`?"),
+        ("state q = 1 persits", "did you mean `persist`?"),
+        ("tokens c extnd base { a: 1 }", "did you mean `extends`?"),
+        (
+            "component A { on change a, b aftr 1s { x = 1 } }",
+            "did you mean `after`?",
+        ),
+        ("state s frm \"a.toml\" { a: bool }", "did you mean `from`?"),
+        ("type T { a: bool rx = true }", "did you mean `rw`?"),
+        (
+            "component A { if a { b } els { c } }",
+            "did you mean `else`?",
+        ),
+        // Names are snake_case.
+        (
+            "component A { text \"x\" { max-width: 40% } }",
+            "names are snake_case: `max_width`",
+        ),
+        (
+            "component A { text \"x\" { color: $fg-muted } }",
+            "names are snake_case: `$fg_muted`; or put spaces around `-` to subtract",
+        ),
+        // There is no unary `+`, so the separate-term fix drops the sign.
+        (
+            "component A { box { margin: 0 +2px } }",
+            "write `2px` (no sign) for a separate term, \
+             or put a space after the sign (`+ 2px`) to add",
+        ),
     ];
     for (src, help) in cases {
         let got = helps(src);
@@ -83,6 +116,7 @@ fn every_error_has_a_located_label() {
         "\"open",
         "let x = 1 &",
         "@reset",
+        "component A { if a { b } els { c } }",
     ] {
         let parsed = parse(FileId::default(), src);
         assert!(!parsed.diagnostics.is_empty(), "{src}: expected an error");
@@ -95,6 +129,57 @@ fn every_error_has_a_located_label() {
             &SourceMap::single("e.strand", String::from(src)).0,
         );
         assert!(short.starts_with("e.strand:1:"), "{short}");
+    }
+    // An error at the start of an item points at the bad token on its own
+    // line, not at the end of the line before.
+    for (src, at) in [
+        ("component A {\n  123\n  width: 1\n}\n", "e.strand:2:3:"),
+        ("component A {\n  width: 1\n  ]\n}\n", "e.strand:3:3:"),
+        ("component A {\n  box\n  => x\n}\n", "e.strand:3:3:"),
+        (
+            "component A {\n  on click {\n    ]\n  }\n}\n",
+            "e.strand:3:5:",
+        ),
+        (
+            "component A {\n  match m {\n    a => b\n    ]\n  }\n}\n",
+            "e.strand:4:5:",
+        ),
+        ("enum E {\n  a\n  ]\n}\n", "e.strand:3:3:"),
+    ] {
+        let parsed = parse(FileId::default(), src);
+        let short = render_short(
+            &parsed.diagnostics,
+            &SourceMap::single("e.strand", String::from(src)).0,
+        );
+        assert_eq!(parsed.diagnostics.len(), 1, "{src}\n{short}");
+        assert!(short.starts_with(at), "{src}\nwanted {at}, got {short}");
+        assert!(!short.contains("line break"), "{short}");
+    }
+}
+
+#[test]
+fn a_misspelt_clause_keyword_does_not_ask_for_a_value() {
+    for src in [
+        "state p: [P] kye app = []",
+        "state s frm \"a.toml\" { a: bool }",
+    ] {
+        let parsed = parse(FileId::default(), src);
+        assert_eq!(parsed.diagnostics.len(), 1, "{}", report(src));
+        assert!(
+            !report(src).contains("state needs a value"),
+            "{}",
+            report(src)
+        );
+    }
+}
+
+#[test]
+fn misplaced_elements_are_not_misspelt_keywords() {
+    // `text` is two edits from `let`, `icon` two from `on`: these are
+    // elements in the wrong place, not typos.
+    for src in ["text \"x\"\n", "icon \"y\"\n"] {
+        let got = helps(src);
+        assert!(got.is_empty(), "{src}: {got:?}");
     }
 }
 
@@ -186,10 +271,20 @@ fn errors_do_not_cascade() {
         "component A {\n  text a b c d\n}\n",
         "let x = f(1, 2\nlet y = 3\n",
         "component A {\n  for x im xs { text x }\n}\n",
+        "component A {\n  box\n  {\n    width: 1\n  }\n  text \"x\"\n}\nstate y = 1\n",
+        "component A {\n  box { width: 1 }\n  {\n    width: 2\n  }\n  text \"x\"\n}\nstate y = 1\n",
+        "component A {\n  box { width: 1 } : 2 ]\n  text \"x\"\n}\n",
     ] {
         let n = parse(FileId::default(), src).diagnostics.len();
         assert_eq!(n, 1, "{src}\n{}", report(src));
     }
+    // An Allman `{` stays with its element, and nothing leaves `A`.
+    let src = "component A {\n  box\n  {\n    width: 1\n  }\n  text \"x\"\n}\nstate y = 1\n";
+    let t = dump::tree(&parse(FileId::default(), src).file).render();
+    assert!(
+        t.contains("component A\n    element box\n      prop width: 1\n    element text \"x\""),
+        "{t}"
+    );
 }
 
 #[test]
@@ -294,6 +389,33 @@ fn missing_brace_hint_stays_inside_the_unclosed_block() {
             report(&broken)
         );
     }
+    // Losing the `}` of Clock's `on click` points at that line (61), not
+    // at the `text … {` that encloses it (60): the innermost suspect wins.
+    let broken = src.replacen(
+        "    on click { open = !open }\n",
+        "    on click { open = !open\n",
+        1,
+    );
+    assert_ne!(broken, src);
+    let parsed = parse(FileId::default(), &broken);
+    let short = render_short(
+        &parsed.diagnostics,
+        &SourceMap::single("e.strand", broken.clone()).0,
+    );
+    // The handler swallows the `popup` line, which reads as a statement
+    // followed by `{`; that second error is a true consequence.
+    let unclosed = parsed
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "syntax::unclosed")
+        .unwrap_or_else(|| panic!("{short}"));
+    let line_of = |off: u32| broken[..off as usize].matches('\n').count() + 1;
+    let hint = unclosed
+        .labels
+        .iter()
+        .find(|l| l.message.contains("probably missing"))
+        .unwrap_or_else(|| panic!("no hint:\n{}", report(&broken)));
+    assert_eq!(line_of(hint.span.start), 61, "{}", report(&broken));
     // The same with two tiny components.
     let src = "component A {\n  box {\n    text \"a\"\n      }\n}\ncomponent B {\n  box {\n    text \"b\"\n}\ncomponent C { }\n";
     let parsed = parse(FileId::default(), src);

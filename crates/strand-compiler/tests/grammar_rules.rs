@@ -120,6 +120,42 @@ fn a_dot_or_colon_ending_a_line_does_not_take_the_next_line() {
         codes("tokens t {\n  accent:\n  fg: #fff\n}\n"),
         ["syntax::missing_value"]
     );
+    // So is a trailing `<->`, `~`, `,` or binary operator when the next
+    // line starts a prop: the next prop stays a prop.
+    for (line, next) in [
+        ("value: <->", "color: $fg"),
+        ("width: 24 ~", "height: 3"),
+        ("margin: 8, 8,", "bg: $fg"),
+        ("opacity: a ??", "radius: 4"),
+        ("opacity: a +", "radius: 4"),
+        ("opacity: hover ?", "radius: 4"),
+    ] {
+        let src = format!("component R {{\n  box {{\n    {line}\n    {next}\n  }}\n}}\n");
+        let parsed = parse(FileId::default(), &src);
+        assert_eq!(codes(&src), ["syntax::missing_value"], "{src}");
+        // Reported at the end of the dangling line, not on the next one.
+        let at = parsed.diagnostics[0].primary_span().unwrap().start as usize;
+        assert_eq!(&src[..at], &src[..src.find(line).unwrap() + line.len()]);
+        let name = next.split(':').next().unwrap();
+        assert!(
+            tree(&src).contains(&format!("prop {name}: ")),
+            "{src}\n{}",
+            tree(&src)
+        );
+    }
+    // Token blocks too, with `$x` and dotted keys.
+    assert_eq!(
+        codes("tokens t {\n  a: 1,\n  radius.lg: 4\n}\n"),
+        ["syntax::missing_value"]
+    );
+    assert_eq!(
+        codes("tokens t {\n  a: $b ??\n  $c: 4\n}\n"),
+        ["syntax::missing_value"]
+    );
+    // Continuations that are not a new prop still continue.
+    assert!(codes("component R {\n  box {\n    opacity: a ??\n      b\n  }\n}\n").is_empty());
+    assert!(codes("component R {\n  box {\n    margin: 8,\n      8\n  }\n}\n").is_empty());
+    assert!(codes("component R {\n  box {\n    o: c ?\n      a : b\n  }\n}\n").is_empty());
 }
 
 #[test]
