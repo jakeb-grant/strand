@@ -221,6 +221,107 @@ fn a_stalled_backup_then_rename_is_read_once_closed() {
     only_theme_changed(&fx, NEW);
 }
 
+/// A wallpaper downloaded in two halves (`curl -o ~/pics/wall.png`) into a
+/// directory watched without `MODIFY` (other programs write there): its
+/// creation already has bytes, it is held until its `CLOSE_WRITE`, and
+/// read once, whole.
+#[test]
+fn a_wallpaper_downloaded_in_two_halves_is_read_once_closed() {
+    let fx = fixture();
+    let pics = fx.base.join("pics");
+    fs::create_dir(&pics).unwrap();
+    let wall = pics.join("wall.png");
+    fx.watcher.watch_file(&wall, Role::Wallpaper).unwrap();
+    let body = "png header and all the pixels";
+    write_in_two_halves(&wall, body, Duration::from_millis(200));
+    let b = one_batch(&fx);
+    assert_eq!(b.changes.len(), 1, "{b:#?}");
+    assert_eq!(b.changes[0].kind, ChangeKind::Created);
+    assert_eq!(b.changes[0].hash, Some(hash_bytes(body.as_bytes())));
+    assert!(b.notices.is_empty(), "{b:#?}");
+}
+
+/// "Save all" where the first file's writer stalled mid-write (held at
+/// an earlier flush): once it closes, a file saved 3 ms later is in the
+/// same batch, cut 15 ms after the last completed write.
+#[test]
+fn a_save_all_after_a_stalled_write_is_one_batch() {
+    let fx = fixture();
+    let theme = fx.cfg.join("theme.strand");
+    let bar = fx.cfg.join("bar.strand");
+    fs::remove_file(&theme).unwrap();
+    write_in_two_halves(&theme, NEW, Duration::from_millis(200));
+    std::thread::sleep(Duration::from_millis(3));
+    fs::write(&bar, "bar { compact: true }\n").unwrap();
+    let b = one_batch(&fx);
+    assert_eq!(b.changes.len(), 2, "{b:#?}");
+    assert_modified(&b.changes[0], &bar, "bar { compact: true }\n");
+    assert_modified(&b.changes[1], &theme, NEW);
+}
+
+/// A file held mid-write is deleted while its writer still has it open,
+/// then created again 5 ms later: one `Modified`, not `Removed` then
+/// `Created` (the removal grace applies to it like to any other).
+#[test]
+fn a_held_file_deleted_and_created_again_is_one_modified() {
+    let fx = fixture();
+    let theme = fx.cfg.join("theme.strand");
+    fs::remove_file(&theme).unwrap();
+    let mut f = fs::File::create(&theme).unwrap();
+    f.write_all(&NEW.as_bytes()[..10]).unwrap();
+    f.flush().unwrap();
+    // Past the removal grace: the delete-and-create batch was cut and the
+    // file held.
+    std::thread::sleep(Duration::from_millis(150));
+    fs::remove_file(&theme).unwrap();
+    std::thread::sleep(Duration::from_millis(5));
+    fs::write(&theme, NEW).unwrap();
+    drop(f);
+    only_theme_changed(&fx, NEW);
+}
+
+/// A watched file that a process keeps open and writes to every 5 ms (a
+/// `service … from file` status file fed by `script > status.txt`) does
+/// not hold back an unrelated save: its quiet period runs from the last
+/// completed write, not from the last `MODIFY`.
+#[test]
+fn a_file_written_continuously_does_not_delay_a_save() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let fx = fixture();
+    let status = fx.cfg.join("status.txt");
+    fs::write(&status, "").unwrap();
+    fx.watcher.watch_file(&status, Role::Other).unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let writer = {
+        let (stop, status) = (stop.clone(), status.clone());
+        std::thread::spawn(move || {
+            let mut f = fs::OpenOptions::new().append(true).open(&status).unwrap();
+            while !stop.load(Ordering::Relaxed) {
+                f.write_all(b"tick\n").unwrap();
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        })
+    };
+    std::thread::sleep(Duration::from_millis(100));
+    let saved = Instant::now();
+    fs::write(fx.cfg.join("theme.strand"), NEW).unwrap();
+    let b = next_files(&fx.rx, FIRST).expect("no batch");
+    let took = saved.elapsed();
+    stop.store(true, Ordering::Relaxed);
+    writer.join().unwrap();
+    assert_eq!(b.changes.len(), 1, "{b:#?}");
+    assert_modified(&b.changes[0], &fx.cfg.join("theme.strand"), NEW);
+    // The appends never moved the quiet period (they used to stretch it
+    // to `max_delay`, 500 ms).
+    assert!(
+        b.last_event - b.first_event < Duration::from_millis(50),
+        "{:?}",
+        b.last_event - b.first_event
+    );
+    assert!(took < Duration::from_millis(400), "{took:?}");
+}
+
 /// A new module and a new settings file written in two halves (`curl -o`,
 /// `cp` from slow media): created with the full content, once.
 #[test]

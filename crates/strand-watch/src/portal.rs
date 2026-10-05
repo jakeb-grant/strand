@@ -185,8 +185,12 @@ pub async fn follow(conn: &zbus::Connection, sink: EventSink) -> zbus::Result<()
     let setup = async {
         let proxy = SettingsProxy::new(conn).await?;
         // Subscribe before reading, so a change between the two is not
-        // lost.
-        let changes = proxy.receive_setting_changed().await?;
+        // lost. The match rule names the namespace (arg0), so the bus
+        // drops the other namespaces' signals (GNOME's backend sends one
+        // for every exposed gsettings key) instead of waking this runtime.
+        let changes = proxy
+            .receive_setting_changed_with_args(&[(0, APPEARANCE)])
+            .await?;
         let owners = proxy.inner().receive_owner_changed().await?;
         zbus::Result::Ok((proxy, changes, owners))
     };
@@ -229,6 +233,7 @@ pub async fn follow(conn: &zbus::Connection, sink: EventSink) -> zbus::Result<()
                 let Ok(args) = signal.args() else {
                     continue;
                 };
+                // A backstop: the match rule already filters on it.
                 if *args.namespace() != APPEARANCE {
                     continue;
                 }

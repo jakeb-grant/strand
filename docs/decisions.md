@@ -801,8 +801,9 @@ schema from `strand-compiler`).
   `MOVED_FROM` or delete, every watch whose path starts with it, behind
   the caller's back. `rustix::fs::inotify` (rustix is already a
   dependency) with the mask `CLOSE_WRITE | MOVED_TO | MOVED_FROM |
-  CREATE | DELETE | DELETE_SELF | MOVE_SELF | MODIFY | ONLYDIR |
-  EXCL_UNLINK` queues nothing for reads (`reading_a_watched_file_queues_no_events`).
+  CREATE | DELETE | DELETE_SELF | MOVE_SELF | ONLYDIR | EXCL_UNLINK`
+  (plus `MODIFY` in config directories only; see "`MODIFY` only in config
+  directories") queues nothing for reads (`reading_a_watched_file_queues_no_events`).
   The watcher thread `poll(2)`s the inotify fd and an eventfd that control
   calls write, so there is one thread and no wake-up without work. The
   wd-to-path map lives with core, which decides when watches go.
@@ -828,11 +829,12 @@ schema from `strand-compiler`).
   be half-written, and a module deleted for good must be reported.
   `MODIFY` and an empty plain-file `CREATE` mark a write in progress on
   that path: the file is not read until its `CLOSE_WRITE` or `MOVED_TO`
-  (or its removal), however long the writer pauses, and they keep an
-  already-open batch waiting, so a slow multi-file save stays one batch.
-  A stream that never goes quiet is cut 500 ms after its first event; a
-  file still being written at that cut is held, not read (see "Writes
-  in progress are held").
+  (or its removal), however long the writer pauses. They do not move an
+  open batch's quiet period (revised in review round 5: see "The quiet
+  period runs from completed writes"). A stream of completed writes that
+  never goes quiet is cut 500 ms after its first event; a file still
+  being written at that cut is held, not read (see "Writes in progress
+  are held").
 - **2026-10-05 · Removal grace 50 ms.** When the latest event on a
   watched path was a removal the quiet period is 50 ms instead of 15, so
   delete-and-create and Vim's rename-then-write are one `Modified`, never
@@ -1009,7 +1011,8 @@ schema from `strand-compiler`).
   own writes are atomic (temporary file renamed over the path); an
   in-place write is held until it is closed, but a crash mid-write
   would leave a half file on disk.
-- **2026-10-05 · Files linked in complete.** A `CREATE` of a regular
+- **2026-10-05 · Files linked in complete.** In a config directory (the
+  only watches with `MODIFY`, review round 5), a `CREATE` of a regular
   file with one link and non-zero length is read like a completed write
   unless a `MODIFY` for it follows: its bytes may have existed before its
   name (`O_TMPFILE` + `linkat`, as systemd's `link_tmpfile` does; its
@@ -1018,7 +1021,9 @@ schema from `strand-compiler`).
   read after its first write looks the same at `CREATE`, but the kernel
   queues its `MODIFY` for the name right behind, which marks the write
   in progress and holds the file until `CLOSE_WRITE`. An empty new file
-  waits for `CLOSE_WRITE` from the start.
+  waits for `CLOSE_WRITE` from the start. In other content directories
+  no `MODIFY` tells the two apart, so such a creation is held like a
+  write in progress (see "`MODIFY` only in config directories").
 - **2026-10-05 · Light ancestor watches.** A watched directory's inotify
   descriptor follows its inode, so moving an unwatched ancestor
   (`mv ~/x ~/w` with only `~/x/y/z` watched) made no event and the file
@@ -1071,9 +1076,10 @@ schema from `strand-compiler`).
   app writing its own file in `~/.config` would otherwise wake the
   watcher on each `write(2)` (`MODIFY`) and close, which the move to raw
   inotify was meant to stop. A directory wanted for several reasons gets
-  the strongest kind (full, then parent, then ancestor). The directories
-  of a referenced file's symlinks stay full watches: a save that replaces
-  the link with a plain file (delete and create) writes there.
+  the strongest kind (full, then completed, then parent, then ancestor).
+  The directories of a referenced file's symlinks stay content watches
+  (without `MODIFY` since review round 5): a save that replaces the link
+  with a plain file (delete and create) writes there.
 - **2026-10-05 · Content-only batches leave the watches alone (review
   round 4).** A flush re-syncs the watches only when the structure may
   have changed: a full rescan, a module-set or cache-tree rescan, a
@@ -1107,3 +1113,87 @@ schema from `strand-compiler`).
   return and its watch (the re-walk lists directories, not files), and
   its callers (boot, the apps/icons/fonts services) are not on a hot
   path.
+- **2026-10-05 · `MODIFY` only in config directories (review round 5).**
+  `IN_MODIFY` is queued once per `write(2)`, and the watcher drains its
+  fd as soon as `poll` wakes, so the kernel's merging of identical
+  events rarely applies: any process writing in a directory watched with
+  it wakes the thread once per write. Only the config's module
+  directories (Strand's own) keep it. Every other content directory (a
+  referenced file's directory and each symlink hop's, so `~` for a
+  home-manager `~/.background-image`, `~/Pictures`, `~/Downloads`; every
+  app, icon and font tree, whose entries are never read) is watched for
+  completed writes and names: `CLOSE_WRITE | MOVED_TO | CREATE` and the
+  removal events. A download, `.xsession-errors` or a package upgrade
+  there now costs one wakeup per file created or closed
+  (`tests/wakeups.rs`: 4500 small writes next to watched files wake the
+  thread a handful of times, against about 2600 with `MODIFY`;
+  `writes_queue_events_only_in_config_directories`). Throttling the fd
+  after `MODIFY`-only drains was rejected: one inotify fd serves the
+  config directories too, so pausing it would delay config saves, and a
+  continuous writer would still wake the thread every pause. What
+  `MODIFY` did there is covered otherwise: an in-place write is not
+  touched until its `CLOSE_WRITE`; an empty new file is held from its
+  `CREATE`; a new single-link file that already has bytes when its
+  `CREATE` is read (`Raw::Created`: a writer that wrote first, or a file
+  linked in from `O_TMPFILE`) is held until its `CLOSE_WRITE`, as no
+  `MODIFY` will say which it is. A cache-tree entry created that way is
+  reported at once (it is never read). The remaining gap: a file in such
+  a directory that is touched for another reason (a full rescan) while
+  being rewritten in place can be read mid-write; its `CLOSE_WRITE`
+  reports the final content in a later batch.
+- **2026-10-05 · Stalls are measured by the file, not by events (review
+  round 5).** Without `MODIFY`, an active writer makes no event between
+  its creation and its close, so "no event for `stalled_write`" alone
+  would read a 6 s download half done. A held file is read as stalled
+  only if, in addition, its modification time is unchanged since the
+  flush that held it; a changed one renews the hold for another
+  `stalled_write`. One `stat` per held file per 5 s; a file linked in
+  from `O_TMPFILE` into such a directory (its `CLOSE_WRITE` comes under
+  `#<ino>`) is read 5 s after it stops changing, with
+  `Notice::StalledWrite`
+  (`a_new_file_without_modify_is_held_while_it_changes`).
+- **2026-10-05 · The quiet period runs from completed writes (review
+  round 5).** design.md: 15 ms after the last *completed* write. A
+  `MODIFY` no longer moves an open batch's quiet period: a watched file
+  that a process keeps open and appends to (a `service … from file`
+  status file) stretched every unrelated batch to `max_delay`
+  (`a_file_written_continuously_does_not_delay_a_save`,
+  `busy_never_moves_the_quiet_period`). Holding a file mid-write at the
+  flush already keeps half-written content out. A held file whose write
+  ended (`CLOSE_WRITE`, `MOVED_TO`, removal) has no deadline of its own:
+  that event put it back in the open batch, which waits for its coalesce
+  or removal grace like any other, so a stalled save followed by "save
+  all" is one batch and a held file deleted and created again is one
+  `Modified` (`a_save_all_after_a_stalled_write_is_one_batch`,
+  `a_held_file_deleted_and_created_again_is_one_modified`,
+  `a_held_file_removed_waits_for_the_removal_grace`).
+- **2026-10-05 · Events keep the mask they were queued under (review
+  round 5).** A directory's watch kind can change while events queued
+  under the old mask are unread (a wallpaper written into `~/.config`, a
+  names-only parent watch, and then registered). Before a mask changes,
+  the queued events are read and classified under the old kind, and
+  handled before newer ones. A creation seen by a names-only watch is
+  complete as far as that watch can tell (it queues no `CLOSE_WRITE`), so
+  it is never held waiting for one
+  (`events_keep_the_mask_they_were_queued_under`).
+- **2026-10-05 · The IPC socket is not a watch source (review round 5).**
+  design.md lists "CLI and IPC: Unix socket and D-Bus" among the change
+  sources, and an early draft of the thread table gave the socket to the
+  watcher thread. It belongs to the `strand` binary instead, served on
+  the logic loop (calloop source), because every request it carries
+  (`strand reload`, `strand watch`, and M5's `get | set | toggle | watch
+  | call`) reads or writes live state or calls into the program, which
+  only logic may touch; routing it through `strand-watch` would add a
+  thread hop and a second request path for no gain. `strand reload`
+  reaches the watcher through `Watcher::rescan()`. strand-watch therefore
+  has no IPC `ChangeEvent` slot; its sources are inotify, polling, the
+  portal Settings client and the compositor-event slot
+  (`ChangeEvent::Compositor`, filled by M3 adapters).
+- **2026-10-05 · The bus filters portal namespaces (review round 5).**
+  `follow` subscribes with an `arg0='org.freedesktop.appearance'` match
+  rule (`receive_setting_changed_with_args`), so the bus daemon drops
+  `SettingChanged` for every other namespace (GNOME's backend emits one
+  per exposed gsettings key) instead of routing it to the services
+  runtime; the client-side namespace check stays as a backstop
+  (`other_namespaces_are_dropped_by_the_bus`, which reads every message
+  the bus routes to the client's connection).

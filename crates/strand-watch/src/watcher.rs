@@ -40,14 +40,19 @@ enum Ctl {
 }
 
 /// What a directory watch listens for. Never `IN_OPEN`, `IN_ACCESS`,
-/// `IN_CLOSE_NOWRITE` or `IN_ATTRIB`: reads cost nothing. `IN_MODIFY`
-/// marks a write in progress, so the file is not read before its
-/// `IN_CLOSE_WRITE`. A parent watch (`~/.config` above the config root, a
-/// missing directory's nearest ancestor) hears names come and go, never
-/// writes. An ancestor watch hears only its children being moved away or
-/// deleted (and itself going): writes, new files and edits in `~` or `/`
-/// queue nothing.
-fn watch_mask(kind: WatchKind) -> WatchFlags {
+/// `IN_CLOSE_NOWRITE` or `IN_ATTRIB`: reads cost nothing. Only the config
+/// directories get `IN_MODIFY` (one event per `write(2)`), which marks a
+/// write in progress so the file is not read before its `IN_CLOSE_WRITE`.
+/// Every other content directory (a wallpaper's or settings file's
+/// directory, a symlink hop such as `~`, `~/Downloads`, a font, icon or
+/// `applications` tree) hears completed writes and names only, so a
+/// download, a log or a package upgrade there costs one wakeup per file
+/// closed, not one per write. A parent watch (`~/.config` above the
+/// config root, a missing directory's nearest ancestor) hears names come
+/// and go, never writes. An ancestor watch hears only its children being
+/// moved away or deleted (and itself going): writes, new files and edits
+/// in `~` or `/` queue nothing.
+pub(crate) fn watch_mask(kind: WatchKind) -> WatchFlags {
     let gone = WatchFlags::MOVED_FROM
         | WatchFlags::DELETE
         | WatchFlags::DELETE_SELF
@@ -57,12 +62,10 @@ fn watch_mask(kind: WatchKind) -> WatchFlags {
     match kind {
         WatchKind::Ancestor => gone,
         WatchKind::Parent => gone | WatchFlags::CREATE | WatchFlags::MOVED_TO,
-        WatchKind::Full => {
-            gone | WatchFlags::CLOSE_WRITE
-                | WatchFlags::MOVED_TO
-                | WatchFlags::CREATE
-                | WatchFlags::MODIFY
+        WatchKind::Completed => {
+            gone | WatchFlags::CLOSE_WRITE | WatchFlags::MOVED_TO | WatchFlags::CREATE
         }
+        WatchKind::Full => watch_mask(WatchKind::Completed) | WatchFlags::MODIFY,
     }
 }
 
@@ -72,9 +75,15 @@ fn watch_mask(kind: WatchKind) -> WatchFlags {
 /// path is stale and core drops it, and everything below it).
 pub(crate) struct Inotify {
     fd: OwnedFd,
-    dirs: HashMap<i32, PathBuf>,
+    /// Each descriptor's directory, and what it is watched for.
+    dirs: HashMap<i32, (PathBuf, WatchKind)>,
     wds: HashMap<PathBuf, i32>,
     buf: Vec<MaybeUninit<u8>>,
+    /// Events read early, before a directory's mask changed: each is
+    /// classified under the mask it was queued with (a creation queued
+    /// under a names-only watch has no `CLOSE_WRITE` coming, even if the
+    /// directory is a content watch by the time it is handled).
+    early: Vec<Raw>,
 }
 
 impl Inotify {
@@ -85,10 +94,23 @@ impl Inotify {
             dirs: HashMap::new(),
             wds: HashMap::new(),
             buf: vec![MaybeUninit::uninit(); 16 * 1024],
+            early: Vec::new(),
         })
     }
 
     fn watch(&mut self, dir: &Path, kind: WatchKind) -> Result<(), String> {
+        if self
+            .wds
+            .get(dir)
+            .and_then(|wd| self.dirs.get(wd))
+            .is_some_and(|(_, k)| *k != kind)
+        {
+            let mut early = std::mem::take(&mut self.early);
+            // A failing read fails again at the watcher's next read, which
+            // handles it.
+            let _ = self.read_queued(&mut early);
+            self.early = early;
+        }
         let wd = inotify::add_watch(&self.fd, dir, watch_mask(kind))
             .map_err(|e| io::Error::from(e).to_string())?;
         if let Some(old) = self.wds.insert(dir.to_path_buf(), wd)
@@ -100,7 +122,7 @@ impl Inotify {
         }
         // The same inode under another path (a stale name) now has this
         // one: inotify gives one descriptor per inode.
-        if let Some(prev) = self.dirs.insert(wd, dir.to_path_buf())
+        if let Some((prev, _)) = self.dirs.insert(wd, (dir.to_path_buf(), kind))
             && prev != dir
         {
             self.wds.remove(&prev);
@@ -116,9 +138,22 @@ impl Inotify {
         }
     }
 
-    /// Read every queued event (the fd is non-blocking).
+    /// Whether events read early wait to be handled.
+    fn has_early(&self) -> bool {
+        !self.early.is_empty()
+    }
+
+    /// Every event read early, then every queued event (the fd is
+    /// non-blocking).
     fn read(&mut self, out: &mut Vec<Raw>) -> io::Result<()> {
-        let Inotify { fd, dirs, wds, buf } = self;
+        out.append(&mut self.early);
+        self.read_queued(out)
+    }
+
+    fn read_queued(&mut self, out: &mut Vec<Raw>) -> io::Result<()> {
+        let Inotify {
+            fd, dirs, wds, buf, ..
+        } = self;
         let mut reader = inotify::Reader::new(&*fd, buf);
         loop {
             let ev = match reader.next() {
@@ -136,7 +171,7 @@ impl Inotify {
                 // The kernel dropped the watch. After our own
                 // `remove_watch` it is no longer mapped; otherwise its
                 // directory is gone (DELETE_SELF or UNMOUNT came first).
-                if let Some(dir) = dirs.remove(&ev.wd()) {
+                if let Some((dir, _)) = dirs.remove(&ev.wd()) {
                     if wds.get(&dir) == Some(&ev.wd()) {
                         wds.remove(&dir);
                     }
@@ -145,14 +180,14 @@ impl Inotify {
                 continue;
             }
             // Events still queued for a descriptor already removed.
-            let Some(dir) = dirs.get(&ev.wd()) else {
+            let Some((dir, kind)) = dirs.get(&ev.wd()) else {
                 continue;
             };
             let path = match ev.file_name() {
                 Some(name) => dir.join(OsStr::from_bytes(name.to_bytes())),
                 None => dir.clone(),
             };
-            if let Some(raw) = classify(flags, ev.file_name().is_some(), path) {
+            if let Some(raw) = classify(flags, ev.file_name().is_some(), *kind, path) {
                 out.push(raw);
             }
         }
@@ -163,8 +198,14 @@ impl Inotify {
 /// (`CLOSE_WRITE`, `MOVED_TO`), names created complete (a symlink, a hard
 /// link), removals, directory changes. `MODIFY` and an empty new file are
 /// a write in progress: the file is not read until it is closed.
-/// `named` is false for events about the watched directory itself.
-pub(crate) fn classify(flags: ReadFlags, named: bool, path: PathBuf) -> Option<Raw> {
+/// `named` is false for events about the watched directory itself;
+/// `kind` is what the directory is watched for (its mask).
+pub(crate) fn classify(
+    flags: ReadFlags,
+    named: bool,
+    kind: WatchKind,
+    path: PathBuf,
+) -> Option<Raw> {
     if !named {
         // The watched directory was deleted, moved (its descriptor now
         // follows the inode elsewhere) or unmounted.
@@ -186,21 +227,32 @@ pub(crate) fn classify(flags: ReadFlags, named: bool, path: PathBuf) -> Option<R
         if is_dir {
             Raw::Dir(path)
         } else {
+            // A names-only watch queues no CLOSE_WRITE: what is there now
+            // is all it will say (and a creation queued before the watch
+            // became a content watch must not wait for one).
+            let closes = kind >= WatchKind::Completed;
             match std::fs::symlink_metadata(&path) {
                 // `ln -s` makes no CLOSE_WRITE: the link is complete now.
                 Ok(m) if m.file_type().is_symlink() => Raw::Linked(path),
                 Ok(m) if m.is_dir() => Raw::Dir(path),
                 // An empty new file is being written: wait for CLOSE_WRITE.
+                Ok(m) if !closes && !m.is_dir() => Raw::Linked(path),
                 Ok(m) if m.is_file() && m.nlink() == 1 && m.len() == 0 => Raw::Busy(path),
-                // `ln` (a new name for complete content), a file linked in
-                // complete from `O_TMPFILE` (its writes and CLOSE_WRITE, if
-                // any, came under its `#<ino>` name), `mkfifo` and the like
-                // make no CLOSE_WRITE. A writer that wrote its first bytes
-                // before this creation was read looks the same, but its
-                // MODIFY is queued right behind and holds the file until
-                // its CLOSE_WRITE.
+                // A file with bytes already: linked in complete from
+                // `O_TMPFILE` (its writes and CLOSE_WRITE, if any, came
+                // under its `#<ino>` name), or a writer that wrote its
+                // first bytes before this creation was read. With
+                // `MODIFY` in the mask, that writer's MODIFY is queued
+                // right behind and holds the file until its CLOSE_WRITE;
+                // without it, core holds the file itself.
+                Ok(m) if m.is_file() && m.nlink() == 1 && kind == WatchKind::Completed => {
+                    Raw::Created(path)
+                }
+                // `ln` (a new name for complete content), `mkfifo` and the
+                // like make no CLOSE_WRITE.
                 Ok(_) => Raw::Linked(path),
-                Err(_) => Raw::Busy(path),
+                Err(_) if closes => Raw::Busy(path),
+                Err(_) => Raw::Linked(path),
             }
         }
     } else if flags.contains(ReadFlags::MODIFY) {
@@ -457,6 +509,12 @@ fn run(mut core: Core<Kernel>, rx: Receiver<Ctl>, wake: &OwnedFd, sink: EventSin
         if core.has_polled_dirs() {
             deadline = Some(deadline.map_or(next_poll, |w| w.min(next_poll)));
         }
+        // Events read early (a mask change during the last flush) are
+        // handled at once.
+        let early = matches!(core.backend(), Kernel::Inotify(i) if i.has_early());
+        if early {
+            deadline = Some(now);
+        }
         let timeout =
             deadline.and_then(|d| Timespec::try_from(d.saturating_duration_since(now)).ok());
         let (ctl_ready, fs_ready) = {
@@ -503,7 +561,10 @@ fn run(mut core: Core<Kernel>, rx: Receiver<Ctl>, wake: &OwnedFd, sink: EventSin
                 }
             }
         }
-        if fs_ready && let Kernel::Inotify(i) = core.backend() {
+        let early = matches!(core.backend(), Kernel::Inotify(i) if i.has_early());
+        if (fs_ready || early)
+            && let Kernel::Inotify(i) = core.backend()
+        {
             let read = i.read(&mut raws);
             let now = Instant::now();
             for raw in raws.drain(..) {
@@ -554,7 +615,7 @@ mod tests {
         let hard = dir.join("hard.strand");
         std::fs::hard_link(&file, &hard).unwrap();
         let sub = dir.join("sub");
-        let f = |flags, p: &Path| classify(flags, true, p.to_path_buf());
+        let f = |flags, p: &Path| classify(flags, true, WatchKind::Full, p.to_path_buf());
         let got: Vec<Option<Raw>> = vec![
             f(ReadFlags::MODIFY, &file),
             f(ReadFlags::CREATE, &alone),
@@ -570,18 +631,26 @@ mod tests {
             f(ReadFlags::CREATE | ReadFlags::ISDIR, &sub),
             f(ReadFlags::MOVED_FROM, &file),
             f(ReadFlags::DELETE | ReadFlags::ISDIR, &sub),
-            classify(ReadFlags::MOVE_SELF, false, dir.clone()),
-            classify(ReadFlags::DELETE_SELF, false, dir.clone()),
-            classify(ReadFlags::MODIFY, false, dir.clone()),
+            classify(ReadFlags::MOVE_SELF, false, WatchKind::Full, dir.clone()),
+            classify(ReadFlags::DELETE_SELF, false, WatchKind::Full, dir.clone()),
+            classify(ReadFlags::MODIFY, false, WatchKind::Full, dir.clone()),
+            // Without `MODIFY` in the mask, a new file with bytes is held
+            // by core; a hard link and a symlink as above.
+            classify(ReadFlags::CREATE, true, WatchKind::Completed, whole.clone()),
+            classify(ReadFlags::CREATE, true, WatchKind::Completed, hard.clone()),
+            classify(ReadFlags::CREATE, true, WatchKind::Completed, link.clone()),
+            // A names-only watch has no CLOSE_WRITE to wait for.
+            classify(ReadFlags::CREATE, true, WatchKind::Parent, alone.clone()),
+            classify(ReadFlags::CREATE, true, WatchKind::Parent, whole.clone()),
         ];
         assert_eq!(
             got,
             vec![
                 Some(Raw::Busy(file.clone())),
-                Some(Raw::Busy(alone)),
-                Some(Raw::Linked(whole)),
-                Some(Raw::Linked(link)),
-                Some(Raw::Linked(hard)),
+                Some(Raw::Busy(alone.clone())),
+                Some(Raw::Linked(whole.clone())),
+                Some(Raw::Linked(link.clone())),
+                Some(Raw::Linked(hard.clone())),
                 Some(Raw::Written(file.clone())),
                 None,
                 None,
@@ -594,6 +663,11 @@ mod tests {
                 Some(Raw::Gone(dir.clone())),
                 Some(Raw::Gone(dir)),
                 None,
+                Some(Raw::Created(whole.clone())),
+                Some(Raw::Linked(hard)),
+                Some(Raw::Linked(link)),
+                Some(Raw::Linked(alone.clone())),
+                Some(Raw::Linked(whole)),
             ]
         );
     }
@@ -628,6 +702,79 @@ mod tests {
         std::fs::write(dir.join("other"), "x").unwrap();
         ino.read(&mut out).unwrap();
         assert!(out.contains(&Raw::Written(dir.join("other"))), "{out:?}");
+    }
+
+    /// A content watch outside the config directories (a wallpaper's
+    /// directory, `~`, a font tree) has no `MODIFY`: a process writing
+    /// there (a download, a log, shell history) queues one event when it
+    /// creates the file and one when it closes it, never one per write.
+    /// A config directory's watch does hear each write.
+    #[test]
+    fn writes_queue_events_only_in_config_directories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = std::fs::canonicalize(tmp.path()).unwrap();
+        let (pics, cfg) = (base.join("pics"), base.join("cfg"));
+        std::fs::create_dir(&pics).unwrap();
+        std::fs::create_dir(&cfg).unwrap();
+        let mut ino = Inotify::new().unwrap();
+        ino.watch(&pics, WatchKind::Completed).unwrap();
+        ino.watch(&cfg, WatchKind::Full).unwrap();
+        let mut out = Vec::new();
+        let download = pics.join("download.part");
+        let mut f = std::fs::File::create(&download).unwrap();
+        for _ in 0..1000 {
+            std::io::Write::write_all(&mut f, b"0123456789abcdef").unwrap();
+            // Drained after every write, as the watcher thread would.
+            ino.read(&mut out).unwrap();
+        }
+        drop(f);
+        ino.read(&mut out).unwrap();
+        // The creation is read after the first write here, so it comes
+        // as `Created` (a file with bytes, held until closed).
+        assert_eq!(
+            out,
+            vec![Raw::Created(download.clone()), Raw::Written(download)],
+            "creation and close only"
+        );
+        out.clear();
+        let log = cfg.join("status.txt");
+        let mut f = std::fs::File::create(&log).unwrap();
+        for _ in 0..10 {
+            std::io::Write::write_all(&mut f, b"x").unwrap();
+            ino.read(&mut out).unwrap();
+        }
+        assert_eq!(
+            out.iter().filter(|r| **r == Raw::Busy(log.clone())).count(),
+            10,
+            "one per write"
+        );
+    }
+
+    /// A creation queued under a names-only watch is classified under that
+    /// mask even when the directory became a content watch before it was
+    /// read (a file registered right after it was written): it has no
+    /// `CLOSE_WRITE` coming, so it must not be held waiting for one.
+    #[test]
+    fn events_keep_the_mask_they_were_queued_under() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = std::fs::canonicalize(tmp.path()).unwrap();
+        let mut ino = Inotify::new().unwrap();
+        ino.watch(&dir, WatchKind::Parent).unwrap();
+        std::fs::write(dir.join("wall.png"), "png").unwrap();
+        std::fs::write(dir.join("empty"), "").unwrap();
+        ino.watch(&dir, WatchKind::Completed).unwrap();
+        std::fs::write(dir.join("next.png"), "png").unwrap();
+        let mut out = Vec::new();
+        ino.read(&mut out).unwrap();
+        assert_eq!(
+            out,
+            vec![
+                Raw::Linked(dir.join("wall.png")),
+                Raw::Linked(dir.join("empty")),
+                Raw::Created(dir.join("next.png")),
+                Raw::Written(dir.join("next.png")),
+            ]
+        );
     }
 
     /// A parent watch (`~/.config` above the config root) hears names

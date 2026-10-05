@@ -8,10 +8,10 @@ file fixes boundaries; each crate is free inside its own boundary.
 | Thread | Crates | Owns | Never does |
 | --- | --- | --- | --- |
 | Main: render + surface | `strand-render`, `strand-surface` | Wayland connection (calloop), springs, token evaluation per frame, layout, damage, paint, presentation | Wait on the logic thread, run handlers, evaluate bytecode |
-| Logic | `strand-core`, `strand-compiler` (VM, reconciler) | Reactive graph, state, handlers, timers, the live program | Touch Wayland or pixels |
+| Logic | `strand-core`, `strand-compiler` (VM, reconciler) | Reactive graph, state, handlers, timers, the live program; the `strand` binary's IPC Unix socket (`strand reload`, `strand watch`, M5's `get \| set \| toggle \| watch \| call`) is a source on this loop | Touch Wayland or pixels |
 | Compiler worker | `strand-compiler` | Parse, check, lower changed modules off-thread | Mutate live state (it hands a compiled `Program` to logic) |
 | Text worker | `strand-text` | parley shaping, swash rasterisation, per-scale glyph atlases | Block render: a painted surface keeps drawing its last layout (or a realigned stand-in from another scale or width) until the new one arrives |
-| Watcher | `strand-watch` | inotify directory watches and polling (one `strand-watch` thread) | Parse files (it sends paths and hashes) |
+| Watcher | `strand-watch` | inotify directory watches and polling (one `strand-watch` thread); not the IPC socket (`docs/decisions.md`, wave2-watch) | Parse files (it sends paths and hashes) |
 | Services | `strand-services` | tokio current-thread runtime (the portal Settings client `strand_watch::follow` and the compositor IPC adapters run here); PipeWire and toplevel get their own threads | Block logic: they send state diffs and events |
 
 Channels are the only coupling between threads. Logic → render is one
@@ -508,9 +508,14 @@ It does not depend on `strand-compiler` or `strand-core`.
   registration is in place when it returns, and it silences the write
   under every registered path that resolves to that file. Own writes
   should be atomic (temporary file renamed over the path). A file with a
-  write in progress (`MODIFY` seen, no `CLOSE_WRITE` yet) is never read;
-  after 5 s (`Options::stalled_write`) with no further write it is read
-  anyway with `Notice::StalledWrite(path)`. The config root's parent and
+  write in progress (`MODIFY` seen in a config directory, or a new file
+  created and not yet closed, and no `CLOSE_WRITE` yet) is never read;
+  after 5 s (`Options::stalled_write`) with no further event and no
+  change to its modification time it is read anyway with
+  `Notice::StalledWrite(path)`. Only config directories are watched with
+  `MODIFY`; every other content directory (referenced files, symlink
+  hops, cache trees) hears completed writes and names only, so writers
+  there cost one wakeup per file closed. The config root's parent and
   the stand-in for a missing directory are watched for names only, and
   every ancestor of a watched directory holds a light watch (moves and
   deletions of its children only), so moving any directory on the way

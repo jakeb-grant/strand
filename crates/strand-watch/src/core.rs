@@ -118,6 +118,13 @@ pub(crate) enum Raw {
     /// `MODIFY` or an empty file created: a write in progress. The file is
     /// not read until its `CLOSE_WRITE` (or `stalled_write`).
     Busy(PathBuf),
+    /// A plain file created with bytes already in it, in a directory
+    /// watched without `MODIFY`: linked in complete from `O_TMPFILE`, or a
+    /// writer that wrote before the creation was read. No `MODIFY` will
+    /// tell them apart, so a watched file is held as if being written
+    /// until its `CLOSE_WRITE` or until it stops changing for
+    /// `stalled_write`. A cache-tree entry is reported at once.
+    Created(PathBuf),
     /// The inotify queue overflowed.
     Overflow,
 }
@@ -135,8 +142,14 @@ pub(crate) enum WatchKind {
     /// nearest existing ancestor of a missing directory. Names appearing
     /// and going are seen; writes to files in it queue nothing.
     Parent,
-    /// A directory whose entries' contents matter: every event Strand
-    /// acts on.
+    /// A directory whose entries' contents matter but which other
+    /// programs write to (a wallpaper's or settings file's directory, a
+    /// symlink hop such as `~`, a cache tree): completed writes
+    /// (`CLOSE_WRITE`, `MOVED_TO`) and names, no `MODIFY`, so a process
+    /// writing there costs one wakeup per file closed, not per write.
+    Completed,
+    /// A config directory: [`WatchKind::Completed`] plus `MODIFY`, which
+    /// marks a write in progress so a half-written module is never read.
     Full,
 }
 
@@ -406,6 +419,22 @@ struct Pending {
     last: Option<Instant>,
 }
 
+/// A watched file left unread because a write to it is in progress.
+#[derive(Debug, Clone, Copy)]
+struct Held {
+    /// When that was decided.
+    at: Instant,
+    /// Its modification time then. A writer is stalled only if no event
+    /// came for `stalled_write` *and* the file did not change: in a
+    /// directory watched without `MODIFY` (a download into `~/Pictures`)
+    /// the writes themselves make no event.
+    mtime: Option<std::time::SystemTime>,
+}
+
+fn mtime(path: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum What {
     Written,
@@ -443,8 +472,8 @@ pub(crate) struct Core<B> {
     /// since. The time is that of the latest such event.
     writing: HashMap<PathBuf, Instant>,
     /// Watched files left unread at a flush because they were being
-    /// written, with when that was decided. Re-checked at every flush.
-    held: BTreeMap<PathBuf, Instant>,
+    /// written. Re-checked at every flush.
+    held: BTreeMap<PathBuf, Held>,
     pending: Pending,
     /// How many times the watches were brought up to date.
     #[cfg(test)]
@@ -827,14 +856,18 @@ impl<B: Backend> Core<B> {
             }
             _ => None,
         };
-        // A held file whose write ended is normally back in the batch
-        // through its `CLOSE_WRITE`; if not, it is due at once.
+        // A held file still being written is due when its writer counts
+        // as stalled. One whose write ended (`CLOSE_WRITE`, `MOVED_TO`,
+        // removal) is back in the open batch and waits for its quiet
+        // period like any other: the coalesce, or the removal grace when
+        // it was deleted. Only one that is neither is due at once.
         let held = self
             .held
             .iter()
-            .map(|(f, at)| {
-                self.busy_since(f)
-                    .map_or(*at, |t| t + self.opts.stalled_write)
+            .filter_map(|(f, h)| match self.busy_since(f) {
+                Some(t) => Some(t + self.opts.stalled_write),
+                None if self.pending.files.contains(f) => None,
+                None => Some(h.at),
             })
             .min();
         match (batch, held) {
@@ -875,16 +908,21 @@ impl<B: Backend> Core<B> {
                 self.on_path(p, What::Gone, now);
             }
             Raw::Dir(p) => self.on_path(p, What::Dir, now),
+            // Bookkeeping only: the batch's quiet period runs from the last
+            // *completed* write, so a writer that keeps its file open (a
+            // status file fed by a script, a font being copied) does not
+            // stretch every batch to `max_delay`. The file itself is held
+            // at the flush while its write is in progress.
             Raw::Busy(p) => {
-                if !self.relevant(&p) {
-                    return;
-                }
                 if self.hashed(&p) {
                     self.writing.insert(p, now);
                 }
-                if self.pending.first.is_some() {
-                    self.pending.last = Some(now);
+            }
+            Raw::Created(p) => {
+                if self.hashed(&p) {
+                    self.writing.insert(p.clone(), now);
                 }
+                self.on_path(p, What::Written, now);
             }
         }
     }
@@ -894,17 +932,6 @@ impl<B: Backend> Core<B> {
     fn hashed(&self, p: &Path) -> bool {
         self.by_path.contains_key(p)
             || (p.parent().is_some_and(|d| self.config_dirs.contains(d)) && is_module_name(p))
-    }
-
-    fn relevant(&self, p: &Path) -> bool {
-        if self.by_path.contains_key(p) {
-            return true;
-        }
-        let Some(parent) = p.parent() else {
-            return false;
-        };
-        (self.config_dirs.contains(parent) && is_module_name(p))
-            || self.tree_dirs.contains_key(parent)
     }
 
     fn on_path(&mut self, p: PathBuf, what: What, now: Instant) {
@@ -1121,7 +1148,8 @@ impl<B: Backend> Core<B> {
         let mut notices = p.notices;
         let mut touched = p.files;
         // Files held back at an earlier flush are looked at again.
-        touched.extend(std::mem::take(&mut self.held).into_keys());
+        let was_held = std::mem::take(&mut self.held);
+        touched.extend(was_held.keys().cloned());
         if p.full.is_some() || p.config {
             self.rescan_config(&mut touched, &mut changes, &mut notices);
         }
@@ -1164,10 +1192,18 @@ impl<B: Backend> Core<B> {
         let mut own_seen = HashSet::new();
         for path in &touched {
             if let Some(since) = self.busy_since(path) {
-                if now.saturating_duration_since(since) < self.opts.stalled_write {
+                let m = mtime(path);
+                let quiet = now.saturating_duration_since(since) >= self.opts.stalled_write;
+                // Changed since it was held: its writer is still at it,
+                // even though no event said so (no `MODIFY` there).
+                let changed = was_held.get(path).is_some_and(|h| h.mtime != m);
+                if !quiet || changed {
+                    if quiet && let Some(e) = self.files.get(path) {
+                        self.writing.insert(e.resolved.path.clone(), now);
+                    }
                     // Never read a file mid-write: wait for its
                     // `CLOSE_WRITE`.
-                    self.held.insert(path.clone(), now);
+                    self.held.insert(path.clone(), Held { at: now, mtime: m });
                     continue;
                 }
                 if let Some(e) = self.files.get(path) {
@@ -1455,17 +1491,19 @@ impl<B: Backend> Core<B> {
             }
         }
         for e in self.files.values() {
-            // Every link's directory in full too: a save that replaces
-            // the link with a plain file (delete and create) is written
-            // there.
+            // Every link's directory for contents too: a save that
+            // replaces the link with a plain file (delete and create) is
+            // written there. No `MODIFY` outside the config directories:
+            // other programs write in `~`, `~/Pictures` or `~/Downloads`.
             for d in e.resolved.watch_dirs() {
-                want(d, WatchKind::Full);
+                want(d, WatchKind::Completed);
             }
         }
         for t in &self.trees {
-            want(&t.resolved.path, WatchKind::Full);
+            // Cache entries are never read: a completed write is enough.
+            want(&t.resolved.path, WatchKind::Completed);
             for d in &t.dirs {
-                want(d, WatchKind::Full);
+                want(d, WatchKind::Completed);
             }
             for d in t.resolved.hops.iter().filter_map(|h| h.parent()) {
                 want(d, WatchKind::Parent);
@@ -1844,23 +1882,28 @@ mod tests {
         assert!(core.deadline().is_none());
     }
 
+    /// A write in progress (`MODIFY`) opens no batch and never moves an
+    /// open batch's quiet period: it runs from the last *completed*
+    /// write, so a writer that keeps its file open does not stretch every
+    /// batch to `max_delay`.
     #[test]
-    fn busy_extends_only_an_open_batch() {
+    fn busy_never_moves_the_quiet_period() {
         let (_tmp, root) = cfg_dir();
         std::fs::write(root.join("a.strand"), "a").unwrap();
+        std::fs::write(root.join("b.strand"), "b").unwrap();
         let mut core = Core::new(Silent::default(), Options::default(), Some(config(&root)));
         settle(&mut core);
         let t0 = Instant::now();
         core.on_raw(Raw::Busy(root.join("a.strand")), t0);
         assert!(core.deadline().is_none());
-        core.on_raw(Raw::Written(root.join("a.strand")), t0);
-        let later = t0 + Duration::from_millis(10);
-        core.on_raw(Raw::Busy(root.join("a.strand")), later);
-        assert_eq!(core.deadline(), Some(later + Duration::from_millis(15)));
-        // A never-quiet stream is still cut at max_delay.
-        let much_later = t0 + Duration::from_secs(2);
-        core.on_raw(Raw::Busy(root.join("a.strand")), much_later);
-        assert_eq!(core.deadline(), Some(t0 + Duration::from_millis(500)));
+        core.on_raw(Raw::Written(root.join("b.strand")), t0);
+        for ms in [5, 10, 14] {
+            core.on_raw(
+                Raw::Busy(root.join("a.strand")),
+                t0 + Duration::from_millis(ms),
+            );
+        }
+        assert_eq!(core.deadline(), Some(t0 + Duration::from_millis(15)));
     }
 
     #[test]
@@ -2152,6 +2195,9 @@ mod tests {
         std::fs::write(&theme, "half and the rest").unwrap();
         let t1 = t0 + Duration::from_millis(300);
         core.on_raw(Raw::Written(theme.clone()), t1);
+        // Back in the open batch: due after the coalesce, like any write,
+        // so a "save all" finishing right after is in the same batch.
+        assert_eq!(core.deadline(), Some(t1 + opts.coalesce));
         let b = core.flush(core.deadline().unwrap()).unwrap();
         assert_eq!(b.changes.len(), 1, "{b:#?}");
         assert_eq!(b.changes[0].kind, ChangeKind::Modified);
@@ -2180,6 +2226,93 @@ mod tests {
         assert_eq!(b.changes[0].kind, ChangeKind::Created);
         assert_eq!(b.notices, vec![Notice::StalledWrite(osd)]);
         assert!(core.deadline().is_none());
+    }
+
+    /// A held file deleted (its writer still has it open) and created
+    /// again: the removal brings it back into the batch, which then waits
+    /// for the removal grace, so the re-creation makes one `Modified`.
+    #[test]
+    fn a_held_file_removed_waits_for_the_removal_grace() {
+        let (_tmp, root) = cfg_dir();
+        let theme = root.join("theme.strand");
+        std::fs::write(&theme, "a").unwrap();
+        let opts = Options::default();
+        let mut core = Core::new(Silent::default(), opts.clone(), Some(config(&root)));
+        settle(&mut core);
+        let t0 = Instant::now();
+        std::fs::write(&theme, "ha").unwrap();
+        core.on_raw(Raw::Busy(theme.clone()), t0);
+        core.on_raw(Raw::Written(root.join("bar.strand")), t0);
+        assert!(core.flush(core.deadline().unwrap()).is_none());
+        let t1 = t0 + Duration::from_millis(200);
+        core.on_raw(Raw::Gone(theme.clone()), t1);
+        assert_eq!(core.deadline(), Some(t1 + opts.removal_grace));
+        let t2 = t1 + Duration::from_millis(5);
+        std::fs::write(&theme, "whole").unwrap();
+        core.on_raw(Raw::Written(theme.clone()), t2);
+        assert_eq!(core.deadline(), Some(t2 + opts.coalesce));
+        let b = core.flush(core.deadline().unwrap()).unwrap();
+        assert_eq!(b.changes.len(), 1, "{b:#?}");
+        assert_eq!(b.changes[0].kind, ChangeKind::Modified);
+        assert_eq!(b.changes[0].hash, Some(blake3::hash(b"whole")));
+    }
+
+    /// In a directory watched without `MODIFY`, a new file that already
+    /// has bytes may still be being written: it is held until its
+    /// `CLOSE_WRITE`, and a writer counts as stalled only once the file
+    /// stopped changing (its writes make no event there). A cache-tree
+    /// entry created the same way is reported at once.
+    #[test]
+    fn a_new_file_without_modify_is_held_while_it_changes() {
+        let (_tmp, root) = cfg_dir();
+        let pics = root.with_file_name("pics");
+        let fonts = root.with_file_name("fonts");
+        std::fs::create_dir(&pics).unwrap();
+        std::fs::create_dir(&fonts).unwrap();
+        let wall = pics.join("wall.png");
+        let opts = Options::default();
+        let mut core = Core::new(Silent::default(), opts.clone(), Some(config(&root)));
+        core.add_file(&wall, Role::Wallpaper, None);
+        core.add_tree(&fonts, 1, CacheKind::Fonts);
+        settle(&mut core);
+        assert_eq!(core.kinds.get(&pics), Some(&WatchKind::Completed));
+        assert_eq!(core.kinds.get(&fonts), Some(&WatchKind::Completed));
+        assert_eq!(core.kinds.get(&root), Some(&WatchKind::Full));
+
+        std::fs::write(&wall, "png 1").unwrap();
+        std::fs::write(fonts.join("a.ttf"), "ttf").unwrap();
+        let t0 = Instant::now();
+        core.on_raw(Raw::Created(wall.clone()), t0);
+        core.on_raw(Raw::Created(fonts.join("a.ttf")), t0);
+        let b = core.flush(core.deadline().unwrap()).unwrap();
+        assert_eq!(b.changes.len(), 1, "{b:#?}");
+        assert_eq!(b.changes[0].role, Role::Cache(CacheKind::Fonts));
+        let due = core.deadline().unwrap();
+        assert_eq!(due, t0 + opts.stalled_write);
+        // Still growing at the stall limit: held again.
+        std::thread::sleep(Duration::from_millis(30));
+        std::fs::write(&wall, "png 1 and 2").unwrap();
+        assert!(core.flush(due).is_none());
+        let due = core.deadline().unwrap();
+        assert!(due >= t0 + opts.stalled_write * 2 - Duration::from_millis(50));
+        // Unchanged for the stall limit: read, with a notice.
+        let b = core.flush(due).unwrap();
+        assert_eq!(b.changes.len(), 1, "{b:#?}");
+        assert_eq!(b.changes[0].hash, Some(blake3::hash(b"png 1 and 2")));
+        assert_eq!(b.notices, vec![Notice::StalledWrite(wall.clone())]);
+
+        // The usual case: the writer closes it.
+        std::fs::remove_file(&wall).unwrap();
+        let t3 = Instant::now();
+        core.on_raw(Raw::Gone(wall.clone()), t3);
+        std::fs::write(&wall, "png 3").unwrap();
+        core.on_raw(Raw::Created(wall.clone()), t3);
+        assert!(core.flush(core.deadline().unwrap()).is_none());
+        let t4 = t3 + Duration::from_millis(100);
+        core.on_raw(Raw::Written(wall.clone()), t4);
+        let b = core.flush(core.deadline().unwrap()).unwrap();
+        assert_eq!(b.changes[0].hash, Some(blake3::hash(b"png 3")));
+        assert!(b.notices.is_empty());
     }
 
     /// A batch of content edits does not touch the watches, so its cost
@@ -2233,8 +2366,9 @@ mod tests {
         assert_eq!(core.kinds.get(&parent), Some(&WatchKind::Parent));
         core.add_file(&parent.join("missing/prefs.toml"), Role::Settings, None);
         assert_eq!(core.kinds.get(&parent), Some(&WatchKind::Parent));
-        // A file of its own there makes it a full watch.
+        // A file of its own there makes it a content watch (no `MODIFY`:
+        // other apps write in `~/.config`).
         core.add_file(&parent.join("prefs.toml"), Role::Settings, None);
-        assert_eq!(core.kinds.get(&parent), Some(&WatchKind::Full));
+        assert_eq!(core.kinds.get(&parent), Some(&WatchKind::Completed));
     }
 }
