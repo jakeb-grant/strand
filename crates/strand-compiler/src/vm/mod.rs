@@ -303,6 +303,8 @@ pub struct Vm {
     depth: Cell<u32>,
     /// Function values called so far ([`Vm::calls`]).
     calls: Cell<u64>,
+    /// The longest frame or closure capture seen ([`Vm::peak_frame`]).
+    peak: Cell<usize>,
     hooks: RefCell<Option<std::rc::Weak<dyn VmHooks>>>,
     /// Where errors raised since the last [`Vm::clear_faults`] came from:
     /// the failing op's file and span.
@@ -335,6 +337,7 @@ impl Vm {
             root: Env::root(),
             depth: Cell::new(0),
             calls: Cell::new(0),
+            peak: Cell::new(0),
             hooks: RefCell::new(None),
             faults: RefCell::default(),
         })
@@ -463,6 +466,20 @@ impl Vm {
         self.calls.get()
     }
 
+    /// The longest local frame, or closure capture, any chunk has had so
+    /// far: a measure of work that does not depend on the clock (a loop
+    /// that kept its iterations' locals, or captures that doubled per
+    /// nested lambda, would grow it with the input).
+    pub fn peak_frame(&self) -> usize {
+        self.peak.get()
+    }
+
+    pub(crate) fn note_frame(&self, len: usize) {
+        if len > self.peak.get() {
+            self.peak.set(len);
+        }
+    }
+
     /// Call a function value with arguments (lambdas given to `filter`,
     /// `sort_by`, `update`).
     pub fn call(
@@ -486,6 +503,7 @@ impl Vm {
         for (p, a) in c.params.iter().zip(args) {
             frame.push((*p, a));
         }
+        self.note_frame(frame.len());
         let mut m = exec::Machine::new(c.chunk, c.env.clone(), frame, Some(c.clone()), None);
         let r = stacker::maybe_grow(64 * 1024, 1024 * 1024, || m.run(self, rt));
         self.depth.set(depth);

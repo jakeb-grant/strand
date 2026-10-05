@@ -1408,8 +1408,10 @@ see wave2-core; the compiler supplies the field schema.)
 - **2026-10-05 · wave2-vm: `play`.** `play shake` sets the node's `play`
   prop to `[shake, n]` with a sequence number, so playing the same
   keyframes twice is two changes. Render plays keyframes in M4.
-- **2026-10-05 · wave2-vm: time signals until M4.** `t`, `wave(…)` and
-  `noise(…)` read 0 on the logic thread: they are render-side signals
+- **2026-10-05 · wave2-vm: time signals until M4.** `t` and `wave(…)`
+  read 0 and `noise(…)` is computed once on the logic thread (amended in
+  fixer round 1, "frozen time signals are warned about"): they are
+  render-side signals
   ("only that node repaints, only while visible") that arrive with the
   effects catalogue. Node-valued props (`nav: results`) are not sent
   until keyboard navigation (M4).
@@ -1747,11 +1749,41 @@ see wave2-core; the compiler supplies the field schema.)
   `acquire`/`release` take `&Runtime` (lazy service cells, the 5 s stop
   on core timers); several service crates combine into one host as a
   composite routing by service name (architecture.md), so
-  `Instance::new` keeps taking one `Rc<dyn ServiceHost>`. A failing
+  `Instance::new` keeps taking one `Rc<dyn ServiceHost>`. Amended in
+  fixer round 2: the service crates do not implement `ServiceHost`
+  (that would need an edge from `strand-services` to `strand-compiler`,
+  which the crate graph forbids). They publish typed cells, keyed
+  collections and `EventQueue`s into `strand-core`; the `Value`
+  adapters and the composite live in the binary (or, if generic over
+  `#[derive(Store)]`, in `strand-compiler` behind a core trait). A failing
   first read of a `for`'s list or an `if`/`match` selector is no longer
   reported at mount: the list's or switch's effect reports it in the
   same flush, located (`if`/`match` now have a site), so it appears once
   (`tests/instantiate.rs::mount_failures_are_reported_once_located`).
+- **2026-10-05 · wave2-vm (fixer round 2): a whole handler `let` is
+  an `int`.** `let y = 1` in a handler was typed `float`, so `total +=
+  y` was a type error on `state total: int = 0` and made an untyped
+  whole `state total = 0` fractional. A handler `let`
+  whose value is a whole-number literal is now an `int`, as a top-level
+  one is; a local is never written, so no fraction can widen it later
+  (a checker change, made here because the checker step has finished
+  and the VM's tests needed it). As a defence the VM also stores a
+  whole plain number written to an `int` state as an `int`.
+  `tests/instantiate.rs::whole_handler_lets_keep_int_state_int`.
+- **2026-10-05 · wave2-vm (fixer round 2): work counters, not clocks.**
+  Loop linearity and lambda captures are measured by the VM's longest
+  frame or capture (`Vm::peak_frame`, `Instance::peak_frame`), not by
+  wall-clock time, so the tests cannot fail on a busy machine. A closure
+  captures from its current frame only (inside a call that frame already
+  starts with the closure's own captures), each local once, so nesting
+  lambdas no longer doubles captures per level
+  (`tests/instantiate.rs::nested_lambdas_capture_each_local_once`,
+  `handler_loops_are_linear`). The mounted-settings list is pruned of
+  unmounted entries only when it has doubled since the last prune
+  (amortised O(1) per mount, at most twice the live count plus a floor
+  of 16; `unmounted_settings_are_pruned`), and a chain step whose lambda
+  reads a view `let` depends on the view's version, as for a keyed
+  `state`, not on a comparison of its whole list.
 
 ## wave2-core
 

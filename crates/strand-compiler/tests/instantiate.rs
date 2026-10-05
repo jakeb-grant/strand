@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use strand_compiler::instantiate::{Instance, NodeFlag, SceneMirror, Storage, Update, show};
-use strand_compiler::vm::Value;
 use strand_compiler::vm::schema_host::SchemaHost;
+use strand_compiler::vm::{Num, Value};
 use strand_compiler::{SourceMap, lower};
 use strand_core::Runtime;
 use strand_scene::{NodeId, NodeKind, Prop, PropValue, SceneOp};
@@ -2309,13 +2309,16 @@ fn action_calls_declare_their_service_writes() {
     assert_eq!(shell.scene.texts(), ["0"]);
 }
 
-/// A handler loop costs time linear in its items: each iteration drops
+/// A handler loop's work is linear in its items: each iteration drops
 /// the previous one's locals (the frame stays small, so reading a local
 /// from before the loop is one short scan), and a lambda made in the loop
-/// captures only what it reads. Before, 20,000 items took seconds.
+/// captures only what it reads. Measured as the longest frame the VM
+/// ever held, which must not grow with the item count (before, every
+/// iteration's locals stayed and 20,000 items took seconds). A whole
+/// handler `let` is an `int` (`total += y` keeps `total` an `int`).
 #[test]
 fn handler_loops_are_linear() {
-    let src = "state xs: [int] = []\nstate total = 0\nbar B {\n  box { on click {\n    let base: int = 1\n    for x in xs {\n      let y = x + base\n      if y > 0 { let z = y\n        total += z }\n      total += [base].map(v => v + y)[0] ?? 0\n    }\n  } }\n}\n";
+    let src = "state xs: [int] = []\nstate total = 0\nbar B {\n  box { on click {\n    let base = 1\n    for x in xs {\n      let y = x + base\n      if y > 0 { let z = y\n        total += z }\n      total += [base].map(v => v + y)[0] ?? 0\n    }\n  } }\n}\n";
     let mut shell = boot(&[("t.strand", src)], |rt, host| {
         screens(rt, host, &["DP-1"])
     });
@@ -2325,25 +2328,88 @@ fn handler_loops_are_linear() {
         shell.inst.set_value("t", "xs", Value::list(items)).unwrap();
         shell.inst.set_value("t", "total", Value::int(0)).unwrap();
         shell.flush();
-        let start = std::time::Instant::now();
+        let calls = shell.inst.lambda_calls();
         assert!(shell.inst.event(b, "click", Vec::new()));
         let u = shell.flush();
-        let took = start.elapsed();
         assert!(u.errors.is_empty(), "{:?}", u.errors);
         // Σ (x + 1) twice, plus 1 per item for the lambda's `+ base`.
         let want = n * (n + 1) + n;
         assert_eq!(shell.inst.value_of("t", "total").unwrap(), Value::int(want));
-        took
+        assert_eq!(
+            shell.inst.lambda_calls() - calls,
+            n as u64,
+            "one call per item"
+        );
+        shell.inst.peak_frame()
     };
-    let small = run(5_000);
+    let small = run(100);
     let large = run(20_000);
-    assert!(
-        large < small * 10 + std::time::Duration::from_millis(50),
-        "4x the items took {:?} vs {:?}",
-        large,
-        small
+    assert_eq!(small, large, "the frame does not grow with the items");
+    assert!(large <= 8, "{large}");
+}
+
+/// Lambdas nested in lambdas capture each outer local once: the frame a
+/// call starts with already holds its closure's captures, so capturing
+/// from both used to double them per level (2^19 entries at 20 levels).
+#[test]
+fn nested_lambdas_capture_each_local_once() {
+    let mut e = "base".to_string();
+    for k in 0..20 {
+        e = format!("([1].map(v{k} => {e})[0] ?? 0)");
+    }
+    let src = format!(
+        "state total = 0\nbar B {{ box {{ on click {{\n  let base = 1\n  total += {e}\n}} }} }}\n"
     );
-    assert!(large < std::time::Duration::from_secs(3), "{large:?}");
+    let mut shell = boot(&[("t.strand", &src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let b = shell.scene.of_kind(NodeKind::Box)[0];
+    assert!(shell.inst.event(b, "click", Vec::new()));
+    let u = shell.flush();
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    assert_eq!(shell.inst.value_of("t", "total").unwrap(), Value::int(1));
+    let peak = shell.inst.peak_frame();
+    assert!(peak <= 4, "captures grew with nesting: {peak}");
+}
+
+/// A whole handler `let` added to an `int` state keeps it an `int`
+/// value (the checker types the `let` `int`; the VM also stores a whole
+/// plain number written to an `int` state as an `int`).
+#[test]
+fn whole_handler_lets_keep_int_state_int() {
+    let src = "state total = 0\nbar B { box { on click { let y = 1\n total += y } } }\n";
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let b = shell.scene.of_kind(NodeKind::Box)[0];
+    for _ in 0..3 {
+        assert!(shell.inst.event(b, "click", Vec::new()));
+        assert!(shell.flush().errors.is_empty());
+    }
+    let v = shell.inst.value_of("t", "total").unwrap();
+    assert!(matches!(v, Value::Num(n, Num::Int) if n == 3.0), "{v:?}");
+}
+
+/// Mounting and unmounting a component that declares a settings `state`
+/// many times keeps the mounted-settings list bounded: dead entries are
+/// pruned whenever it doubles, so it stays within twice what is live
+/// (plus the first prune's floor), at amortised O(1) per mount.
+#[test]
+fn unmounted_settings_are_pruned() {
+    let src = "state on = true\ncomponent C {\n  state p from \"c.toml\" { dense: bool = false }\n  text p.dense ? \"dense\" : \"airy\"\n}\nbar B { box { on click { on = !on } }\n  if on { C } }\n";
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    assert!(shell.scene.find_text("airy").is_some());
+    let b = shell.scene.of_kind(NodeKind::Box)[0];
+    let mut most = 0;
+    for _ in 0..400 {
+        assert!(shell.inst.event(b, "click", Vec::new()));
+        assert!(shell.flush().errors.is_empty());
+        most = most.max(shell.inst.settings_len());
+    }
+    assert!(shell.scene.find_text("airy").is_some(), "mounted again");
+    assert!(most <= 32, "the list grew to {most}");
 }
 
 /// design.md's notification stack names its chain in a `let` (`let shown

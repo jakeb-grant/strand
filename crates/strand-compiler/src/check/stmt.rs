@@ -78,6 +78,12 @@ impl<'a> Checker<'a> {
                         self.require(&h, t, &format!("`{}`", l.name.name));
                         h
                     }
+                    // A whole-number literal is an `int`, as for a
+                    // top-level `let` (a local is never written, so no
+                    // fraction can widen it later).
+                    None if super::is_whole_literal(&l.value) => {
+                        self.let_value(&l.value, Some(&Ty::INT))
+                    }
                     None => self.let_value(&l.value, None),
                 };
                 if l.export.is_some() {

@@ -806,14 +806,29 @@ Public interfaces other crates and later stages build on:
     `release` (also called from scope cleanup: no synchronous disposal
     there).
   - Several service crates, one host (M3 plan): `Instance::new` takes one
-    `Rc<dyn ServiceHost>`. The binary builds a composite host that
-    routes every call by its service name to the crate that serves it
-    (each M3 service crate implements `ServiceHost` for its own
-    services; `SchemaHost::real` answers the rest at their defaults, and
-    the clock and calendar stay there), unions `next_wake` (earliest)
-    and fans out `wake`. A service name belongs to exactly one member;
-    `declare`d custom services go to the member that implements their
-    source kind (`dbus`, `file`, `listen`, `poll`).
+    `Rc<dyn ServiceHost>`, and `ServiceHost` (with `Value`, `RecordId`
+    and the rest of the VM's dynamic types) stays in `strand-compiler`:
+    `strand-services` depends only on `strand-core` (crate graph) and
+    never sees `Value`. Each M3 service publishes typed state into
+    `strand-core` (`Signal<T>`/`Memo<T>` per field, `KeyedSignal` for
+    keyed lists, an `EventQueue<T>` per event, plain Rust methods for
+    actions and `fn`/async methods), the `#[service]`/`#[derive(Store)]`
+    contract features.md plans. The adapter from those typed stores to
+    `ServiceHost` lives on the language side: the binary (`strand`, which
+    depends on both) gives each service one `ServiceHost` implementation
+    that converts between its typed cells and `Value` (a `Memo<Value>`
+    over each typed field, so a binding still depends on exactly that
+    field; writes and actions converted back and sent to the service),
+    and a composite host routes every call by service name to the member
+    that serves it (`SchemaHost::real` answers the rest at their
+    defaults, and the clock and calendar stay there), unions `next_wake`
+    (earliest) and fans out `wake`. A service name belongs to exactly one
+    member; `declare`d custom services go to the member that implements
+    their source kind (`dbus`, `file`, `listen`, `poll`). If the
+    conversion turns out to be generic over `#[derive(Store)]` (a store
+    describing its fields by name), it moves into `strand-compiler`
+    behind a `strand-core` trait instead; no edge from `strand-services`
+    to `strand-compiler` is added either way.
   - `declare(rt, name, record)` adds a custom service; `next_wake(rt) ->
     Option<SystemTime>` and `wake(rt, now)` let wall-clock services (the
     clock) wake the host loop only at minute boundaries (seconds only

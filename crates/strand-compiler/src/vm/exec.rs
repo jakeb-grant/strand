@@ -15,7 +15,7 @@ use strand_core::{Error, Runtime};
 use strand_scene::{Channel, Color, TokenExpr};
 
 use super::builtins;
-use super::value::{Closure, NodeState, PendingOp, Value, ValueKey};
+use super::value::{Closure, NodeState, Num, PendingOp, Value, ValueKey};
 use super::{Env, Vm};
 use crate::hir::{AssignOp, LocalId};
 use crate::lower::{
@@ -401,12 +401,20 @@ impl Machine {
                     let l = &chunk.lambdas[*i as usize];
                     // Only the locals the body reads: a lambda made in a
                     // loop costs what it uses, not the whole frame.
-                    let wanted = |id: &LocalId| l.free.binary_search(id).is_ok();
-                    let mut captured: Frame = Vec::new();
-                    if let Some(c) = &self.closure {
-                        captured.extend(c.captured.iter().filter(|(id, _)| wanted(id)).cloned());
+                    // Inside a call the frame already starts with the
+                    // closure's own captures (`Vm::call`), so the frame
+                    // alone is searched, latest binding first, each local
+                    // once: nesting lambdas does not multiply captures.
+                    let mut captured: Frame = Vec::with_capacity(l.free.len());
+                    for (id, v) in self.frame.iter().rev() {
+                        if l.free.binary_search(id).is_ok()
+                            && !captured.iter().any(|(c, _)| c == id)
+                        {
+                            captured.push((*id, v.clone()));
+                        }
                     }
-                    captured.extend(self.frame.iter().filter(|(id, _)| wanted(id)).cloned());
+                    captured.reverse();
+                    vm.note_frame(captured.len());
                     self.stack.push(Value::Fn(Rc::new(Closure {
                         params: l.params.clone(),
                         chunk: l.chunk,
@@ -422,6 +430,7 @@ impl Machine {
                 Op::SetLocal(id) => {
                     let v = self.pop();
                     self.frame.push((*id, v));
+                    vm.note_frame(self.frame.len());
                 }
                 Op::ScopeEnter => self.marks.push(self.frame.len()),
                 Op::ScopeExit => {
@@ -447,6 +456,7 @@ impl Machine {
                     match item {
                         Some(item) => {
                             self.frame.push((*binding, item));
+                            vm.note_frame(self.frame.len());
                             if let Some(top) = self.stack.last_mut() {
                                 *top = Value::int(i as i64 + 1);
                             }
@@ -845,6 +855,26 @@ fn read_place(
 }
 
 /// Write `value` (combined with `op`) at `place`.
+/// Whether a declaration's type is `int` (or `int?`).
+fn is_int_ty(ty: &crate::ty::Ty) -> bool {
+    use crate::ty::{Prim, Ty};
+    match ty {
+        Ty::Prim(Prim::Int) => true,
+        Ty::Optional(t) => is_int_ty(t),
+        _ => false,
+    }
+}
+
+/// A whole plain number written to an `int` state is stored as an
+/// `int`, whatever arithmetic produced it, so int-ness does not leak
+/// into equality, the inspector or later arithmetic.
+fn as_int(v: Value) -> Value {
+    match v {
+        Value::Num(n, Num::Float) if n.is_finite() && n.fract() == 0.0 => Value::Num(n, Num::Int),
+        v => v,
+    }
+}
+
 pub(crate) fn store(
     vm: &Rc<Vm>,
     rt: &Runtime,
@@ -902,9 +932,11 @@ pub(crate) fn store(
             let super::Slot::Signal(sig) = slot else {
                 return Err(fail(format!("`{}` is not state", vm.prog.def(*d).name)));
             };
+            let whole = place.segs.is_empty() && is_int_ty(&vm.prog.def(*d).ty);
             let mut result = Ok(());
             sig.update(rt, |cur| {
                 match set_in(vm, cur, &place.segs, &indices, op, value) {
+                    Ok(new) if whole => *cur = as_int(new),
                     Ok(new) => *cur = new,
                     Err(e) => result = Err(e),
                 }

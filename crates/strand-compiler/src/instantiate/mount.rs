@@ -619,9 +619,15 @@ impl Ctx {
         let slot = Rc::new(crate::vm::SettingsSlot { fields, handle });
         {
             // Settings declared in a component or branch that was
-            // unmounted since leave dead entries: drop them first.
+            // unmounted since leave dead entries: drop them whenever the
+            // list has doubled since the last prune (amortised O(1) per
+            // mount, and the list stays within twice the live count).
             let mut all = self.settings.borrow_mut();
-            all.retain(|w| w.strong_count() > 0);
+            if all.len() >= self.settings_prune_at.get() {
+                all.retain(|w| w.strong_count() > 0);
+                self.settings_prune_at
+                    .set((all.len() * 2).max(super::SETTINGS_PRUNE_MIN));
+            }
             all.push(Rc::downgrade(&slot));
         }
         let (sl, names): (Rc<crate::vm::SettingsSlot>, Vec<String>) = (

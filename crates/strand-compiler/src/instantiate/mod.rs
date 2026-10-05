@@ -173,6 +173,9 @@ pub(crate) struct Ctx {
     pub blocked: RefCell<std::collections::HashMap<CoreId, u32>>,
     /// Mounted settings files (the watcher's `reload_settings`).
     pub settings: RefCell<Vec<std::rc::Weak<crate::vm::SettingsSlot>>>,
+    /// The length `settings` is next pruned of unmounted entries at
+    /// (doubles with what survives: amortised O(1) per mount).
+    pub settings_prune_at: Cell<usize>,
     /// Per-monitor bar lists: forget a parked monitor's bar by key.
     pub forgetters: RefCell<Vec<std::rc::Weak<Forget>>>,
     pub notices: RefCell<Vec<String>>,
@@ -458,6 +461,9 @@ impl Storage {
 
 /// The seed of the palette a config without `use palette` gets: the
 /// design's default accent.
+/// The mounted-settings list is first pruned at this length.
+pub(crate) const SETTINGS_PRUNE_MIN: usize = 16;
+
 pub const DEFAULT_SEED: &str = "#7aa2f7";
 
 /// A program running on a runtime. See the module docs.
@@ -500,6 +506,7 @@ impl Instance {
             sites: RefCell::default(),
             forgetters: RefCell::default(),
             settings: RefCell::default(),
+            settings_prune_at: Cell::new(SETTINGS_PRUNE_MIN),
             holds: RefCell::default(),
             next_hold: Cell::new(0),
             blocked: RefCell::default(),
@@ -869,6 +876,19 @@ impl Instance {
     /// Function values the VM called so far ([`crate::vm::Vm::calls`]).
     pub fn lambda_calls(&self) -> u64 {
         self.ctx.vm.calls()
+    }
+
+    /// The longest local frame (or closure capture) a handler, binding
+    /// or lambda has had so far ([`crate::vm::Vm::peak_frame`]; tests
+    /// and the inspector).
+    pub fn peak_frame(&self) -> usize {
+        self.ctx.vm.peak_frame()
+    }
+
+    /// Entries in the mounted-settings list, live or not yet pruned
+    /// (tests and the inspector).
+    pub fn settings_len(&self) -> usize {
+        self.ctx.settings.borrow().len()
     }
 
     /// A top-level `state` or `let` of a file by module and name

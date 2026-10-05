@@ -239,7 +239,10 @@ impl Ctx {
         let mut out = Vec::new();
         let slot = |s: Slot, out: &mut Vec<Value>| -> Result<(), Error> {
             match s {
+                // A collection's version stands for its list (one per
+                // diff): O(1), where comparing the list would be O(n).
                 Slot::Keyed(k, _) => out.push(Value::int(k.snapshot(rt)?.version() as i64)),
+                Slot::View(v, _) => out.push(Value::int(v.snapshot(rt)?.version() as i64)),
                 s => out.push(s.get(rt)?),
             }
             Ok(())
