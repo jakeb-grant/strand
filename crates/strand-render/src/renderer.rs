@@ -412,6 +412,10 @@ impl Painter for Renderer {
             .raster
             .paint(&f.items, &total, &self.atlas, scale, target)
         {
+            // Too large for vello_cpu: nothing was drawn.
+            if let Some(s) = self.surfaces.get_mut(&surface) {
+                s.valid = false;
+            }
             return Damage::new();
         }
         self.last_damage.insert(surface, total);
@@ -419,9 +423,15 @@ impl Painter for Renderer {
     }
 
     fn wants_frame(&self, surface: SurfaceId) -> bool {
-        self.surfaces
-            .get(&surface)
-            .is_some_and(|s| s.dirty || !s.valid)
-            || !self.pending.is_empty()
+        let Some(s) = self.surfaces.get(&surface) else {
+            return false;
+        };
+        // Dirty, never painted, or waiting for text it will show.
+        s.dirty
+            || !s.valid
+            || self
+                .pending
+                .values()
+                .any(|(node, scale)| *scale == s.scale && self.tree.root_of(*node) == Some(s.root))
     }
 }

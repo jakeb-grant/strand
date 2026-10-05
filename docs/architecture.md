@@ -72,7 +72,10 @@ be built and tested without the language, and the language without pixels.
   `SetTokens { table }`. Node ids are generational. Prop values are typed
   (`Length`, `Color`, `Paint`, `Text`, `Shadow`, ...). `transition` is
   `Default` (the token spring for that prop class), `Spring { .. }`,
-  `Duration { .. }` or `Instant`, matching `~` in the language.
+  `Duration { .. }` or `Instant`, matching `~` in the language. `Create`/`Move`
+  take `parent: Option<NodeId>` (`None` for surface roots) and
+  `PropValue::Unset` reverts a prop to its default. Render maps a surface
+  root to Wayland surfaces with `Renderer::attach_surface(SurfaceId, NodeId)`.
 
 ### `strand-core`
 
@@ -97,6 +100,10 @@ and the LSP. The grammar is specified in `docs/grammar.md`.
 Request/response over a channel: `TextRequest { key, text, style, max_width,
 scale }` → `TextLayout { key, size, glyph runs }`. Glyph atlases are keyed by
 scale and LRU-bounded. Render draws the last delivered layout.
+Each `TextLayout` also carries the `AtlasUpload`s (alpha pixels) for glyphs
+rasterised while producing it, which render applies to its mirror of the
+atlas in arrival order, and leases on the atlas pages it uses, so the worker
+never recycles a page a live layout draws from.
 
 ### `strand-surface`
 
