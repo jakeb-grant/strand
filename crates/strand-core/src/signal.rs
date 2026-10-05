@@ -222,6 +222,12 @@ impl Runtime {
     {
         let mut prev: Option<(K, T)> = None;
         let effect = self.effect(move |rt| {
+            // A reload write upstream (`Signal::set_reloaded`): the next
+            // value read is a baseline, also when this run fails to read
+            // it (the mark only lasts this flush).
+            if rt.current_writer().is_some_and(|me| rt.take_rebaseline(me)) {
+                prev = None;
+            }
             let k = key(rt)?;
             let value = track(rt)?;
             let fire = match &prev {
@@ -335,6 +341,29 @@ impl<T: Clone + PartialEq + 'static> Signal<T> {
                 *v = value;
             }
         });
+    }
+
+    /// A write made by live reload: a declared default adopted, a
+    /// persisted value handed over to the replacement instance, `@reset`
+    /// applied at reload. The value changes like any write (readers update
+    /// in the next flush), but every `on change` handler downstream of the
+    /// cell takes the new value as its baseline instead of firing, and an
+    /// `on change … after` debounce is not restarted, as when its key
+    /// changes ([`Runtime::on_change_keyed`]): `on change` fires "never at
+    /// boot or reload" (design, "Events and time"). Not rate-gated (it is
+    /// not a handler's write). Returns whether the value changed.
+    ///
+    /// The re-baseline applies to the next run of each such handler in the
+    /// next flush (a handler held by a frozen component keeps it until it
+    /// runs); a real change to another of its inputs in that same flush is
+    /// absorbed into the new baseline too.
+    pub fn set_reloaded(self, rt: &Runtime, value: T) -> Result<bool, Error> {
+        rt.check_write_allowed(self.id)?;
+        let changed = self.set_raw(rt, value)?;
+        if changed {
+            rt.rebaseline_from(self.id);
+        }
+        Ok(changed)
     }
 
     /// Write without rate gating. Returns whether the value changed.

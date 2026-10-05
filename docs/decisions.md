@@ -1589,8 +1589,11 @@ see wave2-core; the compiler supplies the field schema.)
   the compiler cannot meet the "once per flush" promise without it:
   tasks spawned by event listeners are polled before the next sink (the
   flush polled them one sink late, so an `if` reading what an `on
-  click` wrote ran before and after it). The core track should own it
-  from here (`crates/strand-core/src/runtime.rs`, `flush`).
+  click` wrote ran before and after it). Superseded at the merge of
+  wave2/core round 7 (wave2/lang review round 1): the ordering rule
+  belongs to strand-core and wave2/core, whose `flush` ("each listener
+  at its own rank", a woken task at its handler's rank) replaced this
+  branch's hunk; the compiler only declares edges and relies on it.
   `tests/instantiate.rs::sinks_run_once_after_the_handlers_that_feed_them`
   fails without the declarations.
 - **2026-10-05 · wave2-vm: keyed chains.** design.md says `.filter`,
@@ -1693,10 +1696,11 @@ see wave2-core; the compiler supplies the field schema.)
   record) and the instantiator asks `ServiceHost::action_writes(rt,
   service)`, by default every field of the service (a superset).
   `tests/instantiate.rs::action_calls_declare_their_service_writes`.
-  The core change above (tasks spawned by listeners polled before the
-  next sink) now has a core test of its own,
-  `crates/strand-core/tests/order_props.rs::a_cell_written_by_a_task_a_listener_spawns_is_read_once_per_flush`,
-  which fails without it.
+  The ordering it relies on (tasks spawned by listeners run before the
+  sinks that read what they write) is wave2/core's; this branch's copy
+  of a core test for it was dropped at the merge, so strand-core here is
+  exactly wave2/core's, and the compiler side is proven by
+  `tests/instantiate.rs::sinks_run_once_after_the_handlers_that_feed_them`.
 
 ## wave2-core
 
@@ -1822,7 +1826,9 @@ than a handler of the flush (another thread's waker) writes when it is
 polled. Ranks live in a side map (most nodes are rank 0), so the node and
 the 10k-node numbers stay as they were (`docs/benchmarks.md`). (Refined by
 "Declared reads" and "Foreign wakes" below: the first flush and woken
-tasks are now ordered too.)
+tasks are now ordered too; and by "Event deliveries and woken tasks are
+ranked" (review round 6): deliveries and polls are items of the ranked
+queue, no longer run before every sink.)
 
 **2026-10-05 · Declared reads and the provisional phase (review round
 1).** Read edges exist only once a node has run, so round 0 ran a reader
@@ -1868,7 +1874,8 @@ waits for the queue (bounded, 5 s); dropping the last store handle drains
 it (bounded) and joins the thread; a persisted cell's writer queues its
 pending value when dropped, so a runtime dropped without `shutdown` still
 writes. The file's baseline is updated when a write is queued, not when it
-lands (a failed write is reported; the next change writes again).
+lands (a failed write is reported; round 5: the cell then forgets what
+its file holds, so its next change or capture writes again).
 `rt.persisted` returns a `Persisted` handle with `redeclare(rt,
 new_default)` (the reload rule for state defaults: adopt if the value
 still holds the old default, removing the file; else keep, report
@@ -2015,6 +2022,259 @@ sweep only matches `.<name>.tmp.<pid>.<n>`. `rt.is_idle()` is false while
 an IO thread's failure waits to be reported. `KeyedSignal::get_untracked`
 inside the collection's own `update` returns `Error::Reentrant` instead of
 panicking.
+
+**2026-10-05 · Persisted writes are read at unmount (review round 4).**
+Round 1 queued only what the cell's tracking effect had noted, so a write
+whose owner went before that effect ran was lost: `if open { state level
+persist }` with `level = 5; open = false` in one handler (the `if`
+re-runs first and disposes the branch), a write followed by `shutdown`
+without a flush, and a write to a frozen component (its tracking effect
+is held) that is then replaced. The unmount cleanup now reads the cell's
+live value (cleanups run before nodes are removed) and queues it if the
+file does not hold it; `shutdown` does the same for every live persisted
+cell before disposing anything (root-level cells are disposed before root
+cleanups run), and dropping the last `Runtime` handle without `shutdown`
+does it too (an `impl Drop for Runtime` that acts only for the last strong
+handle and not while panicking). Also, a stored value that already equals
+the new declared default is adopted silently at boot, as
+`Persisted::redeclare` does on a live reload (round 1 reported it as "kept
+(default changed)").
+
+**2026-10-05 · Strand's own writes are pre-registered (review round 4).**
+Design, "Live reload" step 2: unchanged content stops at the hash check,
+"including Strand's own writes, whose hashes are pre-registered". Only the
+persist IO thread knows the bytes of a settings edit (it applies the
+`toml_edit` edits to whatever the file holds at that moment), so
+`PersistStore::on_written` (and `SettingsStore::on_written`) observes
+every file the IO thread replaces or removes: `OwnWrite { path, target,
+content }`, called after the temp file is complete and `fsync`ed and
+*before* the rename, so a registration made in the callback always comes
+before the watcher's change event. If the rename then fails, the
+registered hash never appears on disk; the watcher should treat a
+registration as one-shot. The callback runs on the IO thread and must be
+short.
+
+**2026-10-05 · The watcher does not parse settings files (review round
+4).** Supersedes round 3 (c), which had strand-watch call
+`SettingsSources::read_from` on its own thread. That parses TOML and
+probes writability, which contradicts the Threads table ("Watcher. Never
+does: Parse files (it sends paths and hashes)"), a boundary the watch
+track builds against. The boundary stays: the watcher sends (path,
+hash), and the logic thread calls `Settings::reload`. A settings file is
+small and is read once per real change; Strand's own writes no longer
+come back at all, because their hashes are pre-registered. `sources()`,
+`read_from` and `reload_with` remain for a thread allowed to parse (the
+compiler worker), should a profile ever ask for it.
+
+**2026-10-05 · Lowering can be checked (review round 4).** "Once per
+flush" depends on the compiler declaring every read and write edge, and
+a missing declaration used to fail silently, as a possible double run.
+`Stats::learned_edges` counts edges the runtime had to learn: write edges
+seen without `writes_to`, and reads by a node that declared its reads
+(`reads_from`) of a source it did not declare. Nodes that declare
+nothing, such as runtime-internal effects, are not counted, so the
+counter speaks only about the compiler's declarations. `Stats::reruns`
+counts sink runs beyond the first in one flush. Compiler and VM tests
+assert both are 0 after lowering real fixtures without feedback edges.
+`set_sources` also skips the rank walk when a node's source list did not
+change (rank raises already reach observers), which takes back most of
+the cost of a populated rank map (`docs/benchmarks.md`, "ranked").
+
+**2026-10-05 · Derived collections read by key (review round 4).**
+`KeyedMemo` gets `with`, `with_untracked` and `get_key`, matching
+`KeyedSignal`. A derived collection keeps no key index: its output is
+patched per diff, and an index would double that upkeep for a read most
+lists never make. Its `get_key` is therefore a documented O(n) scan
+(about 1 µs per 1,000 rows), fine for selecting by key once per event.
+A loop over many keys should read `with` once.
+
+**2026-10-05 · Persist failures, retention and the observer (review
+round 5).** (a) *A failed write is retried.* The baseline (what the file
+holds) was set when a write was queued, so after a transient failure
+(ENOSPC, EIO) the unmount, shutdown and drop captures found the live value
+equal to it and queued nothing: a value changed once was lost at restart.
+The IO thread now marks the cell's reporter stale on any failure, and the
+cell's next change or capture treats the file as unknown and writes. No
+immediate retry: a disk that keeps failing would loop through the wake
+hook. (b) *Retention.* Instance-qualified paths (`list[<key>].x` on a
+notification list, a monitor that never comes back) left one file per key
+for good. Rule: a persisted file no cell has claimed for 90 days
+(`PERSIST_RETENTION`) is removed. A claim of a stored file and the release
+of a path (its last cell disposed) refresh the file's modification time on
+the IO thread; a store that persisted cells used sweeps, when it is
+dropped at exit, the cell files and `.<name>.corrupt` copies older than
+that which no cell of the process holds and nothing is queued for (under
+the queue lock). At exit rather than at boot, because a component mounted
+a moment after the sweep would lose its file; a quarantine also refreshes
+the time, so a corrupt copy is kept 90 days for inspection. A store no cell
+used (a tool's) never sweeps. Not chosen: a `forget(path)` call for the
+reconciler, which cannot tell an item removed for good from one filtered
+out for a while. (Narrowed in round 6: only instance-qualified paths
+expire, see "Retention is for instance files".) Residual: a second shell instance sharing the directory
+and running longer than 90 days without touching a file can lose it to
+the other's exit sweep. (c) *`save`/`remove` are for tools.* They now
+replace what is queued for the file (the doc said "after") and run their
+IO outside the queue lock, holding the in-flight slot instead, so a
+`load` or a cell's `enqueue` on another thread no longer waits for their
+`fsync`; a live cell on the same path does not see them (documented, not
+refused: the store does not know runtimes). (d) *The observer.* One slot
+per IO thread, shared by the `PersistStore` and every `SettingsStore` made
+from it (documented on both). It can also run on the caller of
+`save`/`remove`, must not call `save`, `remove` or `sync` itself, and a
+panic in it (or anywhere in an operation) is caught: the observer is
+removed, the IO thread lives on, and the cell reports `PersistFailed`. A
+corrupt overlay moved aside is reported to it too. (e) Removal checks the
+path with `symlink_metadata`, so a dangling link at a cell file is removed
+like any other. (f) The list of persisted writers is pruned at a
+high-water mark (twice its live size after the last prune), so cells
+created and disposed one for one around a power of two no longer rescan
+it on every creation.
+
+**2026-10-05 · Reload writes (review round 6).** Design, "Events and
+time": `on change x` fires "on changes, never at boot or reload". Round
+1's `Persisted::redeclare` adopted a new default with a plain `set`, so
+editing a `state … persist` default in source fired the `on change` that
+pops an OSD; the persist hand-over (surface recreate, monitor replug) and
+`Settings::redeclare` did the same through `set_raw`, and plain `state`
+default adoption had no way to avoid it. New primitive:
+`Signal::set_reloaded(rt, v)` writes the value (not rate-gated: not a
+handler's write) and marks every effect downstream of the cell, through
+derived values; an `on change` handler (`on_change`, `on_change_after`,
+`on_change_keyed`) whose next run finds its mark takes the value as its
+new baseline without running the handler or restarting a debounce, as a
+key change does. Marks last one flush (a handler held by a frozen
+component keeps its mark until it runs). Used by the Adopted path of
+`Persisted::redeclare`, the hand-over to a waiting cell, the new
+`Persisted::reset_reloaded` (`@reset` at reload) and
+`Settings::redeclare` (adopted defaults, type resets); the overlay's
+`[reset]` (`Persisted::reset`) is the user's action and stays an ordinary
+write, and so does a settings file the user edited (that is a change, not
+a reload). Residual: a real change to another input of the same `on
+change` in the reload's flush is absorbed into the baseline too; a reload
+is its own tick, so that does not happen in practice. Removes a concept
+(the reconciler no longer needs to know which handlers read a cell).
+
+**2026-10-05 · Retention is for instance files (review round 6).** Round
+5's 90-day sweep removed any cell file no cell had claimed for 90 days,
+including the plain declared path of a component that is simply not
+mounted (`if open { state level persist }`, a popup opened twice a year,
+a hidden page): silent loss of user state, which design.md does not have
+(`persist` keeps values across restarts; `[reset]`/`@reset` are the only
+ways to drop one). "Does it remove a concept, or add one?": expiry of
+declared state adds one, so it is gone. The sweep now only removes files
+of instance-qualified paths (a `[` in the path, escaped `%5B` in the file
+name: `list[<key>].x`, `bar[<monitor>].x`), the narrow problem it was
+added for, plus quarantined `.<name>.corrupt` copies (not values; a
+quarantine now refreshes the copy's time, so it is kept 90 days for
+inspection, as round 5 meant). Considered: having the binary pass the set
+of declared paths, so a removed declaration's file could expire too;
+not chosen, since a removed declaration's single file costs nothing and
+the binary would need a complete set at exit.
+
+**2026-10-05 · Small persist fixes (review round 6).** (a) `load` looks
+for the newest queued write, removal or quarantine, then the one in
+flight: a queued `Touch` (or settings job) no longer hides a write still
+in flight, which made a component remounted twice on a slow disk start
+from its default; claim and release no longer queue a touch behind an
+operation in flight. (b) A write made before a persisted cell's tracking
+effect first runs (the mount tick, `on mount { boots += 1 }`) arms the
+debounce from that first run (`on change` never fires for the first
+value, so it never did): it reached the disk only at unmount or shutdown
+and was lost by a crash. Settings files do the same for a field whose
+live value differs from what was shown. (c) A UI write over a key the
+user wrote as a table (`[a]`) replaces it as a new key with default
+spacing instead of keeping the table header's decor.
+
+**2026-10-05 · Event deliveries and woken tasks are ranked (review round
+6).** (Refined in review round 7: each listener is delivered at its own
+rank, see "Each listener at its own rank".) Round 0 delivered events and polled woken tasks before every sink,
+whatever their rank, so a listener declared to read a cell a handler
+writes in the same flush (`on notifications.received(n) { if !dnd { … }
+}` with `dnd` set by an effect) saw the old value and the handler wrote
+the new one after it: a glitch at the edge that declarations could not
+fix. They are now items of the flush's ranked queue: a queue's delivery
+runs at the highest rank of the queue and its listeners (all listeners
+get each event together, in order, as before; one listener with a high
+rank delays the queue's delivery to the others, which is still before
+anything that reads what they write), a woken task at its own rank (it
+ranks with the handler site that owns it) or its writer's. At one rank,
+woken tasks run before deliveries, deliveries before sinks (wave 1's
+order). A task is still polled at most once per flush; foreign wakes are
+still taken only when the flush starts. `tests/order_props.rs` adds
+listeners to the random graphs (one outside emit per flush, declared:
+every delivery sees final values). Also: a listener released by an
+earlier listener's handler during a delivery gets what it missed first,
+in order (round 0 queued it behind the rest of the batch).
+
+**2026-10-05 · Strict edges (review round 6).** Round 4 made a missing
+declaration countable (`Stats::learned_edges`), which a test has to
+read on purpose; principle: loud errors over silent ones.
+`rt.set_strict_edges(true)` reports every learned edge once, in the tick
+it is learned, as `Diagnostic::UndeclaredWrite { writer, target }` or
+`Diagnostic::UndeclaredRead { reader, source }` (the same edges the
+counter counts: undeclared reads only for nodes that declared their
+reads). Opt-in rather than `cfg(debug_assertions)`: runtime-internal
+nodes and Rust-side tests that declare nothing would flood every debug
+build; the VM's and compiler's test runtimes turn it on, and a debug
+binary may.
+
+**2026-10-05 · Each listener at its own rank (review round 7).** Round 6
+delivered a queue's events to all its listeners together, at the highest
+rank of the queue and its listeners. That is not glitch-free once a
+listener writes: a listener's write targets are ranked from its own rank,
+so with `on received(n) { history.push(n) }` next to `on received(n) {
+if !dnd { … } }` (the second ranked high by what it reads) the push
+landed after the readers of `history` had run, and they ran twice; and
+with listener A writing `x`, an effect S reading `x` and writing `y`, and
+listener B reading `y`, no single rank for the queue fits (A must run
+before S, B after it), so B saw the old `y` (which value it saw also
+depended on registration order). Design.md asks for events to be
+lossless and in order per handler and for handlers to see final values;
+it does not ask that all handlers of an event run back to back, so that
+requirement goes (it added a concept). Now an emit is handed to every
+live listener as soon as the flush sees it (right after the handler that
+emitted, or at the flush's start), into the listener's own inbox, and
+each listener is delivered at its own rank, its events in emit order.
+The rank rules are unchanged (a listener ranks with its queue and with
+what it reads; what it writes ranks above it), so every listener sees
+final values and every sink fed by a listener runs once. The cycle guard
+counts hand-outs per queue as it counted deliveries (a parked queue
+keeps its events, `queue -> listener -> queue` paths are unchanged); a
+frozen listener's inbox is its backlog (input dropped, others bounded by
+`MAX_FROZEN_EVENTS`, the count reported on release or disposal). A
+listener alive when the flush picks an emit up gets it (before: when
+the queue was delivered). `tests/order_props.rs` adds listener-written
+cells (with declarations) to the random graphs, so listeners read what
+effects and other listeners of the same event write.
+
+**2026-10-05 · Handler reads are learned (review round 7).** A listener
+and a task are scheduled by rank, not by observer edges, and their reads
+were never tracked: a read the compiler failed to declare left the
+listener one tick stale for good, silently, also under
+`set_strict_edges(true)`, which exists to catch exactly that lowering
+bug. Listener bodies and task polls now run in a tracking frame that
+records reads without subscribing; a source the listener (for a task,
+its handler, which is where the compiler declares a handler's whole read
+set) did not declare is kept as a read edge of the handler (it ranks
+with it from then on, so the glitch happens at most once), counted in
+`Stats::learned_edges` and reported as `Diagnostic::UndeclaredRead` in
+strict mode, as for sinks (only for handlers that declared their reads).
+A handler that reads what it writes (`count = count + 1` in a listener)
+gets a feedback edge, exactly as when the compiler declares both.
+
+**2026-10-05 · Reload marks reach late landings (review round 7).**
+Round 6's reload marks follow observer edges and last one flush, which
+missed two cases where an `on change` handler sees the reloaded value
+later: (a) through `let hits = svc.call(query)`, where the reload write
+changes the input and the load lands in a later flush: the async memo's
+effect, re-run with a mark, makes the load's begin and its result
+reload writes (the result whenever it lands; a superseded load never
+lands); (b) an `on change` whose tracked read errs in the reload's flush
+(the mark was taken only after the read succeeded, then cleared): the
+mark is now taken first and forgets the previous value, so the next
+successful read is a baseline. Residual, recorded rather than built: a
+handler that copies a reloaded value into another cell (a timer, a
+listener) 
 
 ## wave2-watch
 

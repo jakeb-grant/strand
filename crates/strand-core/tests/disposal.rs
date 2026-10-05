@@ -840,3 +840,41 @@ fn an_on_change_handler_moved_to_a_new_owner_creates_nodes_there() {
     b.dispose(&rt);
     assert!(!rt.exists(sig), "disposed with its new component");
 }
+
+#[test]
+fn a_listener_released_mid_delivery_gets_what_it_missed_first() {
+    let rt = Runtime::new();
+    let notices = rt.events::<&'static str>();
+    let component = rt.signal(None);
+    // Listens first: the second notice releases the frozen component.
+    notices
+        .on(&rt, move |rt, &n| {
+            if n == "b"
+                && let Some(c) = component.get_untracked(rt)?
+            {
+                rt.resume(c);
+            }
+            Ok(())
+        })
+        .unwrap();
+    let got = Rc::new(RefCell::new(Vec::new()));
+    let g = got.clone();
+    let (scope, _) = rt.scope(|rt| {
+        notices
+            .on(rt, move |_, &n| {
+                g.borrow_mut().push(n);
+                Ok(())
+            })
+            .unwrap()
+    });
+    component.set(&rt, Some(scope.id())).unwrap();
+    rt.flush();
+    rt.suspend(scope.id()).unwrap();
+    for n in ["a", "b", "c"] {
+        notices.emit(&rt, n).unwrap();
+    }
+    rt.flush();
+    assert_eq!(*got.borrow(), vec!["a", "b", "c"], "in order, at once");
+    rt.flush();
+    assert_eq!(got.borrow().len(), 3, "delivered once");
+}

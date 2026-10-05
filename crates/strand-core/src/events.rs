@@ -1,12 +1,25 @@
 //! Lossless event queues (`on notifications.received(n)`).
 //!
 //! State coalesces to its latest value per tick; events never do. Every
-//! event emitted is delivered exactly once, in order, to every listener alive
-//! at delivery time, during the flush that follows the emit. Events emitted
-//! by a listener are delivered in the same flush.
+//! event emitted is delivered exactly once, in order, to every listener
+//! alive when the flush picks it up (the flush that follows the emit; an
+//! event emitted by a handler during a flush is picked up right after that
+//! handler, so it is delivered in the same flush).
+//!
+//! Each listener is delivered on its own, at its own rank (see `order`): a
+//! listener ranks with its queue and with what it reads, so it runs after
+//! the writers of what it reads, and what it writes ranks above it, so
+//! the readers of that run after it. Listeners of one queue therefore do
+//! not get an event together: one that reads what another writes for the
+//! same event runs after it (and after any effect in between), whatever
+//! order they were registered in. Each listener gets its events in emit
+//! order. A listener's reads are tracked while it runs (without
+//! subscribing): one it did not declare ranks it above that source from
+//! then on, and is reported in strict mode
+//! ([`Runtime::set_strict_edges`]).
 //!
 //! Listeners that re-emit to each other in a loop are a runtime cycle: past
-//! [`crate::MAX_RUNS_PER_FLUSH`] deliveries of one queue in one flush, if the
+//! [`crate::MAX_RUNS_PER_FLUSH`] pick-ups of one queue in one flush, if the
 //! deliveries and emits of this flush form a path back to the queue, the
 //! flush reports [`Error::Cycle`] (`queue -> listener -> queue …`) and parks
 //! the queue: its events stay queued (nothing is lost) and are delivered
@@ -24,7 +37,7 @@
 //! reported). (State needs no bound: a cell keeps only its latest value.)
 
 use std::any::Any;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::marker::PhantomData;
@@ -56,34 +69,27 @@ impl<T> fmt::Debug for EventQueue<T> {
 type ListenerFn<T> = Box<dyn FnMut(&Runtime, &T) -> Result<(), Error>>;
 
 struct EventsData<T> {
-    /// Shared so one event can wait for a frozen listener while it is
-    /// delivered to the others, without `T: Clone`.
+    /// Emitted, not yet handed to the listeners. Shared (`Rc`) so one
+    /// event goes to every listener without `T: Clone`.
     queue: RefCell<VecDeque<Rc<T>>>,
     listeners: RefCell<Vec<NodeId>>,
-    /// Events kept for suspended listeners of a lossless queue, in order,
-    /// at most [`MAX_FROZEN_EVENTS`] each, with the count dropped.
-    backlog: RefCell<Vec<Backlog<T>>>,
     /// External input (`on click`, `on scroll`): listeners are input
     /// handlers, not counted by the write-rate guard.
     input: bool,
 }
 
-/// What a frozen listener missed.
-struct Backlog<T> {
-    listener: NodeId,
-    events: VecDeque<Rc<T>>,
-    /// Oldest events dropped past [`MAX_FROZEN_EVENTS`].
-    dropped: usize,
-}
-
 struct ListenerData<T> {
     f: RefCell<ListenerFn<T>>,
-}
-
-impl<T: 'static> NodeData for ListenerData<T> {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
+    /// Its queue (for diagnostics).
+    queue: NodeId,
+    /// Its queue is an input queue: events are dropped while it is frozen.
+    input: bool,
+    /// Events handed to it, not yet delivered: those of this flush, or
+    /// those it missed while frozen (at most [`MAX_FROZEN_EVENTS`]).
+    inbox: RefCell<VecDeque<Rc<T>>>,
+    /// Oldest events dropped past [`MAX_FROZEN_EVENTS`] while frozen, not
+    /// yet reported.
+    dropped: Cell<usize>,
 }
 
 impl<T: 'static> NodeData for EventsData<T> {
@@ -95,129 +101,147 @@ impl<T: 'static> NodeData for EventsData<T> {
         self.listeners.borrow().clone()
     }
 
-    fn deliver(&self, rt: &Runtime, id: NodeId, errors: &mut Vec<(NodeId, Error)>) -> bool {
+    /// Hand the queued events to the live listeners; those not frozen are
+    /// queued for delivery at their rank.
+    fn distribute(&self, rt: &Runtime, id: NodeId) {
         let events: Vec<Rc<T>> = match self.queue.try_borrow_mut() {
             Ok(mut q) => q.drain(..).collect(),
-            Err(_) => return false,
+            Err(_) => return,
         };
-        // Released listeners first get what they missed while frozen (it is
-        // older than anything queued now).
-        let released: Vec<Backlog<T>> = {
-            let Ok(mut backlog) = self.backlog.try_borrow_mut() else {
-                return false;
-            };
-            // A frozen listener disposed instead of resumed (the reload
-            // replaced its component): what it held is gone; what it had
-            // already lost is still reported.
-            backlog.retain(|b| {
-                let alive = rt.exists(b.listener);
-                if !alive && b.dropped > 0 {
-                    rt.diagnose(Diagnostic::EventsDropped {
-                        queue: id,
-                        listener: b.listener,
-                        dropped: b.dropped,
-                    });
-                }
-                alive
-            });
-            let (released, frozen) = std::mem::take(&mut *backlog)
-                .into_iter()
-                .partition(|b| !rt.is_suspended(b.listener));
-            *backlog = frozen;
-            released
-        };
-        if events.is_empty() && released.is_empty() {
-            self.note_backlog(rt, id);
-            return false;
+        if events.is_empty() {
+            return;
         }
+        let listeners: Vec<NodeId> = {
+            let mut list = self.listeners.borrow_mut();
+            list.retain(|&l| rt.exists(l));
+            list.clone()
+        };
         // For cycle paths: this queue reaches its listeners.
         rt.inner
             .flush_writes
             .borrow_mut()
-            .extend(self.listeners.borrow().iter().map(|&l| (id, l)));
-        for b in released {
-            if b.dropped > 0 {
-                rt.diagnose(Diagnostic::EventsDropped {
-                    queue: id,
-                    listener: b.listener,
-                    dropped: b.dropped,
-                });
-            }
-            for ev in b.events {
-                self.run_listener(rt, b.listener, &ev, errors);
-            }
-        }
-        for ev in &events {
-            let listeners: Vec<NodeId> = self.listeners.borrow().clone();
-            for l in listeners {
-                if rt.is_suspended(l) {
-                    // A frozen component ignores input; other events wait.
-                    if !self.input && rt.exists(l) {
-                        self.keep_for(l, ev.clone());
+            .extend(listeners.iter().map(|&l| (id, l)));
+        for l in listeners {
+            let Ok(data) = rt.data(l) else { continue };
+            let Some(listener) = data.as_any().downcast_ref::<ListenerData<T>>() else {
+                continue;
+            };
+            if rt.is_suspended(l) {
+                // A frozen component ignores input; other events wait.
+                if !self.input {
+                    for ev in &events {
+                        listener.keep(ev.clone());
                     }
-                    continue;
+                    rt.hold(l);
                 }
-                self.run_listener(rt, l, ev, errors);
+                continue;
             }
+            listener.inbox.borrow_mut().extend(events.iter().cloned());
+            rt.inner.listeners_ready.borrow_mut().push(l);
         }
-        self.listeners.borrow_mut().retain(|&l| rt.exists(l));
-        self.note_backlog(rt, id);
-        true
     }
 }
 
-impl<T: 'static> EventsData<T> {
-    fn run_listener(&self, rt: &Runtime, l: NodeId, ev: &T, errors: &mut Vec<(NodeId, Error)>) {
-        let Ok(data) = rt.data(l) else { return };
-        let Some(listener) = data.as_any().downcast_ref::<ListenerData<T>>() else {
-            return;
-        };
-        let Ok(mut f) = listener.f.try_borrow_mut() else {
+impl<T: 'static> NodeData for ListenerData<T> {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    /// Deliver the inbox, in order (the flush calls it at the listener's
+    /// rank).
+    fn deliver(&self, rt: &Runtime, id: NodeId, errors: &mut Vec<(NodeId, Error)>) -> bool {
+        let mut any = false;
+        loop {
+            if !rt.exists(id) {
+                // Disposed by its own handler: the rest goes with it.
+                self.inbox.borrow_mut().clear();
+                break;
+            }
+            if rt.is_suspended(id) {
+                // Frozen (possibly by its own handler): keep the rest.
+                self.freeze();
+                if !self.inbox.borrow().is_empty() {
+                    rt.hold(id);
+                }
+                break;
+            }
+            let dropped = self.dropped.replace(0);
+            if dropped > 0 {
+                // Released: what it lost is reported before what it kept.
+                rt.diagnose(Diagnostic::EventsDropped {
+                    queue: self.queue,
+                    listener: id,
+                    dropped,
+                });
+            }
+            let Some(ev) = self.inbox.borrow_mut().pop_front() else {
+                break;
+            };
+            any = true;
+            self.run(rt, id, &ev, errors);
+        }
+        any
+    }
+
+    /// A frozen listener disposed instead of released (the reload replaced
+    /// its component): what it held is gone; what it had already lost is
+    /// still reported.
+    fn on_dispose(&self, rt: &Runtime, id: NodeId) {
+        let dropped = self.dropped.replace(0);
+        if dropped > 0 {
+            rt.diagnose(Diagnostic::EventsDropped {
+                queue: self.queue,
+                listener: id,
+                dropped,
+            });
+        }
+        self.inbox.borrow_mut().clear();
+    }
+}
+
+impl<T: 'static> ListenerData<T> {
+    fn run(&self, rt: &Runtime, l: NodeId, ev: &T, errors: &mut Vec<(NodeId, Error)>) {
+        let Ok(mut f) = self.f.try_borrow_mut() else {
             return;
         };
         // Nodes the listener creates belong to its component; tasks it
         // starts belong to the listener, so disposing it (unmount or a
-        // reload that restarts the handler) cancels them.
+        // reload that restarts the handler) cancels them. Its reads are
+        // tracked (without subscribing) so an undeclared one ranks it.
         let ctx = HandlerCtx {
             writer: l,
             owner: rt.owner_of(l).ok().flatten(),
             site: Some(l),
             input: self.input,
         };
-        let r = rt.run_handler(ctx, |rt| f(rt, ev));
+        let r = rt.run_handler_tracked(ctx, l, |rt| f(rt, ev));
         if let Err(e) = r {
             errors.push((l, e));
         }
     }
 
-    /// Keep `ev` for the suspended listener `l`, dropping (and counting) the
+    /// Keep `ev` for this frozen listener, dropping (and counting) the
     /// oldest past [`MAX_FROZEN_EVENTS`].
-    fn keep_for(&self, l: NodeId, ev: Rc<T>) {
-        let mut backlog = self.backlog.borrow_mut();
-        match backlog.iter_mut().find(|b| b.listener == l) {
-            Some(b) => {
-                if b.events.len() >= MAX_FROZEN_EVENTS {
-                    b.events.pop_front();
-                    b.dropped += 1;
-                }
-                b.events.push_back(ev);
-            }
-            None => backlog.push(Backlog {
-                listener: l,
-                events: VecDeque::from([ev]),
-                dropped: 0,
-            }),
+    fn keep(&self, ev: Rc<T>) {
+        let mut inbox = self.inbox.borrow_mut();
+        if inbox.len() >= MAX_FROZEN_EVENTS {
+            inbox.pop_front();
+            self.dropped.set(self.dropped.get() + 1);
         }
+        inbox.push_back(ev);
     }
 
-    /// Tell the runtime this queue holds events for frozen listeners, so
-    /// releasing them re-delivers.
-    fn note_backlog(&self, rt: &Runtime, id: NodeId) {
-        if !self.backlog.borrow().is_empty() {
-            let mut list = rt.inner.backlogged.borrow_mut();
-            if !list.contains(&id) {
-                list.push(id);
-            }
+    /// The listener was found frozen with events in its inbox: input is
+    /// dropped, the rest bounded.
+    fn freeze(&self) {
+        let mut inbox = self.inbox.borrow_mut();
+        if self.input {
+            inbox.clear();
+            return;
+        }
+        while inbox.len() > MAX_FROZEN_EVENTS {
+            inbox.pop_front();
+            self.dropped.set(self.dropped.get() + 1);
         }
     }
 }
@@ -244,7 +268,6 @@ impl Runtime {
             Some(Rc::new(EventsData::<T> {
                 queue: RefCell::new(VecDeque::new()),
                 listeners: RefCell::new(Vec::new()),
-                backlog: RefCell::new(Vec::new()),
                 input,
             })),
         );
@@ -254,30 +277,44 @@ impl Runtime {
         }
     }
 
-    /// Deliver every queued event. Returns whether anything was delivered.
-    /// `runs` counts deliveries per queue in this flush (cycle guard).
-    pub(crate) fn deliver_events(
+    /// Queues with events to hand out, each once, in the order they were
+    /// first emitted to.
+    pub(crate) fn take_pending_events(&self) -> Vec<NodeId> {
+        let mut queues = std::mem::take(&mut *self.inner.events_pending.borrow_mut());
+        if queues.len() > 1 {
+            let mut seen = HashSet::with_capacity(queues.len());
+            queues.retain(|q| seen.insert(*q));
+        }
+        queues
+    }
+
+    /// Listeners with events to deliver (handed out, or released from a
+    /// freeze), in the order they became ready.
+    pub(crate) fn take_ready_listeners(&self) -> Vec<NodeId> {
+        std::mem::take(&mut *self.inner.listeners_ready.borrow_mut())
+    }
+
+    /// Hand what queue `q` holds to its listeners (the flush calls it as
+    /// soon as the emit is seen). `runs` counts pick-ups per queue in this
+    /// flush (cycle guard).
+    pub(crate) fn distribute_queue(
         &self,
+        q: NodeId,
         runs: &mut HashMap<NodeId, u32>,
         errors: &mut Vec<(NodeId, Error)>,
-    ) -> bool {
-        let mut any = false;
-        loop {
-            let mut queues = std::mem::take(&mut *self.inner.events_pending.borrow_mut());
-            if queues.is_empty() {
-                return any;
-            }
-            let mut seen = HashSet::new();
-            queues.retain(|q| seen.insert(*q));
-            for q in queues {
-                let Ok(data) = self.data(q) else { continue };
-                if self.cycle_cut(q, runs, errors) {
-                    // Parked: the events stay queued for the next emit.
-                    continue;
-                }
-                any |= data.deliver(self, q, errors);
-            }
+    ) {
+        let Ok(data) = self.data(q) else { return };
+        if self.cycle_cut(q, runs, errors) {
+            // Parked: the events stay queued for the next emit.
+            return;
         }
+        data.distribute(self, q);
+    }
+
+    /// Deliver listener `l`'s inbox (the flush calls it at `l`'s rank).
+    pub(crate) fn deliver_listener(&self, l: NodeId, errors: &mut Vec<(NodeId, Error)>) {
+        let Ok(data) = self.data(l) else { return };
+        data.deliver(self, l, errors);
     }
 }
 
@@ -315,11 +352,16 @@ impl<T: 'static> EventQueue<T> {
         if !rt.exists(self.id) {
             return Err(Error::Disposed(self.id));
         }
+        let input = rt.with_data::<EventsData<T>, _>(self.id, |d| d.input)?;
         let l = rt.create_node(
             NodeKind::Listener,
             Color::Clean,
             Some(Rc::new(ListenerData::<T> {
                 f: RefCell::new(Box::new(f)),
+                queue: self.id,
+                input,
+                inbox: RefCell::new(VecDeque::new()),
+                dropped: Cell::new(0),
             })),
         );
         rt.with_data::<EventsData<T>, _>(self.id, |d| d.listeners.borrow_mut().push(l))?;
@@ -327,7 +369,8 @@ impl<T: 'static> EventQueue<T> {
         Ok(l)
     }
 
-    /// Events emitted but not yet delivered.
+    /// Events emitted but not yet handed to the listeners (those of this
+    /// tick, or of a queue parked as a cycle).
     pub fn queued(self, rt: &Runtime) -> Result<usize, Error> {
         rt.with_data::<EventsData<T>, _>(self.id, |d| d.queue.borrow().len())
     }

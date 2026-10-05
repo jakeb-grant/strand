@@ -1,8 +1,9 @@
 //! M0 benchmark: a 10k-node reactive graph (mixed fan-in/fan-out, depth
 //! 20). Measures single-write propagation, full fan-out, a narrow path (one
 //! chain of 20 memos, what a clock tick does), an equality cut-off (a write
-//! stopped after one memo) and an idle flush, and reports memory per node
-//! through a counting global allocator.
+//! stopped after one memo) and an idle flush, the same flushes once a
+//! declared handler write has populated the rank map (`ranked_*`), and
+//! reports memory per node through a counting global allocator.
 //!
 //! Run: `cargo bench -p strand-core --bench graph`. Results go in
 //! `docs/benchmarks.md`.
@@ -179,6 +180,66 @@ fn benches(c: &mut Criterion) {
     group.bench_function("idle_check", |b| {
         b.iter(|| black_box((g.rt.is_idle(), g.rt.next_deadline())))
     });
+
+    // The same graph once something declares a write edge: the rank map is
+    // no longer empty, so every recompute that changes its sources ranks
+    // the node after them. One handler writes a layer-0 signal (declared
+    // with `writes_to`, as the compiler does) and 100 effects read the
+    // written cell, so ranks reach into the graph.
+    let r = build(1);
+    let trigger = r.rt.signal(0i64);
+    let written = r.signals[0];
+    let writer = r.rt.effect(move |rt| written.set(rt, trigger.get(rt)?));
+    r.rt.reads_from(writer.id(), &[trigger.id()]).unwrap();
+    r.rt.writes_to(writer.id(), written.id()).unwrap();
+    for _ in 0..100 {
+        let e = r.rt.effect(move |rt| written.get(rt).map(|_| ()));
+        r.rt.reads_from(e.id(), &[written.id()]).unwrap();
+    }
+    r.rt.flush();
+    assert!(r.rt.rank(writer.id()) < r.rt.rank(written.id()));
+    let mut rng = Rng::new(42);
+    let mut v = 0i64;
+    group.bench_function("ranked_single_write_flush", |b| {
+        b.iter(|| {
+            let s = r.signals[1 + rng.below(r.signals.len() - 1)];
+            v += 1;
+            s.set(&r.rt, v).unwrap();
+            black_box(r.rt.flush());
+        })
+    });
+    let mut v = 0i64;
+    group.bench_function("ranked_full_fanout_flush", |b| {
+        b.iter(|| {
+            v += 1;
+            r.root.set(&r.rt, v).unwrap();
+            black_box(r.rt.flush());
+        })
+    });
+    // The handler write: the logic clock moves 100 ms per iteration, so
+    // the handler stays under the 30 writes/s guard (else this measures
+    // the throttled path, which writes nothing).
+    let mut v = 0i64;
+    let mut t = r.rt.now();
+    group.bench_function("ranked_handler_write_flush", |b| {
+        b.iter(|| {
+            v += 1;
+            t += Duration::from_millis(100);
+            trigger.set(&r.rt, v).unwrap();
+            black_box(r.rt.tick(t));
+        })
+    });
+    let before = r.rt.stats();
+    trigger.set(&r.rt, -1).unwrap();
+    r.rt.tick(t + Duration::from_millis(100));
+    let after = r.rt.stats();
+    assert_eq!(r.rt.untrack(|rt| written.get(rt)).unwrap(), -1);
+    assert!(
+        after.effect_runs - before.effect_runs > 100,
+        "the readers ran"
+    );
+    assert_eq!(after.reruns, before.reruns, "declared: every sink once");
+    assert_eq!(after.learned_edges, 0);
 
     group.sample_size(10);
     group.bench_function("build", |b| {

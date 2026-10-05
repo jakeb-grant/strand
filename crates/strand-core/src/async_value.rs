@@ -161,7 +161,21 @@ impl<T: Clone + PartialEq + 'static> Signal<Async<T>> {
     where
         F: Future<Output = Result<T, Error>> + 'static,
     {
+        self.load_from(rt, fut, false)
+    }
+
+    /// `load`; `reloaded`: the load was started by a reload
+    /// write upstream ([`Signal::set_reloaded`]), so its begin and its
+    /// result are reload writes too (`on change` handlers downstream take
+    /// them as their baseline).
+    fn load_from<F>(self, rt: &Runtime, fut: F, reloaded: bool) -> Result<Task, Error>
+    where
+        F: Future<Output = Result<T, Error>> + 'static,
+    {
         let id = self.begin(rt)?;
+        if reloaded {
+            rt.rebaseline_from(self.id);
+        }
         let mut guard = CancelGuard {
             cell: self,
             id,
@@ -172,7 +186,13 @@ impl<T: Clone + PartialEq + 'static> Signal<Async<T>> {
             let result = fut.await;
             guard.armed = false;
             match guard.rt.upgrade() {
-                Some(rt) => self.resolve(&rt, id, result).map(|_| ()),
+                Some(rt) => {
+                    let landed = self.resolve(&rt, id, result)?;
+                    if landed && reloaded {
+                        rt.rebaseline_from(self.id);
+                    }
+                    Ok(())
+                }
                 None => Ok(()),
             }
         }))
@@ -276,6 +296,10 @@ impl Runtime {
         let cell = self.signal(Async::empty());
         let mut running: Option<Task> = None;
         let effect = self.effect(move |rt| {
+            // Re-run by a reload write upstream: what this load writes,
+            // whenever it lands, is a reload write too, so `on change`
+            // handlers reading the value do not fire for it.
+            let reloaded = rt.current_writer().is_some_and(|me| rt.take_rebaseline(me));
             let input = input(rt);
             if let Some(task) = running.take() {
                 rt.cancel_quietly(task);
@@ -283,13 +307,16 @@ impl Runtime {
             match input {
                 Ok(a) => {
                     let fut = rt.untrack(|_| fetch(a));
-                    let task = cell.load(rt, fut)?;
+                    let task = cell.load_from(rt, fut, reloaded)?;
                     rt.set_quiet(task);
                     running = Some(task);
                 }
                 Err(e) => {
                     let id = cell.begin(rt)?;
                     cell.resolve(rt, id, Err(e))?;
+                    if reloaded {
+                        rt.rebaseline_from(cell.id());
+                    }
                 }
             }
             Ok(())

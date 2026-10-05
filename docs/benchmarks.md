@@ -29,8 +29,15 @@ shared with another build), criterion medians:
 | Idle check | `is_idle()` + `next_deadline()` | 20 ns |
 | Build | create 10k nodes + 522 watches, first compute | 3.4 ms |
 
-Wave 2 (core: sinks from a rank-ordered queue, woken tasks and events
-checked before each sink, ranks in a side map), same machine, medians:
+Wave 1 round 3 spot check (9d93dac: late `on change` phase, logic-step
+epoch, released suspensions): single write 1.45 ms, narrow path 1.63 µs,
+idle flush 61 ns, idle check 22 ns, memory 347 B / 5.5 allocations per
+node: unchanged within noise. Late `on change` handlers live in a side
+set, not a node flag, so the node slot stays the same size.
+
+Wave 2 (8a6c5ab, core: sinks from a rank-ordered queue, woken tasks and
+events checked before each sink, ranks in a side map), same machine,
+medians:
 
 | Case | Time |
 | --- | --- |
@@ -47,7 +54,7 @@ That is within 2–5% of round 3 on the propagation cases (the cost of a
 heap instead of one sort per batch, and of looking for woken handlers
 between sinks), with this machine's noise of a few percent.
 
-Wave 2 review round 1 (declared reads and the provisional phase, foreign
+Wave 2 review round 1 (915a084: declared reads and the provisional phase, foreign
 wakes kept apart, write edges in hash sets, held writes indexed, persist
 IO thread), same machine, medians (another agent shares the 4 CPUs; runs
 vary by up to 10–25% on the µs cases, the numbers are from quiet runs):
@@ -63,11 +70,104 @@ vary by up to 10–25% on the µs cases, the numbers are from quiet runs):
 | Build | 3.52 ms |
 | Memory | 347 B and 5.54 allocations per node (unchanged: "never ran" and declared reads live in side sets) |
 
-Round 3 spot check (late `on change` phase, logic-step epoch, released
-suspensions): single write 1.45 ms, narrow path 1.63 µs, idle flush 61 ns,
-idle check 22 ns, memory 347 B / 5.5 allocations per node: unchanged within
-noise. Late `on change` handlers live in a side set, not a node flag, so the
-node slot stays the same size.
+Review rounds 2 and 3 (77cf7be, 2eb240e) did not touch the flush hot path
+(settings files, persist hand-over, feedback-edge bookkeeping on
+`writes_to`/`reads_from`, and `is_idle`, measured above), so the round 1
+numbers stood for them.
+
+Wave 2 review round 4 (822905c, which adds the `ranked_*`
+cases: `Stats::reruns` / `learned_edges` counting, and `set_sources`
+skipping the rank walk when a source list did not change). Same machine,
+medians, measured while another agent was building on the shared CPUs:
+everything ran about 5–15% slower than the quiet round 1 runs. An A/B on
+this commit with the two new counters removed gave the same numbers
+within noise (single write 1.76 vs 1.66 ms, full fan-out 2.28 vs
+2.35 ms), so the difference is the machine and not the change.
+
+| Case | Time |
+| --- | --- |
+| Single write + flush | 1.68 ms |
+| Full fan-out + flush | 2.45 ms |
+| Narrow path + flush | 2.00 µs |
+| Equality cut-off + flush | 0.81 µs |
+| Idle flush | 44 ns |
+| Idle check | 7.4 ns |
+| Build | 4.0 ms |
+| Memory | 347 B and 5.54 allocations per node |
+
+**Ranked.** The cases above run with an empty rank map, the state before
+any handler declares or performs a write. Every real program leaves that
+state on its first handler write. `ranked_*` builds the same graph,
+then adds one effect that writes a layer-0 signal (declared with
+`writes_to`, as the compiler does) and 100 effects that read the written
+cell (declared with `reads_from`), so ranks reach into the graph.
+Measured in the same run:
+
+| Case | Time | vs. unranked |
+| --- | --- | --- |
+| Single write + flush (a signal other than the written one) | 1.71 ms | +1.5% |
+| Full fan-out + flush | 2.47 ms | +1.1% |
+| Handler write + tick (the writer, its 100 readers, ~6,900 memos and 520 changed watches; the clock moves 100 ms per iteration to stay under the 30 writes/s guard) | 2.16 ms | n/a |
+
+The bench asserts that the handler write runs every sink once
+(`reruns` unchanged) and learns no edge. Before `set_sources` skipped the
+rank walk for an unchanged source list, review round 4 measured the
+ranked fan-out at 3–10% over unranked (2.33–2.42 ms vs 2.18–2.35 ms).
+
+Wave 2 review round 6 (4440bd2: event deliveries and woken tasks are
+items of the ranked queue instead of being checked before every sink;
+`set_reloaded` marks; strict-edge reporting off by default). Full run,
+same machine, medians, under load from the other agent:
+
+| Case | Time |
+| --- | --- |
+| Single write + flush | 1.72 ms |
+| Full fan-out + flush | 2.38 ms |
+| Narrow path + flush | 2.21 µs |
+| Equality cut-off + flush | 0.93 µs |
+| Idle flush | 52 ns |
+| Idle check | 7.9 ns |
+| Ranked single write + flush | 1.92 ms |
+| Ranked full fan-out + flush | 2.53 ms |
+| Ranked handler write + tick | 2.21 ms |
+| Build | 3.96 ms |
+| Memory | 347 B and 5.54 allocations per node (unchanged) |
+
+An A/B on a quieter machine right after (criterion baseline of the
+previous commit, d3e29a5, then this one): narrow path 2.02 → 1.99 µs and
+cut-off 815 → 823 ns (unchanged within noise), idle flush 44.9 → 50.0 ns
+(+5 ns: the flush now drains the ready and event lists into its heap and
+clears the reload marks; still far below a frame).
+
+Wave 2 review round 7 (2ecfb76: each listener delivered at its own
+rank, handler reads tracked; b2a677a: persist queue indexed by file). The review asked about the
+ranked cases of round 6 (1.92 ms ranked single write against 1.72 ms
+unranked, +12%, where round 4 had +1.5%), which round 6's A/B had not
+covered. One session, back to back, criterion baseline of d3e29a5, then
+round 6 (5542c70) and this round against it, medians:
+
+| Case | d3e29a5 | Round 6 | Round 7 |
+| --- | --- | --- | --- |
+| Single write + flush | 1.75 ms | 1.75 ms | 1.83 ms |
+| Full fan-out + flush | 2.38 ms | 2.47 ms | 2.42 ms |
+| Narrow path + flush | 1.94 µs | 2.06 µs | 2.00 µs |
+| Equality cut-off + flush | 802 ns | 834 ns | 838 ns |
+| Idle flush | 45.3 ns | 49.1 ns | 49.1 ns |
+| Idle check | 8.0 ns | 7.6 ns | 11.1 ns |
+| Ranked single write + flush | 1.78 ms | 1.84 ms | 1.78 ms |
+| Ranked full fan-out + flush | 2.36 ms | 2.54 ms | 2.39 ms |
+| Ranked handler write + tick | 2.13 ms | 1.99 ms | 2.10 ms |
+| Build | 4.11 ms | 4.18 ms | 4.40 ms |
+| Memory | 347 B, 5.54 allocations per node | | 347 B, 5.54 allocations per node |
+
+Ranked against unranked in the same run: +1.5% (d3e29a5), +5.7%
+(round 6), −2.7% (round 7), so ranks cost what round 4 measured and the
++12% of round 6's table was the load at the time: the ranked heap holding
+deliveries and tasks costs nothing measurable when there are none (the
+bench has no listeners), and round 6's own ranked cases moved by −6% to
++7% against d3e29a5, both ways, with the noise of the shared machine.
+Round 7's idle check is about 3 ns slower (`is_idle` also looks at the
+listeners waiting for delivery).
 
 The "single write" case recomputes about half of this deliberately
 over-connected graph, so it measures fan-out twice; the narrow-path and
@@ -123,7 +223,7 @@ cheap to clone). The chain case is a 2,000-row cell feeding
 emitter that holds the last snapshot of each and reads `diffs_since` every
 tick (so every write to a list copies it once: the snapshot shares it).
 
-Measured 2026-10-05 (wave 2, core), same machine, criterion medians.
+Measured 2026-10-05 (wave 2, core, 1cf4c18), same machine, criterion medians.
 "Before" is wave 1 (linear key scans, O(n²) `keyed_diff`):
 
 | Case | Before | After |
@@ -142,12 +242,28 @@ Measured 2026-10-05 (wave 2, core), same machine, criterion medians.
 | `keyed_memo`, one row of a plain list changed + flush | 105 µs | 50 µs |
 | `keyed_memo`, plain list rotated by one + flush | 1.47 ms | 122 µs |
 
-Review round 1 re-run (held keyed copies rebase instead of being
+Review round 1 re-run (915a084: held keyed copies rebase instead of being
 superseded; the in-place path is unchanged), same machine: get by key
 10.2 ns, update by key 24.9 ns, `keyed_diff` identical 5.2 µs / one move
 76 µs / 10+10 39 µs / reversed 97 µs / shuffled 172 µs, chain update
 20.0 µs, remove + push 26.0 µs, move 25.7 µs, filter query change 358 µs,
 `keyed_memo` one row 52 µs, rotated 131 µs: unchanged within noise.
+
+Review round 6 re-run (4440bd2; the review asked for a re-run after the
+write-path changes of 77cf7be and 822905c, which this includes), as an
+A/B against d3e29a5 on the same machine, back to back, medians (before →
+after): get by key 11.2 → 11.5 ns, update by key 26.6 → 26.7 ns, chain
+update 22.9 → 22.7 µs, remove + push 28.6 → 29.3 µs, move 28.3 →
+29.1 µs, filter query change 410 → 401 µs, `keyed_memo` one row 58.5 →
+58.4 µs, rotated 144 → 143 µs; handler writing 500 / 1,000 / 2,000 /
+4,000 cells 43 / 88 / 184 / 429 µs → 42 / 84 / 183 / 445 µs, throttled
+60 / 130 / 287 / 798 µs → 59 / 122 / 311 / 822 µs. Unchanged within
+noise (changes go both ways, −12% to +12%, on cases this round did not
+touch). Against the round 1 table the machine itself is slower today:
+`keyed_diff`, whose code has not changed since 915a084, measured
+5.6 µs identical / 102 µs one move / 69 µs 10+10 / 127 µs reversed /
+210 µs shuffled in the same session (round 1: 5.2 / 76 / 39 / 97 /
+172 µs).
 
 ### One handler writing a cell per row
 
@@ -197,3 +313,27 @@ What changed:
 
 Every case is far inside a 16 ms frame; scrolling itself writes nothing to
 the list.
+
+## Persisted cells, 2,000 rows (wave 2 review round 7)
+
+`cargo bench -p strand-core --bench persist`
+(`crates/strand-core/benches/persist.rs`): a list whose items each persist
+a field under an instance-qualified path (`list[<i>].x`), files present,
+mounted and unmounted in one runtime (a live reload, or a long list
+scrolled in and out). Mount creates the cells (reading every file) and
+flushes; unmount disposes them and flushes. Medians, review round 7
+(b2a677a), A/B against the previous commit (2ecfb76) on the same machine:
+
+| Rows | Mount before | Mount after | Unmount before | Unmount after |
+| --- | --- | --- | --- | --- |
+| 500 | 22.7 ms | 2.9 ms | 10.3 ms | 0.62 ms |
+| 1,000 | 65.7 ms | 5.9 ms | 36.9 ms | 1.36 ms |
+| 2,000 | 132 ms | 13.9 ms | 128 ms | 3.1 ms |
+
+Before, every load, claim, release and write scanned the store's queue
+(a list holding a touch per claimed file) under the lock the IO thread
+takes: quadratic, 8 frames to unmount 2,000 rows. The queue is now
+indexed by file and a claim or release no longer queues a touch for a
+file the store touched or wrote in the last day: linear. Mount is now
+dominated by reading 2,000 files on the logic thread (about 7 µs each),
+a frame for 2,000 rows; unmount is under a frame.

@@ -12,6 +12,7 @@ file fixes boundaries; each crate is free inside its own boundary.
 | Compiler worker | `strand-compiler` | Parse, check, lower changed modules off-thread | Mutate live state (it hands a compiled `Program` to logic) |
 | Text worker | `strand-text` | parley shaping, swash rasterisation, per-scale glyph atlases | Block render: a painted surface keeps drawing its last layout (or a realigned stand-in from another scale or width) until the new one arrives |
 | Watcher | `strand-watch` | inotify, portal, IPC socket | Parse files (it sends paths and hashes) |
+| Persist IO (one per `PersistStore`) | `strand-core` | Atomic writes of persisted cells, settings-file edits, settings overlays and last-good snapshots; reports each file it is about to change to `PersistStore::on_written` | Run on the logic tick or block logic (failures come back as diagnostics in a later tick) |
 | Services | `strand-services` | tokio current-thread runtime; PipeWire and toplevel get their own threads | Block logic: they send state diffs and events |
 
 Channels are the only coupling between threads. Logic → render is one
@@ -308,12 +309,36 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   edge to the value itself; the VM declares the input's read set on
   `memo.effect_id()` and readers declare `memo.id()`. For `on change …
   after T` (`Debounced`), the tracked expression's reads go on `d.effect`
-  and the body's writes on `d.timer`. Tasks woken from other threads (IO and
-  D-Bus replies) are polled at the start of the next flush, never between
-  sinks. Tasks that event listeners spawn (`on click`, `on
-  notifications.received`) are polled as soon as the listeners ran,
-  before the next sink, so a sink reading what such a handler writes
-  synchronously runs after it, once.
+  and the body's writes on `d.timer`. Listeners and woken tasks are
+  ranked like sinks: an emit is handed to every live listener of the
+  queue as soon as the flush sees it, and each listener is delivered at
+  its own rank (each gets its events in emit order; listeners of one
+  queue are not delivered together), a task at its own or its writer's
+  rank, so a listener declared to read a cell a handler (an effect, or
+  another listener of the same event) writes in the same flush sees the
+  final value, and the readers of what a listener writes run after it;
+  at one rank, woken tasks run before listeners, listeners before sinks.
+  A listener's body and a task's polls are tracked without subscribing:
+  a read not declared on the listener (for a task, on its handler) is
+  learned (it ranks the handler from then on) and reported in strict
+  mode. Tasks woken from other threads (IO and D-Bus replies) are polled
+  at the start of the next flush, never between sinks.
+  Reload writes: the reconciler adopts a changed `state` default (and
+  makes any other reload-driven change to a live cell) with
+  `signal.set_reloaded(rt, v)`, not `set`: the value changes as usual, but
+  every `on change` / `on_change_after` / `on_change_keyed` handler
+  downstream of the cell takes it as its new baseline in the next flush
+  instead of firing, and a debounce is not restarted ("`on change` fires
+  on changes, never at boot or reload"). `Persisted::redeclare`, the
+  persist hand-over to a waiting cell, `Persisted::reset_reloaded`
+  (`@reset`) and `Settings::redeclare` use it; the overlay's `[reset]`
+  (`Persisted::reset`) and file reloads of a settings file are ordinary
+  writes. For a keyed collection the reload write is
+  `xs.replace_all_reloaded(rt, values)` (a keyed diff, by key, as a
+  reload write). A load an `rt.async_memo` starts because of a reload
+  write lands as a reload write too, whenever it resolves; a value a
+  handler (timer, listener) copies from a reloaded cell into another
+  cell is an ordinary write.
   Service events are `EventQueue`s. Keyed collection writes from
   graph-triggered handlers are rate-guarded too (wave 2): a throttled
   handler writes to a held copy (with the list it started from) whose
@@ -357,13 +382,47 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   and the calls the reconciler makes: on a reload that changes the
   declared default, `persisted.redeclare(rt, new_default)` (adopt if the
   value still holds the old default, else keep it, report once and
-  re-stamp; returns `Redeclared`), and for `@reset` / the overlay's
-  `[reset]`, `persisted.reset(rt)` (cancels a pending or queued write,
-  removes the file, sets the default). Warnings arrive as
+  re-stamp; returns `Redeclared`), for `@reset` at reload
+  `persisted.reset_reloaded(rt)` and for the overlay's `[reset]`
+  `persisted.reset(rt)` (both cancel a pending or queued write, remove the
+  file and set the default; the first is a reload write that `on change`
+  handlers take as their baseline, the second the user's write). An
+  adopted default and a hand-over to a waiting cell are reload writes too
+  (`Signal::set_reloaded`). Warnings arrive as
   `Diagnostic::PersistDefaultChanged` / `Diagnostic::PersistFailed` (write
   failures in a later tick, with a wake-hook call; `rt.is_idle()` is false
-  while one waits to be reported). `rt.shutdown()` waits (bounded) for
-  queued writes.
+  while one waits to be reported). A write is never lost to the debounce:
+  unmount, `rt.shutdown()` and dropping the last `Runtime` handle read the
+  cell's live value and queue it, even when the owner went in the same
+  tick as the write; `rt.shutdown()` waits (bounded) for queued writes.
+  A write that fails is written again on the cell's next change or
+  capture. Files of instance-qualified paths (a `[` in the path:
+  `list[<key>].x`, `bar[<monitor>].x`) that no cell has claimed for 90
+  days (`PERSIST_RETENTION`), and quarantined copies that old, are
+  removed when the store is dropped at exit and once a day while it runs
+  (`PERSIST_SWEEP_INTERVAL`), so per-key files do not pile up; a plain
+  declared path (`bar.level`) never expires, however long its component
+  stays unmounted; `PersistStore::save`/`remove` are for offline tools (a
+  live cell on the path does not see them). `state xs: [T] key f = [...]
+  persist` is `rt.persisted_keyed(&store, path, default_keyed_vec, encode,
+  decode)`: `encode` writes the list's values, `decode` returns them as a
+  `Vec<T>` and the list is rebuilt with the default's key function; the
+  `PersistedKeyed` handle (`cell: KeyedSignal`, `restored`) has the same
+  `redeclare` (taking the new default `KeyedVec`), `reset_reloaded` and
+  `reset`, all applied by key.
+- Strand's own writes, for the watcher (wave 2):
+  `persist_store.on_written(|w: &OwnWrite| ..)` (also on
+  `SettingsStore`: one observer slot per IO thread, so setting it on
+  either replaces the other) runs on the persist IO thread (and on the
+  caller of `PersistStore::save`/`remove`, which must then not call
+  `save`, `remove` or `sync`; a panic removes the observer) for every file it is
+  about to replace or remove, with `w.path` (as queued: the declared
+  settings path, an overlay, a snapshot or a cell file), `w.target` (symlinks
+  followed, canonical directory) and `w.content` (the exact new bytes, or
+  `None` for a removal), after the temp file is complete and before the
+  rename makes it visible. The binary hashes `content` (BLAKE3) and hands
+  the hash to `strand-watch` as pre-registered for `target`, so the
+  watcher's no-op check stops there.
 - `state prefs from "prefs.toml" { accent: color = #7aa2f7; … }` is
   `rt.settings_file(&settings_store, path, fields)` (wave 2,
   `strand_core::settings`): `settings_store` is
@@ -398,7 +457,7 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   only where nothing set the field; a changed `FieldSpec::with_type` type
   resets that field; added fields are read, removed ones disposed); and
   several handles on one declared file (one per mounted instance) adopt
-  each other's writes in the same tick. Off-thread reads: see
+  each other's writes in the same tick. Watcher hand-off: see
   `strand-watch` below.
 
 ### `strand-compiler`
@@ -432,20 +491,41 @@ Public interfaces other crates and later stages build on:
   empty) and every assignment and `emit` with `rt.writes_to(handler,
   target)` as nodes are created, so effects run once per flush in
   topological order from the first flush on; read keyed collections with
-  `with`/`with_untracked`/`get_key` instead of holding `KeyedVec` clones;
+  `with`/`with_untracked`/`get_key` instead of holding `KeyedVec` clones
+  (derived collections, `KeyedMemo`, have the same three reads over an
+  Rc-shared slice; they keep no key index, so their `get_key` is an O(n)
+  scan, fine once per event, not inside a loop over the rows);
+  check the lowering in tests: after lowering real fixtures and running a
+  few flushes, `rt.stats().learned_edges` (edges nobody declared) and
+  `rt.stats().reruns` (sinks run twice in one flush) are 0 unless the
+  program has a feedback edge; or turn on `rt.set_strict_edges(true)` in
+  the VM's and compiler's test runtimes (and in debug builds), which
+  reports every learned edge once as `Diagnostic::UndeclaredWrite {
+  writer, target }` / `Diagnostic::UndeclaredRead { reader, source }`, so
+  any fixture fails loudly on a missing declaration;
   `writes_to` answering `WriteEdge::Feedback` is not an error (a
   self-normalising handler is valid; only a static cycle among `let`s is a
   load error); for `let x = svc.call(input)` declare the input's reads on
   `memo.effect_id()`, for `on change … after T` the tracked reads on
   `d.effect` and the body's writes on `d.timer`;
   create persisted cells with an instance-qualified path and keep the
-  `Persisted` handle for `redeclare` (reload) and `reset` (`@reset`);
+  `Persisted` handle for `redeclare` (reload), `reset_reloaded` (`@reset`)
+  and `reset` (the overlay's `[reset]`), and `rt.persisted_keyed` /
+  `PersistedKeyed` for a persisted keyed collection; adopt any other
+  changed `state` default (and apply `@reset` to a non-persisted one)
+  with `signal.set_reloaded(rt, v)`, or `xs.replace_all_reloaded(rt,
+  values)` for a keyed collection;
+  node closures use their `rt` parameter or a `WeakRuntime`
+  (`rt.downgrade()`), never a captured `Runtime` clone: that is an `Rc`
+  cycle, so neither dropping the last handle nor a persisted cell's
+  writer ever runs, and debounced values are lost silently; the binary
+  calls `rt.shutdown()` on exit signals (SIGTERM, SIGINT) and on a normal
+  exit, before dropping the stores;
   lower `state x from "file.toml" { typed fields }` to
   `rt.settings_file(&store, resolved_path, fields)` with one `FieldSpec`
   per field from the checked schema (the type's decode and encode over
   `toml_edit::Item`, the declared default), keep the `Settings` handle,
-  call `reload` (or `reload_with`, see `strand-watch`) when the watcher
-  reports the file, call `redeclare` when a reload changes the
+  call `reload` when the watcher reports the file (see `strand-watch`), call `redeclare` when a reload changes the
   declaration, pass each field's type name with `FieldSpec::with_type`,
   and give its path to the watcher. See the `strand-core` section.
   How the compiler meets this: `lower::reads` computes every chunk's
@@ -1077,16 +1157,22 @@ It does not depend on `strand-compiler` or `strand-core`.
   on `strand-watch` for `EventSink` and `CompositorEvent`; `strand-watch`
   depends on neither `strand-services` nor `strand-core`.
 
-Settings files (fixed in wave 2 by `strand-core`): the watcher should not
-read a settings file twice or parse it on the logic thread. For each
-declared file it holds the `SettingsSources` from `Settings::sources()`
-(`Send`, cheap to clone). On a change event, on its own thread: `let m =
-sources.mark()` (Strand's own writes done or queued; must come *before*
-reading the bytes), read the bytes, hash them (an unchanged hash, such as
-Strand's own write, stops here), then `sources.read_from(m, Ok(text))`
-(also reads the overlay and probes writability) and post the
-`SettingsRead` to the logic thread, which calls
-`settings.reload_with(rt, read)` and only decodes. Strand's temp files next
+Settings files (fixed in wave 2 by `strand-core`; the Threads table holds:
+the watcher reads and hashes, it never parses). On a change event the
+watcher hashes the file (BLAKE3). An unchanged hash stops there, and that
+includes Strand's own writes: the binary registers
+`persist_store.on_written(..)` and passes the hash of each `OwnWrite`'s
+`content` to the watcher as pre-registered for its `target` (and its
+`path`, when that is a link), before the rename makes the content
+visible, so the change event finds the hash already known. A changed hash
+goes to the logic thread as (path, hash), and the logic thread calls
+`settings.reload(rt)` on every `Settings` handle declared on that path.
+`reload` takes the write mark before it reads, so a write of Strand's
+that lands meanwhile is never undone. `Settings::sources()`,
+`SettingsSources::read_from` and `Settings::reload_with` stay available
+for a thread that is allowed to parse, such as the compiler worker, in
+case reading on the logic thread ever shows up in a profile. The watcher
+does not call them. Strand's temp files next
 to a settings file are named `.<name>.tmp.<pid>.<n>` (renamed over the file:
 the watcher sees `MOVED_TO` for the file itself); its scratch-name filter
 should ignore that pattern, as it does editors' scratch names.

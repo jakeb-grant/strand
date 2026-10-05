@@ -13,7 +13,9 @@
 //!   first, so an owner re-running disposes what it owns before that runs);
 //! * a cell or event queue written by a handler ranks above it
 //!   (`rank(cell) >= rank(writer) + 1`), and an event queue's listeners
-//!   rank with it;
+//!   rank with it or above (a listener also ranks with what it reads);
+//!   each listener is delivered at its own rank, a woken task polled at
+//!   its own or its writer's rank;
 //! * `on change` handlers start at [`LATE_RANK`]: they run after every
 //!   ordinary sink has settled, so one outside write fires them once with
 //!   the final values.
@@ -47,7 +49,7 @@
 //! its remaining edges need.
 
 use crate::error::Error;
-use crate::runtime::{NodeId, NodeKind, Runtime};
+use crate::runtime::{Diagnostic, NodeId, NodeKind, Runtime};
 
 /// What a declared or learned write edge became ([`Runtime::writes_to`],
 /// [`Runtime::write_edge`]).
@@ -79,13 +81,18 @@ pub(crate) struct Writes {
     feedback: foldhash::HashSet<NodeId>,
 }
 
-/// Declared read edges ([`Runtime::reads_from`]), both directions.
+/// Declared read edges ([`Runtime::reads_from`]), both directions, and
+/// the reads of handlers learned while they ran (a listener or a handler's
+/// task reads without subscribing, so its read edges are kept here).
 #[derive(Default)]
 pub(crate) struct Declared {
-    /// Reader -> the sources it declared.
+    /// Reader -> the sources it declared (or was seen reading).
     sources: foldhash::HashMap<NodeId, Vec<NodeId>>,
     /// Source -> the readers that declared it.
     readers: foldhash::HashMap<NodeId, foldhash::HashSet<NodeId>>,
+    /// Readers in `sources` only through learned reads (they never called
+    /// [`Runtime::reads_from`]).
+    learned_only: foldhash::HashSet<NodeId>,
 }
 
 impl Declared {
@@ -94,9 +101,24 @@ impl Declared {
     }
     pub(crate) fn declares(&self, reader: NodeId) -> bool {
         self.sources.contains_key(&reader)
+            && (self.learned_only.is_empty() || !self.learned_only.contains(&reader))
+    }
+    fn add(&mut self, reader: NodeId, sources: &[NodeId]) {
+        let list = self.sources.entry(reader).or_default();
+        for &s in sources {
+            if s != reader && !list.contains(&s) {
+                list.push(s);
+            }
+        }
+        for &s in sources {
+            if s != reader {
+                self.readers.entry(s).or_default().insert(reader);
+            }
+        }
     }
     /// Forget a disposed node.
     pub(crate) fn forget(&mut self, n: NodeId) {
+        self.learned_only.remove(&n);
         if let Some(sources) = self.sources.remove(&n) {
             for s in sources {
                 if let Some(r) = self.readers.get_mut(&s) {
@@ -227,20 +249,60 @@ impl Runtime {
         }
         {
             let mut declared = self.inner.declared.borrow_mut();
-            let list = declared.sources.entry(reader).or_default();
-            for &s in sources {
-                if s != reader && !list.contains(&s) {
-                    list.push(s);
-                }
-            }
-            for &s in sources {
-                if s != reader {
-                    declared.readers.entry(s).or_default().insert(reader);
-                }
-            }
+            declared.learned_only.remove(&reader);
+            declared.add(reader, sources);
         }
         self.rank_after_sources(reader);
         Ok(())
+    }
+
+    /// A handler that is scheduled by rank rather than by observer edges
+    /// (a listener; a task, through its handler) read `sources` while it
+    /// ran: keep the reads it had not declared as read edges, so it ranks
+    /// with them from now on (the first delivery may have seen a value
+    /// its writer had not yet written), and count and report them like a
+    /// sink's undeclared reads ([`Runtime::set_strict_edges`]) if it
+    /// declared its reads.
+    pub(crate) fn learn_reads(&self, reader: NodeId, sources: &[NodeId]) {
+        if sources.is_empty() || !self.exists(reader) {
+            return;
+        }
+        let (new, declared_reads): (Vec<NodeId>, bool) = {
+            let declared = self.inner.declared.borrow();
+            let list = declared.sources.get(&reader).map_or(&[][..], Vec::as_slice);
+            let new = if list.len() > 16 && sources.len() > 16 {
+                let set: foldhash::HashSet<NodeId> = list.iter().copied().collect();
+                sources
+                    .iter()
+                    .filter(|&&s| s != reader && !set.contains(&s))
+                    .copied()
+                    .collect()
+            } else {
+                sources
+                    .iter()
+                    .filter(|&&s| s != reader && !list.contains(&s))
+                    .copied()
+                    .collect()
+            };
+            (new, declared.declares(reader))
+        };
+        if new.is_empty() {
+            return;
+        }
+        if declared_reads {
+            self.bump(|s| s.learned_edges += new.len() as u64);
+            for &source in &new {
+                self.report_learned(reader, source, false);
+            }
+        }
+        {
+            let mut declared = self.inner.declared.borrow_mut();
+            if !declared.sources.contains_key(&reader) {
+                declared.learned_only.insert(reader);
+            }
+            declared.add(reader, &new);
+        }
+        self.rank_after_sources(reader);
     }
 
     /// A handler is writing `target` during a flush: queue the write edge
@@ -279,6 +341,10 @@ impl Runtime {
         self.inner.learn_seen.borrow_mut().clear();
         for (writer, target) in queue {
             if self.exists(writer) && self.exists(target) {
+                if self.write_edge(writer, target).is_none() {
+                    self.bump(|s| s.learned_edges += 1);
+                    self.report_learned(writer, target, true);
+                }
                 self.learn(writer, target);
             }
         }
@@ -306,6 +372,75 @@ impl Runtime {
         }
         w.prune(self);
         ok
+    }
+
+    /// `id`'s sources changed: count the ones it did not declare, if it
+    /// declared its reads ([`Stats::learned_edges`](crate::Stats)).
+    pub(crate) fn count_undeclared_reads(&self, id: NodeId) {
+        let declared = self.inner.declared.borrow();
+        if !declared.declares(id) {
+            return;
+        }
+        let Some(list) = declared.sources.get(&id) else {
+            return;
+        };
+        let nodes = self.inner.nodes.borrow();
+        let Some(n) = nodes.get(id) else { return };
+        let undeclared: Vec<NodeId> = if list.len() > 16 && n.sources.len() > 16 {
+            let set: foldhash::HashSet<NodeId> = list.iter().copied().collect();
+            n.sources
+                .iter()
+                .filter(|s| !set.contains(s))
+                .copied()
+                .collect()
+        } else {
+            n.sources
+                .iter()
+                .filter(|s| !list.contains(s))
+                .copied()
+                .collect()
+        };
+        drop(nodes);
+        drop(declared);
+        if !undeclared.is_empty() {
+            self.bump(|s| s.learned_edges += undeclared.len() as u64);
+            for source in undeclared {
+                self.report_learned(id, source, false);
+            }
+        }
+    }
+
+    /// Strict edges: report a learned edge once
+    /// ([`Diagnostic::UndeclaredWrite`] / [`Diagnostic::UndeclaredRead`]).
+    fn report_learned(&self, node: NodeId, other: NodeId, write: bool) {
+        if !self.inner.strict_edges.get()
+            || !self.inner.strict_seen.borrow_mut().insert((node, other))
+        {
+            return;
+        }
+        self.diagnose(if write {
+            Diagnostic::UndeclaredWrite {
+                writer: node,
+                target: other,
+            }
+        } else {
+            Diagnostic::UndeclaredRead {
+                reader: node,
+                source: other,
+            }
+        });
+    }
+
+    /// Report every edge the runtime has to learn as a diagnostic
+    /// ([`Diagnostic::UndeclaredWrite`], [`Diagnostic::UndeclaredRead`]),
+    /// once per edge, in the tick it is learned: what
+    /// [`Stats::learned_edges`](crate::Stats) counts, made loud. Off by
+    /// default; the VM's and compiler's test suites turn it on, so every
+    /// fixture fails on a missing `reads_from`/`writes_to` declaration
+    /// without asserting the counters. A debug build of the binary may turn
+    /// it on too (the overlay then shows a lowering bug).
+    pub fn set_strict_edges(&self, on: bool) {
+        self.inner.strict_edges.set(on);
     }
 
     /// `id` was just created by (or moved to) `owner`: it ranks no lower.

@@ -1130,3 +1130,123 @@ fn redeclare_keeps_a_live_value_the_broken_file_could_not_take() {
     assert_eq!(get(&rt, &s, "compact"), V::Bool(true));
     assert_eq!(get(&rt, &s, "dense"), V::Bool(true));
 }
+
+#[test]
+fn own_writes_are_reported_with_the_bytes_that_land() {
+    // The watcher pre-registers the hash of Strand's own writes ("Live
+    // reload" step 2): the observer gets each file's exact new content
+    // before it becomes visible.
+    use std::sync::{Arc, Mutex};
+    type Seen = Vec<(PathBuf, PathBuf, Option<Vec<u8>>)>;
+    let tmp = TempDir::new("own-writes");
+    let dotfiles = tmp.0.join("dotfiles");
+    fs::create_dir_all(&dotfiles).unwrap();
+    let real = dotfiles.join("prefs.toml");
+    fs::write(&real, "# mine\ncompact = false\n").unwrap();
+    let link = tmp.config("prefs.toml");
+    symlink("../dotfiles/prefs.toml", &link).unwrap();
+    let seen: Arc<Mutex<Seen>> = Arc::default();
+    let rt = Runtime::new();
+    let store = tmp.store();
+    let log = seen.clone();
+    store.on_written(move |w| {
+        // Not visible yet: the rename comes after the observer.
+        if let Some(c) = w.content {
+            assert_ne!(fs::read(w.target).ok().as_deref(), Some(c));
+        }
+        log.lock().unwrap().push((
+            w.path.to_path_buf(),
+            w.target.to_path_buf(),
+            w.content.map(<[u8]>::to_vec),
+        ));
+    });
+    let s = prefs(&rt, &store, &link);
+    rt.flush();
+    let d = write(
+        &rt,
+        &s,
+        &store,
+        "compact",
+        V::Bool(true),
+        Duration::from_millis(10),
+    );
+    assert!(d.is_empty(), "{d:?}");
+    let on_disk = fs::read(&real).unwrap();
+    assert_eq!(on_disk, b"# mine\ncompact = true\n");
+    let seen = seen.lock().unwrap();
+    let own: Vec<_> = seen.iter().filter(|(p, _, _)| *p == link).collect();
+    assert_eq!(own.len(), 1, "{seen:?}");
+    assert_eq!(
+        own[0].1,
+        fs::canonicalize(&real).unwrap(),
+        "the target, symlinks followed"
+    );
+    assert_eq!(own[0].2.as_deref(), Some(&on_disk[..]));
+    // Every other file it wrote (the last-good snapshot) is reported with
+    // what is on disk too: the last report per file is its content now.
+    let mut last = std::collections::HashMap::new();
+    for (_, target, content) in seen.iter() {
+        last.insert(target.clone(), content.clone());
+    }
+    assert!(last.len() >= 2, "{seen:?}");
+    for (target, content) in last {
+        assert_eq!(fs::read(&target).ok(), content, "{target:?}");
+    }
+}
+
+#[test]
+fn a_field_written_in_the_mount_tick_is_saved_after_the_debounce() {
+    let tmp = TempDir::new("mount-write");
+    let file = tmp.config("prefs.toml");
+    let rt = Runtime::new();
+    let store = tmp.store();
+    let s = prefs(&rt, &store, &file);
+    // Written before the saver's first tracking run.
+    s.set(&rt, "compact", V::Bool(true)).unwrap();
+    rt.flush();
+    rt.tick(PERSIST_DEBOUNCE + Duration::from_millis(16));
+    assert!(store.sync(Duration::from_secs(5)));
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        "compact = true\n",
+        "saved without an unmount"
+    );
+    rt.shutdown();
+}
+
+#[test]
+fn redeclare_does_not_fire_on_change() {
+    let tmp = TempDir::new("redeclare-on-change");
+    let file = tmp.config("prefs.toml");
+    let rt = Runtime::new();
+    let store = tmp.store();
+    let s = prefs(&rt, &store, &file);
+    let compact = s.signal("compact").unwrap();
+    let fired = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let seen = fired.clone();
+    rt.on_change(
+        move |rt| compact.get(rt),
+        move |_, v| {
+            seen.borrow_mut().push(v.clone());
+            Ok(())
+        },
+    );
+    rt.flush();
+    // A live reload adopts a new default: not a change.
+    s.redeclare(&rt, vec![color("accent", "#7aa2f7"), flag("compact", true)]);
+    rt.flush();
+    assert_eq!(get(&rt, &s, "compact"), V::Bool(true));
+    // A type change resets the field: not a change either.
+    s.redeclare(
+        &rt,
+        vec![color("accent", "#7aa2f7"), color("compact", "#000000")],
+    );
+    rt.flush();
+    assert_eq!(get(&rt, &s, "compact"), V::Color("#000000".into()));
+    assert!(fired.borrow().is_empty(), "{:?}", fired.borrow());
+    // A write is.
+    s.set(&rt, "compact", V::Color("#111111".into())).unwrap();
+    rt.flush();
+    assert_eq!(*fired.borrow(), vec![V::Color("#111111".into())]);
+    rt.shutdown();
+}

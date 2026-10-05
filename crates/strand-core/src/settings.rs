@@ -45,9 +45,11 @@
 //!   once per monitor): each has its own signals, and a write through one
 //!   is adopted by the others in the same tick, without a reload.
 //!
-//! The watcher calls [`Settings::reload`] when the file changes, or reads
-//! on its own thread with [`SettingsSources`] and hands the result to
-//! [`Settings::reload_with`], so the logic thread only decodes. A reload
+//! The logic thread calls [`Settings::reload`] when the watcher reports a
+//! changed hash (the watcher never parses; Strand's own writes reach it as
+//! pre-registered hashes through [`SettingsStore::on_written`]). A thread
+//! allowed to parse can instead read with [`SettingsSources`] and hand the
+//! result to [`Settings::reload_with`], so the logic thread only decodes. A reload
 //! never undoes a write of Strand's own that may not be in what it read
 //! (still queued, in flight, or written after the read began), and leaves a
 //! field the user wrote since the last write-out alone (that write is
@@ -67,8 +69,8 @@ use toml_edit::{DocumentMut, Item};
 
 use crate::error::Error;
 use crate::persist::{
-    FailSink, PERSIST_DEBOUNCE, PersistError, PersistStore, create_private_dir, escape_name,
-    io_error, quarantine, quarantine_path, sweep_temps, temp_next_to,
+    FailSink, Observers, PERSIST_DEBOUNCE, PersistError, PersistStore, create_private_dir,
+    escape_name, io_error, quarantine, quarantine_path, sweep_temps, temp_next_to,
 };
 use crate::runtime::{Diagnostic, NodeId, Runtime};
 use crate::signal::Signal;
@@ -108,6 +110,18 @@ impl SettingsStore {
             io: PersistStore::new(dir.clone()),
             dir,
         }
+    }
+
+    /// [`PersistStore::on_written`] for the IO thread this store writes
+    /// through. It is the same single observer slot as that
+    /// `PersistStore`'s (the one this store was made from with
+    /// [`PersistStore::settings`] or [`SettingsStore::sharing`]): it sees
+    /// every file that IO thread writes or removes (settings files,
+    /// overlays, last-good snapshots *and* persisted cells), and setting it
+    /// here replaces an observer set on the `PersistStore`, and the
+    /// reverse. Register one observer per IO thread.
+    pub fn on_written(&self, f: impl Fn(&crate::persist::OwnWrite<'_>) + Send + Sync + 'static) {
+        self.io.on_written(f);
     }
 
     /// A store keeping overlays in `dir` and writing through `io`'s thread
@@ -378,7 +392,8 @@ impl SettingsJob {
 }
 
 /// Run a settings job on the IO thread; it reports its own outcome.
-pub(crate) fn perform(key: &Path, job: &SettingsJob) {
+pub(crate) fn perform(key: &Path, job: &SettingsJob, observe: &Observers<'_>) {
+    let edit_toml = |path: &Path, edits: &[Edit], mode| edit_toml(path, edits, mode, observe);
     match &job.target {
         Target::Snapshot => {
             let _ = edit_toml(key, &job.edits, Mode::Snapshot);
@@ -479,7 +494,7 @@ fn apply_edits(doc: &mut DocumentMut, edits: &[Edit]) {
                 doc.remove(name);
             }
             Some(new) => match doc.get_mut(name) {
-                Some(old) => {
+                Some(old) if old.is_value() => {
                     let decor = old.as_value().map(|v| v.decor().clone());
                     match (decor, new.clone()) {
                         (Some(decor), Item::Value(mut v)) => {
@@ -488,6 +503,13 @@ fn apply_edits(doc: &mut DocumentMut, edits: &[Edit]) {
                         }
                         (_, new) => *old = new,
                     }
+                }
+                // A table (or array of tables) the user wrote under that
+                // name: replaced as a new key, with the key's default
+                // spacing (its own decor belongs to a `[header]`).
+                Some(_) => {
+                    doc.remove(name);
+                    doc.insert(name, new.clone());
                 }
                 None => {
                     doc.insert(name, new.clone());
@@ -502,7 +524,12 @@ fn apply_edits(doc: &mut DocumentMut, edits: &[Edit]) {
 /// target's permissions), `fsync`, rename, directory `fsync`. Strand's own
 /// files (overlay, snapshot) live in a private directory and are removed
 /// once they hold nothing.
-fn edit_toml(path: &Path, edits: &[Edit], mode: Mode) -> Result<Option<Quarantined>, EditError> {
+fn edit_toml(
+    path: &Path,
+    edits: &[Edit],
+    mode: Mode,
+    observe: &Observers<'_>,
+) -> Result<Option<Quarantined>, EditError> {
     let target = resolve_links(path);
     if mode == Mode::File && probe_read_only(&target) {
         return Err(EditError::ReadOnly);
@@ -520,6 +547,7 @@ fn edit_toml(path: &Path, edits: &[Edit], mode: Mode) -> Result<Option<Quarantin
             match mode {
                 Mode::File => return Err(EditError::Syntax(e.to_string())),
                 Mode::Overlay => {
+                    observe.report(path, &target, None);
                     quarantine(&target);
                     quarantined = Some(Quarantined {
                         moved_to: quarantine_path(&target),
@@ -540,6 +568,10 @@ fn edit_toml(path: &Path, edits: &[Edit], mode: Mode) -> Result<Option<Quarantin
     } else {
         create_private_dir(&dir).map_err(EditError::Io)?;
         if doc.is_empty() {
+            // Not `exists()`, which follows a link.
+            if fs::symlink_metadata(&target).is_ok() {
+                observe.report(path, &target, None);
+            }
             return match fs::remove_file(&target) {
                 Ok(()) => Ok(quarantined),
                 Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(quarantined),
@@ -548,13 +580,15 @@ fn edit_toml(path: &Path, edits: &[Edit], mode: Mode) -> Result<Option<Quarantin
         }
     }
     let temp = temp_next_to(&dir, &target);
+    let content = doc.to_string();
     let written = (|| {
         let mut f = fs::File::create(&temp)?;
         if let Ok(m) = fs::metadata(&target) {
             f.set_permissions(m.permissions())?;
         }
-        f.write_all(doc.to_string().as_bytes())?;
+        f.write_all(content.as_bytes())?;
         f.sync_all()?;
+        observe.report(path, &target, Some(content.as_bytes()));
         fs::rename(&temp, &target)
     })();
     if let Err(e) = written {
@@ -1003,8 +1037,10 @@ impl<V: Clone + PartialEq + 'static> Inner<V> {
     }
 
     /// Give the signal its layers' value, unless the user wrote it since
-    /// (that write is saved next).
-    fn show(&self, rt: &Runtime, f: &Field<V>, force: bool) {
+    /// (that write is saved next). `reload`: a live reload's redeclare (an
+    /// adopted default, a type reset), a reload write that `on change`
+    /// handlers take as their baseline ([`Signal::set_reloaded`]).
+    fn show(&self, rt: &Runtime, f: &Field<V>, force: bool, reload: bool) {
         let eff = f.effective();
         let Ok(cur) = f.signal.get_untracked(rt) else {
             return;
@@ -1018,7 +1054,12 @@ impl<V: Clone + PartialEq + 'static> Inner<V> {
         // left stale is not mistaken for a user write.
         if rt.check_write_allowed(f.signal.id()).is_ok() {
             rt.note_write(f.signal.id());
-            if f.signal.set_raw(rt, eff.clone()).is_ok() {
+            let set = if reload {
+                f.signal.set_reloaded(rt, eff.clone())
+            } else {
+                f.signal.set_raw(rt, eff.clone())
+            };
+            if set.is_ok() {
                 f.shown.replace(eff);
             }
         }
@@ -1163,7 +1204,7 @@ impl<V: Clone + PartialEq + 'static> Sibling for Inner<V> {
                 f.file.replace(v);
                 f.file_seq.set(seq);
             }
-            self.show(rt, &f, false);
+            self.show(rt, &f, false, false);
         }
     }
 }
@@ -1302,7 +1343,7 @@ impl<V: Clone + PartialEq + 'static> Settings<V> {
     pub fn reload_with(&self, rt: &Runtime, read: SettingsRead) {
         self.inner.apply(rt, read, false);
         for f in self.inner.fields() {
-            self.inner.show(rt, &f, false);
+            self.inner.show(rt, &f, false, false);
         }
     }
 
@@ -1316,7 +1357,7 @@ impl<V: Clone + PartialEq + 'static> Settings<V> {
             .inner
             .enqueue(&self.inner.overlay, edits.clone(), Target::Overlay, false);
         f.overlay_seq.set(seq);
-        self.inner.show(rt, &f, true);
+        self.inner.show(rt, &f, true, false);
         self.inner.tell_siblings(rt, true, &edits, seq);
         Ok(())
     }
@@ -1333,7 +1374,7 @@ impl<V: Clone + PartialEq + 'static> Settings<V> {
             .inner
             .enqueue(&self.inner.overlay, edits.clone(), Target::Overlay, false);
         f.overlay_seq.set(seq);
-        self.inner.show(rt, &f, true);
+        self.inner.show(rt, &f, true, false);
         self.inner.tell_siblings(rt, true, &edits, seq);
         Ok(())
     }
@@ -1400,7 +1441,7 @@ impl<V: Clone + PartialEq + 'static> Settings<V> {
             inner.apply(rt, inner.sources().read(), true);
         }
         for f in inner.fields() {
-            inner.show(rt, &f, reset.contains(&f.name));
+            inner.show(rt, &f, reset.contains(&f.name), true);
         }
         // The saver tracks the new field list.
         let n = inner.schema.get_untracked(rt).unwrap_or(0);
@@ -1478,16 +1519,30 @@ impl Runtime {
         // The tracking effect keeps the handle alive with the field cells.
         let tracked = inner.clone();
         let saver: Weak<Inner<V>> = Rc::downgrade(&inner);
-        self.on_change_after(
+        // A field written before the first tracking run (the mount tick)
+        // differs from what was shown: that run arms the debounce itself,
+        // since `on change` never fires for the first value.
+        let debounce: Rc<Cell<Option<crate::timer::Timer>>> = Rc::new(Cell::new(None));
+        let arm = debounce.clone();
+        let first = Cell::new(true);
+        let d = self.on_change_after(
             move |rt| {
                 let inner = &tracked;
                 inner.schema.get(rt)?;
                 let fields = inner.fields();
                 let mut values = Vec::with_capacity(fields.len());
+                let mut written = false;
                 for f in &fields {
                     let v = f.signal.get(rt)?;
+                    written |= *f.shown.borrow() != v;
                     f.live.replace(v.clone());
                     values.push(v);
+                }
+                if first.replace(false)
+                    && written
+                    && let Some(t) = arm.get()
+                {
+                    t.restart(rt)?;
                 }
                 Ok(values)
             },
@@ -1499,6 +1554,7 @@ impl Runtime {
                 Ok(())
             },
         );
+        debounce.set(Some(d.timer));
         let flusher = Rc::downgrade(&inner);
         let rt = self.downgrade();
         self.on_cleanup(move || {
@@ -1541,6 +1597,15 @@ mod tests {
             edit(&out, &[(Arc::from("gap"), None)]),
             "# My settings\naccent   =  \"#ff0000\"   # blue\n\n# denser bar\ncompact = true\n"
         );
+    }
+
+    #[test]
+    fn a_table_replaced_by_a_value_gets_default_spacing() {
+        let out = edit(
+            "b = 5\n[a]\nx = 1\n",
+            &[(Arc::from("a"), Some(toml_edit::value(9)))],
+        );
+        assert_eq!(out, "b = 5\na = 9\n");
     }
 
     #[test]

@@ -807,3 +807,77 @@ type ParkedHandle = (
 thread_local! {
     static HANDLES: RefCell<Vec<ParkedHandle>> = const { RefCell::new(Vec::new()) };
 }
+
+/// A reload write whose flush cannot read the tracked value (its read
+/// errs) still re-baselines `on change`: it does not fire later for the
+/// reload.
+#[test]
+fn a_reload_seen_through_a_failing_read_does_not_fire_on_change_later() {
+    let rt = Runtime::new();
+    let x = rt.signal(1);
+    let broken = rt.signal(false);
+    let fired = Rc::new(RefCell::new(Vec::new()));
+    let f = fired.clone();
+    rt.on_change(
+        move |rt| {
+            if broken.get(rt)? {
+                return Err(Error::Cancelled);
+            }
+            x.get(rt)
+        },
+        move |_, v| {
+            f.borrow_mut().push(*v);
+            Ok(())
+        },
+    );
+    rt.flush();
+    x.set_reloaded(&rt, 2).unwrap();
+    broken.set(&rt, true).unwrap();
+    rt.flush();
+    broken.set(&rt, false).unwrap();
+    rt.flush();
+    assert!(fired.borrow().is_empty(), "{:?}", fired.borrow());
+    x.set(&rt, 3).unwrap();
+    rt.flush();
+    assert_eq!(*fired.borrow(), vec![3], "a real change still fires");
+}
+
+/// `let hits = svc.search(query)` with `on change hits.value`: a reload
+/// write to `query` starts a load that lands in a later flush; its result
+/// is a reload write too, so the handler does not fire for it.
+#[test]
+fn a_load_started_by_a_reload_write_does_not_fire_on_change_when_it_lands() {
+    let rt = Runtime::new();
+    let query = rt.signal(1i64);
+    let weak = rt.downgrade();
+    let hits = rt.async_memo(
+        move |rt| query.get(rt),
+        move |q| slow(weak.clone(), 10 * MS, q * 10),
+    );
+    let fired = Rc::new(RefCell::new(Vec::new()));
+    let f = fired.clone();
+    rt.on_change(
+        move |rt| Ok(hits.get(rt)?.value().copied()),
+        move |_, v| {
+            f.borrow_mut().push(*v);
+            Ok(())
+        },
+    );
+    rt.flush();
+    rt.tick(10 * MS);
+    assert_eq!(hits.get_untracked(&rt).unwrap().value(), Some(&10));
+    // The first result landing is a change (from no value).
+    assert_eq!(*fired.borrow(), vec![Some(10)]);
+    fired.borrow_mut().clear();
+    query.set_reloaded(&rt, 2).unwrap();
+    rt.flush();
+    rt.tick(20 * MS);
+    rt.tick(30 * MS);
+    assert_eq!(hits.get_untracked(&rt).unwrap().value(), Some(&20));
+    assert!(fired.borrow().is_empty(), "reload: {:?}", fired.borrow());
+    query.set(&rt, 3).unwrap();
+    rt.flush();
+    rt.tick(40 * MS);
+    rt.tick(50 * MS);
+    assert_eq!(*fired.borrow(), vec![Some(30)], "a real change still fires");
+}

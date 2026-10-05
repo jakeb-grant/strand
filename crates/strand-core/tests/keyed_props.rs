@@ -677,3 +677,123 @@ fn a_key_index_left_past_the_end_by_removals_still_finds_its_item() {
     assert_eq!(v.index_of(&8), Some(7));
     assert!(v.push((8, 2)).is_err(), "still a duplicate");
 }
+
+/// A small deterministic PRNG (xorshift64*), so the bulk test is
+/// reproducible without proptest's shrinking over hundreds of rows.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
+    }
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n.max(1) as u64) as usize
+    }
+}
+
+#[test]
+fn bulk_batches_rebuild_with_keyed_diffs_and_match_naive() {
+    // The 2,000-row path: a flush bringing more than 128 diffs covering a
+    // quarter of the source rebuilds each operator and publishes the keyed
+    // diff of its output. Batches of both sizes are interleaved; after
+    // every flush the output and a mirror that follows only the published
+    // diffs must equal naive recomputation, and no diff may be a `Reset`
+    // (items keep identity).
+    type Row = (u16, i64);
+    let keep = |v: &Row| v.1 % 3 != 0;
+    let order = |a: &Row, b: &Row| (a.1 / 8).cmp(&(b.1 / 8));
+    const TAKE: usize = 250;
+    let naive = |src: &[(u16, Row)]| -> Vec<(u16, i64)> {
+        let mut v: Vec<(u16, Row)> = src.iter().filter(|(_, r)| keep(r)).cloned().collect();
+        v.sort_by(|a, b| order(&a.1, &b.1));
+        v.truncate(TAKE);
+        v.into_iter().map(|(k, r)| (k, r.1 * 2)).collect()
+    };
+    let mut rng = Rng(0x5eed_1234_abcd_ef01);
+    let rt = Runtime::new();
+    let xs = rt.keyed(
+        KeyedVec::from_values(
+            |v: &Row| v.0,
+            (0..800u16).map(|k| (k, (k as i64 * 37) % 500)),
+        )
+        .unwrap(),
+    );
+    let out = xs
+        .filter(&rt, keep)
+        .sort_by(&rt, order)
+        .take(&rt, TAKE)
+        .map(&rt, |r: &Row| r.1 * 2);
+    rt.watch(out.id()).unwrap();
+    rt.flush();
+    let mut seen = out.snapshot(&rt).unwrap();
+    let mut mirror: Vec<(u16, i64)> = seen.items().to_vec();
+    let mut next_key = 800u16;
+    let rebuilds_at_start = rt.stats().rebuilds;
+    let mut bulk_flushes = 0;
+    for round in 0..24 {
+        let len = xs.with_untracked(&rt, |v| v.len()).unwrap();
+        // Every third round is small (incremental), the others bulk.
+        let n = if round % 3 == 2 {
+            1 + rng.below(60)
+        } else {
+            bulk_flushes += 1;
+            len / 4 + 130 + rng.below(200)
+        };
+        for _ in 0..n {
+            let len = xs.with_untracked(&rt, |v| v.len()).unwrap();
+            let key_at = |i: usize| xs.with_untracked(&rt, |v| v.items()[i].0).unwrap();
+            match rng.below(10) {
+                0..=3 if len > 0 => {
+                    let k = key_at(rng.below(len));
+                    let x = rng.below(500) as i64;
+                    xs.update(&rt, &k, |r| r.1 = x).unwrap();
+                }
+                4 | 5 if len > 200 => {
+                    let k = key_at(rng.below(len));
+                    xs.remove_key(&rt, &k).unwrap();
+                }
+                6 if len > 1 => {
+                    let k = key_at(rng.below(len));
+                    xs.move_key(&rt, &k, rng.below(len)).unwrap();
+                }
+                _ => {
+                    let x = rng.below(500) as i64;
+                    xs.insert(&rt, rng.below(len + 1), (next_key, x)).unwrap();
+                    next_key += 1;
+                }
+            }
+        }
+        rt.flush();
+        let now = out.snapshot(&rt).unwrap();
+        let src = xs.with_untracked(&rt, |v| v.items().to_vec()).unwrap();
+        assert_eq!(now.items(), &naive(&src)[..], "round {round}");
+        let diffs = now.diffs_since(seen.version()).unwrap();
+        for d in &diffs {
+            assert!(
+                !matches!(d, VecDiff::Reset { .. }),
+                "round {round}: a Reset"
+            );
+            d.apply(&mut mirror).unwrap();
+        }
+        assert_eq!(mirror, now.items(), "round {round}: the diffs mirror");
+        // Keys are unique in the output.
+        let keys: std::collections::HashSet<_> = now.keys().collect();
+        assert_eq!(keys.len(), now.len());
+        seen = now;
+    }
+    // The bulk path ran (each of the four operators rebuilds per bulk
+    // flush, or at least the first one does).
+    assert!(
+        rt.stats().rebuilds - rebuilds_at_start >= bulk_flushes,
+        "rebuilds {} for {bulk_flushes} bulk flushes",
+        rt.stats().rebuilds - rebuilds_at_start
+    );
+    // `get_key` on a derived collection.
+    let (k, v) = seen.items()[3];
+    assert_eq!(out.get_key(&rt, &k).unwrap(), Some(v));
+    assert_eq!(out.get_key(&rt, &u16::MAX).unwrap(), None);
+    assert_eq!(out.with(&rt, |items| items.len()).unwrap(), seen.len());
+}
