@@ -25,6 +25,29 @@ pub struct Host {
     log_damage: bool,
     /// `strand run`: what the logic thread hears about.
     logic: Option<Forward>,
+    /// Tests: told of every paint and monitor change (`bench.rs`).
+    #[cfg(test)]
+    pub(crate) probe: Option<ProbeHandle>,
+}
+
+/// What the latency benchmark watches on the main thread.
+#[cfg(test)]
+pub(crate) trait Probe {
+    /// `surface` was painted (`drew`: with damage, so committed).
+    fn painted(&self, surface: SurfaceId, drew: bool, renderer: &Renderer);
+    /// A monitor was plugged in or changed.
+    fn monitor(&self);
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct ProbeHandle(pub std::rc::Rc<dyn Probe>);
+
+#[cfg(test)]
+impl std::fmt::Debug for ProbeHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ProbeHandle")
+    }
 }
 
 /// The surface layer's facts for a logic thread (`strand run`): monitors
@@ -292,6 +315,8 @@ impl Host {
             renderer,
             log_damage,
             logic: None,
+            #[cfg(test)]
+            probe: None,
         }
     }
 
@@ -306,6 +331,10 @@ impl Host {
 impl Painter for Host {
     fn paint(&mut self, surface: SurfaceId, target: &mut PaintTarget<'_>) -> Damage {
         let damage = self.renderer.paint(surface, target);
+        #[cfg(test)]
+        if let Some(p) = &self.probe {
+            p.0.painted(surface, !damage.is_empty(), &self.renderer);
+        }
         if !damage.is_empty() && self.log_damage {
             let rects: Vec<String> = damage
                 .rects()
@@ -368,12 +397,20 @@ impl SurfaceHost for Host {
     }
 
     fn monitor_added(&mut self, monitor: &Monitor, _reconnected: bool) {
+        #[cfg(test)]
+        if let Some(p) = &self.probe {
+            p.0.monitor();
+        }
         if let Some(f) = &mut self.logic {
             f.monitor_added(monitor);
         }
     }
 
     fn monitor_changed(&mut self, monitor: &Monitor) {
+        #[cfg(test)]
+        if let Some(p) = &self.probe {
+            p.0.monitor();
+        }
         if let Some(f) = &mut self.logic {
             f.monitor_changed(monitor);
         }

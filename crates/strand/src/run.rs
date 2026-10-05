@@ -150,7 +150,7 @@ pub enum ToLogic {
 }
 
 /// The `screens` service fields for `screens`.
-fn set_screens(rt: &Runtime, host: &SchemaHost, screens: &[ScreenInfo]) {
+pub(crate) fn set_screens(rt: &Runtime, host: &SchemaHost, screens: &[ScreenInfo]) {
     let records: Vec<Value> = screens
         .iter()
         .enumerate()
@@ -1138,14 +1138,14 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use strand_compiler::instantiate::SceneMirror;
     use strand_compiler::reconcile::loader::Loader;
     use strand_compiler::schema::Schema;
     use strand_scene::{Prop, PropValue};
 
-    fn screen(id: &str, name: &str) -> ScreenInfo {
+    pub(crate) fn screen(id: &str, name: &str) -> ScreenInfo {
         ScreenInfo {
             id: id.into(),
             name: name.into(),
@@ -1172,6 +1172,28 @@ mod tests {
         dir
     }
 
+    /// A calloop channel is read through a loop: one on a thread of its
+    /// own hands the diffs to a plain receiver.
+    pub(crate) fn inbox(rx: Channel<SceneDiff>) -> std::sync::mpsc::Receiver<SceneDiff> {
+        let (tx, inbox) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut el = EventLoop::<bool>::try_new().unwrap();
+            el.handle()
+                .insert_source(rx, move |event, _, closed| match event {
+                    Event::Msg(d) => {
+                        let _ = tx.send(d);
+                    }
+                    Event::Closed => *closed = true,
+                })
+                .unwrap();
+            let mut closed = false;
+            while !closed {
+                el.dispatch(None, &mut closed).unwrap();
+            }
+        });
+        inbox
+    }
+
     /// The scene as the main thread sees it, fed from the diff channel.
     struct Mirror {
         inbox: std::sync::mpsc::Receiver<SceneDiff>,
@@ -1182,27 +1204,9 @@ mod tests {
     }
 
     impl Mirror {
-        /// A calloop channel is read through a loop: one on a thread of
-        /// its own hands the diffs to a plain receiver.
         fn new(rx: Channel<SceneDiff>) -> Self {
-            let (tx, inbox) = std::sync::mpsc::channel();
-            std::thread::spawn(move || {
-                let mut el = EventLoop::<bool>::try_new().unwrap();
-                el.handle()
-                    .insert_source(rx, move |event, _, closed| match event {
-                        Event::Msg(d) => {
-                            let _ = tx.send(d);
-                        }
-                        Event::Closed => *closed = true,
-                    })
-                    .unwrap();
-                let mut closed = false;
-                while !closed {
-                    el.dispatch(None, &mut closed).unwrap();
-                }
-            });
             Self {
-                inbox,
+                inbox: inbox(rx),
                 scene: SceneMirror::new(),
                 steady: false,
             }
@@ -1891,7 +1895,7 @@ mod tests {
     }
 
     /// p95 of `v` (milliseconds).
-    fn p95(v: &[f64]) -> f64 {
+    pub(crate) fn p95(v: &[f64]) -> f64 {
         let mut v = v.to_vec();
         v.sort_by(f64::total_cmp);
         let i = ((v.len() as f64 * 0.95).ceil() as usize).clamp(1, v.len()) - 1;
@@ -2042,8 +2046,78 @@ mod tests {
         assert!(pm <= 50.0, "markup edits: p95 {pm:.1} ms: {markup:?}");
     }
 
+    /// design.md, "Live reload": monitor changes show on the next frame.
+    /// The logic thread answers a plug, a scale change, an unplug and a
+    /// replug each in the first diff it sends after hearing of it (no
+    /// reload pipeline, no coalescing), with the whole change in it; the
+    /// main thread paints that diff in its next frame
+    /// (`bench.rs::reload_latency_to_the_presented_frame` times a plug on
+    /// sway).
+    #[test]
+    fn a_monitor_change_is_in_the_next_diff() {
+        let dir = temp_dir("next-frame");
+        std::fs::write(
+            dir.join("bar.strand"),
+            "bar Top {\n  state n = 0\n  on click { n += 1 }\n  text join(\" \", screen.name, screen.scale, n)\n}\n",
+        )
+        .unwrap();
+        let (compiler, to_logic, t, mut m) = spawn_live(&dir, None);
+        m.until("the bar", |s| s.texts() == ["DP-1 1 0"]);
+        let a = m.scene.roots()[0];
+        to_logic
+            .send(ToLogic::Event {
+                node: a,
+                event: NodeEvent::Click,
+            })
+            .unwrap();
+        m.until("a click", |s| s.texts() == ["DP-1 1 1"]);
+        // Nothing else is coming: no clock, no animation.
+        m.settle("quiet", Duration::from_millis(100));
+        let next = |m: &mut Mirror, what: &str, msg: ToLogic| {
+            to_logic.send(msg).unwrap();
+            let d = m
+                .inbox
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap_or_else(|_| panic!("{what}: no diff"));
+            m.apply(what, &d);
+            m.texts()
+        };
+        let b = screen("B", "HDMI-A-1");
+        let mut b2 = b.clone();
+        b2.scale = 2.0;
+        let a1 = screen("A", "DP-1");
+        assert_eq!(
+            next(
+                &mut m,
+                "a plug",
+                ToLogic::Screens(vec![a1.clone(), b.clone()])
+            ),
+            ["DP-1 1 1", "HDMI-A-1 1 0"]
+        );
+        assert_eq!(
+            next(
+                &mut m,
+                "a scale change",
+                ToLogic::Screens(vec![a1.clone(), b2.clone()])
+            ),
+            ["DP-1 1 1", "HDMI-A-1 2 0"]
+        );
+        assert_eq!(
+            next(&mut m, "an unplug", ToLogic::Screens(vec![a1.clone()])),
+            ["DP-1 1 1"]
+        );
+        assert_eq!(
+            next(&mut m, "a replug", ToLogic::Screens(vec![a1, b2])),
+            ["DP-1 1 1", "HDMI-A-1 2 0"]
+        );
+        to_logic.send(ToLogic::Shutdown).unwrap();
+        assert_eq!(t.join().unwrap(), Ok(()));
+        drop(compiler);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// The scene as text with surfaces in a fixed order.
-    fn canonical(scene: &SceneMirror) -> String {
+    pub(crate) fn canonical(scene: &SceneMirror) -> String {
         let mut blocks: Vec<String> = Vec::new();
         for line in scene.render().lines() {
             if !line.starts_with(' ') || blocks.is_empty() {

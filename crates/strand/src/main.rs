@@ -10,6 +10,11 @@ mod logging;
 mod overlay;
 mod run;
 
+#[cfg(test)]
+mod bench;
+#[cfg(test)]
+mod fuzz;
+
 use std::io::IsTerminal;
 use std::process::ExitCode;
 
