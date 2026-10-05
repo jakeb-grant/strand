@@ -377,3 +377,43 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn malformed_service_diffs_name_the_real_error() {
+    use strand_core::KeyedError;
+    let mut v = KeyedVec::new(|x: &Item| x.0);
+    v.push((1, 10)).unwrap();
+    v.push((2, 20)).unwrap();
+    // Insert/Update whose key disagrees with the key function.
+    assert_eq!(
+        v.apply(&VecDiff::Update {
+            index: 1,
+            key: 2,
+            value: (3, 0)
+        }),
+        Err(KeyedError::KeyMismatch { index: 1 })
+    );
+    assert_eq!(
+        v.apply(&VecDiff::Insert {
+            index: 2,
+            key: 9,
+            value: (8, 0)
+        }),
+        Err(KeyedError::KeyMismatch { index: 2 })
+    );
+    // A Reset item whose key disagrees is a mismatch at its index; a real
+    // duplicate is a duplicate.
+    assert_eq!(
+        v.apply(&VecDiff::Reset {
+            items: vec![(1, (1, 0)), (5, (4, 0))]
+        }),
+        Err(KeyedError::KeyMismatch { index: 1 })
+    );
+    assert_eq!(
+        v.apply(&VecDiff::Reset {
+            items: vec![(1, (1, 0)), (1, (1, 1))]
+        }),
+        Err(KeyedError::DuplicateKey)
+    );
+    assert_eq!(v.len(), 2, "unchanged");
+}

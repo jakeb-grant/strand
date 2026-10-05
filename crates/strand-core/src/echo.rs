@@ -102,6 +102,8 @@ impl<T: Clone + PartialEq + 'static> Signal<T> {
             Ok(g)
         };
         if rt.rate_gate(self.id) {
+            // Supersedes any held write, even when the value is unchanged.
+            rt.drop_deferred(self.id);
             commit(rt, value).map(Some)
         } else {
             let held = Box::new(value.clone());

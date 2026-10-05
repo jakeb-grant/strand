@@ -45,7 +45,7 @@ mod signal;
 mod task;
 mod timer;
 
-pub use async_value::{Async, RequestId};
+pub use async_value::{Async, AsyncMemo, RequestId};
 pub use echo::{Generation, MAX_PENDING_ECHOES, Received};
 pub use error::{CyclePath, Error};
 pub use events::EventQueue;

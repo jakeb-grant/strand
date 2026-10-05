@@ -23,6 +23,7 @@ async fn slow<T>(weak: WeakRuntime, d: Duration, v: T) -> Result<T, Error> {
 fn a_load_started_by_a_handler_outlives_the_handler() {
     // on click { hits.load(...) }
     let rt = Runtime::new();
+    let mut diags = Vec::new();
     let click = rt.events::<()>();
     let hits = rt.signal(Async::<u32>::empty());
     let weak = rt.downgrade();
@@ -34,14 +35,14 @@ fn a_load_started_by_a_handler_outlives_the_handler() {
             .unwrap()
     });
     click.emit(&rt, ()).unwrap();
-    rt.flush();
+    diags.extend(rt.flush().diagnostics);
     assert!(hits.get(&rt).unwrap().pending());
-    rt.tick(50 * MS);
+    diags.extend(rt.tick(50 * MS).diagnostics);
     let a = hits.get(&rt).unwrap();
     assert_eq!(a.value(), Some(&7));
     assert!(!a.pending());
     assert!(
-        rt.take_diagnostics().is_empty(),
+        diags.is_empty(),
         "the load was not cancelled when the click handler returned"
     );
 }
@@ -81,38 +82,127 @@ fn handlers_do_not_accumulate_nodes() {
 #[test]
 fn timer_and_on_change_bodies_create_nodes_for_their_component() {
     let rt = Runtime::new();
+    let mut diags = Vec::new();
     let x = rt.signal(0);
     let hits = rt.signal(Async::<u32>::empty());
+    let made = Rc::new(RefCell::new(Vec::new()));
     let weak = rt.downgrade();
     let w2 = weak.clone();
+    let (m1, m2) = (made.clone(), made.clone());
     let (component, (timer, effect)) = rt.scope(|rt| {
         let t = rt.after(
             10 * MS,
             |_| Ok(true),
-            move |rt| hits.load(rt, slow(weak.clone(), 100 * MS, 1)).map(|_| ()),
+            move |rt| {
+                m1.borrow_mut().push(rt.signal(0).id());
+                hits.load(rt, slow(weak.clone(), 100 * MS, 1)).map(|_| ())
+            },
         );
         let e = rt.on_change(
             move |rt| x.get(rt),
-            move |rt, _| hits.load(rt, slow(w2.clone(), 100 * MS, 2)).map(|_| ()),
+            move |rt, _| {
+                m2.borrow_mut().push(rt.signal(0).id());
+                hits.load(rt, slow(w2.clone(), 100 * MS, 2)).map(|_| ())
+            },
         );
         (t, e)
     });
-    rt.flush();
-    rt.tick(10 * MS);
-    // The timer's load belongs to the component, not the (finished) timer.
-    let task = *rt.owned(component.id()).unwrap().last().unwrap();
-    assert_eq!(rt.owner_of(task), Ok(Some(component.id())));
-    assert_ne!(rt.owner_of(task), Ok(Some(timer.id())));
+    diags.extend(rt.flush().diagnostics);
+    diags.extend(rt.tick(10 * MS).diagnostics);
     x.set(&rt, 1).unwrap();
-    rt.flush();
-    // A second change re-runs the effect; the first change's load survives
-    // (it is superseded, not cancelled).
-    let loads = rt.owned(component.id()).unwrap().len();
-    assert_eq!(loads, 4, "timer, effect and two loads");
+    diags.extend(rt.flush().diagnostics);
+    x.set(&rt, 2).unwrap();
+    diags.extend(rt.flush().diagnostics);
+    // Nodes the bodies create belong to the component.
+    for &n in made.borrow().iter() {
+        assert_eq!(rt.owner_of(n), Ok(Some(component.id())));
+    }
+    // Their loads belong to the handlers' sites: not the component, and not
+    // the effect itself (whose re-run would cancel them).
     assert!(rt.owned(effect.id()).unwrap().is_empty());
-    rt.tick(200 * MS);
+    let timer_site = rt.site_of(timer.id()).unwrap();
+    assert_eq!(rt.owned(timer_site).unwrap().len(), 1, "the timer's load");
+    let effect_site = rt.site_of(effect.id()).unwrap();
+    assert_eq!(rt.owned(effect_site).unwrap().len(), 2, "both loads alive");
+    diags.extend(rt.tick(200 * MS).diagnostics);
     assert_eq!(hits.get(&rt).unwrap().value(), Some(&2));
-    assert!(rt.take_diagnostics().is_empty());
+    assert!(diags.is_empty(), "nothing was cancelled");
+}
+
+/// Reload restarts changed handler code: disposing a listener, a timer or
+/// an `on change` handler cancels its in-flight `await`, reports it, and
+/// leaves nothing scheduled.
+#[test]
+fn disposing_a_handler_cancels_its_in_flight_tasks() {
+    for which in 0..3 {
+        let rt = Runtime::new();
+        let x = rt.signal(0);
+        let after = rt.signal(0);
+        let click = rt.events::<()>();
+        let body = move |rt: &Runtime| {
+            let weak = rt.downgrade();
+            rt.spawn(async move {
+                let rt = weak.upgrade().ok_or(Error::Cancelled)?;
+                rt.sleep(Duration::from_secs(5)).await;
+                after.set(&rt, 1)
+            });
+            Ok(())
+        };
+        let (_component, handler) = rt.scope(|rt| match which {
+            0 => click.on(rt, move |rt, _| body(rt)).unwrap(),
+            1 => rt.after(10 * MS, |_| Ok(true), body).id(),
+            _ => rt
+                .on_change(move |rt| x.get(rt), move |rt, _| body(rt))
+                .id(),
+        });
+        rt.flush();
+        click.emit(&rt, ()).unwrap();
+        x.set(&rt, 1).unwrap();
+        rt.flush();
+        rt.tick(10 * MS);
+        assert!(rt.next_deadline().is_some(), "case {which}: sleeping");
+        rt.take_diagnostics();
+        rt.dispose(handler);
+        let diags = rt.take_diagnostics();
+        assert!(
+            matches!(diags.as_slice(), [Diagnostic::Cancelled { .. }]),
+            "case {which}: {diags:?}"
+        );
+        assert_eq!(rt.next_deadline(), None, "case {which}");
+        rt.tick(Duration::from_secs(6));
+        assert_eq!(after.get(&rt), Ok(0), "case {which}: never resumed");
+    }
+}
+
+/// A timer or `on change` re-evaluating its condition does not cancel the
+/// tasks its body started.
+#[test]
+fn reevaluating_a_handler_keeps_its_tasks() {
+    let rt = Runtime::new();
+    let mut diags = Vec::new();
+    let hover = rt.signal(false);
+    let done = rt.signal(0);
+    let weak = rt.downgrade();
+    let timer = rt.every(
+        10 * MS,
+        move |rt| Ok(!hover.get(rt)?),
+        move |rt| {
+            let weak = weak.clone();
+            rt.spawn(async move {
+                let rt = weak.upgrade().ok_or(Error::Cancelled)?;
+                rt.sleep(Duration::from_secs(1)).await;
+                done.update(&rt, |d| *d += 1)
+            });
+            Ok(())
+        },
+    );
+    diags.extend(rt.tick(10 * MS).diagnostics);
+    hover.set(&rt, true).unwrap();
+    diags.extend(rt.tick(20 * MS).diagnostics);
+    assert_eq!(rt.owned(rt.site_of(timer.id()).unwrap()).unwrap().len(), 1);
+    diags.extend(rt.tick(Duration::from_secs(2)).diagnostics);
+    assert_eq!(done.get(&rt), Ok(1));
+    assert!(diags.is_empty());
 }
 
 #[test]
@@ -187,14 +277,14 @@ fn async_memo_follows_its_input_and_supersedes_quietly() {
         move |q: String| slow(weak.clone(), 20 * MS, q.len()),
     );
     let pending = rt.memo(move |rt| Ok(hits.get(rt)?.pending()));
-    rt.flush();
+    let mut diags = rt.flush().diagnostics;
     assert_eq!(pending.get(&rt), Ok(true));
-    rt.tick(20 * MS);
+    diags.extend(rt.tick(20 * MS).diagnostics);
     assert_eq!(hits.get(&rt).unwrap().value(), Some(&0));
     // Typing: each keystroke supersedes the previous request.
     for (i, q) in ["f", "fi", "fir"].iter().enumerate() {
         query.set(&rt, q.to_string()).unwrap();
-        rt.tick((25 + i as u32 * 5) * MS);
+        diags.extend(rt.tick((25 + i as u32 * 5) * MS).diagnostics);
         assert!(hits.get(&rt).unwrap().pending());
         assert_eq!(
             hits.get(&rt).unwrap().value(),
@@ -202,12 +292,12 @@ fn async_memo_follows_its_input_and_supersedes_quietly() {
             "kept while typing"
         );
     }
-    rt.tick(100 * MS);
+    diags.extend(rt.tick(100 * MS).diagnostics);
     let a = hits.get(&rt).unwrap();
     assert_eq!(a.value(), Some(&3));
     assert!(!a.pending());
     assert!(
-        rt.take_diagnostics().is_empty(),
+        diags.is_empty(),
         "superseded requests are not reported as cancelled"
     );
     // An input error becomes the cell's error; the value is kept.
@@ -310,12 +400,14 @@ fn zero_period_every_pauses_and_reports() {
         |_| Ok(true),
         move |rt| count.update(rt, |c| *c += 1),
     );
-    rt.flush();
+    let tick = rt.flush();
     assert_eq!(rt.next_deadline(), None, "no busy loop");
     assert_eq!(
-        rt.take_diagnostics(),
+        tick.diagnostics,
         vec![Diagnostic::ZeroPeriod { timer: timer.id() }]
     );
+    assert!(rt.take_diagnostics().is_empty(), "drained into the tick");
+    assert!(rt.flush().diagnostics.is_empty(), "reported once");
     rt.tick(10 * MS);
     assert_eq!(count.get(&rt), Ok(0));
     // Sub-millisecond periods are clamped.
@@ -450,4 +542,79 @@ fn listeners_reemitting_in_a_loop_are_a_cycle() {
             .iter()
             .any(|(_, e)| matches!(e, Error::Cycle(_)))
     );
+}
+
+/// Free slots so that new nodes get lower slot indices than older ones.
+fn free_slots(rt: &Runtime, n: usize) {
+    let cells: Vec<_> = (0..n).map(|_| rt.signal(0)).collect();
+    for c in cells {
+        c.dispose(rt);
+    }
+}
+
+/// Handlers woken in one flush run in wake order, so the later handler's
+/// write is the one that sticks (latest value wins), whatever slots the
+/// tasks landed in.
+#[test]
+fn woken_tasks_run_in_wake_order_not_slot_order() {
+    let rt = Runtime::new();
+    let x = rt.signal(0);
+    free_slots(&rt, 8);
+    for v in [1, 2] {
+        let weak = rt.downgrade();
+        rt.spawn(async move {
+            let rt = weak.upgrade().ok_or(Error::Cancelled)?;
+            x.set(&rt, v)
+        });
+    }
+    rt.flush();
+    assert_eq!(x.get(&rt), Ok(2));
+}
+
+/// Timers due at the same instant fire in creation order.
+#[test]
+fn timers_due_together_fire_in_creation_order() {
+    let rt = Runtime::new();
+    let x = rt.signal(0);
+    free_slots(&rt, 8);
+    let _a = rt.after(10 * MS, |_| Ok(true), move |rt| x.set(rt, 1));
+    let _b = rt.after(10 * MS, |_| Ok(true), move |rt| x.set(rt, 2));
+    rt.tick(10 * MS);
+    assert_eq!(x.get(&rt), Ok(2));
+}
+
+/// A task that woke itself during a flush waits for the next one; the wake
+/// hook fires so a host sleeping on it comes back.
+#[test]
+fn a_task_left_ready_after_a_flush_calls_the_wake_hook() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let rt = Runtime::new();
+    let woken = Arc::new(AtomicUsize::new(0));
+    let w = woken.clone();
+    rt.set_wake_hook(move || {
+        w.fetch_add(1, Ordering::SeqCst);
+    });
+    let mut yielded = false;
+    rt.spawn(async move {
+        std::future::poll_fn(|cx| {
+            if yielded {
+                return Poll::Ready(());
+            }
+            yielded = true;
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        })
+        .await;
+        Ok(())
+    });
+    let before = woken.load(Ordering::SeqCst);
+    rt.flush();
+    assert!(!rt.is_idle());
+    assert!(
+        woken.load(Ordering::SeqCst) > before,
+        "host told to flush again"
+    );
+    rt.flush();
+    assert!(rt.is_idle());
 }

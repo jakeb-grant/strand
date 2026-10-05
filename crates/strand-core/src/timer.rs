@@ -21,7 +21,9 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use crate::error::Error;
-use crate::runtime::{Color, Diagnostic, NodeData, NodeId, NodeKind, RunOutcome, Runtime};
+use crate::runtime::{
+    Color, Diagnostic, HandlerCtx, NodeData, NodeId, NodeKind, RunOutcome, Runtime,
+};
 use crate::signal::Effect;
 
 /// The shortest `every` period; shorter positive periods are clamped.
@@ -234,6 +236,9 @@ impl Runtime {
             })),
         );
         self.inner.timers.borrow_mut().push(id);
+        // Tasks its body starts are cancelled with the timer, not when its
+        // condition changes.
+        self.create_site_for(id);
         // Evaluate the condition now so the deadline is known immediately.
         let _ = self.update_if_necessary(id);
         Timer { id }
@@ -330,6 +335,7 @@ impl Runtime {
         let timers = self.inner.timers.borrow().clone();
         timers
             .into_iter()
+            .filter(|&id| !self.is_suspended(id))
             .filter_map(|id| {
                 self.with_data::<TimerData, _>(id, TimerData::deadline)
                     .ok()
@@ -358,7 +364,7 @@ impl Runtime {
     pub(crate) fn fire_timers(&self, errors: &mut Vec<(NodeId, Error)>) {
         let now = self.now();
         self.inner.timers.borrow_mut().retain(|&t| self.exists(t));
-        let mut due: Vec<(Duration, NodeId)> = self
+        let mut due: Vec<(Duration, u64, NodeId)> = self
             .inner
             .timers
             .borrow()
@@ -368,11 +374,14 @@ impl Runtime {
                     .with_data::<TimerData, _>(id, TimerData::deadline)
                     .ok()
                     .flatten()?;
-                (d <= now).then_some((d, id))
+                let seq = self.inner.nodes.borrow().get(id)?.seq;
+                // A frozen timer stays due and fires on resume.
+                (d <= now && !self.is_suspended(id)).then_some((d, seq, id))
             })
             .collect();
-        due.sort();
-        for (_, id) in due {
+        // Earliest first; equal deadlines in creation order, not slot order.
+        due.sort_by_key(|&(d, seq, _)| (d, seq));
+        for (_, _, id) in due {
             // An earlier body may have written this timer's condition.
             if self.is_stale(id) {
                 let _ = self.update_if_necessary(id);
@@ -403,8 +412,13 @@ impl Runtime {
                 continue;
             };
             // Nodes the body creates belong to the timer's component.
-            let owner = self.owner_of(id).ok().flatten();
-            let r = self.run_handler(id, owner, |rt| body(rt));
+            let ctx = HandlerCtx {
+                writer: id,
+                owner: self.owner_of(id).ok().flatten(),
+                site: self.site_of(id),
+                input: false,
+            };
+            let r = self.run_handler(ctx, |rt| body(rt));
             if let Err(e) = r {
                 errors.push((id, e));
             }

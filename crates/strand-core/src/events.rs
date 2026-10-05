@@ -20,7 +20,7 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 
 use crate::error::Error;
-use crate::runtime::{Color, NodeData, NodeId, NodeKind, Runtime};
+use crate::runtime::{Color, HandlerCtx, NodeData, NodeId, NodeKind, Runtime};
 
 /// A lossless queue of `T` events. Copyable handle.
 pub struct EventQueue<T> {
@@ -45,6 +45,9 @@ type ListenerFn<T> = Box<dyn FnMut(&Runtime, &T) -> Result<(), Error>>;
 struct EventsData<T> {
     queue: RefCell<VecDeque<T>>,
     listeners: RefCell<Vec<NodeId>>,
+    /// External input (`on click`, `on scroll`): listeners are input
+    /// handlers, not counted by the write-rate guard.
+    input: bool,
 }
 
 struct ListenerData<T> {
@@ -78,6 +81,10 @@ impl<T: 'static> NodeData for EventsData<T> {
         for ev in &events {
             let listeners: Vec<NodeId> = self.listeners.borrow().clone();
             for l in listeners {
+                if rt.is_suspended(l) {
+                    // A frozen component ignores events.
+                    continue;
+                }
                 let Ok(data) = rt.data(l) else { continue };
                 let Some(listener) = data.as_any().downcast_ref::<ListenerData<T>>() else {
                     continue;
@@ -85,9 +92,16 @@ impl<T: 'static> NodeData for EventsData<T> {
                 let Ok(mut f) = listener.f.try_borrow_mut() else {
                     continue;
                 };
-                // Nodes the listener creates belong to its component.
-                let owner = rt.owner_of(l).ok().flatten();
-                let r = rt.run_handler(l, owner, |rt| f(rt, ev));
+                // Nodes the listener creates belong to its component; tasks
+                // it starts belong to the listener, so disposing it (unmount
+                // or a reload that restarts the handler) cancels them.
+                let ctx = HandlerCtx {
+                    writer: l,
+                    owner: rt.owner_of(l).ok().flatten(),
+                    site: Some(l),
+                    input: self.input,
+                };
+                let r = rt.run_handler(ctx, |rt| f(rt, ev));
                 if let Err(e) = r {
                     errors.push((l, e));
                 }
@@ -99,14 +113,28 @@ impl<T: 'static> NodeData for EventsData<T> {
 }
 
 impl Runtime {
-    /// Create an event queue owned by the current owner.
+    /// Create an event queue owned by the current owner (service events,
+    /// component events: listeners are counted by the write-rate guard).
     pub fn events<T: 'static>(&self) -> EventQueue<T> {
+        self.event_queue(false)
+    }
+
+    /// Create a queue of external input events (`on click`, `on scroll(dy)`,
+    /// `on activate`). Its listeners, and the tasks they spawn, are input
+    /// handlers: like CLI or service writes, their writes are not counted by
+    /// the 30 writes/s guard, so 60 Hz smooth scrolling is never throttled.
+    pub fn input_events<T: 'static>(&self) -> EventQueue<T> {
+        self.event_queue(true)
+    }
+
+    fn event_queue<T: 'static>(&self, input: bool) -> EventQueue<T> {
         let id = self.create_node(
             NodeKind::Events,
             Color::Clean,
             Some(Rc::new(EventsData::<T> {
                 queue: RefCell::new(VecDeque::new()),
                 listeners: RefCell::new(Vec::new()),
+                input,
             })),
         );
         EventQueue {

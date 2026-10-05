@@ -56,21 +56,28 @@ applies). Stale handles give `Error::Disposed`; a write inside a memo is
 errors land in `Tick::errors`. Observers of a disposed node re-run and see
 `Disposed`.
 
-**2026-10-05 · Write-rate monitor.** ">30 writes per second to one cell
-from one handler" counts ticks, not calls: many writes to one cell in one
-handler run coalesce to one (and read-your-writes holds). The 31st tick
+**2026-10-05 · Write-rate monitor.** The rule sits under "Feedback loops",
+so it guards loops through the graph: handlers triggered by state
+(effects, `on change`, timers, listeners of service events, and tasks they
+spawn). Handlers run for external input (`on click`, `on scroll`,
+`on activate`; queues from `rt.input_events()`, tasks from
+`rt.spawn_input`) and `<->` writes from widgets are like CLI and service
+writes and are not counted: the design's own `on scroll(dy) { volume -= dy
+* 0.05 }` at 60 Hz is the user, not a loop. Writes are counted per tick,
+not per call (many writes in one handler run coalesce; read-your-writes
+holds); writing the current value is not counted. The 31st attempted write
 within a sliding second warns once (`Diagnostic::WriteRate` naming
-`handler -> cell`) and defers the write; later writes replace it (latest
-value wins) and it lands when the window has room. Any write that goes
-through supersedes a deferred one. While throttled, `update` (`x += 1`)
-starts from the held value, so no increment is lost. Writing the current
-value is not a write and is not counted. Writes from outside handlers
-(services, CLI) are not counted. **Handler identity** is stable: the
-listener, effect or timer node; a task inherits the identity of the
-handler that spawned it, and the VM, which starts a coroutine per event
-from outside any handler, passes the handler site with
-`spawn_for(site, fut)`. Keyed collections are not gated: their diffs can't
-be coalesced to a latest value; revisit if a collection loop shows up.
+`handler -> cell`) and throttles as a leaky bucket: one write per 1/30 s
+goes through and only the latest value is held in between, so the cell
+moves smoothly at 30 Hz instead of bursting and stalling. While throttled,
+`update` (`x += 1`) starts from the held value, so no step is lost. Any
+write that goes through, even one equal to the current value, supersedes
+held ones (latest value wins). A held write is dropped when its handler is
+disposed (cancelled), except a task that finished normally. **Handler
+identity** is stable: the listener, effect or timer node; a task inherits
+the identity of the handler that spawned it; `spawn_for(site, fut)` counts
+against `site`. Keyed collections are not gated: their diffs can't be
+coalesced to a latest value; revisit if a collection loop shows up.
 
 **2026-10-05 · Echo suppression.** `write_tagged(value, send)` applies a
 local write, remembers it as pending and calls `send(value, generation)`;
@@ -117,15 +124,22 @@ service path as the key.
 **2026-10-05 · Handlers.** A handler is a `Future` owned by a node and
 polled during the flush when woken; no async runtime is needed. Each task
 is polled at most once per flush (a self-waking task waits for the next
-one, so it can't spin the flush). Disposal drops it (cancelled at its
-current `await`, reported as `Diagnostic::Cancelled`); a dropped `sleep`
-unschedules itself. Wakers are thread-safe and call an optional wake hook
-so a service reply on another thread can wake the logic loop. **Ownership:**
-a handler body (listener, timer, `on change`, task) creates nodes on behalf
-of its component (the handler's owner), not itself, so `on click {
-hits.load(..) }` outlives the click handler and finished handlers leave
-nothing behind. Effects still own what they create and dispose it before
-re-running.
+one, so it can't spin the flush; the flush then calls the wake hook so a
+sleeping host comes back). Woken tasks run in wake order and timers due
+together in creation order, never slot order, so the later handler's write
+wins. Disposal drops a task (cancelled at its current `await`, reported as
+`Diagnostic::Cancelled`); a dropped `sleep` unschedules itself. Wakers are
+thread-safe. **Ownership:** a handler body (listener, timer, `on change`,
+task) creates nodes on behalf of its component (the handler's owner), so
+`on click { hits.load(..) }`'s result outlives the invocation and finished
+handlers leave nothing behind. The *tasks* a listener, timer or `on change`
+handler starts belong to its **handler site** (the listener itself; a
+separate node for timers and `on change`, because those re-evaluate their
+condition and would otherwise cancel their own tasks), disposed with the
+handler: reload's "handler code restarted; an in-flight `await` is
+cancelled and reported" is `rt.dispose(handler)`. The VM's per-event
+coroutines use a site from `rt.handler_site()`. Effects own what they
+create, tasks included, and dispose it before re-running.
 
 **2026-10-05 · `Async<T>`.** `x ?? fallback` is `Async::or`: the value if
 there is one (kept while pending and after an error), else the fallback.
@@ -135,7 +149,7 @@ clears `pending` if it was still the latest request; value and error stay
 (a cancellation is not an error). `begin`/`resolve`/cancel bypass the
 write-rate gate: they must see each other, and fast typing is not a
 feedback loop. `let hits = apps.search(query)` is `rt.async_memo(input,
-fetch)`: it re-requests when `input` changes and drops the superseded
+fetch)`, a read-only `AsyncMemo` (assigning to a `let` is an error): it re-requests when `input` changes and drops the superseded
 request quietly (no `Cancelled` diagnostic, which is reserved for real
 cancellations).
 
@@ -155,8 +169,41 @@ a comparator that is not a total order (NaN): it uses its own stable merge
 sort; the order is then unspecified but keeps every key.
 
 **2026-10-05 · Introspection.** `rt.sources(id)`, `rt.observers(id)`,
-`rt.owned(id)` and `rt.root_owned()` expose the graph read-only for the
-inspector (token provenance), `strand watch` and the LSP.
+`rt.owned(id)`, `rt.root_owned()` and `rt.site_of(handler)` expose the
+graph read-only for the inspector (token provenance), `strand watch` and
+the LSP. `Tick::diagnostics` carries the warnings raised since the previous
+tick (`take_diagnostics` remains for callers outside a flush).
+
+**2026-10-05 · Re-running nodes and their children.** A node that re-runs
+first disposes what it owns; losing a child it read must not dirty the
+node itself (it re-reads everything), or `if show { let local = …; use
+local }` would loop into a false cycle. Other observers of the disposed
+children are still dirtied.
+
+**2026-10-05 · Reparenting.** Identity across reloads ("a node keeps its
+identity while its source text maps to it", monitors' state surviving an
+unplug) needs state to outlive the scope that created it.
+`rt.reparent(id, new_owner)` moves a live subtree; making a node its own
+ancestor is `Error::Cycle` naming the ownership path, and a stale id is a
+no-op. The moved subtree is renumbered after every existing node (keeping
+its own order), so "owners run before owned" still holds. Cells keep their
+identity, so a keyed cell keeps its diff log and the emitter needs no
+`Reset`.
+
+**2026-10-05 · Freezing a faulted component.** "A runtime fault freezes
+only its own component" is `rt.suspend(scope)`: effects, watches, timers,
+listeners and tasks inside stop running (work that comes due is held),
+state is kept, memos stay readable, and the runtime can be idle. Events
+delivered while frozen are not seen by its listeners (a frozen component
+ignores input). `rt.resume(scope)` (the fixing reload) runs held work at
+the next flush; timers that came due fire at the next tick.
+
+**2026-10-05 · Service lifecycle.** No observed/unobserved hook on cells:
+the compiler knows which service paths each component reads, so the VM
+reference-counts services per mounted, visible component (acquire on
+mount and show, release in the scope's `on_cleanup` and on hide), and the
+services layer applies the 5 s stop delay. Graph observation would see
+memos read lazily by the emitter, not visibility.
 
 **2026-10-05 · Left for wave 2.** `persist` storage with a default hash and
 settings files are not in `strand-core` yet (they need file IO and the

@@ -89,7 +89,11 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
 - One `Runtime` per logic thread, passed as `&Runtime`; closures receive it.
   Reads return `Result<T, Error>`; memo closures return `Result<T, Error>`.
 - The host loop calls `rt.tick(now)` (advance the logic clock, fire timers,
-  then `flush`) and sleeps until `rt.next_deadline()`; `None` means idle.
+  then `flush`) and sleeps until `rt.next_deadline()` or the wake hook
+  (`rt.set_wake_hook`, also called when a flush leaves a woken task for the
+  next one); `None` and no hook means idle. Each `Tick` carries `errors` and
+  `diagnostics` (write-rate, cancelled handlers, zero periods) raised since
+  the previous tick, for the overlay and `strand watch --json`.
 - The scene emitter calls `rt.watch(prop_memo.id())` per bound prop and,
   each tick, turns `Tick::changed` (watched ids whose value changed, in
   creation order) into `SetProp`s; `for` loops read a collection
@@ -97,18 +101,39 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   `Create`/`Remove`/`Move` ops.
 - Mounting a component runs inside `rt.scope(..)`; unmounting is
   `scope.dispose(rt)`, which drops its nodes, timers and handlers.
-- Handlers are `rt.spawn(future)` (cancelled on unmount; nodes a handler
-  creates belong to its component); the VM starting one coroutine per event
-  uses `rt.spawn_for(handler_site, fut)` so the 30 writes/s guard sees one
-  handler. Timers are `rt.after/every(_dyn)`, `on change` is
-  `rt.on_change(_after)` or, for service paths, `rt.on_change_keyed(key,
-  ..)` with the path's object as key (no firing on a sink switch). Service
-  events are `EventQueue`s. Service `rw` writes use `write_tagged(value,
-  send)` (throttled writes are held, then sent) and reports come back
-  through `receive`. `let x = svc.call(input)` returning `Async` is
-  `rt.async_memo(input, fetch)`.
+- The reconciler keeps identity across reloads with `rt.reparent(id,
+  new_owner)`: a component moved from `start` to `end`, or a surface's
+  state kept across a monitor unplug, moves to its new owner before the old
+  one is disposed (keyed cells keep their diff log, so items keep identity).
+  A runtime fault freezes one component with `rt.suspend(scope)` (effects,
+  timers, listeners and tasks stop, state kept) and the fixing reload calls
+  `rt.resume(scope)`.
+- Handlers: listeners, timers and `on change` handlers each get a handler
+  site (`rt.site_of(handler)`) owning the tasks their bodies `rt.spawn`;
+  disposing the handler (reload restarting changed handler code, or
+  unmount) cancels them at their `await` and reports `Cancelled`. Nodes a
+  handler creates belong to its component. A VM starting one coroutine per
+  event creates a site with `rt.handler_site()` (disposed when the handler
+  is replaced) and starts each with `rt.spawn_for(site, fut)` for
+  graph-triggered events (service events, `on change`: the 30 writes/s guard
+  sees one handler) or `rt.spawn_input(Some(site), fut)` for external input
+  (`on click`, `on scroll`, `on activate`: not rate-counted). Input event
+  queues are `rt.input_events()`; `<->` writes from widgets are made
+  outside any handler and are not counted either. Timers are
+  `rt.after/every(_dyn)`, `on change` is `rt.on_change(_after)` or, for
+  service paths, `rt.on_change_keyed(key, ..)` with the path's object as
+  key (no firing on a sink switch). Service events are `EventQueue`s.
+  Service `rw` writes use `write_tagged(value, send)` (throttled writes are
+  held, then sent) and reports come back through `receive`. `let x =
+  svc.call(input)` returning `Async` is `rt.async_memo(input, fetch)`, a
+  read-only `AsyncMemo`.
+- Service lifecycle (start on first reader, stop 5 s after the last leaves
+  or goes invisible) is driven by the VM, not by graph observation: the
+  compiler knows which service paths each component reads, so the VM
+  acquires them on mount (and when shown) and releases them in an
+  `rt.on_cleanup` of the component scope (and when hidden).
 - Read-only graph introspection for the inspector, `strand watch` and the
-  LSP: `rt.sources/observers/owned(id)`.
+  LSP: `rt.sources/observers/owned(id)`, `rt.site_of(handler)`.
 
 ### `strand-compiler`
 

@@ -9,7 +9,7 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 
 use crate::error::Error;
-use crate::runtime::{Color, NodeData, NodeId, NodeKind, RunOutcome, Runtime};
+use crate::runtime::{Color, HandlerCtx, NodeData, NodeId, NodeKind, RunOutcome, Runtime};
 
 macro_rules! typed_handle {
     ($name:ident, $what:literal) => {
@@ -219,7 +219,7 @@ impl Runtime {
     {
         let owner = self.current_owner();
         let mut prev: Option<(K, T)> = None;
-        self.effect(move |rt| {
+        let effect = self.effect(move |rt| {
             let k = key(rt)?;
             let value = track(rt)?;
             let fire = match &prev {
@@ -230,13 +230,23 @@ impl Runtime {
             };
             let r = if fire {
                 let writer = rt.current_writer().unwrap_or_default();
-                rt.run_handler(writer, owner, |rt| handler(rt, &value))
+                let ctx = HandlerCtx {
+                    writer,
+                    owner,
+                    site: rt.site_of(writer),
+                    input: false,
+                };
+                rt.run_handler(ctx, |rt| handler(rt, &value))
             } else {
                 Ok(())
             };
             prev = Some((k, value));
             r
-        })
+        });
+        // In-flight tasks the handler started are cancelled with it, not
+        // when it re-reads its inputs.
+        self.create_site_for(effect.id);
+        effect
     }
 }
 
@@ -278,7 +288,11 @@ impl<T: Clone + PartialEq + 'static> Signal<T> {
             return Ok(());
         }
         if rt.rate_gate(self.id) {
-            self.set_raw(rt, value).map(|_| ())
+            // Even an unchanged write supersedes held ones (latest wins).
+            if !self.set_raw(rt, value)? {
+                rt.drop_deferred(self.id);
+            }
+            Ok(())
         } else {
             let held = Box::new(value.clone());
             rt.defer_write(

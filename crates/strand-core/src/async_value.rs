@@ -15,11 +15,12 @@
 //! apps.search(query)`): it re-requests when its tracked inputs change and
 //! drops superseded requests quietly.
 
+use std::fmt;
 use std::future::Future;
 
 use crate::error::Error;
-use crate::runtime::{Runtime, WeakRuntime};
-use crate::signal::Signal;
+use crate::runtime::{NodeId, Runtime, WeakRuntime};
+use crate::signal::{Effect, Signal};
 use crate::task::Task;
 
 /// Identifies one load; only the latest one may resolve.
@@ -196,6 +197,51 @@ impl<T: Clone + PartialEq + 'static> Drop for CancelGuard<T> {
     }
 }
 
+/// A derived `Async` value (`let hits = apps.search(query)`): read-only,
+/// like every `let`. Copyable handle.
+pub struct AsyncMemo<T> {
+    cell: Signal<Async<T>>,
+    effect: Effect,
+}
+
+impl<T> Clone for AsyncMemo<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<T> Copy for AsyncMemo<T> {}
+impl<T> PartialEq for AsyncMemo<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.cell == other.cell
+    }
+}
+impl<T> Eq for AsyncMemo<T> {}
+impl<T> fmt::Debug for AsyncMemo<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "AsyncMemo({:?})", self.cell.id())
+    }
+}
+
+impl<T: Clone + PartialEq + 'static> AsyncMemo<T> {
+    /// Read and track.
+    pub fn get(self, rt: &Runtime) -> Result<Async<T>, Error> {
+        self.cell.get(rt)
+    }
+    /// Read without tracking.
+    pub fn get_untracked(self, rt: &Runtime) -> Result<Async<T>, Error> {
+        self.cell.get_untracked(rt)
+    }
+    /// The node holding the value (for [`Runtime::watch`]).
+    pub fn id(self) -> NodeId {
+        self.cell.id()
+    }
+    /// Stop requesting and dispose the value; a running load is cancelled.
+    pub fn dispose(self, rt: &Runtime) {
+        self.effect.dispose(rt);
+        self.cell.dispose(rt);
+    }
+}
+
 impl Runtime {
     /// A derived `Async` value (`let hits = apps.search(query)`): `input`
     /// is tracked; whenever it changes, `fetch(input)` is started as a new
@@ -203,8 +249,8 @@ impl Runtime {
     /// [`crate::Diagnostic::Cancelled`] (superseding a keystroke is not a
     /// cancellation worth reporting). The value is kept while loading. An
     /// `Err` from `input` becomes the cell's `.error`. Owned by the current
-    /// owner; treat the returned cell as read-only.
-    pub fn async_memo<A, T, I, F, Fut>(&self, input: I, fetch: F) -> Signal<Async<T>>
+    /// owner. Read-only, like every `let`.
+    pub fn async_memo<A, T, I, F, Fut>(&self, input: I, fetch: F) -> AsyncMemo<T>
     where
         A: 'static,
         T: Clone + PartialEq + 'static,
@@ -214,7 +260,7 @@ impl Runtime {
     {
         let cell = self.signal(Async::empty());
         let mut running: Option<Task> = None;
-        self.effect(move |rt| {
+        let effect = self.effect(move |rt| {
             let input = input(rt);
             if let Some(task) = running.take() {
                 rt.cancel_quietly(task);
@@ -233,6 +279,6 @@ impl Runtime {
             }
             Ok(())
         });
-        cell
+        AsyncMemo { cell, effect }
     }
 }

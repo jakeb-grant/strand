@@ -16,18 +16,18 @@ any earlier node. Layer 1 also reads a global `root` signal, so everything
 depends on it. Memo values are wrapping sums (no equality cut-off, the worst
 case). The 522 last-layer nodes are watched, as the scene emitter would.
 
-Measured 2026-10-05 (core review round 1), Intel Xeon @ 2.10 GHz (4 vCPUs
+Measured 2026-10-05 (core review round 2), Intel Xeon @ 2.10 GHz (4 vCPUs
 shared with another build), criterion medians:
 
 | Case | Work per iteration | Time |
 | --- | --- | --- |
-| Single write + flush | one random signal; ~5,400 memos recompute (this random graph is very connected), ~516 leaves change | 1.41 ms (~260 ns per recompute) |
-| Full fan-out + flush | `root` write; ~8,200 memos recompute, 521 leaves change | 1.95 ms (~240 ns per recompute) |
-| Narrow path + flush | one signal feeding a chain of 20 memos and one watch, in the same 10k-node runtime (a clock tick) | 1.55 µs (~75 ns per recompute) |
-| Equality cut-off + flush | a write whose first memo recomputes to the same value; the 19 memos below it and the watch do no work | 0.65 µs |
-| Idle flush | nothing written | 45 ns |
+| Single write + flush | one random signal; ~5,400 memos recompute (this random graph is very connected), ~516 leaves change | 1.47 ms (~270 ns per recompute) |
+| Full fan-out + flush | `root` write; ~8,200 memos recompute, 521 leaves change | 1.98 ms (~240 ns per recompute) |
+| Narrow path + flush | one signal feeding a chain of 20 memos and one watch, in the same 10k-node runtime (a clock tick) | 1.61 µs (~75 ns per recompute) |
+| Equality cut-off + flush | a write whose first memo recomputes to the same value; the 19 memos below it and the watch do no work | 0.68 µs |
+| Idle flush | nothing written | 59 ns (round 1: 45 ns; now also drains diagnostics into the `Tick` and checks for a task left ready, to call the wake hook) |
 | Idle check | `is_idle()` + `next_deadline()` | 20 ns |
-| Build | create 10k nodes + 522 watches, first compute | 3.5 ms |
+| Build | create 10k nodes + 522 watches, first compute | 3.4 ms |
 
 The "single write" case recomputes about half of this deliberately
 over-connected graph, so it measures fan-out twice; the narrow-path and

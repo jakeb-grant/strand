@@ -389,18 +389,23 @@ where
     /// with the key function.
     pub fn apply(&mut self, diff: &VecDiff<K, T>) -> Result<(), KeyedError> {
         match diff {
-            VecDiff::Insert { key, value, .. } | VecDiff::Update { key, value, .. }
+            // The key disagrees with the key function: a mismatch at the
+            // diff's own index.
+            VecDiff::Insert { index, key, value } | VecDiff::Update { index, key, value }
                 if (self.key_of)(value) != *key =>
             {
-                return Err(KeyedError::KeyMismatch { index: 0 });
+                return Err(KeyedError::KeyMismatch { index: *index });
             }
             VecDiff::Insert { key, .. } if self.index_of(key).is_some() => {
                 return Err(KeyedError::DuplicateKey);
             }
             VecDiff::Reset { items } => {
                 let mut seen = HashSet::new();
-                for (k, v) in items {
-                    if (self.key_of)(v) != *k || !seen.insert(k) {
+                for (i, (k, v)) in items.iter().enumerate() {
+                    if (self.key_of)(v) != *k {
+                        return Err(KeyedError::KeyMismatch { index: i });
+                    }
+                    if !seen.insert(k) {
                         return Err(KeyedError::DuplicateKey);
                     }
                 }

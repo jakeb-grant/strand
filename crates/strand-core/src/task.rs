@@ -28,7 +28,9 @@ use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 
 use crate::error::Error;
-use crate::runtime::{Color, Diagnostic, NodeData, NodeId, NodeKind, Runtime, WeakRuntime};
+use crate::runtime::{
+    Color, Diagnostic, HandlerCtx, NodeData, NodeId, NodeKind, Runtime, WeakRuntime,
+};
 
 type BoxFuture = Pin<Box<dyn Future<Output = Result<(), Error>>>>;
 type Hook = Arc<dyn Fn() + Send + Sync>;
@@ -43,7 +45,7 @@ pub(crate) struct ReadyQueue {
 impl ReadyQueue {
     /// Queue `id` without calling the wake hook (the runtime already knows
     /// it is not idle).
-    fn push_quiet(&self, id: NodeId) {
+    pub(crate) fn push_quiet(&self, id: NodeId) {
         self.ids
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -51,6 +53,9 @@ impl ReadyQueue {
     }
     fn push(&self, id: NodeId) {
         self.push_quiet(id);
+        self.call_hook();
+    }
+    fn call_hook(&self) {
         let hook = self
             .hook
             .lock()
@@ -92,6 +97,12 @@ struct TaskData {
     /// or timer that spawned it, or an explicit handler site), so a handler
     /// that spawns one task per event is still one writer.
     writer: NodeId,
+    /// Nodes it creates belong here (the component that was the owner when
+    /// it was spawned), so they outlive the task. The task node itself is
+    /// owned by its handler's site, so disposing the handler cancels it.
+    creation_owner: Option<NodeId>,
+    /// Started by external input: its writes are not rate-counted.
+    input: bool,
     /// Superseded on purpose (an `async_memo` re-request): no diagnostic.
     quiet: Cell<bool>,
 }
@@ -129,38 +140,73 @@ impl Task {
 }
 
 impl Runtime {
-    /// Start a handler coroutine owned by the current owner. It is first
-    /// polled at the next flush. Its writes count against the handler that
-    /// is running now (if any) for the write-rate guard; nodes it creates
-    /// belong to its owner, not to the task, so a load started by a handler
-    /// outlives the handler.
+    /// Start a handler coroutine. It is first polled at the next flush.
+    ///
+    /// Inside a listener, timer or `on change` handler the task belongs to
+    /// that handler's site: disposing the handler (unmount, or a reload that
+    /// restarts changed handler code) cancels it at its current `await`.
+    /// Inside an effect it belongs to the effect (cancelled when the effect
+    /// re-runs); elsewhere to the current owner. Its writes count against
+    /// the handler running now (if any) for the write-rate guard, and it
+    /// inherits whether that handler is an input handler. Nodes it creates
+    /// belong to the component (the owner at spawn time), so a load started
+    /// by a handler outlives the handler's invocation.
     pub fn spawn<F>(&self, fut: F) -> Task
     where
         F: Future<Output = Result<(), Error>> + 'static,
     {
-        self.spawn_inner(self.current_writer(), fut)
+        self.spawn_inner(self.current_writer(), None, self.inner.input.get(), fut)
     }
 
-    /// [`Runtime::spawn`] on behalf of a handler site: writes count against
-    /// `handler` for the write-rate guard. The VM uses this when it starts a
-    /// fresh coroutine per event (`on scroll(dy) { volume += dy }`), so the
+    /// [`Runtime::spawn`] on behalf of a handler site (from
+    /// [`Runtime::handler_site`]): the task is owned by `site`, so disposing
+    /// the site cancels it, and its writes count against `site` for the
+    /// write-rate guard. The VM uses this when it starts a fresh coroutine
+    /// per graph-triggered event (`on notifications.received(n)`), so the
     /// guard sees one handler, not one writer per event.
-    pub fn spawn_for<F>(&self, handler: NodeId, fut: F) -> Task
+    pub fn spawn_for<F>(&self, site: NodeId, fut: F) -> Task
     where
         F: Future<Output = Result<(), Error>> + 'static,
     {
-        self.spawn_inner(Some(handler), fut)
+        self.spawn_inner(Some(site), Some(site), false, fut)
     }
 
-    fn spawn_inner<F>(&self, writer: Option<NodeId>, fut: F) -> Task
+    /// [`Runtime::spawn`] for a handler run by external input (`on click`,
+    /// `on scroll(dy)`, a `<->` write from a widget). Its writes are not
+    /// counted by the write-rate guard: input at 60 Hz is the user, not a
+    /// feedback loop. `site` (from [`Runtime::handler_site`]) owns the task
+    /// so a reload can cancel it; `None` means the current owner.
+    pub fn spawn_input<F>(&self, site: Option<NodeId>, fut: F) -> Task
     where
         F: Future<Output = Result<(), Error>> + 'static,
     {
+        self.spawn_inner(site, site, true, fut)
+    }
+
+    fn spawn_inner<F>(
+        &self,
+        writer: Option<NodeId>,
+        site: Option<NodeId>,
+        input: bool,
+        fut: F,
+    ) -> Task
+    where
+        F: Future<Output = Result<(), Error>> + 'static,
+    {
+        let creation_owner = self.current_owner();
+        let home = site
+            .or(self.inner.site.get())
+            .filter(|&s| self.exists(s))
+            .or(creation_owner);
+        let prev = self.inner.owner.replace(home);
         let id = self.create_node(NodeKind::Task, Color::Clean, None);
+        self.inner.owner.set(prev);
         let data = Rc::new(TaskData {
             fut: RefCell::new(Some(Box::pin(fut))),
             waker: RefCell::new(None),
             writer: writer.unwrap_or(id),
+            creation_owner,
+            input,
             quiet: Cell::new(false),
         });
         if let Some(n) = self.inner.nodes.borrow_mut().get_mut(id) {
@@ -175,8 +221,10 @@ impl Runtime {
         Task { id }
     }
 
-    /// Called when a handler is woken from outside a flush (possibly from
-    /// another thread), so the host can schedule a flush.
+    /// Called when a handler is woken (possibly from another thread), and at
+    /// the end of a flush that left a woken task for the next one, so a host
+    /// loop that sleeps until this hook fires or
+    /// [`Runtime::next_deadline`] arrives always comes back to flush.
     pub fn set_wake_hook(&self, hook: impl Fn() + Send + Sync + 'static) {
         *self
             .inner
@@ -188,6 +236,10 @@ impl Runtime {
 
     pub(crate) fn ready_is_empty(&self) -> bool {
         self.inner.ready.is_empty()
+    }
+
+    pub(crate) fn call_wake_hook(&self) {
+        self.inner.ready.call_hook();
     }
 
     /// Cancel `task` without a [`Diagnostic::Cancelled`] (it was superseded
@@ -211,12 +263,20 @@ impl Runtime {
         if ids.is_empty() {
             return false;
         }
-        ids.sort();
-        ids.dedup();
+        // Wake order (first wake wins), never slot order: slots are reused,
+        // so a later handler must not run before an earlier one and lose
+        // "latest value wins" to it.
+        let mut seen = HashSet::with_capacity(ids.len());
+        ids.retain(|id| seen.insert(*id));
         let mut any = false;
         for id in ids {
             if !polled.insert(id) {
                 self.inner.ready.push_quiet(id);
+                continue;
+            }
+            if self.is_suspended(id) {
+                // Frozen with its component: polled again on resume.
+                self.hold(id);
                 continue;
             }
             let Ok(data) = self.data(id) else { continue };
@@ -230,14 +290,22 @@ impl Runtime {
                 continue;
             };
             any = true;
-            let owner = self.owner_of(id).ok().flatten();
+            let ctx = HandlerCtx {
+                writer: task.writer,
+                owner: task.creation_owner,
+                // Tasks it spawns share its site.
+                site: self.owner_of(id).ok().flatten(),
+                input: task.input,
+            };
             let mut cx = Context::from_waker(&waker);
-            let poll = self.run_handler(task.writer, owner, |_| fut.as_mut().poll(&mut cx));
+            let poll = self.run_handler(ctx, |_| fut.as_mut().poll(&mut cx));
             match poll {
                 Poll::Ready(r) => {
                     if let Err(e) = r {
                         self.record_error(id, e);
                     }
+                    // Finished, not cancelled: its last held write lands.
+                    self.detach_deferred(id);
                     self.dispose(id);
                 }
                 Poll::Pending => {

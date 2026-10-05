@@ -32,6 +32,9 @@ enum Spec {
     Clamp(usize, i64),
     /// A signal written by an effect that copies node `i` (earlier) into it.
     Sink(usize),
+    /// `(x + 1) mod 7` through a memo the memo creates (and owns) on every
+    /// run and reads right away (a component's local `let`).
+    Local(usize),
 }
 
 #[derive(Clone, Debug)]
@@ -91,6 +94,7 @@ fn naive(
                 }
                 Spec::Clamp(x, c) => v[*x].map(|x| x.min(*c)),
                 Spec::Sink(_) => Some(signal(idx)),
+                Spec::Local(x) => v[*x].map(|x| (x + 1).rem_euclid(7)),
             }
         };
         v.push(x);
@@ -146,7 +150,7 @@ fn graph_strategy() -> impl Strategy<Value = Case> {
         1usize..5,
         prop::collection::vec(
             (
-                0u8..9,
+                0u8..10,
                 prop::collection::vec(any::<usize>(), 1..4),
                 -2i64..6,
             ),
@@ -170,6 +174,7 @@ fn graph_strategy() -> impl Strategy<Value = Case> {
                         0..=2 => Spec::Sum(idx.iter().map(|&j| j % avail).collect()),
                         3..=5 => Spec::Pick(pick(0), pick(1), pick(2)),
                         6 | 7 => Spec::Clamp(pick(0), c),
+                        9 => Spec::Local(pick(0)),
                         _ if writers => Spec::Sink(pick(0)),
                         _ => Spec::Clamp(pick(0), c),
                     });
@@ -322,6 +327,11 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
                             }
                         }
                         Spec::Clamp(x, c) => inputs[*x].get(rt)?.min(*c),
+                        Spec::Local(x) => {
+                            let input = inputs[*x];
+                            let local = rt.memo(move |rt| Ok(input.get(rt)? + 1));
+                            local.get(rt)?.rem_euclid(7)
+                        }
                         Spec::Sink(_) => unreachable!(),
                     };
                     // Glitch check: this computation saw a consistent view.
@@ -354,7 +364,18 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
             let hs: Vec<(usize, H)> = reads.iter().map(|&i| (i, nodes[i])).collect();
             let m2 = model.clone();
             rt.effect(move |rt| {
-                let seen: Vec<Option<i64>> = hs.iter().map(|(_, h)| h.get(rt).ok()).collect();
+                // Odd effects read through local memos they own and
+                // recreate on every run (an `if` branch's local `let`).
+                let seen: Vec<Option<i64>> = hs
+                    .iter()
+                    .map(|&(_, h)| {
+                        if e % 2 == 1 {
+                            rt.memo(move |rt| h.get(rt)).get(rt).ok()
+                        } else {
+                            h.get(rt).ok()
+                        }
+                    })
+                    .collect();
                 let now = m2.naive_now(rt);
                 let expect: Vec<Option<i64>> = hs.iter().map(|(i, _)| now[*i]).collect();
                 if seen != expect {

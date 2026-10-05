@@ -132,6 +132,20 @@ struct Frame {
     sources: Vec<NodeId>,
 }
 
+/// How a handler body runs.
+#[derive(Copy, Clone, Debug)]
+pub(crate) struct HandlerCtx {
+    /// Its identity for the write-rate guard and cycle paths.
+    pub(crate) writer: NodeId,
+    /// Nodes it creates belong here (its component), so they outlive this
+    /// one invocation.
+    pub(crate) owner: Option<NodeId>,
+    /// Tasks it spawns belong here, so disposing the handler cancels them.
+    pub(crate) site: Option<NodeId>,
+    /// Started by external input: writes are not rate-counted.
+    pub(crate) input: bool,
+}
+
 /// A non-fatal report the host may show (the overlay, `strand watch`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Diagnostic {
@@ -174,6 +188,10 @@ pub struct Tick {
     pub effects_run: usize,
     /// Handler errors and runtime cycles, as values.
     pub errors: Vec<(NodeId, Error)>,
+    /// Warnings raised since the previous tick (write-rate throttling,
+    /// cancelled handlers, zero periods), so `strand watch --json` and the
+    /// overlay can attribute them to this tick.
+    pub diagnostics: Vec<Diagnostic>,
 }
 
 /// Counters for tests and benchmarks.
@@ -218,6 +236,20 @@ pub(crate) struct Inner {
     computing_stack: RefCell<Vec<NodeId>>,
     pub(crate) owner: Cell<Option<NodeId>>,
     pub(crate) writer: Cell<Option<NodeId>>,
+    /// The handler site that owns tasks spawned right now (see
+    /// [`Runtime::handler_site`]); `None` means the current owner.
+    pub(crate) site: Cell<Option<NodeId>>,
+    /// The running handler was started by external input (`on click`,
+    /// `on scroll`): its writes are not counted by the write-rate guard.
+    pub(crate) input: Cell<bool>,
+    /// Handler → its site: disposing the handler disposes the site and so
+    /// cancels the handler's in-flight tasks.
+    sites: RefCell<SecondaryMap<NodeId, NodeId>>,
+    /// Suspended scopes (a faulted component): their sinks, timers, tasks
+    /// and listeners do not run until resumed.
+    pub(crate) suspended: RefCell<HashSet<NodeId>>,
+    /// Sinks and tasks skipped because they are inside a suspended scope.
+    held: RefCell<Vec<NodeId>>,
     pending: RefCell<Vec<NodeId>>,
     seq: Cell<u64>,
     pub(crate) flushing: Cell<bool>,
@@ -324,6 +356,11 @@ impl Runtime {
                 computing_stack: RefCell::new(Vec::new()),
                 owner: Cell::new(None),
                 writer: Cell::new(None),
+                site: Cell::new(None),
+                input: Cell::new(false),
+                sites: RefCell::new(SecondaryMap::new()),
+                suspended: RefCell::new(HashSet::new()),
+                held: RefCell::new(Vec::new()),
                 pending: RefCell::new(Vec::new()),
                 seq: Cell::new(0),
                 flushing: Cell::new(false),
@@ -580,21 +617,62 @@ impl Runtime {
         Ok(r)
     }
 
-    /// Run a handler body: `writer` is its identity for the write-rate
-    /// guard, and nodes it creates belong to `owner` (the handler's
-    /// component), so they outlive this one invocation. Untracked.
-    pub(crate) fn run_handler<R>(
-        &self,
-        writer: NodeId,
-        owner: Option<NodeId>,
-        f: impl FnOnce(&Runtime) -> R,
-    ) -> R {
-        let prev_writer = self.inner.writer.replace(Some(writer));
+    /// Run a handler body (untracked) as `h` describes.
+    pub(crate) fn run_handler<R>(&self, h: HandlerCtx, f: impl FnOnce(&Runtime) -> R) -> R {
+        let owner = h.owner.filter(|&o| self.exists(o));
+        let prev_writer = self.inner.writer.replace(Some(h.writer));
         let prev_owner = self.inner.owner.replace(owner);
+        let prev_site = self.inner.site.replace(h.site);
+        let prev_input = self.inner.input.replace(h.input);
         let r = self.untrack(f);
+        self.inner.input.set(prev_input);
+        self.inner.site.set(prev_site);
         self.inner.owner.set(prev_owner);
         self.inner.writer.set(prev_writer);
         r
+    }
+
+    /// A handler site: a node that owns the coroutines a handler starts, so
+    /// disposing it (the VM does when handler code changes on reload)
+    /// cancels them at their current `await` and reports
+    /// [`Diagnostic::Cancelled`]. Pass it to [`Runtime::spawn_for`]. It is
+    /// owned by the current owner (the component); listeners, timers and
+    /// `on change` handlers get their own site automatically.
+    pub fn handler_site(&self) -> NodeId {
+        self.create_node(NodeKind::Scope, Color::Clean, None)
+    }
+
+    /// Create the site of `handler`: owned by no one, disposed with the
+    /// handler (not when the handler re-evaluates its condition).
+    pub(crate) fn create_site_for(&self, handler: NodeId) -> NodeId {
+        let seq = self.inner.seq.get();
+        self.inner.seq.set(seq + 1);
+        let site = self.inner.nodes.borrow_mut().insert(Node {
+            kind: NodeKind::Scope,
+            color: Color::Clean,
+            computing: false,
+            running: false,
+            version: 0,
+            seq,
+            data: None,
+            sources: Vec::new(),
+            observers: Vec::new(),
+            // Not in the handler's owned list (re-evaluating the handler
+            // must not dispose it); the back-pointer is for suspension.
+            owner: Some(handler),
+        });
+        self.inner.sites.borrow_mut().insert(handler, site);
+        site
+    }
+
+    /// The site owning the tasks a listener, timer or `on change` handler
+    /// started (for a listener, the listener itself): `rt.owned(site)` are
+    /// its in-flight coroutines (the inspector, reload reporting).
+    pub fn site_of(&self, handler: NodeId) -> Option<NodeId> {
+        if let Some(&site) = self.inner.sites.borrow().get(handler) {
+            return Some(site);
+        }
+        (self.kind(handler) == Ok(NodeKind::Listener)).then_some(handler)
     }
 
     /// Create a scope owned by the current owner and run `f` inside it.
@@ -787,6 +865,10 @@ impl Runtime {
             n.running = true;
         }
         let prev_owner = self.inner.owner.replace(Some(id));
+        // Tasks an effect spawns are its own (cancelled when it re-runs);
+        // graph-triggered handlers are always counted by the rate guard.
+        let prev_site = self.inner.site.replace(None);
+        let prev_input = self.inner.input.replace(false);
         let prev_writer = if kind.is_sink() {
             Some(self.inner.writer.replace(Some(id)))
         } else {
@@ -795,6 +877,8 @@ impl Runtime {
 
         let outcome = data.run(self, id);
 
+        self.inner.input.set(prev_input);
+        self.inner.site.set(prev_site);
         self.inner.owner.set(prev_owner);
         if let Some(w) = prev_writer {
             self.inner.writer.set(w);
@@ -915,7 +999,9 @@ impl Runtime {
         std::mem::take(&mut *self.inner.errors.borrow_mut())
     }
 
-    /// Drain warnings (write-rate throttling, cancelled handlers).
+    /// Drain warnings raised outside a flush (write-rate throttling,
+    /// cancelled handlers). [`Runtime::flush`] drains them into
+    /// [`Tick::diagnostics`].
     pub fn take_diagnostics(&self) -> Vec<Diagnostic> {
         std::mem::take(&mut *self.inner.diagnostics.borrow_mut())
     }
@@ -949,10 +1035,12 @@ impl Runtime {
             }
             None => remove(&mut self.inner.root_owned.borrow_mut()),
         }
-        self.dispose_tree(vec![id]);
+        self.dispose_tree(vec![id], None);
     }
 
-    /// Dispose the nodes owned by `id` (before it re-runs).
+    /// Dispose the nodes owned by `id` (before it re-runs). `id` itself is
+    /// not dirtied by losing children it read: it is about to re-run and
+    /// re-reads whatever it needs.
     pub(crate) fn dispose_owned(&self, id: NodeId) {
         let children = self.inner.owned.borrow_mut().remove(id);
         let cleanups = self.inner.cleanups.borrow_mut().remove(id);
@@ -964,11 +1052,14 @@ impl Runtime {
         if let Some(children) = children
             && !children.is_empty()
         {
-            self.dispose_tree(children);
+            self.dispose_tree(children, Some(id));
         }
     }
 
-    fn dispose_tree(&self, roots: Vec<NodeId>) {
+    /// Dispose `roots` and everything they own. Live observers of disposed
+    /// nodes are dirtied (they re-run and see `Disposed`), except `rerun`:
+    /// the node whose children these are, which is about to re-run.
+    fn dispose_tree(&self, roots: Vec<NodeId>, rerun: Option<NodeId>) {
         // Collect the subtree, parents before children.
         let mut order = Vec::new();
         let mut stack = roots;
@@ -976,6 +1067,10 @@ impl Runtime {
             order.push(n);
             if let Some(children) = self.inner.owned.borrow_mut().remove(n) {
                 stack.extend(children);
+            }
+            // A handler's site (and so its in-flight tasks) goes with it.
+            if let Some(site) = self.inner.sites.borrow_mut().remove(n) {
+                stack.push(site);
             }
         }
         // Cleanups and dispose hooks, children first.
@@ -1014,15 +1109,184 @@ impl Runtime {
         }
         drop(names);
         drop(echo);
+        {
+            let mut suspended = self.inner.suspended.borrow_mut();
+            if !suspended.is_empty() {
+                for &n in &order {
+                    suspended.remove(&n);
+                }
+            }
+        }
+        {
+            let mut held = self.inner.held.borrow_mut();
+            if !held.is_empty() {
+                let nodes = self.inner.nodes.borrow();
+                held.retain(|&n| nodes.contains_key(n));
+            }
+        }
+        self.forget_rate_state();
         // Live observers of disposed nodes re-run and see the error value.
         for node in &dropped {
             for &o in &node.observers {
-                if self.exists(o) {
+                if Some(o) != rerun && self.exists(o) {
                     self.mark_dirty_and_downstream(o);
                 }
             }
         }
         drop(dropped);
+    }
+
+    // ----- moving and freezing subtrees -----------------------------------
+
+    /// Move a live node (and everything it owns) to `new_owner` (`None`:
+    /// owned by no one). Live reload uses it to keep identity: a component
+    /// moved from `start` to `end`, or a surface's state kept across a
+    /// monitor unplug, keeps its cells (and a keyed cell its diff log, so
+    /// items keep their identity) when the old parent is disposed.
+    ///
+    /// A no-op on a disposed `id`. Making a node its own owner or
+    /// ancestor is [`Error::Cycle`] naming the ownership path. The moved
+    /// subtree is renumbered after every existing node, keeping its own
+    /// order, so effects still run owners before owned and after the new
+    /// owner.
+    pub fn reparent(&self, id: NodeId, new_owner: Option<NodeId>) -> Result<(), Error> {
+        if !self.exists(id) {
+            return Ok(());
+        }
+        if let Some(o) = new_owner {
+            if !self.exists(o) {
+                return Err(Error::Disposed(o));
+            }
+            // Walk up from the new owner: reaching `id` is an ownership cycle.
+            let mut chain = vec![o];
+            let mut cur = Some(o);
+            while let Some(c) = cur {
+                if c == id {
+                    chain.reverse();
+                    chain.push(id);
+                    return Err(Error::Cycle(Arc::new(self.path(chain))));
+                }
+                cur = self.inner.nodes.borrow().get(c).and_then(|n| n.owner);
+                if let Some(next) = cur {
+                    chain.push(next);
+                }
+            }
+        }
+        let old = self.inner.nodes.borrow().get(id).and_then(|n| n.owner);
+        if old == new_owner {
+            return Ok(());
+        }
+        let remove = |list: &mut Vec<NodeId>| {
+            if let Some(p) = list.iter().rposition(|&c| c == id) {
+                list.remove(p);
+            }
+        };
+        match old {
+            Some(o) => {
+                if let Some(list) = self.inner.owned.borrow_mut().get_mut(o) {
+                    remove(list);
+                }
+            }
+            None => remove(&mut self.inner.root_owned.borrow_mut()),
+        }
+        match new_owner {
+            Some(o) => {
+                let mut owned = self.inner.owned.borrow_mut();
+                match owned.get_mut(o) {
+                    Some(list) => list.push(id),
+                    None => {
+                        owned.insert(o, vec![id]);
+                    }
+                }
+            }
+            None => self.inner.root_owned.borrow_mut().push(id),
+        }
+        // Renumber the subtree (and handler sites) in its own order.
+        let mut subtree = Vec::new();
+        let mut stack = vec![id];
+        while let Some(n) = stack.pop() {
+            subtree.push(n);
+            if let Some(children) = self.inner.owned.borrow().get(n) {
+                stack.extend(children.iter().copied());
+            }
+            if let Some(&site) = self.inner.sites.borrow().get(n) {
+                stack.push(site);
+            }
+        }
+        let mut nodes = self.inner.nodes.borrow_mut();
+        subtree.sort_by_key(|&n| nodes.get(n).map_or(0, |n| n.seq));
+        for n in subtree {
+            if let Some(node) = nodes.get_mut(n) {
+                let seq = self.inner.seq.get();
+                self.inner.seq.set(seq + 1);
+                node.seq = seq;
+            }
+        }
+        if let Some(node) = nodes.get_mut(id) {
+            node.owner = new_owner;
+        }
+        Ok(())
+    }
+
+    /// Freeze a subtree (a component whose handler faulted, outlined in red
+    /// until the fixing reload): its effects, watches, timers, listeners
+    /// and tasks stop running, but its state is kept. Memos stay readable
+    /// (they are pure). Work that comes due while frozen is held and done
+    /// on [`Runtime::resume`]; events delivered while frozen are not seen
+    /// by its listeners (a frozen component ignores input). A frozen
+    /// subtree schedules nothing, so the runtime can still be idle.
+    pub fn suspend(&self, id: NodeId) -> Result<(), Error> {
+        if !self.exists(id) {
+            return Err(Error::Disposed(id));
+        }
+        self.inner.suspended.borrow_mut().insert(id);
+        Ok(())
+    }
+
+    /// Unfreeze a subtree suspended with [`Runtime::suspend`]: held sinks
+    /// and woken tasks run at the next flush; timers count again.
+    pub fn resume(&self, id: NodeId) {
+        if !self.inner.suspended.borrow_mut().remove(&id) {
+            return;
+        }
+        let held = std::mem::take(&mut *self.inner.held.borrow_mut());
+        let mut keep = Vec::new();
+        for n in held {
+            if !self.exists(n) {
+                continue;
+            }
+            if self.is_suspended(n) {
+                keep.push(n);
+            } else if self.kind(n) == Ok(NodeKind::Task) {
+                self.inner.ready.push_quiet(n);
+            } else if self.is_stale(n) {
+                self.inner.pending.borrow_mut().push(n);
+            }
+        }
+        *self.inner.held.borrow_mut() = keep;
+    }
+
+    /// True while `id` or one of its owners (or the handler of its site) is
+    /// suspended.
+    pub fn is_suspended(&self, id: NodeId) -> bool {
+        let suspended = self.inner.suspended.borrow();
+        if suspended.is_empty() {
+            return false;
+        }
+        let nodes = self.inner.nodes.borrow();
+        let mut cur = Some(id);
+        while let Some(c) = cur {
+            if suspended.contains(&c) {
+                return true;
+            }
+            cur = nodes.get(c).and_then(|n| n.owner);
+        }
+        false
+    }
+
+    /// Remember a task skipped because it is suspended.
+    pub(crate) fn hold(&self, id: NodeId) {
+        self.inner.held.borrow_mut().push(id);
     }
 
     pub(crate) fn mark_dirty_and_downstream(&self, id: NodeId) {
@@ -1066,7 +1330,7 @@ impl Runtime {
     /// between the runtime and futures or closures that captured it.
     pub fn shutdown(&self) {
         let roots = std::mem::take(&mut *self.inner.root_owned.borrow_mut());
-        self.dispose_tree(roots);
+        self.dispose_tree(roots, None);
         let cleanups = std::mem::take(&mut *self.inner.root_cleanups.borrow_mut());
         for c in cleanups.into_iter().rev() {
             c();
@@ -1123,6 +1387,12 @@ impl Runtime {
     /// once), run dirty sinks (in creation order) until quiescent, and
     /// report what changed. Writes made by sinks during the flush are part
     /// of this tick.
+    ///
+    /// A task that woke itself during the flush is polled at the next one;
+    /// the flush then calls the wake hook ([`Runtime::set_wake_hook`]), so a
+    /// host that sleeps until the hook fires or [`Runtime::next_deadline`]
+    /// arrives never misses it. (Equivalently: flush again while
+    /// [`Runtime::is_idle`] is false.)
     pub fn flush(&self) -> Tick {
         let mut tick = Tick::default();
         if self.inner.flushing.replace(true) {
@@ -1163,6 +1433,11 @@ impl Runtime {
                         _ => continue,
                     }
                 };
+                if self.is_suspended(id) {
+                    // Frozen with its component until resumed.
+                    self.inner.held.borrow_mut().push(id);
+                    continue;
+                }
                 if self.cycle_cut(id, &mut runs, &mut errors) {
                     self.park(id);
                     continue;
@@ -1205,8 +1480,14 @@ impl Runtime {
             tick.changed.sort_by_key(|&t| nodes[t].seq);
         }
         tick.changed.dedup();
+        tick.diagnostics = self.take_diagnostics();
         self.inner.flush_writes.borrow_mut().clear();
         self.inner.flushing.set(false);
+        // A task that woke itself during this flush waits for the next one;
+        // tell the host so a loop sleeping on the hook polls it.
+        if !self.ready_is_empty() {
+            self.call_wake_hook();
+        }
         tick
     }
 
