@@ -167,8 +167,9 @@ fn renderer_paints_a_bar_through_the_surface_manager() {
     let lit = (20..80).any(|x| (8..30).any(|y| shot.rgb(x, y)[0] > 0xc0));
     assert!(lit, "no text drawn");
 
-    // Clock-tick-sized changes repaint only what moved, once buffers are
-    // reused (the second frame ever needs a fresh, fully painted buffer).
+    // Clock-tick-sized changes repaint only what moved, from the first
+    // change on: the second buffer starts as a copy of the first frame
+    // (copy-forward), so it is not painted in full.
     for x in [500.0, 700.0, 900.0] {
         let mut d = SceneDiff::default();
         d.set(SQUARE, Prop::X, PropValue::Number(x));
@@ -181,9 +182,9 @@ fn renderer_paints_a_bar_through_the_surface_manager() {
             })
             .unwrap();
         assert!(ok);
+        let damage = mgr.state().host().renderer.last_damage(info.id).unwrap();
+        assert!(damage.area() <= 4 * 20 * 20, "move to {x}: {damage:?}");
     }
-    let damage = mgr.state().host().renderer.last_damage(info.id).unwrap();
-    assert!(damage.area() <= 4 * 20 * 20, "{damage:?}");
     std::thread::sleep(Duration::from_millis(50));
     let shot = sway.grim("HEADLESS-1");
     for x in [310, 510, 710] {
