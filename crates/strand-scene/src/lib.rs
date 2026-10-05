@@ -7,6 +7,7 @@ pub mod color;
 pub mod damage;
 pub mod geometry;
 pub mod id;
+pub mod input;
 pub mod paint;
 pub mod protocol;
 pub mod surface;
@@ -16,6 +17,7 @@ pub use color::{Color, LinearRgb, Oklab, Oklch};
 pub use damage::{Damage, MAX_RECTS};
 pub use geometry::{LogicalPoint, LogicalRect, LogicalSize, Point, Rect, Scale, Size};
 pub use id::{NodeId, NodeIdAllocator, SurfaceId};
+pub use input::{AxisDelta, AxisSource, ButtonState, InputEvent};
 pub use paint::{BYTES_PER_PIXEL, PaintTarget, Painter, TargetError};
 pub use protocol::{
     Border, Corners, Easing, Font, GradientStop, Insets, Length, NodeKind, Paint, Prop, PropClass,

@@ -543,3 +543,109 @@ schema from `strand-compiler`).
   non-finite numbers read as unset, lengths and offsets clamp to ±1e6
   logical px, blur to 1000; `Create` with an index more than 65,536 past
   the live slots is rejected; rect and damage arithmetic saturates.
+
+## surface
+
+- 2026-10-05 · surface: buffer size is `Scale::physical_size` (round half
+  away from zero), which is what `wp_fractional_scale_v1` prescribes, not
+  the `ceil` the track spec mentioned; they differ only when
+  `logical × scale` has a fraction below .5, where `ceil` would make a
+  buffer 1 px larger than the viewport and the compositor would resample
+  it (blur). Before the compositor's `preferred_scale` arrives the scale
+  is estimated from the output's mode and xdg-output logical size, so the
+  first frame is already sharp. Without fractional scale or viewporter
+  (or with `Config::fractional_scale = false`) buffers are `logical × n`
+  with `set_buffer_scale(n)`, `n` the surface's preferred integer scale.
+- 2026-10-05 · surface: the lifecycle hooks the manager needs (attach,
+  configure, detach, monitors, `frame_deadline`, `frame_dropped`) live in
+  `strand_surface::SurfaceHost: Painter` with no-op defaults, not in
+  `strand-scene`: render does not depend on surface, and the binary wraps
+  `Renderer` to forward them. `frame_deadline` returns an `Instant` like
+  `Renderer::frame_deadline`. No `strand-scene` change was needed.
+- 2026-10-05 · surface: frame callbacks. A buffer commit requests a frame
+  callback only if `wants_frame` is still true after the paint, so a
+  single repaint (a clock tick) costs one commit and no callback.
+  Repaint requests and Wayland events mark surfaces dirty; marked surfaces
+  are painted once at the end of the loop wakeup (calloop idle). A
+  surface whose last frame is still in flight waits: for its frame
+  callback, or, when none was requested, for that commit's presentation
+  feedback (`presented` or `discarded`), so paints lock to the refresh
+  rate however often content changes (review round 1). Without
+  `wp_presentation` every buffer commit requests a frame callback.
+  Feedback carries the surface's generation and commit number, so
+  feedback for a destroyed surface whose id was reused is ignored.
+  Configure and `preferred_scale` only mark the surface; size and scale
+  are resolved right before the paint, so one wakeup gives one
+  `surface_configured`. A configure that needs no new frame gets a bare
+  commit so the ack takes effect (while a frame is in flight it waits for
+  that frame's callback or feedback: a bare commit would discard the
+  feedback). A configure or scale that needs a new buffer size skips the
+  wait, so a surface the compositor does not present still applies it
+  (review round 2; not reproducible on headless sway 1.9, which presents
+  occluded surfaces and defers output changes while powered off, so it
+  has no sway test). Before painting, a host hold (`wants_frame` false,
+  `frame_deadline` Some: the renderer's first-frame text wait) arms a
+  timer at the deadline and commits nothing but a pending ack; the paint
+  cancels any armed deadline. A paint that returns no damage while
+  `wants_frame` stays true arms a timer at `frame_deadline` if the host
+  gives one; on a surface that has not committed a buffer yet (unmapped:
+  no frame callbacks come) it retries after 16 ms; otherwise it requests
+  a callback with a bare commit. Presentation
+  feedback is requested for every buffer commit (none while idle).
+  `State` methods called between dispatches take effect on the next
+  `SurfaceManager::dispatch`, which does not sleep while work is pending.
+- 2026-10-05 · surface: buffers. One pool per surface and size, buffers
+  created lazily: the free buffer holding the newest frame is reused, a
+  second is created while the first is on screen, a third only while two
+  are busy; with all three busy the paint waits for a release. Ages count
+  buffer commits since the last resize. A new size (or a new pool) drops
+  the old pool and destroys its buffers at once, busy or not: allowed by
+  `wl_surface.attach` because that storage is never written again.
+- 2026-10-05 · surface: monitors. Identity is `"make | model |
+  description"`; a second identical monitor plugged at the same time gets
+  ` #2`. `Screens::Named` matches the identity or the connector name
+  (`DP-1`). An unplugged monitor is remembered for 30 s (one timer, armed
+  only while something is remembered) and keeps its per-node
+  `SurfaceId`s, so a quick replug reattaches the same ids. wlroots puts
+  the connector into `wl_output.description` (`"… (DP-1)"`); a trailing
+  `" (<connector>)"` equal to the output's own name is dropped from the
+  identity, so a monitor moved to another port is the same monitor.
+  Numbering of identical monitors follows plug order. `Monitor` also
+  carries the output's scale (estimated fractional, else integer),
+  xdg-output logical size and position; changes to those (same identity)
+  go to `SurfaceHost::monitor_changed`. On sway, `output X disable` /
+  `enable` withdraws and re-adds the `wl_output` global with the same
+  description, which is how the replug test exercises reconnection.
+- 2026-10-05 · surface: `screens: focused` is one layer surface per node
+  created with `output = null`; wlr-layer-shell lets the compositor put
+  it on the output the user last interacted with (sway: the focused
+  workspace's). Its monitor is learnt from `wl_surface.enter`
+  (`SurfaceHost::surface_entered`); `surface_attached` gets `None`.
+  `State::set_focused_monitor` (for a compositor IPC service) pins it and
+  moves an open one; when that output goes, the compositor picks again.
+- 2026-10-05 · surface: a layer surface the compositor `closed` is
+  destroyed and detached; it is recreated only when outputs change or its
+  spec is updated, never in a loop. Content-sized surfaces (a bar without
+  thickness, a panel or OSD without width and height) are not mapped until
+  M2 layout can size them (logged); `popup` and `lock` are not layer
+  surfaces. Logical lengths are rounded to whole pixels for layer-shell.
+  Spec updates reconfigure anchor, size, margins, exclusive zone and
+  keyboard in place with a bare commit; layer or namespace changes
+  recreate.
+- 2026-10-05 · surface: `InputEvent` and its parts moved to
+  `strand-scene` (`strand_scene::input`; `strand_surface` re-exports
+  them) so render and logic can name them. `SurfaceHost::input` gives the
+  host every event on the main thread before the channel; the channel is
+  created by `take_input` and nothing is queued before. Wayland serials
+  stay in `strand-surface` (`State::last_button_serial` for popup grabs).
+  The cursor is set to `default` on every enter through SCTK's themed
+  pointer (`wp_cursor_shape_v1`, else the cursor theme). An `osd` gets an
+  empty input region before its first commit (design example d:
+  "click-through").
+- 2026-10-05 · surface: SCTK is used without default features (no
+  xkbcommon until keyboard input); `rustix` reads the clock
+  `wp_presentation.clock_id` names. SCTK 0.21.1 declares rust-version
+  1.86 while the workspace says 1.85; the root manifest is not this
+  track's, so the bump is left to the integration step. Headless wlroots reports refresh 0
+  in presentation feedback, so predictions there fall back to "now";
+  refresh locking is covered by fake-clock unit tests.
