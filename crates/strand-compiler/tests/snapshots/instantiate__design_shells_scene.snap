@@ -2,7 +2,7 @@
 source: crates/strand-compiler/tests/instantiate.rs
 expression: shell.scene.render()
 ---
-bar height=36 margin=[$space.2, $space.2, 0] edge=top screens="DP-1" name="Top" bg=$surface.alpha(0.72) color=$fg radius=$radius.lg shadow=$elevation.md blur=24 font=$font.ui
+bar height=36 margin=[$space.2, $space.2, 0] edge=top screens="Mock | DP-1 | Display" name="Top" bg=$surface.alpha(0.72) color=$fg radius=$radius.lg shadow=$elevation.md blur=24 font=$font.ui
   split pad=[0, $space.3]
     start gap=$space.3
       row gap=$space.1
@@ -12,54 +12,6 @@ bar height=36 margin=[$space.2, $space.2, 0] edge=top screens="DP-1" name="Top" 
     center
       text text="Mon 05  09:41"
         popup open=false
-          col pad=$space.3 gap=$space.2 bg=$surface radius=$radius.lg shadow=$elevation.lg
-            row align=center
-              button text="‹"
-              text grow=1 align=center text="October 2026"
-              button text="›"
-            grid gap=$space.1 columns=7
-              text width=28 height=28 align=center color=$fg.faint text="28"
-              text width=28 height=28 align=center color=$fg.faint text="29"
-              text width=28 height=28 align=center color=$fg.faint text="30"
-              text width=28 height=28 align=center text=" 1"
-              text width=28 height=28 align=center text=" 2"
-              text width=28 height=28 align=center text=" 3"
-              text width=28 height=28 align=center text=" 4"
-              text width=28 height=28 align=center bg=$accent color=$on_accent radius=full text=" 5"
-              text width=28 height=28 align=center text=" 6"
-              text width=28 height=28 align=center text=" 7"
-              text width=28 height=28 align=center text=" 8"
-              text width=28 height=28 align=center text=" 9"
-              text width=28 height=28 align=center text="10"
-              text width=28 height=28 align=center text="11"
-              text width=28 height=28 align=center text="12"
-              text width=28 height=28 align=center text="13"
-              text width=28 height=28 align=center text="14"
-              text width=28 height=28 align=center text="15"
-              text width=28 height=28 align=center text="16"
-              text width=28 height=28 align=center text="17"
-              text width=28 height=28 align=center text="18"
-              text width=28 height=28 align=center text="19"
-              text width=28 height=28 align=center text="20"
-              text width=28 height=28 align=center text="21"
-              text width=28 height=28 align=center text="22"
-              text width=28 height=28 align=center text="23"
-              text width=28 height=28 align=center text="24"
-              text width=28 height=28 align=center text="25"
-              text width=28 height=28 align=center text="26"
-              text width=28 height=28 align=center text="27"
-              text width=28 height=28 align=center text="28"
-              text width=28 height=28 align=center text="29"
-              text width=28 height=28 align=center text="30"
-              text width=28 height=28 align=center text="31"
-              text width=28 height=28 align=center color=$fg.faint text=" 1"
-              text width=28 height=28 align=center color=$fg.faint text=" 2"
-              text width=28 height=28 align=center color=$fg.faint text=" 3"
-              text width=28 height=28 align=center color=$fg.faint text=" 4"
-              text width=28 height=28 align=center color=$fg.faint text=" 5"
-              text width=28 height=28 align=center color=$fg.faint text=" 6"
-              text width=28 height=28 align=center color=$fg.faint text=" 7"
-              text width=28 height=28 align=center color=$fg.faint text=" 8"
     end gap=$space.3
       row gap=$space.1
         icon source="audio-volume-medium-symbolic"
@@ -67,7 +19,7 @@ bar height=36 margin=[$space.2, $space.2, 0] edge=top screens="DP-1" name="Top" 
         icon source="battery-good-symbolic"
         text text="42% · 2 h 5 min"
       image size=16 source="network-wireless"
-bar height=36 margin=[$space.2, $space.2, 0] edge=top screens="HDMI-A-1" name="Top" bg=$surface.alpha(0.72) color=$fg radius=$radius.lg shadow=$elevation.md blur=24 font=$font.ui
+bar height=36 margin=[$space.2, $space.2, 0] edge=top screens="Mock | HDMI-A-1 | Display" name="Top" bg=$surface.alpha(0.72) color=$fg radius=$radius.lg shadow=$elevation.md blur=24 font=$font.ui
   split pad=[0, $space.3]
     start gap=$space.3
       row gap=$space.1
@@ -76,54 +28,6 @@ bar height=36 margin=[$space.2, $space.2, 0] edge=top screens="HDMI-A-1" name="T
     center
       text text="Mon 05  09:41"
         popup open=false
-          col pad=$space.3 gap=$space.2 bg=$surface radius=$radius.lg shadow=$elevation.lg
-            row align=center
-              button text="‹"
-              text grow=1 align=center text="October 2026"
-              button text="›"
-            grid gap=$space.1 columns=7
-              text width=28 height=28 align=center color=$fg.faint text="28"
-              text width=28 height=28 align=center color=$fg.faint text="29"
-              text width=28 height=28 align=center color=$fg.faint text="30"
-              text width=28 height=28 align=center text=" 1"
-              text width=28 height=28 align=center text=" 2"
-              text width=28 height=28 align=center text=" 3"
-              text width=28 height=28 align=center text=" 4"
-              text width=28 height=28 align=center bg=$accent color=$on_accent radius=full text=" 5"
-              text width=28 height=28 align=center text=" 6"
-              text width=28 height=28 align=center text=" 7"
-              text width=28 height=28 align=center text=" 8"
-              text width=28 height=28 align=center text=" 9"
-              text width=28 height=28 align=center text="10"
-              text width=28 height=28 align=center text="11"
-              text width=28 height=28 align=center text="12"
-              text width=28 height=28 align=center text="13"
-              text width=28 height=28 align=center text="14"
-              text width=28 height=28 align=center text="15"
-              text width=28 height=28 align=center text="16"
-              text width=28 height=28 align=center text="17"
-              text width=28 height=28 align=center text="18"
-              text width=28 height=28 align=center text="19"
-              text width=28 height=28 align=center text="20"
-              text width=28 height=28 align=center text="21"
-              text width=28 height=28 align=center text="22"
-              text width=28 height=28 align=center text="23"
-              text width=28 height=28 align=center text="24"
-              text width=28 height=28 align=center text="25"
-              text width=28 height=28 align=center text="26"
-              text width=28 height=28 align=center text="27"
-              text width=28 height=28 align=center text="28"
-              text width=28 height=28 align=center text="29"
-              text width=28 height=28 align=center text="30"
-              text width=28 height=28 align=center text="31"
-              text width=28 height=28 align=center color=$fg.faint text=" 1"
-              text width=28 height=28 align=center color=$fg.faint text=" 2"
-              text width=28 height=28 align=center color=$fg.faint text=" 3"
-              text width=28 height=28 align=center color=$fg.faint text=" 4"
-              text width=28 height=28 align=center color=$fg.faint text=" 5"
-              text width=28 height=28 align=center color=$fg.faint text=" 6"
-              text width=28 height=28 align=center color=$fg.faint text=" 7"
-              text width=28 height=28 align=center color=$fg.faint text=" 8"
     end gap=$space.3
       row gap=$space.1
         icon source="audio-volume-medium-symbolic"
@@ -132,24 +36,6 @@ bar height=36 margin=[$space.2, $space.2, 0] edge=top screens="HDMI-A-1" name="T
         text text="42% · 2 h 5 min"
       image size=16 source="network-wireless"
 panel anchor=center layer=overlay keyboard=exclusive screens=focused open=false name="Launcher" enter={opacity: 0; scale: 0.96} exit={opacity: 0; scale: 0.96}
-  col width=600 pad=$space.3 gap=$space.2 bg=$surface.alpha(0.82) radius=$radius.xl shadow=$elevation.xl blur=32 clip=true
-    input text="" font=$font.title placeholder="Search apps" focus=true
-    list max_height=420
-      row pad=$space.2 gap=$space.3 align=center radius=$radius.md
-        image size=32 source="firefox"
-        col grow=1
-          text text="Firefox" weight=600 marks=[] mark_color=$accent
-          text color=$fg.muted text="" font=$font.caption ellipsis=end
-      row pad=$space.2 gap=$space.3 align=center radius=$radius.md
-        image size=32 source="foot"
-        col grow=1
-          text text="Foot" weight=600 marks=[] mark_color=$accent
-          text color=$fg.muted text="" font=$font.caption ellipsis=end
-      row pad=$space.2 gap=$space.3 align=center radius=$radius.md
-        image size=32 source="files"
-        col grow=1
-          text text="Files" weight=600 marks=[] mark_color=$accent
-          text color=$fg.muted text="" font=$font.caption ellipsis=end
 panel margin=$space.3 anchor=top_right layer=overlay keyboard=none screens=focused open=true name="Toasts"
   col width=380 gap=$space.2
     col pad=$space.3 gap=$space.2 bg=$surface.alpha(0.88) radius=$radius.lg border=template(1, #000000 <- $border) shadow=$elevation.lg blur=24 enter={x: 420; opacity: 0} exit={x: 420; opacity: 0; height: 0}
@@ -167,7 +53,3 @@ panel margin=$space.3 anchor=top_right layer=overlay keyboard=none screens=focus
           text color=$fg.muted text="…" max_lines=4 markup=basic
         icon size=14 source="window-close-symbolic"
 osd margin=[0, 0, 96] anchor=bottom open=false name="Level" enter={opacity: 0; scale: 0.9} exit={opacity: 0; scale: 0.9}
-  row width=260 pad=$space.3 gap=$space.3 align=center bg=$surface.alpha(0.8) radius=full shadow=$elevation.lg blur=24
-    icon size=20 source="audio-volume-medium-symbolic"
-    meter height=6 grow=1 color=$accent track=$fg.alpha(0.15) value=0.5
-    text width=4ch align=end text="50%" font=$font.mono

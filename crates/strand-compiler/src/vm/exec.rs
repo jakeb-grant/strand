@@ -15,7 +15,7 @@ use strand_core::{Error, Runtime};
 use strand_scene::{Channel, Color, TokenExpr};
 
 use super::builtins;
-use super::value::{Closure, NodeState, PendingOp, Value};
+use super::value::{Closure, NodeState, PendingOp, Value, ValueKey};
 use super::{Env, Vm};
 use crate::hir::{AssignOp, LocalId};
 use crate::lower::{ArgMap, ChunkId, Const, Op, Pattern, Place, PlaceRoot, PlaceSeg};
@@ -32,6 +32,26 @@ pub struct EventCtx {
     pub scene: Option<strand_scene::NodeId>,
     pub event: String,
     pub args: Vec<Value>,
+    /// `propagate()` already passed this event on (a second call, or a
+    /// second handler of the same event on the element, does nothing).
+    pub propagated: std::cell::Cell<bool>,
+}
+
+impl EventCtx {
+    pub fn new(
+        node: Option<Rc<NodeState>>,
+        scene: Option<strand_scene::NodeId>,
+        event: impl Into<String>,
+        args: Vec<Value>,
+    ) -> Self {
+        Self {
+            node,
+            scene,
+            event: event.into(),
+            args,
+            propagated: std::cell::Cell::new(false),
+        }
+    }
 }
 
 pub(crate) enum Exit {
@@ -42,6 +62,8 @@ pub(crate) enum Exit {
 pub(crate) struct Machine {
     chunk: ChunkId,
     pc: usize,
+    /// Stop before this op (the call of an async service `let`).
+    stop: Option<usize>,
     stack: Vec<Value>,
     frame: Frame,
     closure: Option<Rc<Closure>>,
@@ -89,6 +111,7 @@ impl Machine {
         Self {
             chunk,
             pc: 0,
+            stop: None,
             stack: Vec::new(),
             frame,
             closure,
@@ -139,11 +162,28 @@ impl Machine {
         }
     }
 
-    /// Run until the chunk ends or an `await`.
+    /// Run until the chunk ends or an `await`. A failure is noted with
+    /// the failing op's source span ([`Vm::fault_of`]), unless an inner
+    /// chunk (a `let` it read, a `fn` it called) already noted it.
     pub(crate) fn run(&mut self, vm: &Rc<Vm>, rt: &Runtime) -> Result<Exit, Error> {
+        let r = self.run_ops(vm, rt);
+        if let Err(e) = &r {
+            let chunk = vm.prog.chunk(self.chunk);
+            let at = self.pc.saturating_sub(1);
+            if let Some(span) = chunk.spans.get(at).or(chunk.spans.last()) {
+                vm.note_fault(e, chunk.file, *span);
+            }
+        }
+        r
+    }
+
+    fn run_ops(&mut self, vm: &Rc<Vm>, rt: &Runtime) -> Result<Exit, Error> {
         let prog = vm.prog.clone();
         let chunk = prog.chunk(self.chunk);
         while let Some(op) = chunk.ops.get(self.pc) {
+            if self.stop == Some(self.pc) {
+                break;
+            }
             self.pc += 1;
             match op {
                 Op::Const(k) => {
@@ -170,6 +210,17 @@ impl Machine {
                     self.stack.push(v);
                 }
                 Op::Def(d) => {
+                    // `prefs.accent` reads that settings field's signal
+                    // only, not the whole record.
+                    if let Some(Op::Field(n)) = chunk.ops.get(self.pc)
+                        && let Some(fields) = self.env.settings(*d)
+                        && let Some(sig) = fields.field(&chunk.names[*n as usize])
+                    {
+                        self.pc += 1;
+                        let v = sig.get(rt)?;
+                        self.stack.push(v);
+                        continue;
+                    }
                     let v = vm.read_def(rt, *d, &self.env)?;
                     self.stack.push(v);
                 }
@@ -407,7 +458,32 @@ impl Machine {
                 Op::Fail(n) => return Err(fail(chunk.names[*n as usize].clone())),
             }
         }
+        if self.stop.is_some_and(|s| s == self.pc) {
+            // Stopped before the call: the stack holds its operands.
+            return Ok(Exit::Done(Value::Unit));
+        }
         Ok(Exit::Done(self.stack.pop().unwrap_or(Value::Unit)))
+    }
+
+    /// Run up to the chunk's last op, a method call, and return its
+    /// receiver and arguments instead of calling it.
+    pub(crate) fn call_args(
+        &mut self,
+        vm: &Rc<Vm>,
+        rt: &Runtime,
+    ) -> Result<(Value, Vec<Value>), Error> {
+        let prog = vm.prog.clone();
+        let chunk = prog.chunk(self.chunk);
+        let Some(Op::CallMethod { args, .. }) = chunk.ops.last() else {
+            return Err(fail("not a method call"));
+        };
+        self.stop = Some(chunk.ops.len() - 1);
+        if let Exit::Await(_) = self.run(vm, rt)? {
+            return Err(fail("`await` outside a handler"));
+        }
+        let a = self.pop_args(&chunk.args[*args as usize]);
+        let recv = self.pop();
+        Ok((recv, a.into_vec()))
     }
 
     fn pop_n(&mut self, n: u32) -> Vec<Value> {
@@ -467,7 +543,8 @@ fn key_of(vm: &Vm, item: &Value, path: Option<&[String]>) -> Value {
 }
 
 /// `xs.push(x)`, `xs.remove_key(k)`, `xs.move(k, i)`, … on a writable
-/// list.
+/// list. A keyed `state` is a core keyed collection: each call is one
+/// keyed operation (one `VecDiff`), never a copy of the list.
 fn mutate(
     vm: &Rc<Vm>,
     rt: &Runtime,
@@ -477,6 +554,12 @@ fn mutate(
     method: &str,
     args: Args,
 ) -> Result<(), Error> {
+    if let PlaceRoot::Def(d) = &place.root
+        && place.segs.is_empty()
+        && let Some(super::Slot::Keyed(k)) = env.def(*d)
+    {
+        return mutate_keyed(vm, rt, k, method, args);
+    }
     let current = rt.untrack(|rt| read_place(vm, rt, place, &indices, env))?;
     let mut list: Vec<Value> = current.as_list().map(<[Value]>::to_vec).unwrap_or_default();
     let path = key_path(vm, place, &list);
@@ -551,6 +634,75 @@ fn mutate(
     )
 }
 
+/// A list mutation on a keyed `state`, as core keyed operations.
+fn mutate_keyed(
+    vm: &Rc<Vm>,
+    rt: &Runtime,
+    k: strand_core::KeyedSignal<ValueKey, Value>,
+    method: &str,
+    args: Args,
+) -> Result<(), Error> {
+    let arg = |i: usize| args.get(i).cloned().unwrap_or(Value::Null);
+    let len = k.with_untracked(rt, |v| v.len())?;
+    let index = |v: &Value| v.as_f64().map(|n| (n.max(0.0) as usize).min(len));
+    let key_of_item = |item: &Value| k.with_untracked(rt, |v| (v.key_fn())(item));
+    let has = |key: &ValueKey| k.with_untracked(rt, |v| v.contains_key(key));
+    match method {
+        "push" | "insert" => {
+            let (at, item) = if method == "push" {
+                (len, arg(0))
+            } else {
+                (index(&arg(0)).unwrap_or(len), arg(1))
+            };
+            if has(&key_of_item(&item)?)? {
+                return Err(fail(format!(
+                    "`{method}`: an item with this key is already in the list"
+                )));
+            }
+            k.insert(rt, at, item)
+        }
+        "remove" => {
+            let at = arg(0).as_f64().unwrap_or(-1.0);
+            let key = k.with_untracked(rt, |v| {
+                (at >= 0.0)
+                    .then(|| v.items().get(at as usize).map(|(key, _)| key.clone()))
+                    .flatten()
+            })?;
+            match key {
+                Some(key) => k.remove_key(rt, &key),
+                None => Err(fail(format!("`remove`: no item at {at}"))),
+            }
+        }
+        "clear" => k.replace_all(rt, Vec::new()),
+        "remove_key" | "move" | "update" => {
+            let key = ValueKey(arg(0));
+            if !has(&key)? {
+                return Err(fail(format!("`{method}`: no item with this key")));
+            }
+            match method {
+                "remove_key" => k.remove_key(rt, &key),
+                "move" => {
+                    let to = index(&arg(1)).unwrap_or(len).min(len.saturating_sub(1));
+                    k.move_key(rt, &key, to)
+                }
+                _ => {
+                    let Some(old) = k.get_key(rt, &key)? else {
+                        return Err(fail("`update`: no item with this key"));
+                    };
+                    // The new item is computed before the collection is
+                    // touched (no read inside its own update).
+                    let new = vm.call(rt, &arg(1), vec![old])?;
+                    if key_of_item(&new)? != key {
+                        return Err(fail("`update` changed the item's key"));
+                    }
+                    k.update(rt, &key, move |v| *v = new)
+                }
+            }
+        }
+        _ => Err(fail(format!("lists have no method `{method}`"))),
+    }
+}
+
 /// The current value of a place.
 fn read_place(
     vm: &Rc<Vm>,
@@ -587,6 +739,35 @@ pub(crate) fn store(
     value: Value,
 ) -> Result<(), Error> {
     match &place.root {
+        PlaceRoot::Def(d) if env.settings(*d).is_some() => {
+            let Some(fields) = env.settings(*d) else {
+                return Err(fail("no settings file"));
+            };
+            match place.segs.split_first() {
+                // `prefs.compact = true`: that field's signal only.
+                Some((PlaceSeg::Field(name), rest)) => {
+                    let Some(sig) = fields.field(name) else {
+                        return Err(fail(format!("settings have no field `{name}`")));
+                    };
+                    let cur = sig.get_untracked(rt)?;
+                    let new = set_in(vm, &cur, rest, &indices, op, value)?;
+                    sig.set(rt, new)
+                }
+                // A whole record: each field.
+                _ => {
+                    let Value::Record(r) = &value else {
+                        return Err(fail("settings take a record"));
+                    };
+                    let def = vm.types().record(r.ty);
+                    for (f, v) in def.fields.iter().zip(&r.fields) {
+                        if let Some(sig) = fields.field(&f.name) {
+                            sig.set(rt, v.clone())?;
+                        }
+                    }
+                    Ok(())
+                }
+            }
+        }
         PlaceRoot::Def(d) => {
             let Some(slot) = env.def(*d) else {
                 return Err(fail(format!(
@@ -594,6 +775,14 @@ pub(crate) fn store(
                     vm.prog.def(*d).name
                 )));
             };
+            if let super::Slot::Keyed(k) = slot {
+                // `xs = [...]` replaces by key; `xs[i].done = true` updates
+                // the item at `i` by its key.
+                let cur = rt.untrack(|rt| slot.get(rt))?;
+                let new = set_in(vm, &cur, &place.segs, &indices, op, value)?;
+                let items = new.as_list().map(<[Value]>::to_vec).unwrap_or_default();
+                return k.replace_all(rt, items);
+            }
             let super::Slot::Signal(sig) = slot else {
                 return Err(fail(format!("`{}` is not state", vm.prog.def(*d).name)));
             };
@@ -610,9 +799,30 @@ pub(crate) fn store(
             let Some(PlaceSeg::Field(f)) = place.segs.first() else {
                 return Err(fail(format!("`{s}` cannot be written")));
             };
-            let cur = rt.untrack(|rt| vm.host.read(rt, s, f))?;
-            let new = set_in(vm, &cur, &place.segs[1..], &indices, op, value)?;
-            vm.host.write(rt, s, f, new)
+            // The leaf's path, indices resolved: the host writes only what
+            // changed.
+            let mut path = vec![super::host::PathSeg::Field(f.clone())];
+            let mut idx = indices.iter();
+            for seg in &place.segs[1..] {
+                path.push(match seg {
+                    PlaceSeg::Field(n) => super::host::PathSeg::Field(n.clone()),
+                    PlaceSeg::Index => {
+                        let i = idx.next().and_then(Value::as_f64).unwrap_or(-1.0);
+                        if i < 0.0 {
+                            return Err(fail(format!("index {i} out of range")));
+                        }
+                        super::host::PathSeg::Index(i as usize)
+                    }
+                });
+            }
+            let value = match op.binary() {
+                None => value,
+                Some(b) => {
+                    let cur = rt.untrack(|rt| read_place(vm, rt, place, &indices, env))?;
+                    builtins::binary(b, &cur, &value)?
+                }
+            };
+            vm.host.write(rt, s, &path, value)
         }
     }
 }

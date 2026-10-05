@@ -447,7 +447,12 @@ pub(crate) fn call(
         "wave" => Value::float(0.0),
         "noise" => Value::float(noise(num(0).unwrap_or(0.0))),
         "sleep" => {
-            let d = args.get(0).and_then(Value::as_duration).unwrap_or_default();
+            let Some(d) = args.get(0).and_then(Value::as_duration) else {
+                return Err(Error::failed(format!(
+                    "`sleep` needs a duration from 0 to {} s",
+                    Duration::MAX.as_secs()
+                )));
+            };
             let sleep = rt.sleep(d);
             Value::Async(Rc::new(AsyncValue {
                 value: None,

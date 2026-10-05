@@ -37,6 +37,8 @@ pub use value::{Num, Slot, Value, ValueKey};
 
 use crate::hir::{DefId, DefKind, LocalId, NodeIdx};
 use crate::lower::{ChunkId, Program};
+use crate::source::FileId;
+use crate::syntax::Span;
 use value::NodeState;
 
 /// Deepest nesting of `fn` and lambda calls before a call is an error
@@ -71,6 +73,36 @@ pub struct Env {
     /// on first use belong to it, not to whatever computation first read
     /// them.
     owner: Cell<Option<strand_core::NodeId>>,
+    /// A `for` item's or per-monitor bar's identity (`[<key>]`), which
+    /// qualifies the persist paths of state declared under it.
+    instance: RefCell<Option<Rc<str>>>,
+    /// Settings files declared here: one signal per field.
+    settings: RefCell<Vec<(DefId, Rc<SettingsSlot>)>>,
+}
+
+/// A settings file's fields (`state prefs from "prefs.toml" { … }`):
+/// each field is its own signal (core's `Settings` handle when the file
+/// is read), so writing `prefs.compact` writes that field only and a
+/// binding reading `prefs.accent` does not re-run for it.
+pub struct SettingsSlot {
+    pub fields: Vec<(String, strand_core::Signal<Value>)>,
+    /// The file's handle (reload, overlay, provenance), when the
+    /// instance has a settings store.
+    pub handle: Option<strand_core::Settings<Value>>,
+}
+
+impl std::fmt::Debug for SettingsSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SettingsSlot")
+            .field("fields", &self.fields.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl SettingsSlot {
+    pub fn field(&self, name: &str) -> Option<strand_core::Signal<Value>> {
+        self.fields.iter().find(|(n, _)| n == name).map(|(_, s)| *s)
+    }
 }
 
 impl std::fmt::Debug for Env {
@@ -94,6 +126,8 @@ impl Env {
             slot: None,
             component: None,
             owner: Cell::new(None),
+            instance: RefCell::new(None),
+            settings: RefCell::default(),
         })
     }
 
@@ -113,7 +147,72 @@ impl Env {
             slot,
             component: component.or(parent.component),
             owner: Cell::new(None),
+            instance: RefCell::new(None),
+            settings: RefCell::default(),
         })
+    }
+
+    /// Mark this scope as one instance among several (`[<key>]`).
+    pub fn set_instance(&self, id: impl Into<Rc<str>>) {
+        *self.instance.borrow_mut() = Some(id.into());
+    }
+
+    /// The instance qualifiers from the outermost scope in: `[DP-1][3]`.
+    pub fn instance_path(&self) -> String {
+        let mut parts = Vec::new();
+        let mut cur = Some(self);
+        while let Some(e) = cur {
+            if let Some(i) = &*e.instance.borrow() {
+                parts.push(format!("[{i}]"));
+            }
+            cur = e.parent.as_deref();
+        }
+        parts.reverse();
+        parts.concat()
+    }
+
+    pub fn bind_settings(&self, id: DefId, slot: Rc<SettingsSlot>) {
+        self.settings.borrow_mut().push((id, slot));
+    }
+
+    /// The settings file `id` as declared in this scope chain.
+    pub fn settings(&self, id: DefId) -> Option<Rc<SettingsSlot>> {
+        let found = self
+            .settings
+            .borrow()
+            .iter()
+            .rev()
+            .find(|(d, _)| *d == id)
+            .map(|(_, s)| s.clone());
+        found.or_else(|| self.parent.as_ref().and_then(|p| p.settings(id)))
+    }
+
+    /// The live state of element `idx` if one exists in this scope chain
+    /// (none is created).
+    pub fn existing_node_state(&self, idx: NodeIdx) -> Option<Rc<NodeState>> {
+        if let Some((_, n)) = self.nodes.borrow().iter().find(|(i, _)| *i == idx) {
+            return Some(n.clone());
+        }
+        if self.owned.contains(&idx) {
+            return None;
+        }
+        self.parent.as_ref()?.existing_node_state(idx)
+    }
+
+    /// The core scope a runtime fault in this scope freezes: the
+    /// instance of the innermost component (or the surface instance, or
+    /// `for` item at the top level) this scope belongs to.
+    pub fn fault_scope(self: &Rc<Self>) -> Option<strand_core::NodeId> {
+        let mut cur = self.clone();
+        loop {
+            let Some(p) = cur.parent.clone() else {
+                return cur.owner.get();
+            };
+            if p.parent.is_none() || p.component != cur.component {
+                return cur.owner.get();
+            }
+            cur = p;
+        }
     }
 
     /// Tie this scope to the core scope `owner` (the one being mounted).
@@ -160,8 +259,11 @@ impl Env {
             if let Some((_, n)) = env.nodes.borrow().iter().find(|(i, _)| *i == idx) {
                 return n.clone();
             }
-            if owner.is_none() && env.owned.contains(&idx) {
+            // The scope that owns the element has the only state for it
+            // (a second mount of a component's `slot` owns its own).
+            if env.owned.contains(&idx) {
                 owner = Some(env.clone());
+                break;
             }
             cur = env.parent.clone();
         }
@@ -195,6 +297,21 @@ pub struct Vm {
     pub root: Rc<Env>,
     depth: Cell<u32>,
     hooks: RefCell<Option<std::rc::Weak<dyn VmHooks>>>,
+    /// Where errors raised since the last [`Vm::clear_faults`] came from:
+    /// the failing op's file and span.
+    faults: RefCell<std::collections::VecDeque<(Error, FileId, Span)>>,
+}
+
+/// Faults remembered between two [`Vm::clear_faults`] (a tick's worth).
+const MAX_FAULTS: usize = 4096;
+
+/// The same error value: one `Failed` message by identity (two
+/// failures with the same text are two faults), others by equality.
+fn same_error(a: &Error, b: &Error) -> bool {
+    match (a, b) {
+        (Error::Failed(x), Error::Failed(y)) => Arc::ptr_eq(x, y),
+        (a, b) => a == b,
+    }
 }
 
 impl std::fmt::Debug for Vm {
@@ -211,7 +328,36 @@ impl Vm {
             root: Env::root(),
             depth: Cell::new(0),
             hooks: RefCell::new(None),
+            faults: RefCell::default(),
         })
+    }
+
+    /// Note where `e` was raised (the innermost chunk wins: a binding
+    /// failing because a `let` it read failed points at the `let`).
+    pub(crate) fn note_fault(&self, e: &Error, file: FileId, span: Span) {
+        let mut f = self.faults.borrow_mut();
+        if f.iter().any(|(x, _, _)| same_error(x, e)) {
+            return;
+        }
+        if f.len() >= MAX_FAULTS {
+            f.pop_front();
+        }
+        f.push_back((e.clone(), file, span));
+    }
+
+    /// Where `e` was raised, if the VM raised it since the last
+    /// [`Vm::clear_faults`].
+    pub fn fault_of(&self, e: &Error) -> Option<(FileId, Span)> {
+        self.faults
+            .borrow()
+            .iter()
+            .find(|(x, _, _)| same_error(x, e))
+            .map(|(_, f, s)| (*f, *s))
+    }
+
+    /// Forget noted faults (the instance does after reporting a tick).
+    pub fn clear_faults(&self) {
+        self.faults.borrow_mut().clear();
     }
 
     /// The instantiator's hooks (held weakly: the instantiator owns the
@@ -255,6 +401,19 @@ impl Vm {
             exec::Exit::Done(v) => Ok(v),
             exec::Exit::Await(_) => Err(Error::failed("`await` outside a handler")),
         }
+    }
+
+    /// The receiver and arguments of the method call `chunk` ends with
+    /// (`apps.search(query)`), evaluated (tracked) without making the
+    /// call: the input of an async service `let`.
+    pub fn eval_call_args(
+        self: &Rc<Self>,
+        rt: &Runtime,
+        chunk: ChunkId,
+        env: &Rc<Env>,
+    ) -> Result<(Value, Vec<Value>), Error> {
+        let mut m = exec::Machine::new(chunk, env.clone(), Frame::default(), None, None);
+        m.call_args(self, rt)
     }
 
     /// A handler body as a coroutine for `rt.spawn*`: it runs until it

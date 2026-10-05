@@ -243,6 +243,8 @@ pub struct For {
     pub iter: ChunkId,
     pub key: ForKey,
     pub body: Body,
+    pub file: FileId,
+    pub span: Span,
 }
 
 /// How a `for` item is identified.
@@ -303,6 +305,8 @@ pub struct Timer {
     pub duration: ChunkId,
     pub while_: Option<ChunkId>,
     pub body: ChunkId,
+    pub file: FileId,
+    pub span: Span,
 }
 
 impl Program {
@@ -586,6 +590,8 @@ impl Lowerer<'_> {
                     iter,
                     key,
                     body: self.body(&f.body),
+                    file: self.file,
+                    span: f.span,
                 })
             }
             hir::Node::Match(m) => {
@@ -826,6 +832,8 @@ impl Lowerer<'_> {
             duration: self.expr_chunk(&t.duration),
             while_: t.while_.as_ref().map(|w| self.expr_chunk(w)),
             body: self.stmts_chunk(&t.body, t.span),
+            file: self.file,
+            span: t.span,
         }
     }
 

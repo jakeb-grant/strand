@@ -16,7 +16,7 @@ use strand_scene::{
 };
 
 use crate::ty::{EnumId, Prim, Ty, TypeTable};
-use crate::vm::value::{CallValue, Num, Value};
+use crate::vm::value::{CallValue, Num, Value, duration_ms, f32_to_f64, fits};
 
 /// Colour slots of a composite value: a placeholder colour in the value,
 /// the token that fills it here.
@@ -175,7 +175,7 @@ fn convert(types: &TypeTable, ty: &Ty, v: &Value, border_pair: bool) -> Option<P
                 Num::Percent => PropValue::Length(Length::Percent(n)),
                 Num::Ch => PropValue::Length(Length::Ch(n)),
                 Num::Deg => PropValue::Angle(n),
-                Num::Ms => PropValue::Duration(Duration::from_secs_f64(x.max(0.0) / 1000.0)),
+                Num::Ms => PropValue::Duration(duration_ms(x.max(0.0))?),
                 Num::Int | Num::Float | Num::Px => PropValue::Number(n),
             }
         }
@@ -313,9 +313,12 @@ pub fn transition(types: &TypeTable, v: &Value) -> Transition {
             TokenExpr::Ref(p) => Transition::Token(p.clone()),
             _ => Transition::Default,
         },
-        Value::Num(ms, Num::Ms) => Transition::Duration {
-            duration: Duration::from_secs_f64(ms.max(0.0) / 1000.0),
-            easing: Easing::STANDARD,
+        Value::Num(ms, Num::Ms) => match duration_ms(ms.max(0.0)) {
+            Some(duration) => Transition::Duration {
+                duration,
+                easing: Easing::STANDARD,
+            },
+            None => Transition::Default,
         },
         Value::Enum(e, i) if variant(types, *e, *i).as_deref() == Some("instant") => {
             Transition::Instant
@@ -345,20 +348,26 @@ pub fn token_entry(types: &TypeTable, table: &mut TokenTable, path: &str, ty: &T
 /// A value a widget wrote back (`value: <-> level`, `text: <-> query`,
 /// `open: <-> open`) as the type of the place it goes to.
 pub fn from_prop(types: &TypeTable, ty: &Ty, v: &PropValue) -> Option<Value> {
+    let v = from_prop_unchecked(types, ty, v)?;
+    fits(types, ty, &v).then_some(v)
+}
+
+fn from_prop_unchecked(types: &TypeTable, ty: &Ty, v: &PropValue) -> Option<Value> {
     let ty = match ty {
         Ty::Optional(t) => t,
         t => t,
     };
+    let num = |n: f32| f32_to_f64(n);
     Some(match (ty, v) {
         (_, PropValue::Unset) => Value::Null,
         (_, PropValue::Bool(b)) => Value::Bool(*b),
         (Ty::Prim(Prim::Int), PropValue::Number(n)) => Value::int(n.round() as i64),
-        (Ty::Prim(Prim::Length), PropValue::Number(n)) => Value::Num(*n as f64, Num::Px),
-        (Ty::Prim(Prim::Percent), PropValue::Number(n)) => Value::Num(*n as f64, Num::Percent),
+        (Ty::Prim(Prim::Length), PropValue::Number(n)) => Value::Num(num(*n), Num::Px),
+        (Ty::Prim(Prim::Percent), PropValue::Number(n)) => Value::Num(num(*n), Num::Percent),
         (Ty::Prim(Prim::Angle), PropValue::Number(n) | PropValue::Angle(n)) => {
-            Value::Num(*n as f64, Num::Deg)
+            Value::Num(num(*n), Num::Deg)
         }
-        (_, PropValue::Number(n)) => Value::float(*n as f64),
+        (_, PropValue::Number(n)) => Value::float(num(*n)),
         (_, PropValue::Text(t)) => Value::text(t.as_str()),
         (_, PropValue::Color(c)) => Value::Color(*c),
         (_, PropValue::Duration(d)) => Value::from(*d),

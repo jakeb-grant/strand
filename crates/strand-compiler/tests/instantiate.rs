@@ -5,9 +5,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use strand_compiler::instantiate::{Instance, NodeFlag, SceneMirror, Update, show};
+use strand_compiler::instantiate::{Instance, NodeFlag, SceneMirror, Storage, Update, show};
 use strand_compiler::vm::Value;
-use strand_compiler::vm::persist::{MemoryStore, PersistStore};
 use strand_compiler::vm::schema_host::SchemaHost;
 use strand_compiler::{SourceMap, lower};
 use strand_core::Runtime;
@@ -44,13 +43,13 @@ impl Shell {
 }
 
 fn boot(files: &[(&str, &str)], setup: impl FnOnce(&Runtime, &SchemaHost)) -> Shell {
-    boot_with(files, setup, None)
+    boot_with(files, setup, Storage::none())
 }
 
 fn boot_with(
     files: &[(&str, &str)],
     setup: impl FnOnce(&Runtime, &SchemaHost),
-    store: Option<Rc<dyn PersistStore>>,
+    storage: Storage,
 ) -> Shell {
     let mut map = SourceMap::new();
     for (name, text) in files {
@@ -65,7 +64,7 @@ fn boot_with(
     let rt = Runtime::new();
     let host = Rc::new(SchemaHost::mock(&rt, &program.types));
     setup(&rt, &host);
-    let inst = Instance::new(&rt, program, host.clone(), store);
+    let inst = Instance::new(&rt, program, host.clone(), storage);
     let mut shell = Shell {
         rt,
         host,
@@ -79,12 +78,24 @@ fn boot_with(
     shell
 }
 
+/// Monitors by connector name; each one's identity is `Mock <name>`.
 fn screens(rt: &Runtime, host: &SchemaHost, names: &[&str]) {
-    let list = names
-        .iter()
-        .map(|n| host.record("Screen", &[("name", Value::text(*n))]))
-        .collect();
+    let list = names.iter().map(|n| screen(host, n, n)).collect();
     host.set(rt, "screens.all", Value::list(list)).unwrap();
+}
+
+/// A monitor plugged into connector `name`, identified by `model`.
+fn screen(host: &SchemaHost, name: &str, model: &str) -> Value {
+    host.record(
+        "Screen",
+        &[
+            ("id", Value::text(format!("Mock | {model} | Display"))),
+            ("name", Value::text(name)),
+            ("make", Value::text("Mock")),
+            ("model", Value::text(model)),
+            ("description", Value::text("Display")),
+        ],
+    )
 }
 
 #[test]
@@ -263,7 +274,9 @@ fn refs(files: &[(String, String)]) -> Vec<(&str, &str)> {
 #[test]
 fn the_design_shells_run_on_the_mock() {
     let files = design_shells();
-    let shell = boot(&refs(&files), desktop);
+    let mut shell = boot(&refs(&files), desktop);
+    // Closed popups, the closed launcher and the hidden OSD have no
+    // content yet.
     insta::assert_snapshot!("design_shells_scene", shell.scene.render());
     insta::assert_snapshot!("design_shells_tokens", shell.scene.render_tokens());
     // The boot diff starts with the token table, applied without a spring.
@@ -283,8 +296,8 @@ fn the_design_shells_run_on_the_mock() {
     assert_eq!(
         screens,
         [
-            Some(PropValue::Text("DP-1".into())),
-            Some(PropValue::Text("HDMI-A-1".into()))
+            Some(PropValue::Text("Mock | DP-1 | Display".into())),
+            Some(PropValue::Text("Mock | HDMI-A-1 | Display".into()))
         ]
     );
     assert_eq!(shell.scene.of_kind(NodeKind::Panel).len(), 2);
@@ -296,6 +309,21 @@ fn the_design_shells_run_on_the_mock() {
     );
     assert_eq!(shell.inst.get("launcher.open").unwrap(), Value::Bool(false));
     assert!(shell.inst.get("osd.shown").is_err(), "not exported");
+    // Everything opened: the launcher, both calendars and the OSD (a
+    // volume change shows it).
+    shell.inst.set("launcher.open", Value::Bool(true)).unwrap();
+    for clock in shell.scene.walk().into_iter().filter(|&n| {
+        matches!(shell.scene.prop(n, Prop::Text), Some(PropValue::Text(t)) if t == "Mon 05  09:41")
+    }) {
+        shell.inst.event(clock, "click", Vec::new());
+    }
+    shell
+        .host
+        .set(&shell.rt, "audio.sink.volume", Value::float(0.6))
+        .unwrap();
+    let u = shell.flush();
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    insta::assert_snapshot!("design_shells_opened", shell.scene.render());
 }
 
 #[test]
@@ -474,6 +502,12 @@ fn every_while_repeats_only_while_true() {
 fn two_way_bindings_write_back() {
     let files = design_shells();
     let mut shell = boot(&refs(&files), desktop);
+    // A closed launcher has no content yet and runs no search.
+    assert!(shell.scene.of_kind(NodeKind::Input).is_empty());
+    assert_eq!(shell.host.readers("apps"), 1, "the config's own `let`");
+    // `strand toggle launcher.open`.
+    shell.inst.set("launcher.open", Value::Bool(true)).unwrap();
+    shell.flush();
     let input = shell.scene.of_kind(NodeKind::Input)[0];
     shell
         .inst
@@ -490,14 +524,12 @@ fn two_way_bindings_write_back() {
     shell.flush();
     assert_eq!(shell.scene.children(launcher).len(), 0);
     assert!(shell.scene.find_text("No matches").is_some());
-    // `strand toggle launcher.open` and the panel's own dismissal.
-    shell.inst.set("launcher.open", Value::Bool(true)).unwrap();
-    shell.flush();
     let panel = shell.scene.ancestor(input, NodeKind::Panel).unwrap();
     assert_eq!(
         shell.scene.prop(panel, Prop::Open),
         Some(&PropValue::Bool(true))
     );
+    // The panel's own dismissal writes `open` back.
     shell
         .inst
         .write(panel, Prop::Open, PropValue::Bool(false))
@@ -506,6 +538,14 @@ fn two_way_bindings_write_back() {
     assert_eq!(
         shell.scene.prop(panel, Prop::Open),
         Some(&PropValue::Bool(false))
+    );
+    assert_eq!(shell.inst.get("launcher.open").unwrap(), Value::Bool(false));
+    // A bool does not fit a text place.
+    assert!(
+        shell
+            .inst
+            .write(input, Prop::Text, PropValue::Bool(true))
+            .is_err()
     );
     // The volume slider appears while its row is hovered and writes the
     // sink's `rw` volume.
@@ -532,10 +572,16 @@ fn two_way_bindings_write_back() {
         .write(slider, Prop::Value, PropValue::Number(0.8))
         .unwrap();
     shell.flush();
+    // The slider's f32 is the 0.8 it shows, and the host is told which
+    // leaf changed.
     assert_eq!(
         shell.host.get(&shell.rt, "audio.sink.volume").unwrap(),
-        Value::float(0.8_f32 as f64)
+        Value::float(0.8)
     );
+    let writes = shell.host.take_writes();
+    assert_eq!(writes.len(), 1, "{writes:?}");
+    assert_eq!(writes[0].path, "audio.sink.volume");
+    assert_eq!(writes[0].value, Value::float(0.8));
     shell.inst.set_flag(row, NodeFlag::Hover, false);
     let u = shell.flush();
     assert!(
@@ -762,7 +808,51 @@ fn events_bubble_and_propagate() {
     shell.inst.event(boxes[1], "click", Vec::new());
     shell.flush();
     assert_eq!(shell.inst.value_of("t", "a").unwrap(), Value::int(2));
-    // Scroll arguments reach the handler's parameters.
+}
+
+/// Scroll arguments reach the handler's parameters: the bar's volume row
+/// (`on scroll(dy) { audio.sink.volume -= dy * 0.05 }`).
+#[test]
+fn scroll_reaches_its_parameters() {
+    let files = design_shells();
+    let mut shell = boot(&refs(&files), desktop);
+    let bar = shell.scene.of_kind(NodeKind::Bar)[0];
+    let icon = shell
+        .scene
+        .walk()
+        .into_iter()
+        .find(|&n| {
+            shell.scene.kind(n) == Some(NodeKind::Icon)
+                && shell.scene.ancestor(n, NodeKind::Bar) == Some(bar)
+        })
+        .unwrap();
+    assert!(
+        shell
+            .inst
+            .event(icon, "scroll", vec![Value::float(2.0), Value::float(0.0)])
+    );
+    shell.flush();
+    let v = shell.host.get(&shell.rt, "audio.sink.volume").unwrap();
+    assert!(
+        (v.as_f64().unwrap() - 0.4).abs() < 1e-9,
+        "0.5 - 2 * 0.05: {v:?}"
+    );
+}
+
+/// Two handlers of one event on an element both run, in source order,
+/// and `propagate()` passes the event on once however often it is called.
+#[test]
+fn every_handler_runs_and_propagates_once() {
+    let src = "state a = 0\nstate b = 0\nstate p = 0\nbar B {\n  row {\n    on click { p += 1 }\n    box { on click { a += 1; propagate(); propagate() }\n          on click { b += 1; propagate() } }\n  }\n}\n";
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let b = shell.scene.of_kind(NodeKind::Box)[0];
+    assert!(shell.inst.event(b, "click", Vec::new()));
+    shell.flush();
+    assert_eq!(shell.inst.value_of("t", "a").unwrap(), Value::int(1));
+    assert_eq!(shell.inst.value_of("t", "b").unwrap(), Value::int(1));
+    assert_eq!(shell.inst.value_of("t", "p").unwrap(), Value::int(1));
 }
 
 /// One bar per monitor, each with its own component state; monitors
@@ -811,27 +901,115 @@ fn a_bar_per_monitor_with_its_own_state() {
         Some(&PropValue::Bool(true))
     );
     assert!(
-        shell.scene.find_text("October 2026").is_some(),
-        "the other monitor's"
+        shell.scene.find_text("October 2026").is_none(),
+        "the other monitor's popup is closed: its calendar is not mounted"
     );
-    // Plug a third monitor, then unplug the first.
+    // Plug a third monitor.
     screens(&shell.rt, &shell.host, &["DP-1", "HDMI-A-1", "DP-2"]);
     shell.flush();
     assert_eq!(shell.scene.of_kind(NodeKind::Bar).len(), 3);
-    screens(&shell.rt, &shell.host, &["HDMI-A-1", "DP-2"]);
-    shell.flush();
-    let bars = shell.scene.of_kind(NodeKind::Bar);
-    assert_eq!(bars.len(), 2);
-    assert!(
-        shell.scene.find_text("September 2026").is_none(),
-        "went with DP-1"
-    );
     // Readers are counted per mounted reader: each bar and each bar's
     // `Battery` component read `battery`.
-    assert_eq!(shell.host.readers("battery"), 4);
+    assert_eq!(shell.host.readers("battery"), 6);
+    // Unplug the first: its bar leaves the scene, its state is kept.
+    screens(&shell.rt, &shell.host, &["HDMI-A-1", "DP-2"]);
+    let u = shell.flush();
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    assert_eq!(shell.scene.of_kind(NodeKind::Bar).len(), 2);
+    assert!(shell.scene.find_text("September 2026").is_none());
+    assert_eq!(
+        shell.host.readers("battery"),
+        4,
+        "a parked bar reads nothing"
+    );
+    // The same monitor comes back on another port within 30 s: its bar
+    // returns as it was, pinned to the monitor, not the port.
+    let dp1 = screen(&shell.host, "DP-3", "DP-1");
+    let others: Vec<Value> = ["HDMI-A-1", "DP-2"]
+        .iter()
+        .map(|n| screen(&shell.host, n, n))
+        .collect();
+    let mut all = others.clone();
+    all.insert(0, dp1.clone());
+    shell
+        .host
+        .set(&shell.rt, "screens.all", Value::list(all.clone()))
+        .unwrap();
+    let u = shell.flush();
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    assert_eq!(shell.scene.of_kind(NodeKind::Bar).len(), 3);
+    assert!(
+        shell.scene.find_text("September 2026").is_some(),
+        "the calendar kept its month"
+    );
+    let pins: Vec<_> = shell
+        .scene
+        .of_kind(NodeKind::Bar)
+        .into_iter()
+        .filter_map(|b| shell.scene.prop(b, Prop::Screens).cloned())
+        .collect();
+    assert!(pins.contains(&PropValue::Text("Mock | DP-1 | Display".into())));
+    assert_eq!(shell.host.readers("battery"), 6);
+    // Gone for good (the surface layer forgets it after 30 s): a replug
+    // starts fresh.
+    shell
+        .host
+        .set(&shell.rt, "screens.all", Value::list(others.clone()))
+        .unwrap();
+    shell.flush();
+    assert!(shell.inst.forget_screen("Mock | DP-1 | Display"));
+    assert!(!shell.inst.forget_screen("Mock | DP-1 | Display"));
+    shell
+        .host
+        .set(&shell.rt, "screens.all", Value::list(all))
+        .unwrap();
+    let u = shell.flush();
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    assert_eq!(shell.scene.of_kind(NodeKind::Bar).len(), 3);
+    assert!(shell.scene.find_text("September 2026").is_none());
     screens(&shell.rt, &shell.host, &[]);
     shell.flush();
-    assert_eq!(shell.host.readers("battery"), 0, "released on unmount");
+    assert_eq!(shell.host.readers("battery"), 0, "released while parked");
+    for n in ["DP-1", "HDMI-A-1", "DP-2"] {
+        shell.inst.forget_screen(&format!("Mock | {n} | Display"));
+    }
+    shell.flush();
+    assert_eq!(shell.host.readers("battery"), 0, "and when forgotten");
+}
+
+/// A bar's own `screens:` picks its monitors: a name (the connector or
+/// the monitor's id) or `focused`; each instance is pinned to its
+/// monitor.
+#[test]
+fn a_bar_follows_its_own_screens() {
+    let src = "bar Pinned { screens: \"DP-1\"; text screen.name }\nbar Focus { screens: focused; text join(\" \", \"F\", screen.name) }\nbar Every { text join(\" \", \"E\", screen.name) }\n";
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1", "HDMI-A-1"]);
+        host.set(rt, "screens.focused", screen(host, "HDMI-A-1", "HDMI-A-1"))
+            .unwrap();
+    });
+    let mut texts = shell.scene.texts();
+    texts.sort();
+    assert_eq!(texts, ["DP-1", "E DP-1", "E HDMI-A-1", "F HDMI-A-1"]);
+    let pin_of = |shell: &Shell, text: &str| {
+        let t = shell.text_node(text);
+        let bar = shell.scene.ancestor(t, NodeKind::Bar).unwrap();
+        shell.scene.prop(bar, Prop::Screens).cloned()
+    };
+    assert_eq!(
+        pin_of(&shell, "DP-1"),
+        Some(PropValue::Text("Mock | DP-1 | Display".into()))
+    );
+    assert_eq!(
+        pin_of(&shell, "F HDMI-A-1"),
+        Some(PropValue::Text("Mock | HDMI-A-1 | Display".into()))
+    );
+    // Focus moves: the focused bar follows.
+    let dp1 = screen(&shell.host, "DP-1", "DP-1");
+    shell.host.set(&shell.rt, "screens.focused", dp1).unwrap();
+    shell.flush();
+    assert!(shell.scene.find_text("F DP-1").is_some());
+    assert!(shell.scene.find_text("F HDMI-A-1").is_none());
 }
 
 /// Service events are lossless: three in one tick, three handler runs.
@@ -857,13 +1035,22 @@ fn service_events_are_lossless() {
     );
 }
 
-/// `persist` keeps a value across instances, keyed by path, with the
-/// default's hash.
+/// A fresh directory under the system temp dir for one test.
+fn temp_dir(name: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("strand-inst-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+/// `persist` keeps a value across instances in core's store, by path,
+/// with the default's hash.
 #[test]
 fn persisted_state_survives_a_restart() {
-    let store: Rc<dyn PersistStore> = Rc::new(MemoryStore::new());
+    let dir = temp_dir("persist");
+    let storage = Storage::in_dirs(dir.join("state"), dir.join("config"));
     let files = [fixture("toasts.strand")];
-    let shell = boot_with(&refs(&files), desktop, Some(store.clone()));
+    let shell = boot_with(&refs(&files), desktop, storage.clone());
     assert_eq!(shell.inst.get("toasts.dnd").unwrap(), Value::Bool(false));
     shell.inst.set("toasts.dnd", Value::Bool(true)).unwrap();
     let mut shell = shell;
@@ -871,9 +1058,20 @@ fn persisted_state_survives_a_restart() {
     // Do not disturb: only the critical notification stays shown.
     assert!(shell.scene.find_text("Mail · New message").is_none());
     drop(shell);
-    let shell = boot_with(&refs(&files), desktop, Some(store.clone()));
+    let shell = boot_with(&refs(&files), desktop, storage.clone());
     assert_eq!(shell.inst.get("toasts.dnd").unwrap(), Value::Bool(true));
     assert!(shell.scene.find_text("Mail · New message").is_none());
+    // `@reset`: back to the default, and so after a restart.
+    shell.inst.reset("toasts.dnd").unwrap();
+    assert_eq!(shell.inst.get("toasts.dnd").unwrap(), Value::Bool(false));
+    drop(shell);
+    let shell = boot_with(&refs(&files), desktop, storage.clone());
+    assert_eq!(shell.inst.get("toasts.dnd").unwrap(), Value::Bool(false));
+    drop(shell);
+    if let Some(p) = &storage.persist {
+        assert!(p.sync(Duration::from_secs(5)));
+    }
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// A theme switch is one `SetTokens` with the default (spring)
@@ -901,8 +1099,60 @@ fn a_theme_switch_swaps_the_token_table() {
     assert_eq!(shell.scene.render(), before);
     // `prefs.compact` picks the extending set: overrides win, the rest
     // is inherited.
-    let set = shell.flush();
-    assert!(set.diff.is_empty());
+    assert_eq!(
+        shell.scene.tokens.get("space.3").map(show).as_deref(),
+        Some("12")
+    );
+    shell
+        .inst
+        .set_value("theme", "prefs.compact", Value::Bool(true))
+        .unwrap();
+    let u = shell.flush();
+    assert_eq!(u.diff.ops.len(), 1, "one new token table");
+    assert_eq!(
+        shell.scene.tokens.get("space.3").map(show).as_deref(),
+        Some("8")
+    );
+    assert_eq!(
+        shell.scene.tokens.get("radius.lg").map(show).as_deref(),
+        Some("14"),
+        "inherited from base"
+    );
+    assert_eq!(shell.scene.render(), before, "the tree is unchanged");
+}
+
+/// A persisted `state` in a bar on every monitor is one cell per
+/// monitor (`B[<monitor id>].count`).
+#[test]
+fn persisted_bar_state_is_per_monitor() {
+    let dir = temp_dir("persist-bars");
+    let storage = Storage::in_dirs(dir.join("state"), dir.join("config"));
+    let src = "bar B {\n  state count = 0 persist\n  text join(\" \", count) { on click { count += 1 } }\n}\n";
+    let two = |rt: &Runtime, host: &SchemaHost| screens(rt, host, &["DP-1", "HDMI-A-1"]);
+    let mut shell = boot_with(&[("t.strand", src)], two, storage.clone());
+    let texts = shell.inst.nodes_handling("click");
+    shell.inst.event(texts[0], "click", Vec::new());
+    shell.inst.event(texts[0], "click", Vec::new());
+    shell.inst.event(texts[1], "click", Vec::new());
+    shell.flush();
+    let mut seen = shell.scene.texts();
+    seen.sort();
+    assert_eq!(seen, ["1", "2"]);
+    drop(shell);
+    let shell = boot_with(&[("t.strand", src)], two, storage.clone());
+    let mut seen = shell.scene.texts();
+    seen.sort();
+    assert_eq!(seen, ["1", "2"], "each monitor's own count came back");
+    drop(shell);
+    if let Some(p) = &storage.persist {
+        assert!(p.sync(Duration::from_secs(5)));
+        assert!(
+            p.file_of("B[Mock | DP-1 | Display].count")
+                .unwrap()
+                .exists()
+        );
+    }
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Components take parameters and render their caller's children at
@@ -1109,6 +1359,8 @@ fn play_poses_and_lock() {
 fn selected_rows_and_activate() {
     let files = [fixture("launcher.strand")];
     let mut shell = boot(&refs(&files), desktop);
+    shell.inst.set("launcher.open", Value::Bool(true)).unwrap();
+    shell.flush();
     let row = shell
         .scene
         .of_kind(NodeKind::Row)
@@ -1122,7 +1374,6 @@ fn selected_rows_and_activate() {
         Some("$accent.container")
     );
     // `activate` runs the row's handler: launch and close.
-    shell.inst.set("launcher.open", Value::Bool(true)).unwrap();
     shell.inst.event(row, "activate", Vec::new());
     shell.flush();
     let actions: Vec<String> = shell
@@ -1423,4 +1674,324 @@ fn deep_trees_mount_on_a_small_stack() {
         .unwrap()
         .join()
         .unwrap();
+}
+
+/// Durations past what a `Duration` holds are error values, never a
+/// panic: a timer, `sleep` and a `~`.
+#[test]
+fn huge_durations_are_errors_not_panics() {
+    let src = "state n = 0\nstate w = 0\nafter 100000000000000000000000s { n += 1 }\nbar B {\n  box { width: w ~ 1000000000000000000000000000000s; on click { await sleep(100000000000000000000000s); n += 1 } }\n}\n";
+    let mut map = SourceMap::new();
+    map.add("t.strand", src.to_string());
+    let compiled = strand_compiler::compile(&map);
+    assert_eq!(compiled.errors(), 0, "{:#?}", compiled.diagnostics);
+    let program = Arc::new(lower::lower(
+        &compiled.program,
+        strand_compiler::schema::Schema::builtin(),
+    ));
+    let rt = Runtime::new();
+    let host = Rc::new(SchemaHost::mock(&rt, &program.types));
+    screens(&rt, &host, &["DP-1"]);
+    let inst = Instance::new(&rt, program, host, Storage::none());
+    let u = inst.flush();
+    assert!(
+        u.errors
+            .iter()
+            .any(|e| e.contains("`after` needs a duration")),
+        "{:?}",
+        u.errors
+    );
+    let b = inst.nodes_handling("click")[0];
+    inst.set_value("t", "w", Value::int(5)).unwrap();
+    inst.event(b, "click", Vec::new());
+    let u = inst.tick(Duration::from_secs(1));
+    assert!(
+        u.errors
+            .iter()
+            .any(|e| e.contains("`sleep` needs a duration")),
+        "{:?}",
+        u.errors
+    );
+    assert_eq!(inst.value_of("t", "n").unwrap(), Value::int(0));
+}
+
+/// A zero `every` period is an error naming the timer, not a silent
+/// pause.
+#[test]
+fn a_zero_period_is_reported() {
+    let src = "state d = 0ms\nstate n = 0\nevery d { n += 1 }\nbar B { text \"x\" }\n";
+    let mut map = SourceMap::new();
+    map.add("t.strand", src.to_string());
+    let compiled = strand_compiler::compile(&map);
+    let program = Arc::new(lower::lower(
+        &compiled.program,
+        strand_compiler::schema::Schema::builtin(),
+    ));
+    let rt = Runtime::new();
+    let host = Rc::new(SchemaHost::mock(&rt, &program.types));
+    screens(&rt, &host, &["DP-1"]);
+    let inst = Instance::new(&rt, program, host, Storage::none());
+    let u = inst.flush();
+    let e = u
+        .errors
+        .iter()
+        .find(|e| e.contains("positive period"))
+        .unwrap_or_else(|| panic!("{:?}", u.errors));
+    assert_eq!(e.what, "every timer in t");
+    assert!(e.span.is_some());
+    inst.set_value("t", "d", Value::Num(500.0, strand_compiler::vm::Num::Ms))
+        .unwrap();
+    inst.flush();
+    inst.tick(Duration::from_millis(600));
+    inst.tick(Duration::from_millis(1100));
+    assert_eq!(inst.value_of("t", "n").unwrap(), Value::int(2));
+}
+
+/// A dropped instance leaves nothing running on its runtime: timers,
+/// handlers and service readers go with it.
+#[test]
+fn dropping_an_instance_stops_it() {
+    let src = "state n = 0\nevery 1s { n += 1 }\nbar B { text pct(battery.percent) }\n";
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    shell.at(1.0);
+    shell.at(2.0);
+    assert_eq!(shell.inst.value_of("t", "n").unwrap(), Value::int(2));
+    assert!(shell.host.readers("battery") > 0);
+    assert!(shell.rt.next_deadline().is_some());
+    let Shell { rt, host, inst, .. } = shell;
+    drop(inst);
+    assert_eq!(rt.next_deadline(), None, "no timer left");
+    assert_eq!(host.readers("battery"), 0);
+    let t = rt.tick(Duration::from_secs(10));
+    assert!(t.errors.is_empty(), "{:?}", t.errors);
+}
+
+/// `strand set` checks the declared type.
+#[test]
+fn set_checks_the_declared_type() {
+    let files = design_shells();
+    let shell = boot(&refs(&files), desktop);
+    let e = shell.inst.set("theme.look", Value::int(3)).unwrap_err();
+    assert!(e.to_string().contains("Look"), "{e}");
+    assert!(shell.inst.set("launcher.open", Value::text("yes")).is_err());
+    assert!(shell.inst.set("launcher.open", Value::Bool(true)).is_ok());
+}
+
+/// A component mounting `slot` twice gives each copy its own element
+/// states: hovering one copy is not hovering the other.
+#[test]
+fn each_slot_copy_has_its_own_states() {
+    let src = "component Two() { col { slot }\n col { slot } }\nbar B { Two { box { when hover { bg: #ff0000 } } } }\n";
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let boxes = shell.scene.of_kind(NodeKind::Box);
+    assert_eq!(boxes.len(), 2);
+    shell.inst.set_flag(boxes[1], NodeFlag::Hover, true);
+    shell.flush();
+    assert!(shell.scene.prop(boxes[0], Prop::Bg).is_none());
+    assert!(shell.scene.prop(boxes[1], Prop::Bg).is_some());
+    shell.inst.set_flag(boxes[0], NodeFlag::Hover, true);
+    shell.inst.set_flag(boxes[1], NodeFlag::Hover, false);
+    shell.flush();
+    assert!(shell.scene.prop(boxes[0], Prop::Bg).is_some());
+    assert!(shell.scene.prop(boxes[1], Prop::Bg).is_none());
+}
+
+/// `on change … after d` follows a reactive duration.
+#[test]
+fn a_debounce_follows_its_duration() {
+    let src = "state x = 0\nstate d = 1s\nstate fired = 0\non change x after d { fired += 1 }\nbar B { text \"x\" }\n";
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    shell
+        .inst
+        .set_value("t", "d", Value::Num(3000.0, strand_compiler::vm::Num::Ms))
+        .unwrap();
+    shell.flush();
+    shell.inst.set_value("t", "x", Value::int(1)).unwrap();
+    shell.at(0.1);
+    shell.at(2.0);
+    assert_eq!(shell.inst.value_of("t", "fired").unwrap(), Value::int(0));
+    shell.at(3.2);
+    assert_eq!(shell.inst.value_of("t", "fired").unwrap(), Value::int(1));
+}
+
+/// Surfaces send `show` and `hide`, their content is mounted when first
+/// shown and frozen while hidden, and the services their body reads are
+/// held only while shown.
+#[test]
+fn surfaces_show_hide_and_hold_services_while_shown() {
+    let src = "export state o = false\nstate shows = 0\nstate hides = 0\npanel P {\n  open: <-> o\n  on show { shows += 1 }\n  on hide { hides += 1 }\n  text pct(battery.percent)\n}\n";
+    let mut shell = boot(&[("vis.strand", src)], |_, _| {});
+    assert_eq!(shell.host.readers("battery"), 0, "hidden");
+    assert!(
+        shell.scene.of_kind(NodeKind::Text).is_empty(),
+        "not mounted"
+    );
+    shell.inst.set("vis.o", Value::Bool(true)).unwrap();
+    shell.flush();
+    assert_eq!(shell.host.readers("battery"), 1);
+    assert_eq!(shell.scene.of_kind(NodeKind::Text).len(), 1);
+    assert_eq!(shell.inst.value_of("vis", "shows").unwrap(), Value::int(1));
+    // Hidden: `hide`, services let go; the content stays (frozen).
+    let panel = shell.scene.of_kind(NodeKind::Panel)[0];
+    shell
+        .inst
+        .write(panel, Prop::Open, PropValue::Bool(false))
+        .unwrap();
+    shell.flush();
+    assert_eq!(shell.inst.value_of("vis", "hides").unwrap(), Value::int(1));
+    assert_eq!(shell.host.readers("battery"), 0);
+    shell
+        .host
+        .set(&shell.rt, "battery.percent", Value::float(0.5))
+        .unwrap();
+    let u = shell.flush();
+    assert!(u.diff.is_empty(), "frozen while hidden: {:?}", u.diff);
+    shell.inst.set("vis.o", Value::Bool(true)).unwrap();
+    let u = shell.flush();
+    assert!(!u.diff.is_empty(), "catches up when shown");
+    assert_eq!(shell.inst.value_of("vis", "shows").unwrap(), Value::int(2));
+    assert_eq!(shell.host.readers("battery"), 1);
+}
+
+/// Settings files are read through core (overlay > file > default) and
+/// written back field by field.
+#[test]
+fn settings_files_are_read_and_written_back() {
+    let dir = temp_dir("settings");
+    let config = dir.join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("prefs.toml"),
+        "# my prefs\ncompact = true\naccent = \"#ff8800\"\n",
+    )
+    .unwrap();
+    let storage = Storage::in_dirs(dir.join("state"), &config);
+    let src = "export state prefs from \"prefs.toml\" {\n  accent: color = #7aa2f7; compact: bool = false; gap: int = 4\n}\nbar B { text prefs.compact ? \"compact\" : \"roomy\" }\n";
+    let mut shell = boot_with(
+        &[("prefs_test.strand", src)],
+        |rt, host| screens(rt, host, &["DP-1"]),
+        storage.clone(),
+    );
+    assert_eq!(shell.scene.texts(), ["compact"]);
+    assert_eq!(
+        shell.inst.get("prefs_test.prefs.accent").unwrap(),
+        Value::Color(strand_scene::Color::from_hex("#ff8800").unwrap())
+    );
+    assert_eq!(
+        shell.inst.get("prefs_test.prefs.gap").unwrap(),
+        Value::int(4),
+        "default"
+    );
+    // A write through `strand set`: the field's signal, then the file,
+    // after the quiet time, keeping its comment.
+    shell
+        .inst
+        .set("prefs_test.prefs.compact", Value::Bool(false))
+        .unwrap();
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["roomy"]);
+    shell.at(1.0);
+    if let Some(s) = &storage.settings {
+        assert!(s.sync(Duration::from_secs(5)));
+    }
+    let text = std::fs::read_to_string(config.join("prefs.toml")).unwrap();
+    assert!(text.contains("# my prefs"), "{text}");
+    assert!(text.contains("compact = false"), "{text}");
+    assert!(
+        shell
+            .inst
+            .set("prefs_test.prefs.gap", Value::text("x"))
+            .is_err()
+    );
+    drop(shell);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Runtime errors carry where they happened: the failing operation's
+/// file and span, the scene node and the component, and the instance
+/// can freeze that component.
+#[test]
+fn runtime_errors_are_located_and_freeze_their_component() {
+    let src = "state zero = 1\nstate ticks = 0\ncomponent Faulty() {\n  every 1s { ticks += 1 }\n  text pct(10 / zero)\n}\nbar B { Faulty }\n";
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let text = shell.scene.of_kind(NodeKind::Text)[0];
+    shell.inst.set_value("t", "zero", Value::int(0)).unwrap();
+    let u = shell.flush();
+    let e = &u.errors[0];
+    assert_eq!(u.errors.len(), 1, "{:?}", u.errors);
+    assert!(e.contains("`10 / 0` has no value"), "{e}");
+    assert_eq!(e.node, Some(text));
+    let span = e.span.unwrap();
+    assert_eq!(&src[span.start as usize..span.end as usize], "10 / zero");
+    assert!(e.component.is_some());
+    let origin = shell.inst.origin(text).unwrap();
+    assert_eq!(
+        &src[origin.2.start as usize..origin.2.start as usize + 4],
+        "text"
+    );
+    // Freeze the component: its timer stops, and runs again once thawed.
+    shell.at(1.0);
+    assert_eq!(shell.inst.value_of("t", "ticks").unwrap(), Value::int(1));
+    assert!(shell.inst.freeze(e));
+    shell.at(2.0);
+    shell.at(3.0);
+    assert_eq!(shell.inst.value_of("t", "ticks").unwrap(), Value::int(1));
+    shell.inst.thaw(e);
+    shell.at(3.5);
+    shell.at(4.5);
+    assert_eq!(shell.inst.value_of("t", "ticks").unwrap(), Value::int(2));
+}
+
+/// Changing one item of a long keyed list re-runs that item's bindings
+/// only: each mounted key has its own value cell, and a `for` over a
+/// keyed `state` follows its diffs.
+#[test]
+fn one_item_change_reruns_one_item() {
+    let mut src = String::from("type Row { id: int; label: text }\nstate rows: [Row] key id = [");
+    for i in 0..2000 {
+        src.push_str(&format!("Row(id: {i}, label: \"r{i}\"), "));
+    }
+    src.push_str("]\nbar B { col { for r in rows { text r.label } } }\n");
+    let mut shell = boot(&[("t.strand", &src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    assert_eq!(shell.scene.of_kind(NodeKind::Text).len(), 2000);
+    let before = shell.rt.stats().computations;
+    shell
+        .inst
+        .set_value("t", "rows", {
+            let mut v = Vec::new();
+            for i in 0..2000 {
+                let label = if i == 7 {
+                    "changed".to_string()
+                } else {
+                    format!("r{i}")
+                };
+                v.push(
+                    shell
+                        .inst
+                        .vm()
+                        .types()
+                        .find_record("Row")
+                        .map_or(Value::Null, |r| {
+                            Value::record(r, vec![Value::int(i), Value::text(label)])
+                        }),
+                );
+            }
+            Value::list(v)
+        })
+        .unwrap();
+    let u = shell.flush();
+    let runs = shell.rt.stats().computations - before;
+    assert_eq!(u.diff.ops.len(), 1, "{:?}", u.diff);
+    assert!(runs < 20, "{runs} computations for one changed item");
+    assert!(shell.scene.find_text("changed").is_some());
 }

@@ -2,7 +2,7 @@
 source: crates/strand-compiler/tests/instantiate.rs
 expression: shell.scene.render()
 ---
-bar screens="DP-1" name="B"
+bar screens="Mock | DP-1 | Display" name="B"
   col pad=$Card.pad gap=0
     text text="Hi"
     text text="inside"

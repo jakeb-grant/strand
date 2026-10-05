@@ -20,7 +20,12 @@ fn run(src: &str) -> (Runtime, Rc<SchemaHost>, Instance) {
     ));
     let rt = Runtime::new();
     let host = Rc::new(SchemaHost::mock(&rt, &p.types));
-    let inst = Instance::new(&rt, p, host.clone(), None);
+    let inst = Instance::new(
+        &rt,
+        p,
+        host.clone(),
+        strand_compiler::instantiate::Storage::none(),
+    );
     let u = inst.flush();
     assert!(u.errors.is_empty(), "{:?}", u.errors);
     (rt, host, inst)
@@ -149,4 +154,91 @@ fn writes_to_services_and_settings() {
         prefs.field(inst.vm().types(), "scale"),
         Some(&Value::float(2.0))
     );
+}
+
+/// `??` gives the fallback while an `Async` is pending, then the value
+/// once it is ready; the `let` keeps one load per change of its
+/// arguments (`apps.search(q)` is an async memo).
+#[test]
+fn coalesce_covers_a_pending_async() {
+    let src = "state q = \"f\"\nlet hits = apps.search(q)\nlet first = hits ?? []\nlet n = first.len\nlet waiting = hits.pending\nbar B { text join(\" \", n, waiting) }\n";
+    let mut map = SourceMap::new();
+    map.add("t.strand", src.to_string());
+    let c = strand_compiler::compile(&map);
+    assert_eq!(c.errors(), 0, "{:#?}", c.diagnostics);
+    let p = Arc::new(lower::lower(
+        &c.program,
+        strand_compiler::schema::Schema::builtin(),
+    ));
+    let rt = Runtime::new();
+    let host = Rc::new(SchemaHost::mock(&rt, &p.types));
+    let apps = ["firefox", "files", "foot"]
+        .iter()
+        .map(|a| host.record("App", &[("id", Value::text(*a)), ("name", Value::text(*a))]))
+        .collect();
+    host.set(&rt, "apps.all", Value::list(apps)).unwrap();
+    let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+    host.set(&rt, "screens.all", Value::list(vec![screen]))
+        .unwrap();
+    host.hold("apps.search");
+    let inst = Instance::new(
+        &rt,
+        p,
+        host.clone(),
+        strand_compiler::instantiate::Storage::none(),
+    );
+    inst.flush();
+    assert_eq!(get(&inst, "waiting"), Value::Bool(true));
+    assert_eq!(get(&inst, "first"), Value::list(Vec::new()), "pending");
+    assert_eq!(get(&inst, "n"), Value::int(0));
+    host.release_fetch("apps.search");
+    inst.flush();
+    assert_eq!(get(&inst, "waiting"), Value::Bool(false));
+    assert_eq!(
+        get(&inst, "n"),
+        Value::int(3),
+        "ready: firefox, files, foot"
+    );
+    // A new query starts a new load: pending again, then its result.
+    host.hold("apps.search");
+    inst.set_value("t", "q", Value::text("fi")).unwrap();
+    inst.flush();
+    assert_eq!(get(&inst, "first"), Value::list(Vec::new()));
+    assert_eq!(get(&inst, "waiting"), Value::Bool(true));
+    host.release_fetch("apps.search");
+    inst.flush();
+    assert_eq!(get(&inst, "n"), Value::int(2));
+}
+
+/// The runtime host keeps no history of actions (the mock records them
+/// for tests).
+#[test]
+fn the_real_host_records_no_actions() {
+    let src = "bar B { text \"x\" { on click { notifications.clear() } } }\n";
+    let mut map = SourceMap::new();
+    map.add("t.strand", src.to_string());
+    let c = strand_compiler::compile(&map);
+    assert_eq!(c.errors(), 0, "{:#?}", c.diagnostics);
+    let p = Arc::new(lower::lower(
+        &c.program,
+        strand_compiler::schema::Schema::builtin(),
+    ));
+    let rt = Runtime::new();
+    let host = Rc::new(SchemaHost::real(&rt, &p.types));
+    let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+    host.set(&rt, "screens.all", Value::list(vec![screen]))
+        .unwrap();
+    let inst = Instance::new(
+        &rt,
+        p,
+        host.clone(),
+        strand_compiler::instantiate::Storage::none(),
+    );
+    inst.flush();
+    let text = inst.nodes_handling("click")[0];
+    for _ in 0..100 {
+        assert!(inst.event(text, "click", Vec::new()));
+        inst.flush();
+    }
+    assert!(host.actions().is_empty());
 }

@@ -15,7 +15,7 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::time::Duration;
 
-use strand_core::{Memo, Signal};
+use strand_core::{KeyedSignal, KeyedVec, Memo, Signal};
 use strand_scene::{Color, TokenExpr};
 
 use crate::hir::{DefId, LocalId, NodeIdx};
@@ -315,14 +315,16 @@ impl Value {
         }
     }
 
-    /// A duration: `6s`, `200ms`; plain numbers are seconds.
+    /// A duration: `6s`, `200ms`; plain numbers are seconds. `None` for
+    /// a negative, non-finite or too large value (past `Duration::MAX`,
+    /// about 584 billion years): config input never panics.
     pub fn as_duration(&self) -> Option<Duration> {
         let ms = match self {
             Value::Num(n, Num::Ms) => *n,
             Value::Num(n, _) => *n * 1000.0,
             _ => return None,
         };
-        (ms.is_finite() && ms >= 0.0).then(|| Duration::from_secs_f64(ms / 1000.0))
+        duration_ms(ms)
     }
 
     pub fn as_list(&self) -> Option<&[Value]> {
@@ -452,6 +454,80 @@ impl Value {
     }
 }
 
+/// Whether `v` is a value of type `ty` (writes from widgets and `strand
+/// set` are checked with it, so a bool never lands in an `int` state).
+/// Shapes the VM does not distinguish (fonts, shadows, opaque values,
+/// functions) are accepted.
+pub fn fits(types: &TypeTable, ty: &crate::ty::Ty, v: &Value) -> bool {
+    use crate::ty::{Prim, Ty};
+    match (ty, v) {
+        (Ty::Error | Ty::Any, _) => true,
+        (Ty::Optional(_), Value::Null) => true,
+        (Ty::Optional(t), v) => fits(types, t, v),
+        (Ty::Union(ts), v) => ts.iter().any(|t| fits(types, t, v)),
+        (_, Value::Null) => matches!(ty, Ty::Null),
+        (Ty::Unit, v) => matches!(v, Value::Unit),
+        (Ty::Prim(p), v) => match (p, v) {
+            (Prim::Bool, Value::Bool(_)) => true,
+            (Prim::Bool, _) => false,
+            (Prim::Int, Value::Num(n, u)) => {
+                matches!(u, Num::Int | Num::Float) && n.fract() == 0.0 && n.is_finite()
+            }
+            (Prim::Float, Value::Num(_, u)) => matches!(u, Num::Int | Num::Float),
+            (Prim::Length, Value::Num(_, u)) => {
+                matches!(u, Num::Int | Num::Float | Num::Px | Num::Percent | Num::Ch)
+            }
+            (Prim::Percent, Value::Num(_, u)) => matches!(u, Num::Int | Num::Float | Num::Percent),
+            (Prim::Angle, Value::Num(_, u)) => matches!(u, Num::Int | Num::Float | Num::Deg),
+            (Prim::Duration, Value::Num(_, u)) => matches!(u, Num::Int | Num::Float | Num::Ms),
+            (
+                Prim::Int | Prim::Float | Prim::Length | Prim::Percent | Prim::Angle,
+                Value::Token(_),
+            ) => true,
+            (
+                Prim::Int
+                | Prim::Float
+                | Prim::Length
+                | Prim::Percent
+                | Prim::Angle
+                | Prim::Duration,
+                _,
+            ) => false,
+            (Prim::Text | Prim::Path, v) => matches!(v, Value::Text(_)),
+            (Prim::Color, v) => matches!(v, Value::Color(_) | Value::Token(_)),
+            (Prim::Paint, v) => matches!(v, Value::Color(_) | Value::Token(_) | Value::Call(_)),
+            _ => true,
+        },
+        (Ty::Enum(e), v) => {
+            matches!(v, Value::Enum(e2, i) if e2 == e && (*i as usize) < types.enum_(*e).variants.len())
+        }
+        (Ty::Record(r), v) => matches!(v, Value::Record(rec) if rec.ty == *r),
+        (Ty::List(t, _), v) => match v {
+            Value::List(items) => items.iter().all(|i| fits(types, t, i)),
+            _ => false,
+        },
+        _ => true,
+    }
+}
+
+/// An `f32` from a widget as the `f64` with the shortest decimal form
+/// that round-trips it (a slider's 0.8 is 0.8, not 0.800000011920929).
+pub fn f32_to_f64(n: f32) -> f64 {
+    if !n.is_finite() {
+        return n as f64;
+    }
+    n.to_string().parse().unwrap_or(n as f64)
+}
+
+/// `ms` milliseconds as a `Duration`: `None` when negative, not finite or
+/// out of range.
+pub fn duration_ms(ms: f64) -> Option<Duration> {
+    if ms < 0.0 {
+        return None;
+    }
+    Duration::try_from_secs_f64(ms / 1000.0).ok()
+}
+
 /// A number without a trailing `.0`.
 pub fn number(n: f64) -> String {
     if n.fract() == 0.0 && n.abs() < 1e15 {
@@ -548,10 +624,13 @@ fn key_hash<H: Hasher>(v: &Value, state: &mut H) {
 /// Where a name's value lives at run time.
 #[derive(Clone, Copy, Debug)]
 pub enum Slot {
-    /// `state`, settings files, item bindings written by the VM.
+    /// `state`, settings fields, item bindings written by the VM.
     Signal(Signal<Value>),
-    /// `let`s, component parameters, `for` items.
+    /// `let`s, component parameters, settings files read as a record.
     Memo(Memo<Value>),
+    /// A keyed `state xs: [T] key f`: a core keyed collection, so a
+    /// `push` is one `VecDiff` and a `for` over it follows the diffs.
+    Keyed(KeyedSignal<ValueKey, Value>),
 }
 
 impl Slot {
@@ -560,6 +639,7 @@ impl Slot {
         match self {
             Slot::Signal(s) => s.get(rt),
             Slot::Memo(m) => m.get(rt),
+            Slot::Keyed(k) => k.with(rt, list_of),
         }
     }
 
@@ -567,8 +647,31 @@ impl Slot {
         match self {
             Slot::Signal(s) => s.id(),
             Slot::Memo(m) => m.id(),
+            Slot::Keyed(k) => k.id(),
         }
     }
+}
+
+/// A keyed collection's items as a list value.
+pub fn list_of(v: &KeyedVec<ValueKey, Value>) -> Value {
+    Value::list(v.items().iter().map(|(_, x)| x.clone()).collect())
+}
+
+/// An empty keyed collection keyed by `path` (a record key, `state … key
+/// f`'s path), or by the item's identity. `holder` keeps the type table
+/// alive (`types` gets it out).
+pub fn keyed_vec<H: 'static>(
+    holder: H,
+    types: fn(&H) -> &TypeTable,
+    path: Option<Vec<String>>,
+) -> KeyedVec<ValueKey, Value> {
+    KeyedVec::new(move |v: &Value| {
+        let t = types(&holder);
+        ValueKey(match &path {
+            Some(p) => v.key_path(t, p).cloned().unwrap_or(Value::Null),
+            None => v.identity(t),
+        })
+    })
 }
 
 #[cfg(test)]

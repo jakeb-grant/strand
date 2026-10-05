@@ -12,9 +12,9 @@
 
 use std::time::SystemTime;
 
-use strand_core::{Error, EventQueue, Runtime};
+use strand_core::{Error, EventQueue, KeyedSignal, Runtime};
 
-use super::value::Value;
+use super::value::{Value, ValueKey};
 
 /// Who an action is for.
 #[derive(Clone, Copy, Debug)]
@@ -41,12 +41,37 @@ pub trait ServiceHost {
     /// The value of `service.field`, tracked.
     fn read(&self, rt: &Runtime, service: &str, field: &str) -> Result<Value, Error>;
 
-    /// Write a `rw` field (`audio.sink` with its `volume` changed is
-    /// written as the whole new `sink` record).
-    fn write(&self, rt: &Runtime, service: &str, field: &str, value: Value) -> Result<(), Error>;
+    /// A list field published as a keyed collection
+    /// (`notifications.popups`, `workspaces.all`): a `for` over it follows
+    /// its `VecDiff`s instead of comparing whole lists, so one new
+    /// notification is one diff from the service to the scene. `None`
+    /// (the default) for fields kept as plain values.
+    fn read_keyed(
+        &self,
+        _rt: &Runtime,
+        _service: &str,
+        _field: &str,
+    ) -> Option<KeyedSignal<ValueKey, Value>> {
+        None
+    }
+
+    /// Write one `rw` leaf: `audio.sink.volume = 0.8` is `write(rt,
+    /// "audio", [Field("sink"), Field("volume")], 0.8)`, so the service
+    /// sends only what changed (a concurrent `muted` change is not
+    /// overwritten). The first segment is always a field of the service.
+    /// Hosts keep the written cell's generation tags with core's
+    /// `Signal::write_tagged` and match the service's reports with
+    /// `receive`, so an echo of this write is ignored.
+    fn write(
+        &self,
+        rt: &Runtime,
+        service: &str,
+        path: &[PathSeg],
+        value: Value,
+    ) -> Result<(), Error>;
 
     /// Call a `fn` method of a service (`clock.format(p)`,
-    /// `calendar.days(m)`, `apps.search(q)`), tracked.
+    /// `calendar.days(m)`, `workspaces.on(s)`), tracked.
     fn call(
         &self,
         rt: &Runtime,
@@ -54,6 +79,26 @@ pub trait ServiceHost {
         method: &str,
         args: &[Value],
     ) -> Result<Value, Error>;
+
+    /// Start an `Async` method (`apps.search(q)`) as a load: `let hits =
+    /// apps.search(query)` is `rt.async_memo(args, fetch)` per mounted
+    /// `let`, so each change of the arguments starts one fetch and drops
+    /// the superseded one (dropping the future cancels it), and the value
+    /// keeps its last result while pending. The default runs
+    /// [`ServiceHost::call`] once and is ready at once.
+    fn fetch(&self, rt: &Runtime, service: &str, method: &str, args: Vec<Value>) -> Fetch {
+        let r = self.call(rt, service, method, &args);
+        Box::pin(async move {
+            match r? {
+                Value::Async(a) => match (&a.error, &a.value) {
+                    (Some(e), _) => Err(Error::failed(e.to_string())),
+                    (None, Some(v)) => Ok(v.clone()),
+                    (None, None) => Ok(Value::Null),
+                },
+                v => Ok(v),
+            }
+        })
+    }
 
     /// Run an action.
     fn action(
@@ -69,12 +114,12 @@ pub trait ServiceHost {
     fn event(&self, rt: &Runtime, service: &str, event: &str) -> Option<EventQueue<Vec<Value>>>;
 
     /// A component (or surface, or the config) reading `service` was
-    /// mounted: the service starts on its first reader (design.md,
-    /// "Lifecycle").
+    /// mounted, or a surface reading it was shown: the service starts on
+    /// its first reader (design.md, "Lifecycle").
     fn acquire(&self, _service: &str) {}
 
-    /// The matching unmount: the service stops 5 s after its last reader
-    /// leaves.
+    /// The matching unmount or hide: the service stops 5 s after its last
+    /// reader leaves or goes invisible.
     fn release(&self, _service: &str) {}
 
     /// The next wall-clock time the host loop must wake for (the next
@@ -87,3 +132,22 @@ pub trait ServiceHost {
     /// The wall clock reached `now`: update time-driven fields.
     fn wake(&self, _rt: &Runtime, _now: SystemTime) {}
 }
+
+/// One step of a written path below a service.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PathSeg {
+    Field(String),
+    Index(usize),
+}
+
+impl std::fmt::Display for PathSeg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PathSeg::Field(n) => write!(f, ".{n}"),
+            PathSeg::Index(i) => write!(f, "[{i}]"),
+        }
+    }
+}
+
+/// A load started by [`ServiceHost::fetch`].
+pub type Fetch = std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, Error>>>>;

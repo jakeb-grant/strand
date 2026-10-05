@@ -38,17 +38,23 @@ pub(crate) struct Binding {
     pub prop: Prop,
     pub memo: Memo<PropOut>,
     pub transitions: Rc<Vec<Transition>>,
-    pub what: Rc<str>,
+    pub site: Rc<super::Site>,
 }
 
 /// An element instance the emitter knows.
 pub(crate) struct NodeEntry {
+    /// The element it instantiates, and where it is written.
+    pub idx: crate::hir::NodeIdx,
+    pub kind: NodeKind,
+    pub file: crate::source::FileId,
+    pub span: crate::syntax::Span,
     /// A surface (a `popup` included): events do not bubble out of it.
     pub surface: bool,
     pub parent: Option<NodeId>,
     pub state: Rc<NodeState>,
-    /// Input queues of its `on …` handlers, by event name.
-    pub events: HashMap<String, strand_core::EventQueue<Rc<EventCtx>>>,
+    /// Input queues of its `on …` handlers, by event name, in source
+    /// order.
+    pub events: HashMap<String, Vec<strand_core::EventQueue<Rc<EventCtx>>>>,
     /// `<->` props: where a widget write goes.
     pub two_way: Vec<(Prop, crate::lower::TwoWay, Rc<crate::vm::Env>)>,
     /// Watched memos bound to this node.
@@ -70,6 +76,8 @@ pub(crate) struct Emitter {
     /// The last value sent per node and prop, so unchanged values are
     /// not resent.
     pub sent: HashMap<NodeId, HashMap<Prop, PropValue>>,
+    /// Fragments taken off the scene but kept (a parked monitor's bar).
+    parked: std::collections::HashSet<FragId>,
 }
 
 impl Emitter {
@@ -262,6 +270,83 @@ impl Emitter {
         }
     }
 
+    /// Take `frag` off the scene (`Remove` its top nodes, so render plays
+    /// their exit) but keep it whole: nodes, bindings, state. Returns its
+    /// scope, for the caller to freeze.
+    pub fn park(&mut self, frag: FragId) -> Option<Scope> {
+        let scene_parent = self.scene_parent(frag);
+        for n in self.top_nodes(frag) {
+            self.ops.push(SceneOp::Remove { id: n });
+            if let Some(o) = self.order.get_mut(&scene_parent) {
+                o.retain(|&x| x != n);
+            }
+        }
+        if let Some(p) = self.frag(frag).and_then(|f| f.parent)
+            && let Some(pf) = self.frag_mut(p)
+        {
+            pf.children.retain(|&c| c != frag);
+        }
+        self.parked.insert(frag);
+        self.frag(frag).and_then(|f| f.scope)
+    }
+
+    /// Put a parked `frag` back at position `at` among its parent's
+    /// children: its nodes are created again under their ids, with every
+    /// prop last sent (`Instant`: nothing animates from defaults). Returns
+    /// its scope, for the caller to unfreeze.
+    pub fn unpark(&mut self, frag: FragId, at: usize) -> Option<Scope> {
+        if !self.parked.remove(&frag) {
+            return None;
+        }
+        if let Some(p) = self.frag(frag).and_then(|f| f.parent)
+            && let Some(pf) = self.frag_mut(p)
+        {
+            let at = at.min(pf.children.len());
+            pf.children.insert(at, frag);
+        }
+        let scene_parent = self.scene_parent(frag);
+        let mut pred = self.predecessor(frag);
+        for n in self.top_nodes(frag) {
+            let index = self.order_index(scene_parent, pred);
+            let o = self.order.entry(scene_parent).or_default();
+            let at = index.min(o.len());
+            o.insert(at, n);
+            self.recreate(n, scene_parent, at);
+            pred = Some(n);
+        }
+        self.frag(frag).and_then(|f| f.scope)
+    }
+
+    fn recreate(&mut self, n: NodeId, parent: Option<NodeId>, index: usize) {
+        let Some(kind) = self.nodes.get(&n).map(|e| e.kind) else {
+            return;
+        };
+        self.ops.push(SceneOp::Create {
+            id: n,
+            kind,
+            parent,
+            index: index as u32,
+        });
+        let mut props: Vec<(Prop, PropValue)> = self
+            .sent
+            .get(&n)
+            .map(|m| m.iter().map(|(p, v)| (*p, v.clone())).collect())
+            .unwrap_or_default();
+        props.sort_by_key(|(p, _)| p.name());
+        for (prop, value) in props {
+            self.ops.push(SceneOp::SetProp {
+                id: n,
+                prop,
+                value,
+                transition: Transition::Instant,
+            });
+        }
+        let children = self.order.get(&Some(n)).cloned().unwrap_or_default();
+        for (i, c) in children.into_iter().enumerate() {
+            self.recreate(c, Some(n), i);
+        }
+    }
+
     /// Unmount everything under `frag` (and `frag` itself unless
     /// `keep_self`): `Remove` its top scene nodes, forget their bindings
     /// and return the scopes to dispose and node states to reset.
@@ -278,7 +363,9 @@ impl Emitter {
         for root in roots {
             let root_parent = self.frag(root).and_then(|f| f.parent);
             let scene_parent = self.scene_parent(root);
-            for n in self.top_nodes(root) {
+            // A parked fragment is off the scene already.
+            let on_scene = !self.parked.remove(&root);
+            for n in self.top_nodes(root).into_iter().filter(|_| on_scene) {
                 self.ops.push(SceneOp::Remove { id: n });
                 if let Some(o) = self.order.get_mut(&scene_parent) {
                     o.retain(|&x| x != n);

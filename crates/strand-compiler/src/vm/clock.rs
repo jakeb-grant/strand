@@ -51,11 +51,29 @@ fn fail(msg: impl Into<String>) -> Error {
 }
 
 /// True if `pattern` shows seconds (so a binding using it must re-run
-/// every second).
+/// every second). Reads chrono's own items, so padding flags (`%-S`,
+/// `%_S`, `%0S`), fractions (`%f`, `%.3f`, `%3f`) and composite specs
+/// (`%T`, `%X`, `%c`, `%r`, `%+`) all count.
 pub fn shows_seconds(pattern: &str) -> bool {
-    ["%S", "%T", "%s", "%X", "%r", "%c", "%+", "%f", "%."]
-        .iter()
-        .any(|p| pattern.contains(p))
+    use chrono::format::{Fixed, Numeric};
+    StrftimeItems::new(pattern).any(|i| match i {
+        Item::Numeric(n, _) => matches!(
+            n,
+            Numeric::Second | Numeric::Timestamp | Numeric::Nanosecond
+        ),
+        Item::Fixed(f) => matches!(
+            f,
+            Fixed::Nanosecond
+                | Fixed::Nanosecond3
+                | Fixed::Nanosecond6
+                | Fixed::Nanosecond9
+                | Fixed::RFC2822
+                | Fixed::RFC3339
+                // `%3f` and friends (no public name).
+                | Fixed::Internal(_)
+        ),
+        _ => false,
+    })
 }
 
 /// `strftime` with chrono, without panicking on a bad pattern.
@@ -297,6 +315,31 @@ mod tests {
 
     fn at(s: i64) -> SystemTime {
         UNIX_EPOCH + Duration::from_secs(s as u64)
+    }
+
+    #[test]
+    fn seconds_are_found_through_padding_and_composites() {
+        for p in [
+            "%S",
+            "%-S",
+            "%_S",
+            "%0S",
+            "%T",
+            "%X",
+            "%c",
+            "%r",
+            "%+",
+            "%s",
+            "%f",
+            "%.3f",
+            "%3f",
+            "%H:%M:%-S",
+        ] {
+            assert!(shows_seconds(p), "{p}");
+        }
+        for p in ["%H:%M", "%-H:%M", "%a %d %b", "%p", "%%S", "%R", "%D"] {
+            assert!(!shows_seconds(p), "{p}");
+        }
     }
 
     #[test]

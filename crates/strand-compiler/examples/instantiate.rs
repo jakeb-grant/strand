@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
 use strand_compiler::diagnostic::{Style, render};
-use strand_compiler::instantiate::{Instance, SceneMirror};
+use strand_compiler::instantiate::{Instance, SceneMirror, Storage};
 use strand_compiler::vm::Value;
 use strand_compiler::vm::schema_host::SchemaHost;
 use strand_compiler::{SourceMap, lower};
@@ -42,13 +42,19 @@ fn main() {
     let rt = Runtime::new();
     let host = Rc::new(SchemaHost::real(&rt, &program.types));
     // One monitor until the binary feeds the real `screens` service.
-    let screen = host.record("Screen", &[("name", Value::text("HEADLESS-1"))]);
+    let screen = host.record(
+        "Screen",
+        &[
+            ("id", Value::text("Headless | Headless | Headless output")),
+            ("name", Value::text("HEADLESS-1")),
+        ],
+    );
     let _ = host.set(&rt, "screens.all", Value::list(vec![screen]));
-    let inst = Instance::new(&rt, program, host, None);
+    let inst = Instance::new(&rt, program, host, Storage::none());
     let start = Instant::now();
     let mut scene = SceneMirror::new();
     loop {
-        let u = inst.tick(start.elapsed());
+        let (u, wake) = inst.step(start.elapsed(), SystemTime::now());
         for e in &u.errors {
             eprintln!("error: {e}");
         }
@@ -64,16 +70,9 @@ fn main() {
         }
         // Sleep until the runtime or a service needs us: the next minute
         // for a clock, never for a static bar.
-        let logic = inst
-            .next_deadline()
-            .map(|d| d.saturating_sub(start.elapsed()));
-        let wall = inst
-            .next_wake()
-            .map(|t| t.duration_since(SystemTime::now()).unwrap_or_default());
-        let Some(wait) = [logic, wall].into_iter().flatten().min() else {
+        let Some(wait) = wake.sleep_for(start.elapsed(), SystemTime::now()) else {
             return;
         };
         std::thread::sleep(wait);
-        inst.wake(SystemTime::now());
     }
 }

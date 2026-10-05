@@ -2,12 +2,12 @@
 source: crates/strand-compiler/tests/instantiate.rs
 expression: shell.scene.render()
 ---
-bar edge=top screens="DP-1" name="Top"
+bar edge=top screens="Mock | DP-1 | Display" name="Top"
 panel name="Shows"
 panel keyboard=none name="KeyboardNone"
 panel keyboard=on_demand name="KeyboardOnDemand"
 panel keyboard=exclusive name="KeyboardExclusive"
-bar screens="DP-1" name="Everything"
+bar screens="Mock | DP-1 | Display" name="Everything"
   col
     box bg=$accent
     text text="09:41"

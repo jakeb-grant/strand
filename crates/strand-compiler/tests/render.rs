@@ -52,7 +52,12 @@ fn design_shells_reach_the_renderer() {
     let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
     host.set(&rt, "screens.all", Value::list(vec![screen]))
         .unwrap();
-    let inst = Instance::new(&rt, program, host.clone(), None);
+    let inst = Instance::new(
+        &rt,
+        program,
+        host.clone(),
+        strand_compiler::instantiate::Storage::none(),
+    );
     let mut r = renderer();
     let errors = r.apply(inst.flush().diff);
     assert!(errors.is_empty(), "{errors:?}");
