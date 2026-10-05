@@ -33,3 +33,5 @@ check::unknown_field
  3 │ let c = theme.look
    ╰────
   help: did you mean `look`?
+
+fix [check::unknown_field] bar.strand: `lok` -> `look`

@@ -25,3 +25,6 @@ check::unknown_token
  7 │ }
    ╰────
   help: did you mean `fg.muted`?
+
+fix [check::unknown_token] misspelt_override.strand: `spcae` -> `space`
+fix [check::unknown_token] misspelt_override.strand: `fg.mutde` -> `fg.muted`

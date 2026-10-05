@@ -145,6 +145,7 @@ pub fn serve_with(conn: &Connection, schema: Arc<Schema>) -> Result<()> {
         dirty: HashSet::new(),
         deadline: None,
         published: HashMap::new(),
+        owner: HashMap::new(),
     };
     server.run()
 }
@@ -159,9 +160,13 @@ struct Server<'c> {
     /// Configs whose diagnostics wait for the debounce.
     dirty: HashSet<ConfigKey>,
     deadline: Option<Instant>,
-    /// The configs published, with the URIs that show diagnostics (to
-    /// clear them later).
+    /// The configs published, with the URIs whose diagnostics they show
+    /// (to clear them later).
     published: HashMap<ConfigKey, HashSet<String>>,
+    /// The config that last published each URI's diagnostics. A URI moves
+    /// between configs (a new file saved into a config directory), and
+    /// only its owner may clear or republish it.
+    owner: HashMap<String, ConfigKey>,
 }
 
 impl Server<'_> {
@@ -206,6 +211,7 @@ impl Server<'_> {
                         )
                     });
                     self.conn.sender.send(Message::Response(resp))?;
+                    self.recheck_rebuilt();
                 }
                 Message::Notification(n) => {
                     if n.method == "exit" {
@@ -243,6 +249,7 @@ impl Server<'_> {
                 self.ws
                     .open(uri.clone(), p.text_document.text, p.text_document.version);
                 self.publish_now(&uri)?;
+                self.prune();
             }
             "textDocument/didChange" => {
                 let p: DidChangeTextDocumentParams = serde_json::from_value(n.params)?;
@@ -258,6 +265,7 @@ impl Server<'_> {
                 let p: DidSaveTextDocumentParams = serde_json::from_value(n.params)?;
                 self.ws.disk_changed();
                 self.publish_now(p.text_document.uri.as_str())?;
+                self.prune();
             }
             "textDocument/didClose" => {
                 let p: DidCloseTextDocumentParams = serde_json::from_value(n.params)?;
@@ -270,18 +278,22 @@ impl Server<'_> {
                     self.publish(&key)?;
                 } else {
                     // Nothing shows it any more.
-                    if let Some(set) = self.published.remove(&key) {
-                        for u in set {
-                            self.send_diagnostics(&u, Vec::new(), None)?;
-                        }
-                    }
-                    self.ws.forget(&key);
+                    self.unpublish(&key)?;
                 }
+                self.prune();
             }
             "workspace/didChangeWatchedFiles" => {
                 self.ws.disk_changed();
-                // Re-check what is shown, after the debounce.
-                self.dirty.extend(self.published.keys().cloned());
+                // Re-check what is shown, after the debounce, each file
+                // with the config it belongs to now.
+                let keys: Vec<ConfigKey> = self.published.keys().cloned().collect();
+                for k in keys {
+                    let now = match &k {
+                        ConfigKey::Single(u) => self.ws.config_of(u),
+                        ConfigKey::Dir(_) => k,
+                    };
+                    self.dirty.insert(now);
+                }
                 self.deadline = Some(Instant::now() + self.debounce);
             }
             _ => {}
@@ -302,13 +314,33 @@ impl Server<'_> {
         for k in keys {
             self.publish(&k)?;
         }
+        self.prune();
         Ok(())
     }
 
-    /// Publishes diagnostics for every file of a config, clearing files
-    /// that had some and no longer belong to it or have none.
+    /// Schedules the configs a request found changed on disk (the client
+    /// did not say so), so what is shown catches up with what requests
+    /// see.
+    fn recheck_rebuilt(&mut self) {
+        let keys: Vec<ConfigKey> = self
+            .ws
+            .take_rebuilt()
+            .into_iter()
+            .filter(|k| self.published.contains_key(k))
+            .collect();
+        if !keys.is_empty() {
+            self.dirty.extend(keys);
+            self.deadline = Some(Instant::now() + self.debounce);
+        }
+    }
+
+    /// Publishes diagnostics for every file of a config, taking those
+    /// files over from any config that published them before, and
+    /// clearing files it showed that left it.
     fn publish(&mut self, key: &ConfigKey) -> Result<()> {
         let an = self.ws.analysis(key);
+        // Published now, whatever changed on disk to cause it.
+        self.ws.settle(key);
         let old = self.published.remove(key).unwrap_or_default();
         let mut shown = HashSet::new();
         let mut in_config = HashSet::new();
@@ -316,7 +348,16 @@ impl Server<'_> {
             let uri = an.uri(f).to_string();
             let diags = diag::for_file(&an, f);
             let version = self.ws.docs.get(&uri).map(|d| d.version);
-            if !diags.is_empty() || old.contains(&uri) || self.ws.docs.contains_key(&uri) {
+            let previous = self.owner.insert(uri.clone(), key.clone());
+            // Another config showed this file: what it showed is replaced
+            // by what is sent now, so it no longer holds it.
+            let moved = previous.as_ref().is_some_and(|p| p != key);
+            if let Some(p) = previous.filter(|p| p != key)
+                && let Some(set) = self.published.get_mut(&p)
+            {
+                set.remove(&uri);
+            }
+            if !diags.is_empty() || old.contains(&uri) || moved || self.ws.docs.contains_key(&uri) {
                 if !diags.is_empty() {
                     shown.insert(uri.clone());
                 }
@@ -325,11 +366,47 @@ impl Server<'_> {
             in_config.insert(uri);
         }
         for gone in old.iter().filter(|u| !in_config.contains(*u)) {
-            self.send_diagnostics(gone, Vec::new(), None)?;
+            // Only the owner clears a file; another config may show it now.
+            if self.owner.get(gone) == Some(key) {
+                self.owner.remove(gone);
+                self.send_diagnostics(gone, Vec::new(), None)?;
+            }
         }
-        // URIs showing diagnostics, to clear them later.
         self.published.insert(key.clone(), shown);
         Ok(())
+    }
+
+    /// Clears what `key` shows and forgets it.
+    fn unpublish(&mut self, key: &ConfigKey) -> Result<()> {
+        if let Some(set) = self.published.remove(key) {
+            for u in set {
+                if self.owner.get(&u) == Some(key) {
+                    self.send_diagnostics(&u, Vec::new(), None)?;
+                }
+            }
+        }
+        self.owner.retain(|_, k| k != key);
+        self.dirty.remove(key);
+        self.ws.forget(key);
+        Ok(())
+    }
+
+    /// Forgets the published configs that no longer own any file: their
+    /// files moved to another config, which shows them now. They are not
+    /// re-checked again.
+    fn prune(&mut self) {
+        let owning: HashSet<&ConfigKey> = self.owner.values().collect();
+        let stale: Vec<ConfigKey> = self
+            .published
+            .keys()
+            .filter(|k| !owning.contains(k))
+            .cloned()
+            .collect();
+        for k in stale {
+            self.published.remove(&k);
+            self.dirty.remove(&k);
+            self.ws.forget(&k);
+        }
     }
 
     /// A message for the client's log.

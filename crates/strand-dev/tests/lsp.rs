@@ -683,10 +683,18 @@ fn hover_shows_types_and_schema_docs() {
     assert!(h.len() > "service battery".len() + 20, "no schema doc: {h}");
     let h = c.hover("bar.strand", Client::pos(&bar, "battery.percent", 0, 10));
     assert!(h.contains("percent: float"), "{h}");
+    // Service fields and record members carry the schema's docs.
+    assert!(h.contains("Charge, 0 to 1"), "{h}");
+    let h = c.hover("bar.strand", Client::pos(&bar, "audio.sink.volume", 0, 13));
+    assert!(
+        h.contains("volume: float rw") && h.contains("Volume, 0 to 1"),
+        "{h}"
+    );
     let h = c.hover("bar.strand", Client::pos(&bar, "open = !open", 0, 1));
     assert!(h.contains("state open: bool"), "{h}");
     let h = c.hover("bar.strand", Client::pos(&bar, "$accent }", 0, 2));
     assert!(h.contains("$accent: color"), "{h}");
+    assert!(h.contains("Material 3 `primary`"), "{h}");
     let h = c.hover("bar.strand", Client::pos(&bar, "edge: top", 0, 1));
     assert!(h.contains("edge: Edge"), "{h}");
     let h = c.hover("bar.strand", Client::pos(&bar, "Dot ws }", 0, 1));
@@ -715,6 +723,8 @@ fn hover_shows_types_and_schema_docs() {
         h.contains("base: 8px") && h.contains("compact (override): 4px"),
         "{h}"
     );
+    // A base-tier token reads its tier's doc.
+    assert!(h.contains("The spacing scale"), "{h}");
     // A file's header comment is not the doc of its first declaration.
     let h = c.hover(
         "launcher.strand",
@@ -1025,6 +1035,20 @@ fn quick_fix_for_a_renamed_parameter_and_a_misplaced_span() {
         .collect();
     assert_eq!(titles, ["Change to `open`", "Change to `day`"]);
     assert!(actions.iter().all(|a| a["isPreferred"] == false));
+    // An unknown named argument of a function call, inside a component
+    // call: the parameters left are the function's, not the component's.
+    let side = "fn f(a: int, b: int) -> int { a + b }\n\
+                component Side {\n  Calendar { day: f(a: 1, zzz: 2) }\n}\n";
+    c.change("side.strand", 3, side);
+    let _ = c.diagnostics("side.strand");
+    let actions = fixes_for(&mut c, "side.strand", side);
+    assert_eq!(actions.len(), 1, "{actions:?}");
+    assert_eq!(actions[0]["title"], "Change to `b`");
+    assert_eq!(actions[0]["isPreferred"], true);
+    assert_eq!(
+        c.applied(&actions[0]["edit"], "side.strand", side),
+        side.replace("zzz", "b")
+    );
     // The parser points past the misspelt keyword; the fix still
     // replaces the keyword.
     let a = "component A {\n  on chnage a, b { x = 1 }\n}\n";
@@ -1174,6 +1198,50 @@ fn files_changed_on_disk_are_seen() {
     std::fs::write(c.dir.0.join("extra.strand"), "export state on = true\n").unwrap();
     let h = c.hover("bar.strand", Client::pos(&bar, "extra.on", 0, 7));
     assert!(h.contains("state on: bool"), "{h}");
+    // What is shown catches up with what requests see, though the client
+    // said nothing: the error about `extra` is cleared.
+    loop {
+        let diags = c.diagnostics("bar.strand");
+        if !messages(&diags).iter().any(|m| m.contains("extra")) {
+            break;
+        }
+    }
+}
+
+/// A document opened before its file exists is checked alone; saved into
+/// a config directory, it moves to that config, and a later watched-file
+/// event never brings back what it showed alone.
+#[test]
+fn a_file_saved_into_a_config_moves_to_it() {
+    let files = shell_files(&[]);
+    let refs: Vec<(&str, String)> = files.iter().map(|(n, t)| (n.as_str(), t.clone())).collect();
+    let mut c = Client::start_with(&refs, |p| {
+        p["capabilities"] =
+            json!({ "workspace": { "didChangeWatchedFiles": { "dynamicRegistration": true } } });
+    });
+    let text = "export let shown_too = launcher.open\n";
+    c.open_text("new.strand", text);
+    let diags = c.diagnostics("new.strand");
+    assert!(
+        messages(&diags).iter().any(|m| m.contains("`launcher`")),
+        "{diags:?}"
+    );
+    std::fs::write(c.dir.0.join("new.strand"), text).unwrap();
+    c.notify(
+        "textDocument/didSave",
+        json!({ "textDocument": { "uri": c.uri("new.strand") } }),
+    );
+    assert_eq!(c.diagnostics("new.strand"), Vec::<Value>::new());
+    c.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({ "changes": [{ "uri": c.uri("new.strand"), "type": 1 }] }),
+    );
+    let mut seen = 0;
+    while let Some(d) = c.diagnostics_within("new.strand", Duration::from_millis(1500)) {
+        assert_eq!(d, Vec::<Value>::new());
+        seen += 1;
+    }
+    assert!(seen >= 1, "the watched-file event re-checks the config");
 }
 
 /// A client that watches files gets a registration for `.strand` files,

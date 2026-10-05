@@ -41,136 +41,256 @@ opaque Palette, TokenSet, Spring, Easing, Pose, SwapTransition, Mask, Filter, Hi
 alias AppId = text
 
 // ---------------------------------------------------------------------------
-// Records
+// Records. Every entry carries a `///` doc for hover and completion
+// (design.md: hovers are generated from the schemas); a test fails on an
+// undocumented service, record member, function, element, prop or token.
 
 /// A node of the tree: `self`, or an element given an `id:`.
 record Node {
+  /// The pointer is over it (latched while dragging).
   hover: bool
+  /// A pointer button is held down on it.
   pressed: bool
+  /// It has keyboard focus.
   focused: bool
+  /// It is the selected item of a `list`; arrow keys move the selection.
   selected: bool
+  /// Its laid-out width. `when self.width < 300 { … }` is a container
+  /// query, with 4 px hysteresis so it cannot flicker.
   width: float
+  /// Its laid-out height.
   height: float
 }
 
-record Range { start: int; end: int }
+/// A span of characters: from `start` up to, not including, `end`.
+record Range {
+  /// The first character.
+  start: int
+  /// Just past the last character.
+  end: int
+}
 
+/// A key press: `on key(k: Key)`.
 record Key {
+  /// The key's name, such as `Escape`, `Return` or `a`.
   name: text
+  /// The text the key types; empty for keys that type none.
   text: text
+  /// Ctrl is held.
   ctrl: bool
+  /// Shift is held.
   shift: bool
+  /// Alt is held.
   alt: bool
+  /// The logo (Super) key is held.
   logo: bool
 }
 
+/// A date and time of day, such as `clock.today`.
 record Date {
+  /// The year.
   year: int
+  /// The month, 1 to 12.
   month: int
+  /// The day of the month, 1 to 31.
   day: int
+  /// The day of the week.
   weekday: int
+  /// The first day of its month: `clock.today.month_start()`.
   fn month_start() -> Date
+  /// Moves by days, months and years: `month.add(months: -1)`.
   fn add(days: int = 0, months: int = 0, years: int = 0) -> Date
+  /// Formats with a strftime pattern: `month.format("%B %Y")`.
   fn format(pattern: text) -> text
 }
 
+/// A cell of a month grid, from `calendar.days(month)`.
 record Day key date {
+  /// The day's date.
   date: Date
+  /// It falls in the month asked for; the grid is padded with the days
+  /// of the months around it.
   in_month: bool
+  /// It is today.
   today: bool
+  /// It falls on a weekend.
   weekend: bool
 }
 
+/// A monitor.
 record Screen key name {
+  /// Its output name, such as `DP-1`.
   name: text
+  /// Its maker.
   make: text
+  /// Its model.
   model: text
+  /// A readable description of it.
   description: text
+  /// Its scale factor.
   scale: float
+  /// Its width in logical pixels.
   width: float
+  /// Its height in logical pixels.
   height: float
+  /// It has keyboard focus.
   focused: bool
 }
 
+/// A toplevel window, from `ext-foreign-toplevel-list`.
 record Window key id {
+  /// Its identity.
   id: text
+  /// Its title: `windows.focused?.title`.
   title: text
+  /// The app's id, such as `firefox`.
   app_id: text
+  /// An icon name for its app.
   icon: text
+  /// The workspace it is on, when known.
   workspace: int?
+  /// It has focus.
   focused: bool
+  /// It is minimised.
   minimized: bool
+  /// It is fullscreen.
   fullscreen: bool
+  /// Raises and focuses it.
   action focus()
+  /// Asks it to close.
   action close()
+  /// Minimises it.
   action minimize()
 }
 
+/// A workspace, from `ext-workspace-v1`, keyed by `id`.
 record Workspace key id {
+  /// Its identity.
   id: int
+  /// Its name.
   name: text
+  /// It is the focused workspace.
   focused: bool
+  /// It holds windows.
   occupied: bool
+  /// A window on it asks for attention.
   urgent: bool
+  /// The name of the screen it is on.
   screen: text
+  /// Its windows, keyed by `id`.
   windows: [Window]
+  /// Switches to it: `on click { ws.focus() }`.
   action focus()
 }
 
+/// An audio sink or source, from PipeWire.
 record AudioDevice key id {
+  /// Its PipeWire id.
   id: int
+  /// Its node name.
   name: text
+  /// A readable description of it.
   description: text
+  /// Volume, 0 to 1. Writable: `audio.sink.volume -= dy * 0.05`.
   volume: float rw
+  /// Muted. Writable: `audio.sink.muted = !audio.sink.muted`.
   muted: bool rw
+  /// An icon name for its volume and mute state.
   icon: text
+  /// It is the default device.
   default: bool
+  /// Makes it the default device.
   action make_default()
 }
 
-record TrayMenu { action open() }
+/// A tray item's menu (DBusMenu).
+record TrayMenu {
+  /// Opens it as a popup: `on secondary { item.menu.open() }`.
+  action open()
+}
 
+/// An item in the system tray (StatusNotifierItem), keyed by `id`.
 record TrayItem key id {
+  /// Its identity.
   id: text
+  /// Its title.
   title: text
+  /// Its icon: `image item.icon`.
   icon: text
+  /// Its tooltip, if it has one.
   tooltip: text?
+  /// `Active`, `Passive` or `NeedsAttention`.
   status: text
+  /// Its menu.
   menu: TrayMenu
+  /// Its primary action: `on click { item.activate() }`.
   action activate()
+  /// Its secondary action.
   action secondary()
+  /// Scrolls on it.
   action scroll(dy: float)
 }
 
-record NotificationApp { name: text; icon: text }
+/// The app that sent a notification.
+record NotificationApp {
+  /// The app's name.
+  name: text
+  /// The app's icon.
+  icon: text
+}
 
+/// A button a notification offers.
 record NotificationAction key id {
+  /// Its identity.
   id: text
+  /// Its label: `button a.label`.
   label: text
+  /// Invokes it: `on click { a.invoke() }`.
   action invoke()
 }
 
+/// A desktop notification, keyed by `id`.
 record Notification key id {
+  /// Its identity.
   id: int
+  /// The app that sent it.
   app: NotificationApp
+  /// Its summary line.
   summary: text
+  /// Its body, which may hold basic markup (`markup: basic`).
   body: text
+  /// An image it carries, if any.
   image: text?
+  /// `low`, `normal` or `critical`.
   urgency: Urgency
+  /// How long the sender asked it to show; null leaves it to the shell:
+  /// `after n.timeout ?? 6s { n.expire() }`.
   timeout: duration?
+  /// When it arrived.
   time: Date
+  /// The buttons it offers.
   actions: [NotificationAction]
+  /// Ends its popup, as a timeout does.
   action expire()
+  /// Closes it: `on secondary { n.dismiss() }`.
   action dismiss()
+  /// Invokes its default action: `on click { n.activate() }`.
   action activate()
 }
 
+/// An installed app, from its desktop entry (watched live).
 record App key id {
+  /// Its desktop entry id.
   id: AppId
+  /// Its name.
   name: text
+  /// Its comment, if the entry has one.
   comment: text?
+  /// Its icon: `image h.app.icon`.
   icon: text
+  /// Its desktop entry categories.
   categories: [text]
+  /// Starts it: `on activate { h.app.launch() }`.
   action launch()
 }
 
@@ -179,223 +299,372 @@ record App key id {
 /// which; the other fields are empty. A drag inside the shell delivers the
 /// `drag:` source's own value instead (`on drop(p: Pin, at: int)`).
 record Drop {
+  /// What was dropped: `files`, `app` or `text`.
   kind: DropKind
+  /// The dropped files.
   files: [path]
+  /// The dropped app.
   app: App?
+  /// The dropped text.
   text: text
 }
 
 /// A launcher search result: the app, its score and the matched ranges.
 record Hit key app.id {
+  /// The app found.
   app: App
+  /// Its score: fuzzy match plus frecency.
   score: float
+  /// The matched character ranges of its name: `marks: h.ranges`.
   ranges: [Range]
 }
 
+/// A paired Bluetooth device, keyed by `address`.
 record BluetoothDevice key address {
+  /// Its address.
   address: text
+  /// Its name.
   name: text
+  /// It is connected.
   connected: bool
+  /// Its battery, 0 to 1, when it reports one.
   battery: float?
+  /// An icon name for its kind.
   icon: text
+  /// Connects to it.
   action connect()
+  /// Disconnects from it.
   action disconnect()
 }
 
+/// What `canvas { draw: (c) => … }` draws on, with the paint API the
+/// renderer uses.
 record Canvas {
+  /// The canvas width.
   width: float
+  /// The canvas height.
   height: float
+  /// Fills with `paint`.
   fn fill(paint: paint)
+  /// Strokes with `paint`, `width` wide.
   fn stroke(paint: paint, width: length = 1)
+  /// A line from (`x1`, `y1`) to (`x2`, `y2`).
   fn line(x1: float, y1: float, x2: float, y2: float)
+  /// A rectangle at (`x`, `y`), `w` wide and `h` high.
   fn rect(x: float, y: float, w: float, h: float)
+  /// A circle centred at (`x`, `y`) with radius `r`.
   fn circle(x: float, y: float, r: float)
+  /// Text `t` at (`x`, `y`).
   fn text(t: text, x: float, y: float)
 }
 
 // ---------------------------------------------------------------------------
-// Services: global names whose fields are live values.
+// Services: global names whose fields are live values. A service starts
+// when a shell first reads it and stops 5 s after its last reader leaves.
 
+/// The date and time. Reading it wakes the shell only as often as what is
+/// read changes.
 service clock {
+  /// Today's date: `clock.today.month_start()`.
   today: Date
+  /// The current date and time.
   now: Date
   /// Wakes only as often as the pattern changes (once a minute for %H:%M).
   fn format(pattern: text) -> text
 }
 
+/// Month grids for calendars.
 service calendar {
+  /// The days of the weeks that cover `month`, padded with days of the
+  /// months around it: `for d in calendar.days(month)`.
   fn days(month: Date) -> [Day]
 }
 
+/// The battery, from UPower.
 service battery {
+  /// A battery is present: `if battery.present { Battery }`.
   present: bool
+  /// Charge, 0 to 1: `pct(battery.percent)`.
   percent: float
+  /// It is charging.
   charging: bool
+  /// Time until empty, or until full while charging; null when unknown.
   time_left: duration?
+  /// An icon name for its charge and state.
   icon: text
+  /// Power draw in watts.
   power: float
 }
 
+/// Toplevel windows, from `ext-foreign-toplevel-list`.
 service windows {
+  /// The focused window, if any: `windows.focused?.title`.
   focused: Window?
+  /// Every window, keyed by `id`.
   all: [Window]
 }
 
+/// Workspaces, from `ext-workspace-v1`; Hyprland, niri and sway IPC fill
+/// in what the protocol does not cover yet.
 service workspaces {
+  /// Every workspace, keyed by `id`.
   all: [Workspace]
+  /// The focused workspace, if any.
   focused: Workspace?
+  /// The workspaces on `screen`: `for ws in workspaces.on(screen)`.
   fn on(screen: Screen) -> [Workspace]
 }
 
+/// Audio devices, from PipeWire.
 service audio {
+  /// The default output: `audio.sink.volume`, `audio.sink.muted`.
   sink: AudioDevice
+  /// The default input.
   source: AudioDevice
+  /// Every output, keyed by `id`.
   sinks: [AudioDevice]
+  /// Every input, keyed by `id`.
   sources: [AudioDevice]
 }
 
+/// The screen backlight, set through logind (no root or udev rules).
 service brightness {
+  /// Backlight level, 0 to 1. Writable.
   level: float rw
+  /// A backlight was found.
   available: bool
 }
 
+/// The system tray (a StatusNotifierItem host with DBusMenu).
 service tray {
+  /// The tray's items, keyed by `id`: `for item in tray.items`.
   items: [TrayItem]
 }
 
+/// The notification server: the shell owns the freedesktop notification
+/// name, and says so clearly if another daemon (dunst, mako) has it.
 service notifications {
+  /// The notifications to show now; each leaves when it expires or is
+  /// dismissed.
   popups: [Notification]
+  /// Every notification kept, popups included.
   all: [Notification]
+  /// How many notifications are kept.
   count: int
+  /// Dismisses every notification.
   action clear()
+  /// A notification arrived. Events are lossless queues:
+  /// `on notifications.received(n) { … }`.
   event received(n: Notification)
 }
 
+/// Installed apps, from desktop entries (watched live).
 service apps {
+  /// Every installed app, keyed by `id`.
   all: [App]
   /// Fuzzy match plus frecency; keeps its last result while searching.
   fn search(query: text) -> Async<[Hit]>
 }
 
+/// The active media player, over MPRIS.
 service media {
+  /// Something is playing.
   playing: bool
+  /// The track's title.
   title: text?
+  /// The track's artist.
   artist: text?
+  /// The track's album.
   album: text?
+  /// The album art: `image media.art { fit: cover }`.
   art: text?
   /// Fraction of the track played, 0 to 1.
   position: float
+  /// Time played.
   elapsed: duration
+  /// The track's length, when known.
   length: duration?
+  /// Plays or pauses.
   action play_pause()
+  /// Skips to the next track.
   action next()
+  /// Goes back to the previous track.
   action previous()
 }
 
 /// Portal settings.
 service system {
+  /// The desktop prefers a dark style.
   dark: bool
+  /// The desktop's accent colour, if it sets one.
   accent: color?
+  /// The contrast preference, as `material(contrast:)` takes it.
   contrast: float
+  /// Motion should be reduced: springs snap, and loops, time signals and
+  /// effects stop.
   reduced_motion: bool
+  /// The machine's host name.
   hostname: text
 }
 
+/// Processor load.
 service cpu {
+  /// Load over every core, 0 to 1: `graph cpu.usage`.
   usage: float
+  /// The load of each core, 0 to 1.
   cores: [float]
+  /// The processor's temperature, when a sensor reports one.
   temperature: float?
 }
 
+/// Memory use.
 service memory {
+  /// The fraction in use, 0 to 1.
   usage: float
+  /// Memory in use.
   used: float
+  /// Memory installed.
   total: float
 }
 
+/// Monitors.
 service screens {
+  /// Every monitor, keyed by `name`.
   all: [Screen]
+  /// The monitor with keyboard focus.
   focused: Screen?
 }
 
+/// The compositor.
 service wm {
+  /// Its name, such as `Hyprland`, `niri` or `sway`.
   name: text
+  /// The compositor reloaded its config.
   event config_reloaded()
 }
 
+/// The network, from NetworkManager.
 service network {
+  /// A network connection is up.
   connected: bool
+  /// The Wi-Fi network joined, if any.
   ssid: text?
+  /// The Wi-Fi signal strength, 0 to 1.
   strength: float
+  /// The Wi-Fi radio is on. Writable.
   wifi: bool rw
 }
 
+/// Bluetooth, from BlueZ.
 service bluetooth {
+  /// The adapter is on. Writable.
   powered: bool rw
+  /// Paired devices, keyed by `address`.
   devices: [BluetoothDevice]
 }
 
 /// The lock screen's PAM helper.
 service auth {
+  /// A password is being checked.
   busy: bool
+  /// The last password was wrong.
   failed: bool
+  /// Checks `password`.
   action submit(password: text)
 }
 
 // ---------------------------------------------------------------------------
-// Functions. Overloads are tried in order.
+// Functions. Overloads are tried in order; the first overload's doc
+// documents the name.
 
+/// A fraction as a percentage: `pct(battery.percent)`. Null in, null out.
 fn pct(fraction: float) -> text lift
+/// A duration as text: `dur(battery.time_left)`. Null in, null out.
 fn dur(duration: duration) -> text lift
 /// Joins the parts that are not null.
 fn join(sep: text, ...parts: any?) -> text
 
+/// A Material 3 palette from a seed colour, or from a wallpaper image
+/// (quantised off-thread and cached; the old palette holds until the new
+/// one is ready, so that form is `Async`).
 fn material(seed: color, variant: Variant = tonal_spot, dark: bool = false, contrast: float = 0) -> Palette
 fn material(image: path, variant: Variant = tonal_spot, dark: bool = false, contrast: float = 0) -> Async<Palette>
+/// A palette from another scheme: `import("catppuccin:mocha")`. It must
+/// fill the whole palette schema.
 fn import(source: text) -> Palette
 
 /// `oklch(from $surface, l: l + 0.12)`: `l`, `c`, `h` and `alpha` name the
 /// source colour's channels inside the arguments.
 fn oklch(from: color, l: float = l, c: float = c, h: angle = h, alpha: float = alpha) -> color
 fn oklch(l: float, c: float, h: angle, alpha: float = 1) -> color
+/// A colour from red, green and blue channels.
 fn rgb(r: float, g: float, b: float, alpha: float = 1) -> color
 
+/// A linear gradient: `linear(45deg, $accent, $tertiary)`. Banding is
+/// removed by dithering.
 fn linear(angle: angle, ...stops: color) -> paint
+/// A radial gradient, or with `at` and `size` a radial reveal mask.
 fn radial(...stops: color) -> paint
 fn radial(at: Anchor, size: length) -> Mask
+/// A conic gradient: `conic(from: t * 60deg, $accent, $secondary, $accent)`.
 fn conic(from: angle = 0, ...stops: color) -> paint
 
+/// A spring for `~` and the motion tokens: `spring(700, 0.9)`.
 fn spring(stiffness: float, damping: float) -> Spring
+/// A named curve over a duration: `~ ease(out_back, 300ms)`.
 fn ease(curve: Curve, duration: duration) -> Easing
+/// A cubic bézier curve: `~ bezier(0.05, 0.9, 0.1, 1.05)`.
 fn bezier(x1: float, y1: float, x2: float, y2: float) -> Easing
 
+/// A time signal that swings once per `period`: `10 * wave(2s)`. Only the
+/// node reading it repaints, and only while visible.
 fn wave(period: duration, phase: float = 0) -> float
+/// Smooth noise at `x`; a time signal when `x` follows `t`.
 fn noise(x: float) -> float
 
+/// A larger hit area for a small target: `hit: grow(6)`.
 fn grow(by: length) -> HitArea
+/// Blurs: `backdrop: blur(16)` over your own content, `filter: blur(30)`.
 fn blur(radius: length) -> Filter
+/// A colour filter: `filter: grayscale(1)`.
 fn grayscale(amount: float) -> Filter
+/// A colour filter: `filter: saturate(1.3)`.
 fn saturate(amount: float) -> Filter
+/// A colour filter turning hues: `filter: hue(30deg)`.
 fn hue(angle: angle) -> Filter
+/// A colour filter: `filter: brightness(0.9)`.
 fn brightness(amount: float) -> Filter
+/// A colour filter changing contrast.
 fn contrast(amount: float) -> Filter
+/// A colour filter inverting colours.
 fn invert(amount: float) -> Filter
+/// A colour filter tinting toward a colour: `filter: tint($accent)`.
 fn tint(color: color) -> Filter
 
+/// A mask fading toward an edge: `mask: fade(bottom, 24)`.
 fn fade(edge: Edge, size: length) -> Mask
+/// A mask of a shape from the shape library: `mask: shape(cookie)`.
 fn shape(shape: Shape) -> Mask
 
+/// A pose scaling in from `scale`: `enter: popin(0.8)`.
 fn popin(scale: float) -> Pose
+/// A pose sliding in from an edge: `enter: slide(top)`.
 fn slide(edge: Edge) -> Pose
+/// A transition wiping from an edge: `transition: wipe(left)`.
 fn wipe(edge: Edge) -> SwapTransition
+/// A round particle sprite: `sprite: dot(3)`.
 fn dot(size: length) -> Sprite
 
+/// The smaller of two numbers.
 fn min(a: float, b: float) -> float
+/// The larger of two numbers.
 fn max(a: float, b: float) -> float
+/// `x` kept between `lo` and `hi`.
 fn clamp(x: float, lo: float, hi: float) -> float
 
 /// Handlers only.
 action propagate()
+/// Waits for `duration` inside a handler.
 fn sleep(duration: duration) -> Async<unit>
 
 /// Time signal: seconds, for `rotate: t * 20deg`.
@@ -405,30 +674,49 @@ value t: float
 // Methods on builtin types.
 
 methods color {
+  /// The colour with opacity `alpha`: `$fg.alpha(0.65)`.
   fn alpha(alpha: float) -> color
+  /// Mixes in `amount` of `other`: `$surface.mix($fg, 8%)`.
   fn mix(other: color, amount: float) -> color
+  /// A lighter colour.
   fn lighten(amount: float) -> color
+  /// A darker colour.
   fn darken(amount: float) -> color
 }
 
 methods text {
+  /// The text in upper case.
   fn upper() -> text
+  /// The text in lower case.
   fn lower() -> text
+  /// The text without leading and trailing white space.
   fn trim() -> text
+  /// It holds `part`.
   fn contains(part: text) -> bool
+  /// It starts with `prefix`.
   fn starts_with(prefix: text) -> bool
+  /// It ends with `suffix`.
   fn ends_with(suffix: text) -> bool
+  /// The pieces between each `sep`.
   fn split(sep: text) -> [text]
+  /// Every `from` replaced with `to`.
   fn replace(from: text, to: text) -> text
 }
 
 methods float {
+  /// The absolute value.
   fn abs() -> float
+  /// The nearest whole number.
   fn round() -> int
+  /// The whole number at or below.
   fn floor() -> int
+  /// The whole number at or above.
   fn ceil() -> int
+  /// The smaller of this and `other`.
   fn min(other: float) -> float
+  /// The larger of this and `other`.
   fn max(other: float) -> float
+  /// This kept between `lo` and `hi`.
   fn clamp(lo: float, hi: float) -> float
 }
 
@@ -436,173 +724,387 @@ methods float {
 // Elements. `node` holds what every element accepts; `inherit` props
 // (font, color) reach every descendant.
 
+/// What every element accepts. Every visual prop springs; `x`, `y`,
+/// `scale`, `rotate` and `opacity` are paint-only and never relayout.
 group node {
+  /// Names the element, so others read its state (`results.selected`)
+  /// and keys route to it (`nav: results`).
   id: Node
+  /// Its width: logical pixels, or `40%` of the parent.
   width: length
+  /// Its height: logical pixels, or a percentage of the parent.
   height: length
+  /// The smallest width it takes.
   min_width: length
+  /// The smallest height it takes.
   min_height: length
+  /// The largest width it takes.
   max_width: length
+  /// The largest height it takes: `max_height: 420`.
   max_height: length
+  /// Its width and height at once: `size: 8`.
   size: length
+  /// Its share of the space left in its row or column: `grow: 1`.
   grow: float
+  /// Space inside its edge: one to four values (`pad: 0, $space.3`).
   pad: insets
+  /// Space outside its edge: one to four values.
   margin: insets
+  /// Space between its children: `gap: $space.2`.
   gap: length
+  /// Alignment of its children on the cross axis, or of a text's lines.
   align: Align
+  /// `absolute` takes it out of the flow, placed by `x` and `y`.
   place: Place
+  /// Delays each child's `enter` this much after the one before.
   stagger: duration
+  /// Horizontal offset; paint-only.
   x: length
+  /// Vertical offset; paint-only.
   y: length
+  /// Scale about its centre; paint-only.
   scale: float
+  /// Rotation about its centre; paint-only: `rotate: t * 20deg`.
   rotate: angle
+  /// Opacity, 0 to 1; paint-only.
   opacity: float
+  /// Background paint: a colour or a gradient.
   bg: paint
+  /// Text and icon colour, inherited by every descendant.
   color: color inherit
+  /// Font, inherited by every descendant: `"Inter" 13px 500`, `$font.ui`.
   font: font inherit
+  /// Font weight, inherited by every descendant: `weight: 600`.
   weight: int inherit
+  /// Corner radii: one value, four (`14, 14, 0, 0`), or `full` for a pill.
   radius: corners | RadiusKeyword
+  /// `squircle` for smooth corners.
   corners: CornerStyle
+  /// A border of a width and a paint: `border: 1, $border`. A gradient's
+  /// angle may animate; only the ring repaints.
   border: (length, paint)
+  /// Drop shadows: `0 2px 8px $shadow.alpha(0.25)`, comma-separated.
   shadow: shadow
+  /// A shadow inside its edge.
   inner_shadow: shadow
+  /// Blur behind it, done by the compositor: `blur: 24`.
   blur: length
+  /// What to draw when the compositor cannot blur.
   blur_fallback: BlurFallback
+  /// A filter over your own content behind it: `backdrop: blur(16)`.
   backdrop: Filter
+  /// Clips its children to its rounded shape.
   clip: bool
+  /// Its hit area: `hit: grow(6)` enlarges it for small targets.
   hit: HitArea
+  /// A tooltip shown on hover.
   tooltip: text
+  /// Colour filters on its subtree: `filter: grayscale(1)`, or a list.
   filter: Filter | [Filter]
+  /// How it blends with what is below it.
   blend: Blend
+  /// Masks its subtree: `fade(bottom, 24)`, `radial(…)`, `shape(cookie)`.
   mask: Mask
+  /// A glow of a radius and a colour: `glow: 12, $accent.alpha(0.6)`.
   glow: (length, color)
+  /// A lit edge: `rim: top, $fg.alpha(0.15)`.
   rim: (Edge, color)
+  /// Film grain: `grain: 0.04`.
   grain: float
+  /// A shared-element name: nodes with the same `morph` morph into each
+  /// other across surfaces (`morph: "media"`).
   morph: text
+  /// Squash and stretch while dragged: `jelly: 0.4`.
   jelly: float
+  /// Moves with the pointer, up to this far: `parallax: 6px`.
   parallax: length
+  /// Tilts toward the pointer, up to this angle: `tilt: 8deg`.
   tilt: angle
+  /// A shape from the shape library; a change morphs by spring.
   shape: Shape
+  /// An outline of a width and a paint, with styles:
+  /// `stroke: 3, $accent { trim: 0, progress; cap: round }`.
   stroke: (length, paint) {
+    /// The part drawn: from a start to an end fraction.
     trim: (float, float)
+    /// A wavy stroke: its amplitude and wavelength.
     wave: (float, length)
+    /// The line caps.
     cap: Cap
+    /// Dash and gap lengths.
     dash: (length, length)
   }
+  /// The pose it enters from: `enter { opacity: 0 }`, `popin(0.8)`,
+  /// `slide(top)`, `fade` or `slidefade`. `exit` mirrors it unless given.
   enter: Pose | PoseName
+  /// The pose it leaves by; the subtree unmounts once it has played.
   exit: Pose | PoseName
+  /// How its content swaps on `if`, `pages` and image changes:
+  /// `wipe(left)`, `crossfade`, `disc`, `dissolve` or `pixelate`.
   transition: SwapTransition | SwapKind
+  /// Makes it a drag source carrying this value: `drag: pin`.
   drag: any
+  /// A primary click.
   on click
+  /// A secondary (right) click.
   on secondary
+  /// A middle click.
   on middle
+  /// A scroll: `on scroll(dy) { … }`.
   on scroll(dy: float, dx: float)
+  /// Something was dropped on it: a `drag:` source's value or a `Drop`
+  /// from another program, and the index it landed at.
   on drop(value: any, at: int)
+  /// A key press while it has focus.
   on key(key: Key)
+  /// It was chosen: clicked, or Enter while selected in a `list`.
   on activate
 }
 
+/// What every surface accepts.
 group surface: node {
+  /// The monitors it is on: `all`, `focused`, or output names.
   screens: Screens | [text] | text
+  /// Its layer-shell layer.
   layer: Layer
+  /// Whether it is shown. Bound two-way (`open: <-> open`), Escape,
+  /// click-away and focus loss write false.
   open: bool <->
+  /// Keyboard focus: `none`, `on_demand` or `exclusive`.
   keyboard: Keyboard
+  /// Where it sits on the screen: `anchor: top_right`.
   anchor: Anchor
+  /// Grows out of an edge with concave fillets: `attach: top`.
   attach: Edge
+  /// Paint dimming what is behind it: `scrim: $shadow.alpha(0.3)`.
   scrim: paint
+  /// It was shown: `on show { query = "" }`.
   on show
+  /// It was hidden.
   on hide
 }
 
-// Surfaces. A bar is on every monitor with `screen` in scope.
-element bar: surface { edge: Edge; let screen: Screen; flags surface }
+// Surfaces.
+
+/// A bar, on every monitor with `screen` in scope.
+element bar: surface {
+  /// The screen edge it sits on.
+  edge: Edge
+  /// The monitor this instance is on: one instance per monitor.
+  let screen: Screen
+  flags surface
+}
+/// A layer-shell panel: launchers, notification stacks, dashboards.
 element panel: surface { flags surface }
+/// An on-screen display: on the focused monitor, in the overlay layer and
+/// click-through.
 element osd: surface { flags surface }
+/// The lock screen, on `ext-session-lock`. It is exempt from reload and
+/// fails closed.
 element lock: surface { flags surface }
 /// Anchored to its parent element; nests (tray menus).
-element popup: surface { on dismiss }
+element popup: surface {
+  /// Escape or a click away closed it.
+  on dismiss
+}
 
 // Containers.
+
+/// Lays out its children in a row.
 element row: node {}
+/// Lays out its children in a column.
 element col: node {}
+/// Stacks its children on top of each other.
 element stack: node {}
-element grid: node { columns: int }
+/// Lays out its children in a grid.
+element grid: node {
+  /// How many columns: `columns: 7`.
+  columns: int
+}
+/// Scrolls its content.
 element scroll: node {}
 /// Virtualised; arrow keys move the selection.
 element list: node {}
 /// Start, centre and end, with a truly centred middle.
 element split: node {}
+/// The start part of a `split`.
 element start: node { flags only_in split }
+/// The centre part of a `split`, truly centred.
 element center: node { flags only_in split }
+/// The end part of a `split`.
 element end: node { flags only_in split }
+/// Takes up the space left.
 element spacer: node { flags leaf }
-element pages: node { current: any <-> }
+/// Shows one `page` at a time, with directional transitions. Hidden pages
+/// unmount, so what they read stops.
+element pages: node {
+  /// The value of the page shown, bound two-way.
+  current: any <->
+}
+/// A page of `pages`, shown when its value is `current`.
 element page(any): node { flags only_in pages }
 
 // Widgets.
+
+/// A plain box to style.
 element box: node {}
+/// Text: `text clock.format("%a %d  %H:%M")`.
 element text(text): node {
+  /// Where overflowing text is cut with `…`: `ellipsis: end`.
   ellipsis: Ellipsis
+  /// At most this many lines.
   max_lines: int
+  /// Character ranges to highlight: `marks: h.ranges`.
   marks: [Range]
+  /// The paint of `marks`.
   mark_color: paint
+  /// `basic` renders simple markup.
   markup: Markup
+  /// Rolls the digits when the number changes: `roll: true`.
   roll: bool
+  /// An outline around the letters: `text_stroke: 1, $bg`.
   text_stroke: (length, paint)
+  /// The paint of the letters: `fill: linear(…)`.
   fill: paint
   flags leaf
 }
+/// An icon by name from the icon theme: `icon "window-close-symbolic"`.
 element icon(text): node { flags leaf }
 /// A null source shows nothing.
-element image(text?): node { fit: Fit; flags leaf }
+element image(text?): node {
+  /// How the image fills its box: `cover`, `contain`, `fill` or `none`.
+  fit: Fit
+  flags leaf
+}
+/// A button with a label: `button "‹" { on click { … } }`.
 element button(text): node {}
+/// A slider: `slider { value: <-> audio.sink.volume }`.
 element slider: node {
+  /// Its value, 0 to 1, bound two-way.
   value: float <->
+  /// The paint of the unfilled track.
   track: paint
   flags leaf
 }
+/// A text field: `input { text: <-> query }`.
 element input: node {
+  /// Its text, bound two-way.
   text: text <->
+  /// Shown while it is empty.
   placeholder: text
+  /// `password` masks it.
   type: InputKind
+  /// Takes keyboard focus when shown.
   focus: bool
+  /// Routes arrow keys to a `list`: `nav: results`.
   nav: Node
   flags leaf
 }
+/// A bar filled to a fraction: `meter level`.
 element meter(float): node {
+  /// The fraction filled, 0 to 1.
   value: float
+  /// The paint of the unfilled part.
   track: paint
+  /// A wavy fill's amplitude; 0 is flat: `wave: media.playing ? 3 : 0`.
   wave: float
   flags leaf
 }
-element segmented: node { options: any; value: any <->; flags leaf }
+/// One choice of several: `segmented { options: Look; value: <-> theme.look }`.
+element segmented: node {
+  /// The choices: an enum or a list.
+  options: any
+  /// The chosen one, bound two-way.
+  value: any <->
+  flags leaf
+}
+/// A tooltip with content of its own.
 element tooltip: node {}
 
 // Effects and media nodes.
-element arc: node { value: float; sweep: angle; track: paint; flags leaf }
+
+/// An arc or ring gauge: `arc { value: cpu.usage; sweep: 270deg }`.
+element arc: node {
+  /// The fraction filled, 0 to 1.
+  value: float
+  /// The angle of the whole arc.
+  sweep: angle
+  /// The paint of the unfilled part.
+  track: paint
+  flags leaf
+}
+/// A sparkline with its own history: `graph cpu.usage { history: 60s }`.
+/// Only the new column repaints.
 element graph(float): node {
+  /// How much history it keeps and shows.
   history: duration
+  /// The paint under the line.
   fill: paint
+  /// Smoothing, 0 to 1.
   smooth: float
   flags leaf
 }
-element spectrum(AudioDevice): node { bars: int; smooth: float; style: SpectrumStyle; flags leaf }
+/// An audio spectrum: `spectrum audio.sink { bars: 48; style: mirror }`.
+/// It stops while the audio is silent.
+element spectrum(AudioDevice): node {
+  /// How many bars.
+  bars: int
+  /// Smoothing, 0 to 1.
+  smooth: float
+  /// `bars`, `mirror`, `wave` or `line`.
+  style: SpectrumStyle
+  flags leaf
+}
+/// Your own WGSL shader: `shader "aurora.wgsl" { u_speed: 0.4 }`. Props
+/// named `u_…` are its uniforms; it is checked with naga and hot-reloaded.
 element shader(path): node { flags leaf uniforms }
-element canvas: node { draw: fn(Canvas); flags leaf }
+/// Draws with code: `canvas { draw: (c) => … }`.
+element canvas: node {
+  /// Draws on the canvas.
+  draw: fn(Canvas)
+  flags leaf
+}
+/// An SVG whose layers bind by id: `svg "icon.svg" { #needle { … } }`.
 element svg(path): node { flags leaf selectors }
-element lottie(path): node { speed: float; flags leaf }
-element thumbnail(Window): node { fit: Fit; flags leaf }
-element effect(EffectKind): node { speed: float; flags leaf }
+/// A Lottie animation: `lottie "loader.json" { speed: 1 }`.
+element lottie(path): node {
+  /// Playback speed; 1 is normal.
+  speed: float
+  flags leaf
+}
+/// A live thumbnail of a window: `thumbnail w`.
+element thumbnail(Window): node {
+  /// How the thumbnail fills its box.
+  fit: Fit
+  flags leaf
+}
+/// A built-in effect: `effect sparks { … }`.
+element effect(EffectKind): node {
+  /// How fast it runs; 1 is normal.
+  speed: float
+  flags leaf
+}
+/// Particles: `particles { rate: 20; life: 1.2s; sprite: dot(3) }`.
 element particles: node {
+  /// Particles per second.
   rate: float
+  /// How long each particle lives.
   life: duration
+  /// What each particle looks like: `dot(3)`.
   sprite: Sprite
+  /// The particles' glow radius.
   glow: length
+  /// How fast the particles move.
   speed: float
   flags leaf
 }
 /// Animates each letter of its text; `index` is the letter's position.
-element letters: node { let index: int; let count: int }
+element letters: node {
+  /// The letter's position.
+  let index: int
+  /// How many letters there are.
+  let count: int
+}
 /// Goo merge: children melt together within the given distance.
 element merge(length): node {}
 
@@ -612,28 +1114,104 @@ element merge(length): node {}
 // derived roles design.md uses are typed here and valued by a theme.
 
 palette {
-  accent, on_accent, accent_container, on_accent_container
-  secondary, on_secondary, secondary_container, on_secondary_container
-  tertiary, on_tertiary, tertiary_container, on_tertiary_container
-  error, on_error, error_container, on_error_container
-  bg, on_bg
-  surface, fg, surface_variant, fg_variant
-  surface_dim, surface_bright
-  surface_lowest, surface_low, surface_container, surface_high, surface_highest
-  inverse_surface, inverse_fg, inverse_accent
-  outline, outline_variant, shadow, scrim, surface_tint
+  /// The accent colour (Material 3 `primary`).
+  accent
+  /// Text and icons on `accent` (`on_primary`).
+  on_accent
+  /// A softer accent fill (`primary_container`).
+  accent_container
+  /// Text and icons on `accent_container` (`on_primary_container`).
+  on_accent_container
+  /// The secondary colour (`secondary`).
+  secondary
+  /// Text and icons on `secondary` (`on_secondary`).
+  on_secondary
+  /// A softer secondary fill (`secondary_container`).
+  secondary_container
+  /// Text and icons on `secondary_container` (`on_secondary_container`).
+  on_secondary_container
+  /// The tertiary colour (`tertiary`).
+  tertiary
+  /// Text and icons on `tertiary` (`on_tertiary`).
+  on_tertiary
+  /// A softer tertiary fill (`tertiary_container`).
+  tertiary_container
+  /// Text and icons on `tertiary_container` (`on_tertiary_container`).
+  on_tertiary_container
+  /// The error colour (`error`).
+  error
+  /// Text and icons on `error` (`on_error`).
+  on_error
+  /// A softer error fill (`error_container`).
+  error_container
+  /// Text and icons on `error_container` (`on_error_container`).
+  on_error_container
+  /// The background (`background`).
+  bg
+  /// Text and icons on `bg` (`on_background`).
+  on_bg
+  /// The surface colour (`surface`).
+  surface
+  /// Text and icons on surfaces (`on_surface`).
+  fg
+  /// A variant surface (`surface_variant`).
+  surface_variant
+  /// Secondary text and icons on surfaces (`on_surface_variant`).
+  fg_variant
+  /// The dimmest surface (`surface_dim`).
+  surface_dim
+  /// The brightest surface (`surface_bright`).
+  surface_bright
+  /// The lowest container surface (`surface_container_lowest`).
+  surface_lowest
+  /// A low container surface (`surface_container_low`).
+  surface_low
+  /// The container surface (`surface_container`).
+  surface_container
+  /// A high container surface (`surface_container_high`).
+  surface_high
+  /// The highest container surface (`surface_container_highest`).
+  surface_highest
+  /// The inverse surface (`inverse_surface`).
+  inverse_surface
+  /// Text and icons on `inverse_surface` (`inverse_on_surface`).
+  inverse_fg
+  /// The accent on `inverse_surface` (`inverse_primary`).
+  inverse_accent
+  /// Outlines (`outline`).
+  outline
+  /// Subtle outlines and dividers (`outline_variant`).
+  outline_variant
+  /// The shadow colour (`shadow`).
+  shadow
+  /// The scrim colour (`scrim`).
+  scrim
+  /// The surface tint (`surface_tint`).
+  surface_tint
 }
 
 tokens {
+  /// The spacing scale, smallest to largest: `$space.1` to `$space.4`.
   space { 1: length; 2: length; 3: length; 4: length }
+  /// Corner radii, smallest to largest, and `full` for pills.
   radius { sm: length; md: length; lg: length; xl: length; full: length }
+  /// Fonts: `ui` for text, `title`, `caption` and `mono`.
   font { ui: font; title: font; caption: font; mono: font }
+  /// Springs: `spatial` for movement and size, `effects` for colour and
+  /// opacity, `bouncy` for play.
   motion { spatial: Spring; effects: Spring; bouncy: Spring }
+  /// Shadows by height: `md`, `lg`, `xl`.
   elevation { md: shadow; lg: shadow; xl: shadow }
+  /// A raised surface, such as under the pointer: `$surface.mix($fg, 8%)`.
   surface.hi: color
+  /// Secondary text: `$fg.alpha(0.65)`.
   fg.muted: color
+  /// Faint text, such as days outside the month: `$fg.alpha(0.35)`.
   fg.faint: color
+  /// The accent under the pointer.
   accent.hover: color
+  /// A soft accent fill, such as a selected row: `$accent.alpha(0.22)`.
   accent.container: color
+  /// Hairline borders: `oklch(from $surface, l: l + 0.12)`.
   border: color
 }

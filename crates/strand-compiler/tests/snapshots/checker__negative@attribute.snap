@@ -24,3 +24,5 @@ check::attribute
    ·    ╰── nothing here to reset
  5 │ @reset state b = 1
    ╰────
+
+fix [check::attribute] attribute.strand: `@rest` -> `@reset`

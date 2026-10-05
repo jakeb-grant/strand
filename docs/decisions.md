@@ -1164,12 +1164,9 @@ schema from `strand-compiler`).
   checker keeps a field's base typed when the field is unknown). An
   enum's name, a file stem and a schema enum complete their variants and
   exports. Members are fields, methods, `Async`'s `pending`/`error`/
-  `value` and list members; the list methods mirror the checker's private
-  `LIST_METHODS`, and a test (`completion.rs`,
-  `list_methods_are_the_checkers`) reads the checker's list from its
-  source and fails if the two differ either way (the checker could
-  publish the list, e.g. as `methods list { … }` in the schema, so the
-  copy goes; `check/expr.rs` belongs to the lang track). With the cursor
+  `value` and list members; the list methods are the checker's own
+  (`strand_compiler::check::LIST_METHODS`, public since round 2, so
+  there is no copy to drift). With the cursor
   right after a dot and a name after it (`battery.|present`), that name is
   the member being completed. In a component call's block, children and
   their keywords are offered only if the component has a `slot`;
@@ -1200,21 +1197,51 @@ schema from `strand-compiler`).
   `let` renamed to a file `state` it then hides, which lexical scoping
   accepts) is refused too, by comparing every declaration's reference
   count before and after.
-- **2026-10-05 · wave2-lsp: quick fixes.** A diagnostic whose help is
-  "did you mean `x`?" offers one preferred quick fix replacing the
-  misspelt word with `x`, or only a misspelt unit's letters (`12pz` →
-  `px`). A diagnostic's primary span is not always the misspelt word (the
-  parser points at `a` in `on chnage a, b`), so the replaced text must be
-  a plausible misspelling of `x` by the checker's own `suggest` rule: the
-  span, its last segment after a `.`, or else the word just before the
-  span on its line; otherwise no fix is offered. An unknown parameter of a
-  component call (`check::unknown_param`, help "it takes `a`, `b`")
-  offers one fix per parameter the call does not give yet, preferred when
-  only one is left: design.md "What you see" #2 (`expanded` left at a
-  call site after the parameter became `open`). The checker words that
-  help "it takes …" even when one parameter is left; matching design.md's
-  `did you mean "open"?` there is the lang track's call (`check/tree.rs`).
-  Other fixes (extract component, missing key) are M5.
+- **2026-10-05 · wave2-lsp: quick fixes.** Quick fixes come from the
+  replacements diagnostics propose as data (`Diagnostic::suggestions`),
+  never from their help text. A "did you mean `x`?" diagnostic proposes
+  `x` for the misspelt text itself, which the stage that found it knows
+  even when the error points elsewhere (the parser points at `a` in `on
+  chnage a, b`; the fix replaces `chnage`; a misspelt unit's fix replaces
+  only its letters, `12pz` → `px`). One proposal is a preferred fix;
+  several (the parameters an unknown named argument could be) are each a
+  fix, none preferred. Other fixes (extract component, missing key) are
+  M5.
+- **2026-10-05 · wave2-lsp (round 2): unknown parameters read as
+  design.md shows.** A component call's unknown prop is `unknown prop
+  `expanded`` with help "did you mean `open`?" when a parameter the call
+  does not set yet is close, or is the only one left (design.md "What you
+  see" #2: `bar.strand:12: unknown prop "expanded"; did you mean
+  "open"?`); otherwise the help lists the parameters ("it takes `a`, `b`
+  and `c`") and each one the call does not set is a fix. A function
+  call's unknown named argument follows the same rule with the
+  parameters that call sets (by name, `from` or position). The code stays
+  `check::unknown_param` for both; the quotes are the checker's
+  backticks, as everywhere else.
+- **2026-10-05 · wave2-lsp (round 2): the builtin schema is documented.**
+  Hovers are generated from the schemas (design.md, "System services"),
+  so every service, record and its members, function, method, value,
+  element, group prop, element prop and event, palette role and token
+  tier in `builtin.schema` has a `///` doc worded from design.md; a test
+  (`schema::tests::builtin_schema_is_documented`) fails on a new entry
+  without one. A token without its own doc reads its group's
+  (`$space.2` shows the spacing scale's). Docs say what design.md says
+  and no more: where it gives no unit or range (`memory.used`,
+  `Date.weekday`), the doc names the value only.
+- **2026-10-05 · wave2-lsp (round 2): which config shows a file.** The
+  server remembers the config that last published each file's
+  diagnostics. A file opened before it exists is checked alone; saved
+  into a config directory, it is published by that config, which takes
+  it over: the lone config no longer shows it, may not clear it, and is
+  forgotten. Watched-file events re-check each shown config as the files
+  belong now. A request that finds a file changed on disk without the
+  client saying so (no watched files) schedules that config's
+  diagnostics again, so what is shown catches up with what hover sees.
+- **2026-10-05 · wave2-lsp (round 2): completion after a dot.** With
+  nothing typed after `.`, the config is compiled once more with a
+  placeholder name (the half-typed text does not type the receiver);
+  that analysis is kept with the analysis it came from, per place, so
+  asking again before the text changes compiles nothing.
 - **2026-10-05 · wave2-lsp (round 1): hover docs.** A declaration's doc is
   the `//` block directly above it, except a block that opens the file
   and starts with the file's own name (`// launcher.strand. Bind a key

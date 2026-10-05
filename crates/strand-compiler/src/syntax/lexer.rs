@@ -2,7 +2,7 @@
 //!
 //! See `docs/grammar.md`, "Lexical structure".
 
-use crate::diagnostic::{Diagnostic, did_you_mean};
+use crate::diagnostic::{Diagnostic, closest};
 
 use super::Span;
 
@@ -442,9 +442,10 @@ impl Lexer<'_> {
                             span(unit_start, self.pos),
                             "units are px, %, deg, ch, s and ms",
                         );
-                if let Some(help) = did_you_mean(unit, UNITS.iter().copied()) {
-                    d = d.with_help(help);
-                }
+                d.suggest_opt(
+                    span(unit_start, self.pos),
+                    closest(unit, UNITS.iter().copied()),
+                );
                 self.diags.push(d);
             }
         }

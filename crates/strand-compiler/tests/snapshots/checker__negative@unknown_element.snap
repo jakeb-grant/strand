@@ -25,3 +25,6 @@ check::unknown_element
  8 │   }
    ╰────
   help: did you mean `Volume`?
+
+fix [check::unknown_element] unknown_element.strand: `buton` -> `button`
+fix [check::unknown_element] unknown_element.strand: `Volme` -> `Volume`

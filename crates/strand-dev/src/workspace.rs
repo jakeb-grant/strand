@@ -12,10 +12,10 @@
 //! read changed on disk (size or modification time), so edits made outside
 //! the editor are seen even by clients that do not watch files.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use lsp_types::{Position, Range};
@@ -99,7 +99,15 @@ pub struct Analysis {
     pub schema: Arc<Schema>,
     /// Files and directories read from disk, to notice changes.
     stamps: Vec<Stamp>,
+    /// The last [`Analysis::with_inserted`] asked for, kept with this
+    /// analysis (so dropped when the text changes): completion after a
+    /// `.` asks for the same one again on every request at that place.
+    inserted: Mutex<Option<Inserted>>,
 }
+
+/// A memoised [`Analysis::with_inserted`]: file, offset, text inserted,
+/// and the result.
+type Inserted = (FileId, usize, String, Arc<Analysis>);
 
 impl Analysis {
     /// Compiles `files` as one config.
@@ -123,7 +131,31 @@ impl Analysis {
             compiled,
             schema,
             stamps,
+            inserted: Mutex::new(None),
         }
+    }
+
+    /// The same config with `insert` written at `offset` of `file`,
+    /// compiled once per place and kept until this analysis is replaced.
+    pub fn with_inserted(&self, file: FileId, offset: usize, insert: &str) -> Arc<Analysis> {
+        if let Ok(g) = self.inserted.lock()
+            && let Some((f, o, i, a)) = g.as_ref()
+            && (*f, *o, i.as_str()) == (file, offset, insert)
+        {
+            return a.clone();
+        }
+        let src = self.text(file);
+        let at = offset.min(src.len());
+        let text = format!(
+            "{}{insert}{}",
+            src.get(..at).unwrap_or(src),
+            src.get(at..).unwrap_or("")
+        );
+        let a = Arc::new(self.with_text(file, &text));
+        if let Ok(mut g) = self.inserted.lock() {
+            *g = Some((file, offset, insert.to_string(), a.clone()));
+        }
+        a
     }
 
     /// The same config with one file's text replaced.
@@ -145,6 +177,12 @@ impl Analysis {
             })
             .collect();
         Analysis::new(self.key.clone(), files, self.schema.clone())
+    }
+
+    /// The memoised [`Analysis::with_inserted`], if any.
+    #[cfg(test)]
+    pub(crate) fn inserted(&self) -> Option<Arc<Analysis>> {
+        self.inserted.lock().ok()?.as_ref().map(|(.., a)| a.clone())
     }
 
     /// Nothing it read from disk has changed since.
@@ -221,6 +259,9 @@ pub struct Workspace {
     /// The config of each URI asked about, until files are added, removed
     /// or saved.
     configs: HashMap<String, ConfigKey>,
+    /// Configs rebuilt because a file changed on disk without the client
+    /// saying so: their diagnostics are due again.
+    rebuilt: HashSet<ConfigKey>,
 }
 
 fn canonical(p: &Path) -> PathBuf {
@@ -249,7 +290,19 @@ impl Workspace {
             generation: 0,
             cache: HashMap::new(),
             configs: HashMap::new(),
+            rebuilt: HashSet::new(),
         }
+    }
+
+    /// The configs rebuilt since the last call because something changed
+    /// on disk behind the client ([`Workspace::analysis`]).
+    pub fn take_rebuilt(&mut self) -> HashSet<ConfigKey> {
+        std::mem::take(&mut self.rebuilt)
+    }
+
+    /// `key`'s diagnostics are up to date with its analysis.
+    pub fn settle(&mut self, key: &ConfigKey) {
+        self.rebuilt.remove(key);
     }
 
     pub fn open(&mut self, uri: String, text: String, version: i32) {
@@ -339,8 +392,10 @@ impl Workspace {
                 return a.clone();
             }
             // Changed on disk behind the editor's back: which files
-            // belong where may have changed too.
+            // belong where may have changed too, and what is shown is
+            // out of date.
             self.configs.clear();
+            self.rebuilt.insert(key.clone());
         }
         let (files, dirs) = self.files(key);
         let mut a = Analysis::new(key.clone(), files, self.schema.clone());
@@ -359,6 +414,7 @@ impl Workspace {
     /// Forgets the analysis of a config nothing has open.
     pub fn forget(&mut self, key: &ConfigKey) {
         self.cache.remove(key);
+        self.rebuilt.remove(key);
         self.configs.retain(|_, k| k != key);
     }
 

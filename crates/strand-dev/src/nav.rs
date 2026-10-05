@@ -269,7 +269,7 @@ pub fn describe_found(an: &Analysis, found: &Found) -> String {
                     let _ = write!(code, "\n{set}{over}: {value}");
                 }
             }
-            describe::markdown(&code, schema.doc(&DocKey::Token(path.clone())))
+            describe::markdown(&code, schema.token_doc(path))
         }
         Found::Ref(Target::Field(r, name)) if types.record(*r).field(name).is_none() => {
             method_text(schema, types, &Ty::Record(*r), name, 0)

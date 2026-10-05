@@ -85,3 +85,11 @@ check::unknown_element
  18 │   }
     ╰────
   help: did you mean `play`?
+
+fix [check::unknown_element] misspelt_tree_keyword.strand: `sloot` -> `slot`
+fix [check::unknown_element] misspelt_tree_keyword.strand: `elze` -> `else`
+fix [check::unknown_element] misspelt_tree_keyword.strand: `whn` -> `when`
+fix [check::unknown_element] misspelt_tree_keyword.strand: `enterr` -> `enter`
+fix [check::unknown_element] misspelt_tree_keyword.strand: `exitt` -> `exit`
+fix [check::unknown_element] misspelt_tree_keyword.strand: `sett` -> `set`
+fix [check::unknown_element] misspelt_tree_keyword.strand: `playy` -> `play`

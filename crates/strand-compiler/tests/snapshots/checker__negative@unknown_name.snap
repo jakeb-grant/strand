@@ -60,3 +60,9 @@ check::unknown_name
     ·              ╰── not found
     ╰────
   help: did you mean `toasts.dnd`?
+
+fix [check::unknown_name] unknown_name.strand: `volum` -> `volume`
+fix [check::unknown_name] unknown_name.strand: `opn` -> `open`
+fix [check::unknown_name] unknown_name.strand: `tp` -> `top`
+fix [check::unknown_name] unknown_name.strand: `shak` -> `shake`
+fix [check::unknown_name] unknown_name.strand: `dnd` -> `toasts.dnd`

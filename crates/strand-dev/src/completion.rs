@@ -10,6 +10,7 @@ use lsp_types::{
     MarkupKind, Range, TextEdit,
 };
 use strand_compiler::FileId;
+use strand_compiler::check::LIST_METHODS;
 use strand_compiler::hir::{Callee, DefKind, ExprKind, Program, Target};
 use strand_compiler::schema::{DocKey, Schema};
 use strand_compiler::ty::{Prim, Ty, TypeTable};
@@ -58,29 +59,6 @@ const CALL_KEYWORDS: &[&str] = &["if", "match", "for", "let"];
 
 /// Keywords at the start of a handler statement.
 const STMT_KEYWORDS: &[&str] = &["let", "if", "match", "for", "play"];
-
-/// Methods every list has (the checker's list, `check/expr.rs`).
-const LIST_METHODS: &[&str] = &[
-    "filter",
-    "map",
-    "sort_by",
-    "take",
-    "skip",
-    "reverse",
-    "join",
-    "contains",
-    "any",
-    "all",
-    "count",
-    "find",
-    "push",
-    "insert",
-    "remove",
-    "clear",
-    "remove_key",
-    "move",
-    "update",
-];
 
 pub fn complete(an: &Analysis, file: FileId, offset: u32) -> Vec<CompletionItem> {
     let schema = &*an.schema;
@@ -240,7 +218,7 @@ impl<'a> Completer<'a> {
                 CompletionItemKind::CONSTANT
             };
             let detail = describe::ty(self.types(), &ty);
-            let d = self.schema.doc(&DocKey::Token(path.clone()));
+            let d = self.schema.token_doc(&path);
             self.push(
                 path.clone(),
                 kind,
@@ -304,9 +282,10 @@ impl<'a> Completer<'a> {
         let writable = seg.contains("<->");
         let owned;
         let (an, end): (&Analysis, usize) = if empty {
-            let text = format!("{}{PLACEHOLDER}{}", &src[..name_start], &src[name_start..]);
-            owned = self.an.with_text(self.file, &text);
-            (&owned, name_start + PLACEHOLDER.len())
+            // Memoised on the analysis: asked again at the same place,
+            // the config is not compiled again.
+            owned = self.an.with_inserted(self.file, name_start, PLACEHOLDER);
+            (&*owned, name_start + PLACEHOLDER.len())
         } else {
             (self.an, name_end)
         };
@@ -895,44 +874,31 @@ fn rw_paths(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use strand_compiler::schema::Schema;
+
     use super::*;
+    use crate::workspace::{ConfigKey, Input};
 
-    fn unknown_member(src: &str) -> bool {
-        let (map, _) = strand_compiler::SourceMap::single("t.strand", src);
-        strand_compiler::compile(&map)
-            .diagnostics
-            .iter()
-            .any(|d| d.code == "check::unknown_field")
-    }
-
-    /// The checker's private list of list methods, read from its source.
-    fn checker_list_methods() -> BTreeSet<String> {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../strand-compiler/src/check/expr.rs");
-        let src = std::fs::read_to_string(&path).unwrap();
-        let start = src
-            .find("const LIST_METHODS: &[&str] = &[")
-            .expect("the checker's LIST_METHODS moved; update this test");
-        let body = &src[start..];
-        let body = &body[body.find('[').unwrap() + 1..];
-        let body = &body[body.find('[').unwrap() + 1..body.find("];").unwrap()];
-        body.split(',')
-            .map(|s| s.trim().trim_matches('"').to_string())
-            .filter(|s| !s.is_empty())
-            .collect()
-    }
-
-    /// Completion offers exactly the list methods the checker knows.
+    /// Completion after a `.` with nothing typed compiles the config with
+    /// a placeholder name once per place: asked again, it reuses it.
     #[test]
-    fn list_methods_are_the_checkers() {
-        assert!(unknown_member("let xs = [1, 2]\nlet y = xs.frob()\n"));
-        for m in LIST_METHODS {
-            assert!(
-                !unknown_member(&format!("let xs = [1, 2]\nlet y = xs.{m}()\n")),
-                "the checker does not know `{m}`"
-            );
-        }
-        let ours: BTreeSet<String> = LIST_METHODS.iter().map(|m| m.to_string()).collect();
-        assert_eq!(ours, checker_list_methods());
+    fn a_dot_compiles_once_per_place() {
+        let uri = "file:///t.strand".to_string();
+        let src = "let a = battery.\nlet b = 1\n";
+        let an = Analysis::new(
+            ConfigKey::Single(uri.clone()),
+            vec![Input::new(uri.clone(), "t.strand".into(), src.into())],
+            Arc::new(Schema::builtin().clone()),
+        );
+        let file = an.file(&uri).unwrap();
+        let at = src.find(".\n").unwrap() as u32 + 1;
+        let first = complete(&an, file, at);
+        assert!(first.iter().any(|i| i.label == "percent"), "{first:?}");
+        let memo = an.inserted().unwrap();
+        let again = complete(&an, file, at);
+        assert_eq!(first.len(), again.len());
+        assert!(Arc::ptr_eq(&memo, &an.inserted().unwrap()));
     }
 }

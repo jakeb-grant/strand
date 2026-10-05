@@ -300,15 +300,23 @@ Public interfaces other crates and later stages build on:
   excluded), computed from `Parse::tokens`; `reconcile` owns it.
 - **Diagnostics** (`strand_compiler::diagnostic`): `Diagnostic { severity,
   code: &'static str, message, labels: Vec<Label { file: FileId, span,
-  message, primary }>, help: Option<String> }`, built with
+  message, primary }>, help: Option<String>, suggestions: Vec<Suggestion {
+  file, span, replacement }> }`, built with
   `Diagnostic::error/warning(code, msg).with_label(span, msg)`,
   `.with_secondary(..)`, `.with_label_in(file, ..)`,
   `.with_secondary_in(file, ..)`, `.with_help(..)`, and `.in_file(file)` for
-  single-file stages. `render(&[Diagnostic], &SourceMap, Style)` draws
+  single-file stages (it moves suggestions too). A suggestion is the
+  replacement a diagnostic proposes, as data: `.suggest(span, x)` /
+  `.suggest_opt(span, Option<x>)` / `.with_suggestion(span, x)` set the
+  help to "did you mean `x`?" and propose `x` for the text at `span` (the
+  misspelt word, which need not be the primary span: `on chnage a, b`);
+  `.add_suggestion(span, x)` adds one choice of several (the parameters a
+  call does not set yet). Editors and the overlay read `suggestions`,
+  never the help text. `render(&[Diagnostic], &SourceMap, Style)` draws
   miette reports (labels in other files as related reports, at most 50 per
   file); `render_short(&[Diagnostic], &SourceMap)` gives one
   `file:line:col: severity[code]: message` line each, for the reload
-  overlay's list and editors. `suggest`/`did_you_mean` give the shared
+  overlay's list and editors. `suggest`/`closest` give the shared
   near-miss logic: optimal-string-alignment distance within about one
   edit per three letters, one-letter words matched only by case, no
   one-letter candidate for a longer word, ties to a plausible typo
@@ -334,7 +342,9 @@ Public interfaces other crates and later stages build on:
   Member(type, member), Function(name), Value(name), Method(type, method),
   Element(kind), Prop(kind, name) (also `on event`, `stroke.dash` and
   scope names; group docs reach their elements), Token(path)}`;
-  `RecordDef::doc` mirrors `DocKey::Type`. A parameter's default keeps its
+  `RecordDef::doc` mirrors `DocKey::Type`; `Schema::token_doc(path)` falls
+  back to the nearest documented group (`space.2` reads `space`). Every
+  entry of the builtin schema is documented (a test enforces it). A parameter's default keeps its
   source text (`ParamSig::default: Option<String>`). `Schema::fingerprint()
   -> [u8; 32]` is BLAKE3 chained over every text `extend` was given, in
   order (the builtin first): the schema part of the compiled-output cache
@@ -579,7 +589,8 @@ only `strand-compiler`'s public interfaces: `compile_with` for one config
 at a time against that schema, `hir::Program` (`refs`/`reference_at`,
 defs, locals, `tokens`, the typed tree) for hover, definition, rename and
 completion, `Schema::doc` (of the same schema) for completion and hover
-text, `diagnostic::suggest` for quick fixes, `fmt::format` for
+text, `Diagnostic::suggestions` for quick fixes,
+`check::LIST_METHODS` for the methods every list has, `fmt::format` for
 formatting, and `source::find_files` for which files a document is
 checked with (the rule of `strand check <file>`: the default config
 directory if the file is in it, else a workspace folder that is itself a
