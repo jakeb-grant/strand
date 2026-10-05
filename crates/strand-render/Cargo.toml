@@ -11,7 +11,7 @@ publish.workspace = true
 strand-core.workspace = true
 strand-scene.workspace = true
 strand-text.workspace = true
-vello_cpu = "0.3"
+vello_cpu = { version = "0.3", features = ["f32_pipeline"] }
 
 [dev-dependencies]
 png = "0.18"
@@ -19,3 +19,7 @@ criterion = "0.8"
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "clock_tick"
+harness = false

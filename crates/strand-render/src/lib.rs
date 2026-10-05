@@ -8,3 +8,17 @@
 //! See `docs/design.md`, "Layout, animation and input" and "Rendering,
 //! performance and memory budget". vello_cpu and damage land in M0; layout,
 //! springs and tokens in M2.
+//!
+//! M0 pipeline: [`Renderer::apply`] edits the retained [`SceneTree`]; each
+//! [`Painter::paint`](strand_scene::Painter::paint) flattens the surface's
+//! subtree to a display list with a bounds + signature record per node,
+//! diffs the records against the previous frame to get exact damage, widens
+//! it by the buffer's age and rasterises only inside it.
+
+mod flatten;
+mod raster;
+mod renderer;
+mod tree;
+
+pub use renderer::{DAMAGE_HISTORY, Renderer, TextBackend};
+pub use tree::{Node, PropEntry, SceneError, SceneTree};

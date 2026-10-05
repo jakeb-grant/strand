@@ -197,10 +197,7 @@ impl TextEngine {
                 };
                 let skew = synthesis.skew().unwrap_or(0.0);
                 let font_id = font.data.id();
-                let cache_key = *self
-                    .font_keys
-                    .entry((font_id, font.index))
-                    .or_default();
+                let cache_key = *self.font_keys.entry((font_id, font.index)).or_default();
                 let Some(mut font_ref) = FontRef::from_index(font.data.data(), font.index as usize)
                 else {
                     continue;
