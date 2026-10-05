@@ -227,13 +227,20 @@ fn check(src: &str, render_too: bool) -> Duration {
     elapsed
 }
 
+fn env_u64(name: &str) -> Option<u64> {
+    std::env::var(name).ok()?.parse().ok()
+}
+
+/// 10,000 edits by default; `STRAND_FUZZ_ITERS` and `STRAND_FUZZ_SEED`
+/// allow longer nightly runs.
 #[test]
 fn ten_thousand_random_edits() {
     let bases = fixtures();
-    let mut rng = Rng(0x5eed_5742_a9d0);
+    let iters = env_u64("STRAND_FUZZ_ITERS").unwrap_or(10_000);
+    let mut rng = Rng(env_u64("STRAND_FUZZ_SEED").unwrap_or(0x5eed_5742_a9d0));
     let mut worst = Duration::ZERO;
     let started = Instant::now();
-    for i in 0..10_000 {
+    for i in 0..iters {
         let mut src = bases[rng.below(bases.len())].clone();
         mutate(&mut rng, &mut src);
         // Sometimes keep damaging the same text.
@@ -243,7 +250,7 @@ fn ten_thousand_random_edits() {
         worst = worst.max(check(&src, i % 50 == 0));
     }
     let total = started.elapsed();
-    eprintln!("10k edits: total {total:?}, worst parse {worst:?}");
+    eprintln!("{iters} edits: total {total:?}, worst parse {worst:?}");
     // Generous bounds for unoptimised builds on a shared machine; a stuck
     // or quadratic parser blows through them by orders of magnitude.
     assert!(
