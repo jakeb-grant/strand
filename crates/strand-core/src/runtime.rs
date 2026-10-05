@@ -183,6 +183,25 @@ pub enum Diagnostic {
         /// How many events it lost.
         dropped: usize,
     },
+    /// A persisted cell kept its stored value although its declared default
+    /// changed (the overlay's `path: kept "…" (default changed) [reset]`).
+    /// Reported once: the file is re-stamped with the new default.
+    PersistDefaultChanged {
+        /// The cell.
+        cell: NodeId,
+        /// Its persist path.
+        path: Arc<str>,
+    },
+    /// A persisted value could not be read (the cell starts from its
+    /// default) or written.
+    PersistFailed {
+        /// The cell.
+        cell: NodeId,
+        /// Its persist path.
+        path: Arc<str>,
+        /// What went wrong.
+        error: crate::persist::PersistError,
+    },
 }
 
 /// Events kept per frozen listener of a lossless queue; past this the

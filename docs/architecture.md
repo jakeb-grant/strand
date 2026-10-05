@@ -270,6 +270,16 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   `rt.on_cleanup` of the component scope (and when hidden).
 - Read-only graph introspection for the inspector, `strand watch` and the
   LSP: `rt.sources/observers/owned(id)`, `rt.site_of(handler)`.
+- `state x = d persist` is `rt.persisted(&store, path, d, encode, decode)`
+  (wave 2): `store` is one `PersistStore::from_env()` per process
+  (`$XDG_STATE_HOME/strand/persist`, one file per cell path), `path` is the
+  cell's `file.name` path, and the VM supplies a stable byte codec for its
+  `Value`s. It returns the cell's `Signal` plus the `Restore` decision
+  (default, stored, adopted new default, kept over a new default, failed);
+  warnings arrive as `Diagnostic::PersistDefaultChanged` /
+  `Diagnostic::PersistFailed`. The reconciler compares defaults with
+  `persist::value_hash` of the encoded default, and `@reset` calls
+  `store.remove(path)`.
 
 ### `strand-compiler`
 

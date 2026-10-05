@@ -834,3 +834,26 @@ that the oldest are dropped and the release reports one
 the rest in order. Reported at release rather than per drop: a chatty
 service would otherwise flood the overlay, which already outlines the
 frozen component.
+
+**2026-10-05 · `persist` storage.** One file per persisted cell under
+`$XDG_STATE_HOME/strand/persist/` (falling back to
+`~/.local/state/strand/persist/`; a relative `XDG_STATE_HOME` is ignored, as
+the XDG spec says), named by the cell's `file.name` path with every byte
+outside `[A-Za-z0-9_.-]` (and a leading `.`) percent-escaped, so no path
+escapes the directory. One file per cell keeps writes small and atomic and
+a corrupt file costs one cell. The file is a text header (`strand-persist
+1`, `default <hash>`, `check <hash>`) and the value's bytes; the VM owns
+the value codec, `strand-core` stores opaque bytes. Hashes are FNV-1a 64
+(stable across builds, unlike `std`'s hasher; not a security boundary).
+"Noticing a changed default" follows the reload rule for state defaults: a
+value that still equals its old default (its hash equals the stored
+default hash) adopts the new default; a changed value is kept, reported
+once as `Diagnostic::PersistDefaultChanged`, and re-stamped. A file that
+fails its header or checksum, or whose value no longer decodes (a type
+change), is moved to `<name>.corrupt` and the cell starts from its default
+with `Diagnostic::PersistFailed`. Writes go to a temp file in the same
+directory, are `fsync`ed and renamed over the target (directory created
+0700), debounced by 250 ms of logic time so a slider drag writes once, and
+a pending write is flushed when the owning component is disposed or at
+shutdown. Nothing is written while the value equals what the file (or the
+default) already says.
