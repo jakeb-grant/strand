@@ -1156,6 +1156,8 @@ see wave2-core; the compiler supplies the field schema.)
   crate only warns. A component or surface named like a builtin element
   stays an error (the tree resolves builtin elements first, so it could
   never be placed), as does a user `service` named like a builtin one.
+  (Round 6: calls follow the rule for top-level bindings too; the
+  language's own type names are not part of the prelude.)
 - **2026-10-05 · wave2-check (round 5): component tokens are overridden
   loudly.** `component Toast(n) tokens { radius: $radius.lg }` defines
   `$Toast.radius`, a knob (design.md). A `tokens` set entry with that path
@@ -1173,8 +1175,11 @@ see wave2-core; the compiler supplies the field schema.)
   initial value, a `fn`'s result, a component parameter default), is
   `check::raw_color`. Settings defaults, token values and `material(seed:
   …)` arguments (in a prop too) are exempt. Reading a role of a computed
-  `Palette` inline (`material(…).accent`) stays unsupported: `Palette` is
-  opaque in design.md; roles are read as tokens after `use palette`.
+  `Palette` inline (`material(…).accent`) stays unsupported in M1, an
+  interpretation rather than design.md's words (design.md describes the
+  palette tier as a typed schema of Material 3 roles): there is no field
+  access on a `Palette` value yet; roles are read as tokens after `use
+  palette`.
 - **2026-10-05 · wave2-check (round 5): a dropped `Async` is an error.**
   An expression statement in a handler whose value is `Async<T>`
   (`on click { sleep(1s) }`) is `check::async` with the help "`await` it,
@@ -1213,6 +1218,55 @@ see wave2-core; the compiler supplies the field schema.)
   `schema::members` (`list_members`, `async_members`, `members_of`), which
   the checker types `x.name(…)` by and which the LSP lists after `.` with
   docs; generic schema syntax can come later without changing the API.
+- **2026-10-05 · wave2-check (round 6): user bindings come before
+  builtins at a call too.** Round 5 made builtin names a prelude but a
+  call still looked up builtin functions before the file's top-level
+  `state`/`let` (and before globals other than `fn`, `type` and
+  component), so `let pct = x => x * 2` was read as the lambda and called
+  as the builtin, and a crate adding `fn ring` silently redirected
+  `ring(1)`. A call now resolves a block or parameter name, then the
+  file's `state`/`let`, then every global, and only then the builtins.
+  Calling a non-function user name that hides a builtin function (`state
+  noise = 4px` then `noise(1)`, an `enum wave`) is `check::type_mismatch`
+  with the "hides the builtin" help, wherever it is declared.
+- **2026-10-05 · wave2-check (round 6): the language's own types are not
+  a prelude.** `type color { … }` made every `color` annotation the
+  user's record and printed "expects `color`, found `color`". No crate
+  adds primitive types (`int`, `float`, `bool`, `text`, `color`, `paint`,
+  `path`, `length`, `percent`, `angle`, `duration`, `font`, `shadow`,
+  `insets`, `corners`, `any`, `unit`, `Async`), so redeclaring one is
+  `check::redeclared` and annotations keep the builtin (one diagnostic).
+  Schema records and enums stay a prelude (crates add those); where a
+  config type hides one, the hidden one is printed `builtin Align`
+  ("`align` expects `builtin Align`, found `Align`").
+- **2026-10-05 · wave2-check (round 6): a config `service` named like a
+  builtin one stays an error.** Unlike other names, a service is
+  identified by its name at runtime (`Value::Service(name)`; the host
+  serves reads by name), so a config `service weather` beside a
+  contributed `service weather` would read the crate's data. It stays
+  `check::redeclared`, and the cost is stated where crate authors look
+  (architecture.md, `Schema::extend`): contributing a service name a
+  config already declares breaks that config, so crates should namespace
+  new service names. Revisit when M3 gives config services their own
+  identity.
+- **2026-10-05 · wave2-check (round 6): the positional's prop is schema
+  data.** `element meter(float -> value)`: an element's positional names
+  the prop it fills (`ElementSchema::arg_prop`, required whenever there
+  is a positional). Lowering and the checker's "set twice" rule read it
+  from there, replacing two hard-coded copies of the wave2-vm table
+  (`letters` has no positional, so it fills nothing).
+- **2026-10-05 · wave2-check (round 6): record keys are checked.**
+  `Schema::extend` ends by resolving every record's `key` path across all
+  records, so `record Foo key nope { … }` and a stub replacement that
+  breaks a builtin key (`record App { name: text }` under `Hit key
+  app.id`) are refused (atomically) instead of silently losing keyed
+  identity.
+- **2026-10-05 · wave2-check (round 6): set overrides win at runtime.**
+  The token table took component token defaults after the `use tokens`
+  chain, so `override Toast.radius` was overwritten. Defaults now go in
+  first, and each entry replaces an earlier one at the same path whether
+  plain or derived (a plain value no longer outranks a later derived
+  override; `instantiate.rs::set_overrides_beat_component_token_defaults`).
 
 ## wave2-vm
 
@@ -1230,7 +1284,9 @@ see wave2-core; the compiler supplies the field schema.)
   `name`; every other element (`icon`, `image`, `svg`, `lottie`,
   `shader`, `spectrum`, `thumbnail`) fills `source`. A record (a
   `Window` for `thumbnail`, an `AudioDevice` for `spectrum`) is sent as
-  its key's text.
+  its key's text (Since wave2-check round 6 this table is schema data:
+  `element meter(float -> value)`.)
+
 - **2026-10-05 · wave2-vm: palettes before M2.** `material(seed:)` is a
   deterministic stand-in for Material 3 (`vm/palette.rs`): five tonal
   palettes in OKLCH from the seed's hue and chroma, every role at its M3

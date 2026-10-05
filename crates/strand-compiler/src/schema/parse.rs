@@ -9,7 +9,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use super::{DocKey, ElementFlags, ElementSchema, PropSchema, Schema, SchemaError, TokenSchema};
-use crate::ty::{EnumDef, EventDef, FieldDef, FnSig, MethodDef, Origin, ParamSig, RecordDef, Ty};
+use crate::ty::{
+    EnumDef, EventDef, FieldDef, FnSig, MethodDef, Origin, ParamSig, RecordDef, RecordId, Ty,
+};
 
 #[derive(Clone, Debug, PartialEq)]
 enum Tok {
@@ -214,7 +216,8 @@ enum RawItem {
     Element {
         group: bool,
         name: String,
-        arg: Option<RawType>,
+        /// The positional's type and the prop it fills.
+        arg: Option<(RawType, String)>,
         includes: Vec<String>,
         members: Vec<RawElMember>,
     },
@@ -454,8 +457,14 @@ impl Parser {
                 self.document(DocKey::Element(name.clone()), doc);
                 let arg = if self.eat("(") {
                     let t = self.ty()?;
+                    if !self.eat("->") {
+                        return self.err(format!(
+                            "name the prop the positional of `{name}` fills: `(T -> prop)`"
+                        ));
+                    }
+                    let prop = self.word()?;
                     self.expect(")")?;
-                    Some(t)
+                    Some((t, prop))
                 } else {
                     None
                 };
@@ -1095,6 +1104,7 @@ pub(super) fn extend(schema: &mut Schema, text: &str) -> Result<(), Vec<SchemaEr
                 let mut el = ElementSchema {
                     name: name.clone(),
                     arg: None,
+                    arg_prop: None,
                     props: Vec::new(),
                     events: Vec::new(),
                     scope: Vec::new(),
@@ -1127,9 +1137,12 @@ pub(super) fn extend(schema: &mut Schema, text: &str) -> Result<(), Vec<SchemaEr
                         }),
                     }
                 }
-                if let Some(a) = arg {
+                if let Some((a, filled)) = arg {
                     match resolve(schema, a, line) {
-                        Ok(t) => el.arg = Some(t),
+                        Ok(t) => {
+                            el.arg = Some(t);
+                            el.arg_prop = Some(filled.clone());
+                        }
                         Err(e) => errors.push(e),
                     }
                 }
@@ -1174,6 +1187,33 @@ pub(super) fn extend(schema: &mut Schema, text: &str) -> Result<(), Vec<SchemaEr
                 }
             }
             RawItem::Enum { .. } | RawItem::Opaque(_) | RawItem::Alias { .. } => {}
+        }
+    }
+    // Every record's `key` names a field path, re-checked across all
+    // records: a replaced stub can break a key that runs through it
+    // (`Hit key app.id` after `record App { name: text }`).
+    if errors.is_empty() {
+        let first_record = items
+            .iter()
+            .find(|(i, _)| matches!(i, RawItem::Record { .. }))
+            .map_or(0, |(_, l)| *l);
+        for (i, rec) in schema.types.records.iter().enumerate() {
+            let Some(key) = &rec.key else { continue };
+            if schema.types.field_path(RecordId(i as u32), key).is_some() {
+                continue;
+            }
+            let line = items
+                .iter()
+                .find(|(i, _)| matches!(i, RawItem::Record { name, .. } if *name == rec.name))
+                .map_or(first_record, |(_, l)| *l);
+            errors.push(SchemaError {
+                line,
+                message: format!(
+                    "the key `{}` of `{}` names no field",
+                    key.join("."),
+                    rec.name
+                ),
+            });
         }
     }
     if errors.is_empty() {
@@ -1272,6 +1312,7 @@ fn prop(schema: &Schema, m: &RawElMember) -> Result<PropSchema, Vec<SchemaError>
     let mut holder = ElementSchema {
         name: name.clone(),
         arg: None,
+        arg_prop: None,
         props: Vec::new(),
         events: Vec::new(),
         scope: Vec::new(),

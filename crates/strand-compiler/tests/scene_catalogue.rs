@@ -74,3 +74,18 @@ fn every_prop_is_a_scene_prop() {
         "SCENE_PENDING lists props the schema no longer has"
     );
 }
+
+/// The prop a positional argument fills (`element meter(float -> value)`)
+/// is a scene `Prop`, so lowering can always emit it.
+#[test]
+fn every_positional_fills_a_scene_prop() {
+    let schema = Schema::builtin();
+    for (kind, el) in &schema.elements {
+        if let Some(p) = &el.arg_prop {
+            assert!(
+                Prop::from_name(p).is_some(),
+                "`{kind}`'s positional fills `{p}`, which is no scene Prop"
+            );
+        }
+    }
+}

@@ -366,6 +366,43 @@ fn builtin_names_are_a_prelude() {
     );
 }
 
+/// A file's top-level `let` or `state` comes before the builtins at a
+/// call too, so a name means one thing in a file, and a service crate
+/// that later adds a function of that name changes nothing.
+#[test]
+fn top_level_bindings_shadow_builtins_at_calls() {
+    // `pct` is the builtin `-> text`; the lambda returns a float.
+    let out = one("let pct = (x: float) => x * 2\nlet z: float = pct(0.5)\n");
+    assert_eq!(def_ty(&out.program, "z"), "float");
+    // A non-function named like a builtin cannot be called.
+    let (out, map) = compile_files(&[(
+        "a.strand",
+        "state blur = 4px\nlet y = blur(16)\nbar B { box { pad: blur } }\n".to_string(),
+    )]);
+    let text = render(&out.diagnostics, &map, Style::Plain);
+    assert_eq!(out.diagnostics.len(), 1, "{text}");
+    assert!(text.contains("check::type_mismatch"), "{text}");
+    assert!(text.contains("hides the builtin `blur`"), "{text}");
+    // So does any other global named like one (`enum wave`).
+    let (out, map) = compile_files(&[(
+        "a.strand",
+        "enum wave { a, b }\nlet y = wave(2s)\n".to_string(),
+    )]);
+    let text = render(&out.diagnostics, &map, Style::Plain);
+    assert!(text.contains("hides the builtin `wave`"), "{text}");
+    // A crate adding `fn ring` after the fact: the call still reaches
+    // the config's lambda (the builtin would return `text`).
+    let src = "let ring = (x: float) => x * 2\nlet y: float = ring(1)\n";
+    one(src);
+    let mut schema = strand_compiler::schema::Schema::builtin().clone();
+    schema.extend("fn ring(x: float) -> text").unwrap();
+    let mut map = SourceMap::new();
+    map.add("a.strand", src);
+    let out = strand_compiler::compile_with(&map, &schema);
+    assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
+    assert_eq!(def_ty(&out.program, "y"), "float");
+}
+
 #[test]
 fn component_tokens_are_overridden_loudly() {
     let src = "component Toast(n: int) tokens { radius: $radius.lg } {\n\

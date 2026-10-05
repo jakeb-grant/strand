@@ -337,6 +337,16 @@ impl Ctx {
                 t.insert(role.as_str(), PropValue::Color(*c));
             }
         }
+        // Component token defaults (`$Toast.radius`) before the sets, so
+        // a set's `override Toast.radius` replaces them.
+        for c in prog.components.values() {
+            for e in &c.tokens {
+                match self.vm.eval(rt, e.value, &root) {
+                    Ok(v) => convert::token_entry(types, &mut t, &e.path, &e.ty, &v),
+                    Err(err) => self.error(format!("token `${}`", e.path), err),
+                }
+            }
+        }
         let set = match prog.use_tokens {
             Some(c) => match self.vm.eval(rt, c, &root)? {
                 Value::TokenSet(d) => Some(d),
@@ -358,14 +368,6 @@ impl Ctx {
                 continue;
             };
             for e in &s.entries {
-                match self.vm.eval(rt, e.value, &root) {
-                    Ok(v) => convert::token_entry(types, &mut t, &e.path, &e.ty, &v),
-                    Err(err) => self.error(format!("token `${}`", e.path), err),
-                }
-            }
-        }
-        for c in prog.components.values() {
-            for e in &c.tokens {
                 match self.vm.eval(rt, e.value, &root) {
                     Ok(v) => convert::token_entry(types, &mut t, &e.path, &e.ty, &v),
                     Err(err) => self.error(format!("token `${}`", e.path), err),

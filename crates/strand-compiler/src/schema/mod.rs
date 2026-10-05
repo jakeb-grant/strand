@@ -35,7 +35,8 @@
 //! value t: float                         // a builtin value
 //! methods color { fn alpha(a: float) -> color }   // methods on a builtin type
 //! group node { … }                       // props, events shared by elements
-//! element text(text): node { ellipsis: Ellipsis; on click; let index: int; flags leaf }
+//! element text(text -> text): node { ellipsis: Ellipsis; on click; let index: int; flags leaf }
+//!                                        // `(T -> prop)`: the positional's type and the prop it fills
 //! palette { surface; fg; accent }        // colour roles
 //! tokens { space { 1: length }; surface.hi: color }
 //! ```
@@ -94,6 +95,10 @@ pub struct ElementSchema {
     pub name: String,
     /// The type of the positional argument (`text clock.format(…)`).
     pub arg: Option<Ty>,
+    /// The prop the positional argument fills (`meter x` is its `value`,
+    /// `icon x` its `source`): `element meter(float -> value)`. Set
+    /// whenever `arg` is.
+    pub arg_prop: Option<String>,
     pub props: Vec<PropSchema>,
     pub events: Vec<EventDef>,
     /// Names in scope inside the element (`index` in `letters`).
@@ -450,9 +455,32 @@ mod tests {
     }
 
     #[test]
+    fn a_positional_names_the_prop_it_fills() {
+        let s = Schema::builtin();
+        assert_eq!(
+            s.element("meter").unwrap().arg_prop.as_deref(),
+            Some("value")
+        );
+        assert_eq!(
+            s.element("icon").unwrap().arg_prop.as_deref(),
+            Some("source")
+        );
+        // `letters` takes no positional, so it fills nothing.
+        assert_eq!(s.element("letters").unwrap().arg_prop, None);
+        for el in s.elements.values() {
+            assert_eq!(el.arg.is_some(), el.arg_prop.is_some(), "{}", el.name);
+        }
+        let mut s = s.clone();
+        let err = s
+            .extend("element gauge(float): node { }")
+            .expect_err("no prop");
+        assert!(err[0].message.contains("`(T -> prop)`"), "{err:?}");
+    }
+
+    #[test]
     fn extensions_add_but_never_replace() {
         for text in [
-            "element text(int): node { }",
+            "element text(int -> text): node { }",
             "group node { }",
             "alias AppId = int",
             "value t: text",
@@ -466,7 +494,7 @@ mod tests {
         }
         // The builtin `text` element is untouched by the refused text.
         let mut s = Schema::builtin().clone();
-        let _ = s.extend("element text(int): node { }");
+        let _ = s.extend("element text(int -> text): node { }");
         assert_eq!(s.element("text").unwrap().arg, Some(Ty::TEXT));
         // An overload with other parameters is still allowed.
         let mut s = Schema::builtin().clone();
@@ -489,6 +517,24 @@ mod tests {
             .extend("methods color { fn mix(other: color, amount: float) -> int }")
             .expect_err("same parameters as the builtin mix");
         assert!(err[0].message.contains("declared twice"), "{err:?}");
+    }
+
+    #[test]
+    fn record_keys_name_fields() {
+        let mut s = Schema::builtin().clone();
+        let err = s
+            .extend("record Foo key nope { a: int }")
+            .expect_err("no field `nope`");
+        assert!(err[0].message.contains("key `nope` of `Foo`"), "{err:?}");
+        assert!(s.types.find_record("Foo").is_none(), "atomic");
+        // Replacing a stub that a builtin key runs through (`Hit key
+        // app.id`) without that field breaks the key: refused.
+        let err = s
+            .extend("record App key name { name: text }")
+            .expect_err("`Hit key app.id` broken");
+        assert!(err[0].message.contains("key `app.id` of `Hit`"), "{err:?}");
+        let app = s.types.find_record("App").unwrap();
+        assert!(s.types.record(app).field("id").is_some(), "unchanged");
     }
 
     #[test]

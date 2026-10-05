@@ -499,8 +499,10 @@ Public interfaces other crates and later stages build on:
   `Schema::extend(text) -> Result<(), Vec<SchemaError { line, message }>>`
   (it adds and never replaces: an existing element, group, type, alias,
   value, palette role or token, or a function or method overload with the
-  same parameters, is a "declared twice" error; it is atomic, so on error
-  nothing is added and the fingerprint is unchanged), and check with
+  same parameters, is a "declared twice" error; every record's `key` path
+  must name a field, re-checked across all records after the extension;
+  it is atomic, so on error nothing is added and the fingerprint is
+  unchanged), and check with
   `compile_with(&map, &schema)`. The builtin's service stubs, and the
   records only services hand out (`Window`, `Notification`, `Date`, …),
   are declared `provisional service` / `provisional record`: the first
@@ -508,7 +510,14 @@ Public interfaces other crates and later stages build on:
   `RecordId`, so `[Window]` fields of other services see the real one; the
   stub's members and docs go) and the name stops being provisional, so a
   second contribution is "declared twice" (`Schema::provisional:
-  BTreeSet<String>`). The LSP reads the same
+  BTreeSet<String>`). Configs see contributed names as a prelude
+  their own declarations shadow, with one exception: a config `service`
+  named like a builtin or contributed service is `check::redeclared`
+  (services are identified by name at runtime), so a crate that adds a
+  service name a config already declares breaks that config; namespace
+  new service names. An element's positional names the prop it fills,
+  `element meter(float -> value)` (`ElementSchema::arg_prop`), which the
+  checker and lowering both read. The LSP reads the same
   table for completion and hover (M3, "service schemas drive type checking
   and LSP hover"). Members after `.` come from one table the checker
   itself types `x.name` and `x.name(…)` by: `schema::members_of(&Ty,
@@ -612,7 +621,7 @@ Public interfaces other crates and later stages build on:
   State, Let, Handler, Timer, When, Pose, Set, Play}`. An `Element`'s
   props carry their scene `Prop` and schema type (the positional argument
   is the prop it fills: `text`'s `text`, `icon`/`image`'s `source`,
-  `meter`'s `value`); a `<->` prop carries its `TwoWay` place. A `Body`
+  `meter`'s `value`, from `ElementSchema::arg_prop`); a `<->` prop carries its `TwoWay` place. A `Body`
   (component, surface, `for` item) lists the elements it owns and the
   services it reads.
 - **VM** (`strand_compiler::vm`): `Value` is the dynamic value

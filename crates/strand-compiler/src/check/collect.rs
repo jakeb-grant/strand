@@ -106,6 +106,7 @@ impl<'a> Checker<'a> {
                     }
                     seen.push(&v.name);
                 }
+                self.builtin_type_name(&e.name);
                 let id = self.types.add_enum(EnumDef {
                     name: e.name.name.clone(),
                     variants: e.variants.iter().map(|v| v.name.clone()).collect(),
@@ -119,6 +120,7 @@ impl<'a> Checker<'a> {
                 );
             }
             ItemKind::Type(t) => {
+                self.builtin_type_name(&t.name);
                 let id = self
                     .types
                     .add_record(RecordDef::new(t.name.name.clone(), user(t.name.span)));
@@ -204,6 +206,24 @@ impl<'a> Checker<'a> {
                 .help = Some("rename one of them".into());
             }
         }
+    }
+
+    /// The language's own type names (`color`, `length`, `Async`, …) are
+    /// not a prelude: no crate adds them, and a `type color` would make
+    /// every `color` annotation mean something else. A redeclaration
+    /// (annotations keep the builtin, so it is the only diagnostic).
+    fn builtin_type_name(&mut self, name: &ast::Ident) {
+        let n = name.name.as_str();
+        if crate::ty::Prim::from_name(n).is_none() && !matches!(n, "any" | "unit" | "Async") {
+            return;
+        }
+        self.error(
+            "check::redeclared",
+            format!("`{n}` is a builtin type"),
+            name.span,
+            "already taken",
+        )
+        .help = Some("choose another name: the language's own types cannot be redeclared".into());
     }
 
     /// Builtin names are a prelude: a `state`, `let`, parameter, `fn`,

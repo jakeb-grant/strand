@@ -1071,27 +1071,26 @@ impl<'a> Checker<'a> {
 
     fn call_name(&mut self, id: &ast::Ident, args: &'a [ast::Arg], span: Span) -> hir::Expr {
         let name = id.name.as_str();
-        if let Some(b) = self.lookup_scope(name) {
+        // Every user binding comes before the builtins (they are a
+        // prelude): a block or parameter name, then the file's `state` and
+        // `let`, then the config's globals. So a builtin added by a service
+        // crate never changes what an existing call means.
+        let value = self.lookup_scope(name).or_else(|| {
+            self.file_scopes[self.module]
+                .get(name)
+                .map(|&d| Binding::Def(d))
+        });
+        if let Some(b) = value {
             let f = self.binding_expr(b, id.span);
-            if !matches!(f.ty, Ty::Fn(_) | Ty::Error | Ty::Any)
-                && self.schema.functions.contains_key(name)
-            {
-                // Builtins are a prelude: a local shadows one. Say so where
-                // the shadowing is observed.
-                for a in args {
-                    self.expr(&a.value, None);
-                }
+            if !matches!(f.ty, Ty::Fn(_) | Ty::Error | Ty::Any) {
                 let shown = self.show(&f.ty);
-                self.error(
-                    "check::type_mismatch",
-                    format!("`{name}` here is a `{shown}`, not a function"),
-                    id.span,
-                    "cannot be called",
-                )
-                .help = Some(format!(
-                    "`{name}` in scope hides the builtin `{name}`; rename it to call the builtin"
-                ));
-                return hir::Expr::error(span);
+                return self
+                    .hides_builtin(id, &shown, args, span)
+                    .unwrap_or_else(|| {
+                        // Not named like a builtin: `call_value` says it
+                        // cannot be called.
+                        self.call_value(f, args, span)
+                    });
             }
             return self.call_value(f, args, span);
         }
@@ -1133,7 +1132,22 @@ impl<'a> Checker<'a> {
                     .help = Some(format!("write it as an element: `{name} arg {{ … }}`"));
                     return hir::Expr::error(span);
                 }
-                _ => {}
+                kind => {
+                    // `enum wave { … }` then `wave(2s)`: never the
+                    // builtin behind the user's name.
+                    let what = match kind {
+                        DefKind::Surface(_) => "surface",
+                        DefKind::Enum(_) => "enum",
+                        DefKind::Tokens => "token set",
+                        DefKind::Keyframes => "keyframes",
+                        DefKind::Service(_) => "service",
+                        _ => "declaration",
+                    };
+                    if let Some(e) = self.hides_builtin(id, what, args, span) {
+                        self.add_ref(id.span, Target::Def(d));
+                        return e;
+                    }
+                }
             }
         }
         if let Some(sigs) = self.schema.functions.get(name) {
@@ -1167,11 +1181,6 @@ impl<'a> Checker<'a> {
         {
             return self.construct(r, args, span);
         }
-        // Not a function: maybe a value of function type in file scope.
-        if let Some(&d) = self.file_scopes[self.module].get(name) {
-            let f = self.binding_expr(Binding::Def(d), id.span);
-            return self.call_value(f, args, span);
-        }
         let mut candidates: Vec<String> = self.schema.functions.keys().cloned().collect();
         candidates.extend(
             self.globals
@@ -1193,6 +1202,36 @@ impl<'a> Checker<'a> {
             self.expr(&a.value, None);
         }
         hir::Expr::error(span)
+    }
+
+    /// A call of a user name that is not a function but hides a builtin
+    /// function (`state blur = 4px` then `blur(16)`): an error naming the
+    /// hidden builtin, never a silent call of it. `None` when no builtin
+    /// function has that name.
+    fn hides_builtin(
+        &mut self,
+        id: &ast::Ident,
+        shown: &str,
+        args: &'a [ast::Arg],
+        span: Span,
+    ) -> Option<hir::Expr> {
+        let name = id.name.as_str();
+        if !self.schema.functions.contains_key(name) {
+            return None;
+        }
+        for a in args {
+            self.expr(&a.value, None);
+        }
+        self.error(
+            "check::type_mismatch",
+            format!("`{name}` here is a `{shown}`, not a function"),
+            id.span,
+            "cannot be called",
+        )
+        .help = Some(format!(
+            "`{name}` in scope hides the builtin `{name}`; rename it to call the builtin"
+        ));
+        Some(hir::Expr::error(span))
     }
 
     /// `Pin(app: a, label: "x")`.

@@ -858,8 +858,8 @@ impl<'a> Checker<'a> {
     }
 
     /// `meter 0.5 { value: 0.7 }`: the positional is the prop it fills
-    /// (`crate::lower::positional_prop`), so setting both is a prop set
-    /// twice.
+    /// (`ElementSchema::arg_prop`, which lowering reads too), so setting
+    /// both is a prop set twice.
     fn positional_set_twice(
         &mut self,
         kind: &str,
@@ -867,12 +867,8 @@ impl<'a> Checker<'a> {
         arg: &hir::Expr,
         props: &[hir::Prop],
     ) {
-        let filled = match kind {
-            "text" | "button" | "letters" => "text",
-            "meter" | "graph" | "merge" => "value",
-            "effect" => "style",
-            "page" => "name",
-            _ => "source",
+        let Some(filled) = schema.arg_prop.as_deref() else {
+            return;
         };
         if schema.prop(filled).is_none() {
             return;

@@ -961,6 +961,16 @@ impl<'a> Checker<'a> {
                     );
                 }
                 if let [one] = name.as_slice() {
+                    // The language's own types first: a `type color` is a
+                    // redeclaration, reported where it is declared.
+                    let own = match *one {
+                        "any" => Some(Ty::Any),
+                        "unit" => Some(Ty::Unit),
+                        n => crate::ty::Prim::from_name(n).map(Ty::Prim),
+                    };
+                    if let Some(t) = own {
+                        return t;
+                    }
                     if let Some(id) = self.globals.get(*one).copied() {
                         match self.defs[id.0 as usize].kind {
                             DefKind::Enum(e) => {

@@ -717,9 +717,11 @@ impl Lowerer<'_> {
         };
         let arg = e.arg.as_ref().map(|a| {
             let (name, prop) = match &kind {
-                ElementKind::Builtin(k) => {
-                    let p = positional_prop(*k);
-                    (p.name().to_string(), Some(p))
+                // The schema names the prop a positional fills.
+                ElementKind::Builtin(_) => {
+                    let name = schema.and_then(|s| s.arg_prop.clone()).unwrap_or_default();
+                    let prop = SceneProp::from_name(&name);
+                    (name, prop)
                 }
                 ElementKind::Component(d) => (self.first_param(*d), None),
                 ElementKind::Unknown(_) => (String::new(), None),
@@ -1025,19 +1027,6 @@ fn collect_keys(item: &hir::Item, out: &mut BTreeMap<DefId, Vec<String>>) {
         hir::Item::Component(c) => nodes(&c.body, out),
         hir::Item::Surface(s) => nodes(&s.element.children, out),
         _ => {}
-    }
-}
-
-/// The prop a builtin element's positional argument fills: `text x` is
-/// its `text`, `icon x` and `image x` their `source`, `meter x` its
-/// `value` (see `docs/decisions.md`, wave2-vm).
-pub fn positional_prop(kind: NodeKind) -> SceneProp {
-    match kind {
-        NodeKind::Text | NodeKind::Button | NodeKind::Letters => SceneProp::Text,
-        NodeKind::Meter | NodeKind::Graph | NodeKind::Merge => SceneProp::Value,
-        NodeKind::Effect => SceneProp::Style,
-        NodeKind::Page => SceneProp::Name,
-        _ => SceneProp::Source,
     }
 }
 

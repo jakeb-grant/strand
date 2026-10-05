@@ -15,3 +15,7 @@ component Card(blur: length = 24) {
   let soft = blur(16)
   box { width: blur }
 }
+// A file's `state` or `let` is a user binding too: called, it hides the
+// builtin just the same, never silently calling it.
+state noise = 4px
+let grain = noise(1)

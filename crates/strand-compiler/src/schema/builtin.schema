@@ -544,11 +544,11 @@ element center: node { flags only_in split }
 element end: node { flags only_in split }
 element spacer: node { flags leaf }
 element pages: node { current: any <-> }
-element page(any): node { flags only_in pages }
+element page(any -> name): node { flags only_in pages }
 
 // Widgets.
 element box: node {}
-element text(text): node {
+element text(text -> text): node {
   ellipsis: Ellipsis
   max_lines: int
   marks: [Range]
@@ -559,10 +559,10 @@ element text(text): node {
   fill: paint
   flags leaf
 }
-element icon(text): node { flags leaf }
+element icon(text -> source): node { flags leaf }
 /// A null source shows nothing.
-element image(text?): node { fit: Fit; flags leaf }
-element button(text): node {}
+element image(text? -> source): node { fit: Fit; flags leaf }
+element button(text -> text): node {}
 element slider: node {
   value: float <->
   track: paint
@@ -576,7 +576,7 @@ element input: node {
   nav: Node
   flags leaf
 }
-element meter(float): node {
+element meter(float -> value): node {
   value: float
   track: paint
   wave: float
@@ -587,19 +587,19 @@ element tooltip: node {}
 
 // Effects and media nodes.
 element arc: node { value: float; sweep: angle; track: paint; flags leaf }
-element graph(float): node {
+element graph(float -> value): node {
   history: duration
   fill: paint
   smooth: float
   flags leaf
 }
-element spectrum(AudioDevice): node { bars: int; smooth: float; style: SpectrumStyle; flags leaf }
-element shader(path): node { flags leaf uniforms }
+element spectrum(AudioDevice -> source): node { bars: int; smooth: float; style: SpectrumStyle; flags leaf }
+element shader(path -> source): node { flags leaf uniforms }
 element canvas: node { draw: fn(Canvas); flags leaf }
-element svg(path): node { flags leaf selectors }
-element lottie(path): node { speed: float; flags leaf }
-element thumbnail(Window): node { fit: Fit; flags leaf }
-element effect(EffectKind): node { speed: float; flags leaf }
+element svg(path -> source): node { flags leaf selectors }
+element lottie(path -> source): node { speed: float; flags leaf }
+element thumbnail(Window -> source): node { fit: Fit; flags leaf }
+element effect(EffectKind -> style): node { speed: float; flags leaf }
 element particles: node {
   rate: float
   life: duration
@@ -611,7 +611,7 @@ element particles: node {
 /// Animates each letter of its text; `index` is the letter's position.
 element letters: node { let index: int; let count: int }
 /// Goo merge: children melt together within the given distance.
-element merge(length): node {}
+element merge(length -> value): node {}
 
 // ---------------------------------------------------------------------------
 // Tokens. The palette maps 1:1 onto Material 3 system roles (primary is

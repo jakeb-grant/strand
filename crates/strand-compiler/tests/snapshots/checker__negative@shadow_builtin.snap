@@ -85,3 +85,14 @@ check::type_mismatch
  16 │   box { width: blur }
     ╰────
   help: `blur` in scope hides the builtin `blur`; rename it to call the builtin
+
+check::type_mismatch
+
+  × `noise` here is a `length`, not a function
+    ╭─[shadow_builtin.strand:21:13]
+ 20 │ state noise = 4px
+ 21 │ let grain = noise(1)
+    ·             ──┬──
+    ·               ╰── cannot be called
+    ╰────
+  help: `noise` in scope hides the builtin `noise`; rename it to call the builtin

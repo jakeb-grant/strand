@@ -1170,6 +1170,25 @@ fn components_with_params_slot_and_tokens() {
     );
 }
 
+/// A set's `override` of a component token wins over the component's
+/// default at runtime, plain or derived on either side.
+#[test]
+fn set_overrides_beat_component_token_defaults() {
+    let src = "component Toast(n: int) tokens { radius: 14px; edge: $radius.lg; pad: 2px; gap: $radius.lg } {\n  box { radius: $Toast.radius; pad: $Toast.pad; width: $Toast.edge; gap: $Toast.gap }\n}\ntokens x {\n  radius { sm: 4px; lg: 16px }\n  override Toast.radius: 6px\n  override Toast.edge: $radius.sm\n  override Toast.pad: $radius.sm\n  override Toast.gap: 9px\n}\nuse tokens x\nbar B { Toast 1 }\n";
+    let shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let t = &shell.scene.tokens;
+    // Plain over plain.
+    assert_eq!(t.lookup("Toast.radius"), Some(PropValue::Number(6.0)));
+    // Derived over derived.
+    assert_eq!(t.lookup("Toast.edge"), Some(PropValue::Number(4.0)));
+    // Derived over plain.
+    assert_eq!(t.lookup("Toast.pad"), Some(PropValue::Number(4.0)));
+    // Plain over derived.
+    assert_eq!(t.lookup("Toast.gap"), Some(PropValue::Number(9.0)));
+}
+
 /// `match` in a tree mounts the matching arm and swaps on change.
 #[test]
 fn tree_match_swaps_arms() {

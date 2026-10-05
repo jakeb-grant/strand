@@ -420,6 +420,16 @@ impl TypeTable {
             .map(|i| RecordId(i as u32))
     }
 
+    /// Whether the config declares a record or enum called `name` (which
+    /// then hides a schema type of that name).
+    pub fn user_named(&self, name: &str) -> bool {
+        let user = |o: &Origin| matches!(o, Origin::User(..));
+        self.records
+            .iter()
+            .any(|r| r.name == name && user(&r.origin))
+            || self.enums.iter().any(|e| e.name == name && user(&e.origin))
+    }
+
     pub fn find_enum(&self, name: &str) -> Option<EnumId> {
         self.enums
             .iter()
@@ -526,16 +536,37 @@ pub struct ShowTy<'a> {
 impl fmt::Display for ShowTy<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let show = |ty| self.table.show(ty);
+        // A schema type the config hides with its own `type`/`enum` of
+        // the same name: `builtin Align`, so "expects `builtin Align`,
+        // found `Align`" never reads as a contradiction.
+        let named = |f: &mut fmt::Formatter<'_>, name: &str, schema: bool| {
+            if schema && self.table.user_named(name) {
+                write!(f, "builtin {name}")
+            } else {
+                f.write_str(name)
+            }
+        };
+        let schema = |o: &Origin| matches!(o, Origin::Schema);
         match self.ty {
             Ty::Error => f.write_str("{unknown}"),
             Ty::Any => f.write_str("any"),
             Ty::Null => f.write_str("null"),
             Ty::Unit => f.write_str("()"),
             Ty::Prim(p) => f.write_str(p.name()),
-            Ty::Opaque(n) => f.write_str(n),
-            Ty::Enum(e) => f.write_str(&self.table.enum_(*e).name),
-            Ty::EnumType(e) => write!(f, "enum {}", self.table.enum_(*e).name),
-            Ty::Record(r) => f.write_str(&self.table.record(*r).name),
+            Ty::Opaque(n) => named(f, n, true),
+            Ty::Enum(e) => {
+                let e = self.table.enum_(*e);
+                named(f, &e.name, schema(&e.origin))
+            }
+            Ty::EnumType(e) => {
+                let e = self.table.enum_(*e);
+                f.write_str("enum ")?;
+                named(f, &e.name, schema(&e.origin))
+            }
+            Ty::Record(r) => {
+                let r = self.table.record(*r);
+                named(f, &r.name, schema(&r.origin))
+            }
             Ty::List(t, _) => write!(f, "[{}]", show(t)),
             Ty::Optional(t) => match &**t {
                 Ty::Fn(_) | Ty::Union(_) => write!(f, "({})?", show(t)),
