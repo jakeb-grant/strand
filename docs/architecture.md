@@ -467,8 +467,9 @@ It does not depend on `strand-compiler` or `strand-core`.
   runs the `strand-watch` thread (one thread: a raw inotify fd and a
   control eventfd under `poll(2)`; with no inotify instance, everything
   is polled).
-  `ConfigWatch { root, modules: ModuleSet { files, dirs }, rescan }` is
-  `source::find_files`'s `Discovery` (`files`, `dirs`) plus a
+  `ConfigWatch { root, modules: ModuleSet { files, dirs, errors,
+  too_deep }, rescan }` is `source::find_files`'s `Discovery` (`files`,
+  `dirs`, `errors` with each error as text, `too_deep`) plus a
   `FnMut() -> io::Result<ModuleSet>` the binary implements with
   `find_files`; the watcher calls it when a `.strand` name, a directory
   or a directory link appears or vanishes in a config directory, a
@@ -512,7 +513,11 @@ It does not depend on `strand-compiler` or `strand-core`.
   created and not yet closed, and no `CLOSE_WRITE` yet) is never read;
   after 5 s (`Options::stalled_write`) with no further event and no
   change to its modification time it is read anyway with
-  `Notice::StalledWrite(path)`. Only config directories are watched with
+  `Notice::StalledWrite(path)`, and read again when it is closed. A file
+  that a write reached while it was being read (an event for it queued
+  by then, its stamp moved, or modified less than 15 ms before) is left
+  out of the batch with its baseline unchanged and read at a later quiet
+  period, so no batch carries a torn read. Only config directories are watched with
   `MODIFY`; every other content directory (referenced files, symlink
   hops, cache trees) hears completed writes and names only, so writers
   there cost one wakeup per file closed. The config root's parent and
@@ -537,8 +542,10 @@ It does not depend on `strand-compiler` or `strand-core`.
   hashed; anything else (a FIFO, a device) has `error:
   Some(InvalidInput)`. Cache-tree entries are not hashed. `rescan` is
   `Some(Overflow | Requested)` for a full rescan; `notices` reports
-  polled directories, rescan-callback failures, backend errors and
-  stalled writes. `first_event` and
+  polled directories, rescan-callback failures, backend errors, stalled
+  writes, and `Notice::ModuleSet { errors, too_deep }` when a rescan's
+  diagnostics differ from the previous scan's (complete lists, so the
+  overlay replaces what it shows). `first_event` and
   `last_event` (`Instant`) let latency measurements subtract the quiet
   period.
 - **System settings.** `strand_watch::follow(&zbus::Connection,

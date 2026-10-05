@@ -102,6 +102,15 @@ pub enum Notice {
     /// neither wrote again nor closed it for `Options::stalled_write`
     /// (5 s), so it was read anyway; the content may be incomplete.
     StalledWrite(PathBuf),
+    /// A module-set rescan found paths it could not read (`errors`: a
+    /// dangling `*.strand` link, an unreadable directory) or directories
+    /// too deep to load that hold `.strand` files (`too_deep`), and these
+    /// differ from the previous scan's. Both lists are complete (empty
+    /// once every problem is gone), so the loader replaces what it shows.
+    ModuleSet {
+        errors: Vec<(PathBuf, String)>,
+        too_deep: Vec<PathBuf>,
+    },
 }
 
 /// Why a directory is polled.

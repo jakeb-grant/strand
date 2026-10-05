@@ -24,6 +24,12 @@ fn modules(root: &Path) -> std::io::Result<ModuleSet> {
     Ok(ModuleSet {
         files: found.files,
         dirs: found.dirs,
+        errors: found
+            .errors
+            .into_iter()
+            .map(|(p, e)| (p, e.to_string()))
+            .collect(),
+        too_deep: found.too_deep,
     })
 }
 

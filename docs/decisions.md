@@ -1197,3 +1197,81 @@ schema from `strand-compiler`).
   runtime; the client-side namespace check stays as a backstop
   (`other_namespaces_are_dropped_by_the_bus`, which reads every message
   the bus routes to the client's connection).
+- **2026-10-05 · A file written during its read is not reported (review
+  round 6).** A flush reads files whose last event was a completed write,
+  but the next write can begin while it reads: an in-place save's
+  `O_TRUNC` sets the size to zero before its `MODIFY` is queued (on ext4
+  freeing the old blocks in between takes milliseconds, and under load
+  the writer can be descheduled there), so a read can see an empty or
+  partial file with no event yet to say so. After hashing, the flush
+  takes `SEEK_DATA` on the same descriptor (ext4, btrfs and tmpfs take
+  the inode lock for it, which a truncation holds until its `MODIFY` is
+  queued), takes the stamp again from that descriptor, and then drains
+  the inotify queue. A file whose stamp moved, whose modification time
+  is less than one quiet period (15 ms) old, or that an event drained
+  then names (a `MODIFY`, `CLOSE_WRITE`, creation or removal), or any file
+  after an overflow, is left out of the batch with its baseline
+  unchanged: held while its write is in progress, read again at a later
+  quiet period otherwise
+  (`a_write_during_the_read_is_not_reported_until_closed`,
+  `own_writes_in_place_in_a_tight_loop_are_never_torn`). The
+  modification-time rule covers filesystems that take no lock for
+  `SEEK_DATA`, and overwrites without truncation, whose `MODIFY` is
+  queued after the write returns.
+- **2026-10-05 · A `MODIFY` holds the file (review round 6).** A file
+  written in place whose writer keeps it open and stops writing was
+  only marked busy: nothing scheduled it, so it was never read with
+  `Notice::StalledWrite` as `Options::stalled_write` promises. Now the
+  first `MODIFY` also holds every watched file at that path, so it is due
+  `stalled_write` after the writer's last write and read then with the
+  notice, and again (normally) once closed. In a config directory every
+  write is an event, so the hold skips the modification-time check that
+  directories without `MODIFY` need (and reads no `stat` per write)
+  (`a_stalled_in_place_writer_is_read_with_a_notice`,
+  `a_stalled_in_place_write_is_read_with_a_notice`).
+- **2026-10-05 · `O_TMPFILE` files outside the config (review round 6).**
+  A file made with `O_TMPFILE` and linked in (`linkat`) is created with
+  its bytes. In a directory watched without `MODIFY` it is held as being
+  written, and its `CLOSE_WRITE` comes only under its unnamed `#<ino>`.
+  `IN_EXCL_UNLINK` drops that event (the file has no name), so the file
+  waited 5 s and came with a false `StalledWrite`. Completed-write
+  watches no longer set `IN_EXCL_UNLINK`, and a `CLOSE_WRITE` named
+  `#<digits>` ends the write of each name in that directory with that
+  inode (one `stat` per file being written there). Config directories
+  keep `IN_EXCL_UNLINK`: there a writer still holding a deleted module
+  would otherwise mark the new file at that name as being written with
+  each `MODIFY`. Outside them, the cost is that a deleted file's writer
+  closing it reports a `CLOSE_WRITE` under its old name, which re-reads
+  whatever file has that name now
+  (`a_file_linked_in_from_o_tmpfile_is_reported_outside_the_config`).
+  A file closed before it is linked in sends its close before its
+  creation and still waits for `stalled_write`.
+- **2026-10-05 · Module-set diagnostics travel with the batch (review
+  round 6).** `ModuleSet` carries `Discovery::errors` (as text) and
+  `too_deep`. When a runtime rescan's lists differ from the previous
+  ones, the batch carries `Notice::ModuleSet { errors, too_deep }` with
+  the complete new lists, so a module that became a dangling link or an
+  unreadable directory reaches the loader's overlay on the same channel
+  as the module's `Removed` (`module_set_errors_are_forwarded`).
+- **2026-10-05 · The cost of `MODIFY` in config directories (review
+  round 6).** Every `write(2)` to any file in a config directory wakes
+  the watcher thread, including files Strand never reads (a log or cache
+  kept in `~/.config/strand`). The event is dropped at once, but a tight
+  writer pays for it: in review, 1.46 million one-byte writes in about
+  1.2 s cost the watcher about 85 % of a core while saves were still reported in
+  16 ms. This is the price of never reading a half-written module.
+  Files other than modules should live outside the config directory
+  (`$XDG_STATE_HOME`, `$XDG_CACHE_HOME`); a settings TOML written a few
+  times per second costs nothing noticeable.
+- **2026-10-05 · The tight-loop own-write test is bounded (review
+  round 6).** `own_writes_in_a_tight_loop_are_never_reported` failed
+  twice under load in review, and did not fail again here in about 50
+  runs (40 alone, 8 within the whole suite), with three or four busy
+  loops loading the machine. Each of its writes queues five events (create,
+  modify, close, moved-from, moved-to). Up to 3,000 writes, at about 5
+  events each, come near the kernel's default 16,384-event queue, so a
+  watcher thread starved for most of the loop overflows it. The
+  overflow's rescan batch, correct but without changes, failed
+  `no_batch`. The loop now stops at 1,000 writes (5,000 events), and the
+  test checks that no batch carries a change (a change-less rescan
+  batch is allowed), naming the body behind each reported hash.

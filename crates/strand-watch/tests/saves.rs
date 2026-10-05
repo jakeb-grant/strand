@@ -27,6 +27,12 @@ fn modules(root: &Path) -> std::io::Result<ModuleSet> {
     Ok(ModuleSet {
         files: found.files,
         dirs: found.dirs,
+        errors: found
+            .errors
+            .into_iter()
+            .map(|(p, e)| (p, e.to_string()))
+            .collect(),
+        too_deep: found.too_deep,
     })
 }
 
@@ -105,6 +111,47 @@ fn one_batch(fx: &Fx) -> FileBatch {
 fn no_batch(fx: &Fx) {
     if let Some(b) = next_files(&fx.rx, SETTLE) {
         panic!("unexpected batch: {b:#?}");
+    }
+}
+
+/// Bodies a test wrote, by hash, to name the hashes a batch carries.
+struct Written(std::collections::HashMap<strand_watch::ContentHash, String>);
+
+impl Written {
+    fn new() -> Self {
+        Written(Default::default())
+    }
+
+    fn add(&mut self, body: &str) -> strand_watch::ContentHash {
+        let h = hash_bytes(body.as_bytes());
+        self.0.insert(h, body.to_string());
+        h
+    }
+
+    /// Each change's hash, with the body it is the hash of when the test
+    /// wrote one (`None` when it never did: a torn read).
+    fn name(&self, b: &FileBatch) -> Vec<(PathBuf, ChangeKind, Option<String>)> {
+        b.changes
+            .iter()
+            .map(|c| {
+                let body = c.hash.and_then(|h| self.0.get(&h).cloned());
+                (c.path.clone(), c.kind, body)
+            })
+            .collect()
+    }
+}
+
+/// Until the watcher has been quiet for `SETTLE`: no batch carries a
+/// change. A batch with no change at all is allowed (a queue overflow's
+/// rescan that found every file as it was: overflow is the kernel's call,
+/// not a reported write).
+fn no_changes(fx: &Fx, written: &Written) {
+    while let Some(b) = next_files(&fx.rx, SETTLE) {
+        assert!(
+            b.changes.is_empty(),
+            "unexpected changes {:?} in {b:#?}",
+            written.name(&b)
+        );
     }
 }
 
@@ -1233,25 +1280,93 @@ fn own_writes_are_skipped_under_every_alias() {
 /// `register_own_write` is in place when it returns, whatever the watcher
 /// thread is doing: a tight loop of registered atomic writes reports
 /// nothing, even with flushes running concurrently.
+///
+/// At most 1000 writes (5000 inotify events: create, modify, close,
+/// moved-from, moved-to) stay well under the kernel's default queue of
+/// 16384, which a watcher thread starved by a loaded machine could
+/// otherwise overflow; an overflow's rescan batch without changes would
+/// be correct, and is allowed.
 #[test]
 fn own_writes_in_a_tight_loop_are_never_reported() {
     let fx = fixture();
     let prefs = fx.cfg.join("prefs.toml");
+    let mut written = Written::new();
+    written.add("v = 0\n");
     fs::write(&prefs, "v = 0\n").unwrap();
     fx.watcher.watch_file(&prefs, Role::Settings).unwrap();
     let tmp = fx.cfg.join(".prefs.toml.tmp");
     let end = Instant::now() + Duration::from_millis(1500);
     let mut writes = 0u32;
-    while Instant::now() < end {
+    while Instant::now() < end && writes < 1000 {
         writes += 1;
         let body = format!("v = {writes}\n");
-        fx.watcher
-            .register_own_write(&prefs, hash_bytes(body.as_bytes()));
+        fx.watcher.register_own_write(&prefs, written.add(&body));
         fs::write(&tmp, &body).unwrap();
         fs::rename(&tmp, &prefs).unwrap();
     }
     assert!(writes > 100, "{writes}");
-    no_batch(&fx);
+    no_changes(&fx, &written);
+}
+
+/// The same loop written in place (truncate and rewrite, as VS Code
+/// saves): flushes keep reading the file while the next write truncates
+/// it, and a read that overlapped a write is never reported. Every write
+/// is registered, so any change at all would be a torn read (a hash the
+/// test never wrote) or a registered write reported.
+#[test]
+fn own_writes_in_place_in_a_tight_loop_are_never_torn() {
+    let fx = fixture();
+    let prefs = fx.cfg.join("prefs.toml");
+    let mut written = Written::new();
+    written.add("v = 0\n");
+    fs::write(&prefs, "v = 0\n").unwrap();
+    fx.watcher.watch_file(&prefs, Role::Settings).unwrap();
+    let end = Instant::now() + Duration::from_millis(1500);
+    let mut writes = 0u32;
+    while Instant::now() < end && writes < 1000 {
+        writes += 1;
+        // Longer bodies widen the window a read can land in.
+        let body = format!("v = {writes}\n{}", "#".repeat((64 << 10) + writes as usize));
+        fx.watcher.register_own_write(&prefs, written.add(&body));
+        fs::write(&prefs, &body).unwrap();
+    }
+    assert!(writes > 100, "{writes}");
+    no_changes(&fx, &written);
+}
+
+/// A file written in place whose writer then keeps it open without
+/// writing or closing: read once the writer counts as stalled, with a
+/// notice and the partial content, and read again when it is closed.
+#[test]
+fn a_stalled_in_place_write_is_read_with_a_notice() {
+    let opts = Options {
+        stalled_write: Duration::from_millis(400),
+        ..Options::default()
+    };
+    let fx = fixture_with(opts, |_| {});
+    let theme = fx.cfg.join("theme.strand");
+    let mut f = fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(&theme)
+        .unwrap();
+    f.write_all(&NEW.as_bytes()[..10]).unwrap();
+    f.flush().unwrap();
+    let start = Instant::now();
+    let b = next_files(&fx.rx, FIRST).expect("no stalled batch");
+    assert!(
+        start.elapsed() >= Duration::from_millis(350),
+        "read too early"
+    );
+    assert_eq!(b.changes.len(), 1, "{b:#?}");
+    assert_eq!(b.changes[0].hash, Some(hash_bytes(&NEW.as_bytes()[..10])));
+    assert_eq!(b.notices, vec![Notice::StalledWrite(theme.clone())]);
+    if let Some(extra) = next_files(&fx.rx, SETTLE) {
+        panic!("a second batch while still open: {extra:#?}");
+    }
+    f.write_all(&NEW.as_bytes()[10..]).unwrap();
+    drop(f);
+    only_theme_changed(&fx, NEW);
 }
 
 /// A file made complete through `O_TMPFILE` and linked in (`linkat`, as
@@ -1291,6 +1406,48 @@ fn a_file_linked_in_from_o_tmpfile_is_reported() {
     assert_eq!(b.changes[0].path, prefs);
     assert_eq!(b.changes[0].kind, ChangeKind::Created);
     assert_eq!(b.changes[0].hash, Some(hash_bytes(b"a = 1\n")));
+}
+
+/// The same into a directory watched without `MODIFY` (a wallpaper's):
+/// the new name already has bytes and is held as being written, and its
+/// `CLOSE_WRITE`, which comes under `#<ino>`, ends that write. Reported at
+/// once, with no stalled-write notice.
+#[test]
+fn a_file_linked_in_from_o_tmpfile_is_reported_outside_the_config() {
+    use rustix::fs::{AtFlags, CWD, Mode, OFlags};
+    let fx = fixture();
+    let pics = fx.base.join("pics");
+    fs::create_dir(&pics).unwrap();
+    let wall = pics.join("wall.png");
+    fx.watcher.watch_file(&wall, Role::Wallpaper).unwrap();
+    let fd = match rustix::fs::openat(
+        CWD,
+        &pics,
+        OFlags::TMPFILE | OFlags::WRONLY | OFlags::CLOEXEC,
+        Mode::from_raw_mode(0o644),
+    ) {
+        Ok(fd) => fd,
+        Err(e) => {
+            eprintln!("skipping: O_TMPFILE unsupported here ({e})");
+            return;
+        }
+    };
+    rustix::io::write(&fd, b"png").unwrap();
+    let proc_path = format!("/proc/self/fd/{}", std::os::fd::AsRawFd::as_raw_fd(&fd));
+    rustix::fs::linkat(CWD, proc_path.as_str(), CWD, &wall, AtFlags::SYMLINK_FOLLOW).unwrap();
+    let start = Instant::now();
+    drop(fd);
+    let b = next_files(&fx.rx, FIRST).expect("no batch");
+    let took = start.elapsed();
+    if let Some(extra) = next_files(&fx.rx, SETTLE) {
+        panic!("a second batch: {extra:#?}");
+    }
+    assert_eq!(b.changes.len(), 1, "{b:#?}");
+    assert_eq!(b.changes[0].path, wall);
+    assert_eq!(b.changes[0].kind, ChangeKind::Created);
+    assert_eq!(b.changes[0].hash, Some(hash_bytes(b"png")));
+    assert!(b.notices.is_empty(), "{b:#?}");
+    assert!(took < Duration::from_millis(200), "{took:?}");
 }
 
 /// An ancestor of a watched directory moved while its own parent holds no

@@ -52,20 +52,32 @@ enum Ctl {
 /// and go, never writes. An ancestor watch hears only its children being
 /// moved away or deleted (and itself going): writes, new files and edits
 /// in `~` or `/` queue nothing.
+///
+/// `IN_EXCL_UNLINK` (no events for a file once it has no name here) is
+/// set everywhere except on completed-write watches. A config
+/// directory needs it: a `MODIFY` from a writer still holding a deleted
+/// module would otherwise come under the name a new file now has, and
+/// hold that file. A completed-write watch must not have it: a file made
+/// with `O_TMPFILE` and linked in (`linkat`) is created with its bytes,
+/// held as being written, and its `CLOSE_WRITE` comes only under its
+/// unnamed `#<ino>`, which `IN_EXCL_UNLINK` drops (the file would wait
+/// for `stalled_write`). The cost there: a deleted file's writer closing
+/// it reports a `CLOSE_WRITE` under its old name, which reads whatever
+/// file has that name now.
 pub(crate) fn watch_mask(kind: WatchKind) -> WatchFlags {
     let gone = WatchFlags::MOVED_FROM
         | WatchFlags::DELETE
         | WatchFlags::DELETE_SELF
         | WatchFlags::MOVE_SELF
-        | WatchFlags::ONLYDIR
-        | WatchFlags::EXCL_UNLINK;
+        | WatchFlags::ONLYDIR;
+    let completed = gone | WatchFlags::CLOSE_WRITE | WatchFlags::MOVED_TO | WatchFlags::CREATE;
     match kind {
-        WatchKind::Ancestor => gone,
-        WatchKind::Parent => gone | WatchFlags::CREATE | WatchFlags::MOVED_TO,
-        WatchKind::Completed => {
-            gone | WatchFlags::CLOSE_WRITE | WatchFlags::MOVED_TO | WatchFlags::CREATE
+        WatchKind::Ancestor => gone | WatchFlags::EXCL_UNLINK,
+        WatchKind::Parent => {
+            gone | WatchFlags::CREATE | WatchFlags::MOVED_TO | WatchFlags::EXCL_UNLINK
         }
-        WatchKind::Full => watch_mask(WatchKind::Completed) | WatchFlags::MODIFY,
+        WatchKind::Completed => completed,
+        WatchKind::Full => completed | WatchFlags::MODIFY | WatchFlags::EXCL_UNLINK,
     }
 }
 
@@ -290,6 +302,13 @@ impl Backend for Kernel {
     fn unwatch(&mut self, dir: &Path) {
         if let Kernel::Inotify(i) = self {
             i.unwatch(dir);
+        }
+    }
+
+    fn drain(&mut self, out: &mut Vec<Raw>) -> io::Result<()> {
+        match self {
+            Kernel::Inotify(i) => i.read(out),
+            Kernel::Unavailable(_) => Ok(()),
         }
     }
 }
@@ -849,6 +868,7 @@ mod tests {
         let set = crate::ModuleSet {
             files: vec![cfg.join("bar.strand")],
             dirs: vec![cfg.clone()],
+            ..Default::default()
         };
         let rescan_set = set.clone();
         let config = ConfigWatch {

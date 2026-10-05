@@ -72,6 +72,13 @@ pub struct ModuleSet {
     pub files: Vec<PathBuf>,
     /// Canonical directories scanned (`Discovery::dirs`).
     pub dirs: Vec<PathBuf>,
+    /// Paths that could not be read, with the reason (`Discovery::errors`,
+    /// the error as text): a dangling `*.strand` link, an unreadable
+    /// directory.
+    pub errors: Vec<(PathBuf, String)>,
+    /// Directories too deep to load that hold `.strand` files
+    /// (`Discovery::too_deep`).
+    pub too_deep: Vec<PathBuf>,
 }
 
 /// Recomputes the module set (the binary calls `source::find_files`).
@@ -158,6 +165,12 @@ pub(crate) enum WatchKind {
 pub(crate) trait Backend {
     fn watch(&mut self, dir: &Path, kind: WatchKind) -> Result<(), String>;
     fn unwatch(&mut self, dir: &Path);
+    /// Take every event queued so far without waiting. A flush calls it
+    /// after hashing, to see whether a file was written while it was read.
+    /// A backend with no queue (polling, most tests) has nothing.
+    fn drain(&mut self, _out: &mut Vec<Raw>) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -217,7 +230,7 @@ impl Entry {
     /// Record the file's current state as the baseline, reporting nothing.
     fn take_baseline(&mut self, path: &Path) {
         (self.hash, self.stamp, self.error, self.exists) = match read_hash(path) {
-            Ok((h, s)) => (Some(h), Some(s), None, true),
+            Ok(r) => (Some(r.hash), Some(r.stamp), None, true),
             Err(e) if is_missing(&e) => (None, None, None, false),
             Err(e) => (None, current_stamp(path), Some(e.kind()), true),
         };
@@ -505,10 +518,21 @@ fn open_nonblocking(path: &Path) -> io::Result<std::fs::File> {
         .open(path)
 }
 
+/// A regular file's hash and the stamp it had when opened.
+#[derive(Debug, Clone, Copy)]
+struct Hashed {
+    hash: ContentHash,
+    stamp: Stamp,
+    /// False when the file changed while it was read (its stamp, taken
+    /// again from the same descriptor after hashing, differs): the bytes
+    /// may be torn.
+    stable: bool,
+}
+
 /// Hash a regular file, streaming. Anything else (a FIFO, a device, a
 /// directory) is `InvalidInput` and never read: a FIFO would block the
 /// watcher thread and `/dev/zero` never ends.
-fn read_hash(path: &Path) -> io::Result<(ContentHash, Stamp)> {
+fn read_hash(path: &Path) -> io::Result<Hashed> {
     let not_regular = || io::Error::new(io::ErrorKind::InvalidInput, "not a regular file");
     if !std::fs::metadata(path)?.is_file() {
         return Err(not_regular());
@@ -520,7 +544,43 @@ fn read_hash(path: &Path) -> io::Result<(ContentHash, Stamp)> {
     }
     let mut hasher = blake3::Hasher::new();
     hasher.update_reader(&file)?;
-    Ok((hasher.finalize(), Stamp::of(&meta)))
+    // A barrier: on ext4, btrfs and tmpfs `SEEK_DATA` takes the inode's
+    // lock, which a truncation (`O_TRUNC`) holds until its `MODIFY` is
+    // queued. A truncation under way during the read has queued its
+    // event once this returns, for the flush's drain to find. Its result
+    // (ENXIO for an empty file) does not matter.
+    let _ = rustix::fs::seek(&file, rustix::fs::SeekFrom::Data(0));
+    let stamp = Stamp::of(&meta);
+    let stable = file.metadata().is_ok_and(|m| Stamp::of(&m) == stamp);
+    Ok(Hashed {
+        hash: hasher.finalize(),
+        stamp,
+        stable,
+    })
+}
+
+/// Whether `stamp`'s modification time is less than `window` before
+/// `now` (an [`Instant`], projected onto the wall clock). A time in the
+/// future (a clock set back, a server's skew) is not recent.
+fn written_within(stamp: &Stamp, now: Instant, window: Duration) -> bool {
+    let (secs, nanos) = stamp.mtime;
+    let (Ok(secs), Ok(nanos)) = (u64::try_from(secs), u32::try_from(nanos)) else {
+        return false;
+    };
+    let Some(mtime) =
+        std::time::UNIX_EPOCH.checked_add(Duration::new(secs, nanos.min(999_999_999)))
+    else {
+        return false;
+    };
+    let real = Instant::now();
+    let wall = std::time::SystemTime::now();
+    let wall = if now >= real {
+        wall.checked_add(now - real)
+    } else {
+        wall.checked_sub(real - now)
+    };
+    wall.and_then(|w| w.duration_since(mtime).ok())
+        .is_some_and(|age| age < window)
 }
 
 /// The stamp of what `path` resolves to, without reading it.
@@ -896,6 +956,10 @@ impl<B: Backend> Core<B> {
         match raw {
             Raw::Overflow => self.request_rescan(RescanReason::Overflow, now),
             Raw::Written(p) => {
+                if let Some(ino) = tmpfile_ino(&p) {
+                    self.closed_tmpfile(&p, ino, now);
+                    return;
+                }
                 self.writing.remove(&p);
                 self.on_path(p, What::Written, now);
             }
@@ -912,9 +976,13 @@ impl<B: Backend> Core<B> {
             // *completed* write, so a writer that keeps its file open (a
             // status file fed by a script, a font being copied) does not
             // stretch every batch to `max_delay`. The file itself is held
-            // at the flush while its write is in progress.
+            // at the flush while its write is in progress, and held from
+            // now on: if its writer stalls (no further write, no close),
+            // it is due `stalled_write` after the last one even when no
+            // completed write ever opens a batch for it.
             Raw::Busy(p) => {
                 if self.hashed(&p) {
+                    self.hold_written(&p, now);
                     self.writing.insert(p, now);
                 }
             }
@@ -924,6 +992,51 @@ impl<B: Backend> Core<B> {
                 }
                 self.on_path(p, What::Written, now);
             }
+        }
+    }
+
+    /// Hold every watched file that resolves to `p` (being written) and is
+    /// not held yet. In a config directory each write makes an event, so
+    /// its modification time is not needed (and not read per write).
+    fn hold_written(&mut self, p: &Path, now: Instant) {
+        let Some(files) = self.by_path.get(p) else {
+            return;
+        };
+        for f in files {
+            if self.held.contains_key(f) || !self.files.get(f).is_some_and(|e| e.resolved.path == p)
+            {
+                continue;
+            }
+            let mtime = if self.tracked(f) { None } else { mtime(f) };
+            self.held.insert(f.clone(), Held { at: now, mtime });
+        }
+    }
+
+    /// Whether every write to the file `f` resolves to makes an event
+    /// (`MODIFY`: its directory is a config directory).
+    fn tracked(&self, f: &Path) -> bool {
+        self.files
+            .get(f)
+            .and_then(|e| e.resolved.path.parent())
+            .is_some_and(|d| self.kinds.get(d) == Some(&WatchKind::Full))
+    }
+
+    /// A `CLOSE_WRITE` under `#<ino>`: a file made with `O_TMPFILE` was
+    /// closed, after `linkat` already gave it a name (its creation came
+    /// under that name, with bytes, and it is held as being written). End
+    /// the write of each name in that directory that is this inode.
+    fn closed_tmpfile(&mut self, p: &Path, ino: u64, now: Instant) {
+        let dir = p.parent();
+        let names: Vec<PathBuf> = self
+            .writing
+            .keys()
+            .filter(|w| w.parent() == dir)
+            .filter(|w| std::fs::metadata(w).is_ok_and(|m| m.ino() == ino))
+            .cloned()
+            .collect();
+        for w in names {
+            self.writing.remove(&w);
+            self.on_path(w, What::Written, now);
         }
     }
 
@@ -1139,6 +1252,18 @@ impl<B: Backend> Core<B> {
         }
     }
 
+    /// Handle every event queued in the backend now.
+    fn drain(&mut self, now: Instant) {
+        let mut raws = Vec::new();
+        // A failed read fails again at the watcher thread's next read,
+        // which handles it (with what it lost); the events read before
+        // the failure are handled here.
+        let _ = self.backend.drain(&mut raws);
+        for raw in raws {
+            self.on_raw(raw, now);
+        }
+    }
+
     /// Cut the open batch: rescan if asked, re-resolve symlinks, re-watch
     /// when the structure may have changed, hash what was touched and is
     /// not being written, and drop what did not change.
@@ -1190,13 +1315,17 @@ impl<B: Backend> Core<B> {
         // An own write matched for one logical path is own for every path
         // that reaches the same file (a symlink alias, a `..` spelling).
         let mut own_seen = HashSet::new();
+        let mut reads = Vec::new();
         for path in &touched {
+            let mut stalled = false;
             if let Some(since) = self.busy_since(path) {
-                let m = mtime(path);
                 let quiet = now.saturating_duration_since(since) >= self.opts.stalled_write;
                 // Changed since it was held: its writer is still at it,
-                // even though no event said so (no `MODIFY` there).
-                let changed = was_held.get(path).is_some_and(|h| h.mtime != m);
+                // even though no event said so (no `MODIFY` there; in a
+                // config directory every write is an event).
+                let tracked = self.tracked(path);
+                let m = if tracked { None } else { mtime(path) };
+                let changed = !tracked && was_held.get(path).is_some_and(|h| h.mtime != m);
                 if !quiet || changed {
                     if quiet && let Some(e) = self.files.get(path) {
                         self.writing.insert(e.resolved.path.clone(), now);
@@ -1209,9 +1338,47 @@ impl<B: Backend> Core<B> {
                 if let Some(e) = self.files.get(path) {
                     self.writing.remove(&e.resolved.path);
                 }
+                stalled = true;
+            }
+            if self.files.contains_key(path) {
+                reads.push((path.clone(), read_hash(path), stalled));
+            }
+        }
+        // A write that began after the last drain (an in-place save's
+        // `O_TRUNC`, its first `write`) may have been read half done. Its
+        // `MODIFY` (or `CLOSE_WRITE`, creation, removal) is queued by now:
+        // take the queue, and keep any file it names (or whose stamp moved
+        // under the read) out of this batch. Its baseline stays as it
+        // was; it is held while its write is in progress and read again
+        // in a later batch.
+        if !reads.is_empty() {
+            self.drain(now);
+        }
+        let lost = self.pending.full.is_some();
+        for (path, read, stalled) in reads {
+            // Changed while read, or changed so recently that the event
+            // for it may not be queued yet: a truncation sets the size
+            // (and the times) before its `MODIFY` is queued, and on ext4
+            // freeing the old blocks in between can take milliseconds.
+            // A completed save is at least a quiet period old by now.
+            let torn = matches!(&read, Ok(r) if !r.stable
+                || written_within(&r.stamp, now, self.opts.coalesce));
+            let busy = self.busy_since(&path).is_some();
+            if lost || torn || busy || self.pending.files.contains(&path) {
+                if busy {
+                    let tracked = self.tracked(&path);
+                    let m = if tracked { None } else { mtime(&path) };
+                    self.held.insert(path, Held { at: now, mtime: m });
+                } else {
+                    self.pending.files.insert(path);
+                    self.mark(now);
+                }
+                continue;
+            }
+            if stalled {
                 notices.push(Notice::StalledWrite(path.clone()));
             }
-            self.check(path, &mut changes, &mut own_seen);
+            self.check(&path, read, &mut changes, &mut own_seen);
         }
         // Forget writes nobody closed (a lost `CLOSE_WRITE`) once stale.
         let stalled = self.opts.stalled_write;
@@ -1270,6 +1437,16 @@ impl<B: Backend> Core<B> {
             }
         };
         cfg.modules.dirs = canonical_dirs(&set.dirs);
+        if set.errors != cfg.modules.errors || set.too_deep != cfg.modules.too_deep {
+            // The loader shows these (a dangling `*.strand` link, an
+            // unreadable directory) next to the changes they explain.
+            notices.push(Notice::ModuleSet {
+                errors: set.errors.clone(),
+                too_deep: set.too_deep.clone(),
+            });
+            cfg.modules.errors = set.errors;
+            cfg.modules.too_deep = set.too_deep;
+        }
         let new: BTreeSet<PathBuf> = set.files.iter().map(|f| paths::absolute(f)).collect();
         for (path, e) in self.files.iter_mut() {
             if !e.module || new.contains(path) {
@@ -1332,6 +1509,7 @@ impl<B: Backend> Core<B> {
     fn check(
         &mut self,
         path: &Path,
+        read: io::Result<Hashed>,
         out: &mut Vec<FileChange>,
         own_seen: &mut HashSet<(PathBuf, ContentHash)>,
     ) {
@@ -1343,8 +1521,8 @@ impl<B: Backend> Core<B> {
         let old_error = e.error;
         let canonical = e.resolved.path.clone();
         let moved = e.reported != canonical;
-        let (base, hash, error) = match read_hash(path) {
-            Ok((h, stamp)) => {
+        let (base, hash, error) = match read {
+            Ok(Hashed { hash: h, stamp, .. }) => {
                 let key = (canonical.clone(), h);
                 let own = own_seen.contains(&key) || lock(&self.own).take(path, &canonical, h);
                 if own {
@@ -1686,6 +1864,16 @@ fn is_module_name(p: &Path) -> bool {
     p.extension().is_some_and(|e| e == "strand")
 }
 
+/// The inode in an `O_TMPFILE`'s name (`#1925585`), which its events
+/// carry until (and after) `linkat` names it.
+fn tmpfile_ino(p: &Path) -> Option<u64> {
+    let digits = p.file_name()?.to_str()?.strip_prefix('#')?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1735,7 +1923,6 @@ mod tests {
         std::fs::write(root.join("a.strand"), "a").unwrap();
         let mut core = Core::new(Full, Options::default(), Some(config(&root)));
         assert!(core.has_polled_dirs());
-        let t0 = Instant::now();
         let b = core.flush(core.deadline().unwrap()).unwrap();
         assert!(
             b.notices.contains(&Notice::Polling {
@@ -1746,6 +1933,9 @@ mod tests {
         );
         // Same size, same mtime second: only a content comparison sees it.
         std::fs::write(root.join("a.strand"), "b").unwrap();
+        // After the write: the flush is a quiet period later, so the file
+        // is not too fresh to read.
+        let t0 = Instant::now();
         core.poll(t0);
         let b = core.flush(core.deadline().unwrap()).unwrap();
         assert_eq!(b.changes.len(), 1);
@@ -1885,17 +2075,18 @@ mod tests {
     /// A write in progress (`MODIFY`) opens no batch and never moves an
     /// open batch's quiet period: it runs from the last *completed*
     /// write, so a writer that keeps its file open does not stretch every
-    /// batch to `max_delay`.
+    /// batch to `max_delay`. Its file is only due if its writer stalls.
     #[test]
     fn busy_never_moves_the_quiet_period() {
         let (_tmp, root) = cfg_dir();
         std::fs::write(root.join("a.strand"), "a").unwrap();
         std::fs::write(root.join("b.strand"), "b").unwrap();
-        let mut core = Core::new(Silent::default(), Options::default(), Some(config(&root)));
+        let opts = Options::default();
+        let mut core = Core::new(Silent::default(), opts.clone(), Some(config(&root)));
         settle(&mut core);
         let t0 = Instant::now();
         core.on_raw(Raw::Busy(root.join("a.strand")), t0);
-        assert!(core.deadline().is_none());
+        assert_eq!(core.deadline(), Some(t0 + opts.stalled_write));
         core.on_raw(Raw::Written(root.join("b.strand")), t0);
         for ms in [5, 10, 14] {
             core.on_raw(
@@ -2226,6 +2417,146 @@ mod tests {
         assert_eq!(b.changes[0].kind, ChangeKind::Created);
         assert_eq!(b.notices, vec![Notice::StalledWrite(osd)]);
         assert!(core.deadline().is_none());
+    }
+
+    /// A file written in place whose writer keeps it open and stops
+    /// writing (`MODIFY` only, no completed write ever names it) is due
+    /// `stalled_write` after its last write and read with a notice; its
+    /// later `CLOSE_WRITE` reports the rest.
+    #[test]
+    fn a_stalled_in_place_writer_is_read_with_a_notice() {
+        let (_tmp, root) = cfg_dir();
+        let theme = root.join("theme.strand");
+        std::fs::write(&theme, "theme").unwrap();
+        let opts = Options::default();
+        let mut core = Core::new(Silent::default(), opts.clone(), Some(config(&root)));
+        settle(&mut core);
+        std::fs::write(&theme, "ha").unwrap();
+        let t0 = Instant::now();
+        core.on_raw(Raw::Busy(theme.clone()), t0);
+        let t1 = t0 + Duration::from_millis(100);
+        core.on_raw(Raw::Busy(theme.clone()), t1);
+        assert_eq!(core.deadline(), Some(t1 + opts.stalled_write));
+        let b = core.flush(t1 + opts.stalled_write).unwrap();
+        assert_eq!(b.changes.len(), 1, "{b:#?}");
+        assert_eq!(b.changes[0].hash, Some(blake3::hash(b"ha")));
+        assert_eq!(b.notices, vec![Notice::StalledWrite(theme.clone())]);
+        assert!(core.deadline().is_none());
+        std::fs::write(&theme, "half and the rest").unwrap();
+        let t2 = t1 + opts.stalled_write + Duration::from_millis(10);
+        core.on_raw(Raw::Written(theme.clone()), t2);
+        let b = core.flush(core.deadline().unwrap()).unwrap();
+        assert_eq!(b.changes[0].hash, Some(blake3::hash(b"half and the rest")));
+        assert!(b.notices.is_empty());
+    }
+
+    /// A backend that, the first time it is drained, truncates `file` (as
+    /// an in-place save's `O_TRUNC` does, right after the flush's last
+    /// drain) and reports the `MODIFY` that makes.
+    struct WritesDuringRead {
+        file: PathBuf,
+        armed: bool,
+    }
+
+    impl Backend for WritesDuringRead {
+        fn watch(&mut self, _: &Path, _: WatchKind) -> Result<(), String> {
+            Ok(())
+        }
+        fn unwatch(&mut self, _: &Path) {}
+        fn drain(&mut self, out: &mut Vec<Raw>) -> io::Result<()> {
+            if std::mem::take(&mut self.armed) {
+                out.push(Raw::Busy(self.file.clone()));
+            }
+            Ok(())
+        }
+    }
+
+    /// A write that starts while a flush reads the file: its `MODIFY` is
+    /// in the queue when the flush drains it after hashing, so the bytes
+    /// read are not reported (nor kept as the baseline); the file is held
+    /// and reported once, whole, after its `CLOSE_WRITE`.
+    #[test]
+    fn a_write_during_the_read_is_not_reported_until_closed() {
+        let (_tmp, root) = cfg_dir();
+        let theme = root.join("theme.strand");
+        std::fs::write(&theme, "theme").unwrap();
+        let opts = Options::default();
+        let backend = WritesDuringRead {
+            file: theme.clone(),
+            armed: false,
+        };
+        let mut core = Core::new(backend, opts.clone(), Some(config(&root)));
+        settle(&mut core);
+        // A completed save, then (while it is read) the next one begins.
+        std::fs::write(&theme, "").unwrap();
+        let t0 = Instant::now();
+        core.on_raw(Raw::Written(theme.clone()), t0);
+        core.backend().armed = true;
+        let cut = core.deadline().unwrap();
+        assert!(
+            core.flush(cut).is_none(),
+            "the truncated file is not reported"
+        );
+        assert_eq!(core.files[&theme].hash, Some(blake3::hash(b"theme")));
+        assert!(core.held.contains_key(&theme));
+        assert_eq!(core.deadline(), Some(cut + opts.stalled_write));
+        std::fs::write(&theme, "theme 2").unwrap();
+        let t1 = t0 + Duration::from_millis(40);
+        core.on_raw(Raw::Written(theme.clone()), t1);
+        let b = core.flush(core.deadline().unwrap()).unwrap();
+        assert_eq!(b.changes.len(), 1, "{b:#?}");
+        assert_eq!(b.changes[0].hash, Some(blake3::hash(b"theme 2")));
+        assert!(b.notices.is_empty());
+        assert!(core.deadline().is_none());
+    }
+
+    /// A rescan that finds a dangling `*.strand` link reports it as a
+    /// notice next to the module's removal, and again (empty) once fixed.
+    #[test]
+    fn module_set_errors_are_forwarded() {
+        let (_tmp, root) = cfg_dir();
+        let bar = root.join("bar.strand");
+        std::fs::write(&bar, "bar").unwrap();
+        let errors = Arc::new(Mutex::new(Vec::new()));
+        let d = root.clone();
+        let e = errors.clone();
+        let cfg = ConfigWatch {
+            root: root.clone(),
+            modules: strand_files(&root),
+            rescan: Box::new(move || {
+                let mut set = strand_files(&d);
+                set.errors = e.lock().unwrap().clone();
+                Ok(set)
+            }),
+        };
+        let mut core = Core::new(Silent::default(), Options::default(), Some(cfg));
+        settle(&mut core);
+        std::fs::remove_file(&bar).unwrap();
+        let why = (bar.clone(), "dangling link".to_string());
+        errors.lock().unwrap().push(why.clone());
+        core.on_raw(Raw::Gone(bar.clone()), Instant::now());
+        let b = core.flush(core.deadline().unwrap()).unwrap();
+        assert_eq!(b.changes.len(), 1, "{b:#?}");
+        assert_eq!(b.changes[0].kind, ChangeKind::Removed);
+        assert_eq!(
+            b.notices,
+            vec![Notice::ModuleSet {
+                errors: vec![why],
+                too_deep: vec![],
+            }]
+        );
+        errors.lock().unwrap().clear();
+        std::fs::write(&bar, "bar").unwrap();
+        core.on_raw(Raw::Written(bar.clone()), Instant::now());
+        let b = core.flush(core.deadline().unwrap()).unwrap();
+        assert_eq!(b.changes[0].kind, ChangeKind::Created);
+        assert_eq!(
+            b.notices,
+            vec![Notice::ModuleSet {
+                errors: vec![],
+                too_deep: vec![],
+            }]
+        );
     }
 
     /// A held file deleted (its writer still has it open) and created

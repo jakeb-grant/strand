@@ -625,7 +625,7 @@ inotify watches inodes. Many editors save by writing a new file and renaming it 
 - **VS Code** truncates and rewrites user files in place, so a `MODIFY` event can see a half-written file.
 - **JetBrains** safe-write creates sibling backup and temp files.
 
-So Strand watches directories and acts only on `CLOSE_WRITE` and `MOVED_TO`, never `MODIFY`. Editor scratch names (`4913`, `*.swp`, `*~`, `*___jb_*___`) are filtered. A queue overflow triggers a full rescan.
+So Strand watches directories and reads a file only after a completed write: `CLOSE_WRITE` or `MOVED_TO`, or a creation no `CLOSE_WRITE` follows (a symlink, a hard link). Removals are acted on too. `MODIFY` (config directories only) never triggers a read; it only marks a write in progress, so a half-written file is not read (`docs/decisions.md`, wave2-watch). Editor scratch names (`4913`, `*.swp`, `*~`, `*___jb_*___`) are filtered. A queue overflow triggers a full rescan.
 
 **Symlinked dotfiles.** GNU stow can make `~/.config/strand` itself a link into `~/dotfiles`, so Strand canonicalises each loaded file and also watches the target's directory. home-manager links into the read-only `/nix/store`; `home-manager switch` swaps the link, which the link-directory watch sees. NFS emits no events and falls back to polling with content comparison.
 
