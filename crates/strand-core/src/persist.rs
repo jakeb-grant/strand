@@ -36,7 +36,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -180,6 +180,13 @@ pub const PERSIST_SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
 /// Temp files of other processes older than this are removed.
 const STALE_TEMP: Duration = Duration::from_secs(60);
 
+/// How long a persisted file is kept when no cell claims it: per-instance
+/// paths (a list item's key, a monitor that never comes back) would
+/// otherwise pile up for good. A store that persisted cells used removes,
+/// when it goes (at exit), the files older than this that no cell of the
+/// process claimed; a claim refreshes the file's modification time.
+pub const PERSIST_RETENTION: Duration = Duration::from_secs(90 * 24 * 60 * 60);
+
 type IoHook = Arc<dyn Fn(&Path) + Send + Sync>;
 type WriteObserver = Arc<dyn Fn(&OwnWrite<'_>) + Send + Sync>;
 
@@ -201,12 +208,23 @@ pub struct OwnWrite<'a> {
     pub content: Option<&'a [u8]>,
 }
 
-/// Calls the store's observers (none set: nothing).
-pub(crate) struct Observers<'a>(Option<&'a WriteObserver>);
+/// Calls the store's observer (none set: nothing). A panicking observer
+/// is not called again; the store then drops it.
+pub(crate) struct Observers<'a> {
+    f: Option<&'a WriteObserver>,
+    panicked: Cell<bool>,
+}
 
-impl Observers<'_> {
+impl<'a> Observers<'a> {
+    fn new(f: Option<&'a WriteObserver>) -> Self {
+        Self {
+            f,
+            panicked: Cell::new(false),
+        }
+    }
+
     pub(crate) fn report(&self, path: &Path, target: &Path, content: Option<&[u8]>) {
-        let Some(f) = self.0 else {
+        let Some(f) = self.f.filter(|_| !self.panicked.get()) else {
             return;
         };
         // The target's directory made canonical (the file itself may not
@@ -215,11 +233,18 @@ impl Observers<'_> {
             (Some(dir), Some(name)) => fs::canonicalize(dir).ok().map(|d| d.join(name)),
             _ => None,
         };
-        f(&OwnWrite {
-            path,
-            target: canonical.as_deref().unwrap_or(target),
-            content,
-        });
+        let call = || {
+            f(&OwnWrite {
+                path,
+                target: canonical.as_deref().unwrap_or(target),
+                content,
+            });
+        };
+        // The observer is the binary's code: a panic in it must not take
+        // the IO thread (and every later write) down with it.
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(call)).is_err() {
+            self.panicked.set(true);
+        }
     }
 }
 
@@ -232,6 +257,14 @@ impl Drop for StoreInner {
     /// Drain queued writes (bounded) and join the IO thread.
     fn drop(&mut self) {
         let drained = self.shared.wait_idle(PERSIST_SHUTDOWN_WAIT);
+        // Expire unclaimed files at exit, when every claim of this run is
+        // known (at boot a cell mounted a moment later would lose its
+        // file). Only a store that persisted cells used: a tool's store
+        // knows nothing about which files are live.
+        let used = self.shared.lock().used;
+        if drained && used {
+            self.shared.sweep_unclaimed();
+        }
         self.shared.lock().stop = true;
         self.shared.changed.notify_all();
         let handle = self
@@ -269,6 +302,11 @@ struct Queue {
     /// failed): a reload trusts what it read only for fields whose last
     /// edit is at most this ([`crate::settings`]).
     settings_landed: std::collections::HashMap<PathBuf, u64>,
+    /// Cell files a persisted cell of this process has claimed: kept by
+    /// the retention sweep ([`PERSIST_RETENTION`]).
+    claimed: std::collections::HashSet<PathBuf>,
+    /// A persisted cell used this store: it sweeps at exit.
+    used: bool,
 }
 
 struct Job {
@@ -285,6 +323,9 @@ enum Op {
     Remove,
     /// Move the file aside to `.<name>.corrupt`.
     Quarantine,
+    /// A cell claimed the file: refresh its modification time, which the
+    /// retention sweep goes by. Never replaces another queued operation.
+    Touch,
     /// Per-field edits of a settings file (or its overlay), applied with
     /// `toml_edit` to what the file holds when the IO thread gets to it.
     Settings(crate::settings::SettingsJob),
@@ -297,6 +338,21 @@ pub(crate) struct Reporter {
     cell: NodeId,
     path: Arc<str>,
     sink: Arc<FailSink>,
+    /// Set by the IO thread when an operation for the cell failed: the
+    /// cell no longer knows what its file holds, so its next change or
+    /// capture writes again ([`Writer::note`]).
+    stale: Arc<AtomicBool>,
+}
+
+impl Reporter {
+    fn failed(&self, error: PersistError) {
+        self.stale.store(true, Ordering::Release);
+        self.sink.push(Diagnostic::PersistFailed {
+            cell: self.cell,
+            path: self.path.clone(),
+            error,
+        });
+    }
 }
 
 /// Failures from the IO thread, for one runtime.
@@ -367,13 +423,15 @@ impl Shared {
             let (file, job, sweep) = {
                 let mut q = self.lock();
                 loop {
-                    if !q.ops.is_empty() {
+                    // `in_flight` may be a `save`/`remove` running on its
+                    // caller's thread: wait for it.
+                    if q.in_flight.is_none() && !q.ops.is_empty() {
                         let (file, job) = q.ops.remove(0);
                         q.in_flight = Some((file.clone(), job.op.clone()));
                         let sweep = !std::mem::replace(&mut q.swept, true);
                         break (file, job, sweep);
                     }
-                    if q.stop {
+                    if q.stop && q.ops.is_empty() {
                         return;
                     }
                     q = self.changed.wait(q).unwrap_or_else(PoisonError::into_inner);
@@ -382,10 +440,7 @@ impl Shared {
             if sweep {
                 sweep_temps(&self.dir, None);
             }
-            if let Some(hook) = &self.io_hook {
-                hook(&file);
-            }
-            let r = self.perform(&file, &job.op);
+            let r = self.perform_guarded(&file, &job.op, true);
             let settings_seq = match &job.op {
                 Op::Settings(j) => Some(j.seq),
                 _ => None,
@@ -393,11 +448,7 @@ impl Shared {
             // Reported before the operation counts as done, so a `sync`
             // that returns has its failures in the runtime.
             if let (Err(error), Some(rep)) = (r, job.report) {
-                rep.sink.push(Diagnostic::PersistFailed {
-                    cell: rep.cell,
-                    path: rep.path,
-                    error,
-                });
+                rep.failed(error);
             }
             {
                 let mut q = self.lock();
@@ -411,20 +462,39 @@ impl Shared {
         }
     }
 
+    /// [`Shared::perform`] (after the test hook, on the IO thread), with a
+    /// panic turned into a failure: the IO thread and `in_flight` survive.
+    fn perform_guarded(&self, file: &Path, op: &Op, hook: bool) -> Result<(), PersistError> {
+        let run = || {
+            if let (true, Some(h)) = (hook, &self.io_hook) {
+                h(file);
+            }
+            self.perform(file, op)
+        };
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).unwrap_or_else(|_| {
+            Err(PersistError::Io {
+                path: file.to_path_buf(),
+                message: Arc::from("the persist operation panicked"),
+            })
+        })
+    }
+
     fn perform(&self, file: &Path, op: &Op) -> Result<(), PersistError> {
         let observer = self
             .observer
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
-        let observe = &Observers(observer.as_ref());
-        match op {
+        let observe = &Observers::new(observer.as_ref());
+        let r = match op {
             Op::Write {
                 default_hash,
                 value,
             } => write_file(&self.dir, file, *default_hash, value, observe),
             Op::Remove => {
-                if !file.exists() {
+                // Not `exists()`: that follows a link, and a dangling one
+                // must go too.
+                if fs::symlink_metadata(file).is_err() {
                     return Ok(());
                 }
                 observe.report(file, file, None);
@@ -439,12 +509,83 @@ impl Shared {
                 quarantine(file);
                 Ok(())
             }
+            Op::Touch => {
+                touch(file);
+                Ok(())
+            }
             // Reports its own outcome (notices and failures).
             Op::Settings(job) => {
                 crate::settings::perform(file, job, observe);
                 Ok(())
             }
+        };
+        if !observe.panicked.get() {
+            return r;
         }
+        // Drop the observer (unless it was replaced meanwhile) and say so.
+        {
+            let mut slot = self.observer.lock().unwrap_or_else(PoisonError::into_inner);
+            if let (Some(now), Some(ran)) = (slot.as_ref(), observer.as_ref())
+                && Arc::ptr_eq(now, ran)
+            {
+                *slot = None;
+            }
+        }
+        r?;
+        Err(PersistError::Io {
+            path: file.to_path_buf(),
+            message: Arc::from("the on_written observer panicked and was removed"),
+        })
+    }
+
+    /// Remove cell files (and quarantined copies) that no cell has
+    /// claimed for [`PERSIST_RETENTION`]: per-instance paths
+    /// (`list[<key>].x`, a monitor that never comes back) do not pile up
+    /// for good. Files claimed in this process, or with an operation
+    /// queued, are kept; the check and the removal happen under the queue
+    /// lock, so a claim cannot slip in between.
+    fn sweep_unclaimed(&self) {
+        let Ok(entries) = fs::read_dir(&self.dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            // Cell files never start with `.` (`file_of` escapes it); of
+            // the hidden ones only quarantined copies are ours to expire
+            // (temp files are `sweep_temps`').
+            if name.starts_with('.') && !name.ends_with(".corrupt") {
+                continue;
+            }
+            // `DirEntry::metadata` does not follow links.
+            let Ok(meta) = e.metadata() else {
+                continue;
+            };
+            let old = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age > PERSIST_RETENTION);
+            if !meta.is_file() || !old {
+                continue;
+            }
+            let path = e.path();
+            let q = self.lock();
+            let busy = q.claimed.contains(&path)
+                || q.ops.iter().any(|(f, _)| *f == path)
+                || q.in_flight.as_ref().is_some_and(|(f, _)| *f == path);
+            if !busy {
+                let _ = fs::remove_file(&path);
+            }
+        }
+    }
+}
+
+/// Refresh `file`'s modification time (best effort; a missing file stays
+/// missing).
+fn touch(file: &Path) {
+    if let Ok(f) = fs::OpenOptions::new().write(true).open(file) {
+        let _ = f.set_modified(std::time::SystemTime::now());
     }
 }
 
@@ -489,9 +630,19 @@ impl PersistStore {
     /// visible, so a watcher that registers the content's hash here sees
     /// the hash before the change event (design, "Live reload" step 2:
     /// Strand's own writes are pre-registered). If the rename then fails,
-    /// the bytes never appear and the failure is reported as usual. One
-    /// observer per store; a later call replaces it. Keep `f` short: the
-    /// IO thread waits for it.
+    /// the bytes never appear and the failure is reported as usual.
+    ///
+    /// One observer per IO thread: a later call replaces it, and so does
+    /// [`SettingsStore::on_written`](crate::settings::SettingsStore::on_written)
+    /// on a settings store sharing this one's thread. Keep `f` short: the
+    /// IO thread waits for it. `f` also runs on the thread that calls
+    /// [`PersistStore::save`] or [`PersistStore::remove`] (those perform
+    /// their operation there). While it runs that operation holds the
+    /// store's in-flight slot, so `f` must not call `save`, `remove` or
+    /// `sync` on this store (they wait for the slot: a deadlock); `load`
+    /// is fine. A panic in `f` is caught: the observer is removed (later
+    /// writes are not observed), the IO thread keeps working, and the
+    /// operation's cell, if any, reports [`Diagnostic::PersistFailed`].
     pub fn on_written(&self, f: impl Fn(&OwnWrite<'_>) + Send + Sync + 'static) {
         *self
             .inner
@@ -638,7 +789,7 @@ impl PersistStore {
                     }));
                 }
                 Some(Op::Remove | Op::Quarantine) => return Ok(None),
-                Some(Op::Settings(_)) | None => {}
+                Some(Op::Settings(_) | Op::Touch) | None => {}
             }
         }
         let bytes = match fs::read(&file) {
@@ -661,9 +812,14 @@ impl PersistStore {
     }
 
     /// Store `value` for `path`, stamped with the hash of `default`, now
-    /// (on the calling thread, after anything queued for the file).
+    /// (on the calling thread, replacing anything queued for the file).
     /// Atomic: a reader sees the old file or the new one, never a mix.
-    /// Persisted cells write through the IO thread instead.
+    ///
+    /// For offline tools (a CLI with no runtime on the path, tests):
+    /// persisted cells write through the IO thread, and a live cell on
+    /// `path` does not see this write (it may skip its next write as
+    /// unchanged, or overwrite this value). A live cell is changed through
+    /// its `Signal`, and forgotten with [`Persisted::reset`].
     pub fn save(&self, path: &str, default: &[u8], value: &[u8]) -> Result<(), PersistError> {
         let file = self.file_of(path)?;
         self.now(
@@ -675,8 +831,9 @@ impl PersistStore {
         )
     }
 
-    /// Forget the stored value now (tools; a persisted cell's `@reset` is
-    /// [`Persisted::reset`]).
+    /// Forget the stored value now, replacing anything queued for the file.
+    /// For offline tools, like [`PersistStore::save`]: a persisted cell's
+    /// `@reset` is [`Persisted::reset`].
     pub fn remove(&self, path: &str) -> Result<(), PersistError> {
         let file = self.file_of(path)?;
         self.now(&file, &Op::Remove)
@@ -689,22 +846,74 @@ impl PersistStore {
     }
 
     /// Perform `op` on the calling thread, replacing what is queued for
-    /// `file` and after an in-flight operation on it.
+    /// `file`, after the operation in flight (if any). The operation takes
+    /// the in-flight slot, so the IO thread waits for it while `load`,
+    /// `enqueue` and `sync` callers only wait for the lock, not for the
+    /// IO.
     fn now(&self, file: &Path, op: &Op) -> Result<(), PersistError> {
         let shared = &self.inner.shared;
-        let mut q = shared.lock();
-        q.ops.retain(|(f, _)| f != file);
-        while q.in_flight.as_ref().is_some_and(|(f, _)| f == file) {
-            q = shared
-                .changed
-                .wait(q)
-                .unwrap_or_else(PoisonError::into_inner);
+        {
+            let mut q = shared.lock();
+            while q.in_flight.is_some() {
+                q = shared
+                    .changed
+                    .wait(q)
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
+            q.ops.retain(|(f, _)| f != file);
+            q.in_flight = Some((file.to_path_buf(), op.clone()));
         }
-        // Holding the lock keeps the IO thread off this file meanwhile.
-        let r = shared.perform(file, op);
-        drop(q);
+        let r = shared.perform_guarded(file, op, false);
+        shared.lock().in_flight = None;
         shared.changed.notify_all();
         r
+    }
+
+    /// A persisted cell claimed `file`: the retention sweep keeps it, and
+    /// with `touch` (the file exists and nothing will rewrite it) its
+    /// modification time is refreshed on the IO thread, unless another
+    /// operation is already queued for it, which writes it anyway.
+    fn claim(&self, file: &Path, touch: bool) {
+        let shared = &self.inner.shared;
+        {
+            let mut q = shared.lock();
+            q.used = true;
+            let fresh = q.claimed.insert(file.to_path_buf());
+            if !fresh || !touch || q.ops.iter().any(|(f, _)| f == file) {
+                return;
+            }
+            q.ops.push((
+                file.to_path_buf(),
+                Job {
+                    op: Op::Touch,
+                    report: None,
+                },
+            ));
+        }
+        self.ensure_worker();
+        shared.changed.notify_all();
+    }
+
+    /// The last cell on `file` went: the sweep no longer keeps it for this
+    /// process, so its modification time is refreshed now (the time it was
+    /// last in use) unless a write is queued for it anyway.
+    fn release(&self, file: &Path) {
+        let shared = &self.inner.shared;
+        {
+            let mut q = shared.lock();
+            if !q.claimed.remove(file) || q.ops.iter().any(|(f, _)| f == file) {
+                return;
+            }
+            q.ops.push((
+                file.to_path_buf(),
+                Job {
+                    op: Op::Touch,
+                    report: None,
+                },
+            ));
+        }
+        self.ensure_worker();
+        shared.changed.notify_all();
     }
 
     /// Queue `op` for `file`, replacing what is queued for it.
@@ -739,12 +948,9 @@ impl PersistStore {
                 let shared = &self.inner.shared;
                 let jobs = std::mem::take(&mut shared.lock().ops);
                 for (file, job) in jobs {
-                    if let (Err(error), Some(rep)) = (shared.perform(&file, &job.op), job.report) {
-                        rep.sink.push(Diagnostic::PersistFailed {
-                            cell: rep.cell,
-                            path: rep.path,
-                            error,
-                        });
+                    let r = shared.perform_guarded(&file, &job.op, false);
+                    if let (Err(error), Some(rep)) = (r, job.report) {
+                        rep.failed(error);
                     }
                 }
             }
@@ -1043,8 +1249,9 @@ struct Writer<T> {
     /// still holding it when promoted takes what the old owner left.
     start: Vec<u8>,
     /// What the file holds (or will, once the queue drains); the default
-    /// when nothing is stored.
-    baseline: RefCell<Vec<u8>>,
+    /// when nothing is stored; `None` when not known (an operation for the
+    /// cell failed), so the next change or capture writes.
+    baseline: RefCell<Option<Vec<u8>>>,
     /// Encoded value not yet queued.
     pending: RefCell<Option<Vec<u8>>>,
     /// False while another live cell owns the path: it does not write
@@ -1060,7 +1267,11 @@ impl<T> Writer<T> {
             return;
         }
         let bytes = (self.encode)(value);
-        let fresh = *self.baseline.borrow() != bytes;
+        if self.report.stale.swap(false, Ordering::AcqRel) {
+            // A write (or removal) failed: the file may hold anything.
+            *self.baseline.borrow_mut() = None;
+        }
+        let fresh = self.baseline.borrow().as_deref() != Some(&bytes[..]);
         *self.pending.borrow_mut() = fresh.then_some(bytes);
     }
 
@@ -1078,7 +1289,7 @@ impl<T> Writer<T> {
             },
             Some(self.report.clone()),
         );
-        *self.baseline.borrow_mut() = bytes;
+        *self.baseline.borrow_mut() = Some(bytes);
     }
 }
 
@@ -1118,7 +1329,7 @@ impl<T: Clone + PartialEq + 'static> Waiter for Writer<T> {
             }),
             _ => {}
         }
-        *self.baseline.borrow_mut() = file_bytes.clone();
+        *self.baseline.borrow_mut() = Some(file_bytes.clone());
         let Ok(live) = self.signal.get_untracked(rt) else {
             return;
         };
@@ -1151,12 +1362,12 @@ impl<T: Clone + PartialEq + 'static> Waiter for Writer<T> {
                             ),
                         },
                     });
-                    *self.baseline.borrow_mut() = default_bytes;
+                    *self.baseline.borrow_mut() = Some(default_bytes);
                 }
             }
         }
         // Changed while it waited: its value wins and is written now.
-        let fresh = *self.baseline.borrow() != live_bytes;
+        let fresh = self.baseline.borrow().as_deref() != Some(&live_bytes[..]);
         *self.pending.borrow_mut() = fresh.then_some(live_bytes);
         self.flush();
     }
@@ -1200,7 +1411,7 @@ impl<T: Clone + PartialEq + 'static> Persisted<T> {
         *w.default.borrow_mut() = (new_default.clone(), new_bytes.clone(), new_hash);
         *w.pending.borrow_mut() = None;
         if live_bytes == old_bytes || live_bytes == new_bytes {
-            *w.baseline.borrow_mut() = new_bytes;
+            *w.baseline.borrow_mut() = Some(new_bytes);
             if w.active.get() {
                 w.store
                     .enqueue(w.file.clone(), Op::Remove, Some(w.report.clone()));
@@ -1218,7 +1429,7 @@ impl<T: Clone + PartialEq + 'static> Persisted<T> {
                 Some(w.report.clone()),
             );
         }
-        *w.baseline.borrow_mut() = live_bytes;
+        *w.baseline.borrow_mut() = Some(live_bytes);
         rt.diagnose(Diagnostic::PersistDefaultChanged {
             cell: w.cell,
             path: w.path.clone(),
@@ -1236,7 +1447,7 @@ impl<T: Clone + PartialEq + 'static> Persisted<T> {
             (d.0.clone(), d.1.clone())
         };
         *w.pending.borrow_mut() = None;
-        *w.baseline.borrow_mut() = bytes;
+        *w.baseline.borrow_mut() = Some(bytes);
         if w.active.get() {
             w.store
                 .enqueue(w.file.clone(), Op::Remove, Some(w.report.clone()));
@@ -1296,6 +1507,7 @@ impl Runtime {
             cell: signal.id(),
             path: path.clone(),
             sink: self.inner.persist_failures.clone(),
+            stale: Arc::new(AtomicBool::new(false)),
         };
         let file = store.file_of(&path);
         // One live cell per file.
@@ -1360,6 +1572,10 @@ impl Runtime {
             },
             Restore::Default | Restore::Adopted | Restore::Failed(_) => None,
         };
+        if let Ok(file) = &file {
+            // A stored file nothing rewrites gets its time refreshed.
+            store.claim(file, active && matches!(restored, Restore::Stored(_)));
+        }
         if let Some(v) = initial {
             // Its starting value, not a write: nothing observes it yet.
             signal.init_value(self, v);
@@ -1387,16 +1603,20 @@ impl Runtime {
             encode: Box::new(encode),
             decode: Box::new(decode),
             start: baseline.clone(),
-            baseline: RefCell::new(baseline),
+            baseline: RefCell::new(Some(baseline)),
             pending: RefCell::new(None),
             active: Cell::new(active),
             report,
         });
         let waiter: Weak<dyn Waiter> = Rc::downgrade(&writer) as Weak<Writer<T>>;
         {
+            // Pruned at a high-water mark, so churn around any size
+            // (cells disposed and created one for one) stays amortised O(1).
             let mut live = self.inner.persist_writers.borrow_mut();
-            if live.len().is_power_of_two() {
+            let prune_at = &self.inner.persist_prune_at;
+            if live.len() >= prune_at.get() {
                 live.retain(|w| w.strong_count() > 0);
+                prune_at.set((2 * live.len()).max(16));
             }
             live.push(waiter.clone());
         }
@@ -1457,6 +1677,7 @@ impl Runtime {
                     Some(o) => slot.owner = o.cell(),
                     None => {
                         bound.remove(&w.file);
+                        w.store.release(&w.file);
                     }
                 }
                 next

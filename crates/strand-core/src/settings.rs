@@ -113,7 +113,13 @@ impl SettingsStore {
     }
 
     /// [`PersistStore::on_written`] for the IO thread this store writes
-    /// through: settings files, overlays and last-good snapshots.
+    /// through. It is the same single observer slot as that
+    /// `PersistStore`'s (the one this store was made from with
+    /// [`PersistStore::settings`] or [`SettingsStore::sharing`]): it sees
+    /// every file that IO thread writes or removes (settings files,
+    /// overlays, last-good snapshots *and* persisted cells), and setting it
+    /// here replaces an observer set on the `PersistStore`, and the
+    /// reverse. Register one observer per IO thread.
     pub fn on_written(&self, f: impl Fn(&crate::persist::OwnWrite<'_>) + Send + Sync + 'static) {
         self.io.on_written(f);
     }
@@ -534,6 +540,7 @@ fn edit_toml(
             match mode {
                 Mode::File => return Err(EditError::Syntax(e.to_string())),
                 Mode::Overlay => {
+                    observe.report(path, &target, None);
                     quarantine(&target);
                     quarantined = Some(Quarantined {
                         moved_to: quarantine_path(&target),
@@ -554,7 +561,8 @@ fn edit_toml(
     } else {
         create_private_dir(&dir).map_err(EditError::Io)?;
         if doc.is_empty() {
-            if target.exists() {
+            // Not `exists()`, which follows a link.
+            if fs::symlink_metadata(&target).is_ok() {
                 observe.report(path, &target, None);
             }
             return match fs::remove_file(&target) {

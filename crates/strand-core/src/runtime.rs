@@ -397,6 +397,8 @@ pub(crate) struct Inner {
     /// Every persisted cell's writer (dead ones pruned as it grows), so
     /// shutdown and drop can queue values no tracking run saw.
     pub(crate) persist_writers: RefCell<Vec<std::rc::Weak<dyn crate::persist::Waiter>>>,
+    /// `persist_writers` is pruned when it reaches this length.
+    pub(crate) persist_prune_at: Cell<usize>,
     /// Live settings-file handles, by overlay path (one per store and
     /// declared file): a write through one is adopted by the others.
     pub(crate) settings_files: RefCell<Vec<crate::settings::Registered>>,
@@ -532,6 +534,7 @@ impl Runtime {
                 persist_paths: RefCell::new(HashMap::new()),
                 persist_stores: RefCell::new(Vec::new()),
                 persist_writers: RefCell::new(Vec::new()),
+                persist_prune_at: Cell::new(16),
                 settings_files: RefCell::new(Vec::new()),
                 ready,
             }),

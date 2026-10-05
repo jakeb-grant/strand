@@ -786,3 +786,176 @@ fn own_writes_and_removals_are_reported_to_the_observer() {
     assert_eq!(seen.lock().unwrap().last().cloned(), Some((file, None)));
     rt.shutdown();
 }
+
+#[test]
+fn a_failed_write_is_retried_and_restored_on_the_next_start() {
+    let tmp = TempDir::new("retry");
+    // The store's parent is a file: the first write fails (the store
+    // directory cannot be created) until the file goes.
+    let blocker = tmp.0.join("blocker");
+    fs::write(&blocker, b"").unwrap();
+    let store = PersistStore::new(blocker.join("persist"));
+    let rt = Runtime::new();
+    let p = rt.persisted_value(&store, "osd.level", 40i64);
+    rt.flush();
+    p.signal.set(&rt, 7).unwrap();
+    rt.tick(Duration::from_millis(10));
+    rt.tick(Duration::from_millis(10) + PERSIST_DEBOUNCE);
+    assert!(store.sync(Duration::from_secs(5)));
+    let diags = rt
+        .tick(Duration::from_millis(20) + PERSIST_DEBOUNCE)
+        .diagnostics;
+    assert!(
+        diags
+            .iter()
+            .any(|d| matches!(d, Diagnostic::PersistFailed { .. })),
+        "{diags:?}"
+    );
+    // The disk recovers; the value is not changed again.
+    fs::remove_file(&blocker).unwrap();
+    rt.shutdown();
+    drop(p);
+    let (restored, value, diags) = session(&store, 40, &[]);
+    assert_eq!(restored, Restore::Stored(b"7".to_vec()));
+    assert_eq!(value, 7);
+    assert!(diags.is_empty(), "{diags:?}");
+}
+
+#[test]
+fn save_runs_its_io_outside_the_store_lock() {
+    use std::sync::{Arc, Mutex};
+    let tmp = TempDir::new("save-lock");
+    let store = tmp.store();
+    let seen: Arc<Mutex<Vec<Option<i64>>>> = Arc::default();
+    let (log, reader) = (seen.clone(), store.clone());
+    // The observer runs on this thread, during `save`'s write: reading the
+    // store from it used to deadlock on the queue lock.
+    store.on_written(move |_| {
+        let v = reader
+            .load("other")
+            .unwrap()
+            .map(|s| i64::decode(&s.value).unwrap());
+        log.lock().unwrap().push(v);
+    });
+    store.save("other", b"0", b"4").unwrap();
+    store.save("x", b"0", b"1").unwrap();
+    // The in-flight write counts for `load`, as a queued one does.
+    assert_eq!(*seen.lock().unwrap(), vec![Some(4), Some(4)]);
+    // `save` replaces what is queued for the file.
+    let rt = Runtime::new();
+    let p = rt.persisted_value(&store, "x", 0i64);
+    p.signal.set(&rt, 2).unwrap();
+    rt.shutdown();
+    store.save("x", b"0", b"3").unwrap();
+    assert_eq!(store.load("x").unwrap().unwrap().value, b"3");
+}
+
+#[test]
+fn a_panicking_observer_is_removed_and_writes_go_on() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let tmp = TempDir::new("observer-panic");
+    let store = tmp.store();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let c = calls.clone();
+    store.on_written(move |_| {
+        c.fetch_add(1, Ordering::SeqCst);
+        panic!("observer bug");
+    });
+    let rt = Runtime::new();
+    let p = rt.persisted_value(&store, "osd.level", 40i64);
+    rt.flush();
+    let mut t = Duration::ZERO;
+    let mut write = |v: i64| {
+        p.signal.set(&rt, v).unwrap();
+        t += Duration::from_millis(10);
+        rt.tick(t);
+        t += PERSIST_DEBOUNCE;
+        rt.tick(t);
+        assert!(store.sync(Duration::from_secs(5)), "the IO thread is alive");
+        t += Duration::from_millis(10);
+        rt.tick(t).diagnostics
+    };
+    let diags = write(5);
+    assert!(
+        diags
+            .iter()
+            .any(|d| matches!(d, Diagnostic::PersistFailed { .. })),
+        "{diags:?}"
+    );
+    assert_eq!(store.load("osd.level").unwrap().unwrap().value, b"5");
+    write(6);
+    assert_eq!(store.load("osd.level").unwrap().unwrap().value, b"6");
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "not called again");
+    rt.shutdown();
+}
+
+#[test]
+fn removing_a_dangling_link_removes_the_link() {
+    let tmp = TempDir::new("dangling");
+    let store = tmp.store();
+    fs::create_dir_all(store.dir()).unwrap();
+    let file = store.file_of("x").unwrap();
+    std::os::unix::fs::symlink(tmp.0.join("nowhere"), &file).unwrap();
+    store.remove("x").unwrap();
+    assert!(fs::symlink_metadata(&file).is_err(), "the link is gone");
+}
+
+#[test]
+fn files_no_cell_claimed_for_the_retention_period_are_swept_at_exit() {
+    use std::time::SystemTime;
+    use strand_core::persist::PERSIST_RETENTION;
+    let tmp = TempDir::new("retention");
+    let dir = tmp.0.join("persist");
+    let age = |p: &Path, by: Duration| {
+        fs::File::options()
+            .write(true)
+            .open(p)
+            .unwrap()
+            .set_modified(SystemTime::now() - by)
+            .unwrap();
+    };
+    let mtime_age = |p: &Path| {
+        fs::metadata(p)
+            .unwrap()
+            .modified()
+            .unwrap()
+            .elapsed()
+            .unwrap()
+    };
+    {
+        let store = PersistStore::new(&dir);
+        for name in ["claimed", "released", "unclaimed", "recent"] {
+            store.save(name, b"0", b"1").unwrap();
+        }
+    }
+    let old = PERSIST_RETENTION + Duration::from_secs(3600);
+    for name in ["claimed", "released", "unclaimed"] {
+        age(&dir.join(name), old);
+    }
+    let corrupt = dir.join(".gone.corrupt");
+    fs::write(&corrupt, b"x").unwrap();
+    age(&corrupt, old);
+    {
+        let store = PersistStore::new(&dir);
+        let rt = Runtime::new();
+        let _kept = rt.persisted_value(&store, "claimed", 0i64);
+        let (scope, _released) = rt.scope(|rt| rt.persisted_value(&store, "released", 0i64));
+        rt.flush();
+        scope.dispose(&rt);
+        rt.shutdown();
+    }
+    let mut left = files(&dir);
+    left.sort();
+    assert_eq!(left, vec!["claimed", "recent", "released"]);
+    for name in ["claimed", "released"] {
+        assert!(
+            mtime_age(&dir.join(name)) < Duration::from_secs(3600),
+            "{name}: a claim refreshes the time"
+        );
+    }
+    // A store no cell used (a tool) sweeps nothing.
+    age(&dir.join("recent"), old);
+    drop(PersistStore::new(&dir));
+    assert!(dir.join("recent").exists());
+}

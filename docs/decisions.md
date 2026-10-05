@@ -963,7 +963,8 @@ waits for the queue (bounded, 5 s); dropping the last store handle drains
 it (bounded) and joins the thread; a persisted cell's writer queues its
 pending value when dropped, so a runtime dropped without `shutdown` still
 writes. The file's baseline is updated when a write is queued, not when it
-lands (a failed write is reported; the next change writes again).
+lands (a failed write is reported; round 5: the cell then forgets what
+its file holds, so its next change or capture writes again).
 `rt.persisted` returns a `Persisted` handle with `redeclare(rt,
 new_default)` (the reload rule for state defaults: adopt if the value
 still holds the old default, removing the file; else keep, report
@@ -1175,3 +1176,44 @@ patched per diff, and an index would double that upkeep for a read most
 lists never make. Its `get_key` is therefore a documented O(n) scan
 (about 1 µs per 1,000 rows), fine for selecting by key once per event.
 A loop over many keys should read `with` once.
+
+**2026-10-05 · Persist failures, retention and the observer (review
+round 5).** (a) *A failed write is retried.* The baseline (what the file
+holds) was set when a write was queued, so after a transient failure
+(ENOSPC, EIO) the unmount, shutdown and drop captures found the live value
+equal to it and queued nothing: a value changed once was lost at restart.
+The IO thread now marks the cell's reporter stale on any failure, and the
+cell's next change or capture treats the file as unknown and writes. No
+immediate retry: a disk that keeps failing would loop through the wake
+hook. (b) *Retention.* Instance-qualified paths (`list[<key>].x` on a
+notification list, a monitor that never comes back) left one file per key
+for good. Rule: a persisted file no cell has claimed for 90 days
+(`PERSIST_RETENTION`) is removed. A claim of a stored file and the release
+of a path (its last cell disposed) refresh the file's modification time on
+the IO thread; a store that persisted cells used sweeps, when it is
+dropped at exit, the cell files and `.<name>.corrupt` copies older than
+that which no cell of the process holds and nothing is queued for (under
+the queue lock). At exit rather than at boot, because a component mounted
+a moment after the sweep would lose its file; a quarantine also refreshes
+the time, so a corrupt copy is kept 90 days for inspection. A store no cell
+used (a tool's) never sweeps. Not chosen: a `forget(path)` call for the
+reconciler, which cannot tell an item removed for good from one filtered
+out for a while. Residual: a second shell instance sharing the directory
+and running longer than 90 days without touching a file can lose it to
+the other's exit sweep. (c) *`save`/`remove` are for tools.* They now
+replace what is queued for the file (the doc said "after") and run their
+IO outside the queue lock, holding the in-flight slot instead, so a
+`load` or a cell's `enqueue` on another thread no longer waits for their
+`fsync`; a live cell on the same path does not see them (documented, not
+refused: the store does not know runtimes). (d) *The observer.* One slot
+per IO thread, shared by the `PersistStore` and every `SettingsStore` made
+from it (documented on both). It can also run on the caller of
+`save`/`remove`, must not call `save`, `remove` or `sync` itself, and a
+panic in it (or anywhere in an operation) is caught: the observer is
+removed, the IO thread lives on, and the cell reports `PersistFailed`. A
+corrupt overlay moved aside is reported to it too. (e) Removal checks the
+path with `symlink_metadata`, so a dangling link at a cell file is removed
+like any other. (f) The list of persisted writers is pruned at a
+high-water mark (twice its live size after the last prune), so cells
+created and disposed one for one around a power of two no longer rescan
+it on every creation.

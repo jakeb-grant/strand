@@ -342,9 +342,17 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   unmount, `rt.shutdown()` and dropping the last `Runtime` handle read the
   cell's live value and queue it, even when the owner went in the same
   tick as the write; `rt.shutdown()` waits (bounded) for queued writes.
+  A write that fails is written again on the cell's next change or
+  capture. Files no cell has claimed for 90 days (`PERSIST_RETENTION`)
+  are removed when the store is dropped at exit, so per-key paths do not
+  pile up; `PersistStore::save`/`remove` are for offline tools (a live
+  cell on the path does not see them).
 - Strand's own writes, for the watcher (wave 2):
   `persist_store.on_written(|w: &OwnWrite| ..)` (also on
-  `SettingsStore`) runs on the persist IO thread for every file it is
+  `SettingsStore`: one observer slot per IO thread, so setting it on
+  either replaces the other) runs on the persist IO thread (and on the
+  caller of `PersistStore::save`/`remove`, which must then not call
+  `save`, `remove` or `sync`; a panic removes the observer) for every file it is
   about to replace or remove, with `w.path` (as queued: the declared
   settings path, an overlay, a snapshot or a cell file), `w.target` (symlinks
   followed, canonical directory) and `w.content` (the exact new bytes, or
@@ -431,6 +439,12 @@ Public interfaces other crates and later stages build on:
   `d.effect` and the body's writes on `d.timer`;
   create persisted cells with an instance-qualified path and keep the
   `Persisted` handle for `redeclare` (reload) and `reset` (`@reset`);
+  node closures use their `rt` parameter or a `WeakRuntime`
+  (`rt.downgrade()`), never a captured `Runtime` clone: that is an `Rc`
+  cycle, so neither dropping the last handle nor a persisted cell's
+  writer ever runs, and debounced values are lost silently; the binary
+  calls `rt.shutdown()` on exit signals (SIGTERM, SIGINT) and on a normal
+  exit, before dropping the stores;
   lower `state x from "file.toml" { typed fields }` to
   `rt.settings_file(&store, resolved_path, fields)` with one `FieldSpec`
   per field from the checked schema (the type's decode and encode over
