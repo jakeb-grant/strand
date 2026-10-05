@@ -217,16 +217,64 @@ impl Ty {
             _ => None,
         }
     }
+}
 
-    /// True if values of this type can be stored with `persist`: plain
-    /// data, no functions, nodes or pending loads.
-    pub fn is_data(&self) -> bool {
-        match self {
-            Ty::Error | Ty::Null | Ty::Enum(_) | Ty::Record(_) => true,
-            Ty::Prim(_) => true,
-            Ty::List(t, _) | Ty::Optional(t) => t.is_data(),
-            Ty::Tuple(ts) => ts.iter().all(Ty::is_data),
-            Ty::Opaque(_) => true,
+impl TypeTable {
+    /// True if values of this type can be stored with `persist` or in a
+    /// settings file: what the codecs in `vm::persist` round-trip
+    /// (numbers, text, paths, colours, enums, and records and lists of
+    /// those). Functions, pending loads, opaque values (`Palette`,
+    /// `Spring`), fonts, shadows and gradients are not data, nor are
+    /// `handle` records (`Node`, `Canvas`) or records with actions (live
+    /// service items: `Window`, `App`); any other record is data when every
+    /// field is.
+    pub fn is_data(&self, ty: &Ty) -> bool {
+        self.data_walk(ty, true, &mut Vec::new())
+    }
+
+    /// True if values of this type can identify the items of a `for`
+    /// (`key`): comparable values. Looser than [`TypeTable::is_data`]:
+    /// opaque values and fonts compare, functions and pending loads do
+    /// not.
+    pub fn is_comparable(&self, ty: &Ty) -> bool {
+        self.data_walk(ty, false, &mut Vec::new())
+    }
+
+    fn data_walk(&self, ty: &Ty, stored: bool, seen: &mut Vec<RecordId>) -> bool {
+        match ty {
+            Ty::Error | Ty::Null | Ty::Enum(_) => true,
+            Ty::Prim(p) => {
+                !stored
+                    || !matches!(
+                        p,
+                        Prim::Paint | Prim::Font | Prim::Shadow | Prim::Insets | Prim::Corners
+                    )
+            }
+            Ty::Record(r) => {
+                if seen.contains(r) {
+                    // A recursive type (`type Node { kids: [Node] }`):
+                    // the fields already being walked decide.
+                    return true;
+                }
+                let rec = self.record(*r);
+                // A runtime handle, or a live service item whose actions
+                // act on something that may be gone after a restart.
+                if stored
+                    && (rec.handle || rec.methods.iter().any(|m| m.sigs.iter().any(|s| s.action)))
+                {
+                    return false;
+                }
+                seen.push(*r);
+                let ok = rec
+                    .fields
+                    .iter()
+                    .all(|f| self.data_walk(&f.ty, stored, seen));
+                seen.pop();
+                ok
+            }
+            Ty::List(t, _) | Ty::Optional(t) => self.data_walk(t, stored, seen),
+            Ty::Tuple(ts) => !stored && ts.iter().all(|t| self.data_walk(t, stored, seen)),
+            Ty::Opaque(_) => !stored,
             Ty::Any | Ty::Unit | Ty::EnumType(_) | Ty::Async(_) | Ty::Fn(_) | Ty::Union(_) => false,
         }
     }
@@ -267,14 +315,23 @@ impl FnSig {
         }
     }
 
-    /// A signature of plain positional parameters (lambdas).
+    /// A signature of unnamed positional parameters (a function type such
+    /// as `fn(int) -> int`): diagnostics call them "argument 1", …
     pub fn positional(params: Vec<Ty>, ret: Ty) -> Self {
+        Self::named(
+            params.into_iter().map(|ty| (String::new(), ty)).collect(),
+            ret,
+        )
+    }
+
+    /// A signature of named positional parameters without defaults
+    /// (lambdas: `(a: int) => …`). An empty name is an unnamed parameter.
+    pub fn named(params: Vec<(String, Ty)>, ret: Ty) -> Self {
         Self::new(
             params
                 .into_iter()
-                .enumerate()
-                .map(|(i, ty)| ParamSig {
-                    name: format!("_{i}"),
+                .map(|(name, ty)| ParamSig {
+                    name,
                     ty,
                     has_default: false,
                     default: None,
@@ -283,6 +340,18 @@ impl FnSig {
                 .collect(),
             ret,
         )
+    }
+}
+
+impl ParamSig {
+    /// How diagnostics name the parameter at `index`: `` `name` `` or,
+    /// for an unnamed one, `argument 2`.
+    pub fn label(&self, index: usize) -> String {
+        if self.name.is_empty() {
+            format!("argument {}", index + 1)
+        } else {
+            format!("`{}`", self.name)
+        }
     }
 }
 
@@ -328,6 +397,9 @@ pub struct RecordDef {
     /// The identity of items of this record, as a field path (`id`,
     /// `app.id`): lists of it are keyed.
     pub key: Option<Vec<String>>,
+    /// Values are live runtime handles (`Node`, `Canvas`), not data:
+    /// they compare, but `persist` and settings files cannot store them.
+    pub handle: bool,
     pub origin: Origin,
     pub doc: Option<String>,
 }
@@ -340,6 +412,7 @@ impl RecordDef {
             methods: Vec::new(),
             events: Vec::new(),
             key: None,
+            handle: false,
             origin,
             doc: None,
         }

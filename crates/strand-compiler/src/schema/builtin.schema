@@ -48,7 +48,7 @@ alias AppId = text
 // undocumented service, record member, function, element, prop or token.
 
 /// A node of the tree: `self`, or an element given an `id:`.
-record Node {
+handle record Node {
   /// The pointer is over it (latched while dragging).
   hover: bool
   /// A pointer button is held down on it.
@@ -347,7 +347,7 @@ provisional record BluetoothDevice key address {
 
 /// What `canvas { draw: (c) => … }` draws on, with the paint API the
 /// renderer uses.
-record Canvas {
+handle record Canvas {
   /// The canvas width.
   width: float
   /// The canvas height.
@@ -914,6 +914,7 @@ element lock: surface { flags surface }
 element popup: surface {
   /// Escape or a click away closed it.
   on dismiss
+  flags on_demand
 }
 
 // Containers.
@@ -950,7 +951,7 @@ element pages: node {
   current: any <->
 }
 /// A page of `pages`, shown when its value is `current`.
-element page(any -> name): node { flags only_in pages }
+element page(any -> name): node { flags only_in pages on_demand }
 
 // Widgets.
 
@@ -1027,7 +1028,7 @@ element segmented: node {
   flags leaf
 }
 /// A tooltip with content of its own.
-element tooltip: node {}
+element tooltip: node { flags on_demand }
 
 // Effects and media nodes.
 

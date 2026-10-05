@@ -3,5 +3,5 @@
 // the parameter's type was joined; a type that does not join with it is
 // one error at the parameter naming both arguments.
 component A(x) { text "${x}"; B x }
-component B(y) { A "far" }
+component B(y) { if true { A "far" } }
 bar Top { A 1 }

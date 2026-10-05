@@ -1,6 +1,7 @@
-// expect: check::redeclared, check::unknown_field
+// expect: check::redeclared
 // A file named like a service cannot be read as `file.name`: there the
-// name means the service.
+// name means the service. One mistake, one diagnostic: the export is
+// reported where it is declared, and the read stays quiet.
 // file: battery.strand
 export state low = false
 // file: bar.strand

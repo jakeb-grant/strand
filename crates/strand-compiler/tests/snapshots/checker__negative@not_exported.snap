@@ -20,6 +20,7 @@ Error:
  3 │ state secret = 1
    ·       ───┬──
    ·          ╰── declared here
+ 4 │ state prefs from "prefs.toml" { dim: bool = false }
    ╰────
 
 check::unknown_field
@@ -33,5 +34,25 @@ check::unknown_field
  3 │ let c = theme.look
    ╰────
   help: did you mean `look`?
+
+check::not_exported
+
+  × `prefs` is not exported from `theme`
+   ╭─[bar.strand:4:15]
+ 3 │ let c = theme.look
+ 4 │ let d = theme.prefs
+   ·               ──┬──
+   ·                 ╰── private to its file
+   ╰────
+  help: add `export` to its declaration: `export state prefs from "…" { … }`
+
+Error: 
+  × see also theme.strand
+   ╭─[theme.strand:4:7]
+ 3 │ state secret = 1
+ 4 │ state prefs from "prefs.toml" { dim: bool = false }
+   ·       ──┬──
+   ·         ╰── declared here
+   ╰────
 
 fix [check::unknown_field] bar.strand: `lok` -> `look`

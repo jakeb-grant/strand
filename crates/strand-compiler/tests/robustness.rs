@@ -506,3 +506,78 @@ fn long_token_extends_chains_stay_cheap() {
     assert_eq!(out.errors(), 0, "{:?}", out.diagnostics.first());
     assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
 }
+
+/// Whole-number states handed on through list literals (`a1 = [a0][0]`)
+/// are followed like direct hand-offs, and hand-offs the checker does not
+/// follow precisely (`[a0].first ?? 0`) are followed over-approximately
+/// after a few passes: a chain of 800 never costs a pass per link.
+#[test]
+fn long_whole_number_hand_off_chains_stay_cheap() {
+    let n = 800;
+    for link in ["[{prev}][0]", "[{prev}].first ?? 0"] {
+        let mut src = String::new();
+        for i in 0..n {
+            src.push_str(&format!("state a{i} = 0\n"));
+        }
+        src.push_str("bar B { edge: top; box { on click {\n  a0 = 0.5\n");
+        for i in 1..n {
+            let prev = format!("a{}", i - 1);
+            src.push_str(&format!("  a{i} = {}\n", link.replace("{prev}", &prev)));
+        }
+        src.push_str("} } }\n");
+        let (map, _) = SourceMap::single("chain.strand", src);
+        let started = Instant::now();
+        let out = strand_compiler::compile(&map);
+        let elapsed = started.elapsed();
+        assert_eq!(out.errors(), 0, "{link}: {:?}", out.diagnostics.first());
+        assert!(elapsed < Duration::from_secs(3), "{link}: {elapsed:?}");
+    }
+}
+
+/// A rolled-back overload attempt spends none of the did-you-mean budget:
+/// every typo inside an ambiguous overloaded call gets its help.
+#[test]
+fn overload_attempts_keep_the_suggestion_budget() {
+    let n = 100;
+    let mut src = String::new();
+    for i in 0..n {
+        src.push_str(&format!("let m{i} = radial(batery, 40%)\n"));
+    }
+    let (map, _) = SourceMap::single("typos.strand", src);
+    let out = strand_compiler::compile(&map);
+    let typos: Vec<_> = out
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == "check::unknown_name")
+        .collect();
+    assert_eq!(typos.len(), n);
+    for d in typos {
+        assert_eq!(d.help.as_deref(), Some("did you mean `battery`?"));
+    }
+}
+
+/// The over-approximate hand-offs of a late pass stop where no fraction
+/// can pass: a long chain elsewhere does not turn `sel = a5.round()` into
+/// a float, nor an index, a condition or a `.len`.
+#[test]
+fn late_pass_hand_offs_stop_at_whole_results() {
+    let mut src = String::new();
+    for i in 0..6 {
+        src.push_str(&format!("state a{i} = 0\n"));
+    }
+    src.push_str(
+        "state sel = 0\nstate at = 0\nstate n = 0\nstate pick = 0\nstate xs: [int] = [1, 2]\n",
+    );
+    src.push_str("bar B { edge: top; height: 32\n");
+    src.push_str("  text \"x\" { max_lines: sel }\n  text \"y\" { max_lines: at }\n");
+    src.push_str("  text \"z\" { max_lines: n }\n  text \"w\" { max_lines: pick }\n");
+    src.push_str("  box { on click {\n    a0 = 0.5\n");
+    for i in 1..6 {
+        src.push_str(&format!("    a{i} = [a{}].first ?? 0\n", i - 1));
+    }
+    src.push_str("    sel = a5.round()\n    at = xs[a5.floor()] ?? 0\n");
+    src.push_str("    n = [a5].len\n    pick = a5 > 1 ? 1 : 2\n  } }\n}\n");
+    let (map, _) = SourceMap::single("late.strand", src);
+    let out = strand_compiler::compile(&map);
+    assert_eq!(out.errors(), 0, "{:#?}", out.diagnostics);
+}

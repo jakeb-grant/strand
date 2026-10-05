@@ -62,12 +62,12 @@ syntax::expected
 
 check::type_mismatch
 
-  × the function's result expects `Pin`, found `float`
+  × the function's result expects `Pin`, found `int`
     ╭─[one_mistake.strand:22:42]
  21 │ component D {
  22 │   box { on click { pins.update("a", p => 3) } }
     ·                                          ┬
-    ·                                          ╰── this is `float`
+    ·                                          ╰── this is `int`
  23 │   page wifi { }
     ╰────
 
@@ -81,3 +81,14 @@ check::misplaced
     ·     ╰── not in a `pages`
  24 │ }
     ╰────
+
+check::assign_to_let
+
+  × cannot assign `first`: it is a `let`
+    ╭─[one_mistake.strand:30:32]
+ 29 │ let first = pts.first
+ 30 │ component W { box { on click { first.a = 3 } } }
+    ·                                ───┬───
+    ·                                   ╰── derived, read-only
+    ╰────
+  help: a `let` follows its expression; to assign it, make it `state first = …`

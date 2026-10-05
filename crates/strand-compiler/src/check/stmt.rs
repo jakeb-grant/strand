@@ -187,6 +187,7 @@ impl<'a> Checker<'a> {
                 value,
             };
         }
+        let mark = self.diags.len();
         let t = self.expr(target, None);
         if self.ctx.pure_fn {
             self.error(
@@ -197,6 +198,17 @@ impl<'a> Checker<'a> {
             )
             .help = Some("return the new value instead, and assign it in a handler".into());
         } else if let Err(why) = self.writable(&t) {
+            // One mistake, one diagnostic: `first.a = 3` through a
+            // nullable `let first` is a write to a `let`; that the path
+            // may be null no longer matters.
+            let mut i = mark;
+            while i < self.diags.len() {
+                if self.diags[i].code == "check::nullable" {
+                    self.diags.remove(i);
+                } else {
+                    i += 1;
+                }
+            }
             self.not_writable(why, target.span, "assign");
         }
         let v = match op {

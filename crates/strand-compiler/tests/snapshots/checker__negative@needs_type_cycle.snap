@@ -10,9 +10,9 @@ check::needs_type
  5 │ component A(x) { text "${x}"; B x }
    ·             ┬
    ·             ╰── its type comes from its callers, which disagree
- 6 │ component B(y) { A "far" }
-   ·                    ──┬──
-   ·                      ╰── `text` here
+ 6 │ component B(y) { if true { A "far" } }
+   ·                              ──┬──
+   ·                                ╰── `text` here
  7 │ bar Top { A 1 }
    ·             ┬
    ·             ╰── `int` here

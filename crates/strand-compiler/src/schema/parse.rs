@@ -203,6 +203,9 @@ enum RawItem {
         service: bool,
         /// `provisional`: a stub one later extension may replace.
         provisional: bool,
+        /// `handle`: values are live runtime handles (`Node`, `Canvas`),
+        /// not data `persist` could store.
+        handle: bool,
     },
     Fn(RawSig),
     Value {
@@ -357,11 +360,12 @@ impl Parser {
         let doc = self.doc();
         let mut kw = self.word()?;
         let provisional = kw == "provisional";
-        if provisional {
-            kw = self.word()?;
+        let handle = kw == "handle";
+        if provisional || handle {
+            let prefix = std::mem::replace(&mut kw, self.word()?);
             if kw != "record" && kw != "service" {
                 return self.err(format!(
-                    "`provisional` goes before `record` or `service`, not `{kw}`"
+                    "`{prefix}` goes before `record` or `service`, not `{kw}`"
                 ));
             }
         }
@@ -419,6 +423,7 @@ impl Parser {
                     members,
                     service: kw == "service",
                     provisional,
+                    handle,
                 }
             }
             "fn" | "action" => {
@@ -943,6 +948,7 @@ pub(super) fn extend(schema: &mut Schema, text: &str) -> Result<(), Vec<SchemaEr
                 key,
                 service,
                 provisional,
+                handle,
                 ..
             } => {
                 let replaced = schema
@@ -952,6 +958,7 @@ pub(super) fn extend(schema: &mut Schema, text: &str) -> Result<(), Vec<SchemaEr
                 if let Some(id) = replaced {
                     let mut rec = RecordDef::new(name.clone(), Origin::Schema);
                     rec.key = key.clone();
+                    rec.handle = *handle;
                     rec.doc = schema.docs.get(&DocKey::Type(name.clone())).cloned();
                     *schema.types.record_mut(id) = rec;
                     if *service {
@@ -969,6 +976,7 @@ pub(super) fn extend(schema: &mut Schema, text: &str) -> Result<(), Vec<SchemaEr
                 } else {
                     let mut rec = RecordDef::new(name.clone(), Origin::Schema);
                     rec.key = key.clone();
+                    rec.handle = *handle;
                     rec.doc = schema.docs.get(&DocKey::Type(name.clone())).cloned();
                     let id = schema.types.add_record(rec);
                     if *service {
@@ -1279,6 +1287,7 @@ fn el_members(
                         "surface" => el.flags.surface = true,
                         "uniforms" => el.flags.uniforms = true,
                         "selectors" => el.flags.selectors = true,
+                        "on_demand" => el.flags.on_demand = true,
                         "only_in" => el.flags.only_in = it.next().cloned(),
                         other => errors.push(SchemaError {
                             line: *line,

@@ -5,94 +5,107 @@ expression: rendered
 check::shadows_builtin
 
   ⚠ this `let` hides the builtin service `battery`
-   ╭─[shadow_builtin.strand:6:5]
- 5 │ // far away.
- 6 │ let battery = 5
+   ╭─[shadow_builtin.strand:7:5]
+ 6 │ // (`let t = 3` would turn `rotate: t * 20deg` into a constant).
+ 7 │ let battery = 5
    ·     ───┬───
-   ·        ╰── shadows a service
- 7 │ state clock = 0
+   ·        ╰── shadows a builtin service
+ 8 │ state clock = 0
    ╰────
-  help: rename the `let`: in its scope `battery` no longer reads the service
+  help: rename the `let`: in its scope `battery` no longer reads the builtin service
 
 check::shadows_builtin
 
   ⚠ this `state` hides the builtin service `clock`
-   ╭─[shadow_builtin.strand:7:7]
- 6 │ let battery = 5
- 7 │ state clock = 0
+   ╭─[shadow_builtin.strand:8:7]
+ 7 │ let battery = 5
+ 8 │ state clock = 0
    ·       ──┬──
-   ·         ╰── shadows a service
- 8 │ component C(audio: float) {
+   ·         ╰── shadows a builtin service
+ 9 │ component C(audio: float) {
    ╰────
-  help: rename the `state`: in its scope `clock` no longer reads the service
+  help: rename the `state`: in its scope `clock` no longer reads the builtin service
 
 check::shadows_builtin
 
   ⚠ this parameter hides the builtin service `audio`
-   ╭─[shadow_builtin.strand:8:13]
- 7 │ state clock = 0
- 8 │ component C(audio: float) {
-   ·             ──┬──
-   ·               ╰── shadows a service
- 9 │   let media = 1
-   ╰────
-  help: rename the parameter: in its scope `audio` no longer reads the service
+    ╭─[shadow_builtin.strand:9:13]
+  8 │ state clock = 0
+  9 │ component C(audio: float) {
+    ·             ──┬──
+    ·               ╰── shadows a builtin service
+ 10 │   let media = 1
+    ╰────
+  help: rename the parameter: in its scope `audio` no longer reads the builtin service
 
 check::shadows_builtin
 
   ⚠ this `let` hides the builtin service `media`
-    ╭─[shadow_builtin.strand:9:7]
-  8 │ component C(audio: float) {
-  9 │   let media = 1
+    ╭─[shadow_builtin.strand:10:7]
+  9 │ component C(audio: float) {
+ 10 │   let media = 1
     ·       ──┬──
-    ·         ╰── shadows a service
- 10 │   box { on click { let wm = 2 } }
+    ·         ╰── shadows a builtin service
+ 11 │   box { on click { let wm = 2 } }
     ╰────
-  help: rename the `let`: in its scope `media` no longer reads the service
+  help: rename the `let`: in its scope `media` no longer reads the builtin service
 
 check::shadows_builtin
 
   ⚠ this `let` hides the builtin service `wm`
-    ╭─[shadow_builtin.strand:10:24]
-  9 │   let media = 1
- 10 │   box { on click { let wm = 2 } }
+    ╭─[shadow_builtin.strand:11:24]
+ 10 │   let media = 1
+ 11 │   box { on click { let wm = 2 } }
     ·                        ─┬
-    ·                         ╰── shadows a service
- 11 │ }
+    ·                         ╰── shadows a builtin service
+ 12 │ }
     ╰────
-  help: rename the `let`: in its scope `wm` no longer reads the service
+  help: rename the `let`: in its scope `wm` no longer reads the builtin service
 
 check::shadows_builtin
 
   ⚠ this `fn` hides the builtin service `notifications`
-    ╭─[shadow_builtin.strand:12:4]
- 11 │ }
- 12 │ fn notifications(x: float) -> float { x }
+    ╭─[shadow_builtin.strand:13:4]
+ 12 │ }
+ 13 │ fn notifications(x: float) -> float { x }
     ·    ──────┬──────
-    ·          ╰── shadows a service
- 13 │ // Calling a parameter that hides a builtin function names the builtin.
+    ·          ╰── shadows a builtin service
+ 14 │ // Calling a parameter that hides a builtin function names the builtin.
     ╰────
-  help: rename the `fn`: in its scope `notifications` no longer reads the service
+  help: rename the `fn`: in its scope `notifications` no longer reads the builtin service
 
 check::type_mismatch
 
-  × `blur` here is a `length`, not a function
-    ╭─[shadow_builtin.strand:15:14]
- 14 │ component Card(blur: length = 24) {
- 15 │   let soft = blur(16)
+  × `blur` here is a value of type `length`, not a function
+    ╭─[shadow_builtin.strand:16:14]
+ 15 │ component Card(blur: length = 24) {
+ 16 │   let soft = blur(16)
     ·              ──┬─
     ·                ╰── cannot be called
- 16 │   box { width: blur }
+ 17 │   box { width: blur }
     ╰────
   help: `blur` in scope hides the builtin `blur`; rename it to call the builtin
 
 check::type_mismatch
 
-  × `noise` here is a `length`, not a function
-    ╭─[shadow_builtin.strand:21:13]
- 20 │ state noise = 4px
- 21 │ let grain = noise(1)
+  × `noise` here is a value of type `length`, not a function
+    ╭─[shadow_builtin.strand:22:13]
+ 21 │ state noise = 4px
+ 22 │ let grain = noise(1)
     ·             ──┬──
     ·               ╰── cannot be called
+ 23 │ // The time signal hidden by a file `let`.
     ╰────
   help: `noise` in scope hides the builtin `noise`; rename it to call the builtin
+
+check::shadows_builtin
+
+  ⚠ this `let` hides the builtin value `t`
+    ╭─[shadow_builtin.strand:24:5]
+ 23 │ // The time signal hidden by a file `let`.
+ 24 │ let t = 3
+    ·     ┬
+    ·     ╰── shadows a builtin value
+ 25 │ let spin = t * 20deg
+    ╰────
+  help: rename the `let`: in its scope `t` no longer reads the builtin value

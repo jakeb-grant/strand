@@ -12,7 +12,8 @@ check::persist
    ·                                     ╰── not plain data
  4 │ state ok = 1 persist
    ╰────
-  help: only plain data (numbers, text, colours, enums, records, lists) is stored
+  help: only plain data is stored: numbers, text, paths, colours, enums, and lists and records of
+        those; for a node or a live item (a window, an app) store its key instead
 
 syntax::persist
 
@@ -34,5 +35,134 @@ syntax::persist
  6 │ let doubled = ok * 2 persist
    ·                      ───┬───
    ·                         ╰── a `let` is derived, so there is nothing to store
+ 7 │ // A record is data only when every field is; opaque values are not data.
    ╰────
   help: to keep a value across restarts, make it `state doubled = … persist`
+
+check::persist
+
+  × `hs` cannot persist a `[Holder]`
+    ╭─[persist.strand:9:25]
+  8 │ type Holder { hits: Async<[text]>; n: int }
+  9 │ state hs: [Holder] = [] persist
+    ·                         ───┬───
+    ·                            ╰── not plain data
+ 10 │ state pal: Palette = material(seed: #7aa2f7) persist
+    ╰────
+  help: only plain data is stored: numbers, text, paths, colours, enums, and lists and records of
+        those; for a node or a live item (a window, an app) store its key instead
+
+check::persist
+
+  × `pal` cannot persist a `Palette`
+    ╭─[persist.strand:10:46]
+  9 │ state hs: [Holder] = [] persist
+ 10 │ state pal: Palette = material(seed: #7aa2f7) persist
+    ·                                              ───┬───
+    ·                                                 ╰── not plain data
+ 11 │ state prefs from "p.toml" { w: Holder? = null; s: Spring = spring(1, 1); n: int = 3 }
+    ╰────
+  help: only plain data is stored: numbers, text, paths, colours, enums, and lists and records of
+        those; for a node or a live item (a window, an app) store its key instead
+
+check::persist
+
+  × setting `w` cannot be a `Holder?`: a settings file holds plain data
+    ╭─[persist.strand:11:32]
+ 10 │ state pal: Palette = material(seed: #7aa2f7) persist
+ 11 │ state prefs from "p.toml" { w: Holder? = null; s: Spring = spring(1, 1); n: int = 3 }
+    ·                                ───┬───
+    ·                                   ╰── not plain data
+ 12 │ // Runtime handles and live service items are not data either.
+    ╰────
+  help: only plain data is stored: numbers, text, paths, colours, enums, and lists and records of
+        those; for a node or a live item (a window, an app) store its key instead
+
+check::persist
+
+  × setting `s` cannot be a `Spring`: a settings file holds plain data
+    ╭─[persist.strand:11:51]
+ 10 │ state pal: Palette = material(seed: #7aa2f7) persist
+ 11 │ state prefs from "p.toml" { w: Holder? = null; s: Spring = spring(1, 1); n: int = 3 }
+    ·                                                   ───┬──
+    ·                                                      ╰── not plain data
+ 12 │ // Runtime handles and live service items are not data either.
+    ╰────
+  help: only plain data is stored: numbers, text, paths, colours, enums, and lists and records of
+        those; for a node or a live item (a window, an app) store its key instead
+
+check::persist
+
+  × `last` cannot persist a `Node?`
+    ╭─[persist.strand:13:26]
+ 12 │ // Runtime handles and live service items are not data either.
+ 13 │ state last: Node? = null persist
+    ·                          ───┬───
+    ·                             ╰── not plain data
+ 14 │ state ns: [Node] = [] persist
+    ╰────
+  help: only plain data is stored: numbers, text, paths, colours, enums, and lists and records of
+        those; for a node or a live item (a window, an app) store its key instead
+
+check::persist
+
+  × `ns` cannot persist a `[Node]`
+    ╭─[persist.strand:14:23]
+ 13 │ state last: Node? = null persist
+ 14 │ state ns: [Node] = [] persist
+    ·                       ───┬───
+    ·                          ╰── not plain data
+ 15 │ type NodeHolder { n: Node; label: text }
+    ╰────
+  help: only plain data is stored: numbers, text, paths, colours, enums, and lists and records of
+        those; for a node or a live item (a window, an app) store its key instead
+
+check::persist
+
+  × `nh` cannot persist a `NodeHolder?`
+    ╭─[persist.strand:16:30]
+ 15 │ type NodeHolder { n: Node; label: text }
+ 16 │ state nh: NodeHolder? = null persist
+    ·                              ───┬───
+    ·                                 ╰── not plain data
+ 17 │ state win: Window? = null persist
+    ╰────
+  help: only plain data is stored: numbers, text, paths, colours, enums, and lists and records of
+        those; for a node or a live item (a window, an app) store its key instead
+
+check::persist
+
+  × `win` cannot persist a `Window?`
+    ╭─[persist.strand:17:27]
+ 16 │ state nh: NodeHolder? = null persist
+ 17 │ state win: Window? = null persist
+    ·                           ───┬───
+    ·                              ╰── not plain data
+ 18 │ state handles from "h.toml" { who: Node? = null; app: App? = null; count: int = 0 }
+    ╰────
+  help: only plain data is stored: numbers, text, paths, colours, enums, and lists and records of
+        those; for a node or a live item (a window, an app) store its key instead
+
+check::persist
+
+  × setting `who` cannot be a `Node?`: a settings file holds plain data
+    ╭─[persist.strand:18:36]
+ 17 │ state win: Window? = null persist
+ 18 │ state handles from "h.toml" { who: Node? = null; app: App? = null; count: int = 0 }
+    ·                                    ──┬──
+    ·                                      ╰── not plain data
+    ╰────
+  help: only plain data is stored: numbers, text, paths, colours, enums, and lists and records of
+        those; for a node or a live item (a window, an app) store its key instead
+
+check::persist
+
+  × setting `app` cannot be a `App?`: a settings file holds plain data
+    ╭─[persist.strand:18:55]
+ 17 │ state win: Window? = null persist
+ 18 │ state handles from "h.toml" { who: Node? = null; app: App? = null; count: int = 0 }
+    ·                                                       ──┬─
+    ·                                                         ╰── not plain data
+    ╰────
+  help: only plain data is stored: numbers, text, paths, colours, enums, and lists and records of
+        those; for a node or a live item (a window, an app) store its key instead

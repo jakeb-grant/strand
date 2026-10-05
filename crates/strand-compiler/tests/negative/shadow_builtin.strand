@@ -2,7 +2,8 @@
 // Builtin names are a prelude: a declaration shadows a builtin function,
 // value or type in its scope. Shadowing a builtin service is a warning:
 // `let battery = 5` would turn `battery.percent` into a confusing error
-// far away.
+// far away. A `state` or `let` named like a builtin value warns as well
+// (`let t = 3` would turn `rotate: t * 20deg` into a constant).
 let battery = 5
 state clock = 0
 component C(audio: float) {
@@ -19,3 +20,6 @@ component Card(blur: length = 24) {
 // builtin just the same, never silently calling it.
 state noise = 4px
 let grain = noise(1)
+// The time signal hidden by a file `let`.
+let t = 3
+let spin = t * 20deg

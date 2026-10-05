@@ -12,6 +12,9 @@ use crate::syntax::Span;
 use crate::syntax::ast::{self, ItemKind};
 use crate::ty::{FieldDef, FnSig, Origin, ParamSig, Prim, RecordDef, Ty};
 
+/// Why `persist` and settings files refuse a type.
+const PLAIN_DATA_HELP: &str = "only plain data is stored: numbers, text, paths, colours, enums, and lists and records of those; for a node or a live item (a window, an app) store its key instead";
+
 /// What a tree block may hold.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Place {
@@ -640,7 +643,7 @@ impl<'a> Checker<'a> {
         self.add_ref(f.binding.span, Target::Local(binding));
         let key = f.key.as_ref().map(|k| {
             let h = self.expr(k, None);
-            if !h.ty.is_data() {
+            if !self.types.is_comparable(&h.ty) {
                 let shown = self.show(&h.ty);
                 self.error(
                     "check::type_mismatch",
@@ -1846,7 +1849,7 @@ impl<'a> Checker<'a> {
                     self.state_keys.insert(id, path.clone());
                 }
                 if let Some(p) = persist
-                    && !final_ty.is_data()
+                    && !self.types.is_data(&final_ty)
                 {
                     let shown = self.show(&final_ty);
                     self.error(
@@ -1855,10 +1858,7 @@ impl<'a> Checker<'a> {
                         *p,
                         "not plain data",
                     )
-                    .help = Some(
-                        "only plain data (numbers, text, colours, enums, records, lists) is stored"
-                            .into(),
-                    );
+                    .help = Some(PLAIN_DATA_HELP.into());
                 }
                 self.defs[id.0 as usize].ty = final_ty;
                 hir::StateDecl {
@@ -1892,6 +1892,19 @@ impl<'a> Checker<'a> {
                         continue;
                     }
                     let ty = self.resolve_type(&f.ty);
+                    if !self.types.is_data(&ty) {
+                        let shown = self.show(&ty);
+                        self.error(
+                            "check::persist",
+                            format!(
+                                "setting `{}` cannot be a `{shown}`: a settings file holds plain data",
+                                f.name.name
+                            ),
+                            f.ty.span,
+                            "not plain data",
+                        )
+                        .help = Some(PLAIN_DATA_HELP.into());
+                    }
                     let default = match &f.default {
                         Some(d) => Some(self.expect(d, &ty, &format!("`{}`", f.name.name))),
                         None => {

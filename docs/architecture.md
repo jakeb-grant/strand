@@ -519,7 +519,13 @@ Public interfaces other crates and later stages build on:
   `RecordId`, so `[Window]` fields of other services see the real one; the
   stub's members and docs go) and the name stops being provisional, so a
   second contribution is "declared twice" (`Schema::provisional:
-  BTreeSet<String>`). Configs see contributed names as a prelude
+  BTreeSet<String>`). `handle record X` marks a record whose values are
+  runtime handles (`Node`, `Canvas`; `RecordDef::handle`): they compare,
+  but `persist` and settings files refuse them, as they refuse any record
+  that declares an `action`. An element flagged `on_demand` (`popup`,
+  `tooltip`, `page`; `ElementFlags::on_demand`) mounts its children only
+  on demand, which the component-cycle check reads like an `if`.
+  Configs see contributed names as a prelude
   their own declarations shadow, with one exception: a config `service`
   named like a builtin or contributed service is `check::redeclared`
   (services are identified by name at runtime), so a crate that adds a

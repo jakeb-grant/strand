@@ -44,6 +44,29 @@ check::type_mismatch
  5 │ let c = pct("half")
    ·             ───┬──
    ·                ╰── this is `text`
+ 6 │ // A lambda's parameters keep their names in diagnostics.
    ╰────
+
+check::type_mismatch
+
+  × `a` of the function expects `int`, found `text`
+   ╭─[call_args.strand:8:20]
+ 7 │ let inc = (a: int) => a + 1
+ 8 │ let bad: int = inc("x")
+   ·                    ─┬─
+   ·                     ╰── this is `text`
+ 9 │ // Calling a parameter that hides a builtin function names its type.
+   ╰────
+
+check::type_mismatch
+
+  × `pct` here is a value of type `int`, not a function
+    ╭─[call_args.strand:10:35]
+  9 │ // Calling a parameter that hides a builtin function names its type.
+ 10 │ component Fx(pct: int = 3) { text pct(0.5) }
+    ·                                   ─┬─
+    ·                                    ╰── cannot be called
+    ╰────
+  help: `pct` in scope hides the builtin `pct`; rename it to call the builtin
 
 fix [check::unknown_param] call_args.strand: `time` -> `duration`

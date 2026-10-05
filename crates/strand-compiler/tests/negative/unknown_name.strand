@@ -13,7 +13,12 @@ keyframes shake { 0%, 100% { x: 0 }; 50% { x: 4 } }
 component Shaker { box { on click { play shak } } }
 // Another file's export is offered by its path.
 let quiet = dnd
+// Another file's private declaration is named, with how to export it.
+let hushed = hush
+// `screen` belongs to a bar (one per monitor), not to a variant.
+let s = screen
 // file: toasts.strand
 export state dnd = false
+state hush = true
 // A kebab-case name is one unknown name, not two.
 let kebab = my-bar.open

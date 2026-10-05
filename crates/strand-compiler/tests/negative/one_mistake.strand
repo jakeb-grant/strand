@@ -1,4 +1,4 @@
-// expect: check::unknown_field, check::two_way_prop, check::unknown_prop, check::misplaced, syntax::expected, check::type_mismatch
+// expect: check::unknown_field, check::two_way_prop, check::unknown_prop, check::misplaced, syntax::expected, check::type_mismatch, check::assign_to_let
 // One mistake, one diagnostic: an unknown field is not also read-only, a
 // rejected `<->` does not also check its target, an unknown prop does not
 // also resolve its value, a misplaced surface does not read its name as a
@@ -22,3 +22,9 @@ component D {
   box { on click { pins.update("a", p => 3) } }
   page wifi { }
 }
+// A write through a nullable `let` is a write to a `let`; that the path
+// may be null is not reported as well.
+type Pt { a: int }
+state pts: [Pt] = []
+let first = pts.first
+component W { box { on click { first.a = 3 } } }
