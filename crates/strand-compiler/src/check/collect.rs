@@ -710,11 +710,17 @@ impl<'a> Checker<'a> {
         let Some(mut sig) = self.comp_sigs.get(&def).cloned() else {
             return;
         };
+        self.inferred.insert(def);
         let decl = self.defs[def.0 as usize].clone();
         for (i, p) in sig.params.iter_mut().enumerate() {
             if !p.infer {
                 continue;
             }
+            // A type an earlier pass found passed inside a cycle, after
+            // the join (see `arg_value`).
+            let pinned = self
+                .param_span(def, i)
+                .and_then(|s| self.param_pins.get(&(decl.file, s)).cloned());
             let passed = self.param_args.get(&(def, i));
             let had_args = passed.is_some_and(|v| !v.is_empty());
             let args: Vec<super::PassedArg> = passed
@@ -726,7 +732,9 @@ impl<'a> Checker<'a> {
                 })
                 .unwrap_or_default();
             let Some((_, _, first)) = args.first() else {
-                if had_args {
+                if let Some(t) = pinned {
+                    p.ty = t;
+                } else if had_args {
                     // Every argument was already an error at its call
                     // (`Side cente`): not also "nothing passes it a value".
                     self.infer_failed.insert((def, i));
@@ -734,6 +742,9 @@ impl<'a> Checker<'a> {
                 continue;
             };
             let mut joined = first.clone();
+            if let Some(t) = &pinned {
+                joined = self.types.join(&joined, t).unwrap_or(joined);
+            }
             let mut clash = None;
             for (k, (_, _, t)) in args.iter().enumerate().skip(1) {
                 match self.types.join(&joined, t) {
@@ -774,7 +785,7 @@ impl<'a> Checker<'a> {
     }
 
     /// The span of parameter `i` of component `def`.
-    fn param_span(&self, def: DefId, i: usize) -> Option<Span> {
+    pub(super) fn param_span(&self, def: DefId, i: usize) -> Option<Span> {
         let d = self.deferred_ast(def)?;
         d.params.as_ref()?.get(i).map(|p| p.name.span)
     }

@@ -1,0 +1,7 @@
+// expect: check::needs_type
+// In a cycle of components that infer a parameter, a call can come after
+// the parameter's type was joined; a type that does not join with it is
+// one error at the parameter naming both arguments.
+component A(x) { text "${x}"; B x }
+component B(y) { A "far" }
+bar Top { A 1 }

@@ -377,8 +377,8 @@ fn whole_number_declarations_are_ints_until_a_fraction_arrives() {
     ] {
         assert_eq!(def_ty(p, name), ty, "{name}");
     }
-    // A chain of hand-offs longer than the pass cap still widens every
-    // link, so the fraction reaches the `int` prop and is reported.
+    // A long chain of hand-offs widens every link, so the fraction
+    // reaches the `int` prop and is reported there.
     let links = 12;
     let mut src = String::new();
     for k in 0..=links {
@@ -398,27 +398,51 @@ fn whole_number_declarations_are_ints_until_a_fraction_arrives() {
         render(&out.diagnostics, &map, Style::Plain)
     );
     assert_eq!(def_ty(&out.program, &format!("s{links}")), "float");
-    // Hand-offs through locals are not followed; past the cap the write
-    // that would still widen is an error, never a silent `int`.
-    let mut src = String::new();
-    for k in 0..=links {
-        src.push_str(&format!("state s{k} = 0\n"));
+    // Hand-offs through handler locals and untyped fn values are
+    // followed too: a long chain of either checks clean (no pass cap to
+    // hit), and the fraction still reaches the `int` prop at the end.
+    let chains = [
+        (
+            String::new(),
+            (1..=links)
+                .map(|k| format!("; let t{k} = s{}; s{k} = t{k}", k - 1))
+                .collect::<String>(),
+        ),
+        (
+            (1..=links)
+                .map(|k| format!("fn f{k}() {{ s{} }}\n", k - 1))
+                .collect::<String>(),
+            (1..=links)
+                .map(|k| format!("; s{k} = f{k}()"))
+                .collect::<String>(),
+        ),
+    ];
+    for (fns, writes) in &chains {
+        for grid in [false, true] {
+            let mut src = String::new();
+            for k in 0..=links {
+                src.push_str(&format!("state s{k} = 0\n"));
+            }
+            src.push_str(fns);
+            src.push_str(&format!(
+                "component C {{\n  box {{ on click {{ s0 = 0.5{writes} }} }}\n"
+            ));
+            if grid {
+                src.push_str(&format!("  grid {{ columns: s{links} }}\n"));
+            }
+            src.push_str("}\n");
+            let (out, map) = compile_files(&[("a.strand", src)]);
+            let codes: Vec<&str> = out.diagnostics.iter().map(|d| d.code).collect();
+            let want: &[&str] = if grid { &["check::type_mismatch"] } else { &[] };
+            assert_eq!(
+                codes,
+                want,
+                "{}",
+                render(&out.diagnostics, &map, Style::Plain)
+            );
+            assert_eq!(def_ty(&out.program, &format!("s{links}")), "float");
+        }
     }
-    src.push_str("component C {\n  box { on click { s0 = 0.5");
-    for k in 1..=links {
-        src.push_str(&format!("; let v{k} = s{}; s{k} = v{k}", k - 1));
-    }
-    src.push_str(&format!(" }} }}\n  grid {{ columns: s{links} }}\n}}\n"));
-    let (out, map) = compile_files(&[("a.strand", src)]);
-    let rendered = render(&out.diagnostics, &map, Style::Plain);
-    assert!(out.errors() > 0, "{rendered}");
-    assert!(
-        out.diagnostics
-            .iter()
-            .any(|d| d.code == "check::needs_type"
-                && d.message.contains("whole numbers and fractions")),
-        "{rendered}"
-    );
     // An exported whole number reads as an `int` from another file.
     let (out, map) = compile_files(&[
         ("a.strand", "export let q = 1\n".into()),
@@ -480,6 +504,46 @@ fn component_parameters_are_inferred_from_callers() {
         names,
         ["Toast", "Toasts", "Label", "Wrap", "Grid", "Mixed", "Top"]
     );
+    // An argument is checked as the value of an untyped `let` is, so
+    // integer arithmetic stays an `int`; mutually recursive inferring
+    // components see each other's arguments that way too.
+    let out = one("state count = 2\n\
+                   component Grid(n) { grid { columns: n } }\n\
+                   component A(x) { if x > 1 { B x - 1 } }\n\
+                   component B(y) { if y > 1 { A y - 1 } }\n\
+                   bar Top { Grid count + 1; A 3 }\n");
+    let p = &out.program;
+    let param_ty = |comp: &str| {
+        let c = p
+            .files
+            .iter()
+            .flat_map(|f| &f.items)
+            .find_map(|i| match i {
+                hir::Item::Component(c) if p.def(c.def).name == comp => Some(c),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no component {comp}"));
+        show(p, &p.locals[c.params[0].local.0 as usize].ty)
+    };
+    assert_eq!(param_ty("Grid"), "int");
+    assert_eq!(param_ty("A"), "int");
+    assert_eq!(param_ty("B"), "int");
+    // A call inside such a cycle can come after the parameter's type was
+    // joined: a fraction there widens it (`1` outside, `0.5` inside).
+    let out = one("component A(x) { text \"${x}\"; B x }\n\
+                   component B(y) { A 0.5 }\n\
+                   bar Top { A 1 }\n");
+    let p = &out.program;
+    let a = p
+        .files
+        .iter()
+        .flat_map(|f| &f.items)
+        .find_map(|i| match i {
+            hir::Item::Component(c) if p.def(c.def).name == "A" => Some(c),
+            _ => None,
+        })
+        .expect("A");
+    assert_eq!(show(p, &p.locals[a.params[0].local.0 as usize].ty), "float");
 }
 
 /// A whole-number literal is a `float` unless its position expects an

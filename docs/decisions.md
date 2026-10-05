@@ -1012,20 +1012,28 @@ schema from `strand-compiler`).
   over every text `extend` was given, in order, for the compiled cache
   key.
 - **2026-10-05 · wave2-check (round 3): whole-number passes.** The extra
-  checker passes for whole-number states are bounded and sound. Before
-  the first pass, fraction writes the source shows plainly are pinned
-  (`check/prepin.rs`): `x = 0.5`, `x /= …`, `x += 0.1`, or `<-> x` on a
-  builtin prop that reads and writes a `float`, when `x` is the only
-  declaration of its name in the file and the write is in that file.
-  The configs in the fixtures, and any with sliders bound to
-  `state v = 0`, check in one pass. A pass also records hand-offs between
-  whole-number states (`b = a`, `b = a * 2`, `b = c ? a : 0`, `b = a ??
-  0`), and the pins are closed over them, so a chain costs one extra pass
-  however long it is. Hand-offs through locals or calls are not followed
-  and cost a pass per link; at the cap (8 passes) the last pass reports
-  a write that would still widen as `check::needs_type` ("holds whole
-  numbers and fractions", fix: `state x: float = …`), so a fraction
-  never reaches an `int` position unreported.
+  checker passes for whole-number states are sound and few. Before the
+  first pass, fraction writes the source shows plainly are pinned
+  (`check/prepin.rs`): `x = 0.5`, `x /= …`, `x += 0.1`, `<-> x` on a
+  builtin prop that reads and writes a `float`, and arithmetic with a
+  fraction literal or a handler `float` among its terms (`x = x + dy *
+  0.05`, `x += dy` in `on scroll(dy)`, whose `dy` the schema types
+  `float`; `let d: float`), when `x` is the only declaration of its name
+  in the file (counting element-scope names such as `letters`'s `index`
+  and `id:` names), the write is in that file, and every other name in
+  the arithmetic is a whole-number state. The fixtures, sliders bound to
+  `state v = 0` and the usual scroll handler check in one pass. A pass
+  also records hand-offs between whole-number states (`b = a`, `b = a *
+  2`, `b = c ? a : 0`, `b = a ?? 0`), also through an untyped `let` or
+  `state`, a handler or fn local, or the value of a fn without a return
+  type (`let t = a; b = t`, `b = f()` with `fn f() { a }`); the pins are
+  closed over them, so such a chain costs one extra pass however long it
+  is. *Superseded in round 3 (fixer pass 3):* there is no pass cap and no
+  "holds whole numbers and fractions" error. Pins only grow and are
+  bounded by the number of whole-number declarations, so the loop ends;
+  a hand-off the checker does not follow (through a list or a record
+  field) costs one pass per link but never gives a wrong type or a false
+  error.
 - **2026-10-05 · wave2-check (round 3): inferred parameters.** A
   whole-number literal passed to a parameter whose type comes from its
   callers is an `int` there, as in an untyped `state` (`Grid 3` makes
@@ -1034,7 +1042,22 @@ schema from `strand-compiler`).
   resolved, as no enum is expected: it is one `check::unknown_name` whose
   help says to write the enum (`Align.center`) or type the parameter.
   A parameter whose callers all passed errors is not also reported as
-  "nothing passes it a value".
+  "nothing passes it a value". *Refined (fixer pass 3):* an argument to
+  an inferred parameter is checked with no expected type, as the value
+  of an untyped `let` is, so `Grid count + 1` gives `int` and mutually
+  recursive inferring components (`A x - 1` / `B y - 1`) agree. In a
+  cycle of such components a call can come after the parameter's type
+  was joined (the first declared is checked first); an argument the
+  joined type does not cover is joined into it for the next pass (the
+  same pass loop as whole numbers: `A 1` outside and `A 0.5` inside the
+  cycle make `x` a `float`), and one that does not join is one
+  `check::needs_type` at the parameter labelling both arguments
+  (`negative/needs_type_cycle.strand`).
+- **2026-10-05 · wave2-check (round 3): a fn without a body.** When the
+  parser finds no `{` after a fn's signature (`fn get() = a`) it reports
+  `syntax::expected` and gives the body one error statement; the checker
+  does not also report `check::fn_value`, and the fn's value is the error
+  type.
 - **2026-10-05 · wave2-check (round 3): uniform vectors.** A shader
   uniform's vector is a WGSL `vec2` to `vec4`: 2 to 4 comma values. A
   list, or more or fewer comma values, is a `check::type_mismatch`.

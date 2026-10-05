@@ -46,4 +46,15 @@ check::unknown_prop
  15 │ panel P { edge: bottm }
     ·           ──┬─
     ·             ╰── not a prop of this element
+ 16 │ fn get() = 1
+    ╰────
+
+syntax::expected
+
+  × expected `{` to start the function body, found `=`
+    ╭─[one_mistake.strand:16:10]
+ 15 │ panel P { edge: bottm }
+ 16 │ fn get() = 1
+    ·          ┬
+    ·          ╰── expected `{` to start the function body
     ╰────

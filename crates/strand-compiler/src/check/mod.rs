@@ -83,28 +83,40 @@ pub fn check<'a>(modules: &'a [Module<'a>], schema: &'a Schema) -> Checked {
     // an `int` until a fraction is written to it (`i = 0.5`, `i += t`, a
     // slider's `value: <-> i`); then it is a `float` and the program is
     // checked again with it pinned. A pass also records which whole
-    // declarations are assigned from which (`b = a`, `b = a * 2`), and the
-    // pins are closed over those hand-offs, so a chain of them costs one
-    // extra pass, not one per link. Each pass pins at least one more
-    // declaration, so this ends; past the cap (hand-offs through locals or
-    // calls, which are not followed), the last pass reports a write that
-    // would still widen as an error instead of accepting it, so a fraction
-    // never flows unreported into an `int`. The fraction writes the
-    // source shows plainly (`level = 0.5`, a slider's `<-> level`) are
-    // pinned before the first pass ([`prepin`]), so the usual config is
-    // checked once.
-    let mut pins: HashSet<(FileId, Span)> = prepin::pre_pins(modules, schema);
+    // declarations are assigned from which (`b = a`, `b = a * 2`, also
+    // through an untyped `let`, handler local or fn value in between), and
+    // the pins are closed over those hand-offs, so a chain of them costs
+    // one extra pass, not one per link. The fraction writes the source
+    // shows plainly (`level = 0.5`, `level += dy * 0.05`, a slider's
+    // `<-> level`) are pinned before the first pass ([`prepin`]), so the
+    // usual config is checked once.
+    //
+    // There is no pass cap: every pass but the last pins at least one more
+    // declaration (or widens an inferred component parameter, see
+    // [`Checker::param_pins`]), pins only grow and are bounded by the
+    // declarations, so the loop ends. A hand-off the checker does not
+    // follow (through a list, a record field) costs a pass, never a wrong
+    // type or a false error.
+    let mut pins: HashSet<DeclAt> = prepin::pre_pins(modules, schema);
+    let mut param_pins: HashMap<DeclAt, Ty> = HashMap::new();
     let mut passes = 0;
     loop {
         let mut c = Checker::new(modules, schema);
         c.float_pins = pins.clone();
+        c.param_pins = param_pins.clone();
         passes += 1;
-        c.strict_widen = passes >= MAX_WIDENING_PASSES;
         c.run();
         let before = pins.len();
         pins.extend(c.widened.iter().copied());
         close_flows(&mut pins, &c.flows);
-        if pins.len() == before || c.strict_widen {
+        let mut params_moved = false;
+        for (k, t) in c.new_param_pins.drain() {
+            if param_pins.get(&k) != Some(&t) {
+                param_pins.insert(k, t);
+                params_moved = true;
+            }
+        }
+        if pins.len() == before && !params_moved {
             let mut out = c.finish();
             out.passes = passes;
             return out;
@@ -146,9 +158,6 @@ pub(crate) fn is_whole_literal(e: &ast::Expr) -> bool {
         _ => false,
     }
 }
-
-/// See [`check`].
-const MAX_WIDENING_PASSES: usize = 8;
 
 /// Tree keywords, offered when an unknown element looks like one
 /// (`whn hover { … }` → `when`).
@@ -356,8 +365,21 @@ pub(crate) struct Checker<'a> {
     /// Hand-offs between whole-number declarations this pass: `(target,
     /// source)` for `target = …source…` (see [`check`]).
     pub flows: Vec<(DeclAt, DeclAt)>,
-    /// The last pass: a write that would widen is an error.
-    pub strict_widen: bool,
+    /// The whole-number declarations the value of an untyped `let` or
+    /// `state`, or of a fn without a return type, reads (through
+    /// arithmetic, `?:`, `??` and other such values), so a hand-off
+    /// through it is followed like a direct one.
+    pub value_sources: HashMap<DefId, Vec<DefId>>,
+    /// The same for handler and fn `let`s.
+    pub local_sources: HashMap<LocalId, Vec<DefId>>,
+    /// Inferred component parameters (by the parameter's name) widened by
+    /// an earlier pass: a call inside a cycle of such components passed a
+    /// type the joined one did not cover (`A 0.5` after `A 1`).
+    pub param_pins: HashMap<DeclAt, Ty>,
+    /// Those found this pass.
+    pub new_param_pins: HashMap<DeclAt, Ty>,
+    /// Components whose inferred parameters have been joined.
+    pub inferred: HashSet<DefId>,
 }
 
 impl<'a> Checker<'a> {
@@ -407,7 +429,11 @@ impl<'a> Checker<'a> {
             float_pins: HashSet::new(),
             infer_arg: None,
             flows: Vec::new(),
-            strict_widen: false,
+            value_sources: HashMap::new(),
+            local_sources: HashMap::new(),
+            param_pins: HashMap::new(),
+            new_param_pins: HashMap::new(),
+            inferred: HashSet::new(),
         }
     }
 
@@ -703,9 +729,7 @@ impl<'a> Checker<'a> {
 
     /// Writes a value of type `from` into `target`: if `target` is a
     /// whole-number declaration and `from` is fractional, records it for
-    /// the next pass and returns true (the write is not an error). On the
-    /// last pass (see [`check`]) it reports the write instead, still
-    /// returning true so the caller does not report it again.
+    /// the next pass and returns true (the write is not an error).
     pub fn widen(&mut self, target: &hir::Expr, from: &Ty) -> bool {
         let hir::ExprKind::Def(d) = target.kind else {
             return false;
@@ -717,74 +741,87 @@ impl<'a> Checker<'a> {
             return false;
         }
         let def = &self.defs[d.0 as usize];
-        let (name, file, span) = (def.name.clone(), def.file, def.span);
-        let kw = if def.kind == DefKind::Let {
-            "let"
-        } else {
-            "state"
-        };
-        if self.strict_widen {
-            self.error(
-                "check::needs_type",
-                format!("`{name}` holds whole numbers and fractions"),
-                target.span,
-                "a fraction is written here",
-            )
-            .add_secondary(file, span, "declared with a whole number")
-            .help = Some(format!(
-                "write its type: `{kw} {name}: float = …`; the hand-offs that make it fractional are too long to follow"
-            ));
-            return true;
-        }
-        self.widened.insert((file, span));
+        self.widened.insert((def.file, def.span));
         true
+    }
+
+    /// The declarations `e`'s value comes from, for [`Checker::record_flow`]:
+    /// through arithmetic, `?:` and `??` (which keep a `float` a `float`),
+    /// and through untyped `let`s, handler locals and fn values, whose own
+    /// sources were recorded when they were checked.
+    pub fn flow_sources(&self, e: &hir::Expr, out: &mut Vec<DefId>) {
+        match &e.kind {
+            hir::ExprKind::Def(d) => {
+                out.push(*d);
+                out.extend(self.value_sources.get(d).into_iter().flatten());
+            }
+            hir::ExprKind::Local(l) => {
+                out.extend(self.local_sources.get(l).into_iter().flatten());
+            }
+            hir::ExprKind::Call {
+                callee: hir::Callee::Fn(d),
+                ..
+            } => out.extend(self.value_sources.get(d).into_iter().flatten()),
+            hir::ExprKind::Unary {
+                op: hir::UnaryOp::Neg,
+                expr,
+            } => self.flow_sources(expr, out),
+            hir::ExprKind::Binary {
+                op:
+                    hir::BinaryOp::Add
+                    | hir::BinaryOp::Sub
+                    | hir::BinaryOp::Mul
+                    | hir::BinaryOp::Div
+                    | hir::BinaryOp::Rem
+                    | hir::BinaryOp::Coalesce,
+                lhs,
+                rhs,
+            } => {
+                self.flow_sources(lhs, out);
+                self.flow_sources(rhs, out);
+            }
+            hir::ExprKind::Ternary { then, else_, .. } => {
+                self.flow_sources(then, out);
+                self.flow_sources(else_, out);
+            }
+            _ => {}
+        }
+    }
+
+    /// The whole-number declarations `e` reads, deduplicated (what
+    /// [`Checker::value_sources`] and [`Checker::local_sources`] keep).
+    pub fn whole_sources(&self, e: &hir::Expr) -> Vec<DefId> {
+        let mut found = Vec::new();
+        self.flow_sources(e, &mut found);
+        found.retain(|d| self.whole.contains(d));
+        found.sort_unstable_by_key(|d| d.0);
+        found.dedup_by_key(|d| d.0);
+        found
+    }
+
+    /// Records the sources of an untyped declaration's value (see
+    /// [`Checker::value_sources`]).
+    pub fn record_value_sources(&mut self, id: DefId, value: &hir::Expr) {
+        let found = self.whole_sources(value);
+        if !found.is_empty() {
+            self.value_sources.insert(id, found);
+        }
     }
 
     /// Records that `value` is written into `target`: if both sides are
     /// whole-number declarations, a fraction in the source makes the
-    /// target fractional too (see [`check`]). Follows the value through
-    /// arithmetic, `?:` and `??`, which keep a `float` a `float`.
+    /// target fractional too (see [`check`]).
     pub fn record_flow(&mut self, target: &hir::Expr, value: &hir::Expr) {
-        fn sources(e: &hir::Expr, out: &mut Vec<DefId>) {
-            match &e.kind {
-                hir::ExprKind::Def(d) => out.push(*d),
-                hir::ExprKind::Unary {
-                    op: hir::UnaryOp::Neg,
-                    expr,
-                } => sources(expr, out),
-                hir::ExprKind::Binary {
-                    op:
-                        hir::BinaryOp::Add
-                        | hir::BinaryOp::Sub
-                        | hir::BinaryOp::Mul
-                        | hir::BinaryOp::Div
-                        | hir::BinaryOp::Rem
-                        | hir::BinaryOp::Coalesce,
-                    lhs,
-                    rhs,
-                } => {
-                    sources(lhs, out);
-                    sources(rhs, out);
-                }
-                hir::ExprKind::Ternary { then, else_, .. } => {
-                    sources(then, out);
-                    sources(else_, out);
-                }
-                _ => {}
-            }
-        }
         let hir::ExprKind::Def(t) = target.kind else {
             return;
         };
         if !self.whole.contains(&t) {
             return;
         }
-        let mut found = Vec::new();
-        sources(value, &mut found);
         let td = &self.defs[t.0 as usize];
         let tk = (td.file, td.span);
-        for s in found {
-            if s != t && self.whole.contains(&s) {
+        for s in self.whole_sources(value) {
+            if s != t {
                 let sd = &self.defs[s.0 as usize];
                 self.flows.push((tk, (sd.file, sd.span)));
             }

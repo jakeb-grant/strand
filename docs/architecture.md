@@ -376,11 +376,13 @@ Public interfaces other crates and later stages build on:
   declarations is. An untyped `state`/`let` holding a whole number is an
   `int` in the HIR unless a fraction is written to it (then `float`).
   Fraction writes the source shows plainly are pinned before checking;
-  any found while checking re-run the checker once, closed over the
-  hand-offs between such states (`Checked::passes` says how many ran;
-  see decisions.md). An untyped component parameter has the joined type
-  of its call sites' arguments (a whole-number literal argument counts
-  as `int`).
+  any found while checking re-run the checker, with the pins closed over
+  the hand-offs between such states, direct or through untyped `let`s,
+  locals and fn values (`Checked::passes` says how many ran; there is no
+  cap, see decisions.md). An untyped component parameter has the joined
+  type of its call sites' arguments, each checked as an untyped `let`'s
+  value (`count + 1` is an `int`); in a cycle of inferring components a
+  later call that widens it re-runs the checker with it widened.
 - **HIR** (`strand_compiler::hir`), the typed, resolved program the VM
   lowering, the reconciler and the LSP consume. `Program { files:
   Vec<FileHir { file, name, items }>, defs: Vec<Def>, locals: Vec<Local>,

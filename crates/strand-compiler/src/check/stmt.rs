@@ -67,8 +67,16 @@ impl<'a> Checker<'a> {
                         "a local",
                     );
                 }
+                let untyped = declared.is_none();
                 let ty = declared.unwrap_or_else(|| value.ty.clone());
                 let local = self.bind_local(&l.name.name, ty, l.name.span, LocalKind::Let);
+                if untyped {
+                    // `let t = a; b = t` hands `a` to `b` (see `check`).
+                    let found = self.whole_sources(&value);
+                    if !found.is_empty() {
+                        self.local_sources.insert(local, found);
+                    }
+                }
                 self.add_ref(l.name.span, Target::Local(local));
                 StmtKind::Let { local, value }
             }

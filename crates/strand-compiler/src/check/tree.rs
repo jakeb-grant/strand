@@ -966,15 +966,8 @@ impl<'a> Checker<'a> {
             Some(ast::HeadArg::Positional(e)) => match sig.params.first() {
                 Some(p) => {
                     filled[0] = true;
-                    let ty = self.arg_ty(p, e);
-                    let outer = self.infer_arg.take();
-                    self.infer_arg = p.infer.then(|| p.name.clone());
-                    let h = self.prop_value(e, &ty, &format!("`{}` of `{kind}`", p.name));
-                    self.infer_arg = outer;
-                    if p.infer {
-                        self.passed(d, 0, &h);
-                    }
-                    Some(h)
+                    let p = p.clone();
+                    Some(self.arg_value(d, 0, &p, e, &format!("`{}` of `{kind}`", p.name)))
                 }
                 None => {
                     self.error(
@@ -1038,17 +1031,90 @@ impl<'a> Checker<'a> {
         })
     }
 
-    /// The type an argument to parameter `p` is checked against. A
-    /// parameter whose type comes from its callers expects nothing, except
-    /// that a whole-number literal is an `int` there, as in an untyped
-    /// `state` (`Grid 3`); callers that also pass fractions widen it to
-    /// `float` when the types are joined.
-    fn arg_ty(&self, p: &super::CompParam, e: &ast::Expr) -> Ty {
-        if p.infer && super::is_whole_literal(e) {
-            Ty::INT
-        } else {
-            p.ty.clone()
+    /// The argument `e` to parameter `i` (`p`) of component `comp`.
+    ///
+    /// A parameter whose type comes from its callers expects nothing: the
+    /// argument is checked as the value of an untyped `let` is (so a
+    /// whole-number literal or `count + 1` is an `int`), and its type is
+    /// recorded for the join. A call inside a cycle of such components can
+    /// come after the join; an argument the joined type does not cover
+    /// widens it for the next pass (see [`super::check`]), or, when the
+    /// types do not join, is one error at the parameter.
+    fn arg_value(
+        &mut self,
+        comp: DefId,
+        i: usize,
+        p: &super::CompParam,
+        e: &'a ast::Expr,
+        what: &str,
+    ) -> hir::Expr {
+        if !p.infer {
+            return self.prop_value(e, &p.ty, what);
         }
+        let outer = self.infer_arg.take();
+        self.infer_arg = Some(p.name.clone());
+        let joined = self.inferred.contains(&comp);
+        let h = match &e.kind {
+            ast::ExprKind::Commas(_) | ast::ExprKind::Spaced(_) => self.prop_value(e, &p.ty, what),
+            _ if joined => self.expr(e, Some(&p.ty)),
+            _ => {
+                let hint = super::is_whole_literal(e).then_some(Ty::INT);
+                self.expr(e, hint.as_ref())
+            }
+        };
+        self.infer_arg = outer;
+        if !joined {
+            self.passed(comp, i, &h);
+        } else if !h.ty.is_lenient() && !p.ty.is_lenient() && !self.types.assignable(&h.ty, &p.ty) {
+            self.late_arg(comp, i, p, &h);
+        }
+        h
+    }
+
+    /// An argument to an inferred parameter, passed after its type was
+    /// joined (inside a cycle of inferring components), that the joined
+    /// type does not cover: widens the parameter for the next pass, or
+    /// reports the clash once.
+    fn late_arg(&mut self, comp: DefId, i: usize, p: &super::CompParam, h: &hir::Expr) {
+        let Some(span) = self.param_span(comp, i) else {
+            return;
+        };
+        let key = (self.defs[comp.0 as usize].file, span);
+        let joined = self
+            .types
+            .join(&p.ty, &h.ty)
+            .and_then(|j| match self.new_param_pins.get(&key) {
+                Some(prev) => self.types.join(prev, &j),
+                None => Some(j),
+            })
+            .filter(|j| self.types.assignable(&h.ty, j));
+        if let Some(j) = joined {
+            self.new_param_pins.insert(key, j);
+            return;
+        }
+        if !self.infer_failed.insert((comp, i)) {
+            return;
+        }
+        let (sa, sb) = (self.show(&p.ty), self.show(&h.ty));
+        let first = self
+            .param_args
+            .get(&(comp, i))
+            .and_then(|v| v.iter().find(|(_, _, t)| !t.is_error()).cloned());
+        let comp_name = self.defs[comp.0 as usize].name.clone();
+        let name = p.name.clone();
+        let file = self.file();
+        let d = self.error(
+            "check::needs_type",
+            format!("parameter `{name}` of `{comp_name}` is passed `{sa}` and `{sb}`"),
+            span,
+            "its type comes from its callers, which disagree",
+        );
+        if let Some((f, s, _)) = first {
+            d.add_secondary(f, s, format!("`{sa}` here"));
+        }
+        d.add_secondary(file, h.span, format!("`{sb}` here")).help = Some(format!(
+            "write the type it takes (`{name}: T`), or pass the same type everywhere"
+        ));
     }
 
     /// A shader uniform's vector is a WGSL `vec2` to `vec4`: 2 to 4
@@ -1122,14 +1188,13 @@ impl<'a> Checker<'a> {
                         "pass the value; let the component's widgets bind their own state".into(),
                     );
                 }
-                let ty = self.arg_ty(&sig.params[i], p.value);
-                let outer = self.infer_arg.take();
-                self.infer_arg = sig.params[i].infer.then(|| name.to_string());
-                let value = self.prop_value(p.value, &ty, &format!("`{name}` of `{}`", call.name));
-                self.infer_arg = outer;
-                if sig.params[i].infer {
-                    self.passed(call.def, i, &value);
-                }
+                let value = self.arg_value(
+                    call.def,
+                    i,
+                    &sig.params[i],
+                    p.value,
+                    &format!("`{name}` of `{}`", call.name),
+                );
                 Some(hir::Prop {
                     name: name.to_string(),
                     span: p.name.span,
@@ -1644,6 +1709,7 @@ impl<'a> Checker<'a> {
                 };
                 if declared.is_none() {
                     self.inferable(&h.ty, &s.name, value.span, "state");
+                    self.record_value_sources(id, &h);
                 }
                 let mut final_ty = declared.unwrap_or_else(|| h.ty.clone());
                 let key_path = key.as_ref().and_then(|k| self.state_key(&mut final_ty, k));
@@ -1853,6 +1919,7 @@ impl<'a> Checker<'a> {
         };
         if declared.is_none() {
             self.inferable(&value.ty, &l.name, l.value.span, "let");
+            self.record_value_sources(id, &value);
         }
         let ty = declared.unwrap_or_else(|| value.ty.clone());
         self.defs[id.0 as usize].ty = ty;
@@ -1892,7 +1959,11 @@ impl<'a> Checker<'a> {
             Some(hir::StmtKind::Expr(e)) => Some((e.ty.clone(), e.clone())),
             _ => None,
         };
+        // A body that did not parse (`fn get() = a`) was reported by the
+        // parser; it is not also "no value".
+        let broken = matches!(body.last().map(|s| &s.kind), Some(hir::StmtKind::Error));
         match (&ret, &value_ty) {
+            (_, None) if broken => {}
             (_, None) => {
                 self.error(
                     "check::fn_value",
@@ -1913,6 +1984,10 @@ impl<'a> Checker<'a> {
         self.pop_scope();
         self.ctx = saved;
         if ret.is_none() {
+            if let Some((_, e)) = &value_ty {
+                // `a1 = f()` with `fn f() { a0 }` hands `a0` to `a1`.
+                self.record_value_sources(id, e);
+            }
             let r = value_ty.map_or(Ty::Error, |(t, _)| t);
             self.defs[id.0 as usize].ty = Ty::Fn(Arc::new(FnSig::new(params, r)));
         }

@@ -1084,11 +1084,18 @@ impl Parser<'_> {
             Vec::new()
         };
         let ret = self.eat(K::ThinArrow).map(|_| self.ty());
+        let missing = !self.at(K::LBrace);
+        let mut body = self.stmt_block("the function body");
+        if missing {
+            // No body (`fn get() = a`): an error statement marks it, so
+            // the checker does not also report that it has no value.
+            body.items.push(error_stmt(body.span));
+        }
         ItemKind::Fn(FnDecl {
             name,
             params,
             ret,
-            body: self.stmt_block("the function body"),
+            body,
         })
     }
 

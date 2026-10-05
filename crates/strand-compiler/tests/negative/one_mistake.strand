@@ -1,8 +1,8 @@
-// expect: check::unknown_field, check::two_way_prop, check::unknown_prop, check::misplaced
+// expect: check::unknown_field, check::two_way_prop, check::unknown_prop, check::misplaced, syntax::expected
 // One mistake, one diagnostic: an unknown field is not also read-only, a
 // rejected `<->` does not also check its target, an unknown prop does not
-// also resolve its value, and a misplaced surface does not read its name
-// as a value.
+// also resolve its value, a misplaced surface does not read its name as a
+// value, and a fn whose body did not parse does not also lack a value.
 state prefs from "~/.config/strand/prefs.toml" { a: int = 1 }
 state s = ""
 component C {
@@ -13,3 +13,4 @@ component C {
   bar X { edge: top }
 }
 panel P { edge: bottm }
+fn get() = 1
