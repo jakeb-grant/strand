@@ -33,6 +33,12 @@ impl Sway {
     /// installed, so the test is skipped.
     pub fn start(test: &str) -> Option<Sway> {
         if Command::new("sway").arg("--version").output().is_err() {
+            // CI sets STRAND_REQUIRE_SWAY so a missing sway fails loudly
+            // instead of passing as a skip.
+            assert!(
+                std::env::var_os("STRAND_REQUIRE_SWAY").is_none(),
+                "{test}: sway is not installed but STRAND_REQUIRE_SWAY is set"
+            );
             eprintln!("skipping {test}: sway is not installed");
             return None;
         }
@@ -201,10 +207,10 @@ fn json_strings(json: &str, key: &str) -> Vec<String> {
     while let Some(i) = rest.find(&pat) {
         rest = &rest[i + pat.len()..];
         let r = rest.trim_start_matches([':', ' ']);
-        if let Some(r) = r.strip_prefix('"') {
-            if let Some(end) = r.find('"') {
-                out.push(r[..end].to_owned());
-            }
+        if let Some(r) = r.strip_prefix('"')
+            && let Some(end) = r.find('"')
+        {
+            out.push(r[..end].to_owned());
         }
     }
     out

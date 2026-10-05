@@ -1412,12 +1412,12 @@ impl Parser<'_> {
             let value = self.expr();
             return StmtKind::Assign { target, op, value };
         }
-        if !self.at_item_end() {
-            if let ExprKind::Name(id) = &target.kind {
-                let kws = STMT_KEYWORDS.iter().copied().chain(["else"]);
-                if let Some(h) = did_you_mean(&id.name, kws) {
-                    self.expected_with("`;` or a line break after this statement", Some(h));
-                }
+        if !self.at_item_end()
+            && let ExprKind::Name(id) = &target.kind
+        {
+            let kws = STMT_KEYWORDS.iter().copied().chain(["else"]);
+            if let Some(h) = did_you_mean(&id.name, kws) {
+                self.expected_with("`;` or a line break after this statement", Some(h));
             }
         }
         StmtKind::Expr(target)

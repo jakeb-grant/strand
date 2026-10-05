@@ -19,8 +19,15 @@ bar Top {
 That file is already on every monitor, reactive, themed and animated. It wakes
 once a minute.
 
-**Status:** pre-M0. The workspace is laid out, but nothing renders yet. See
-[`docs/design.md`](docs/design.md) for the full design.
+**Status:** M0 spike done, M1 under way. `strand run --demo` puts a
+hard-coded hello bar with a minute clock on every monitor (layer-shell,
+fractional scale, exact damage, true idle between ticks, about 21 MB PSS on
+two monitors; see [`docs/m0-report.md`](docs/m0-report.md)). The reactive core
+(`strand-core`) and the `.strand` parser with did-you-mean diagnostics
+(`strand check`) are in; the type checker, VM and live reload are not, so
+`strand run` cannot load your own `.strand` files yet. Progress is tracked in
+[`docs/features.md`](docs/features.md); [`docs/design.md`](docs/design.md) has
+the full design.
 
 ## Layout
 
@@ -55,7 +62,10 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-CI runs the same three on every push. The later tiers in the design's Testing
-section (offline render tests, headless sway, mocked D-Bus services, the
-reload fuzzer and the memory budgets) are added with the milestones that need
-them.
+CI runs the same three on every push, with headless sway, grim and DejaVu
+fonts installed so the Wayland integration tests and the M0 demo run (set
+`STRAND_REQUIRE_SWAY=1` to make a missing sway fail instead of skip), plus
+`cargo test --release -p strand --test demo` for the 34 MB PSS budget.
+Offline render tests run in plain `cargo test`. The later tiers in the
+design's Testing section (mocked D-Bus services and the reload fuzzer) are
+added with the milestones that need them.

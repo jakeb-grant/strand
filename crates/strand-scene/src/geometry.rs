@@ -306,7 +306,7 @@ impl Scale {
     }
 
     pub const fn is_integer(self) -> bool {
-        self.0 % Self::DENOMINATOR == 0
+        self.0.is_multiple_of(Self::DENOMINATOR)
     }
 
     /// A logical length in physical pixels, unrounded.

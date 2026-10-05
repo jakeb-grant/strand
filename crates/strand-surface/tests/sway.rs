@@ -330,10 +330,10 @@ fn renders_pixels_with_exact_damage() {
         assert_eq!(shot.rgb(sq.x as u32 + 1, sq.y as u32 + 1), RED);
         assert_eq!(shot.rgb(sq.right() as u32 - 1, sq.bottom() as u32 - 1), RED);
         assert_eq!(shot.rgb(sq.right() as u32, sq.y as u32), BLUE);
-        if let Some(old) = previous {
-            if !old.intersect(sq).is_some() {
-                assert_eq!(shot.rgb(old.x as u32 + 1, old.y as u32 + 1), BLUE);
-            }
+        if let Some(old) = previous
+            && !old.intersect(sq).is_some()
+        {
+            assert_eq!(shot.rgb(old.x as u32 + 1, old.y as u32 + 1), BLUE);
         }
         previous = Some(sq);
     }

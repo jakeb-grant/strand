@@ -7,12 +7,18 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
+  # The Wayland and budget tiers fail instead of skipping when sway is missing.
+  STRAND_REQUIRE_SWAY: "1"
 
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install headless sway, grim and fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends sway grim fonts-dejavu-core
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -20,3 +26,5 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets
       - run: cargo test --workspace
+      # The 34 MB PSS gate is checked on a release build (design.md, "Testing": budgets).
+      - run: cargo test --release -p strand --test demo

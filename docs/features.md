@@ -92,6 +92,7 @@ Live reload:
 - [ ] Off-thread compile of changed modules + dependents; atomic commit of the largest consistent set
 - [ ] Last good tree kept; compiled cache keyed by source hash + compiler version + schema hash
 - [ ] Identity: source span → key/id → position; ambiguity resets with a warning (core side done: `Runtime::reparent` moves live state, keyed cells keep their diff log, handlers create nodes in their current component — `crates/strand-core/tests/disposal.rs::a_moved_scope_survives_its_old_parent`, `an_on_change_handler_moved_to_a_new_owner_creates_nodes_there`)
+- [ ] State lives on components, surfaces and list items, never on leaf elements; a cell adopts a new default only if it still holds the old one, else the overlay says `launcher.query: kept "fir" (default changed) [reset]`
 - [ ] Edit table: token swap, prop patch animates, node add/remove poses, state default adoption rules, name/type change resets one cell, handler restart, timer rescale, surface recreate, service restart, lock deferral (core side of handler restart and timer rescale done: disposing a handler cancels and reports its in-flight `await` — `crates/strand-core/tests/handler_semantics.rs::disposing_a_handler_cancels_its_in_flight_tasks`; `Timer::rescale_from` / `Debounced::rescale_from` carry the countdown's lifecycle — `tests/handlers.rs::reactive_duration_and_rescale`, `rescaling_from_an_after_that_fired_never_fires_again`, `a_debounce_restarted_mid_countdown_fires_once_at_the_rescaled_time`)
 - [ ] Merkle hashes over handler reachability
 - [ ] Error overlay after 250 ms quiet; did-you-mean; click to `$EDITOR`; runtime fault freezes one component outlined red (core side done: `Runtime::suspend/resume` — `crates/strand-core/tests/disposal.rs::a_suspended_component_freezes_and_resumes`, `resume_wakes_the_host_for_held_work_and_overdue_timers`, `an_effect_moved_out_of_a_suspended_scope_is_not_left_deaf`, `a_nested_scope_moved_out_of_a_suspended_parent_runs_again`, `a_frozen_task_woken_repeatedly_is_held_once`)
@@ -100,6 +101,7 @@ Live reload:
 - [ ] `strand check`, `strand watch [--json]`, `strand reload [--hard]`, `@reset` (`strand check` parses and reports: `crates/strand/src/check.rs` tests; `@reset` parses: `snippets.strand`; checker, watch, reload pending)
 - [ ] Basic LSP in `strand-dev`: diagnostics, completion after `$` `.` `<->`, hover, rename
 - [ ] Reload fuzzer: five save styles, cold-boot equivalence
+- [ ] Reload latency benchmark fails the build when p95 misses its target: token edit ≤35 ms save → pixels, markup edit ≤50 ms, portal or monitor change on the next frame
 
 ## M2 Layout, animation, tokens: usable v0.1 (weeks 17–24)
 
@@ -122,10 +124,15 @@ Exit: [ ] theme swap under 5 ms · [ ] contrast never below 3:1 · [ ] the four 
 - [ ] Contrast guard ≥3:1; crossfade fallback for light↔dark
 - [ ] Snap rules: fonts, padded shadow lists, layout lengths; `reduced_motion`
 - [ ] `material(seed:)`, `material(image:)` (128 px downscale off-thread, content-hash cache), importers (base16/24, Catppuccin, matugen, W3C) filling the full palette
+- [ ] Wallpaper path and its symlink target watched; the old palette holds until the new one is ready
 - [ ] Portal `system.dark`, `system.accent`, `system.contrast`
 - [ ] Last palette persisted; no default-colour flash at boot
 - [ ] Settings files: per-field validation, `toml_edit` write-back, symlink-following, read-only overlay
 - [ ] Widgets: `text`, `icon`, `image`, `box`, `button`, `slider`, `input`, `meter`, `segmented`, `popup`, `tooltip`
+- [ ] Text props: `ellipsis: start | middle | end`, `max_lines`, `marks` + `mark_color`, `markup: basic`, `max_width: %` (render side of `ellipsis`, `max_lines`, `marks`/`mark_color` done: `crates/strand-text/tests/text.rs` (`ellipsis_cuts_to_one_line_that_fits`, `max_lines_limits_wrapped_text`, `spans_colour_and_weight_ranges`), `crates/strand-render/tests/damage.rs::ellipsis_and_marks_reach_the_text_engine`; `markup: basic` parsing pending)
+- [ ] Images decode at drawn size into a 6 MB LRU; GPU crates stay cold unless used
+- [ ] Surface defaults: `osd` on the focused monitor, overlay layer, click-through (empty input region); `panel`/`osd` honour `screens: focused`, `layer`, `anchor`, `keyboard`; each surface gets the stable `strand-<Name>` namespace (render side: `strand-scene::surface::SurfaceSpec` — `crates/strand-render/tests/damage.rs::surface_specs_resolve_tokens_and_report_changes`)
+- [ ] Offline render tier also covers springs sampled at fixed timestamps (deterministic springs as images) and theme swaps
 - [ ] Shapes and paint: per-corner radius, squircle, borders, shadows (`$elevation`), gradients with dither
 
 ## M3 Services (weeks 25–34)
@@ -135,11 +142,13 @@ Exit: [ ] runs on Hyprland, niri and sway · [ ] 100 reloads with no reconnects 
 - [ ] Service contract: `#[service]`, `#[derive(Store)]`, lazy start, refcount, stop 5 s after last reader, visibility gating
 - [ ] audio (PipeWire), brightness (logind), battery (UPower), network (nmrs), bluetooth, tray (SNI + DBusMenu), notifications server, workspaces (`ext-workspace-v1` + IPC adapters), windows (`ext-foreign-toplevel-list`), apps (desktop entries, icons, nucleo fuzzy + frecency), portal settings, clock, calendar, media (MPRIS), cpu/memory
 - [ ] Hyprland, niri, sway IPC adapters (own implementations)
+- [ ] Service threads: one shared tokio current-thread runtime; PipeWire and the Wayland toplevel protocols on their own threads
+- [ ] Change sources beyond files: compositor reload (Hyprland socket2 `configreloaded`, niri `ConfigLoaded { failed }`) as `wm.config_reloaded`; `applications/`, `index.theme` and fontconfig dirs invalidate their caches
 - [ ] No-code services `from dbus` checked against introspection; `from file|listen|poll`; `permit exec`
 - [ ] Service schemas drive type checking and LSP hover
 - [ ] The compiler collects the service paths a shell uses; only those services start (lazy start input)
 - [ ] Notification name conflict with dunst/mako fails clearly
-- [ ] python-dbusmock CI tier
+- [ ] python-dbusmock CI tier (UPower, NetworkManager, BlueZ, logind, notifications under `dbus-run-session`; PipeWire with a null sink; zbus mocks for the portal and tray)
 
 ## M4 Power features (weeks 35–44)
 
@@ -148,13 +157,14 @@ Exit: [ ] smooth 2,000-row scrolling · [ ] GPU released when idle · [ ] lock f
 - [ ] GPU promotion (vello_gpu/wgpu) for large long animations; switch only when settled; device dropped after 30 s idle
 - [ ] Compositor-animated poses: alpha modifier, viewporter scale, layer-shell margins
 - [ ] Popups as nested xdg_popups; tray menus; tooltips
+- [ ] Scrims and lock backgrounds use single-pixel buffers (`wp_single_pixel_buffer_v1`); `attach: top` concave fillets on popups and panels
 - [ ] Popup/panel `open: <-> x` is written false by Escape, click-away and focus loss
 - [ ] Virtualised long lists; keyboard `nav:`
 - [ ] Drag and drop: `drag:`, typed `Drop`, springs by key
 - [ ] `pages current:` with directional transitions; hidden pages unmount
 - [ ] Shaders (naga-checked, hot-reloaded); canvas
-- [ ] Blur ladder: `ext-background-effect-v1`, Hyprland rules (`strand compositor-rules`), tint fallback; `backdrop: blur()` at quarter scale
-- [ ] Lock screen on `ext-session-lock`, forked PAM helper, fail-closed, exempt from reload
+- [ ] Blur ladder: `ext-background-effect-v1`, Hyprland rules (`strand compositor-rules`), tint fallback; `backdrop: blur()` at quarter scale; `blur_fallback: tint | none` (tint raises alpha by 0.15 and the inspector says why); the blur region follows the rounded shape and is re-sent only when the shape changes
+- [ ] Lock screen on `ext-session-lock`, forked PAM helper, fail-closed, exempt from reload; tested in a local QEMU VM with injected faults, never on a real session
 - [ ] Effects catalogue: shapes + morphing, strokes, arcs, goo merge, glow, inner shadow, rim, grain, text effects, scrim, filters, blend modes, masks, named curves, pose presets, time signals (`t`, `wave`, `noise`), keyframes, stagger, shared-element `morph`, rolling numbers, jelly, parallax/tilt, built-in effects, particles, transition masks, spectrum, graphs, wavy meter, GIF/APNG/WebP, Lottie, bindable SVG, thumbnails
 - [ ] Bundled GPU effects (8) start only while visible
 - [ ] Runtime: effect layers in scene IR, cached offscreen groups, CPU raster nodes, per-node clocks with frame caps

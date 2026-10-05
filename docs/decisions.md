@@ -752,3 +752,32 @@ schema from `strand-compiler`).
   itself one. A poisoned surface then stops drawing a gone layout.
 - 2026-10-05 · m0: `scripts/m0-exit.sh` gates damage per tick as the sum
   over all bars in every scenario, the 3-bar tick after hotplug included.
+
+## integration
+
+- **2026-10-05 · integration: wave-1 merge.** Branches merged in the order
+  core, compiler, render, surface, m0. `Cargo.lock` was regenerated from
+  main's lock with `cargo metadata`, so every branch's locked versions are
+  kept. `docs/features.md` and this file are the union of every track's
+  entries; where the compiler track ticked a syntax-only box and the core
+  track noted the runtime side, both notes stay on the one line.
+- **2026-10-05 · integration: `strand` binary.** The compiler track's
+  `strand check` (handled before dispatch) and the m0 track's
+  `run --demo` and mimalloc allocator live side by side in `main.rs`.
+- **2026-10-05 · integration: MSRV 1.89.** `rust-version` is 1.89, the
+  highest any locked dependency declares (vello_cpu, vello_common and
+  fearless_simd 0.3/0.7; parley 0.11 needs 1.88; smithay-client-toolkit
+  0.21 and wayland-protocols 0.32 need 1.86).
+- **2026-10-05 · integration: CI Wayland and budget tiers.** CI installs
+  sway, grim and fonts-dejavu-core and sets `STRAND_REQUIRE_SWAY=1`, under
+  which the sway-backed tests (`crates/strand-surface/tests`,
+  `crates/strand/tests/demo.rs`) fail instead of skipping; it also runs
+  `cargo test --release -p strand --test demo` for the 34 MB PSS gate.
+- **2026-10-05 · integration: checklist coverage.** Items the design names
+  but the checklist lacked were added unticked: state placement and
+  default-adoption notice, the p95 reload-latency benchmark, text props
+  (`ellipsis`, `max_lines`, `marks`, `markup: basic`), the 6 MB image LRU,
+  surface defaults and `strand-<Name>` namespaces, deterministic-spring and
+  theme-swap render tests, wallpaper watching, service threads, compositor
+  reload and cache-invalidation sources, `blur_fallback`, single-pixel
+  buffers and `attach:` fillets, and the lock-screen VM tier.

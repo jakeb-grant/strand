@@ -1272,18 +1272,16 @@ impl<H: SurfaceHost + 'static> State<H> {
             return;
         }
         let wants = self.host.wants_frame(id);
-        if !wants {
-            if let Some(at) = self.host.frame_deadline(id) {
-                // The painter holds this frame (a first frame whose text is
-                // still being shaped): ask again at its deadline, or sooner
-                // when new content marks the surface. The paint stays owed.
-                if let Some(s) = self.surfaces.get_mut(&id) {
-                    s.repaint = true;
-                }
-                self.commit_ack(id);
-                self.arm_deadline(id, at);
-                return;
+        if !wants && let Some(at) = self.host.frame_deadline(id) {
+            // The painter holds this frame (a first frame whose text is
+            // still being shaped): ask again at its deadline, or sooner
+            // when new content marks the surface. The paint stays owed.
+            if let Some(s) = self.surfaces.get_mut(&id) {
+                s.repaint = true;
             }
+            self.commit_ack(id);
+            self.arm_deadline(id, at);
+            return;
         }
         let Some(s) = self.surfaces.get_mut(&id) else {
             return;
@@ -1519,11 +1517,11 @@ impl<H: SurfaceHost + 'static> State<H> {
 
     fn send_input(&mut self, event: InputEvent) {
         self.host.input(&event);
-        if let Some(tx) = &self.input {
-            if tx.send(event).is_err() {
-                // Nobody listens any more: stop queueing.
-                self.input = None;
-            }
+        if let Some(tx) = &self.input
+            && tx.send(event).is_err()
+        {
+            // Nobody listens any more: stop queueing.
+            self.input = None;
         }
     }
 }
@@ -2007,11 +2005,11 @@ impl<H: SurfaceHost + 'static> Dispatch2<WpFractionalScaleV1, State<H>> for Surf
             let Some(scale) = Scale::new(scale) else {
                 return;
             };
-            if let Some(s) = state.surfaces.get_mut(&self.0) {
-                if s.scale != scale {
-                    s.scale = scale;
-                    state.mark(self.0);
-                }
+            if let Some(s) = state.surfaces.get_mut(&self.0)
+                && s.scale != scale
+            {
+                s.scale = scale;
+                state.mark(self.0);
             }
         }
     }

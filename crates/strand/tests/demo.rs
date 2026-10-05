@@ -39,6 +39,12 @@ impl Sway {
     fn start() -> Option<Self> {
         for tool in ["sway", "swaymsg", "grim"] {
             if Command::new(tool).arg("--version").output().is_err() {
+                // CI sets STRAND_REQUIRE_SWAY so a missing tool fails loudly
+                // instead of passing as a skip.
+                assert!(
+                    std::env::var_os("STRAND_REQUIRE_SWAY").is_none(),
+                    "{tool} is not installed but STRAND_REQUIRE_SWAY is set"
+                );
                 eprintln!(
                     "\n*** SKIPPED: {tool} is not installed; the M0 PSS, idle and alignment checks did not run ***\n"
                 );
