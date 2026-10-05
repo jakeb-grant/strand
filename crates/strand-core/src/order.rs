@@ -19,15 +19,27 @@
 //!   the final values.
 //!
 //! Most nodes have rank 0 and are not stored. A flush runs queued sinks by
-//! `(rank, creation order)`. Write edges are *learned* the first time a
-//! handler writes a target during a flush (or *declared* up front with
-//! [`Runtime::writes_to`], which the compiler can do for every assignment
-//! it sees), and ranks only rise. So a sink runs at most once per flush,
-//! except that a write edge seen for the first time can re-run a sink that
-//! already ran in that flush, once; from then on it is ordered after the
-//! writer. A write edge that would close a loop (a handler writing what it
-//! reads, directly or through other handlers) is a feedback edge: it is not
-//! ranked, and the runtime's cycle guard bounds it as before.
+//! `(rank, creation order)`.
+//!
+//! Read edges only exist once a node has run, so a sink's rank would be
+//! incomplete before its first run. The compiler therefore *declares* the
+//! edges it can see in the source: [`Runtime::reads_from`] (the syntactic
+//! read set of a binding or handler, every branch: a conservative
+//! superset) and [`Runtime::writes_to`] (every assignment and emit). With
+//! both declared, ranks are complete before anything runs and a sink runs
+//! exactly once per flush, the first flush included, even when it switches
+//! between branches at run time. Undeclared edges are *learned*: a write
+//! edge the first time a handler writes a target during a flush, a read
+//! edge when a node first reads a source. Ranks only rise. A sink that has
+//! never run and declares nothing (no reads, no writes) runs in a
+//! *provisional* phase, after all ranked work and before `on change`
+//! handlers ([`PROVISIONAL_RANK`]), so on a boot or reload it sees what
+//! the declared writers wrote. Without declarations a learned edge can
+//! still re-run a sink that already ran in that flush, once; its last run
+//! sees the final values. A write edge that would close a loop (a handler
+//! writing what it reads, directly or through other handlers) is a
+//! feedback edge: it is not ranked, and the runtime's cycle guard bounds
+//! it as before.
 
 use crate::error::Error;
 use crate::runtime::{NodeId, Runtime};
@@ -38,13 +50,50 @@ use std::sync::Arc;
 /// ordinary writes (each write edge adds one).
 pub(crate) const LATE_RANK: u32 = 1 << 20;
 
-/// Write edges of one writer.
+/// Where a sink that has never run and declares no edges runs its first
+/// time: after every ranked sink, before `on change` handlers.
+pub(crate) const PROVISIONAL_RANK: u32 = LATE_RANK - 1;
+
+/// Write edges of one writer. Sets: a handler filling one cell per row
+/// (2,000 rows) checks an edge on every write.
 #[derive(Default)]
 pub(crate) struct Writes {
     /// Targets ranked above the writer.
-    ranked: Vec<NodeId>,
+    ranked: foldhash::HashSet<NodeId>,
     /// Targets whose edge would close a loop (not ranked).
-    feedback: Vec<NodeId>,
+    feedback: foldhash::HashSet<NodeId>,
+}
+
+/// Declared read edges ([`Runtime::reads_from`]), both directions.
+#[derive(Default)]
+pub(crate) struct Declared {
+    /// Reader -> the sources it declared.
+    sources: foldhash::HashMap<NodeId, Vec<NodeId>>,
+    /// Source -> the readers that declared it.
+    readers: foldhash::HashMap<NodeId, foldhash::HashSet<NodeId>>,
+}
+
+impl Declared {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.sources.is_empty()
+    }
+    pub(crate) fn declares(&self, reader: NodeId) -> bool {
+        self.sources.contains_key(&reader)
+    }
+    /// Forget a disposed node.
+    pub(crate) fn forget(&mut self, n: NodeId) {
+        if let Some(sources) = self.sources.remove(&n) {
+            for s in sources {
+                if let Some(r) = self.readers.get_mut(&s) {
+                    r.remove(&n);
+                    if r.is_empty() {
+                        self.readers.remove(&s);
+                    }
+                }
+            }
+        }
+        self.readers.remove(&n);
+    }
 }
 
 impl Writes {
@@ -70,6 +119,25 @@ impl Runtime {
         self.rank_of(id)
     }
 
+    /// The rank a queued sink runs at: its rank, or [`PROVISIONAL_RANK`]
+    /// for a sink that has never run and declares no edges (its read edges
+    /// don't exist yet, so it waits for the ranked work).
+    pub(crate) fn sched_rank(&self, id: NodeId) -> u32 {
+        let r = self.rank_of(id);
+        if r >= PROVISIONAL_RANK {
+            return r;
+        }
+        let fresh = self.inner.fresh.borrow();
+        if fresh.is_empty()
+            || !fresh.contains(&id)
+            || self.inner.declared.borrow().declares(id)
+            || self.inner.writes.borrow().contains_key(&id)
+        {
+            return r;
+        }
+        PROVISIONAL_RANK
+    }
+
     pub(crate) fn rank_of(&self, id: NodeId) -> u32 {
         let ranks = self.inner.ranks.borrow();
         if ranks.is_empty() {
@@ -80,19 +148,16 @@ impl Runtime {
 
     /// Declare that `writer` (an effect, listener, timer, `on change`
     /// handler or handler site) writes `target` (a cell or event queue), so
-    /// sinks reading `target` are ordered after `writer` from the first
-    /// flush on, instead of after the first write is seen. The compiler
-    /// knows every assignment a handler makes. A declaration that would
+    /// sinks reading `target` are ordered after `writer` before the first
+    /// write is seen: from the first flush on when they declare their reads
+    /// ([`Runtime::reads_from`]) or declare nothing (they then wait for the
+    /// ranked work on their first run), else once they have run. The
+    /// compiler declares every assignment and `emit`. A declaration that would
     /// close a loop (`writer` reads `target`, directly or through other
     /// writers) is a feedback edge: [`Error::Cycle`] names it and nothing
     /// is ranked.
     pub fn writes_to(&self, writer: NodeId, target: NodeId) -> Result<(), Error> {
-        if !self.exists(writer) {
-            return Err(Error::Disposed(writer));
-        }
-        if !self.exists(target) {
-            return Err(Error::Disposed(target));
-        }
+        self.write_target_check(writer, target)?;
         if self.learn(writer, target) {
             Ok(())
         } else {
@@ -100,6 +165,51 @@ impl Runtime {
                 self.path(vec![writer, target, writer]),
             )))
         }
+    }
+
+    fn write_target_check(&self, writer: NodeId, target: NodeId) -> Result<(), Error> {
+        if !self.exists(writer) {
+            return Err(Error::Disposed(writer));
+        }
+        if !self.exists(target) {
+            return Err(Error::Disposed(target));
+        }
+        Ok(())
+    }
+
+    /// Declare that `reader` (a memo, derived collection, effect, timer,
+    /// `on change` handler, listener or handler site) reads `sources`, so
+    /// it is ranked with them before its first run instead of after it. The
+    /// compiler declares the syntactic read set of every binding and
+    /// handler: every branch, a conservative superset of what one run
+    /// reads. Calling it marks `reader` as declared even with no sources
+    /// (a handler that reads nothing), so it is not held back to the
+    /// provisional phase on its first run. Calls add up. A declared read
+    /// that closes a loop through write edges turns those write edges into
+    /// feedback edges, as a learned read does.
+    pub fn reads_from(&self, reader: NodeId, sources: &[NodeId]) -> Result<(), Error> {
+        if !self.exists(reader) {
+            return Err(Error::Disposed(reader));
+        }
+        if let Some(&gone) = sources.iter().find(|&&s| !self.exists(s)) {
+            return Err(Error::Disposed(gone));
+        }
+        {
+            let mut declared = self.inner.declared.borrow_mut();
+            let list = declared.sources.entry(reader).or_default();
+            for &s in sources {
+                if s != reader && !list.contains(&s) {
+                    list.push(s);
+                }
+            }
+            for &s in sources {
+                if s != reader {
+                    declared.readers.entry(s).or_default().insert(reader);
+                }
+            }
+        }
+        self.rank_after_sources(reader);
+        Ok(())
     }
 
     /// A handler is writing `target` during a flush: queue the write edge
@@ -123,9 +233,8 @@ impl Runtime {
         {
             return;
         }
-        let mut queue = self.inner.learn_queue.borrow_mut();
-        if !queue.contains(&(writer, target)) {
-            queue.push((writer, target));
+        if self.inner.learn_seen.borrow_mut().insert((writer, target)) {
+            self.inner.learn_queue.borrow_mut().push((writer, target));
         }
     }
 
@@ -136,6 +245,7 @@ impl Runtime {
             return;
         }
         let queue = std::mem::take(&mut *self.inner.learn_queue.borrow_mut());
+        self.inner.learn_seen.borrow_mut().clear();
         for (writer, target) in queue {
             if self.exists(writer) && self.exists(target) {
                 self.learn(writer, target);
@@ -159,9 +269,9 @@ impl Runtime {
         let mut writes = self.inner.writes.borrow_mut();
         let w = writes.entry(writer).or_default();
         if ok {
-            w.ranked.push(target);
+            w.ranked.insert(target);
         } else {
-            w.feedback.push(target);
+            w.feedback.insert(target);
         }
         w.prune(self);
         ok
@@ -184,8 +294,14 @@ impl Runtime {
             let nodes = self.inner.nodes.borrow();
             let Some(n) = nodes.get(id) else { return };
             let ranks = self.inner.ranks.borrow();
+            if ranks.is_empty() {
+                return;
+            }
+            let declared = self.inner.declared.borrow();
+            let extra = declared.sources.get(&id).map_or(&[][..], Vec::as_slice);
             n.sources
                 .iter()
+                .chain(extra)
                 .filter_map(|s| ranks.get(s).copied())
                 .max()
                 .unwrap_or(0)
@@ -212,6 +328,9 @@ impl Runtime {
         if let Some(w) = self.inner.writes.borrow().get(&n) {
             out.extend(w.ranked.iter().map(|&t| (t, true)));
         }
+        if let Some(r) = self.inner.declared.borrow().readers.get(&n) {
+            out.extend(r.iter().map(|&r| (r, false)));
+        }
         if let Ok(data) = self.data(n) {
             out.extend(data.downstream().into_iter().map(|l| (l, false)));
         }
@@ -220,10 +339,13 @@ impl Runtime {
     /// Find a path from `id` to one of its own sources and unrank the
     /// write edges on it. Returns whether any edge was unranked.
     fn break_loop(&self, id: NodeId) -> bool {
-        let sources: foldhash::HashSet<NodeId> = match self.inner.nodes.borrow().get(id) {
+        let mut sources: foldhash::HashSet<NodeId> = match self.inner.nodes.borrow().get(id) {
             Some(n) => n.sources.iter().copied().collect(),
             None => return false,
         };
+        if let Some(d) = self.inner.declared.borrow().sources.get(&id) {
+            sources.extend(d.iter().copied());
+        }
         let mut parent: foldhash::HashMap<NodeId, (NodeId, bool)> = foldhash::HashMap::default();
         let mut queue = std::collections::VecDeque::from([id]);
         let mut next = Vec::new();
@@ -245,8 +367,8 @@ impl Runtime {
                 while cur != id {
                     let (p, write) = parent[&cur];
                     if write && let Some(w) = writes.get_mut(&p) {
-                        w.ranked.retain(|&t| t != cur);
-                        w.feedback.push(cur);
+                        w.ranked.remove(&cur);
+                        w.feedback.insert(cur);
                         demoted = true;
                     }
                     cur = p;

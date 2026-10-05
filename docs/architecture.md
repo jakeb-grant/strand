@@ -236,9 +236,14 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   listeners and tasks stop, timers pause as if their `while` were false,
   state kept; service events are kept for its listeners up to
   `MAX_FROZEN_EVENTS` each, the oldest dropped and counted in
-  `Diagnostic::EventsDropped`; input events dropped) and the fixing reload calls
+  `Diagnostic::EventsDropped`, also when the listener is disposed instead
+  of resumed; input events dropped; `await sleep(..)` inside it pauses too)
+  and the fixing reload calls
   `rt.resume(scope)`, or moves the live state out with `reparent` and
-  disposes the frozen scope (held work is released either way). Reloaded
+  disposes the frozen scope (held work is released either way). Released
+  timers and sleeps count again from the host's next `tick` (the logic
+  clock stands still while the host sleeps), and the release calls the
+  wake hook so the host ticks. Reloaded
   timers take over the old countdown with `new.rescale_from(rt, old)`
   (`Debounced::rescale_from` for `on change … after`).
 - Handlers: listeners, timers and `on change` handlers each get a handler
@@ -259,18 +264,31 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   key (no firing on a sink switch); `on change` handlers run after the
   tick's other effects settle, so they fire once per outside write.
   Sinks run in a computed topological order (wave 2): ranks over read
-  edges and the write edges handlers make, learned on the first write or
-  declared up front with `rt.writes_to(handler, cell)`, which the compiler
-  should call for every assignment and `emit` it lowers (a reader is then
-  ordered after its writer as soon as the reader has run once, before the
-  first write is seen); `rt.rank(id)` exposes the rank.
+  edges, ownership and the write edges handlers make. The compiler must
+  declare both kinds of edge it lowers, before the first flush:
+  `rt.reads_from(node, &sources)` with the syntactic read set (every
+  branch: a conservative superset) of every binding (memo, derived
+  collection) and handler (effect, timer condition, `on change` tracked
+  expression, listener), even an empty one, and `rt.writes_to(handler,
+  target)` for every assignment and `emit`. With both, every sink runs
+  exactly once per flush with final values, the first flush (boot,
+  reload mounts) included. Undeclared edges are learned when first seen,
+  which can re-run a sink once in that flush; a sink that has never run
+  and declares nothing runs after all ranked sinks on its first run.
+  `rt.rank(id)` exposes the rank. Tasks woken from other threads (IO and
+  D-Bus replies) are polled at the start of the next flush, never between
+  sinks.
   Service events are `EventQueue`s. Keyed collection writes from
   graph-triggered handlers are rate-guarded too (wave 2): a throttled
-  handler writes to a held copy that lands as one keyed diff, so the
-  emitter only ever sees `VecDiff`s. `KeyedVec` lookups by key are O(1);
-  a `KeyedVec` clone shares its key index, so read through a temporary
-  (`xs.get_untracked(rt)?.get(&k)`) rather than holding a clone across a
-  write, which would copy the index.
+  handler writes to a held copy (with the list it started from) whose
+  changes land as one keyed diff, re-applied by key onto whatever other
+  writes (input handlers, service batches, other handlers) did meanwhile,
+  so the emitter only ever sees `VecDiff`s and no push is lost
+  (`Diagnostic::KeyedConflict` counts changes that no longer apply). The
+  VM reads collections without copying through `xs.with(rt, |v| ..)`
+  (tracked), `xs.with_untracked(rt, ..)` and `xs.get_key(rt, &k)`; a
+  `KeyedVec` clone (`get_untracked`) held across a write makes that write
+  copy the items and the key index.
   Service `rw` writes use `write_tagged(value, send)` (throttled writes are
   held, then sent) and reports come back through `receive`. `let x =
   svc.call(input)` returning `Async` is `rt.async_memo(input, fetch)`, a
@@ -284,14 +302,26 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   LSP: `rt.sources/observers/owned(id)`, `rt.site_of(handler)`.
 - `state x = d persist` is `rt.persisted(&store, path, d, encode, decode)`
   (wave 2): `store` is one `PersistStore::from_env()` per process
-  (`$XDG_STATE_HOME/strand/persist`, one file per cell path), `path` is the
-  cell's `file.name` path, and the VM supplies a stable byte codec for its
-  `Value`s. It returns the cell's `Signal` plus the `Restore` decision
-  (default, stored, adopted new default, kept over a new default, failed);
-  warnings arrive as `Diagnostic::PersistDefaultChanged` /
-  `Diagnostic::PersistFailed`. The reconciler compares defaults with
-  `persist::value_hash` of the encoded default, and `@reset` calls
-  `store.remove(path)`.
+  (`$XDG_STATE_HOME/strand/persist`, one file per cell path; its writes go
+  through one persist IO thread, so `fsync` never stalls a tick), and the
+  VM supplies a stable byte codec for its `Value`s. `path` names one live
+  cell: the cell's `file.name` path plus its instance identity when the
+  component has several, `bar[<make model description>].expanded` for a
+  `bar` on every monitor (the monitor identity of `strand-surface`), or
+  the item key for state on list items (`list[<key>].x`); any bytes are
+  allowed, the store escapes them. A second live cell on a path in use is
+  reported as `Diagnostic::PersistPathInUse` and never writes. It returns
+  a `Persisted` handle: the cell's `Signal`, the `Restore` decision
+  (default, stored, adopted new default, kept over a new default, failed),
+  and the calls the reconciler makes: on a reload that changes the
+  declared default, `persisted.redeclare(rt, new_default)` (adopt if the
+  value still holds the old default, else keep it, report once and
+  re-stamp; returns `Redeclared`), and for `@reset` / the overlay's
+  `[reset]`, `persisted.reset(rt)` (cancels a pending or queued write,
+  removes the file, sets the default). Warnings arrive as
+  `Diagnostic::PersistDefaultChanged` / `Diagnostic::PersistFailed` (write
+  failures in a later tick, with a wake-hook call). `rt.shutdown()` waits
+  (bounded) for queued writes.
 
 ### `strand-compiler`
 
@@ -315,6 +345,15 @@ Public interfaces other crates and later stages build on:
   other wrapper nodes; payload structs use their wrapper's span. Trees are
   at most 256 levels deep (`docs/grammar.md`, "Error recovery"), so passes
   may recurse over them on a 2 MiB stack.
+- **Lowering into `strand-core`** (the VM's obligations): declare every
+  read set with `rt.reads_from(node, &sources)` (all branches, also when
+  empty) and every assignment and `emit` with `rt.writes_to(handler,
+  target)` as nodes are created, so effects run once per flush in
+  topological order from the first flush on; read keyed collections with
+  `with`/`with_untracked`/`get_key` instead of holding `KeyedVec` clones;
+  create persisted cells with an instance-qualified path and keep the
+  `Persisted` handle for `redeclare` (reload) and `reset` (`@reset`). See
+  the `strand-core` section.
 - **Identity and change detection.** AST `PartialEq` compares spans, which
   shift on every edit above a node. Reload identity and "did this handler
   change" use a span-insensitive structural hash over the texts of the

@@ -15,11 +15,12 @@
 //! * Effects run in a computed topological order, only after every write
 //!   of the tick has been pushed, so no effect ever sees a half-propagated
 //!   graph: by rank (see `order`: read edges plus the write edges handlers
-//!   make, learned or declared), then creation order (owners before the
-//!   nodes they own). A sink therefore runs after every handler that
-//!   writes what it reads, and once per flush; only a write edge seen for
-//!   the first time can re-run a sink that already ran (once; the rank is
-//!   then fixed). `on change` handlers rank after all other sinks, so they
+//!   make, declared by the compiler or learned), then creation order
+//!   (owners before the nodes they own). A sink therefore runs after every
+//!   handler that writes what it reads, and once per flush; only an edge
+//!   that was not declared, seen for the first time, can re-run a sink that
+//!   already ran (once; the rank is then fixed). Tasks woken from other
+//!   threads are polled when a flush starts, never between its sinks. `on change` handlers rank after all other sinks, so they
 //!   fire once per outside write. A sink re-triggered past
 //!   [`MAX_RUNS_PER_FLUSH`] through a feedback path is a runtime cycle and
 //!   is parked.
@@ -193,6 +194,19 @@ pub enum Diagnostic {
         /// How many events it lost.
         dropped: usize,
     },
+    /// A throttled handler's held changes to a keyed collection could not
+    /// all be re-applied after another write to it went through: it
+    /// inserted a key the other write inserted too, or updated or moved an
+    /// item the other write removed. Those changes were skipped; the rest
+    /// landed.
+    KeyedConflict {
+        /// The collection.
+        cell: NodeId,
+        /// The throttled handler.
+        writer: NodeId,
+        /// Changes skipped.
+        skipped: usize,
+    },
     /// A persisted cell kept its stored value although its declared default
     /// changed (the overlay's `path: kept "…" (default changed) [reset]`).
     /// Reported once: the file is re-stamped with the new default.
@@ -202,8 +216,21 @@ pub enum Diagnostic {
         /// Its persist path.
         path: Arc<str>,
     },
+    /// A second live persisted cell asked for a path another live cell
+    /// already uses (two instances of a component without their instance
+    /// identity in the path). It never writes; the first cell owns the
+    /// file.
+    PersistPathInUse {
+        /// The new cell.
+        cell: NodeId,
+        /// The cell that owns the path.
+        other: NodeId,
+        /// The persist path.
+        path: Arc<str>,
+    },
     /// A persisted value could not be read (the cell starts from its
-    /// default) or written.
+    /// default) or written (reported in a later tick: writes happen on the
+    /// store's IO thread).
     PersistFailed {
         /// The cell.
         cell: NodeId,
@@ -306,6 +333,13 @@ pub(crate) struct Inner {
     pub(crate) writes: RefCell<foldhash::HashMap<NodeId, crate::order::Writes>>,
     /// `(writer, target)` written this flush, learned before the next sink.
     pub(crate) learn_queue: RefCell<Vec<(NodeId, NodeId)>>,
+    /// The pairs in `learn_queue` (a handler writing 2,000 cells queues
+    /// each edge once in O(1)).
+    pub(crate) learn_seen: RefCell<foldhash::HashSet<(NodeId, NodeId)>>,
+    /// Read edges declared by the compiler (see `order`).
+    pub(crate) declared: RefCell<crate::order::Declared>,
+    /// Sinks that have never run (their read edges don't exist yet).
+    pub(crate) fresh: RefCell<foldhash::HashSet<NodeId>>,
     /// Event queues holding events for suspended listeners.
     pub(crate) backlogged: RefCell<Vec<NodeId>>,
     /// Bumped at the start of every `advance_to` and `flush`: the write-rate
@@ -327,14 +361,22 @@ pub(crate) struct Inner {
     stats: Cell<Stats>,
     pub(crate) echo: RefCell<SecondaryMap<NodeId, Box<dyn Any>>>,
     pub(crate) rate: RefCell<HashMap<(NodeId, NodeId), crate::rate::RateWindow>>,
-    pub(crate) throttled: RefCell<Vec<crate::rate::Deferred>>,
+    pub(crate) throttled: RefCell<crate::rate::Throttled>,
     pub(crate) events_pending: RefCell<Vec<NodeId>>,
     pub(crate) timers: RefCell<Vec<NodeId>>,
     /// While timers catch up before a clock advance: the new time, at which
     /// resumed timers start counting.
     pub(crate) resume_at: Cell<Option<Duration>>,
     pub(crate) sleepers: RefCell<crate::task::Sleepers>,
+    /// The task being polled (a `sleep` it registers pauses with it).
+    pub(crate) polling: Cell<Option<NodeId>>,
     pub(crate) ready: Arc<crate::task::ReadyQueue>,
+    /// Write failures reported by persist IO threads.
+    pub(crate) persist_failures: Arc<crate::persist::FailSink>,
+    /// Persist file -> the live cell that owns it.
+    pub(crate) persist_paths: RefCell<HashMap<std::path::PathBuf, NodeId>>,
+    /// Stores used by persisted cells (synced at shutdown).
+    pub(crate) persist_stores: RefCell<Vec<crate::persist::PersistStore>>,
 }
 
 /// The reactive runtime of one logic thread.
@@ -404,6 +446,7 @@ impl Scope {
 impl Runtime {
     /// A fresh runtime at time zero.
     pub fn new() -> Self {
+        let ready = Arc::new(crate::task::ReadyQueue::default());
         Self {
             inner: Rc::new(Inner {
                 nodes: RefCell::new(SlotMap::with_key()),
@@ -427,6 +470,9 @@ impl Runtime {
                 ranks: RefCell::new(foldhash::HashMap::default()),
                 writes: RefCell::new(foldhash::HashMap::default()),
                 learn_queue: RefCell::new(Vec::new()),
+                learn_seen: RefCell::new(foldhash::HashSet::default()),
+                declared: RefCell::new(crate::order::Declared::default()),
+                fresh: RefCell::new(foldhash::HashSet::default()),
                 backlogged: RefCell::new(Vec::new()),
                 epoch: Cell::new(0),
                 pending: RefCell::new(Vec::new()),
@@ -442,12 +488,16 @@ impl Runtime {
                 stats: Cell::new(Stats::default()),
                 echo: RefCell::new(SecondaryMap::new()),
                 rate: RefCell::new(HashMap::new()),
-                throttled: RefCell::new(Vec::new()),
+                throttled: RefCell::new(crate::rate::Throttled::default()),
                 events_pending: RefCell::new(Vec::new()),
                 timers: RefCell::new(Vec::new()),
                 resume_at: Cell::new(None),
                 sleepers: RefCell::new(crate::task::Sleepers::default()),
-                ready: Arc::new(crate::task::ReadyQueue::default()),
+                polling: Cell::new(None),
+                persist_failures: Arc::new(crate::persist::FailSink::new(ready.clone())),
+                persist_paths: RefCell::new(HashMap::new()),
+                persist_stores: RefCell::new(Vec::new()),
+                ready,
             }),
         }
     }
@@ -497,6 +547,7 @@ impl Runtime {
         }
         if color != Color::Clean && kind.is_sink() {
             self.inner.pending.borrow_mut().push(id);
+            self.inner.fresh.borrow_mut().insert(id);
         }
         id
     }
@@ -949,6 +1000,12 @@ impl Runtime {
         let prev_site = self.inner.site.replace(None);
         let prev_input = self.inner.input.replace(false);
         let prev_writer = if kind.is_sink() {
+            {
+                let mut fresh = self.inner.fresh.borrow_mut();
+                if !fresh.is_empty() {
+                    fresh.remove(&id);
+                }
+            }
             Some(self.inner.writer.replace(Some(id)))
         } else {
             None
@@ -1088,7 +1145,9 @@ impl Runtime {
     /// cancelled handlers). [`Runtime::flush`] drains them into
     /// [`Tick::diagnostics`].
     pub fn take_diagnostics(&self) -> Vec<Diagnostic> {
-        std::mem::take(&mut *self.inner.diagnostics.borrow_mut())
+        let mut d = std::mem::take(&mut *self.inner.diagnostics.borrow_mut());
+        d.extend(self.inner.persist_failures.take());
+        d
     }
 
     pub(crate) fn diagnose(&self, d: Diagnostic) {
@@ -1190,6 +1249,8 @@ impl Runtime {
         let mut echo = self.inner.echo.borrow_mut();
         let mut ranks = self.inner.ranks.borrow_mut();
         let mut writes = self.inner.writes.borrow_mut();
+        let mut declared = self.inner.declared.borrow_mut();
+        let mut fresh = self.inner.fresh.borrow_mut();
         for &n in &order {
             names.remove(n);
             echo.remove(n);
@@ -1199,11 +1260,19 @@ impl Runtime {
             if !writes.is_empty() {
                 writes.remove(&n);
             }
+            if !declared.is_empty() {
+                declared.forget(n);
+            }
+            if !fresh.is_empty() {
+                fresh.remove(&n);
+            }
         }
         drop(names);
         drop(echo);
         drop(ranks);
         drop(writes);
+        drop(declared);
+        drop(fresh);
         let mut unfroze = false;
         {
             let mut suspended = self.inner.suspended.borrow_mut();
@@ -1345,9 +1414,9 @@ impl Runtime {
     /// and tasks stop running, but its state is kept (cells keep their
     /// latest value; each held sink runs once on release). Memos stay
     /// readable (they are pure). Work that comes due while frozen is held
-    /// and done on [`Runtime::resume`]. Its timers are paused, like a
-    /// `while` condition that turned false, and count again from the
-    /// release. A frozen subtree schedules nothing, so the runtime can
+    /// and done on [`Runtime::resume`]. Its timers (and `await sleep(..)`
+    /// in its tasks) are paused, like a `while` condition that turned
+    /// false, and count again after the release. A frozen subtree schedules nothing, so the runtime can
     /// still be idle.
     ///
     /// Events from input queues ([`Runtime::input_events`]) are dropped for
@@ -1369,8 +1438,10 @@ impl Runtime {
 
     /// Unfreeze a subtree suspended with [`Runtime::suspend`]: held sinks,
     /// woken tasks and events kept for its listeners run at the next flush;
-    /// timers count again from now. Calls the wake hook when it re-queued
-    /// work or restarted a timer.
+    /// timers and sleeps count again from the next clock advance (the
+    /// host's next `tick`: the logic clock stands still while the host
+    /// sleeps). Calls the wake hook when it re-queued work or released a
+    /// timer or sleep.
     pub fn resume(&self, id: NodeId) {
         if self.inner.suspended.borrow_mut().remove(&id) {
             self.release_held(true);
@@ -1413,7 +1484,8 @@ impl Runtime {
                 requeued = true;
             }
         }
-        // Released timers count again from now: their deadlines are back.
+        // Released timers and sleeps count again from the next clock
+        // advance: wake the host so it ticks.
         let restarted = unfroze && self.sync_frozen_timers();
         if requeued || restarted {
             self.call_wake_hook();
@@ -1502,6 +1574,8 @@ impl Runtime {
         self.inner.throttled.borrow_mut().clear();
         self.inner.sleepers.borrow_mut().clear();
         self.inner.timers.borrow_mut().clear();
+        // Persisted values queued by the cleanups reach the disk (bounded).
+        self.sync_persist();
     }
 
     // ----- watch ----------------------------------------------------------
@@ -1582,10 +1656,15 @@ impl Runtime {
         // `order`), so each sink runs after everything that writes what it
         // reads, once.
         let mut queue: BinaryHeap<Reverse<(u32, u64, NodeId)>> = BinaryHeap::new();
+        // Tasks woken by other threads are polled when the flush starts;
+        // one woken while sinks run waits for the next flush (its write
+        // could not be ordered before readers that already ran).
+        let mut start = true;
         loop {
             // Writers that are not sinks (woken handlers, event listeners)
             // run as soon as they are due, before the next sink.
-            let mut progressed = self.poll_ready_tasks(&mut polled);
+            let mut progressed = self.poll_ready_tasks(&mut polled, start);
+            start = false;
             progressed |= self.deliver_events(&mut runs, &mut errors);
             self.learn_queued();
             self.queue_pending(&mut queue);
@@ -1601,7 +1680,9 @@ impl Runtime {
                     Some(n) if n.color != Color::Clean => {
                         if n.seq != seq {
                             // Renumbered by a reparent: requeue in order.
-                            queue.push(Reverse((self.rank_of(id), n.seq, id)));
+                            let seq = n.seq;
+                            drop(nodes);
+                            queue.push(Reverse((self.sched_rank(id), seq, id)));
                             continue;
                         }
                         n.kind
@@ -1610,7 +1691,7 @@ impl Runtime {
                     _ => continue,
                 }
             };
-            let now_rank = self.rank_of(id);
+            let now_rank = self.sched_rank(id);
             if now_rank != rank {
                 // Raised (a write edge learned) since it was queued.
                 queue.push(Reverse((now_rank, seq, id)));
@@ -1679,11 +1760,11 @@ impl Runtime {
         if pending.is_empty() {
             return;
         }
-        let ranked = !self.inner.ranks.borrow().is_empty();
+        let ranked = !self.inner.ranks.borrow().is_empty() || !self.inner.fresh.borrow().is_empty();
         let nodes = self.inner.nodes.borrow();
         for id in pending {
             if let Some(n) = nodes.get(id) {
-                let rank = if ranked { self.rank_of(id) } else { 0 };
+                let rank = if ranked { self.sched_rank(id) } else { 0 };
                 queue.push(Reverse((rank, n.seq, id)));
             }
         }
@@ -1820,8 +1901,8 @@ impl Runtime {
         if let Some(d) = self.inner.sleepers.borrow().earliest() {
             consider(d);
         }
-        for t in self.inner.throttled.borrow().iter() {
-            consider(t.due);
+        if let Some(d) = self.inner.throttled.borrow().earliest() {
+            consider(d);
         }
         best
     }

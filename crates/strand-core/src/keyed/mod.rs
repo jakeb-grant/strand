@@ -217,6 +217,114 @@ where
     out
 }
 
+/// Re-apply, by key, the changes that turned `base` into `held` onto
+/// `live` (which other writers changed since `base`): removals, value
+/// updates, moves (survivors outside the longest in-order run) and
+/// inserts. A moved or inserted item goes right before the next item of
+/// `held` that `live` still has in place, or at the end (a `push` stays at
+/// the end, after what others appended meanwhile). Changes that cannot be
+/// re-applied are skipped and counted: inserting a key `live` already has,
+/// or updating or moving one `live` no longer has. O(n), O(n log n) with
+/// moves.
+pub(crate) fn rebase<K, T>(
+    live: &[(K, T)],
+    base: &[(K, T)],
+    held: &[(K, T)],
+) -> (Vec<(K, T)>, usize)
+where
+    K: Clone + Eq + Hash,
+    T: Clone + PartialEq,
+{
+    let base_at: HashMap<&K, usize> = base.iter().enumerate().map(|(i, (k, _))| (k, i)).collect();
+    let held_at: HashMap<&K, usize> = held.iter().enumerate().map(|(i, (k, _))| (k, i)).collect();
+    let in_live: HashSet<&K> = live.iter().map(|(k, _)| k).collect();
+    let mut lost = 0;
+    // Survivors in held order with their base positions: those outside the
+    // longest increasing run were moved by the handler.
+    let survivors: Vec<usize> = held
+        .iter()
+        .filter_map(|(k, _)| base_at.get(k).copied())
+        .collect();
+    let stays = longest_increasing(&survivors);
+    // Per held item: Some(value) to place it (moved or inserted), and the
+    // value updates for items that stay.
+    let mut place: Vec<bool> = vec![false; held.len()];
+    let mut updates: HashMap<&K, &T> = HashMap::new();
+    let mut s = 0;
+    for (i, (k, v)) in held.iter().enumerate() {
+        match base_at.get(k) {
+            Some(&b) => {
+                let moved = !stays[s];
+                s += 1;
+                let updated = base[b].1 != *v;
+                if !in_live.contains(k) {
+                    // Removed by another writer: nothing to move or update.
+                    lost += usize::from(moved || updated);
+                    continue;
+                }
+                if updated {
+                    updates.insert(k, v);
+                }
+                place[i] = moved;
+            }
+            None if in_live.contains(k) => lost += 1,
+            None => place[i] = true,
+        }
+    }
+    let placed: HashSet<&K> = held
+        .iter()
+        .zip(&place)
+        .filter(|&(_, &p)| p)
+        .map(|((k, _), _)| k)
+        .collect();
+    let removed = |k: &K| base_at.contains_key(k) && !held_at.contains_key(k);
+    // Group placed items by the next held item that keeps its place in
+    // `live` (its held index; `None`: the end), in held order.
+    let mut groups: HashMap<Option<usize>, Vec<usize>> = HashMap::new();
+    let mut anchor: Option<usize> = None;
+    for (i, (k, _)) in held.iter().enumerate().rev() {
+        if place[i] {
+            groups.entry(anchor).or_default().push(i);
+        } else if in_live.contains(k) && !placed.contains(k) {
+            anchor = Some(i);
+        }
+    }
+    let value_of = |i: usize, live_value: Option<&T>| -> T {
+        let (k, v) = &held[i];
+        match (base_at.get(k), live_value) {
+            // Moved without a change of value: keep what live has.
+            (Some(&b), Some(lv)) if base[b].1 == *v => lv.clone(),
+            _ => v.clone(),
+        }
+    };
+    let live_value: HashMap<&K, &T> = if placed.is_empty() {
+        HashMap::new()
+    } else {
+        live.iter().map(|(k, v)| (k, v)).collect()
+    };
+    let mut emit_group = |out: &mut Vec<(K, T)>, at: Option<usize>| {
+        if let Some(g) = groups.remove(&at) {
+            for &i in g.iter().rev() {
+                let k = &held[i].0;
+                out.push((k.clone(), value_of(i, live_value.get(k).copied())));
+            }
+        }
+    };
+    let mut out = Vec::with_capacity(live.len() + held.len().saturating_sub(base.len()));
+    for (k, v) in live {
+        if removed(k) || placed.contains(k) {
+            continue;
+        }
+        if let Some(&i) = held_at.get(k) {
+            emit_group(&mut out, Some(i));
+        }
+        let v = updates.get(k).map_or_else(|| v.clone(), |&u| u.clone());
+        out.push((k.clone(), v));
+    }
+    emit_group(&mut out, None);
+    (out, lost)
+}
+
 /// Removals, moves and inserts that give `new`'s keys from `old`'s (their
 /// first and last keys differ). `base` is added to every index. Returns
 /// the position in `old` of each item of `new` that survived; `None` when a
@@ -426,8 +534,11 @@ pub type KeyFn<K, T> = Rc<dyn Fn(&T) -> K>;
 /// insert or removal before an item shifts it without touching the map.
 /// Keys are unique, so `items[p].0 == key` proves an entry right; a stale
 /// one is found again by searching outward from it (an item moves by one
-/// per insert or removal before it) and fixed. Lookups are O(1) amortised
-/// and mutations never re-index the items after them.
+/// per insert or removal before it) and fixed. A lookup is O(1) when the
+/// entry is fresh, otherwise O(drift since the key was last looked up),
+/// bounded by the list length (a queue, pushing at the back and removing
+/// at the front, drifts every entry by up to n; `Vec::remove` is O(n)
+/// there anyway). Mutations never re-index the items after them.
 type KeyIndex<K> = Rc<RefCell<Positions<K>>>;
 
 /// Key -> position.
@@ -447,7 +558,8 @@ fn index_unique<K: Clone + Eq + Hash, T>(items: &[(K, T)]) -> Option<HashMap<K, 
     Some(index)
 }
 
-/// A list whose items carry unique keys, with O(1) lookup by key. Cloning
+/// A list whose items carry unique keys, with lookup by key (O(1) for a
+/// fresh index entry, see above). Cloning
 /// is cheap: the items (and the key index) are shared until the next
 /// mutation.
 pub struct KeyedVec<K, T> {
@@ -522,7 +634,8 @@ where
         self.items.is_empty()
     }
 
-    /// Position of `key`, O(1) amortised.
+    /// Position of `key`: O(1) for a fresh entry, else O(drift) (see the
+    /// key index).
     pub fn index_of(&self, key: &K) -> Option<usize> {
         let mut index = self.index.borrow_mut();
         let p = *index.get(key)?;
@@ -554,7 +667,7 @@ where
         }
     }
 
-    /// The item with `key`, O(1) amortised.
+    /// The item with `key` (cost as [`KeyedVec::index_of`]).
     pub fn get(&self, key: &K) -> Option<&T> {
         self.index_of(key).map(|i| &self.items[i].1)
     }
@@ -581,6 +694,25 @@ where
         }
         let index = index_unique(&items).ok_or(KeyedError::DuplicateKey)?;
         Ok((items, index))
+    }
+
+    /// True when both share the same items (no write since one was cloned
+    /// from the other).
+    pub(crate) fn same_items(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.items, &other.items)
+    }
+
+    /// A collection with this one's key function and `items` (keys already
+    /// paired). `None` if a key repeats.
+    pub(crate) fn with_items(&self, items: Vec<(K, T)>) -> Option<Self> {
+        let index = index_unique(&items)?;
+        let mut v = Self {
+            items: Rc::new(Vec::new()),
+            key_of: self.key_of.clone(),
+            index: Rc::new(RefCell::new(HashMap::new())),
+        };
+        v.set_items(items, index);
+        Some(v)
     }
 
     /// Replace the items and their index.
@@ -716,5 +848,111 @@ where
                 Ok(())
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    type Items = Vec<(u32, u32)>;
+
+    /// Apply random edits (by another writer, or by the held handler).
+    fn edit(base: &[(u32, u32)], ops: &[(u8, u32, u32)], fresh: u32) -> Items {
+        let mut v: Items = base.to_vec();
+        let mut next = fresh;
+        for &(op, a, b) in ops {
+            let n = v.len();
+            match op % 4 {
+                0 => {
+                    let at = if n == 0 { 0 } else { a as usize % (n + 1) };
+                    v.insert(at, (next, b));
+                    next += 1;
+                }
+                1 if n > 0 => {
+                    v.remove(a as usize % n);
+                }
+                2 if n > 0 => {
+                    let i = a as usize % n;
+                    v[i].1 = b;
+                }
+                3 if n > 1 => {
+                    let item = v.remove(a as usize % n);
+                    v.insert(b as usize % n, item);
+                }
+                _ => {}
+            }
+        }
+        v
+    }
+
+    fn keys(v: &[(u32, u32)]) -> HashSet<u32> {
+        v.iter().map(|(k, _)| *k).collect()
+    }
+
+    proptest! {
+        #[test]
+        fn rebase_reapplies_the_held_changes_by_key(
+            n in 0usize..20,
+            live_ops in prop::collection::vec((any::<u8>(), any::<u32>(), 0u32..5), 0..8),
+            held_ops in prop::collection::vec((any::<u8>(), any::<u32>(), 0u32..5), 0..8),
+            clash in any::<bool>(),
+        ) {
+            let base: Items = (0..n as u32).map(|k| (k, 0)).collect();
+            let live = edit(&base, &live_ops, 1000);
+            // Fresh keys from the same range when `clash`: both inserted.
+            let held = edit(&base, &held_ops, if clash { 1000 } else { 2000 });
+            let (out, lost) = rebase(&live, &base, &held);
+            let (bk, lk, hk, ok) = (keys(&base), keys(&live), keys(&held), keys(&out));
+            prop_assert_eq!(ok.len(), out.len(), "unique keys");
+            let removed: HashSet<u32> = bk.difference(&hk).copied().collect();
+            let inserted: HashSet<u32> = hk.difference(&bk).copied().collect();
+            let mut want: HashSet<u32> = lk.difference(&removed).copied().collect();
+            want.extend(inserted.difference(&lk));
+            prop_assert_eq!(&ok, &want);
+            let base_v: HashMap<u32, u32> = base.iter().copied().collect();
+            let live_v: HashMap<u32, u32> = live.iter().copied().collect();
+            let held_v: HashMap<u32, u32> = held.iter().copied().collect();
+            for (k, v) in &out {
+                let by_held = base_v.get(k).is_some_and(|b| held_v.get(k).is_some_and(|h| h != b));
+                if by_held || inserted.contains(k) && !lk.contains(k) {
+                    prop_assert_eq!(Some(v), held_v.get(k), "held change of {}", k);
+                } else {
+                    prop_assert_eq!(Some(v), live_v.get(k), "live value of {}", k);
+                }
+            }
+            let dup = inserted.intersection(&lk).count();
+            prop_assert!(lost >= dup, "duplicates are counted");
+            if live == base {
+                prop_assert_eq!(&out, &held, "nothing else wrote: the held list");
+                prop_assert_eq!(lost, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn held_pushes_land_after_what_others_appended() {
+        let base: Items = vec![(1, 0), (2, 0)];
+        let live: Items = vec![(1, 0), (2, 0), (9, 0)];
+        let held: Items = vec![(2, 5), (3, 0), (4, 0)];
+        let (out, lost) = rebase(&live, &base, &held);
+        assert_eq!(out, vec![(2, 5), (9, 0), (3, 0), (4, 0)]);
+        assert_eq!(lost, 0);
+        // A key both inserted is kept once, as the live writer has it.
+        let held: Items = vec![(1, 0), (2, 0), (9, 1)];
+        let (out, lost) = rebase(&live, &base, &held);
+        assert_eq!(out, live);
+        assert_eq!(lost, 1);
+    }
+
+    #[test]
+    fn a_held_move_is_replayed_before_its_next_neighbour() {
+        let base: Items = vec![(1, 0), (2, 0), (3, 0), (4, 0)];
+        // The handler moved 4 to the front; another writer appended 5.
+        let held: Items = vec![(4, 0), (1, 0), (2, 0), (3, 0)];
+        let live: Items = vec![(1, 0), (2, 0), (3, 0), (4, 0), (5, 0)];
+        let (out, _) = rebase(&live, &base, &held);
+        assert_eq!(out, vec![(4, 0), (1, 0), (2, 0), (3, 0), (5, 0)]);
     }
 }

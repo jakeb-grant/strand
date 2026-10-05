@@ -309,6 +309,7 @@ impl<T: Clone + PartialEq + 'static> Signal<T> {
                 Box::new(move |rt: &Runtime, _held| {
                     let _ = self.set_raw(rt, value);
                 }),
+                None,
             );
             Ok(())
         }
@@ -324,6 +325,16 @@ impl<T: Clone + PartialEq + 'static> Signal<T> {
         };
         f(&mut v);
         self.set(rt, v)
+    }
+
+    /// Replace the starting value of a cell nothing has read yet (no
+    /// notification, no write reported).
+    pub(crate) fn init_value(self, rt: &Runtime, value: T) {
+        let _ = rt.with_data::<SignalData<T>, _>(self.id, |d| {
+            if let Ok(mut v) = d.value.try_borrow_mut() {
+                *v = value;
+            }
+        });
     }
 
     /// Write without rate gating. Returns whether the value changed.

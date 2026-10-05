@@ -2,7 +2,8 @@
 //! scrolling): single-row writes through a derived `filter → sort_by →
 //! take` chain with the emitter holding snapshots, a filter query change
 //! (rebuild + keyed diff of the outputs), `keyed_memo` over a plain list,
-//! `keyed_diff` shapes and key lookups.
+//! `keyed_diff` shapes, key lookups, and one handler writing a cell per
+//! row (the write-edge bookkeeping must stay linear).
 //!
 //! Run: `cargo bench -p strand-core --bench keyed`. Results go in
 //! `docs/benchmarks.md`.
@@ -217,8 +218,48 @@ fn lookup_case(c: &mut Criterion) {
     g.finish();
 }
 
+/// One effect writing `n` per-row cells per flush (`for r in rows {
+/// r.seen = tick }`), after its write edges are learned.
+fn writer_case(c: &mut Criterion) {
+    let mut g = c.benchmark_group("handler writing n cells");
+    g.measurement_time(Duration::from_secs(3));
+    for n in [500usize, 1_000, 2_000, 4_000] {
+        let rt = Runtime::new();
+        let trigger = rt.signal(0i64);
+        let cells: Vec<_> = (0..n).map(|_| rt.signal(0i64)).collect();
+        rt.effect(move |rt| {
+            let t = trigger.get(rt)?;
+            for c in &cells {
+                c.set(rt, t)?;
+            }
+            Ok(())
+        });
+        rt.flush();
+        // 10 Hz of logic time: under the 30 writes/s guard.
+        let mut t = 0;
+        g.bench_function(format!("{n} cells: write + tick"), |b| {
+            b.iter(|| {
+                t += 1;
+                trigger.set(&rt, t).unwrap();
+                black_box(rt.tick(Duration::from_millis(100) * t as u32).written.len())
+            });
+        });
+        // The clock stands still: past 30 writes a second every write is
+        // held (one held write per cell, replaced each flush).
+        g.bench_function(format!("{n} cells: throttled write + flush"), |b| {
+            b.iter(|| {
+                t += 1;
+                trigger.set(&rt, t).unwrap();
+                black_box(rt.flush().written.len())
+            });
+        });
+    }
+    g.finish();
+}
+
 fn main() {
     let mut c = Criterion::default().configure_from_args();
+    writer_case(&mut c);
     lookup_case(&mut c);
     diff_case(&mut c);
     chain_case(&mut c);

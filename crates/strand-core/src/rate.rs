@@ -22,6 +22,10 @@
 //! A held write is dropped if its handler is disposed (cancelled) before it
 //! lands, unless the handler was a task that finished normally.
 //!
+//! A keyed collection's held write is a set of changes, not a latest value
+//! (see [`crate::KeyedSignal`]): another write that goes through rebases it
+//! onto the new list instead of superseding it, so no `push` is lost.
+//!
 //! "One handler" is a stable identity: the effect, listener or timer node,
 //! inherited by tasks they spawn, or the handler site given to
 //! [`Runtime::spawn_for`]. A fresh task per event is still one writer.
@@ -74,8 +78,78 @@ impl RateWindow {
     }
 }
 
+/// Held writes by `(cell, writer)`: a handler writing a cell per row
+/// (2,000 rows) while throttled holds 2,000 writes, and every one of its
+/// writes finds its own in O(1).
+#[derive(Default)]
+pub(crate) struct Throttled {
+    by: foldhash::HashMap<(NodeId, NodeId), Deferred>,
+    /// Held writes per cell.
+    cells: foldhash::HashMap<NodeId, u32>,
+    /// Hold order (applied oldest first).
+    seq: u64,
+}
+
+impl Throttled {
+    pub(crate) fn earliest(&self) -> Option<Duration> {
+        self.by.values().map(|d| d.due).min()
+    }
+    pub(crate) fn clear(&mut self) {
+        self.by.clear();
+        self.cells.clear();
+    }
+    fn is_empty(&self) -> bool {
+        self.by.is_empty()
+    }
+    fn holds(&self, cell: NodeId) -> bool {
+        self.cells.contains_key(&cell)
+    }
+    fn insert(&mut self, mut d: Deferred) {
+        self.seq += 1;
+        d.seq = self.seq;
+        self.reinsert(d);
+    }
+    /// Put back a held write taken out, keeping its place in the order.
+    fn reinsert(&mut self, d: Deferred) {
+        let cell = d.cell;
+        if self.by.insert((d.cell, d.writer), d).is_none() {
+            *self.cells.entry(cell).or_insert(0) += 1;
+        }
+    }
+    fn remove(&mut self, cell: NodeId, writer: NodeId) -> Option<Deferred> {
+        let d = self.by.remove(&(cell, writer))?;
+        self.uncount(cell);
+        Some(d)
+    }
+    fn uncount(&mut self, cell: NodeId) {
+        if let Some(n) = self.cells.get_mut(&cell) {
+            *n -= 1;
+            if *n == 0 {
+                self.cells.remove(&cell);
+            }
+        }
+    }
+    /// Take out the held writes `f` selects, oldest first.
+    fn extract(&mut self, mut f: impl FnMut(&Deferred) -> bool) -> Vec<Deferred> {
+        let keys: Vec<(NodeId, NodeId)> = self
+            .by
+            .iter()
+            .filter(|(_, d)| f(d))
+            .map(|(&k, _)| k)
+            .collect();
+        let mut out: Vec<Deferred> = keys
+            .into_iter()
+            .filter_map(|(c, w)| self.remove(c, w))
+            .collect();
+        out.sort_by_key(|d| d.seq);
+        out
+    }
+}
+
 pub(crate) struct Deferred {
     pub(crate) cell: NodeId,
+    /// Hold order.
+    seq: u64,
     pub(crate) writer: NodeId,
     pub(crate) due: Duration,
     /// The writer was a task that finished normally: its last held write
@@ -85,9 +159,15 @@ pub(crate) struct Deferred {
     pub(crate) value: Option<Box<dyn Any>>,
     /// Lands the write; gets the held value back.
     pub(crate) apply: DeferredApply,
+    /// Keyed held copies: re-applies the held changes onto the live value
+    /// after another write went through (instead of being superseded).
+    pub(crate) rebase: Option<Rebase>,
 }
 
 pub(crate) type DeferredApply = Box<dyn FnOnce(&Runtime, Option<Box<dyn Any>>)>;
+
+/// `(runtime, writer, held) -> held rebased onto the live value`.
+pub(crate) type Rebase = std::rc::Rc<dyn Fn(&Runtime, NodeId, Box<dyn Any>) -> Box<dyn Any>>;
 
 impl Runtime {
     /// Decide whether a write from the current handler to `cell` goes
@@ -134,6 +214,11 @@ impl Runtime {
             return through;
         }
         w.attempts.push_back(now);
+        // Only the newest 31 decide (more than 30 within the window); the
+        // older ones would be pruned first anyway.
+        if w.attempts.len() > MAX_WRITES_PER_SEC + 1 {
+            w.attempts.pop_front();
+        }
         let through = !w.throttling() || now >= w.due(now);
         let warn = w.throttling() && !w.warned;
         if warn {
@@ -156,17 +241,29 @@ impl Runtime {
     }
 
     /// A write that went through supersedes held writes for the same cell
-    /// (latest value wins).
+    /// (latest value wins). Held keyed copies are change sets: they are
+    /// rebased onto the new value instead.
     pub(crate) fn drop_deferred(&self, cell: NodeId) {
-        let mut throttled = self.inner.throttled.borrow_mut();
-        if !throttled.is_empty() {
-            throttled.retain(|d| d.cell != cell);
+        let held = {
+            let mut throttled = self.inner.throttled.borrow_mut();
+            if throttled.is_empty() || !throttled.holds(cell) {
+                return;
+            }
+            throttled.extract(|d| d.cell == cell)
+        };
+        for mut d in held {
+            // Plain values are superseded; keyed copies are rebased.
+            let Some(f) = d.rebase.clone() else { continue };
+            if let Some(v) = d.value.take() {
+                d.value = Some(f(self, d.writer, v));
+            }
+            self.inner.throttled.borrow_mut().reinsert(d);
         }
     }
 
     /// True while a held write to `cell` is waiting.
     pub(crate) fn has_deferred(&self, cell: NodeId) -> bool {
-        self.inner.throttled.borrow().iter().any(|d| d.cell == cell)
+        self.inner.throttled.borrow().holds(cell)
     }
 
     /// The value the running handler's held write to `cell` holds.
@@ -175,8 +272,8 @@ impl Runtime {
         self.inner
             .throttled
             .borrow()
-            .iter()
-            .find(|d| d.cell == cell && d.writer == writer)
+            .by
+            .get(&(cell, writer))
             .and_then(|d| d.value.as_ref()?.downcast_ref::<T>().cloned())
     }
 
@@ -186,10 +283,14 @@ impl Runtime {
     pub(crate) fn take_deferred<T: 'static>(&self, cell: NodeId) -> Option<T> {
         let writer = self.inner.writer.get()?;
         let mut throttled = self.inner.throttled.borrow_mut();
-        let at = throttled.iter().position(|d| {
-            d.cell == cell && d.writer == writer && d.value.as_ref().is_some_and(|v| v.is::<T>())
-        })?;
-        let d = throttled.remove(at);
+        if !throttled
+            .by
+            .get(&(cell, writer))
+            .is_some_and(|d| d.value.as_ref().is_some_and(|v| v.is::<T>()))
+        {
+            return None;
+        }
+        let d = throttled.remove(cell, writer)?;
         d.value?.downcast::<T>().ok().map(|b| *b)
     }
 
@@ -199,6 +300,7 @@ impl Runtime {
         cell: NodeId,
         value: Option<Box<dyn Any>>,
         apply: DeferredApply,
+        rebase: Option<Rebase>,
     ) {
         let Some(writer) = self.inner.writer.get() else {
             apply(self, value);
@@ -211,21 +313,21 @@ impl Runtime {
             .borrow()
             .get(&(cell, writer))
             .map_or(now, |w| w.due(now));
-        let mut throttled = self.inner.throttled.borrow_mut();
-        throttled.retain(|d| !(d.cell == cell && d.writer == writer));
-        throttled.push(Deferred {
+        self.inner.throttled.borrow_mut().insert(Deferred {
             cell,
+            seq: 0,
             writer,
             due,
             detached: false,
             value,
             apply,
+            rebase,
         });
     }
 
     /// A task finished normally: its held writes still land.
     pub(crate) fn detach_deferred(&self, writer: NodeId) {
-        for d in self.inner.throttled.borrow_mut().iter_mut() {
+        for d in self.inner.throttled.borrow_mut().by.values_mut() {
             if d.writer == writer {
                 d.detached = true;
             }
@@ -237,9 +339,11 @@ impl Runtime {
         let now = self.now();
         let due: Vec<Deferred> = {
             let mut throttled = self.inner.throttled.borrow_mut();
-            let (due, keep): (Vec<_>, Vec<_>) = throttled.drain(..).partition(|d| d.due <= now);
-            *throttled = keep;
-            due
+            if throttled.is_empty() {
+                Vec::new()
+            } else {
+                throttled.extract(|d| d.due <= now)
+            }
         };
         for d in due {
             if !self.exists(d.cell) || !(d.detached || self.exists(d.writer)) {
@@ -274,7 +378,7 @@ impl Runtime {
         }
         let mut throttled = self.inner.throttled.borrow_mut();
         if !throttled.is_empty() {
-            throttled.retain(|d| alive(d.cell) && (d.detached || alive(d.writer)));
+            drop(throttled.extract(|d| !(alive(d.cell) && (d.detached || alive(d.writer)))));
         }
     }
 }

@@ -47,6 +47,22 @@ That is within 2–5% of round 3 on the propagation cases (the cost of a
 heap instead of one sort per batch, and of looking for woken handlers
 between sinks), with this machine's noise of a few percent.
 
+Wave 2 review round 1 (declared reads and the provisional phase, foreign
+wakes kept apart, write edges in hash sets, held writes indexed, persist
+IO thread), same machine, medians (another agent shares the 4 CPUs; runs
+vary by up to 10–25% on the µs cases, the numbers are from quiet runs):
+
+| Case | Time |
+| --- | --- |
+| Single write + flush | 1.56 ms |
+| Full fan-out + flush | 2.06–2.19 ms |
+| Narrow path + flush | 1.65 µs |
+| Equality cut-off + flush | 0.73–0.76 µs |
+| Idle flush | 41 ns (the woken-task and persist-failure checks are lock-free atomics) |
+| Idle check | 6.7 ns (`is_idle` no longer locks the ready queue) |
+| Build | 3.52 ms |
+| Memory | 347 B and 5.54 allocations per node (unchanged: "never ran" and declared reads live in side sets) |
+
 Round 3 spot check (late `on change` phase, logic-step epoch, released
 suspensions): single write 1.45 ms, narrow path 1.63 µs, idle flush 61 ns,
 idle check 22 ns, memory 347 B / 5.5 allocations per node: unchanged within
@@ -126,17 +142,50 @@ Measured 2026-10-05 (wave 2, core), same machine, criterion medians.
 | `keyed_memo`, one row of a plain list changed + flush | 105 µs | 50 µs |
 | `keyed_memo`, plain list rotated by one + flush | 1.47 ms | 122 µs |
 
+Review round 1 re-run (held keyed copies rebase instead of being
+superseded; the in-place path is unchanged), same machine: get by key
+10.2 ns, update by key 24.9 ns, `keyed_diff` identical 5.2 µs / one move
+76 µs / 10+10 39 µs / reversed 97 µs / shuffled 172 µs, chain update
+20.0 µs, remove + push 26.0 µs, move 25.7 µs, filter query change 358 µs,
+`keyed_memo` one row 52 µs, rotated 131 µs: unchanged within noise.
+
+### One handler writing a cell per row
+
+`for r in rows { r.seen = tick }`: one effect writing n signals per flush
+(`handler writing n cells` in `benches/keyed.rs`), after its write edges
+are learned. "Write + tick" ticks at 10 Hz of logic time (under the
+guard); "throttled" never moves the clock, so past 30 writes a second
+every write is held.
+
+| n | Write + tick | Throttled write + flush |
+| --- | --- | --- |
+| 500 | 38 µs | 55 µs |
+| 1,000 | 76 µs | 110 µs |
+| 2,000 | 175 µs | 265 µs |
+| 4,000 | 389 µs | 761 µs |
+
+Linear. Before review round 1 every write checked the writer's known
+edges with a linear `Vec::contains` (the review measured 95 µs, 261 µs,
+922 µs and 3.1 ms for 500 to 4,000 cells, about 3.4x per doubling), and a
+throttled handler's held writes were a list scanned per write (9.7 ms at
+2,000, 39 ms at 4,000 in this bench). Write edges are now hash sets, the
+learn queue is deduplicated with a set, held writes are indexed by
+`(cell, writer)`, and a rate window keeps only its newest 31 attempts.
+
 What changed:
 
 - `KeyedVec` keeps a key → position map. Inserts and removals never
   re-index the items after them: an entry may go stale, keys are unique so
   `items[p].0 == key` proves it right, and a stale one is found by
   searching outward (one step per insert or removal before the item) and
-  fixed. Lookups are O(1) amortised; a mutation is an O(n) `memmove`.
+  fixed. A lookup is O(1) for a fresh entry, else O(its drift since it
+  was last looked up), bounded by the list length; a mutation is an O(n)
+  `memmove`.
   The single-row chain cases are dominated by copying the 2,000-row lists
   the emitter's snapshots share (about 4 µs per list) and `sort_by`'s O(n)
   index loops. A `KeyedVec` clone shares the map; writing while a clone is
-  alive copies it (O(n)), so read through a temporary.
+  alive copies it (O(n)), so the VM reads through `KeyedSignal::with`,
+  `with_untracked` or `get_key` instead of holding a clone.
 - `keyed_diff` trims the common prefix and suffix, then matches keys with a
   hash map (foldhash), keeps the longest increasing run of survivors in
   place (LIS) and moves every other survivor once, with a Fenwick tree for

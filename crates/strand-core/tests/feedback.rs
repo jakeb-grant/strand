@@ -720,3 +720,163 @@ fn input_handlers_and_services_write_collections_unthrottled() {
     assert_eq!(changes, 120);
     assert_eq!(xs.get_untracked(&rt).unwrap().len(), 240);
 }
+
+/// A runaway `every 5ms` pusher on `xs` (keys from `first`), throttled
+/// after the first 30 pushes. Returns the timer's `running` switch and how
+/// many rows it pushed.
+fn runaway_pusher(
+    rt: &Runtime,
+    xs: strand_core::KeyedSignal<u32, u32>,
+    first: u32,
+) -> (strand_core::Signal<bool>, std::rc::Rc<std::cell::Cell<u32>>) {
+    let running = rt.signal(true);
+    let pushed = std::rc::Rc::new(std::cell::Cell::new(0u32));
+    let p = pushed.clone();
+    rt.every(
+        Duration::from_millis(5),
+        move |rt| running.get(rt),
+        move |rt| {
+            xs.push(rt, first + p.get())?;
+            p.set(p.get() + 1);
+            Ok(())
+        },
+    );
+    (running, pushed)
+}
+
+/// Tick every 5 ms from `t` for `n` ticks; returns the new time and the
+/// diagnostics.
+fn run_for(rt: &Runtime, t: &mut Duration, n: usize) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    for _ in 0..n {
+        *t += Duration::from_millis(5);
+        diags.extend(rt.tick(*t).diagnostics);
+    }
+    diags
+}
+
+fn sorted_keys(xs: strand_core::KeyedSignal<u32, u32>, rt: &Runtime) -> Vec<u32> {
+    let mut k: Vec<u32> = xs
+        .with(rt, |v| v.items().iter().map(|(k, _)| *k).collect())
+        .unwrap();
+    k.sort_unstable();
+    k
+}
+
+#[test]
+fn a_held_collection_copy_survives_an_input_write() {
+    // `every 5ms { history.push(..) }` gets throttled; a click pushes one
+    // row in place meanwhile. Neither loses a row.
+    use strand_core::KeyedVec;
+    let rt = Runtime::new();
+    let xs = rt.keyed(KeyedVec::new(|e: &u32| *e));
+    let (running, pushed) = runaway_pusher(&rt, xs, 0);
+    let clicks = rt.input_events::<u32>();
+    clicks.on(&rt, move |rt, &k| xs.push(rt, k)).unwrap();
+    let mut t = Duration::ZERO;
+    run_for(&rt, &mut t, 60);
+    assert!(
+        xs.with(&rt, |v| v.len()).unwrap() < pushed.get() as usize,
+        "throttled"
+    );
+    clicks.emit(&rt, 10_000).unwrap();
+    run_for(&rt, &mut t, 1);
+    running.set(&rt, false).unwrap();
+    let diags = run_for(&rt, &mut t, 40);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| matches!(d, Diagnostic::KeyedConflict { .. }))
+    );
+    let mut want: Vec<u32> = (0..pushed.get()).collect();
+    want.push(10_000);
+    assert_eq!(sorted_keys(xs, &rt), want);
+}
+
+#[test]
+fn a_held_collection_copy_survives_a_service_batch() {
+    use strand_core::{KeyedVec, VecDiff};
+    let rt = Runtime::new();
+    let xs = rt.keyed(KeyedVec::new(|e: &u32| *e));
+    let (running, pushed) = runaway_pusher(&rt, xs, 0);
+    let mut t = Duration::ZERO;
+    run_for(&rt, &mut t, 60);
+    // A service inserts at the front from outside any handler.
+    xs.apply(
+        &rt,
+        &[VecDiff::Insert {
+            index: 0,
+            key: 20_000,
+            value: 20_000,
+        }],
+    )
+    .unwrap();
+    running.set(&rt, false).unwrap();
+    run_for(&rt, &mut t, 40);
+    let keys: Vec<u32> = xs
+        .with(&rt, |v| v.items().iter().map(|(k, _)| *k).collect())
+        .unwrap();
+    assert_eq!(keys[0], 20_000, "the service's row keeps its place");
+    let mut want: Vec<u32> = (0..pushed.get()).collect();
+    want.push(20_000);
+    assert_eq!(sorted_keys(xs, &rt), want);
+    // Pushes stay in push order.
+    assert!(keys[1..].windows(2).all(|w| w[0] < w[1]), "{keys:?}");
+}
+
+#[test]
+fn two_throttled_writers_on_one_list_keep_both_their_rows() {
+    use strand_core::KeyedVec;
+    let rt = Runtime::new();
+    let xs = rt.keyed(KeyedVec::new(|e: &u32| *e));
+    let (a_running, a) = runaway_pusher(&rt, xs, 0);
+    let (b_running, b) = runaway_pusher(&rt, xs, 50_000);
+    let mut t = Duration::ZERO;
+    let mut diags = run_for(&rt, &mut t, 80);
+    a_running.set(&rt, false).unwrap();
+    b_running.set(&rt, false).unwrap();
+    diags.extend(run_for(&rt, &mut t, 40));
+    assert_eq!(
+        diags
+            .iter()
+            .filter(|d| matches!(d, Diagnostic::WriteRate { .. }))
+            .count(),
+        2,
+        "both throttled: {diags:?}"
+    );
+    assert!(
+        !diags
+            .iter()
+            .any(|d| matches!(d, Diagnostic::KeyedConflict { .. }))
+    );
+    let mut want: Vec<u32> = (0..a.get()).chain(50_000..50_000 + b.get()).collect();
+    want.sort_unstable();
+    assert_eq!(sorted_keys(xs, &rt), want);
+}
+
+#[test]
+fn a_held_insert_of_a_key_another_write_inserted_is_reported() {
+    use strand_core::KeyedVec;
+    let rt = Runtime::new();
+    let xs = rt.keyed(KeyedVec::new(|e: &u32| *e));
+    let (running, pushed) = runaway_pusher(&rt, xs, 0);
+    let mut t = Duration::ZERO;
+    run_for(&rt, &mut t, 60);
+    // A click inserts the key the pusher holds next-to-last.
+    let held_key = pushed.get() - 1;
+    assert!(!xs.with(&rt, |v| v.contains_key(&held_key)).unwrap());
+    let clicks = rt.input_events::<u32>();
+    clicks.on(&rt, move |rt, &k| xs.push(rt, k)).unwrap();
+    clicks.emit(&rt, held_key).unwrap();
+    let mut diags = run_for(&rt, &mut t, 1);
+    running.set(&rt, false).unwrap();
+    diags.extend(run_for(&rt, &mut t, 40));
+    assert!(
+        diags.iter().any(|d| matches!(
+            d,
+            Diagnostic::KeyedConflict { cell, skipped: 1, .. } if *cell == xs.id()
+        )),
+        "{diags:?}"
+    );
+    assert_eq!(sorted_keys(xs, &rt), (0..pushed.get()).collect::<Vec<_>>());
+}

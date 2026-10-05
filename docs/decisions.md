@@ -798,8 +798,12 @@ remain.)
 **2026-10-05 · Keyed collections at 2,000 rows.** `KeyedVec` keeps a key →
 position map that tolerates stale entries (keys are unique, so an entry is
 proved by one comparison; a stale one is found by an outward search and
-fixed), so mutations never re-index the items after them and lookups are
-O(1) amortised. `keyed_diff` is hash-based with the longest increasing run
+fixed), so mutations never re-index the items after them. A lookup is
+O(1) when its entry is fresh and otherwise costs the entry's drift since
+it was last looked up, bounded by the list length (a queue that pushes at
+the back and removes at the front drifts every entry by up to n; its
+`Vec::remove` is O(n) anyway). Not "O(1) amortised" for every pattern, as
+round 0 of this section said. `keyed_diff` is hash-based with the longest increasing run
 of survivors left in place: the fewest `Move`s, never a remove and
 re-insert of a surviving key; repeated keys give a `Reset` instead of a
 panic. A derived collection that receives more than 128 diffs covering at
@@ -809,18 +813,31 @@ output (identity kept), because `sort_by` costs O(n) per diff. Hashing uses
 `docs/benchmarks.md`.
 
 **2026-10-05 · Keyed writes under the 30 writes/s guard.** Replaces wave
-1's "keyed collections are not gated". A collection's latest value is the
-whole list, so a throttled handler gets a held copy: its later operations
-apply to that copy (read-your-writes: no `push` is lost, a duplicate key
-or a missing key is reported at once against what it has written), and
-when its window has room the copy lands as one `keyed_diff` against the
-live list, so items keep identity. Diffs cannot be held one by one (that
-would grow without bound in a runaway loop); one copy is bounded. As with
-plain state, a write that goes through (a service batch, an input
-handler) supersedes held copies, and a cancelled handler's copy never
-lands. The rate is checked before an in-place write and counted only when
-the operation changed something, so the unthrottled path stays in place
-(no copy).
+1's "keyed collections are not gated". A throttled handler gets a held
+copy of the list plus the list it started from: its later operations
+apply to that copy (read-your-writes: a duplicate key or a missing key is
+reported at once against what it has written), and when its window has
+room the copy's changes land as one keyed diff, so items keep identity.
+Diffs cannot be held one by one (that would grow without bound in a
+runaway loop); one copy is bounded. Unlike plain state, a held copy is a
+*set of changes*, not a latest value (review round 1: round 0 let any
+write that went through supersede it, silently dropping every row a
+throttled `on notifications.received(n) { history.push(n) }` had pushed
+when the user dismissed one). A write that goes through (an input
+handler, a service batch, another handler's landing) rebases the held
+copy: the changes from its base to it (removals, value updates, moves of
+survivors outside the longest in-order run, inserts) are re-applied by
+key onto the new list, moved and inserted items going before the next
+held item the new list still has in place (so pushes stay at the end,
+after what others appended). Changes that no longer apply (a key both
+inserted; an item the handler updated or moved but the other write
+removed) are skipped and counted in one `Diagnostic::KeyedConflict`. A
+cancelled handler's copy still never lands. The rate is checked before an
+in-place write and counted only when the operation changed something, so
+the unthrottled path stays in place (no copy). Held writes are indexed by
+`(cell, writer)` and a rate window keeps only its newest 31 attempts, so a
+throttled handler writing a cell per row stays linear
+(`docs/benchmarks.md`).
 
 **2026-10-05 · Frozen = paused, with a bounded backlog.** Refines wave 1's
 "timers count while frozen". A timer inside a suspended component is
@@ -829,8 +846,16 @@ time counted so far and counts again from `rt.resume` (or from leaving the
 frozen scope), so a toast frozen by a fault does not expire behind the
 user's back, and an `every` does not fire a catch-up tick on release. A
 timer created or restarted while frozen starts counting at the release.
-`await sleep(..)` inside a handler is not a timer: a frozen task wakes on
-time but is held, and continues on release. State needs no bound (a cell
+`await sleep(..)` in a frozen handler pauses the same way (review round 1:
+round 0 let it keep counting, so `await sleep(5s); n.expire()` still
+expired a toast the moment it was released): each sleep knows the task
+polling it and keeps its time left while that task is frozen. A release
+does not count from the logic clock's last tick: the clock only moves
+when the host ticks, and a host sleeps while everything is frozen, so a
+released timer or sleep starts counting at the next clock advance (the
+host's real time), reports no deadline until then, and the release calls
+the wake hook. Freezing pauses as of the last tick (it may under-count by
+less than a tick; never over-counts). State needs no bound (a cell
 keeps its latest value, a held sink runs once on release with it; the held
 list is a set). Events of lossless queues are kept per frozen listener up
 to `MAX_FROZEN_EVENTS` (256, the size of a collection's diff log); past
@@ -840,7 +865,8 @@ the rest in order. Reported at release rather than per drop: a chatty
 service would otherwise flood the overlay, which already outlines the
 frozen component.
 
-**2026-10-05 · `persist` storage.** One file per persisted cell under
+**2026-10-05 · `persist` storage.** (Refined by "Persist IO thread and
+handle" below.) One file per persisted cell under
 `$XDG_STATE_HOME/strand/persist/` (falling back to
 `~/.local/state/strand/persist/`; a relative `XDG_STATE_HOME` is ignored, as
 the XDG spec says), named by the cell's `file.name` path with every byte
@@ -889,4 +915,77 @@ is left unranked (the rank walk never goes round it) and the cycle guard
 bounds the loop as before. Not ordered: a task woken by something other
 than a handler of the flush (another thread's waker) writes when it is
 polled. Ranks live in a side map (most nodes are rank 0), so the node and
-the 10k-node numbers stay as they were (`docs/benchmarks.md`).
+the 10k-node numbers stay as they were (`docs/benchmarks.md`). (Refined by
+"Declared reads" and "Foreign wakes" below: the first flush and woken
+tasks are now ordered too.)
+
+**2026-10-05 · Declared reads and the provisional phase (review round
+1).** Read edges exist only once a node has run, so round 0 ran a reader
+created before its writer at rank 0 on the first flush, then again after
+the writer: a glitch per mount, even with `rt.writes_to` declared, and a
+reader switching to a higher-ranked branch re-ran too. The compiler now
+also declares reads: `rt.reads_from(node, &sources)` with the syntactic
+read set of every binding and handler (every branch, a conservative
+superset; an empty set still counts as declared). Declared read edges are
+rank-only: `rank(node) >= rank(source)`, walked by rank raises like
+observer edges, and a declared read closing a loop through write edges
+turns those into feedback edges, as a learned one does. With reads and
+writes declared, ranks are complete before anything runs, so every sink
+runs exactly once per flush with final values from the first flush on,
+`Pick` branch switches included; `tests/order_props.rs` checks every flush
+of declared graphs, the first one included, with written cells starting
+unsettled. A sink that has never run and declares nothing (no reads, no
+write edges) runs its first time in a provisional phase at rank
+2^20 - 1, after every ranked sink and before `on change` handlers, so it
+sees what declared writers wrote. Residual, without declarations only: a
+learned edge can re-run a sink once in that flush (its last run sees the
+final values, also property-tested), and undeclared fresh sinks in the
+provisional phase run in creation order among themselves. So "once per
+flush" holds for declared graphs; `features.md` says so.
+
+**2026-10-05 · Foreign wakes (review round 1).** A task woken by another
+thread (an IO or D-Bus reply) used to be polled between sinks of the
+running flush, writing behind readers that had already run. The ready
+queue now keeps wakes from other threads apart (by thread id) and polls
+them only when a flush starts; one arriving mid-flush waits for the next
+flush (the wake hook brings the host back). Both lists merge back in wake
+order. Wakes on the logic thread (a handler's write completing a future,
+`spawn`) are still polled before the next sink, where they are ordered.
+
+**2026-10-05 · Persist IO thread and handle (review round 1).** Writes no
+longer run on the logic thread: each `PersistStore` has one IO thread,
+started on first use, fed by a queue coalesced to the latest operation
+per file (write, remove, move aside). `load` sees queued operations before
+the disk, so a component remounted by a reload reads what its predecessor
+just queued. Failures come back through a per-runtime sink drained into
+the next tick's diagnostics, with a wake-hook call. `Runtime::shutdown`
+waits for the queue (bounded, 5 s); dropping the last store handle drains
+it (bounded) and joins the thread; a persisted cell's writer queues its
+pending value when dropped, so a runtime dropped without `shutdown` still
+writes. The file's baseline is updated when a write is queued, not when it
+lands (a failed write is reported; the next change writes again).
+`rt.persisted` returns a `Persisted` handle with `redeclare(rt,
+new_default)` (the reload rule for state defaults: adopt if the value
+still holds the old default, removing the file; else keep, report
+`PersistDefaultChanged` once and re-stamp) and `reset(rt)` (cancels the
+pending and queued write, removes the file, sets the default), so the
+default hash follows reloads and `@reset` cannot be undone by a late
+write. A path names one live cell: the reconciler qualifies it with the
+instance identity (`bar[<make model description>].x`, a list item's key);
+a second live cell on a path in use reports `PersistPathInUse` and never
+writes (the first owns the file). A stored value that no longer decodes is
+moved aside to `<name>.corrupt` like a corrupt file (round 0 left it, so
+the warning repeated on every start). Temp files of dead processes (or
+older than a minute and not ours) are swept on a store's first write.
+
+**2026-10-05 · Settings files deferred (review round 1).** `state x from
+"file.toml" { .. }` (per-field validation, `toml_edit` write-back,
+symlinks, the read-only overlay in `$XDG_STATE_HOME`) is not part of this
+step: `docs/features.md` lists it under M2 ("Settings files: per-field
+validation, `toml_edit` write-back, symlink-following, read-only
+overlay"), it needs the checker's typed field schema from
+`strand-compiler`, and wave 1's "left for wave 2" note named it by mistake
+next to `persist`. When it is built, the store belongs next to `persist`
+in `strand-core` (the same atomic write path, IO thread and
+`$XDG_STATE_HOME` layout), with the schema and per-field checks from
+`strand-compiler`; the orchestrator should assign it to an M2 track.

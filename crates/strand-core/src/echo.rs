@@ -114,6 +114,7 @@ impl<T: Clone + PartialEq + 'static> Signal<T> {
                 Box::new(move |rt: &Runtime, _held| {
                     let _ = commit(rt, value);
                 }),
+                None,
             );
             Ok(None)
         }

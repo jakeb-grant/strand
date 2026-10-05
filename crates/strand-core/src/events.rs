@@ -19,7 +19,9 @@
 //! out of the frozen scope), so a service event is not lost. The backlog is
 //! bounded: past [`crate::MAX_FROZEN_EVENTS`] per listener the oldest are
 //! dropped and the release reports [`Diagnostic::EventsDropped`] with the
-//! count. (State needs no bound: a cell keeps only its latest value.)
+//! count (also when the listener is disposed instead of released: the
+//! events it still held go with it, the count of those it lost before is
+//! reported). (State needs no bound: a cell keeps only its latest value.)
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -104,7 +106,20 @@ impl<T: 'static> NodeData for EventsData<T> {
             let Ok(mut backlog) = self.backlog.try_borrow_mut() else {
                 return false;
             };
-            backlog.retain(|b| rt.exists(b.listener));
+            // A frozen listener disposed instead of resumed (the reload
+            // replaced its component): what it held is gone; what it had
+            // already lost is still reported.
+            backlog.retain(|b| {
+                let alive = rt.exists(b.listener);
+                if !alive && b.dropped > 0 {
+                    rt.diagnose(Diagnostic::EventsDropped {
+                        queue: id,
+                        listener: b.listener,
+                        dropped: b.dropped,
+                    });
+                }
+                alive
+            });
             let (released, frozen) = std::mem::take(&mut *backlog)
                 .into_iter()
                 .partition(|b| !rt.is_suspended(b.listener));

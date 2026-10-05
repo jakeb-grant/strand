@@ -2,7 +2,9 @@
 //!
 //! Each persisted cell is one small file under `$XDG_STATE_HOME/strand/
 //! persist/` (or `~/.local/state/strand/persist/`), named by the cell's path
-//! (`launcher.query`, `bar.dnd`: the same `file.name` path `export` uses).
+//! (`launcher.query`, `bar.dnd`: the `file.name` path `export` uses, plus
+//! the instance identity when a component has several instances,
+//! `bar[<monitor>].expanded`).
 //! The file stores the value's bytes together with a hash of the default
 //! it was declared with, so a changed default can be noticed ("Persistence
 //! and settings" in the design):
@@ -21,8 +23,11 @@
 //! the type changed) is moved aside to `<name>.corrupt` and the default is
 //! used, with [`Diagnostic::PersistFailed`]. Writes are atomic (temp file,
 //! `fsync`, rename, directory `fsync`), so a crash never leaves a torn
-//! file, and debounced by [`PERSIST_DEBOUNCE`] of logic time; a pending
-//! write is flushed when the cell's owner is disposed (unmount, shutdown).
+//! file, done on the store's IO thread (never on the logic tick), and
+//! debounced by [`PERSIST_DEBOUNCE`] of logic time; a pending write is
+//! queued when the cell's owner is disposed (unmount, shutdown) or the
+//! runtime is dropped. [`Persisted::redeclare`] follows a default changed
+//! by a live reload and [`Persisted::reset`] is `@reset`.
 
 use std::cell::RefCell;
 use std::fmt;
@@ -30,12 +35,12 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
 use crate::error::Error;
-use crate::runtime::{Diagnostic, NodeId, Runtime, WeakRuntime};
+use crate::runtime::{Diagnostic, NodeId, Runtime};
 use crate::signal::Signal;
 
 /// Quiet time after the last change before a persisted value is written
@@ -134,10 +139,229 @@ pub enum Restore {
     Failed(PersistError),
 }
 
-/// Where persisted values live. Cheap to clone.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Where persisted values live. Cheap to clone: clones share one IO
+/// thread.
+///
+/// Writes, removals and quarantines are queued to a persist IO thread
+/// (started on first use), coalesced to the latest operation per file, so
+/// the logic thread never waits for `fsync` on a slow or networked disk.
+/// [`PersistStore::load`] sees queued operations before the disk, so a
+/// value written by an unmounting component is read back by its
+/// replacement even before it reaches the disk. [`PersistStore::sync`]
+/// waits for the queue to drain ([`Runtime::shutdown`] does, bounded);
+/// dropping the last clone drains the queue (bounded) and joins the
+/// thread.
+#[derive(Clone)]
 pub struct PersistStore {
+    inner: Arc<StoreInner>,
+}
+
+impl fmt::Debug for PersistStore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PersistStore")
+            .field("dir", &self.inner.shared.dir)
+            .finish()
+    }
+}
+
+impl PartialEq for PersistStore {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner.shared.dir == other.inner.shared.dir
+    }
+}
+
+impl Eq for PersistStore {}
+
+/// How long [`Runtime::shutdown`] (and dropping a store) waits for queued
+/// writes before giving up on them.
+pub const PERSIST_SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
+
+/// Temp files of other processes older than this are removed.
+const STALE_TEMP: Duration = Duration::from_secs(60);
+
+type IoHook = Arc<dyn Fn(&Path) + Send + Sync>;
+
+struct StoreInner {
+    shared: Arc<Shared>,
+    worker: Mutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+impl Drop for StoreInner {
+    /// Drain queued writes (bounded) and join the IO thread.
+    fn drop(&mut self) {
+        let drained = self.shared.wait_idle(PERSIST_SHUTDOWN_WAIT);
+        self.shared.lock().stop = true;
+        self.shared.changed.notify_all();
+        let handle = self
+            .worker
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let (true, Some(h)) = (drained, handle) {
+            let _ = h.join();
+        }
+    }
+}
+
+/// State shared with the IO thread.
+struct Shared {
     dir: PathBuf,
+    queue: Mutex<Queue>,
+    changed: Condvar,
+    /// Called before every queued operation (tests: a slow disk).
+    io_hook: Option<IoHook>,
+}
+
+#[derive(Default)]
+struct Queue {
+    /// Pending operations, at most one per file, oldest first.
+    ops: Vec<(PathBuf, Job)>,
+    /// The operation the IO thread is performing.
+    in_flight: Option<(PathBuf, Op)>,
+    stop: bool,
+    /// Old temp files were swept (once per store).
+    swept: bool,
+}
+
+struct Job {
+    op: Op,
+    report: Option<Reporter>,
+}
+
+#[derive(Clone)]
+enum Op {
+    Write {
+        default_hash: u64,
+        value: Arc<[u8]>,
+    },
+    Remove,
+    /// Move the file aside to `<name>.corrupt`.
+    Quarantine,
+}
+
+/// Where a queued operation reports its failure: the runtime drains it in
+/// its next flush as [`Diagnostic::PersistFailed`].
+#[derive(Clone)]
+pub(crate) struct Reporter {
+    cell: NodeId,
+    path: Arc<str>,
+    sink: Arc<FailSink>,
+}
+
+/// Failures from the IO thread, for one runtime.
+pub(crate) struct FailSink {
+    list: Mutex<Vec<Diagnostic>>,
+    /// `list` is not empty: every flush checks without locking.
+    any: std::sync::atomic::AtomicBool,
+    ready: Arc<crate::task::ReadyQueue>,
+}
+
+impl FailSink {
+    pub(crate) fn new(ready: Arc<crate::task::ReadyQueue>) -> Self {
+        Self {
+            list: Mutex::new(Vec::new()),
+            any: std::sync::atomic::AtomicBool::new(false),
+            ready,
+        }
+    }
+    pub(crate) fn take(&self) -> Vec<Diagnostic> {
+        if !self.any.load(Ordering::Acquire) {
+            return Vec::new();
+        }
+        let mut list = self.list.lock().unwrap_or_else(PoisonError::into_inner);
+        self.any.store(false, Ordering::Release);
+        std::mem::take(&mut *list)
+    }
+    fn push(&self, d: Diagnostic) {
+        {
+            let mut list = self.list.lock().unwrap_or_else(PoisonError::into_inner);
+            list.push(d);
+            self.any.store(true, Ordering::Release);
+        }
+        // Wake the logic thread so the next flush reports it.
+        self.ready.call_hook();
+    }
+}
+
+impl Shared {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Queue> {
+        self.queue.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Wait until nothing is queued or in flight; false on timeout.
+    fn wait_idle(&self, timeout: Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut q = self.lock();
+        while !q.ops.is_empty() || q.in_flight.is_some() {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            q = self
+                .changed
+                .wait_timeout(q, deadline - now)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+        true
+    }
+
+    /// The IO thread.
+    fn run(&self) {
+        loop {
+            let (file, job, sweep) = {
+                let mut q = self.lock();
+                loop {
+                    if !q.ops.is_empty() {
+                        let (file, job) = q.ops.remove(0);
+                        q.in_flight = Some((file.clone(), job.op.clone()));
+                        let sweep = !std::mem::replace(&mut q.swept, true);
+                        break (file, job, sweep);
+                    }
+                    if q.stop {
+                        return;
+                    }
+                    q = self.changed.wait(q).unwrap_or_else(PoisonError::into_inner);
+                }
+            };
+            if sweep {
+                sweep_temps(&self.dir);
+            }
+            if let Some(hook) = &self.io_hook {
+                hook(&file);
+            }
+            let r = self.perform(&file, &job.op);
+            // Reported before the operation counts as done, so a `sync`
+            // that returns has its failures in the runtime.
+            if let (Err(error), Some(rep)) = (r, job.report) {
+                rep.sink.push(Diagnostic::PersistFailed {
+                    cell: rep.cell,
+                    path: rep.path,
+                    error,
+                });
+            }
+            self.lock().in_flight = None;
+            self.changed.notify_all();
+        }
+    }
+
+    fn perform(&self, file: &Path, op: &Op) -> Result<(), PersistError> {
+        match op {
+            Op::Write {
+                default_hash,
+                value,
+            } => write_file(&self.dir, file, *default_hash, value),
+            Op::Remove => match fs::remove_file(file) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(io_error(file, &e)),
+            },
+            Op::Quarantine => {
+                quarantine(file);
+                Ok(())
+            }
+        }
+    }
 }
 
 /// Distinct temp names within one process.
@@ -146,7 +370,31 @@ static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 impl PersistStore {
     /// A store keeping its files in `dir` (created on the first write).
     pub fn new(dir: impl Into<PathBuf>) -> Self {
-        Self { dir: dir.into() }
+        Self::build(dir.into(), None)
+    }
+
+    /// A store whose IO thread calls `hook` with the file before every
+    /// queued operation: tests simulate a slow disk with it.
+    #[doc(hidden)]
+    pub fn with_io_hook(
+        dir: impl Into<PathBuf>,
+        hook: impl Fn(&Path) + Send + Sync + 'static,
+    ) -> Self {
+        Self::build(dir.into(), Some(Arc::new(hook)))
+    }
+
+    fn build(dir: PathBuf, io_hook: Option<IoHook>) -> Self {
+        Self {
+            inner: Arc::new(StoreInner {
+                shared: Arc::new(Shared {
+                    dir,
+                    queue: Mutex::new(Queue::default()),
+                    changed: Condvar::new(),
+                    io_hook,
+                }),
+                worker: Mutex::new(None),
+            }),
+        }
     }
 
     /// `$XDG_STATE_HOME/strand/persist`, or `$HOME/.local/state/strand/
@@ -175,7 +423,11 @@ impl PersistStore {
 
     /// The directory holding the files.
     pub fn dir(&self) -> &Path {
-        &self.dir
+        &self.inner.shared.dir
+    }
+
+    pub(crate) fn same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
     }
 
     /// The file for a cell path. Bytes outside `[A-Za-z0-9_.-]` (and a
@@ -202,14 +454,42 @@ impl PersistStore {
                 .unwrap_or(0);
             name = format!("{}~{:016x}", &name[..cut], value_hash(path.as_bytes()));
         }
-        Ok(self.dir.join(name))
+        Ok(self.dir().join(name))
     }
 
     /// Read a stored value. `Ok(None)` when nothing is stored; a file that
     /// is not a valid persisted value is moved aside to `<name>.corrupt`
-    /// and reported as [`PersistError::Corrupt`].
+    /// and reported as [`PersistError::Corrupt`]. Operations still queued
+    /// for the file count: the latest one is what the file will hold.
     pub fn load(&self, path: &str) -> Result<Option<Stored>, PersistError> {
         let file = self.file_of(path)?;
+        {
+            let q = self.inner.shared.lock();
+            let queued = q
+                .ops
+                .iter()
+                .rev()
+                .find(|(f, _)| *f == file)
+                .map(|(_, j)| &j.op)
+                .or(q
+                    .in_flight
+                    .as_ref()
+                    .filter(|(f, _)| *f == file)
+                    .map(|(_, op)| op));
+            match queued {
+                Some(Op::Write {
+                    default_hash,
+                    value,
+                }) => {
+                    return Ok(Some(Stored {
+                        value: value.to_vec(),
+                        default_hash: *default_hash,
+                    }));
+                }
+                Some(Op::Remove | Op::Quarantine) => return Ok(None),
+                None => {}
+            }
+        }
         let bytes = match fs::read(&file) {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -218,11 +498,9 @@ impl PersistStore {
         match parse(&bytes) {
             Ok(stored) => Ok(Some(stored)),
             Err(reason) => {
-                let mut aside = file.clone().into_os_string();
-                aside.push(".corrupt");
                 // Best effort: the default is used either way, and the next
                 // write replaces the file.
-                let _ = fs::rename(&file, &aside);
+                quarantine(&file);
                 Err(PersistError::Corrupt {
                     path: file,
                     reason: Arc::from(reason),
@@ -231,61 +509,105 @@ impl PersistStore {
         }
     }
 
-    /// Store `value` for `path`, stamped with the hash of `default`.
+    /// Store `value` for `path`, stamped with the hash of `default`, now
+    /// (on the calling thread, after anything queued for the file).
     /// Atomic: a reader sees the old file or the new one, never a mix.
+    /// Persisted cells write through the IO thread instead.
     pub fn save(&self, path: &str, default: &[u8], value: &[u8]) -> Result<(), PersistError> {
-        self.save_hashed(path, value_hash(default), value)
-    }
-
-    fn save_hashed(&self, path: &str, default_hash: u64, value: &[u8]) -> Result<(), PersistError> {
         let file = self.file_of(path)?;
-        create_private_dir(&self.dir)?;
-        let mut body = format!(
-            "{MAGIC}\ndefault {default_hash:016x}\ncheck {:016x}\n\n",
-            value_hash(value)
+        self.now(
+            &file,
+            &Op::Write {
+                default_hash: value_hash(default),
+                value: Arc::from(value),
+            },
         )
-        .into_bytes();
-        body.extend_from_slice(value);
-        let name = file
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let temp = self.dir.join(format!(
-            ".{name}.tmp.{}.{}",
-            std::process::id(),
-            TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        let written = (|| {
-            let mut f = fs::File::create(&temp)?;
-            f.write_all(&body)?;
-            f.sync_all()?;
-            fs::rename(&temp, &file)
-        })();
-        if let Err(e) = written {
-            let _ = fs::remove_file(&temp);
-            return Err(io_error(&file, &e));
-        }
-        // Make the rename itself durable; failing here loses nothing that
-        // is not already on its way to disk.
-        if let Ok(d) = fs::File::open(&self.dir) {
-            let _ = d.sync_all();
-        }
-        Ok(())
     }
 
-    /// Forget the stored value (`@reset`, the inspector's "reset").
+    /// Forget the stored value now (tools; a persisted cell's `@reset` is
+    /// [`Persisted::reset`]).
     pub fn remove(&self, path: &str) -> Result<(), PersistError> {
         let file = self.file_of(path)?;
-        match fs::remove_file(&file) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(io_error(&file, &e)),
+        self.now(&file, &Op::Remove)
+    }
+
+    /// Wait until every queued write has reached the disk, at most
+    /// `timeout`. Returns false if the queue did not drain in time.
+    pub fn sync(&self, timeout: Duration) -> bool {
+        self.inner.shared.wait_idle(timeout)
+    }
+
+    /// Perform `op` on the calling thread, replacing what is queued for
+    /// `file` and after an in-flight operation on it.
+    fn now(&self, file: &Path, op: &Op) -> Result<(), PersistError> {
+        let shared = &self.inner.shared;
+        let mut q = shared.lock();
+        q.ops.retain(|(f, _)| f != file);
+        while q.in_flight.as_ref().is_some_and(|(f, _)| f == file) {
+            q = shared
+                .changed
+                .wait(q)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        // Holding the lock keeps the IO thread off this file meanwhile.
+        let r = shared.perform(file, op);
+        drop(q);
+        shared.changed.notify_all();
+        r
+    }
+
+    /// Queue `op` for `file`, replacing what is queued for it.
+    fn enqueue(&self, file: PathBuf, op: Op, report: Option<Reporter>) {
+        let shared = &self.inner.shared;
+        {
+            let mut q = shared.lock();
+            q.ops.retain(|(f, _)| *f != file);
+            q.ops.push((file, Job { op, report }));
+        }
+        self.ensure_worker();
+        shared.changed.notify_all();
+    }
+
+    fn ensure_worker(&self) {
+        let mut worker = self
+            .inner
+            .worker
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if worker.is_some() {
+            return;
+        }
+        let shared = self.inner.shared.clone();
+        match std::thread::Builder::new()
+            .name("strand-persist".into())
+            .spawn(move || shared.run())
+        {
+            Ok(h) => *worker = Some(h),
+            // No thread: do the work here rather than lose it.
+            Err(_) => {
+                let shared = &self.inner.shared;
+                let jobs = std::mem::take(&mut shared.lock().ops);
+                for (file, job) in jobs {
+                    if let (Err(error), Some(rep)) = (shared.perform(&file, &job.op), job.report) {
+                        rep.sink.push(Diagnostic::PersistFailed {
+                            cell: rep.cell,
+                            path: rep.path,
+                            error,
+                        });
+                    }
+                }
+            }
         }
     }
 
     /// Decide a cell's starting value from what is stored and its declared
-    /// `default` (encoded). See [`Restore`].
+    /// `default` (encoded). See [`Restore`]. Removing an adopted file and
+    /// re-stamping a kept one are queued.
     pub fn restore(&self, path: &str, default: &[u8]) -> Restore {
+        self.restore_reporting(path, default, None)
+    }
+
+    fn restore_reporting(&self, path: &str, default: &[u8], report: Option<Reporter>) -> Restore {
         let stored = match self.load(path) {
             Ok(None) => return Restore::Default,
             Ok(Some(s)) => s,
@@ -295,15 +617,110 @@ impl PersistStore {
         if stored.default_hash == new_default {
             return Restore::Stored(stored.value);
         }
+        let Ok(file) = self.file_of(path) else {
+            return Restore::Failed(PersistError::EmptyPath);
+        };
         if value_hash(&stored.value) == stored.default_hash {
             // Never changed from the old default: take the new one. The
             // stale file would only say the same again next time.
-            let _ = self.remove(path);
+            self.enqueue(file, Op::Remove, report);
             return Restore::Adopted;
         }
         // Kept; re-stamp so the change of default is reported once.
-        let _ = self.save_hashed(path, new_default, &stored.value);
+        self.enqueue(
+            file,
+            Op::Write {
+                default_hash: new_default,
+                value: Arc::from(&stored.value[..]),
+            },
+            report,
+        );
         Restore::KeptOverNewDefault(stored.value)
+    }
+}
+
+/// Write `value` to `file` atomically: temp file, `fsync`, rename,
+/// directory `fsync`.
+fn write_file(
+    dir: &Path,
+    file: &Path,
+    default_hash: u64,
+    value: &[u8],
+) -> Result<(), PersistError> {
+    create_private_dir(dir)?;
+    let mut body = format!(
+        "{MAGIC}\ndefault {default_hash:016x}\ncheck {:016x}\n\n",
+        value_hash(value)
+    )
+    .into_bytes();
+    body.extend_from_slice(value);
+    let name = file
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let temp = dir.join(format!(
+        ".{name}.tmp.{}.{}",
+        std::process::id(),
+        TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    let written = (|| {
+        let mut f = fs::File::create(&temp)?;
+        f.write_all(&body)?;
+        f.sync_all()?;
+        fs::rename(&temp, file)
+    })();
+    if let Err(e) = written {
+        let _ = fs::remove_file(&temp);
+        return Err(io_error(file, &e));
+    }
+    // Make the rename itself durable; failing here loses nothing that is
+    // not already on its way to disk.
+    if let Ok(d) = fs::File::open(dir) {
+        let _ = d.sync_all();
+    }
+    Ok(())
+}
+
+/// Move `file` aside to `<name>.corrupt` (best effort).
+fn quarantine(file: &Path) {
+    let mut aside = file.as_os_str().to_owned();
+    aside.push(".corrupt");
+    let _ = fs::rename(file, &aside);
+}
+
+/// Remove temp files (`.<name>.tmp.<pid>.<n>`) a crash left between create
+/// and rename: those of processes that are gone, or older than a minute
+/// and not ours.
+fn sweep_temps(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let me = std::process::id();
+    for e in entries.flatten() {
+        let name = e.file_name();
+        let name = name.to_string_lossy();
+        let Some(rest) = name.strip_prefix('.') else {
+            continue;
+        };
+        let Some((_, tail)) = rest.rsplit_once(".tmp.") else {
+            continue;
+        };
+        let Some(pid) = tail.split('.').next().and_then(|p| p.parse::<u32>().ok()) else {
+            continue;
+        };
+        if pid == me {
+            continue;
+        }
+        let gone = !Path::new(&format!("/proc/{pid}")).exists();
+        let old = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > STALE_TEMP);
+        if gone || old {
+            let _ = fs::remove_file(e.path());
+        }
     }
 }
 
@@ -357,13 +774,35 @@ fn parse(bytes: &[u8]) -> Result<Stored, String> {
     })
 }
 
-/// A persisted cell: [`Runtime::persisted`].
-#[derive(Debug)]
+/// A persisted cell: [`Runtime::persisted`]. Keep it to follow live
+/// reloads ([`Persisted::redeclare`]) and `@reset` ([`Persisted::reset`]).
 pub struct Persisted<T> {
     /// The state cell (an ordinary [`Signal`]).
     pub signal: Signal<T>,
     /// How its starting value was chosen.
     pub restored: Restore,
+    writer: Rc<Writer<T>>,
+}
+
+impl<T> fmt::Debug for Persisted<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Persisted")
+            .field("signal", &self.signal)
+            .field("path", &self.writer.path)
+            .field("restored", &self.restored)
+            .finish()
+    }
+}
+
+/// What [`Persisted::redeclare`] did with a changed default.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Redeclared {
+    /// The default did not change.
+    Unchanged,
+    /// The value still held the old default: it took the new one.
+    Adopted,
+    /// The value had been changed: it is kept (and reported once).
+    Kept,
 }
 
 type Encode<T> = Box<dyn Fn(&T) -> Vec<u8>>;
@@ -372,61 +811,159 @@ type Encode<T> = Box<dyn Fn(&T) -> Vec<u8>>;
 struct Writer<T> {
     store: PersistStore,
     path: Arc<str>,
+    file: PathBuf,
     cell: NodeId,
-    default_hash: u64,
+    /// The declared default, its encoding and hash (changed by a reload).
+    default: RefCell<(T, Vec<u8>, u64)>,
     encode: Encode<T>,
-    /// What the file holds now (the default when nothing is stored).
+    /// What the file holds (or will, once the queue drains); the default
+    /// when nothing is stored.
     baseline: RefCell<Vec<u8>>,
-    /// Encoded value not yet written.
+    /// Encoded value not yet queued.
     pending: RefCell<Option<Vec<u8>>>,
-    rt: WeakRuntime,
+    /// False for a second live cell on a path already in use: it never
+    /// writes (the first one owns the file).
+    active: bool,
+    report: Reporter,
 }
 
 impl<T> Writer<T> {
     /// The value changed: remember it unless the file already says it.
     fn note(&self, value: &T) {
+        if !self.active {
+            return;
+        }
         let bytes = (self.encode)(value);
         let fresh = *self.baseline.borrow() != bytes;
         *self.pending.borrow_mut() = fresh.then_some(bytes);
     }
 
-    /// Write the pending value, if any.
+    /// Queue the pending value, if any, for the IO thread.
     fn flush(&self) {
         let Some(bytes) = self.pending.borrow_mut().take() else {
             return;
         };
-        match self
-            .store
-            .save_hashed(&self.path, self.default_hash, &bytes)
-        {
-            Ok(()) => *self.baseline.borrow_mut() = bytes,
-            Err(error) => {
-                if let Some(rt) = self.rt.upgrade() {
-                    rt.diagnose(Diagnostic::PersistFailed {
-                        cell: self.cell,
-                        path: self.path.clone(),
-                        error,
-                    });
-                }
+        let default_hash = self.default.borrow().2;
+        self.store.enqueue(
+            self.file.clone(),
+            Op::Write {
+                default_hash,
+                value: Arc::from(&bytes[..]),
+            },
+            Some(self.report.clone()),
+        );
+        *self.baseline.borrow_mut() = bytes;
+    }
+}
+
+impl<T> Drop for Writer<T> {
+    /// A runtime dropped without [`Runtime::shutdown`] still writes what
+    /// was pending (the store drains its queue when it goes).
+    fn drop(&mut self) {
+        self.flush();
+    }
+}
+
+impl<T: Clone + PartialEq + 'static> Persisted<T> {
+    /// The persist path.
+    pub fn path(&self) -> &str {
+        &self.writer.path
+    }
+
+    /// Live reload changed the declared default (`state x = 40 persist`
+    /// became `= 60`): the reconciler calls this instead of creating a new
+    /// cell. The "state default" rule: a value that still holds the old
+    /// default takes the new one (the stored file is removed: nothing
+    /// stored means the default); a changed value is kept, reported once
+    /// as [`Diagnostic::PersistDefaultChanged`] and re-stamped with the new
+    /// default's hash, so the next start neither adopts it nor reports it
+    /// again.
+    pub fn redeclare(&self, rt: &Runtime, new_default: T) -> Result<Redeclared, Error> {
+        let w = &self.writer;
+        let new_bytes = (w.encode)(&new_default);
+        let new_hash = value_hash(&new_bytes);
+        let old_bytes = {
+            let d = w.default.borrow();
+            if d.2 == new_hash {
+                return Ok(Redeclared::Unchanged);
             }
+            d.1.clone()
+        };
+        let live = self.signal.get_untracked(rt)?;
+        let live_bytes = (w.encode)(&live);
+        *w.default.borrow_mut() = (new_default.clone(), new_bytes.clone(), new_hash);
+        *w.pending.borrow_mut() = None;
+        if live_bytes == old_bytes || live_bytes == new_bytes {
+            *w.baseline.borrow_mut() = new_bytes;
+            if w.active {
+                w.store
+                    .enqueue(w.file.clone(), Op::Remove, Some(w.report.clone()));
+            }
+            self.signal.set(rt, new_default)?;
+            return Ok(Redeclared::Adopted);
         }
+        if w.active {
+            w.store.enqueue(
+                w.file.clone(),
+                Op::Write {
+                    default_hash: new_hash,
+                    value: Arc::from(&live_bytes[..]),
+                },
+                Some(w.report.clone()),
+            );
+        }
+        *w.baseline.borrow_mut() = live_bytes;
+        rt.diagnose(Diagnostic::PersistDefaultChanged {
+            cell: w.cell,
+            path: w.path.clone(),
+        });
+        Ok(Redeclared::Kept)
+    }
+
+    /// `@reset` (and the overlay's `[reset]`): forget the stored value and
+    /// go back to the default. A write still pending or queued for the
+    /// cell is cancelled, so it cannot bring the old value back.
+    pub fn reset(&self, rt: &Runtime) -> Result<(), Error> {
+        let w = &self.writer;
+        let (default, bytes) = {
+            let d = w.default.borrow();
+            (d.0.clone(), d.1.clone())
+        };
+        *w.pending.borrow_mut() = None;
+        *w.baseline.borrow_mut() = bytes;
+        if w.active {
+            w.store
+                .enqueue(w.file.clone(), Op::Remove, Some(w.report.clone()));
+        }
+        self.signal.set(rt, default)
     }
 }
 
 impl Runtime {
     /// `state x = default persist`: a [`Signal`] whose value survives
-    /// restarts, stored under `path` (the cell's `file.name` path) in
-    /// `store`. `encode`/`decode` are the VM's codec for the value (any
-    /// stable byte encoding).
+    /// restarts, stored under `path` in `store`. `encode`/`decode` are the
+    /// VM's codec for the value (any stable byte encoding).
+    ///
+    /// `path` names one live cell: the cell's `file.name` path plus the
+    /// identity of its instance when the component has several (`bar[<make
+    /// model description>].expanded` for a `bar` on every monitor, the item
+    /// key for state on list items). A second live cell on a path already
+    /// in use is reported as [`Diagnostic::PersistPathInUse`] and never
+    /// writes (the first cell owns the file); it starts from the stored
+    /// value.
     ///
     /// The starting value follows [`PersistStore::restore`]; a kept value
     /// over a changed default reports [`Diagnostic::PersistDefaultChanged`],
     /// and a file that cannot be read (or a value that no longer decodes,
-    /// such as after a type change) starts from the default and reports
-    /// [`Diagnostic::PersistFailed`]. Changes are written
-    /// [`PERSIST_DEBOUNCE`] after the last one (logic time, so the host's
-    /// `tick` drives it), and a pending write is flushed when the current
-    /// owner is disposed or at [`Runtime::shutdown`].
+    /// such as after a type change, which is then moved aside to
+    /// `<name>.corrupt`) starts from the default and reports
+    /// [`Diagnostic::PersistFailed`]. Changes are queued for the store's IO
+    /// thread [`PERSIST_DEBOUNCE`] after the last one (logic time, so the
+    /// host's `tick` drives it); a pending change is queued when the
+    /// current owner is disposed, at [`Runtime::shutdown`] (which waits
+    /// for the queue, bounded by [`PERSIST_SHUTDOWN_WAIT`]) and when the
+    /// runtime is dropped. Write failures arrive as
+    /// [`Diagnostic::PersistFailed`] in a later tick.
     pub fn persisted<T, E, D>(
         &self,
         store: &PersistStore,
@@ -442,27 +979,73 @@ impl Runtime {
     {
         let path: Arc<str> = Arc::from(path);
         let default_bytes = encode(&default);
-        let mut restored = store.restore(&path, &default_bytes);
+        let signal = self.signal(default.clone());
+        self.set_name(signal.id(), path.clone());
+        let report = Reporter {
+            cell: signal.id(),
+            path: path.clone(),
+            sink: self.inner.persist_failures.clone(),
+        };
+        let file = store.file_of(&path);
+        // One live cell per file.
+        let mut active = file.is_ok();
+        if let Ok(file) = &file {
+            let mut bound = self.inner.persist_paths.borrow_mut();
+            match bound.get(file) {
+                Some(&other) if self.exists(other) => {
+                    active = false;
+                    self.diagnose(Diagnostic::PersistPathInUse {
+                        cell: signal.id(),
+                        other,
+                        path: path.clone(),
+                    });
+                }
+                _ => {
+                    bound.insert(file.clone(), signal.id());
+                }
+            }
+            drop(bound);
+            let mut stores = self.inner.persist_stores.borrow_mut();
+            if !stores.iter().any(|s| s.same(store)) {
+                stores.push(store.clone());
+            }
+        }
+        let mut restored = if active {
+            store.restore_reporting(&path, &default_bytes, Some(report.clone()))
+        } else {
+            match store.load(&path) {
+                Ok(Some(s)) => Restore::Stored(s.value),
+                Ok(None) => Restore::Default,
+                Err(e) => Restore::Failed(e),
+            }
+        };
         let mut baseline = default_bytes.clone();
         let initial = match &restored {
             Restore::Stored(bytes) | Restore::KeptOverNewDefault(bytes) => match decode(bytes) {
                 Some(v) => {
                     baseline.clone_from(bytes);
-                    v
+                    Some(v)
                 }
                 None => {
-                    let file = store.file_of(&path).unwrap_or_default();
+                    let file = file.clone().unwrap_or_default();
+                    if active {
+                        // Moved aside, like a corrupt file: the warning is
+                        // not repeated on every start.
+                        store.enqueue(file.clone(), Op::Quarantine, Some(report.clone()));
+                    }
                     restored = Restore::Failed(PersistError::Corrupt {
                         path: file,
                         reason: Arc::from("the stored value does not decode as this cell's type"),
                     });
-                    default.clone()
+                    None
                 }
             },
-            Restore::Default | Restore::Adopted | Restore::Failed(_) => default.clone(),
+            Restore::Default | Restore::Adopted | Restore::Failed(_) => None,
         };
-        let signal = self.signal(initial);
-        self.set_name(signal.id(), path.clone());
+        if let Some(v) = initial {
+            // Its starting value, not a write: nothing observes it yet.
+            signal.init_value(self, v);
+        }
         match &restored {
             Restore::KeptOverNewDefault(_) => self.diagnose(Diagnostic::PersistDefaultChanged {
                 cell: signal.id(),
@@ -475,18 +1058,21 @@ impl Runtime {
             }),
             _ => {}
         }
+        let default_hash = value_hash(&default_bytes);
         let writer = Rc::new(Writer {
             store: store.clone(),
             path,
+            file: file.unwrap_or_default(),
             cell: signal.id(),
-            default_hash: crate::persist::value_hash(&default_bytes),
+            default: RefCell::new((default, default_bytes, default_hash)),
             encode: Box::new(encode),
             baseline: RefCell::new(baseline),
             pending: RefCell::new(None),
-            rt: self.downgrade(),
+            active,
+            report,
         });
         let w = writer.clone();
-        let saver = writer.clone();
+        let saver = Rc::downgrade(&writer);
         self.on_change_after(
             move |rt| {
                 let v = signal.get(rt)?;
@@ -495,12 +1081,33 @@ impl Runtime {
             },
             PERSIST_DEBOUNCE,
             move |_| {
-                saver.flush();
+                if let Some(w) = saver.upgrade() {
+                    w.flush();
+                }
                 Ok(())
             },
         );
-        self.on_cleanup(move || writer.flush());
-        Persisted { signal, restored }
+        let flusher = Rc::downgrade(&writer);
+        let rt = self.downgrade();
+        self.on_cleanup(move || {
+            if let Some(w) = flusher.upgrade() {
+                w.flush();
+                // The path is free for the next cell (a remount).
+                if let Some(rt) = rt.upgrade()
+                    && w.active
+                {
+                    let mut bound = rt.inner.persist_paths.borrow_mut();
+                    if bound.get(&w.file) == Some(&w.cell) {
+                        bound.remove(&w.file);
+                    }
+                }
+            }
+        });
+        Persisted {
+            signal,
+            restored,
+            writer,
+        }
     }
 
     /// [`Runtime::persisted`] for values with a built-in text encoding
@@ -510,6 +1117,15 @@ impl Runtime {
         T: PersistValue + Clone + PartialEq + 'static,
     {
         self.persisted(store, path, default, T::encode, T::decode)
+    }
+
+    /// Wait (bounded) for the persist stores this runtime used to write
+    /// what is queued; at shutdown.
+    pub(crate) fn sync_persist(&self) {
+        let stores = std::mem::take(&mut *self.inner.persist_stores.borrow_mut());
+        for s in stores {
+            s.sync(PERSIST_SHUTDOWN_WAIT);
+        }
     }
 }
 

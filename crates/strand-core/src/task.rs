@@ -23,7 +23,7 @@ use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
@@ -37,28 +37,62 @@ type BoxFuture = Pin<Box<dyn Future<Output = Result<(), Error>>>>;
 type Hook = Arc<dyn Fn() + Send + Sync>;
 
 /// Woken task ids, shared with wakers on any thread.
-#[derive(Default)]
+///
+/// Wakes made on the logic thread (by a handler of the flush, a spawn, a
+/// sleeper coming due) and wakes from other threads (an IO or D-Bus reply)
+/// are kept apart: a flush polls the foreign ones only when it starts, so
+/// a reply arriving while sinks run waits for the next flush instead of
+/// writing behind readers that already ran (no sink runs twice per tick).
 pub(crate) struct ReadyQueue {
-    ids: Mutex<Vec<NodeId>>,
+    /// `(wake number, task)`: the two lists merge back in wake order.
+    ids: Mutex<Vec<(u64, NodeId)>>,
     /// `ids` is not empty (set and cleared under the lock): lets the flush
     /// check for woken tasks between sinks without locking.
     any: AtomicBool,
+    /// Woken from other threads.
+    foreign: Mutex<Vec<(u64, NodeId)>>,
+    any_foreign: AtomicBool,
+    wakes: AtomicU64,
+    /// The logic thread (the runtime is not `Send`).
+    home: std::thread::ThreadId,
     hook: Mutex<Option<Hook>>,
+}
+
+impl Default for ReadyQueue {
+    fn default() -> Self {
+        Self {
+            ids: Mutex::new(Vec::new()),
+            any: AtomicBool::new(false),
+            foreign: Mutex::new(Vec::new()),
+            any_foreign: AtomicBool::new(false),
+            wakes: AtomicU64::new(0),
+            home: std::thread::current().id(),
+            hook: Mutex::new(None),
+        }
+    }
 }
 
 impl ReadyQueue {
     /// Queue `id` without calling the wake hook (the runtime already knows
     /// it is not idle).
     pub(crate) fn push_quiet(&self, id: NodeId) {
+        let n = self.wakes.fetch_add(1, AtomicOrdering::Relaxed);
         let mut ids = self.ids.lock().unwrap_or_else(PoisonError::into_inner);
-        ids.push(id);
+        ids.push((n, id));
         self.any.store(true, AtomicOrdering::Release);
     }
     fn push(&self, id: NodeId) {
-        self.push_quiet(id);
+        if std::thread::current().id() == self.home {
+            self.push_quiet(id);
+        } else {
+            let n = self.wakes.fetch_add(1, AtomicOrdering::Relaxed);
+            let mut ids = self.foreign.lock().unwrap_or_else(PoisonError::into_inner);
+            ids.push((n, id));
+            self.any_foreign.store(true, AtomicOrdering::Release);
+        }
         self.call_hook();
     }
-    fn call_hook(&self) {
+    pub(crate) fn call_hook(&self) {
         let hook = self
             .hook
             .lock()
@@ -68,19 +102,34 @@ impl ReadyQueue {
             h();
         }
     }
-    fn take(&self) -> Vec<NodeId> {
-        if !self.any.load(AtomicOrdering::Acquire) {
-            return Vec::new();
+    /// Woken ids: the local ones, and (`foreign`) those woken by other
+    /// threads first, in wake order.
+    fn take(&self, foreign: bool) -> Vec<NodeId> {
+        let mut out = Vec::new();
+        if foreign && self.any_foreign.load(AtomicOrdering::Acquire) {
+            let mut ids = self.foreign.lock().unwrap_or_else(PoisonError::into_inner);
+            self.any_foreign.store(false, AtomicOrdering::Release);
+            out = std::mem::take(&mut *ids);
         }
-        let mut ids = self.ids.lock().unwrap_or_else(PoisonError::into_inner);
-        self.any.store(false, AtomicOrdering::Release);
-        std::mem::take(&mut *ids)
+        let merge = !out.is_empty();
+        if self.any.load(AtomicOrdering::Acquire) {
+            let mut ids = self.ids.lock().unwrap_or_else(PoisonError::into_inner);
+            self.any.store(false, AtomicOrdering::Release);
+            if out.is_empty() {
+                out = std::mem::take(&mut *ids);
+            } else {
+                out.append(&mut ids);
+            }
+        }
+        if merge {
+            out.sort_by_key(|&(n, _)| n);
+        }
+        out.into_iter().map(|(_, id)| id).collect()
     }
     fn is_empty(&self) -> bool {
-        self.ids
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .is_empty()
+        // The flags are set after a push and cleared with the take, both
+        // under the list's lock.
+        !self.any.load(AtomicOrdering::Acquire) && !self.any_foreign.load(AtomicOrdering::Acquire)
     }
 }
 
@@ -273,9 +322,11 @@ impl Runtime {
     /// Poll every woken task that has not been polled in this flush yet
     /// (`polled`). A task woken again during the flush (a `yield_now`
     /// pattern) waits for the next flush, so a self-waking task can't spin
-    /// the flush. Returns whether any task was polled.
-    pub(crate) fn poll_ready_tasks(&self, polled: &mut HashSet<NodeId>) -> bool {
-        let mut ids = self.inner.ready.take();
+    /// the flush. Tasks woken by other threads are polled only when
+    /// `foreign` is set (at the start of a flush). Returns whether any task
+    /// was polled.
+    pub(crate) fn poll_ready_tasks(&self, polled: &mut HashSet<NodeId>, foreign: bool) -> bool {
+        let mut ids = self.inner.ready.take(foreign);
         if ids.is_empty() {
             return false;
         }
@@ -314,7 +365,9 @@ impl Runtime {
                 input: task.input.get(),
             };
             let mut cx = Context::from_waker(&waker);
+            let prev = self.inner.polling.replace(Some(id));
             let poll = self.run_handler(ctx, |_| fut.as_mut().poll(&mut cx));
+            self.inner.polling.set(prev);
             match poll {
                 Poll::Ready(r) => {
                     if let Err(e) = r {
@@ -354,45 +407,148 @@ impl Runtime {
         let now = self.now();
         let due: Vec<Waker> = {
             let mut sleepers = self.inner.sleepers.borrow_mut();
-            let (due, keep): (Vec<_>, Vec<_>) =
-                sleepers.entries.drain(..).partition(|(d, _, _)| *d <= now);
+            let (due, keep): (Vec<_>, Vec<_>) = sleepers
+                .entries
+                .drain(..)
+                .partition(|e| e.counting() && e.deadline <= now);
             sleepers.entries = keep;
-            due.into_iter().map(|(_, _, w)| w).collect()
+            due.into_iter().map(|e| e.waker).collect()
         };
         for w in due {
             w.wake();
         }
     }
+
+    /// Pause the sleeps of tasks inside suspended scopes (keeping the time
+    /// left) and mark the released ones; see `sync_frozen_timers`.
+    pub(crate) fn sync_frozen_sleepers(&self) -> bool {
+        let now = self.now();
+        let tasks: Vec<(usize, NodeId)> = self
+            .inner
+            .sleepers
+            .borrow()
+            .entries
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| Some((i, e.task?)))
+            .collect();
+        let frozen: Vec<(usize, bool)> = tasks
+            .into_iter()
+            .map(|(i, t)| (i, self.is_suspended(t)))
+            .collect();
+        let mut released = false;
+        let mut sleepers = self.inner.sleepers.borrow_mut();
+        for (i, frozen) in frozen {
+            let e = &mut sleepers.entries[i];
+            match (frozen, e.left) {
+                (true, None) => e.left = Some(e.deadline.saturating_sub(now)),
+                (false, Some(_)) if !e.resume_pending => {
+                    e.resume_pending = true;
+                    released = true;
+                }
+                _ => {}
+            }
+        }
+        released
+    }
+
+    /// Released sleepers count again from `at`.
+    pub(crate) fn start_released_sleepers(&self, at: Duration) {
+        let pending: Vec<(usize, NodeId)> = self
+            .inner
+            .sleepers
+            .borrow()
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.resume_pending)
+            .filter_map(|(i, e)| Some((i, e.task?)))
+            .collect();
+        let still: Vec<(usize, bool)> = pending
+            .into_iter()
+            .map(|(i, t)| (i, self.is_suspended(t)))
+            .collect();
+        let mut sleepers = self.inner.sleepers.borrow_mut();
+        for (i, frozen) in still {
+            let e = &mut sleepers.entries[i];
+            if frozen {
+                // Frozen again before the clock moved: stays paused.
+                e.resume_pending = false;
+            } else if let Some(left) = e.left.take() {
+                e.resume_pending = false;
+                e.deadline = at.checked_add(left).unwrap_or(Duration::MAX);
+            }
+        }
+    }
 }
 
-/// Registered [`Sleep`]s: `(deadline, registration, waker)`.
+/// A registered [`Sleep`].
+struct Sleeper {
+    deadline: Duration,
+    id: u64,
+    waker: Waker,
+    /// The task polling it, so a frozen task's sleep pauses.
+    task: Option<NodeId>,
+    /// Paused (its task is frozen): the time it had left.
+    left: Option<Duration>,
+    /// Released: counts again from the next clock advance.
+    resume_pending: bool,
+}
+
+impl Sleeper {
+    fn counting(&self) -> bool {
+        self.left.is_none()
+    }
+}
+
+/// Registered [`Sleep`]s.
 #[derive(Default)]
 pub(crate) struct Sleepers {
     next: u64,
-    entries: Vec<(Duration, u64, Waker)>,
+    entries: Vec<Sleeper>,
 }
 
 impl Sleepers {
     pub(crate) fn earliest(&self) -> Option<Duration> {
-        self.entries.iter().map(|(d, _, _)| *d).min()
+        self.entries
+            .iter()
+            .filter(|e| e.counting())
+            .map(|e| e.deadline)
+            .min()
     }
     pub(crate) fn clear(&mut self) {
         self.entries.clear();
     }
-    fn register(&mut self, id: Option<u64>, deadline: Duration, waker: &Waker) -> u64 {
+    fn get(&self, id: u64) -> Option<&Sleeper> {
+        self.entries.iter().find(|e| e.id == id)
+    }
+    fn register(
+        &mut self,
+        id: Option<u64>,
+        deadline: Duration,
+        task: Option<NodeId>,
+        waker: &Waker,
+    ) -> u64 {
         if let Some(id) = id
-            && let Some(e) = self.entries.iter_mut().find(|e| e.1 == id)
+            && let Some(e) = self.entries.iter_mut().find(|e| e.id == id)
         {
-            e.2.clone_from(waker);
+            e.waker.clone_from(waker);
             return id;
         }
         let id = self.next;
         self.next += 1;
-        self.entries.push((deadline, id, waker.clone()));
+        self.entries.push(Sleeper {
+            deadline,
+            id,
+            waker: waker.clone(),
+            task,
+            left: None,
+            resume_pending: false,
+        });
         id
     }
     fn remove(&mut self, id: u64) {
-        self.entries.retain(|e| e.1 != id);
+        self.entries.retain(|e| e.id != id);
     }
 }
 
@@ -432,21 +588,42 @@ impl Future for Sleep {
         };
         let now = rt.now();
         let dur = self.dur;
+        let Ok(mut sleepers) = rt.inner.sleepers.try_borrow_mut() else {
+            // Never reached in practice; poll again next flush.
+            cx.waker().wake_by_ref();
+            return Poll::Pending;
+        };
+        if let Some(reg) = self.registration {
+            match sleepers.get(reg) {
+                // Fired (`wake_sleepers` removed it).
+                None => {
+                    self.registration = None;
+                    return Poll::Ready(());
+                }
+                // The registry holds the deadline: a frozen task's sleep
+                // was paused and moved.
+                Some(e) if e.counting() => self.deadline = Some(e.deadline),
+                Some(_) => {}
+            }
+        }
         // A deadline past the end of time never comes: stay pending without
         // scheduling anything.
         let Some(deadline) = self.deadline.or_else(|| now.checked_add(dur)) else {
             return Poll::Pending;
         };
         self.deadline = Some(deadline);
-        if now >= deadline {
+        let paused = self
+            .registration
+            .and_then(|r| sleepers.get(r))
+            .is_some_and(|e| !e.counting());
+        if now >= deadline && !paused {
+            if let Some(reg) = self.registration.take() {
+                sleepers.remove(reg);
+            }
             return Poll::Ready(());
         }
-        let Ok(mut sleepers) = rt.inner.sleepers.try_borrow_mut() else {
-            // Never reached in practice; poll again next flush.
-            cx.waker().wake_by_ref();
-            return Poll::Pending;
-        };
-        self.registration = Some(sleepers.register(self.registration, deadline, cx.waker()));
+        let task = rt.inner.polling.get();
+        self.registration = Some(sleepers.register(self.registration, deadline, task, cx.waker()));
         Poll::Pending
     }
 }

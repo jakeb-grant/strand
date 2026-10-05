@@ -4,20 +4,26 @@
 //! Random graphs of primary signals, memos and *handler-written cells* (an
 //! effect reads earlier nodes and writes the cell), with reader effects and
 //! `on change` handlers on top, all effects created in a random order (so
-//! creation order is not topological). After the first flush has learned
-//! the write edges:
+//! creation order is not topological).
 //!
-//! * every effect runs at most once per flush, unless its rank rose during
-//!   that flush (a dependency seen for the first time: a `Pick` switching
-//!   branches); with static dependencies ranks never rise again, so it is
-//!   exactly once;
+//! With every edge declared (`rt.reads_from` with the syntactic read set,
+//! every `Pick` branch included, and `rt.writes_to` for every write, as the
+//! compiler emits them), from the very first flush on, written cells
+//! starting unsettled:
+//!
+//! * every effect runs at most once per flush, and exactly once in the
+//!   first; no rank ever rises;
 //! * every reader that runs sees the flush's final values (glitch-free at
 //!   the edge), and every reader whose inputs changed ran (never deaf);
 //! * `on change` fires at most once per flush, with the final value,
-//!   exactly when the value differs from the previous flush's.
+//!   exactly when the value differs from the previous flush's (never in
+//!   the first flush).
 //!
-//! Declared write edges (`rt.writes_to`) give the same order before any
-//! write has been seen.
+//! Without declarations (edges learned as they are seen), after a warm-up
+//! flush the same holds, except that a reader whose rank rose in a flush
+//! (a `Pick` switching to a higher-ranked branch) may run more than once
+//! and see an intermediate value; its last run still sees the final
+//! values.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -52,7 +58,7 @@ struct Case {
     specs: Vec<Spec>,
     /// Effects in creation order (a random permutation).
     effects: Vec<Fx>,
-    /// Declare every write edge before the first flush.
+    /// Declare every read and write edge before the first flush.
     declare: bool,
     /// Ticks: `(primary, value)` writes.
     ticks: Vec<Vec<(usize, i64)>>,
@@ -187,6 +193,13 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
     let n = case.specs.len();
     let mut primary = vec![0i64; n];
     let handles: Rc<RefCell<Vec<H>>> = Rc::new(RefCell::new(Vec::new()));
+    // The syntactic read set of a node or effect (every branch).
+    let declare_reads = |id: NodeId, ins: &[usize], hs: &[H]| {
+        if case.declare {
+            let ids: Vec<NodeId> = ins.iter().map(|&j| hs[j].id()).collect();
+            rt.reads_from(id, &ids).unwrap();
+        }
+    };
     for spec in &case.specs {
         let h = match spec {
             Spec::Primary | Spec::Written(_) => H::S(rt.signal(0)),
@@ -215,14 +228,22 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
                 }))
             }
         };
+        match spec {
+            Spec::Sum(ins) => declare_reads(h.id(), ins, &handles.borrow()),
+            Spec::Pick(c, a, b) => declare_reads(h.id(), &[*c, *a, *b], &handles.borrow()),
+            Spec::Primary | Spec::Written(_) => {}
+        }
         handles.borrow_mut().push(h);
     }
-    // Written cells start at their settled value for all-zero primaries, so
-    // the warm-up flush only learns.
-    let start = naive(&case.specs, &primary);
-    for (i, s) in case.specs.iter().enumerate() {
-        if let (Spec::Written(_), H::S(sig)) = (s, handles.borrow()[i]) {
-            sig.set(&rt, start[i]).unwrap();
+    // Without declarations, written cells start at their settled value for
+    // all-zero primaries, so the warm-up flush only learns. With them, they
+    // start at 0 and the first flush is checked like any other.
+    if !case.declare {
+        let start = naive(&case.specs, &primary);
+        for (i, s) in case.specs.iter().enumerate() {
+            if let (Spec::Written(_), H::S(sig)) = (s, handles.borrow()[i]) {
+                sig.set(&rt, start[i]).unwrap();
+            }
         }
     }
     let log = Rc::new(RefCell::new(Log::default()));
@@ -235,32 +256,37 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
         let hs = handles.borrow().clone();
         let effect = match fx {
             Fx::Reader(ins) => {
-                let ins = ins.clone();
-                rt.effect(move |rt| {
+                let ins2 = ins.clone();
+                let hs2 = hs.clone();
+                let r = rt.effect(move |rt| {
                     let mut seen = Vec::new();
-                    for &j in &ins {
-                        seen.push(hs[j].get(rt)?);
+                    for &j in &ins2 {
+                        seen.push(hs2[j].get(rt)?);
                     }
                     let mut l = lg.borrow_mut();
                     l.runs[e] += 1;
                     l.seen[e].push(seen);
                     Ok(())
-                })
+                });
+                declare_reads(r.id(), ins, &hs);
+                r
             }
             Fx::Writer(i) => {
                 let Spec::Written(ins) = &case.specs[*i] else {
                     unreachable!()
                 };
-                let ins = ins.clone();
+                let ins2 = ins.clone();
                 let H::S(cell) = hs[*i] else { unreachable!() };
+                let hs2 = hs.clone();
                 let w = rt.effect(move |rt| {
                     let mut s = 0;
-                    for &j in &ins {
-                        s += hs[j].get(rt)?;
+                    for &j in &ins2 {
+                        s += hs2[j].get(rt)?;
                     }
                     lg.borrow_mut().runs[e] += 1;
                     cell.set(rt, (s + 1).rem_euclid(7))
                 });
+                declare_reads(w.id(), ins, &hs);
                 if case.declare {
                     rt.writes_to(w.id(), cell.id()).unwrap();
                 }
@@ -268,24 +294,34 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
             }
             Fx::OnChange(j) => {
                 let j = *j;
-                rt.on_change(
-                    move |rt| hs[j].get(rt),
+                let hs2 = hs.clone();
+                let oc = rt.on_change(
+                    move |rt| hs2[j].get(rt),
                     move |_, v| {
                         let mut l = lg.borrow_mut();
                         l.runs[e] += 1;
                         l.fired[e].push(*v);
                         Ok(())
                     },
-                )
+                );
+                declare_reads(oc.id(), &[j], &hs);
+                oc
             }
         };
         ids.push(effect);
     }
-    // Warm-up: first runs, learning write edges.
-    let tick = rt.flush();
-    prop_assert!(tick.errors.is_empty(), "{:?}", tick.errors);
+    // Without declarations: a warm-up flush (first runs, learning edges).
+    // With them, the first flush is checked too (no writes before it).
     let mut prev = naive(&case.specs, &primary);
-    for ticks in &case.ticks {
+    let mut flushes: Vec<&[(usize, i64)]> = vec![&[]];
+    flushes.extend(case.ticks.iter().map(Vec::as_slice));
+    if !case.declare {
+        let tick = rt.flush();
+        prop_assert!(tick.errors.is_empty(), "{:?}", tick.errors);
+        flushes.remove(0);
+    }
+    for (f, ticks) in flushes.into_iter().enumerate() {
+        let first = case.declare && f == 0;
         {
             let mut l = log.borrow_mut();
             for e in 0..case.effects.len() {
@@ -313,8 +349,9 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
         for (e, fx) in case.effects.iter().enumerate() {
             let rose = rt.rank(ids[e].id()) > ranks_before[e];
             prop_assert!(
-                !rose || case.dynamic(),
-                "a static graph's ranks are settled"
+                !rose || case.dynamic() && !case.declare,
+                "declared or static ranks are settled: effect {} rose",
+                e
             );
             prop_assert!(
                 l.runs[e] <= 1 || rose,
@@ -323,10 +360,19 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
                 fx,
                 l.runs[e]
             );
+            if first && !matches!(fx, Fx::OnChange(_)) {
+                prop_assert_eq!(l.runs[e], 1, "effect {} ({:?}) runs once at first", e, fx);
+            }
             match fx {
                 Fx::Reader(ins) => {
                     let want: Vec<i64> = ins.iter().map(|&j| fin[j]).collect();
-                    if !rose {
+                    if rose {
+                        // Learned in this flush: only its last run is
+                        // ordered after every writer.
+                        if let Some(last) = l.seen[e].last() {
+                            prop_assert_eq!(last, &want, "reader {} ended stale", e);
+                        }
+                    } else {
                         // Glitch-free at the edge: every run saw final values.
                         for seen in &l.seen[e] {
                             prop_assert_eq!(seen, &want, "reader {} saw a glitch", e);
@@ -338,7 +384,7 @@ fn check(case: &Case) -> Result<(), TestCaseError> {
                     }
                 }
                 Fx::OnChange(j) => {
-                    let want: Vec<i64> = if fin[*j] != prev[*j] {
+                    let want: Vec<i64> = if fin[*j] != prev[*j] && !first {
                         vec![fin[*j]]
                     } else {
                         vec![]
@@ -364,7 +410,9 @@ proptest! {
 
 #[test]
 fn a_declared_writer_orders_its_readers_from_the_first_flush() {
-    // reader (created first) -> cell <- writer (created second).
+    // reader (created first) -> cell <- writer (created second). Only the
+    // write edge is declared: the reader has never run and declares
+    // nothing, so its first run waits for the ranked work.
     let rt = Runtime::new();
     let x = rt.signal(1);
     let cell = rt.signal(0);
@@ -377,14 +425,91 @@ fn a_declared_writer_orders_its_readers_from_the_first_flush() {
     let writer = rt.effect(move |rt| cell.set(rt, x.get(rt)? * 10));
     rt.writes_to(writer.id(), cell.id()).unwrap();
     assert!(rt.rank(reader.id()) == 0, "no read edge yet");
-    rt.flush();
-    // The first flush runs the reader before its read edge exists.
-    assert_eq!(*seen.borrow(), vec![0, 10]);
+    let tick = rt.flush();
+    assert_eq!(*seen.borrow(), vec![10], "once, with the written value");
+    assert_eq!(tick.effects_run, 2);
     assert!(rt.rank(reader.id()) > rt.rank(writer.id()));
     seen.borrow_mut().clear();
     x.set(&rt, 2).unwrap();
     rt.flush();
     assert_eq!(*seen.borrow(), vec![20], "once, after its writer");
+}
+
+#[test]
+fn declared_reads_rank_a_reader_before_it_runs() {
+    // reader (created first) reads `m`, which reads `cell` only on one
+    // branch; a writer created later fills `cell`. With the syntactic read
+    // sets declared, the reader runs once per flush with final values, on
+    // the first flush and when the branch switches.
+    let rt = Runtime::new();
+    let x = rt.signal(1);
+    let sel = rt.signal(false);
+    let cell = rt.signal(0);
+    let m = rt.memo(move |rt| {
+        if sel.get(rt)? {
+            cell.get(rt)
+        } else {
+            x.get(rt)
+        }
+    });
+    rt.reads_from(m.id(), &[sel.id(), cell.id(), x.id()])
+        .unwrap();
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let s = seen.clone();
+    let reader = rt.effect(move |rt| {
+        s.borrow_mut().push(m.get(rt)?);
+        Ok(())
+    });
+    rt.reads_from(reader.id(), &[m.id()]).unwrap();
+    let writer = rt.effect(move |rt| cell.set(rt, x.get(rt)? * 10));
+    rt.reads_from(writer.id(), &[x.id()]).unwrap();
+    rt.writes_to(writer.id(), cell.id()).unwrap();
+    assert!(
+        rt.rank(reader.id()) > rt.rank(writer.id()),
+        "ranked up front"
+    );
+    rt.flush();
+    assert_eq!(*seen.borrow(), vec![1]);
+    seen.borrow_mut().clear();
+    // Switch to the written branch and change what the writer writes in
+    // the same tick: one run, with the written value.
+    sel.set(&rt, true).unwrap();
+    x.set(&rt, 2).unwrap();
+    let before = rt.rank(reader.id());
+    rt.flush();
+    assert_eq!(*seen.borrow(), vec![20]);
+    assert_eq!(rt.rank(reader.id()), before, "no rank rose");
+}
+
+#[test]
+fn a_sink_that_declares_nothing_runs_after_ranked_work_on_its_first_run() {
+    let rt = Runtime::new();
+    let x = rt.signal(1);
+    let cell = rt.signal(0);
+    let order = Rc::new(RefCell::new(Vec::new()));
+    let o = order.clone();
+    // Created first, declares nothing.
+    rt.effect(move |rt| {
+        o.borrow_mut().push(format!("plain {}", cell.get(rt)?));
+        Ok(())
+    });
+    let o = order.clone();
+    let w = rt.effect(move |rt| {
+        o.borrow_mut().push("writer".to_string());
+        cell.set(rt, x.get(rt)? + 1)
+    });
+    rt.reads_from(w.id(), &[x.id()]).unwrap();
+    rt.writes_to(w.id(), cell.id()).unwrap();
+    let o = order.clone();
+    rt.on_change(
+        move |rt| cell.get(rt),
+        move |_, v| {
+            o.borrow_mut().push(format!("change {v}"));
+            Ok(())
+        },
+    );
+    rt.flush();
+    assert_eq!(*order.borrow(), vec!["writer", "plain 2"]);
 }
 
 #[test]
