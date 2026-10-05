@@ -382,7 +382,8 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
 (builtin elements, services, functions and tokens as data), `ty` (types),
 `check` (names, types, did-you-mean) producing `hir` (the typed program),
 `lower` (bytecode), `vm` (evaluates bytecode against
-`strand-core` signals, services, persistence), `instantiate` (mounts a
+`strand-core` signals and services; codecs for core's persistence and
+settings files), `instantiate` (mounts a
 program and emits scene diffs), `reconcile` (old program + new program →
 identity map → `SceneDiff` and state migration; M1 live reload). One crate serves runtime, `strand check`
 and the LSP. The grammar is specified in `docs/grammar.md`.
@@ -574,64 +575,159 @@ Public interfaces other crates and later stages build on:
   (the prop keeps its last good value), a failing handler an `Err` its
   task returns; `fn` and lambda calls nest at most `MAX_CALL_DEPTH` (200).
 - **Services** (`strand_compiler::vm::ServiceHost`): the VM's only way
-  to services. `read(rt, service, field)` and `call(rt, service, method,
-  args)` (`fn` methods: `clock.format`, `calendar.days`,
-  `workspaces.on`, `apps.search`) must read through the graph (a
-  `Signal<Value>` per field) so bindings depend on exactly that field;
-  `write(rt, service, field, value)` takes the whole new top-level field
-  (`audio.sink` with its `volume` changed); `action(rt, ActionTarget::
-  {Service, Item(&record)}, name, args)` runs `notifications.clear()` or
-  `ws.focus()`; `event(rt, service, event) -> EventQueue<Vec<Value>>` is
-  the lossless queue `on notifications.received(n)` listens to;
-  `acquire`/`release(service)` are called on mount/unmount of every
-  component, surface and the config that reads a service (reference
-  counts for lazy start and the 5 s stop); `declare(rt, name, record)`
-  adds a custom service; `next_wake(rt) -> Option<SystemTime>` and
-  `wake(rt, now)` let wall-clock services (the clock) wake the host loop
-  only at minute boundaries (seconds only while a binding reads them).
-  `vm::schema_host::SchemaHost` implements it with every schema service
-  at its defaults: `SchemaHost::mock` (clock fixed at 2026-10-05 09:41:07
-  UTC; tests `set` fields, `emit` events, read `actions()` and
-  `readers(service)`) and `SchemaHost::real` (the wall clock and
-  calendar in local time; other services at defaults until M3 service
-  crates implement the trait).
-- **Persistence** (`strand_compiler::vm::persist`): `PersistStore {
-  load(key), save(key, Stored { default_hash, value }) }`, with
-  `MemoryStore` and `FileStore` (one JSON file,
-  `$XDG_STATE_HOME/strand/persist.json`, written by temp file and
-  rename). Keys are `module.name` (`toasts.dnd`) or `Component.name`;
-  values are JSON by declared type (enums by variant name).
+  to services.
+  - `read(rt, service, field)` and `call(rt, service, method, args)`
+    (`fn` methods: `clock.format`, `calendar.days`, `workspaces.on`)
+    must read through the graph (a `Signal<Value>` per field) so
+    bindings depend on exactly that field.
+  - `read_keyed(rt, service, field) -> Option<KeyedSignal<ValueKey,
+    Value>>`: a list field published as a core keyed collection
+    (`notifications.popups`, `workspaces.all`). A `for` directly over
+    it follows its `VecDiff`s (one new notification is one diff from
+    the service to the scene) instead of comparing whole lists; `None`
+    (the default) for plain fields.
+  - `write(rt, service, path: &[PathSeg], value)` writes one `rw` leaf:
+    `audio.sink.volume = 0.8` is `write("audio", [Field("sink"),
+    Field("volume")], 0.8)`, so a service sends only what changed and a
+    concurrent `muted` change is not overwritten. Hosts tag writes with
+    core's `Signal::write_tagged` (generation per written cell) and
+    match the service's reports with `receive`, so the echo of a write
+    is ignored (`SchemaHost` writes the field's cell with
+    `write_tagged`).
+  - `fetch(rt, service, method, args) -> Fetch` (a boxed future):
+    `let x = svc.m(args)` whose method returns `Async` is `rt.async_memo(
+    args, fetch)` per mounted `let`, created on the `let`'s first read
+    (a closed launcher never searches). Each change of the argument
+    tuple starts one fetch and drops the superseded future (cancelling
+    it); the value keeps its last result while pending. The default
+    runs `call` once and is ready at once. Async calls anywhere else
+    (inside a larger expression) still go through `call`.
+  - `action(rt, ActionTarget::{Service, Item(&record)}, name, args)` runs
+    `notifications.clear()` or `ws.focus()`; `event(rt, service,
+    event) -> EventQueue<Vec<Value>>` is the lossless queue `on
+    notifications.received(n)` listens to.
+  - `acquire`/`release(service)`: a reader count. Every mounted
+    component and the config's top level hold the services their body
+    reads; a surface holds its body's services only while shown (its
+    `open` is true, or it has no `open`), and a parked bar (monitor
+    unplugged) lets go of everything under it until it returns. The
+    service starts on its first reader and stops 5 s after its last
+    leaves or goes invisible.
+  - `declare(rt, name, record)` adds a custom service; `next_wake(rt) ->
+    Option<SystemTime>` and `wake(rt, now)` let wall-clock services (the
+    clock) wake the host loop only at minute boundaries (seconds only
+    while a binding shows them).
+  - `vm::schema_host::SchemaHost` implements it with every schema
+    service at its defaults; lists of keyed records are keyed
+    collections. `SchemaHost::mock` (clock fixed at 2026-10-05 09:41:07
+    UTC; tests `set` fields, `emit` events, read `take_actions()`,
+    `take_writes()` and `readers(service)`, `hold`/`release_fetch` a
+    method to keep its fetches pending) and `SchemaHost::real` (the wall
+    clock and calendar in local time, other services at defaults until
+    M3 service crates implement the trait; it records no action or
+    write history).
+- **Storage** (`strand_compiler::instantiate::Storage { persist:
+  Option<strand_core::PersistStore>, settings: Option<SettingsStore>,
+  config_dir }`): `Storage::from_env(config_dir)` (one IO thread for
+  both), `Storage::in_dirs(state, config)` for tests, `Storage::none()`
+  keeps nothing. `state x = d persist` is core's `rt.persisted(store,
+  path, d, encode, decode)` with the VM's codec
+  (`vm::persist::{encode_bytes, decode_bytes}`: JSON by declared type,
+  enums by variant name, records by field name). The path is the
+  cell's owner and name qualified by its instance:
+  `toasts.dnd` (a file's state), `Clock.open` (a component's or
+  surface's), `TopBar[<monitor id>].expanded` (a bar on every monitor),
+  `Row[<item key>].open` (state in a `for` item); two live instances on
+  one path are core's `PersistPathInUse`. The `Persisted` handles are
+  kept: `Instance::reset(path)` is `@reset`. A keyed list `state` that
+  is persisted stays a plain signal (core persists `Signal`s).
+  `state prefs from "prefs.toml" { typed fields }` is `rt.settings_file(
+  store, path, fields)`: the path resolved against `config_dir` (`~/`
+  from `$HOME`), one `FieldSpec` per field with the declared default,
+  its type name, and a TOML codec by type (`vm::persist::{decode_item,
+  encode_item}`: colours as `"#rrggbb"`, durations as `"200ms"`/`"6s"`
+  or seconds, enums by variant name, lists and inline tables). Each
+  field is its own signal: `prefs.compact` reads (and `prefs.compact =
+  true`, `<->`, `strand set theme.prefs.compact true` write) that field
+  only; `prefs` alone reads as a record. Without a settings store the
+  fields hold their defaults. The watcher gets the files from
+  `Instance::settings_files()` and calls `Instance::reload_settings(path)`
+  when one changes (core's `Settings::reload` on every mounted handle;
+  the off-thread `reload_with` path is the watch track's).
 - **Instantiation** (`strand_compiler::instantiate`): `Instance::new(rt,
-  Arc<lower::Program>, Rc<dyn ServiceHost>, Option<Rc<dyn
-  PersistStore>>)` mounts the program; `Instance::tick(now)` (or
-  `flush()`) runs the core tick and returns an `Update { diff:
-  SceneDiff, errors, diagnostics, notices }`: one diff per tick, the
-  boot one starting with `SetTokens { transition: Instant }`, later
-  token tables with `Default`. Each bound prop is one watched memo
-  folding the base binding and its `when` blocks in source order (later
-  wins; each source keeps its own `~` transition); `if`/`match` are
-  effects swapping branch fragments; `for` is `rt.keyed_memo` over the
-  list keyed by `key e`, the item record's key or a keyed `state`'s key,
-  applying `VecDiff`s (`Move` becomes scene `Move`s, so items keep
-  identity and state; a `Reset` is reconciled by key, moving only the
-  items outside the longest run already in order); a `bar` is a keyed instance per `screens.all`
-  item (key `name`) with `screen` in scope and `screens: "<name>"`
-  (`Screens::Named`); every surface gets `Prop::Name`. `exit` mirrors
-  `enter` when not given. Component `tokens { }` entries
-  (`Toast.radius`) join the global table, so an ancestor's `set {
-  $Toast.radius: … }` still overrides them. The host loop sleeps until
-  `next_deadline()` (logic clock) or `next_wake()` (wall clock), calls
-  `wake(now)` then `tick`. Input from render: `event(node, name, args)`
-  (`click`, `secondary`, `scroll` with `dy, dx`, `activate`, `show`,
-  …; delivered through core input queues to the innermost element
-  with a handler, `propagate()` passes it to the next), `set_flag(node,
-  NodeFlag, on)`, `set_size(node, w, h)` (layout facts for
-  `self.width`), `write(node, prop, PropValue)` (`<->` writes, outside
-  any handler). These take scene `NodeId`s; render produces them when
-  hit testing lands (M2), until then the binary maps `InputEvent`s.
-  `get`/`set(path)` read and write exported `file.name` values (the
-  CLI). `SceneMirror` applies diffs to a retained mirror, checks their
-  consistency and renders it as text for snapshots.
+  Arc<lower::Program>, Rc<dyn ServiceHost>, Storage)` mounts the
+  program; `Instance::tick(now)` (or `flush()`) runs the core tick and
+  returns an `Update { diff: SceneDiff, errors: Vec<RuntimeError>,
+  diagnostics, notices }`: one diff per tick, the boot one starting
+  with `SetTokens { transition: Instant }`, later token tables with
+  `Default`.
+  - Each bound prop is one watched memo folding the base binding and
+    its `when` blocks in source order (later wins; each source keeps its
+    own `~` transition); `if`/`match` are effects swapping branch
+    fragments.
+  - `for` keeps one item per key with its own value cell (an
+    `Update` diff sets that item's cell only, so one changed row re-runs
+    one row's bindings). Over a keyed `state` or a host's keyed field it
+    follows that collection's diffs; over any other expression it is
+    `rt.keyed_memo` over the list keyed by `key e` or the item record's
+    key. `Move` becomes scene `Move`s; a `Reset` is reconciled by key,
+    moving only the items outside the longest run already in order.
+    `.filter`/`.map`/`.take`/`.sort_by` chains are whole-list until they
+    lower to core's incremental keyed views (M4, with virtualised
+    lists).
+  - A `bar` is a keyed instance per `screens.all` item that its own
+    `screens:` picks (a connector or monitor id, a list of them,
+    `focused`, `all`), keyed by the monitor's identity (`Screen.id`:
+    make, model and description), with `screen` in scope and `screens:
+    "<monitor id>"` (`Screens::Named`) set by the instance. A bar whose
+    monitor leaves `screens.all` is parked: its nodes are `Remove`d (render
+    plays their exit), its scope is frozen and its services let go, and
+    it comes back as it was (nodes recreated under their ids with their
+    last props, `Instant`) when the monitor returns, or is dropped by
+    `Instance::forget_screen(id)` (the surface layer's
+    `monitor_forgotten`, 30 s after the unplug). Every surface gets
+    `Prop::Name`.
+  - A surface's own element events (`on show`, `on hide`, `on dismiss`)
+    are always live; the rest of its body is mounted when it is first
+    shown and frozen (`rt.suspend`) while hidden. The instance sends
+    `show` when `open` turns true (at mount for a surface without
+    `open`) and `hide` when it turns false; render does not send them.
+  - `exit` mirrors `enter` when not given. Component `tokens { }`
+    entries (`Toast.radius`) join the global table, so an ancestor's
+    `set { $Toast.radius: … }` still overrides them.
+  - Runtime errors are values, located: `RuntimeError { what, error,
+    file, span, node, component, scope }`, the span being the failing
+    operation's (from `Chunk::spans`; the innermost, so a prop failing
+    because a `let` it reads failed points into the `let`), else the
+    binding's, handler's or timer's. `Instance::origin(node) ->
+    (FileId, NodeIdx, Span)` maps a scene node back to its element (the
+    overlay's click to `$EDITOR`, inspector provenance), and
+    `Instance::freeze(&err)` suspends the faulting component's instance
+    scope (`thaw` resumes it after the fixing reload).
+  - The host loop: `Instance::step(now, wall) -> (Update, Wake)` wakes
+    wall-clock services that are due, ticks the logic clock to `now`
+    and says when to come back (`Wake { deadline, wall }`,
+    `sleep_for(now, wall_now)`). The `strand run` logic thread is: feed
+    the `screens` service from the surface layer's monitor hooks
+    (`screens.all` with each `Screen { id: MonitorId, name: connector,
+    … }`, `screens.focused`; `monitor_forgotten` →
+    `forget_screen`); map render's `InputEvent`s to `event(node, name,
+    args)` (`click`, `secondary`, `scroll` with `dy, dx`, `activate`,
+    …; delivered through core input queues to the innermost element
+    with a handler, every handler of that event on it in source order,
+    `propagate()` passes it on once), `set_flag(node, NodeFlag, on)`,
+    `set_size(node, w, h)` (layout facts for `self.width`) and
+    `write(node, prop, PropValue)` (`<->` writes, outside any handler,
+    checked against the place's type); call `step` and send the diff to
+    render; sleep for `Wake::sleep_for`, input, a monitor hook or the
+    runtime's wake hook, whichever comes first. These take scene
+    `NodeId`s; render produces them when hit testing lands (M2).
+  - `get`/`set(path)` read and write exported `file.name` values and
+    fields inside them (`theme.prefs.compact`; the CLI), `set` checked
+    against the declared type. Dropping an `Instance` (or `shutdown`)
+    disposes everything it mounted. `SceneMirror` applies diffs to a
+    retained mirror, checks their consistency and renders it as text
+    for snapshots.
 
 ### Config files
 

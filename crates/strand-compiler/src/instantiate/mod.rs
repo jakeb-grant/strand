@@ -160,6 +160,8 @@ pub(crate) struct Ctx {
     /// Services each mounted scope reads, by token.
     pub holds: RefCell<std::collections::HashMap<u64, Hold>>,
     pub next_hold: Cell<u64>,
+    /// Mounted settings files (the watcher's `reload_settings`).
+    pub settings: RefCell<Vec<std::rc::Weak<crate::vm::SettingsSlot>>>,
     /// Per-monitor bar lists: forget a parked monitor's bar by key.
     pub forgetters: RefCell<Vec<std::rc::Weak<Forget>>>,
     pub notices: RefCell<Vec<String>>,
@@ -483,6 +485,7 @@ impl Instance {
             errors: RefCell::default(),
             sites: RefCell::default(),
             forgetters: RefCell::default(),
+            settings: RefCell::default(),
             holds: RefCell::default(),
             next_hold: Cell::new(0),
             notices: RefCell::default(),
@@ -902,6 +905,49 @@ impl Instance {
         for f in fs {
             any |= f(&self.rt, &key);
         }
+        any
+    }
+
+    /// The settings files the mounted program reads (for the watcher).
+    pub fn settings_files(&self) -> Vec<PathBuf> {
+        let mut out: Vec<PathBuf> = self
+            .ctx
+            .settings
+            .borrow()
+            .iter()
+            .filter_map(std::rc::Weak::upgrade)
+            .filter_map(|s| s.handle.as_ref().map(|h| h.path().to_path_buf()))
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// The watcher saw `path` change: every mounted handle on it re-reads
+    /// it (core's `Settings::reload`: each field checked on its own, a
+    /// syntax error keeps the last good values). Returns whether one
+    /// was mounted.
+    pub fn reload_settings(&self, path: &std::path::Path) -> bool {
+        let slots: Vec<_> = self
+            .ctx
+            .settings
+            .borrow()
+            .iter()
+            .filter_map(std::rc::Weak::upgrade)
+            .collect();
+        let mut any = false;
+        for s in slots {
+            if let Some(h) = &s.handle
+                && h.path() == path
+            {
+                h.reload(&self.rt);
+                any = true;
+            }
+        }
+        self.ctx
+            .settings
+            .borrow_mut()
+            .retain(|w| w.strong_count() > 0);
         any
     }
 

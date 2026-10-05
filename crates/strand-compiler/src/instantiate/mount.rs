@@ -490,6 +490,7 @@ impl Ctx {
             rt.set_name(s.id(), format!("{path}.{n}"));
         }
         let slot = Rc::new(crate::vm::SettingsSlot { fields, handle });
+        self.settings.borrow_mut().push(Rc::downgrade(&slot));
         let (sl, names): (Rc<crate::vm::SettingsSlot>, Vec<String>) = (
             slot.clone(),
             rec.fields.iter().map(|f| f.name.clone()).collect(),
