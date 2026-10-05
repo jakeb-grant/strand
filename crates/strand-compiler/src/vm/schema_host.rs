@@ -15,7 +15,7 @@ use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use chrono::FixedOffset;
-use strand_core::{Error, EventQueue, KeyedSignal, Runtime, Signal};
+use strand_core::{Error, EventQueue, KeyedSignal, Memo, Runtime, Signal};
 
 use super::builtins::default_of;
 use super::clock::{Clock, Zone};
@@ -50,7 +50,8 @@ type Events = HashMap<(String, String), EventQueue<Vec<Value>>>;
 #[derive(Clone, Copy, Debug)]
 enum Field {
     Plain(Signal<Value>),
-    Keyed(KeyedSignal<ValueKey, Value>),
+    /// The collection, and its items as one list value for plain reads.
+    Keyed(KeyedSignal<ValueKey, Value>, Memo<Value>),
 }
 
 /// A `rw` write the mock saw: `audio.sink.volume` and the value.
@@ -150,7 +151,8 @@ impl SchemaHost {
                     Some(path) => {
                         let k = rt.keyed(keyed_vec(self.types.clone(), |t| &**t, path));
                         rt.set_name(k.id(), format!("{name}.{}", f.name));
-                        Field::Keyed(k)
+                        let list = rt.memo(move |rt| k.with(rt, list_of));
+                        Field::Keyed(k, list)
                     }
                     None => {
                         let s = rt.signal(default_of(&self.types, &f.ty));
@@ -199,7 +201,7 @@ impl SchemaHost {
     fn signal(&self, service: &str, field: &str) -> Result<Signal<Value>, Error> {
         match self.field(service, field)? {
             Field::Plain(s) => Ok(s),
-            Field::Keyed(_) => Err(fail(format!("`{service}.{field}` is a keyed list"))),
+            Field::Keyed(..) => Err(fail(format!("`{service}.{field}` is a keyed list"))),
         }
     }
 
@@ -213,11 +215,11 @@ impl SchemaHost {
         };
         let rest: Vec<&str> = parts.collect();
         match self.field(service, field)? {
-            Field::Keyed(k) if rest.is_empty() => {
+            Field::Keyed(k, _) if rest.is_empty() => {
                 let items = value.as_list().map(<[Value]>::to_vec).unwrap_or_default();
                 k.replace_all(rt, items)
             }
-            Field::Keyed(_) => Err(fail(format!("`{path}`: set the whole list"))),
+            Field::Keyed(..) => Err(fail(format!("`{path}`: set the whole list"))),
             Field::Plain(sig) => {
                 if rest.is_empty() {
                     return sig.set(rt, value);
@@ -426,7 +428,7 @@ impl SchemaHost {
         {
             let key = ValueKey(item.identity(&self.types));
             match self.field("notifications", "popups")? {
-                Field::Keyed(k) => {
+                Field::Keyed(k, _) => {
                     if k.get_key(rt, &key)?.is_some() {
                         k.remove_key(rt, &key)?;
                     }
@@ -466,7 +468,7 @@ impl ServiceHost for SchemaHost {
         }
         match self.field(service, field)? {
             Field::Plain(s) => s.get(rt),
-            Field::Keyed(k) => k.with(rt, list_of),
+            Field::Keyed(_, list) => list.get(rt),
         }
     }
 
@@ -477,7 +479,7 @@ impl ServiceHost for SchemaHost {
         field: &str,
     ) -> Option<KeyedSignal<ValueKey, Value>> {
         match self.field(service, field).ok()? {
-            Field::Keyed(k) => Some(k),
+            Field::Keyed(k, _) => Some(k),
             Field::Plain(_) => None,
         }
     }

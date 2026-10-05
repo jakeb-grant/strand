@@ -1353,30 +1353,63 @@ see wave2-core; the compiler supplies the field schema.)
   (`rt.on_change_keyed`), so switching sinks pops no OSD; other targets
   compare values only.
 - **2026-10-05 · wave2-vm: per-monitor bars.** A `bar` is instantiated
-  once per item of `screens.all`, keyed by the screen's `name` (the
-  connector), with `screen` in scope and `screens: "<name>"`; its state
-  lives in that instance. Keeping it across a 30-second unplug (monitor
-  identity is make, model and description) needs the binary's `screens`
-  service to keep a replugged monitor's item; that wiring is the `strand
-  run` item.
-- **2026-10-05 · wave2-vm: service readers.** Every mounted component,
-  surface instance and the config's top level acquires the services its
-  body reads and releases them when unmounted, so a service's reader
-  count is the number of mounted readers (a bar and its `Battery` both
-  count).
-- **2026-10-05 · wave2-vm: `persist` storage lives in the compiler.**
-  strand-core has no persistence, so `vm::persist` stores cells as JSON
-  by declared type (enums by variant name, records by field name) with
-  the BLAKE3 hash of the default's encoding. A stored value that is
-  still the old default takes a changed default; one the user changed is
-  kept and reported (`toasts.dnd: kept true (default changed)`); one that
-  no longer fits the type resets. Keys are `module.name`, or
-  `Component.name` for component state (shared by its instances).
-- **2026-10-05 · wave2-vm: settings files hold their defaults until
-  M2.** `state prefs from "….toml" { … }` is a record of its fields'
-  defaults, written field by field (`prefs.compact = true`, `<->`);
-  reading the TOML file, per-field validation and `toml_edit` write-back
-  are the M2 settings item.
+  once per item of `screens.all` that its own `screens:` picks (a
+  connector or monitor id, a list of them, `focused`, `all`), keyed by
+  the monitor's identity, a new `Screen.id` field (make, model and
+  description as `strand-surface`'s `MonitorId`, ` #2` for a second
+  identical monitor; `Screen` is now `key id`), with `screen` in scope
+  and `screens: "<id>"` set by the instance (it wins over the bar's own
+  `screens:`, which only chooses monitors). A bar whose monitor leaves
+  is parked, not unmounted: its nodes are removed from the scene, its
+  scope frozen and its services released; the same monitor coming back
+  (on any connector) gets it back with its state, and
+  `Instance::forget_screen(id)`, which the binary calls on the surface
+  layer's `monitor_forgotten` (30 s), drops it. The instantiator owns
+  this because only it owns the bars' scopes; the `screens` service
+  only lists monitors that exist
+  (`tests/instantiate.rs::a_bar_per_monitor_with_its_own_state`,
+  `a_bar_follows_its_own_screens`).
+- **2026-10-05 · wave2-vm: service readers and visibility.** Every
+  mounted component and the config's top level hold the services their
+  body reads. A surface holds its body's services only while shown (its
+  `open` true, or no `open`), and its content (everything but its own
+  `on show`/`on hide`/`on dismiss`) is mounted when first shown and
+  frozen with `rt.suspend` while hidden, so a closed launcher neither
+  searches nor counts as a reader of what only its content reads; its
+  state is kept for the next show. The instance sends `show` when
+  `open` turns true (at mount for a surface without `open`) and `hide`
+  when it turns false. Services read by top-level `let`s stay held by
+  the config while it runs (a `let` is lazy, so nothing runs if no
+  shown binding reads it); the 5 s stop is the service crate's (M3)
+  (`tests/instantiate.rs::surfaces_show_hide_and_hold_services_while_shown`).
+- **2026-10-05 · wave2-vm: `persist` is core's store.** A persisted
+  `state` is `rt.persisted` on core's `PersistStore` (one file per
+  cell, off-thread atomic writes debounced 250 ms, the default's hash,
+  `redeclare`, `reset`); the compiler supplies only the codec, JSON by
+  declared type (enums by variant name, records by field name). The
+  path is the cell's owner (file module, or the component or surface
+  name) qualified by every keyed instance it sits in, then its name:
+  `toasts.dnd`, `TopBar[<monitor id>].expanded`, `Row[<key>].open`, so
+  per-monitor bars and list items each keep their own value; two
+  instances that still share a path (the same component twice in one
+  bar) are core's `PersistPathInUse`. A kept value over a changed
+  default is also an `Update::notices` line (`toasts.dnd: kept true
+  (default changed)`). A keyed list `state` that is persisted stays a
+  plain signal, since core persists `Signal`s
+  (`tests/instantiate.rs::persisted_state_survives_a_restart`,
+  `persisted_bar_state_is_per_monitor`).
+- **2026-10-05 · wave2-vm: settings files are core's.** `state prefs
+  from "prefs.toml" { … }` is `rt.settings_file` with one `FieldSpec`
+  per field (its declared default, its type's name, a TOML codec by
+  type: colours as `"#rrggbb"`, durations as `"200ms"`/`"6s"` or a
+  number of seconds, enums by variant name, lists, inline tables for
+  records), the file resolved against the config directory (`~/` from
+  `$HOME`). Each field is its own signal: `prefs.accent` depends on
+  that field only, and a write (`prefs.compact = true`, `<->`, `strand
+  set theme.prefs.compact true`) goes to that field, then to the file
+  through `toml_edit`. Without a settings store (`Storage::none`) the
+  fields hold their defaults
+  (`tests/instantiate.rs::settings_files_are_read_and_written_back`).
 - **2026-10-05 · wave2-vm: errors keep the last good value.** A binding
   that fails reports its error in the tick's `Update::errors` and its
   prop keeps the value last sent; a failing `if` condition keeps the
@@ -1384,14 +1417,21 @@ see wave2-core; the compiler supplies the field schema.)
   missing one, fail the handler and change nothing.
 - **2026-10-05 · wave2-vm: the mock's behaviour.** `SchemaHost::mock`
   models what tests need beyond storing fields: `apps.search` is a
-  ready `Async` of substring matches, `workspaces.on(screen)` filters by
-  the workspace's `screen`, `calendar` and `clock` run on a fixed clock,
-  and a notification's `expire`, `dismiss` or `activate` removes it from
-  `notifications.popups`. Every action is logged.
-- **2026-10-05 · wave2-vm: awaiting.** `await` waits on the pending
-  future an `Async` carries (`sleep(d)`); an `Async` without one (a
-  service load) gives its current value or its error. Service crates
-  give their `Async` results a future in M3.
+  ready `Async` of substring matches (or pending while a test `hold`s
+  it), `workspaces.on(screen)` filters by the workspace's `screen`,
+  `calendar` and `clock` run on a fixed clock, and a notification's
+  `expire`, `dismiss` or `activate` removes it from
+  `notifications.popups`. Only the mock logs actions and `rw` writes;
+  `SchemaHost::real` keeps no history.
+- **2026-10-05 · wave2-vm: awaiting and async lets.** `await` waits on
+  the pending future an `Async` carries (`sleep(d)`); an `Async`
+  without one (a service load) gives its current value or its error.
+  `let x = svc.m(args)` with an `Async` method is a core async memo over
+  the argument tuple, created on the `let`'s first read, each change
+  starting one `ServiceHost::fetch` and dropping the superseded one;
+  `??` gives its fallback while it is pending or failed
+  (`tests/vm.rs::coalesce_covers_a_pending_async`). Async calls inside
+  larger expressions still use `call`.
 - **2026-10-05 · wave2-vm: render → logic input.** Until render hit
   tests (M2) the instance takes scene `NodeId`s: `event(node, name,
   args)`, `set_flag(node, hover | pressed | focused | selected, on)`,
@@ -1416,6 +1456,47 @@ see wave2-core; the compiler supplies the field schema.)
   owned by that scope, never by the binding that first read them; an
   element an `if` unmounts and mounts again keeps working, and an
   unmounted element reads as not hovered.
+
+
+- **2026-10-05 · wave2-vm: keyed lists follow diffs.** A keyed `state`
+  (`state pins: [App] key id = []`) is a core `KeyedSignal`: `push`,
+  `insert`, `remove`, `remove_key`, `move`, `update` and `clear` are
+  keyed operations, and `xs = …` or `xs[i].x = …` replaces by key. A
+  `for` directly over a keyed `state` or a host's keyed field follows
+  that collection's diffs; other list expressions go through
+  `rt.keyed_memo`. Every mounted item has its own value cell, set from
+  `VecDiff::Update`, so one changed row re-runs one row's bindings
+  (`tests/instantiate.rs::one_item_change_reruns_one_item`: 2,000 rows).
+  Chains of `.filter`/`.map`/`.take`/`.sort_by` stay whole-list until
+  they lower to core's incremental views with virtualised lists (M4).
+- **2026-10-05 · wave2-vm: located runtime errors.** Errors are
+  `RuntimeError`s carrying the failing operation's file and span (the
+  innermost chunk that raised it), the scene node, the component and
+  the scope `Instance::freeze` suspends (the instance of the innermost
+  component, or the surface instance); `Instance::origin` maps scene
+  nodes to source elements. The overlay and the reconciler (live-reload
+  track) decide when to freeze
+  (`tests/instantiate.rs::runtime_errors_are_located_and_freeze_their_component`).
+- **2026-10-05 · wave2-vm: durations at their limits.** A duration
+  past `Duration::MAX` (or negative, or not finite) is an error value
+  naming what needed it (`after`, `every`, `sleep`, `on change … after`);
+  a prop or `~` given one is unset or uses the default transition. An
+  `every` period of zero is an error naming the timer (a zero period
+  would wake the host forever). `on change … after d` follows a
+  reactive `d`: a new duration replaces the debounce and takes over a
+  countdown in flight.
+- **2026-10-05 · wave2-vm: events on one element.** Several handlers of
+  one event on an element (`on click` twice) all run, in source order,
+  sharing one event context, so `propagate()` passes the event on once
+  however often it is called.
+- **2026-10-05 · wave2-vm: a second `slot` mount.** The caller's
+  children have one set of element states in the caller's scope (so its
+  `id:` names reach them). A component that mounts `slot` again while
+  that set is on screen gives the copy its own states.
+- **2026-10-05 · wave2-vm: widget writes are typed.** A `<->` write or
+  `strand set` whose value does not fit the declared type is refused
+  with an error; a widget's `f32` becomes the `f64` with the shortest
+  decimal that round-trips it (a slider's 0.8 is 0.8).
 
 ## wave2-core
 

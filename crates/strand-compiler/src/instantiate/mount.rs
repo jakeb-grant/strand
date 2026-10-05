@@ -379,7 +379,8 @@ impl Ctx {
             }
             let k = rt.keyed(kv);
             rt.set_name(k.id(), path.as_str());
-            env.bind_def(s.def, Slot::Keyed(k));
+            let list = rt.memo(move |rt| k.with(rt, crate::vm::value::list_of));
+            env.bind_def(s.def, Slot::Keyed(k, list));
             return;
         }
         let sig = match (&self.storage.persist, s.persist) {
@@ -490,6 +491,7 @@ impl Ctx {
             rt.set_name(s.id(), format!("{path}.{n}"));
         }
         let slot = Rc::new(crate::vm::SettingsSlot { fields, handle });
+        self.settings.borrow_mut().push(Rc::downgrade(&slot));
         let (sl, names): (Rc<crate::vm::SettingsSlot>, Vec<String>) = (
             slot.clone(),
             rec.fields.iter().map(|f| f.name.clone()).collect(),
@@ -1345,7 +1347,7 @@ impl Ctx {
         let chunk = prog.chunk(f.iter);
         match chunk.ops.as_slice() {
             [Op::Def(d)] => {
-                let Some(Slot::Keyed(k)) = env.def(*d) else {
+                let Some(Slot::Keyed(k, _)) = env.def(*d) else {
                     return None;
                 };
                 let own = prog.state_keys.get(d).cloned().or_else(|| {

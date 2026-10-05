@@ -1909,6 +1909,16 @@ fn settings_files_are_read_and_written_back() {
             .set("prefs_test.prefs.gap", Value::text("x"))
             .is_err()
     );
+    // The watcher's reload: an edit to the file reaches the field.
+    assert_eq!(shell.inst.settings_files(), [config.join("prefs.toml")]);
+    std::fs::write(config.join("prefs.toml"), "compact = true\ngap = 6\n").unwrap();
+    assert!(shell.inst.reload_settings(&config.join("prefs.toml")));
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["compact"]);
+    assert_eq!(
+        shell.inst.get("prefs_test.prefs.gap").unwrap(),
+        Value::int(6)
+    );
     drop(shell);
     let _ = std::fs::remove_dir_all(dir);
 }

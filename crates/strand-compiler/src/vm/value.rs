@@ -629,8 +629,10 @@ pub enum Slot {
     /// `let`s, component parameters, settings files read as a record.
     Memo(Memo<Value>),
     /// A keyed `state xs: [T] key f`: a core keyed collection, so a
-    /// `push` is one `VecDiff` and a `for` over it follows the diffs.
-    Keyed(KeyedSignal<ValueKey, Value>),
+    /// `push` is one `VecDiff` and a `for` over it follows the diffs;
+    /// with the list as one value for every other read (built once per
+    /// change, however many bindings read it).
+    Keyed(KeyedSignal<ValueKey, Value>, Memo<Value>),
 }
 
 impl Slot {
@@ -639,7 +641,7 @@ impl Slot {
         match self {
             Slot::Signal(s) => s.get(rt),
             Slot::Memo(m) => m.get(rt),
-            Slot::Keyed(k) => k.with(rt, list_of),
+            Slot::Keyed(_, list) => list.get(rt),
         }
     }
 
@@ -647,7 +649,7 @@ impl Slot {
         match self {
             Slot::Signal(s) => s.id(),
             Slot::Memo(m) => m.id(),
-            Slot::Keyed(k) => k.id(),
+            Slot::Keyed(k, _) => k.id(),
         }
     }
 }

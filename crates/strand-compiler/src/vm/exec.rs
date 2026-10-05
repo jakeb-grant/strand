@@ -556,7 +556,7 @@ fn mutate(
 ) -> Result<(), Error> {
     if let PlaceRoot::Def(d) = &place.root
         && place.segs.is_empty()
-        && let Some(super::Slot::Keyed(k)) = env.def(*d)
+        && let Some(super::Slot::Keyed(k, _)) = env.def(*d)
     {
         return mutate_keyed(vm, rt, k, method, args);
     }
@@ -775,7 +775,7 @@ pub(crate) fn store(
                     vm.prog.def(*d).name
                 )));
             };
-            if let super::Slot::Keyed(k) = slot {
+            if let super::Slot::Keyed(k, _) = slot {
                 // `xs = [...]` replaces by key; `xs[i].done = true` updates
                 // the item at `i` by its key.
                 let cur = rt.untrack(|rt| slot.get(rt))?;
