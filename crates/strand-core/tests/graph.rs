@@ -312,3 +312,44 @@ fn reentrant_flush_is_an_error_not_a_panic() {
     let nested = inner.borrow_mut().take().unwrap();
     assert!(nested.errors.iter().any(|(_, e)| *e == Error::Reentrant));
 }
+
+#[test]
+fn self_normalizing_effect_settles_without_a_cycle_error() {
+    // on change level { level = min(level, 100) }
+    let rt = Runtime::new();
+    let level = rt.signal(50);
+    let runs = Rc::new(RefCell::new(0));
+    let r = runs.clone();
+    rt.effect(move |rt| {
+        *r.borrow_mut() += 1;
+        let v = level.get(rt)?;
+        level.set(rt, v.min(100))
+    });
+    rt.flush();
+    *runs.borrow_mut() = 0;
+    level.set(&rt, 250).unwrap();
+    let tick = rt.flush();
+    assert!(tick.errors.is_empty(), "{:?}", tick.errors);
+    assert_eq!(level.get(&rt), Ok(100));
+    assert_eq!(*runs.borrow(), 2, "clamps, then sees the clamped value");
+}
+
+#[test]
+fn effects_created_in_reverse_order_still_settle_in_one_flush() {
+    // Effect i copies cell i into cell i + 1, created last-to-first, so
+    // every write re-triggers an effect that already ran this flush.
+    let rt = Runtime::new();
+    let cells: Vec<_> = (0..20).map(|_| rt.signal(0)).collect();
+    for i in (0..19).rev() {
+        let (from, to) = (cells[i], cells[i + 1]);
+        rt.effect(move |rt| {
+            let v = from.get(rt)?;
+            to.set(rt, v)
+        });
+    }
+    rt.flush();
+    cells[0].set(&rt, 7).unwrap();
+    let tick = rt.flush();
+    assert!(tick.errors.is_empty(), "{:?}", tick.errors);
+    assert_eq!(cells[19].get(&rt), Ok(7));
+}
