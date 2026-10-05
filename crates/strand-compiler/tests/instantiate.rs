@@ -801,6 +801,15 @@ fn a_bar_per_monitor_with_its_own_state() {
     shell.inst.event(back, "click", Vec::new());
     shell.flush();
     assert!(shell.scene.find_text("September 2026").is_some());
+    // A click on a day in the popup does not bubble to the clock text it
+    // is anchored to (which would close it).
+    let day = shell.scene.find_text("15").unwrap();
+    assert!(!shell.inst.event(day, "click", Vec::new()));
+    shell.flush();
+    assert_eq!(
+        shell.scene.prop(popups[0], Prop::Open),
+        Some(&PropValue::Bool(true))
+    );
     assert!(
         shell.scene.find_text("October 2026").is_some(),
         "the other monitor's"
@@ -1174,4 +1183,47 @@ fn every_snippet_mounts() {
         assert!(!e.contains("text.") && !e.contains("box."), "{e}");
     }
     shell.at(20.0);
+}
+
+/// An element's flags outlive the branch that mounted it: a node shown
+/// again by an `if` still drives `when other.hover`.
+#[test]
+fn node_flags_survive_a_branch_swap() {
+    let src = "state shown = true\nbar B {\n  row {\n    if shown { box { id: target } }\n    box { when target.hover { opacity: 0.5 } }\n  }\n}\n";
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    for _ in 0..2 {
+        shell
+            .inst
+            .set_value("t", "shown", Value::Bool(false))
+            .unwrap();
+        shell.flush();
+        assert_eq!(shell.scene.of_kind(NodeKind::Box).len(), 1);
+        shell
+            .inst
+            .set_value("t", "shown", Value::Bool(true))
+            .unwrap();
+        shell.flush();
+    }
+    let boxes = shell.scene.of_kind(NodeKind::Box);
+    assert_eq!(boxes.len(), 2);
+    shell.inst.set_flag(boxes[0], NodeFlag::Hover, true);
+    let u = shell.flush();
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    assert_eq!(
+        shell.scene.prop(boxes[1], Prop::Opacity),
+        Some(&PropValue::Number(0.5))
+    );
+    shell
+        .inst
+        .set_value("t", "shown", Value::Bool(false))
+        .unwrap();
+    shell.flush();
+    let left = shell.scene.of_kind(NodeKind::Box)[0];
+    assert_eq!(
+        shell.scene.prop(left, Prop::Opacity),
+        None,
+        "an unmounted node is not hovered"
+    );
 }

@@ -43,6 +43,8 @@ pub(crate) struct Binding {
 
 /// An element instance the emitter knows.
 pub(crate) struct NodeEntry {
+    /// A surface (a `popup` included): events do not bubble out of it.
+    pub surface: bool,
     pub parent: Option<NodeId>,
     pub state: Rc<NodeState>,
     /// Input queues of its `on …` handlers, by event name.

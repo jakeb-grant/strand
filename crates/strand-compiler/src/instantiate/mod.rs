@@ -107,7 +107,12 @@ impl VmHooks for Ctx {
 
     fn propagate(&self, rt: &Runtime, ctx: &EventCtx) {
         let Some(scene) = ctx.scene else { return };
-        let parent = self.em.borrow().nodes.get(&scene).and_then(|e| e.parent);
+        let parent = self
+            .em
+            .borrow()
+            .nodes
+            .get(&scene)
+            .and_then(|e| e.parent.filter(|_| !e.surface));
         if let Some(p) = parent {
             self.route(rt, p, &ctx.event, ctx.args.clone());
         }
@@ -127,7 +132,9 @@ impl Ctx {
                 (
                     entry.events.get(event).copied(),
                     entry.state.clone(),
-                    entry.parent,
+                    // A surface is the top of its own event tree: a click in
+                    // a popup does not reach the element it is anchored to.
+                    entry.parent.filter(|_| !entry.surface),
                 )
             };
             if let Some(q) = queue {
@@ -264,6 +271,7 @@ impl Instance {
         let prog = ctx.vm.prog.clone();
         let root_env = ctx.vm.root.clone();
         let (scope, ()) = rt.scope(|rt| {
+            root_env.set_owner(rt.current_owner());
             // Every file's `let`s and `state`s first: other files read
             // them as `file.name`.
             let all: Vec<Node> = prog

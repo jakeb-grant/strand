@@ -65,8 +65,12 @@ pub struct Env {
     /// For a component instance: the caller's children and scope, which
     /// `slot` mounts.
     pub slot: Option<(Arc<Vec<crate::lower::Node>>, Rc<Env>)>,
-    /// The component this scope instantiates, if any (for persist keys).
+    /// The component this scope instantiates, if any.
     pub component: Option<DefId>,
+    /// The core scope this one lives as long as: element states created
+    /// on first use belong to it, not to whatever computation first read
+    /// them.
+    owner: Cell<Option<strand_core::NodeId>>,
 }
 
 impl std::fmt::Debug for Env {
@@ -89,6 +93,7 @@ impl Env {
             nodes: RefCell::default(),
             slot: None,
             component: None,
+            owner: Cell::new(None),
         })
     }
 
@@ -107,7 +112,13 @@ impl Env {
             nodes: RefCell::default(),
             slot,
             component: component.or(parent.component),
+            owner: Cell::new(None),
         })
+    }
+
+    /// Tie this scope to the core scope `owner` (the one being mounted).
+    pub fn set_owner(&self, owner: Option<strand_core::NodeId>) {
+        self.owner.set(owner);
     }
 
     pub fn bind_local(&self, id: LocalId, slot: Slot) {
@@ -155,7 +166,7 @@ impl Env {
             cur = env.parent.clone();
         }
         let owner = owner.unwrap_or_else(|| self.clone());
-        let state = Rc::new(NodeState {
+        let make = |rt: &Runtime| NodeState {
             idx,
             scene: Cell::new(None),
             hover: rt.signal(false),
@@ -164,6 +175,12 @@ impl Env {
             selected: rt.signal(false),
             width: rt.signal(Value::float(0.0)),
             height: rt.signal(Value::float(0.0)),
+        };
+        // The flags live as long as the scope that owns the element, even
+        // when a binding (a memo) is what first asks for them.
+        let state = Rc::new(match owner.owner.get() {
+            Some(o) => rt.with_owner(o, make).unwrap_or_else(|_| make(rt)),
+            None => make(rt),
         });
         owner.nodes.borrow_mut().push((idx, state.clone()));
         state

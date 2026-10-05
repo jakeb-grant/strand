@@ -1180,4 +1180,13 @@ schema from `strand-compiler`).
   args)`, `set_flag(node, hover | pressed | focused | selected, on)`,
   `set_size(node, w, h)` and `write(node, prop, value)`. An event goes
   to the innermost element with a handler for it; `propagate()` passes
-  it to the next.
+  it to the next. A surface (a `popup` included) is the top of its own
+  event tree: a click on a calendar day does not reach the clock text the
+  popup is anchored to.
+- **2026-10-05 · wave2-vm: element flags belong to their scope.** An
+  element's `hover`, `pressed`, `focused`, `selected` and size live in
+  the component, surface or `for` item that owns the element (so `id:`
+  names read them from anywhere in the body), created on first use but
+  owned by that scope, never by the binding that first read them; an
+  element an `if` unmounts and mounts again keeps working, and an
+  unmounted element reads as not hovered.

@@ -121,6 +121,7 @@ impl Ctx {
                         let children = children.clone();
                         let caller = Env::child(caller, Arc::default(), None, None);
                         self.mount_block(rt, frag, None, |ctx, rt, f| {
+                            caller.set_owner(rt.current_owner());
                             ctx.declare(rt, &children, &caller);
                             ctx.mount_nodes(rt, &children, &caller, f, None);
                         });
@@ -186,11 +187,11 @@ impl Ctx {
                 Value::Null
             }
         };
-        let key = match env.component {
-            Some(c) if info.owner.is_some() => {
-                format!("{}.{}", self.vm.prog.def(c).name, info.name)
-            }
-            _ => format!("{}.{}", info.module, info.name),
+        // `toasts.dnd` for a file's state, `Clock.open` for a component's
+        // (or a surface's).
+        let key = match info.owner {
+            Some(o) => format!("{}.{}", self.vm.prog.def(o).name, info.name),
+            None => format!("{}.{}", info.module, info.name),
         };
         let initial = match (&self.store, s.persist) {
             (Some(store), true) => {
@@ -280,6 +281,7 @@ impl Ctx {
             em.nodes.insert(
                 id,
                 NodeEntry {
+                    surface: kind.is_surface(),
                     parent: parent_scene,
                     state: state.clone(),
                     events: HashMap::new(),
@@ -540,6 +542,7 @@ impl Ctx {
                     let benv = Env::child(&env, Arc::default(), None, None);
                     let _ = rt.with_owner(block.id(), |rt| {
                         ctx.mount_block(rt, frag, None, |ctx, rt, f| {
+                            benv.set_owner(rt.current_owner());
                             ctx.declare(rt, &nodes, &benv);
                             ctx.mount_nodes(rt, &nodes, &benv, f, None);
                         });
@@ -604,6 +607,7 @@ impl Ctx {
                 let item = item.clone();
                 rt.with_owner(block.id(), |rt| {
                     ctx.mount_block(rt, frag, Some(at), |_, rt, f| {
+                        ie.set_owner(rt.current_owner());
                         let k = key.clone();
                         let value = rt.memo(move |rt| item_value(rt, keyed, &index, &k));
                         if let Some(b) = binding {
@@ -759,6 +763,7 @@ impl Ctx {
             })
             .collect();
         self.mount_block(rt, parent, None, |ctx, rt, frag| {
+            env.set_owner(rt.current_owner());
             for ((local, default), arg) in comp.params.iter().zip(args) {
                 let vm = ctx.vm.clone();
                 let m = match (arg, default) {
@@ -809,6 +814,7 @@ impl Ctx {
         let Some(screen) = s.screen else {
             let env = Env::child(env, s.body.owned.clone(), None, None);
             self.mount_block(rt, parent, None, |ctx, rt, frag| {
+                env.set_owner(rt.current_owner());
                 ctx.acquire(rt, &services);
                 ctx.declare(rt, &element.children, &env);
                 ctx.mount_element(rt, &element, &env, frag, extra);
