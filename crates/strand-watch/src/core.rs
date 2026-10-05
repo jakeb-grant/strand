@@ -638,15 +638,12 @@ impl<B: Backend> Core<B> {
             }
             What::Written => false,
         };
-        if replaced && self.watched.contains_key(&p) {
-            self.forget_watch(&p);
-            self.pending.config |= self.config_dirs.contains(&p);
-            self.pending.trees |= self.tree_dirs.contains_key(&p);
-            for (f, e) in &self.files {
-                if e.resolved.watch_dirs().any(|d| d == p) {
-                    self.pending.files.insert(f.clone());
-                }
-            }
+        if replaced && self.forget_tree(&p) {
+            // Everything below it is re-resolved, re-watched and re-hashed
+            // at the flush: a tree moved away and back, or swapped for a
+            // copy (`mv cfg cfg.bak; mv cfg.new cfg`), may hold edits made
+            // while it was not watched.
+            self.wake_under(&p);
             hit = true;
         }
         if let Some(parent) = p.parent()
@@ -700,6 +697,24 @@ impl<B: Backend> Core<B> {
         self.pending.trees |= self.trees.iter().any(|t| t.resolved.path.starts_with(p));
     }
 
+    /// Forget the watch on `dir` and on every watched directory below it.
+    /// A moved directory's inotify descriptors follow the inodes, so the
+    /// paths they were added under are stale for the whole subtree; a
+    /// deleted one's are gone. Returns whether anything was watched.
+    fn forget_tree(&mut self, dir: &Path) -> bool {
+        let below: Vec<PathBuf> = self
+            .watched
+            .range(dir.to_path_buf()..)
+            .map(|(d, _)| d)
+            .take_while(|d| d.starts_with(dir))
+            .cloned()
+            .collect();
+        for d in &below {
+            self.forget_watch(d);
+        }
+        !below.is_empty()
+    }
+
     fn forget_watch(&mut self, dir: &Path) {
         if self.watched.remove(dir) == Some(Mode::Inotify) {
             self.backend.unwatch(dir);
@@ -738,7 +753,9 @@ impl<B: Backend> Core<B> {
                 if !e.exists || !e.resolved.watch_dirs().any(|d| d == dir) {
                     continue;
                 }
-                let stamp = fresh_stamp(f);
+                // A file that exists but cannot be opened (EACCES) falls
+                // back to `stat`, as `check` stored it.
+                let stamp = fresh_stamp(f).or_else(|| current_stamp(f));
                 let swept = sweep && stamp.is_some_and(|s| s.len <= self.opts.sweep_max_bytes);
                 if stamp != e.stamp || swept {
                     self.pending.files.insert(f.clone());
@@ -810,10 +827,23 @@ impl<B: Backend> Core<B> {
                 e.resolved = paths::resolve(path);
             }
         }
-        self.sync_watches();
+        let added = self.sync_watches();
         notices.append(&mut self.pending.notices);
         for path in &touched {
             self.check(path, &mut changes);
+        }
+        // Watch, then list: the rescan above listed directories before
+        // their new watches existed, so a file created in between made no
+        // event. List them once more after the next quiet period (the
+        // next sync adds nothing, so this ends; an unchanged set is no
+        // batch).
+        if added.iter().any(|d| self.config_dirs.contains(d)) {
+            self.pending.config = true;
+            self.mark(now);
+        }
+        if added.iter().any(|d| self.tree_dirs.contains_key(d)) {
+            self.pending.trees = true;
+            self.mark(now);
         }
         for (path, kind) in cache {
             let exists = std::fs::symlink_metadata(&path).is_ok();
@@ -1105,8 +1135,10 @@ impl<B: Backend> Core<B> {
     /// Bring the backend's watches in line with what the state needs. A
     /// wanted directory that does not exist is replaced by its nearest
     /// existing ancestor, and the first missing path below that ancestor
-    /// is remembered in `waiting`.
-    fn sync_watches(&mut self) {
+    /// is remembered in `waiting`. A watched directory whose inode changed
+    /// behind our back is watched again, and what lies below it re-checked
+    /// at the next flush. Returns the directories newly watched or polled.
+    fn sync_watches(&mut self) -> Vec<PathBuf> {
         self.reindex();
         self.waiting.clear();
         let mut desired = BTreeSet::new();
@@ -1138,9 +1170,21 @@ impl<B: Backend> Core<B> {
         for d in stale {
             self.forget_watch(&d);
         }
+        let mut added = Vec::new();
         for d in desired {
-            if self.watched.contains_key(&d) || !d.is_dir() {
+            let Ok(meta) = std::fs::metadata(&d) else {
                 continue;
+            };
+            if !meta.is_dir() {
+                continue;
+            }
+            if self.watched.contains_key(&d) {
+                if self.watched_ino.get(&d) == Some(&meta.ino()) {
+                    continue;
+                }
+                self.forget_tree(&d);
+                self.wake_under(&d);
+                self.mark(Instant::now());
             }
             let poll = |reason| (Mode::Poll, Some(reason));
             let (mode, reason) = match paths::fs_kind(&d) {
@@ -1162,11 +1206,11 @@ impl<B: Backend> Core<B> {
                     reason,
                 });
             }
-            if let Ok(m) = std::fs::metadata(&d) {
-                self.watched_ino.insert(d.clone(), m.ino());
-            }
-            self.watched.insert(d, mode);
+            self.watched_ino.insert(d.clone(), meta.ino());
+            self.watched.insert(d.clone(), mode);
+            added.push(d);
         }
+        added
     }
 
     /// Notices raised outside a flush (a new watch fell back to polling)
@@ -1175,6 +1219,11 @@ impl<B: Backend> Core<B> {
         if !self.pending.notices.is_empty() && self.pending.first.is_none() {
             self.mark(Instant::now());
         }
+    }
+
+    /// The backend, for the watcher thread to read its events.
+    pub(crate) fn backend(&mut self) -> &mut B {
+        &mut self.backend
     }
 
     #[cfg(test)]
@@ -1428,5 +1477,58 @@ mod tests {
         assert_eq!(b.changes[0].kind, ChangeKind::Created);
         assert_eq!(core.watched_dirs(), vec![root.join("state/strand")]);
         assert!(core.waiting.is_empty());
+    }
+    /// Watch, then list: the rescan lists a new directory before its watch
+    /// exists, so it is listed once more after the next quiet period. A
+    /// file written in between (no event at all) is found then.
+    #[test]
+    fn a_new_directory_is_listed_again_once_watched() {
+        let (_tmp, root) = cfg_dir();
+        std::fs::write(root.join("a.strand"), "a").unwrap();
+        let backend = Silent::default();
+        let mut core = Core::new(backend.clone(), Options::default(), Some(config(&root)));
+        std::fs::create_dir(root.join("w")).unwrap();
+        core.on_raw(Raw::Dir(root.join("w")), Instant::now());
+        assert!(core.flush(core.deadline().unwrap()).is_none());
+        assert!(backend.0.lock().unwrap().contains(&root.join("w")));
+        std::fs::write(root.join("w/osd.strand"), "osd").unwrap();
+        let b = core
+            .flush(core.deadline().expect("a second listing is due"))
+            .unwrap();
+        assert_eq!(b.changes.len(), 1, "{b:#?}");
+        assert_eq!(b.changes[0].path, root.join("w/osd.strand"));
+        assert_eq!(b.changes[0].kind, ChangeKind::Created);
+        assert!(core.deadline().is_none(), "the third listing is not needed");
+    }
+
+    /// A directory moved away takes every watch below it along (their
+    /// descriptors follow the inodes); a stale sub-directory watch would
+    /// otherwise never be added again.
+    #[test]
+    fn a_moved_directory_forgets_the_watches_below_it() {
+        let (_tmp, root) = cfg_dir();
+        std::fs::create_dir(root.join("widgets")).unwrap();
+        std::fs::write(root.join("widgets/osd.strand"), "osd").unwrap();
+        let backend = Silent::default();
+        let mut core = Core::new(backend.clone(), Options::default(), Some(config(&root)));
+        assert!(core.watched_dirs().contains(&root.join("widgets")));
+        let bak = root.with_file_name("cfg.bak");
+        std::fs::rename(&root, &bak).unwrap();
+        core.on_raw(Raw::Gone(root.clone()), Instant::now());
+        let watched = core.watched_dirs();
+        assert!(!watched.contains(&root), "{watched:?}");
+        assert!(!watched.contains(&root.join("widgets")), "{watched:?}");
+        // Back, with an edit made while away: re-watched and re-hashed.
+        std::fs::write(bak.join("widgets/osd.strand"), "osd 2").unwrap();
+        std::fs::rename(&bak, &root).unwrap();
+        core.on_raw(Raw::Dir(root.clone()), Instant::now());
+        let b = core.flush(core.deadline().unwrap()).unwrap();
+        assert!(core.watched_dirs().contains(&root.join("widgets")));
+        let osd = b
+            .changes
+            .iter()
+            .find(|c| c.path == root.join("widgets/osd.strand"))
+            .expect("the nested edit");
+        assert_eq!(osd.kind, ChangeKind::Modified);
     }
 }

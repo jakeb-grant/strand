@@ -214,6 +214,10 @@ pub async fn follow(conn: &zbus::Connection, sink: EventSink) -> zbus::Result<()
     }
     let mut pending: Option<ReadFuture<'_>> =
         (!late.is_empty()).then(|| Box::pin(read_late(&proxy, late)) as ReadFuture<'_>);
+    // Settings that changed (by signal) while `pending` was in flight: the
+    // signal is at least as new as the read's answer, so the read's value
+    // for them is dropped rather than sent after it as a stale revert.
+    let mut newer: Vec<&'static str> = Vec::new();
     loop {
         let next = tokio::select! {
             s = changes.next() => Next::Changed(s),
@@ -235,19 +239,27 @@ pub async fn follow(conn: &zbus::Connection, sink: EventSink) -> zbus::Result<()
                     continue;
                 }
                 match parse_setting(args.key(), args.value()) {
-                    Some(s) => send(&sink, vec![s], false),
+                    Some(s) => {
+                        if pending.is_some() && !newer.contains(&s.path()) {
+                            newer.push(s.path());
+                        }
+                        send(&sink, vec![s], false)
+                    }
                     None => continue,
                 }
             }
             // The portal (re)started: its values may differ from ours.
             Next::Owner(Some(Some(_))) => {
                 pending = Some(Box::pin(read_late(&proxy, KEYS.to_vec())));
+                newer.clear();
                 continue;
             }
             // The portal went away; keep the last values.
             Next::Owner(Some(None)) => continue,
-            Next::Read(settings) => {
+            Next::Read(mut settings) => {
                 pending = None;
+                settings.retain(|s| !newer.contains(&s.path()));
+                newer.clear();
                 if settings.is_empty() {
                     continue;
                 }

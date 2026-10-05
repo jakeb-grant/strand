@@ -96,7 +96,7 @@ pub enum Notice {
     Polling { dir: PathBuf, reason: PollReason },
     /// The module-set rescan callback failed; the previous set is kept.
     RescanFailed(String),
-    /// The notify backend reported an error.
+    /// Reading the inotify queue (or waiting on it) failed.
     Backend(String),
 }
 

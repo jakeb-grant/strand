@@ -9,16 +9,18 @@ env:
   RUSTFLAGS: -D warnings
   # The Wayland and budget tiers fail instead of skipping when sway is missing.
   STRAND_REQUIRE_SWAY: "1"
+  # The portal tests fail instead of skipping when dbus-daemon is missing.
+  STRAND_REQUIRE_DBUS: "1"
 
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install headless sway, grim, fonts and fontconfig headers
+      - name: Install headless sway, grim, fonts, fontconfig headers and dbus-daemon
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends sway grim fonts-dejavu-core pkg-config libfontconfig1-dev
+          sudo apt-get install -y --no-install-recommends sway grim fonts-dejavu-core pkg-config libfontconfig1-dev dbus
       # Pinned to the dev container's toolchain so a new stable release's
       # lints and deprecations cannot fail -D warnings on unchanged code.
       - uses: dtolnay/rust-toolchain@master

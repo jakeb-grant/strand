@@ -30,8 +30,11 @@ impl Drop for Daemon {
 }
 
 /// A private session bus. Skips (returns `None`) when `dbus-daemon` is not
-/// installed, unless `STRAND_REQUIRE_DBUS` is set.
+/// installed, unless `STRAND_REQUIRE_DBUS` or `CI` (set by GitHub Actions)
+/// is set: there the portal tier must run, not pass silently.
 fn daemon() -> Option<Daemon> {
+    let required =
+        std::env::var_os("STRAND_REQUIRE_DBUS").is_some() || std::env::var_os("CI").is_some();
     let dir = tempfile::tempdir().unwrap();
     let spawned = Command::new("dbus-daemon")
         .args(["--session", "--nofork", "--print-address=1"])
@@ -41,7 +44,7 @@ fn daemon() -> Option<Daemon> {
         .spawn();
     let mut child = match spawned {
         Ok(c) => c,
-        Err(e) if std::env::var_os("STRAND_REQUIRE_DBUS").is_none() => {
+        Err(e) if !required => {
             eprintln!("skipping: dbus-daemon unavailable ({e})");
             return None;
         }
@@ -319,6 +322,55 @@ fn a_late_portal_is_read_and_followed() {
             scheme: ColorScheme::PreferLight
         }
     );
+
+    // Signals from the new instance (a new unique name behind the same
+    // well-known one) still arrive.
+    emit(
+        &rt,
+        &_conn,
+        "org.freedesktop.appearance",
+        "contrast",
+        Value::from(1u32),
+    );
+    assert_eq!(
+        next(&rx),
+        (vec![SystemSetting::Contrast(Contrast::High)], false)
+    );
+}
+
+/// A change signalled while a re-read is in flight wins over the read's
+/// (older) answer for that key: the read must not revert it.
+#[test]
+fn a_change_during_a_re_read_is_not_reverted() {
+    let Some(d) = daemon() else { return };
+    let (sink, rx) = channel();
+    let _portal = PortalSettings::spawn(Bus::Address(d.address.clone()), sink).unwrap();
+    assert_eq!(next(&rx), (vec![], true));
+    let rt = runtime();
+    // The portal appears; its `contrast` read hangs, still answering
+    // "normal" after the user switched to high contrast.
+    let conn = serve(
+        &rt,
+        &d.address,
+        Mock {
+            slow: Some(("contrast", Duration::from_millis(800))),
+            ..mock(appearance())
+        },
+    );
+    std::thread::sleep(Duration::from_millis(200));
+    emit(
+        &rt,
+        &conn,
+        "org.freedesktop.appearance",
+        "contrast",
+        Value::from(1u32),
+    );
+    assert_eq!(
+        next(&rx),
+        (vec![SystemSetting::Contrast(Contrast::High)], false)
+    );
+    assert_eq!(next(&rx), (initial()[..2].to_vec(), false));
+    assert!(rx.recv_timeout(Duration::from_millis(300)).is_err());
 }
 
 /// A portal whose read hangs does not hold the boot batch past

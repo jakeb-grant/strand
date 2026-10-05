@@ -790,17 +790,34 @@ schema from `strand-compiler`).
 
 ## wave2-watch
 
-- **2026-10-05 · notify 8.2 without notify-debouncer-full.** notify's
-  inotify backend reports `CLOSE_WRITE` (`Access(Close(Write))`),
-  `MOVED_TO` (`Modify(Name(To))`) and overflow (`Flag::Rescan`), so raw
-  inotify is not needed. The debouncer is not used: it debounces per path
-  on a tick, which cannot express "15 ms after the last completed write
-  across all files" (save all = one batch), and its rename stitching is
-  unneeded because the watcher never follows renames: it marks the paths
-  an event names and decides at the end of the quiet period, by `lstat`
-  and BLAKE3, what each one is now. Watches are non-recursive, one per
-  directory, so depth (3, from `find_files`) and symlink handling stay
-  ours.
+- **2026-10-05 · Raw inotify (rustix), not notify, and no debouncer.**
+  The spec allows raw inotify where notify cannot express the event set,
+  and notify 8.2 cannot: it always adds `IN_OPEN` and `IN_ATTRIB` to
+  every watch, so every open of any file in a watched directory by any
+  process (each font an app loads in a `watch_tree` font directory, every
+  read in `~/.config`, which is watched as the config root's parent)
+  would wake its thread and ours, against design.md's "an idle shell
+  does zero work". It also removes, on a watched directory's
+  `MOVED_FROM` or delete, every watch whose path starts with it, behind
+  the caller's back. `rustix::fs::inotify` (rustix is already a
+  dependency) with the mask `CLOSE_WRITE | MOVED_TO | MOVED_FROM |
+  CREATE | DELETE | DELETE_SELF | MOVE_SELF | MODIFY | ONLYDIR |
+  EXCL_UNLINK` queues nothing for reads (`reading_a_watched_file_queues_no_events`).
+  The watcher thread `poll(2)`s the inotify fd and an eventfd that control
+  calls write, so there is one thread and no wake-up without work. The
+  wd-to-path map lives with core, which decides when watches go.
+  `Q_OVERFLOW` is a full rescan; an `IGNORED` for a still-mapped
+  descriptor is a removal. If `inotify_init` fails
+  (`max_user_instances` reached, common with Electron apps), every
+  directory is polled and reported as `Polling { WatchFailed }` instead
+  of the watcher failing to start. The debouncer is not used: it
+  debounces per path on a tick, which cannot express "15 ms after the
+  last completed write across all files" (save all = one batch), and its
+  rename stitching is unneeded because the watcher never follows renames:
+  it marks the paths an event names and decides at the end of the quiet
+  period, by `lstat` and BLAKE3, what each one is now. Watches are
+  non-recursive, one per directory, so depth (3, from `find_files`) and
+  symlink handling stay ours.
 - **2026-10-05 · What counts as an event.** Acted on: `CLOSE_WRITE`,
   `MOVED_TO`, and a `CREATE` that no `CLOSE_WRITE` will follow: a
   symlink (`ln -s`), a hard link (`ln`, a regular file with more than
@@ -842,7 +859,9 @@ schema from `strand-compiler`).
   sees. Other read-only mounts are watched (a read-only bind mount of a
   writable tree still gets events), and a network or FUSE filesystem is
   polled even when mounted read-only (the server's copy still changes):
-  the filesystem type is checked before the read-only flag.
+  the filesystem type is checked before the read-only flag. A polled
+  file that exists but cannot be opened is compared by `stat` stamp, as
+  it was stored, so it is not re-checked on every poll.
 - **2026-10-05 · Polling.** Directories on NFS, SMB/CIFS, 9p, Ceph, AFS,
   Coda or FUSE (statfs magic), or whose inotify watch fails (limit
   reached), are polled every second (`Options::poll_interval`): the
@@ -895,7 +914,12 @@ schema from `strand-compiler`).
   `accent-color` component outside 0..=1 means unset. Tests use a zbus
   mock portal on a private `dbus-daemon` the test starts itself
   (python3-dbusmock is not installed); they skip when `dbus-daemon` is
-  missing unless `STRAND_REQUIRE_DBUS` is set.
+  missing unless `STRAND_REQUIRE_DBUS` or `CI` is set, and CI sets the
+  former and installs `dbus`, so the tier cannot pass silently there. A
+  `SettingChanged` that arrives while a late or restart re-read is in
+  flight wins: the read's value for that key is dropped, since the
+  signal is at least as new as the read's answer and sending the read
+  after it would revert the change (dark mode flipping back).
 - **2026-10-05 · Missing and replaced directories.** A directory the
   watcher wants (a config directory, a referenced file's directory, a
   link's directory, a cache tree root) that does not exist is replaced
@@ -908,8 +932,22 @@ schema from `strand-compiler`).
   scripts, `mv new strand`) is watched again. Directory removals
   (`IN_DELETE` of a directory, `DELETE_SELF`) are removals; a creation
   event for a path already watched with the same inode changes nothing.
-  A write that lands between the rescan and the new watch is still read,
-  since files are hashed after the watch is in place.
+  A watched directory that is moved or deleted takes every watch below
+  it along: a moved directory's descriptors follow the inodes, so the
+  paths they were added under are stale for the whole subtree. The
+  watcher drops them all (`MOVE_SELF`, `MOVED_FROM`, `DELETE_SELF`) and,
+  at the flush, re-resolves, re-watches and re-hashes every file below,
+  so `mv cfg cfg.bak; mv cfg.new cfg` reports the changed files in
+  sub-directories and nothing written in `cfg.bak` is reported under
+  the old names. As a backstop, each flush re-checks the inode of every
+  watched directory and re-watches one that changed. Watch, then list:
+  when a flush adds a watch on a config or cache-tree directory, the
+  module set (or tree) is listed once more after the next quiet period,
+  because the rescan listed that directory before its watch existed and
+  a file created in between (a slow `cp -r`, a `git checkout`) made no
+  event. The second listing adds no new watch, so it ends there, and an
+  unchanged set sends no batch. Referenced files are hashed after their
+  watch is in place, so they need no second pass.
 - **2026-10-05 · Registrations per role.** A referenced path can be
   wanted for several reasons (two `state … from "prefs.toml"`, a
   wallpaper also shown by an `image`), so registrations are counted per

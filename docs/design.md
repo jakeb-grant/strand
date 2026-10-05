@@ -629,7 +629,7 @@ So Strand watches directories and acts only on `CLOSE_WRITE` and `MOVED_TO`, nev
 
 **Symlinked dotfiles.** GNU stow can make `~/.config/strand` itself a link into `~/dotfiles`, so Strand canonicalises each loaded file and also watches the target's directory. home-manager links into the read-only `/nix/store`; `home-manager switch` swaps the link, which the link-directory watch sees. NFS emits no events and falls back to polling with content comparison.
 
-Crate: [`notify`](https://docs.rs/notify/latest/notify/) 8.2, with no debouncer: [`notify-debouncer-full`](https://docs.rs/notify-debouncer-full/latest/notify_debouncer_full/) debounces each file on its own timer, but "save all" needs one quiet period across all files, and Strand never follows renames (it re-checks each named path by `lstat` and hash when the quiet period ends), so its rename stitching is not needed (`docs/decisions.md`, wave2-watch). `notify` 9 is still a release candidate. A missing watched directory is waited for from its nearest existing ancestor, and the config directory's parent is watched, so a directory that is deleted and recreated is not lost.
+Crate: raw inotify through [`rustix`](https://docs.rs/rustix/latest/rustix/fs/inotify/) (`fs::inotify`, polled with `poll(2)` next to an eventfd), not [`notify`](https://docs.rs/notify/latest/notify/) 8.2: `notify` adds `IN_OPEN` and `IN_ATTRIB` to every watch, so every file any process opens in a watched directory (fonts, icons, `~/.config`) would wake an idle shell, and it silently drops the watches below a moved directory. The watch mask is `CLOSE_WRITE`, `MOVED_TO`, `MOVED_FROM`, `CREATE`, `DELETE`, `DELETE_SELF`, `MOVE_SELF` and `MODIFY` (the last only keeps an open batch waiting). No debouncer: [`notify-debouncer-full`](https://docs.rs/notify-debouncer-full/latest/notify_debouncer_full/) debounces each file on its own timer, but "save all" needs one quiet period across all files, and Strand never follows renames (it re-checks each named path by `lstat` and hash when the quiet period ends), so its rename stitching is not needed (`docs/decisions.md`, wave2-watch). A missing watched directory is waited for from its nearest existing ancestor, and the config directory's parent is watched, so a directory that is deleted and recreated is not lost.
 
 ### The pipeline
 
@@ -727,7 +727,7 @@ Services are typed Rust structs that start lazily when a shell first references 
 | freedesktop-desktop-entry 0.8, freedesktop-icons 0.4 | Launcher data and icons | Watched live |
 | nucleo 0.5 | Fuzzy matching with match ranges | Releases stalled since 2024; wrap it, fork if needed |
 | swayipc-async 3.0; own Hyprland and niri IPC | Compositor adapters | `hyprland` and `niri-ipc` crates are GPL-3.0; their IPC is simple JSON over a socket |
-| notify 8.2, blake3 | Live reload | Directory watches; see live reload |
+| rustix inotify, blake3 | Live reload | Directory watches without `IN_OPEN`; see live reload |
 | taffy 0.14, parley 0.11, swash | Layout and text | taffy runs on the render thread |
 | vello\_cpu, vello\_gpu 0.3, wgpu 30, naga | Rendering and shaders | Behind our own scene IR |
 | material-colors 0.5, palette 0.7, tinted-builder | Palettes and importers | Material spec version pinned |

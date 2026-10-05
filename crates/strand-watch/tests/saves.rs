@@ -751,3 +751,138 @@ fn fifos_are_not_read() {
     let b = one_batch(&fx);
     assert_modified(&b.changes[0], &fx.cfg.join("bar.strand"), "bar { ok: 1 }\n");
 }
+
+// --- Directory trees moved and swapped ---------------------------------------
+
+/// Take every batch until the watcher has been quiet for `SETTLE`.
+fn drain(fx: &Fx) {
+    while next_files(&fx.rx, SETTLE).is_some() {}
+}
+
+fn copy_tree(from: &Path, to: &Path) {
+    fs::create_dir(to).unwrap();
+    for e in fs::read_dir(from).unwrap().flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            copy_tree(&p, &to.join(e.file_name()));
+        } else {
+            fs::copy(&p, to.join(e.file_name())).unwrap();
+        }
+    }
+}
+
+fn with_widgets(base: &Path) {
+    fs::create_dir(base.join("cfg/widgets")).unwrap();
+    fs::write(base.join("cfg/widgets/osd.strand"), "osd {}\n").unwrap();
+}
+
+/// A dotfile manager builds the new config beside the old one and swaps
+/// them (`mv cfg cfg.bak; mv cfg.new cfg`): the swap reports the changed
+/// file in the sub-directory, the new tree stays watched, and the old one
+/// (now `cfg.bak`) is no longer reported under the old names.
+#[test]
+fn a_swapped_config_tree_keeps_nested_watches() {
+    let fx = fixture_with(Options::default(), with_widgets);
+    let osd = fx.cfg.join("widgets/osd.strand");
+    let new = fx.base.join("cfg.new");
+    copy_tree(&fx.cfg, &new);
+    fs::write(new.join("widgets/osd.strand"), "osd { v: 2 }\n").unwrap();
+    drain(&fx);
+    fs::rename(&fx.cfg, fx.base.join("cfg.bak")).unwrap();
+    fs::rename(&new, &fx.cfg).unwrap();
+    let b = until(&fx.rx, "the nested change", |b| {
+        has(b, &osd, ChangeKind::Modified)
+    });
+    let c = b.changes.iter().find(|c| c.path == osd).unwrap();
+    assert_eq!(c.hash, Some(hash_bytes(b"osd { v: 2 }\n")));
+    drain(&fx);
+
+    // The old tree is not watched any more.
+    fs::write(fx.base.join("cfg.bak/widgets/osd.strand"), "osd { old }\n").unwrap();
+    fs::write(fx.base.join("cfg.bak/bar.strand"), "bar { old }\n").unwrap();
+    no_batch(&fx);
+    // The new one is, sub-directory included.
+    fs::write(&osd, "osd { v: 3 }\n").unwrap();
+    let b = one_batch(&fx);
+    assert_eq!(b.changes.len(), 1, "{b:#?}");
+    assert_modified(&b.changes[0], &osd, "osd { v: 3 }\n");
+}
+
+/// `mv cfg cfg.bak; cp -r cfg.bak cfg`: the copy's sub-directory is
+/// watched again.
+#[test]
+fn a_moved_and_copied_back_config_keeps_nested_watches() {
+    let fx = fixture_with(Options::default(), with_widgets);
+    let osd = fx.cfg.join("widgets/osd.strand");
+    let bak = fx.base.join("cfg.bak");
+    fs::rename(&fx.cfg, &bak).unwrap();
+    copy_tree(&bak, &fx.cfg);
+    drain(&fx);
+    fs::write(&osd, "osd { v: 2 }\n").unwrap();
+    let b = until(&fx.rx, "the nested edit", |b| {
+        has(b, &osd, ChangeKind::Modified)
+    });
+    assert_eq!(b.changes.len(), 1, "{b:#?}");
+    assert_modified(&b.changes[0], &osd, "osd { v: 2 }\n");
+}
+
+/// A sub-directory moved away and back (`mv cfg/a X; mv X cfg/a`): the
+/// directories below it are watched again.
+#[test]
+fn a_subdirectory_moved_away_and_back() {
+    let fx = fixture_with(Options::default(), |base| {
+        fs::create_dir_all(base.join("cfg/a/b")).unwrap();
+        fs::write(base.join("cfg/a/b/osd.strand"), "osd {}\n").unwrap();
+    });
+    let osd = fx.cfg.join("a/b/osd.strand");
+    let away = fx.base.join("X");
+    fs::rename(fx.cfg.join("a"), &away).unwrap();
+    fs::rename(&away, fx.cfg.join("a")).unwrap();
+    drain(&fx);
+    fs::write(&osd, "osd { v: 2 }\n").unwrap();
+    let b = until(&fx.rx, "the nested edit", |b| {
+        has(b, &osd, ChangeKind::Modified)
+    });
+    assert_modified(&b.changes[0], &osd, "osd { v: 2 }\n");
+    // And nothing is reported for the path it was moved through.
+    fs::write(fx.cfg.join("a/b/osd.strand"), "osd { v: 3 }\n").unwrap();
+    let b = one_batch(&fx);
+    assert_modified(&b.changes[0], &osd, "osd { v: 3 }\n");
+}
+
+/// Watch, then list: a file written into a new sub-directory after the
+/// module-set rescan listed it, but before its watch was added, made no
+/// event; the second listing (after the watch exists) finds it.
+#[test]
+fn a_file_written_while_a_new_directory_is_being_watched() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = fs::canonicalize(tmp.path()).unwrap().join("cfg");
+    fs::create_dir(&cfg).unwrap();
+    fs::write(cfg.join("bar.strand"), "bar {}\n").unwrap();
+    let osd = cfg.join("w/osd.strand");
+    let wrote = Arc::new(AtomicBool::new(false));
+    let (r, o, w) = (cfg.clone(), osd.clone(), wrote.clone());
+    let config = ConfigWatch {
+        root: cfg.clone(),
+        modules: modules(&cfg).unwrap(),
+        rescan: Box::new(move || {
+            let set = modules(&r)?;
+            // The slow `cp -r`: the file lands right after the listing.
+            if r.join("w").is_dir() && !w.swap(true, Ordering::SeqCst) {
+                fs::write(&o, "osd {}\n")?;
+            }
+            Ok(set)
+        }),
+    };
+    let (sink, rx) = channel();
+    let _watcher = Watcher::spawn(Some(config), Options::default(), sink).unwrap();
+    fs::create_dir(cfg.join("w")).unwrap();
+    let b = until(&rx, "the file written in the window", |b| {
+        has(b, &osd, ChangeKind::Created)
+    });
+    assert!(wrote.load(Ordering::SeqCst));
+    let c = b.changes.iter().find(|c| c.path == osd).unwrap();
+    assert_eq!(c.hash, Some(hash_bytes(b"osd {}\n")));
+}

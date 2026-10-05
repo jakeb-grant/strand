@@ -464,7 +464,9 @@ It does not depend on `strand-compiler` or `strand-core`.
   the logic loop). `ChangeEvent` is `Files(FileBatch)`,
   `System(SystemBatch)` or `Compositor(CompositorEvent)`.
 - **Files.** `Watcher::spawn(Option<ConfigWatch>, Options, EventSink)`
-  runs the `strand-watch` thread (notify's inotify thread feeds it).
+  runs the `strand-watch` thread (one thread: a raw inotify fd and a
+  control eventfd under `poll(2)`; with no inotify instance, everything
+  is polled).
   `ConfigWatch { root, modules: ModuleSet { files, dirs }, rescan }` is
   `source::find_files`'s `Discovery` (`files`, `dirs`) plus a
   `FnMut() -> io::Result<ModuleSet>` the binary implements with
