@@ -23,7 +23,7 @@ Exit: [ ] ≤34 MB PSS on 2 monitors · [ ] no wakeups between minute ticks ·
 - [ ] Text: parley shaping on the text worker; swash rasterisation; LRU glyph atlas per scale
 - [ ] Offline render tests: scenes → PNG compared to references within tolerance
 - [ ] Clock tick aligned to the minute boundary; process sleeps between ticks
-- [ ] 10k-node reactive graph benchmark (propagation latency, memory per node)
+- [x] 10k-node reactive graph benchmark (propagation latency, memory per node) — `crates/strand-core/benches/graph.rs`, shape checked by `crates/strand-core/tests/bench_graph.rs`, results in `docs/benchmarks.md`
 - [ ] mimalloc allocator in the runtime binary
 - [ ] Measurement script: PSS, wakeups, damage per tick, on headless sway with 2 outputs
 
@@ -39,10 +39,10 @@ Language (`docs/grammar.md`):
 - [ ] `state` / `state … persist` / `state x from "file.toml" { typed fields }` / `let` / `export`
 - [ ] `enum`, `type` (records), keyed collections `state xs: [T] key f = []`
 - [ ] `when cond { props }`; `hover`, `pressed`, `focused`, `selected`; `id:` and `other.hover`; later `when` wins
-- [ ] `if`/`else`, `match`, `for x in xs [key e]`; plain data without a key is an error
+- [ ] `if`/`else`, `match`, `for x in xs [key e]`; plain data without a key is an error (core side done: a `for` over a plain list expression is `rt.keyed_memo(key_fn, f)` / `Memo::keyed` / `AsyncMemo::keyed`, published as keyed diffs, duplicate keys an error value — `crates/strand-core/tests/keyed_props.rs::keyed_memo_matches_naive_and_publishes_keyed_diffs`, `keyed_memo_reports_duplicate_keys_as_a_value_and_recovers`, `memo_and_async_lists_feed_keyed_loops`, `a_fast_changing_keyed_memo_is_not_rate_throttled`)
 - [ ] `enter {}` / `exit {}` poses; exit mirrors enter
-- [ ] Events: `on click`, `on secondary`, `on scroll(dy)`, `on show`, `on activate`, `on drop(p: T, at: int)`, `on change a, b [after T]`, `on notifications.received(n)`
-- [ ] Timers: `after T while cond { }`, `every T while cond { }`
+- [ ] Events: `on click`, `on secondary`, `on scroll(dy)`, `on show`, `on activate`, `on drop(p: T, at: int)`, `on change a, b [after T]`, `on notifications.received(n)` (runtime side done in strand-core: `on_change`, `on_change_after`, `on_change_keyed` for "never on a sink switch", `EventQueue` with a runtime cycle guard, `input_events` for `on click`/`on scroll` (not rate-counted) — `crates/strand-core/tests/handlers.rs`, `tests/feedback.rs::smooth_input_scrolling_is_neither_warned_nor_delayed`, `tests/graph.rs::on_change_skips_first_value`, `tests/handler_semantics.rs::on_change_keyed_ignores_a_sink_switch`, `listeners_reemitting_in_a_loop_are_a_cycle`, `on_change_fires_once_per_outside_write_after_writers_settle`; service events kept for a frozen listener — `tests/disposal.rs::service_events_wait_for_a_frozen_listener_without_delaying_others`)
+- [ ] Timers: `after T while cond { }`, `every T while cond { }` (runtime side done in strand-core: `Runtime::after/every` — `crates/strand-core/tests/handlers.rs::after_while_pauses_and_resumes`, `every_while_repeats_only_while_true`, `tests/handler_semantics.rs::a_timer_sees_a_pause_written_in_the_same_tick`, `every_keeps_its_phase_despite_late_ticks`, `zero_period_every_pauses_and_reports`, `timers_due_together_fire_in_creation_order`)
 - [ ] Two-way binding `prop: <-> target`
 - [ ] Expressions: `?.`, `??`, ternary, lambdas `x => e`, method calls, named args `f(months: -1)`, `match` expressions
 - [ ] Spring override `prop: value ~ $motion.bouncy | ~ 200ms | ~ instant | ~ ease(..) | ~ bezier(..)`
@@ -56,13 +56,13 @@ Checking and runtime:
 - [ ] Type checker: records, enums, `Async<T>` vs `T`, nullable `?`, durations, colours, lengths
 - [ ] Errors: unknown name with did-you-mean; redeclaration across files; assignment to `let` or bound prop; static cycles name the path
 - [ ] Bytecode lowering + VM evaluating bindings against `strand-core` signals
-- [ ] Handlers as cancellable coroutines; errors as values; cancelled at next `await` on unmount
-- [ ] Reactive graph: push-pull, glitch-free, equality cut-off, generational ids, stale read is an error value
-- [ ] Batching: one `SceneDiff` per tick
-- [ ] State vs events: latest-value coalescing vs lossless queues
-- [ ] Write generation tags (ignore service echoes); >30 writes/s per cell warns and throttles
-- [ ] Keyed collections: `push/insert/remove_key/move/update`, `VecDiff`, incremental `filter/map/take/sort_by`
-- [ ] `Async<T>` with `.pending`, `.error`, keeps last value
+- [x] Handlers as cancellable coroutines; errors as values; cancelled at next `await` on unmount — `crates/strand-core/tests/handlers.rs` (`unmount_cancels_a_handler_at_its_next_await`, `handler_errors_are_values`), `tests/handler_semantics.rs` (`a_load_started_by_a_handler_outlives_the_handler`, `handlers_do_not_accumulate_nodes`, `a_self_waking_task_does_not_spin_the_flush`, `disposing_a_handler_cancels_its_in_flight_tasks`, `reevaluating_a_handler_keeps_its_tasks`, `woken_tasks_run_in_wake_order_not_slot_order`); VM handlers plug in through `Runtime::spawn` / `spawn_for(site, fut)` / `spawn_input(site, fut)` with `handler_site()`
+- [x] Reactive graph: push-pull, glitch-free, equality cut-off, generational ids, stale read is an error value — `crates/strand-core/tests/graph_props.rs` (memos and effects check themselves against naive recomputation when they run; effects that write, scope disposal and stale reads included), `tests/graph.rs`, `tests/disposal.rs` (incl. effects, memos and keyed derivations that own and read a child: `an_effect_that_creates_and_reads_a_child_runs_once_per_tick`)
+- [ ] Batching: one `SceneDiff` per tick (core side done: writes coalesce, one `Tick` per flush listing changed watched props — `crates/strand-core/tests/graph.rs::writes_coalesce_and_effects_run_once_per_tick`, `watch_reports_changed_props_once`; the emitter is strand-compiler. Effects run in creation order, not a computed topological order: an effect re-triggered by a later effect's write re-runs in the same flush; `on change` handlers run in a late phase so they fire once per outside write — see `docs/decisions.md`, core, "Ticks and batching")
+- [x] State vs events: latest-value coalescing vs lossless queues — `crates/strand-core/tests/handlers.rs::events_are_lossless_while_state_coalesces`
+- [x] Write generation tags (ignore service echoes); >30 writes/s per cell warns and throttles — `crates/strand-core/tests/feedback.rs` (graph-triggered handlers only, smooth 30 Hz leaky bucket once tripped: `more_than_thirty_writes_per_second_warns_and_throttles`, `a_graph_triggered_writer_is_still_throttled`, `smooth_input_scrolling_is_neither_warned_nor_delayed`, `throttling_covers_the_service_write_path`, `a_handler_spawning_one_task_per_event_is_one_writer`, `a_held_write_of_a_disposed_handler_never_lands`, `an_unchanged_newer_write_supersedes_a_held_one`, `a_runaway_loop_started_by_a_click_is_throttled`, `input_tasks_writing_before_their_first_await_stay_exempt`, `timer_body_and_its_task_writes_count_separately`)
+- [x] Keyed collections: `push/insert/remove_key/move/update`, `VecDiff`, incremental `filter/map/take/sort_by` — `crates/strand-core/tests/keyed_props.rs` (incl. `keyed_memo_matches_naive_and_publishes_keyed_diffs` for collections derived from plain lists)
+- [x] `Async<T>` with `.pending`, `.error`, keeps last value — `crates/strand-core/tests/handlers.rs::async_keeps_previous_value`, `async_load_runs_as_a_cancellable_handler`, `tests/handler_semantics.rs::a_cancelled_load_clears_pending`, `async_memo_follows_its_input_and_supersedes_quietly` (read-only `AsyncMemo`)
 - [ ] `persist` storage with default hash
 
 Live reload:
@@ -71,10 +71,10 @@ Live reload:
 - [ ] 15 ms coalesce; BLAKE3 no-op skip incl. own writes
 - [ ] Off-thread compile of changed modules + dependents; atomic commit of the largest consistent set
 - [ ] Last good tree kept; compiled cache keyed by source hash + compiler version + schema hash
-- [ ] Identity: source span → key/id → position; ambiguity resets with a warning
-- [ ] Edit table: token swap, prop patch animates, node add/remove poses, state default adoption rules, name/type change resets one cell, handler restart, timer rescale, surface recreate, service restart, lock deferral
+- [ ] Identity: source span → key/id → position; ambiguity resets with a warning (core side done: `Runtime::reparent` moves live state, keyed cells keep their diff log, handlers create nodes in their current component — `crates/strand-core/tests/disposal.rs::a_moved_scope_survives_its_old_parent`, `an_on_change_handler_moved_to_a_new_owner_creates_nodes_there`)
+- [ ] Edit table: token swap, prop patch animates, node add/remove poses, state default adoption rules, name/type change resets one cell, handler restart, timer rescale, surface recreate, service restart, lock deferral (core side of handler restart and timer rescale done: disposing a handler cancels and reports its in-flight `await` — `crates/strand-core/tests/handler_semantics.rs::disposing_a_handler_cancels_its_in_flight_tasks`; `Timer::rescale_from` / `Debounced::rescale_from` carry the countdown's lifecycle — `tests/handlers.rs::reactive_duration_and_rescale`, `rescaling_from_an_after_that_fired_never_fires_again`, `a_debounce_restarted_mid_countdown_fires_once_at_the_rescaled_time`)
 - [ ] Merkle hashes over handler reachability
-- [ ] Error overlay after 250 ms quiet; did-you-mean; click to `$EDITOR`; runtime fault freezes one component outlined red
+- [ ] Error overlay after 250 ms quiet; did-you-mean; click to `$EDITOR`; runtime fault freezes one component outlined red (core side done: `Runtime::suspend/resume` — `crates/strand-core/tests/disposal.rs::a_suspended_component_freezes_and_resumes`, `resume_wakes_the_host_for_held_work_and_overdue_timers`, `an_effect_moved_out_of_a_suspended_scope_is_not_left_deaf`, `a_nested_scope_moved_out_of_a_suspended_parent_runs_again`, `a_frozen_task_woken_repeatedly_is_held_once`)
 - [ ] `strand check`, `strand watch [--json]`, `strand reload [--hard]`, `@reset`
 - [ ] Basic LSP in `strand-dev`: diagnostics, completion after `$` `.` `<->`, hover, rename
 - [ ] Reload fuzzer: five save styles, cold-boot equivalence
