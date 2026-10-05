@@ -19,6 +19,8 @@ stacker = "0.1.25"
 
 [dev-dependencies]
 insta = "1.49.0"
+strand-render.workspace = true
+strand-text.workspace = true
 
 [lints]
 workspace = true

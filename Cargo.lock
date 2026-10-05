@@ -1558,7 +1558,9 @@ dependencies = [
  "serde_json",
  "stacker",
  "strand-core",
+ "strand-render",
  "strand-scene",
+ "strand-text",
  "strsim",
 ]
 
