@@ -310,6 +310,16 @@ fn shapes_match_reference() {
         [0x2e, 0x1e, 0x1e, 0xff],
         "child clipped to the rounded corner"
     );
+    let below = buf.px(48, 59);
+    assert!(
+        below[0] < 0x2e && below[3] == 0xff,
+        "shadow darkens below the card: {below:?}"
+    );
+    let (l, r) = (buf.px(98, 36), buf.px(157, 36));
+    assert!(
+        l[2] < r[2] || l[1] < r[1],
+        "gradient runs left to right: {l:?} {r:?}"
+    );
     assert_matches_ref("shapes", &buf, TOLERANCE);
 }
 
