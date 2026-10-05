@@ -89,6 +89,10 @@ impl<T: 'static> NodeData for EventsData<T> {
         self
     }
 
+    fn downstream(&self) -> Vec<NodeId> {
+        self.listeners.borrow().clone()
+    }
+
     fn deliver(&self, rt: &Runtime, id: NodeId, errors: &mut Vec<(NodeId, Error)>) -> bool {
         let events: Vec<Rc<T>> = match self.queue.try_borrow_mut() {
             Ok(mut q) => q.drain(..).collect(),
@@ -278,6 +282,7 @@ impl<T: 'static> EventQueue<T> {
             Err(_) => Err(Error::Reentrant),
         })??;
         rt.inner.events_pending.borrow_mut().push(self.id);
+        rt.note_write(self.id);
         if rt.inner.flushing.get()
             && let Some(w) = rt.current_writer()
         {
@@ -303,6 +308,7 @@ impl<T: 'static> EventQueue<T> {
             })),
         );
         rt.with_data::<EventsData<T>, _>(self.id, |d| d.listeners.borrow_mut().push(l))?;
+        rt.inherit_rank(l, self.id);
         Ok(l)
     }
 

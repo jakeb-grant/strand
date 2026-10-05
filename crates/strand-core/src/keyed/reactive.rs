@@ -239,6 +239,7 @@ where
         f: impl FnOnce(&mut KeyedVec<K, T>) -> (Vec<VecDiff<K, T>>, Result<(), Error>),
     ) -> Result<(), Error> {
         rt.check_write_allowed(self.id)?;
+        rt.note_write(self.id);
         let held = rt.take_deferred::<KeyedVec<K, T>>(self.id);
         if held.is_none() && rt.rate_would_pass(self.id) {
             // In place; counted only if something changed.

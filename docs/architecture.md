@@ -258,6 +258,12 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   service paths, `rt.on_change_keyed(key, ..)` with the path's object as
   key (no firing on a sink switch); `on change` handlers run after the
   tick's other effects settle, so they fire once per outside write.
+  Sinks run in a computed topological order (wave 2): ranks over read
+  edges and the write edges handlers make, learned on the first write or
+  declared up front with `rt.writes_to(handler, cell)`, which the compiler
+  should call for every assignment and `emit` it lowers (a reader is then
+  ordered after its writer as soon as the reader has run once, before the
+  first write is seen); `rt.rank(id)` exposes the rank.
   Service events are `EventQueue`s.
   Service `rw` writes use `write_tagged(value, send)` (throttled writes are
   held, then sent) and reports come back through `receive`. `let x =

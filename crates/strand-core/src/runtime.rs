@@ -12,11 +12,15 @@
 //!   them actually changed value does the node become `Dirty` and recompute.
 //!   A recompute that produces an equal value does not dirty its observers:
 //!   that is the equality cut-off.
-//! * Effects run in creation order (owners before the nodes they own), and
-//!   only after every write of the tick has been pushed, so no effect ever
-//!   sees a half-propagated graph. `on change` handlers run after the
-//!   other queued sinks have settled, so they fire once per outside write. An effect re-triggered by a later
-//!   effect's write runs again in the same flush; a sink re-triggered past
+//! * Effects run in a computed topological order, only after every write
+//!   of the tick has been pushed, so no effect ever sees a half-propagated
+//!   graph: by rank (see `order`: read edges plus the write edges handlers
+//!   make, learned or declared), then creation order (owners before the
+//!   nodes they own). A sink therefore runs after every handler that
+//!   writes what it reads, and once per flush; only a write edge seen for
+//!   the first time can re-run a sink that already ran (once; the rank is
+//!   then fixed). `on change` handlers rank after all other sinks, so they
+//!   fire once per outside write. A sink re-triggered past
 //!   [`MAX_RUNS_PER_FLUSH`] through a feedback path is a runtime cycle and
 //!   is parked.
 //! * Edges to sources a computation read for the first time are linked
@@ -26,7 +30,8 @@
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fmt;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
@@ -108,6 +113,11 @@ pub(crate) trait NodeData: 'static {
     }
     /// Called once, outside any borrow, when the node is disposed.
     fn on_dispose(&self, _rt: &Runtime, _id: NodeId) {}
+    /// Nodes this one triggers without an observer edge (an event queue's
+    /// listeners), for scheduling ranks.
+    fn downstream(&self) -> Vec<NodeId> {
+        Vec::new()
+    }
 }
 
 pub(crate) struct Node {
@@ -288,10 +298,14 @@ pub(crate) struct Inner {
     /// (each once, in the order they were held).
     held: RefCell<Vec<NodeId>>,
     held_set: RefCell<HashSet<NodeId>>,
-    /// Sinks that run only after the other queued sinks have settled
-    /// (`on change` handlers), so they see one consistent state per tick.
-    /// A set, not a node field: few nodes are late and the node stays small.
-    late: RefCell<HashSet<NodeId>>,
+    /// Scheduling ranks (see `order`): absent means 0. A map, not a node
+    /// field: only nodes downstream of a handler's writes (and `on change`
+    /// handlers) have one, and the node stays small.
+    pub(crate) ranks: RefCell<foldhash::HashMap<NodeId, u32>>,
+    /// Write edges learned or declared per writer (see `order`).
+    pub(crate) writes: RefCell<foldhash::HashMap<NodeId, crate::order::Writes>>,
+    /// `(writer, target)` written this flush, learned before the next sink.
+    pub(crate) learn_queue: RefCell<Vec<(NodeId, NodeId)>>,
     /// Event queues holding events for suspended listeners.
     pub(crate) backlogged: RefCell<Vec<NodeId>>,
     /// Bumped at the start of every `advance_to` and `flush`: the write-rate
@@ -410,7 +424,9 @@ impl Runtime {
                 suspended: RefCell::new(HashSet::new()),
                 held: RefCell::new(Vec::new()),
                 held_set: RefCell::new(HashSet::new()),
-                late: RefCell::new(HashSet::new()),
+                ranks: RefCell::new(foldhash::HashMap::default()),
+                writes: RefCell::new(foldhash::HashMap::default()),
+                learn_queue: RefCell::new(Vec::new()),
                 backlogged: RefCell::new(Vec::new()),
                 epoch: Cell::new(0),
                 pending: RefCell::new(Vec::new()),
@@ -476,6 +492,9 @@ impl Runtime {
             }
             None => self.inner.root_owned.borrow_mut().push(id),
         }
+        if let Some(o) = owner {
+            self.inherit_rank(id, o);
+        }
         if color != Color::Clean && kind.is_sink() {
             self.inner.pending.borrow_mut().push(id);
         }
@@ -514,10 +533,11 @@ impl Runtime {
             .is_some_and(|n| n.color != Color::Clean)
     }
 
-    /// Make a sink run after the other queued sinks have settled.
+    /// Make a sink run after the other queued sinks have settled (`on
+    /// change` handlers): it is ranked at [`crate::order::LATE_RANK`].
     pub(crate) fn set_late(&self, id: NodeId) {
         if self.exists(id) {
-            self.inner.late.borrow_mut().insert(id);
+            self.raise(id, crate::order::LATE_RANK, None);
         }
     }
 
@@ -1042,9 +1062,15 @@ impl Runtime {
         };
         spare.clear();
         drop(nodes);
-        let mut pool = self.inner.pool.borrow_mut();
-        if pool.len() < 64 {
-            pool.push(spare);
+        {
+            let mut pool = self.inner.pool.borrow_mut();
+            if pool.len() < 64 {
+                pool.push(spare);
+            }
+        }
+        // A new read edge from a higher-ranked source lifts this node.
+        if !self.inner.ranks.borrow().is_empty() {
+            self.rank_after_sources(id);
         }
     }
 
@@ -1162,17 +1188,22 @@ impl Runtime {
         }
         let mut names = self.inner.names.borrow_mut();
         let mut echo = self.inner.echo.borrow_mut();
-        let mut late = self.inner.late.borrow_mut();
+        let mut ranks = self.inner.ranks.borrow_mut();
+        let mut writes = self.inner.writes.borrow_mut();
         for &n in &order {
             names.remove(n);
             echo.remove(n);
-            if !late.is_empty() {
-                late.remove(&n);
+            if !ranks.is_empty() {
+                ranks.remove(&n);
+            }
+            if !writes.is_empty() {
+                writes.remove(&n);
             }
         }
         drop(names);
         drop(echo);
-        drop(late);
+        drop(ranks);
+        drop(writes);
         let mut unfroze = false;
         {
             let mut suspended = self.inner.suspended.borrow_mut();
@@ -1298,6 +1329,11 @@ impl Runtime {
             node.owner = new_owner;
         }
         drop(nodes);
+        // Owners run before what they own: lift the subtree to its new
+        // owner's rank.
+        if let Some(o) = new_owner {
+            self.inherit_rank(id, o);
+        }
         // Moved out of a suspended scope: held work runs again.
         let unfroze = !self.inner.suspended.borrow().is_empty();
         self.release_held(unfroze);
@@ -1514,8 +1550,9 @@ impl Runtime {
     }
 
     /// End the tick: deliver events, poll woken handlers (each at most
-    /// once), run dirty sinks (in creation order; `on change` handlers
-    /// after the others have settled) until quiescent, and
+    /// once), run dirty sinks (in topological order, see
+    /// [`Runtime::writes_to`]; `on change` handlers after the others have
+    /// settled) until quiescent, and
     /// report what changed. Writes made by sinks during the flush are part
     /// of this tick.
     ///
@@ -1540,67 +1577,66 @@ impl Runtime {
         let mut runs: HashMap<NodeId, u32> = HashMap::new();
         let mut polled: HashSet<NodeId> = HashSet::new();
         let mut errors = Vec::new();
+        // Sinks by (rank, creation order): a computed topological order of
+        // the read edges and the write edges handlers have made (see
+        // `order`), so each sink runs after everything that writes what it
+        // reads, once.
+        let mut queue: BinaryHeap<Reverse<(u32, u64, NodeId)>> = BinaryHeap::new();
         loop {
+            // Writers that are not sinks (woken handlers, event listeners)
+            // run as soon as they are due, before the next sink.
             let mut progressed = self.poll_ready_tasks(&mut polled);
             progressed |= self.deliver_events(&mut runs, &mut errors);
-            let mut batch = std::mem::take(&mut *self.inner.pending.borrow_mut());
-            if batch.is_empty() {
+            self.learn_queued();
+            self.queue_pending(&mut queue);
+            let Some(Reverse((rank, seq, id))) = queue.pop() else {
                 if progressed {
                     continue;
                 }
                 break;
-            }
-            {
+            };
+            let kind = {
                 let nodes = self.inner.nodes.borrow();
-                batch.retain(|&id| nodes.contains_key(id));
-                batch.sort_by_key(|&id| nodes[id].seq);
-                // `on change` handlers wait until the other sinks (which may
-                // write what they track) have settled, so one outside write
-                // fires them once, with the final values.
-                let late = self.inner.late.borrow();
-                if !late.is_empty() && batch.iter().any(|id| !late.contains(id)) {
-                    let mut pending = self.inner.pending.borrow_mut();
-                    batch.retain(|id| {
-                        let is_late = late.contains(id);
-                        if is_late {
-                            pending.push(*id);
+                match nodes.get(id) {
+                    Some(n) if n.color != Color::Clean => {
+                        if n.seq != seq {
+                            // Renumbered by a reparent: requeue in order.
+                            queue.push(Reverse((self.rank_of(id), n.seq, id)));
+                            continue;
                         }
-                        !is_late
-                    });
-                }
-            }
-            batch.dedup();
-            for &id in &batch {
-                let kind = {
-                    let nodes = self.inner.nodes.borrow();
-                    match nodes.get(id) {
-                        Some(n) if n.color != Color::Clean => n.kind,
-                        // Disposed, already run or parked.
-                        _ => continue,
+                        n.kind
                     }
-                };
-                if self.is_suspended(id) {
-                    // Frozen with its component until resumed.
-                    self.hold(id);
-                    continue;
+                    // Disposed, already run or parked.
+                    _ => continue,
                 }
-                if self.cycle_cut(id, &mut runs, &mut errors) {
-                    self.park(id);
-                    continue;
-                }
-                let before = self.inner.stats.get().effect_runs;
-                if let Err(e) = self.update_if_necessary(id) {
-                    errors.push((id, e));
-                }
-                let ran = self.inner.stats.get().effect_runs > before;
-                if ran {
-                    tick.effects_run += 1;
-                    if kind == NodeKind::Watch {
-                        match self.watch_changed(id) {
-                            WatchOutcome::Changed(t) => tick.changed.push(t),
-                            WatchOutcome::Same => {}
-                            WatchOutcome::TargetGone => self.dispose(id),
-                        }
+            };
+            let now_rank = self.rank_of(id);
+            if now_rank != rank {
+                // Raised (a write edge learned) since it was queued.
+                queue.push(Reverse((now_rank, seq, id)));
+                continue;
+            }
+            if self.is_suspended(id) {
+                // Frozen with its component until resumed.
+                self.hold(id);
+                continue;
+            }
+            if self.cycle_cut(id, &mut runs, &mut errors) {
+                self.park(id);
+                continue;
+            }
+            let before = self.inner.stats.get().effect_runs;
+            if let Err(e) = self.update_if_necessary(id) {
+                errors.push((id, e));
+            }
+            let ran = self.inner.stats.get().effect_runs > before;
+            if ran {
+                tick.effects_run += 1;
+                if kind == NodeKind::Watch {
+                    match self.watch_changed(id) {
+                        WatchOutcome::Changed(t) => tick.changed.push(t),
+                        WatchOutcome::Same => {}
+                        WatchOutcome::TargetGone => self.dispose(id),
                     }
                 }
             }
@@ -1635,6 +1671,22 @@ impl Runtime {
             self.call_wake_hook();
         }
         tick
+    }
+
+    /// Move the sinks queued by writes into the flush's ordered queue.
+    fn queue_pending(&self, queue: &mut BinaryHeap<Reverse<(u32, u64, NodeId)>>) {
+        let pending = std::mem::take(&mut *self.inner.pending.borrow_mut());
+        if pending.is_empty() {
+            return;
+        }
+        let ranked = !self.inner.ranks.borrow().is_empty();
+        let nodes = self.inner.nodes.borrow();
+        for id in pending {
+            if let Some(n) = nodes.get(id) {
+                let rank = if ranked { self.rank_of(id) } else { 0 };
+                queue.push(Reverse((rank, n.seq, id)));
+            }
+        }
     }
 
     /// Count a run (or delivery) of `id` in this flush. Past

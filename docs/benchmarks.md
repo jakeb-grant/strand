@@ -29,6 +29,24 @@ shared with another build), criterion medians:
 | Idle check | `is_idle()` + `next_deadline()` | 20 ns |
 | Build | create 10k nodes + 522 watches, first compute | 3.4 ms |
 
+Wave 2 (core: sinks from a rank-ordered queue, woken tasks and events
+checked before each sink, ranks in a side map), same machine, medians:
+
+| Case | Time |
+| --- | --- |
+| Single write + flush | 1.50 ms |
+| Full fan-out + flush | 2.07 ms |
+| Narrow path + flush | 1.68 µs |
+| Equality cut-off + flush | 0.72 µs |
+| Idle flush | 49 ns (a lock-free check for woken tasks) |
+| Idle check | 21 ns |
+| Build | 3.47 ms |
+| Memory | 347 B and 5.54 allocations per node (unchanged: no rank is stored for a rank-0 node) |
+
+That is within 2–5% of round 3 on the propagation cases (the cost of a
+heap instead of one sort per batch, and of looking for woken handlers
+between sinks), with this machine's noise of a few percent.
+
 Round 3 spot check (late `on change` phase, logic-step epoch, released
 suspensions): single write 1.45 ms, narrow path 1.63 µs, idle flush 61 ns,
 idle check 22 ns, memory 347 B / 5.5 allocations per node: unchanged within

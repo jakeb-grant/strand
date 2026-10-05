@@ -123,8 +123,9 @@ impl NodeData for EffectData {
 }
 
 /// An observer at the edge of the graph. Runs at the end of the tick in
-/// which one of its dependencies changed, at most once per tick unless a
-/// later effect writes to it again.
+/// which one of its dependencies changed, once, after every handler that
+/// writes what it reads (a write edge seen for the first time can re-run
+/// it once; see [`Runtime::writes_to`]).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Effect {
     pub(crate) id: NodeId,
@@ -284,6 +285,7 @@ impl<T: Clone + PartialEq + 'static> Signal<T> {
     /// than 30 times a second is throttled (see [`crate::rate`]).
     pub fn set(self, rt: &Runtime, value: T) -> Result<(), Error> {
         rt.check_write_allowed(self.id)?;
+        rt.note_write(self.id);
         // Writing the current value is not a write, and does not count
         // towards the rate limit, unless a throttled write is waiting (then
         // this one supersedes it).

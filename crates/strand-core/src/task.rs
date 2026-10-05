@@ -23,6 +23,7 @@ use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
@@ -39,6 +40,9 @@ type Hook = Arc<dyn Fn() + Send + Sync>;
 #[derive(Default)]
 pub(crate) struct ReadyQueue {
     ids: Mutex<Vec<NodeId>>,
+    /// `ids` is not empty (set and cleared under the lock): lets the flush
+    /// check for woken tasks between sinks without locking.
+    any: AtomicBool,
     hook: Mutex<Option<Hook>>,
 }
 
@@ -46,10 +50,9 @@ impl ReadyQueue {
     /// Queue `id` without calling the wake hook (the runtime already knows
     /// it is not idle).
     pub(crate) fn push_quiet(&self, id: NodeId) {
-        self.ids
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(id);
+        let mut ids = self.ids.lock().unwrap_or_else(PoisonError::into_inner);
+        ids.push(id);
+        self.any.store(true, AtomicOrdering::Release);
     }
     fn push(&self, id: NodeId) {
         self.push_quiet(id);
@@ -66,7 +69,12 @@ impl ReadyQueue {
         }
     }
     fn take(&self) -> Vec<NodeId> {
-        std::mem::take(&mut *self.ids.lock().unwrap_or_else(PoisonError::into_inner))
+        if !self.any.load(AtomicOrdering::Acquire) {
+            return Vec::new();
+        }
+        let mut ids = self.ids.lock().unwrap_or_else(PoisonError::into_inner);
+        self.any.store(false, AtomicOrdering::Release);
+        std::mem::take(&mut *ids)
     }
     fn is_empty(&self) -> bool {
         self.ids

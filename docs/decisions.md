@@ -28,6 +28,7 @@ with the settled values, even when an effect created after it writes `x`
 from `y`; a write the handler makes still reaches other effects in the
 same flush. A learned rank (Incremental-style heights) would remove the
 remaining re-runs of plain effects; not needed while those are idempotent.
+(Superseded in wave 2: wave2-core, "Topological effect order".)
 
 **2026-10-05 · Runtime cycles.** Past `MAX_RUNS_PER_FLUSH` (16) runs of
 one sink (or deliveries of one event queue) in one flush, the runtime
@@ -88,6 +89,8 @@ identity** is stable: the listener, effect or timer node; a task inherits
 the identity of the handler that spawned it; `spawn_for(site, fut)` counts
 against `site`. Keyed collections are not gated: their diffs can't be
 coalesced to a latest value; revisit if a collection loop shows up.
+(Superseded in wave 2: wave2-core, "Keyed writes under the 30 writes/s
+guard".)
 
 **2026-10-05 · Echo suppression.** `write_tagged(value, send)` applies a
 local write, remembers it as pending and calls `send(value, generation)`;
@@ -222,7 +225,8 @@ frozen component ignores clicks); service and component events are
 lossless, so they are kept per listener and delivered in order, once, when
 it is released. `rt.resume(scope)` (the fixing reload) runs held work at
 the next flush and calls the wake hook; timers that came due fire at the
-next tick (they count while frozen). Work is also released when it leaves
+next tick (they count while frozen; superseded in wave 2: frozen timers
+pause, wave2-core). Work is also released when it leaves
 the frozen scope another way: `reparent` out of it, or disposal of the
 frozen scope after its live parts were moved out.
 
@@ -235,7 +239,8 @@ memos read lazily by the emitter, not visibility.
 
 **2026-10-05 · Left for wave 2.** `persist` storage with a default hash and
 settings files are not in `strand-core` yet (they need file IO and the
-schema from `strand-compiler`).
+schema from `strand-compiler`). (Wave 2: `persist` storage is done, see wave2-core; settings files
+remain.)
 
 ## compiler
 
@@ -857,3 +862,31 @@ directory, are `fsync`ed and renamed over the target (directory created
 a pending write is flushed when the owning component is disposed or at
 shutdown. Nothing is written while the value equals what the file (or the
 default) already says.
+
+**2026-10-05 · Topological effect order.** Replaces wave 1's "effects run
+in creation order" deviation: sinks now run "once per tick in topological
+order". The order is a rank (an Incremental-style height, `src/order.rs`)
+over read edges, ownership (owners first) and the edges the graph can't
+see: a handler writing a cell or emitting to a queue ranks the target one
+above itself, and a queue's listeners rank with the queue. A flush runs
+queued sinks by `(rank, creation order)` from a priority queue, and runs
+woken tasks and due event deliveries before choosing each next sink, so a
+non-sink writer also comes before the readers of what it writes. Write
+edges are learned the first time a handler writes (attempts count: writing
+an equal value still teaches the edge) once its run is over, or declared
+with `rt.writes_to(handler, target)`; ranks only rise. So a sink runs once
+per flush and sees final values, except that a dependency seen for the
+first time (a write edge, or a read edge to a higher-ranked node) can
+re-run a sink that already ran in that flush, once; property-tested by
+`tests/order_props.rs` (a sink running twice must have risen in rank).
+`on change` handlers start at rank 2^20, above anything ordinary writes
+reach, which keeps wave 1's late phase: one outside write fires them once
+with settled values; sinks downstream of what an `on change` writes rank
+above it and run after it in the same flush. A write edge that would close
+a loop (a handler writing what it reads, directly or through other
+handlers, including a read edge that appears later) is a feedback edge: it
+is left unranked (the rank walk never goes round it) and the cycle guard
+bounds the loop as before. Not ordered: a task woken by something other
+than a handler of the flush (another thread's waker) writes when it is
+polled. Ranks live in a side map (most nodes are rank 0), so the node and
+the 10k-node numbers stay as they were (`docs/benchmarks.md`).
