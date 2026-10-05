@@ -1,0 +1,22 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::redeclared
+
+  × `battery.low` cannot be read: `battery` is a builtin service
+   ╭─[battery.strand:1:14]
+ 1 │ export state low = false
+   ·              ─┬─
+   ·               ╰── exported from a file named like it
+   ╰────
+  help: rename `battery.strand`; its exports are read as `file.name`
+
+check::unknown_field
+
+  × `battery` has no field `low`
+   ╭─[bar.strand:1:20]
+ 1 │ let warn = battery.low
+   ·                    ─┬─
+   ·                     ╰── unknown field
+   ╰────

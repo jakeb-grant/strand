@@ -632,6 +632,42 @@ impl<'a> Checker<'a> {
                 seen.push((kind, module, span));
             }
         }
+        // A file named like a service or global name cannot be read as
+        // `file.name`: the name means the service (or global) there.
+        for (i, m) in self.modules.iter().enumerate() {
+            let taken = if self.schema.services.contains_key(m.name) {
+                Some("a builtin service")
+            } else if self.schema.values.contains_key(m.name) {
+                Some("a builtin value")
+            } else if self.globals.contains_key(m.name) {
+                Some("declared in this config")
+            } else {
+                None
+            };
+            let Some(taken) = taken else { continue };
+            let first = self
+                .defs
+                .iter()
+                .find(|d| d.exported && d.file == m.file)
+                .map(|d| (d.span, d.name.clone()));
+            if let Some((span, export)) = first {
+                let saved = std::mem::replace(&mut self.module, i);
+                self.error(
+                    "check::redeclared",
+                    format!(
+                        "`{}.{export}` cannot be read: `{}` is {taken}",
+                        m.name, m.name
+                    ),
+                    span,
+                    "exported from a file named like it",
+                )
+                .help = Some(format!(
+                    "rename `{}.strand`; its exports are read as `file.name`",
+                    m.name
+                ));
+                self.module = saved;
+            }
+        }
         // Two files with one stem would give two exports one path.
         let mut stems: std::collections::HashMap<&str, usize> = Default::default();
         for (i, m) in self.modules.iter().enumerate() {

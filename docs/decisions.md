@@ -881,3 +881,12 @@ schema from `strand-compiler`).
   (misspelt tree keywords via unknown-element did-you-mean, `Spaced` values
   outside shadows and fonts, missing `for` keys, `await` outside handlers,
   `play` targets, parameter types where they cannot be inferred), are done.
+- **2026-10-05 · wave2-check: whole-number literals.** `0` is a `float`
+  unless its position expects an `int` (a prop, parameter, declared type
+  or a typed fn's value), so `state level = 0` may later hold `0.5`;
+  `int` widens to `float`, lengths and angles, never the reverse.
+- **2026-10-05 · wave2-check: a file named like a service.** In
+  `battery.low`, `battery` is the service, so a `battery.strand` that
+  exports `low` could never be read: its export is an error asking to
+  rename the file (likewise for builtin values and the config's global
+  names), not a silent shadow either way.

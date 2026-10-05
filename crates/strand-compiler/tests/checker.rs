@@ -331,3 +331,16 @@ fn contributed_service_schemas_check() {
     assert_eq!(msgs.len(), 1, "{msgs:?}");
     assert!(msgs[0].contains("did you mean `temp`?"), "{msgs:?}");
 }
+
+/// A whole-number literal is a `float` unless its position expects an
+/// `int`; a fn's value is such a position, and a typed fn may recurse.
+#[test]
+fn literals_take_the_type_their_position_expects() {
+    let out = one("fn fact(n: int) -> int { n <= 1 ? 1 : n * fact(n - 1) }\n\
+                   state ticks = 0\n\
+                   let cols: int = 7\n\
+                   let half = ticks / 2\n");
+    let p = &out.program;
+    assert_eq!(show(p, &find_let(p, "cols").value.ty), "int");
+    assert_eq!(show(p, &find_let(p, "half").value.ty), "float");
+}

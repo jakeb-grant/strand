@@ -14,6 +14,26 @@ impl<'a> Checker<'a> {
         out
     }
 
+    /// A fn body: like [`Checker::stmts`], but the last expression, the
+    /// fn's value, is checked against the declared return type (so a `1`
+    /// there is an `int` when the fn returns one).
+    pub(crate) fn fn_body(&mut self, items: &'a [ast::Stmt], ret: Option<&Ty>) -> Vec<hir::Stmt> {
+        self.push_scope();
+        let mut out: Vec<hir::Stmt> = Vec::with_capacity(items.len());
+        for (i, s) in items.iter().enumerate() {
+            let last = i + 1 == items.len();
+            out.push(match (&s.kind, ret) {
+                (ast::StmtKind::Expr(e), Some(r)) if last => hir::Stmt {
+                    kind: StmtKind::Expr(self.expr(e, Some(r))),
+                    span: s.span,
+                },
+                _ => self.stmt(s),
+            });
+        }
+        self.pop_scope();
+        out
+    }
+
     #[inline(never)]
     fn stmt(&mut self, s: &'a ast::Stmt) -> hir::Stmt {
         let span = s.span;

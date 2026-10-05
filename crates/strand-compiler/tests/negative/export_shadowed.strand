@@ -1,0 +1,7 @@
+// expect: check::redeclared, check::unknown_field
+// A file named like a service cannot be read as `file.name`: there the
+// name means the service.
+// file: battery.strand
+export state low = false
+// file: bar.strand
+let warn = battery.low

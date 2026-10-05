@@ -1742,7 +1742,7 @@ impl<'a> Checker<'a> {
                 l
             })
             .collect();
-        let body = self.stmts(&f.body.items);
+        let body = self.fn_body(&f.body.items, ret.as_ref());
         let value_ty = match body.last().map(|s| &s.kind) {
             Some(hir::StmtKind::Expr(e)) => Some((e.ty.clone(), e.clone())),
             _ => None,
