@@ -545,8 +545,12 @@ pub fn render(diags: &[Diagnostic], map: &SourceMap, style: Style) -> String {
     out
 }
 
-/// One line per diagnostic: `file:line:col: error[code]: message`, at the
-/// primary label.
+/// One line per diagnostic: `file:line:col: error[code]: message; help`,
+/// at the primary label. This is the form design.md quotes for a held-back
+/// save (`bar.strand:12: unknown prop "expanded"; did you mean "open"?`),
+/// with the column added: the help follows a `; ` and names quoted in
+/// backticks for the caret render are double-quoted, as plain prose on one
+/// line reads.
 pub fn render_short(diags: &[Diagnostic], map: &SourceMap) -> String {
     let mut indexes: std::collections::HashMap<FileId, LineIndex> = Default::default();
     let mut out = String::new();
@@ -565,13 +569,44 @@ pub fn render_short(diags: &[Diagnostic], map: &SourceMap) -> String {
         };
         out.push_str(&format!(
             "{name}:{line}:{col}: {sev}[{}]: {}",
-            d.code, d.message
+            d.code,
+            plain_quotes(&d.message)
         ));
         if let Some(help) = &d.help {
-            out.push_str(&format!(" ({help})"));
+            out.push_str("; ");
+            out.push_str(&plain_quotes(help));
         }
         out.push('\n');
     }
+    out
+}
+
+/// `` `name` `` becomes `"name"` for the one-line form. A quoted span that
+/// already holds a `"` (a text literal) keeps its backticks, and an
+/// unpaired backtick is left as written.
+fn plain_quotes(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(open) = rest.find('`') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('`') else {
+            out.push_str(&rest[open..]);
+            return out;
+        };
+        let body = &after[..close];
+        if body.contains('"') {
+            out.push('`');
+            out.push_str(body);
+            out.push('`');
+        } else {
+            out.push('"');
+            out.push_str(body);
+            out.push('"');
+        }
+        rest = &after[close + 1..];
+    }
+    out.push_str(rest);
     out
 }
 
@@ -614,8 +649,15 @@ mod tests {
         let out = render_short(&[d], &map);
         assert_eq!(
             out,
-            "bar.strand:2:3: error[syntax::expected]: expected `}` (did you mean `x`?)\n"
+            "bar.strand:2:3: error[syntax::expected]: expected \"}\"; did you mean \"x\"?\n"
         );
+    }
+
+    #[test]
+    fn short_render_keeps_quoted_text_literals() {
+        assert_eq!(plain_quotes("`a` and `b`"), "\"a\" and \"b\"");
+        assert_eq!(plain_quotes("got `\"x\"`"), "got `\"x\"`");
+        assert_eq!(plain_quotes("one ` left"), "one ` left");
     }
 
     #[test]
@@ -633,7 +675,7 @@ mod tests {
         assert!(out.contains("first declared here"), "{out}");
         assert_eq!(
             render_short(&[d], &map),
-            "b.strand:2:7: error[check::redeclared]: `volume` is declared twice\n"
+            "b.strand:2:7: error[check::redeclared]: \"volume\" is declared twice\n"
         );
     }
 

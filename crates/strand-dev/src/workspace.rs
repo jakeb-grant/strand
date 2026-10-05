@@ -385,17 +385,20 @@ impl Workspace {
 
     /// The analysis of a config, compiled now if anything changed since.
     pub fn analysis(&mut self, key: &ConfigKey) -> Arc<Analysis> {
-        if let Some((generation, a)) = self.cache.get(key)
-            && *generation == self.generation
-        {
-            if a.fresh() {
+        if let Some((generation, a)) = self.cache.get(key) {
+            // Disk stamps are checked whatever the generation: an edit to
+            // another config's document must not hide a change on disk.
+            let fresh = a.fresh();
+            if fresh && *generation == self.generation {
                 return a.clone();
             }
-            // Changed on disk behind the editor's back: which files
-            // belong where may have changed too, and what is shown is
-            // out of date.
-            self.configs.clear();
-            self.rebuilt.insert(key.clone());
+            if !fresh {
+                // Changed on disk behind the editor's back: which files
+                // belong where may have changed too, and what is shown is
+                // out of date.
+                self.configs.clear();
+                self.rebuilt.insert(key.clone());
+            }
         }
         let (files, dirs) = self.files(key);
         let mut a = Analysis::new(key.clone(), files, self.schema.clone());

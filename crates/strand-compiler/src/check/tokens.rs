@@ -95,8 +95,9 @@ fn key_fix(key: &ast::TokenKey, path: &str, meant: &str) -> Option<String> {
 }
 
 /// Proposes the key that names token `meant` in place of `key` (which
-/// spells the tail of `path`); when `meant` lies in another group, only
-/// says "did you mean …?", since no edit of the key reaches it.
+/// spells the tail of `path`). When `meant` lies outside the group the key
+/// is written in, no edit of the key reaches it: the help names the token
+/// and its place instead of asking "did you mean …?", and there is no fix.
 fn suggest_key(d: &mut Diagnostic, key: &ast::TokenKey, path: &str, meant: Option<String>) {
     let Some(m) = meant else { return };
     match key_fix(key, path, &m) {
@@ -104,8 +105,12 @@ fn suggest_key(d: &mut Diagnostic, key: &ast::TokenKey, path: &str, meant: Optio
             d.suggest(key.span, f);
         }
         None => {
-            let dollar = if key.dollar { "$" } else { "" };
-            d.help = Some(format!("did you mean `{dollar}{m}`?"));
+            let segs: Vec<&str> = path.split('.').collect();
+            let keep = segs.len().saturating_sub(key.segments.len().max(1));
+            let group = segs[..keep].join(".");
+            d.help = Some(format!(
+                "the closest token is `${m}`, which is outside group `{group}`"
+            ));
         }
     }
 }
@@ -689,13 +694,17 @@ impl<'a> Checker<'a> {
             members.sort();
             members.dedup();
             let shown: Vec<String> = members.iter().take(4).map(|m| format!("`${m}`")).collect();
-            self.error(
+            let d = self.error(
                 "check::unknown_token",
                 format!("`${path}` is a group of tokens, not one token"),
                 span,
                 "a group",
-            )
-            .help = Some(format!("pick one: {}", shown.join(", ")));
+            );
+            d.help = Some(format!("pick one: {}", shown.join(", ")));
+            // Every member is a fix, none preferred.
+            for m in &members {
+                d.add_suggestion(span, format!("${m}"));
+            }
             return Ty::Error;
         }
         let candidates = self.tokens.all_paths(self.schema);

@@ -1221,8 +1221,25 @@ see wave2-core; the compiler supplies the field schema.)
   and `c`") and each one the call does not set is a fix. A function
   call's unknown named argument follows the same rule with the
   parameters that call sets (by name, `from` or position). The code stays
-  `check::unknown_param` for both; the quotes are the checker's
-  backticks, as everywhere else.
+  `check::unknown_param` for both.
+- **2026-10-05 · wave2-lsp (round 3): the one-line diagnostic form.**
+  `render_short` (`strand check`'s short lines, the fallback past 65,535
+  lines, a held-back save) prints `file:line:col: error[code]: message;
+  help`, with backtick-quoted names in double quotes, so the renamed
+  prop reads `bar.strand:5:5: error[check::unknown_param]: unknown prop
+  "expanded"; did you mean "open"?`, design.md "What you see" #2's text.
+  The column and `error[code]` are a superset of design.md's
+  `bar.strand:12:` form. The caret render keeps backticks, as design.md's
+  table shows it (`critcal` → "did you mean `critical`?" with file, line
+  and caret). A backtick span holding a `"` (a text literal) keeps its
+  backticks.
+- **2026-10-05 · wave2-lsp (round 3): token quick fixes.** `$space` used
+  as one token offers every member (`$space.1`, `$space.2`, …) as a fix,
+  none preferred. An override key whose closest token lies outside the
+  group the key is written in cannot be fixed by editing the key, so its
+  help says where that token is ("the closest token is `$fg.muted`, which
+  is outside group `ink`") instead of asking "did you mean …?"; every
+  did-you-mean help now has exactly one fix (`checker.rs::fixes`).
 - **2026-10-05 · wave2-lsp (round 2): the builtin schema is documented.**
   Hovers are generated from the schemas (design.md, "System services"),
   so every service, record and its members, function, method, value,
@@ -1242,6 +1259,11 @@ see wave2-core; the compiler supplies the field schema.)
   belong now. A request that finds a file changed on disk without the
   client saying so (no watched files) schedules that config's
   diagnostics again, so what is shown catches up with what hover sees.
+  Round 3: disk stamps are checked whatever edits other configs had in
+  between; a config drops its hold on a clean file that left it; and a
+  watched-file event also re-checks every open document's config as it
+  is now, so an open file deleted from a directory shows its errors
+  alone.
 - **2026-10-05 · wave2-lsp (round 2): completion after a dot.** With
   nothing typed after `.`, the config is compiled once more with a
   placeholder name (the half-typed text does not type the receiver);

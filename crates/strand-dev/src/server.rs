@@ -294,6 +294,13 @@ impl Server<'_> {
                     };
                     self.dirty.insert(now);
                 }
+                // An open file that left a config (now checked alone, or
+                // in another directory) is shown from its new config.
+                let open: Vec<String> = self.ws.docs.keys().cloned().collect();
+                for u in open {
+                    let k = self.ws.config_of(&u);
+                    self.dirty.insert(k);
+                }
                 self.deadline = Some(Instant::now() + self.debounce);
             }
             _ => {}
@@ -372,6 +379,8 @@ impl Server<'_> {
                 self.send_diagnostics(gone, Vec::new(), None)?;
             }
         }
+        // A clean file that left the config is no longer held by it.
+        self.owner.retain(|u, k| k != key || in_config.contains(u));
         self.published.insert(key.clone(), shown);
         Ok(())
     }

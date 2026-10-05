@@ -444,8 +444,9 @@ Public interfaces other crates and later stages build on:
   never the help text. `render(&[Diagnostic], &SourceMap, Style)` draws
   miette reports (labels in other files as related reports, at most 50 per
   file); `render_short(&[Diagnostic], &SourceMap)` gives one
-  `file:line:col: severity[code]: message` line each, for the reload
-  overlay's list and editors. `suggest`/`closest` give the shared
+  `file:line:col: severity[code]: message; help` line each, names in
+  double quotes (design.md's `unknown prop "expanded"; did you mean
+  "open"?`), for the reload overlay's list and editors. `suggest`/`closest` give the shared
   near-miss logic: optimal-string-alignment distance within about one
   edit per three letters, one-letter words matched only by case, no
   one-letter candidate for a longer word, ties to a plausible typo

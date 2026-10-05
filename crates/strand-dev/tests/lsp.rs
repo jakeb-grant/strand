@@ -1208,6 +1208,75 @@ fn files_changed_on_disk_are_seen() {
     }
 }
 
+/// A change on disk the client never reported is still shown when an edit
+/// to a document of another config came in between: the edit moves the
+/// workspace on, and the stale config must not be rebuilt silently.
+#[test]
+fn disk_changes_survive_edits_elsewhere() {
+    let mut c = Client::shells_edited(&[READS_LAUNCHER]);
+    let bar = c.text("bar.strand");
+    c.open("bar.strand");
+    let diags = c.diagnostics("bar.strand");
+    assert!(
+        messages(&diags).iter().any(|m| m.contains("extra")),
+        "{diags:?}"
+    );
+    let untitled = "untitled:x";
+    c.notify(
+        "textDocument/didOpen",
+        json!({ "textDocument": {
+            "uri": untitled, "languageId": "strand", "version": 1, "text": "state a = 1\n",
+        }}),
+    );
+    std::fs::write(c.dir.0.join("extra.strand"), "export state on = true\n").unwrap();
+    c.notify(
+        "textDocument/didChange",
+        json!({
+            "textDocument": { "uri": untitled, "version": 2 },
+            "contentChanges": [{ "text": "state a = 2\n" }],
+        }),
+    );
+    let h = c.hover("bar.strand", Client::pos(&bar, "extra.on", 0, 7));
+    assert!(h.contains("state on: bool"), "{h}");
+    loop {
+        let diags = c.diagnostics("bar.strand");
+        if !messages(&diags).iter().any(|m| m.contains("extra")) {
+            break;
+        }
+    }
+}
+
+/// An open file deleted from a config directory is checked alone from the
+/// next watched-files event: what it shows ends up being its own errors,
+/// not nothing.
+#[test]
+fn an_open_file_deleted_from_a_config_is_checked_alone() {
+    let files = shell_files(&[]);
+    let refs: Vec<(&str, String)> = files.iter().map(|(n, t)| (n.as_str(), t.clone())).collect();
+    let mut c = Client::start_with(&refs, |p| {
+        p["capabilities"] =
+            json!({ "workspace": { "didChangeWatchedFiles": { "dynamicRegistration": true } } });
+    });
+    let text = "export let shown_too = launcher.open\n";
+    std::fs::write(c.dir.0.join("new.strand"), text).unwrap();
+    c.open_text("new.strand", text);
+    assert_eq!(c.diagnostics("new.strand"), Vec::<Value>::new());
+    std::fs::remove_file(c.dir.0.join("new.strand")).unwrap();
+    c.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({ "changes": [{ "uri": c.uri("new.strand"), "type": 3 }] }),
+    );
+    let mut last = None;
+    while let Some(d) = c.diagnostics_within("new.strand", Duration::from_millis(1500)) {
+        last = Some(d);
+    }
+    let last = last.expect("new.strand was never re-published");
+    assert!(
+        messages(&last).iter().any(|m| m.contains("`launcher`")),
+        "{last:?}"
+    );
+}
+
 /// A document opened before its file exists is checked alone; saved into
 /// a config directory, it moves to that config, and a later watched-file
 /// event never brings back what it showed alone.

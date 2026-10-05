@@ -178,14 +178,8 @@ fn fixes(diags: &[strand_compiler::diagnostic::Diagnostic], map: &SourceMap) -> 
             .as_deref()
             .and_then(|h| h.strip_prefix("did you mean `")?.strip_suffix("`?"));
         if let Some(m) = meant {
-            // A token in another group cannot be reached by editing the
-            // key, so it is help without a fix.
-            if d.suggestions.is_empty() {
-                assert!(d.code == "check::unknown_token", "no fix for {d:?}");
-            } else {
-                assert_eq!(d.suggestions.len(), 1, "{d:?}");
-                assert_eq!(d.suggestions[0].replacement, m, "{d:?}");
-            }
+            assert_eq!(d.suggestions.len(), 1, "no single fix for {d:?}");
+            assert_eq!(d.suggestions[0].replacement, m, "{d:?}");
         }
         for f in &d.suggestions {
             assert_eq!(f.file, d.file(), "{d:?}");
@@ -596,6 +590,27 @@ fn literals_take_the_type_their_position_expects() {
     assert_eq!(show(p, &find_let(p, "half").value.ty), "float");
 }
 
+/// An override whose closest token lies in another group cannot be fixed
+/// by editing its key: the help names that token and offers no fix, and
+/// never reads as a did-you-mean with nothing to apply.
+#[test]
+fn an_override_near_another_group_names_it() {
+    let src = "tokens base { fg.muted: $fg.alpha(0.65); ink { x: 1px } }\n\
+               tokens compact extends base { override ink { muted: 2px } }\n";
+    let (out, _) = compile_files(&[("t.strand", src.to_string())]);
+    let d = out
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "check::unknown_token")
+        .unwrap_or_else(|| panic!("{:?}", out.diagnostics));
+    assert_eq!(
+        d.help.as_deref(),
+        Some("the closest token is `$fg.muted`, which is outside group `ink`"),
+        "{d:?}"
+    );
+    assert!(d.suggestions.is_empty(), "{d:?}");
+}
+
 /// design.md "What you see" #2: a call still passing a parameter that was
 /// renamed reads `bar.strand:12: unknown prop "expanded"; did you mean
 /// "open"?`, and proposes `open` as the fix.
@@ -607,7 +622,7 @@ fn renamed_parameter_reads_as_the_design_shows() {
     let short = strand_compiler::diagnostic::render_short(&out.diagnostics, &map);
     assert_eq!(
         short,
-        "bar.strand:5:5: error[check::unknown_param]: unknown prop `expanded` (did you mean `open`?)\n"
+        "bar.strand:5:5: error[check::unknown_param]: unknown prop \"expanded\"; did you mean \"open\"?\n"
     );
     let fix = &out.diagnostics[0].suggestions;
     assert_eq!(fix.len(), 1);
