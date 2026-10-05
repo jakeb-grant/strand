@@ -1209,15 +1209,62 @@ schema from `strand-compiler`).
   queued), takes the stamp again from that descriptor, and then drains
   the inotify queue. A file whose stamp moved, whose modification time
   is less than one quiet period (15 ms) old, or that an event drained
-  then names (a `MODIFY`, `CLOSE_WRITE`, creation or removal), or any file
-  after an overflow, is left out of the batch with its baseline
-  unchanged: held while its write is in progress, read again at a later
-  quiet period otherwise
-  (`a_write_during_the_read_is_not_reported_until_closed`,
+  then names (a `MODIFY`, creation or removal; outside the config
+  directories also a `CLOSE_WRITE` or `MOVED_TO`), or any file after an
+  overflow, is left out of the batch with its baseline unchanged: held
+  while its write is in progress, read again at a later quiet period
+  otherwise (`a_write_during_the_read_is_not_reported_until_closed`,
   `own_writes_in_place_in_a_tight_loop_are_never_torn`). The
   modification-time rule covers filesystems that take no lock for
   `SEEK_DATA`, and overwrites without truncation, whose `MODIFY` is
-  queued after the write returns.
+  queued after the write returns. It is waived for a file due for
+  `max_delay` (below, review round 7). Corrected in round 7: an earlier
+  version of this paragraph said a completed save is a quiet period old
+  by the time it is read, which is false for a batch cut at `max_delay`.
+- **2026-10-05 · A file rewritten without pause is read within
+  `max_delay` (review round 7).** The round-6 rules put a file rewritten
+  more often than every 15 ms (a live-preview tool, a settings file
+  rewritten during a slider drag, a status file replaced by a script)
+  off for ever: at every cut its last write was under 15 ms old, and
+  putting it off opened a new batch with a new 500 ms bound. That broke
+  design.md's "a batch never stays open more than 500 ms". Now a file
+  put off remembers the first event that made it due; the open batch is
+  cut for it 500 ms after that event (but not sooner than 15 ms after
+  the flush that put it off, so it is not re-read in a busy loop), and
+  from then on a read of it is taken even if its modification time is
+  recent, provided the other checks pass: stable stamp, and no drained
+  `MODIFY`, creation or removal (outside the config directories, no
+  drained `CLOSE_WRITE` either). Inside a config directory, a drained
+  `CLOSE_WRITE` or `MOVED_TO` with no `MODIFY` no longer refuses the
+  read: every write there makes a `MODIFY`, so none overlapped it, and
+  the newer version that event announces is read in the next batch (the
+  path is pending again). A rename-over can never be torn: the read
+  descriptor holds a complete inode, old or new
+  (`a_module_rewritten_in_place_every_5_ms_is_reported`,
+  `a_module_renamed_over_every_5_ms_is_reported`,
+  `a_watched_file_rewritten_in_place_every_5_ms_is_reported`,
+  `a_file_rewritten_without_pause_is_read_within_max_delay`). The batch
+  that finally reads a put-off file reports, as `first_event` and
+  `last_event`, the events that made it due, not the flush that put it
+  off: `sent − last_event` stays the watcher's share of save-to-pixels
+  for the reload-latency benchmark, which should use `last_event`.
+- **2026-10-05 · File age is measured after the read (review round
+  7).** The 15 ms rule measured a file's age from the flush's `now`,
+  taken before the rescan, the watch updates and the hashing of every
+  other file, and took a modification time after that `now` as "not
+  recent": a truncation landing between the two passed. Age is now
+  measured from the wall clock right after the read (or the flush's
+  `now` if later, which only a test passes), and a modification time up
+  to 1 s in the future counts as recent (the clock stepped back a
+  little); beyond that, or in a polled directory whose server clock may
+  run ahead for good, a future time is not recent
+  (`a_write_after_the_flush_began_is_not_read_too_fresh`). What remains:
+  outside the config directories writes make no event, so the guarantee
+  there rests on the stamp comparison, the 15 ms rule and a drained
+  `CLOSE_WRITE`. An in-place writer there that truncates, writes part,
+  and then pauses for more than 15 ms before the read starts (and does
+  not close before the drain) can be read torn; its `CLOSE_WRITE` then
+  re-reads the file and reports the whole content in the next batch.
 - **2026-10-05 · A `MODIFY` holds the file (review round 6).** A file
   written in place whose writer keeps it open and stops writing was
   only marked busy: nothing scheduled it, so it was never read with

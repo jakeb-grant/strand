@@ -514,10 +514,18 @@ It does not depend on `strand-compiler` or `strand-core`.
   after 5 s (`Options::stalled_write`) with no further event and no
   change to its modification time it is read anyway with
   `Notice::StalledWrite(path)`, and read again when it is closed. A file
-  that a write reached while it was being read (an event for it queued
-  by then, its stamp moved, or modified less than 15 ms before) is left
-  out of the batch with its baseline unchanged and read at a later quiet
-  period, so no batch carries a torn read. Only config directories are watched with
+  a write may have reached while it was being read (its stamp moved, a
+  `MODIFY`, creation or removal for it queued by then, outside the config
+  directories also a `CLOSE_WRITE`, or modified less than 15 ms before
+  the read ended) is left out of the batch with its baseline unchanged
+  and read at a later quiet period. A file put off like this is still
+  read within 500 ms of the event that made it due, however often it is
+  rewritten: from then on a recent modification time alone does not put
+  it off. In config directories, where every write makes a `MODIFY`, no
+  batch carries a torn read. Outside them writes make no event before
+  the close, so an in-place writer that pauses for more than 15 ms
+  mid-write can be read torn; its `CLOSE_WRITE` then reports the whole
+  file in the next batch. Only config directories are watched with
   `MODIFY`; every other content directory (referenced files, symlink
   hops, cache trees) hears completed writes and names only, so writers
   there cost one wakeup per file closed. The config root's parent and
@@ -546,8 +554,10 @@ It does not depend on `strand-compiler` or `strand-core`.
   writes, and `Notice::ModuleSet { errors, too_deep }` when a rescan's
   diagnostics differ from the previous scan's (complete lists, so the
   overlay replaces what it shows). `first_event` and
-  `last_event` (`Instant`) let latency measurements subtract the quiet
-  period.
+  `last_event` (`Instant`) are the earliest and latest events behind the
+  batch (for a file put off from an earlier batch, the events that made
+  it due, not the flush that put it off); latency measurements use
+  `sent − last_event` as the watcher's share of save-to-pixels.
 - **System settings.** `strand_watch::follow(&zbus::Connection,
   EventSink)` is the async portal client; `strand-services` runs it on
   the shared tokio current-thread runtime and session connection.

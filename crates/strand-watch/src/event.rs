@@ -135,10 +135,12 @@ pub struct FileBatch {
     pub rescan: Option<RescanReason>,
     /// Polling fallbacks, rescan failures and backend errors.
     pub notices: Vec<Notice>,
-    /// When the first event of this quiet period arrived.
+    /// When the first event behind this batch arrived. For a file whose
+    /// read was put off from an earlier batch (it may have been torn),
+    /// the event that made it due, not the flush that put it off.
     pub first_event: Instant,
-    /// When the last event that kept the period open arrived; the batch is
-    /// cut a quiet period (15 ms, or the removal grace) after it. Sent
+    /// When the last event behind this batch arrived; normally the batch
+    /// is cut a quiet period (15 ms, or the removal grace) after it. Sent
     /// minus `last_event` is the watcher's share of save-to-pixels.
     pub last_event: Instant,
 }

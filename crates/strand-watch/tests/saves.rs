@@ -1311,8 +1311,13 @@ fn own_writes_in_a_tight_loop_are_never_reported() {
 /// The same loop written in place (truncate and rewrite, as VS Code
 /// saves): flushes keep reading the file while the next write truncates
 /// it, and a read that overlapped a write is never reported. Every write
-/// is registered, so any change at all would be a torn read (a hash the
-/// test never wrote) or a registered write reported.
+/// but the last is registered, so any other change would be a torn read
+/// (a hash the test never wrote) or a registered write reported.
+///
+/// Reads must also be *taken* while the loop runs (at the latest
+/// `max_delay` into it), not merely refused: a taken read that matches a
+/// registration drops the ones before it, so the first write's bytes,
+/// written again afterwards, are reported only if one was.
 #[test]
 fn own_writes_in_place_in_a_tight_loop_are_never_torn() {
     let fx = fixture();
@@ -1323,15 +1328,127 @@ fn own_writes_in_place_in_a_tight_loop_are_never_torn() {
     fx.watcher.watch_file(&prefs, Role::Settings).unwrap();
     let end = Instant::now() + Duration::from_millis(1500);
     let mut writes = 0u32;
+    let body = |n: u32| format!("v = {n}\n{}", "#".repeat((64 << 10) + n as usize));
     while Instant::now() < end && writes < 1000 {
         writes += 1;
         // Longer bodies widen the window a read can land in.
-        let body = format!("v = {writes}\n{}", "#".repeat((64 << 10) + writes as usize));
-        fx.watcher.register_own_write(&prefs, written.add(&body));
-        fs::write(&prefs, &body).unwrap();
+        let b = body(writes);
+        fx.watcher.register_own_write(&prefs, written.add(&b));
+        fs::write(&prefs, &b).unwrap();
+        std::thread::sleep(Duration::from_millis(1));
     }
     assert!(writes > 100, "{writes}");
-    no_changes(&fx, &written);
+    let last = "v = last\n";
+    written.add(last);
+    fs::write(&prefs, last).unwrap();
+    let mut reported = Vec::new();
+    while let Some(b) = next_files(&fx.rx, SETTLE) {
+        let named = written.name(&b);
+        assert!(
+            named
+                .iter()
+                .all(|(_, _, body)| body.as_deref() == Some(last)),
+            "unexpected changes {named:?} in {b:#?}"
+        );
+        reported.extend(b.changes);
+    }
+    assert_eq!(reported.len(), 1, "{reported:#?}");
+    assert_modified(&reported[0], &prefs, last);
+    fs::write(&prefs, body(1)).unwrap();
+    let b = next_files(&fx.rx, FIRST).expect("no read was taken during the loop");
+    assert_eq!(b.changes.len(), 1, "{b:#?}");
+    assert_modified(&b.changes[0], &prefs, &body(1));
+}
+
+/// How a test writer rewrites a file.
+#[derive(Clone, Copy, Debug)]
+enum Style {
+    /// Truncate and write, then close.
+    InPlace,
+    /// Write a temporary file, rename it over.
+    RenameOver,
+}
+
+/// Another program rewrites `path` every 5 ms for 1.5 s (a live-preview
+/// tool, a settings file rewritten during a slider drag, a status file
+/// replaced by a script): it is reported within about `max_delay` of the
+/// first write, never torn, and with its final content once the writer
+/// stops.
+fn rewritten_every_5_ms(fx: &Fx, path: &Path, style: Style) {
+    let body = |n: u32| format!("v = {n}\n{}", "#".repeat(4096 + n as usize));
+    let start = Instant::now();
+    let writer = {
+        let path = path.to_path_buf();
+        std::thread::spawn(move || {
+            let tmp = path.with_extension("new");
+            let mut n = 0;
+            while start.elapsed() < Duration::from_millis(1500) {
+                n += 1;
+                match style {
+                    Style::InPlace => fs::write(&path, body(n)).unwrap(),
+                    Style::RenameOver => {
+                        fs::write(&tmp, body(n)).unwrap();
+                        fs::rename(&tmp, &path).unwrap();
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            n
+        })
+    };
+    let mut first = None;
+    let mut seen = Vec::new();
+    while !writer.is_finished() {
+        let Some(b) = next_files(&fx.rx, Duration::from_millis(50)) else {
+            continue;
+        };
+        first.get_or_insert(start.elapsed());
+        seen.push(b);
+    }
+    let n = writer.join().unwrap();
+    while let Some(b) = next_files(&fx.rx, SETTLE) {
+        seen.push(b);
+    }
+    let bodies: std::collections::HashMap<_, _> = (1..=n)
+        .map(|i| (hash_bytes(body(i).as_bytes()), i))
+        .collect();
+    for b in &seen {
+        for c in &b.changes {
+            assert_eq!(c.path, path, "{b:#?}");
+            assert!(
+                c.hash.is_some_and(|h| bodies.contains_key(&h)),
+                "a torn read: {b:#?}"
+            );
+        }
+    }
+    let first = first.expect("nothing reported while the writer ran");
+    // `max_delay` (500 ms) after the first write, with slack for a
+    // loaded machine; it used to be never while the writes went on.
+    assert!(first < Duration::from_millis(800), "{style:?}: {first:?}");
+    let last = seen.iter().flat_map(|b| &b.changes).last().unwrap();
+    assert_modified(last, path, &body(n));
+}
+
+#[test]
+fn a_module_rewritten_in_place_every_5_ms_is_reported() {
+    let fx = fixture();
+    rewritten_every_5_ms(&fx, &fx.cfg.join("theme.strand"), Style::InPlace);
+}
+
+#[test]
+fn a_module_renamed_over_every_5_ms_is_reported() {
+    let fx = fixture();
+    rewritten_every_5_ms(&fx, &fx.cfg.join("bar.strand"), Style::RenameOver);
+}
+
+/// Outside the config directories writes make no event until closed.
+#[test]
+fn a_watched_file_rewritten_in_place_every_5_ms_is_reported() {
+    let fx = fixture();
+    let status = fx.base.join("status.toml");
+    fs::write(&status, "").unwrap();
+    fx.watcher.watch_file(&status, Role::Other).unwrap();
+    rewritten_every_5_ms(&fx, &status, Style::InPlace);
 }
 
 /// A file written in place whose writer then keeps it open without

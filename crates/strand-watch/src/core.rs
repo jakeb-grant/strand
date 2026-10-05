@@ -29,6 +29,9 @@ pub struct Options {
     /// A stream of writes that never goes quiet is still cut this long
     /// after its first event. A file still open for writing is not read
     /// at that cut; it waits for its `CLOSE_WRITE` (see `stalled_write`).
+    /// A file whose read was put off (it may have been torn) is read
+    /// within this long of the event that made it due, however often it
+    /// is rewritten.
     pub max_delay: Duration,
     /// A file with a write in progress (`MODIFY` seen, no `CLOSE_WRITE`
     /// yet) is never read. If its writer goes this long without another
@@ -428,8 +431,29 @@ struct Pending {
     structure: bool,
     full: Option<RescanReason>,
     notices: Vec<Notice>,
+    /// When the batch was opened and when its quiet period last started
+    /// over: they decide when it is cut.
     first: Option<Instant>,
     last: Option<Instant>,
+    /// The earliest and latest event behind the batch's changes, reported
+    /// as `first_event` and `last_event`. Unlike `first` and `last`, a
+    /// file put back for a later batch (a read that may be torn) brings
+    /// the times of the events that made it due, not the flush's.
+    events: Option<(Instant, Instant)>,
+}
+
+/// A watched file whose read was put off (it may have been torn, or its
+/// writer was at it): the open batch is cut for it `max_delay` after the
+/// event that first made it due, however often it is written, and from
+/// then on a stable read of it is taken even if its modification time is
+/// recent.
+#[derive(Debug, Clone, Copy)]
+struct Deferred {
+    /// The first event behind it.
+    since: Instant,
+    /// Not before this: one quiet period after the flush that put it off,
+    /// so a file written without pause is not read in a busy loop.
+    retry: Instant,
 }
 
 /// A watched file left unread because a write to it is in progress.
@@ -487,6 +511,8 @@ pub(crate) struct Core<B> {
     /// Watched files left unread at a flush because they were being
     /// written. Re-checked at every flush.
     held: BTreeMap<PathBuf, Held>,
+    /// Watched files whose read was put off, until one is taken.
+    deferred: HashMap<PathBuf, Deferred>,
     pending: Pending,
     /// How many times the watches were brought up to date.
     #[cfg(test)]
@@ -527,6 +553,9 @@ struct Hashed {
     /// again from the same descriptor after hashing, differs): the bytes
     /// may be torn.
     stable: bool,
+    /// The wall clock right after the read, which the stamp's
+    /// modification time is compared with.
+    read_at: std::time::SystemTime,
 }
 
 /// Hash a regular file, streaming. Anything else (a FIFO, a device, a
@@ -556,13 +585,37 @@ fn read_hash(path: &Path) -> io::Result<Hashed> {
         hash: hasher.finalize(),
         stamp,
         stable,
+        read_at: std::time::SystemTime::now(),
     })
 }
 
+/// `now` projected onto the wall clock.
+fn wall_clock(now: Instant) -> std::time::SystemTime {
+    let (real, wall) = (Instant::now(), std::time::SystemTime::now());
+    let projected = if now >= real {
+        wall.checked_add(now - real)
+    } else {
+        wall.checked_sub(real - now)
+    };
+    projected.unwrap_or(wall)
+}
+
+/// How far in the future a local file's modification time may be and
+/// still count as recent: the clock was stepped back a little (NTP)
+/// between the write and the read. Beyond it (or on a polled network
+/// filesystem, whose server clock may run ahead for good) a time in the
+/// future is not recent, or the file would never be read.
+const MTIME_SKEW: Duration = Duration::from_secs(1);
+
 /// Whether `stamp`'s modification time is less than `window` before
-/// `now` (an [`Instant`], projected onto the wall clock). A time in the
-/// future (a clock set back, a server's skew) is not recent.
-fn written_within(stamp: &Stamp, now: Instant, window: Duration) -> bool {
+/// `at` (the wall clock right after the read), or at most `skew` after
+/// it.
+fn written_within(
+    stamp: &Stamp,
+    at: std::time::SystemTime,
+    window: Duration,
+    skew: Duration,
+) -> bool {
     let (secs, nanos) = stamp.mtime;
     let (Ok(secs), Ok(nanos)) = (u64::try_from(secs), u32::try_from(nanos)) else {
         return false;
@@ -572,15 +625,10 @@ fn written_within(stamp: &Stamp, now: Instant, window: Duration) -> bool {
     else {
         return false;
     };
-    let real = Instant::now();
-    let wall = std::time::SystemTime::now();
-    let wall = if now >= real {
-        wall.checked_add(now - real)
-    } else {
-        wall.checked_sub(real - now)
-    };
-    wall.and_then(|w| w.duration_since(mtime).ok())
-        .is_some_and(|age| age < window)
+    match at.duration_since(mtime) {
+        Ok(age) => age < window,
+        Err(ahead) => ahead.duration() <= skew,
+    }
 }
 
 /// The stamp of what `path` resolves to, without reading it.
@@ -687,6 +735,7 @@ impl<B: Backend> Core<B> {
             waiting: HashSet::new(),
             writing: HashMap::new(),
             held: BTreeMap::new(),
+            deferred: HashMap::new(),
             pending: Pending::default(),
             #[cfg(test)]
             syncs: 0,
@@ -898,8 +947,38 @@ impl<B: Backend> Core<B> {
     }
 
     fn mark(&mut self, now: Instant) {
+        self.schedule(now);
+        self.add_events(now, now);
+    }
+
+    /// Open the batch if none is, and start its quiet period over.
+    fn schedule(&mut self, now: Instant) {
         self.pending.first.get_or_insert(now);
-        self.pending.last = Some(now);
+        self.pending.last = Some(self.pending.last.map_or(now, |l| l.max(now)));
+    }
+
+    fn add_events(&mut self, first: Instant, last: Instant) {
+        let e = self.pending.events.get_or_insert((first, last));
+        *e = (e.0.min(first), e.1.max(last));
+    }
+
+    /// Put the read of `path` off to a later batch: it is due again one
+    /// quiet period from `now`, and (see [`Deferred`]) at the latest
+    /// `max_delay` after `events.0`, the first event behind it. The batch
+    /// reports those events' times.
+    fn defer(&mut self, path: PathBuf, events: (Instant, Instant), now: Instant) {
+        self.note_deferred(&path, events.0, now);
+        self.pending.files.insert(path);
+        self.schedule(now);
+        self.add_events(events.0, events.1);
+    }
+
+    fn note_deferred(&mut self, path: &Path, since: Instant, now: Instant) {
+        let retry = now + self.opts.coalesce;
+        self.deferred
+            .entry(path.to_path_buf())
+            .and_modify(|d| d.retry = retry)
+            .or_insert(Deferred { since, retry });
     }
 
     /// When the open batch should be cut, if one is open, or when a file
@@ -912,7 +991,16 @@ impl<B: Backend> Core<B> {
                 } else {
                     self.opts.removal_grace
                 };
-                Some((last + quiet).min(first + self.opts.max_delay))
+                let cut = (last + quiet).min(first + self.opts.max_delay);
+                // A file put off at an earlier flush keeps the bound of
+                // the batch it was first due in.
+                let deferred = self
+                    .deferred
+                    .iter()
+                    .filter(|(f, _)| self.pending.files.contains(*f))
+                    .map(|(_, d)| (d.since + self.opts.max_delay).max(d.retry))
+                    .min();
+                Some(deferred.map_or(cut, |d| cut.min(d)))
             }
             _ => None,
         };
@@ -1252,16 +1340,34 @@ impl<B: Backend> Core<B> {
         }
     }
 
-    /// Handle every event queued in the backend now.
-    fn drain(&mut self, now: Instant) {
+    /// Handle every event queued in the backend now. Returns the watched
+    /// files a drained event shows a write in progress on, or a removal
+    /// of: a `MODIFY`, a creation, a deletion.
+    fn drain(&mut self, now: Instant) -> HashSet<PathBuf> {
         let mut raws = Vec::new();
         // A failed read fails again at the watcher thread's next read,
         // which handles it (with what it lost); the events read before
         // the failure are handled here.
         let _ = self.backend.drain(&mut raws);
+        let mut unsettled = HashSet::new();
         for raw in raws {
+            if let Raw::Busy(p) | Raw::Created(p) | Raw::Gone(p) = &raw
+                && let Some(files) = self.by_path.get(p)
+            {
+                unsettled.extend(files.iter().cloned());
+            }
             self.on_raw(raw, now);
         }
+        unsettled
+    }
+
+    /// Whether the directory the file `f` resolves to is polled (a
+    /// network filesystem: its modification times are the server's).
+    fn polled(&self, f: &Path) -> bool {
+        self.files
+            .get(f)
+            .and_then(|e| e.resolved.path.parent())
+            .is_some_and(|d| self.watched.get(d) == Some(&Mode::Poll))
     }
 
     /// Cut the open batch: rescan if asked, re-resolve symlinks, re-watch
@@ -1330,6 +1436,10 @@ impl<B: Backend> Core<B> {
                     if quiet && let Some(e) = self.files.get(path) {
                         self.writing.insert(e.resolved.path.clone(), now);
                     }
+                    if self.files.contains_key(path) {
+                        let since = p.events.map_or(now, |e| e.0);
+                        self.note_deferred(path, since, now);
+                    }
                     // Never read a file mid-write: wait for its
                     // `CLOSE_WRITE`.
                     self.held.insert(path.clone(), Held { at: now, mtime: m });
@@ -1347,39 +1457,46 @@ impl<B: Backend> Core<B> {
         // A write that began after the last drain (an in-place save's
         // `O_TRUNC`, its first `write`) may have been read half done. Its
         // `MODIFY` (or `CLOSE_WRITE`, creation, removal) is queued by now:
-        // take the queue, and keep any file it names (or whose stamp moved
-        // under the read) out of this batch. Its baseline stays as it
-        // was; it is held while its write is in progress and read again
-        // in a later batch.
-        if !reads.is_empty() {
-            self.drain(now);
-        }
+        // take the queue, and keep a file out of this batch when there is
+        // evidence its read may be torn. Its baseline stays as it was; it
+        // is held while its write is in progress and read again in a
+        // later batch.
+        let unsettled = if reads.is_empty() {
+            HashSet::new()
+        } else {
+            self.drain(now)
+        };
         let lost = self.pending.full.is_some();
         for (path, read, stalled) in reads {
-            // Changed while read, or changed so recently that the event
-            // for it may not be queued yet: a truncation sets the size
-            // (and the times) before its `MODIFY` is queued, and on ext4
-            // freeing the old blocks in between can take milliseconds.
-            // A completed save is at least a quiet period old by now.
-            let torn = matches!(&read, Ok(r) if !r.stable
-                || written_within(&r.stamp, now, self.opts.coalesce));
             let busy = self.busy_since(&path).is_some();
-            if lost || torn || busy || self.pending.files.contains(&path) {
+            let torn = match &read {
+                Ok(r) => self.maybe_torn(&path, r, &unsettled, p.first, now),
+                Err(_) => false,
+            };
+            if lost || torn || busy {
+                let events = p.events.unwrap_or((now, now));
                 if busy {
                     let tracked = self.tracked(&path);
                     let m = if tracked { None } else { mtime(&path) };
+                    self.note_deferred(&path, events.0, now);
                     self.held.insert(path, Held { at: now, mtime: m });
                 } else {
-                    self.pending.files.insert(path);
-                    self.mark(now);
+                    self.defer(path, events, now);
                 }
                 continue;
             }
+            // A drained `CLOSE_WRITE` or `MOVED_TO` with no sign of a write
+            // under the read: what was read is complete, and the newer
+            // version it announces is read in the next batch (the path is
+            // pending again).
+            self.deferred.remove(&path);
             if stalled {
                 notices.push(Notice::StalledWrite(path.clone()));
             }
             self.check(&path, read, &mut changes, &mut own_seen);
         }
+        let files = &self.files;
+        self.deferred.retain(|f, _| files.contains_key(f));
         // Forget writes nobody closed (a lost `CLOSE_WRITE`) once stale.
         let stalled = self.opts.stalled_write;
         self.writing
@@ -1414,9 +1531,54 @@ impl<B: Backend> Core<B> {
             changes,
             rescan: p.full,
             notices,
-            first_event: p.first.unwrap_or(now),
-            last_event: p.last.unwrap_or(now),
+            first_event: p.events.map_or(now, |e| e.0),
+            last_event: p.events.map_or(now, |e| e.1),
         })
+    }
+
+    /// Whether the stable or unstable read `r` of `path`, taken in a
+    /// flush at `now` for a batch opened at `opened`, may hold a write
+    /// half done:
+    ///
+    /// - its stamp moved while it was read;
+    /// - a drained event shows a write in progress on it (`MODIFY`, a
+    ///   creation) or its removal;
+    /// - outside the config directories, where writes make no event, a
+    ///   drained `CLOSE_WRITE` names it: it may end a write the read
+    ///   overlapped;
+    /// - it was modified less than a quiet period before the read: a
+    ///   truncation sets the size (and the times) before its `MODIFY` is
+    ///   queued, and an in-place writer outside the config directories
+    ///   makes no event until it closes. That rule is waived once the
+    ///   file has been due for `max_delay` (a file rewritten faster than
+    ///   the quiet period would otherwise never be read): the other
+    ///   checks still apply.
+    fn maybe_torn(
+        &self,
+        path: &Path,
+        r: &Hashed,
+        unsettled: &HashSet<PathBuf>,
+        opened: Option<Instant>,
+        now: Instant,
+    ) -> bool {
+        if !r.stable || unsettled.contains(path) {
+            return true;
+        }
+        if !self.tracked(path) && self.pending.files.contains(path) {
+            return true;
+        }
+        let since = self.deferred.get(path).map(|d| d.since).or(opened);
+        let forced = since.is_some_and(|s| now.saturating_duration_since(s) >= self.opts.max_delay);
+        let skew = if self.polled(path) {
+            Duration::ZERO
+        } else {
+            MTIME_SKEW
+        };
+        // The flush's `now` is taken before anything is read (in a test it
+        // may be a deadline ahead of the clock): the age counts from
+        // whichever is later, it or the end of the read.
+        let at = r.read_at.max(wall_clock(now));
+        !forced && written_within(&r.stamp, at, self.opts.coalesce, skew)
     }
 
     fn rescan_config(
@@ -2508,6 +2670,85 @@ mod tests {
         assert_eq!(b.changes[0].hash, Some(blake3::hash(b"theme 2")));
         assert!(b.notices.is_empty());
         assert!(core.deadline().is_none());
+    }
+
+    /// Outside the config directories an in-place write makes no event
+    /// until it closes. One that truncates the file after the flush began
+    /// (its `now` taken) but before the file is read is caught by the
+    /// modification time, measured when the read ends: the torn bytes are
+    /// not reported, and the whole file is once it is quiet.
+    #[test]
+    fn a_write_after_the_flush_began_is_not_read_too_fresh() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        let prefs = root.join("prefs.toml");
+        std::fs::write(&prefs, "v = 1\nw = 1\n").unwrap();
+        let mut core = Core::new(Silent::default(), Options::default(), None);
+        core.add_file(&prefs, Role::Settings, None);
+        assert!(!core.tracked(&prefs));
+        std::thread::sleep(Duration::from_millis(30));
+        let t0 = Instant::now();
+        core.on_raw(Raw::Written(prefs.clone()), t0);
+        let now = Instant::now();
+        std::thread::sleep(Duration::from_millis(10));
+        std::fs::write(&prefs, "v = 2\n").unwrap();
+        assert!(core.flush(now).is_none(), "the torn bytes are not reported");
+        assert_eq!(
+            core.files[&prefs].hash,
+            Some(blake3::hash(b"v = 1\nw = 1\n"))
+        );
+        std::fs::write(&prefs, "v = 2\nw = 2\n").unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+        let b = core.flush(core.deadline().unwrap()).unwrap();
+        assert_eq!(b.changes.len(), 1, "{b:#?}");
+        assert_eq!(b.changes[0].hash, Some(blake3::hash(b"v = 2\nw = 2\n")));
+        // The batch reports the event that made the file due, not the
+        // flush that put it off.
+        assert_eq!((b.first_event, b.last_event), (t0, t0));
+    }
+
+    /// A file rewritten faster than the quiet period is always "too
+    /// fresh" to read; it is put off, but not past `max_delay` after the
+    /// event that first made it due: then a stable read is taken whatever
+    /// its modification time, and the batch reports that first event.
+    #[test]
+    fn a_file_rewritten_without_pause_is_read_within_max_delay() {
+        let (_tmp, root) = cfg_dir();
+        let theme = root.join("theme.strand");
+        std::fs::write(&theme, "theme 0").unwrap();
+        let opts = Options::default();
+        let mut core = Core::new(Silent::default(), opts.clone(), Some(config(&root)));
+        settle(&mut core);
+        let t0 = Instant::now();
+        let mut n = 0;
+        let mut first = None;
+        let b = loop {
+            n += 1;
+            std::fs::write(&theme, format!("theme {n}")).unwrap();
+            let t = Instant::now();
+            first.get_or_insert(t);
+            core.on_raw(Raw::Written(theme.clone()), t);
+            let due = core.deadline().unwrap();
+            assert!(
+                due <= (t0 + opts.max_delay).max(t + opts.coalesce),
+                "cut at {:?}",
+                due - t0
+            );
+            if let Some(b) = core.flush(t) {
+                break b;
+            }
+            let since = first.unwrap_or(t0);
+            assert!(t < since + opts.max_delay, "not read by {:?}", t - since);
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert!(t0.elapsed() >= opts.max_delay);
+        assert_eq!(b.changes.len(), 1, "{b:#?}");
+        assert_eq!(
+            b.changes[0].hash,
+            Some(blake3::hash(format!("theme {n}").as_bytes()))
+        );
+        assert_eq!(Some(b.first_event), first);
+        assert!(!core.deferred.contains_key(&theme));
     }
 
     /// A rescan that finds a dangling `*.strand` link reports it as a
