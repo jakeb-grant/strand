@@ -267,9 +267,70 @@ impl miette::Diagnostic for Report<'_> {
 
 fn named(map: &SourceMap, file: FileId) -> NamedSource<Arc<str>> {
     match map.get(file) {
+        Some(f) if f.text.contains('\r') => {
+            NamedSource::new(&f.name, Arc::from(lone_cr_as_newline(&f.text)))
+        }
         Some(f) => NamedSource::new(&f.name, Arc::clone(&f.text)),
         None => NamedSource::new("<unknown file>", Arc::from("")),
     }
+}
+
+/// A lone `\r` is a line break to the lexer and [`LineIndex`]; miette's
+/// snippets only break at `\n`, so give it `\n` there (same length, so
+/// every span stays put) and the gutter agrees with the header.
+fn lone_cr_as_newline(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    for (i, c) in text.char_indices() {
+        if c == '\r' && bytes.get(i + 1) != Some(&b'\n') {
+            out.push('\n');
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Lines longer than this (in characters) are not drawn: a snippet of a
+/// minified or generated line is unreadable, and miette panics on columns
+/// past 65,535. Such diagnostics fall back to [`render_short`].
+pub const MAX_DRAWN_LINE: usize = 1000;
+
+/// Whether any line a label of `diag` would draw (its own lines and one of
+/// context either side) is longer than [`MAX_DRAWN_LINE`].
+fn too_wide(diag: &Diagnostic, map: &SourceMap) -> bool {
+    diag.labels.iter().any(|l| {
+        let Some(f) = map.get(l.file) else {
+            return false;
+        };
+        let text = &*f.text;
+        let is_break = |b: u8| b == b'\n' || b == b'\r';
+        let bytes = text.as_bytes();
+        let start = (l.span.start as usize).min(text.len());
+        let end = (l.span.end as usize).clamp(start, text.len());
+        // Back to the start of the line before, forward to the end of the
+        // line after.
+        let mut from = start;
+        for _ in 0..2 {
+            from = bytes[..from.saturating_sub(1)]
+                .iter()
+                .rposition(|&b| is_break(b))
+                .map_or(0, |i| i + 1)
+                .min(from);
+        }
+        let mut to = end;
+        for _ in 0..2 {
+            to = bytes[(to + 1).min(bytes.len())..]
+                .iter()
+                .position(|&b| is_break(b))
+                .map_or(bytes.len(), |i| to + 1 + i);
+        }
+        text.get(from..to).is_none_or(|region| {
+            region
+                .split(['\n', '\r'])
+                .any(|line| line.len() > MAX_DRAWN_LINE && line.chars().count() > MAX_DRAWN_LINE)
+        })
+    })
 }
 
 fn report<'a>(diag: &'a Diagnostic, map: &SourceMap) -> Report<'a> {
@@ -327,7 +388,7 @@ pub fn render(diags: &[Diagnostic], map: &SourceMap, style: Style) -> String {
             continue;
         }
         *n += 1;
-        if handler.render_report(&mut out, &report(diag, map)).is_err() {
+        if too_wide(diag, map) || handler.render_report(&mut out, &report(diag, map)).is_err() {
             out.push_str(&render_short(std::slice::from_ref(diag), map));
         }
         out.push('\n');

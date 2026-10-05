@@ -94,6 +94,9 @@ pub struct Discovery {
     /// They are reported, and the scan carries on past them. A dangling
     /// link named `*.strand` is one of these: it was meant to be loaded.
     pub errors: Vec<(PathBuf, std::io::Error)>,
+    /// Directories past [`MAX_DEPTH`] that hold `.strand` files, which are
+    /// therefore not loaded: worth a warning, since nothing else says why.
+    pub too_deep: Vec<PathBuf>,
 }
 
 /// Finds the `.strand` files of a config directory.
@@ -200,6 +203,9 @@ fn scan(
         };
         if meta.is_dir() {
             if depth >= MAX_DEPTH {
+                if holds_strand_files(&path) {
+                    found.too_deep.push(path);
+                }
                 continue;
             }
             // A link back up the tree, or a second link to a directory,
@@ -220,6 +226,36 @@ fn scan(
             }
         }
     }
+}
+
+/// Whether `.strand` files lie anywhere under `dir` (not following
+/// directory links, skipping hidden names, looking at no more than a few
+/// thousand entries).
+fn holds_strand_files(dir: &Path) -> bool {
+    let mut budget = 4096usize;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            budget = match budget.checked_sub(1) {
+                Some(b) => b,
+                None => return false,
+            };
+            let path = entry.path();
+            if entry.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
+            if path.extension().is_some_and(|e| e == "strand") {
+                return true;
+            }
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                stack.push(path);
+            }
+        }
+    }
+    false
 }
 
 #[cfg(test)]

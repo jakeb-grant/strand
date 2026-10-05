@@ -10,4 +10,4 @@ syntax::chained_comparison
    ·               ┬
    ·               ╰── second comparison
    ╰────
-  help: combine them with `&&`: `a < b && b < c`
+  help: combine them with `&&`: `x < y && y < z`

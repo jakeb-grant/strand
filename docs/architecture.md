@@ -29,7 +29,6 @@ strand-scene      shared vocabulary: ids, geometry, colour, scene protocol, Pain
   strand-core ── strand-compiler ── strand-dev (LSP, inspector)
      ^
      strand-services, strand-watch
-                      strand-watch ──> strand-compiler (source::find_files only)
 strand (binary) wires everything.
 ```
 
@@ -135,8 +134,13 @@ followed, a breadth-first walk with directories and files deduplicated by
 canonical path (so each is claimed at its shallowest path), unreadable
 sub-directories and dangling `*.strand` links reported in `errors` and
 skipped. `dirs` lists the canonical path of every directory scanned, link
-targets included. `strand check` uses it today; the loader and `strand-watch`
-must call it (not reimplement it), so they never disagree on the module set.
+targets included. `strand check` uses it today; the loader must call it (not
+reimplement it), so they never disagree on the module set. `strand-watch`
+does not depend on `strand-compiler` for this: the binary calls `find_files`
+and hands the watcher plain paths (`files`, `dirs`) through its constructor,
+and again on every rescan through a `rescan` callback the binary supplies.
+Directories past `MAX_DEPTH` that hold `.strand` files are listed in
+`Discovery::too_deep` so `strand check` can warn that they are not loaded.
 
 It is not the watch set. Per design.md ("Change sources") the watcher also
 watches `.wgsl` shader files, settings TOML (`state … from "…"`), wallpaper

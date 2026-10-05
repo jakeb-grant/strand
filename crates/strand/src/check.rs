@@ -57,6 +57,16 @@ pub fn check_dir(dir: &Path, style: Style) -> Result<Report, String> {
         report.errors += 1;
         let _ = writeln!(report.text, "error: cannot read {}: {e}\n", path.display());
     }
+    for path in &found.too_deep {
+        report.warnings += 1;
+        let _ = writeln!(
+            report.text,
+            "warning: {} holds .strand files but is more than {} directories deep, \
+             so they are not loaded\n",
+            path.display(),
+            strand_compiler::source::MAX_DEPTH,
+        );
+    }
     if found.files.is_empty() && found.errors.is_empty() {
         return Err(format!(
             "strand check: no .strand files in {}",
@@ -103,6 +113,10 @@ pub fn check_dir(dir: &Path, style: Style) -> Result<Report, String> {
     Ok(report)
 }
 
+const USAGE: &str = "usage: strand check [dir | file]\n\n\
+    Parses every .strand file under the directory (default \
+    $XDG_CONFIG_HOME/strand) and prints diagnostics; exits non-zero on errors.\n";
+
 /// Runs `strand check` with its arguments (after `check`). Returns the text
 /// for stderr and whether the check passed.
 pub fn run(args: &[String], style: Style) -> (String, bool) {
@@ -119,8 +133,9 @@ pub fn run(args: &[String], style: Style) -> (String, bool) {
                 );
             }
         },
+        [flag] if flag == "-h" || flag == "--help" => return (USAGE.into(), true),
         [dir] if !dir.starts_with('-') => PathBuf::from(dir),
-        _ => return ("usage: strand check [dir | file]\n".into(), false),
+        _ => return (USAGE.into(), false),
     };
     match check_dir(&dir, style) {
         Ok(report) => {
@@ -200,6 +215,17 @@ mod tests {
             .collect();
         // The link to bar.strand is the same file, so it loads once.
         assert_eq!(names, ["a/b/c/deep.strand", "bar.strand"]);
+        // The directory skipped for depth is named, so a warning can say
+        // why its file is not loaded; `.git` is hidden, not too deep.
+        assert_eq!(found.too_deep, [t.0.join("a/b/c/d")]);
+        let report = check_dir(&t.0, Style::Plain).unwrap();
+        assert!(report.ok());
+        assert_eq!(report.warnings, 1);
+        assert!(
+            report.text.contains("a/b/c/d holds .strand files"),
+            "{}",
+            report.text
+        );
     }
 
     #[test]
@@ -326,6 +352,11 @@ mod tests {
         );
         let (text, ok) = run(&["--frob".into()], Style::Plain);
         assert!(!ok && text.contains("usage"));
+        // Asking for help is not a failure.
+        for flag in ["-h", "--help"] {
+            let (text, ok) = run(&[flag.into()], Style::Plain);
+            assert!(ok && text.contains("usage"), "{flag}");
+        }
     }
 
     #[test]

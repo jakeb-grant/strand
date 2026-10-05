@@ -46,6 +46,7 @@ const FRAGMENTS: &[&str] = &[
     ".",
     "\n",
     "\r\n",
+    "\r",
     " ",
     "\t",
     "=>",
@@ -313,7 +314,7 @@ fn pathological_nesting_reports_instead_of_overflowing() {
         "[".repeat(n),
         format!("component X {}", "{".repeat(n)),
     ] {
-        let (elapsed, codes) = check(&src, false);
+        let (elapsed, codes) = check(&src, true);
         assert!(!codes.is_empty(), "nothing reported for {}", &src[..20]);
         assert!(elapsed < Duration::from_secs(5));
     }
@@ -339,7 +340,7 @@ fn pathological_nesting_reports_instead_of_overflowing() {
         let src2 = src.clone();
         let handle = std::thread::Builder::new()
             .stack_size(2 * 1024 * 1024)
-            .spawn(move || check(&src2, false))
+            .spawn(move || check(&src2, true))
             .unwrap();
         let (elapsed, codes) = handle
             .join()
@@ -356,5 +357,34 @@ fn pathological_nesting_reports_instead_of_overflowing() {
             "{elapsed:?} on {}",
             &src[..60]
         );
+    }
+}
+
+/// miette panics drawing a column past 65,535; such lines (minified or
+/// generated configs) are reported one line each instead.
+#[test]
+fn errors_far_along_a_long_line_render() {
+    for src in [
+        format!("bar T {{ x: {}}} }}", " ".repeat(70_000)),
+        format!("let x = {}1 +", "1 + ".repeat(20_000)),
+        format!(
+            "component A {{ text \"{}\" {{ width: 12pz }} }}",
+            "é".repeat(70_000)
+        ),
+    ] {
+        let (_, codes) = check(&src, true);
+        assert!(!codes.is_empty());
+        let parsed = parse(FileId::default(), &src);
+        let out = render(
+            &parsed.diagnostics,
+            &SourceMap::single("long.strand", src.clone()).0,
+            Style::Plain,
+        );
+        assert!(
+            out.contains("long.strand:1:"),
+            "{}",
+            &out[..out.len().min(300)]
+        );
+        assert!(out.len() < 10_000, "the long line was drawn");
     }
 }

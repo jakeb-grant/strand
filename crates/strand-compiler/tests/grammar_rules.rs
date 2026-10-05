@@ -152,6 +152,25 @@ fn a_dot_or_colon_ending_a_line_does_not_take_the_next_line() {
         codes("tokens t {\n  a: $b ??\n  $c: 4\n}\n"),
         ["syntax::missing_value"]
     );
+    // Integer token keys (`space { 1: 4px; 2: 8px }`) start entries too.
+    let src = "tokens t {\n  space {\n    1: 4px +\n    2: 8px\n  }\n}\n";
+    assert_eq!(codes(src), ["syntax::missing_value"], "{}", tree(src));
+    // A closing bracket on the next line means the operand is missing.
+    for close in ["}", ")"] {
+        let src = if close == "}" {
+            "component R {\n  box {\n    height: 36 ~\n  }\n}\n".to_string()
+        } else {
+            "let x = (a ??\n)\n".to_string()
+        };
+        let parsed = parse(FileId::default(), &src);
+        assert_eq!(codes(&src), ["syntax::missing_value"], "{src}");
+        assert!(
+            parsed.diagnostics[0]
+                .message
+                .contains("at the end of the line"),
+            "{src}"
+        );
+    }
     // Continuations that are not a new prop still continue.
     assert!(codes("component R {\n  box {\n    opacity: a ??\n      b\n  }\n}\n").is_empty());
     assert!(codes("component R {\n  box {\n    margin: 8,\n      8\n  }\n}\n").is_empty());
@@ -472,4 +491,23 @@ fn keywords_are_contextual() {
         "element input\n  prop type: password\n  prop text: <-> q\n  prop enter: fade\n  prop key: 1"
     );
     assert_eq!(top("let state_of = in_month"), "let state_of (= in_month)");
+}
+
+/// A lone `\r` (old Mac line endings) ends a line like `\n`, so a file
+/// saved that way parses as it reads, with matching line numbers.
+#[test]
+fn a_lone_carriage_return_is_a_line_break() {
+    let lf = "component A {\n  box { width: 1 }\n  text \"x\"\n}\n";
+    let cr = lf.replace('\n', "\r");
+    let crlf = lf.replace('\n', "\r\n");
+    assert!(codes(&cr).is_empty(), "{}", tree(&cr));
+    assert_eq!(tree(&cr), tree(lf));
+    assert_eq!(tree(&crlf), tree(lf));
+    let src = "component A {\r  box { width: }\r}\r";
+    let parsed = parse(FileId::default(), src);
+    let short = strand_compiler::diagnostic::render_short(
+        &parsed.diagnostics,
+        &SourceMap::single("e.strand", src).0,
+    );
+    assert!(short.starts_with("e.strand:2:15:"), "{short}");
 }

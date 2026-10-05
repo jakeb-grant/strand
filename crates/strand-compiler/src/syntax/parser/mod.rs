@@ -493,13 +493,20 @@ impl<'s> Parser<'s> {
 
     /// The current token starts a new line that begins a prop, field or
     /// token entry: a name directly touching `:` (`color:`, `$fg:`,
-    /// `radius.lg:`). Such a line never continues the previous one.
+    /// `radius.lg:`, the token key `1:`). Such a line never continues the
+    /// previous one.
     pub(crate) fn at_entry_line(&self) -> bool {
         if !self.on_new_line() {
             return false;
         }
         let mut i = 0;
-        if !matches!(self.nth_kind(0), K::Ident | K::Dollar) {
+        let first = self.cur();
+        let key_start = match first.kind {
+            K::Ident | K::Dollar => true,
+            K::Number => self.text(first).bytes().all(|b| b.is_ascii_digit()),
+            _ => false,
+        };
+        if !key_start {
             return false;
         }
         loop {
@@ -520,8 +527,13 @@ impl<'s> Parser<'s> {
     /// first (`value: <->` then `color: …`), the line ended without its
     /// right-hand side. Reports it at the end of the line and returns true;
     /// the next line is left to be its own item.
+    ///
+    /// The same goes for a closing bracket or the end of the file on the
+    /// next line (`height: 36 ~` then `}`): the operand was never written.
     pub(crate) fn dangling_at_line_end(&mut self) -> bool {
-        if !self.at_entry_line() {
+        let t = self.cur();
+        let closes = t.nl_before && matches!(t.kind, K::RBrace | K::RParen | K::RBracket | K::Eof);
+        if !(closes || self.at_entry_line()) {
             return false;
         }
         let op = self
@@ -535,7 +547,14 @@ impl<'s> Parser<'s> {
                 format!("`{op}` at the end of the line has nothing after it"),
             )
             .with_label(at, "expected a value here, on the same line")
-            .with_help("the next line starts a new prop, so this line ends here"),
+            .with_help(match t.kind {
+                K::Eof => "the file ends after this line".to_string(),
+                _ if closes => format!(
+                    "the next line starts with `{}`, so this line ends here",
+                    self.text(t)
+                ),
+                _ => "the next line starts a new prop, so this line ends here".to_string(),
+            }),
         );
         true
     }
@@ -761,7 +780,7 @@ impl<'s> Parser<'s> {
     /// Leading whitespace of the line holding `offset`.
     fn indent_of(&self, offset: u32) -> usize {
         let before = self.src.get(..offset as usize).unwrap_or("");
-        let line = &before[before.rfind('\n').map_or(0, |i| i + 1)..];
+        let line = &before[before.rfind(['\n', '\r']).map_or(0, |i| i + 1)..];
         line.len() - line.trim_start_matches([' ', '\t']).len()
     }
 

@@ -78,6 +78,41 @@ fn did_you_mean_keywords() {
             "component A { if a { b } els { c } }",
             "did you mean `else`?",
         ),
+        // A misspelt `override` is an error, not a new token (design.md,
+        // "Loud overrides").
+        (
+            "tokens c extends base { overide space { 1: 2px } }",
+            "did you mean `override`?",
+        ),
+        (
+            "tokens c extends base {\n  overrde accent: #fff\n}\n",
+            "did you mean `override`?",
+        ),
+        // Every keyword position, not just item starts.
+        ("export stat x = 0", "did you mean `state`?"),
+        (
+            "component X(n: int) tokns { a: 1 } { text \"x\" }",
+            "did you mean `tokens`?",
+        ),
+        ("permit exc \"a\"", "did you mean `exec`?"),
+        (
+            "service s from poll \"x\" evry 2s { a: int }",
+            "did you mean `every`?",
+        ),
+        // A handler keyword is known by its block of statements.
+        (
+            "component A {\n  evry 1s { t += 1 }\n}\n",
+            "did you mean `every`?",
+        ),
+        (
+            "component A {\n  aftr 6s { n.expire() }\n}\n",
+            "did you mean `after`?",
+        ),
+        (
+            "component A {\n  onn click { open = !open }\n}\n",
+            "did you mean `on`?",
+        ),
+        ("compnent Foo(n: int = 1) { }", "did you mean `component`?"),
         // Names are snake_case.
         (
             "component A { text \"x\" { max-width: 40% } }",
@@ -162,11 +197,65 @@ fn a_misspelt_clause_keyword_does_not_ask_for_a_value() {
     for src in [
         "state p: [P] kye app = []",
         "state s frm \"a.toml\" { a: bool }",
+        "state a: Int kye = 3",
+        "component A { for x in xs kye { text x } }",
+        "tokens c extends base { overide space { 1: 2px } }",
+        "tokens c extends base {\n  overrde accent: #fff\n}\n",
+        "export stat x = 0",
+        "component X(n: int) tokns { a: 1 } { text \"x\" }",
+        "permit exc \"a\"",
+        "service s from poll \"x\" evry 2s { a: int }",
+        "component A {\n  evry 1s { t += 1 }\n}\n",
+        "component A {\n  aftr 6s { n.expire() }\n}\n",
+        "component A {\n  onn change a, b after 1s { x = 1 }\n}\n",
     ] {
         let parsed = parse(FileId::default(), src);
         assert_eq!(parsed.diagnostics.len(), 1, "{}", report(src));
         assert!(
             !report(src).contains("state needs a value"),
+            "{}",
+            report(src)
+        );
+    }
+}
+
+/// A misspelt keyword is read as the keyword: the tree has what was meant.
+#[test]
+fn a_misspelt_keyword_parses_as_the_keyword() {
+    for (src, want) in [
+        (
+            "tokens c extends base { overide space { 1: 2px } }",
+            "override token space",
+        ),
+        ("component A { aftr 6s { n.expire() } }", "after 6s"),
+        ("component A { evry 1s { t += 1 } }", "every 1s"),
+        ("component A { onn click { open = !open } }", "on click"),
+        ("tokns base { space { 1: 4px } }", "tokens base"),
+        ("barr Top { }", "bar Top"),
+        ("export stat x = 0", "export state x"),
+    ] {
+        let t = dump::tree(&parse(FileId::default(), src).file).render();
+        assert!(t.contains(want), "{src}: wanted {want:?} in\n{t}");
+    }
+}
+
+/// Short names are not keywords (`n` is not `on`, `i` is not `if`), and a
+/// statement in a tree says where statements go.
+#[test]
+fn statements_in_a_tree_are_not_misspelt_keywords() {
+    for src in [
+        "component A {\n  n.expire()\n}\n",
+        "component A {\n  i.f()\n}\n",
+        "component A {\n  x = 1\n}\n",
+        "component A {\n  t += 1\n}\n",
+        "component A {\n  n?.expire()\n}\n",
+        "x = 1\n",
+    ] {
+        let parsed = parse(FileId::default(), src);
+        assert_eq!(parsed.diagnostics.len(), 1, "{}", report(src));
+        assert_eq!(
+            parsed.diagnostics[0].help.as_deref(),
+            Some("statements go inside a handler: `on click { … }`"),
             "{}",
             report(src)
         );
@@ -274,6 +363,11 @@ fn errors_do_not_cascade() {
         "component A {\n  box\n  {\n    width: 1\n  }\n  text \"x\"\n}\nstate y = 1\n",
         "component A {\n  box { width: 1 }\n  {\n    width: 2\n  }\n  text \"x\"\n}\nstate y = 1\n",
         "component A {\n  box { width: 1 } : 2 ]\n  text \"x\"\n}\n",
+        // A misspelt declaration keyword parses as the keyword.
+        "compnent Foo(n: int = 1) {\n  text \"x\"\n}\n",
+        "compnent Foo(n: int, d: bool = false) {\n  text \"x\"\n}\n",
+        "tokns base { space { 1: 4px } }\n",
+        "component A {\n  box {\n    height: 36 ~\n  }\n}\n",
     ] {
         let n = parse(FileId::default(), src).diagnostics.len();
         assert_eq!(n, 1, "{src}\n{}", report(src));

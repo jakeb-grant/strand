@@ -351,16 +351,7 @@ impl Parser<'_> {
             if matches!(op, BinaryOp::Add | BinaryOp::Sub) {
                 self.check_sign(op_tok);
             }
-            if prec == COMPARE && last_compare {
-                self.push_error(
-                    Diagnostic::error(
-                        "syntax::chained_comparison",
-                        "comparisons cannot be chained",
-                    )
-                    .with_label(op_tok.span, "second comparison")
-                    .with_help("combine them with `&&`: `a < b && b < c`"),
-                );
-            }
+            let chained = prec == COMPARE && last_compare;
             last_compare = prec == COMPARE;
             let rhs = if self.enter() {
                 let r = self.binary(if right { prec } else { prec + 1 });
@@ -369,6 +360,17 @@ impl Parser<'_> {
             } else {
                 self.error_expr()
             };
+            if chained {
+                let help = self.chain_help(&lhs, op_tok, &rhs);
+                self.push_error(
+                    Diagnostic::error(
+                        "syntax::chained_comparison",
+                        "comparisons cannot be chained",
+                    )
+                    .with_label(op_tok.span, "second comparison")
+                    .with_help(help),
+                );
+            }
             lhs = Expr {
                 kind: ExprKind::Binary {
                     op,
@@ -380,6 +382,25 @@ impl Parser<'_> {
         }
         self.leave_links(links);
         lhs
+    }
+
+    /// The fix for `a < b < c`, in the user's own operands when they are
+    /// short: `a < b && b < c`.
+    fn chain_help(&self, lhs: &Expr, op: Tok, rhs: &Expr) -> String {
+        let generic = "combine them with `&&`: `a < b && b < c`".to_string();
+        let ExprKind::Binary { rhs: middle, .. } = &lhs.kind else {
+            return generic;
+        };
+        let (first, middle, last) = (
+            lhs.span.text(self.src),
+            middle.span.text(self.src),
+            rhs.span.text(self.src),
+        );
+        if middle.is_empty() || last.is_empty() || first.len() + middle.len() + last.len() > 60 {
+            return generic;
+        }
+        let op = self.text(op);
+        format!("combine them with `&&`: `{first} && {middle} {op} {last}`")
     }
 
     fn unary(&mut self) -> Expr {
@@ -569,8 +590,20 @@ impl Parser<'_> {
 
     fn number(&mut self, t: Tok) -> Number {
         let (digits, suffix) = split_number(self.text(t));
+        let value: f64 = digits.parse().unwrap_or(0.0);
+        // Integers past 2^53 (and anything past f64) are not stored exactly.
+        if !value.is_finite() || (!digits.contains('.') && value > 9_007_199_254_740_992.0) {
+            self.push_error(
+                Diagnostic::warning(
+                    "syntax::number_precision",
+                    format!("`{digits}` is too large to be stored exactly"),
+                )
+                .with_label(t.span, format!("this is read as {value:e}"))
+                .with_help("numbers are 64-bit floats; whole numbers are exact up to 2^53"),
+            );
+        }
         Number {
-            value: digits.parse().unwrap_or(0.0),
+            value,
             fraction: digits.contains('.'),
             unit: Unit::from_suffix(suffix),
         }

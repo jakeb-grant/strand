@@ -4,7 +4,7 @@ use crate::diagnostic::{Diagnostic, did_you_mean, suggest};
 
 use super::super::ast::*;
 use super::super::span::Span;
-use super::{Ctx, K, Parser, STMT_KEYWORDS, TOP_KEYWORDS, TREE_KEYWORDS};
+use super::{Ctx, K, Parser, STMT_KEYWORDS, TOP_KEYWORDS, TREE_KEYWORDS, Tok};
 
 /// Service source kinds.
 const SOURCES: &[&str] = &["dbus", "file", "listen", "poll"];
@@ -54,6 +54,37 @@ fn error_field(span: Span) -> Field {
         default: None,
         span,
     }
+}
+
+/// Keywords that start a handler block of statements.
+const HANDLER_KEYWORDS: &[&str] = &["on", "after", "every"];
+
+/// The help for a handler statement written where tree items go.
+const STATEMENT_HELP: &str = "statements go inside a handler: `on click { … }`";
+
+/// A one-edit slip of one of `kws` (`stat` for `state`, `onn` for `on`).
+/// The word must be at least as long as the keyword or three letters, so
+/// a short name (`n`, `i`) is never taken for `on` or `if`.
+fn keyword_slip(word: &str, kws: &[&'static str]) -> Option<&'static str> {
+    let n = word.chars().count();
+    kws.iter()
+        .copied()
+        .find(|kw| *kw != word && n >= kw.len().min(3) && strsim::osa_distance(word, kw) == 1)
+}
+
+/// `t` (the token after a word) shows the word starts a handler statement,
+/// not an item: `x = 1`, `t += 1`, `n.expire()`.
+fn starts_statement(t: Tok) -> bool {
+    matches!(
+        t.kind,
+        K::Eq | K::PlusEq | K::MinusEq | K::StarEq | K::SlashEq
+    ) || matches!(t.kind, K::Dot | K::QuestionDot) && !t.ws_before
+}
+
+/// No keyword is directly followed by `t`: a touching `(`, `[`, `.` or
+/// `?.`, or an assignment.
+fn cannot_follow_keyword(t: Tok) -> bool {
+    starts_statement(t) || matches!(t.kind, K::LParen | K::LBracket) && !t.ws_before
 }
 
 impl Parser<'_> {
@@ -168,6 +199,77 @@ impl Parser<'_> {
             }
             return ItemKind::Prop(prop);
         }
+        if let Some(kind) = self.keyword_item(ctx, t, word) {
+            return kind;
+        }
+        if ctx == Ctx::Service {
+            let help = did_you_mean(word, ["permit"]);
+            self.expected_with("a field such as `name: text = Prop`", help);
+            self.bump();
+            return ItemKind::Error;
+        }
+        let next = self.nth(1);
+        if ctx == Ctx::Top && !cannot_follow_keyword(next) {
+            // A slip of a declaration keyword (`compnent`, `tokns`): say
+            // so once and parse what was meant. An element here would be
+            // an error anyway, so nothing is lost.
+            if let Some(kw) = keyword_slip(word, TOP_KEYWORDS) {
+                self.push_error(
+                    Diagnostic::error(
+                        "syntax::expected",
+                        format!("expected a declaration, found `{word}`"),
+                    )
+                    .with_label(t.span, "unknown declaration")
+                    .with_help(format!("did you mean `{kw}`?")),
+                );
+                if let Some(kind) = self.keyword_item(ctx, t, kw) {
+                    return kind;
+                }
+            }
+        }
+        if ctx != Ctx::Top {
+            // `aftr 6s { n.expire() }`: a block of statements shows a
+            // misspelt handler keyword, not an element.
+            if let Some(kw) = keyword_slip(word, HANDLER_KEYWORDS)
+                .filter(|_| !cannot_follow_keyword(next) && self.statement_block_follows())
+            {
+                self.push_error(
+                    Diagnostic::error(
+                        "syntax::expected",
+                        format!("expected an element or handler, found `{word}`"),
+                    )
+                    .with_label(t.span, "its block holds statements, so this is a handler")
+                    .with_help(format!("did you mean `{kw}`?")),
+                );
+                if let Some(kind) = self.keyword_item(ctx, t, kw) {
+                    return kind;
+                }
+            }
+        }
+        let (el, statement) = self.element(ctx != Ctx::Top);
+        if ctx == Ctx::Top {
+            let (label, help) = if statement {
+                ("statements go inside a handler", Some(STATEMENT_HELP))
+            } else {
+                ("elements must be inside a surface or component", None)
+            };
+            let mut d = Diagnostic::error(
+                "syntax::misplaced",
+                format!("expected a declaration, found `{word}`"),
+            )
+            .with_label(t.span, label);
+            if let Some(h) = help {
+                d = d.with_help(h);
+            }
+            self.push_error(d);
+        }
+        ItemKind::Element(el)
+    }
+
+    /// The item that keyword `word` starts in a block of kind `ctx`, or
+    /// `None` when `word` starts no item there. `t` is the item's first
+    /// token: the keyword, or a misspelling of it.
+    fn keyword_item(&mut self, ctx: Ctx, t: Tok, word: &str) -> Option<ItemKind> {
         let top_only = |p: &mut Self, what: &str| {
             if ctx != Ctx::Top {
                 p.misplaced(t.span, what, "are only allowed at the top level of a file");
@@ -182,12 +284,12 @@ impl Parser<'_> {
                 );
             }
         };
-        match word {
+        Some(match word {
             "component" => {
                 top_only(self, "components");
                 self.component()
             }
-            "bar" | "panel" | "osd" | "lock" if ctx == Ctx::Top => self.surface(),
+            "bar" | "panel" | "osd" | "lock" if ctx == Ctx::Top => self.surface(word),
             "state" if ctx != Ctx::Service => {
                 if ctx == Ctx::Keyframes {
                     tree_only(self, "`state`");
@@ -247,7 +349,11 @@ impl Parser<'_> {
                 if ctx == Ctx::Service {
                     self.misplaced(t.span, "timers", "are not allowed in a service");
                 }
-                self.timer()
+                self.timer(if word == "after" {
+                    TimerKind::After
+                } else {
+                    TimerKind::Every
+                })
             }
             "when" => {
                 tree_only(self, "`when`");
@@ -306,38 +412,8 @@ impl Parser<'_> {
                     ItemKind::Error
                 }
             }
-            _ if ctx == Ctx::Service => {
-                let help = did_you_mean(word, ["permit"]);
-                self.expected_with("a field such as `name: text = Prop`", help);
-                self.bump();
-                ItemKind::Error
-            }
-            _ => {
-                let el = self.element(ctx != Ctx::Top);
-                if ctx == Ctx::Top {
-                    let mut d = Diagnostic::error(
-                        "syntax::misplaced",
-                        format!("expected a declaration, found `{word}`"),
-                    )
-                    .with_label(t.span, "elements must be inside a surface or component");
-                    // Only a one-edit slip is a misspelt keyword; `text`
-                    // or `icon` here is a misplaced element, not `let`/`on`.
-                    let help = suggest(word, TOP_KEYWORDS.iter().copied())
-                        .filter(|kw| strsim::osa_distance(word, kw) == 1)
-                        .map(|kw| format!("did you mean `{kw}`?"));
-                    if let Some(h) = &help {
-                        d = d.with_help(h.clone());
-                    }
-                    self.push_error(d);
-                    if help.is_some() && !self.at_item_end() {
-                        // A misspelt keyword (`stat y = 1`): one error is
-                        // enough, so skip the rest of the line quietly.
-                        self.recover_line();
-                    }
-                }
-                ItemKind::Element(el)
-            }
-        }
+            _ => return None,
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -426,9 +502,27 @@ impl Parser<'_> {
 
     /// `kind [positional] { … }`. With `report_typo`, a kind one letter
     /// from a tree keyword followed by more than an element can hold
-    /// (`stat x = 0`) says what was meant.
-    fn element(&mut self, report_typo: bool) -> Element {
+    /// (`stat x = 0`) says what was meant. Also returns whether the word
+    /// starts a handler statement instead (`x = 1`, `n.expire()`), which
+    /// is reported (in a tree) and skipped to the end of the line.
+    fn element(&mut self, report_typo: bool) -> (Element, bool) {
         let kind = self.ident("an element");
+        let next = self.cur();
+        if self.same_line() && starts_statement(next) {
+            if report_typo {
+                self.expected_with(
+                    "`;` or a line break after this element",
+                    Some(STATEMENT_HELP.to_string()),
+                );
+            }
+            self.recover_line();
+            let el = Element {
+                kind,
+                arg: None,
+                block: None,
+            };
+            return (el, true);
+        }
         let mut arg = None;
         if self.same_line() && self.starts_expr() {
             arg = Some(if self.at(K::Ident) && self.nth_kind(1) == K::Colon {
@@ -458,18 +552,38 @@ impl Parser<'_> {
             None
         };
         let spaced_call = matches!(self.kind(), K::LParen | K::LBracket) && self.cur().ws_before;
-        if report_typo && !self.at_item_end() && !spaced_call {
+        if report_typo && !self.at_item_end() && !spaced_call && !cannot_follow_keyword(next) {
             // `stat x = 0` reads as element `stat`; say what was meant.
-            let close = suggest(&kind.name, TREE_KEYWORDS.iter().copied())
-                .filter(|kw| strsim::osa_distance(&kind.name, kw) == 1);
-            if let Some(kw) = close {
+            if let Some(kw) = keyword_slip(&kind.name, TREE_KEYWORDS) {
                 self.expected_with(
                     "`;` or a line break after this element",
                     Some(format!("did you mean `{kw}`?")),
                 );
             }
         }
-        Element { kind, arg, block }
+        (Element { kind, arg, block }, false)
+    }
+
+    /// From an item's first word: a `{` later on the line whose first
+    /// item is a handler statement (`x = 1`, `t += 1`, `n.expire()`).
+    fn statement_block_follows(&self) -> bool {
+        let mut depth = 0usize;
+        for i in 1..64 {
+            let t = self.nth(i);
+            if t.kind == K::Eof || depth == 0 && t.nl_before {
+                return false;
+            }
+            match t.kind {
+                K::LParen | K::LBracket => depth += 1,
+                K::RParen | K::RBracket => depth = depth.saturating_sub(1),
+                K::LBrace if depth == 0 => {
+                    return self.nth_kind(i + 1) == K::Ident && starts_statement(self.nth(i + 2));
+                }
+                K::LBrace | K::RBrace | K::Semi => return false,
+                _ => {}
+            }
+        }
+        false
     }
 
     /// At a clause position: when the next word on this line is a near
@@ -477,6 +591,14 @@ impl Parser<'_> {
     /// did-you-mean, skips it, and returns the keyword meant, so parsing
     /// goes on as if it were spelt right.
     fn clause_typo(&mut self, kws: &[&'static str]) -> Option<&'static str> {
+        let kw = self.report_clause_typo(kws)?;
+        self.bump();
+        Some(kw)
+    }
+
+    /// [`Parser::clause_typo`] without skipping the word, for callers that
+    /// hand it to the keyword's own parser (which consumes it).
+    fn report_clause_typo(&mut self, kws: &[&'static str]) -> Option<&'static str> {
         if !(self.same_line() && self.at(K::Ident)) {
             return None;
         }
@@ -491,7 +613,6 @@ impl Parser<'_> {
             .collect::<Vec<_>>()
             .join(" or ");
         self.expected_with(&list, Some(format!("did you mean `{kw}`?")));
-        self.bump();
         Some(kw)
     }
 
@@ -625,13 +746,14 @@ impl Parser<'_> {
         let binding = self.ident("a loop variable");
         self.expect_kw("in");
         let iter = self.expr();
-        let key = ((self.same_line() && self.at_kw("key")) || self.clause_typo(&["key"]).is_some())
-            .then(|| {
-                if self.at_kw("key") {
-                    self.bump();
-                }
-                self.expr()
-            });
+        let key = if self.same_line() && self.at_kw("key") {
+            self.bump();
+            Some(self.expr())
+        } else if self.clause_typo(&["key"]).is_some() && !self.at(K::LBrace) {
+            Some(self.expr())
+        } else {
+            None
+        };
         For {
             binding,
             iter,
@@ -684,13 +806,8 @@ impl Parser<'_> {
     }
 
     /// `after T while cond { … }`, `every T while cond { … }`.
-    fn timer(&mut self) -> ItemKind {
-        let kw = self.bump();
-        let kind = if self.text(kw) == "after" {
-            TimerKind::After
-        } else {
-            TimerKind::Every
-        };
+    fn timer(&mut self, kind: TimerKind) -> ItemKind {
+        self.bump(); // after | every (or a slip of one)
         let duration = self.expr();
         let mut while_ = None;
         if self.same_line() && self.at_kw("while") {
@@ -719,8 +836,11 @@ impl Parser<'_> {
         self.bump();
         let name = self.ident("a component name");
         let params = self.at(K::LParen).then(|| self.params());
-        let tokens = self.at_kw("tokens").then(|| {
-            self.bump();
+        let typo = !self.at_kw("tokens") && self.clause_typo(&["tokens"]).is_some();
+        let tokens = (typo || self.at_kw("tokens")).then(|| {
+            if !typo {
+                self.bump();
+            }
             self.token_block("the component tokens")
         });
         ItemKind::Component(Component {
@@ -731,8 +851,10 @@ impl Parser<'_> {
         })
     }
 
-    fn surface(&mut self) -> ItemKind {
-        let kind = self.ident("a surface");
+    /// `bar Top { … }`; `kw` is the surface kind (the word may be a slip).
+    fn surface(&mut self, kw: &str) -> ItemKind {
+        let mut kind = self.ident("a surface");
+        kind.name = kw.to_string();
         let name = if self.at(K::Ident) {
             Some(self.ident("a surface name"))
         } else {
@@ -753,9 +875,10 @@ impl Parser<'_> {
 
     fn export(&mut self) -> ItemKind {
         let t = self.bump();
-        if self.at_kw("state") {
+        let typo = self.report_clause_typo(&["state", "let"]);
+        if self.at_kw("state") || typo == Some("state") {
             self.state(Some(t.span))
-        } else if self.at_kw("let") {
+        } else if self.at_kw("let") || typo == Some("let") {
             ItemKind::Let(self.let_decl(Some(t.span)))
         } else {
             self.expected("`state` or `let` after `export`");
@@ -798,7 +921,11 @@ impl Parser<'_> {
             None if ty.is_some() && !self.at_kw("key") => self.clause_typo(&["key"]),
             None => None,
         };
-        let key = (typo == Some("key") || (self.same_line() && self.at_kw("key"))).then(|| {
+        // A stray word right before `=` (`state a: Int kye = 3`) is
+        // reported once and dropped, not read as a key with no expression.
+        let key = (typo == Some("key") && !self.at(K::Eq)
+            || typo.is_none() && self.same_line() && self.at_kw("key"))
+        .then(|| {
             if typo.is_none() {
                 self.bump();
             }
@@ -962,9 +1089,28 @@ impl Parser<'_> {
     /// `override key: value` or `key { entries }`.
     fn token_entry(&mut self) -> TokenEntry {
         let start = self.cur().span.start;
-        let override_ = (self.at_kw("override")
-            && matches!(self.nth_kind(1), K::Ident | K::Dollar | K::Number))
-        .then(|| self.bump().span);
+        let key_follows =
+            |t: Tok| !t.nl_before && matches!(t.kind, K::Ident | K::Dollar | K::Number);
+        let mut override_ =
+            (self.at_kw("override") && key_follows(self.nth(1))).then(|| self.bump().span);
+        if override_.is_none() && self.at(K::Ident) && key_follows(self.nth(1)) {
+            // `overide space { … }`: a misspelt `override` is an error,
+            // never a new token (design.md, "Loud overrides").
+            let t = self.cur();
+            let word = self.text(t);
+            if suggest(word, ["override"]).is_some() {
+                self.bump();
+                self.push_error(
+                    Diagnostic::error(
+                        "syntax::expected",
+                        format!("expected a token name or `override`, found `{word}`"),
+                    )
+                    .with_label(t.span, "followed by another token name")
+                    .with_help("did you mean `override`?"),
+                );
+                override_ = Some(t.span);
+            }
+        }
         let key = self.token_key();
         let body = if self.eat(K::Colon).is_some() {
             let name = key.span.text(self.src).to_string();
@@ -1086,11 +1232,18 @@ impl Parser<'_> {
             self.push_error(d);
         }
         let mut args = Vec::new();
+        let mut every_typo = false;
         while self.same_line() && !self.at_kw("every") && self.starts_expr() {
+            if kind.name == "poll" && !args.is_empty() && self.clause_typo(&["every"]).is_some() {
+                every_typo = true;
+                break;
+            }
             args.push(self.expr());
         }
-        let every = (self.same_line() && self.at_kw("every")).then(|| {
-            self.bump();
+        let every = (every_typo || self.same_line() && self.at_kw("every")).then(|| {
+            if !every_typo {
+                self.bump();
+            }
             self.expr()
         });
         let start = start.min(kind.span.start);
@@ -1169,7 +1322,11 @@ impl Parser<'_> {
 
     fn permit(&mut self) -> ItemKind {
         self.bump();
-        let capability = self.ident("a capability such as `exec`");
+        let typo = self.report_clause_typo(&["exec"]);
+        let mut capability = self.ident("a capability such as `exec`");
+        if let Some(kw) = typo {
+            capability.name = kw.to_string();
+        }
         let mut args = Vec::new();
         if self.same_line() && self.starts_expr() {
             args.push(self.expr());

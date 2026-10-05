@@ -38,9 +38,9 @@ byte span.
 
 | Token | Form |
 | --- | --- |
-| whitespace | one or more of space, tab, `\r` |
-| newline | `\n` (a `\r\n` pair is whitespace `\r` then newline) |
-| comment | `//` up to, not including, the next `\n` |
+| whitespace | one or more of space, tab, `\r` (a `\r` directly before `\n`) |
+| newline | `\n`, or a lone `\r` not followed by `\n` (a `\r\n` pair is whitespace `\r` then newline) |
+| comment | `//` up to, not including, the next newline |
 
 There are no block comments. Trivia is skipped by the parser, except that
 newlines are significant as described below.
@@ -167,7 +167,9 @@ in full:
    `!` or a ternary's `?` or `:` also continues**, because those tokens need
    a right-hand side and the parser simply reads it from the next line —
    **unless the next line starts a prop, field or token entry**: a name
-   (`color`, `$fg`, `radius.lg`) directly touching `:`. Then the dangling
+   (`color`, `$fg`, `radius.lg`, an integer token key `2`) directly
+   touching `:`, **or starts with a closing `}`, `)` or `]`** (or the file
+   ends). Then the dangling
    line is unfinished: `value: <->`, `width: 24 ~`, `margin: 8, 8,` or
    `opacity: a ??` followed by `color: …` reports `syntax::missing_value`
    at the end of the dangling line, and the next line is its own item. A
@@ -657,10 +659,24 @@ diagnostic and resynchronises:
   so do clause keywords: `for … kye` → `key`, `state p: T kye` → `key`,
   `state q = 1 persits` → `persist`, `state s frm` → `from`,
   `tokens c extnd` → `extends`, `on change a aftr` → `after`, a field's
-  `rx` → `rw`, and `if … { } els { }` → `else`. The misspelt clause keyword
-  is then treated as the keyword. At the top level a misplaced element is
-  only called a misspelt keyword when it is one edit away (`stat` →
-  `state`, but not `text` → `let`).
+  `rx` → `rw`, `if … { } els { }` → `else`, `overide space { … }` →
+  `override` (design.md: a misspelt override is an error, never a new
+  token), `export stat` → `state`, a component's `tokns` → `tokens`,
+  `permit exc` → `exec` and a poll's `evry` → `every`. The misspelt word is
+  then treated as the keyword. A misspelt word directly before `=`
+  (`state a: T kye = 3`) is reported once and dropped.
+- At the top level a word one edit from a declaration keyword (`compnent`,
+  `tokns`, `stat`, but not `text` → `let`) is reported once as an unknown
+  declaration with a did-you-mean and parsed as that declaration. In a
+  tree, where `Set` or `Exit` may be components, a word is only taken for
+  a keyword when what follows cannot belong to an element (`stat x = 0`),
+  or, for `on`/`after`/`every`, when its block starts with a statement
+  (`aftr 6s { n.expire() }`, `onn click { open = !open }`); that item is
+  then parsed as the handler. A keyword is never suggested for a word
+  shorter than three letters (or than the keyword), nor when the next token
+  is `.`, `?.`, a touching `(` or `[`, `=` or an assignment operator: there
+  the item is a handler statement (`x = 1`, `n.expire()`), reported with
+  "statements go inside a handler".
 - Nesting past the limit skips the too-deep bracketed group whole, so the
   enclosing levels still close and there is one error.
 

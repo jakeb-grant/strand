@@ -142,3 +142,23 @@ Interpretations of ambiguities in `design.md`, one short entry each.
   is an error (rule 6) but kept as the body; any other `{` that starts no
   item is skipped with its block. Either way the braces stay in step and
   there is one diagnostic.
+- **2026-10-05 · A lone `\r` is a line break** (lexer, `LineIndex`, and the
+  text given to miette), so old-Mac files parse as they read and the
+  rendered header, gutter and `file:line:col` agree.
+- **2026-10-05 · Keyword slips are read as the keyword.** One edit from a
+  keyword, at least three letters (or the keyword's length), and not
+  followed by `.`, `?.`, a touching `(`/`[`, `=` or an assignment. At the
+  top level a slip is parsed as that declaration; in a tree only when the
+  rest cannot be an element, or for `on`/`after`/`every` when the block
+  starts with a statement, since `Set`/`Exit` may be component names.
+  A misspelt `override` before another token key is an error and parsed as
+  `override` (design.md "Loud overrides").
+- **2026-10-05 · Long lines render short.** A diagnostic whose drawn lines
+  exceed 1,000 characters is rendered as one `file:line:col` line: miette
+  panics past column 65,535 and a snippet of a minified line is useless.
+- **2026-10-05 · Whole-number literals past 2^53** (and any literal past
+  f64) warn `syntax::number_precision`: numbers are f64.
+- **2026-10-05 · strand-watch does not link the compiler.** The binary calls
+  `source::find_files` and passes plain paths to the watcher (constructor
+  and a rescan callback). Directories past depth 3 that hold `.strand`
+  files are reported (`Discovery::too_deep`) and `strand check` warns.

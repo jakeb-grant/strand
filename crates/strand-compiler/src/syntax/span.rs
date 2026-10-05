@@ -67,8 +67,10 @@ pub struct LineIndex {
 impl LineIndex {
     pub fn new(src: &str) -> Self {
         let mut line_starts = vec![0];
-        for (i, b) in src.bytes().enumerate() {
-            if b == b'\n' {
+        let bytes = src.as_bytes();
+        for (i, &b) in bytes.iter().enumerate() {
+            // `\n`, or a lone `\r` (as the lexer reads it).
+            if b == b'\n' || b == b'\r' && bytes.get(i + 1) != Some(&b'\n') {
                 line_starts.push(u32::try_from(i + 1).unwrap_or(u32::MAX));
             }
         }
@@ -99,6 +101,11 @@ mod tests {
         assert_eq!(idx.line_col(src, 3), (2, 1));
         assert_eq!(idx.line_col(src, 6), (2, 2)); // after the 3-byte ‹
         assert_eq!(idx.line_col(src, 8), (3, 1));
+        // A lone `\r` ends a line; `\r\n` is one line break.
+        let src = "a\rb\r\nc";
+        let idx = LineIndex::new(src);
+        assert_eq!(idx.line_col(src, 2), (2, 1));
+        assert_eq!(idx.line_col(src, 5), (3, 1));
     }
 
     #[test]

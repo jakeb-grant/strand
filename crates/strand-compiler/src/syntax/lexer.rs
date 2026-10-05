@@ -222,6 +222,16 @@ impl Lexer<'_> {
         }
     }
 
+    /// At `\n`, or at a `\r` not followed by `\n` (a `\r\n` pair is
+    /// whitespace `\r`, then the line break `\n`).
+    fn at_line_break(&self) -> bool {
+        match self.peek_at(0) {
+            b'\n' => true,
+            b'\r' => self.peek_at(1) != b'\n',
+            _ => false,
+        }
+    }
+
     fn run(&mut self) {
         // A leading byte-order mark (some editors write one) is trivia.
         if self.src.starts_with('\u{feff}') {
@@ -232,18 +242,20 @@ impl Lexer<'_> {
             let start = self.pos;
             let b = self.bytes[self.pos];
             match b {
-                b'\n' => {
+                // A lone `\r` (old Mac line endings) is a line break too, as
+                // it is for editors and the diagnostic renderer.
+                _ if self.at_line_break() => {
                     self.pos += 1;
                     self.push(TokenKind::Newline, start);
                 }
                 b' ' | b'\t' | b'\r' => {
-                    while matches!(self.peek_at(0), b' ' | b'\t' | b'\r') {
+                    while matches!(self.peek_at(0), b' ' | b'\t' | b'\r') && !self.at_line_break() {
                         self.pos += 1;
                     }
                     self.push(TokenKind::Whitespace, start);
                 }
                 b'/' if self.peek_at(1) == b'/' => {
-                    while self.pos < self.bytes.len() && self.bytes[self.pos] != b'\n' {
+                    while self.pos < self.bytes.len() && !self.at_line_break() {
                         self.pos += 1;
                     }
                     self.push(TokenKind::Comment, start);
@@ -328,7 +340,7 @@ impl Lexer<'_> {
     fn string(&mut self, start: usize) {
         self.pos += 1;
         loop {
-            if self.pos >= self.bytes.len() || self.peek_at(0) == b'\n' {
+            if self.pos >= self.bytes.len() || self.at_line_break() {
                 self.error(
                     "syntax::unterminated_string",
                     "unterminated string",
@@ -376,10 +388,13 @@ impl Lexer<'_> {
                             }
                         }
                         _ => {
-                            let len = self.src[self.pos..]
-                                .chars()
-                                .next()
-                                .map_or(0, |c| if c == '\n' { 0 } else { c.len_utf8() });
+                            let len = self.src[self.pos..].chars().next().map_or(0, |c| {
+                                if matches!(c, '\n' | '\r') {
+                                    0
+                                } else {
+                                    c.len_utf8()
+                                }
+                            });
                             self.pos += len;
                             self.error(
                                 "syntax::bad_escape",
