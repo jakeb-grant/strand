@@ -177,7 +177,9 @@ impl Ctx {
         match n {
             Node::Element(e) => self.mount_element(rt, e, env, frag, Vec::new()),
             Node::Surface(s) => self.mount_surface(rt, s, env, frag),
-            Node::If { cond, then, else_ } => self.mount_switch(
+            Node::If {
+                cond, then, else_, ..
+            } => self.mount_switch(
                 rt,
                 *cond,
                 vec![then.clone(), else_.clone()],
@@ -185,7 +187,7 @@ impl Ctx {
                 env,
                 frag,
             ),
-            Node::Match { selector, arms } => {
+            Node::Match { selector, arms, .. } => {
                 self.mount_switch(rt, *selector, arms.clone(), false, env, frag)
             }
             Node::For(f) => self.mount_for(rt, f, env, frag),

@@ -150,6 +150,9 @@ pub enum Node {
         cond: ChunkId,
         then: Arc<Vec<Node>>,
         else_: Arc<Vec<Node>>,
+        /// Where it is written (reload identity).
+        file: FileId,
+        span: Span,
     },
     For(For),
     /// A tree `match`: `selector` gives the index of the arm to mount
@@ -157,6 +160,8 @@ pub enum Node {
     Match {
         selector: ChunkId,
         arms: Vec<Arc<Vec<Node>>>,
+        file: FileId,
+        span: Span,
     },
     Slot,
     State(State),
@@ -309,6 +314,9 @@ pub struct State {
     pub def: DefId,
     pub init: StateInit,
     pub persist: bool,
+    /// `@reset`: a reload starts it from its default instead of keeping
+    /// its value (a persisted one forgets what it stored).
+    pub reset: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -632,6 +640,8 @@ impl Lowerer<'_> {
                 cond: self.expr_chunk(&i.cond),
                 then: Arc::new(self.nodes(&i.then)),
                 else_: Arc::new(self.nodes(&i.else_)),
+                file: self.file,
+                span: i.span,
             },
             hir::Node::For(f) => {
                 let iter = self.expr_chunk(&f.iter);
@@ -667,7 +677,12 @@ impl Lowerer<'_> {
                     .iter()
                     .map(|(_, body)| Arc::new(self.nodes(body)))
                     .collect();
-                Node::Match { selector, arms }
+                Node::Match {
+                    selector,
+                    arms,
+                    file: self.file,
+                    span: m.span,
+                }
             }
             hir::Node::Handler(h) => Node::Handler(self.handler(h)),
             hir::Node::Timer(t) => Node::Timer(self.timer(t)),
@@ -886,6 +901,7 @@ impl Lowerer<'_> {
             def: s.def,
             init,
             persist: s.persist,
+            reset: s.reset,
         }
     }
 

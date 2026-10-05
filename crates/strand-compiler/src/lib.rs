@@ -20,6 +20,8 @@
 //! - [`vm`]: the dynamic [`vm::Value`], the interpreter, builtins, the
 //!   [`vm::ServiceHost`] trait with the schema-populated mock and the real
 //!   clock, and `persist` storage.
+//! - [`reconcile`]: live reload: identity across reloads, Merkle hashes,
+//!   the loader (largest consistent set, last good tree and its cache).
 //! - [`instantiate`]: mounts a program on a `strand-core` runtime and
 //!   emits one `strand_scene::SceneDiff` per tick.
 //!
@@ -30,6 +32,7 @@ pub mod diagnostic;
 pub mod hir;
 pub mod instantiate;
 pub mod lower;
+pub mod reconcile;
 pub mod schema;
 pub mod source;
 pub mod syntax;
