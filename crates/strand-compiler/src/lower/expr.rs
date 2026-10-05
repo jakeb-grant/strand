@@ -1,5 +1,7 @@
 //! Expressions and statements to bytecode.
 
+use std::collections::BTreeSet;
+
 use crate::hir::{
     self, AssignOp, BinaryOp, CallArg, Callee, DefId, DefKind, ExprKind, LambdaBody, LocalKind,
     Pattern as HPat, StmtKind, UnaryOp, Unit,
@@ -569,6 +571,13 @@ impl Lowerer<'_> {
                 }
                 self.expr(c, receiver);
                 let (arity, variadic, action) = self.method_sig(&receiver.ty, name, *overload);
+                if action {
+                    for s in self.action_services(&receiver.ty) {
+                        if !c.actions.contains(&s) {
+                            c.actions.push(s);
+                        }
+                    }
+                }
                 let arity = arity.unwrap_or(args.len());
                 let map = self.push_args(c, args, arity, variadic.map(usize::from));
                 let n = c.name(name);
@@ -605,6 +614,51 @@ impl Lowerer<'_> {
     }
 
     /// Arity, variadic parameter and whether it is an action, for a method.
+    /// The services an action on a value of type `recv` can change: the
+    /// service itself (`notifications.clear()`), or every service whose
+    /// fields reach the record (`n.expire()` on a `Notification`). A
+    /// superset is fine: these become declared write edges.
+    fn action_services(&self, recv: &Ty) -> Vec<String> {
+        fn inner(t: &Ty) -> Option<&Ty> {
+            match t {
+                Ty::List(t, _) | Ty::Optional(t) | Ty::Async(t) => Some(t),
+                _ => None,
+            }
+        }
+        let mut t = recv;
+        while let Some(i) = inner(t) {
+            t = i;
+        }
+        let Ty::Record(target) = t else {
+            return Vec::new();
+        };
+        let types = &self.hir.types;
+        let mut out = Vec::new();
+        for (name, &root) in &self.schema.services {
+            let mut seen = BTreeSet::new();
+            let mut stack = vec![root];
+            while let Some(r) = stack.pop() {
+                if !seen.insert(r) {
+                    continue;
+                }
+                if r == *target {
+                    out.push(name.clone());
+                    break;
+                }
+                for f in &types.record(r).fields {
+                    let mut ft = &f.ty;
+                    while let Some(i) = inner(ft) {
+                        ft = i;
+                    }
+                    if let Ty::Record(x) = ft {
+                        stack.push(*x);
+                    }
+                }
+            }
+        }
+        out
+    }
+
     fn method_sig(
         &self,
         recv: &Ty,

@@ -52,6 +52,15 @@ pub trait ServiceHost {
         Vec::new()
     }
 
+    /// The graph cells an action of `service` can write (`n.expire()`
+    /// changes `notifications.popups`), declared as write edges of the
+    /// handlers that call it so their readers are ranked after them from
+    /// the first flush. The default: every field of the service
+    /// ([`ServiceHost::sources`]), a superset.
+    fn action_writes(&self, rt: &Runtime, service: &str) -> Vec<NodeId> {
+        self.sources(rt, service, None)
+    }
+
     /// A list field published as a keyed collection
     /// (`notifications.popups`, `workspaces.all`): a `for` over it follows
     /// its `VecDiff`s instead of comparing whole lists, so one new

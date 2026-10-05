@@ -56,6 +56,9 @@ pub enum WriteTarget {
     Field(DefId, String),
     /// A service's `rw` field.
     Service(String, String),
+    /// What an action of the service can change (`n.dismiss()`,
+    /// `notifications.clear()`): [`crate::vm::ServiceHost::action_writes`].
+    Action(String),
 }
 
 /// The direct reads of one chunk, and the chunks whose reads it takes
@@ -161,6 +164,7 @@ pub(crate) fn compute(prog: &mut Program) {
                 }
                 _ => None,
             })
+            .chain(chunk.actions.iter().cloned().map(WriteTarget::Action))
             .collect();
         w.sort();
         w.dedup();

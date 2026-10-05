@@ -498,3 +498,222 @@ fn strand_run_boots_the_hello_bar_on_every_output() {
     assert!(errors.is_empty(), "{errors:?}");
     drop(strand);
 }
+
+/// A virtual pointer on the sway seat (`zwlr_virtual_pointer_v1`): the
+/// headless seat has no pointer of its own.
+mod pointer {
+    use std::os::unix::net::UnixStream;
+    use std::path::Path;
+
+    use wayland_client::globals::{GlobalListContents, registry_queue_init};
+    use wayland_client::protocol::{wl_pointer, wl_registry};
+    use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
+    use wayland_protocols_wlr::virtual_pointer::v1::client::{
+        zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1,
+        zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
+    };
+
+    pub struct Client;
+    impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Client {
+        fn event(
+            _: &mut Self,
+            _: &wl_registry::WlRegistry,
+            _: wl_registry::Event,
+            _: &GlobalListContents,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+    delegate_noop!(Client: ignore ZwlrVirtualPointerManagerV1);
+    delegate_noop!(Client: ignore ZwlrVirtualPointerV1);
+
+    pub struct Pointer {
+        _conn: Connection,
+        queue: EventQueue<Client>,
+        pointer: ZwlrVirtualPointerV1,
+        time: u32,
+    }
+
+    impl Pointer {
+        pub fn new(socket: &Path) -> Self {
+            let conn = Connection::from_socket(UnixStream::connect(socket).unwrap()).unwrap();
+            let (globals, mut queue) = registry_queue_init::<Client>(&conn).unwrap();
+            let qh = queue.handle();
+            let manager: ZwlrVirtualPointerManagerV1 = globals.bind(&qh, 1..=2, ()).unwrap();
+            let pointer = manager.create_virtual_pointer(None, &qh, ());
+            queue.roundtrip(&mut Client).unwrap();
+            Self {
+                _conn: conn,
+                queue,
+                pointer,
+                time: 0,
+            }
+        }
+
+        /// A left click at layout position (`x`, `y`) of a layout
+        /// `w`×`h` logical pixels.
+        pub fn click(&mut self, x: u32, y: u32, w: u32, h: u32) {
+            self.time += 10;
+            self.pointer.motion_absolute(self.time, x, y, w, h);
+            self.pointer.frame();
+            for state in [
+                wl_pointer::ButtonState::Pressed,
+                wl_pointer::ButtonState::Released,
+            ] {
+                self.time += 10;
+                self.pointer.button(self.time, 0x110, state);
+                self.pointer.frame();
+            }
+            self.queue.roundtrip(&mut Client).unwrap();
+        }
+    }
+}
+
+/// A monitor unplugged and back within 30 s is the same monitor
+/// (`MonitorId`): its bar is parked while it is gone and comes back with
+/// its state; SIGTERM then ends `strand run` cleanly, with a `persist`
+/// value written less than the 250 ms debounce before it on disk.
+#[test]
+fn strand_run_keeps_a_replugged_monitors_bar() {
+    let Some(sway) = Sway::start_as("replug") else {
+        return;
+    };
+    sway.msg(&["create_output"]).unwrap();
+    sway.msg(&[
+        "output",
+        "HEADLESS-2",
+        "resolution",
+        "1920x1080",
+        "position",
+        "2560",
+        "0",
+        "scale",
+        "1",
+    ])
+    .unwrap();
+    let config = sway.dir.join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    // A click grows the bar: its buffer height shows the bar's `n`.
+    std::fs::write(
+        config.join("bar.strand"),
+        "state total = 0 persist\nbar Top {\n  state n = 0\n  height: n > 0 ? 40 : 32\n  on click {\n    n += 1\n    total += 1\n  }\n  text join(\" \", screen.name, n, total)\n}\n",
+    )
+    .unwrap();
+    let log = sway.dir.join("strand.log");
+    let state = sway.dir.join("state");
+    let child = Command::new(env!("CARGO_BIN_EXE_strand"))
+        .arg("run")
+        .arg(&config)
+        .env("XDG_RUNTIME_DIR", &sway.dir)
+        .env("XDG_STATE_HOME", &state)
+        .env("WAYLAND_DISPLAY", &sway.display)
+        .env("STRAND_LOG", "damage,info")
+        .stdin(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .spawn()
+        .unwrap();
+    let mut strand = Proc(child);
+    let text = || std::fs::read_to_string(&log).unwrap_or_default();
+    let wait = |strand: &mut Proc, what: &str, done: &dyn Fn(&str) -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !done(&text()) {
+            assert!(
+                strand.0.try_wait().unwrap().is_none(),
+                "strand exited: {}",
+                text()
+            );
+            assert!(Instant::now() < deadline, "no {what}: {}", text());
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    // `surface N on HEADLESS-2` lines, in order.
+    let attached = |log: &str| -> Vec<String> {
+        log.lines()
+            .filter(|l| l.ends_with(" on HEADLESS-2"))
+            .filter_map(|l| l.split("surface ").nth(1))
+            .filter_map(|l| l.split_whitespace().next())
+            .map(String::from)
+            .collect()
+    };
+    let damage_after = |log: &str, from: usize, buffer: &str| {
+        log.lines()
+            .filter(|l| l.starts_with("strand: damage"))
+            .skip(from)
+            .any(|l| l.contains(buffer))
+    };
+    let damage_count = |log: &str| {
+        log.lines()
+            .filter(|l| l.starts_with("strand: damage"))
+            .count()
+    };
+    wait(&mut strand, "bars", &|l| {
+        damage_after(l, 0, "buffer=2560x32 ") && damage_after(l, 0, "buffer=1920x32 ")
+    });
+    let first = attached(&text());
+    assert_eq!(first.len(), 1, "{}", text());
+    // Click HEADLESS-2's bar: the layout is 4480×1440, HEADLESS-2 starts
+    // at x = 2560.
+    let mut pointer = pointer::Pointer::new(&sway.dir.join(&sway.display));
+    // The seat gains a pointer: give strand a moment to bind it.
+    std::thread::sleep(Duration::from_millis(300));
+    pointer.click(2560 + 100, 10, 4480, 1440);
+    wait(&mut strand, "the click", &|l| {
+        damage_after(l, 0, "buffer=1920x40 ")
+    });
+    assert!(
+        !damage_after(&text(), 0, "buffer=2560x40 "),
+        "the other bar has its own state"
+    );
+    // Disabled: the output's global goes, and its bar's surface with it.
+    sway.msg(&["output", "HEADLESS-2", "disable"]).unwrap();
+    let detached = format!("surface {} detached", first[0]);
+    wait(&mut strand, "the detach", &|l| l.contains(&detached));
+    // Enabled again within 30 s: the same monitor, its bar back with
+    // `n` kept (40 px, never the fresh 32 px).
+    let mark = damage_count(&text());
+    sway.msg(&["output", "HEADLESS-2", "enable"]).unwrap();
+    wait(&mut strand, "the bar back", &|l| {
+        attached(l).len() == 2 && damage_after(l, mark, "buffer=1920x40 ")
+    });
+    assert!(
+        !damage_after(&text(), mark, "buffer=1920x32 "),
+        "the bar came back fresh: {}",
+        text()
+    );
+    // Another click (n = 2, total = 2), then SIGTERM straight after it
+    // is drawn: the run ends cleanly and `total` reached the disk.
+    let mark = damage_count(&text());
+    pointer.click(2560 + 100, 10, 4480, 1440);
+    wait(&mut strand, "the second click", &|l| {
+        l.lines()
+            .filter(|l| l.starts_with("strand: damage"))
+            .skip(mark)
+            .any(|l| l.contains("buffer=1920x40 "))
+    });
+    let pid = strand.0.id().to_string();
+    assert!(
+        Command::new("kill")
+            .args(["-TERM", &pid])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(s) = strand.0.try_wait().unwrap() {
+            break s;
+        }
+        assert!(Instant::now() < deadline, "strand ignored SIGTERM");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert!(status.success(), "{status:?}: {}", text());
+    let stored = std::fs::read_to_string(state.join("strand/persist/bar.total")).unwrap();
+    assert!(stored.contains('2'), "{stored:?}");
+    let errors: Vec<String> = text()
+        .lines()
+        .filter(|l| l.contains("ERROR"))
+        .map(String::from)
+        .collect();
+    assert!(errors.is_empty(), "{errors:?}");
+}

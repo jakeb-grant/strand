@@ -1365,7 +1365,47 @@ see wave2-core; the compiler supplies the field schema.)
   lay them out yet; and `screens.focused` (and `Screen.focused`) is the
   first monitor in plug order until a compositor service reports
   focus. A config with errors is printed and not run (the overlay over
-  a last good tree is the live-reload track's).
+  a last good tree is the live-reload track's). A left button held on
+  a surface is its node's `pressed` (cleared on release and on leave);
+  buttons other than left and right have no design event and send
+  nothing (round 2 sent a middle click as `on middle`, which the
+  design does not have). A monitor back within 30 s keeps its place in
+  `screens.all` (so `screens.focused` does not move to another monitor
+  on a replug); a forgotten one comes back last.
+- **2026-10-05 · wave2-vm: `strand run` shutdown and sleep (review
+  round 3).** SIGINT, SIGTERM and the compositor going away all end a
+  run the same way: the main thread sends `ToLogic::Shutdown` and joins
+  the logic thread, which unmounts the instance, runs
+  `Runtime::shutdown` (waiting for the persist queue, bounded) and
+  drops its stores, so a `persist` or `prefs.toml` write made in the
+  last 250 ms before logout or Ctrl-C reaches the disk. The signals are
+  blocked in every thread (the mask is set before any thread starts)
+  and read from a `signalfd` on the main loop; calloop's own signal
+  source needs `nix`, which is not in the tree. The logic thread
+  sleeps in a calloop loop of its own: the main thread's messages, a
+  ping for the runtime's wake hook (which therefore holds no sender:
+  the thread also ends when every sender is gone), the logic clock's
+  deadline as the dispatch timeout, and the M0 demo's `CLOCK_REALTIME`
+  timerfd armed at the wall-clock wake with `TFD_TIMER_ABSTIME |
+  TFD_TIMER_CANCEL_ON_SET`, so after a suspend or a clock step the
+  clock shows the new time at once (round 2 slept on a monotonic
+  countdown, up to a minute late). A clock set back between the step
+  and arming the timer (which `CANCEL_ON_SET` does not report) is
+  caught by comparing the wall time after arming with the step's.
+  With no state directory, persisted state is not kept but settings
+  files still are (their overlays in a temporary directory).
+- **2026-10-05 · wave2-vm: action writes (review round 3).** A handler
+  that calls a service action (`n.expire()`, `notifications.clear()`)
+  declares a write of what the action can change, from the first
+  flush: lowering records the services an action's receiver belongs to
+  (the service itself, or every service whose fields reach the item's
+  record) and the instantiator asks `ServiceHost::action_writes(rt,
+  service)`, by default every field of the service (a superset).
+  `tests/instantiate.rs::action_calls_declare_their_service_writes`.
+  The core change above (tasks spawned by listeners polled before the
+  next sink) now has a core test of its own,
+  `crates/strand-core/tests/order_props.rs::a_cell_written_by_a_task_a_listener_spawns_is_read_once_per_flush`,
+  which fails without it.
 
 ## wave2-core
 

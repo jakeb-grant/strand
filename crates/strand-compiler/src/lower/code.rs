@@ -246,6 +246,10 @@ pub struct Chunk {
     pub file: FileId,
     /// Holds an `await`: runs as a coroutine.
     pub awaits: bool,
+    /// The services whose state the action calls in this chunk can change
+    /// (`n.dismiss()` on a `Notification`: `notifications`), for the
+    /// handler's declared write edges.
+    pub actions: Vec<String>,
 }
 
 impl Chunk {

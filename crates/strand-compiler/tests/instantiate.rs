@@ -2249,3 +2249,43 @@ fn keyed_reads_do_not_copy_the_list() {
     // The text's binding only: no list value is rebuilt.
     assert_eq!(shell.rt.stats().computations - before, 1);
 }
+
+/// Service actions are writes too: a handler calling `n.expire()` (on an
+/// item of `notifications.popups`) or `notifications.clear()` declares a
+/// write of what the service's actions can change, so readers of the
+/// popups are ranked after it from the first flush.
+#[test]
+fn action_calls_declare_their_service_writes() {
+    use strand_compiler::lower::WriteTarget;
+    let src = "state m = 0\nbar B {\n  text join(\" \", notifications.popups.len)\n  for n in notifications.popups {\n    box { after 1s { n.expire() } }\n  }\n}\non change m { notifications.clear() }\n";
+    let mut map = SourceMap::new();
+    map.add("actions.strand", src.to_string());
+    let compiled = strand_compiler::compile(&map);
+    assert_eq!(compiled.errors(), 0, "{:#?}", compiled.diagnostics);
+    let program = lower::lower(
+        &compiled.program,
+        strand_compiler::schema::Schema::builtin(),
+    );
+    let action = WriteTarget::Action("notifications".into());
+    let writers = program
+        .writes
+        .iter()
+        .filter(|w| w.contains(&action))
+        .count();
+    assert_eq!(writers, 2, "{:?}", program.writes);
+    // And the mock carries it out in order: the expiry empties the popups
+    // and the count that reads them follows in the same tick.
+    let mut shell = boot(&[("actions", src)], |rt, host| {
+        screens(rt, host, &["DP-1"]);
+        host.set(
+            rt,
+            "notifications.popups",
+            Value::list(vec![notification(host, 1, "mail", "hi", "normal")]),
+        )
+        .unwrap();
+    });
+    assert_eq!(shell.scene.texts(), ["1"]);
+    let u = shell.at(1.0);
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    assert_eq!(shell.scene.texts(), ["0"]);
+}

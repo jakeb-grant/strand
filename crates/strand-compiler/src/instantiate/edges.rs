@@ -134,6 +134,9 @@ impl Ctx {
                 WriteTarget::Service(s, f) => {
                     targets.extend(self.vm.host.sources(rt, s, Some(f)));
                 }
+                WriteTarget::Action(s) => {
+                    targets.extend(self.vm.host.action_writes(rt, s));
+                }
             }
         }
         for t in targets {

@@ -22,13 +22,23 @@ hot path.
 `strand run [dir]` (`crates/strand/src/run.rs`) is this wiring: the main
 thread's surface host forwards the monitor hooks (`screens` as a list of
 plain `ScreenInfo`s, `monitor_forgotten` as `Forget(id)`), surface-level
-input and surface sizes to the logic thread over an `mpsc` channel
+input (`hover` and `pressed` as `Flag`, `click`/`secondary`/`scroll` as
+`Event`) and surface sizes to the logic thread over a calloop channel
 (`run::ToLogic`); the logic thread owns the runtime, `SchemaHost::real`
 and the `Instance`, loops on `Instance::step`, sends each non-empty diff
-on a calloop channel, and sleeps in `recv_timeout(Wake::sleep_for)`, the
-runtime's wake hook sending `ToLogic::Wake`. Until render hit-tests and
-lays out inside surfaces (M2), input and size facts address the
-surface's node.
+on a calloop channel, and sleeps in a calloop loop of its own until a
+message, the runtime's wake hook (a ping, so the hook holds no sender
+and the thread ends when the main thread's senders are gone), the logic
+clock's `Wake::deadline` (the dispatch timeout) or `Wake::wall` on a
+`CLOCK_REALTIME` timerfd (`TFD_TIMER_ABSTIME | TFD_TIMER_CANCEL_ON_SET`:
+a resume or a clock step wakes it at once). SIGINT, SIGTERM (a
+`signalfd` on the main loop, the signals blocked in every thread) and
+the compositor going away send `ToLogic::Shutdown`; the main thread
+joins the logic thread, which unmounts the instance, runs
+`Runtime::shutdown` and drops its stores, so debounced persist and
+settings writes reach the disk before the process exits. Until render
+hit-tests and lays out inside surfaces (M2), input and size facts
+address the surface's node.
 
 ## Crate graph
 
@@ -442,7 +452,7 @@ Public interfaces other crates and later stages build on:
   settings fields, scope locals, service fields, element instances;
   the lambdas a chunk makes and the `fn`s it calls included) and
   write set (`Program::writes(chunk)`: assignment and list-mutation
-  targets). The instantiator resolves those names to core nodes in the
+  targets, and the services its action calls can change). The instantiator resolves those names to core nodes in the
   scope a chunk is mounted in (`ServiceHost::sources` names a service
   field's nodes) and declares them as each node is created: binding
   memos, `let`s (after every name of the body is bound), component
@@ -615,6 +625,13 @@ Public interfaces other crates and later stages build on:
     declares with `rt.reads_from` before the first flush. A superset is
     fine; the default (none) leaves those edges to be learned on first
     run.
+  - `action_writes(rt, service) -> Vec<NodeId>`: the cells an action of
+    `service` can write (`n.expire()` changes `notifications.popups`),
+    declared with `rt.writes_to` on every handler that calls one, so
+    readers are ranked after it from the first flush. Lowering names
+    the service from the receiver's type (the service itself, or every
+    service whose fields reach the item's record). The default is
+    `sources(rt, service, None)`, every field: a superset.
   - `read_keyed(rt, service, field) -> Option<KeyedSignal<ValueKey,
     Value>>`: a list field published as a core keyed collection
     (`notifications.popups`, `workspaces.all`). A `for` directly over
@@ -780,8 +797,10 @@ Public interfaces other crates and later stages build on:
     `set_size(node, w, h)` (layout facts for `self.width`) and
     `write(node, prop, PropValue)` (`<->` writes, outside any handler,
     checked against the place's type); call `step` and send the diff to
-    render; sleep for `Wake::sleep_for`, input, a monitor hook or the
-    runtime's wake hook, whichever comes first. These take scene
+    render; sleep until `Wake::deadline` (logic clock), `Wake::wall`
+    (on a realtime timer, so a suspend or clock step does not delay
+    it), input, a monitor hook or the runtime's wake hook, whichever
+    comes first. These take scene
     `NodeId`s; render produces them when hit testing lands (M2).
   - `get`/`set(path)` read and write exported `file.name` values and
     fields inside them (`theme.prefs.compact`; the CLI), `set` checked

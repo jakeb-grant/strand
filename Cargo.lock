@@ -1549,6 +1549,7 @@ version = "0.0.0"
 dependencies = [
  "calloop",
  "chrono",
+ "libc",
  "libmimalloc-sys",
  "log",
  "mimalloc",
@@ -1561,6 +1562,8 @@ dependencies = [
  "strand-surface",
  "strand-text",
  "strand-watch",
+ "wayland-client",
+ "wayland-protocols-wlr",
 ]
 
 [[package]]

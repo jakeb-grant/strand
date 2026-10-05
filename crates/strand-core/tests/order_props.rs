@@ -737,6 +737,57 @@ fn a_listener_written_cell_is_read_after_the_event_that_fills_it() {
 }
 
 #[test]
+fn a_cell_written_by_a_task_a_listener_spawns_is_read_once_per_flush() {
+    // `on pings(v) { count += v }` as the compiler mounts it: the listener
+    // spawns a handler task on its site (`spawn_for`, as for `on
+    // notifications.received(n)`; `spawn_input` for `on click`), the site
+    // declares its write, and a reader of `count`, created first, declares
+    // its read. The flush polls the spawned task before the next sink, so
+    // the reader runs once per flush with the new total.
+    let rt = Runtime::new();
+    let x = rt.signal(0);
+    let count = rt.signal(0);
+    let reads = Rc::new(RefCell::new(Vec::new()));
+    let r = reads.clone();
+    let reader = rt.effect(move |rt| {
+        r.borrow_mut().push(count.get(rt)?);
+        Ok(())
+    });
+    rt.reads_from(reader.id(), &[count.id()]).unwrap();
+    let site = rt.handler_site();
+    rt.writes_to(site, count.id()).unwrap();
+    let pings = rt.events::<i32>();
+    for input in [false, true] {
+        pings
+            .on(&rt, move |rt, &v| {
+                let weak = rt.downgrade();
+                let add = async move {
+                    let rt = weak.upgrade().ok_or(strand_core::Error::Cancelled)?;
+                    count.update(&rt, |c| *c += v)
+                };
+                if input {
+                    rt.spawn_input(Some(site), add);
+                } else {
+                    rt.spawn_for(site, add);
+                }
+                Ok(())
+            })
+            .unwrap();
+    }
+    let emitter = rt.effect(move |rt| pings.emit(rt, x.get(rt)?));
+    rt.reads_from(emitter.id(), &[x.id()]).unwrap();
+    rt.flush();
+    assert_eq!(*reads.borrow(), vec![0], "the first flush: once");
+    reads.borrow_mut().clear();
+    for v in 1..4 {
+        x.set(&rt, v).unwrap();
+        rt.flush();
+    }
+    // Two listeners add `v` each: 2, 6, 12, each seen once.
+    assert_eq!(*reads.borrow(), vec![2, 6, 12]);
+}
+
+#[test]
 fn a_declared_reader_of_an_async_memo_runs_once_per_flush() {
     // `let hits = apps.search(q)` with `for h in hits`: the reader is
     // created first and declares its reads; the load resolves at once.

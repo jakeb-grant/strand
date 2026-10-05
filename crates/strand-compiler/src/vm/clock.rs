@@ -5,8 +5,10 @@
 //! once a minute; a pattern showing seconds reads the second signal, and
 //! the host loop is asked to wake every second only while something reads
 //! it ([`Clock::next_wake`]). Time comes from the host loop
-//! ([`Clock::set_time`]), so tests drive a fake clock and the runtime a
-//! real `CLOCK_REALTIME` timer.
+//! ([`Clock::set_time`]), so tests drive a fake clock, and `strand run`
+//! sleeps for [`Clock::next_wake`] on a `CLOCK_REALTIME` timerfd armed at
+//! that absolute time with `TFD_TIMER_CANCEL_ON_SET` (`crates/strand/
+//! src/run.rs`), so a resume or a clock step shows the new time at once.
 
 use std::fmt::Write as _;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
