@@ -412,18 +412,21 @@ impl Ctx {
     fn source_value(
         self: &Rc<Self>,
         rt: &Runtime,
+        prop: SceneProp,
         s: &SourceValue,
         env: &Rc<Env>,
     ) -> Result<PropValue, Error> {
         let types = &self.vm.prog.types;
         Ok(match s {
-            SourceValue::Chunk(c, ty) => convert::prop_value(types, ty, &self.eval(rt, *c, env)?),
+            SourceValue::Chunk(c, ty) => {
+                convert::prop_value_for(types, prop, ty, &self.eval(rt, *c, env)?)
+            }
             SourceValue::Pose(props) => {
                 let mut pose = Vec::new();
                 for p in props {
                     if let Some(sp) = p.prop {
                         let v = self.eval(rt, p.value, env)?;
-                        pose.push((sp, convert::prop_value(types, &p.ty, &v)));
+                        pose.push((sp, convert::prop_value_for(types, sp, &p.ty, &v)));
                     }
                 }
                 PropValue::Pose(pose)
@@ -462,7 +465,7 @@ impl Ctx {
                     continue;
                 }
                 return Ok(PropOut {
-                    value: ctx.source_value(rt, &s.value, &e)?,
+                    value: ctx.source_value(rt, prop, &s.value, &e)?,
                     source: i,
                 });
             }

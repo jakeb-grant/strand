@@ -331,6 +331,8 @@ impl Vm {
             DefKind::Tokens => Ok(Value::TokenSet(d)),
             DefKind::Service(_) => Ok(Value::Service(info.name.as_str().into())),
             DefKind::Keyframes => Ok(Value::text(info.name.as_str())),
+            // `options: Look`: the enum itself.
+            DefKind::Enum(e) => Ok(Value::EnumType(*e)),
             _ => Ok(Value::Null),
         }
     }

@@ -46,6 +46,10 @@ fn paint(v: &Value) -> Option<(Paint, Slots)> {
     let Value::Call(c) = v else {
         return None;
     };
+    // A gradient has colour stops; `radial(center, 40%)` is a mask.
+    if !c.args.iter().any(|a| color_slot(a).is_some()) {
+        return None;
+    }
     let stops = |vals: &[Value]| -> (Vec<GradientStop>, Slots) {
         let colors: Vec<(Color, Option<TokenExpr>)> = vals.iter().filter_map(color_slot).collect();
         let n = colors.len().max(2) - 1;
@@ -141,30 +145,37 @@ fn font(parts: &[Value]) -> Option<PropValue> {
     }))
 }
 
-/// The scene value of `v` for a prop of type `ty`.
+/// The scene value of `v` for a value of type `ty` (a token entry, a
+/// call argument).
 pub fn prop_value(types: &TypeTable, ty: &Ty, v: &Value) -> PropValue {
-    convert(types, ty, v).unwrap_or(PropValue::Unset)
+    convert(types, ty, v, false).unwrap_or(PropValue::Unset)
 }
 
-fn convert(types: &TypeTable, ty: &Ty, v: &Value) -> Option<PropValue> {
+/// The scene value of `v` for `prop` of type `ty`: `border`, `stroke` and
+/// `text_stroke` take a width and a paint (`1, $border`) as a
+/// [`Border`].
+pub fn prop_value_for(types: &TypeTable, prop: Prop, ty: &Ty, v: &Value) -> PropValue {
+    let border = matches!(prop, Prop::Border | Prop::Stroke | Prop::TextStroke);
+    convert(types, ty, v, border).unwrap_or(PropValue::Unset)
+}
+
+fn convert(types: &TypeTable, ty: &Ty, v: &Value, border_pair: bool) -> Option<PropValue> {
     let ty = match ty {
         Ty::Optional(t) => t,
         t => t,
     };
     Some(match v {
         Value::Null | Value::Unit => PropValue::Unset,
-        Value::Async(a) => return a.usable().and_then(|v| convert(types, ty, v)),
+        Value::Async(a) => return a.usable().and_then(|v| convert(types, ty, v, border_pair)),
         Value::Token(t) => PropValue::Token((**t).clone()),
         Value::Bool(b) => PropValue::Bool(*b),
-        Value::Num(n, u) => {
-            let n = *n as f32;
+        Value::Num(x, u) => {
+            let n = *x as f32;
             match u {
                 Num::Percent => PropValue::Length(Length::Percent(n)),
                 Num::Ch => PropValue::Length(Length::Ch(n)),
                 Num::Deg => PropValue::Angle(n),
-                Num::Ms => {
-                    PropValue::Duration(Duration::from_secs_f64((n.max(0.0) / 1000.0) as f64))
-                }
+                Num::Ms => PropValue::Duration(Duration::from_secs_f64(x.max(0.0) / 1000.0)),
                 Num::Int | Num::Float | Num::Px => PropValue::Number(n),
             }
         }
@@ -189,14 +200,7 @@ fn convert(types: &TypeTable, ty: &Ty, v: &Value) -> Option<PropValue> {
         }
         Value::Commas(items) => match ty {
             Ty::Prim(Prim::Shadow) => shadows(v)?,
-            Ty::Tuple(parts) if is_border(parts) => border(items)?,
-            Ty::Union(alts)
-                if alts
-                    .iter()
-                    .any(|t| matches!(t, Ty::Tuple(p) if is_border(p))) =>
-            {
-                border(items)?
-            }
+            _ if border_pair && items.len() == 2 => border(items)?,
             _ => {
                 let part = |i: usize| match ty {
                     Ty::Tuple(ts) => ts.get(i).cloned().unwrap_or(Ty::Any),
@@ -231,13 +235,6 @@ fn convert(types: &TypeTable, ty: &Ty, v: &Value) -> Option<PropValue> {
         | Value::TokenSet(_)
         | Value::Service(_) => return None,
     })
-}
-
-fn is_border(parts: &[Ty]) -> bool {
-    matches!(
-        parts,
-        [Ty::Prim(Prim::Length), Ty::Prim(Prim::Paint | Prim::Color)]
-    )
 }
 
 fn border(items: &[Value]) -> Option<PropValue> {
@@ -401,7 +398,7 @@ mod tests {
             Value::float(1.0),
             Value::token(TokenExpr::path("border")),
         ]));
-        let pv = prop_value(&t, &ty, &v);
+        let pv = prop_value_for(&t, Prop::Border, &ty, &v);
         let PropValue::Token(TokenExpr::Template { value, colors }) = &pv else {
             panic!("{pv:?}")
         };

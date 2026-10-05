@@ -125,15 +125,18 @@ impl Clock {
         let _ = self.second.set(rt, s);
     }
 
-    /// The next boundary the clock must be woken at: the next minute, or
-    /// the next second while a binding reads seconds.
+    /// The next boundary the clock must be woken at: the next second
+    /// while a binding reads seconds, else the next minute while one reads
+    /// the time at all, else never (a bar without a clock sleeps).
     pub fn next_wake(&self, rt: &Runtime) -> Option<SystemTime> {
-        let seconds = rt.observers(self.second.id()).is_ok_and(|o| !o.is_empty());
+        let read = |s: Signal<i64>| rt.observers(s.id()).is_ok_and(|o| !o.is_empty());
         let now = self.second.get_untracked(rt).ok()?;
-        let next = if seconds {
+        let next = if read(self.second) {
             now + 1
-        } else {
+        } else if read(self.minute) {
             now.div_euclid(60) * 60 + 60
+        } else {
+            return None;
         };
         Some(UNIX_EPOCH + Duration::from_secs(next.max(0) as u64))
     }
@@ -303,6 +306,7 @@ mod tests {
         // 2026-10-05 09:41:07 UTC.
         let t0 = 1_791_193_267;
         let clock = std::rc::Rc::new(Clock::new(&rt, &types(), utc, at(t0)));
+        assert_eq!(clock.next_wake(&rt), None, "nothing reads the clock");
         let c = clock.clone();
         let hm = rt.memo(move |rt| c.format(rt, "%H:%M"));
         let _w = rt.watch(hm.id()).unwrap();

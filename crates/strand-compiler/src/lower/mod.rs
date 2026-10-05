@@ -74,6 +74,9 @@ pub struct FileProgram {
     pub file: FileId,
     pub module: String,
     pub items: Vec<Node>,
+    /// Services the file's top level reads (`let`s, handlers, timers,
+    /// tokens): acquired for as long as the config runs.
+    pub services: Arc<BTreeSet<String>>,
 }
 
 /// A component declaration.
@@ -338,6 +341,7 @@ pub fn lower(program: &hir::Program, schema: &Schema) -> Program {
         file: FileId(0),
         owned: Vec::new(),
         services: Vec::new(),
+        elem: None,
     };
     for d in &program.defs {
         let module = program
@@ -373,10 +377,13 @@ pub fn lower(program: &hir::Program, schema: &Schema) -> Program {
             file: f.file,
             module: f.name.clone(),
             items: Vec::new(),
+            services: Arc::default(),
         };
+        l.begin_body();
         for item in &f.items {
             l.item(item, &mut fp.items);
         }
+        fp.services = l.end_body(Vec::new(), false).services;
         l.out.files.push(fp);
     }
     l.out
@@ -391,12 +398,18 @@ pub(crate) struct Lowerer<'a> {
     owned: Vec<BTreeSet<NodeIdx>>,
     /// Services read by the bodies being lowered, innermost last.
     pub(crate) services: Vec<BTreeSet<String>>,
+    /// The schema of the element whose children are being lowered, for
+    /// its `when` and pose props.
+    elem: Option<&'a crate::schema::ElementSchema>,
 }
 
 impl Lowerer<'_> {
     fn item(&mut self, item: &hir::Item, out: &mut Vec<Node>) {
         match item {
             hir::Item::Component(c) => {
+                // Defaults, tokens and body read services for the
+                // component, which acquires them when mounted.
+                self.begin_body();
                 let params = c
                     .params
                     .iter()
@@ -404,7 +417,8 @@ impl Lowerer<'_> {
                     .collect();
                 // Paths already carry the component's name (`Toast.radius`).
                 let tokens = c.tokens.iter().map(|t| self.token_def(t)).collect();
-                let body = self.body(&c.body);
+                let nodes = self.nodes(&c.body);
+                let body = self.end_body(nodes, false);
                 self.out.components.insert(
                     c.def,
                     Component {
@@ -419,7 +433,7 @@ impl Lowerer<'_> {
             hir::Item::Surface(s) => {
                 self.begin_body();
                 let element = self.element(&s.element);
-                let body = self.end_body(Vec::new());
+                let body = self.end_body(Vec::new(), false);
                 let kind = match &element.kind {
                     ElementKind::Builtin(k) => *k,
                     _ => NodeKind::Panel,
@@ -493,11 +507,13 @@ impl Lowerer<'_> {
         self.services.push(BTreeSet::new());
     }
 
-    fn end_body(&mut self, nodes: Vec<Node>) -> Body {
+    /// Ends a body. `merge`: its services also count for the body around
+    /// it (a `for` item's are its component's); a component's or
+    /// surface's do not count for the file declaring it.
+    fn end_body(&mut self, nodes: Vec<Node>, merge: bool) -> Body {
         let owned = self.owned.pop().unwrap_or_default();
         let services = self.services.pop().unwrap_or_default();
-        // A body's services are also read by the bodies around it.
-        if let Some(outer) = self.services.last_mut() {
+        if merge && let Some(outer) = self.services.last_mut() {
             outer.extend(services.iter().cloned());
         }
         Body {
@@ -510,7 +526,7 @@ impl Lowerer<'_> {
     fn body(&mut self, nodes: &[hir::Node]) -> Body {
         self.begin_body();
         let lowered = self.nodes(nodes);
-        self.end_body(lowered)
+        self.end_body(lowered, true)
     }
 
     /// The element-scope local `name` bound at the element spanning `span`.
@@ -543,7 +559,7 @@ impl Lowerer<'_> {
             hir::Node::Element(e) => Node::Element(self.element(e)),
             hir::Node::When(w) => Node::When {
                 cond: self.expr_chunk(&w.cond),
-                props: self.props(&w.props, None),
+                props: self.props(&w.props, self.elem),
             },
             hir::Node::If(i) => Node::If {
                 cond: self.expr_chunk(&i.cond),
@@ -586,7 +602,7 @@ impl Lowerer<'_> {
             hir::Node::Timer(t) => Node::Timer(self.timer(t)),
             hir::Node::Pose(p) => Node::Pose {
                 kind: p.kind,
-                props: self.props(&p.props, None),
+                props: self.props(&p.props, self.elem),
             },
             hir::Node::Slot(_) => Node::Slot,
             hir::Node::Set(defs, _) => Node::Set(defs.iter().map(|d| self.token_def(d)).collect()),
@@ -642,7 +658,9 @@ impl Lowerer<'_> {
                 .collect(),
             None => Vec::new(),
         };
+        let outer = std::mem::replace(&mut self.elem, schema);
         let children = Arc::new(self.nodes(&e.children));
+        self.elem = outer;
         Element {
             node: e.node,
             kind,

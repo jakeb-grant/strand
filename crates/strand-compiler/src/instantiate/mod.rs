@@ -34,7 +34,9 @@ use strand_scene::{
     Color, NodeId, Prop as SceneProp, PropValue, SceneDiff, SceneOp, TokenTable, Transition,
 };
 
-pub use convert::{BEZIER_DURATION, from_prop, prop_value, token_entry, transition};
+pub use convert::{
+    BEZIER_DURATION, from_prop, prop_value, prop_value_for, token_entry, transition,
+};
 pub use emit::PropOut;
 pub use mirror::{SceneMirror, show, show_expr};
 
@@ -270,18 +272,20 @@ impl Instance {
                 .flat_map(|f| f.items.iter().cloned())
                 .collect();
             ctx.declare(rt, &all, &root_env);
-            let services: std::collections::BTreeSet<String> = prog
+            // What the top level reads, and `screens` for per-monitor bars.
+            let mut services: std::collections::BTreeSet<String> = prog
+                .files
+                .iter()
+                .flat_map(|f| f.services.iter().cloned())
+                .collect();
+            let bars = prog
                 .files
                 .iter()
                 .flat_map(|f| f.items.iter())
-                .filter_map(|n| match n {
-                    Node::Handler(h) => match &h.event {
-                        crate::lower::Event::Service { service, .. } => Some(service.clone()),
-                        _ => None,
-                    },
-                    _ => None,
-                })
-                .collect();
+                .any(|n| matches!(n, Node::Surface(s) if s.screen.is_some()));
+            if bars {
+                services.insert("screens".to_string());
+            }
             ctx.acquire(rt, &services);
             let root_frag = ctx.em.borrow_mut().new_frag(None, None);
             for f in &prog.files {

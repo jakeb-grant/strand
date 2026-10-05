@@ -421,6 +421,21 @@ fn after_while_pauses_and_expires() {
     assert!(shell.scene.find_text("Battery · Battery low").is_some());
 }
 
+/// A config that reads no clock never wakes: no deadline, no wall-clock
+/// wake-up.
+#[test]
+fn a_static_bar_sleeps() {
+    let src = "bar B { text \"static\" }\n";
+    let shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    assert_eq!(shell.inst.next_deadline(), None);
+    assert_eq!(shell.inst.next_wake(), None);
+    assert!(shell.rt.is_idle());
+    assert_eq!(shell.host.readers("screens"), 1);
+    assert_eq!(shell.host.readers("clock"), 0);
+}
+
 #[test]
 fn every_while_repeats_only_while_true() {
     let src = "state ticks = 0\nstate visible = true\nevery 1s while visible { ticks += 1 }\n";
@@ -826,7 +841,11 @@ fn service_events_are_lossless() {
     }
     shell.flush();
     assert_eq!(shell.scene.texts(), ["3"]);
-    assert_eq!(shell.host.readers("notifications"), 1);
+    assert_eq!(
+        shell.host.readers("notifications"),
+        1,
+        "the top level listens"
+    );
 }
 
 /// `persist` keeps a value across instances, keyed by path, with the
@@ -1105,4 +1124,54 @@ fn selected_rows_and_activate() {
         .collect();
     assert_eq!(actions, ["App(firefox).launch(0)"]);
     assert_eq!(shell.inst.get("launcher.open").unwrap(), Value::Bool(false));
+}
+
+/// Every snippet of design.md (and grammar.md's examples, and the rice)
+/// mounted at once: no binding fails, every diff is consistent.
+#[test]
+fn every_snippet_mounts() {
+    let everything = "bar Everything {\n  col {\n    GoodTable; Switcher; Layout; Hatches; Shape; Paint; Filters; Motion; Launcher2; Now\n    for n in notifications.popups { Expire n; Toast n; Toast2 n\n      for ws in workspaces.all { Rules ws { n: n; xs: workspaces.all } }\n    }\n    for ws in workspaces.all { Dot ws }\n    for w in windows.all { Media w }\n    for p in pins { Pins p }\n  }\n}\n";
+    let (name, snippets) = fixture("snippets.strand");
+    let files = [
+        (name, format!("{snippets}\n{everything}")),
+        fixture("theme.strand"),
+        fixture("rice_now.strand"),
+    ];
+    let mut shell = boot(&refs(&files), |rt, host| {
+        desktop(rt, host);
+        let w = host.record(
+            "Window",
+            &[("id", Value::text("w1")), ("title", Value::text("t"))],
+        );
+        host.set(rt, "windows.all", Value::list(vec![w])).unwrap();
+        screens(rt, host, &["DP-1"]);
+    });
+    assert!(shell.scene.len() > 100, "{}", shell.scene.len());
+    insta::assert_snapshot!("every_snippet", shell.scene.render());
+    let rendered = shell.scene.render();
+    for expected in [
+        "segmented value=auto options=[auto, light, dark, wallpaper, mocha]",
+        "glow=[12, $accent.alpha(0.6)]",
+        "mask=radial(center, 40%)",
+        "stagger=30ms",
+        "border=template(2, conic(from 0deg",
+    ] {
+        assert!(rendered.contains(expected), "{expected}\n{rendered}");
+    }
+    // Click and scroll everything that listens; tick past every timer.
+    for ev in ["click", "secondary", "scroll", "drop"] {
+        for n in shell.inst.nodes_handling(ev) {
+            let args = match ev {
+                "scroll" => vec![Value::float(1.0), Value::float(0.0)],
+                _ => Vec::new(),
+            };
+            shell.inst.event(n, ev, args);
+        }
+    }
+    let u = shell.at(10.0);
+    // Handlers given made-up arguments may fail; bindings must not.
+    for e in &u.errors {
+        assert!(!e.contains("text.") && !e.contains("box."), "{e}");
+    }
+    shell.at(20.0);
 }

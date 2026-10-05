@@ -288,6 +288,26 @@ fn call_value(name: &str, args: Vec<Value>) -> Value {
     }))
 }
 
+/// `noise(x)`: smooth 1D value noise in `0..=1`, the same for the same
+/// `x`.
+pub fn noise(x: f64) -> f64 {
+    fn hash(i: i64) -> f64 {
+        let mut h = (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        h ^= h >> 31;
+        h = h.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        h ^= h >> 29;
+        (h >> 11) as f64 / (1u64 << 53) as f64
+    }
+    if !x.is_finite() {
+        return 0.5;
+    }
+    let i = x.floor();
+    let f = x - i;
+    let s = f * f * (3.0 - 2.0 * f);
+    let (a, b) = (hash(i as i64), hash(i as i64 + 1));
+    a + (b - a) * s
+}
+
 /// `pct(0.42)` is `42%`.
 pub fn pct(f: f64) -> String {
     format!("{}%", (f * 100.0).round() as i64)
@@ -423,8 +443,9 @@ pub(crate) fn call(
             );
             Value::float(x.max(lo).min(hi.max(lo)))
         }
-        // Time signals are the render thread's (M4): constant until then.
-        "wave" | "noise" => Value::float(0.0),
+        // `wave` is a time signal, the render thread's (M4): 0 until then.
+        "wave" => Value::float(0.0),
+        "noise" => Value::float(noise(num(0).unwrap_or(0.0))),
         "sleep" => {
             let d = args.get(0).and_then(Value::as_duration).unwrap_or_default();
             let sleep = rt.sleep(d);
@@ -691,6 +712,17 @@ mod tests {
             binary(BinaryOp::Eq, &Value::int(1), &Value::float(1.0)).unwrap(),
             Value::Bool(true)
         );
+    }
+
+    #[test]
+    fn noise_is_smooth_and_bounded() {
+        for i in 0..100 {
+            let x = i as f64 * 0.37;
+            let n = noise(x);
+            assert!((0.0..=1.0).contains(&n));
+            assert!((noise(x + 1e-6) - n).abs() < 1e-3);
+        }
+        assert_eq!(noise(2.0), noise(2.0));
     }
 
     #[test]
