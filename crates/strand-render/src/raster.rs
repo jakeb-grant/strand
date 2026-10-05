@@ -87,6 +87,26 @@ impl AtlasMirror {
         self.pages.is_empty()
     }
 
+    /// Drops this scale's pages that are not in `live` (the worker trimmed
+    /// or reset them; see `TextLayout::atlas_pages`).
+    pub fn retain_pages(&mut self, scale: Scale, live: &[PageId]) {
+        self.pages.retain(|(s, index), p| {
+            *s != scale
+                || live
+                    .iter()
+                    .any(|id| id.index == *index && id.generation == p.generation)
+        });
+    }
+
+    /// Bytes of mirrored pixels held for `scale`.
+    pub fn bytes(&self, scale: Scale) -> usize {
+        self.pages
+            .iter()
+            .filter(|((s, _), _)| *s == scale)
+            .map(|(_, p)| p.pixmap.width() as usize * p.pixmap.height() as usize * 4)
+            .sum()
+    }
+
     /// Drops pages of scales no surface uses any more.
     pub fn retain_scales(&mut self, keep: impl Fn(Scale) -> bool) {
         self.pages.retain(|(s, _), _| keep(*s));
@@ -195,21 +215,50 @@ pub const CELL_W: u32 = 256;
 /// Height of a raster cell.
 pub const CELL_H: u32 = 64;
 
-/// Render contexts kept for distinct cell sizes (edge cells are smaller).
-const MAX_CONTEXTS: usize = 8;
+/// Render contexts kept for distinct cell sizes by default (edge cells are
+/// smaller, so a surface uses up to four sizes).
+const MIN_CONTEXTS: usize = 8;
 
 /// Owns the vello contexts and scratch space between frames.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Raster {
     /// One context per cell size in use, most recent first.
     contexts: Vec<RenderContext>,
+    /// Contexts kept; see [`Raster::set_surfaces`].
+    max_contexts: usize,
     resources: Option<Resources>,
     scratch: Vec<u8>,
     /// Pixels the last `paint` handed to vello (cells × cell area).
     rasterised: u64,
 }
 
+impl Default for Raster {
+    fn default() -> Self {
+        Self {
+            contexts: Vec::new(),
+            max_contexts: MIN_CONTEXTS,
+            resources: None,
+            scratch: Vec::new(),
+            rasterised: 0,
+        }
+    }
+}
+
 impl Raster {
+    /// Keeps enough contexts for `n` surfaces (four cell sizes each: full
+    /// cells, the right column, the bottom row and the corner), so several
+    /// outputs of different sizes never rebuild contexts every frame.
+    pub fn set_surfaces(&mut self, n: usize) {
+        self.max_contexts = (4 * n).max(MIN_CONTEXTS);
+        self.contexts.truncate(self.max_contexts);
+    }
+
+    /// Render contexts currently kept.
+    #[cfg(test)]
+    pub fn contexts(&self) -> usize {
+        self.contexts.len()
+    }
+
     /// Pixels the last [`Raster::paint`] rasterised. Tracks damage, not
     /// buffer size.
     pub fn rasterised(&self) -> u64 {
@@ -236,7 +285,7 @@ impl Raster {
                 };
                 self.contexts
                     .insert(0, RenderContext::new_with(w, h, settings));
-                self.contexts.truncate(MAX_CONTEXTS);
+                self.contexts.truncate(self.max_contexts);
             }
         }
         &mut self.contexts[0]
@@ -439,10 +488,6 @@ fn draw(
                 layout,
                 color,
             } => {
-                ctx.set_tint(Some(Tint {
-                    color: bgra(*color),
-                    mode: TintMode::AlphaMask,
-                }));
                 // A layout shaped for another scale (the surface moved
                 // to a different output) is drawn resampled until the
                 // re-shaped one arrives.
@@ -455,7 +500,11 @@ fn draw(
                 ctx.set_transform(
                     base * Affine::translate((*x as f64, *y as f64)) * Affine::scale(k),
                 );
-                for g in layout.glyphs() {
+                for (g, run_color) in layout
+                    .runs
+                    .iter()
+                    .flat_map(|r| r.glyphs.iter().map(move |g| (g, r.color)))
+                {
                     let Some(page) = atlas.page(g.slot.page) else {
                         continue;
                     };
@@ -468,6 +517,11 @@ fn draw(
                     if !touches(&gb) {
                         continue;
                     }
+                    // Marks and markup spans paint in their own colour.
+                    ctx.set_tint(Some(Tint {
+                        color: bgra(run_color.unwrap_or(*color)),
+                        mode: TintMode::AlphaMask,
+                    }));
                     ctx.set_paint(PaintType::Image(Image {
                         image: ImageSource::Pixmap(page.clone()),
                         sampler: ImageSampler {

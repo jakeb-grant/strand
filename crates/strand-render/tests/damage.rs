@@ -125,7 +125,7 @@ fn clock_tick_at_fractional_scale_matches_full_repaint() {
     let (mut r, mut buf) = fresh(diff, size.w, size.h, s);
     r.apply(set_text(clock, "13:00"));
     let d = buf.paint(&mut r, BAR, 1);
-    // 1.25² × the 1× budget.
+    // Scale::new(150) is 150/120 = 1.25×: 1.25² × the 1× budget.
     assert!(d.area() <= 3125, "{}", d.area());
     let (_, full) = fresh(bar("13:00").0, size.w, size.h, s);
     assert!(buf.pixels == full.pixels);
@@ -278,7 +278,23 @@ fn parent_opacity_change_repaints_overflowing_children() {
 /// buffers, always match a from-scratch render.
 #[test]
 fn random_edits_match_full_repaint() {
-    let mut seed = 0x2545_f491_4f6c_dd1du64;
+    // Every supported scale (1, 1.25, 1.5, 1.75, 2) with one seed, and a
+    // second seed at the integer and the most common fractional scale.
+    // (Debug-build vello is slow; this keeps the test around 20 s.)
+    for scale in [120, 150, 180, 210, 240] {
+        random_edits(0x2545_f491_4f6c_dd1d, Scale::new(scale).unwrap(), 160);
+    }
+    for scale in [120, 180] {
+        random_edits(0x9e37_79b9_7f4a_7c15, Scale::new(scale).unwrap(), 160);
+    }
+}
+
+/// Random edits painted into three buffers handed back out of order, like
+/// a compositor releasing them; each paint must equal a full repaint.
+/// Buffer age counts commits, and only non-empty paints are committed
+/// (the `Painter` contract), so under-widening by age would show.
+fn random_edits(seed: u64, scale: Scale, frames: usize) {
+    let mut seed = seed;
     let mut rnd = move |n: u32| {
         seed ^= seed << 13;
         seed ^= seed >> 7;
@@ -343,60 +359,109 @@ fn random_edits_match_full_repaint() {
             (Prop::Text, text("0")),
         ],
     );
-    let mut scene = b.diff.clone();
-    let (mut r, first) = fresh(b.diff, 200, 24, Scale::ONE);
-    // Three buffers handed back in arbitrary order, like a compositor
-    // releasing them out of order; age = frames since a buffer was painted.
-    let mut bufs = [
-        first,
-        Buffer::new(200, 24, Scale::ONE),
-        Buffer::new(200, 24, Scale::ONE),
-    ];
-    let mut painted_at: [Option<usize>; 3] = [Some(0), None, None];
+    let size = scale.physical_size(LogicalSize::new(200.0, 24.0));
+    let (w, h) = (size.w, size.h);
+    let mut reference = renderer();
+    assert!(reference.apply(b.diff.clone()).is_empty());
+    reference.attach_surface(BAR, root);
+    let (mut r, first) = fresh(b.diff, w, h, scale);
+    let mut bufs = [first, Buffer::new(w, h, scale), Buffer::new(w, h, scale)];
+    // Commit number each buffer was last committed at.
+    let mut commits = 1usize;
+    let mut painted_at: [Option<usize>; 3] = [Some(1), None, None];
+    let mut front = 0;
     let mut log: Vec<String> = Vec::new();
-    for frame in 1..200 {
+    for frame in 1..frames {
         let mut d = SceneDiff::new();
         for _ in 0..1 + rnd(3) {
             let id = boxes[rnd(boxes.len() as u32) as usize];
-            match rnd(7) {
+            match rnd(12) {
                 0 => d.set(id, Prop::X, num(rnd(180) as f32)),
-                1 => d.set(id, Prop::Bg, color(palette[rnd(5) as usize])),
-                2 => d.set(id, Prop::Radius, num(rnd(9) as f32)),
-                3 => d.set(id, Prop::Opacity, num(rnd(4) as f32 / 3.0)),
-                4 => d.set(label, Prop::Color, color(palette[rnd(4) as usize])),
-                5 if id != boxes[0] => d.push(SceneOp::Move {
+                1 => d.set(id, Prop::Y, num(rnd(20) as f32 - 4.0)),
+                2 => d.set(id, Prop::Bg, color(palette[rnd(5) as usize])),
+                3 => d.set(id, Prop::Radius, num(rnd(9) as f32)),
+                4 => d.set(id, Prop::Opacity, num(rnd(4) as f32 / 3.0)),
+                5 => d.set(label, Prop::Color, color(palette[rnd(4) as usize])),
+                6 if id != boxes[0] => d.push(SceneOp::Move {
                     id,
-                    parent: Some(root),
+                    parent: Some(if rnd(2) == 0 { root } else { clip }),
                     index: rnd(8),
                 }),
+                7 => d.set(
+                    id,
+                    Prop::Shadow,
+                    PropValue::Shadow(if rnd(3) == 0 {
+                        vec![]
+                    } else {
+                        vec![Shadow {
+                            x: rnd(5) as f32 - 2.0,
+                            y: rnd(4) as f32,
+                            blur: rnd(8) as f32,
+                            spread: rnd(3) as f32,
+                            color: hex(palette[rnd(4) as usize]).with_alpha(0.6),
+                        }]
+                    }),
+                ),
+                8 => d.set(
+                    id,
+                    Prop::Border,
+                    PropValue::Border(Border {
+                        width: rnd(3) as f32,
+                        paint: Paint::Solid(hex(palette[rnd(4) as usize])),
+                    }),
+                ),
+                9 => d.set(
+                    id,
+                    Prop::Bg,
+                    PropValue::Paint(Paint::Linear {
+                        angle: rnd(360) as f32,
+                        stops: vec![
+                            GradientStop {
+                                offset: 0.0,
+                                color: hex(palette[rnd(4) as usize]),
+                            },
+                            GradientStop {
+                                offset: 1.0,
+                                color: hex(palette[rnd(5) as usize]),
+                            },
+                        ],
+                    }),
+                ),
                 _ => d.set(label, Prop::Text, text(&rnd(1000).to_string())),
             };
         }
-        scene.ops.extend(d.ops.iter().cloned());
         log.push(format!("{d:?}"));
+        reference.apply(d.clone());
         r.apply(d);
         let i = rnd(3) as usize;
-        let age = painted_at[i].map_or(0, |f| (frame - f).min(255) as u8);
-        let dmg = bufs[i].paint(&mut r, BAR, age);
-        painted_at[i] = Some(frame);
-        log.push(format!("frame {frame} buf {i} age {age} damage {dmg:?}"));
-        let (_, full) = fresh(scene.clone(), 200, 24, Scale::ONE);
-        if let Some(p) = bufs[i]
+        if r.wants_frame(BAR) {
+            let age = painted_at[i].map_or(0, |c| (commits + 1 - c).min(255) as u8);
+            let dmg = bufs[i].paint(&mut r, BAR, age);
+            log.push(format!("frame {frame} buf {i} age {age} damage {dmg:?}"));
+            if !dmg.is_empty() {
+                commits += 1;
+                painted_at[i] = Some(commits);
+                front = i;
+            }
+        }
+        let mut full = Buffer::new(w, h, scale);
+        full.paint(&mut reference, BAR, 0);
+        if let Some(p) = bufs[front]
             .pixels
             .iter()
             .zip(&full.pixels)
             .position(|(a, b)| a != b)
         {
-            let px = p / 4;
+            let px = p as u32 / 4;
             for l in &log[log.len().saturating_sub(10)..] {
                 eprintln!("{l}");
             }
             panic!(
-                "frame {frame} differs at ({}, {}): {:?} vs {:?}",
-                px % 200,
-                px / 200,
-                bufs[i].px(px as u32 % 200, px as u32 / 200),
-                full.px(px as u32 % 200, px as u32 / 200),
+                "scale {scale:?} frame {frame} differs at ({}, {}): {:?} vs {:?}",
+                px % w,
+                px / w,
+                bufs[front].px(px % w, px / w),
+                full.px(px % w, px / w),
             );
         }
     }
@@ -920,16 +985,14 @@ fn token_bound_props_follow_the_table() {
             ),
         ],
     );
-    b.diff.push(SceneOp::SetTokens {
-        table: table.clone(),
-    });
+    b.diff.set_tokens(table.clone(), Transition::Instant);
     let (mut r, mut buf) = fresh(b.diff, 100, 20, Scale::ONE);
     let blue = buf.px(15, 5);
     assert!(blue[0] > blue[2], "accent is blue: {blue:?}");
 
     table.insert("accent", color("#f38ba8"));
     let mut d = SceneDiff::new();
-    d.push(SceneOp::SetTokens { table });
+    d.set_tokens(table, Transition::Default);
     r.apply(d);
     assert!(r.wants_frame(BAR));
     let dmg = buf.paint(&mut r, BAR, 1);
@@ -968,7 +1031,7 @@ fn scoped_token_overrides_apply_to_their_subtree() {
     );
     let child = b.node(NodeKind::Box, Some(group), boxed(20.0, "surface"));
     let derived = b.node(NodeKind::Box, Some(group), boxed(40.0, "surface.dim"));
-    b.diff.push(SceneOp::SetTokens { table });
+    b.diff.set_tokens(table, Transition::Instant);
     let (mut r, mut buf) = fresh(b.diff, 60, 10, Scale::ONE);
     let _ = (plain, child, derived);
     // BGRA bytes.
@@ -1059,4 +1122,216 @@ fn nested_popup_paints_only_on_its_own_surface() {
     assert!(r.wants_frame(popup_s));
     assert!(!p.paint(&mut r, popup_s, 1).is_empty());
     assert_eq!(p.px(1, 1), [255, 255, 255, 255]);
+
+    // Removing the bar takes the popup with it: its surface clears its
+    // stale frame (until the surface manager destroys it on `Removed`).
+    let mut d = SceneDiff::new();
+    d.push(SceneOp::Remove { id: bar });
+    r.apply(d);
+    assert!(
+        r.wants_frame(popup_s),
+        "the orphaned popup surface repaints"
+    );
+    assert!(!p.paint(&mut r, popup_s, 1).is_empty());
+    assert_eq!(p.px(8, 8), [0, 0, 0, 0]);
+    let removed: Vec<NodeId> = r
+        .take_surface_changes()
+        .into_iter()
+        .filter(|(_, c)| *c == SurfaceChange::Removed)
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(removed, vec![bar, popup]);
+}
+
+/// The surface manager learns what to create from resolved specs: token
+/// changes reach a token-bound `margin`, and a `layer` change asks for the
+/// surface to be recreated.
+#[test]
+fn surface_specs_resolve_tokens_and_report_changes() {
+    let mut table = TokenTable::default();
+    table.insert("space.2", num(8.0));
+    let mut b = Builder::default();
+    let space = || PropValue::Token(TokenExpr::path("space.2"));
+    let bar = b.node(
+        NodeKind::Bar,
+        None,
+        vec![
+            (Prop::Name, text("Top")),
+            (Prop::Edge, PropValue::Keyword("top".into())),
+            (Prop::Height, num(36.0)),
+            // margin: $space.2, $space.2, 0
+            (
+                Prop::Margin,
+                PropValue::List(vec![space(), space(), num(0.0)]),
+            ),
+        ],
+    );
+    let popup = b.node(NodeKind::Popup, Some(bar), vec![]);
+    b.diff.set_tokens(table.clone(), Transition::Instant);
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    let changes = r.take_surface_changes();
+    assert_eq!(changes.len(), 2, "{changes:?}");
+    let SurfaceChange::Created(spec) = &changes[0].1 else {
+        panic!("{changes:?}")
+    };
+    assert_eq!(changes[0].0, bar);
+    assert_eq!(spec.namespace(), "strand-Top");
+    assert_eq!(spec.exclusive_zone(), Some(36.0));
+    assert_eq!(
+        (spec.margin.top, spec.margin.left, spec.margin.bottom),
+        (8.0, 8.0, 0.0)
+    );
+    assert_eq!(changes[1].0, popup);
+    assert!(r.take_surface_changes().is_empty());
+
+    // A compact theme changes $space.2: reconfigure in place.
+    table.insert("space.2", num(4.0));
+    let mut d = SceneDiff::new();
+    d.set_tokens(table, Transition::Default);
+    r.apply(d);
+    let changes = r.take_surface_changes();
+    assert_eq!(changes.len(), 1, "only the bar's spec moved: {changes:?}");
+    let SurfaceChange::Updated { spec, recreate } = &changes[0].1 else {
+        panic!("{changes:?}")
+    };
+    assert!(!recreate);
+    assert_eq!(spec.margin.left, 4.0);
+    assert_eq!(r.surface_spec(bar), Some(spec));
+
+    // layer: overlay needs a new layer surface.
+    let mut d = SceneDiff::new();
+    d.set(bar, Prop::Layer, PropValue::Keyword("overlay".into()));
+    r.apply(d);
+    let changes = r.take_surface_changes();
+    assert!(matches!(
+        changes.as_slice(),
+        [(id, SurfaceChange::Updated { recreate: true, .. })] if *id == bar
+    ));
+}
+
+/// A new surface's first frame already has its text: while the worker
+/// shapes it the surface asks for no frame (up to a deadline).
+#[test]
+fn first_frame_of_a_new_surface_has_its_text() {
+    use std::time::Duration;
+    let mut r = worker_renderer();
+    r.set_first_frame_wait(Duration::from_secs(30));
+    let (diff, _) = bar("12:59");
+    r.apply(diff);
+    r.attach_surface(BAR, r.tree().roots()[0]);
+    r.configure_surface(BAR, Size::new(2560, 36), Scale::ONE);
+    // Nothing has polled the worker since the requests went out.
+    assert!(!r.wants_frame(BAR), "no frame without its text");
+    assert!(r.frame_deadline(BAR).is_some());
+    assert!(r.wait_for_text(Duration::from_secs(10)));
+    assert!(r.wants_frame(BAR));
+    assert!(r.frame_deadline(BAR).is_none());
+    let mut buf = Buffer::new(2560, 36, Scale::ONE);
+    buf.paint(&mut r, BAR, 0);
+    let (_, want) = fresh(bar("12:59").0, 2560, 36, Scale::ONE);
+    assert!(buf.pixels == want.pixels, "the first frame has the text");
+
+    // Past the deadline a surface paints anyway.
+    let mut r = worker_renderer();
+    r.set_first_frame_wait(Duration::ZERO);
+    r.apply(bar("12:59").0);
+    r.attach_surface(BAR, r.tree().roots()[0]);
+    r.configure_surface(BAR, Size::new(2560, 36), Scale::ONE);
+    assert!(r.wants_frame(BAR));
+}
+
+/// `ellipsis` and `max_lines` reach the text engine: a long title with
+/// `max_width` stays on one line; `marks` paint in `mark_color`.
+#[test]
+fn ellipsis_and_marks_reach_the_text_engine() {
+    let title = "Firefox — The Rust Programming Language — Fearless Concurrency";
+    let scene = |ellipsis: bool| {
+        let mut b = Builder::default();
+        let root = b.node(
+            NodeKind::Bar,
+            None,
+            vec![
+                (Prop::Color, color("#ffffff")),
+                (Prop::Font, PropValue::Font(font(13.0))),
+            ],
+        );
+        let mut props = vec![
+            (Prop::X, num(2.0)),
+            (Prop::MaxWidth, num(120.0)),
+            (Prop::Text, text(title)),
+            (Prop::MarkColor, color("#ff0000")),
+            (
+                Prop::Marks,
+                PropValue::List(vec![PropValue::List(vec![num(0.0), num(7.0)])]),
+            ),
+        ];
+        if ellipsis {
+            props.push((Prop::Ellipsis, PropValue::Keyword("end".into())));
+        }
+        b.node(NodeKind::Text, Some(root), props);
+        b.diff
+    };
+    let (_, wrapped) = fresh(scene(false), 200, 60, Scale::ONE);
+    let (_, cut) = fresh(scene(true), 200, 60, Scale::ONE);
+    assert!(lit(&wrapped, Rect::new(0, 20, 200, 40)) > 0, "wraps");
+    assert_eq!(lit(&cut, Rect::new(0, 20, 200, 40)), 0, "one line");
+    assert_eq!(lit(&cut, Rect::new(123, 0, 77, 20)), 0, "within max_width");
+    // "Firefox" is red, the rest white (BGRA).
+    let reds = (0..20)
+        .flat_map(|y| (0..40).map(move |x| (x, y)))
+        .filter(|&(x, y)| {
+            let p = cut.px(x, y);
+            p[2] > 100 && p[0] < 30
+        })
+        .count();
+    assert!(reds > 20, "{reds}");
+    assert_eq!(
+        cut.px(100, 8)[2],
+        cut.px(100, 8)[0],
+        "unmarked text is white"
+    );
+}
+
+/// The render thread's atlas mirror follows the worker's pages: replaced
+/// text does not leave pages behind.
+#[test]
+fn atlas_mirror_stays_bounded() {
+    let (diff, clock) = bar("12:59");
+    let (mut r, mut buf) = fresh(diff, 2560, 36, Scale::ONE);
+    let max = strand_text::AtlasConfig::default();
+    for i in 0..60u32 {
+        // Many distinct glyphs at many sizes.
+        let mut d = SceneDiff::new();
+        d.set(clock, Prop::Font, PropValue::Font(font(10.0 + i as f32)));
+        d.set(
+            clock,
+            Prop::Text,
+            text(&format!(
+                "{i} ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz"
+            )),
+        );
+        r.apply(d);
+        buf.paint(&mut r, BAR, 1);
+        assert!(
+            r.atlas_mirror_bytes(Scale::ONE) <= 4 * max.max_bytes,
+            "{}",
+            r.atlas_mirror_bytes(Scale::ONE)
+        );
+    }
+    // Back to a small clock: once the big layouts are gone the worker trims
+    // its extra pages, and the mirror drops them too.
+    for t in ["13:00", "13:01"] {
+        r.apply(set_text(clock, t));
+        let mut d = SceneDiff::new();
+        d.set(clock, Prop::Font, PropValue::Font(font(13.0)));
+        r.apply(d);
+        buf.paint(&mut r, BAR, 1);
+    }
+    let regular = 4 * max.page_size as usize * max.page_size as usize * max.max_pages;
+    assert!(
+        r.atlas_mirror_bytes(Scale::ONE) <= regular,
+        "{} > {regular}",
+        r.atlas_mirror_bytes(Scale::ONE)
+    );
 }

@@ -16,8 +16,11 @@ Each track appends under its own heading.
 - 2026-10-04 · render: protocol details the contract leaves open:
   `PropValue::Unset` reverts a prop (no sixth op); `Create`/`Move` take
   `parent: Option<NodeId>`; `Transition::Duration` carries an `Easing`;
-  shorthands (`pad`, `margin`, `radius`) arrive expanded as `Insets` /
-  `Corners`; `NodeKind` has `start`/`center`/`end` for `split`, and names
+  shorthands (`pad`, `margin`, `radius`) arrive as `Insets` / `Corners`
+  or, when an item is token-bound (`pad: 0, $space.3`), as a `List` of
+  1–4 values that `TokenScope::resolve` resolves in place and render
+  expands like CSS (`Insets::from_values`, `Corners::from_values`), so a
+  theme swap or `set { }` reaches them; `NodeKind` has `start`/`center`/`end` for `split`, and names
   every prop and kind of the design catalogue so compiler and LSP share
   one table (render ignores what it does not draw yet).
 - 2026-10-05 · render: `Move`'s index counts the new parent's children
@@ -46,6 +49,40 @@ Each track appends under its own heading.
   name → value record, SVG `#id { … }` blocks become child nodes that
   carry ordinary props, and render-evaluated time signals (`t`,
   `wave(1s)`, `noise`) become `TokenExpr` variants (time and call) in M4.
+- 2026-10-05 · render: call-shaped values (`hit: grow(6)`, `backdrop:
+  blur(16)`, `filter: grayscale(1)`, `transition: wipe(left)`) are
+  `PropValue::Call { name, args }`; a filter chain is a `List` of calls.
+- 2026-10-05 · render: `SetTokens` carries a `transition` (logic sends
+  `Instant` for the boot table, so no default colours flash). Props of
+  class `Snap` (fonts, text, keywords) always snap whatever `~` says.
+  Token evaluation has a work budget (`MAX_TOKEN_STEPS`, 10k per
+  resolution) besides the depth cap, so a fan-out-heavy user theme fails
+  to resolve instead of stalling the render thread.
+- 2026-10-05 · render: surfaces. A surface's declared name travels as
+  `Prop::Name` (set by the compiler; not a source prop) and gives the
+  namespace `strand-<Name>` (`strand-<kind>` if unnamed). Defaults: a bar
+  is on every screen, edge `top`, layer `top`; a panel is on the focused
+  screen, layer `top`, anchor `center`; an osd is focused, `overlay`,
+  `center`; keyboard `none`; unset `open` is open. A bar's exclusive zone
+  is its thickness (compositors add the edge margin). Logic, which makes
+  one `bar` instance per monitor, sets each instance's `screens` to that
+  monitor's identity string. Only kind, namespace or layer changes
+  recreate a surface; render reports changes through
+  `take_surface_changes`.
+- 2026-10-05 · render: text truncation. `ellipsis: start | middle | end`
+  cuts with "…" to fit `max_width`; without `max_lines` ellipsised text is
+  one line. `max_lines` drops lines past it (ellipsised when `ellipsis` is
+  set). `marks` is a list of `[start, end)` character ranges painted in
+  `mark_color`, else `$accent`, else bold. Spans (`TextStyle::spans`) also
+  carry weight and italic; `markup: basic` parsing into spans comes with
+  notifications (M3).
+- 2026-10-05 · render: a surface that has never painted holds its first
+  frame up to 50 ms (`FIRST_FRAME_TEXT_WAIT`) while its text is shaped;
+  `frame_deadline` tells the loop when to look again. After a worker
+  engine reset every surface holds its old frame the same way, and the
+  request that crashed the engine is not asked again until its text
+  changes. A layout missing glyphs for want of atlas room is retried at
+  most twice, and again only after other text changes or goes.
 - 2026-10-04 · render: the glyph atlas is LRU per page: per scale up to
   `max_pages` (4) 256 px alpha pages, shelf-packed; the least recently
   used unleased page is reset when full. Layouts lease their pages, so
@@ -65,7 +102,11 @@ Each track appends under its own heading.
   in full and re-requests text. Scales no surface uses are dropped from
   worker and mirror together; a rescaled surface keeps its previous
   scale's layouts (drawn resampled) until its text is shaped at the new
-  scale, so text never blanks.
+  scale, so text never blanks. Each layout also lists its scale's live
+  pages (`atlas_pages`) and the mirror drops the rest (trimmed or reset),
+  so it holds at most four times (RGBA: vello_cpu images have no alpha-only
+  format) the worker's alpha bytes. Dropping a `TextWorker` discards its
+  queue.
 - 2026-10-05 · render: until taffy (M2) layout is absolute: `x`/`y` inside
   the parent, sized by `width`/`height`/`size` (px or % of the parent);
   text sizes to its layout; a surface root fills its buffer. `font`,
@@ -90,7 +131,9 @@ Each track appends under its own heading.
   full ones (f32 pipeline: u8 rounds differently at clip edges). Colours
   go to vello with red and blue swapped, so it writes `wl_shm` BGRA
   directly. Clock tick: 0.12 ms on 2560×36, 0.18 ms on 3840×2160.
-  vello_cpu has only `std` + `f32_pipeline`, single-threaded.
+  vello_cpu has only `std` + `f32_pipeline`, single-threaded. A context is
+  kept per cell size, four per attached surface (at least eight), so
+  several outputs never rebuild edge-cell contexts each frame.
 - 2026-10-05 · render: shadows follow CSS box-shadow (blur = 2σ, clipped
   away under the box); differing corner radii are drawn per quadrant.
   Borders are inside the box, width rounded to whole physical pixels (≥1).

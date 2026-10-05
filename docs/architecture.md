@@ -87,15 +87,21 @@ be built and tested without the language, and the language without pixels.
   holding ordered `SceneOp`s over a retained tree: `Create { id, kind,
   parent, index }`, `Remove { id }` (render plays `exit` before unmounting),
   `Move { id, parent, index }`, `SetProp { id, prop, value, transition }`,
-  `SetTokens { table }`. Node ids are generational; a removed id is dead
+  `SetTokens { table, transition }` (logic sends `Instant` for the table
+  it boots with; later swaps spring palette roots from M2). Node ids are generational; a removed id is dead
   at once (logic may reuse the slot with a new generation in the same
   diff). `Move`'s `index` counts the new parent's children after the node
   is detached. Prop values are typed (`Length`, `Color`, `Paint`, `Text`,
-  `Shadow`, ...). `transition` is `Default` (the token spring for that
+  `Shadow`, ...); comma shorthands (`margin: $space.2, $space.2, 0`,
+  `radius: 14, 14, 0, 0`) may arrive as a `List` of 1–4 values, expanded
+  like CSS, and call-shaped values (`hit: grow(6)`, `filter:
+  grayscale(1)`, `backdrop: blur(16)`, `transition: wipe(left)`) are
+  `PropValue::Call { name, args }`. A surface's declared name (`bar Top`)
+  is `Prop::Name` (`Text`), set by the compiler. `transition` is `Default` (the token spring for that
   prop class), `Token(path)` (`~ $motion.bouncy`), `Spring { .. }`,
   `Duration { .. }` or `Instant`, matching `~` in the language;
   `TokenScope::transition` resolves the first two through `$motion.*`
-  tokens at render time. `Create`/`Move` take `parent: Option<NodeId>`
+  tokens at render time (props of class `Snap` always snap). `Create`/`Move` take `parent: Option<NodeId>`
   (`None` for surface roots) and `PropValue::Unset` reverts a prop to its
   default. Render maps a surface root to Wayland surfaces with
   `Renderer::attach_surface(SurfaceId, NodeId)`. A surface-kind node
@@ -106,7 +112,9 @@ be built and tested without the language, and the language without pixels.
   Token-bound values travel unresolved as `PropValue::Token(TokenExpr)`
   (`$path`, colour methods `alpha`/`mix`/`lighten`/`darken`,
   `oklch(from …)` with channel arithmetic, and `Template` for composite
-  values whose colours are tokens, such as `border: 1, $border`). The
+  values whose colours are tokens, such as `border: 1, $border`), also
+  nested inside a `List`, `Pose` or `Call` (`pad: 0, $space.3`), which
+  `TokenScope::resolve` resolves in place. The
   `TokenTable` sent by `SetTokens` holds plain values (palette roots,
   scales, fonts, `PropValue::Transition` springs for `$motion.*`) and
   derived tokens as expressions; render evaluates references at flatten
@@ -121,7 +129,23 @@ be built and tested without the language, and the language without pixels.
   derived inside the subtree. `enter`/`exit` are props whose
   value is a `PropValue::Pose` (prop/value pairs) or a preset keyword.
 
+- **Surfaces**: `SurfaceSpec` (in `strand-scene`) is what a surface-kind
+  node asks of Wayland: kind, name (namespace `strand-<Name>`), edge,
+  anchor, layer, keyboard, margin (`Insets`), requested logical width and
+  height, `screens` (`All`, `Focused`, or `Named` monitor identities, which
+  logic uses to pin each per-monitor `bar` instance), `open` and `attach`,
+  plus `exclusive_zone()` and `needs_recreate()` (kind, namespace or layer
+  changed). Render resolves specs through the node's token scope after
+  every `apply`: `Renderer::surface_spec(node)` reads one, and
+  `Renderer::take_surface_changes()` returns `(NodeId, SurfaceChange)`s,
+  `Created(spec)`, `Updated { spec, recreate }` or `Removed`, in order;
+  token changes that move a resolved value count as updates.
+
 - **Render loop** (the binary wires this; surface calls `Painter`):
+  0. After each `apply`, drain `take_surface_changes()` and hand them to
+     the surface manager: create a layer surface (or xdg_popup, lock
+     surface) per matching output for `Created`, reconfigure or recreate
+     it for `Updated`, destroy it and `detach_surface` for `Removed`.
   1. Spawn the text worker with `TextWorker::spawn_with_waker(config,
      Some(waker))`, where the waker pings the main calloop loop, and
      build `Renderer::new(TextBackend::Worker(worker))`.
@@ -138,7 +162,11 @@ be built and tested without the language, and the language without pixels.
      `paint`. Commit only a non-empty result, with exactly that damage
      (`damage_buffer`) and the converted `opaque_region`; if the commit
      fails, call `invalidate(surface)`. Text still being shaped does not
-     keep `wants_frame` true: the delivery does, through step 2.
+     keep `wants_frame` true: the delivery does, through step 2. A
+     surface that has never painted (or whose text worker restarted) holds
+     its first frame while its text is shaped, at most 50 ms: if
+     `frame_deadline(surface)` is `Some(t)`, arm a timer for `t` and check
+     `wants_frame` again then.
 
 ### `strand-core`
 
@@ -161,7 +189,10 @@ and the LSP. The grammar is specified in `docs/grammar.md`.
 ### `strand-text`
 
 Request/response over a channel: `TextRequest { key, text, style, max_width,
-scale }` → `TextLayout { key, size, glyph runs }`. Glyph atlases are keyed by
+scale }` → `TextLayout { key, size, glyph runs }`. `TextStyle` holds the
+font, line height, alignment, `ellipsis` (start, middle, end), `max_lines`
+and `spans` (byte ranges with weight, italic or colour: marks, markup);
+a glyph run's `color` is its span's, else the node's. Glyph atlases are keyed by
 scale and LRU-bounded. Render draws the last delivered layout.
 Each `TextLayout` also carries the `AtlasUpload`s (alpha pixels) for glyphs
 rasterised while producing it, which render applies to its mirror of the
@@ -179,7 +210,11 @@ answers with an empty layout whose `is_reset()` is true, on which render
 drops its mirror and every layout and re-requests its text. Each scale's
 atlas is capped at `AtlasConfig::max_bytes` of alpha (1 MiB by default;
 glyphs that do not fit are skipped), fonts at `MAX_FONT_PX` (512) and
-text at `MAX_TEXT_BYTES` (64 KiB) per request.
+text at `MAX_TEXT_BYTES` (64 KiB) per request. A layout that had to
+skip glyphs for want of atlas room says so (`is_incomplete`; render asks
+again a bounded number of times), and each layout lists its scale's live
+pages (`atlas_pages`), so the mirror drops pages the worker trimmed.
+Dropping the worker discards its queue.
 
 ### `strand-surface`
 
@@ -188,7 +223,11 @@ per output, a 2–3 buffer shm pool per surface with buffer age,
 `damage_buffer`, `set_opaque_region`, fractional scale + viewporter, frame
 callbacks only while `Painter::wants_frame`, `wp_presentation` timing, output
 hotplug (monitor identity = make + model + description), and input forwarded
-as `InputEvent`s. Compositor-animated poses (alpha modifier, viewporter,
+as `InputEvent`s. It creates and updates surfaces from the `SurfaceSpec`s
+and `SurfaceChange`s render reports (render loop step 0): namespace
+`strand-<Name>`, anchor from `edge` (stretched along it) or `anchor`,
+`margin`, size, `exclusive_zone()`, keyboard interactivity, the outputs
+`screens` selects, and mapping by `open`. Compositor-animated poses (alpha modifier, viewporter,
 margins) are its job in M4.
 
 ### `strand-services`, `strand-watch`

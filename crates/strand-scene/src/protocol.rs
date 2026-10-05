@@ -39,6 +39,8 @@ macro_rules! named_enum {
     };
 }
 
+pub(crate) use named_enum;
+
 named_enum! {
     /// What a scene node is. Components are expanded by the logic thread, so
     /// only built-in kinds reach the render thread.
@@ -164,6 +166,11 @@ props! {
     Screens = "screens": Snap,
     Open = "open": Snap,
     Attach = "attach": Snap,
+    /// The declared name of a surface (`bar Top` → `"Top"`), as
+    /// `PropValue::Text`. Set by the compiler, not written as a prop in
+    /// source; the surface's layer-shell namespace is `strand-<name>`
+    /// (see [`crate::SurfaceSpec`]).
+    Name = "name": Snap,
     // Paint.
     Bg = "bg": Effects,
     Color = "color": Effects,
@@ -264,6 +271,11 @@ pub enum Length {
 }
 
 /// Four edge lengths in logical pixels, for `pad` and `margin`.
+///
+/// The comma shorthand (`margin: 8, 8, 0`, `pad: 0, $space.3`) arrives
+/// as a `PropValue::List` of one to four numbers, expanded like CSS by
+/// [`Insets::from_values`] / [`PropValue::insets`]; a list may hold token
+/// references, which [`crate::TokenScope::resolve`] resolves in place.
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct Insets {
     pub top: f32,
@@ -280,6 +292,25 @@ impl Insets {
             bottom: v,
             left: v,
         }
+    }
+
+    /// CSS expansion of one to four values: `a` is all sides, `a, b` is
+    /// vertical then horizontal, `a, b, c` is top, horizontal, bottom, and
+    /// four values run clockwise from the top.
+    pub fn from_values(v: &[f32]) -> Option<Self> {
+        let (top, right, bottom, left) = match *v {
+            [a] => (a, a, a, a),
+            [a, b] => (a, b, a, b),
+            [a, b, c] => (a, b, c, b),
+            [a, b, c, d] => (a, b, c, d),
+            _ => return None,
+        };
+        Some(Self {
+            top,
+            right,
+            bottom,
+            left,
+        })
     }
 }
 
@@ -310,6 +341,26 @@ impl Corners {
 
     /// `radius: full`.
     pub const FULL: Corners = Corners::all(f32::INFINITY);
+
+    /// CSS `border-radius` expansion of one to four values (`radius: 14,
+    /// 14, 0, 0` runs clockwise from top-left; `a, b` is top-left and
+    /// bottom-right, then the other two; `a, b, c` is top-left, the
+    /// top-right/bottom-left pair, bottom-right).
+    pub fn from_values(v: &[f32]) -> Option<Self> {
+        let (top_left, top_right, bottom_right, bottom_left) = match *v {
+            [a] => (a, a, a, a),
+            [a, b] => (a, b, a, b),
+            [a, b, c] => (a, b, c, b),
+            [a, b, c, d] => (a, b, c, d),
+            _ => return None,
+        };
+        Some(Self {
+            top_left,
+            top_right,
+            bottom_right,
+            bottom_left,
+        })
+    }
 
     pub fn is_zero(&self) -> bool {
         self.top_left <= 0.0
@@ -428,9 +479,53 @@ pub enum PropValue {
     Pose(Vec<(Prop, PropValue)>),
     /// Token overrides for a subtree (the value of [`Prop::Tokens`]).
     Tokens(Box<TokenTable>),
+    /// A call-shaped value: `hit: grow(6)`, `backdrop: blur(16)`,
+    /// `filter: grayscale(1)` (a chain of filters is a `List` of calls),
+    /// `filter: tint($accent)`, `transition: wipe(left)`. `name` is the
+    /// function as written; arguments are typed values and may hold
+    /// tokens. Render ignores calls it does not implement yet. Named
+    /// arguments (`conic(from: 90deg, …)`) are not calls: they lower to
+    /// their typed value (`Paint::Conic`).
+    Call {
+        name: String,
+        args: Vec<PropValue>,
+    },
 }
 
 impl PropValue {
+    /// True if a token reference sits anywhere inside the value.
+    pub fn has_tokens(&self) -> bool {
+        match self {
+            PropValue::Token(_) => true,
+            PropValue::List(items) | PropValue::Call { args: items, .. } => {
+                items.iter().any(PropValue::has_tokens)
+            }
+            PropValue::Pose(props) => props.iter().any(|(_, v)| v.has_tokens()),
+            _ => false,
+        }
+    }
+
+    /// A plain number: `Number` or `Length::Px`.
+    pub fn as_number(&self) -> Option<f32> {
+        match self {
+            PropValue::Number(n) | PropValue::Length(Length::Px(n)) => Some(*n),
+            _ => None,
+        }
+    }
+
+    /// Insets from `Insets`, one number, or a `List` of one to four numbers
+    /// (the comma shorthand, expanded like CSS). Resolve tokens first.
+    pub fn insets(&self) -> Option<Insets> {
+        match self {
+            PropValue::Insets(i) => Some(*i),
+            PropValue::List(items) => {
+                let v: Option<Vec<f32>> = items.iter().map(PropValue::as_number).collect();
+                Insets::from_values(&v?)
+            }
+            v => v.as_number().map(Insets::all),
+        }
+    }
+
     /// Every colour inside the value, depth first in field order. This is
     /// the order [`TokenExpr::Template`] fills colours in.
     pub fn colors_mut(&mut self) -> Vec<&mut Color> {
@@ -453,7 +548,7 @@ impl PropValue {
             PropValue::Paint(p) => paint(p, out),
             PropValue::Border(b) => paint(&mut b.paint, out),
             PropValue::Shadow(list) => out.extend(list.iter_mut().map(|s| &mut s.color)),
-            PropValue::List(items) => {
+            PropValue::List(items) | PropValue::Call { args: items, .. } => {
                 for v in items {
                     v.collect_colors(out);
                 }
@@ -549,9 +644,7 @@ pub enum SceneOp {
     /// with a new generation in the same diff. (From M2 an exiting subtree
     /// lives on as a render-side ghost outside the id-indexed slots, so
     /// slot reuse never waits for an exit animation.)
-    Remove {
-        id: NodeId,
-    },
+    Remove { id: NodeId },
     /// Re-parents or reorders a node. `index` is the position among the
     /// new parent's children *after* the node has been detached from its
     /// old place (so moving the first of three children to the end is
@@ -567,8 +660,14 @@ pub enum SceneOp {
         value: PropValue,
         transition: Transition,
     },
+    /// Replaces the global token table. Palette roots move to their new
+    /// values with `transition` (from M2; `Default` is `$motion.effects`
+    /// of the new table); logic sends `Instant` for the table it boots
+    /// with, so the first frame never shows default colours. Derived
+    /// tokens are re-evaluated from the roots every frame either way.
     SetTokens {
         table: TokenTable,
+        transition: Transition,
     },
 }
 
@@ -606,6 +705,11 @@ impl SceneDiff {
             parent,
             index,
         })
+    }
+
+    /// Convenience for [`SceneOp::SetTokens`].
+    pub fn set_tokens(&mut self, table: TokenTable, transition: Transition) -> &mut Self {
+        self.push(SceneOp::SetTokens { table, transition })
     }
 
     /// Convenience for [`SceneOp::SetProp`] with [`Transition::Default`].

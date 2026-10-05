@@ -15,7 +15,7 @@ use strand_scene::{
     Border, Color, Corners, Damage, Font, Length, LogicalRect, NodeId, NodeKind, Paint, Prop,
     PropValue, Rect, Scale, Shadow, Size, TokenScope, TokenTable,
 };
-use strand_text::{TextAlign, TextLayout, TextStyle};
+use strand_text::{Ellipsis, TextAlign, TextLayout, TextSpan, TextStyle};
 use vello_cpu::kurbo::{self, BezPath, RoundedRect, RoundedRectRadii, Shape};
 
 use crate::tree::{Node, SceneTree};
@@ -241,6 +241,68 @@ fn sane_font(mut f: Font) -> Font {
     f
 }
 
+/// `marks: h.ranges` (a list of `[start, end]` character ranges, end
+/// exclusive, as fuzzy matchers report them) as text spans painted in
+/// `mark_color` (default `$accent`), or bold when there is no colour.
+fn marks(
+    text: &str,
+    v: Option<&PropValue>,
+    color: impl FnOnce() -> Option<Color>,
+) -> Vec<TextSpan> {
+    let Some(PropValue::List(items)) = v else {
+        return Vec::new();
+    };
+    // Character index → byte offset.
+    let bytes: Vec<usize> = text
+        .char_indices()
+        .map(|(i, _)| i)
+        .chain([text.len()])
+        .collect();
+    let at = |n: f32| bytes[(n.max(0.0) as usize).min(bytes.len() - 1)];
+    let ranges: Vec<std::ops::Range<usize>> = items
+        .iter()
+        .filter_map(|r| match r {
+            PropValue::List(pair) => match (pair.first(), pair.get(1)) {
+                (Some(a), Some(b)) => Some((a.as_number()?, b.as_number()?)),
+                _ => None,
+            },
+            _ => None,
+        })
+        .filter(|(a, b)| a.is_finite() && b.is_finite() && a < b)
+        .take(1024)
+        .map(|(a, b)| at(a)..at(b))
+        .collect();
+    if ranges.is_empty() {
+        return Vec::new();
+    }
+    let color = color();
+    ranges
+        .into_iter()
+        .map(|range| TextSpan {
+            range,
+            weight: color.is_none().then_some(700),
+            italic: false,
+            color,
+        })
+        .collect()
+}
+
+/// The token tables in scope at `id`: the global table, then the
+/// `tokens` overrides of its ancestors and of `id` itself.
+pub fn scope_tables(tree: &SceneTree, id: NodeId) -> Vec<&TokenTable> {
+    let mut chain = Vec::new();
+    let mut cur = tree.get(id);
+    while let Some(n) = cur {
+        if let Some(PropValue::Tokens(t)) = n.get(Prop::Tokens) {
+            chain.push(t.as_ref());
+        }
+        cur = n.parent.and_then(|p| tree.get(p));
+    }
+    chain.push(&tree.tokens);
+    chain.reverse();
+    chain
+}
+
 fn opaque_paint(p: &Paint) -> bool {
     match p {
         Paint::Solid(c) => c.clamped().a >= 1.0,
@@ -277,14 +339,26 @@ fn paint_of(v: Option<&PropValue>) -> Option<Paint> {
 /// `radius: full` arrives as `Keyword("full")` or infinite radii
 /// ([`Corners::FULL`]) and becomes the largest finite radius, which the
 /// CSS shrink in [`radii`] turns into a pill; a percentage is of the
-/// shorter side. NaN and negative radii are square.
+/// shorter side. The comma shorthand (`radius: $radius.lg, $radius.lg,
+/// 0, 0`) is a `List` of one to four of those, expanded like CSS. NaN and
+/// negative radii are square.
 fn corners_of(v: Option<&PropValue>, w: f32, h: f32) -> Corners {
+    let one = |v: &PropValue| match v {
+        PropValue::Number(n) | PropValue::Length(Length::Px(n)) => Some(*n),
+        PropValue::Length(Length::Percent(p)) => Some(w.min(h) * p / 100.0),
+        PropValue::Keyword(k) if k == "full" => Some(f32::INFINITY),
+        _ => None,
+    };
     let c = match v {
         Some(PropValue::Corners(c)) => *c,
-        Some(PropValue::Number(n)) | Some(PropValue::Length(Length::Px(n))) => Corners::all(*n),
-        Some(PropValue::Length(Length::Percent(p))) => Corners::all(w.min(h) * p / 100.0),
-        Some(PropValue::Keyword(k)) if k == "full" => Corners::FULL,
-        _ => Corners::default(),
+        Some(PropValue::List(items)) => items
+            .iter()
+            .map(one)
+            .collect::<Option<Vec<f32>>>()
+            .and_then(|v| Corners::from_values(&v))
+            .unwrap_or_default(),
+        Some(v) => one(v).map(Corners::all).unwrap_or_default(),
+        None => Corners::default(),
     };
     let one = |r: f32| {
         if r == f32::INFINITY {
@@ -549,6 +623,21 @@ impl<'a> Flattener<'a> {
             let max_width = explicit_w
                 .or(length(get(Prop::MaxWidth), parent.w))
                 .map(|w| w.max(0.0));
+            let ellipsis = match get(Prop::Ellipsis) {
+                Some(PropValue::Keyword(k)) => Ellipsis::from_name(k),
+                Some(PropValue::Bool(true)) => Some(Ellipsis::End),
+                _ => None,
+            };
+            let max_lines = number(get(Prop::MaxLines))
+                .filter(|n| *n >= 1.0)
+                .map(|n| n.min(10_000.0) as u32);
+            let spans = marks(text, get(Prop::Marks), || match get(Prop::MarkColor) {
+                Some(PropValue::Color(c)) => Some(*c),
+                _ => match scope.lookup("accent") {
+                    Some(PropValue::Color(c)) => Some(c),
+                    _ => None,
+                },
+            });
             self.out.text.push((
                 node.id,
                 TextSpec {
@@ -557,6 +646,9 @@ impl<'a> Flattener<'a> {
                         font: font.clone(),
                         line_height: None,
                         align,
+                        ellipsis,
+                        max_lines,
+                        spans,
                     },
                     max_width,
                     scale: self.scale,
@@ -875,6 +967,42 @@ mod tests {
         for v in [PropValue::Number(f32::NAN), PropValue::Number(-3.0)] {
             assert!(corners_of(Some(&v), 40.0, 10.0).is_zero(), "{v:?}");
         }
+    }
+
+    #[test]
+    fn radius_lists_expand_like_css() {
+        let top = PropValue::List(vec![
+            PropValue::Number(14.0),
+            PropValue::Number(14.0),
+            PropValue::Number(0.0),
+            PropValue::Number(0.0),
+        ]);
+        let c = corners_of(Some(&top), 100.0, 40.0);
+        assert_eq!((c.top_left, c.top_right, c.bottom_right), (14.0, 14.0, 0.0));
+        let pair = PropValue::List(vec![
+            PropValue::Keyword("full".into()),
+            PropValue::Length(Length::Percent(10.0)),
+        ]);
+        let c = corners_of(Some(&pair), 100.0, 40.0);
+        assert_eq!(
+            (c.top_left, c.top_right, c.bottom_right),
+            (MAX_LOGICAL, 4.0, MAX_LOGICAL)
+        );
+        let bad = PropValue::List(vec![PropValue::Number(1.0); 5]);
+        assert!(corners_of(Some(&bad), 100.0, 40.0).is_zero());
+    }
+
+    #[test]
+    fn marks_become_coloured_spans_on_char_ranges() {
+        let pair =
+            |a: f32, b: f32| PropValue::List(vec![PropValue::Number(a), PropValue::Number(b)]);
+        let v = PropValue::List(vec![pair(0.0, 1.0), pair(2.0, 9.0), pair(3.0, 3.0)]);
+        let s = marks("héllo", Some(&v), || Some(Color::WHITE));
+        let r: Vec<_> = s.iter().map(|s| s.range.clone()).collect();
+        assert_eq!(r, vec![0..1, 3..6]);
+        assert!(s.iter().all(|s| s.color == Some(Color::WHITE)));
+        let s = marks("héllo", Some(&v), || None);
+        assert_eq!(s[0].weight, Some(700));
     }
 
     #[test]

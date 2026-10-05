@@ -1,5 +1,7 @@
 //! The retained scene tree the render thread owns, edited by `SceneDiff`s.
 
+use std::collections::BTreeSet;
+
 use strand_scene::{NodeId, NodeKind, Prop, PropValue, SceneDiff, SceneOp, TokenTable, Transition};
 
 /// A scene op that could not be applied. Application continues with the
@@ -14,13 +16,16 @@ pub enum SceneError {
     Cycle(NodeId),
     /// A non-surface node was created or moved without a parent.
     MissingParent(NodeId),
-    /// `Create` named a slot index far beyond the live ones (ids are
-    /// allocated densely, so this is a bug, and honouring it would
+    /// `Create` named a slot index far beyond the live node count (ids
+    /// are allocated densely, so this is a bug, and honouring it would
     /// allocate without bound).
     InvalidId(NodeId),
 }
 
-/// How far past the current slot count a new id's index may reach.
+/// How far past the number of live nodes a new id's index may reach when
+/// it grows the slot table. Bounding by live nodes (not by the table's
+/// length) keeps a run of creates, each far past the last, from growing
+/// the table without bound.
 pub const MAX_INDEX_GAP: usize = 1 << 16;
 
 impl std::fmt::Display for SceneError {
@@ -69,7 +74,14 @@ pub struct SceneTree {
     slots: Vec<Option<Node>>,
     /// Surface roots in creation order.
     roots: Vec<NodeId>,
+    /// Every surface-kind node, nested ones (popups) included.
+    surfaces: BTreeSet<NodeId>,
+    /// Live nodes.
+    live: usize,
     pub tokens: TokenTable,
+    /// How the last `SetTokens` asked palette roots to move (springs land
+    /// in M2; until then the table snaps).
+    pub tokens_transition: Transition,
 }
 
 impl SceneTree {
@@ -124,8 +136,13 @@ impl SceneTree {
         &self.roots
     }
 
+    /// Every surface-kind node (top-level roots and nested popups).
+    pub fn surface_nodes(&self) -> impl Iterator<Item = NodeId> + '_ {
+        self.surfaces.iter().copied()
+    }
+
     pub fn len(&self) -> usize {
-        self.slots.iter().flatten().count()
+        self.live
     }
 
     pub fn is_empty(&self) -> bool {
@@ -178,8 +195,9 @@ impl SceneTree {
                 }
                 Ok(())
             }
-            SceneOp::SetTokens { table } => {
+            SceneOp::SetTokens { table, transition } => {
                 self.tokens = table;
+                self.tokens_transition = transition;
                 Ok(())
             }
         }
@@ -193,7 +211,7 @@ impl SceneTree {
         index: u32,
     ) -> Result<(), SceneError> {
         let i = id.index as usize;
-        if i > self.slots.len() + MAX_INDEX_GAP {
+        if i >= self.slots.len() && i > self.live + MAX_INDEX_GAP {
             return Err(SceneError::InvalidId(id));
         }
         if self.slots.get(i).is_some_and(Option::is_some) {
@@ -215,6 +233,10 @@ impl SceneTree {
             props: Vec::new(),
             epoch: 0,
         });
+        self.live += 1;
+        if kind.is_surface() {
+            self.surfaces.insert(id);
+        }
         self.attach(id, parent, index);
         Ok(())
     }
@@ -251,6 +273,8 @@ impl SceneTree {
         let mut stack = vec![id];
         while let Some(n) = stack.pop() {
             if let Some(node) = self.slots.get_mut(n.index as usize).and_then(Option::take) {
+                self.live -= 1;
+                self.surfaces.remove(&node.id);
                 stack.extend(node.children);
             }
         }
@@ -329,6 +353,9 @@ mod tests {
         t.apply_op(SceneOp::Remove { id: id(1) }).unwrap();
         assert!(!t.contains(id(3)));
         assert_eq!(t.len(), 2);
+        assert_eq!(t.surface_nodes().collect::<Vec<_>>(), vec![id(0)]);
+        t.apply_op(SceneOp::Remove { id: id(0) }).unwrap();
+        assert_eq!((t.len(), t.surface_nodes().count()), (0, 0));
     }
 
     #[test]
@@ -357,6 +384,24 @@ mod tests {
             ]
         );
         assert!(t.slots.len() < 100);
+        // A run of creates each far past the last cannot grow the table
+        // without bound: the gap is relative to the live node count.
+        let mut far = 0;
+        for k in 1..64u32 {
+            let id = NodeId::new(k * MAX_INDEX_GAP as u32 / 2, 0);
+            if t.apply_op(SceneOp::Create {
+                id,
+                kind: NodeKind::Box,
+                parent: Some(NodeId::new(0, 0)),
+                index: 0,
+            })
+            .is_ok()
+            {
+                far += 1;
+            }
+        }
+        assert!(far <= 2, "{far}");
+        assert!(t.slots.len() <= t.len() + MAX_INDEX_GAP + 1);
         assert_eq!(
             t.get(id(3)).unwrap().get(Prop::Bg),
             Some(&PropValue::Color(Color::WHITE))

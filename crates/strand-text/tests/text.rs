@@ -314,3 +314,161 @@ fn huge_distinct_glyphs_stay_within_the_byte_budget() {
     let l = e.layout(&request(2, &long, 13.0, Scale::ONE));
     assert!(l.size.w.is_finite());
 }
+
+fn styled(
+    key: u64,
+    text: &str,
+    max_width: Option<f32>,
+    f: impl FnOnce(&mut TextStyle),
+) -> TextRequest {
+    let mut r = request(key, text, 13.0, Scale::ONE);
+    r.max_width = max_width;
+    f(&mut r.style);
+    r
+}
+
+/// `text title { max_width: 40%; ellipsis: end }`: a long title is cut to
+/// one line that fits, instead of wrapping inside a 36 px bar.
+#[test]
+fn ellipsis_cuts_to_one_line_that_fits() {
+    let mut e = TextEngine::new(config());
+    let title = "Firefox — The Rust Programming Language — Chapter 16: Fearless Concurrency";
+    let one_line = e.layout(&request(1, "Firefox", 13.0, Scale::ONE)).size.h;
+    let wrapped = e.layout(&styled(2, title, Some(150.0), |_| {}));
+    assert!(wrapped.size.h > 2.0 * one_line, "wraps without ellipsis");
+    for (k, ellipsis) in [Ellipsis::End, Ellipsis::Start, Ellipsis::Middle]
+        .into_iter()
+        .enumerate()
+    {
+        let l = e.layout(&styled(3 + k as u64, title, Some(150.0), |s| {
+            s.ellipsis = Some(ellipsis)
+        }));
+        assert_eq!(l.size.h, one_line, "{ellipsis:?}");
+        assert!(
+            l.size.w <= 150.5 && l.size.w > 120.0,
+            "{ellipsis:?}: {}",
+            l.size.w
+        );
+    }
+    // Text that fits is untouched.
+    let short = e.layout(&styled(9, "Firefox", Some(150.0), |s| {
+        s.ellipsis = Some(Ellipsis::End)
+    }));
+    let plain = e.layout(&request(10, "Firefox", 13.0, Scale::ONE));
+    assert_eq!(short.glyphs().count(), plain.glyphs().count());
+}
+
+/// `text n.body { max_lines: 4 }` keeps at most four lines; with an
+/// ellipsis the last kept line ends in "…" and still fits.
+#[test]
+fn max_lines_limits_wrapped_text() {
+    let mut e = TextEngine::new(config());
+    let body = "word ".repeat(200);
+    let line = e.layout(&request(1, "word", 13.0, Scale::ONE)).size.h;
+    let l = e.layout(&styled(2, &body, Some(120.0), |s| s.max_lines = Some(4)));
+    assert!(
+        (l.size.h - 4.0 * line).abs() < 0.5,
+        "{} vs {}",
+        l.size.h,
+        line
+    );
+    let l = e.layout(&styled(3, &body, Some(120.0), |s| {
+        s.max_lines = Some(2);
+        s.ellipsis = Some(Ellipsis::End);
+    }));
+    assert!((l.size.h - 2.0 * line).abs() < 0.5);
+    assert!(l.size.w <= 120.5);
+}
+
+/// Spans restyle ranges: marks get their colour on their own glyph run,
+/// and a weight span changes shaping.
+#[test]
+fn spans_colour_and_weight_ranges() {
+    let mut e = TextEngine::new(config());
+    let accent = strand_scene::Color::from_hex("#89b4fa").unwrap();
+    let l = e.layout(&styled(1, "Firefox", None, |s| {
+        s.spans = vec![TextSpan {
+            range: 0..4,
+            color: Some(accent),
+            ..TextSpan::default()
+        }]
+    }));
+    let marked: usize = l
+        .runs
+        .iter()
+        .filter(|r| r.color == Some(accent))
+        .map(|r| r.glyphs.len())
+        .sum();
+    let plain: usize = l
+        .runs
+        .iter()
+        .filter(|r| r.color.is_none())
+        .map(|r| r.glyphs.len())
+        .sum();
+    assert_eq!((marked, plain), (4, 3));
+    // Out-of-range and mid-character spans are clipped, not a panic.
+    let l = e.layout(&styled(2, "héllo", None, |s| {
+        s.spans = vec![TextSpan {
+            range: 2..99,
+            italic: true,
+            weight: Some(700),
+            ..TextSpan::default()
+        }]
+    }));
+    assert_eq!(l.glyphs().count(), 5);
+}
+
+/// A layout that could not place every glyph says so, and reports the
+/// atlas pages that are still live.
+#[test]
+fn layouts_report_missing_glyphs_and_live_pages() {
+    let mut cfg = config();
+    cfg.atlas = AtlasConfig {
+        page_size: 64,
+        max_pages: 1,
+        max_bytes: 64 * 64,
+    };
+    let mut e = TextEngine::new(cfg);
+    let a = e.layout(&request(1, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", 40.0, Scale::ONE));
+    assert!(a.is_incomplete());
+    let pages = a.atlas_pages().unwrap();
+    assert_eq!(pages.len(), 1);
+    assert!(a.glyphs().all(|g| pages.contains(&g.slot.page)));
+    // While `a` leases the only page there is no room; once it is gone a
+    // retry completes.
+    assert!(
+        e.layout(&request(2, "12", 13.0, Scale::ONE))
+            .is_incomplete()
+    );
+    drop(a);
+    let b = e.layout(&request(2, "12", 13.0, Scale::ONE));
+    assert!(!b.is_incomplete());
+    assert!(
+        TextLayout::empty(TextKey(3), Scale::ONE)
+            .atlas_pages()
+            .is_none()
+    );
+}
+
+/// Dropping the worker with a long queue does not shape the queue first.
+#[test]
+fn dropping_the_worker_discards_its_queue() {
+    let big = "lorem ipsum ".repeat(MAX_TEXT_BYTES / 12);
+    // How long one big request takes here (debug builds are slow).
+    let mut e = TextEngine::new(config());
+    let t = std::time::Instant::now();
+    e.layout(&request(0, &big, 13.0, Scale::ONE));
+    let one = t.elapsed();
+    let w = TextWorker::spawn(config()).unwrap();
+    for k in 1..=40 {
+        w.request(request(k, &big, 13.0, Scale::ONE)).unwrap();
+    }
+    let t = std::time::Instant::now();
+    drop(w);
+    // At most the request in progress (plus font loading) finishes.
+    assert!(
+        t.elapsed() < one * 4 + Duration::from_millis(200),
+        "{:?} with one request taking {one:?}",
+        t.elapsed()
+    );
+}

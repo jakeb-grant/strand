@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use parley::fontique::{Blob, Collection, CollectionOptions, GenericFamily, SourceCache};
 use parley::{
-    Alignment, AlignmentOptions, FontContext, FontFamily, FontWeight, LayoutContext, LineHeight,
-    PositionedLayoutItem, StyleProperty,
+    Alignment, AlignmentOptions, FontContext, FontFamily, FontStyle, FontWeight, LayoutContext,
+    LineHeight, PositionedLayoutItem, StyleProperty,
 };
 use strand_scene::{LogicalSize, Rect, Scale};
 use swash::scale::{Render, ScaleContext, Source, StrikeWith, image::Content, image::Image};
@@ -18,7 +18,7 @@ use swash::zeno::{Angle, Format, Transform, Vector};
 use swash::{CacheKey, FontRef};
 
 use crate::atlas::{AtlasConfig, AtlasUpload, CachedGlyph, GlyphAtlas, GlyphKey, PageId};
-use crate::{GlyphRun, PlacedGlyph, TextAlign, TextLayout, TextRequest};
+use crate::{Ellipsis, GlyphRun, PlacedGlyph, TextAlign, TextLayout, TextRequest, TextSpan};
 
 /// Largest font size shaped, in physical pixels; larger requests are
 /// shaped at this size so one value from a bad expression cannot stall the
@@ -70,7 +70,8 @@ impl FontConfig {
 /// Shapes text and rasterises glyphs.
 pub struct TextEngine {
     font_cx: FontContext,
-    layout_cx: LayoutContext<()>,
+    /// Brushes are span indices plus one (0: no span).
+    layout_cx: LayoutContext<u32>,
     scale_cx: ScaleContext,
     atlas_config: AtlasConfig,
     atlases: HashMap<Scale, GlyphAtlas>,
@@ -189,26 +190,89 @@ impl TextEngine {
         while !req.text.is_char_boundary(end) {
             end -= 1;
         }
-        let text = &req.text[..end];
-        let mut builder = self
-            .layout_cx
-            .ranged_builder(&mut self.font_cx, text, s, true);
-        builder.push_default(StyleProperty::FontFamily(FontFamily::Source(
-            req.style.font.family.as_str().into(),
-        )));
-        builder.push_default(StyleProperty::FontSize(size));
-        builder.push_default(StyleProperty::FontWeight(FontWeight::new(weight)));
-        if let Some(lh) = line_height {
-            builder.push_default(StyleProperty::LineHeight(LineHeight::FontSizeRelative(lh)));
-        }
-        let mut layout: parley::Layout<()> = builder.build(text);
-        layout.break_all_lines(max_width);
-        let alignment = match req.style.align {
-            TextAlign::Start => Alignment::Start,
-            TextAlign::Center => Alignment::Center,
-            TextAlign::End => Alignment::End,
+        let full = &req.text[..end];
+        let base = Shape {
+            family: req.style.font.family.as_str(),
+            size,
+            weight,
+            line_height,
+            scale: s,
+            max_width,
+            align: req.style.align,
         };
-        layout.align(alignment, AlignmentOptions::default());
+        let (text, spans) = cut(full, &req.style.spans, &[Piece::Text(0..full.len())]);
+        let mut layout = base.layout(&mut self.layout_cx, &mut self.font_cx, &text, &spans);
+        let mut spans = spans;
+        // Truncation: `max_lines`, and `ellipsis` (one line unless
+        // `max_lines` says otherwise).
+        let limit = req
+            .style
+            .max_lines
+            .map(|n| n.max(1) as usize)
+            .or(req.style.ellipsis.map(|_| 1));
+        if let Some(limit) = limit {
+            let ellipsis = req.style.ellipsis;
+            let fits = |l: &parley::Layout<u32>| {
+                l.len() <= limit
+                    && (ellipsis.is_none() || max_width.is_none_or(|w| l.width() <= w + 0.5))
+            };
+            if !fits(&layout) {
+                // Text past the last allowed line can never be kept.
+                let keep_end = layout
+                    .lines()
+                    .nth(limit - 1)
+                    .map_or(text.len(), |l| l.text_range().end);
+                let pieces = match ellipsis {
+                    None => vec![Piece::Text(0..trim_end(&text, keep_end))],
+                    Some(e) => {
+                        let bounds: Vec<usize> = text
+                            .char_indices()
+                            .map(|(i, _)| i)
+                            .chain([text.len()])
+                            .collect();
+                        let n = bounds.len() - 1;
+                        let pieces_for = |k: usize| -> Vec<Piece> {
+                            match e {
+                                Ellipsis::End => vec![
+                                    Piece::Text(0..trim_end(&text, bounds[k])),
+                                    Piece::Ellipsis,
+                                ],
+                                Ellipsis::Start => vec![
+                                    Piece::Ellipsis,
+                                    Piece::Text(trim_start(&text, bounds[n - k])..text.len()),
+                                ],
+                                Ellipsis::Middle => vec![
+                                    Piece::Text(0..trim_end(&text, bounds[k.div_ceil(2)])),
+                                    Piece::Ellipsis,
+                                    Piece::Text(trim_start(&text, bounds[n - k / 2])..text.len()),
+                                ],
+                            }
+                        };
+                        // Largest kept character count that fits.
+                        let mut lo = 0;
+                        let mut hi = match e {
+                            Ellipsis::End => bounds.partition_point(|b| *b < keep_end),
+                            _ => n,
+                        }
+                        .min(n.saturating_sub(1));
+                        while lo < hi {
+                            let mid = (lo + hi).div_ceil(2);
+                            let (t, sp) = cut(&text, &spans, &pieces_for(mid));
+                            let l = base.layout(&mut self.layout_cx, &mut self.font_cx, &t, &sp);
+                            if fits(&l) {
+                                lo = mid;
+                            } else {
+                                hi = mid - 1;
+                            }
+                        }
+                        pieces_for(lo)
+                    }
+                };
+                let (t, sp) = cut(&text, &spans, &pieces);
+                layout = base.layout(&mut self.layout_cx, &mut self.font_cx, &t, &sp);
+                spans = sp;
+            }
+        }
 
         let atlas = self
             .atlases
@@ -219,6 +283,7 @@ impl TextEngine {
         let mut uploads = Vec::new();
         let mut leases = Vec::new();
         let mut leased: HashSet<PageId> = HashSet::new();
+        let mut incomplete = false;
         let mut ink = Rect::default();
         let mut baseline = None;
 
@@ -239,6 +304,11 @@ impl TextEngine {
                     h.finish()
                 };
                 let skew = synthesis.skew().unwrap_or(0.0);
+                let brush = glyph_run.style().brush as usize;
+                let color = brush
+                    .checked_sub(1)
+                    .and_then(|i| spans.get(i))
+                    .and_then(|sp| sp.color);
                 let font_id = font.data.id();
                 let cache_key = *self.font_keys.entry((font_id, font.index)).or_default();
                 let Some(mut font_ref) = FontRef::from_index(font.data.data(), font.index as usize)
@@ -289,7 +359,10 @@ impl TextEngine {
                             );
                             // An atlas allocation failure is not cached:
                             // a later request retries once pages free up.
-                            let Some(c) = c else { continue };
+                            let Some(c) = c else {
+                                incomplete = true;
+                                continue;
+                            };
                             atlas.insert(key, c);
                             c
                         }
@@ -308,7 +381,11 @@ impl TextEngine {
                     glyphs.push(placed);
                 }
                 if !glyphs.is_empty() {
-                    runs.push(GlyphRun { font_size, glyphs });
+                    runs.push(GlyphRun {
+                        font_size,
+                        color,
+                        glyphs,
+                    });
                 }
             }
         }
@@ -323,8 +400,123 @@ impl TextEngine {
             uploads,
             leases,
             reset: false,
+            incomplete,
+            atlas_pages: Some(atlas.page_ids()),
         }
     }
+}
+
+/// Shaping parameters shared by every attempt at one request.
+#[derive(Copy, Clone)]
+struct Shape<'a> {
+    family: &'a str,
+    size: f32,
+    weight: f32,
+    line_height: Option<f32>,
+    scale: f32,
+    /// Physical pixels.
+    max_width: Option<f32>,
+    align: TextAlign,
+}
+
+impl Shape<'_> {
+    fn layout(
+        &self,
+        layout_cx: &mut LayoutContext<u32>,
+        font_cx: &mut FontContext,
+        text: &str,
+        spans: &[TextSpan],
+    ) -> parley::Layout<u32> {
+        let mut builder = layout_cx.ranged_builder(font_cx, text, self.scale, true);
+        builder.push_default(StyleProperty::FontFamily(FontFamily::Source(
+            self.family.into(),
+        )));
+        builder.push_default(StyleProperty::FontSize(self.size));
+        builder.push_default(StyleProperty::FontWeight(FontWeight::new(self.weight)));
+        if let Some(lh) = self.line_height {
+            builder.push_default(StyleProperty::LineHeight(LineHeight::FontSizeRelative(lh)));
+        }
+        for (i, sp) in spans.iter().enumerate() {
+            let r = sp.range.clone();
+            builder.push(StyleProperty::Brush(i as u32 + 1), r.clone());
+            if let Some(w) = sp.weight {
+                builder.push(
+                    StyleProperty::FontWeight(FontWeight::new(w.clamp(1, 1000) as f32)),
+                    r.clone(),
+                );
+            }
+            if sp.italic {
+                builder.push(StyleProperty::FontStyle(FontStyle::Italic), r);
+            }
+        }
+        let mut layout: parley::Layout<u32> = builder.build(text);
+        layout.break_all_lines(self.max_width);
+        let alignment = match self.align {
+            TextAlign::Start => Alignment::Start,
+            TextAlign::Center => Alignment::Center,
+            TextAlign::End => Alignment::End,
+        };
+        layout.align(alignment, AlignmentOptions::default());
+        layout
+    }
+}
+
+/// A piece of truncated text: a byte range of the source, or the "…".
+#[derive(Clone, Debug)]
+enum Piece {
+    Text(std::ops::Range<usize>),
+    Ellipsis,
+}
+
+const ELLIPSIS: &str = "\u{2026}";
+
+/// Builds the text made of `pieces` and moves `spans` (byte ranges of
+/// `text`) onto it. Span ranges are clipped and snapped to character
+/// boundaries; empty ones are dropped.
+fn cut(text: &str, spans: &[TextSpan], pieces: &[Piece]) -> (String, Vec<TextSpan>) {
+    let mut out = String::new();
+    // (source start, source end, output start) of each text piece.
+    let mut map = Vec::new();
+    for p in pieces {
+        match p {
+            Piece::Text(r) => {
+                map.push((r.start, r.end, out.len()));
+                out.push_str(&text[r.clone()]);
+            }
+            Piece::Ellipsis => out.push_str(ELLIPSIS),
+        }
+    }
+    let snap = |mut i: usize| {
+        i = i.min(text.len());
+        while !text.is_char_boundary(i) {
+            i -= 1;
+        }
+        i
+    };
+    let mut moved = Vec::new();
+    for sp in spans {
+        let (a, b) = (snap(sp.range.start), snap(sp.range.end));
+        for &(s0, s1, o) in &map {
+            let (x, y) = (a.max(s0), b.min(s1));
+            if x < y {
+                moved.push(TextSpan {
+                    range: o + x - s0..o + y - s0,
+                    ..sp.clone()
+                });
+            }
+        }
+    }
+    (out, moved)
+}
+
+/// `end` moved back over trailing whitespace.
+fn trim_end(text: &str, end: usize) -> usize {
+    text[..end].trim_end().len()
+}
+
+/// `start` moved forward over leading whitespace.
+fn trim_start(text: &str, start: usize) -> usize {
+    text.len() - text[start..].trim_start().len()
 }
 
 #[allow(clippy::too_many_arguments)]

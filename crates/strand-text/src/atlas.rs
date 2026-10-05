@@ -344,6 +344,11 @@ impl GlyphAtlas {
         }
     }
 
+    /// Ids of every live page.
+    pub fn page_ids(&self) -> Vec<PageId> {
+        self.pages.iter().map(|p| p.id).collect()
+    }
+
     pub fn page_count(&self) -> usize {
         self.pages.len()
     }

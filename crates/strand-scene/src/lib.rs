@@ -9,6 +9,7 @@ pub mod geometry;
 pub mod id;
 pub mod paint;
 pub mod protocol;
+pub mod surface;
 pub mod tokens;
 
 pub use color::{Color, LinearRgb, Oklab, Oklch};
@@ -20,4 +21,5 @@ pub use protocol::{
     Border, Corners, Easing, Font, GradientStop, Insets, Length, NodeKind, Paint, Prop, PropClass,
     PropValue, SceneDiff, SceneOp, Shadow, Transition,
 };
-pub use tokens::{BinOp, Channel, TokenExpr, TokenMethod, TokenScope, TokenTable};
+pub use surface::{Anchor, Edge, Keyboard, Layer, Screens, SurfaceChange, SurfaceSpec};
+pub use tokens::{BinOp, Channel, MAX_TOKEN_STEPS, TokenExpr, TokenMethod, TokenScope, TokenTable};

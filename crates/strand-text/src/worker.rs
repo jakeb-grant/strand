@@ -44,8 +44,8 @@ enum Msg {
 pub type Waker = Box<dyn Fn() + Send + 'static>;
 
 /// Handle to the text worker. Dropping it stops and joins the thread
-/// (after at most the request being shaped; requests are capped at
-/// [`crate::MAX_TEXT_BYTES`]).
+/// after at most the request being shaped (requests are capped at
+/// [`crate::MAX_TEXT_BYTES`]); queued requests are discarded.
 pub struct TextWorker {
     requests: Option<Sender<Msg>>,
     layouts: Receiver<TextLayout>,
@@ -98,8 +98,14 @@ impl TextWorker {
                     // Fold in whatever arrived meanwhile before each
                     // request, so a cancel sent while a long batch is
                     // being shaped still skips the superseded ones.
-                    for m in req_rx.try_iter() {
-                        enqueue(m, &mut queue, &mut cancelled);
+                    // A closed channel means the handle was dropped: stop
+                    // without shaping the rest of the queue.
+                    loop {
+                        match req_rx.try_recv() {
+                            Ok(m) => enqueue(m, &mut queue, &mut cancelled),
+                            Err(TryRecvError::Empty) => break,
+                            Err(TryRecvError::Disconnected) => return,
+                        }
                     }
                     let Some(msg) = queue.pop_front() else {
                         continue;

@@ -10,6 +10,7 @@
 //! graph").
 
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::collections::BTreeMap;
 
 use crate::color::{Color, Oklch};
@@ -105,7 +106,10 @@ pub enum TokenExpr {
         rhs: Box<TokenExpr>,
     },
     /// A composite value whose colours come from token expressions:
-    /// `border: 1, $border` or `linear(45deg, $accent, $tertiary)`. The
+    /// `border: 1, $border` or `linear(45deg, $accent, $tertiary)`.
+    /// (Comma shorthands of numbers, `pad: 0, $space.3`, need no template:
+    /// they are a `PropValue::List` holding `PropValue::Token` items, which
+    /// [`TokenScope::resolve`] resolves in place.) The
     /// `n`-th entry of `colors` replaces the `n`-th colour of `value` in
     /// [`PropValue::colors_mut`] order; `None` keeps the literal colour.
     Template {
@@ -194,9 +198,37 @@ impl TokenTable {
 /// inherited value (no cycle). Derived tokens of the global table are
 /// evaluated in the scope of the node asking, so they stay derived inside
 /// a subtree: with `$surface` overridden, `$surface.hi` follows it.
+///
+/// Every public entry point evaluates within [`MAX_TOKEN_STEPS`], so a
+/// table with a large reference fan-out (user input) fails to resolve
+/// instead of stalling the render thread.
 #[derive(Copy, Clone, Debug)]
 pub struct TokenScope<'a> {
     levels: &'a [&'a TokenTable],
+}
+
+/// Most evaluation steps (references followed plus expression nodes
+/// visited) one `lookup`, `resolve`, `eval` or `transition` may take.
+/// The design's whole token graph is about 100 operations.
+pub const MAX_TOKEN_STEPS: u32 = 10_000;
+
+/// Remaining work for one resolution.
+struct Budget(Cell<u32>);
+
+impl Budget {
+    fn new() -> Self {
+        Self(Cell::new(MAX_TOKEN_STEPS))
+    }
+
+    /// Takes one step; false once the budget is spent.
+    fn step(&self) -> bool {
+        let left = self.0.get();
+        if left == 0 {
+            return false;
+        }
+        self.0.set(left - 1);
+        true
+    }
 }
 
 impl<'a> TokenScope<'a> {
@@ -208,35 +240,36 @@ impl<'a> TokenScope<'a> {
 
     /// Evaluates the token at `path` in this scope.
     pub fn lookup(&self, path: &str) -> Option<PropValue> {
-        self.eval_ref(path, 0)
+        self.eval_ref(path, 0, &Budget::new())
     }
 
     /// Resolves a prop value in this scope (see [`TokenTable::resolve`]).
+    /// Token references nested in a `List`, `Pose` or `Call` (the comma
+    /// shorthand `pad: 0, $space.3`, `radius: $radius.lg, $radius.lg, 0,
+    /// 0`) are resolved in place; if any of them fails the whole value
+    /// does.
     pub fn resolve<'v>(&self, v: &'v PropValue) -> Option<Cow<'v, PropValue>> {
-        match v {
-            PropValue::Token(e) => self.eval(e).map(Cow::Owned),
-            v => Some(Cow::Borrowed(v)),
-        }
+        self.resolve_in(v, 0, &Budget::new())
     }
 
     /// Evaluates an expression in this scope.
     pub fn eval(&self, e: &TokenExpr) -> Option<PropValue> {
-        self.eval_in(e, 0, None)
+        self.eval_in(e, 0, None, &Budget::new())
     }
 
     /// The concrete curve for a prop set with `t`: `Default` takes the
-    /// prop class's `$motion.spatial` / `$motion.effects` token (and snaps
-    /// props that cannot interpolate), `Token` takes the named token.
-    /// Missing or mistyped tokens fall back to [`Transition::Instant`].
+    /// prop class's `$motion.spatial` / `$motion.effects` token, `Token`
+    /// takes the named token. Props that cannot interpolate
+    /// ([`PropClass::Snap`]: fonts, text, keywords) always snap, whatever
+    /// was asked. Missing or mistyped tokens fall back to
+    /// [`Transition::Instant`].
     pub fn transition(&self, t: &Transition, prop: Prop) -> Transition {
-        let path = match t {
-            Transition::Default => match prop.class() {
-                PropClass::Spatial => "motion.spatial",
-                PropClass::Effects => "motion.effects",
-                PropClass::Snap => return Transition::Instant,
-            },
-            Transition::Token(path) => path.as_str(),
-            t => return t.clone(),
+        let path = match (prop.class(), t) {
+            (PropClass::Snap, _) => return Transition::Instant,
+            (PropClass::Spatial, Transition::Default) => "motion.spatial",
+            (PropClass::Effects, Transition::Default) => "motion.effects",
+            (_, Transition::Token(path)) => path.as_str(),
+            (_, t) => return t.clone(),
         };
         match self.lookup(path) {
             Some(PropValue::Transition(t))
@@ -248,8 +281,43 @@ impl<'a> TokenScope<'a> {
         }
     }
 
-    fn eval_ref(&self, path: &str, depth: u32) -> Option<PropValue> {
-        if depth > MAX_TOKEN_DEPTH {
+    fn resolve_in<'v>(
+        &self,
+        v: &'v PropValue,
+        depth: u32,
+        budget: &Budget,
+    ) -> Option<Cow<'v, PropValue>> {
+        if !v.has_tokens() {
+            return Some(Cow::Borrowed(v));
+        }
+        let all = |items: &[PropValue]| -> Option<Vec<PropValue>> {
+            items
+                .iter()
+                .map(|i| self.resolve_in(i, depth, budget).map(Cow::into_owned))
+                .collect()
+        };
+        Some(Cow::Owned(match v {
+            PropValue::Token(e) => self.eval_in(e, depth, None, budget)?,
+            PropValue::List(items) => PropValue::List(all(items)?),
+            PropValue::Call { name, args } => PropValue::Call {
+                name: name.clone(),
+                args: all(args)?,
+            },
+            PropValue::Pose(props) => PropValue::Pose(
+                props
+                    .iter()
+                    .map(|(p, v)| {
+                        self.resolve_in(v, depth, budget)
+                            .map(|v| (*p, v.into_owned()))
+                    })
+                    .collect::<Option<_>>()?,
+            ),
+            v => v.clone(),
+        }))
+    }
+
+    fn eval_ref(&self, path: &str, depth: u32, budget: &Budget) -> Option<PropValue> {
+        if depth > MAX_TOKEN_DEPTH || !budget.step() {
             return None;
         }
         for (i, table) in self.levels.iter().enumerate().rev() {
@@ -261,29 +329,33 @@ impl<'a> TokenScope<'a> {
                 TokenScope::new(&self.levels[..i])
             };
             if let Some(v) = table.tokens.get(path) {
-                return match v {
-                    PropValue::Token(e) => scope.eval_in(e, depth + 1, None),
-                    v => Some(v.clone()),
-                };
+                return scope.resolve_in(v, depth + 1, budget).map(Cow::into_owned);
             }
             if let Some(e) = table.derived.get(path) {
-                return scope.eval_in(e, depth + 1, None);
+                return scope.eval_in(e, depth + 1, None, budget);
             }
         }
         None
     }
 
-    fn eval_in(&self, e: &TokenExpr, depth: u32, base: Option<Oklch>) -> Option<PropValue> {
-        if depth > MAX_TOKEN_DEPTH {
+    fn eval_in(
+        &self,
+        e: &TokenExpr,
+        depth: u32,
+        base: Option<Oklch>,
+        budget: &Budget,
+    ) -> Option<PropValue> {
+        if depth > MAX_TOKEN_DEPTH || !budget.step() {
             return None;
         }
-        let num = |e: &TokenExpr| self.eval_in(e, depth + 1, base).as_ref().and_then(fraction);
-        let col = |e: &TokenExpr| self.eval_in(e, depth + 1, base).as_ref().and_then(color);
+        let sub = |e: &TokenExpr| self.eval_in(e, depth + 1, base, budget);
+        let num = |e: &TokenExpr| sub(e).as_ref().and_then(fraction);
+        let col = |e: &TokenExpr| sub(e).as_ref().and_then(color);
         match e {
-            TokenExpr::Ref(path) => self.eval_ref(path, depth + 1),
+            TokenExpr::Ref(path) => self.eval_ref(path, depth + 1, budget),
             TokenExpr::Value(v) => match v.as_ref() {
-                PropValue::Token(inner) => self.eval_in(inner, depth + 1, base),
-                v => Some(v.clone()),
+                PropValue::Token(inner) => sub(inner),
+                v => self.resolve_in(v, depth + 1, budget).map(Cow::into_owned),
             },
             TokenExpr::Method {
                 receiver,
@@ -313,7 +385,7 @@ impl<'a> TokenScope<'a> {
                     match slot {
                         None => Some(keep),
                         Some(e) => self
-                            .eval_in(e, depth + 1, Some(lch))
+                            .eval_in(e, depth + 1, Some(lch), budget)
                             .as_ref()
                             .and_then(fraction)
                             .map(f64::from),
@@ -608,5 +680,130 @@ mod tests {
                 .transition(&Transition::Token("motion.bouncy".into()), Prop::X),
             spatial
         );
+    }
+
+    #[test]
+    fn shorthand_lists_resolve_through_scoped_overrides() {
+        use crate::protocol::{Corners, Insets};
+        let mut global = table();
+        global.insert("space.3", PropValue::Number(12.0));
+        global.insert("radius.lg", PropValue::Number(14.0));
+        // pad: 0, $space.3
+        let pad = PropValue::List(vec![
+            PropValue::Number(0.0),
+            PropValue::Token(TokenExpr::path("space.3")),
+        ]);
+        // radius: $radius.lg, $radius.lg, 0, 0
+        let radius = PropValue::List(vec![
+            PropValue::Token(TokenExpr::path("radius.lg")),
+            PropValue::Token(TokenExpr::path("radius.lg")),
+            PropValue::Number(0.0),
+            PropValue::Number(0.0),
+        ]);
+        let levels = [&global];
+        let s = TokenScope::new(&levels);
+        let insets = |s: &TokenScope<'_>| s.resolve(&pad).unwrap().insets().unwrap();
+        assert_eq!(
+            insets(&s),
+            Insets {
+                top: 0.0,
+                right: 12.0,
+                bottom: 0.0,
+                left: 12.0
+            }
+        );
+        // A compact theme or `set { $space.3: 4 }` reaches it unresolved.
+        let mut set = TokenTable::default();
+        set.insert("space.3", PropValue::Number(4.0));
+        set.insert("radius.lg", PropValue::Number(6.0));
+        let levels = [&global, &set];
+        let inner = TokenScope::new(&levels);
+        assert_eq!(insets(&inner).left, 4.0);
+        let PropValue::List(r) = inner.resolve(&radius).unwrap().into_owned() else {
+            panic!()
+        };
+        let v: Vec<f32> = r.iter().map(|v| v.as_number().unwrap()).collect();
+        assert_eq!(
+            Corners::from_values(&v),
+            Some(Corners {
+                top_left: 6.0,
+                top_right: 6.0,
+                bottom_right: 0.0,
+                bottom_left: 0.0
+            })
+        );
+        // margin: $space.2, $space.2, 0 is top 8, sides 8, bottom 0.
+        let margin = PropValue::List(vec![
+            PropValue::Token(TokenExpr::path("space.2")),
+            PropValue::Token(TokenExpr::path("space.2")),
+            PropValue::Number(0.0),
+        ]);
+        let m = s.resolve(&margin).unwrap().insets().unwrap();
+        assert_eq!((m.top, m.right, m.bottom, m.left), (8.0, 8.0, 0.0, 8.0));
+        // One unresolvable item fails the whole value; plain lists borrow.
+        let bad = PropValue::List(vec![PropValue::Token(TokenExpr::path("nope"))]);
+        assert!(s.resolve(&bad).is_none());
+        let plain = PropValue::List(vec![PropValue::Number(1.0)]);
+        assert!(matches!(s.resolve(&plain), Some(Cow::Borrowed(_))));
+        // Calls and poses resolve their arguments too.
+        let tint = PropValue::Call {
+            name: "tint".into(),
+            args: vec![PropValue::Token(TokenExpr::path("fg"))],
+        };
+        assert_eq!(
+            s.resolve(&tint).unwrap().into_owned(),
+            PropValue::Call {
+                name: "tint".into(),
+                args: vec![PropValue::Color(Color::WHITE)]
+            }
+        );
+    }
+
+    #[test]
+    fn huge_fan_out_fails_fast() {
+        // Four levels, each a 64-term sum of the level below: 64^4 leaf
+        // evaluations without a work budget.
+        let mut t = TokenTable::default();
+        t.insert("n0", PropValue::Number(1.0));
+        for level in 1..=4 {
+            // A balanced sum, so depth stays far below MAX_TOKEN_DEPTH.
+            fn sum(path: &str, n: usize) -> TokenExpr {
+                if n == 1 {
+                    return TokenExpr::path(path);
+                }
+                TokenExpr::Binary {
+                    op: BinOp::Add,
+                    lhs: Box::new(sum(path, n / 2)),
+                    rhs: Box::new(sum(path, n / 2)),
+                }
+            }
+            t.insert_derived(format!("n{level}"), sum(&format!("n{}", level - 1), 64));
+        }
+        let start = std::time::Instant::now();
+        assert!(t.lookup("n4").is_none());
+        assert!(
+            t.resolve(&PropValue::Token(TokenExpr::path("n4")))
+                .is_none()
+        );
+        assert!(start.elapsed() < std::time::Duration::from_millis(500));
+        // A small fan-out still resolves.
+        assert_eq!(t.lookup("n1"), Some(PropValue::Number(64.0)));
+    }
+
+    #[test]
+    fn snap_props_never_animate() {
+        let t = table();
+        let levels = [&t];
+        let s = TokenScope::new(&levels);
+        let spring = Transition::Spring {
+            stiffness: 300.0,
+            damping: 0.8,
+        };
+        assert_eq!(s.transition(&spring, Prop::Font), Transition::Instant);
+        assert_eq!(
+            s.transition(&Transition::Token("motion.spatial".into()), Prop::Text),
+            Transition::Instant
+        );
+        assert_eq!(s.transition(&spring, Prop::Width), spring);
     }
 }

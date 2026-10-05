@@ -10,7 +10,7 @@ boxes and its exit criteria are ticked.
 Exit: [ ] ≤34 MB PSS on 2 monitors · [ ] no wakeups between minute ticks ·
 [ ] ≤2,000 px² damage per tick
 
-- [x] `strand-scene` vocabulary: geometry, colour (sRGB ↔ OKLab), `Damage` (≤8 rects, merge), `Painter`, scene protocol types — `crates/strand-scene/src/{geometry,color,damage,id,paint,protocol,tokens}.rs` (unit + proptest)
+- [x] `strand-scene` vocabulary: geometry, colour (sRGB ↔ OKLab), `Damage` (≤8 rects, merge), `Painter`, scene protocol types — `crates/strand-scene/src/{geometry,color,damage,id,paint,protocol,surface,tokens}.rs` (unit + proptest), `crates/strand-render/tests/damage.rs` (`surface_specs_resolve_tokens_and_report_changes`)
 - [ ] SCTK layer-shell bar on every output, anchored to an edge, exclusive zone
 - [ ] Output hotplug: bar appears on a new output and is destroyed when one goes; layer-surface `closed` handled
 - [ ] wl_shm pool, 2–3 buffers per surface, buffer age tracked per buffer
@@ -20,7 +20,7 @@ Exit: [ ] ≤34 MB PSS on 2 monitors · [ ] no wakeups between minute ticks ·
 - [ ] `wp_presentation` feedback as the frame clock; injectable fake clock for tests
 - [x] vello_cpu (single-threaded) paints the scene IR into shm with rect clips to damage — `crates/strand-render/tests/damage.rs` (`clock_tick_damage_is_small_and_exact`, `random_edits_match_full_repaint`, `clock_tick_on_4k_rasterises_only_the_damage`)
 - [x] Retained scene → display list → damage diff (only changed nodes' bounds) — `crates/strand-render/tests/damage.rs`
-- [x] Text: parley shaping on the text worker; swash rasterisation; LRU glyph atlas per scale — `crates/strand-text/tests/text.rs` (`huge_distinct_glyphs_stay_within_the_byte_budget`), `crates/strand-render/tests/damage.rs` (`text_survives_output_hotplug`, `worker_rescale_keeps_text_on_the_first_frame`)
+- [x] Text: parley shaping on the text worker; swash rasterisation; LRU glyph atlas per scale — `crates/strand-text/tests/text.rs` (`huge_distinct_glyphs_stay_within_the_byte_budget`), `crates/strand-render/tests/damage.rs` (`text_survives_output_hotplug`, `worker_rescale_keeps_text_on_the_first_frame`, `first_frame_of_a_new_surface_has_its_text`, `atlas_mirror_stays_bounded`)
 - [x] Offline render tests: scenes → PNG compared to references within tolerance — `crates/strand-render/tests/scenes.rs`
 - [ ] Clock tick aligned to the minute boundary; process sleeps between ticks
 - [ ] 10k-node reactive graph benchmark (propagation latency, memory per node)

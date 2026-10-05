@@ -1,23 +1,31 @@
 //! The render thread's entry point: applies scene diffs, keeps text layouts
 //! flowing, diffs damage and implements [`Painter`].
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use strand_scene::{
     Damage, NodeId, NodeKind, PaintTarget, Painter, Prop, Scale, SceneDiff, SceneOp, Size,
-    SurfaceId,
+    SurfaceChange, SurfaceId, SurfaceSpec, TokenScope,
 };
 use strand_text::{TextEngine, TextError, TextKey, TextLayout, TextRequest, TextWorker};
 
-use crate::flatten::{Flattened, NodeRecord, TextSpec, flatten};
+use crate::flatten::{Flattened, NodeRecord, TextSpec, flatten, scope_tables};
 use crate::raster::{AtlasMirror, Raster};
 use crate::tree::{SceneError, SceneTree};
 
 /// How many past frames' damage is kept for buffer-age widening. A buffer
 /// older than this is repainted in full.
 pub const DAMAGE_HISTORY: usize = 4;
+
+/// How long a newly configured surface waits for its text before its first
+/// frame (see [`Renderer::frame_deadline`]).
+pub const FIRST_FRAME_TEXT_WAIT: Duration = Duration::from_millis(50);
+
+/// How often a layout that came back incomplete (no atlas room) is asked
+/// for again before waiting for other text to change or go.
+pub const MAX_TEXT_RETRIES: u8 = 2;
 
 /// Where text layouts come from.
 #[derive(Debug)]
@@ -57,6 +65,19 @@ struct TextState {
     shaped: Option<TextSpec>,
     /// The request in flight, if any.
     requested: Option<(TextKey, TextSpec)>,
+    /// Shaping `shaped` crashed the text worker's engine: it is not asked
+    /// for again (nothing is drawn) until the spec changes.
+    poisoned: bool,
+    /// Retries left for an incomplete layout are `MAX_TEXT_RETRIES -
+    /// retries`.
+    retries: u8,
+}
+
+impl TextState {
+    /// The layout lacks glyphs for want of atlas room.
+    fn incomplete(&self) -> bool {
+        self.layout.as_ref().is_some_and(|l| l.is_incomplete())
+    }
 }
 
 #[derive(Debug)]
@@ -73,6 +94,13 @@ struct SurfaceState {
     history: VecDeque<Damage>,
     /// False until the first paint, and after size or scale changes.
     valid: bool,
+    /// Painted at least once since it was attached.
+    painted: bool,
+    /// Until when the first frame waits for text being shaped (set when
+    /// the surface is first configured).
+    wait_until: Option<Instant>,
+    /// Some text on the surface has no layout at any scale yet.
+    awaiting_text: bool,
     dirty: bool,
     /// Fully opaque part of the last painted frame.
     opaque: Damage,
@@ -123,6 +151,10 @@ pub struct Renderer {
     atlas: AtlasMirror,
     raster: Raster,
     last_damage: HashMap<SurfaceId, Damage>,
+    /// Resolved spec of every surface-kind node, as of the last `apply`.
+    specs: BTreeMap<NodeId, SurfaceSpec>,
+    surface_changes: Vec<(NodeId, SurfaceChange)>,
+    first_frame_wait: Duration,
 }
 
 impl Renderer {
@@ -138,6 +170,70 @@ impl Renderer {
             atlas: AtlasMirror::default(),
             raster: Raster::default(),
             last_damage: HashMap::new(),
+            specs: BTreeMap::new(),
+            surface_changes: Vec::new(),
+            first_frame_wait: FIRST_FRAME_TEXT_WAIT,
+        }
+    }
+
+    /// How long a newly configured surface holds its first frame for text
+    /// still being shaped ([`FIRST_FRAME_TEXT_WAIT`] by default).
+    pub fn set_first_frame_wait(&mut self, wait: Duration) {
+        self.first_frame_wait = wait;
+    }
+
+    /// The resolved surface parameters of a surface-kind node (as of the
+    /// last [`Renderer::apply`]): what `strand-surface` creates its layer
+    /// surface from.
+    pub fn surface_spec(&self, node: NodeId) -> Option<&SurfaceSpec> {
+        self.specs.get(&node)
+    }
+
+    /// Surface-kind nodes created, changed or removed since the last call,
+    /// in order. Token changes that move a resolved value (`margin:
+    /// $space.2`) are reported as updates.
+    pub fn take_surface_changes(&mut self) -> Vec<(NodeId, SurfaceChange)> {
+        std::mem::take(&mut self.surface_changes)
+    }
+
+    /// Bytes of atlas pixels the render thread mirrors for `scale`.
+    pub fn atlas_mirror_bytes(&self, scale: Scale) -> usize {
+        self.atlas.bytes(scale)
+    }
+
+    /// Re-resolves every surface spec and records what changed.
+    fn refresh_specs(&mut self) {
+        let tree = &self.tree;
+        let mut live = BTreeSet::new();
+        for id in tree.surface_nodes() {
+            let Some(node) = tree.get(id) else { continue };
+            let tables = scope_tables(tree, id);
+            let scope = TokenScope::new(&tables);
+            let spec =
+                SurfaceSpec::resolve(node.kind, |p| node.get(p).and_then(|v| scope.resolve(v)));
+            live.insert(id);
+            let change = match self.specs.get(&id) {
+                None => Some(SurfaceChange::Created(spec.clone())),
+                Some(old) if *old != spec => Some(SurfaceChange::Updated {
+                    recreate: old.needs_recreate(&spec),
+                    spec: spec.clone(),
+                }),
+                Some(_) => None,
+            };
+            if let Some(c) = change {
+                self.surface_changes.push((id, c));
+                self.specs.insert(id, spec);
+            }
+        }
+        let gone: Vec<NodeId> = self
+            .specs
+            .keys()
+            .filter(|id| !live.contains(id))
+            .copied()
+            .collect();
+        for id in gone {
+            self.specs.remove(&id);
+            self.surface_changes.push((id, SurfaceChange::Removed));
         }
     }
 
@@ -158,12 +254,16 @@ impl Renderer {
                 records: BTreeMap::new(),
                 history: VecDeque::new(),
                 valid: false,
+                painted: false,
+                wait_until: None,
+                awaiting_text: false,
                 dirty: true,
                 opaque: Damage::new(),
                 time: Duration::ZERO,
                 cache: None,
             },
         );
+        self.raster.set_surfaces(self.surfaces.len());
     }
 
     /// Forces a full repaint of `surface` on its next paint (for example
@@ -177,9 +277,18 @@ impl Renderer {
 
     /// Tells the renderer a surface's buffer size and scale before its first
     /// paint, so text can be shaped ahead of the first frame.
+    ///
+    /// Until its first paint, a surface whose text is still being shaped
+    /// does not ask for a frame (no frame without its text at boot or on
+    /// hotplug) for up to the first-frame wait; see
+    /// [`Renderer::frame_deadline`].
     pub fn configure_surface(&mut self, surface: SurfaceId, size: Size, scale: Scale) {
+        let wait = self.first_frame_wait;
         if let Some(s) = self.surfaces.get_mut(&surface) {
             s.resize(size, scale);
+            if !s.painted && s.wait_until.is_none() && size != Size::default() {
+                s.wait_until = Some(Instant::now() + wait);
+            }
         }
         self.prune_scales();
         self.update();
@@ -188,7 +297,19 @@ impl Renderer {
     pub fn detach_surface(&mut self, surface: SurfaceId) {
         self.surfaces.remove(&surface);
         self.last_damage.remove(&surface);
+        self.raster.set_surfaces(self.surfaces.len());
         self.prune_scales();
+    }
+
+    /// When a surface that is holding its first frame for text will want
+    /// it anyway: the loop should wake by then (a calloop timer) and check
+    /// [`Painter::wants_frame`] again. `None` when it is not waiting.
+    pub fn frame_deadline(&self, surface: SurfaceId) -> Option<Instant> {
+        let s = self.surfaces.get(&surface)?;
+        (!s.painted && s.awaiting_text)
+            .then_some(s.wait_until)
+            .flatten()
+            .filter(|t| Instant::now() < *t)
     }
 
     /// Frees everything held for scales no surface uses any more: text
@@ -272,6 +393,7 @@ impl Renderer {
         // Drop text state of nodes that are gone or no longer show text.
         let tree = &self.tree;
         let text = &self.text;
+        let before = self.texts.len();
         self.texts.retain(|(id, _), t| {
             let keep = tree.get(*id).is_some_and(|n| {
                 matches!(n.kind, NodeKind::Text | NodeKind::Button) && n.get(Prop::Text).is_some()
@@ -281,22 +403,50 @@ impl Renderer {
             }
             keep
         });
+        if self.texts.len() != before {
+            // Dropped layouts may have freed atlas pages.
+            self.refresh_retries();
+        }
         let texts = &self.texts;
         self.pending.retain(|_, slot| texts.contains_key(slot));
         // A surface nested in a touched one (a popup in a bar) inherits
         // from it, so it is touched too; `update` clears it again if
         // nothing it draws changed.
+        // A surface whose root went with an ancestor (a popup in a removed
+        // bar) is touched too: its stale frame clears until it is
+        // detached.
         let tree = &self.tree;
         for s in self.surfaces.values_mut() {
-            if touched
-                .as_ref()
-                .is_none_or(|t| t.iter().any(|r| tree.is_ancestor(*r, s.root)))
+            if !tree.contains(s.root)
+                || touched
+                    .as_ref()
+                    .is_none_or(|t| t.iter().any(|r| tree.is_ancestor(*r, s.root)))
             {
                 s.mark_dirty();
             }
         }
+        self.refresh_specs();
         self.update();
         errors
+    }
+
+    /// Gives every incomplete layout its retries back and wakes its
+    /// surfaces, after something happened that can free atlas pages (a
+    /// layout replaced for new text, text removed, a scale dropped).
+    /// Retries themselves never refresh, so this cannot loop.
+    fn refresh_retries(&mut self) {
+        let mut roots = BTreeSet::new();
+        for ((id, _), t) in self.texts.iter_mut() {
+            if t.incomplete() {
+                t.retries = 0;
+                roots.extend(self.tree.root_of(*id));
+            }
+        }
+        for s in self.surfaces.values_mut() {
+            if roots.contains(&s.root) {
+                s.mark_dirty();
+            }
+        }
     }
 
     /// Collects finished text layouts and sends shaping requests for text
@@ -315,10 +465,25 @@ impl Renderer {
             .collect();
         for id in ids {
             let f = self.flatten_surface(id);
+            // Text with a request in flight and no layout at any scale.
+            let mut shown = HashSet::new();
+            let mut asked = HashSet::new();
+            for ((node, _), t) in &self.texts {
+                if t.layout.is_some() {
+                    shown.insert(*node);
+                } else if t.requested.is_some() {
+                    asked.insert(*node);
+                }
+            }
+            let awaiting = f
+                .text
+                .iter()
+                .any(|(node, _)| asked.contains(node) && !shown.contains(node));
             if let Some(s) = self.surfaces.get_mut(&id) {
                 if s.valid && s.records == f.records && s.opaque == f.opaque {
                     s.dirty = false;
                 }
+                s.awaiting_text = awaiting;
                 s.cache = Some(f);
             }
         }
@@ -373,14 +538,37 @@ impl Renderer {
 
     fn deliver(&mut self, layout: TextLayout) {
         if layout.is_reset() {
+            // The request answered by the reset crashed the engine: keep
+            // it from being asked for again, or the worker would restart
+            // its engine and every text would reshape, forever.
+            let culprit = self.pending.get(&layout.key).and_then(|slot| {
+                let (_, spec) = self.texts.get(slot)?.requested.as_ref()?;
+                Some((*slot, spec.clone()))
+            });
             self.reset_text();
+            if let Some((slot, spec)) = culprit {
+                self.texts.insert(
+                    slot,
+                    TextState {
+                        shaped: Some(spec),
+                        poisoned: true,
+                        ..TextState::default()
+                    },
+                );
+            }
             return;
         }
         // Atlas uploads apply even when the layout itself is stale, except
         // for scales already pruned (their pages would never be freed).
-        for up in &layout.uploads {
-            if self.text_scales.contains(&up.page.scale) {
-                self.atlas.apply(up);
+        if self.text_scales.contains(&layout.scale) {
+            for up in &layout.uploads {
+                if up.page.scale == layout.scale {
+                    self.atlas.apply(up);
+                }
+            }
+            // Pages the worker trimmed or reset since are dropped.
+            if let Some(live) = layout.atlas_pages() {
+                self.atlas.retain_pages(layout.scale, live);
             }
         }
         let Some(slot) = self.pending.remove(&layout.key) else {
@@ -392,9 +580,20 @@ impl Renderer {
         if state.requested.as_ref().map(|(k, _)| *k) != Some(layout.key) {
             return;
         }
+        let mut replaced = false;
         if let Some((_, spec)) = state.requested.take() {
+            // A retry (same spec) does not refresh anyone's retries.
+            replaced = state.shaped.as_ref() != Some(&spec);
+            if replaced {
+                state.retries = 0;
+            }
             state.shaped = Some(spec);
+            state.poisoned = false;
             state.layout = Some(Arc::new(layout));
+        }
+        if replaced {
+            // The layout it replaced released its atlas pages.
+            self.refresh_retries();
         }
         // Surfaces at other scales may draw it resampled meanwhile.
         let root = self.tree.root_of(slot.0);
@@ -409,14 +608,23 @@ impl Renderer {
     /// layout drawing from one is stale. Forget them all and re-request.
     fn reset_text(&mut self) {
         self.atlas = AtlasMirror::default();
-        for (_, t) in self.texts.drain() {
-            if let Some((k, _)) = t.requested {
-                self.text.cancel(k);
+        let text = &self.text;
+        self.texts.retain(|_, t| {
+            if let Some((k, _)) = t.requested.take() {
+                text.cancel(k);
             }
-        }
+            // Earlier culprits stay poisoned.
+            t.layout = None;
+            t.poisoned
+        });
         self.pending.clear();
+        // Repaint in full, but keep showing the old frame (rather than one
+        // without text) until the text is back, as for a first frame.
+        let until = Instant::now() + self.first_frame_wait;
         for s in self.surfaces.values_mut() {
             s.valid = false;
+            s.painted = false;
+            s.wait_until = Some(until);
             s.mark_dirty();
         }
     }
@@ -484,6 +692,9 @@ impl Renderer {
         for (node, spec) in needs {
             let slot = (*node, spec.scale);
             let state = self.texts.entry(slot).or_default();
+            if state.requested.as_ref().is_some_and(|(_, s)| s == spec) {
+                continue;
+            }
             if state.shaped.as_ref() == Some(spec) {
                 // Reverted to what is shown: a request in flight for
                 // something else must not replace it on arrival.
@@ -491,10 +702,12 @@ impl Renderer {
                     self.pending.remove(&old);
                     self.text.cancel(old);
                 }
-                continue;
-            }
-            if state.requested.as_ref().is_some_and(|(_, s)| s == spec) {
-                continue;
+                // Glyphs left out for want of atlas room: ask again, a
+                // bounded number of times.
+                if !(state.incomplete() && state.retries < MAX_TEXT_RETRIES) {
+                    continue;
+                }
+                state.retries += 1;
             }
             let key = TextKey(self.next_key);
             self.next_key += 1;
@@ -519,6 +732,7 @@ impl Renderer {
                         // No worker: keep the last layout, stop asking.
                         state.shaped = Some(spec.clone());
                         state.requested = None;
+                        state.retries = MAX_TEXT_RETRIES;
                     }
                 }
                 TextBackend::Inline(engine) => {
@@ -614,6 +828,7 @@ impl Painter for Renderer {
         s.history.push_front(frame);
         s.history.truncate(DAMAGE_HISTORY);
         s.valid = true;
+        s.painted = true;
         let scale = s.scale;
         self.raster
             .paint(&f.items, &total, &self.atlas, scale, target);
@@ -628,10 +843,14 @@ impl Painter for Renderer {
     fn wants_frame(&self, surface: SurfaceId) -> bool {
         // Dirty or never painted. Text still being shaped does not count:
         // its delivery marks the surface dirty (the worker's waker makes
-        // the loop call `update`), so waiting costs no frames.
-        self.surfaces
-            .get(&surface)
-            .is_some_and(|s| s.dirty || !s.valid)
+        // the loop call `update`), so waiting costs no frames. A surface
+        // not painted yet holds its first frame for its text, up to its
+        // deadline.
+        self.frame_deadline(surface).is_none()
+            && self
+                .surfaces
+                .get(&surface)
+                .is_some_and(|s| s.dirty || !s.valid)
     }
 
     fn opaque_region(&self, surface: SurfaceId) -> Damage {
@@ -644,6 +863,7 @@ impl Painter for Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
     use strand_scene::{Color, PropValue};
     use strand_text::{FontConfig, test_font_path};
 
@@ -689,5 +909,166 @@ mod tests {
         let d = paint(&mut r, &mut after, 1);
         assert_eq!(d, Damage::full(Size::new(80, 20)));
         assert!(before == after);
+    }
+
+    fn texts_diff(texts: &[(u32, &str)]) -> (SceneDiff, NodeId) {
+        let root = NodeId::new(0, 0);
+        let mut d = SceneDiff::new();
+        d.create(root, NodeKind::Bar, None, 0).set(
+            root,
+            Prop::Color,
+            PropValue::Color(Color::WHITE),
+        );
+        for (i, t) in texts {
+            let id = NodeId::new(*i, 0);
+            d.create(id, NodeKind::Text, Some(root), u32::MAX).set(
+                id,
+                Prop::Text,
+                PropValue::Text((*t).into()),
+            );
+        }
+        (d, root)
+    }
+
+    fn worker() -> TextBackend {
+        let data = std::fs::read(test_font_path()).unwrap();
+        TextBackend::Worker(
+            strand_text::TextWorker::spawn(FontConfig::isolated(vec![Arc::new(data)])).unwrap(),
+        )
+    }
+
+    /// A request that crashes the worker's engine every time is not asked
+    /// for again after the reset, so the worker does not restart its
+    /// engine (and every text reshape) in a loop.
+    #[test]
+    fn crashing_requests_are_not_retried() {
+        let mut r = Renderer::new(worker());
+        let (a, b) = (NodeId::new(1, 0), NodeId::new(2, 0));
+        let (d, root) = texts_diff(&[(1, "crash"), (2, "fine")]);
+        assert!(r.apply(d).is_empty());
+        r.attach_surface(SurfaceId(1), root);
+        r.configure_surface(SurfaceId(1), Size::new(80, 20), Scale::ONE);
+        let key_of =
+            |r: &Renderer, n: NodeId| r.texts[&(n, Scale::ONE)].requested.as_ref().unwrap().0;
+        // Flattening without polling the worker: what `update` would ask.
+        let ask = |r: &mut Renderer| {
+            r.surfaces.get_mut(&SurfaceId(1)).unwrap().cache = None;
+            r.flatten_surface(SurfaceId(1));
+        };
+        let ka = key_of(&r, a);
+        r.deliver(TextLayout::reset(ka, Scale::ONE));
+        ask(&mut r);
+        assert!(r.texts[&(a, Scale::ONE)].poisoned);
+        assert!(
+            r.texts[&(a, Scale::ONE)].requested.is_none(),
+            "not asked again"
+        );
+        // A second crash (here: the other text) keeps the first culprit
+        // poisoned too.
+        let kb = key_of(&r, b);
+        r.deliver(TextLayout::reset(kb, Scale::ONE));
+        ask(&mut r);
+        assert!(r.pending.is_empty(), "{:?}", r.pending);
+        assert!(r.texts[&(a, Scale::ONE)].poisoned && r.texts[&(b, Scale::ONE)].poisoned);
+        // New text for the culprit is asked for.
+        let mut d = SceneDiff::new();
+        d.set(a, Prop::Text, PropValue::Text("other".into()));
+        r.apply(d);
+        assert!(r.wait_for_text(Duration::from_secs(10)));
+        assert!(r.texts[&(a, Scale::ONE)].layout.is_some());
+        assert!(!r.texts[&(a, Scale::ONE)].poisoned);
+    }
+
+    /// A layout missing glyphs for want of atlas room is retried a bounded
+    /// number of times, and again once other text frees pages.
+    #[test]
+    fn incomplete_text_retries_without_looping() {
+        let data = std::fs::read(test_font_path()).unwrap();
+        let mut cfg = FontConfig::isolated(vec![Arc::new(data)]);
+        cfg.atlas = strand_text::AtlasConfig {
+            page_size: 64,
+            max_pages: 1,
+            max_bytes: 64 * 64,
+        };
+        let mut r = Renderer::new(TextBackend::Inline(Box::new(TextEngine::new(cfg))));
+        let (b, a) = (NodeId::new(1, 0), NodeId::new(2, 0));
+        let (mut d, root) = texts_diff(&[(1, "WXYZ"), (2, "ABCD")]);
+        let big = PropValue::Font(strand_scene::Font {
+            size: 40.0,
+            ..strand_scene::Font::default()
+        });
+        d.set(root, Prop::Font, big);
+        assert!(r.apply(d).is_empty());
+        r.attach_surface(SurfaceId(1), root);
+        let mut px = vec![0u8; 200 * 40 * 4];
+        let mut t = PaintTarget::new(&mut px, Size::new(200, 40), 800, Scale::ONE, 0).unwrap();
+        r.paint(SurfaceId(1), &mut t);
+        let state = |r: &Renderer, n| r.texts[&(n, Scale::ONE)].incomplete();
+        let n = |r: &Renderer, x| {
+            r.texts[&(x, Scale::ONE)]
+                .layout
+                .as_ref()
+                .unwrap()
+                .glyphs()
+                .count()
+        };
+        assert!(
+            !state(&r, b) && state(&r, a),
+            "B fills the only page: {} {} {} {}",
+            state(&r, b),
+            state(&r, a),
+            n(&r, b),
+            n(&r, a)
+        );
+        // Two retries, then nothing more however often it is flattened.
+        let keys = r.next_key;
+        assert_eq!(keys, 1 + 2 + MAX_TEXT_RETRIES as u64);
+        for _ in 0..3 {
+            r.invalidate(SurfaceId(1));
+            r.surfaces.get_mut(&SurfaceId(1)).unwrap().cache = None;
+            r.update();
+        }
+        assert_eq!(r.next_key, keys, "no hot loop");
+        // B goes: its page frees and A completes.
+        let mut d = SceneDiff::new();
+        d.push(SceneOp::Remove { id: b });
+        r.apply(d);
+        assert!(!state(&r, a));
+        assert_eq!(
+            r.texts[&(a, Scale::ONE)]
+                .layout
+                .as_ref()
+                .unwrap()
+                .glyphs()
+                .count(),
+            4
+        );
+    }
+
+    /// Several outputs of different sizes keep a context per cell size
+    /// instead of rebuilding edge-cell contexts every frame.
+    #[test]
+    fn contexts_cover_several_outputs() {
+        let mut r = renderer();
+        let mut d = SceneDiff::new();
+        let sizes = [Size::new(300, 70), Size::new(280, 40), Size::new(270, 100)];
+        for i in 0..3u32 {
+            let id = NodeId::new(i, 0);
+            d.create(id, NodeKind::Bar, None, i)
+                .set(id, Prop::Bg, PropValue::Color(Color::WHITE));
+            r.attach_surface(SurfaceId(i), id);
+        }
+        r.apply(d);
+        for _ in 0..2 {
+            for (i, size) in sizes.iter().enumerate() {
+                let mut px = vec![0u8; (size.w * size.h * 4) as usize];
+                let mut t = PaintTarget::new(&mut px, *size, size.w * 4, Scale::ONE, 0).unwrap();
+                r.paint(SurfaceId(i as u32), &mut t);
+            }
+        }
+        assert_eq!(r.raster.contexts(), 9, "every cell size is kept");
+        r.detach_surface(SurfaceId(2));
+        r.detach_surface(SurfaceId(1));
+        assert!(r.raster.contexts() <= 8);
     }
 }

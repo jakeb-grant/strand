@@ -19,7 +19,9 @@ pub use atlas::{AtlasConfig, AtlasSlot, AtlasUpload, MAX_PAGE_SIZE, PageId, Page
 pub use engine::{FontConfig, MAX_FONT_PX, MAX_TEXT_BYTES, SUBPIXEL_STEPS, TextEngine};
 pub use worker::{TextError, TextWorker, Waker};
 
-use strand_scene::{Font, LogicalSize, Rect, Scale};
+use std::ops::Range;
+
+use strand_scene::{Color, Font, LogicalSize, Rect, Scale};
 
 /// Identifies a request; echoed in the layout so the requester can match
 /// responses and drop stale ones.
@@ -35,8 +37,45 @@ pub enum TextAlign {
     End,
 }
 
-/// Everything that affects shaping. Colour is not here: it is applied when
-/// painting, so a colour spring never reshapes.
+/// Where `ellipsis:` cuts text that does not fit.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Ellipsis {
+    /// `ellipsis: start`: keeps the end (`…/src/strand`).
+    Start,
+    /// `ellipsis: middle`: keeps both ends.
+    Middle,
+    /// `ellipsis: end`: keeps the start (`Firefox — Strand d…`).
+    End,
+}
+
+impl Ellipsis {
+    /// The value of the `ellipsis` prop: `start`, `middle` or `end`.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "start" => Some(Self::Start),
+            "middle" => Some(Self::Middle),
+            "end" => Some(Self::End),
+            _ => None,
+        }
+    }
+}
+
+/// A styled byte range of the text: a fuzzy-match mark (`marks:` with
+/// `mark_color:`) or a markup span. Ranges are clipped to the text and
+/// snapped to character boundaries; later spans win where they overlap.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TextSpan {
+    pub range: Range<usize>,
+    /// Overrides the weight (1–1000).
+    pub weight: Option<u16>,
+    pub italic: bool,
+    /// Overrides the paint colour of these glyphs ([`GlyphRun::color`]).
+    pub color: Option<Color>,
+}
+
+/// Everything that affects shaping. The node's colour is not here: it is
+/// applied when painting, so a colour spring never reshapes. (Span colours
+/// are, since they split glyph runs.)
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TextStyle {
     pub font: Font,
@@ -44,6 +83,13 @@ pub struct TextStyle {
     /// metrics.
     pub line_height: Option<f32>,
     pub align: TextAlign,
+    /// Cut text that does not fit `max_width` (and `max_lines`) with
+    /// "…". Without `max_lines`, ellipsised text is one line.
+    pub ellipsis: Option<Ellipsis>,
+    /// Most lines shown; lines past it are dropped (with `ellipsis`, the
+    /// last kept line ends in "…").
+    pub max_lines: Option<u32>,
+    pub spans: Vec<TextSpan>,
 }
 
 /// A request to shape `text`.
@@ -72,6 +118,9 @@ pub struct PlacedGlyph {
 pub struct GlyphRun {
     /// Pixel size the glyphs were rasterised at (physical).
     pub font_size: f32,
+    /// Colour of a [`TextSpan`] covering these glyphs; `None` paints them
+    /// with the node's colour.
+    pub color: Option<Color>,
     pub glyphs: Vec<PlacedGlyph>,
 }
 
@@ -95,6 +144,10 @@ pub struct TextLayout {
     leases: Vec<PageLease>,
     /// The worker restarted its engine (see [`TextLayout::is_reset`]).
     reset: bool,
+    /// Some glyph had no atlas room (see [`TextLayout::is_incomplete`]).
+    incomplete: bool,
+    /// Every live page of this scale's atlas after this layout.
+    atlas_pages: Option<Vec<PageId>>,
 }
 
 impl TextLayout {
@@ -110,6 +163,8 @@ impl TextLayout {
             uploads: Vec::new(),
             leases: Vec::new(),
             reset: false,
+            incomplete: false,
+            atlas_pages: None,
         }
     }
 
@@ -130,6 +185,21 @@ impl TextLayout {
     /// arrive after this one belong to the new engine.
     pub fn is_reset(&self) -> bool {
         self.reset
+    }
+
+    /// True when glyphs were left out because the atlas had no room (every
+    /// page leased, or the byte budget spent). Asking again once other
+    /// layouts are dropped can complete it.
+    pub fn is_incomplete(&self) -> bool {
+        self.incomplete
+    }
+
+    /// Every page of this layout's scale that the worker's atlas still
+    /// holds after producing it (`None` when unknown, as for empty and
+    /// reset replies). A mirror applies the uploads, then drops its other
+    /// pages of that scale: they were trimmed or reset.
+    pub fn atlas_pages(&self) -> Option<&[PageId]> {
+        self.atlas_pages.as_deref()
     }
 
     /// Number of atlas pages this layout keeps alive.
