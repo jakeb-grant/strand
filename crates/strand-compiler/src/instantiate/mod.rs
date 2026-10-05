@@ -826,10 +826,7 @@ impl Instance {
             for (key, old_env) in &carry.old.envs {
                 let (Some(o), Some(n)) = (
                     old_env.upgrade(),
-                    new_envs
-                        .iter()
-                        .find(|(k, _)| k == key)
-                        .and_then(|(_, w)| w.upgrade()),
+                    new_envs.get(key).and_then(|w| w.upgrade()),
                 ) else {
                     continue;
                 };

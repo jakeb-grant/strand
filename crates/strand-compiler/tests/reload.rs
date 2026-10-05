@@ -804,3 +804,26 @@ fn a_changed_service_declaration_restarts_only_it() {
     let (report, _) = shell.reload(&[("t.strand", &src("mode").replace("= 0", "= 0 "))]);
     assert!(!report.classes.contains(&EditClass::Service), "{report:?}");
 }
+
+/// A 2,000-row keyed list survives a prop edit of its item template:
+/// every row kept (no create, no remove), each patched once.
+#[test]
+fn a_long_list_is_patched_in_place() {
+    let src = |o: &str| {
+        let mut s = String::from("type Row { id: int; label: text }\nstate rows: [Row] key id = [");
+        for i in 0..2000 {
+            s.push_str(&format!("Row(id: {i}, label: \"r{i}\"), "));
+        }
+        s.push_str(&format!(
+            "]\nbar B {{ col {{ for r in rows {{ text r.label {{ opacity: {o} }} }} }} }}\n"
+        ));
+        s
+    };
+    let mut shell = boot(&[("t.strand", &src("0.5"))]);
+    let before = shell.scene.walk();
+    let (report, ops) = shell.reload(&[("t.strand", &src("0.75"))]);
+    assert_eq!(report.classes, [EditClass::Prop], "{report:?}");
+    assert_eq!((creates(&ops), removes(&ops)), (0, 0));
+    assert_eq!(ops.len(), 2000);
+    assert_eq!(shell.scene.walk(), before);
+}

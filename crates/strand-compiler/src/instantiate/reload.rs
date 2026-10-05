@@ -113,7 +113,10 @@ pub(crate) struct Registry {
     pub cells: HashMap<Rc<str>, CellRec>,
     pub handlers: HashMap<Rc<str>, HandlerRec>,
     /// Scopes by key, for redirecting kept handlers' old scopes.
-    pub envs: Vec<(Rc<str>, Weak<Env>)>,
+    pub envs: HashMap<Rc<str>, Weak<Env>>,
+    /// `envs` is pruned of unmounted scopes when it reaches this length
+    /// (doubling with what survives: amortised O(1) per mount).
+    pub envs_prune_at: usize,
 }
 
 /// A reload in progress: what the old instance had, taken over as the
@@ -204,8 +207,11 @@ impl Ctx {
             c.scopes.insert(key.clone());
         }
         let mut reg = self.registry.borrow_mut();
-        reg.envs.retain(|(_, w)| w.strong_count() > 0);
-        reg.envs.push((key, Rc::downgrade(env)));
+        if reg.envs.len() >= reg.envs_prune_at {
+            reg.envs.retain(|_, w| w.strong_count() > 0);
+            reg.envs_prune_at = (reg.envs.len() * 2).max(64);
+        }
+        reg.envs.insert(key, Rc::downgrade(env));
     }
 
     /// The old cell for `key`, taken out of the carry, with the program
