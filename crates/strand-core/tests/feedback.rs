@@ -619,3 +619,104 @@ fn timer_body_and_its_task_writes_count_separately() {
     }
     assert_eq!(rate_warnings(&diags), 1, "{diags:?}");
 }
+
+#[test]
+fn keyed_collection_writes_are_throttled_without_losing_items() {
+    use strand_core::{KeyedSource, KeyedVec};
+    let rt = Runtime::new();
+    let log = rt.keyed(KeyedVec::new(|e: &(u32, u32)| e.0));
+    rt.set_name(log.id(), "history");
+    let running = rt.signal(true);
+    let next = std::rc::Rc::new(std::cell::Cell::new(0u32));
+    let n = next.clone();
+    // A runaway loop: every 8 ms push a row and drop the oldest past 50.
+    let timer = rt.every(
+        Duration::from_millis(8),
+        move |rt| running.get(rt),
+        move |rt| {
+            let i = n.get();
+            n.set(i + 1);
+            log.push(rt, (i, i * 2))?;
+            // The handler reads its own held writes: the duplicate is
+            // caught at once, and the oldest row it pushed can be removed.
+            assert!(log.push(rt, (i, 0)).is_err(), "duplicate of a held push");
+            if i >= 50 {
+                log.remove_key(rt, &(i - 50))?;
+            }
+            Ok(())
+        },
+    );
+    rt.set_name(timer.id(), "every");
+    let snap = log.snapshot(&rt).unwrap();
+    let mut mirror: Vec<(u32, (u32, u32))> = Vec::new();
+    let mut seen = Some(snap.version());
+    let mut diags = Vec::new();
+    let mut written = Vec::new();
+    let mut t = Duration::ZERO;
+    for _ in 0..375 {
+        t += Duration::from_millis(8);
+        let tick = rt.tick(t);
+        if tick.written.contains(&log.id()) {
+            written.push(t);
+        }
+        diags.extend(tick.diagnostics);
+        // A consumer following diffs (the scene emitter) stays exact.
+        let snap = log.snapshot(&rt).unwrap();
+        for d in snap.diffs_or_reset(seen) {
+            d.apply(&mut mirror).unwrap();
+        }
+        seen = Some(snap.version());
+        assert_eq!(mirror.as_slice(), snap.items());
+    }
+    let warnings: Vec<String> = diags
+        .iter()
+        .filter_map(|d| match d {
+            Diagnostic::WriteRate { names, .. } => Some(names.to_string()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(warnings, vec!["every -> history".to_string()], "warns once");
+    // Throttled to 30 changes a second once tripped.
+    let tripped = written[MAX_WRITES_PER_SEC];
+    let after: Vec<Duration> = written.iter().copied().filter(|&w| w > tripped).collect();
+    assert!(!after.is_empty());
+    for w in after.windows(2) {
+        assert!(w[1] - w[0] >= THROTTLED_INTERVAL, "{:?}", w[1] - w[0]);
+    }
+    // Stop the loop; the held copy lands: every push and removal counted.
+    running.set(&rt, false).unwrap();
+    rt.tick(t + Duration::from_secs(1));
+    let pushed = next.get();
+    let items: Vec<u32> = log.snapshot(&rt).unwrap().keys().copied().collect();
+    assert_eq!(items, (pushed - 50..pushed).collect::<Vec<_>>());
+}
+
+#[test]
+fn input_handlers_and_services_write_collections_unthrottled() {
+    use strand_core::KeyedVec;
+    let rt = Runtime::new();
+    let xs = rt.keyed(KeyedVec::new(|e: &u32| *e));
+    let clicks = rt.input_events::<u32>();
+    clicks.on(&rt, move |rt, &i| xs.push(rt, i)).unwrap();
+    let mut t = Duration::ZERO;
+    let mut changes = 0;
+    for i in 0..120 {
+        t += Duration::from_millis(5);
+        clicks.emit(&rt, i).unwrap();
+        // A service batch from outside any handler.
+        xs.apply(
+            &rt,
+            &[strand_core::VecDiff::Insert {
+                index: 0,
+                key: 1000 + i,
+                value: 1000 + i,
+            }],
+        )
+        .unwrap();
+        let tick = rt.tick(t);
+        changes += usize::from(tick.written.contains(&xs.id()));
+        assert!(tick.diagnostics.is_empty(), "{:?}", tick.diagnostics);
+    }
+    assert_eq!(changes, 120);
+    assert_eq!(xs.get_untracked(&rt).unwrap().len(), 240);
+}

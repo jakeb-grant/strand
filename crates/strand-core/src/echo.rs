@@ -110,7 +110,7 @@ impl<T: Clone + PartialEq + 'static> Signal<T> {
             rt.defer_write(
                 self.id,
                 Some(held),
-                Box::new(move |rt: &Runtime| {
+                Box::new(move |rt: &Runtime, _held| {
                     let _ = commit(rt, value);
                 }),
             );

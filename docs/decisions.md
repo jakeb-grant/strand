@@ -802,3 +802,17 @@ least a quarter of its source rebuilds and publishes the keyed diff of its
 output (identity kept), because `sort_by` costs O(n) per diff. Hashing uses
 `foldhash` (already in the tree), not SipHash. Numbers in
 `docs/benchmarks.md`.
+
+**2026-10-05 · Keyed writes under the 30 writes/s guard.** Replaces wave
+1's "keyed collections are not gated". A collection's latest value is the
+whole list, so a throttled handler gets a held copy: its later operations
+apply to that copy (read-your-writes: no `push` is lost, a duplicate key
+or a missing key is reported at once against what it has written), and
+when its window has room the copy lands as one `keyed_diff` against the
+live list, so items keep identity. Diffs cannot be held one by one (that
+would grow without bound in a runaway loop); one copy is bounded. As with
+plain state, a write that goes through (a service batch, an input
+handler) supersedes held copies, and a cancelled handler's copy never
+lands. The rate is checked before an in-place write and counted only when
+the operation changed something, so the unthrottled path stays in place
+(no copy).

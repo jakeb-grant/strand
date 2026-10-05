@@ -83,13 +83,27 @@ pub(crate) struct Deferred {
     pub(crate) detached: bool,
     /// The value being held, for read-your-writes in `update`.
     pub(crate) value: Option<Box<dyn Any>>,
-    pub(crate) apply: Box<dyn FnOnce(&Runtime)>,
+    /// Lands the write; gets the held value back.
+    pub(crate) apply: DeferredApply,
 }
+
+pub(crate) type DeferredApply = Box<dyn FnOnce(&Runtime, Option<Box<dyn Any>>)>;
 
 impl Runtime {
     /// Decide whether a write from the current handler to `cell` goes
     /// through now (`true`) or is held (`false`).
     pub(crate) fn rate_gate(&self, cell: NodeId) -> bool {
+        self.rate_check(cell, true)
+    }
+
+    /// What [`Runtime::rate_gate`] would answer now, without counting an
+    /// attempt (a keyed write checks first, so it can change the list in
+    /// place and count only when something changed).
+    pub(crate) fn rate_would_pass(&self, cell: NodeId) -> bool {
+        self.rate_check(cell, false)
+    }
+
+    fn rate_check(&self, cell: NodeId, commit: bool) -> bool {
         if self.inner.input.get() {
             return true;
         }
@@ -99,6 +113,18 @@ impl Runtime {
         let now = self.now();
         let tick = self.inner.epoch.get();
         let mut map = self.inner.rate.borrow_mut();
+        if !commit {
+            let Some(w) = map.get(&(cell, writer)) else {
+                return true;
+            };
+            if let Some((t, through)) = w.last_tick
+                && t == tick
+            {
+                return through;
+            }
+            let recent = w.attempts.iter().filter(|&&t| t + WINDOW > now).count();
+            return recent < MAX_WRITES_PER_SEC || now >= w.due(now);
+        }
         let w = map.entry((cell, writer)).or_default();
         w.prune(now);
         if let Some((t, through)) = w.last_tick
@@ -154,15 +180,28 @@ impl Runtime {
             .and_then(|d| d.value.as_ref()?.downcast_ref::<T>().cloned())
     }
 
+    /// Take the running handler's held write to `cell` out of the queue
+    /// (a keyed write applies the next operation to it in place, then holds
+    /// it again or lets it through).
+    pub(crate) fn take_deferred<T: 'static>(&self, cell: NodeId) -> Option<T> {
+        let writer = self.inner.writer.get()?;
+        let mut throttled = self.inner.throttled.borrow_mut();
+        let at = throttled.iter().position(|d| {
+            d.cell == cell && d.writer == writer && d.value.as_ref().is_some_and(|v| v.is::<T>())
+        })?;
+        let d = throttled.remove(at);
+        d.value?.downcast::<T>().ok().map(|b| *b)
+    }
+
     /// Hold a throttled write; a newer one from the same handler replaces it.
     pub(crate) fn defer_write(
         &self,
         cell: NodeId,
         value: Option<Box<dyn Any>>,
-        apply: Box<dyn FnOnce(&Runtime)>,
+        apply: DeferredApply,
     ) {
         let Some(writer) = self.inner.writer.get() else {
-            apply(self);
+            apply(self, value);
             return;
         };
         let now = self.now();
@@ -214,7 +253,7 @@ impl Runtime {
                     *through = true;
                 }
             }
-            (d.apply)(self);
+            (d.apply)(self, d.value);
         }
         // Forget handlers that have been quiet for a whole window.
         self.inner.rate.borrow_mut().retain(|_, w| {

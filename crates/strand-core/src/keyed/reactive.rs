@@ -225,28 +225,90 @@ where
 
     /// Run a mutation and publish the diffs it applied, even when it then
     /// failed part-way (so the log always matches the items).
+    ///
+    /// Writes from graph-triggered handlers go through the 30 writes/s
+    /// guard like any cell write (see [`crate::rate`]). A throttled handler
+    /// keeps a held copy of the list: its later operations apply to that
+    /// copy (read-your-writes, so no `push` is lost and errors such as a
+    /// duplicate key are reported at once), and when its window has room
+    /// the copy lands as one keyed diff against the live list. As with
+    /// plain state, any write that goes through supersedes held ones.
     fn mutate(
         self,
         rt: &Runtime,
         f: impl FnOnce(&mut KeyedVec<K, T>) -> (Vec<VecDiff<K, T>>, Result<(), Error>),
     ) -> Result<(), Error> {
         rt.check_write_allowed(self.id)?;
-        let (changed, r) = rt.with_data::<CellData<K, T>, _>(self.id, |d| {
+        let held = rt.take_deferred::<KeyedVec<K, T>>(self.id);
+        if held.is_none() && rt.rate_would_pass(self.id) {
+            // In place; counted only if something changed.
+            let (changed, r) = rt.with_data::<CellData<K, T>, _>(self.id, |d| {
+                let Ok(mut vec) = d.vec.try_borrow_mut() else {
+                    return (false, Err(Error::Reentrant));
+                };
+                let (diffs, r) = f(&mut vec);
+                let changed = !diffs.is_empty();
+                let mut log = d.log.borrow_mut();
+                for diff in diffs {
+                    log.push(diff);
+                }
+                (changed, r)
+            })?;
+            if changed {
+                rt.rate_gate(self.id);
+                rt.cell_changed(self.id);
+            }
+            return r;
+        }
+        let had_held = held.is_some();
+        let mut work = match held {
+            Some(v) => v,
+            None => self.get_untracked(rt)?,
+        };
+        let (diffs, r) = f(&mut work);
+        if diffs.is_empty() && !had_held {
+            return r;
+        }
+        // An operation that changed nothing is not an attempt: a held copy
+        // just waits for its turn again.
+        if !diffs.is_empty() && rt.rate_gate(self.id) {
+            self.land(rt, work)?;
+        } else {
+            rt.defer_write(
+                self.id,
+                Some(Box::new(work)),
+                Box::new(move |rt: &Runtime, held| {
+                    if let Some(Ok(work)) = held.map(|h| h.downcast::<KeyedVec<K, T>>()) {
+                        let _ = self.land(rt, *work);
+                    }
+                }),
+            );
+        }
+        r
+    }
+
+    /// Replace the live list with `new` (a held copy), publishing the keyed
+    /// diff between them.
+    fn land(self, rt: &Runtime, new: KeyedVec<K, T>) -> Result<(), Error> {
+        let changed = rt.with_data::<CellData<K, T>, _>(self.id, |d| {
             let Ok(mut vec) = d.vec.try_borrow_mut() else {
-                return (false, Err(Error::Reentrant));
+                return Err(Error::Reentrant);
             };
-            let (diffs, r) = f(&mut vec);
+            let diffs = keyed_diff(vec.items(), new.items());
+            *vec = new;
             let changed = !diffs.is_empty();
             let mut log = d.log.borrow_mut();
             for diff in diffs {
                 log.push(diff);
             }
-            (changed, r)
-        })?;
+            Ok(changed)
+        })??;
         if changed {
             rt.cell_changed(self.id);
+        } else {
+            rt.drop_deferred(self.id);
         }
-        r
+        Ok(())
     }
 
     /// `xs.push(v)`.
