@@ -117,6 +117,8 @@ struct Keyed {
     at: (crate::source::FileId, crate::syntax::Span),
     /// Items that leave are parked, not unmounted (per-monitor bars).
     park: bool,
+    /// Its place in the instance tree (`f12`: a `for`, `s3`: a bar).
+    tag: String,
     /// What a [`ListSource::Memo`] reads: chunks evaluated in the list's
     /// scope, and nodes it reads directly (declared edges).
     reads: (Vec<ChunkId>, Vec<strand_core::NodeId>),
@@ -231,8 +233,10 @@ impl Ctx {
                             Arc::default()
                         };
                         let caller = Env::child(caller, owned, None, None);
+                        caller.set_ident(format!("{}/slot", e.ident()));
                         self.mount_block(rt, frag, None, |ctx, rt, f| {
                             caller.set_owner(rt.current_owner());
+                            ctx.note_env(&caller);
                             ctx.declare(rt, &children, &caller);
                             ctx.mount_nodes(rt, &children, &caller, f, None);
                         });
@@ -461,6 +465,8 @@ impl Ctx {
         s: &crate::lower::State,
         env: &Rc<Env>,
     ) {
+        use super::reload::CellRec;
+        use crate::reconcile::EditClass;
         let prog = self.vm.prog.clone();
         let info = prog.def(s.def);
         // `toasts.dnd` for a file's state, `Clock.open` for a component's
@@ -471,13 +477,35 @@ impl Ctx {
             None => info.module.clone(),
         };
         let path = format!("{owner}{}.{}", env.instance_path(), info.name);
+        // The cell a reload keeps: same place in the instance tree, same
+        // owner and name.
+        let scope_key = env.ident();
+        let key: Rc<str> = format!("{scope_key}#{owner}.{}", info.name).into();
+        // The old cell and the program it was made by (a reload's old
+        // program, or an older one for a bar parked across reloads).
+        let carried = self
+            .take_cell(&key)
+            .or_else(|| self.pending.borrow_mut().remove(&key));
+        let from = carried.as_ref().map(|c| c.1.clone());
+        let carried = carried.map(|c| c.0);
+        let ty = prog.types.show(&info.ty).to_string();
         if let StateInit::Settings {
             path: file,
             record,
             fields,
         } = &s.init
         {
-            self.declare_settings(rt, s.def, file, *record, fields, env, &path);
+            self.declare_settings(
+                rt,
+                s.def,
+                file,
+                *record,
+                fields,
+                env,
+                &path,
+                key,
+                carried.zip(from),
+            );
             return;
         }
         let StateInit::Value(c) = &s.init else {
@@ -490,61 +518,244 @@ impl Ctx {
                 Value::Null
             }
         };
+        // What a reload does with the old cell: keep it (same type),
+        // reset it (`@reset`, a new type), or nothing was there.
+        let mut start: Option<Value> = None;
+        let mut keep: Option<CellRec> = None;
+        match carried {
+            None => self.fresh_cell(scope_key.clone(), info.name.clone()),
+            Some(rec) => {
+                let (old_ty, why) = match &rec {
+                    CellRec::Plain { ty, .. } | CellRec::Keyed { ty, .. } => (ty.clone(), None),
+                    CellRec::Settings { .. } => (String::new(), Some("now a plain state")),
+                };
+                let why = if s.reset {
+                    Some("@reset".to_string())
+                } else if let Some(w) = why {
+                    Some(w.to_string())
+                } else if old_ty != ty {
+                    Some(format!("type changed ({old_ty} → {ty})"))
+                } else {
+                    None
+                };
+                match why {
+                    Some(why) => {
+                        self.report(|r| {
+                            r.class(EditClass::StateReset);
+                            r.reset.push((path.clone(), why));
+                        });
+                        // A persisted cell reset by `@reset` forgets what
+                        // it stored.
+                        if s.reset
+                            && let CellRec::Plain {
+                                persisted: Some(p), ..
+                            } = &rec
+                        {
+                            let _ = p.reset(rt);
+                        }
+                    }
+                    None => {
+                        let (cur, old_default) = match &rec {
+                            CellRec::Plain { sig, default, .. } => {
+                                (sig.get_untracked(rt).ok(), default.clone())
+                            }
+                            CellRec::Keyed { list, default, .. } => {
+                                (list.get_untracked(rt).ok(), default.clone())
+                            }
+                            CellRec::Settings { .. } => (None, Value::Null),
+                        };
+                        match cur.zip(from.as_ref()).and_then(|(cur, from)| {
+                            self.adopt_value(&cur, &old_default, &default, &path, from)
+                        }) {
+                            Some(v) => {
+                                self.report(|r| r.kept.push(path.clone()));
+                                start = Some(v);
+                                keep = Some(rec);
+                            }
+                            None => self.report(|r| {
+                                r.class(EditClass::StateReset);
+                                r.reset
+                                    .push((path.clone(), "value does not fit".to_string()));
+                            }),
+                        }
+                    }
+                }
+            }
+        }
         // A keyed list (`state pins: [App] key id = []`) is a core keyed
         // collection: mutations are keyed operations and a `for` over it
-        // follows its diffs.
+        // follows its diffs. A reload keys the kept items again.
         if let Ty::List(_, true) = &info.ty
             && !s.persist
         {
-            let key = prog.state_keys.get(&s.def).cloned();
-            let mut kv = crate::vm::value::keyed_vec(prog.clone(), |p| &p.types, key);
-            let items = default.as_list().map(<[Value]>::to_vec).unwrap_or_default();
-            if let Err(e) = kv.replace_all(items) {
-                self.error(format!("state `{}`", info.name), e.into());
-            }
-            let k = rt.keyed(kv);
-            rt.set_name(k.id(), path.as_str());
-            let list = rt.memo(move |rt| k.with(rt, crate::vm::value::list_of));
-            let _ = rt.reads_from(list.id(), &[k.id()]);
+            let key_path = prog.state_keys.get(&s.def).cloned();
+            let items_of = start.clone().unwrap_or_else(|| default.clone());
+            let (holder, (k, list)) = rt.scope(|rt| {
+                let mut kv = crate::vm::value::keyed_vec(prog.clone(), |p| &p.types, key_path);
+                let items = items_of
+                    .as_list()
+                    .map(<[Value]>::to_vec)
+                    .unwrap_or_default();
+                if let Err(e) = kv.replace_all(items) {
+                    self.error(format!("state `{}`", info.name), e.into());
+                }
+                let k = rt.keyed(kv);
+                rt.set_name(k.id(), path.as_str());
+                let list = rt.memo(move |rt| k.with(rt, crate::vm::value::list_of));
+                let _ = rt.reads_from(list.id(), &[k.id()]);
+                (k, list)
+            });
             env.bind_def(s.def, Slot::Keyed(k, list));
+            self.note_cell(
+                rt,
+                key,
+                CellRec::Keyed {
+                    holder,
+                    list,
+                    default,
+                    ty,
+                    path,
+                },
+            );
             return;
         }
-        let sig = match (&self.storage.persist, s.persist) {
+        // A kept plain cell: moved to its new owner, the same signal.
+        if let Some(CellRec::Plain {
+            holder,
+            sig,
+            persisted,
+            ..
+        }) = keep
+        {
+            let adoptable = match (&persisted, s.persist && self.storage.persist.is_some()) {
+                (None, false) => true,
+                // Same path and a codec that reads the same: the handle
+                // is kept and told the new default.
+                (Some(p), true) => {
+                    p.path() == path && start.is_some() && {
+                        from.as_ref().is_some_and(|from| {
+                            let cur = sig.get_untracked(rt).unwrap_or(Value::Null);
+                            crate::vm::value::translate(&cur, &from.types, &prog.types)
+                                .is_some_and(|(_, changed)| !changed)
+                                && crate::vm::value::translate(&default, &prog.types, &from.types)
+                                    .is_some_and(|(_, changed)| !changed)
+                        })
+                    }
+                }
+                _ => false,
+            };
+            if adoptable {
+                let _ = rt.reparent(holder.id(), rt.current_owner());
+                if let Some(p) = &persisted {
+                    match p.redeclare(rt, default.clone()) {
+                        Ok(strand_core::Redeclared::Kept) => {
+                            let v = sig.get_untracked(rt).unwrap_or(Value::Null);
+                            let shown = super::reload::shown_kept(&v, &prog.types);
+                            self.report(|r| {
+                                r.class(EditClass::StateDefault);
+                                r.notice(format!("{path}: kept {shown} (default changed) [reset]"));
+                            });
+                        }
+                        Ok(strand_core::Redeclared::Adopted) => {
+                            self.report(|r| r.class(EditClass::StateDefault))
+                        }
+                        _ => {}
+                    }
+                    self.persisted
+                        .borrow_mut()
+                        .insert(sig.id(), (path.clone(), p.clone()));
+                    let weak = Rc::downgrade(self);
+                    let id = sig.id();
+                    let _ = rt.with_owner(holder.id(), |rt| {
+                        rt.on_cleanup(move || {
+                            if let Some(ctx) = weak.upgrade() {
+                                ctx.persisted.borrow_mut().remove(&id);
+                            }
+                        })
+                    });
+                } else if let Some(v) = &start {
+                    // A reload write: `on change` takes it as its
+                    // baseline instead of firing.
+                    let _ = sig.set_reloaded(rt, v.clone());
+                }
+                env.bind_def(s.def, Slot::Signal(sig));
+                self.note_cell(
+                    rt,
+                    key,
+                    CellRec::Plain {
+                        holder,
+                        sig,
+                        persisted,
+                        default,
+                        ty,
+                        path,
+                    },
+                );
+                return;
+            }
+            if persisted.is_some() && s.persist {
+                // The new cell takes the path over when the old one goes
+                // (core's handover: it continues from the old value).
+                self.handover_path(path.clone());
+            }
+        }
+        let (holder, (sig, persisted)) = rt.scope(|rt| match (&self.storage.persist, s.persist) {
             (Some(store), true) => {
                 let (pe, pd) = (prog.clone(), prog.clone());
                 let (te, td) = (info.ty.clone(), info.ty.clone());
-                let cell = rt.persisted(
+                let cell = Rc::new(rt.persisted(
                     store,
                     &path,
-                    default,
+                    default.clone(),
                     move |v| crate::vm::persist::encode_bytes(&pe.types, &te, v),
                     move |b| crate::vm::persist::decode_bytes(&pd.types, &td, b),
-                );
+                ));
                 if let strand_core::Restore::KeptOverNewDefault(_) = &cell.restored
                     && let Ok(v) = cell.signal.get_untracked(rt)
                 {
                     self.notices.borrow_mut().push(format!(
-                        "{path}: kept {} (default changed)",
-                        v.show(&prog.types)
+                        "{path}: kept {} (default changed) [reset]",
+                        super::reload::shown_kept(&v, &prog.types)
                     ));
+                }
+                // Newly persisted in a reload: the value it had.
+                if matches!(cell.restored, strand_core::Restore::Default)
+                    && let Some(v) = &start
+                {
+                    let _ = cell.signal.set(rt, v.clone());
                 }
                 let sig = cell.signal;
                 // Kept for `@reset` (and the reconciler's `redeclare`).
                 self.persisted
                     .borrow_mut()
-                    .insert(sig.id(), (path.clone(), cell));
+                    .insert(sig.id(), (path.clone(), cell.clone()));
                 let weak = Rc::downgrade(self);
                 rt.on_cleanup(move || {
                     if let Some(ctx) = weak.upgrade() {
                         ctx.persisted.borrow_mut().remove(&sig.id());
                     }
                 });
-                sig
+                (sig, Some(cell))
             }
-            _ => rt.signal(default),
-        };
+            _ => (
+                rt.signal(start.clone().unwrap_or_else(|| default.clone())),
+                None,
+            ),
+        });
         rt.set_name(sig.id(), path.as_str());
         env.bind_def(s.def, Slot::Signal(sig));
+        self.note_cell(
+            rt,
+            key,
+            CellRec::Plain {
+                holder,
+                sig,
+                persisted,
+                default,
+                ty,
+                path,
+            },
+        );
     }
 
     /// `state prefs from "prefs.toml" { typed fields }`: with a settings
@@ -562,7 +773,10 @@ impl Ctx {
         defaults: &[Option<ChunkId>],
         env: &Rc<Env>,
         path: &str,
+        key: Rc<str>,
+        carried: Option<(super::reload::CellRec, Arc<crate::lower::Program>)>,
     ) {
+        use super::reload::CellRec;
         let prog = self.vm.prog.clone();
         let rec = prog.types.record(record).clone();
         let mut specs = Vec::with_capacity(rec.fields.len());
@@ -580,42 +794,117 @@ impl Ctx {
             specs.push((f.name.clone(), f.ty.clone(), default));
         }
         let resolved = self.storage.resolve(file);
-        let (fields, handle) = match (&self.storage.settings, resolved) {
-            (Some(store), Some(resolved)) => {
-                let specs = specs
-                    .into_iter()
-                    .map(|(name, ty, default)| {
-                        let (pd, pe) = (prog.clone(), prog.clone());
-                        let (td, te) = (ty.clone(), ty.clone());
-                        let shown = prog.types.show(&ty).to_string();
-                        strand_core::FieldSpec::new(
-                            name,
-                            default,
-                            move |item| crate::vm::persist::decode_item(&pd.types, &td, item),
-                            move |v| crate::vm::persist::encode_item(&pe.types, &te, v),
-                        )
-                        .with_type(shown)
-                    })
-                    .collect();
-                let handle = rt.settings_file(store, resolved, specs);
-                let fields = handle
-                    .signals()
-                    .into_iter()
-                    .map(|(n, s)| (n.to_string(), s))
-                    .collect();
-                (fields, Some(handle))
-            }
-            _ => (
-                specs
-                    .into_iter()
-                    .map(|(name, _, default)| (name, rt.signal(default)))
-                    .collect::<Vec<_>>(),
-                None,
-            ),
+        let make_specs = |specs: Vec<(String, Ty, Value)>| -> Vec<strand_core::FieldSpec<Value>> {
+            specs
+                .into_iter()
+                .map(|(name, ty, default)| {
+                    let (pd, pe) = (prog.clone(), prog.clone());
+                    let (td, te) = (ty.clone(), ty.clone());
+                    let shown = prog.types.show(&ty).to_string();
+                    strand_core::FieldSpec::new(
+                        name,
+                        default,
+                        move |item| crate::vm::persist::decode_item(&pd.types, &td, item),
+                        move |v| crate::vm::persist::encode_item(&pe.types, &te, v),
+                    )
+                    .with_type(shown)
+                })
+                .collect()
         };
-        for (n, s) in &fields {
-            rt.set_name(s.id(), format!("{path}.{n}"));
-        }
+        // A reload keeps the file's handle (same file): its fields are
+        // redeclared (kept by name, a new default adopted only where
+        // nothing set the field, a changed type resets that field).
+        let kept = match carried {
+            Some((
+                CellRec::Settings {
+                    holder,
+                    slot,
+                    file: Some(f),
+                    ..
+                },
+                from,
+            )) if resolved.as_deref() == Some(f.as_path()) && slot.handle.is_some() => {
+                Some((holder, slot, from))
+            }
+            Some((
+                CellRec::Settings {
+                    holder,
+                    slot,
+                    file: None,
+                    ..
+                },
+                from,
+            )) if self.storage.settings.is_none() => Some((holder, slot, from)),
+            Some(_) => None,
+            None => {
+                self.fresh_cell(
+                    env.ident(),
+                    path.rsplit('.').next().unwrap_or("").to_string(),
+                );
+                None
+            }
+        };
+        let (holder, (fields, handle)) = match kept {
+            Some((holder, old, from)) => {
+                let _ = rt.reparent(holder.id(), rt.current_owner());
+                self.report(|r| r.kept.push(path.to_string()));
+                let out = match &old.handle {
+                    Some(h) => {
+                        let _ = rt.with_owner(holder.id(), |rt| h.redeclare(rt, make_specs(specs)));
+                        let fields = h
+                            .signals()
+                            .into_iter()
+                            .map(|(n, s)| (n.to_string(), s))
+                            .collect();
+                        (fields, Some(h.clone()))
+                    }
+                    None => {
+                        let fields = rt
+                            .with_owner(holder.id(), |rt| {
+                                specs
+                                    .into_iter()
+                                    .map(|(name, _, default)| {
+                                        let v = old
+                                            .field(&name)
+                                            .and_then(|s| s.get_untracked(rt).ok())
+                                            .and_then(|v| {
+                                                crate::vm::value::translate(
+                                                    &v,
+                                                    &from.types,
+                                                    &prog.types,
+                                                )
+                                                .map(|x| x.0)
+                                            })
+                                            .unwrap_or(default);
+                                        (name, rt.signal(v))
+                                    })
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+                        (fields, None)
+                    }
+                };
+                (holder, out)
+            }
+            None => rt.scope(|rt| match (&self.storage.settings, resolved.clone()) {
+                (Some(store), Some(resolved)) => {
+                    let handle = rt.settings_file(store, resolved, make_specs(specs));
+                    let fields = handle
+                        .signals()
+                        .into_iter()
+                        .map(|(n, s)| (n.to_string(), s))
+                        .collect();
+                    (fields, Some(handle))
+                }
+                _ => (
+                    specs
+                        .into_iter()
+                        .map(|(name, _, default)| (name, rt.signal(default)))
+                        .collect::<Vec<_>>(),
+                    None,
+                ),
+            }),
+        };
         let slot = Rc::new(crate::vm::SettingsSlot { fields, handle });
         {
             // Settings declared in a component or branch that was
@@ -630,6 +919,16 @@ impl Ctx {
             }
             all.push(Rc::downgrade(&slot));
         }
+        self.note_cell(
+            rt,
+            key,
+            CellRec::Settings {
+                holder,
+                slot: slot.clone(),
+                file: resolved,
+                path: path.to_string(),
+            },
+        );
         let (sl, names): (Rc<crate::vm::SettingsSlot>, Vec<String>) = (
             slot.clone(),
             rec.fields.iter().map(|f| f.name.clone()).collect(),
@@ -669,11 +968,19 @@ impl Ctx {
 
     /// Unmount everything in `frag` (`keep_self`: its content only).
     pub(crate) fn unmount(&self, rt: &Runtime, frag: FragId, keep_self: bool) {
-        let (scopes, states) = self.em.borrow_mut().unmount(frag, keep_self);
-        for s in scopes {
+        let gone = self.em.borrow_mut().unmount(frag, keep_self);
+        {
+            let mut reg = self.registry.borrow_mut();
+            for (k, id) in gone.keys {
+                if reg.nodes.get(&k).is_some_and(|n| n.0 == id) {
+                    reg.nodes.remove(&k);
+                }
+            }
+        }
+        for s in gone.scopes {
             s.dispose(rt);
         }
-        for st in states {
+        for st in gone.states {
             for f in [st.hover, st.pressed, st.focused, st.selected] {
                 let _ = f.set(rt, false);
             }
@@ -714,9 +1021,37 @@ impl Ctx {
             ElementKind::Unknown(_) => return,
         };
         let frag = self.em.borrow_mut().new_frag(Some(parent), None);
-        let id = self.em.borrow_mut().create(frag, kind);
+        // A reload keeps the node this element was (same place in the
+        // instance tree, same identity, same kind).
+        let key: Rc<str> = format!("{}/e{}", env.ident(), self.sid(e.file, e.span)).into();
+        let claimed = self.claim_node(&key, kind);
+        let id = self
+            .em
+            .borrow_mut()
+            .create_with(frag, kind, claimed.as_ref().map(|c| c.0));
         let state = env.node_state(rt, e.node);
+        if let Some((_, was)) = &claimed
+            && !Rc::ptr_eq(was, &state)
+        {
+            // Hovered stays hovered across a reload.
+            for (a, b) in [
+                (was.hover, state.hover),
+                (was.pressed, state.pressed),
+                (was.focused, state.focused),
+                (was.selected, state.selected),
+            ] {
+                if let Ok(true) = a.get_untracked(rt) {
+                    let _ = b.set(rt, true);
+                }
+            }
+            for (a, b) in [(was.width, state.width), (was.height, state.height)] {
+                if let Ok(v) = a.get_untracked(rt) {
+                    let _ = b.set(rt, v);
+                }
+            }
+        }
         state.scene.set(Some(id));
+        self.note_node(key.clone(), id, kind, state.clone());
         for &l in &e.scope {
             if env.local(l).is_none() {
                 let m = rt.memo(|_| Ok(Value::int(0)));
@@ -740,6 +1075,7 @@ impl Ctx {
                     events: HashMap::new(),
                     two_way: Vec::new(),
                     bindings: Vec::new(),
+                    key: Some(key),
                 },
             );
             for (p, v) in &extra {
@@ -1100,6 +1436,8 @@ impl Ctx {
         parent: FragId,
         at: (crate::source::FileId, crate::syntax::Span),
     ) {
+        // Its place in the instance tree (`i12`: an `if`, `m3`: a `match`).
+        let tag = format!("{}{}", if two { "i" } else { "m" }, self.sid(at.0, at.1));
         let frag = self.em.borrow_mut().new_frag(Some(parent), None);
         let (block, ()) = rt.scope(|_| ());
         let (ctx, e) = (self.clone(), env.clone());
@@ -1121,9 +1459,11 @@ impl Ctx {
                     // The branch's own `let`s and `state`s live while it
                     // is mounted.
                     let benv = Env::child(&env, Arc::default(), None, None);
+                    benv.set_ident(format!("{}/{tag}.{}", env.ident(), which.unwrap_or(0)));
                     let _ = rt.with_owner(block.id(), |rt| {
                         ctx.mount_block(rt, frag, None, |ctx, rt, f| {
                             benv.set_owner(rt.current_owner());
+                            ctx.note_env(&benv);
                             ctx.declare(rt, &nodes, &benv);
                             ctx.mount_nodes(rt, &nodes, &benv, f, None);
                         });
@@ -1175,7 +1515,9 @@ impl Ctx {
             at,
             park,
             reads,
+            tag,
         } = k;
+        let prefix: Rc<str> = format!("{}/{tag}", env.ident()).into();
         let frag = self.em.borrow_mut().new_frag(Some(parent), None);
         let (block, ()) = rt.scope(|_| ());
         let list_id: Cell<Option<strand_core::NodeId>> = Cell::new(None);
@@ -1232,18 +1574,22 @@ impl Ctx {
         let version: Rc<Cell<Option<u64>>> = Rc::default();
         let mount_item = {
             let (ctx, env, owned, item) = (self.clone(), env.clone(), owned.clone(), item.clone());
+            let prefix = prefix.clone();
             Rc::new(
                 move |rt: &Runtime, at: usize, key: ValueKey, value: Value| -> Item {
                     let item_env = Env::child(&env, owned.clone(), None, None);
-                    item_env.set_instance(key.0.show(&ctx.vm.prog.types));
+                    let shown = key.0.show(&ctx.vm.prog.types);
+                    item_env.set_ident(format!("{prefix}[{shown}]"));
+                    item_env.set_instance(shown);
                     let (ctx2, ie) = (ctx.clone(), item_env.clone());
                     let item = item.clone();
                     let cell: Rc<Cell<Option<strand_core::Signal<Value>>>> = Rc::default();
                     let c2 = cell.clone();
                     let f = rt
                         .with_owner(block.id(), |rt| {
-                            ctx.mount_block(rt, frag, Some(at), |_, rt, f| {
+                            ctx.mount_block(rt, frag, Some(at), |ctx, rt, f| {
                                 ie.set_owner(rt.current_owner());
+                                ctx.note_env(&ie);
                                 let value_cell = rt.signal(value.clone());
                                 c2.set(Some(value_cell));
                                 if let Some(b) = binding {
@@ -1268,13 +1614,21 @@ impl Ctx {
         };
         // An item that leaves: unmounted, or (`park`) taken off the scene
         // and frozen.
+        let ident_of = {
+            let (ctx, prefix) = (self.clone(), prefix.clone());
+            move |key: &ValueKey| -> Rc<str> {
+                format!("{prefix}[{}]", key.0.show(&ctx.vm.prog.types)).into()
+            }
+        };
         let leave = {
             let (ctx, parked) = (self.clone(), parked.clone());
+            let ident_of = ident_of.clone();
             Rc::new(move |rt: &Runtime, it: Item| {
                 if !park {
                     ctx.unmount(rt, it.frag, false);
                     return;
                 }
+                ctx.parked.borrow_mut().insert(ident_of(&it.key));
                 let scope = ctx.em.borrow_mut().park(it.frag);
                 if let Some(s) = scope {
                     ctx.block_services(rt, s.id(), true);
@@ -1286,9 +1640,13 @@ impl Ctx {
         // An item that arrives: a parked one comes back, else a new one.
         let arrive = {
             let (ctx, parked, mount_item) = (self.clone(), parked.clone(), mount_item.clone());
+            let ident_of = ident_of.clone();
             Rc::new(
                 move |rt: &Runtime, at: usize, key: ValueKey, value: Value| -> Item {
                     let back = parked.borrow_mut().remove(&key);
+                    if park {
+                        ctx.parked.borrow_mut().remove(&ident_of(&key));
+                    }
                     match back {
                         Some(it) => {
                             let scope = ctx.em.borrow_mut().unpark(it.frag, at);
@@ -1306,7 +1664,24 @@ impl Ctx {
         };
         if park {
             let (ctx, parked) = (self.clone(), parked.clone());
+            let ident_of = ident_of.clone();
             let forget: Rc<super::Forget> = Rc::new(move |rt: &Runtime, key: &Value| {
+                let ident = ident_of(&ValueKey(key.clone()));
+                ctx.parked.borrow_mut().remove(&ident);
+                // Cells a reload kept for it go too.
+                let pending: Vec<Rc<str>> = ctx
+                    .pending
+                    .borrow()
+                    .keys()
+                    .filter(|k| k.starts_with(&*ident))
+                    .cloned()
+                    .collect();
+                for k in pending {
+                    let rec = ctx.pending.borrow_mut().remove(&k);
+                    if let Some(rec) = rec {
+                        rec.0.dispose(rt);
+                    }
+                }
                 let gone = parked.borrow_mut().remove(&ValueKey(key.clone()));
                 match gone {
                     Some(it) => {
@@ -1525,6 +1900,7 @@ impl Ctx {
                 ),
                 at: (f.file, f.span),
                 park: false,
+                tag: format!("f{}", self.sid(f.file, f.span)),
                 reads: (
                     std::iter::once(f.iter)
                         .chain(match &f.key {
@@ -1616,8 +1992,14 @@ impl Ctx {
                     .map(|p| p.value)
             })
             .collect();
+        env.set_ident(format!(
+            "{}/c{}",
+            caller.ident(),
+            self.sid(call.file, call.span)
+        ));
         self.mount_block(rt, parent, None, |ctx, rt, frag| {
             env.set_owner(rt.current_owner());
+            ctx.note_env(&env);
             let mut defaults = Vec::new();
             for ((local, default), arg) in comp.params.iter().zip(args) {
                 let vm = ctx.vm.clone();
@@ -1803,8 +2185,14 @@ impl Ctx {
         let services = s.body.services.clone();
         let Some(screen) = s.screen else {
             let env = Env::child(env, s.body.owned.clone(), None, None);
+            env.set_ident(format!(
+                "{}/s{}",
+                env.ident(),
+                self.sid(s.element.file, s.element.span)
+            ));
             self.mount_block(rt, parent, None, |ctx, rt, frag| {
                 env.set_owner(rt.current_owner());
+                ctx.note_env(&env);
                 ctx.declare(rt, &element.children, &env);
                 ctx.mount_element_with(rt, &element, &env, frag, extra, Some(&services));
             });
@@ -1887,6 +2275,7 @@ impl Ctx {
                 what: "bar on every screen".to_string(),
                 at: (s.element.file, s.element.span),
                 park: true,
+                tag: format!("s{}", self.sid(s.element.file, s.element.span)),
                 reads: (
                     pick.into_iter().collect(),
                     ["all", "focused"]
@@ -1968,6 +2357,7 @@ impl Ctx {
                 });
                 // The body's tasks write as the site.
                 self.declare_writes(rt, site, body, env);
+                self.keep_handler(rt, env, file, h.span, site);
                 if let Ok(l) = r {
                     let _ = rt.reads_from(l, &[]);
                     let mut em = self.em.borrow_mut();
@@ -2003,6 +2393,7 @@ impl Ctx {
                     Ok(())
                 });
                 self.declare_writes(rt, site, body, env);
+                self.keep_handler(rt, env, file, h.span, site);
                 if let Ok(l) = r {
                     let _ = rt.reads_from(l, &[]);
                 }
@@ -2061,6 +2452,9 @@ impl Ctx {
                             .id();
                         self.declare_reads(rt, id, &tracked, env, &[]);
                         self.declare_writes(rt, id, body, env);
+                        if let Some(site) = rt.site_of(id) {
+                            self.keep_handler(rt, env, file, h.span, site);
+                        }
                         id
                     }
                     Some(d) => {
@@ -2074,6 +2468,39 @@ impl Ctx {
                         let current: Rc<
                             Cell<Option<(std::time::Duration, strand_core::Debounced)>>,
                         > = Rc::default();
+                        // A reload's old debounce, kept (frozen) until the
+                        // new one exists to take its countdown over.
+                        let carried: Rc<Cell<Option<strand_core::Debounced>>> = Rc::default();
+                        {
+                            let hkey: Rc<str> =
+                                format!("{}/h{}", env.ident(), self.sid(file, h.span)).into();
+                            let hash = self.hash(file, h.span);
+                            let old = self.take_handler(
+                                rt,
+                                &hkey,
+                                hash,
+                                None,
+                                crate::reconcile::EditClass::Handler,
+                            );
+                            if let Some(cur) = old.and_then(|o| o.debounce)
+                                && let Some((_, d)) = cur.take()
+                            {
+                                d.effect.dispose(rt);
+                                let _ = rt.reparent(d.timer.id(), rt.current_owner());
+                                let _ = rt.suspend(d.timer.id());
+                                carried.set(Some(d));
+                            }
+                            self.note_handler(
+                                rt,
+                                hkey,
+                                super::reload::HandlerRec {
+                                    site: None,
+                                    hash,
+                                    timer: None,
+                                    debounce: Some(current.clone()),
+                                },
+                            );
+                        }
                         let effect = rt.effect(move |rt| {
                             let delay = ctx.eval(rt, d, &e)?.as_duration().ok_or_else(|| {
                                 Error::failed("`on change … after` needs a duration from 0 up")
@@ -2105,6 +2532,9 @@ impl Ctx {
                                 let _ = rt.reads_from(new.timer.id(), &[]);
                             });
                             if let Some((_, old)) = current.take() {
+                                let _ = new.rescale_from(rt, old);
+                                old.dispose(rt);
+                            } else if let Some(old) = carried.take() {
                                 let _ = new.rescale_from(rt, old);
                                 old.dispose(rt);
                             }
@@ -2191,6 +2621,29 @@ impl Ctx {
             TimerKind::Every => rt.every_dyn(dur, cond, run),
         };
         rt.set_name(timer.id(), name.as_str());
+        {
+            // A reload: the new timer takes the old countdown over,
+            // rescaled to its duration.
+            let hkey: Rc<str> = format!("{}/t{}", env.ident(), self.sid(t.file, t.span)).into();
+            let hash = self.hash(t.file, t.span);
+            let site = rt.site_of(timer.id());
+            if let Some(old) =
+                self.take_handler(rt, &hkey, hash, site, crate::reconcile::EditClass::Timer)
+                && let Some(ot) = old.timer
+            {
+                let _ = timer.rescale_from(rt, ot);
+            }
+            self.note_handler(
+                rt,
+                hkey,
+                super::reload::HandlerRec {
+                    site,
+                    hash,
+                    timer: Some(timer),
+                    debounce: None,
+                },
+            );
+        }
         let mut reads = vec![t.duration];
         reads.extend(t.while_);
         self.declare_reads(rt, timer.id(), &reads, env, &[]);

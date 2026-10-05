@@ -319,8 +319,11 @@ impl Identity {
     fn walk(&mut self, prog: &lower::Program, nodes: &[Node], group: &Group) {
         for n in nodes {
             match n {
-                Node::Element(e) => self.element(prog, e, group),
-                Node::Surface(s) => self.element(prog, &s.element, group),
+                Node::Element(e) => self.element(prog, e, group, None),
+                // A surface is one kind of node whatever its kind, so
+                // `bar Top` edited to `panel Top` keeps its identity (and
+                // its state); render recreates only the surface itself.
+                Node::Surface(s) => self.element(prog, &s.element, group, Some("surface")),
                 Node::For(f) => {
                     if let Some(i) = self.push("for".into(), f.file, f.span, group, None) {
                         self.walk(prog, &f.body.nodes, &Group::Child(i, 0));
@@ -374,11 +377,20 @@ impl Identity {
         }
     }
 
-    fn element(&mut self, prog: &lower::Program, e: &lower::Element, group: &Group) {
-        let label = match &e.kind {
-            ElementKind::Builtin(k) => k.name().to_string(),
-            ElementKind::Component(d) => prog.def(*d).name.clone(),
-            ElementKind::Unknown(n) => format!("?{n}"),
+    fn element(
+        &mut self,
+        prog: &lower::Program,
+        e: &lower::Element,
+        group: &Group,
+        label: Option<&str>,
+    ) {
+        let label = match label {
+            Some(l) => l.to_string(),
+            None => match &e.kind {
+                ElementKind::Builtin(k) => k.name().to_string(),
+                ElementKind::Component(d) => prog.def(*d).name.clone(),
+                ElementKind::Unknown(n) => format!("?{n}"),
+            },
         };
         let id_name = e.id.map(|l| prog.local(l).name.clone());
         if let Some(i) = self.push(label, e.file, e.span, group, id_name) {

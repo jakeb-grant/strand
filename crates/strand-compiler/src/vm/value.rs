@@ -703,6 +703,89 @@ pub fn keyed_vec<H: 'static>(
     })
 }
 
+/// `v`, a value of a program with type table `from`, as a value of a
+/// program with table `to` (a live reload keeping state): enums by name
+/// and variant name, records by name and field name. `None` when the new
+/// program has no such type, variant or field, or for values that only
+/// mean something in the program that made them (closures, element
+/// handles, pending loads, token sets). Returns the value and whether
+/// anything changed.
+pub fn translate(v: &Value, from: &TypeTable, to: &TypeTable) -> Option<(Value, bool)> {
+    Some(match v {
+        Value::Null
+        | Value::Unit
+        | Value::Bool(_)
+        | Value::Num(..)
+        | Value::Text(_)
+        | Value::Color(_)
+        | Value::Token(_)
+        | Value::Palette(_)
+        | Value::Service(_) => (v.clone(), false),
+        Value::Enum(e, i) => {
+            let def = from.enums.get(e.0 as usize)?;
+            let variant = def.variants.get(*i as usize)?;
+            let ne = to.find_enum(&def.name)?;
+            let ni = to.enum_(ne).variants.iter().position(|x| x == variant)? as u32;
+            (Value::Enum(ne, ni), ne != *e || ni != *i)
+        }
+        Value::EnumType(e) => {
+            let def = from.enums.get(e.0 as usize)?;
+            let ne = to.find_enum(&def.name)?;
+            (Value::EnumType(ne), ne != *e)
+        }
+        Value::Record(r) => {
+            let def = from.records.get(r.ty.0 as usize)?;
+            let nr = to.find_record(&def.name)?;
+            let ndef = to.record(nr);
+            let mut changed = nr != r.ty || ndef.fields.len() != def.fields.len();
+            let mut fields = Vec::with_capacity(ndef.fields.len());
+            for f in &ndef.fields {
+                let i = def.fields.iter().position(|x| x.name == f.name);
+                let (fv, c) = match i.and_then(|i| r.fields.get(i)) {
+                    Some(old) => translate(old, from, to)?,
+                    // A new field: its type's default.
+                    None => (crate::vm::schema_host::default_value(to, &f.ty), true),
+                };
+                if i.is_some_and(|i| i != fields.len()) {
+                    changed = true;
+                }
+                changed |= c;
+                fields.push(fv);
+            }
+            (Value::Record(Rc::new(Record { ty: nr, fields })), changed)
+        }
+        Value::List(xs) | Value::Commas(xs) | Value::Spaced(xs) => {
+            let mut changed = false;
+            let mut out = Vec::with_capacity(xs.len());
+            for x in xs.iter() {
+                let (nx, c) = translate(x, from, to)?;
+                changed |= c;
+                out.push(nx);
+            }
+            let out = Rc::new(out);
+            let nv = match v {
+                Value::List(_) => Value::List(out),
+                Value::Commas(_) => Value::Commas(out),
+                _ => Value::Spaced(out),
+            };
+            (nv, changed)
+        }
+        Value::Pose(ps) => {
+            let mut changed = false;
+            let mut out = Vec::with_capacity(ps.len());
+            for (n, x) in ps.iter() {
+                let (nx, c) = translate(x, from, to)?;
+                changed |= c;
+                out.push((n.clone(), nx));
+            }
+            (Value::Pose(Rc::new(out)), changed)
+        }
+        Value::Call(_) | Value::Async(_) | Value::Fn(_) | Value::Node(_) | Value::TokenSet(_) => {
+            return None;
+        }
+    })
+}
+
 #[cfg(test)]
 // `ValueKey` hashes and compares the value, never the pending future an
 // `Async` may hold.

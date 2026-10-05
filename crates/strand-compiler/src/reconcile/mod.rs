@@ -172,6 +172,13 @@ pub struct Report {
 }
 
 impl Report {
+    /// Add a notice line (once).
+    pub fn notice(&mut self, line: String) {
+        if !self.notices.contains(&line) {
+            self.notices.push(line);
+        }
+    }
+
     /// Add an edit class (once, in table order).
     pub fn class(&mut self, c: EditClass) {
         if let Err(i) = self.classes.binary_search(&c) {

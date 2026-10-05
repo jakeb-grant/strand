@@ -25,8 +25,10 @@ mod edges;
 mod emit;
 mod mirror;
 mod mount;
+mod reload;
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -34,7 +36,8 @@ use std::time::{Duration, SystemTime};
 
 use strand_core::{Diagnostic, Error, Memo, NodeId as CoreId, Runtime, Scope};
 use strand_scene::{
-    Color, NodeId, Prop as SceneProp, PropValue, SceneDiff, SceneOp, TokenTable, Transition,
+    Color, NodeId, NodeKind, Prop as SceneProp, PropValue, SceneDiff, SceneOp, TokenTable,
+    Transition,
 };
 
 pub use convert::{
@@ -152,6 +155,13 @@ pub struct Update {
     pub notices: Vec<String>,
 }
 
+/// A live persisted cell and its path.
+pub(crate) type PersistedCell = (String, Rc<strand_core::Persisted<Value>>);
+
+/// A parked bar's cell kept across a reload, with the program that made
+/// it.
+pub(crate) type ParkedCell = (reload::CellRec, Arc<Program>);
+
 /// The shared state of an instance (held by the closures the runtime
 /// runs).
 pub(crate) struct Ctx {
@@ -160,8 +170,7 @@ pub(crate) struct Ctx {
     pub storage: Storage,
     /// Live persisted cells with their paths (`@reset`, the reconciler's
     /// `redeclare`), by signal id so an unmount removes its cell in O(1).
-    pub persisted:
-        RefCell<std::collections::HashMap<CoreId, (String, strand_core::Persisted<Value>)>>,
+    pub persisted: RefCell<std::collections::HashMap<CoreId, PersistedCell>>,
     pub errors: RefCell<Vec<RuntimeError>>,
     /// Bindings, handlers and timers by core id, for locating their
     /// errors (removed when their scope goes).
@@ -181,6 +190,23 @@ pub(crate) struct Ctx {
     pub forgetters: RefCell<Vec<std::rc::Weak<Forget>>>,
     pub notices: RefCell<Vec<String>>,
     play_seq: Cell<u32>,
+    /// Reload identities and handler hashes of the program (`None`: made
+    /// from a bare program, keyed by span).
+    pub identity: Option<Arc<crate::reconcile::Identity>>,
+    pub hashes: Option<Arc<crate::reconcile::Hashes>>,
+    /// What is mounted, by reload key (the next reload's carry).
+    pub registry: RefCell<reload::Registry>,
+    /// A reload in progress: the old instance's registry.
+    pub carry: RefCell<Option<reload::Carry>>,
+    /// Cells of bars parked when a reload happened (their monitor
+    /// unplugged), waiting for it to come back.
+    pub pending: RefCell<HashMap<Rc<str>, ParkedCell>>,
+    /// Reload idents of parked bar instances.
+    pub parked: RefCell<std::collections::HashSet<Rc<str>>>,
+    /// Persisted paths a reload handed from an old cell to a new one.
+    pub handover: RefCell<Vec<String>>,
+    /// Runtime faults outlined in red: the node and the border it had.
+    pub outlined: RefCell<HashMap<NodeId, Option<PropValue>>>,
 }
 
 impl VmHooks for Ctx {
@@ -382,6 +408,53 @@ impl Ctx {
     }
 }
 
+fn rec_holder(rec: &reload::CellRec) -> CoreId {
+    match rec {
+        reload::CellRec::Plain { holder, .. }
+        | reload::CellRec::Keyed { holder, .. }
+        | reload::CellRec::Settings { holder, .. } => holder.id(),
+    }
+}
+
+impl Ctx {
+    pub(crate) fn create(
+        vm: Rc<Vm>,
+        em: Emitter,
+        storage: Storage,
+        identity: Option<Arc<crate::reconcile::Identity>>,
+        hashes: Option<Arc<crate::reconcile::Hashes>>,
+    ) -> Rc<Ctx> {
+        let ctx = Rc::new(Ctx {
+            vm: vm.clone(),
+            em: RefCell::new(em),
+            storage,
+            persisted: RefCell::default(),
+            errors: RefCell::default(),
+            sites: RefCell::default(),
+            forgetters: RefCell::default(),
+            settings: RefCell::default(),
+            settings_prune_at: Cell::new(SETTINGS_PRUNE_MIN),
+            holds: RefCell::default(),
+            next_hold: Cell::new(0),
+            blocked: RefCell::default(),
+            notices: RefCell::default(),
+            play_seq: Cell::new(0),
+            identity,
+            hashes,
+            registry: RefCell::default(),
+            carry: RefCell::default(),
+            pending: RefCell::default(),
+            parked: RefCell::default(),
+            handover: RefCell::default(),
+            outlined: RefCell::default(),
+        });
+        let weak: std::rc::Weak<Ctx> = Rc::downgrade(&ctx);
+        let weak: std::rc::Weak<dyn VmHooks> = weak;
+        vm.set_hooks(weak);
+        ctx
+    }
+}
+
 /// When the host loop should run [`Instance::step`] again.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Wake {
@@ -460,6 +533,14 @@ impl Storage {
     }
 }
 
+/// The red outline of a faulty component.
+fn fault_outline() -> PropValue {
+    PropValue::Border(strand_scene::Border {
+        width: 2.0,
+        paint: strand_scene::Paint::Solid(Color::from_hex("#e5484d").unwrap_or(Color::BLACK)),
+    })
+}
+
 /// The mounted-settings list is first pruned at this length.
 pub(crate) const SETTINGS_PRUNE_MIN: usize = 16;
 
@@ -493,57 +574,74 @@ impl Instance {
         host: Rc<dyn ServiceHost>,
         storage: Storage,
     ) -> Instance {
+        Self::mount(rt, program, None, None, host, storage)
+    }
+
+    /// Mount a compiled config (with its reload identities, so later
+    /// [`Instance::reload`]s keep state).
+    pub fn from_build(
+        rt: &Runtime,
+        build: &crate::reconcile::Build,
+        host: Rc<dyn ServiceHost>,
+        storage: Storage,
+    ) -> Instance {
+        Self::mount(
+            rt,
+            build.program.clone(),
+            Some(build.identity.clone()),
+            Some(build.hashes.clone()),
+            host,
+            storage,
+        )
+    }
+
+    fn mount(
+        rt: &Runtime,
+        program: Arc<Program>,
+        identity: Option<Arc<crate::reconcile::Identity>>,
+        hashes: Option<Arc<crate::reconcile::Hashes>>,
+        host: Rc<dyn ServiceHost>,
+        storage: Storage,
+    ) -> Instance {
         for (name, record) in program.services.values() {
             host.declare(rt, name, *record);
         }
         let warnings = program.warnings.clone();
-        let vm = Vm::new(program, host);
-        let ctx = Rc::new(Ctx {
-            vm: vm.clone(),
-            em: RefCell::new(Emitter::default()),
+        let ctx = Ctx::create(
+            Vm::new(program, host),
+            Emitter::default(),
             storage,
-            persisted: RefCell::default(),
-            errors: RefCell::default(),
-            sites: RefCell::default(),
-            forgetters: RefCell::default(),
-            settings: RefCell::default(),
-            settings_prune_at: Cell::new(SETTINGS_PRUNE_MIN),
-            holds: RefCell::default(),
-            next_hold: Cell::new(0),
-            blocked: RefCell::default(),
-            // Lowering's warnings (a frozen time signal), once, in the
-            // boot tick.
-            notices: RefCell::new(
-                warnings
-                    .iter()
-                    .map(|d| match &d.help {
-                        Some(h) => format!("{} ({h})", d.message),
-                        None => d.message.clone(),
-                    })
-                    .collect(),
-            ),
-            play_seq: Cell::new(0),
-        });
-        let weak: std::rc::Weak<Ctx> = Rc::downgrade(&ctx);
-        let weak: std::rc::Weak<dyn VmHooks> = weak;
-        vm.set_hooks(weak);
+            identity,
+            hashes,
+        );
+        // Lowering's warnings (a frozen time signal), once, in the boot
+        // tick.
+        ctx.notices
+            .borrow_mut()
+            .extend(warnings.iter().map(|d| match &d.help {
+                Some(h) => format!("{} ({h})", d.message),
+                None => d.message.clone(),
+            }));
         let mut inst = Instance {
             rt: rt.clone(),
             ctx,
             tokens: None,
             root: None,
         };
-        inst.boot();
+        inst.boot(true);
         inst
     }
 
-    fn boot(&mut self) {
+    /// Mount the ctx's program. `fresh`: a boot (the token table goes
+    /// first, `Instant`); otherwise a reload, which compares tables.
+    fn boot(&mut self, fresh: bool) {
         let rt = self.rt.clone();
         let ctx = self.ctx.clone();
         let prog = ctx.vm.prog.clone();
         let root_env = ctx.vm.root.clone();
         let (scope, ()) = rt.scope(|rt| {
             root_env.set_owner(rt.current_owner());
+            ctx.note_env(&root_env);
             // Every file's `let`s and `state`s first: other files read
             // them as `file.name`.
             let all: Vec<Node> = prog
@@ -597,19 +695,237 @@ impl Instance {
             .collect();
         let system = ctx.vm.host.sources(&rt, "system", Some("dark"));
         ctx.declare_reads(&rt, memo.id(), &chunks, &root_env, &system);
-        match memo.get_untracked(&rt) {
-            Ok(table) => ctx.em.borrow_mut().ops.insert(
-                0,
-                SceneOp::SetTokens {
-                    table,
-                    transition: Transition::Instant,
-                },
-            ),
-            Err(e) => ctx.error("tokens", e),
+        if fresh {
+            match memo.get_untracked(&rt) {
+                Ok(table) => ctx.em.borrow_mut().ops.insert(
+                    0,
+                    SceneOp::SetTokens {
+                        table,
+                        transition: Transition::Instant,
+                    },
+                ),
+                Err(e) => ctx.error("tokens", e),
+            }
         }
         if rt.watch(memo.id()).is_ok() {
             self.tokens = Some(memo);
         }
+    }
+
+    /// Commit a new build of the config into the running instance
+    /// (design.md, "What each edit does"): nodes keep their identity
+    /// (and render patches them in place, animating from their current
+    /// values), state cells keep their values (a changed default adopted
+    /// only where the value was never changed), handlers whose code is
+    /// unchanged keep running, timers keep their countdown rescaled to
+    /// the new duration. The diff comes with the next
+    /// [`Instance::tick`]/[`Instance::flush`]/[`Instance::step`].
+    ///
+    /// While a `lock` surface is shown, a build that changes any `lock`
+    /// is not committed: the report says [`EditClass::LockDeferred`] and
+    /// the caller commits it again after the unlock
+    /// ([`Instance::lock_shown`]).
+    ///
+    /// [`EditClass::LockDeferred`]: crate::reconcile::EditClass::LockDeferred
+    pub fn reload(&mut self, build: &crate::reconcile::Build) -> crate::reconcile::Report {
+        use crate::reconcile::{EditClass, Report};
+        let rt = self.rt.clone();
+        let old = self.ctx.clone();
+        let old_locks = old.hashes.as_ref().map_or(0, |h| h.locks());
+        if self.lock_shown() && build.hashes.locks() != old_locks {
+            let mut r = Report::default();
+            r.class(EditClass::LockDeferred);
+            return r;
+        }
+        let old_table = self.tokens.and_then(|t| t.get_untracked(&rt).ok());
+        let pending_ops = std::mem::take(&mut old.em.borrow_mut().ops);
+        let changed_services = match &old.hashes {
+            Some(h) => build.hashes.changed_services(h),
+            None => Vec::new(),
+        };
+        let host = old.vm.host.clone();
+        for (name, record) in build.program.services.values() {
+            host.declare(&rt, name, *record);
+        }
+        let em = Emitter::continuing(&old.em.borrow());
+        let ctx = Ctx::create(
+            Vm::new(build.program.clone(), host),
+            em,
+            old.storage.clone(),
+            Some(build.identity.clone()),
+            Some(build.hashes.clone()),
+        );
+        *ctx.parked.borrow_mut() = old.parked.borrow().clone();
+        *ctx.pending.borrow_mut() = std::mem::take(&mut *old.pending.borrow_mut());
+        *ctx.carry.borrow_mut() = Some(reload::Carry {
+            old: std::mem::take(&mut *old.registry.borrow_mut()),
+            old_prog: old.vm.prog.clone(),
+            report: Report::default(),
+            kept_nodes: Default::default(),
+            scopes: Default::default(),
+            fresh: Vec::new(),
+            handover: Vec::new(),
+        });
+        let old_root = self.root.take();
+        let old_tokens = self.tokens.take();
+        self.ctx = ctx.clone();
+        self.boot(false);
+        let carry = ctx.carry.borrow_mut().take();
+        let Some(mut carry) = carry else {
+            return Report::default();
+        };
+        // The scene: from what render shows to the new tree.
+        let reduced = {
+            let old_em = old.em.borrow();
+            let mut em = ctx.em.borrow_mut();
+            let r = em.reduce(&old_em);
+            em.free_dropped(&old_em);
+            r
+        };
+        let mut report = std::mem::take(&mut carry.report);
+        if reduced.created > 0 {
+            report.class(EditClass::NodeAdded);
+        }
+        if reduced.removed > 0 {
+            report.class(EditClass::NodeRemoved);
+        }
+        if reduced.patched > 0 {
+            report.class(EditClass::Prop);
+        }
+        if reduced.surfaces > 0 {
+            report.class(EditClass::Surface);
+        }
+        if !changed_services.is_empty() {
+            report.class(EditClass::Service);
+        }
+        let mut ops = pending_ops;
+        let new_table = self.tokens.and_then(|t| t.get_untracked(&rt).ok());
+        if let Some(table) = new_table
+            && Some(&table) != old_table.as_ref()
+        {
+            report.class(EditClass::Token);
+            ops.push(SceneOp::SetTokens {
+                table,
+                transition: if old_table.is_some() {
+                    Transition::Default
+                } else {
+                    Transition::Instant
+                },
+            });
+        }
+        ops.append(&mut ctx.em.borrow_mut().ops);
+        ctx.em.borrow_mut().ops = ops;
+        // Handlers kept with an `await` in flight run the old bytecode
+        // against their old scopes: point those at the new cells.
+        {
+            let new_envs = ctx.registry.borrow().envs.clone();
+            for (key, old_env) in &carry.old.envs {
+                let (Some(o), Some(n)) = (
+                    old_env.upgrade(),
+                    new_envs
+                        .iter()
+                        .find(|(k, _)| k == key)
+                        .and_then(|(_, w)| w.upgrade()),
+                ) else {
+                    continue;
+                };
+                o.redirect(&n, &carry.old_prog, &ctx.vm.prog);
+            }
+        }
+        // Cells nobody took: renamed or retyped (reset, with a warning),
+        // waiting for a parked bar, or gone with their declaration.
+        let mut left: Vec<(Rc<str>, reload::CellRec)> = carry.old.cells.drain().collect();
+        left.sort_by(|a, b| a.0.cmp(&b.0));
+        for (key, rec) in left {
+            let scope: Rc<str> = key.split('#').next().unwrap_or("").into();
+            let parked = ctx.parked.borrow().iter().any(|p| key.starts_with(&**p));
+            if parked {
+                if let Some(r) = &self.root {
+                    let _ = rt.reparent(rec_holder(&rec), Some(r.id()));
+                }
+                ctx.pending
+                    .borrow_mut()
+                    .insert(key, (rec, carry.old_prog.clone()));
+                continue;
+            }
+            if carry.fresh.iter().any(|(s, _)| *s == scope) {
+                report.class(EditClass::StateReset);
+                report
+                    .reset
+                    .push((rec.path().to_string(), "renamed".to_string()));
+            }
+        }
+        ctx.handover.borrow_mut().extend(carry.handover.drain(..));
+        // The old instance goes: what it still owns (changed handlers and
+        // their tasks, cells nobody kept) is disposed.
+        if let Some(s) = old_root {
+            s.dispose(&rt);
+        }
+        if let Some(t) = old_tokens {
+            rt.dispose(t.id());
+        }
+        old.em.borrow_mut().ops.clear();
+        for w in build.identity.warnings() {
+            report.notices.push(w.clone());
+        }
+        report
+    }
+
+    /// `strand reload --hard`: drop every non-persisted state and
+    /// recreate every surface (the old instance is unmounted first, so
+    /// persisted cells are written and read again).
+    pub fn reload_hard(&mut self, build: &crate::reconcile::Build) -> crate::reconcile::Report {
+        let host = self.ctx.vm.host.clone();
+        let storage = self.ctx.storage.clone();
+        let parked = std::mem::take(&mut *self.ctx.pending.borrow_mut());
+        drop(parked);
+        let mut prior = std::mem::take(&mut self.ctx.em.borrow_mut().ops);
+        if let Some(s) = self.root.take() {
+            s.dispose(&self.rt);
+        }
+        if let Some(t) = self.tokens.take() {
+            self.rt.dispose(t.id());
+        }
+        // Wait (bounded) for the persisted writes the unmount queued, so
+        // the new cells read them.
+        if let Some(p) = &storage.persist {
+            p.sync(std::time::Duration::from_secs(2));
+        }
+        let mut em = Emitter::continuing(&self.ctx.em.borrow());
+        {
+            let old = self.ctx.em.borrow();
+            prior.extend(em.drop_all(&old));
+        }
+        for (name, record) in build.program.services.values() {
+            host.declare(&self.rt, name, *record);
+        }
+        let ctx = Ctx::create(
+            Vm::new(build.program.clone(), host),
+            em,
+            storage,
+            Some(build.identity.clone()),
+            Some(build.hashes.clone()),
+        );
+        self.ctx = ctx.clone();
+        self.boot(true);
+        let mut ops = prior;
+        ops.append(&mut ctx.em.borrow_mut().ops);
+        ctx.em.borrow_mut().ops = ops;
+        let mut r = crate::reconcile::Report::default();
+        r.class(crate::reconcile::EditClass::Hard);
+        r
+    }
+
+    /// True while a `lock` surface is shown (reloads that change a lock
+    /// wait for the unlock).
+    pub fn lock_shown(&self) -> bool {
+        let em = self.ctx.em.borrow();
+        em.nodes.iter().any(|(id, e)| {
+            e.kind == strand_scene::NodeKind::Lock
+                && em.is_on_scene(*id)
+                && em.sent.get(id).and_then(|s| s.get(&SceneProp::Open))
+                    != Some(&PropValue::Bool(false))
+        })
     }
 
     pub fn runtime(&self) -> &Runtime {
@@ -946,17 +1262,98 @@ impl Instance {
     /// whether something was frozen. [`Instance::thaw`] undoes it (the
     /// fixing reload).
     pub fn freeze(&self, err: &RuntimeError) -> bool {
-        match err.scope {
+        let frozen = match err.scope {
             Some(s) if !self.rt.is_suspended(s) => self.rt.suspend(s).is_ok(),
             _ => false,
+        };
+        // Outlined in red: the component's top nodes, or the failing node
+        // of a fault at the config's top level.
+        let nodes = match err.scope {
+            Some(s) => self.ctx.em.borrow().scope_nodes(s),
+            None => Vec::new(),
+        };
+        let nodes = if nodes.is_empty() {
+            err.node.into_iter().collect()
+        } else {
+            nodes
+        };
+        let mut em = self.ctx.em.borrow_mut();
+        let mut outlined = self.ctx.outlined.borrow_mut();
+        for n in nodes {
+            if outlined.contains_key(&n) || !em.nodes.contains_key(&n) {
+                continue;
+            }
+            let was = em
+                .sent
+                .get(&n)
+                .and_then(|p| p.get(&SceneProp::Border))
+                .cloned();
+            outlined.insert(n, was);
+            em.set(n, SceneProp::Border, fault_outline(), Transition::Instant);
         }
+        frozen
     }
 
-    /// Resume a scope [`Instance::freeze`] froze.
+    /// Resume a scope [`Instance::freeze`] froze and take its outline off.
     pub fn thaw(&self, err: &RuntimeError) {
         if let Some(s) = err.scope {
             self.rt.resume(s);
         }
+        let nodes = match err.scope {
+            Some(s) => self.ctx.em.borrow().scope_nodes(s),
+            None => Vec::new(),
+        };
+        let mut em = self.ctx.em.borrow_mut();
+        let mut outlined = self.ctx.outlined.borrow_mut();
+        for n in nodes.into_iter().chain(err.node) {
+            if let Some(was) = outlined.remove(&n) {
+                em.set(
+                    n,
+                    SceneProp::Border,
+                    was.unwrap_or(PropValue::Unset),
+                    Transition::Instant,
+                );
+            }
+        }
+    }
+
+    /// Scene nodes outlined as faulty (tests and the inspector).
+    pub fn outlined(&self) -> Vec<NodeId> {
+        let mut v: Vec<NodeId> = self.ctx.outlined.borrow().keys().copied().collect();
+        v.sort();
+        v
+    }
+
+    // -----------------------------------------------------------------
+    // Nodes outside the program (the error overlay)
+
+    /// Create a scene node that belongs to no element of the program (the
+    /// error overlay's surface and its rows): it shares the instance's
+    /// ids, goes out with the next tick's diff and is kept as it is
+    /// across reloads. `parent: None` makes a surface root.
+    pub fn external_create(&self, kind: NodeKind, parent: Option<NodeId>, index: usize) -> NodeId {
+        self.ctx
+            .em
+            .borrow_mut()
+            .external_create(kind, parent, index)
+    }
+
+    /// Set a prop of an external node (unchanged values are not resent).
+    pub fn external_set(&self, id: NodeId, prop: SceneProp, value: PropValue) {
+        let mut em = self.ctx.em.borrow_mut();
+        if em.external.contains_key(&id) {
+            em.set(id, prop, value, Transition::Default);
+        }
+    }
+
+    /// Remove an external node and its subtree.
+    pub fn external_remove(&self, id: NodeId) {
+        self.ctx.em.borrow_mut().external_remove(id);
+    }
+
+    /// True if `id` is an external node (input on it is the caller's).
+    pub fn is_external(&self, id: NodeId) -> bool {
+        self.ctx.em.borrow().external.contains_key(&id)
     }
 
     /// The monitor `id` is gone for good (the surface layer's

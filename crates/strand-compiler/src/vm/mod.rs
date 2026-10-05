@@ -78,6 +78,10 @@ pub struct Env {
     instance: RefCell<Option<Rc<str>>>,
     /// Settings files declared here: one signal per field.
     settings: RefCell<Vec<(DefId, Rc<SettingsSlot>)>>,
+    /// Where this scope sits in the mounted instance tree, in reload
+    /// identities (`/c12/f7[3]`): what the reconciler keys state, scene
+    /// nodes and handlers by.
+    ident: RefCell<Rc<str>>,
 }
 
 /// A settings file's fields (`state prefs from "prefs.toml" { … }`):
@@ -128,6 +132,7 @@ impl Env {
             owner: Cell::new(None),
             instance: RefCell::new(None),
             settings: RefCell::default(),
+            ident: RefCell::new(Rc::from("")),
         })
     }
 
@@ -149,7 +154,54 @@ impl Env {
             owner: Cell::new(None),
             instance: RefCell::new(None),
             settings: RefCell::default(),
+            ident: RefCell::new(parent.ident()),
         })
+    }
+
+    /// Where this scope sits in the instance tree (reload identity).
+    pub fn ident(&self) -> Rc<str> {
+        self.ident.borrow().clone()
+    }
+
+    /// Place this scope in the instance tree (reload identity).
+    pub fn set_ident(&self, ident: impl Into<Rc<str>>) {
+        *self.ident.borrow_mut() = ident.into();
+    }
+
+    /// Point this scope's values at `new`'s, by name: a handler kept
+    /// across a reload (its code unchanged) still runs the old bytecode
+    /// against this scope, and from now on reads and writes the new
+    /// program's cells. `old` and `new` name the programs' declarations
+    /// and locals.
+    pub fn redirect(&self, new: &Env, old: &Program, newp: &Program) {
+        let mut defs = self.defs.borrow_mut();
+        for (d, slot) in defs.iter_mut() {
+            let name = &old.def(*d).name;
+            let found = new
+                .defs
+                .borrow()
+                .iter()
+                .rev()
+                .find(|(nd, _)| newp.def(*nd).name == *name)
+                .map(|(_, s)| *s);
+            if let Some(s) = found {
+                *slot = s;
+            }
+        }
+        let mut locals = self.locals.borrow_mut();
+        for (l, slot) in locals.iter_mut() {
+            let name = &old.local(*l).name;
+            let found = new
+                .locals
+                .borrow()
+                .iter()
+                .rev()
+                .find(|(nl, _)| newp.local(*nl).name == *name)
+                .map(|(_, s)| *s);
+            if let Some(s) = found {
+                *slot = s;
+            }
+        }
     }
 
     /// Mark this scope as one instance among several (`[<key>]`).

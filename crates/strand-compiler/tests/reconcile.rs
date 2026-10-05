@@ -54,7 +54,7 @@ fn editing_props_keeps_every_identity() {
             "// a comment\nbar Top {\n  height: 40\n  row { gap: 4\n    text \"a\" { opacity: 0.75 }\n    text \"b\"\n  }\n}\n",
         )],
     );
-    for l in ["bar", "row", "text"] {
+    for l in ["surface", "row", "text"] {
         assert_eq!(sids(&a, l), sids(&b, l), "{l}");
     }
     assert!(b.identity.warnings().is_empty());
@@ -106,7 +106,7 @@ fn a_changed_kind_is_a_new_node() {
     let b = build(Some(&a), &[("bar.strand", "bar Top {\n  icon \"a\"\n}\n")]);
     assert!(sids(&b, "text").is_empty());
     assert!(!sids(&a, "text").contains(&sids(&b, "icon")[0]));
-    assert_eq!(sids(&a, "bar"), sids(&b, "bar"));
+    assert_eq!(sids(&a, "surface"), sids(&b, "surface"));
 }
 
 #[test]
