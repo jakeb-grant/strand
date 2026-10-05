@@ -91,14 +91,20 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
 - The host loop calls `rt.tick(now)` (advance the logic clock, fire timers,
   then `flush`) and sleeps until `rt.next_deadline()` or the wake hook
   (`rt.set_wake_hook`, also called when a flush leaves a woken task for the
-  next one); `None` and no hook means idle. Each `Tick` carries `errors` and
+  next one and when `rt.resume` re-queues held work or leaves a timer
+  overdue); `rt.is_idle()` (nothing queued for a flush) with
+  `next_deadline() == None` means idle. Each `Tick` carries `errors` and
   `diagnostics` (write-rate, cancelled handlers, zero periods) raised since
   the previous tick, for the overlay and `strand watch --json`.
 - The scene emitter calls `rt.watch(prop_memo.id())` per bound prop and,
   each tick, turns `Tick::changed` (watched ids whose value changed, in
   creation order) into `SetProp`s; `for` loops read a collection
   `Snapshot` and turn `diffs_since(last_version)` into keyed
-  `Create`/`Remove`/`Move` ops.
+  `Create`/`Remove`/`Move` ops. A `for` over a plain list expression
+  (`calendar.days(month)`, `n.actions`, an `Async` list) goes through
+  `rt.keyed_memo(key_fn, |rt| list)` (or `memo.keyed(rt, key_fn)`,
+  `async_memo.keyed(..)`), which diffs each new list by key: no writing
+  effect, no second copy in the emitter.
 - Mounting a component runs inside `rt.scope(..)`; unmounting is
   `scope.dispose(rt)`, which drops its nodes, timers and handlers.
 - The reconciler keeps identity across reloads with `rt.reparent(id,
@@ -106,8 +112,12 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   state kept across a monitor unplug, moves to its new owner before the old
   one is disposed (keyed cells keep their diff log, so items keep identity).
   A runtime fault freezes one component with `rt.suspend(scope)` (effects,
-  timers, listeners and tasks stop, state kept) and the fixing reload calls
-  `rt.resume(scope)`.
+  timers, listeners and tasks stop, state kept; service events are kept for
+  its listeners, input events dropped) and the fixing reload calls
+  `rt.resume(scope)`, or moves the live state out with `reparent` and
+  disposes the frozen scope (held work is released either way). Reloaded
+  timers take over the old countdown with `new.rescale_from(rt, old)`
+  (`Debounced::rescale_from` for `on change … after`).
 - Handlers: listeners, timers and `on change` handlers each get a handler
   site (`rt.site_of(handler)`) owning the tasks their bodies `rt.spawn`;
   disposing the handler (reload restarting changed handler code, or
@@ -117,12 +127,15 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   is replaced) and starts each with `rt.spawn_for(site, fut)` for
   graph-triggered events (service events, `on change`: the 30 writes/s guard
   sees one handler) or `rt.spawn_input(Some(site), fut)` for external input
-  (`on click`, `on scroll`, `on activate`: not rate-counted). Input event
+  (`on click`, `on scroll`, `on activate`: not rate-counted up to the
+  task's first suspending `await`; a loop it then runs is counted). Input event
   queues are `rt.input_events()`; `<->` writes from widgets are made
   outside any handler and are not counted either. Timers are
   `rt.after/every(_dyn)`, `on change` is `rt.on_change(_after)` or, for
   service paths, `rt.on_change_keyed(key, ..)` with the path's object as
-  key (no firing on a sink switch). Service events are `EventQueue`s.
+  key (no firing on a sink switch); `on change` handlers run after the
+  tick's other effects settle, so they fire once per outside write.
+  Service events are `EventQueue`s.
   Service `rw` writes use `write_tagged(value, send)` (throttled writes are
   held, then sent) and reports come back through `receive`. `let x =
   svc.call(input)` returning `Async` is `rt.async_memo(input, fetch)`, a

@@ -6,10 +6,14 @@
 //! tasks they spawn). Handlers run for external input (`on click`,
 //! `on scroll`, `<->` writes from widgets; see [`Runtime::input_events`]
 //! and [`Runtime::spawn_input`]) are like CLI and service writes and are not
-//! counted: smooth scrolling at 60 Hz is the user, not a loop.
+//! counted: smooth scrolling at 60 Hz is the user, not a loop. For a task
+//! the exemption covers its synchronous response, up to its first `await`
+//! that suspends; after that it is counted like any handler, so
+//! `on click { loop { x += 1; await sleep(10ms) } }` is still throttled.
 //!
-//! Writes are counted per tick, not per call: a handler that writes a cell
-//! many times inside one tick coalesces to one write. Writing the current
+//! Writes are counted per logic step, not per call: a handler that writes a
+//! cell many times inside one flush (or one batch of timer bodies in
+//! `advance_to`) coalesces to one write. Writing the current
 //! value is not counted. Once a handler has attempted more than 30 writes
 //! to a cell within one second it is throttled: a write goes through at
 //! most every 1/30 s and only the latest value is held in between (a leaky
@@ -42,7 +46,8 @@ pub(crate) struct RateWindow {
     /// Times of the ticks in the last second in which this handler tried
     /// to change the cell (written or held).
     attempts: VecDeque<Duration>,
-    /// The tick of the latest attempt and whether it went through.
+    /// The logic step (`advance_to` or `flush`) of the latest attempt and
+    /// whether it went through.
     last_tick: Option<(u64, bool)>,
     /// When the latest write went through.
     last_through: Option<Duration>,
@@ -92,7 +97,7 @@ impl Runtime {
             return true;
         };
         let now = self.now();
-        let tick = self.tick_seq();
+        let tick = self.inner.epoch.get();
         let mut map = self.inner.rate.borrow_mut();
         let w = map.entry((cell, writer)).or_default();
         w.prune(now);
@@ -204,7 +209,7 @@ impl Runtime {
             if let Some(w) = self.inner.rate.borrow_mut().get_mut(&(d.cell, d.writer)) {
                 w.last_through = Some(now);
                 if let Some((t, through)) = &mut w.last_tick
-                    && *t == self.tick_seq()
+                    && *t == self.inner.epoch.get()
                 {
                     *through = true;
                 }

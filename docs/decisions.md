@@ -20,9 +20,14 @@ sinks have no graph edges between them, so this is topological for effects
 that only read; an effect that *writes* a cell creates an ordering the
 graph can't see, and an effect re-triggered by a later effect's write runs
 again in the same flush (it always sees consistent values, and the flush
-ends quiescent). A learned rank (Incremental-style heights) would remove
-the re-runs; not needed while shell effects that write are rare `on change`
-handlers.
+ends quiescent). Re-running is harmless for idempotent effects but not for
+user handlers, so **`on change` handlers run in a late phase**: a queued
+`on change` waits until no other sink is queued, then runs (still in
+creation order). One outside write therefore fires `on change x, y` once
+with the settled values, even when an effect created after it writes `x`
+from `y`; a write the handler makes still reaches other effects in the
+same flush. A learned rank (Incremental-style heights) would remove the
+remaining re-runs of plain effects; not needed while those are idempotent.
 
 **2026-10-05 · Runtime cycles.** Past `MAX_RUNS_PER_FLUSH` (16) runs of
 one sink (or deliveries of one event queue) in one flush, the runtime
@@ -63,9 +68,14 @@ spawn). Handlers run for external input (`on click`, `on scroll`,
 `on activate`; queues from `rt.input_events()`, tasks from
 `rt.spawn_input`) and `<->` writes from widgets are like CLI and service
 writes and are not counted: the design's own `on scroll(dy) { volume -= dy
-* 0.05 }` at 60 Hz is the user, not a loop. Writes are counted per tick,
-not per call (many writes in one handler run coalesce; read-your-writes
-holds); writing the current value is not counted. The 31st attempted write
+* 0.05 }` at 60 Hz is the user, not a loop. For a task the exemption ends
+at its first `await` that suspends: the synchronous response to the event
+is the user, but `on click { loop { x += 1; await sleep(10ms) } }` is a
+runaway loop and is counted against its handler like any other. Writes are
+counted per logic step (each `advance_to` and each `flush`), not per call
+(many writes in one handler run coalesce; read-your-writes holds), so a
+timer body and the task it spawned count as two attempts; writing the
+current value is not counted. The 31st attempted write
 within a sliding second warns once (`Diagnostic::WriteRate` naming
 `handler -> cell`) and throttles as a leaky bucket: one write per 1/30 s
 goes through and only the latest value is held in between, so the cell
@@ -95,7 +105,8 @@ outside change: it is applied and clears pending writes.
 **2026-10-05 · Events.** Each event is delivered once to every listener
 alive at delivery time, in emission order, during the next flush; events
 emitted by listeners are delivered in the same flush (bounded: see runtime
-cycles).
+cycles). Queued events are shared (`Rc<T>`), so one can wait for a frozen
+listener while the others get it, without `T: Clone`.
 
 **2026-10-05 · Timers and `on change`.** `after T while c` counts only time
 during which `c` holds, fires once, and schedules nothing while paused.
@@ -108,7 +119,12 @@ longer than a period it fires once and re-phases (no replay). A zero
 `every` period pauses the timer and reports `Diagnostic::ZeroPeriod`;
 positive periods under 1 ms are clamped to 1 ms. Deadlines past
 `Duration::MAX` mean never. A reactive duration keeps the time already
-counted. Reload's "remaining time rescaled" is `Timer::rescale_from(old)`.
+counted. Reload's "remaining time rescaled" is `Timer::rescale_from(old)`
+(`Debounced::rescale_from` for `on change … after`): the new timer takes
+over the old one's lifecycle, not only its fraction. An `after` that
+already fired stays done (a reload never repeats `n.expire()`), an idle
+debounce stays idle, and a countdown in flight, an armed debounce
+included, keeps its counted fraction and finishes at the new duration.
 `on change x` never fires for the first value; `on change x after T`
 restarts its countdown on every change (debounce). Time is the logic clock
 the host passes to `tick(now)`; `next_deadline()` tells it when to wake.
@@ -166,7 +182,14 @@ behind gets a `Reset`. A service batch (`apply`) with a malformed diff
 keeps and publishes the diffs before it and returns the error, so the cell,
 its log and derived collections never disagree. `sort_by` never panics on
 a comparator that is not a total order (NaN): it uses its own stable merge
-sort; the order is then unspecified but keeps every key.
+sort; the order is then unspecified but keeps every key. A `for` over a
+plain list expression (`calendar.days(month)`, `n.actions`, an `Async`
+list) is `rt.keyed_memo(key_fn, f)` / `memo.keyed(..)` /
+`async_memo.keyed(..)`: a derived collection that diffs each new list by
+key against its previous output (no writing effect, so a 60 Hz list is
+never rate-throttled; no second copy in the emitter). Duplicate keys are an
+`Error` value; the last good list is kept to diff against. An `Async` list
+yields its kept value, empty before the first result.
 
 **2026-10-05 · Introspection.** `rt.sources(id)`, `rt.observers(id)`,
 `rt.owned(id)`, `rt.root_owned()` and `rt.site_of(handler)` expose the
@@ -192,11 +215,16 @@ identity, so a keyed cell keeps its diff log and the emitter needs no
 
 **2026-10-05 · Freezing a faulted component.** "A runtime fault freezes
 only its own component" is `rt.suspend(scope)`: effects, watches, timers,
-listeners and tasks inside stop running (work that comes due is held),
-state is kept, memos stay readable, and the runtime can be idle. Events
-delivered while frozen are not seen by its listeners (a frozen component
-ignores input). `rt.resume(scope)` (the fixing reload) runs held work at
-the next flush; timers that came due fire at the next tick.
+listeners and tasks inside stop running (work that comes due is held, each
+node once), state is kept, memos stay readable, and the runtime can be
+idle. Input events (`rt.input_events()`) are dropped for its listeners (a
+frozen component ignores clicks); service and component events are
+lossless, so they are kept per listener and delivered in order, once, when
+it is released. `rt.resume(scope)` (the fixing reload) runs held work at
+the next flush and calls the wake hook; timers that came due fire at the
+next tick (they count while frozen). Work is also released when it leaves
+the frozen scope another way: `reparent` out of it, or disposal of the
+frozen scope after its live parts were moved out.
 
 **2026-10-05 · Service lifecycle.** No observed/unobserved hook on cells:
 the compiler knows which service paths each component reads, so the VM

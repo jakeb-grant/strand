@@ -11,6 +11,12 @@
 //! flush reports [`Error::Cycle`] (`queue -> listener -> queue …`) and parks
 //! the queue: its events stay queued (nothing is lost) and are delivered
 //! with the next emit to it.
+//!
+//! A listener inside a suspended (frozen) component does not run. Events of
+//! an input queue ([`Runtime::input_events`]) are dropped for it (a frozen
+//! component ignores clicks); events of any other queue are kept for it, in
+//! order, and delivered once it is released ([`Runtime::resume`], or moved
+//! out of the frozen scope), so a service event is never lost.
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -43,8 +49,12 @@ impl<T> fmt::Debug for EventQueue<T> {
 type ListenerFn<T> = Box<dyn FnMut(&Runtime, &T) -> Result<(), Error>>;
 
 struct EventsData<T> {
-    queue: RefCell<VecDeque<T>>,
+    /// Shared so one event can wait for a frozen listener while it is
+    /// delivered to the others, without `T: Clone`.
+    queue: RefCell<VecDeque<Rc<T>>>,
     listeners: RefCell<Vec<NodeId>>,
+    /// Events kept for suspended listeners of a lossless queue, in order.
+    backlog: RefCell<Vec<(NodeId, VecDeque<Rc<T>>)>>,
     /// External input (`on click`, `on scroll`): listeners are input
     /// handlers, not counted by the write-rate guard.
     input: bool,
@@ -66,11 +76,25 @@ impl<T: 'static> NodeData for EventsData<T> {
     }
 
     fn deliver(&self, rt: &Runtime, id: NodeId, errors: &mut Vec<(NodeId, Error)>) -> bool {
-        let events: Vec<T> = match self.queue.try_borrow_mut() {
+        let events: Vec<Rc<T>> = match self.queue.try_borrow_mut() {
             Ok(mut q) => q.drain(..).collect(),
             Err(_) => return false,
         };
-        if events.is_empty() {
+        // Released listeners first get what they missed while frozen (it is
+        // older than anything queued now).
+        let released: Vec<(NodeId, VecDeque<Rc<T>>)> = {
+            let Ok(mut backlog) = self.backlog.try_borrow_mut() else {
+                return false;
+            };
+            backlog.retain(|(l, _)| rt.exists(*l));
+            let (released, frozen) = std::mem::take(&mut *backlog)
+                .into_iter()
+                .partition(|(l, _)| !rt.is_suspended(*l));
+            *backlog = frozen;
+            released
+        };
+        if events.is_empty() && released.is_empty() {
+            self.note_backlog(rt, id);
             return false;
         }
         // For cycle paths: this queue reaches its listeners.
@@ -78,37 +102,72 @@ impl<T: 'static> NodeData for EventsData<T> {
             .flush_writes
             .borrow_mut()
             .extend(self.listeners.borrow().iter().map(|&l| (id, l)));
+        for (l, missed) in released {
+            for ev in missed {
+                self.run_listener(rt, l, &ev, errors);
+            }
+        }
         for ev in &events {
             let listeners: Vec<NodeId> = self.listeners.borrow().clone();
             for l in listeners {
                 if rt.is_suspended(l) {
-                    // A frozen component ignores events.
+                    // A frozen component ignores input; other events wait.
+                    if !self.input && rt.exists(l) {
+                        self.keep_for(l, ev.clone());
+                    }
                     continue;
                 }
-                let Ok(data) = rt.data(l) else { continue };
-                let Some(listener) = data.as_any().downcast_ref::<ListenerData<T>>() else {
-                    continue;
-                };
-                let Ok(mut f) = listener.f.try_borrow_mut() else {
-                    continue;
-                };
-                // Nodes the listener creates belong to its component; tasks
-                // it starts belong to the listener, so disposing it (unmount
-                // or a reload that restarts the handler) cancels them.
-                let ctx = HandlerCtx {
-                    writer: l,
-                    owner: rt.owner_of(l).ok().flatten(),
-                    site: Some(l),
-                    input: self.input,
-                };
-                let r = rt.run_handler(ctx, |rt| f(rt, ev));
-                if let Err(e) = r {
-                    errors.push((l, e));
-                }
+                self.run_listener(rt, l, ev, errors);
             }
         }
         self.listeners.borrow_mut().retain(|&l| rt.exists(l));
+        self.note_backlog(rt, id);
         true
+    }
+}
+
+impl<T: 'static> EventsData<T> {
+    fn run_listener(&self, rt: &Runtime, l: NodeId, ev: &T, errors: &mut Vec<(NodeId, Error)>) {
+        let Ok(data) = rt.data(l) else { return };
+        let Some(listener) = data.as_any().downcast_ref::<ListenerData<T>>() else {
+            return;
+        };
+        let Ok(mut f) = listener.f.try_borrow_mut() else {
+            return;
+        };
+        // Nodes the listener creates belong to its component; tasks it
+        // starts belong to the listener, so disposing it (unmount or a
+        // reload that restarts the handler) cancels them.
+        let ctx = HandlerCtx {
+            writer: l,
+            owner: rt.owner_of(l).ok().flatten(),
+            site: Some(l),
+            input: self.input,
+        };
+        let r = rt.run_handler(ctx, |rt| f(rt, ev));
+        if let Err(e) = r {
+            errors.push((l, e));
+        }
+    }
+
+    /// Keep `ev` for the suspended listener `l`.
+    fn keep_for(&self, l: NodeId, ev: Rc<T>) {
+        let mut backlog = self.backlog.borrow_mut();
+        match backlog.iter_mut().find(|(b, _)| *b == l) {
+            Some((_, q)) => q.push_back(ev),
+            None => backlog.push((l, VecDeque::from([ev]))),
+        }
+    }
+
+    /// Tell the runtime this queue holds events for frozen listeners, so
+    /// releasing them re-delivers.
+    fn note_backlog(&self, rt: &Runtime, id: NodeId) {
+        if !self.backlog.borrow().is_empty() {
+            let mut list = rt.inner.backlogged.borrow_mut();
+            if !list.contains(&id) {
+                list.push(id);
+            }
+        }
     }
 }
 
@@ -134,6 +193,7 @@ impl Runtime {
             Some(Rc::new(EventsData::<T> {
                 queue: RefCell::new(VecDeque::new()),
                 listeners: RefCell::new(Vec::new()),
+                backlog: RefCell::new(Vec::new()),
                 input,
             })),
         );
@@ -180,7 +240,7 @@ impl<T: 'static> EventQueue<T> {
     pub fn emit(self, rt: &Runtime, event: T) -> Result<(), Error> {
         rt.with_data::<EventsData<T>, _>(self.id, |d| match d.queue.try_borrow_mut() {
             Ok(mut q) => {
-                q.push_back(event);
+                q.push_back(Rc::new(event));
                 Ok(())
             }
             Err(_) => Err(Error::Reentrant),

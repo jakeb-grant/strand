@@ -497,6 +497,83 @@ where
     }
 }
 
+// ----- from a plain list ---------------------------------------------------
+
+impl Runtime {
+    /// A keyed collection derived from a plain list expression:
+    /// `for d in calendar.days(month) key d.date`, `for a in n.actions`.
+    /// `f` is tracked like a memo; each new list is diffed by key against
+    /// the previous one ([`keyed_diff`]) and published, so items keep their
+    /// identity and the emitter gets `Insert`/`Remove`/`Move`/`Update`, not a
+    /// `Reset`. It is a derived value, not a write: a list changing at
+    /// 60 Hz (a spectrum, `cpu` history) is never rate-throttled. A list
+    /// with two items under one key is an [`Error`] value
+    /// ([`KeyedError::DuplicateKey`](super::KeyedError::DuplicateKey)), and
+    /// the previous items are kept for the next good list to diff against.
+    pub fn keyed_memo<K, T, KF, F>(&self, key_of: KF, f: F) -> KeyedMemo<K, T>
+    where
+        K: Clone + Eq + Hash + 'static,
+        T: Clone + PartialEq + 'static,
+        KF: Fn(&T) -> K + 'static,
+        F: Fn(&Runtime) -> Result<Vec<T>, Error> + 'static,
+    {
+        let step = move |rt: &Runtime| -> Result<Step<K, T>, Error> {
+            let values = f(rt)?;
+            let mut seen = std::collections::HashSet::with_capacity(values.len());
+            let mut items = Vec::with_capacity(values.len());
+            for v in values {
+                let k = key_of(&v);
+                if !seen.insert(k.clone()) {
+                    return Err(super::KeyedError::DuplicateKey.into());
+                }
+                items.push((k, v));
+            }
+            Ok(Step::Rebuild(items))
+        };
+        let id = self.create_node(
+            NodeKind::Collection,
+            Color::Dirty,
+            Some(Rc::new(DerivedData::<K, T> {
+                step: RefCell::new(Box::new(step)),
+                items: RefCell::new(Rc::new(Vec::new())),
+                log: Rc::new(RefCell::new(DiffLog::new())),
+                error: RefCell::new(None),
+                started: Cell::new(false),
+                force_rebuild: Rc::new(Cell::new(false)),
+            })),
+        );
+        KeyedMemo {
+            id,
+            _t: PhantomData,
+        }
+    }
+}
+
+impl<T: Clone + PartialEq + 'static> crate::Memo<Vec<T>> {
+    /// This list as a keyed collection (`for x in xs key k`); see
+    /// [`Runtime::keyed_memo`].
+    pub fn keyed<K>(self, rt: &Runtime, key_of: impl Fn(&T) -> K + 'static) -> KeyedMemo<K, T>
+    where
+        K: Clone + Eq + Hash + 'static,
+    {
+        rt.keyed_memo(key_of, move |rt| self.get(rt))
+    }
+}
+
+impl<T: Clone + PartialEq + 'static> crate::AsyncMemo<Vec<T>> {
+    /// The loaded list as a keyed collection (`for h in hits key h.id`): the
+    /// value kept while a newer request is pending or after an error, empty
+    /// before the first result. See [`Runtime::keyed_memo`].
+    pub fn keyed<K>(self, rt: &Runtime, key_of: impl Fn(&T) -> K + 'static) -> KeyedMemo<K, T>
+    where
+        K: Clone + Eq + Hash + 'static,
+    {
+        rt.keyed_memo(key_of, move |rt| {
+            Ok(self.get(rt)?.value().cloned().unwrap_or_default())
+        })
+    }
+}
+
 /// Build a derived collection from an operator factory and tracked params.
 fn derive<K, T, U, P, O, S>(
     rt: &Runtime,

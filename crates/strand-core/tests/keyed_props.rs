@@ -417,3 +417,145 @@ fn malformed_service_diffs_name_the_real_error() {
     );
     assert_eq!(v.len(), 2, "unchanged");
 }
+
+// ----- keyed collections from plain lists ---------------------------------
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// `for x in <list expression> key k`: each new list is published as a
+    /// keyed diff that turns the previous output into exactly the naive
+    /// list, and operators chained on it agree with naive recomputation.
+    #[test]
+    fn keyed_memo_matches_naive_and_publishes_keyed_diffs(
+        lists in prop::collection::vec(
+            prop::collection::vec((any::<u8>(), -20i64..20), 0..12), 1..20),
+    ) {
+        let rt = Runtime::new();
+        let src = rt.signal(Vec::<Item>::new());
+        let xs = rt.keyed_memo(|it: &Item| it.0, move |rt| src.get(rt));
+        let evens = xs.filter(&rt, |it| pred(&it.0, it));
+        let mut prev = xs.snapshot(&rt).unwrap();
+        prop_assert!(prev.is_empty());
+        for raw in lists {
+            // Distinct keys (a duplicate is an error; tested separately).
+            let mut seen = std::collections::HashSet::new();
+            let list: Vec<Item> = raw
+                .into_iter()
+                .map(|(k, v)| (k % 16, v))
+                .filter(|it| seen.insert(it.0))
+                .collect();
+            src.set(&rt, list.clone()).unwrap();
+            rt.flush();
+            let snap = xs.snapshot(&rt).unwrap();
+            let naive: List = list.iter().map(|it| (it.0, *it)).collect();
+            prop_assert_eq!(snap.items(), &naive[..]);
+            // The published diffs turn the previous output into this one,
+            // with no Reset after the first run.
+            let diffs = snap.diffs_since(prev.version()).unwrap();
+            let reset = diffs.iter().any(|d| matches!(d, VecDiff::Reset { .. }));
+            prop_assert!(!reset, "no reset after the first run");
+            let mut replay = prev.items().to_vec();
+            for d in &diffs {
+                d.apply(&mut replay).unwrap();
+            }
+            prop_assert_eq!(&replay[..], &naive[..]);
+            prop_assert_eq!(diffs.is_empty(), prev.items() == &naive[..]);
+            let filtered = evens.snapshot(&rt).unwrap();
+            prop_assert_eq!(filtered.items(), &naive_filter(&naive)[..]);
+            prev = snap;
+        }
+    }
+}
+
+#[test]
+fn keyed_memo_reports_duplicate_keys_as_a_value_and_recovers() {
+    let rt = Runtime::new();
+    let src = rt.signal(vec![(1u8, 10i64), (2, 20)]);
+    let xs = rt.keyed_memo(|it: &Item| it.0, move |rt| src.get(rt));
+    let first = xs.snapshot(&rt).unwrap();
+    src.set(&rt, vec![(1, 10), (1, 11)]).unwrap();
+    assert_eq!(
+        xs.snapshot(&rt).unwrap_err(),
+        strand_core::Error::Keyed(strand_core::KeyedError::DuplicateKey)
+    );
+    src.set(&rt, vec![(2, 20), (1, 10), (3, 30)]).unwrap();
+    let snap = xs.snapshot(&rt).unwrap();
+    // Diffed against the last good list: keys kept, no reset.
+    let diffs = snap.diffs_since(first.version()).unwrap();
+    assert!(!diffs.iter().any(|d| matches!(d, VecDiff::Reset { .. })));
+    let mut replay = first.items().to_vec();
+    for d in &diffs {
+        d.apply(&mut replay).unwrap();
+    }
+    assert_eq!(replay, snap.items());
+}
+
+#[test]
+fn memo_and_async_lists_feed_keyed_loops() {
+    let rt = Runtime::new();
+    let month = rt.signal(1u8);
+    // `for d in calendar.days(month)`: a list computed from a reactive arg.
+    let days = rt.memo(move |rt| {
+        let m = month.get(rt)?;
+        Ok((1..=3u8)
+            .map(|d| (m * 10 + d, i64::from(d)))
+            .collect::<Vec<Item>>())
+    });
+    let keyed = days.keyed(&rt, |it: &Item| it.0);
+    assert_eq!(keyed.snapshot(&rt).unwrap().len(), 3);
+    let w = rt.watch(keyed.id()).unwrap();
+    month.set(&rt, 2).unwrap();
+    assert!(rt.flush().changed.contains(&keyed.id()));
+    assert_eq!(
+        keyed
+            .snapshot(&rt)
+            .unwrap()
+            .keys()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![21, 22, 23]
+    );
+    rt.dispose(w);
+    // `for h in hits`: an Async list keeps its value while a request runs.
+    let query = rt.signal(0u8);
+    let hits = rt.async_memo(
+        move |rt| query.get(rt),
+        |q: u8| async move { Ok(vec![(q, 1i64), (q + 1, 2)]) },
+    );
+    let keyed_hits = hits.keyed(&rt, |it: &Item| it.0);
+    assert!(
+        keyed_hits.snapshot(&rt).unwrap().is_empty(),
+        "before any result"
+    );
+    rt.flush();
+    rt.flush();
+    assert_eq!(keyed_hits.snapshot(&rt).unwrap().len(), 2);
+}
+
+/// A list recomputed every frame (a spectrum) is a derived value, not a
+/// write: it is never warned about or throttled.
+#[test]
+fn a_fast_changing_keyed_memo_is_not_rate_throttled() {
+    use std::time::Duration;
+    let rt = Runtime::new();
+    let frame = rt.signal(0i64);
+    let bars = rt.keyed_memo(
+        |it: &Item| it.0,
+        move |rt| {
+            let f = frame.get(rt)?;
+            Ok((0..8u8).map(|k| (k, f + i64::from(k))).collect())
+        },
+    );
+    let _w = rt.watch(bars.id()).unwrap();
+    let mut t = Duration::ZERO;
+    for i in 1..=120 {
+        frame.set(&rt, i).unwrap();
+        t += Duration::from_nanos(16_666_667);
+        let tick = rt.tick(t);
+        assert!(tick.diagnostics.is_empty(), "{:?}", tick.diagnostics);
+        assert_eq!(tick.changed, vec![bars.id()], "frame {i} published");
+        assert_eq!(bars.snapshot(&rt).unwrap().items()[7], (7, (7, i + 7)));
+    }
+    assert_eq!(rt.next_deadline(), None);
+}

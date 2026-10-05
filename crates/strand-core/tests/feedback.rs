@@ -530,3 +530,92 @@ fn an_unchanged_newer_write_supersedes_a_held_one() {
     rt.tick(t + Duration::from_secs(1));
     assert_eq!(cell.get(&rt), Ok(current));
 }
+
+/// `on click { loop { x += 1; await sleep(10ms) } }`: the click's
+/// synchronous response is input, but the loop it starts is a 100 Hz
+/// writer like any other: warned once and throttled.
+#[test]
+fn a_runaway_loop_started_by_a_click_is_throttled() {
+    let rt = Runtime::new();
+    let x = rt.signal(0i32);
+    let clicks = rt.input_events::<()>();
+    let first = rt.signal(0i32);
+    clicks
+        .on(&rt, move |rt, _| {
+            // Synchronous response: exempt.
+            first.set(rt, 1)?;
+            let weak = rt.downgrade();
+            rt.spawn(async move {
+                let rt = weak.upgrade().ok_or(strand_core::Error::Cancelled)?;
+                loop {
+                    x.update(&rt, |v| *v += 1)?;
+                    rt.sleep(Duration::from_millis(10)).await;
+                }
+            });
+            Ok(())
+        })
+        .unwrap();
+    clicks.emit(&rt, ()).unwrap();
+    let mut diags = Vec::new();
+    let mut landed = 0;
+    for i in 0..=200u32 {
+        let tick = rt.tick(i * Duration::from_millis(10));
+        landed += usize::from(tick.written.contains(&x.id()));
+        diags.extend(tick.diagnostics);
+    }
+    assert_eq!(first.get(&rt), Ok(1));
+    assert_eq!(rate_warnings(&diags), 1, "{diags:?}");
+    // The cell moves at ~30 Hz over 2 s instead of 100 Hz (`update` reads
+    // the held value, so no step is lost, only batched).
+    assert!(landed < 110, "{landed} writes landed");
+}
+
+/// The input exemption covers a spawned task's synchronous part: a task
+/// per click that writes once before any await is never counted.
+#[test]
+fn input_tasks_writing_before_their_first_await_stay_exempt() {
+    let rt = Runtime::new();
+    let x = rt.signal(0i32);
+    let site = rt.handler_site();
+    let mut diags = Vec::new();
+    for i in 1..=120u32 {
+        let weak = rt.downgrade();
+        rt.spawn_input(Some(site), async move {
+            let rt = weak.upgrade().ok_or(strand_core::Error::Cancelled)?;
+            x.update(&rt, |v| *v += 1)?;
+            rt.sleep(Duration::from_secs(5)).await;
+            Ok(())
+        });
+        diags.extend(rt.tick(i * Duration::from_nanos(16_666_667)).diagnostics);
+        assert_eq!(x.get(&rt), Ok(i as i32));
+    }
+    assert_eq!(rate_warnings(&diags), 0);
+}
+
+/// A timer body and the task it spawns are one writer; their writes in
+/// `advance_to` and in the following flush are separate attempts, so 2
+/// writes per 50 ms tick (40/s) is over the limit.
+#[test]
+fn timer_body_and_its_task_writes_count_separately() {
+    let rt = Runtime::new();
+    let x = rt.signal(0i32);
+    rt.every(
+        Duration::from_millis(50),
+        |_| Ok(true),
+        move |rt| {
+            x.update(rt, |v| *v += 1)?;
+            let weak = rt.downgrade();
+            rt.spawn(async move {
+                let rt = weak.upgrade().ok_or(strand_core::Error::Cancelled)?;
+                x.update(&rt, |v| *v += 1)
+            });
+            Ok(())
+        },
+    );
+    rt.flush();
+    let mut diags = Vec::new();
+    for i in 1..=40u32 {
+        diags.extend(rt.tick(i * Duration::from_millis(50)).diagnostics);
+    }
+    assert_eq!(rate_warnings(&diags), 1, "{diags:?}");
+}

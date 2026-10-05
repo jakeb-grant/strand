@@ -379,3 +379,77 @@ fn async_load_runs_as_a_cancellable_handler() {
     rt.tick(Duration::from_secs(10));
     assert_eq!(hits.get(&rt).unwrap().value(), Some(&42));
 }
+
+/// Reload must not repeat a side effect: an `after` that already fired
+/// stays done in the new timer.
+#[test]
+fn rescaling_from_an_after_that_fired_never_fires_again() {
+    let rt = Runtime::new();
+    let runs = rt.signal(0);
+    let old = rt.after(
+        100 * MS,
+        |_| Ok(true),
+        move |rt| runs.update(rt, |n| *n += 1),
+    );
+    rt.tick(700 * MS);
+    assert_eq!(runs.get(&rt), Ok(1));
+    let new = rt.after(
+        100 * MS,
+        |_| Ok(true),
+        move |rt| runs.update(rt, |n| *n += 1),
+    );
+    new.rescale_from(&rt, old).unwrap();
+    old.dispose(&rt);
+    assert_eq!(new.deadline(&rt), Ok(None));
+    assert_eq!(rt.next_deadline(), None, "nothing scheduled");
+    for t in [800, 900, 5000] {
+        rt.tick(t * MS);
+    }
+    assert_eq!(runs.get(&rt), Ok(1), "fired once in total");
+}
+
+/// `on change x after T` restarted mid-countdown (the OSD file edited while
+/// the OSD is shown): the debounce in flight still fires, once, at the
+/// rescaled time; an idle one stays idle.
+#[test]
+fn a_debounce_restarted_mid_countdown_fires_once_at_the_rescaled_time() {
+    let rt = Runtime::new();
+    let volume = rt.signal(50);
+    let shown = rt.signal(true);
+    let hides = rt.signal(0);
+    let hide = move |rt: &Runtime| {
+        hides.update(rt, |n| *n += 1)?;
+        shown.set(rt, false)
+    };
+    let old = rt.on_change_after(move |rt| volume.get(rt), 100 * MS, hide);
+    rt.flush();
+    volume.set(&rt, 51).unwrap();
+    rt.tick(Duration::ZERO);
+    rt.tick(50 * MS);
+    // Reload: the new handler has a 200 ms debounce; half was counted.
+    let new = rt.on_change_after(move |rt| volume.get(rt), 200 * MS, hide);
+    new.rescale_from(&rt, old).unwrap();
+    old.dispose(&rt);
+    rt.flush();
+    assert_eq!(new.timer.deadline(&rt), Ok(Some(150 * MS)));
+    rt.tick(149 * MS);
+    assert_eq!(shown.get(&rt), Ok(true));
+    rt.tick(150 * MS);
+    assert_eq!(shown.get(&rt), Ok(false), "fires at the rescaled time");
+    rt.tick(1000 * MS);
+    assert_eq!(hides.get(&rt), Ok(1), "once");
+    assert_eq!(rt.next_deadline(), None);
+    // An idle debounce stays idle across a reload.
+    let newer = rt.on_change_after(move |rt| volume.get(rt), 200 * MS, hide);
+    newer.rescale_from(&rt, new).unwrap();
+    new.dispose(&rt);
+    rt.flush();
+    assert_eq!(rt.next_deadline(), None);
+    rt.tick(2000 * MS);
+    assert_eq!(hides.get(&rt), Ok(1));
+    // And it still works for the next change.
+    volume.set(&rt, 52).unwrap();
+    rt.tick(2000 * MS);
+    rt.tick(2200 * MS);
+    assert_eq!(hides.get(&rt), Ok(2));
+}

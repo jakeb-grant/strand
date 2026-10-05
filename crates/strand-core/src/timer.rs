@@ -142,6 +142,14 @@ pub struct Debounced {
 }
 
 impl Debounced {
+    /// Live reload of `on change x after T`: take over `old`'s debounce, so
+    /// a countdown in flight when the handler was restarted still fires
+    /// (once, at its rescaled time) and an idle one stays idle. See
+    /// [`Timer::rescale_from`].
+    pub fn rescale_from(self, rt: &Runtime, old: Debounced) -> Result<(), Error> {
+        self.timer.rescale_from(rt, old.timer)
+    }
+
     /// Stop both.
     pub fn dispose(self, rt: &Runtime) {
         self.effect.dispose(rt);
@@ -187,21 +195,35 @@ impl Timer {
         })
     }
 
-    /// Live reload of a timer duration: the new timer keeps the fraction of
-    /// its period that `old` had already counted ("remaining time
-    /// rescaled").
+    /// Live reload of a timer duration ("remaining time rescaled"): this
+    /// (new) timer takes over `old`'s countdown. Its lifecycle carries over,
+    /// not just its fraction: an `after` that already fired stays done (a
+    /// reload never repeats its side effect), an idle debounce stays idle,
+    /// and a countdown in flight (an armed debounce included) keeps the
+    /// fraction of its period already counted and finishes the rest at the
+    /// new duration.
     pub fn rescale_from(self, rt: &Runtime, old: Timer) -> Result<(), Error> {
-        let fraction = old.progress(rt)?;
-        let fraction = if fraction.is_finite() { fraction } else { 0.0 };
         let now = rt.now();
+        let (armed, fraction) = old.with(rt, |t| {
+            let s = t.st.get();
+            let fraction = if s.duration.is_zero() {
+                0.0
+            } else {
+                (t.counted(now).as_secs_f64() / s.duration.as_secs_f64()).clamp(0.0, 1.0)
+            };
+            (s.armed, fraction)
+        })?;
         self.with(rt, |t| {
             let mut s = t.st.get();
-            s.elapsed = Duration::try_from_secs_f64(s.duration.as_secs_f64() * fraction)
-                .unwrap_or(s.duration)
-                .min(s.duration);
-            if s.since.is_some() {
-                s.since = Some(now);
-            }
+            s.armed = armed;
+            s.elapsed = if armed {
+                Duration::try_from_secs_f64(s.duration.as_secs_f64() * fraction)
+                    .unwrap_or(s.duration)
+                    .min(s.duration)
+            } else {
+                Duration::ZERO
+            };
+            s.since = (armed && s.cond && !s.zero).then_some(now);
             t.st.set(s);
         })
     }

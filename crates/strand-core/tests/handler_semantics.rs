@@ -618,3 +618,50 @@ fn a_task_left_ready_after_a_flush_calls_the_wake_hook() {
     rt.flush();
     assert!(rt.is_idle());
 }
+
+/// `on change x, y` created before an effect that writes `x = y * 10`: one
+/// outside write to `y` fires it once, with the settled values, never with
+/// the intermediate `(0, 1)`.
+#[test]
+fn on_change_fires_once_per_outside_write_after_writers_settle() {
+    let rt = Runtime::new();
+    let x = rt.signal(0);
+    let y = rt.signal(0);
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let s = seen.clone();
+    rt.on_change(
+        move |rt| Ok((x.get(rt)?, y.get(rt)?)),
+        move |_, &v| {
+            s.borrow_mut().push(v);
+            Ok(())
+        },
+    );
+    rt.effect(move |rt| x.set(rt, y.get(rt)? * 10));
+    rt.flush();
+    assert!(seen.borrow().is_empty(), "boot is the baseline");
+    y.set(&rt, 1).unwrap();
+    let tick = rt.flush();
+    assert!(tick.errors.is_empty());
+    assert_eq!(*seen.borrow(), vec![(10, 1)]);
+    y.set(&rt, 2).unwrap();
+    rt.flush();
+    assert_eq!(*seen.borrow(), vec![(10, 1), (20, 2)]);
+}
+
+/// A late `on change` handler that writes still triggers the effects that
+/// read what it wrote, in the same flush.
+#[test]
+fn an_on_change_handler_write_reaches_effects_in_the_same_flush() {
+    let rt = Runtime::new();
+    let a = rt.signal(0);
+    let b = rt.signal(0);
+    let c = rt.signal(0);
+    rt.effect(move |rt| c.set(rt, b.get(rt)? + 1));
+    rt.on_change(move |rt| a.get(rt), move |rt, &v| b.set(rt, v * 2));
+    rt.flush();
+    a.set(&rt, 3).unwrap();
+    rt.flush();
+    assert_eq!(b.get(&rt), Ok(6));
+    assert_eq!(c.get(&rt), Ok(7));
+    assert!(rt.is_idle());
+}

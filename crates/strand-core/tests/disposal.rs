@@ -360,9 +360,12 @@ fn a_suspended_component_freezes_and_resumes() {
     let seen = rt.signal(0);
     let fired = rt.signal(0);
     let resumed = rt.signal(0);
-    let clicks = rt.events::<()>();
+    let clicks = rt.input_events::<()>();
     let clicked = rt.signal(0);
+    let notices = rt.events::<i32>();
+    let got = Rc::new(RefCell::new(Vec::new()));
     let weak = rt.downgrade();
+    let g = got.clone();
     let (component, state) = rt.scope(|rt| {
         let state = rt.signal(42);
         rt.effect(move |rt| seen.set(rt, x.get(rt)?));
@@ -379,6 +382,12 @@ fn a_suspended_component_freezes_and_resumes() {
         clicks
             .on(rt, move |rt, _| clicked.update(rt, |c| *c += 1))
             .unwrap();
+        notices
+            .on(rt, move |_, &n| {
+                g.borrow_mut().push(n);
+                Ok(())
+            })
+            .unwrap();
         state
     });
     rt.flush();
@@ -386,11 +395,13 @@ fn a_suspended_component_freezes_and_resumes() {
     assert!(rt.is_suspended(component.id()));
     x.set(&rt, 1).unwrap();
     clicks.emit(&rt, ()).unwrap();
+    notices.emit(&rt, 1).unwrap();
     rt.tick(Duration::from_millis(20));
     assert_eq!(seen.get(&rt), Ok(0), "effect frozen");
     assert_eq!(fired.get(&rt), Ok(0), "timer frozen");
     assert_eq!(resumed.get(&rt), Ok(0), "task frozen");
     assert_eq!(clicked.get(&rt), Ok(0), "input ignored");
+    assert!(got.borrow().is_empty(), "service event waits");
     assert_eq!(state.get(&rt), Ok(42), "state kept");
     assert!(rt.is_idle(), "a frozen subtree is idle");
     assert_eq!(rt.next_deadline(), None, "and schedules nothing");
@@ -400,7 +411,221 @@ fn a_suspended_component_freezes_and_resumes() {
     assert_eq!(seen.get(&rt), Ok(1));
     assert_eq!(fired.get(&rt), Ok(1));
     assert_eq!(resumed.get(&rt), Ok(1));
+    assert_eq!(*got.borrow(), vec![1], "the frozen-time event, once");
     clicks.emit(&rt, ()).unwrap();
+    notices.emit(&rt, 2).unwrap();
     rt.flush();
-    assert_eq!(clicked.get(&rt), Ok(1));
+    assert_eq!(
+        clicked.get(&rt),
+        Ok(1),
+        "the click while frozen was dropped"
+    );
+    assert_eq!(*got.borrow(), vec![1, 2], "lossless and in order");
+}
+
+#[test]
+fn service_events_wait_for_a_frozen_listener_without_delaying_others() {
+    let rt = Runtime::new();
+    let notices = rt.events::<String>(); // not Clone-dependent: shared Rc
+    let frozen_got = Rc::new(RefCell::new(Vec::new()));
+    let live_got = Rc::new(RefCell::new(Vec::new()));
+    let f = frozen_got.clone();
+    let (component, _) = rt.scope(|rt| {
+        notices
+            .on(rt, move |_, n: &String| {
+                f.borrow_mut().push(n.clone());
+                Ok(())
+            })
+            .unwrap()
+    });
+    let l = live_got.clone();
+    notices
+        .on(&rt, move |_, n: &String| {
+            l.borrow_mut().push(n.clone());
+            Ok(())
+        })
+        .unwrap();
+    rt.suspend(component.id()).unwrap();
+    for n in ["a", "b"] {
+        notices.emit(&rt, n.to_string()).unwrap();
+        rt.flush();
+    }
+    assert_eq!(*live_got.borrow(), vec!["a", "b"]);
+    assert!(frozen_got.borrow().is_empty());
+    assert!(rt.is_idle());
+    let woke = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let w = woke.clone();
+    rt.set_wake_hook(move || {
+        w.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    });
+    rt.resume(component.id());
+    assert!(
+        woke.load(std::sync::atomic::Ordering::SeqCst) > 0,
+        "resume wakes the host"
+    );
+    assert!(!rt.is_idle());
+    notices.emit(&rt, "c".to_string()).unwrap();
+    rt.flush();
+    assert_eq!(*frozen_got.borrow(), vec!["a", "b", "c"]);
+    assert_eq!(*live_got.borrow(), vec!["a", "b", "c"]);
+    rt.flush();
+    assert_eq!(frozen_got.borrow().len(), 3, "delivered once");
+}
+
+#[test]
+fn resume_wakes_the_host_for_held_work_and_overdue_timers() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+    let rt = Runtime::new();
+    let fired = rt.signal(0);
+    let (component, _) = rt.scope(|rt| {
+        rt.after(
+            Duration::from_millis(110),
+            |_| Ok(true),
+            move |rt| fired.set(rt, 1),
+        )
+    });
+    rt.flush();
+    rt.suspend(component.id()).unwrap();
+    rt.tick(Duration::from_millis(200));
+    assert_eq!(fired.get(&rt), Ok(0));
+    assert_eq!(rt.next_deadline(), None);
+    let woke = Arc::new(AtomicUsize::new(0));
+    let w = woke.clone();
+    rt.set_wake_hook(move || {
+        w.fetch_add(1, Ordering::SeqCst);
+    });
+    rt.resume(component.id());
+    assert_eq!(
+        woke.load(Ordering::SeqCst),
+        1,
+        "an overdue timer wakes the host"
+    );
+    assert!(rt.next_deadline().is_some_and(|d| d <= rt.now()));
+    rt.tick(Duration::from_millis(200));
+    assert_eq!(fired.get(&rt), Ok(1));
+}
+
+#[test]
+fn an_effect_moved_out_of_a_suspended_scope_is_not_left_deaf() {
+    let rt = Runtime::new();
+    let x = rt.signal(0);
+    let runs = Rc::new(RefCell::new(0));
+    let r = runs.clone();
+    let (s, e) = rt.scope(|rt| {
+        rt.effect(move |rt| {
+            x.get(rt)?;
+            *r.borrow_mut() += 1;
+            Ok(())
+        })
+    });
+    rt.flush();
+    rt.suspend(s.id()).unwrap();
+    x.set(&rt, 1).unwrap();
+    rt.flush();
+    assert_eq!(*runs.borrow(), 1, "held while frozen");
+    // The fixing reload moves the live state out, then drops the old parent.
+    rt.reparent(e.id(), None).unwrap();
+    s.dispose(&rt);
+    rt.flush();
+    assert_eq!(*runs.borrow(), 2, "the held run happens once released");
+    x.set(&rt, 2).unwrap();
+    rt.flush();
+    assert_eq!(*runs.borrow(), 3, "and it still hears later writes");
+}
+
+#[test]
+fn a_nested_scope_moved_out_of_a_suspended_parent_runs_again() {
+    let rt = Runtime::new();
+    let x = rt.signal(0);
+    let runs = Rc::new(RefCell::new(0));
+    let r = runs.clone();
+    let (outer, inner) = rt.scope(|rt| {
+        rt.scope(|rt| {
+            rt.effect(move |rt| {
+                x.get(rt)?;
+                *r.borrow_mut() += 1;
+                Ok(())
+            })
+        })
+        .0
+    });
+    let (target, _) = rt.scope(|_| ());
+    rt.flush();
+    rt.suspend(outer.id()).unwrap();
+    x.set(&rt, 1).unwrap();
+    rt.flush();
+    assert_eq!(*runs.borrow(), 1);
+    rt.reparent(inner.id(), Some(target.id())).unwrap();
+    assert!(!rt.is_suspended(inner.id()));
+    rt.flush();
+    assert_eq!(*runs.borrow(), 2);
+    x.set(&rt, 2).unwrap();
+    rt.flush();
+    assert_eq!(*runs.borrow(), 3);
+    // The old parent is still frozen and can go away without effect.
+    outer.dispose(&rt);
+    x.set(&rt, 3).unwrap();
+    rt.flush();
+    assert_eq!(*runs.borrow(), 4);
+}
+
+#[test]
+fn a_frozen_task_woken_repeatedly_is_held_once() {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::task::{Context, Poll, Waker};
+    // A future that stashes its waker so the test can wake it at will
+    // (a service channel delivering at 60 Hz).
+    struct Stash(Rc<RefCell<Option<Waker>>>);
+    impl Future for Stash {
+        type Output = Result<(), Error>;
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            *self.0.borrow_mut() = Some(cx.waker().clone());
+            Poll::Pending
+        }
+    }
+    let rt = Runtime::new();
+    let waker = Rc::new(RefCell::new(None));
+    let wk = waker.clone();
+    let (component, task) = rt.scope(|rt| rt.spawn(Stash(wk)));
+    rt.flush();
+    rt.suspend(component.id()).unwrap();
+    for _ in 0..1000 {
+        waker.borrow().as_ref().unwrap().wake_by_ref();
+        rt.flush();
+    }
+    assert_eq!(rt.held().len(), 1, "held once, not once per wake");
+    rt.resume(component.id());
+    rt.flush();
+    assert!(!task.is_finished(&rt));
+    assert_eq!(rt.held().len(), 0);
+}
+
+#[test]
+fn an_on_change_handler_moved_to_a_new_owner_creates_nodes_there() {
+    let rt = Runtime::new();
+    let x = rt.signal(0);
+    let made = Rc::new(RefCell::new(None));
+    let m = made.clone();
+    let (a, effect) = rt.scope(|rt| {
+        rt.on_change(
+            move |rt| x.get(rt),
+            move |rt, _| {
+                *m.borrow_mut() = Some(rt.signal(0).id());
+                Ok(())
+            },
+        )
+    });
+    let (b, _) = rt.scope(|_| ());
+    rt.flush();
+    rt.reparent(effect.id(), Some(b.id())).unwrap();
+    a.dispose(&rt);
+    x.set(&rt, 1).unwrap();
+    rt.flush();
+    let sig = made.borrow().expect("handler ran");
+    assert_eq!(rt.owner_of(sig), Ok(Some(b.id())));
+    b.dispose(&rt);
+    assert!(!rt.exists(sig), "disposed with its new component");
 }

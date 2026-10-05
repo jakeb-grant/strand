@@ -29,6 +29,12 @@ shared with another build), criterion medians:
 | Idle check | `is_idle()` + `next_deadline()` | 20 ns |
 | Build | create 10k nodes + 522 watches, first compute | 3.4 ms |
 
+Round 3 spot check (late `on change` phase, logic-step epoch, released
+suspensions): single write 1.45 ms, narrow path 1.63 µs, idle flush 61 ns,
+idle check 22 ns, memory 347 B / 5.5 allocations per node: unchanged within
+noise. Late `on change` handlers live in a side set, not a node flag, so the
+node slot stays the same size.
+
 The "single write" case recomputes about half of this deliberately
 over-connected graph, so it measures fan-out twice; the narrow-path and
 cut-off rows are what real shell writes look like (the bench asserts that

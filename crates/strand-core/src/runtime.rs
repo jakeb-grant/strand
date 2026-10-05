@@ -14,7 +14,8 @@
 //!   that is the equality cut-off.
 //! * Effects run in creation order (owners before the nodes they own), and
 //!   only after every write of the tick has been pushed, so no effect ever
-//!   sees a half-propagated graph. An effect re-triggered by a later
+//!   sees a half-propagated graph. `on change` handlers run after the
+//!   other queued sinks have settled, so they fire once per outside write. An effect re-triggered by a later
 //!   effect's write runs again in the same flush; a sink re-triggered past
 //!   [`MAX_RUNS_PER_FLUSH`] through a feedback path is a runtime cycle and
 //!   is parked.
@@ -248,8 +249,19 @@ pub(crate) struct Inner {
     /// Suspended scopes (a faulted component): their sinks, timers, tasks
     /// and listeners do not run until resumed.
     pub(crate) suspended: RefCell<HashSet<NodeId>>,
-    /// Sinks and tasks skipped because they are inside a suspended scope.
+    /// Sinks and tasks skipped because they are inside a suspended scope
+    /// (each once).
     held: RefCell<Vec<NodeId>>,
+    /// Sinks that run only after the other queued sinks have settled
+    /// (`on change` handlers), so they see one consistent state per tick.
+    /// A set, not a node field: few nodes are late and the node stays small.
+    late: RefCell<HashSet<NodeId>>,
+    /// Event queues holding events for suspended listeners.
+    pub(crate) backlogged: RefCell<Vec<NodeId>>,
+    /// Bumped at the start of every `advance_to` and `flush`: the write-rate
+    /// guard coalesces attempts per logic step, so timer-body writes and the
+    /// following flush's writes count separately.
+    pub(crate) epoch: Cell<u64>,
     pending: RefCell<Vec<NodeId>>,
     seq: Cell<u64>,
     pub(crate) flushing: Cell<bool>,
@@ -361,6 +373,9 @@ impl Runtime {
                 sites: RefCell::new(SecondaryMap::new()),
                 suspended: RefCell::new(HashSet::new()),
                 held: RefCell::new(Vec::new()),
+                late: RefCell::new(HashSet::new()),
+                backlogged: RefCell::new(Vec::new()),
+                epoch: Cell::new(0),
                 pending: RefCell::new(Vec::new()),
                 seq: Cell::new(0),
                 flushing: Cell::new(false),
@@ -460,6 +475,13 @@ impl Runtime {
             .borrow()
             .get(id)
             .is_some_and(|n| n.color != Color::Clean)
+    }
+
+    /// Make a sink run after the other queued sinks have settled.
+    pub(crate) fn set_late(&self, id: NodeId) {
+        if self.exists(id) {
+            self.inner.late.borrow_mut().insert(id);
+        }
     }
 
     /// True while `id` names a live node.
@@ -1103,17 +1125,23 @@ impl Runtime {
         }
         let mut names = self.inner.names.borrow_mut();
         let mut echo = self.inner.echo.borrow_mut();
+        let mut late = self.inner.late.borrow_mut();
         for &n in &order {
             names.remove(n);
             echo.remove(n);
+            if !late.is_empty() {
+                late.remove(&n);
+            }
         }
         drop(names);
         drop(echo);
+        drop(late);
+        let mut unfroze = false;
         {
             let mut suspended = self.inner.suspended.borrow_mut();
             if !suspended.is_empty() {
                 for &n in &order {
-                    suspended.remove(&n);
+                    unfroze |= suspended.remove(&n);
                 }
             }
         }
@@ -1124,6 +1152,9 @@ impl Runtime {
                 held.retain(|&n| nodes.contains_key(n));
             }
         }
+        // A suspended scope that went away (its live parts moved out first)
+        // no longer freezes what it held.
+        self.release_held(unfroze);
         self.forget_rate_state();
         // Live observers of disposed nodes re-run and see the error value.
         for node in &dropped {
@@ -1225,6 +1256,10 @@ impl Runtime {
         if let Some(node) = nodes.get_mut(id) {
             node.owner = new_owner;
         }
+        drop(nodes);
+        // Moved out of a suspended scope: held work runs again.
+        let unfroze = !self.inner.suspended.borrow().is_empty();
+        self.release_held(unfroze);
         Ok(())
     }
 
@@ -1232,9 +1267,13 @@ impl Runtime {
     /// until the fixing reload): its effects, watches, timers, listeners
     /// and tasks stop running, but its state is kept. Memos stay readable
     /// (they are pure). Work that comes due while frozen is held and done
-    /// on [`Runtime::resume`]; events delivered while frozen are not seen
-    /// by its listeners (a frozen component ignores input). A frozen
+    /// on [`Runtime::resume`]. A frozen
     /// subtree schedules nothing, so the runtime can still be idle.
+    ///
+    /// Events from input queues ([`Runtime::input_events`]) are dropped for
+    /// its listeners (a frozen component ignores input); other events
+    /// (service and component events, which are lossless) are kept per
+    /// listener and delivered in order after it is released.
     pub fn suspend(&self, id: NodeId) -> Result<(), Error> {
         if !self.exists(id) {
             return Err(Error::Disposed(id));
@@ -1243,14 +1282,28 @@ impl Runtime {
         Ok(())
     }
 
-    /// Unfreeze a subtree suspended with [`Runtime::suspend`]: held sinks
-    /// and woken tasks run at the next flush; timers count again.
+    /// Unfreeze a subtree suspended with [`Runtime::suspend`]: held sinks,
+    /// woken tasks and events kept for its listeners run at the next flush;
+    /// timers count again (one that came due while frozen fires at the next
+    /// tick). Calls the wake hook when it re-queued work.
     pub fn resume(&self, id: NodeId) {
-        if !self.inner.suspended.borrow_mut().remove(&id) {
+        if self.inner.suspended.borrow_mut().remove(&id) {
+            self.release_held(true);
+        }
+    }
+
+    /// Re-queue held work that is no longer suspended (after a resume, a
+    /// reparent out of a suspended scope, or the disposal of a suspended
+    /// scope), and wake the host if anything is now due. `unfroze`: a
+    /// suspension may have ended, so a timer may be overdue.
+    fn release_held(&self, unfroze: bool) {
+        let backlogged = std::mem::take(&mut *self.inner.backlogged.borrow_mut());
+        if !unfroze && self.inner.held.borrow().is_empty() && backlogged.is_empty() {
             return;
         }
         let held = std::mem::take(&mut *self.inner.held.borrow_mut());
         let mut keep = Vec::new();
+        let mut requeued = false;
         for n in held {
             if !self.exists(n) {
                 continue;
@@ -1259,11 +1312,31 @@ impl Runtime {
                 keep.push(n);
             } else if self.kind(n) == Ok(NodeKind::Task) {
                 self.inner.ready.push_quiet(n);
+                requeued = true;
             } else if self.is_stale(n) {
                 self.inner.pending.borrow_mut().push(n);
+                requeued = true;
             }
         }
         *self.inner.held.borrow_mut() = keep;
+        // Queues re-deliver what their released listeners missed; one that
+        // still has frozen listeners puts itself back on the list.
+        for q in backlogged {
+            if self.exists(q) {
+                self.inner.events_pending.borrow_mut().push(q);
+                requeued = true;
+            }
+        }
+        let overdue = unfroze && self.timer_deadline().is_some_and(|d| d <= self.now());
+        if requeued || overdue {
+            self.call_wake_hook();
+        }
+    }
+
+    /// Sinks and tasks held by suspended scopes, waiting to run when
+    /// released (the inspector, reload reporting).
+    pub fn held(&self) -> Vec<NodeId> {
+        self.inner.held.borrow().clone()
     }
 
     /// True while `id` or one of its owners (or the handler of its site) is
@@ -1284,9 +1357,13 @@ impl Runtime {
         false
     }
 
-    /// Remember a task skipped because it is suspended.
+    /// Remember a sink or task skipped because it is suspended (once: a
+    /// frozen task woken at 60 Hz must not grow the list).
     pub(crate) fn hold(&self, id: NodeId) {
-        self.inner.held.borrow_mut().push(id);
+        let mut held = self.inner.held.borrow_mut();
+        if !held.contains(&id) {
+            held.push(id);
+        }
     }
 
     pub(crate) fn mark_dirty_and_downstream(&self, id: NodeId) {
@@ -1374,8 +1451,11 @@ impl Runtime {
 
     // ----- flush ----------------------------------------------------------
 
-    /// True when nothing is queued: no dirty sinks, no events, no woken
-    /// handlers, no throttled writes. An idle runtime needs no flush.
+    /// True when nothing is queued for the next flush: no dirty sinks, no
+    /// events, no woken handlers, no unreported writes. Work scheduled on
+    /// the clock (timers, sleeping handlers, throttled writes) is reported
+    /// by [`Runtime::next_deadline`] instead; a host is truly idle when
+    /// this is true and that is `None`.
     pub fn is_idle(&self) -> bool {
         self.inner.pending.borrow().is_empty()
             && self.inner.events_pending.borrow().is_empty()
@@ -1384,7 +1464,8 @@ impl Runtime {
     }
 
     /// End the tick: deliver events, poll woken handlers (each at most
-    /// once), run dirty sinks (in creation order) until quiescent, and
+    /// once), run dirty sinks (in creation order; `on change` handlers
+    /// after the others have settled) until quiescent, and
     /// report what changed. Writes made by sinks during the flush are part
     /// of this tick.
     ///
@@ -1405,6 +1486,7 @@ impl Runtime {
         }
         tick.seq = self.inner.tick.get() + 1;
         self.inner.tick.set(tick.seq);
+        self.inner.epoch.set(self.inner.epoch.get() + 1);
         let mut runs: HashMap<NodeId, u32> = HashMap::new();
         let mut polled: HashSet<NodeId> = HashSet::new();
         let mut errors = Vec::new();
@@ -1422,6 +1504,20 @@ impl Runtime {
                 let nodes = self.inner.nodes.borrow();
                 batch.retain(|&id| nodes.contains_key(id));
                 batch.sort_by_key(|&id| nodes[id].seq);
+                // `on change` handlers wait until the other sinks (which may
+                // write what they track) have settled, so one outside write
+                // fires them once, with the final values.
+                let late = self.inner.late.borrow();
+                if !late.is_empty() && batch.iter().any(|id| !late.contains(id)) {
+                    let mut pending = self.inner.pending.borrow_mut();
+                    batch.retain(|id| {
+                        let is_late = late.contains(id);
+                        if is_late {
+                            pending.push(*id);
+                        }
+                        !is_late
+                    });
+                }
             }
             batch.dedup();
             for &id in &batch {
@@ -1435,7 +1531,7 @@ impl Runtime {
                 };
                 if self.is_suspended(id) {
                     // Frozen with its component until resumed.
-                    self.inner.held.borrow_mut().push(id);
+                    self.hold(id);
                     continue;
                 }
                 if self.cycle_cut(id, &mut runs, &mut errors) {
@@ -1596,6 +1692,7 @@ impl Runtime {
     /// up to the previous time and a resume from `now`: a timer never counts
     /// time its condition may not have held for.
     pub fn advance_to(&self, now: Duration) -> Vec<(NodeId, Error)> {
+        self.inner.epoch.set(self.inner.epoch.get() + 1);
         self.refresh_timers(now);
         if now > self.inner.now.get() {
             self.inner.now.set(now);

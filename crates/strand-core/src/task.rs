@@ -101,8 +101,11 @@ struct TaskData {
     /// it was spawned), so they outlive the task. The task node itself is
     /// owned by its handler's site, so disposing the handler cancels it.
     creation_owner: Option<NodeId>,
-    /// Started by external input: its writes are not rate-counted.
-    input: bool,
+    /// Started by external input and not yet suspended: its writes are not
+    /// rate-counted. Cleared at its first `await` that suspends, so the
+    /// synchronous response to the event is exempt but a loop it then runs
+    /// (`loop { x += 1; await sleep(10ms) }`) is counted like any handler.
+    input: Cell<bool>,
     /// Superseded on purpose (an `async_memo` re-request): no diagnostic.
     quiet: Cell<bool>,
 }
@@ -148,7 +151,8 @@ impl Runtime {
     /// Inside an effect it belongs to the effect (cancelled when the effect
     /// re-runs); elsewhere to the current owner. Its writes count against
     /// the handler running now (if any) for the write-rate guard, and it
-    /// inherits whether that handler is an input handler. Nodes it creates
+    /// inherits whether that handler is an input handler (exempt up to its
+    /// first suspending `await`). Nodes it creates
     /// belong to the component (the owner at spawn time), so a load started
     /// by a handler outlives the handler's invocation.
     pub fn spawn<F>(&self, fut: F) -> Task
@@ -174,7 +178,11 @@ impl Runtime {
     /// [`Runtime::spawn`] for a handler run by external input (`on click`,
     /// `on scroll(dy)`, a `<->` write from a widget). Its writes are not
     /// counted by the write-rate guard: input at 60 Hz is the user, not a
-    /// feedback loop. `site` (from [`Runtime::handler_site`]) owns the task
+    /// feedback loop. The exemption covers the body up to its first `await`
+    /// that suspends; after that its writes count against its handler
+    /// identity (`site`, or the task) like a graph-triggered handler's, so
+    /// a runaway loop started by a click is still throttled.
+    /// `site` (from [`Runtime::handler_site`]) owns the task
     /// so a reload can cancel it; `None` means the current owner.
     pub fn spawn_input<F>(&self, site: Option<NodeId>, fut: F) -> Task
     where
@@ -206,7 +214,7 @@ impl Runtime {
             waker: RefCell::new(None),
             writer: writer.unwrap_or(id),
             creation_owner,
-            input,
+            input: Cell::new(input),
             quiet: Cell::new(false),
         });
         if let Some(n) = self.inner.nodes.borrow_mut().get_mut(id) {
@@ -295,7 +303,7 @@ impl Runtime {
                 owner: task.creation_owner,
                 // Tasks it spawns share its site.
                 site: self.owner_of(id).ok().flatten(),
-                input: task.input,
+                input: task.input.get(),
             };
             let mut cx = Context::from_waker(&waker);
             let poll = self.run_handler(ctx, |_| fut.as_mut().poll(&mut cx));
@@ -309,6 +317,8 @@ impl Runtime {
                     self.dispose(id);
                 }
                 Poll::Pending => {
+                    // Past its synchronous response to the input event.
+                    task.input.set(false);
                     if self.exists(id) {
                         *task.fut.borrow_mut() = Some(fut);
                     } else {

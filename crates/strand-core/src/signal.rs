@@ -191,7 +191,9 @@ impl Runtime {
     }
 
     /// `on change x { … }`: run `handler` when the value of `track`
-    /// changes, never for its first value (boot or reload). `handler` runs
+    /// changes, never for its first value (boot or reload). It runs after
+    /// the tick's other effects have settled, so an effect writing what it
+    /// tracks does not make it fire twice with an intermediate value. `handler` runs
     /// untracked, as a handler of the current owner: nodes it creates (a
     /// load it starts) belong to the component, not to this effect.
     pub fn on_change<T, F, H>(&self, track: F, handler: H) -> Effect
@@ -217,7 +219,6 @@ impl Runtime {
         F: Fn(&Runtime) -> Result<T, Error> + 'static,
         H: FnMut(&Runtime, &T) -> Result<(), Error> + 'static,
     {
-        let owner = self.current_owner();
         let mut prev: Option<(K, T)> = None;
         let effect = self.effect(move |rt| {
             let k = key(rt)?;
@@ -230,9 +231,11 @@ impl Runtime {
             };
             let r = if fire {
                 let writer = rt.current_writer().unwrap_or_default();
+                // Its component as of now: the effect may have been moved
+                // (`reparent`) since it was created.
                 let ctx = HandlerCtx {
                     writer,
-                    owner,
+                    owner: rt.owner_of(writer).ok().flatten(),
                     site: rt.site_of(writer),
                     input: false,
                 };
@@ -246,6 +249,9 @@ impl Runtime {
         // In-flight tasks the handler started are cancelled with it, not
         // when it re-reads its inputs.
         self.create_site_for(effect.id);
+        // Fires after the tick's other sinks settle: once per outside
+        // write, with final values (see `Runtime::flush`).
+        self.set_late(effect.id);
         effect
     }
 }
