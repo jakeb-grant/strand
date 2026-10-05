@@ -15,3 +15,5 @@ component Shaker { box { on click { play shak } } }
 let quiet = dnd
 // file: toasts.strand
 export state dnd = false
+// A kebab-case name is one unknown name, not two.
+let kebab = my-bar.open

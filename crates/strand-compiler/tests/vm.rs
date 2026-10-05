@@ -210,6 +210,46 @@ fn coalesce_covers_a_pending_async() {
     assert_eq!(get(&inst, "n"), Value::int(2));
 }
 
+/// A list transform of an `Async` list is `Async` too: it keeps the
+/// loading state, so `.pending` and `??` work on `hits.take(2)`.
+#[test]
+fn async_list_transforms_keep_the_loading_state() {
+    let src = "state q = \"f\"\nlet hits = apps.search(q)\nlet top = hits.take(2)\nlet top_pending = top.pending\nlet top_n = (top ?? []).len\nlet shown = hits.len\nbar B { text join(\" \", top_n, top_pending, shown) }\n";
+    let mut map = SourceMap::new();
+    map.add("t.strand", src.to_string());
+    let c = strand_compiler::compile(&map);
+    assert_eq!(c.errors(), 0, "{:#?}", c.diagnostics);
+    let p = Arc::new(lower::lower(
+        &c.program,
+        strand_compiler::schema::Schema::builtin(),
+    ));
+    let rt = Runtime::new();
+    let host = Rc::new(SchemaHost::mock(&rt, &p.types));
+    let apps = ["firefox", "files", "foot"]
+        .iter()
+        .map(|a| host.record("App", &[("id", Value::text(*a)), ("name", Value::text(*a))]))
+        .collect();
+    host.set(&rt, "apps.all", Value::list(apps)).unwrap();
+    let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+    host.set(&rt, "screens.all", Value::list(vec![screen]))
+        .unwrap();
+    host.hold("apps.search");
+    let inst = Instance::new(
+        &rt,
+        p,
+        host.clone(),
+        strand_compiler::instantiate::Storage::none(),
+    );
+    inst.flush();
+    assert_eq!(get(&inst, "top_pending"), Value::Bool(true));
+    assert_eq!(get(&inst, "top_n"), Value::int(0), "pending: the fallback");
+    host.release_fetch("apps.search");
+    inst.flush();
+    assert_eq!(get(&inst, "top_pending"), Value::Bool(false));
+    assert_eq!(get(&inst, "top_n"), Value::int(2));
+    assert_eq!(get(&inst, "shown"), Value::int(3));
+}
+
 /// `await` on an async `let` waits for its load (never a silent null or
 /// a stale value), and every handler awaiting the same value gets the
 /// same result.

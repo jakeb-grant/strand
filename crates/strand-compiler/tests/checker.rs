@@ -464,8 +464,8 @@ fn component_parameters_are_inferred_from_callers() {
                      col { radius: $Toast.radius; text n.summary }\n\
                    }\n\
                    panel Toasts { for n in notifications.popups { Toast n } }\n\
-                   component Label(t) { text t }\n\
-                   component Wrap(x) { Label t: x }\n\
+                   component Label(s) { text s }\n\
+                   component Wrap(x) { Label s: x }\n\
                    component Grid(n) { grid { columns: n } }\n\
                    component Mixed(v) { meter v }\n\
                    bar Top { edge: top; Wrap \"hi\"; Grid 3; Grid n: -2; Mixed 1; Mixed 0.5 }\n");

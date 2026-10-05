@@ -6,3 +6,11 @@ let art = material(image: prefs.wallpaper)
 let palette: Palette = art
 let fine: Palette = art ?? material(seed: $accent)
 let title = apps.search("x").first
+// Element reads forget the loading state; list transforms keep it, so a
+// plain list still needs `??`. `any` parameters take no loading value.
+state q = ""
+let hits = apps.search(q)
+let top: [Hit] = hits.take(3)
+let fine_top: [Hit] = hits.take(3) ?? []
+let names = join(", ", apps.search(q))
+component Count { text "{hits.len}"; col { for h in hits.filter(h => h.app.name != "") { text h.app.name } } }

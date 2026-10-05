@@ -835,7 +835,8 @@ see wave2-core; the compiler supplies the field schema.)
   last value (empty before the first). Any other use of an `Async<T>` where
   `T` is expected is an error whose fix is `?? fallback`; `.pending`,
   `.error` (`text?`) and `.value` (`T?`) are its own members. `??` takes
-  the inner type of an `Async` or a `T?`.
+  the inner type of an `Async` or a `T?`. *Narrowed (fixer round 4,
+  below): only `.len` and `for` read through.*
 - **2026-10-05 · wave2-check: events and node booleans need an element.**
   A component body has no node of its own, so `when`, `hover`, `self`,
   poses and element events (`on click`) directly in it are errors pointing
@@ -865,7 +866,8 @@ see wave2-core; the compiler supplies the field schema.)
 - **2026-10-05 · wave2-check: the raw-colour lint covers prop values
   only:** props, `when` and pose blocks and component arguments. Settings
   defaults, `let`s, token values and `set { }` right-hand sides are exempt
-  (they are where colours are meant to live).
+  (they are where colours are meant to live). *Narrowed (fixer round 4,
+  below): a `let` that holds a colour is linted too.*
 - **2026-10-05 · wave2-check: `persist`.** It stores plain data (numbers,
   text, colours, enums, records, lists), so a function or `Async` state is
   an error. `let x = … persist` and `state x persist = …` are parse errors
@@ -1073,6 +1075,65 @@ see wave2-core; the compiler supplies the field schema.)
   a parameter declared again in its body, and a file's `state` named
   like a global. A component `let` or a `for` binding that hides a
   file-level `state` is ordinary lexical scoping and is accepted.
+
+- **2026-10-05 · wave2-check (round 4): `Async` lists read through
+  `.len` and `for` only.** design.md's launcher reads `hits.len` and
+  loops `for h in hits`; those see the last result (empty before the
+  first). The list transforms `filter`, `map`, `sort_by`, `take`, `skip`
+  and `reverse` on an `Async<[T]>` give an `Async<[U]>`, so `.pending`
+  and `.error` survive and a plain list still needs `??`
+  (`hits.take(3) ?? []`); the VM keeps the source's pending and error on
+  the result. Element reads (`.first`, `.last`), other list methods
+  (`join`, `find`, `contains`…) and an `Async` passed to an `any`
+  parameter (`join(", ", hits)`) are `check::async`, since each would
+  forget the loading state.
+- **2026-10-05 · wave2-check (round 4): overloads are chosen by shape.**
+  A call picks its overload before checking any argument: named
+  parameters, a `from` argument, the positional count and the required
+  parameters (`material(seed:)` vs `material(image:)`, `oklch(from …)`
+  vs `oklch(l, c, h)`). Only calls the shape cannot tell apart
+  (`radial(center, 40%)` vs `radial(#000, #fff)`) try overloads in turn,
+  at most two nested levels deep (deeper, the first that fits is taken),
+  so nested overloaded calls check in linear time. A declaration (or
+  token) first read inside an attempt is checked once, and its
+  diagnostics and references are kept whatever the attempt's outcome, so
+  an unknown name there is never lost (`negative/overload_lazy.strand`,
+  `robustness.rs::nested_overloaded_calls_stay_cheap`).
+- **2026-10-05 · wave2-check (round 4): builtin names are not shadowed.**
+  A top-level, component or handler `state`/`let`, or a component or fn
+  parameter, named like a builtin service (`battery`), value (`t`) or
+  function (`pct`, `blur`) is `check::redeclared`: it would hide the
+  builtin without a word, and the mistake would surface far away
+  (`battery.percent` failing on a number). This follows the
+  service-named-file rule. `for` bindings and lambda parameters are
+  exempt: they are short-lived and local to one expression or loop, as
+  round 3 decided for ordinary lexical scoping. A handler `let` declared
+  twice in one block, and a prop set twice in one element (`value: <->
+  v; value: 0.3`), are `check::redeclared` too.
+- **2026-10-05 · wave2-check (round 4): a `let` holding a colour is
+  linted.** `let c = #ff0000` then `bg: c` would bypass the raw-colour
+  lint, so a raw colour in a `let` whose type is a colour or paint (or a
+  list or nullable of them) gets the same `check::raw_color` warning.
+  Settings defaults, token values and `material(seed: …)` arguments stay
+  exempt.
+- **2026-10-05 · wave2-check (round 4): `segmented`'s value is an
+  option.** `options: Look` (an enum) makes `value` a `Look`; a list of
+  `T` makes it a `T`. A `value` of another type is `check::type_mismatch`
+  pointing at the options. The schema keeps `any` for both props (the
+  check is the element's, like `page` names taking `pages.current`'s
+  type); a general "type from a sibling prop" schema feature waits for a
+  second element that needs it.
+- **2026-10-05 · wave2-check (round 4): extensions add, never replace.**
+  `Schema::extend` refuses an element, group, alias, value, palette role
+  or token that already exists, and a function overload whose parameters
+  (names and types) match an existing one, with "declared twice": a
+  service crate cannot silently change a builtin (`element text(int)`).
+- **2026-10-05 · wave2-check (round 4): one error for a kebab name.**
+  `my-bar.open`, with neither `my` nor `bar` known and no spaces around
+  the `-`, is one `check::unknown_name` for `my-bar` (naming the
+  snake_case spelling, or the file to rename) rather than two, and a
+  write to an `id:` node's prop (`vol.opacity = 1`) is one
+  `check::assign_to_prop`.
 
 ## wave2-vm
 

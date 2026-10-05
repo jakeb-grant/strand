@@ -561,6 +561,7 @@ impl<'a> Checker<'a> {
             EntryState::Pending => {}
         }
         self.tokens.entries[e].state = EntryState::Checking;
+        let mark = (self.diags.len(), self.refs.len());
         self.tokens.stack.push(e);
         let entry = self.tokens.entries[e].clone();
         let want = self.schema.tokens.get(&entry.path).map(|t| t.ty.clone());
@@ -575,6 +576,7 @@ impl<'a> Checker<'a> {
         let ty = want.unwrap_or_else(|| h.ty.clone());
         self.tokens.entries[e].hir = Some(h);
         self.tokens.entries[e].state = EntryState::Done(ty.clone());
+        self.keep_from(mark);
         ty
     }
 

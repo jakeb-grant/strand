@@ -60,3 +60,14 @@ check::unknown_name
     ·              ╰── not found
     ╰────
   help: did you mean `toasts.dnd`?
+
+check::unknown_name
+
+  × unknown name `my-bar`
+   ╭─[toasts.strand:3:13]
+ 2 │ // A kebab-case name is one unknown name, not two.
+ 3 │ let kebab = my-bar.open
+   ·             ───┬──
+   ·                ╰── read as `my - bar`
+   ╰────
+  help: names are snake_case: `my_bar`

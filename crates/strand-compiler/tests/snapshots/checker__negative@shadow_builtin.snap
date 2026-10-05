@@ -1,0 +1,98 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::redeclared
+
+  × `battery` is a builtin service
+   ╭─[shadow_builtin.strand:5:5]
+ 4 │ // `battery.percent` into a confusing error far away.
+ 5 │ let battery = 5
+   ·     ───┬───
+   ·        ╰── already taken
+ 6 │ state clock = 0
+   ╰────
+  help: rename the `let`: here it would hide the builtin `battery`
+
+check::redeclared
+
+  × `clock` is a builtin service
+   ╭─[shadow_builtin.strand:6:7]
+ 5 │ let battery = 5
+ 6 │ state clock = 0
+   ·       ──┬──
+   ·         ╰── already taken
+ 7 │ let t = 3
+   ╰────
+  help: rename the `state`: here it would hide the builtin `clock`
+
+check::redeclared
+
+  × `t` is a builtin value
+   ╭─[shadow_builtin.strand:7:5]
+ 6 │ state clock = 0
+ 7 │ let t = 3
+   ·     ┬
+   ·     ╰── already taken
+ 8 │ let pct = 0.5
+   ╰────
+  help: rename the `let`: here it would hide the builtin `t`
+
+check::redeclared
+
+  × `pct` is a builtin function
+   ╭─[shadow_builtin.strand:8:5]
+ 7 │ let t = 3
+ 8 │ let pct = 0.5
+   ·     ─┬─
+   ·      ╰── already taken
+ 9 │ component C(audio: float) {
+   ╰────
+  help: rename the `let`: here it would hide the builtin `pct`
+
+check::redeclared
+
+  × `audio` is a builtin service
+    ╭─[shadow_builtin.strand:9:13]
+  8 │ let pct = 0.5
+  9 │ component C(audio: float) {
+    ·             ──┬──
+    ·               ╰── already taken
+ 10 │   let media = 1
+    ╰────
+  help: rename the parameter: here it would hide the builtin `audio`
+
+check::redeclared
+
+  × `media` is a builtin service
+    ╭─[shadow_builtin.strand:10:7]
+  9 │ component C(audio: float) {
+ 10 │   let media = 1
+    ·       ──┬──
+    ·         ╰── already taken
+ 11 │   box { on click { let wm = 2 } }
+    ╰────
+  help: rename the `let`: here it would hide the builtin `media`
+
+check::redeclared
+
+  × `wm` is a builtin service
+    ╭─[shadow_builtin.strand:11:24]
+ 10 │   let media = 1
+ 11 │   box { on click { let wm = 2 } }
+    ·                        ─┬
+    ·                         ╰── already taken
+ 12 │ }
+    ╰────
+  help: rename the `let`: here it would hide the builtin `wm`
+
+check::redeclared
+
+  × `blur` is a builtin function
+    ╭─[shadow_builtin.strand:13:6]
+ 12 │ }
+ 13 │ fn f(blur: float) -> float { blur }
+    ·      ──┬─
+    ·        ╰── already taken
+    ╰────
+  help: rename the parameter: here it would hide the builtin `blur`

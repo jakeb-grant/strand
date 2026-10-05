@@ -85,10 +85,12 @@ impl<'a> Checker<'a> {
                     ast::StateInit::Value { .. } => DefKind::State,
                 };
                 let pending = self.pending(LazyAst::State(s, reset));
+                self.shadows_builtin(&s.name, "`state`");
                 self.declare_file(&s.name, kind, s.export.is_some(), pending);
             }
             ItemKind::Let(l) => {
                 let pending = self.pending(LazyAst::Let(l, reset));
+                self.shadows_builtin(&l.name, "`let`");
                 self.declare_file(&l.name, DefKind::Let, l.export.is_some(), pending);
             }
             ItemKind::Enum(e) => {
@@ -183,6 +185,52 @@ impl<'a> Checker<'a> {
         )
         .add_secondary(pf, ps, "first declared here")
         .help = Some(help);
+    }
+
+    /// A binding already in the innermost scope, declared again there.
+    pub(super) fn redeclared_binding(&mut self, name: &ast::Ident, prev: Binding) {
+        match prev {
+            Binding::Def(d) => self.redeclared(name, d, "block"),
+            Binding::Local(l) => {
+                let local = &self.locals[l.0 as usize];
+                let (lf, ls) = (local.file, local.span);
+                self.error(
+                    "check::redeclared",
+                    format!("`{}` is declared twice", name.name),
+                    name.span,
+                    "declared again here",
+                )
+                .add_secondary(lf, ls, "first declared here")
+                .help = Some("rename one of them".into());
+            }
+        }
+    }
+
+    /// A `state`, `let`, `fn` or parameter named like a builtin service,
+    /// value or function would hide it in its scope without a word
+    /// (`let battery = 5`, then `battery.percent` fails far from the
+    /// cause): an error asking for another name. `what` names the
+    /// declaration (`let`, `state`, `parameter`).
+    pub(super) fn shadows_builtin(&mut self, name: &ast::Ident, what: &str) {
+        let n = name.name.as_str();
+        let taken = if self.schema.services.contains_key(n) {
+            "a builtin service"
+        } else if self.schema.values.contains_key(n) {
+            "a builtin value"
+        } else if self.schema.functions.contains_key(n) {
+            "a builtin function"
+        } else {
+            return;
+        };
+        self.error(
+            "check::redeclared",
+            format!("`{n}` is {taken}"),
+            name.span,
+            "already taken",
+        )
+        .help = Some(format!(
+            "rename the {what}: here it would hide the builtin `{n}`"
+        ));
     }
 
     pub(super) fn declare_global(
@@ -288,11 +336,17 @@ impl<'a> Checker<'a> {
                 .last()
                 .and_then(|s| s.iter().find(|(n, _)| *n == name.name).map(|(_, b)| *b))
             {
-                if let Binding::Def(prev) = prev {
-                    self.redeclared(name, prev, "block");
-                }
+                self.redeclared_binding(name, prev);
                 continue;
             }
+            self.shadows_builtin(
+                name,
+                if matches!(kind, DefKind::Let) {
+                    "`let`"
+                } else {
+                    "`state`"
+                },
+            );
             let def = Def {
                 name: name.name.clone(),
                 kind,

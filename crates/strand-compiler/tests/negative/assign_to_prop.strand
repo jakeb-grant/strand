@@ -8,3 +8,5 @@ component Bar(level: float) {
     on middle { self.opacity = 0.5 }
   }
 }
+// A prop of an `id:` node is one error, not also "no field".
+component Vol { box { id: vol; on click { vol.opacity = 1 } } }

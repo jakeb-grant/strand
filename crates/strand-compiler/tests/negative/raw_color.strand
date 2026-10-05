@@ -1,9 +1,13 @@
 // expect: check::raw_color
-// A raw hex colour in a prop is a lint; settings defaults, lets and token
-// values are exempt.
+// A raw hex colour in a prop is a lint, and so is one in a `let` that
+// holds a colour (it reaches props the same way); settings defaults,
+// token values and `material(seed: …)` are exempt.
 state prefs from "prefs.toml" { accent: color = #7aa2f7 }
 let seed = material(seed: #7aa2f7)
 tokens base { border: #44475a }
 component C {
   box { bg: #ff0000; color: prefs.accent }
 }
+let warn = #ff0000
+let pick = true ? #00ff00 : $accent
+component D { box { bg: warn } }

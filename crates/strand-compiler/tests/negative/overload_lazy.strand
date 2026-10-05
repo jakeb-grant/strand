@@ -1,0 +1,11 @@
+// expect: check::unknown_name, check::type_mismatch
+// A declaration first read inside an overloaded call's argument keeps its
+// own diagnostics: choosing the overload never drops them.
+let c = oklch(bad, 0.1, 30)
+let bad = nosuchname + 1
+component C { box { bg: oklch(w, 0.1, 30) } }
+let w = batery.percent
+let pal = material(image: lost)
+let lost = undefined_thing
+let c2 = oklch(txt, 0.1, 30)
+let txt = pct("x")

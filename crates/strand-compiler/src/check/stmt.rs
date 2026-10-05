@@ -56,8 +56,12 @@ impl<'a> Checker<'a> {
             {
                 let declared = l.ty.as_ref().map(|t| self.resolve_type(t));
                 let value = match &declared {
-                    Some(t) => self.expect(&l.value, t, &format!("`{}`", l.name.name)),
-                    None => self.expr(&l.value, None),
+                    Some(t) => {
+                        let h = self.let_value(&l.value, Some(t));
+                        self.require(&h, t, &format!("`{}`", l.name.name));
+                        h
+                    }
+                    None => self.let_value(&l.value, None),
                 };
                 if l.export.is_some() {
                     self.error(
@@ -69,6 +73,14 @@ impl<'a> Checker<'a> {
                 }
                 let untyped = declared.is_none();
                 let ty = declared.unwrap_or_else(|| value.ty.clone());
+                if let Some(prev) = self
+                    .scopes
+                    .last()
+                    .and_then(|s| s.iter().find(|(n, _)| *n == l.name.name).map(|(_, b)| *b))
+                {
+                    self.redeclared_binding(&l.name, prev);
+                }
+                self.shadows_builtin(&l.name, "`let`");
                 let local = self.bind_local(&l.name.name, ty, l.name.span, LocalKind::Let);
                 if untyped {
                     // `let t = a; b = t` hands `a` to `b` (see `check`).
@@ -241,6 +253,27 @@ impl<'a> Checker<'a> {
                         .find_record("Node")
                         .is_some_and(|r| self.types.record(r).field(&name.name).is_some());
                     (!node_field).then_some(name.name.as_str())
+                }
+                // `vol.opacity = 1` with `id: vol`: a prop of that node,
+                // one error rather than also "no field `opacity`".
+                ast::ExprKind::Name(b) => {
+                    let is_node = matches!(
+                        self.lookup_scope(&b.name),
+                        Some(super::Binding::Local(l))
+                            if matches!(self.locals[l.0 as usize].kind, LocalKind::NodeId(_))
+                    );
+                    let n = name.name.as_str();
+                    let node_field = self
+                        .types
+                        .find_record("Node")
+                        .is_some_and(|r| self.types.record(r).field(n).is_some());
+                    if is_node
+                        && !node_field
+                        && self.schema.elements.values().any(|e| e.prop(n).is_some())
+                    {
+                        return Some(n.to_string());
+                    }
+                    None
                 }
                 _ => None,
             },

@@ -38,3 +38,14 @@ check::assign_to_prop
  9 │   }
    ╰────
   help: bind the prop to a `state` (`opacity: v`) and assign the state instead
+
+check::assign_to_prop
+
+  × cannot assign `opacity`: props are bindings
+    ╭─[assign_to_prop.strand:12:43]
+ 11 │ // A prop of an `id:` node is one error, not also "no field".
+ 12 │ component Vol { box { id: vol; on click { vol.opacity = 1 } } }
+    ·                                           ─────┬─────
+    ·                                                ╰── a bound prop
+    ╰────
+  help: bind the prop to a `state` (`opacity: v`) and assign the state instead

@@ -35,3 +35,14 @@ check::type_mismatch
  7 │   }
    ╰────
   help: write `6s` or `200ms`
+
+check::type_mismatch
+
+  × `value` is one of the options, so it is `Look`, but this is `Other`
+    ╭─[type_mismatch.strand:13:55]
+ 12 │ state other = Other.x
+ 13 │ component Seg { segmented { options: Look; value: <-> other } }
+    ·                                      ──┬─             ──┬──
+    ·                                        │                ╰── this is `Other`
+    ·                                        ╰── the options are `Look`
+    ╰────

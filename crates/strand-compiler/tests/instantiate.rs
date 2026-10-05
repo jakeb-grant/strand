@@ -2186,7 +2186,7 @@ fn hidden_surfaces_hold_no_services_below_them() {
 #[test]
 fn keyed_chains_update_incrementally() {
     let mut src = String::from(
-        "type Row { id: int; label: text; show: bool }\nexport state min = 0\nstate rows: [Row] key id = [",
+        "type Row { id: int; label: text; show: bool }\nexport state lowest = 0\nstate rows: [Row] key id = [",
     );
     for i in 0..2000 {
         src.push_str(&format!(
@@ -2194,7 +2194,7 @@ fn keyed_chains_update_incrementally() {
             i % 2 == 0
         ));
     }
-    src.push_str("]\nstate next = 5000\nbar B {\n  for r in rows.filter(r => r.show && r.id >= min).take(5) { text r.label }\n  button { on click { rows.push(Row(id: next, label: \"new\", show: true)); next += 1 } }\n  button { on scroll(dy) { rows.update(2, r => Row(id: r.id, label: \"two\", show: true)) } }\n  button { on activate { rows.remove_key(0) } }\n}\n");
+    src.push_str("]\nstate next = 5000\nbar B {\n  for r in rows.filter(r => r.show && r.id >= lowest).take(5) { text r.label }\n  button { on click { rows.push(Row(id: next, label: \"new\", show: true)); next += 1 } }\n  button { on scroll(dy) { rows.update(2, r => Row(id: r.id, label: \"two\", show: true)) } }\n  button { on activate { rows.remove_key(0) } }\n}\n");
     let mut shell = boot(&[("chain.strand", &src)], |rt, host| {
         screens(rt, host, &["DP-1"])
     });
@@ -2223,7 +2223,7 @@ fn keyed_chains_update_incrementally() {
     assert_eq!(shell.scene.texts(), ["two", "r4", "r6", "r8", "r10"]);
     assert_eq!(shell.text_node("two"), r2);
     // A parameter the lambda reads changes: the view is rebuilt.
-    shell.inst.set("chain.min", Value::int(6)).unwrap();
+    shell.inst.set("chain.lowest", Value::int(6)).unwrap();
     shell.flush();
     assert_eq!(shell.scene.texts(), ["r6", "r8", "r10", "r12", "r14"]);
 }

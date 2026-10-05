@@ -5,11 +5,35 @@ expression: rendered
 check::raw_color
 
   ⚠ raw colour in a prop
-   ╭─[raw_color.strand:8:13]
- 7 │ component C {
- 8 │   box { bg: #ff0000; color: prefs.accent }
-   ·             ───┬───
-   ·                ╰── this colour ignores the theme
- 9 │ }
-   ╰────
+    ╭─[raw_color.strand:9:13]
+  8 │ component C {
+  9 │   box { bg: #ff0000; color: prefs.accent }
+    ·             ───┬───
+    ·                ╰── this colour ignores the theme
+ 10 │ }
+    ╰────
+  help: use a token such as `$accent` or `$fg.muted`, so theme swaps reach it
+
+check::raw_color
+
+  ⚠ raw colour in a `let`
+    ╭─[raw_color.strand:11:12]
+ 10 │ }
+ 11 │ let warn = #ff0000
+    ·            ───┬───
+    ·               ╰── this colour ignores the theme
+ 12 │ let pick = true ? #00ff00 : $accent
+    ╰────
+  help: use a token such as `$accent` or `$fg.muted`, so theme swaps reach it
+
+check::raw_color
+
+  ⚠ raw colour in a `let`
+    ╭─[raw_color.strand:12:19]
+ 11 │ let warn = #ff0000
+ 12 │ let pick = true ? #00ff00 : $accent
+    ·                   ───┬───
+    ·                      ╰── this colour ignores the theme
+ 13 │ component D { box { bg: warn } }
+    ╰────
   help: use a token such as `$accent` or `$fg.muted`, so theme swaps reach it

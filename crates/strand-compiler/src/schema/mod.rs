@@ -427,6 +427,31 @@ mod tests {
     }
 
     #[test]
+    fn extensions_add_but_never_replace() {
+        for text in [
+            "element text(int): node { }",
+            "group node { }",
+            "alias AppId = int",
+            "value t: text",
+            "palette { accent }",
+            "tokens { space { 2: length } }",
+            "fn pct(fraction: float) -> text",
+        ] {
+            let mut s = Schema::builtin().clone();
+            let err = s.extend(text).expect_err(text);
+            assert!(err[0].message.contains("declared twice"), "{text}: {err:?}");
+        }
+        // The builtin `text` element is untouched by the refused text.
+        let mut s = Schema::builtin().clone();
+        let _ = s.extend("element text(int): node { }");
+        assert_eq!(s.element("text").unwrap().arg, Some(Ty::TEXT));
+        // An overload with other parameters is still allowed.
+        let mut s = Schema::builtin().clone();
+        s.extend("fn pct(part: int, whole: int) -> text").unwrap();
+        assert_eq!(s.functions["pct"].len(), 2);
+    }
+
+    #[test]
     fn fingerprint_tracks_every_extension() {
         let builtin = Schema::builtin();
         let mut again = Schema::default();

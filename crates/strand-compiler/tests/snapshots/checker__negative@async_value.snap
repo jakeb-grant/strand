@@ -13,3 +13,39 @@ check::async
  7 │ let fine: Palette = art ?? material(seed: $accent)
    ╰────
   help: give a value for while it loads or fails: `… ?? fallback`
+
+check::async
+
+  × `apps.search(…)` may still be loading
+   ╭─[async_value.strand:8:13]
+ 7 │ let fine: Palette = art ?? material(seed: $accent)
+ 8 │ let title = apps.search("x").first
+   ·             ────────┬───────
+   ·                     ╰── this is `Async<[Hit]>`
+ 9 │ // Element reads forget the loading state; list transforms keep it, so a
+   ╰────
+  help: read `.value` (null while loading) or give a fallback: `… ?? fallback`
+
+check::async
+
+  × `top` expects `[Hit]`, but this may still be loading
+    ╭─[async_value.strand:13:18]
+ 12 │ let hits = apps.search(q)
+ 13 │ let top: [Hit] = hits.take(3)
+    ·                  ──────┬─────
+    ·                        ╰── this is `Async<[Hit]>`
+ 14 │ let fine_top: [Hit] = hits.take(3) ?? []
+    ╰────
+  help: give a value for while it loads or fails: `… ?? fallback`
+
+check::async
+
+  × `parts` of `join` cannot take a value that may still be loading
+    ╭─[async_value.strand:15:24]
+ 14 │ let fine_top: [Hit] = hits.take(3) ?? []
+ 15 │ let names = join(", ", apps.search(q))
+    ·                        ───────┬──────
+    ·                               ╰── this is `Async<[Hit]>`
+ 16 │ component Count { text "{hits.len}"; col { for h in hits.filter(h => h.app.name != "") { text h.app.name } } }
+    ╰────
+  help: give a value for while it loads or fails: `… ?? fallback`

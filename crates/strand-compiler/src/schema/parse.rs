@@ -898,6 +898,14 @@ pub(super) fn extend(schema: &mut Schema, text: &str) -> Result<(), Vec<SchemaEr
     // Aliases may refer to each other in order.
     for (item, line) in &items {
         if let RawItem::Alias { name, ty } = item {
+            if schema.aliases.contains_key(name)
+                || schema.types.find_record(name).is_some()
+                || schema.types.find_enum(name).is_some()
+                || schema.opaques.contains_key(name)
+            {
+                errors.push(twice(*line, name));
+                continue;
+            }
             match resolve(schema, ty, *line) {
                 Ok(t) => {
                     schema.aliases.insert(name.clone(), t);
@@ -951,13 +959,29 @@ pub(super) fn extend(schema: &mut Schema, text: &str) -> Result<(), Vec<SchemaEr
                 rec.events = events;
             }
             RawItem::Fn(sig) => match resolve_sig(schema, sig) {
-                Ok(s) => schema
-                    .functions
-                    .entry(sig.name.clone())
-                    .or_default()
-                    .push(s),
+                Ok(s) => {
+                    // An overload must differ in its parameters, or it
+                    // would silently replace (or never be picked over)
+                    // the first.
+                    let same = |a: &FnSig, b: &FnSig| {
+                        a.params.len() == b.params.len()
+                            && a.params
+                                .iter()
+                                .zip(&b.params)
+                                .all(|(p, q)| p.name == q.name && p.ty == q.ty)
+                    };
+                    let list = schema.functions.entry(sig.name.clone()).or_default();
+                    if list.iter().any(|o| same(o, &s)) {
+                        errors.push(twice(line, &sig.name));
+                    } else {
+                        list.push(s);
+                    }
+                }
                 Err(e) => errors.push(e),
             },
+            RawItem::Value { name, .. } if schema.values.contains_key(name) => {
+                errors.push(twice(line, name));
+            }
             RawItem::Value { name, ty } => match resolve(schema, ty, line) {
                 Ok(t) => {
                     schema.values.insert(name.clone(), t);
@@ -981,6 +1005,15 @@ pub(super) fn extend(schema: &mut Schema, text: &str) -> Result<(), Vec<SchemaEr
                 includes,
                 members,
             } => {
+                let taken = if *group {
+                    schema.groups.contains_key(name)
+                } else {
+                    schema.elements.contains_key(name)
+                };
+                if taken {
+                    errors.push(twice(line, name));
+                    continue;
+                }
                 let mut el = ElementSchema {
                     name: name.clone(),
                     arg: None,
@@ -1033,6 +1066,10 @@ pub(super) fn extend(schema: &mut Schema, text: &str) -> Result<(), Vec<SchemaEr
             }
             RawItem::Palette(names) => {
                 for n in names {
+                    if schema.tokens.contains_key(n) {
+                        errors.push(twice(line, n));
+                        continue;
+                    }
                     schema.tokens.insert(
                         n.clone(),
                         TokenSchema {
@@ -1044,6 +1081,10 @@ pub(super) fn extend(schema: &mut Schema, text: &str) -> Result<(), Vec<SchemaEr
             }
             RawItem::Tokens(entries) => {
                 for (path, ty, line) in entries {
+                    if schema.tokens.contains_key(path) {
+                        errors.push(twice(*line, path));
+                        continue;
+                    }
                     match resolve(schema, ty, *line) {
                         Ok(ty) => {
                             schema
@@ -1061,6 +1102,14 @@ pub(super) fn extend(schema: &mut Schema, text: &str) -> Result<(), Vec<SchemaEr
         Ok(())
     } else {
         Err(errors)
+    }
+}
+
+/// `name` is already in the schema (an extension may add, never replace).
+fn twice(line: u32, name: &str) -> SchemaError {
+    SchemaError {
+        line,
+        message: format!("`{name}` is declared twice"),
     }
 }
 

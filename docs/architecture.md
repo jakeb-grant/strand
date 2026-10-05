@@ -496,8 +496,11 @@ Public interfaces other crates and later stages build on:
   language (`schema/builtin.schema`, described in the module docs) and
   parsed once by `Schema::builtin() -> &'static Schema`. Service crates
   contribute their schemas the same way: clone the builtin, call
-  `Schema::extend(text) -> Result<(), Vec<SchemaError { line, message }>>`,
-  and check with `compile_with(&map, &schema)`; the LSP reads the same
+  `Schema::extend(text) -> Result<(), Vec<SchemaError { line, message }>>`
+  (it adds and never replaces: an existing element, group, type, alias,
+  value, palette role or token, or an overload with the same parameters,
+  is a "declared twice" error), and check with `compile_with(&map,
+  &schema)`; the LSP reads the same
   table for completion and hover (M3, "service schemas drive type checking
   and LSP hover"). `///` comments in schema text document the entry they
   precede: `Schema::doc(&DocKey) -> Option<&str>` with `DocKey::{Type(name),

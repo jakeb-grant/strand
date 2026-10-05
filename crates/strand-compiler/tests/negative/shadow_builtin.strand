@@ -1,0 +1,13 @@
+// expect: check::redeclared
+// A `state`, `let` or parameter named like a builtin service, value or
+// function would hide it without a word: `let battery = 5` turns
+// `battery.percent` into a confusing error far away.
+let battery = 5
+state clock = 0
+let t = 3
+let pct = 0.5
+component C(audio: float) {
+  let media = 1
+  box { on click { let wm = 2 } }
+}
+fn f(blur: float) -> float { blur }

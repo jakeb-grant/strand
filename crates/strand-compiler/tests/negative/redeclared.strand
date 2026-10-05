@@ -8,3 +8,9 @@ enum Kind { a, b }
 component Dot { box { size: 6 } }
 state x = 1
 state x = 2
+// A handler `let` twice in one block, and a prop set twice in one element.
+component Twice {
+  slider { value: 0.5; value: 0.3
+    on click { let x = 4; let y = x; let x = 5 }
+  }
+}

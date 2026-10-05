@@ -543,10 +543,25 @@ pub(crate) fn method(
         Value::Text(t) => text_method(t, name, &args),
         Value::Num(n, u) => num_method(*n, *u, name, &args),
         Value::List(items) => list_method(vm, rt, items, name, args),
-        Value::Async(a) => match &a.value {
-            Some(Value::List(items)) => list_method(vm, rt, items, name, args),
-            _ => list_method(vm, rt, &[], name, args),
-        },
+        Value::Async(a) => {
+            let out = match &a.value {
+                Some(Value::List(items)) => list_method(vm, rt, items, name, args)?,
+                _ => list_method(vm, rt, &[], name, args)?,
+            };
+            // A transform of a loading list is still loading (the
+            // checker types it `Async<[U]>`): `.pending` and `.error`
+            // carry over, so `?? fallback` still covers them.
+            Ok(if matches!(out, Value::List(_)) {
+                Value::Async(Rc::new(AsyncValue {
+                    value: a.value.as_ref().map(|_| out),
+                    pending: a.pending,
+                    error: a.error.clone(),
+                    op: None,
+                }))
+            } else {
+                out
+            })
+        }
         Value::Record(r) => {
             let def = vm.types().record(r.ty);
             if def.name == "Date" {

@@ -136,6 +136,9 @@ impl<'a> Checker<'a> {
 
     #[inline(never)]
     fn color(&mut self, c: &ast::Color, span: Span) -> hir::Expr {
+        if !self.ctx.prop && self.ctx.let_value {
+            self.let_colours.push(span);
+        }
         if self.ctx.prop {
             self.warning(
                 "check::raw_color",
@@ -238,7 +241,10 @@ impl<'a> Checker<'a> {
 
     /// Reports `h` not fitting `ty`; true if it fits.
     pub fn require(&mut self, h: &hir::Expr, ty: &Ty, what: &str) -> bool {
-        if self.types.assignable(&h.ty, ty) {
+        // `any` takes anything but a loading value (`join(",", hits)`):
+        // the loading state would be forgotten.
+        let async_to_any = matches!(h.ty, Ty::Async(_)) && matches!(ty.non_null(), Ty::Any);
+        if self.types.assignable(&h.ty, ty) && !async_to_any {
             return true;
         }
         let found = self.show(&h.ty);
@@ -253,10 +259,15 @@ impl<'a> Checker<'a> {
                 )
                 .help = Some("give a fallback: `… ?? default`".into());
             }
-            Ty::Async(inner) if self.types.assignable(inner, ty) => {
+            Ty::Async(inner) if async_to_any || self.types.assignable(inner, ty) => {
+                let message = if async_to_any {
+                    format!("{what} cannot take a value that may still be loading")
+                } else {
+                    format!("{what} expects `{want}`, but this may still be loading")
+                };
                 self.error(
                     "check::async",
-                    format!("{what} expects `{want}`, but this may still be loading"),
+                    message,
                     h.span,
                     format!("this is `{found}`"),
                 )
@@ -820,6 +831,34 @@ impl<'a> Checker<'a> {
             Some("read `.value` (null while loading) or give a fallback: `… ?? fallback`".into());
     }
 
+    /// Checks a `let`'s value. A raw colour in it that the `let` hands on
+    /// as a colour (`let c = #ff0000`, then `bg: c`) bypasses the theme
+    /// as a prop's would, so it gets the same lint; one inside
+    /// `material(seed: …)` does not.
+    pub(crate) fn let_value(&mut self, value: &'a ast::Expr, expected: Option<&Ty>) -> hir::Expr {
+        let mark = self.let_colours.len();
+        let saved = self.ctx.let_value;
+        self.ctx.let_value = true;
+        let h = self.expr(value, expected);
+        self.ctx.let_value = saved;
+        let found = self.let_colours.split_off(mark.min(self.let_colours.len()));
+        let ty = expected.unwrap_or(&h.ty);
+        if colour_like(ty) {
+            for span in found {
+                self.warning(
+                    "check::raw_color",
+                    "raw colour in a `let`",
+                    span,
+                    "this colour ignores the theme",
+                )
+                .help = Some(
+                    "use a token such as `$accent` or `$fg.muted`, so theme swaps reach it".into(),
+                );
+            }
+        }
+        h
+    }
+
     /// `base.name` once `base` is checked.
     fn member(
         &mut self,
@@ -845,7 +884,10 @@ impl<'a> Checker<'a> {
                 "pending" => (Ty::BOOL, false),
                 "error" => (Ty::TEXT.optional(), false),
                 "value" => ((*inner).clone().optional(), false),
-                _ if inner.list_elem().is_some() => {
+                // `hits.len`: how many the last result had (0 before the
+                // first). Element reads (`.first`, `.last`) would forget
+                // the loading state, so they need `?? fallback` first.
+                "len" if inner.list_elem().is_some() => {
                     (self.field_of(&inner, base_ast, name, &base), false)
                 }
                 _ => {
@@ -1061,7 +1103,14 @@ impl<'a> Checker<'a> {
             self.add_ref(id.span, Target::Builtin(name.to_string()));
             let sigs = sigs.clone();
             let reported = sigs.iter().any(|s| s.action) && self.action_check(name, id.span);
+            // `material(seed: #7aa2f7)`: a seed is where a raw colour
+            // belongs.
+            let saved = self.ctx.let_value;
+            if name == "material" {
+                self.ctx.let_value = false;
+            }
             let (overload, args, ret) = self.call_overloads(&sigs, args, name, span);
+            self.ctx.let_value = saved;
             let ret = if reported { Ty::Error } else { ret };
             return hir::Expr {
                 kind: ExprKind::Call {
@@ -1164,6 +1213,17 @@ impl<'a> Checker<'a> {
         true
     }
 
+    /// Picks an overload and checks the arguments against it.
+    ///
+    /// The overload is chosen by the call's shape first (named
+    /// parameters, a `from` argument, how many positional arguments, which
+    /// required parameters are filled), so `material(seed: …)` and
+    /// `material(image: …)` check their arguments once. Only overloads the
+    /// shape cannot tell apart (`radial(center, 40%)` against
+    /// `radial(#000, #fff)`) are tried in turn; a declaration first read
+    /// inside such an attempt keeps its own diagnostics (see
+    /// [`Checker::force`]), and nested attempts are bounded
+    /// ([`MAX_SPECULATION`]), so nested overloaded calls cost linear time.
     pub(crate) fn call_overloads(
         &mut self,
         sigs: &[Arc<FnSig>],
@@ -1172,26 +1232,43 @@ impl<'a> Checker<'a> {
         span: Span,
     ) -> (usize, Vec<CallArg>, Ty) {
         let what = format!("`{name}`");
-        if sigs.len() == 1 {
-            let (a, r) = self.call_args(&sigs[0], args, &what, span);
-            return (0, a, r);
+        let fits: Vec<usize> = (0..sigs.len())
+            .filter(|&i| shape_fits(&sigs[i], args))
+            .collect();
+        // No overload fits the shape: the one with fewest errors explains
+        // the mistake best.
+        let tried: Vec<usize> = if fits.is_empty() {
+            (0..sigs.len()).collect()
+        } else {
+            fits
+        };
+        if tried.len() == 1 || self.speculating >= MAX_SPECULATION {
+            let i = tried[0];
+            let (a, r) = self.call_args(&sigs[i], args, &what, span);
+            return (i, a, r);
         }
         let mut best: Option<(usize, usize)> = None;
-        for (i, sig) in sigs.iter().enumerate() {
+        for &i in &tried {
             let mark = (self.diags.len(), self.refs.len());
-            let (a, r) = self.call_args(sig, args, &what, span);
+            let reported = self.reported.clone();
+            self.speculating += 1;
+            let (a, r) = self.call_args(&sigs[i], args, &what, span);
+            self.speculating -= 1;
             let errors = self.diags[mark.0..].iter().filter(|d| d.is_error()).count();
             if errors == 0 {
+                self.release_kept();
                 return (i, a, r);
             }
             self.diags.truncate(mark.0);
             self.refs.truncate(mark.1);
+            self.reported = reported;
             if best.is_none_or(|(_, e)| errors < e) {
                 best = Some((i, errors));
             }
         }
-        let i = best.map_or(0, |(i, _)| i);
+        let i = best.map_or(tried[0], |(i, _)| i);
         let (a, r) = self.call_args(&sigs[i], args, &what, span);
+        self.release_kept();
         (i, a, r)
     }
 
@@ -1381,7 +1458,35 @@ impl<'a> Checker<'a> {
                 }
                 ((*inner).clone(), optional)
             }
-            Ty::Async(inner) if inner.list_elem().is_some() => ((*inner).clone(), false),
+            // `hits.take(3)`, `hits.filter(…)`: a transform of a loading
+            // list is still loading (`Async<[U]>`, `.pending` kept).
+            Ty::Async(inner)
+                if inner.list_elem().is_some()
+                    && ASYNC_TRANSFORMS.contains(&name.name.as_str()) =>
+            {
+                let list = (*inner).clone();
+                let Ty::List(elem, keyed) = &list else {
+                    return hir::Expr::error(span);
+                };
+                let (args, ret) = self.list_method(&recv, recv_ast, elem, *keyed, name, args, span);
+                let ret = if ret.is_error() {
+                    ret
+                } else {
+                    Ty::Async(Box::new(ret))
+                };
+                return hir::Expr {
+                    kind: ExprKind::Call {
+                        callee: Callee::Method {
+                            receiver: Box::new(recv),
+                            name: name.name.clone(),
+                            overload: 0,
+                        },
+                        args,
+                    },
+                    ty: ret,
+                    span,
+                };
+            }
             Ty::Async(_) => {
                 self.async_use(&recv, recv_ast);
                 for a in args {
@@ -1691,6 +1796,43 @@ impl<'a> Checker<'a> {
     }
 
     /// A bare name nothing declares (a variant waiting for its type).
+    /// `my-bar.open` with neither `my` nor `bar` known: a name written
+    /// in kebab case, read as a subtraction. One error for the whole
+    /// name rather than one per half.
+    fn kebab_name(&mut self, lhs: &ast::Expr, rhs: &ast::Expr, span: Span) -> Option<hir::Expr> {
+        let ast::ExprKind::Name(a) = &lhs.kind else {
+            return None;
+        };
+        let mut root = rhs;
+        while let ast::ExprKind::Field { base, .. } = &root.kind {
+            root = base;
+        }
+        let ast::ExprKind::Name(b) = &root.kind else {
+            return None;
+        };
+        if a.span.end + 1 != b.span.start
+            || !self.is_unbound_name(lhs)
+            || !self.is_unbound_name(root)
+        {
+            return None;
+        }
+        let written = format!("{}-{}", a.name, b.name);
+        let snake = format!("{}_{}", a.name, b.name);
+        let help = if self.file_index.contains_key(&written) {
+            format!("rename `{written}.strand` to `{snake}.strand` and read `{snake}.…`")
+        } else {
+            format!("names are snake_case: `{snake}`")
+        };
+        self.error(
+            "check::unknown_name",
+            format!("unknown name `{written}`"),
+            Span::new(a.span.start, b.span.end),
+            format!("read as `{} - {}`", a.name, b.name),
+        )
+        .help = Some(help);
+        Some(hir::Expr::error(span))
+    }
+
     fn is_unbound_name(&self, e: &ast::Expr) -> bool {
         match &e.kind {
             ast::ExprKind::Name(i) => {
@@ -1730,6 +1872,11 @@ impl<'a> Checker<'a> {
         if op == BinaryOp::Sub
             && let (ast::ExprKind::Token(key), ast::ExprKind::Name(name)) = (&lhs.kind, &rhs.kind)
             && let Some(e) = self.kebab_token(key, name, span)
+        {
+            return e;
+        }
+        if op == BinaryOp::Sub
+            && let Some(e) = self.kebab_name(lhs, rhs, span)
         {
             return e;
         }
@@ -2527,6 +2674,75 @@ const LIST_METHODS: &[&str] = &[
     "move",
     "update",
 ];
+
+/// A colour, paint, or a list or nullable of them.
+fn colour_like(t: &Ty) -> bool {
+    match t {
+        Ty::Prim(Prim::Color | Prim::Paint) => true,
+        Ty::Optional(t) | Ty::List(t, _) => colour_like(t),
+        Ty::Tuple(ts) | Ty::Union(ts) => ts.iter().any(colour_like),
+        _ => false,
+    }
+}
+
+/// List methods that keep an `Async` list loading: they transform the
+/// last result, and the transform is `Async` too.
+const ASYNC_TRANSFORMS: &[&str] = &["filter", "map", "sort_by", "take", "skip", "reverse"];
+
+/// How deep overload attempts nest before the first overload that fits
+/// the call's shape is taken without trying the others.
+pub(crate) const MAX_SPECULATION: u32 = 2;
+
+/// Whether a call's arguments fit an overload's parameters by shape alone:
+/// every named argument names a parameter, a `from` argument is given
+/// exactly when the overload takes one, the positional arguments fit and
+/// every required parameter is filled.
+fn shape_fits(sig: &FnSig, args: &[ast::Arg]) -> bool {
+    let mut filled = vec![false; sig.params.len()];
+    let has_from = sig.params.iter().any(|p| p.name == "from");
+    let mut from = false;
+    let mut positional = 0usize;
+    for a in args {
+        match &a.kind {
+            ArgKind::Named(n) => {
+                match sig
+                    .params
+                    .iter()
+                    .position(|p| p.name == n.name && !p.variadic)
+                {
+                    Some(i) if !filled[i] => filled[i] = true,
+                    _ => return false,
+                }
+            }
+            ArgKind::From(_) => from = true,
+            ArgKind::Positional => positional += 1,
+        }
+    }
+    if from != has_from {
+        return false;
+    }
+    if from && let Some(i) = sig.params.iter().position(|p| p.name == "from") {
+        filled[i] = true;
+    }
+    for (i, p) in sig.params.iter().enumerate() {
+        if positional == 0 {
+            break;
+        }
+        if p.variadic {
+            positional = 0;
+            filled[i] = true;
+        } else if !filled[i] {
+            filled[i] = true;
+            positional -= 1;
+        }
+    }
+    positional == 0
+        && sig
+            .params
+            .iter()
+            .zip(&filled)
+            .all(|(p, f)| *f || p.has_default || p.variadic)
+}
 
 fn accepts_int(t: &Ty) -> bool {
     match t {
