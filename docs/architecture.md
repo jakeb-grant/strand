@@ -8,12 +8,12 @@ file fixes boundaries; each crate is free inside its own boundary.
 | Thread | Crates | Owns | Never does |
 | --- | --- | --- | --- |
 | Main: render + surface | `strand-render`, `strand-surface` | Wayland connection (calloop), springs, token evaluation per frame, layout, damage, paint, presentation | Wait on the logic thread, run handlers, evaluate bytecode |
-| Logic | `strand-core`, `strand-compiler` (VM, reconciler) | Reactive graph, state, handlers, timers, the live program | Touch Wayland or pixels |
+| Logic | `strand-core`, `strand-compiler` (VM, reconciler) | Reactive graph, state, handlers, timers, the live program; the `strand` binary's IPC Unix socket (`strand reload`, `strand watch`, M5's `get \| set \| toggle \| watch \| call`) is a source on this loop | Touch Wayland or pixels |
 | Compiler worker | `strand-compiler` | Parse, check, lower changed modules off-thread | Mutate live state (it hands a compiled `Program` to logic) |
 | Text worker | `strand-text` | parley shaping, swash rasterisation, per-scale glyph atlases | Block render: a painted surface keeps drawing its last layout (or a realigned stand-in from another scale or width) until the new one arrives |
-| Watcher | `strand-watch` | inotify, portal, IPC socket | Parse files (it sends paths and hashes) |
+| Watcher | `strand-watch` | inotify directory watches and polling (one `strand-watch` thread); not the IPC socket (`docs/decisions.md`, wave2-watch) | Parse files (it sends paths and hashes) |
 | Persist IO (one per `PersistStore`) | `strand-core` | Atomic writes of persisted cells, settings-file edits, settings overlays and last-good snapshots; reports each file it is about to change to `PersistStore::on_written` | Run on the logic tick or block logic (failures come back as diagnostics in a later tick) |
-| Services | `strand-services` | tokio current-thread runtime; PipeWire and toplevel get their own threads | Block logic: they send state diffs and events |
+| Services | `strand-services` | tokio current-thread runtime (the portal Settings client `strand_watch::follow` and the compositor IPC adapters run here); PipeWire and toplevel get their own threads | Block logic: they send state diffs and events |
 
 Channels are the only coupling between threads. Logic → render is one
 `SceneDiff` per tick. Render → logic is `InputEvent`s (`strand-scene`) and layout facts
@@ -1146,8 +1146,9 @@ It does not depend on `strand-compiler` or `strand-core`.
   runs the `strand-watch` thread (one thread: a raw inotify fd and a
   control eventfd under `poll(2)`; with no inotify instance, everything
   is polled).
-  `ConfigWatch { root, modules: ModuleSet { files, dirs }, rescan }` is
-  `source::find_files`'s `Discovery` (`files`, `dirs`) plus a
+  `ConfigWatch { root, modules: ModuleSet { files, dirs, errors,
+  too_deep }, rescan }` is `source::find_files`'s `Discovery` (`files`,
+  `dirs`, `errors` with each error as text, `too_deep`) plus a
   `FnMut() -> io::Result<ModuleSet>` the binary implements with
   `find_files`; the watcher calls it when a `.strand` name, a directory
   or a directory link appears or vanishes in a config directory, a
@@ -1163,21 +1164,54 @@ It does not depend on `strand-compiler` or `strand-core`.
   each item `(path, role)` or `(path, role, hash)` with `hash` the
   `hash_bytes` of what the loader read, for every `(path,
   Role::{Shader, Settings, Wallpaper, Other})` the program references;
-  it replaces all registrations, and a file that no longer holds the
-  bytes its `hash` names (saved between the read and the call) is
-  reported. `watch_file(path, role)` / `unwatch_file(path, role)` add or
-  drop one (counted per path and role); `watch_file` is register, then
-  read. Module-set membership is separate, so a
+  it replaces the loader's previous set (and only that), and a file that
+  no longer holds the bytes its `hash` names (saved between the read
+  and the call) is reported. `watch_file(path, role)` /
+  `unwatch_file(path, role)` add or drop one ad-hoc registration
+  (counted per path and role) for owners whose paths the compiler does
+  not collect (the wallpaper owner: `prefs.wallpaper` is a runtime
+  value); `set_referenced` never replaces them. `watch_file` is
+  register, then read; `watch_file_loaded(path, role, hash)` is read,
+  then register. Module-set membership is separate, so a
   module file registered for another role stays a module. Neither a
   referenced file nor its directory need exist yet. Cache sources come
   through `watch_tree(dir, depth, CacheKind::{Apps, Icons, Fonts})`.
+  **Blocking:** `watch_file`, `set_referenced` and `watch_tree` wait for
+  the watcher thread (watches synced; a new path given without a hash
+  is read before they return, one given with a hash is compared later
+  on the watcher thread); call them from the loader, the compile worker,
+  boot or a service thread, never from logic. `watch_file_loaded`,
+  `unwatch_file`, `register_own_write` and `rescan` return at once and
+  are safe on the logic thread.
   `register_own_write(path, hash_bytes(&bytes))` before Strand writes a
   file (settings write-back) makes the matching write silent; the
-  registration is in place when it returns. Own writes must be atomic
-  (temporary file renamed over the path): an in-place write can be read
-  half done. Every ancestor of a watched directory holds a light watch
-  (moves and deletions of its children only), so moving any directory
-  on the way reports the files below as `Removed`.
+  registration is in place when it returns, and it silences the write
+  under every registered path that resolves to that file. Own writes
+  should be atomic (temporary file renamed over the path). A file with a
+  write in progress (`MODIFY` seen in a config directory, or a new file
+  created and not yet closed, and no `CLOSE_WRITE` yet) is never read;
+  after 5 s (`Options::stalled_write`) with no further event and no
+  change to its modification time it is read anyway with
+  `Notice::StalledWrite(path)`, and read again when it is closed. A file
+  a write may have reached while it was being read (its stamp moved, a
+  `MODIFY`, creation or removal for it queued by then, outside the config
+  directories also a `CLOSE_WRITE`, or modified less than 15 ms before
+  the read ended) is left out of the batch with its baseline unchanged
+  and read at a later quiet period. A file put off like this is still
+  read within 500 ms of the event that made it due, however often it is
+  rewritten: from then on a recent modification time alone does not put
+  it off. In config directories, where every write makes a `MODIFY`, no
+  batch carries a torn read. Outside them writes make no event before
+  the close, so an in-place writer that pauses for more than 15 ms
+  mid-write can be read torn; its `CLOSE_WRITE` then reports the whole
+  file in the next batch. Only config directories are watched with
+  `MODIFY`; every other content directory (referenced files, symlink
+  hops, cache trees) hears completed writes and names only, so writers
+  there cost one wakeup per file closed. The config root's parent and
+  the stand-in for a missing directory are watched for names only, and
+  every ancestor of a watched directory holds a light watch (moves and
+  deletions of its children only), so moving any directory on the way
+  reports the files below as `Removed`.
   `rescan()` is `strand reload`.
 - **`FileBatch { changes, rescan, notices, first_event, last_event }`.**
   One batch per quiet period: 15 ms after the last completed write
@@ -1195,9 +1229,14 @@ It does not depend on `strand-compiler` or `strand-core`.
   hashed; anything else (a FIFO, a device) has `error:
   Some(InvalidInput)`. Cache-tree entries are not hashed. `rescan` is
   `Some(Overflow | Requested)` for a full rescan; `notices` reports
-  polled directories and rescan-callback failures. `first_event` and
-  `last_event` (`Instant`) let latency measurements subtract the quiet
-  period.
+  polled directories, rescan-callback failures, backend errors, stalled
+  writes, and `Notice::ModuleSet { errors, too_deep }` when a rescan's
+  diagnostics differ from the previous scan's (complete lists, so the
+  overlay replaces what it shows). `first_event` and
+  `last_event` (`Instant`) are the earliest and latest events behind the
+  batch (for a file put off from an earlier batch, the events that made
+  it due, not the flush that put it off); latency measurements use
+  `sent − last_event` as the watcher's share of save-to-pixels.
 - **System settings.** `strand_watch::follow(&zbus::Connection,
   EventSink)` is the async portal client; `strand-services` runs it on
   the shared tokio current-thread runtime and session connection.

@@ -98,6 +98,19 @@ pub enum Notice {
     RescanFailed(String),
     /// Reading the inotify queue (or waiting on it) failed.
     Backend(String),
+    /// This watched file was being written (`MODIFY` seen) and its writer
+    /// neither wrote again nor closed it for `Options::stalled_write`
+    /// (5 s), so it was read anyway; the content may be incomplete.
+    StalledWrite(PathBuf),
+    /// A module-set rescan found paths it could not read (`errors`: a
+    /// dangling `*.strand` link, an unreadable directory) or directories
+    /// too deep to load that hold `.strand` files (`too_deep`), and these
+    /// differ from the previous scan's. Both lists are complete (empty
+    /// once every problem is gone), so the loader replaces what it shows.
+    ModuleSet {
+        errors: Vec<(PathBuf, String)>,
+        too_deep: Vec<PathBuf>,
+    },
 }
 
 /// Why a directory is polled.
@@ -122,10 +135,12 @@ pub struct FileBatch {
     pub rescan: Option<RescanReason>,
     /// Polling fallbacks, rescan failures and backend errors.
     pub notices: Vec<Notice>,
-    /// When the first event of this quiet period arrived.
+    /// When the first event behind this batch arrived. For a file whose
+    /// read was put off from an earlier batch (it may have been torn),
+    /// the event that made it due, not the flush that put it off.
     pub first_event: Instant,
-    /// When the last event that kept the period open arrived; the batch is
-    /// cut a quiet period (15 ms, or the removal grace) after it. Sent
+    /// When the last event behind this batch arrived; normally the batch
+    /// is cut a quiet period (15 ms, or the removal grace) after it. Sent
     /// minus `last_event` is the watcher's share of save-to-pixels.
     pub last_event: Instant,
 }

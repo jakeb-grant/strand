@@ -1,6 +1,6 @@
 [package]
 name = "strand-watch"
-description = "Change sources: inotify directory watches, portal, outputs, compositor events, IPC"
+description = "Change sources: inotify directory watches, polling, portal Settings, compositor-event slot"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

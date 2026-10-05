@@ -1,7 +1,8 @@
 //! Change sources that become writes into the reactive graph.
 //!
 //! - [`Watcher`]: directory (never file) inotify watches (raw, via rustix),
-//!   acting on `CLOSE_WRITE` and `MOVED_TO` (never `MODIFY`), editor
+//!   acting on `CLOSE_WRITE` and `MOVED_TO` (`MODIFY` only marks a write
+//!   in progress, and that file is not read before it is closed), editor
 //!   scratch names filtered, symlink chains followed (the link's directory
 //!   and the target's directory are both watched; a link swap is an edit),
 //!   network filesystems polled with content comparison, a queue overflow

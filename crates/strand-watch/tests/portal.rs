@@ -30,11 +30,11 @@ impl Drop for Daemon {
 }
 
 /// A private session bus. Skips (returns `None`) when `dbus-daemon` is not
-/// installed, unless `STRAND_REQUIRE_DBUS` or `CI` (set by GitHub Actions)
-/// is set: there the portal tier must run, not pass silently.
+/// installed, unless `STRAND_REQUIRE_DBUS` is set: there the portal tier
+/// must run, not pass silently. (CI setting it, and installing `dbus`, is
+/// an integration change outside this crate; see docs/decisions.md.)
 fn daemon() -> Option<Daemon> {
-    let required =
-        std::env::var_os("STRAND_REQUIRE_DBUS").is_some() || std::env::var_os("CI").is_some();
+    let required = std::env::var_os("STRAND_REQUIRE_DBUS").is_some();
     let dir = tempfile::tempdir().unwrap();
     let spawned = Command::new("dbus-daemon")
         .args(["--session", "--nofork", "--print-address=1"])
@@ -425,4 +425,70 @@ fn an_unreachable_bus_sends_an_empty_boot_batch() {
     )
     .unwrap();
     assert_eq!(next(&rx), (vec![], true));
+}
+
+/// The subscription's match rule names the appearance namespace, so the
+/// bus never routes other namespaces' `SettingChanged` (GNOME's backend
+/// emits one per exposed gsettings key) to the client: they neither wake
+/// it nor produce a batch. An unfiltered stream on the client's own
+/// connection sees every message the bus delivers to it.
+#[test]
+fn other_namespaces_are_dropped_by_the_bus() {
+    use futures_lite::StreamExt;
+    let Some(d) = daemon() else { return };
+    let rt = runtime();
+    let conn = serve(&rt, &d.address, mock(appearance()));
+    let (sink, rx) = channel();
+    let client = rt.block_on(async {
+        zbus::connection::Builder::address(d.address.as_str())
+            .unwrap()
+            .build()
+            .await
+            .unwrap()
+    });
+    let mut delivered = zbus::MessageStream::from(&client);
+    let follower = client.clone();
+    rt.spawn(async move { strand_watch::follow(&follower, sink).await });
+    assert_eq!(next(&rx), (initial(), true));
+
+    for ns in [
+        "org.gnome.desktop.interface",
+        "org.gnome.desktop.wm.preferences",
+    ] {
+        emit(&rt, &conn, ns, "color-scheme", Value::from(1u32));
+    }
+    emit(
+        &rt,
+        &conn,
+        "org.freedesktop.appearance",
+        "contrast",
+        Value::from(1u32),
+    );
+    assert_eq!(
+        next_system(&rx).settings,
+        vec![SystemSetting::Contrast(Contrast::High)]
+    );
+    // Everything the bus routed to the client up to the appearance signal
+    // (which arrived, so the earlier ones were sent before it).
+    let namespaces = rt.block_on(async {
+        let mut seen = Vec::new();
+        loop {
+            let msg = tokio::time::timeout(Duration::from_secs(5), delivered.next())
+                .await
+                .expect("the appearance signal reached the client")
+                .unwrap()
+                .unwrap();
+            let h = msg.header();
+            if h.member().is_some_and(|m| m.as_str() == "SettingChanged") {
+                let (ns, _, _): (String, String, OwnedValue) = msg.body().deserialize().unwrap();
+                let done = ns == "org.freedesktop.appearance";
+                seen.push(ns);
+                if done {
+                    return seen;
+                }
+            }
+        }
+    });
+    assert_eq!(namespaces, vec!["org.freedesktop.appearance".to_string()]);
+    assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
 }

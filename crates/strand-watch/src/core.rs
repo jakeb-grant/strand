@@ -27,8 +27,17 @@ pub struct Options {
     /// delete-and-create save is one `Modified`, not `Removed` + `Created`.
     pub removal_grace: Duration,
     /// A stream of writes that never goes quiet is still cut this long
-    /// after its first event.
+    /// after its first event. A file still open for writing is not read
+    /// at that cut; it waits for its `CLOSE_WRITE` (see `stalled_write`).
+    /// A file whose read was put off (it may have been torn) is read
+    /// within this long of the event that made it due, however often it
+    /// is rewritten.
     pub max_delay: Duration,
+    /// A file with a write in progress (`MODIFY` seen, no `CLOSE_WRITE`
+    /// yet) is never read. If its writer goes this long without another
+    /// write and without closing it, it is read anyway, with
+    /// [`Notice::StalledWrite`].
+    pub stalled_write: Duration,
     /// How often polled directories (network filesystems) are compared.
     /// A watched file in a polled directory is re-hashed only when its
     /// stat stamp (inode, size, times; refreshed by an `open`) changed.
@@ -50,6 +59,7 @@ impl Default for Options {
             coalesce: Duration::from_millis(15),
             removal_grace: Duration::from_millis(50),
             max_delay: Duration::from_millis(500),
+            stalled_write: Duration::from_secs(5),
             poll_interval: Duration::from_secs(1),
             content_sweep: Duration::from_secs(30),
             sweep_max_bytes: 1 << 20,
@@ -65,6 +75,13 @@ pub struct ModuleSet {
     pub files: Vec<PathBuf>,
     /// Canonical directories scanned (`Discovery::dirs`).
     pub dirs: Vec<PathBuf>,
+    /// Paths that could not be read, with the reason (`Discovery::errors`,
+    /// the error as text): a dangling `*.strand` link, an unreadable
+    /// directory.
+    pub errors: Vec<(PathBuf, String)>,
+    /// Directories too deep to load that hold `.strand` files
+    /// (`Discovery::too_deep`).
+    pub too_deep: Vec<PathBuf>,
 }
 
 /// Recomputes the module set (the binary calls `source::find_files`).
@@ -94,30 +111,56 @@ impl std::fmt::Debug for ConfigWatch {
 /// One directory event, already reduced to what Strand acts on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Raw {
-    /// A completed write: `CLOSE_WRITE`, `MOVED_TO`, a symlink or hard link
-    /// created, or a polled entry that changed.
+    /// A completed write: `CLOSE_WRITE` or `MOVED_TO`. Ends any write in
+    /// progress on the path.
     Written(PathBuf),
+    /// A name created complete, with no `CLOSE_WRITE` to come under it: a
+    /// symlink, a hard link, a FIFO, or a file linked in from `O_TMPFILE`.
+    /// A plain file created by a writer that already wrote its first
+    /// bytes looks the same here, but its `MODIFY` follows at once and
+    /// holds it until its `CLOSE_WRITE`.
+    Linked(PathBuf),
     /// `DELETE`, `MOVED_FROM`, a directory deleted, or a watched directory
     /// deleted or moved.
     Gone(PathBuf),
     /// A directory created or moved in.
     Dir(PathBuf),
-    /// `MODIFY` or a plain file created: a write in progress. Never read;
-    /// it only keeps an open batch waiting.
+    /// `MODIFY` or an empty file created: a write in progress. The file is
+    /// not read until its `CLOSE_WRITE` (or `stalled_write`).
     Busy(PathBuf),
+    /// A plain file created with bytes already in it, in a directory
+    /// watched without `MODIFY`: linked in complete from `O_TMPFILE`, or a
+    /// writer that wrote before the creation was read. No `MODIFY` will
+    /// tell them apart, so a watched file is held as if being written
+    /// until its `CLOSE_WRITE` or until it stops changing for
+    /// `stalled_write`. A cache-tree entry is reported at once.
+    Created(PathBuf),
     /// The inotify queue overflowed.
     Overflow,
 }
 
-/// What a directory watch is for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What a directory watch is for. Ordered weakest first: a directory
+/// wanted for several reasons gets the strongest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum WatchKind {
-    /// A directory whose entries matter: every event Strand acts on.
-    Full,
     /// An ancestor of a watched directory, watched only so that its
     /// children being moved or deleted is seen (`mv ~/x ~/w` when only
     /// `~/x/y/z` holds a referenced file). Writes in it queue nothing.
     Ancestor,
+    /// A directory where only names matter: the config root's parent
+    /// (`~/.config`), a directory holding a symlink on the way, or the
+    /// nearest existing ancestor of a missing directory. Names appearing
+    /// and going are seen; writes to files in it queue nothing.
+    Parent,
+    /// A directory whose entries' contents matter but which other
+    /// programs write to (a wallpaper's or settings file's directory, a
+    /// symlink hop such as `~`, a cache tree): completed writes
+    /// (`CLOSE_WRITE`, `MOVED_TO`) and names, no `MODIFY`, so a process
+    /// writing there costs one wakeup per file closed, not per write.
+    Completed,
+    /// A config directory: [`WatchKind::Completed`] plus `MODIFY`, which
+    /// marks a write in progress so a half-written module is never read.
+    Full,
 }
 
 /// Adds and removes inotify directory watches. Watching a directory again
@@ -125,6 +168,12 @@ pub(crate) enum WatchKind {
 pub(crate) trait Backend {
     fn watch(&mut self, dir: &Path, kind: WatchKind) -> Result<(), String>;
     fn unwatch(&mut self, dir: &Path);
+    /// Take every event queued so far without waiting. A flush calls it
+    /// after hashing, to see whether a file was written while it was read.
+    /// A backend with no queue (polling, most tests) has nothing.
+    fn drain(&mut self, _out: &mut Vec<Raw>) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,9 +192,12 @@ struct Entry {
     /// for another role: `Role::Module` is reported `Created` even though
     /// the bytes are known.
     module_new: bool,
-    /// Explicit registrations (`watch_file`, `set_referenced`), counted
-    /// per role.
-    refs: BTreeMap<Role, usize>,
+    /// The loader's registrations (`set_referenced`, which replaces
+    /// them), counted per role.
+    loader: BTreeMap<Role, usize>,
+    /// Ad-hoc registrations (`watch_file` / `unwatch_file`), counted per
+    /// role; `set_referenced` never touches them.
+    explicit: BTreeMap<Role, usize>,
     resolved: Resolved,
     hash: Option<ContentHash>,
     stamp: Option<Stamp>,
@@ -167,7 +219,8 @@ impl Entry {
         Entry {
             module: false,
             module_new: false,
-            refs: BTreeMap::new(),
+            loader: BTreeMap::new(),
+            explicit: BTreeMap::new(),
             reported: resolved.path.clone(),
             resolved,
             hash: None,
@@ -180,18 +233,23 @@ impl Entry {
     /// Record the file's current state as the baseline, reporting nothing.
     fn take_baseline(&mut self, path: &Path) {
         (self.hash, self.stamp, self.error, self.exists) = match read_hash(path) {
-            Ok((h, s)) => (Some(h), Some(s), None, true),
+            Ok(r) => (Some(r.hash), Some(r.stamp), None, true),
             Err(e) if is_missing(&e) => (None, None, None, false),
             Err(e) => (None, current_stamp(path), Some(e.kind()), true),
         };
     }
 
     fn unused(&self) -> bool {
-        !self.module && self.refs.is_empty()
+        !self.module && self.loader.is_empty() && self.explicit.is_empty()
     }
 
     fn roles(&self) -> BTreeSet<Role> {
-        let mut roles: BTreeSet<Role> = self.refs.keys().copied().collect();
+        let mut roles: BTreeSet<Role> = self
+            .loader
+            .keys()
+            .chain(self.explicit.keys())
+            .copied()
+            .collect();
         if self.module {
             roles.insert(Role::Module);
         }
@@ -234,13 +292,22 @@ pub(crate) struct OwnWrites {
 pub(crate) type SharedOwnWrites = Arc<Mutex<OwnWrites>>;
 
 impl OwnWrites {
-    pub(crate) fn register(&mut self, path: &Path, hash: ContentHash, now: Instant) {
+    /// Add a registration. `path` is absolute and `canonical` its resolved
+    /// form, both computed by the caller before taking the lock (resolving
+    /// can be slow on a network filesystem, and the watcher thread takes
+    /// this lock for every file it hashes).
+    pub(crate) fn register(
+        &mut self,
+        path: PathBuf,
+        canonical: PathBuf,
+        hash: ContentHash,
+        now: Instant,
+    ) {
         self.expire(now);
-        let path = paths::absolute(path);
         self.seq += 1;
         self.list.push(OwnWrite {
             seq: self.seq,
-            canonical: paths::resolve(&path).path,
+            canonical,
             path,
             hash,
             at: now,
@@ -358,10 +425,51 @@ struct Pending {
     gone: HashSet<PathBuf>,
     config: bool,
     trees: bool,
+    /// A watched directory went or was replaced, or a missing one on the
+    /// way appeared: the watches must be brought up to date. A batch of
+    /// content edits alone leaves them as they are.
+    structure: bool,
     full: Option<RescanReason>,
     notices: Vec<Notice>,
+    /// When the batch was opened and when its quiet period last started
+    /// over: they decide when it is cut.
     first: Option<Instant>,
     last: Option<Instant>,
+    /// The earliest and latest event behind the batch's changes, reported
+    /// as `first_event` and `last_event`. Unlike `first` and `last`, a
+    /// file put back for a later batch (a read that may be torn) brings
+    /// the times of the events that made it due, not the flush's.
+    events: Option<(Instant, Instant)>,
+}
+
+/// A watched file whose read was put off (it may have been torn, or its
+/// writer was at it): the open batch is cut for it `max_delay` after the
+/// event that first made it due, however often it is written, and from
+/// then on a stable read of it is taken even if its modification time is
+/// recent.
+#[derive(Debug, Clone, Copy)]
+struct Deferred {
+    /// The first event behind it.
+    since: Instant,
+    /// Not before this: one quiet period after the flush that put it off,
+    /// so a file written without pause is not read in a busy loop.
+    retry: Instant,
+}
+
+/// A watched file left unread because a write to it is in progress.
+#[derive(Debug, Clone, Copy)]
+struct Held {
+    /// When that was decided.
+    at: Instant,
+    /// Its modification time then. A writer is stalled only if no event
+    /// came for `stalled_write` *and* the file did not change: in a
+    /// directory watched without `MODIFY` (a download into `~/Pictures`)
+    /// the writes themselves make no event.
+    mtime: Option<std::time::SystemTime>,
+}
+
+fn mtime(path: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -380,8 +488,8 @@ pub(crate) struct Core<B> {
     trees: Vec<Tree>,
     own: SharedOwnWrites,
     watched: BTreeMap<PathBuf, Mode>,
-    /// Watched directories that are only ancestors ([`WatchKind::Ancestor`]).
-    light: HashSet<PathBuf>,
+    /// What each watched directory is watched for.
+    kinds: HashMap<PathBuf, WatchKind>,
     /// Inode of each watched directory when its watch was added.
     watched_ino: HashMap<PathBuf, u64>,
     snaps: HashMap<PathBuf, Snapshot>,
@@ -396,7 +504,19 @@ pub(crate) struct Core<B> {
     /// path below its nearest existing ancestor (which is watched): when it
     /// appears, the watches are brought up to date.
     waiting: HashSet<PathBuf>,
+    /// Paths (as events name them) with a write in progress: `MODIFY` or
+    /// an empty file created, and no `CLOSE_WRITE`, `MOVED_TO` or removal
+    /// since. The time is that of the latest such event.
+    writing: HashMap<PathBuf, Instant>,
+    /// Watched files left unread at a flush because they were being
+    /// written. Re-checked at every flush.
+    held: BTreeMap<PathBuf, Held>,
+    /// Watched files whose read was put off, until one is taken.
+    deferred: HashMap<PathBuf, Deferred>,
     pending: Pending,
+    /// How many times the watches were brought up to date.
+    #[cfg(test)]
+    syncs: usize,
 }
 
 impl<B> std::fmt::Debug for Core<B> {
@@ -424,10 +544,24 @@ fn open_nonblocking(path: &Path) -> io::Result<std::fs::File> {
         .open(path)
 }
 
+/// A regular file's hash and the stamp it had when opened.
+#[derive(Debug, Clone, Copy)]
+struct Hashed {
+    hash: ContentHash,
+    stamp: Stamp,
+    /// False when the file changed while it was read (its stamp, taken
+    /// again from the same descriptor after hashing, differs): the bytes
+    /// may be torn.
+    stable: bool,
+    /// The wall clock right after the read, which the stamp's
+    /// modification time is compared with.
+    read_at: std::time::SystemTime,
+}
+
 /// Hash a regular file, streaming. Anything else (a FIFO, a device, a
 /// directory) is `InvalidInput` and never read: a FIFO would block the
 /// watcher thread and `/dev/zero` never ends.
-fn read_hash(path: &Path) -> io::Result<(ContentHash, Stamp)> {
+fn read_hash(path: &Path) -> io::Result<Hashed> {
     let not_regular = || io::Error::new(io::ErrorKind::InvalidInput, "not a regular file");
     if !std::fs::metadata(path)?.is_file() {
         return Err(not_regular());
@@ -439,7 +573,62 @@ fn read_hash(path: &Path) -> io::Result<(ContentHash, Stamp)> {
     }
     let mut hasher = blake3::Hasher::new();
     hasher.update_reader(&file)?;
-    Ok((hasher.finalize(), Stamp::of(&meta)))
+    // A barrier: on ext4, btrfs and tmpfs `SEEK_DATA` takes the inode's
+    // lock, which a truncation (`O_TRUNC`) holds until its `MODIFY` is
+    // queued. A truncation under way during the read has queued its
+    // event once this returns, for the flush's drain to find. Its result
+    // (ENXIO for an empty file) does not matter.
+    let _ = rustix::fs::seek(&file, rustix::fs::SeekFrom::Data(0));
+    let stamp = Stamp::of(&meta);
+    let stable = file.metadata().is_ok_and(|m| Stamp::of(&m) == stamp);
+    Ok(Hashed {
+        hash: hasher.finalize(),
+        stamp,
+        stable,
+        read_at: std::time::SystemTime::now(),
+    })
+}
+
+/// `now` projected onto the wall clock.
+fn wall_clock(now: Instant) -> std::time::SystemTime {
+    let (real, wall) = (Instant::now(), std::time::SystemTime::now());
+    let projected = if now >= real {
+        wall.checked_add(now - real)
+    } else {
+        wall.checked_sub(real - now)
+    };
+    projected.unwrap_or(wall)
+}
+
+/// How far in the future a local file's modification time may be and
+/// still count as recent: the clock was stepped back a little (NTP)
+/// between the write and the read. Beyond it (or on a polled network
+/// filesystem, whose server clock may run ahead for good) a time in the
+/// future is not recent, or the file would never be read.
+const MTIME_SKEW: Duration = Duration::from_secs(1);
+
+/// Whether `stamp`'s modification time is less than `window` before
+/// `at` (the wall clock right after the read), or at most `skew` after
+/// it.
+fn written_within(
+    stamp: &Stamp,
+    at: std::time::SystemTime,
+    window: Duration,
+    skew: Duration,
+) -> bool {
+    let (secs, nanos) = stamp.mtime;
+    let (Ok(secs), Ok(nanos)) = (u64::try_from(secs), u32::try_from(nanos)) else {
+        return false;
+    };
+    let Some(mtime) =
+        std::time::UNIX_EPOCH.checked_add(Duration::new(secs, nanos.min(999_999_999)))
+    else {
+        return false;
+    };
+    match at.duration_since(mtime) {
+        Ok(age) => age < window,
+        Err(ahead) => ahead.duration() <= skew,
+    }
 }
 
 /// The stamp of what `path` resolves to, without reading it.
@@ -535,7 +724,7 @@ impl<B: Backend> Core<B> {
             trees: Vec::new(),
             own: SharedOwnWrites::default(),
             watched: BTreeMap::new(),
-            light: HashSet::new(),
+            kinds: HashMap::new(),
             watched_ino: HashMap::new(),
             snaps: HashMap::new(),
             by_path: HashMap::new(),
@@ -544,7 +733,12 @@ impl<B: Backend> Core<B> {
             tree_dirs: HashMap::new(),
             tree_hops: HashMap::new(),
             waiting: HashSet::new(),
+            writing: HashMap::new(),
+            held: BTreeMap::new(),
+            deferred: HashMap::new(),
             pending: Pending::default(),
+            #[cfg(test)]
+            syncs: 0,
         };
         if let Some(mut cfg) = config {
             cfg.root = paths::absolute(&cfg.root);
@@ -559,7 +753,7 @@ impl<B: Backend> Core<B> {
             }
             core.config = Some(cfg);
         }
-        let added = core.sync_watches();
+        let added = core.sync_watches(true);
         for (path, e) in core.files.iter_mut() {
             e.take_baseline(path);
         }
@@ -589,18 +783,37 @@ impl<B: Backend> Core<B> {
         }
     }
 
-    /// Take the baseline of entries just created by a registration (their
-    /// directories are watched by now), then compare each with the bytes
-    /// the loader says it read: a mismatch is a save between the read and
-    /// the registration, reported at the next quiet period.
+    /// Settle entries a registration touched (their directories are
+    /// watched by now). A new entry the caller read itself (`loaded`)
+    /// takes that hash as its baseline without being read here: it is
+    /// compared with the file at the next quiet period, on this thread,
+    /// so the caller never waits for a hash. A new entry with no `loaded`
+    /// is read now (watch, then read: the caller reads after this). An
+    /// entry already watched whose baseline differs from `loaded` (a save
+    /// between the caller's read and the registration) is compared again
+    /// at the next quiet period.
     fn settle_new(&mut self, fresh: &[PathBuf], loaded: &[(PathBuf, ContentHash)]) {
+        let given: HashMap<&PathBuf, ContentHash> = loaded.iter().map(|(p, h)| (p, *h)).collect();
+        let mut recheck = false;
         for path in fresh {
-            if let Some(e) = self.files.get_mut(path) {
-                e.take_baseline(path);
+            let Some(e) = self.files.get_mut(path) else {
+                continue;
+            };
+            match given.get(path) {
+                Some(h) => {
+                    e.hash = Some(*h);
+                    e.exists = true;
+                    e.error = None;
+                    self.pending.files.insert(path.clone());
+                    recheck = true;
+                }
+                None => e.take_baseline(path),
             }
         }
-        let mut stale = false;
         for (path, hash) in loaded {
+            if fresh.contains(path) {
+                continue;
+            }
             let Some(e) = self.files.get_mut(path) else {
                 continue;
             };
@@ -611,18 +824,19 @@ impl<B: Backend> Core<B> {
                 e.exists = true;
                 e.error = None;
                 self.pending.files.insert(path.clone());
-                stale = true;
+                recheck = true;
             }
         }
-        if stale {
+        if recheck {
             self.mark(Instant::now());
         }
     }
 
     /// Watch one more file (settings TOML, wallpaper, shader, …) for
-    /// `role`. Registrations are counted per (path, role). The file need
-    /// not exist yet, nor its directory: creation is reported. `loaded` is
-    /// the hash of the bytes the caller already read, if it did.
+    /// `role`: an ad-hoc registration, counted per (path, role), that
+    /// [`Core::set_referenced`] never replaces. The file need not exist
+    /// yet, nor its directory: creation is reported. `loaded` is the hash
+    /// of the bytes the caller already read, if it did.
     pub(crate) fn add_file(&mut self, path: &Path, role: Role, loaded: Option<ContentHash>) {
         let path = paths::absolute(path);
         let fresh = !self.files.contains_key(&path);
@@ -630,8 +844,10 @@ impl<B: Backend> Core<B> {
             .files
             .entry(path.clone())
             .or_insert_with(|| Entry::unread(&path));
-        *e.refs.entry(role).or_default() += 1;
-        self.sync_watches();
+        *e.explicit.entry(role).or_default() += 1;
+        if fresh {
+            self.sync_watches(false);
+        }
         let fresh: Vec<PathBuf> = fresh.then(|| path.clone()).into_iter().collect();
         let loaded: Vec<_> = loaded.map(|h| (path, h)).into_iter().collect();
         self.settle_new(&fresh, &loaded);
@@ -639,29 +855,30 @@ impl<B: Backend> Core<B> {
     }
 
     /// Drop one registration made with [`Core::add_file`]. Module files
-    /// belong to the module set and stay.
+    /// and the loader's registrations stay.
     pub(crate) fn remove_file(&mut self, path: &Path, role: Role) {
         let path = paths::absolute(path);
         let Some(e) = self.files.get_mut(&path) else {
             return;
         };
-        match e.refs.get_mut(&role) {
+        match e.explicit.get_mut(&role) {
             Some(n) if *n > 1 => *n -= 1,
             Some(_) => {
-                e.refs.remove(&role);
+                e.explicit.remove(&role);
             }
             None => return,
         }
         if e.unused() {
             self.files.remove(&path);
             self.pending.files.remove(&path);
+            self.held.remove(&path);
+            self.sync_watches(false);
         }
-        self.sync_watches();
     }
 
-    /// Replace every registration made with [`Core::add_file`] by this
-    /// set (what the compiler collected from the whole program). A pair
-    /// listed twice counts twice.
+    /// Replace the loader's registrations by this set (what the compiler
+    /// collected from the whole program). A pair listed twice counts
+    /// twice. Registrations made with [`Core::add_file`] are kept.
     pub(crate) fn set_referenced(&mut self, refs: Vec<Referenced>) {
         let mut wanted: BTreeMap<PathBuf, BTreeMap<Role, usize>> = BTreeMap::new();
         let mut loaded = Vec::new();
@@ -673,19 +890,20 @@ impl<B: Backend> Core<B> {
             *wanted.entry(path).or_default().entry(r.role).or_default() += 1;
         }
         for (p, e) in self.files.iter_mut() {
-            e.refs = wanted.remove(p).unwrap_or_default();
+            e.loader = wanted.remove(p).unwrap_or_default();
         }
         self.files.retain(|_, e| !e.unused());
         let mut fresh = Vec::new();
         for (p, refs) in wanted {
             let mut e = Entry::unread(&p);
-            e.refs = refs;
+            e.loader = refs;
             self.files.insert(p.clone(), e);
             fresh.push(p);
         }
         let files = &self.files;
         self.pending.files.retain(|p| files.contains_key(p));
-        self.sync_watches();
+        self.held.retain(|p, _| files.contains_key(p));
+        self.sync_watches(false);
         self.settle_new(&fresh, &loaded);
         self.mark_if_notices();
     }
@@ -703,22 +921,20 @@ impl<B: Backend> Core<B> {
             depth,
             kind,
         });
-        let added = self.sync_watches();
+        let added = self.sync_watches(false);
         self.relist(&added, Instant::now());
         self.mark_if_notices();
     }
 
-    /// The next write of `path` whose content hashes to `hash` is Strand's
-    /// own and is not reported.
     /// The backend was replaced (inotify failed): every watch it held is
     /// gone. Add them all again and rescan everything, since events were
     /// lost.
     pub(crate) fn rewatch_all(&mut self, now: Instant) {
         self.watched.clear();
-        self.light.clear();
+        self.kinds.clear();
         self.watched_ino.clear();
         self.snaps.clear();
-        self.sync_watches();
+        self.sync_watches(true);
         self.request_rescan(RescanReason::Overflow, now);
     }
 
@@ -731,20 +947,88 @@ impl<B: Backend> Core<B> {
     }
 
     fn mark(&mut self, now: Instant) {
-        self.pending.first.get_or_insert(now);
-        self.pending.last = Some(now);
+        self.schedule(now);
+        self.add_events(now, now);
     }
 
-    /// When the open batch should be cut, if one is open.
+    /// Open the batch if none is, and start its quiet period over.
+    fn schedule(&mut self, now: Instant) {
+        self.pending.first.get_or_insert(now);
+        self.pending.last = Some(self.pending.last.map_or(now, |l| l.max(now)));
+    }
+
+    fn add_events(&mut self, first: Instant, last: Instant) {
+        let e = self.pending.events.get_or_insert((first, last));
+        *e = (e.0.min(first), e.1.max(last));
+    }
+
+    /// Put the read of `path` off to a later batch: it is due again one
+    /// quiet period from `now`, and (see [`Deferred`]) at the latest
+    /// `max_delay` after `events.0`, the first event behind it. The batch
+    /// reports those events' times.
+    fn defer(&mut self, path: PathBuf, events: (Instant, Instant), now: Instant) {
+        self.note_deferred(&path, events.0, now);
+        self.pending.files.insert(path);
+        self.schedule(now);
+        self.add_events(events.0, events.1);
+    }
+
+    fn note_deferred(&mut self, path: &Path, since: Instant, now: Instant) {
+        let retry = now + self.opts.coalesce;
+        self.deferred
+            .entry(path.to_path_buf())
+            .and_modify(|d| d.retry = retry)
+            .or_insert(Deferred { since, retry });
+    }
+
+    /// When the open batch should be cut, if one is open, or when a file
+    /// held back because it was being written is due to be read anyway.
     pub(crate) fn deadline(&self) -> Option<Instant> {
-        let first = self.pending.first?;
-        let last = self.pending.last?;
-        let quiet = if self.pending.gone.is_empty() {
-            self.opts.coalesce
-        } else {
-            self.opts.removal_grace
+        let batch = match (self.pending.first, self.pending.last) {
+            (Some(first), Some(last)) => {
+                let quiet = if self.pending.gone.is_empty() {
+                    self.opts.coalesce
+                } else {
+                    self.opts.removal_grace
+                };
+                let cut = (last + quiet).min(first + self.opts.max_delay);
+                // A file put off at an earlier flush keeps the bound of
+                // the batch it was first due in.
+                let deferred = self
+                    .deferred
+                    .iter()
+                    .filter(|(f, _)| self.pending.files.contains(*f))
+                    .map(|(_, d)| (d.since + self.opts.max_delay).max(d.retry))
+                    .min();
+                Some(deferred.map_or(cut, |d| cut.min(d)))
+            }
+            _ => None,
         };
-        Some((last + quiet).min(first + self.opts.max_delay))
+        // A held file still being written is due when its writer counts
+        // as stalled. One whose write ended (`CLOSE_WRITE`, `MOVED_TO`,
+        // removal) is back in the open batch and waits for its quiet
+        // period like any other: the coalesce, or the removal grace when
+        // it was deleted. Only one that is neither is due at once.
+        let held = self
+            .held
+            .iter()
+            .filter_map(|(f, h)| match self.busy_since(f) {
+                Some(t) => Some(t + self.opts.stalled_write),
+                None if self.pending.files.contains(f) => None,
+                None => Some(h.at),
+            })
+            .min();
+        match (batch, held) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// When the latest write to the file `f` resolves to was seen, if a
+    /// write to it is in progress.
+    fn busy_since(&self, f: &Path) -> Option<Instant> {
+        let e = self.files.get(f)?;
+        self.writing.get(&e.resolved.path).copied()
     }
 
     pub(crate) fn has_polled_dirs(&self) -> bool {
@@ -759,26 +1043,96 @@ impl<B: Backend> Core<B> {
     pub(crate) fn on_raw(&mut self, raw: Raw, now: Instant) {
         match raw {
             Raw::Overflow => self.request_rescan(RescanReason::Overflow, now),
-            Raw::Written(p) => self.on_path(p, What::Written, now),
-            Raw::Gone(p) => self.on_path(p, What::Gone, now),
-            Raw::Dir(p) => self.on_path(p, What::Dir, now),
-            Raw::Busy(p) => {
-                if self.pending.first.is_some() && self.relevant(&p) {
-                    self.pending.last = Some(now);
+            Raw::Written(p) => {
+                if let Some(ino) = tmpfile_ino(&p) {
+                    self.closed_tmpfile(&p, ino, now);
+                    return;
                 }
+                self.writing.remove(&p);
+                self.on_path(p, What::Written, now);
+            }
+            // Not the end of a write: a writer that created the file and
+            // wrote before the creation was read keeps its write in
+            // progress through the `MODIFY` right behind it.
+            Raw::Linked(p) => self.on_path(p, What::Written, now),
+            Raw::Gone(p) => {
+                self.writing.remove(&p);
+                self.on_path(p, What::Gone, now);
+            }
+            Raw::Dir(p) => self.on_path(p, What::Dir, now),
+            // Bookkeeping only: the batch's quiet period runs from the last
+            // *completed* write, so a writer that keeps its file open (a
+            // status file fed by a script, a font being copied) does not
+            // stretch every batch to `max_delay`. The file itself is held
+            // at the flush while its write is in progress, and held from
+            // now on: if its writer stalls (no further write, no close),
+            // it is due `stalled_write` after the last one even when no
+            // completed write ever opens a batch for it.
+            Raw::Busy(p) => {
+                if self.hashed(&p) {
+                    self.hold_written(&p, now);
+                    self.writing.insert(p, now);
+                }
+            }
+            Raw::Created(p) => {
+                if self.hashed(&p) {
+                    self.writing.insert(p.clone(), now);
+                }
+                self.on_path(p, What::Written, now);
             }
         }
     }
 
-    fn relevant(&self, p: &Path) -> bool {
-        if self.by_path.contains_key(p) {
-            return true;
-        }
-        let Some(parent) = p.parent() else {
-            return false;
+    /// Hold every watched file that resolves to `p` (being written) and is
+    /// not held yet. In a config directory each write makes an event, so
+    /// its modification time is not needed (and not read per write).
+    fn hold_written(&mut self, p: &Path, now: Instant) {
+        let Some(files) = self.by_path.get(p) else {
+            return;
         };
-        (self.config_dirs.contains(parent) && is_module_name(p))
-            || self.tree_dirs.contains_key(parent)
+        for f in files {
+            if self.held.contains_key(f) || !self.files.get(f).is_some_and(|e| e.resolved.path == p)
+            {
+                continue;
+            }
+            let mtime = if self.tracked(f) { None } else { mtime(f) };
+            self.held.insert(f.clone(), Held { at: now, mtime });
+        }
+    }
+
+    /// Whether every write to the file `f` resolves to makes an event
+    /// (`MODIFY`: its directory is a config directory).
+    fn tracked(&self, f: &Path) -> bool {
+        self.files
+            .get(f)
+            .and_then(|e| e.resolved.path.parent())
+            .is_some_and(|d| self.kinds.get(d) == Some(&WatchKind::Full))
+    }
+
+    /// A `CLOSE_WRITE` under `#<ino>`: a file made with `O_TMPFILE` was
+    /// closed, after `linkat` already gave it a name (its creation came
+    /// under that name, with bytes, and it is held as being written). End
+    /// the write of each name in that directory that is this inode.
+    fn closed_tmpfile(&mut self, p: &Path, ino: u64, now: Instant) {
+        let dir = p.parent();
+        let names: Vec<PathBuf> = self
+            .writing
+            .keys()
+            .filter(|w| w.parent() == dir)
+            .filter(|w| std::fs::metadata(w).is_ok_and(|m| m.ino() == ino))
+            .cloned()
+            .collect();
+        for w in names {
+            self.writing.remove(&w);
+            self.on_path(w, What::Written, now);
+        }
+    }
+
+    /// Whether `p` (as an event names it) is a file whose content is
+    /// hashed: a watched file or a module name in a config directory.
+    fn hashed(&self, p: &Path) -> bool {
+        self.by_path.contains_key(p)
+            || (p.parent().is_some_and(|d| self.config_dirs.contains(d)) && is_module_name(p))
     }
 
     fn on_path(&mut self, p: PathBuf, what: What, now: Instant) {
@@ -872,6 +1226,7 @@ impl<B: Backend> Core<B> {
     /// everything below it at the next flush (which re-resolves and
     /// re-watches).
     fn wake_under(&mut self, p: &Path) {
+        self.pending.structure = true;
         for (f, e) in &self.files {
             if e.resolved.path.starts_with(p) || e.resolved.hops.iter().any(|h| h.starts_with(p)) {
                 self.pending.files.insert(f.clone());
@@ -908,7 +1263,7 @@ impl<B: Backend> Core<B> {
         if self.watched.remove(dir) == Some(Mode::Inotify) {
             self.backend.unwatch(dir);
         }
-        self.light.remove(dir);
+        self.kinds.remove(dir);
         self.watched_ino.remove(dir);
         self.snaps.remove(dir);
     }
@@ -985,13 +1340,47 @@ impl<B: Backend> Core<B> {
         }
     }
 
-    /// Cut the open batch: rescan if asked, re-resolve symlinks, re-watch,
-    /// hash what was touched and drop what did not change.
+    /// Handle every event queued in the backend now. Returns the watched
+    /// files a drained event shows a write in progress on, or a removal
+    /// of: a `MODIFY`, a creation, a deletion.
+    fn drain(&mut self, now: Instant) -> HashSet<PathBuf> {
+        let mut raws = Vec::new();
+        // A failed read fails again at the watcher thread's next read,
+        // which handles it (with what it lost); the events read before
+        // the failure are handled here.
+        let _ = self.backend.drain(&mut raws);
+        let mut unsettled = HashSet::new();
+        for raw in raws {
+            if let Raw::Busy(p) | Raw::Created(p) | Raw::Gone(p) = &raw
+                && let Some(files) = self.by_path.get(p)
+            {
+                unsettled.extend(files.iter().cloned());
+            }
+            self.on_raw(raw, now);
+        }
+        unsettled
+    }
+
+    /// Whether the directory the file `f` resolves to is polled (a
+    /// network filesystem: its modification times are the server's).
+    fn polled(&self, f: &Path) -> bool {
+        self.files
+            .get(f)
+            .and_then(|e| e.resolved.path.parent())
+            .is_some_and(|d| self.watched.get(d) == Some(&Mode::Poll))
+    }
+
+    /// Cut the open batch: rescan if asked, re-resolve symlinks, re-watch
+    /// when the structure may have changed, hash what was touched and is
+    /// not being written, and drop what did not change.
     pub(crate) fn flush(&mut self, now: Instant) -> Option<FileBatch> {
         let p = std::mem::take(&mut self.pending);
         let mut changes = Vec::new();
         let mut notices = p.notices;
         let mut touched = p.files;
+        // Files held back at an earlier flush are looked at again.
+        let was_held = std::mem::take(&mut self.held);
+        touched.extend(was_held.keys().cloned());
         if p.full.is_some() || p.config {
             self.rescan_config(&mut touched, &mut changes, &mut notices);
         }
@@ -1009,17 +1398,109 @@ impl<B: Backend> Core<B> {
             }
         }
         // Resolve first, watch the new link targets, then read: a write
-        // that lands after the read is seen by the new watch.
+        // that lands after the read is seen by the new watch. A batch of
+        // content edits (nothing resolves elsewhere, no directory came or
+        // went) leaves the watches alone: its cost does not grow with the
+        // number of watched directories.
+        let mut resync = p.full.is_some() || p.config || p.trees || p.structure;
         for path in &touched {
             if let Some(e) = self.files.get_mut(path) {
-                e.resolved = paths::resolve(path);
+                let resolved = paths::resolve(path);
+                if resolved != e.resolved {
+                    e.resolved = resolved;
+                    resync = true;
+                }
             }
         }
-        let added = self.sync_watches();
+        let added = if resync {
+            self.sync_watches(p.full.is_some())
+        } else {
+            Vec::new()
+        };
         notices.append(&mut self.pending.notices);
+        // An own write matched for one logical path is own for every path
+        // that reaches the same file (a symlink alias, a `..` spelling).
+        let mut own_seen = HashSet::new();
+        let mut reads = Vec::new();
         for path in &touched {
-            self.check(path, &mut changes);
+            let mut stalled = false;
+            if let Some(since) = self.busy_since(path) {
+                let quiet = now.saturating_duration_since(since) >= self.opts.stalled_write;
+                // Changed since it was held: its writer is still at it,
+                // even though no event said so (no `MODIFY` there; in a
+                // config directory every write is an event).
+                let tracked = self.tracked(path);
+                let m = if tracked { None } else { mtime(path) };
+                let changed = !tracked && was_held.get(path).is_some_and(|h| h.mtime != m);
+                if !quiet || changed {
+                    if quiet && let Some(e) = self.files.get(path) {
+                        self.writing.insert(e.resolved.path.clone(), now);
+                    }
+                    if self.files.contains_key(path) {
+                        let since = p.events.map_or(now, |e| e.0);
+                        self.note_deferred(path, since, now);
+                    }
+                    // Never read a file mid-write: wait for its
+                    // `CLOSE_WRITE`.
+                    self.held.insert(path.clone(), Held { at: now, mtime: m });
+                    continue;
+                }
+                if let Some(e) = self.files.get(path) {
+                    self.writing.remove(&e.resolved.path);
+                }
+                stalled = true;
+            }
+            if self.files.contains_key(path) {
+                reads.push((path.clone(), read_hash(path), stalled));
+            }
         }
+        // A write that began after the last drain (an in-place save's
+        // `O_TRUNC`, its first `write`) may have been read half done. Its
+        // `MODIFY` (or `CLOSE_WRITE`, creation, removal) is queued by now:
+        // take the queue, and keep a file out of this batch when there is
+        // evidence its read may be torn. Its baseline stays as it was; it
+        // is held while its write is in progress and read again in a
+        // later batch.
+        let unsettled = if reads.is_empty() {
+            HashSet::new()
+        } else {
+            self.drain(now)
+        };
+        let lost = self.pending.full.is_some();
+        for (path, read, stalled) in reads {
+            let busy = self.busy_since(&path).is_some();
+            let torn = match &read {
+                Ok(r) => self.maybe_torn(&path, r, &unsettled, p.first, now),
+                Err(_) => false,
+            };
+            if lost || torn || busy {
+                let events = p.events.unwrap_or((now, now));
+                if busy {
+                    let tracked = self.tracked(&path);
+                    let m = if tracked { None } else { mtime(&path) };
+                    self.note_deferred(&path, events.0, now);
+                    self.held.insert(path, Held { at: now, mtime: m });
+                } else {
+                    self.defer(path, events, now);
+                }
+                continue;
+            }
+            // A drained `CLOSE_WRITE` or `MOVED_TO` with no sign of a write
+            // under the read: what was read is complete, and the newer
+            // version it announces is read in the next batch (the path is
+            // pending again).
+            self.deferred.remove(&path);
+            if stalled {
+                notices.push(Notice::StalledWrite(path.clone()));
+            }
+            self.check(&path, read, &mut changes, &mut own_seen);
+        }
+        let files = &self.files;
+        self.deferred.retain(|f, _| files.contains_key(f));
+        // Forget writes nobody closed (a lost `CLOSE_WRITE`) once stale.
+        let stalled = self.opts.stalled_write;
+        self.writing
+            .retain(|_, t| now.saturating_duration_since(*t) < stalled);
         // The rescan above listed directories before their new watches
         // existed.
         self.relist(&added, now);
@@ -1050,9 +1531,54 @@ impl<B: Backend> Core<B> {
             changes,
             rescan: p.full,
             notices,
-            first_event: p.first.unwrap_or(now),
-            last_event: p.last.unwrap_or(now),
+            first_event: p.events.map_or(now, |e| e.0),
+            last_event: p.events.map_or(now, |e| e.1),
         })
+    }
+
+    /// Whether the stable or unstable read `r` of `path`, taken in a
+    /// flush at `now` for a batch opened at `opened`, may hold a write
+    /// half done:
+    ///
+    /// - its stamp moved while it was read;
+    /// - a drained event shows a write in progress on it (`MODIFY`, a
+    ///   creation) or its removal;
+    /// - outside the config directories, where writes make no event, a
+    ///   drained `CLOSE_WRITE` names it: it may end a write the read
+    ///   overlapped;
+    /// - it was modified less than a quiet period before the read: a
+    ///   truncation sets the size (and the times) before its `MODIFY` is
+    ///   queued, and an in-place writer outside the config directories
+    ///   makes no event until it closes. That rule is waived once the
+    ///   file has been due for `max_delay` (a file rewritten faster than
+    ///   the quiet period would otherwise never be read): the other
+    ///   checks still apply.
+    fn maybe_torn(
+        &self,
+        path: &Path,
+        r: &Hashed,
+        unsettled: &HashSet<PathBuf>,
+        opened: Option<Instant>,
+        now: Instant,
+    ) -> bool {
+        if !r.stable || unsettled.contains(path) {
+            return true;
+        }
+        if !self.tracked(path) && self.pending.files.contains(path) {
+            return true;
+        }
+        let since = self.deferred.get(path).map(|d| d.since).or(opened);
+        let forced = since.is_some_and(|s| now.saturating_duration_since(s) >= self.opts.max_delay);
+        let skew = if self.polled(path) {
+            Duration::ZERO
+        } else {
+            MTIME_SKEW
+        };
+        // The flush's `now` is taken before anything is read (in a test it
+        // may be a deadline ahead of the clock): the age counts from
+        // whichever is later, it or the end of the read.
+        let at = r.read_at.max(wall_clock(now));
+        !forced && written_within(&r.stamp, at, self.opts.coalesce, skew)
     }
 
     fn rescan_config(
@@ -1073,6 +1599,16 @@ impl<B: Backend> Core<B> {
             }
         };
         cfg.modules.dirs = canonical_dirs(&set.dirs);
+        if set.errors != cfg.modules.errors || set.too_deep != cfg.modules.too_deep {
+            // The loader shows these (a dangling `*.strand` link, an
+            // unreadable directory) next to the changes they explain.
+            notices.push(Notice::ModuleSet {
+                errors: set.errors.clone(),
+                too_deep: set.too_deep.clone(),
+            });
+            cfg.modules.errors = set.errors;
+            cfg.modules.too_deep = set.too_deep;
+        }
         let new: BTreeSet<PathBuf> = set.files.iter().map(|f| paths::absolute(f)).collect();
         for (path, e) in self.files.iter_mut() {
             if !e.module || new.contains(path) {
@@ -1113,7 +1649,8 @@ impl<B: Backend> Core<B> {
                         Entry {
                             module: true,
                             module_new: false,
-                            refs: BTreeMap::new(),
+                            loader: BTreeMap::new(),
+                            explicit: BTreeMap::new(),
                             reported: resolved.path.clone(),
                             resolved,
                             hash: None,
@@ -1131,7 +1668,13 @@ impl<B: Backend> Core<B> {
 
     /// Compare `path` with its last known state and push one change per
     /// role it is watched for.
-    fn check(&mut self, path: &Path, out: &mut Vec<FileChange>) {
+    fn check(
+        &mut self,
+        path: &Path,
+        read: io::Result<Hashed>,
+        out: &mut Vec<FileChange>,
+        own_seen: &mut HashSet<(PathBuf, ContentHash)>,
+    ) {
         let Some(e) = self.files.get(path) else {
             return;
         };
@@ -1140,9 +1683,13 @@ impl<B: Backend> Core<B> {
         let old_error = e.error;
         let canonical = e.resolved.path.clone();
         let moved = e.reported != canonical;
-        let (base, hash, error) = match read_hash(path) {
-            Ok((h, stamp)) => {
-                let own = lock(&self.own).take(path, &canonical, h);
+        let (base, hash, error) = match read {
+            Ok(Hashed { hash: h, stamp, .. }) => {
+                let key = (canonical.clone(), h);
+                let own = own_seen.contains(&key) || lock(&self.own).take(path, &canonical, h);
+                if own {
+                    own_seen.insert(key);
+                }
                 let Some(e) = self.files.get_mut(path) else {
                     return;
                 };
@@ -1259,54 +1806,81 @@ impl<B: Backend> Core<B> {
         }
     }
 
-    fn desired_dirs(&self) -> BTreeSet<PathBuf> {
-        let mut dirs = BTreeSet::new();
+    /// Every directory the state needs, with what it is needed for.
+    fn desired_dirs(&self) -> BTreeMap<PathBuf, WatchKind> {
+        let mut dirs = BTreeMap::new();
+        let mut want = |d: &Path, kind: WatchKind| {
+            let k = dirs.entry(d.to_path_buf()).or_insert(kind);
+            *k = (*k).max(kind);
+        };
         if let Some(cfg) = &self.config {
-            dirs.extend(cfg.modules.dirs.iter().cloned());
+            for d in &cfg.modules.dirs {
+                want(d, WatchKind::Full);
+            }
         }
         if let Some(root) = &self.config_root {
-            dirs.extend(
-                root.hops
-                    .iter()
-                    .filter_map(|h| h.parent())
-                    .map(Path::to_path_buf),
-            );
-            dirs.extend(root.path.parent().map(Path::to_path_buf));
+            // Only names matter there: the root (or a link on its way)
+            // being replaced, moved or deleted.
+            for d in root
+                .hops
+                .iter()
+                .chain([&root.path])
+                .filter_map(|h| h.parent())
+            {
+                want(d, WatchKind::Parent);
+            }
         }
         for e in self.files.values() {
-            dirs.extend(e.resolved.watch_dirs().map(Path::to_path_buf));
+            // Every link's directory for contents too: a save that
+            // replaces the link with a plain file (delete and create) is
+            // written there. No `MODIFY` outside the config directories:
+            // other programs write in `~`, `~/Pictures` or `~/Downloads`.
+            for d in e.resolved.watch_dirs() {
+                want(d, WatchKind::Completed);
+            }
         }
         for t in &self.trees {
-            dirs.insert(t.resolved.path.clone());
-            dirs.extend(t.dirs.iter().cloned());
-            dirs.extend(
-                t.resolved
-                    .hops
-                    .iter()
-                    .filter_map(|h| h.parent())
-                    .map(Path::to_path_buf),
-            );
+            // Cache entries are never read: a completed write is enough.
+            want(&t.resolved.path, WatchKind::Completed);
+            for d in &t.dirs {
+                want(d, WatchKind::Completed);
+            }
+            for d in t.resolved.hops.iter().filter_map(|h| h.parent()) {
+                want(d, WatchKind::Parent);
+            }
         }
         dirs
     }
 
     /// Bring the backend's watches in line with what the state needs. A
     /// wanted directory that does not exist is replaced by its nearest
-    /// existing ancestor, and the first missing path below that ancestor
-    /// is remembered in `waiting`. Every ancestor of a wanted directory is
-    /// watched lightly ([`WatchKind::Ancestor`]), so that one of them being
-    /// moved or deleted is seen even though the descriptors below follow
-    /// the moved inodes and report nothing. A watched directory whose inode
-    /// changed behind our back is watched again, and what lies below it
-    /// re-checked at the next flush. Returns the directories newly watched
-    /// or polled in full.
-    fn sync_watches(&mut self) -> Vec<PathBuf> {
+    /// existing ancestor, watched for names only ([`WatchKind::Parent`]),
+    /// and the first missing path below that ancestor is remembered in
+    /// `waiting`. Every ancestor of a wanted directory is watched lightly
+    /// ([`WatchKind::Ancestor`]), so that one of them being moved or
+    /// deleted is seen even though the descriptors below follow the moved
+    /// inodes and report nothing. With `verify`, every watched directory
+    /// is stat'ed, and one whose inode changed behind our back is watched
+    /// again and what lies below it re-checked at the next flush (a full
+    /// rescan does that); without it, only directories not yet watched
+    /// are looked at. Returns the directories newly watched or polled
+    /// (not ancestors).
+    fn sync_watches(&mut self, verify: bool) -> Vec<PathBuf> {
+        #[cfg(test)]
+        {
+            self.syncs += 1;
+        }
         self.reindex();
         self.waiting.clear();
         let mut desired: BTreeMap<PathBuf, WatchKind> = BTreeMap::new();
-        for d in self.desired_dirs() {
-            if d.is_dir() {
-                desired.insert(d, WatchKind::Full);
+        let mut want = |d: PathBuf, kind: WatchKind| {
+            let k = desired.entry(d).or_insert(kind);
+            *k = (*k).max(kind);
+        };
+        for (d, kind) in self.desired_dirs() {
+            let known = !verify && self.watched.contains_key(&d);
+            if known || d.is_dir() {
+                want(d, kind);
                 continue;
             }
             let mut child = d.as_path();
@@ -1319,12 +1893,12 @@ impl<B: Backend> Core<B> {
                 ancestor = a.parent();
             }
             if let Some(a) = ancestor {
-                desired.insert(a.to_path_buf(), WatchKind::Full);
+                want(a.to_path_buf(), WatchKind::Parent);
                 self.waiting.insert(child.to_path_buf());
             }
         }
-        let full: Vec<PathBuf> = desired.keys().cloned().collect();
-        for d in full {
+        let named: Vec<PathBuf> = desired.keys().cloned().collect();
+        for d in named {
             for a in d.ancestors().skip(1) {
                 desired
                     .entry(a.to_path_buf())
@@ -1333,19 +1907,15 @@ impl<B: Backend> Core<B> {
         }
         let stale: Vec<PathBuf> = self
             .watched
-            .iter()
-            .filter(|(d, _)| match desired.get(*d) {
-                None => true,
-                // Wanted for another reason now: watched again below.
-                Some(k) => (*k == WatchKind::Ancestor) != self.light.contains(*d),
-            })
-            .map(|(d, _)| d.clone())
+            .keys()
+            .filter(|d| desired.get(*d) != self.kinds.get(*d))
+            .cloned()
             .collect();
         for d in stale {
             // Not `forget_watch`: re-adding an inotify watch replaces its
             // mask, and dropping it first would lose events in between.
             self.watched.remove(&d);
-            self.light.remove(&d);
+            self.kinds.remove(&d);
             self.snaps.remove(&d);
             if !desired.contains_key(&d) {
                 self.backend.unwatch(&d);
@@ -1354,6 +1924,9 @@ impl<B: Backend> Core<B> {
         }
         let mut added = Vec::new();
         for (d, kind) in desired {
+            if !verify && self.watched.contains_key(&d) {
+                continue;
+            }
             let Ok(meta) = std::fs::metadata(&d) else {
                 continue;
             };
@@ -1370,7 +1943,7 @@ impl<B: Backend> Core<B> {
             } else if self.watched.contains_key(&d) {
                 continue;
             }
-            // Still known: watched until now for the other kind, and its
+            // Still known: watched until now for another kind, and its
             // inotify watch (if any) is replaced or dropped here.
             let rewatch = self.watched_ino.contains_key(&d);
             if kind == WatchKind::Ancestor {
@@ -1389,7 +1962,7 @@ impl<B: Backend> Core<B> {
                 if rewatch && mode != Mode::Inotify {
                     self.backend.unwatch(&d);
                 }
-                self.light.insert(d.clone());
+                self.kinds.insert(d.clone(), kind);
                 self.watched_ino.insert(d.clone(), meta.ino());
                 self.watched.insert(d, mode);
                 continue;
@@ -1399,7 +1972,7 @@ impl<B: Backend> Core<B> {
                 FsKind::Immutable => (Mode::Skip, None),
                 _ if self.opts.force_polling => poll(PollReason::Forced),
                 FsKind::NoEvents => poll(PollReason::NoEventsFilesystem),
-                FsKind::Local => match self.backend.watch(&d, WatchKind::Full) {
+                FsKind::Local => match self.backend.watch(&d, kind) {
                     Ok(()) => (Mode::Inotify, None),
                     Err(e) => poll(PollReason::WatchFailed(e)),
                 },
@@ -1417,6 +1990,7 @@ impl<B: Backend> Core<B> {
                     reason,
                 });
             }
+            self.kinds.insert(d.clone(), kind);
             self.watched_ino.insert(d.clone(), meta.ino());
             self.watched.insert(d.clone(), mode);
             added.push(d);
@@ -1442,7 +2016,7 @@ impl<B: Backend> Core<B> {
     pub(crate) fn watched_dirs(&self) -> Vec<PathBuf> {
         self.watched
             .keys()
-            .filter(|d| !self.light.contains(*d))
+            .filter(|d| self.kinds.get(*d) != Some(&WatchKind::Ancestor))
             .cloned()
             .collect()
     }
@@ -1450,6 +2024,16 @@ impl<B: Backend> Core<B> {
 
 fn is_module_name(p: &Path) -> bool {
     p.extension().is_some_and(|e| e == "strand")
+}
+
+/// The inode in an `O_TMPFILE`'s name (`#1925585`), which its events
+/// carry until (and after) `linkat` names it.
+fn tmpfile_ino(p: &Path) -> Option<u64> {
+    let digits = p.file_name()?.to_str()?.strip_prefix('#')?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
 }
 
 #[cfg(test)]
@@ -1462,10 +2046,10 @@ mod tests {
     struct Silent(Arc<Mutex<BTreeSet<PathBuf>>>);
 
     impl Backend for Silent {
-        /// Records full watches only (ancestors are bookkeeping).
+        /// Records full and parent watches (ancestors are bookkeeping).
         fn watch(&mut self, dir: &Path, kind: WatchKind) -> Result<(), String> {
             let mut set = self.0.lock().unwrap();
-            if kind == WatchKind::Full {
+            if kind != WatchKind::Ancestor {
                 set.insert(dir.to_path_buf());
             } else {
                 set.remove(dir);
@@ -1501,7 +2085,6 @@ mod tests {
         std::fs::write(root.join("a.strand"), "a").unwrap();
         let mut core = Core::new(Full, Options::default(), Some(config(&root)));
         assert!(core.has_polled_dirs());
-        let t0 = Instant::now();
         let b = core.flush(core.deadline().unwrap()).unwrap();
         assert!(
             b.notices.contains(&Notice::Polling {
@@ -1512,6 +2095,9 @@ mod tests {
         );
         // Same size, same mtime second: only a content comparison sees it.
         std::fs::write(root.join("a.strand"), "b").unwrap();
+        // After the write: the flush is a quiet period later, so the file
+        // is not too fresh to read.
+        let t0 = Instant::now();
         core.poll(t0);
         let b = core.flush(core.deadline().unwrap()).unwrap();
         assert_eq!(b.changes.len(), 1);
@@ -1648,23 +2234,29 @@ mod tests {
         assert!(core.deadline().is_none());
     }
 
+    /// A write in progress (`MODIFY`) opens no batch and never moves an
+    /// open batch's quiet period: it runs from the last *completed*
+    /// write, so a writer that keeps its file open does not stretch every
+    /// batch to `max_delay`. Its file is only due if its writer stalls.
     #[test]
-    fn busy_extends_only_an_open_batch() {
+    fn busy_never_moves_the_quiet_period() {
         let (_tmp, root) = cfg_dir();
         std::fs::write(root.join("a.strand"), "a").unwrap();
-        let mut core = Core::new(Silent::default(), Options::default(), Some(config(&root)));
+        std::fs::write(root.join("b.strand"), "b").unwrap();
+        let opts = Options::default();
+        let mut core = Core::new(Silent::default(), opts.clone(), Some(config(&root)));
         settle(&mut core);
         let t0 = Instant::now();
         core.on_raw(Raw::Busy(root.join("a.strand")), t0);
-        assert!(core.deadline().is_none());
-        core.on_raw(Raw::Written(root.join("a.strand")), t0);
-        let later = t0 + Duration::from_millis(10);
-        core.on_raw(Raw::Busy(root.join("a.strand")), later);
-        assert_eq!(core.deadline(), Some(later + Duration::from_millis(15)));
-        // A never-quiet stream is still cut at max_delay.
-        let much_later = t0 + Duration::from_secs(2);
-        core.on_raw(Raw::Busy(root.join("a.strand")), much_later);
-        assert_eq!(core.deadline(), Some(t0 + Duration::from_millis(500)));
+        assert_eq!(core.deadline(), Some(t0 + opts.stalled_write));
+        core.on_raw(Raw::Written(root.join("b.strand")), t0);
+        for ms in [5, 10, 14] {
+            core.on_raw(
+                Raw::Busy(root.join("a.strand")),
+                t0 + Duration::from_millis(ms),
+            );
+        }
+        assert_eq!(core.deadline(), Some(t0 + Duration::from_millis(15)));
     }
 
     #[test]
@@ -1899,7 +2491,7 @@ mod tests {
             root.clone(),
             PathBuf::from("/"),
         ] {
-            assert!(core.light.contains(&a), "{a:?} {:?}", core.light);
+            assert_eq!(core.kinds.get(&a), Some(&WatchKind::Ancestor), "{a:?}");
         }
         std::fs::rename(root.join("x"), root.join("w")).unwrap();
         // What the light watch on `root` reports.
@@ -1909,7 +2501,7 @@ mod tests {
         assert_eq!(b.changes[0].kind, ChangeKind::Removed);
         // Waited for from `root`, now watched in full.
         assert_eq!(core.watched_dirs(), vec![root.clone()]);
-        assert!(!core.light.contains(&root));
+        assert_eq!(core.kinds.get(&root), Some(&WatchKind::Parent));
 
         std::fs::rename(root.join("w"), root.join("x")).unwrap();
         core.on_raw(Raw::Dir(root.join("x")), Instant::now());
@@ -1917,7 +2509,7 @@ mod tests {
         assert_eq!(b.changes.len(), 1, "{b:#?}");
         assert_eq!(b.changes[0].kind, ChangeKind::Created);
         assert_eq!(core.watched_dirs(), vec![z]);
-        assert!(core.light.contains(&root));
+        assert_eq!(core.kinds.get(&root), Some(&WatchKind::Ancestor));
     }
 
     /// A cache tree is walked before its watches exist: it is walked again
@@ -1931,5 +2523,424 @@ mod tests {
         let d = core.deadline().expect("a second walk is due");
         core.flush(d);
         assert!(core.watched_dirs().contains(&root.join("hicolor")));
+    }
+
+    /// A file with a write in progress is never read: it is held at the
+    /// flush (no batch, no busy loop: the next deadline is the stall
+    /// limit) and read once its `CLOSE_WRITE` arrives.
+    #[test]
+    fn a_file_being_written_is_held_until_closed() {
+        let (_tmp, root) = cfg_dir();
+        let theme = root.join("theme.strand");
+        std::fs::write(&theme, "a").unwrap();
+        let opts = Options::default();
+        let mut core = Core::new(Silent::default(), opts.clone(), Some(config(&root)));
+        settle(&mut core);
+        // Delete and create; the new file has its first half.
+        std::fs::write(&theme, "ha").unwrap();
+        let t0 = Instant::now();
+        core.on_raw(Raw::Gone(theme.clone()), t0);
+        core.on_raw(Raw::Linked(theme.clone()), t0);
+        core.on_raw(Raw::Busy(theme.clone()), t0);
+        let d = core.deadline().unwrap();
+        assert!(core.flush(d).is_none(), "nothing read mid-write");
+        assert_eq!(core.deadline(), Some(t0 + opts.stalled_write));
+        std::fs::write(&theme, "half and the rest").unwrap();
+        let t1 = t0 + Duration::from_millis(300);
+        core.on_raw(Raw::Written(theme.clone()), t1);
+        // Back in the open batch: due after the coalesce, like any write,
+        // so a "save all" finishing right after is in the same batch.
+        assert_eq!(core.deadline(), Some(t1 + opts.coalesce));
+        let b = core.flush(core.deadline().unwrap()).unwrap();
+        assert_eq!(b.changes.len(), 1, "{b:#?}");
+        assert_eq!(b.changes[0].kind, ChangeKind::Modified);
+        assert_eq!(b.changes[0].hash, Some(blake3::hash(b"half and the rest")));
+        assert!(b.notices.is_empty());
+        assert!(core.deadline().is_none());
+    }
+
+    /// A writer that neither writes again nor closes for `stalled_write`
+    /// has its file read anyway, with a notice.
+    #[test]
+    fn a_stalled_writer_is_read_with_a_notice() {
+        let (_tmp, root) = cfg_dir();
+        let osd = root.join("osd.strand");
+        let mut core = Core::new(Silent::default(), Options::default(), Some(config(&root)));
+        settle(&mut core);
+        std::fs::write(&osd, "osd").unwrap();
+        let t0 = Instant::now();
+        core.on_raw(Raw::Busy(osd.clone()), t0);
+        core.on_raw(Raw::Linked(osd.clone()), t0);
+        assert!(core.flush(core.deadline().unwrap()).is_none());
+        let due = core.deadline().unwrap();
+        assert_eq!(due, t0 + Options::default().stalled_write);
+        let b = core.flush(due).unwrap();
+        assert_eq!(b.changes.len(), 1, "{b:#?}");
+        assert_eq!(b.changes[0].kind, ChangeKind::Created);
+        assert_eq!(b.notices, vec![Notice::StalledWrite(osd)]);
+        assert!(core.deadline().is_none());
+    }
+
+    /// A file written in place whose writer keeps it open and stops
+    /// writing (`MODIFY` only, no completed write ever names it) is due
+    /// `stalled_write` after its last write and read with a notice; its
+    /// later `CLOSE_WRITE` reports the rest.
+    #[test]
+    fn a_stalled_in_place_writer_is_read_with_a_notice() {
+        let (_tmp, root) = cfg_dir();
+        let theme = root.join("theme.strand");
+        std::fs::write(&theme, "theme").unwrap();
+        let opts = Options::default();
+        let mut core = Core::new(Silent::default(), opts.clone(), Some(config(&root)));
+        settle(&mut core);
+        std::fs::write(&theme, "ha").unwrap();
+        let t0 = Instant::now();
+        core.on_raw(Raw::Busy(theme.clone()), t0);
+        let t1 = t0 + Duration::from_millis(100);
+        core.on_raw(Raw::Busy(theme.clone()), t1);
+        assert_eq!(core.deadline(), Some(t1 + opts.stalled_write));
+        let b = core.flush(t1 + opts.stalled_write).unwrap();
+        assert_eq!(b.changes.len(), 1, "{b:#?}");
+        assert_eq!(b.changes[0].hash, Some(blake3::hash(b"ha")));
+        assert_eq!(b.notices, vec![Notice::StalledWrite(theme.clone())]);
+        assert!(core.deadline().is_none());
+        std::fs::write(&theme, "half and the rest").unwrap();
+        let t2 = t1 + opts.stalled_write + Duration::from_millis(10);
+        core.on_raw(Raw::Written(theme.clone()), t2);
+        let b = core.flush(core.deadline().unwrap()).unwrap();
+        assert_eq!(b.changes[0].hash, Some(blake3::hash(b"half and the rest")));
+        assert!(b.notices.is_empty());
+    }
+
+    /// A backend that, the first time it is drained, truncates `file` (as
+    /// an in-place save's `O_TRUNC` does, right after the flush's last
+    /// drain) and reports the `MODIFY` that makes.
+    struct WritesDuringRead {
+        file: PathBuf,
+        armed: bool,
+    }
+
+    impl Backend for WritesDuringRead {
+        fn watch(&mut self, _: &Path, _: WatchKind) -> Result<(), String> {
+            Ok(())
+        }
+        fn unwatch(&mut self, _: &Path) {}
+        fn drain(&mut self, out: &mut Vec<Raw>) -> io::Result<()> {
+            if std::mem::take(&mut self.armed) {
+                out.push(Raw::Busy(self.file.clone()));
+            }
+            Ok(())
+        }
+    }
+
+    /// A write that starts while a flush reads the file: its `MODIFY` is
+    /// in the queue when the flush drains it after hashing, so the bytes
+    /// read are not reported (nor kept as the baseline); the file is held
+    /// and reported once, whole, after its `CLOSE_WRITE`.
+    #[test]
+    fn a_write_during_the_read_is_not_reported_until_closed() {
+        let (_tmp, root) = cfg_dir();
+        let theme = root.join("theme.strand");
+        std::fs::write(&theme, "theme").unwrap();
+        let opts = Options::default();
+        let backend = WritesDuringRead {
+            file: theme.clone(),
+            armed: false,
+        };
+        let mut core = Core::new(backend, opts.clone(), Some(config(&root)));
+        settle(&mut core);
+        // A completed save, then (while it is read) the next one begins.
+        std::fs::write(&theme, "").unwrap();
+        let t0 = Instant::now();
+        core.on_raw(Raw::Written(theme.clone()), t0);
+        core.backend().armed = true;
+        let cut = core.deadline().unwrap();
+        assert!(
+            core.flush(cut).is_none(),
+            "the truncated file is not reported"
+        );
+        assert_eq!(core.files[&theme].hash, Some(blake3::hash(b"theme")));
+        assert!(core.held.contains_key(&theme));
+        assert_eq!(core.deadline(), Some(cut + opts.stalled_write));
+        std::fs::write(&theme, "theme 2").unwrap();
+        let t1 = t0 + Duration::from_millis(40);
+        core.on_raw(Raw::Written(theme.clone()), t1);
+        let b = core.flush(core.deadline().unwrap()).unwrap();
+        assert_eq!(b.changes.len(), 1, "{b:#?}");
+        assert_eq!(b.changes[0].hash, Some(blake3::hash(b"theme 2")));
+        assert!(b.notices.is_empty());
+        assert!(core.deadline().is_none());
+    }
+
+    /// Outside the config directories an in-place write makes no event
+    /// until it closes. One that truncates the file after the flush began
+    /// (its `now` taken) but before the file is read is caught by the
+    /// modification time, measured when the read ends: the torn bytes are
+    /// not reported, and the whole file is once it is quiet.
+    #[test]
+    fn a_write_after_the_flush_began_is_not_read_too_fresh() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        let prefs = root.join("prefs.toml");
+        std::fs::write(&prefs, "v = 1\nw = 1\n").unwrap();
+        let mut core = Core::new(Silent::default(), Options::default(), None);
+        core.add_file(&prefs, Role::Settings, None);
+        assert!(!core.tracked(&prefs));
+        std::thread::sleep(Duration::from_millis(30));
+        let t0 = Instant::now();
+        core.on_raw(Raw::Written(prefs.clone()), t0);
+        let now = Instant::now();
+        std::thread::sleep(Duration::from_millis(10));
+        std::fs::write(&prefs, "v = 2\n").unwrap();
+        assert!(core.flush(now).is_none(), "the torn bytes are not reported");
+        assert_eq!(
+            core.files[&prefs].hash,
+            Some(blake3::hash(b"v = 1\nw = 1\n"))
+        );
+        std::fs::write(&prefs, "v = 2\nw = 2\n").unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+        let b = core.flush(core.deadline().unwrap()).unwrap();
+        assert_eq!(b.changes.len(), 1, "{b:#?}");
+        assert_eq!(b.changes[0].hash, Some(blake3::hash(b"v = 2\nw = 2\n")));
+        // The batch reports the event that made the file due, not the
+        // flush that put it off.
+        assert_eq!((b.first_event, b.last_event), (t0, t0));
+    }
+
+    /// A file rewritten faster than the quiet period is always "too
+    /// fresh" to read; it is put off, but not past `max_delay` after the
+    /// event that first made it due: then a stable read is taken whatever
+    /// its modification time, and the batch reports that first event.
+    #[test]
+    fn a_file_rewritten_without_pause_is_read_within_max_delay() {
+        let (_tmp, root) = cfg_dir();
+        let theme = root.join("theme.strand");
+        std::fs::write(&theme, "theme 0").unwrap();
+        let opts = Options::default();
+        let mut core = Core::new(Silent::default(), opts.clone(), Some(config(&root)));
+        settle(&mut core);
+        let t0 = Instant::now();
+        let mut n = 0;
+        let mut first = None;
+        let b = loop {
+            n += 1;
+            std::fs::write(&theme, format!("theme {n}")).unwrap();
+            let t = Instant::now();
+            first.get_or_insert(t);
+            core.on_raw(Raw::Written(theme.clone()), t);
+            let due = core.deadline().unwrap();
+            assert!(
+                due <= (t0 + opts.max_delay).max(t + opts.coalesce),
+                "cut at {:?}",
+                due - t0
+            );
+            if let Some(b) = core.flush(t) {
+                break b;
+            }
+            let since = first.unwrap_or(t0);
+            assert!(t < since + opts.max_delay, "not read by {:?}", t - since);
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert!(t0.elapsed() >= opts.max_delay);
+        assert_eq!(b.changes.len(), 1, "{b:#?}");
+        assert_eq!(
+            b.changes[0].hash,
+            Some(blake3::hash(format!("theme {n}").as_bytes()))
+        );
+        assert_eq!(Some(b.first_event), first);
+        assert!(!core.deferred.contains_key(&theme));
+    }
+
+    /// A rescan that finds a dangling `*.strand` link reports it as a
+    /// notice next to the module's removal, and again (empty) once fixed.
+    #[test]
+    fn module_set_errors_are_forwarded() {
+        let (_tmp, root) = cfg_dir();
+        let bar = root.join("bar.strand");
+        std::fs::write(&bar, "bar").unwrap();
+        let errors = Arc::new(Mutex::new(Vec::new()));
+        let d = root.clone();
+        let e = errors.clone();
+        let cfg = ConfigWatch {
+            root: root.clone(),
+            modules: strand_files(&root),
+            rescan: Box::new(move || {
+                let mut set = strand_files(&d);
+                set.errors = e.lock().unwrap().clone();
+                Ok(set)
+            }),
+        };
+        let mut core = Core::new(Silent::default(), Options::default(), Some(cfg));
+        settle(&mut core);
+        std::fs::remove_file(&bar).unwrap();
+        let why = (bar.clone(), "dangling link".to_string());
+        errors.lock().unwrap().push(why.clone());
+        core.on_raw(Raw::Gone(bar.clone()), Instant::now());
+        let b = core.flush(core.deadline().unwrap()).unwrap();
+        assert_eq!(b.changes.len(), 1, "{b:#?}");
+        assert_eq!(b.changes[0].kind, ChangeKind::Removed);
+        assert_eq!(
+            b.notices,
+            vec![Notice::ModuleSet {
+                errors: vec![why],
+                too_deep: vec![],
+            }]
+        );
+        errors.lock().unwrap().clear();
+        std::fs::write(&bar, "bar").unwrap();
+        core.on_raw(Raw::Written(bar.clone()), Instant::now());
+        let b = core.flush(core.deadline().unwrap()).unwrap();
+        assert_eq!(b.changes[0].kind, ChangeKind::Created);
+        assert_eq!(
+            b.notices,
+            vec![Notice::ModuleSet {
+                errors: vec![],
+                too_deep: vec![],
+            }]
+        );
+    }
+
+    /// A held file deleted (its writer still has it open) and created
+    /// again: the removal brings it back into the batch, which then waits
+    /// for the removal grace, so the re-creation makes one `Modified`.
+    #[test]
+    fn a_held_file_removed_waits_for_the_removal_grace() {
+        let (_tmp, root) = cfg_dir();
+        let theme = root.join("theme.strand");
+        std::fs::write(&theme, "a").unwrap();
+        let opts = Options::default();
+        let mut core = Core::new(Silent::default(), opts.clone(), Some(config(&root)));
+        settle(&mut core);
+        let t0 = Instant::now();
+        std::fs::write(&theme, "ha").unwrap();
+        core.on_raw(Raw::Busy(theme.clone()), t0);
+        core.on_raw(Raw::Written(root.join("bar.strand")), t0);
+        assert!(core.flush(core.deadline().unwrap()).is_none());
+        let t1 = t0 + Duration::from_millis(200);
+        core.on_raw(Raw::Gone(theme.clone()), t1);
+        assert_eq!(core.deadline(), Some(t1 + opts.removal_grace));
+        let t2 = t1 + Duration::from_millis(5);
+        std::fs::write(&theme, "whole").unwrap();
+        core.on_raw(Raw::Written(theme.clone()), t2);
+        assert_eq!(core.deadline(), Some(t2 + opts.coalesce));
+        let b = core.flush(core.deadline().unwrap()).unwrap();
+        assert_eq!(b.changes.len(), 1, "{b:#?}");
+        assert_eq!(b.changes[0].kind, ChangeKind::Modified);
+        assert_eq!(b.changes[0].hash, Some(blake3::hash(b"whole")));
+    }
+
+    /// In a directory watched without `MODIFY`, a new file that already
+    /// has bytes may still be being written: it is held until its
+    /// `CLOSE_WRITE`, and a writer counts as stalled only once the file
+    /// stopped changing (its writes make no event there). A cache-tree
+    /// entry created the same way is reported at once.
+    #[test]
+    fn a_new_file_without_modify_is_held_while_it_changes() {
+        let (_tmp, root) = cfg_dir();
+        let pics = root.with_file_name("pics");
+        let fonts = root.with_file_name("fonts");
+        std::fs::create_dir(&pics).unwrap();
+        std::fs::create_dir(&fonts).unwrap();
+        let wall = pics.join("wall.png");
+        let opts = Options::default();
+        let mut core = Core::new(Silent::default(), opts.clone(), Some(config(&root)));
+        core.add_file(&wall, Role::Wallpaper, None);
+        core.add_tree(&fonts, 1, CacheKind::Fonts);
+        settle(&mut core);
+        assert_eq!(core.kinds.get(&pics), Some(&WatchKind::Completed));
+        assert_eq!(core.kinds.get(&fonts), Some(&WatchKind::Completed));
+        assert_eq!(core.kinds.get(&root), Some(&WatchKind::Full));
+
+        std::fs::write(&wall, "png 1").unwrap();
+        std::fs::write(fonts.join("a.ttf"), "ttf").unwrap();
+        let t0 = Instant::now();
+        core.on_raw(Raw::Created(wall.clone()), t0);
+        core.on_raw(Raw::Created(fonts.join("a.ttf")), t0);
+        let b = core.flush(core.deadline().unwrap()).unwrap();
+        assert_eq!(b.changes.len(), 1, "{b:#?}");
+        assert_eq!(b.changes[0].role, Role::Cache(CacheKind::Fonts));
+        let due = core.deadline().unwrap();
+        assert_eq!(due, t0 + opts.stalled_write);
+        // Still growing at the stall limit: held again.
+        std::thread::sleep(Duration::from_millis(30));
+        std::fs::write(&wall, "png 1 and 2").unwrap();
+        assert!(core.flush(due).is_none());
+        let due = core.deadline().unwrap();
+        assert!(due >= t0 + opts.stalled_write * 2 - Duration::from_millis(50));
+        // Unchanged for the stall limit: read, with a notice.
+        let b = core.flush(due).unwrap();
+        assert_eq!(b.changes.len(), 1, "{b:#?}");
+        assert_eq!(b.changes[0].hash, Some(blake3::hash(b"png 1 and 2")));
+        assert_eq!(b.notices, vec![Notice::StalledWrite(wall.clone())]);
+
+        // The usual case: the writer closes it.
+        std::fs::remove_file(&wall).unwrap();
+        let t3 = Instant::now();
+        core.on_raw(Raw::Gone(wall.clone()), t3);
+        std::fs::write(&wall, "png 3").unwrap();
+        core.on_raw(Raw::Created(wall.clone()), t3);
+        assert!(core.flush(core.deadline().unwrap()).is_none());
+        let t4 = t3 + Duration::from_millis(100);
+        core.on_raw(Raw::Written(wall.clone()), t4);
+        let b = core.flush(core.deadline().unwrap()).unwrap();
+        assert_eq!(b.changes[0].hash, Some(blake3::hash(b"png 3")));
+        assert!(b.notices.is_empty());
+    }
+
+    /// A batch of content edits does not touch the watches, so its cost
+    /// does not grow with the number of watched directories (a large icon
+    /// tree). A directory going does re-sync.
+    #[test]
+    fn content_only_flushes_do_not_resync() {
+        let (_tmp, root) = cfg_dir();
+        std::fs::write(root.join("bar.strand"), "bar").unwrap();
+        let icons = root.with_file_name("icons");
+        for i in 0..200 {
+            std::fs::create_dir_all(icons.join(format!("t{i}/apps"))).unwrap();
+        }
+        let mut core = Core::new(Silent::default(), Options::default(), Some(config(&root)));
+        core.add_tree(&icons, 2, CacheKind::Icons);
+        while let Some(d) = core.deadline() {
+            core.flush(d);
+        }
+        assert_eq!(
+            core.watched_dirs().len(),
+            1 + 1 + 1 + 400,
+            "cfg, its parent, icons, tree"
+        );
+        let before = core.syncs;
+        for i in 0..3 {
+            std::fs::write(root.join("bar.strand"), format!("bar {i}")).unwrap();
+            core.on_raw(Raw::Written(root.join("bar.strand")), Instant::now());
+            let b = core.flush(core.deadline().unwrap()).unwrap();
+            assert_eq!(b.changes.len(), 1);
+            std::fs::write(icons.join("t1/apps/x.png"), "png").unwrap();
+            core.on_raw(Raw::Written(icons.join("t1/apps/x.png")), Instant::now());
+            let b = core.flush(core.deadline().unwrap()).unwrap();
+            assert_eq!(b.changes[0].role, Role::Cache(CacheKind::Icons));
+        }
+        assert_eq!(core.syncs, before, "content edits never re-sync");
+        std::fs::remove_dir(icons.join("t2/apps")).unwrap();
+        core.on_raw(Raw::Gone(icons.join("t2/apps")), Instant::now());
+        core.flush(core.deadline().unwrap());
+        assert!(core.syncs > before);
+        assert!(!core.watched_dirs().contains(&icons.join("t2/apps")));
+    }
+
+    /// The config root's parent (`~/.config`) and a missing directory's
+    /// stand-in are watched for names only, never for writes.
+    #[test]
+    fn the_root_s_parent_is_watched_for_names_only() {
+        let (_tmp, root) = cfg_dir();
+        let mut core = Core::new(Silent::default(), Options::default(), Some(config(&root)));
+        let parent = root.parent().unwrap().to_path_buf();
+        assert_eq!(core.kinds.get(&root), Some(&WatchKind::Full));
+        assert_eq!(core.kinds.get(&parent), Some(&WatchKind::Parent));
+        core.add_file(&parent.join("missing/prefs.toml"), Role::Settings, None);
+        assert_eq!(core.kinds.get(&parent), Some(&WatchKind::Parent));
+        // A file of its own there makes it a content watch (no `MODIFY`:
+        // other apps write in `~/.config`).
+        core.add_file(&parent.join("prefs.toml"), Role::Settings, None);
+        assert_eq!(core.kinds.get(&parent), Some(&WatchKind::Completed));
     }
 }

@@ -2396,8 +2396,9 @@ listener)
   `MOVED_FROM` or delete, every watch whose path starts with it, behind
   the caller's back. `rustix::fs::inotify` (rustix is already a
   dependency) with the mask `CLOSE_WRITE | MOVED_TO | MOVED_FROM |
-  CREATE | DELETE | DELETE_SELF | MOVE_SELF | MODIFY | ONLYDIR |
-  EXCL_UNLINK` queues nothing for reads (`reading_a_watched_file_queues_no_events`).
+  CREATE | DELETE | DELETE_SELF | MOVE_SELF | ONLYDIR | EXCL_UNLINK`
+  (plus `MODIFY` in config directories only; see "`MODIFY` only in config
+  directories") queues nothing for reads (`reading_a_watched_file_queues_no_events`).
   The watcher thread `poll(2)`s the inotify fd and an eventfd that control
   calls write, so there is one thread and no wake-up without work. The
   wd-to-path map lives with core, which decides when watches go.
@@ -2421,9 +2422,14 @@ listener)
   a sub-directory) rescans the module set. Removals (`DELETE`, `MOVED_FROM`, a watched directory
   deleted or moved) mark a path for an existence check: a removal cannot
   be half-written, and a module deleted for good must be reported.
-  `MODIFY` and a plain-file `CREATE` are never read; they only keep an
-  already-open batch waiting, so a slow multi-file save stays one batch.
-  A stream that never goes quiet is cut 500 ms after its first event.
+  `MODIFY` and an empty plain-file `CREATE` mark a write in progress on
+  that path: the file is not read until its `CLOSE_WRITE` or `MOVED_TO`
+  (or its removal), however long the writer pauses. They do not move an
+  open batch's quiet period (revised in review round 5: see "The quiet
+  period runs from completed writes"). A stream of completed writes that
+  never goes quiet is cut 500 ms after its first event; a file still
+  being written at that cut is held, not read (see "Writes in progress
+  are held").
 - **2026-10-05 · Removal grace 50 ms.** When the latest event on a
   watched path was a removal the quiet period is 50 ms instead of 15, so
   delete-and-create and Vim's rename-then-write are one `Modified`, never
@@ -2509,8 +2515,10 @@ listener)
   `accent-color` component outside 0..=1 means unset. Tests use a zbus
   mock portal on a private `dbus-daemon` the test starts itself
   (python3-dbusmock is not installed); they skip when `dbus-daemon` is
-  missing unless `STRAND_REQUIRE_DBUS` or `CI` is set, and CI sets the
-  former and installs `dbus`, so the tier cannot pass silently there. A
+  missing unless `STRAND_REQUIRE_DBUS` is set. Making CI set it (and
+  install `dbus`) is a change to `.github/workflows/ci.yml`, which this
+  track does not own: it is requested from the integrator, and until it
+  lands the tier may skip in CI. A
   `SettingChanged` that arrives while a late or restart re-read is in
   flight wins: the read's value for that key is dropped, since the
   signal is at least as new as the read's answer and sending the read
@@ -2534,8 +2542,9 @@ listener)
   at the flush, re-resolves, re-watches and re-hashes every file below,
   so `mv cfg cfg.bak; mv cfg.new cfg` reports the changed files in
   sub-directories and nothing written in `cfg.bak` is reported under
-  the old names. As a backstop, each flush re-checks the inode of every
-  watched directory and re-watches one that changed. Watch, then list:
+  the old names. As a backstop, a full rescan (overflow, `strand
+  reload`) re-checks the inode of every watched directory and re-watches
+  one that changed. Watch, then list:
   when a flush adds a watch on a config or cache-tree directory, the
   module set (or tree) is listed once more after the next quiet period,
   because the rescan listed that directory before its watch existed and
@@ -2552,9 +2561,10 @@ listener)
   membership is separate from registrations, so registering or
   unregistering a module file never changes its module status. A change
   is reported once per role (`changes` sorted by path, then role).
-  `set_referenced(pairs)` replaces every registration with the set the
-  compiler collected from the whole program, so the loader does not diff
-  path sets itself.
+  `set_referenced(pairs)` replaces the loader's registrations with the
+  set the compiler collected from the whole program, so the loader does
+  not diff path sets itself. It never touches `watch_file`
+  registrations (see "Two registration sets").
 - **2026-10-05 · Only regular files are read.** A watched path is
   `stat`ed, opened with `O_NONBLOCK`, `fstat`ed, and hashed only if it is
   a regular file, streaming (`blake3::Hasher::update_reader`), so a FIFO
@@ -2594,13 +2604,21 @@ listener)
   (`Arc<Mutex<_>>`) instead of queueing a control message, so a flush
   already under way when Strand writes sees the registration. Strand's
   own writes are atomic (temporary file renamed over the path); an
-  in-place write can be read half done and that content is reported.
-- **2026-10-05 · Files linked in complete.** A `CREATE` of a regular
-  file with one link and non-zero length is a completed write: its bytes
-  existed before its name (`O_TMPFILE` + `linkat`, as systemd's
-  `link_tmpfile` does; its `CLOSE_WRITE` is reported under the unnamed
-  `#<ino>`, if at all). An empty new file still waits for `CLOSE_WRITE`;
-  a write still in progress extends the batch with `MODIFY`.
+  in-place write is held until it is closed, but a crash mid-write
+  would leave a half file on disk.
+- **2026-10-05 · Files linked in complete.** In a config directory (the
+  only watches with `MODIFY`, review round 5), a `CREATE` of a regular
+  file with one link and non-zero length is read like a completed write
+  unless a `MODIFY` for it follows: its bytes may have existed before its
+  name (`O_TMPFILE` + `linkat`, as systemd's `link_tmpfile` does; its
+  writes and `CLOSE_WRITE` are reported under the unnamed `#<ino>`, if
+  at all). A plain `open(O_CREAT)` + `write` writer whose creation is
+  read after its first write looks the same at `CREATE`, but the kernel
+  queues its `MODIFY` for the name right behind, which marks the write
+  in progress and holds the file until `CLOSE_WRITE`. An empty new file
+  waits for `CLOSE_WRITE` from the start. In other content directories
+  no `MODIFY` tells the two apart, so such a creation is held like a
+  write in progress (see "`MODIFY` only in config directories").
 - **2026-10-05 · Light ancestor watches.** A watched directory's inotify
   descriptor follows its inode, so moving an unwatched ancestor
   (`mv ~/x ~/w` with only `~/x/y/z` watched) made no event and the file
@@ -2608,7 +2626,8 @@ listener)
   watched in full now holds a light watch (`MOVED_FROM`, `DELETE`,
   `DELETE_SELF`, `MOVE_SELF` only, no writes or creations), so the move
   forgets the watches below, re-resolves and reports `Removed`; the
-  ancestor then becomes the full watch waiting for the path to return.
+  ancestor then becomes the parent watch (names only) waiting for the
+  path to return.
   Writes in `~` or `/` queue nothing; renames and deletions there wake
   the thread for a map lookup and no batch. Ancestor watches are best
   effort and silent: on a network or read-only filesystem, or past the
@@ -2621,3 +2640,280 @@ listener)
   (not `EAGAIN`) leaves the fd readable, so the watcher drops inotify,
   polls every directory (each reported once as `WatchFailed`) and
   rescans everything (`RescanReason::Overflow`: events were lost).
+- **2026-10-05 · Writes in progress are held (review round 4).** The
+  watcher keeps the paths with a write in progress (`MODIFY`, or an
+  empty file created, and no `CLOSE_WRITE`, `MOVED_TO` or removal since).
+  At a flush, a touched file whose resolved path is among them is not
+  read: it is held, and looked at again at every later flush, so a
+  delete-and-create or Vim save whose writer stalls mid-write (past the
+  50 ms removal grace, past the 500 ms cut) is one batch with the full
+  content. A held file adds no busy loop: the next deadline is its
+  `CLOSE_WRITE` (an event) or the stall limit. A writer that neither
+  writes nor closes for `Options::stalled_write` (5 s; a program keeping
+  the file open) has the file read anyway, with
+  `Notice::StalledWrite(path)`; a lost `CLOSE_WRITE` (overflow) ends the
+  same way. Polled directories have no `MODIFY` and compare content as
+  before.
+- **2026-10-05 · Two registration sets (review round 4).** Each watched
+  path counts the loader's registrations (`set_referenced`, replaced
+  whole after each reload) and ad-hoc ones (`watch_file` /
+  `unwatch_file`) separately, and is watched while either (or module
+  membership) holds it. The wallpaper is a runtime settings value
+  (`prefs.wallpaper`, changed by `strand set`), not a path the compiler
+  collects, so its owner registers it with `watch_file`; replacing all
+  registrations on every reload would silently drop it (design.md:
+  "Both the wallpaper path and its symlink target are watched").
+- **2026-10-05 · Parent watches (review round 4).** The config root's
+  parent (`~/.config`), the directories holding a symlink on the root's
+  or a cache tree's way, and the nearest existing ancestor that stands in
+  for a missing directory are watched for names only: `CREATE`,
+  `MOVED_TO`, `MOVED_FROM`, `DELETE`, `DELETE_SELF`, `MOVE_SELF`. Every
+  app writing its own file in `~/.config` would otherwise wake the
+  watcher on each `write(2)` (`MODIFY`) and close, which the move to raw
+  inotify was meant to stop. A directory wanted for several reasons gets
+  the strongest kind (full, then completed, then parent, then ancestor).
+  The directories of a referenced file's symlinks stay content watches
+  (without `MODIFY` since review round 5): a save that replaces the link
+  with a plain file (delete and create) writes there.
+- **2026-10-05 · Content-only batches leave the watches alone (review
+  round 4).** A flush re-syncs the watches only when the structure may
+  have changed: a full rescan, a module-set or cache-tree rescan, a
+  watched directory gone or replaced, a missing directory appearing, or
+  a touched file that now resolves elsewhere. A batch of content edits
+  (the common save) costs the files it hashes, not the number of watched
+  directories (a 3000-directory icon tree added ~23 ms per save before).
+  A re-sync stats only directories not yet watched; the per-directory
+  inode audit runs on full rescans only
+  (`content_only_flushes_do_not_resync`).
+- **2026-10-05 · Own writes across aliases (review round 4).** Within one
+  flush, an own-write match is a fact about the resolved file: once one
+  registered path matched `(canonical, hash)`, every other registered
+  path that resolves to the same file with the same hash (a symlink
+  alias, a `..` spelling, which `paths::absolute` does not normalise) is
+  own too. `register_own_write` resolves the path before taking the lock
+  the watcher thread takes per hashed file, so a slow `readlink` on NFS
+  never stalls a flush.
+- **2026-10-05 · Which thread may block (review round 4).**
+  `watch_file`, `set_referenced` and `watch_tree` block until the
+  watcher thread has synced the watches (and, for a new path given no
+  hash, read its baseline: watch, then read). They are for the loader,
+  the compile worker, boot and service threads, never the logic thread.
+  A path given with the hash of what the caller read is not read at
+  registration: its baseline is that hash and the watcher compares the
+  file at the next quiet period on its own thread. For the logic thread,
+  `watch_file_loaded(path, role, hash)` and `unwatch_file` return at
+  once (a control message), and `register_own_write` takes only a short
+  lock. `watch_tree` still walks the tree before it returns: deferring
+  the walk would lose files created in a sub-directory between the
+  return and its watch (the re-walk lists directories, not files), and
+  its callers (boot, the apps/icons/fonts services) are not on a hot
+  path.
+- **2026-10-05 · `MODIFY` only in config directories (review round 5).**
+  `IN_MODIFY` is queued once per `write(2)`, and the watcher drains its
+  fd as soon as `poll` wakes, so the kernel's merging of identical
+  events rarely applies: any process writing in a directory watched with
+  it wakes the thread once per write. Only the config's module
+  directories (Strand's own) keep it. Every other content directory (a
+  referenced file's directory and each symlink hop's, so `~` for a
+  home-manager `~/.background-image`, `~/Pictures`, `~/Downloads`; every
+  app, icon and font tree, whose entries are never read) is watched for
+  completed writes and names: `CLOSE_WRITE | MOVED_TO | CREATE` and the
+  removal events. A download, `.xsession-errors` or a package upgrade
+  there now costs one wakeup per file created or closed
+  (`tests/wakeups.rs`: 4500 small writes next to watched files wake the
+  thread a handful of times, against about 2600 with `MODIFY`;
+  `writes_queue_events_only_in_config_directories`). Throttling the fd
+  after `MODIFY`-only drains was rejected: one inotify fd serves the
+  config directories too, so pausing it would delay config saves, and a
+  continuous writer would still wake the thread every pause. What
+  `MODIFY` did there is covered otherwise: an in-place write is not
+  touched until its `CLOSE_WRITE`; an empty new file is held from its
+  `CREATE`; a new single-link file that already has bytes when its
+  `CREATE` is read (`Raw::Created`: a writer that wrote first, or a file
+  linked in from `O_TMPFILE`) is held until its `CLOSE_WRITE`, as no
+  `MODIFY` will say which it is. A cache-tree entry created that way is
+  reported at once (it is never read). The remaining gap: a file in such
+  a directory that is touched for another reason (a full rescan) while
+  being rewritten in place can be read mid-write; its `CLOSE_WRITE`
+  reports the final content in a later batch.
+- **2026-10-05 · Stalls are measured by the file, not by events (review
+  round 5).** Without `MODIFY`, an active writer makes no event between
+  its creation and its close, so "no event for `stalled_write`" alone
+  would read a 6 s download half done. A held file is read as stalled
+  only if, in addition, its modification time is unchanged since the
+  flush that held it; a changed one renews the hold for another
+  `stalled_write`. One `stat` per held file per 5 s; a file linked in
+  from `O_TMPFILE` into such a directory (its `CLOSE_WRITE` comes under
+  `#<ino>`) is read 5 s after it stops changing, with
+  `Notice::StalledWrite`
+  (`a_new_file_without_modify_is_held_while_it_changes`).
+- **2026-10-05 · The quiet period runs from completed writes (review
+  round 5).** design.md: 15 ms after the last *completed* write. A
+  `MODIFY` no longer moves an open batch's quiet period: a watched file
+  that a process keeps open and appends to (a `service … from file`
+  status file) stretched every unrelated batch to `max_delay`
+  (`a_file_written_continuously_does_not_delay_a_save`,
+  `busy_never_moves_the_quiet_period`). Holding a file mid-write at the
+  flush already keeps half-written content out. A held file whose write
+  ended (`CLOSE_WRITE`, `MOVED_TO`, removal) has no deadline of its own:
+  that event put it back in the open batch, which waits for its coalesce
+  or removal grace like any other, so a stalled save followed by "save
+  all" is one batch and a held file deleted and created again is one
+  `Modified` (`a_save_all_after_a_stalled_write_is_one_batch`,
+  `a_held_file_deleted_and_created_again_is_one_modified`,
+  `a_held_file_removed_waits_for_the_removal_grace`).
+- **2026-10-05 · Events keep the mask they were queued under (review
+  round 5).** A directory's watch kind can change while events queued
+  under the old mask are unread (a wallpaper written into `~/.config`, a
+  names-only parent watch, and then registered). Before a mask changes,
+  the queued events are read and classified under the old kind, and
+  handled before newer ones. A creation seen by a names-only watch is
+  complete as far as that watch can tell (it queues no `CLOSE_WRITE`), so
+  it is never held waiting for one
+  (`events_keep_the_mask_they_were_queued_under`).
+- **2026-10-05 · The IPC socket is not a watch source (review round 5).**
+  design.md lists "CLI and IPC: Unix socket and D-Bus" among the change
+  sources, and an early draft of the thread table gave the socket to the
+  watcher thread. It belongs to the `strand` binary instead, served on
+  the logic loop (calloop source), because every request it carries
+  (`strand reload`, `strand watch`, and M5's `get | set | toggle | watch
+  | call`) reads or writes live state or calls into the program, which
+  only logic may touch; routing it through `strand-watch` would add a
+  thread hop and a second request path for no gain. `strand reload`
+  reaches the watcher through `Watcher::rescan()`. strand-watch therefore
+  has no IPC `ChangeEvent` slot; its sources are inotify, polling, the
+  portal Settings client and the compositor-event slot
+  (`ChangeEvent::Compositor`, filled by M3 adapters).
+- **2026-10-05 · The bus filters portal namespaces (review round 5).**
+  `follow` subscribes with an `arg0='org.freedesktop.appearance'` match
+  rule (`receive_setting_changed_with_args`), so the bus daemon drops
+  `SettingChanged` for every other namespace (GNOME's backend emits one
+  per exposed gsettings key) instead of routing it to the services
+  runtime; the client-side namespace check stays as a backstop
+  (`other_namespaces_are_dropped_by_the_bus`, which reads every message
+  the bus routes to the client's connection).
+- **2026-10-05 · A file written during its read is not reported (review
+  round 6).** A flush reads files whose last event was a completed write,
+  but the next write can begin while it reads: an in-place save's
+  `O_TRUNC` sets the size to zero before its `MODIFY` is queued (on ext4
+  freeing the old blocks in between takes milliseconds, and under load
+  the writer can be descheduled there), so a read can see an empty or
+  partial file with no event yet to say so. After hashing, the flush
+  takes `SEEK_DATA` on the same descriptor (ext4, btrfs and tmpfs take
+  the inode lock for it, which a truncation holds until its `MODIFY` is
+  queued), takes the stamp again from that descriptor, and then drains
+  the inotify queue. A file whose stamp moved, whose modification time
+  is less than one quiet period (15 ms) old, or that an event drained
+  then names (a `MODIFY`, creation or removal; outside the config
+  directories also a `CLOSE_WRITE` or `MOVED_TO`), or any file after an
+  overflow, is left out of the batch with its baseline unchanged: held
+  while its write is in progress, read again at a later quiet period
+  otherwise (`a_write_during_the_read_is_not_reported_until_closed`,
+  `own_writes_in_place_in_a_tight_loop_are_never_torn`). The
+  modification-time rule covers filesystems that take no lock for
+  `SEEK_DATA`, and overwrites without truncation, whose `MODIFY` is
+  queued after the write returns. It is waived for a file due for
+  `max_delay` (below, review round 7). Corrected in round 7: an earlier
+  version of this paragraph said a completed save is a quiet period old
+  by the time it is read, which is false for a batch cut at `max_delay`.
+- **2026-10-05 · A file rewritten without pause is read within
+  `max_delay` (review round 7).** The round-6 rules put a file rewritten
+  more often than every 15 ms (a live-preview tool, a settings file
+  rewritten during a slider drag, a status file replaced by a script)
+  off for ever: at every cut its last write was under 15 ms old, and
+  putting it off opened a new batch with a new 500 ms bound. That broke
+  design.md's "a batch never stays open more than 500 ms". Now a file
+  put off remembers the first event that made it due; the open batch is
+  cut for it 500 ms after that event (but not sooner than 15 ms after
+  the flush that put it off, so it is not re-read in a busy loop), and
+  from then on a read of it is taken even if its modification time is
+  recent, provided the other checks pass: stable stamp, and no drained
+  `MODIFY`, creation or removal (outside the config directories, no
+  drained `CLOSE_WRITE` either). Inside a config directory, a drained
+  `CLOSE_WRITE` or `MOVED_TO` with no `MODIFY` no longer refuses the
+  read: every write there makes a `MODIFY`, so none overlapped it, and
+  the newer version that event announces is read in the next batch (the
+  path is pending again). A rename-over can never be torn: the read
+  descriptor holds a complete inode, old or new
+  (`a_module_rewritten_in_place_every_5_ms_is_reported`,
+  `a_module_renamed_over_every_5_ms_is_reported`,
+  `a_watched_file_rewritten_in_place_every_5_ms_is_reported`,
+  `a_file_rewritten_without_pause_is_read_within_max_delay`). The batch
+  that finally reads a put-off file reports, as `first_event` and
+  `last_event`, the events that made it due, not the flush that put it
+  off: `sent − last_event` stays the watcher's share of save-to-pixels
+  for the reload-latency benchmark, which should use `last_event`.
+- **2026-10-05 · File age is measured after the read (review round
+  7).** The 15 ms rule measured a file's age from the flush's `now`,
+  taken before the rescan, the watch updates and the hashing of every
+  other file, and took a modification time after that `now` as "not
+  recent": a truncation landing between the two passed. Age is now
+  measured from the wall clock right after the read (or the flush's
+  `now` if later, which only a test passes), and a modification time up
+  to 1 s in the future counts as recent (the clock stepped back a
+  little); beyond that, or in a polled directory whose server clock may
+  run ahead for good, a future time is not recent
+  (`a_write_after_the_flush_began_is_not_read_too_fresh`). What remains:
+  outside the config directories writes make no event, so the guarantee
+  there rests on the stamp comparison, the 15 ms rule and a drained
+  `CLOSE_WRITE`. An in-place writer there that truncates, writes part,
+  and then pauses for more than 15 ms before the read starts (and does
+  not close before the drain) can be read torn; its `CLOSE_WRITE` then
+  re-reads the file and reports the whole content in the next batch.
+- **2026-10-05 · A `MODIFY` holds the file (review round 6).** A file
+  written in place whose writer keeps it open and stops writing was
+  only marked busy: nothing scheduled it, so it was never read with
+  `Notice::StalledWrite` as `Options::stalled_write` promises. Now the
+  first `MODIFY` also holds every watched file at that path, so it is due
+  `stalled_write` after the writer's last write and read then with the
+  notice, and again (normally) once closed. In a config directory every
+  write is an event, so the hold skips the modification-time check that
+  directories without `MODIFY` need (and reads no `stat` per write)
+  (`a_stalled_in_place_writer_is_read_with_a_notice`,
+  `a_stalled_in_place_write_is_read_with_a_notice`).
+- **2026-10-05 · `O_TMPFILE` files outside the config (review round 6).**
+  A file made with `O_TMPFILE` and linked in (`linkat`) is created with
+  its bytes. In a directory watched without `MODIFY` it is held as being
+  written, and its `CLOSE_WRITE` comes only under its unnamed `#<ino>`.
+  `IN_EXCL_UNLINK` drops that event (the file has no name), so the file
+  waited 5 s and came with a false `StalledWrite`. Completed-write
+  watches no longer set `IN_EXCL_UNLINK`, and a `CLOSE_WRITE` named
+  `#<digits>` ends the write of each name in that directory with that
+  inode (one `stat` per file being written there). Config directories
+  keep `IN_EXCL_UNLINK`: there a writer still holding a deleted module
+  would otherwise mark the new file at that name as being written with
+  each `MODIFY`. Outside them, the cost is that a deleted file's writer
+  closing it reports a `CLOSE_WRITE` under its old name, which re-reads
+  whatever file has that name now
+  (`a_file_linked_in_from_o_tmpfile_is_reported_outside_the_config`).
+  A file closed before it is linked in sends its close before its
+  creation and still waits for `stalled_write`.
+- **2026-10-05 · Module-set diagnostics travel with the batch (review
+  round 6).** `ModuleSet` carries `Discovery::errors` (as text) and
+  `too_deep`. When a runtime rescan's lists differ from the previous
+  ones, the batch carries `Notice::ModuleSet { errors, too_deep }` with
+  the complete new lists, so a module that became a dangling link or an
+  unreadable directory reaches the loader's overlay on the same channel
+  as the module's `Removed` (`module_set_errors_are_forwarded`).
+- **2026-10-05 · The cost of `MODIFY` in config directories (review
+  round 6).** Every `write(2)` to any file in a config directory wakes
+  the watcher thread, including files Strand never reads (a log or cache
+  kept in `~/.config/strand`). The event is dropped at once, but a tight
+  writer pays for it: in review, 1.46 million one-byte writes in about
+  1.2 s cost the watcher about 85 % of a core while saves were still reported in
+  16 ms. This is the price of never reading a half-written module.
+  Files other than modules should live outside the config directory
+  (`$XDG_STATE_HOME`, `$XDG_CACHE_HOME`); a settings TOML written a few
+  times per second costs nothing noticeable.
+- **2026-10-05 · The tight-loop own-write test is bounded (review
+  round 6).** `own_writes_in_a_tight_loop_are_never_reported` failed
+  twice under load in review, and did not fail again here in about 50
+  runs (40 alone, 8 within the whole suite), with three or four busy
+  loops loading the machine. Each of its writes queues five events (create,
+  modify, close, moved-from, moved-to). Up to 3,000 writes, at about 5
+  events each, come near the kernel's default 16,384-event queue, so a
+  watcher thread starved for most of the loop overflows it. The
+  overflow's rescan batch, correct but without changes, failed
+  `no_batch`. The loop now stops at 1,000 writes (5,000 events), and the
+  test checks that no batch carries a change (a change-less rescan
+  batch is allowed), naming the body behind each reported hash.

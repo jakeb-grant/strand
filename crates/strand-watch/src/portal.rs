@@ -65,17 +65,11 @@ pub fn parse_setting(key: &str, value: &Value<'_>) -> Option<SystemSetting> {
             Contrast::Normal
         })),
         ("accent-color", Value::Structure(s)) => {
-            let rgb: Vec<f64> = s
-                .fields()
-                .iter()
-                .filter_map(|f| match f {
-                    Value::F64(x) => Some(*x),
-                    _ => None,
-                })
-                .collect();
-            let [r, g, b] = rgb[..] else {
+            // Exactly `(ddd)`: anything else is malformed and ignored.
+            let [Value::F64(r), Value::F64(g), Value::F64(b)] = s.fields() else {
                 return None;
             };
+            let (r, g, b) = (*r, *g, *b);
             let unit = |x: f64| (0.0..=1.0).contains(&x);
             Some(SystemSetting::Accent(
                 (unit(r) && unit(g) && unit(b)).then_some([r, g, b]),
@@ -191,8 +185,12 @@ pub async fn follow(conn: &zbus::Connection, sink: EventSink) -> zbus::Result<()
     let setup = async {
         let proxy = SettingsProxy::new(conn).await?;
         // Subscribe before reading, so a change between the two is not
-        // lost.
-        let changes = proxy.receive_setting_changed().await?;
+        // lost. The match rule names the namespace (arg0), so the bus
+        // drops the other namespaces' signals (GNOME's backend sends one
+        // for every exposed gsettings key) instead of waking this runtime.
+        let changes = proxy
+            .receive_setting_changed_with_args(&[(0, APPEARANCE)])
+            .await?;
         let owners = proxy.inner().receive_owner_changed().await?;
         zbus::Result::Ok((proxy, changes, owners))
     };
@@ -235,6 +233,7 @@ pub async fn follow(conn: &zbus::Connection, sink: EventSink) -> zbus::Result<()
                 let Ok(args) = signal.args() else {
                     continue;
                 };
+                // A backstop: the match rule already filters on it.
                 if *args.namespace() != APPEARANCE {
                     continue;
                 }
@@ -380,6 +379,14 @@ mod tests {
             parse_setting("accent-color", &unset),
             Some(SystemSetting::Accent(None))
         );
+        // Malformed accents (not exactly three doubles) are ignored, not
+        // made into a colour.
+        let four = Value::Structure(Structure::from((0.2f64, 0.4f64, 1.0f64, 0.5f64)));
+        assert_eq!(parse_setting("accent-color", &four), None);
+        let mixed = Value::Structure(Structure::from((0.2f64, "x", 0.4f64, 1.0f64)));
+        assert_eq!(parse_setting("accent-color", &mixed), None);
+        let uint = Value::Structure(Structure::from((0.2f64, 0.4f64, 1u32)));
+        assert_eq!(parse_setting("accent-color", &uint), None);
         assert_eq!(parse_setting("contrast", &Value::Str("x".into())), None);
         assert_eq!(parse_setting("reduced-motion", &Value::U32(1)), None);
     }
