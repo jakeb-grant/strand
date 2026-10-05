@@ -1,0 +1,35 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::not_exported
+
+  × `secret` is not exported from `theme`
+   ╭─[bar.strand:1:15]
+ 1 │ let a = theme.secret
+   ·               ───┬──
+   ·                  ╰── private to its file
+ 2 │ let b = theme.lok
+   ╰────
+  help: add `export` to its declaration: `export state secret = …`
+
+Error: 
+  × see also theme.strand
+   ╭─[theme.strand:3:7]
+ 2 │ export state look = light
+ 3 │ state secret = 1
+   ·       ───┬──
+   ·          ╰── declared here
+   ╰────
+
+check::unknown_field
+
+  × `theme` exports no `lok`
+   ╭─[bar.strand:2:15]
+ 1 │ let a = theme.secret
+ 2 │ let b = theme.lok
+   ·               ─┬─
+   ·                ╰── not exported there
+ 3 │ let c = theme.look
+   ╰────
+  help: did you mean `look`?

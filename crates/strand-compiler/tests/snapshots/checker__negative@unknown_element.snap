@@ -1,0 +1,27 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::unknown_element
+
+  × unknown element `buton`
+   ╭─[unknown_element.strand:6:5]
+ 5 │   col {
+ 6 │     buton "OK"
+   ·     ──┬──
+   ·       ╰── not an element or component
+ 7 │     Volme
+   ╰────
+  help: did you mean `button`?
+
+check::unknown_element
+
+  × unknown element `Volme`
+   ╭─[unknown_element.strand:7:5]
+ 6 │     buton "OK"
+ 7 │     Volme
+   ·     ──┬──
+   ·       ╰── not an element or component
+ 8 │   }
+   ╰────
+  help: did you mean `Volume`?

@@ -1,0 +1,27 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::misplaced
+
+  × props cannot go directly in a component's body
+   ╭─[misplaced.strand:5:3]
+ 4 │ component C {
+ 5 │   width: 24
+   ·   ──┬──
+   ·     ╰── not on an element
+ 6 │   if open { opacity: 1 }
+   ╰────
+  help: put it on an element: `row { … }`
+
+check::misplaced
+
+  × props cannot go directly in an `if`, `for` or `match` body
+   ╭─[misplaced.strand:6:13]
+ 5 │   width: 24
+ 6 │   if open { opacity: 1 }
+   ·             ───┬───
+   ·                ╰── not on an element
+ 7 │   box { }
+   ╰────
+  help: to style conditionally use `when cond { … }`; to choose children use `if`

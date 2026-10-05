@@ -1,0 +1,11 @@
+// expect: check::children_not_allowed, check::misplaced
+// Children render at `slot`; a component without one takes none, and
+// `slot` belongs in a component.
+component Dot { box { size: 8 } }
+component Card { col { slot } }
+bar Top {
+  edge: top
+  Dot { text "child" }
+  Card { text "fine" }
+  slot
+}

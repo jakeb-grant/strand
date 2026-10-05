@@ -3,6 +3,27 @@ source: crates/strand-compiler/tests/fixtures.rs
 expression: tree
 ---
 file
+  type Pin
+    field app :AppId
+    field label :text
+  type Item
+    field name :text
+    field visible :bool
+    field hidden :bool
+  type Inner
+    field c :text
+  type Outer
+    field b :Inner?
+  enum Net wifi wired
+  state pins :[Pin] (key app) (= array)
+  state password (= "")
+  state items :[Item] (= array)
+  state xs :[Item] (= array)
+  state a (= (call Outer (b: null)))
+  state d :text? (= null)
+  state cond (= true)
+  state visible (= true)
+  state ticks (= 0)
   fn clamp01 (params (x :float)) (-> :float)
     expr (?: (< x 0) 0 (?: (> x 1) 1 x))
   fn label (params (n :int)) (-> :text)
@@ -35,6 +56,8 @@ file
         expr (call (. auth submit) password)
   component Grammar (params (level :float) (side :Side (= left)))
     state page (= wifi)
+    state cur (= level)
+    state dir (= side)
     let lines (= (array "a" "b"))
     element text (call (. (call (. (call (. (. clock today) month_start)) add) (months: (neg 1))) format) "%B")
     element box
@@ -62,28 +85,29 @@ file
             element text "low"
     for p (in pins) (key (. p app))
       element text (. p label)
-    on click
-      let next (= (+ level 0.1))
-      if (> next 1)
-        then
-          assign = level 1
-        else
-          assign = level next
-      match side
-        arm left
-          assign = side right
-        arm _
-          assign = side left
-      for p (in pins)
-        expr (call (. p touch))
-      expr (await (call sleep 200ms))
-    on key (params k)
-      expr (call propagate)
+    element box
+      on click
+        let next (= (+ cur 0.1))
+        if (> next 1)
+          then
+            assign = cur 1
+          else
+            assign = cur next
+        match dir
+          arm left
+            assign = dir right
+          arm _
+            assign = dir left
+        for p (in pins)
+          expr (call (. pins remove_key) (. p app))
+        expr (await (call sleep 200ms))
+      on key (params k)
+        expr (call propagate)
     element text (call (. (call (. (call (. items filter) (=> (params i) (&& (. i visible) (! (. i hidden))))) map) (=> (params (i :Item)) (. i name))) join) ", ")
     element text (?? (?. (. a b) c) (paren (?? d "none")))
     element text (?: cond "yes" "no")
     every 1s (while visible)
       assign += ticks 1
     element canvas
-      prop draw: (=> (params c) (block (expr (call (. c fill) $accent)) (expr (call (. c line) 0 0 width height))))
+      prop draw: (=> (params c) (block (expr (call (. c fill) $accent)) (expr (call (. c line) 0 0 (. c width) (. c height)))))
     element text (. (index xs 0) name)

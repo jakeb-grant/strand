@@ -1,0 +1,15 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::state_placement
+
+  × `state` lives on components, surfaces and list items
+   ╭─[state_placement.strand:6:20]
+ 5 │   state open = false
+ 6 │   text "a" { state hovered = false }
+   ·                    ───┬───
+   ·                       ╰── not on a `text`
+ 7 │   col {
+   ╰────
+  help: move it up to the component (or surface), or into the `for` body it belongs to

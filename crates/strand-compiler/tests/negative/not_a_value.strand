@@ -1,0 +1,7 @@
+// expect: check::not_a_value
+// Components and types are not values; methods must be called.
+type Pin { app: text }
+component Dot { box { } }
+let a = Dot
+let b = Pin
+let c = "x".upper

@@ -1,0 +1,27 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::needs_type
+
+  × parameter `n` needs a type
+   ╭─[needs_type.strand:4:27]
+ 3 │ // where it cannot infer.
+ 4 │ component Toast(n) { text n.summary }
+   ·                 ┬         ┬
+   ·                 │         ╰── its type is needed here
+   ·                 ╰── declared without a type
+ 5 │ component Fine(dense = false) { box { opacity: dense ? 0.5 : 1 } }
+   ╰────
+  help: write the type it takes, such as `n: Notification` or `n: float`
+
+check::needs_type
+
+  × parameter `x` needs a type
+   ╭─[needs_type.strand:6:10]
+ 5 │ component Fine(dense = false) { box { opacity: dense ? 0.5 : 1 } }
+ 6 │ fn twice(x) -> float { x * 2 }
+   ·          ┬
+   ·          ╰── add `: T`
+   ╰────
+  help: `x: float`

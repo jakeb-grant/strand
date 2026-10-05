@@ -1,0 +1,5 @@
+// expect: check::not_reactive
+// `on change` must watch something that can change.
+state shown = false
+on change 5 { shown = true }
+on change audio.sink.volume after 1.2s { shown = false }

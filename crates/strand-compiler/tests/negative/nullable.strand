@@ -1,0 +1,5 @@
+// expect: check::nullable
+// `T?` is not `T`: read through null with `?.` and give a fallback.
+let title: text = windows.focused.title
+let fine: text = windows.focused?.title ?? ""
+let left: duration = battery.time_left

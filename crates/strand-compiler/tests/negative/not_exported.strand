@@ -1,0 +1,10 @@
+// expect: check::not_exported, check::unknown_field
+// No imports: `file.name` reaches what a file exports.
+// file: theme.strand
+enum Look { light, dark }
+export state look = light
+state secret = 1
+// file: bar.strand
+let a = theme.secret
+let b = theme.lok
+let c = theme.look

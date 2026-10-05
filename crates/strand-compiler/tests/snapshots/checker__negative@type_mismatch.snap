@@ -1,0 +1,37 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::type_mismatch
+
+  × `height` expects `length`, found `text`
+   ╭─[type_mismatch.strand:5:17]
+ 4 │ component C {
+ 5 │   box { height: "tall"; opacity: true
+   ·                 ───┬──
+   ·                    ╰── this is `text`
+ 6 │     after 6 while shown { shown = false }
+   ╰────
+
+check::type_mismatch
+
+  × `opacity` expects `float`, found `bool`
+   ╭─[type_mismatch.strand:5:34]
+ 4 │ component C {
+ 5 │   box { height: "tall"; opacity: true
+   ·                                  ──┬─
+   ·                                    ╰── this is `bool`
+ 6 │     after 6 while shown { shown = false }
+   ╰────
+
+check::type_mismatch
+
+  × the timer expects a duration, which needs a unit
+   ╭─[type_mismatch.strand:6:11]
+ 5 │   box { height: "tall"; opacity: true
+ 6 │     after 6 while shown { shown = false }
+   ·           ┬
+   ·           ╰── a plain number
+ 7 │   }
+   ╰────
+  help: write `6s` or `200ms`

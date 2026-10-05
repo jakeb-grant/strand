@@ -1,0 +1,6 @@
+// expect: check::action_in_binding
+// Actions change the world, so they run in handlers, not bindings.
+let cleared = notifications.clear()
+component C(n: Notification) {
+  text n.summary { opacity: n.expire() }
+}

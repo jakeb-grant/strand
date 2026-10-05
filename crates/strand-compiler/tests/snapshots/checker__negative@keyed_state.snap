@@ -1,0 +1,14 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::unknown_field
+
+  × `Pin` has no field `ap`
+   ╭─[keyed_state.strand:4:23]
+ 3 │ type Pin { app: text; label: text }
+ 4 │ state pins: [Pin] key ap = []
+   ·                       ─┬
+   ·                        ╰── not a field of the items
+   ╰────
+  help: did you mean `app`?

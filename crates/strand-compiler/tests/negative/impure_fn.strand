@@ -1,0 +1,6 @@
+// expect: check::impure
+// `fn`s are pure: no assignment, no actions.
+state open = false
+fn toggle(x: bool) -> bool { open = x; !x }
+fn focus(w: Workspace) -> bool { w.focus(); true }
+fn fine(x: float) -> float { x * 2 }

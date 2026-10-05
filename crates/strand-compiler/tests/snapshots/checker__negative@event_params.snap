@@ -1,0 +1,26 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::too_many_args
+
+  × `scroll` gives 2 values
+   ╭─[event_params.strand:5:23]
+ 4 │   box {
+ 5 │     on scroll(dy, dx, dz) { }
+   ·                       ─┬
+   ·                        ╰── nothing to receive
+ 6 │     on drop(p: text, at: text) { }
+   ╰────
+  help: it gives `dy`, `dx`
+
+check::type_mismatch
+
+  × this event gives `int`, not `text`
+   ╭─[event_params.strand:6:22]
+ 5 │     on scroll(dy, dx, dz) { }
+ 6 │     on drop(p: text, at: text) { }
+   ·                      ────┬───
+   ·                          ╰── declared `text`
+ 7 │   }
+   ╰────

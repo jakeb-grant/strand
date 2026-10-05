@@ -1,7 +1,32 @@
 // One-line snippets from design.md tables and prose, each in the smallest
 // valid context. Where the design writes `…` this file fills in a minimal
 // body; where it lists alternatives as `a | b | c`, each alternative is its
-// own line. Everything else is verbatim.
+// own line. Everything else is verbatim. The names the snippets read are
+// declared under "Context"; the file is checked together with theme.strand,
+// which declares `Look` and exports `theme.look`.
+
+// --- Context ----------------------------------------------------------------
+
+state open = false
+state shown = false
+state query = ""
+state ticks = 0
+state visible = true
+state level = 0.5
+state progress = 0.5
+state loading = false
+state y: duration? = null
+state log: [Notification] key id = []
+let hits = apps.search(query)
+let q = ""
+let wallpaper = "~/Pictures/wall.jpg"
+let fallback = material(seed: #7aa2f7)
+let expr = "A tooltip"
+let pin = Pin(app: "firefox", label: "Firefox")
+enum Page { wifi, bluetooth }
+state page = wifi
+
+component Dot(ws: Workspace) { box { size: 8 } }
 
 // --- Good vs bad vs ugly ----------------------------------------------------
 
@@ -20,24 +45,27 @@ component GoodTable {
 }
 
 component Expire(n: Notification) {
-  after 6s while !hover { n.expire() }
+  box { after 6s while !hover { n.expire() } }
 }
 
 // --- The rules ----------------------------------------------------------------
 
-component Rules {
+component Rules(ws: Workspace, n: Notification, xs: [Workspace]) {
   Dot ws
   Toast n { dense: true }
   box { id: vol }
-  when vol.hover { bg: $accent }
+  box {
+    when vol.hover { bg: $accent }
+    on click { open = !open }
+    on scroll(dy) { audio.sink.volume -= dy * 0.05 }
+  }
   for x in xs key x.id { text x.name }
-  on click { open = !open }
-  on scroll(dy) { audio.sink.volume -= dy * 0.05 }
-  on show { query = "" }
-  on change x { y = x }
+  on change x { ticks += 1 }
   on change x after 1.2s { shown = false }
   every 1s while visible { ticks += 1 }
 }
+
+panel Shows { on show { query = "" } }
 
 component Toast(n: Notification, dense: bool = false) {
   col { slot }
@@ -55,9 +83,11 @@ let art = material(image: wallpaper) ?? fallback
 
 on notifications.received(n) { log.push(n) }
 
-component Pins {
-  on drop(p: Pin, at: int) { pins.move(p.app, at) }
-  on secondary { pins.remove_key(p.app); pins.insert(0, p); pins.update(p.app, q => q) }
+component Pins(p: Pin) {
+  box {
+    on drop(p: Pin, at: int) { pins.move(p.app, at) }
+    on secondary { pins.remove_key(p.app); pins.insert(0, p); pins.update(p.app, q => q) }
+  }
 }
 
 // --- Styling, tokens and theming ----------------------------------------------
@@ -88,6 +118,7 @@ component Layout {
   box { width: 24 ~ 200ms }
   box { width: 24 ~ instant }
   input { nav: results }
+  list { id: results }
   box { drag: pin }
   pages current: page { page wifi { text "Wi-Fi" }; page bluetooth { text "Bluetooth" } }
   box { tooltip: expr }
@@ -178,7 +209,7 @@ component Motion {
 
 // --- Generative, data-driven and media ---------------------------------------
 
-component Media {
+component Media(w: Window) {
   effect lightning { speed: 1 }
   effect sparks { speed: 1 }
   effect shimmer { speed: 1 }

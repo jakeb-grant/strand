@@ -1,0 +1,15 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::non_exhaustive
+
+  × `match` misses `dark`, `mocha`
+   ╭─[non_exhaustive.strand:5:23]
+ 4 │ state look = auto
+ 5 │ let dark = match look { auto => system.dark, light => false }
+   ·                       ───────────────────┬───────────────────
+   ·                                          ╰── not every value has an arm
+ 6 │ let fine = match look { light => false, _ => true }
+   ╰────
+  help: add the missing arms, or `_ => …`

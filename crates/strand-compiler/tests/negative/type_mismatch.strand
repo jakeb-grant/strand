@@ -1,0 +1,8 @@
+// expect: check::type_mismatch
+// Units are types: a duration is not a number, text is not a length.
+state shown = true
+component C {
+  box { height: "tall"; opacity: true
+    after 6 while shown { shown = false }
+  }
+}

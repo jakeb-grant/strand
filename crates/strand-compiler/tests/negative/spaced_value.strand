@@ -1,0 +1,5 @@
+// expect: check::spaced_value
+// Space-separated values are for shadows and fonts; elsewhere commas.
+component C {
+  box { margin: 8 8 0; shadow: 0 2px 8px $shadow.alpha(0.25); font: "Inter" 13px 500 }
+}

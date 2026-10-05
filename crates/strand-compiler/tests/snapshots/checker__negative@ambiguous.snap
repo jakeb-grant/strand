@@ -1,0 +1,15 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::ambiguous
+
+  × `large` is a variant of several enums
+   ╭─[ambiguous.strand:6:12]
+ 5 │ enum Weight { light, large }
+ 6 │ let pick = large
+   ·            ──┬──
+   ·              ╰── which one?
+ 7 │ let fine: Size = large
+   ╰────
+  help: write the enum: `Size.large` or `Weight.large`

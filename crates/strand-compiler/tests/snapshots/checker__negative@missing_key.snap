@@ -1,0 +1,15 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::missing_key
+
+  × `pins` is plain data, so `for` needs a `key`
+   ╭─[missing_key.strand:8:14]
+ 7 │   col {
+ 8 │     for p in pins { text p.label }
+   ·              ──┬─
+   ·                ╰── items have no identity
+ 9 │     for p in pins key p.app { text p.label }
+   ╰────
+  help: say what identifies an item: `for p in … key p`

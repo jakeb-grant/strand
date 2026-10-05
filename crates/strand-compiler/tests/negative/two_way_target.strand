@@ -1,0 +1,10 @@
+// expect: check::two_way_target
+// `<->` binds to a `state`, a settings field or an `rw` service field.
+state volume = 0.5
+let half = volume / 2
+component C {
+  slider { value: <-> half }
+  slider { value: <-> battery.percent }
+  slider { value: <-> audio.sink.volume }
+  slider { value: <-> volume }
+}

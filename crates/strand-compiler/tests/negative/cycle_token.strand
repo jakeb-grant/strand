@@ -1,0 +1,6 @@
+// expect: check::cycle
+// Derived tokens form a graph; a cycle is a load error naming the path.
+tokens base {
+  surface.hi: $surface.mix($fg.muted, 8%)
+  fg.muted:   $surface.hi.alpha(0.65)
+}

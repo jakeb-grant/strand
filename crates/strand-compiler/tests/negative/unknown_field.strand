@@ -1,0 +1,8 @@
+// expect: check::unknown_field
+// Fields of records and services, with did-you-mean.
+component C {
+  col {
+    text battery.precent
+    for ws in workspaces.all { text ws.nme }
+  }
+}

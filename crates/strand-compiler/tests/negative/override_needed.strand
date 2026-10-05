@@ -1,0 +1,5 @@
+// expect: check::override_needed
+// Redefining a token needs `override`.
+tokens base { space { 1: 4px; 2: 8px } }
+tokens compact extends base { space { 1: 2px }; override space { 2: 4px } }
+tokens other { accent: #7aa2f7 }

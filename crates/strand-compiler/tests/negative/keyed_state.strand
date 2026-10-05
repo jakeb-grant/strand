@@ -1,0 +1,4 @@
+// expect: check::unknown_field
+// `key` names a field of the item, with did-you-mean.
+type Pin { app: text; label: text }
+state pins: [Pin] key ap = []

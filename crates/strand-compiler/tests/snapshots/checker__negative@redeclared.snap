@@ -1,0 +1,37 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::redeclared
+
+  × `Dot` is declared twice
+   ╭─[widgets.strand:1:11]
+ 1 │ component Dot { box { size: 6 } }
+   ·           ─┬─
+   ·            ╰── declared again here
+ 2 │ state x = 1
+   ╰────
+  help: rename one: component, type and other global names are shared by every file of the config
+
+Error: 
+  × see also bar.strand
+   ╭─[bar.strand:1:11]
+ 1 │ component Dot { box { size: 8 } }
+   ·           ─┬─
+   ·            ╰── first declared here
+ 2 │ enum Kind { a, b }
+   ╰────
+
+check::redeclared
+
+  × `x` is declared twice
+   ╭─[widgets.strand:3:7]
+ 1 │ component Dot { box { size: 6 } }
+ 2 │ state x = 1
+   ·       ┬
+   ·       ╰── first declared here
+ 3 │ state x = 2
+   ·       ┬
+   ·       ╰── declared again here
+   ╰────
+  help: rename one of them

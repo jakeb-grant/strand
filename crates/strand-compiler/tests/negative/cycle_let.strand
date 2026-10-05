@@ -1,0 +1,5 @@
+// expect: check::cycle
+// A static cycle names its path.
+let a = b + 1
+let b = c * 2
+let c = a - 1

@@ -1,0 +1,40 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::no_node
+
+  × `when` styles an element, and there is none here
+   ╭─[no_node.strand:4:3]
+ 3 │ component C {
+ 4 │   when hover { opacity: 0.5 }
+   ·   ─────────────┬─────────────
+   ·                ╰── not inside an element
+ 5 │   on click { }
+   ╰────
+  help: put it inside the element it styles
+
+check::no_node
+
+  × `on click` belongs to an element, and there is none here
+   ╭─[no_node.strand:5:6]
+ 4 │   when hover { opacity: 0.5 }
+ 5 │   on click { }
+   ·      ──┬──
+   ·        ╰── not inside an element
+ 6 │   box { }
+   ╰────
+  help: put it inside the element it is about: `box { on click { … } }`; service events are `on
+        service.event`
+
+check::no_node
+
+  × `self` belongs to an element, and there is none here
+   ╭─[no_node.strand:8:9]
+ 7 │ }
+ 8 │ let w = self.width
+   ·         ──┬─
+   ·           ╰── not inside an element
+   ╰────
+  help: use `self` inside the element it describes, or give that element an `id:` and read
+        `id.width`

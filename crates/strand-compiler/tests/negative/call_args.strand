@@ -1,0 +1,5 @@
+// expect: check::missing_arg, check::unknown_param, check::type_mismatch
+// Builtin functions are checked like components.
+let a = spring(700)
+let b = ease(curve: out_back, time: 300ms)
+let c = pct("half")

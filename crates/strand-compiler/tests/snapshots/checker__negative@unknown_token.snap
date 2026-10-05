@@ -1,0 +1,39 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::unknown_token
+
+  × unknown token `$fg-muted`
+   ╭─[unknown_token.strand:5:16]
+ 4 │ component C {
+ 5 │   col { color: $fg-muted; bg: $surfce; pad: $space }
+   ·                ────┬────
+   ·                    ╰── read as `$fg - muted`
+ 6 │ }
+   ╰────
+  help: did you mean `$fg.muted`?
+
+check::unknown_token
+
+  × unknown token `$surfce`
+   ╭─[unknown_token.strand:5:31]
+ 4 │ component C {
+ 5 │   col { color: $fg-muted; bg: $surfce; pad: $space }
+   ·                               ───┬───
+   ·                                  ╰── not a token
+ 6 │ }
+   ╰────
+  help: did you mean `$surface`?
+
+check::unknown_token
+
+  × `$space` is a group of tokens, not one token
+   ╭─[unknown_token.strand:5:45]
+ 4 │ component C {
+ 5 │   col { color: $fg-muted; bg: $surfce; pad: $space }
+   ·                                             ───┬──
+   ·                                                ╰── a group
+ 6 │ }
+   ╰────
+  help: pick one: `$space.1`, `$space.2`, `$space.3`, `$space.4`

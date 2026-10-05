@@ -1,0 +1,15 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::spaced_value
+
+  × `margin` takes comma-separated values
+   ╭─[spaced_value.strand:4:17]
+ 3 │ component C {
+ 4 │   box { margin: 8 8 0; shadow: 0 2px 8px $shadow.alpha(0.25); font: "Inter" 13px 500 }
+   ·                 ──┬──
+   ·                   ╰── space-separated values are for shadows and fonts
+ 5 │ }
+   ╰────
+  help: separate the values with commas: `8, 8, 0`

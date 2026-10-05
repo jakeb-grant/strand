@@ -1,0 +1,10 @@
+// expect: check::redeclared
+// Components, types and other global names are shared by every file of a
+// config: declaring one twice is an error naming both places.
+// file: bar.strand
+component Dot { box { size: 8 } }
+enum Kind { a, b }
+// file: widgets.strand
+component Dot { box { size: 6 } }
+state x = 1
+state x = 2

@@ -1,0 +1,8 @@
+// expect: check::unknown_name
+// A misspelt name gets a did-you-mean from what is in scope, including
+// the variants of the enum the position expects.
+enum Kind { volume, brightness }
+state kind = volume
+state open = false
+let label = kind == volum ? "volume" : "brightness"
+let shown = opn && kind == brightness

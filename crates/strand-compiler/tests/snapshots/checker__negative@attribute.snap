@@ -1,0 +1,26 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::attribute
+
+  × unknown attribute `@rest`
+   ╭─[attribute.strand:3:1]
+ 2 │ // `@reset` is the only attribute, and goes on `state` or `let`.
+ 3 │ @rest state a = 1
+   · ──┬──
+   ·   ╰── not an attribute
+ 4 │ @reset component C { box { } }
+   ╰────
+  help: did you mean `@reset`?
+
+check::attribute
+
+  × `@reset` goes on a `state` or `let`
+   ╭─[attribute.strand:4:1]
+ 3 │ @rest state a = 1
+ 4 │ @reset component C { box { } }
+   · ───┬──
+   ·    ╰── nothing here to reset
+ 5 │ @reset state b = 1
+   ╰────

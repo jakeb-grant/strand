@@ -1,0 +1,8 @@
+// expect: check::no_node
+// `hover`, `self` and element events belong to an enclosing element.
+component C {
+  when hover { opacity: 0.5 }
+  on click { }
+  box { }
+}
+let w = self.width

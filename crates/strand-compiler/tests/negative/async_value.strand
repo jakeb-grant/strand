@@ -1,0 +1,8 @@
+// expect: check::async
+// `Async<T>` where `T` is expected is an error; `??` covers pending and
+// failed loads.
+state prefs from "prefs.toml" { wallpaper: path = "~/wall.jpg" }
+let art = material(image: prefs.wallpaper)
+let palette: Palette = art
+let fine: Palette = art ?? material(seed: $accent)
+let title = apps.search("x").first

@@ -1,0 +1,40 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::assign_to_prop
+
+  × cannot assign `width`: props are bindings
+   ╭─[assign_to_prop.strand:6:16]
+ 5 │   box { width: 24
+ 6 │     on click { width = 30 }
+   ·                ──┬──
+   ·                  ╰── a bound prop
+ 7 │     on secondary { level = 0 }
+   ╰────
+  help: bind the prop to a `state` (`width: w`) and assign the state instead
+
+check::assign_to_prop
+
+  × cannot assign `level`: it is a parameter, bound by the caller
+   ╭─[assign_to_prop.strand:7:20]
+ 6 │     on click { width = 30 }
+ 7 │     on secondary { level = 0 }
+   ·                    ──┬──
+   ·                      ╰── a bound prop
+ 8 │     on middle { self.opacity = 0.5 }
+   ╰────
+  help: assigning would cut the binding; keep a `state` here and assign that, or change what the
+        caller passes
+
+check::assign_to_prop
+
+  × cannot assign `opacity`: props are bindings
+   ╭─[assign_to_prop.strand:8:17]
+ 7 │     on secondary { level = 0 }
+ 8 │     on middle { self.opacity = 0.5 }
+   ·                 ──────┬─────
+   ·                       ╰── a bound prop
+ 9 │   }
+   ╰────
+  help: bind the prop to a `state` (`width: w`) and assign the state instead

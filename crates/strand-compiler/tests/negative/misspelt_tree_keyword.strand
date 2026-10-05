@@ -1,0 +1,19 @@
+// expect: check::unknown_element
+// `whn hover { … }` and `enterr { … }` are valid element syntax, so the
+// checker's unknown-element did-you-mean offers the tree keywords.
+keyframes shake { 0%, 100% { x: 0 }; 50% { x: 4 } }
+component Card {
+  col {
+    sloot
+    elze { box { } }
+  }
+}
+component Dot {
+  box { size: 8
+    whn hover { bg: $accent }
+    enterr { opacity: 0 }
+    exitt { opacity: 0 }
+    sett { }
+    playy shake
+  }
+}

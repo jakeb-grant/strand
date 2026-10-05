@@ -1,0 +1,47 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::missing_arg
+
+  × `spring` needs `damping`
+   ╭─[call_args.strand:3:9]
+ 2 │ // Builtin functions are checked like components.
+ 3 │ let a = spring(700)
+   ·         ─────┬─────
+   ·              ╰── missing argument
+ 4 │ let b = ease(curve: out_back, time: 300ms)
+   ╰────
+
+check::missing_arg
+
+  × `ease` needs `duration`
+   ╭─[call_args.strand:4:9]
+ 3 │ let a = spring(700)
+ 4 │ let b = ease(curve: out_back, time: 300ms)
+   ·         ─────────────────┬────────────────
+   ·                          ╰── missing argument
+ 5 │ let c = pct("half")
+   ╰────
+
+check::unknown_param
+
+  × `ease` has no parameter `time`
+   ╭─[call_args.strand:4:31]
+ 3 │ let a = spring(700)
+ 4 │ let b = ease(curve: out_back, time: 300ms)
+   ·                               ──┬─
+   ·                                 ╰── unknown parameter
+ 5 │ let c = pct("half")
+   ╰────
+  help: it takes `curve` and `duration`
+
+check::type_mismatch
+
+  × `fraction` of `pct` expects `float`, found `text`
+   ╭─[call_args.strand:5:13]
+ 4 │ let b = ease(curve: out_back, time: 300ms)
+ 5 │ let c = pct("half")
+   ·             ───┬──
+   ·                ╰── this is `text`
+   ╰────

@@ -1,0 +1,26 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::unknown_type
+
+  × unknown type `txt`
+   ╭─[unknown_type.strand:3:30]
+ 2 │ // Types: builtin names, records and enums, with did-you-mean.
+ 3 │ type Pin { app: text; label: txt }
+   ·                              ─┬─
+   ·                               ╰── not a type
+ 4 │ state pins: [Pn] = []
+   ╰────
+  help: did you mean `text`?
+
+check::unknown_type
+
+  × unknown type `Pn`
+   ╭─[unknown_type.strand:4:14]
+ 3 │ type Pin { app: text; label: txt }
+ 4 │ state pins: [Pn] = []
+   ·              ─┬
+   ·               ╰── not a type
+   ╰────
+  help: did you mean `Pin`?

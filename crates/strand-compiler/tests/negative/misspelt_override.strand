@@ -1,0 +1,7 @@
+// expect: check::unknown_token
+// A misspelt override is an unknown-name error, never a new token.
+tokens base { space { 1: 4px; 2: 8px }; fg.muted: $fg.alpha(0.65) }
+tokens compact extends base {
+  override spcae { 1: 2px }
+  override fg.mutde: $fg.alpha(0.5)
+}

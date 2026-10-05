@@ -1,0 +1,8 @@
+// expect: check::misplaced
+// Props go on elements, not directly in a component body or an `if`.
+state open = false
+component C {
+  width: 24
+  if open { opacity: 1 }
+  box { }
+}

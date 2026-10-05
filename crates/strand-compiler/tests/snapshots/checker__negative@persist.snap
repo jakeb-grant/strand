@@ -1,0 +1,38 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::persist
+
+  × `pick` cannot persist a `fn(float) -> float`
+   ╭─[persist.strand:3:34]
+ 2 │ // `persist` stores plain data, and only `state` has anything to store.
+ 3 │ state pick = (x: float) => x * 2 persist
+   ·                                  ───┬───
+   ·                                     ╰── not plain data
+ 4 │ state ok = 1 persist
+   ╰────
+  help: only plain data (numbers, text, colours, enums, records, lists) is stored
+
+syntax::persist
+
+  × `persist` goes after the value
+   ╭─[persist.strand:5:13]
+ 4 │ state ok = 1 persist
+ 5 │ state early persist = 2
+   ·             ───┬───
+   ·                ╰── before the value
+ 6 │ let doubled = ok * 2 persist
+   ╰────
+  help: write `state early = … persist`
+
+syntax::persist
+
+  × `persist` goes on `state`, not `let`
+   ╭─[persist.strand:6:22]
+ 5 │ state early persist = 2
+ 6 │ let doubled = ok * 2 persist
+   ·                      ───┬───
+   ·                         ╰── a `let` is derived, so there is nothing to store
+   ╰────
+  help: to keep a value across restarts, make it `state doubled = … persist`

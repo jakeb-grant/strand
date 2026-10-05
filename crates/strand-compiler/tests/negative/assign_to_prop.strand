@@ -1,0 +1,10 @@
+// expect: check::assign_to_prop
+// Assigning to a prop (QML's `width = 30`) or to a parameter would kill a
+// binding: a load error with a fix.
+component Bar(level: float) {
+  box { width: 24
+    on click { width = 30 }
+    on secondary { level = 0 }
+    on middle { self.opacity = 0.5 }
+  }
+}

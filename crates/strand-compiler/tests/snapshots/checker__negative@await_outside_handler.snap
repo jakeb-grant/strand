@@ -1,0 +1,15 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::await_outside_handler
+
+  × `await` only works in handlers
+   ╭─[await_outside_handler.strand:3:13]
+ 2 │ // Bindings never wait.
+ 3 │ let ready = await sleep(1s)
+   ·             ───────┬───────
+   ·                    ╰── not in a handler
+ 4 │ component C {
+   ╰────
+  help: bindings never wait: bind the `Async` value and read `?? fallback`

@@ -1,0 +1,8 @@
+// expect: check::read_only
+// Service fields are writable only where the service marks them `rw`.
+component C {
+  box {
+    on click { battery.percent = 1 }
+    on scroll(dy) { audio.sink.volume -= dy * 0.05 }
+  }
+}

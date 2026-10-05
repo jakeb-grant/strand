@@ -1,0 +1,22 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::redeclared
+
+  × `use tokens` appears twice
+   ╭─[b.strand:1:5]
+ 1 │ use tokens compact
+   ·     ───────┬──────
+   ·            ╰── chosen again here
+   ╰────
+  help: one `use tokens` chooses for the whole config; pick between sets with an expression (`use
+        tokens a ? x : y`)
+
+Error: 
+  × see also a.strand
+   ╭─[a.strand:1:5]
+ 1 │ use tokens base
+   ·     ─────┬─────
+   ·          ╰── first chosen here
+   ╰────

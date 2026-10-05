@@ -1,0 +1,15 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::not_reactive
+
+  × `on change` watches something that never changes
+   ╭─[not_reactive.strand:4:11]
+ 3 │ state shown = false
+ 4 │ on change 5 { shown = true }
+   ·           ┬
+   ·           ╰── constant
+ 5 │ on change audio.sink.volume after 1.2s { shown = false }
+   ╰────
+  help: watch a `state`, a `let` or a service field, such as `audio.sink.volume`

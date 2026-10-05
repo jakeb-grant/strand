@@ -1,0 +1,6 @@
+// expect: check::non_exhaustive
+// A `match` covers every variant or has `_`.
+enum Look { auto, light, dark, mocha }
+state look = auto
+let dark = match look { auto => system.dark, light => false }
+let fine = match look { light => false, _ => true }

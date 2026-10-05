@@ -1,0 +1,16 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::two_way_prop
+
+  × `value` cannot be bound two-way
+   ╭─[two_way_prop.strand:5:24]
+ 4 │ component C {
+ 5 │   meter level { value: <-> level }
+   ·                        ─┬─
+   ·                         ╰── the element never writes it
+ 6 │ }
+   ╰────
+  help: `<->` is for props a widget writes back: `value`, `text`, `open`, `current`; bind this one
+        with `name: value`

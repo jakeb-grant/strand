@@ -1,0 +1,3 @@
+// expect: check::needs_default
+// Settings fields have defaults, so a missing key springs back.
+state prefs from "prefs.toml" { accent: color; compact: bool = false }

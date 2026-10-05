@@ -1,0 +1,6 @@
+// expect: check::unknown_token
+// Unknown tokens get a did-you-mean; `$fg-muted` is read as a subtraction,
+// so the token meant is named instead of an unknown `muted`.
+component C {
+  col { color: $fg-muted; bg: $surfce; pad: $space }
+}

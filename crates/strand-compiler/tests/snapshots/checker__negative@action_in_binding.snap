@@ -1,0 +1,27 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::action_in_binding
+
+  × `notifications.clear` is an action, so it runs in a handler
+   ╭─[action_in_binding.strand:3:29]
+ 2 │ // Actions change the world, so they run in handlers, not bindings.
+ 3 │ let cleared = notifications.clear()
+   ·                             ──┬──
+   ·                               ╰── changes something
+ 4 │ component C(n: Notification) {
+   ╰────
+  help: call it from a handler: `on click { notifications.clear(…) }`
+
+check::action_in_binding
+
+  × `n.expire` is an action, so it runs in a handler
+   ╭─[action_in_binding.strand:5:31]
+ 4 │ component C(n: Notification) {
+ 5 │   text n.summary { opacity: n.expire() }
+   ·                               ───┬──
+   ·                                  ╰── changes something
+ 6 │ }
+   ╰────
+  help: call it from a handler: `on click { n.expire(…) }`

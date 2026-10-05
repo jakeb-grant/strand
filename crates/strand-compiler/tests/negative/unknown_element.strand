@@ -1,0 +1,9 @@
+// expect: check::unknown_element
+// Elements and components are offered alike.
+component Volume { row { gap: 4 } }
+component Panel {
+  col {
+    buton "OK"
+    Volme
+  }
+}

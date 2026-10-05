@@ -1,0 +1,8 @@
+// expect: check::redeclared
+// One `use tokens` chooses for the whole config.
+tokens base { space { 1: 4px } }
+tokens compact extends base { override space { 1: 2px } }
+// file: a.strand
+use tokens base
+// file: b.strand
+use tokens compact

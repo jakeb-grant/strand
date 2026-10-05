@@ -1,0 +1,713 @@
+//! Tokens: token sets, `extends` and loud `override`s, token references,
+//! `set { … }`, component tokens and `use`.
+//!
+//! Every token path the program can read is a schema token (palette roles
+//! and base tiers), an entry of a `tokens` set, or a component token
+//! (`$Toast.radius`). Entries are typed on first read, so a cycle among
+//! derived tokens is found as it is walked and reported with its path.
+
+use std::collections::{BTreeMap, HashMap};
+
+use super::{Checker, Ctx};
+use crate::hir::{self, DefId, DefKind, Target};
+use crate::schema::Schema;
+use crate::syntax::Span;
+use crate::syntax::ast;
+use crate::ty::Ty;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Owner {
+    Set(usize),
+    Component(DefId),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum EntryState {
+    Pending,
+    Checking,
+    Done(Ty),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct Entry<'a> {
+    pub owner: Owner,
+    pub path: String,
+    pub span: Span,
+    pub override_: bool,
+    /// The `override group { … }` this entry came from: its prefix and
+    /// key span, so a misspelt group is reported once.
+    pub group: Option<(String, Span)>,
+    pub value: &'a ast::Expr,
+    pub module: usize,
+    pub state: EntryState,
+    pub hir: Option<hir::Expr>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct SetInfo<'a> {
+    pub def: DefId,
+    pub module: usize,
+    pub ast: &'a ast::TokensDecl,
+    pub extends: Option<usize>,
+    pub entries: Vec<usize>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Tokens<'a> {
+    pub sets: Vec<SetInfo<'a>>,
+    pub set_of_def: HashMap<DefId, usize>,
+    pub entries: Vec<Entry<'a>>,
+    pub by_path: HashMap<String, Vec<usize>>,
+    pub stack: Vec<usize>,
+}
+
+fn key_path(k: &ast::TokenKey) -> String {
+    k.segments
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+impl<'a> Tokens<'a> {
+    pub fn add_set(&mut self, def: DefId, module: usize, decl: &'a ast::TokensDecl) {
+        let set = self.sets.len();
+        let mut entries = Vec::new();
+        self.flatten(
+            Owner::Set(set),
+            module,
+            "",
+            &decl.entries.items,
+            None,
+            false,
+            &mut entries,
+        );
+        self.sets.push(SetInfo {
+            def,
+            module,
+            ast: decl,
+            extends: None,
+            entries,
+        });
+        self.set_of_def.insert(def, set);
+    }
+
+    pub fn add_component(
+        &mut self,
+        def: DefId,
+        module: usize,
+        name: &str,
+        block: &'a ast::Block<ast::TokenEntry>,
+    ) -> Vec<usize> {
+        let mut out = Vec::new();
+        self.flatten(
+            Owner::Component(def),
+            module,
+            name,
+            &block.items,
+            None,
+            false,
+            &mut out,
+        );
+        out
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn flatten(
+        &mut self,
+        owner: Owner,
+        module: usize,
+        prefix: &str,
+        items: &'a [ast::TokenEntry],
+        group: Option<(String, Span)>,
+        override_: bool,
+        out: &mut Vec<usize>,
+    ) {
+        for e in items {
+            let key = key_path(&e.key);
+            let path = if prefix.is_empty() {
+                key
+            } else {
+                format!("{prefix}.{key}")
+            };
+            let ov = override_ || e.override_.is_some();
+            match &e.body {
+                ast::TokenBody::Value(v) => {
+                    let idx = self.entries.len();
+                    self.entries.push(Entry {
+                        owner,
+                        path: path.clone(),
+                        span: e.key.span,
+                        override_: ov,
+                        group: group.clone(),
+                        value: v,
+                        module,
+                        state: EntryState::Pending,
+                        hir: None,
+                    });
+                    self.by_path.entry(path).or_default().push(idx);
+                    out.push(idx);
+                }
+                ast::TokenBody::Group(b) => {
+                    let g = if e.override_.is_some() && group.is_none() {
+                        Some((path.clone(), e.key.span))
+                    } else {
+                        group.clone()
+                    };
+                    self.flatten(owner, module, &path, &b.items, g, ov, out);
+                }
+            }
+        }
+    }
+
+    /// Sets from `set` up its `extends` chain, without repeats.
+    fn chain(&self, set: Option<usize>) -> Vec<usize> {
+        let mut out = Vec::new();
+        let mut cur = set;
+        while let Some(s) = cur {
+            if out.contains(&s) {
+                break;
+            }
+            out.push(s);
+            cur = self.sets[s].extends;
+        }
+        out
+    }
+
+    fn find_in_chain(&self, set: Option<usize>, path: &str) -> Option<usize> {
+        self.chain(set).into_iter().find_map(|s| {
+            self.sets[s]
+                .entries
+                .iter()
+                .copied()
+                .find(|&e| self.entries[e].path == path)
+        })
+    }
+
+    /// Every readable token path and its type.
+    pub fn all_types(&self, schema: &Schema) -> BTreeMap<String, Ty> {
+        let mut out: BTreeMap<String, Ty> = schema
+            .tokens
+            .iter()
+            .map(|(k, t)| (k.clone(), t.ty.clone()))
+            .collect();
+        for e in &self.entries {
+            if let EntryState::Done(t) = &e.state {
+                out.entry(e.path.clone()).or_insert_with(|| t.clone());
+            }
+        }
+        out
+    }
+
+    fn known(&self, schema: &Schema, path: &str) -> bool {
+        schema.tokens.contains_key(path) || self.by_path.contains_key(path)
+    }
+
+    fn all_paths(&self, schema: &Schema) -> Vec<String> {
+        let mut v: Vec<String> = schema.tokens.keys().cloned().collect();
+        v.extend(self.by_path.keys().cloned());
+        v
+    }
+}
+
+impl<'a> Checker<'a> {
+    /// Resolves `extends` and checks each set's entries against the sets it
+    /// extends: redefining needs `override`, and an `override` must
+    /// override something.
+    pub(super) fn resolve_token_sets(&mut self) {
+        for s in 0..self.tokens.sets.len() {
+            let set = &self.tokens.sets[s];
+            let (module, ext) = (set.module, set.ast.extends.as_ref());
+            let Some(ext) = ext else { continue };
+            self.module = module;
+            match self.globals.get(&ext.name).copied() {
+                Some(d) if self.defs[d.0 as usize].kind == DefKind::Tokens => {
+                    self.add_ref(ext.span, Target::Def(d));
+                    self.tokens.sets[s].extends = self.tokens.set_of_def.get(&d).copied();
+                }
+                _ => {
+                    let candidates: Vec<String> = self
+                        .tokens
+                        .sets
+                        .iter()
+                        .map(|t| self.defs[t.def.0 as usize].name.clone())
+                        .collect();
+                    let help = Self::did_you_mean(&ext.name, &candidates);
+                    self.error(
+                        "check::unknown_name",
+                        format!("unknown token set `{}`", ext.name),
+                        ext.span,
+                        "not a `tokens` set",
+                    )
+                    .help = help;
+                }
+            }
+        }
+        // `a extends b extends a`.
+        for s in 0..self.tokens.sets.len() {
+            let mut seen = vec![s];
+            let mut cur = self.tokens.sets[s].extends;
+            while let Some(c) = cur {
+                if c == s {
+                    let names: Vec<String> = seen
+                        .iter()
+                        .chain(std::iter::once(&s))
+                        .map(|i| {
+                            format!("`{}`", self.defs[self.tokens.sets[*i].def.0 as usize].name)
+                        })
+                        .collect();
+                    self.module = self.tokens.sets[s].module;
+                    let span = self.tokens.sets[s]
+                        .ast
+                        .extends
+                        .as_ref()
+                        .map_or(Span::default(), |e| e.span);
+                    self.error(
+                        "check::cycle",
+                        format!("token sets extend each other: {}", names.join(" → ")),
+                        span,
+                        "extends itself",
+                    );
+                    self.tokens.sets[s].extends = None;
+                    break;
+                }
+                if seen.contains(&c) {
+                    break;
+                }
+                seen.push(c);
+                cur = self.tokens.sets[c].extends;
+            }
+        }
+        for s in 0..self.tokens.sets.len() {
+            self.validate_set(s);
+        }
+    }
+
+    fn validate_set(&mut self, s: usize) {
+        self.module = self.tokens.sets[s].module;
+        let parent = self.tokens.sets[s].extends;
+        let set_name = self.defs[self.tokens.sets[s].def.0 as usize].name.clone();
+        let parent_name =
+            parent.map(|p| self.defs[self.tokens.sets[p].def.0 as usize].name.clone());
+        let entries = self.tokens.sets[s].entries.clone();
+        let mut reported_groups: Vec<String> = Vec::new();
+        for (i, &e) in entries.iter().enumerate() {
+            let entry = self.tokens.entries[e].clone();
+            let path = entry.path.as_str();
+            if let Some(&prev) = entries[..i]
+                .iter()
+                .find(|&&p| self.tokens.entries[p].path == path)
+            {
+                let ps = self.tokens.entries[prev].span;
+                let file = self.file();
+                self.error(
+                    "check::redeclared",
+                    format!("`${path}` is defined twice in `{set_name}`"),
+                    entry.span,
+                    "defined again here",
+                )
+                .add_secondary(file, ps, "first defined here");
+                continue;
+            }
+            let inherited = self.tokens.find_in_chain(parent, path);
+            let schema = self.schema.tokens.get(path);
+            if !entry.override_ {
+                if let Some(inh) = inherited {
+                    let (f, sp) = (
+                        self.modules[self.tokens.entries[inh].module].file,
+                        self.tokens.entries[inh].span,
+                    );
+                    self.error(
+                        "check::override_needed",
+                        format!(
+                            "`${path}` is already defined by `{}`",
+                            parent_name.as_deref().unwrap_or("")
+                        ),
+                        entry.span,
+                        "redefined without `override`",
+                    )
+                    .add_secondary(f, sp, "defined here")
+                    .help = Some(format!("redefining a token is loud: `override {path}: …`"));
+                } else if schema.is_some_and(|t| t.palette) {
+                    self.error(
+                        "check::override_needed",
+                        format!("`${path}` is a palette role"),
+                        entry.span,
+                        "redefined without `override`",
+                    )
+                    .help = Some(format!(
+                        "palette roles come from `use palette …`; to replace one here, write `override {path}: …`"
+                    ));
+                }
+            } else if inherited.is_none() && schema.is_none() {
+                // A misspelt override is an unknown name, never a new token.
+                if let Some((prefix, gspan)) = &entry.group {
+                    let any = self.tokens.all_paths(self.schema).iter().any(|p| {
+                        p.starts_with(&format!("{prefix}.")) && self.override_target(parent, p)
+                    });
+                    if !any {
+                        if !reported_groups.contains(prefix) {
+                            reported_groups.push(prefix.clone());
+                            let groups = self.token_groups(parent);
+                            let help = Self::did_you_mean(prefix, &groups);
+                            self.error(
+                                "check::unknown_token",
+                                format!("`override {prefix}` overrides nothing"),
+                                *gspan,
+                                "no such token group",
+                            )
+                            .help = help.or_else(|| {
+                                Some("an override must name an existing token; drop `override` to add a new one".into())
+                            });
+                        }
+                        continue;
+                    }
+                }
+                let candidates = self.override_candidates(parent);
+                let help = Self::did_you_mean(path, &candidates);
+                self.error(
+                    "check::unknown_token",
+                    format!("`override {path}` overrides nothing"),
+                    entry.span,
+                    "no such token",
+                )
+                .help = help.or_else(|| {
+                    Some(
+                        "an override must name an existing token; drop `override` to add a new one"
+                            .into(),
+                    )
+                });
+            }
+        }
+    }
+
+    /// Whether `path` is something `override` in a set extending `parent`
+    /// may name.
+    fn override_target(&self, parent: Option<usize>, path: &str) -> bool {
+        self.schema.tokens.contains_key(path) || self.tokens.find_in_chain(parent, path).is_some()
+    }
+
+    fn override_candidates(&self, parent: Option<usize>) -> Vec<String> {
+        let mut v: Vec<String> = self.schema.tokens.keys().cloned().collect();
+        for s in self.tokens.chain(parent) {
+            v.extend(
+                self.tokens.sets[s]
+                    .entries
+                    .iter()
+                    .map(|&e| self.tokens.entries[e].path.clone()),
+            );
+        }
+        v
+    }
+
+    fn token_groups(&self, parent: Option<usize>) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .override_candidates(parent)
+            .iter()
+            .filter_map(|p| p.split_once('.').map(|(g, _)| g.to_string()))
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    }
+
+    /// A token set's entries, typed.
+    pub(super) fn token_set(&mut self, def: DefId) -> hir::TokenSet {
+        let Some(&s) = self.tokens.set_of_def.get(&def) else {
+            return hir::TokenSet {
+                def,
+                extends: None,
+                entries: Vec::new(),
+            };
+        };
+        let entries = self.tokens.sets[s].entries.clone();
+        let extends = self.tokens.sets[s].extends.map(|p| self.tokens.sets[p].def);
+        hir::TokenSet {
+            def,
+            extends,
+            entries: self.token_defs(&entries),
+        }
+    }
+
+    pub(super) fn token_defs(&mut self, entries: &[usize]) -> Vec<hir::TokenDef> {
+        entries
+            .iter()
+            .map(|&e| {
+                let span = self.tokens.entries[e].span;
+                self.entry_ty(e, span);
+                let entry = &mut self.tokens.entries[e];
+                hir::TokenDef {
+                    path: entry.path.clone(),
+                    span: entry.span,
+                    override_: entry.override_,
+                    value: entry
+                        .hir
+                        .take()
+                        .unwrap_or_else(|| hir::Expr::error(entry.value.span)),
+                }
+            })
+            .collect()
+    }
+
+    /// The type of entry `e`, checking it on first use.
+    fn entry_ty(&mut self, e: usize, span: Span) -> Ty {
+        match &self.tokens.entries[e].state {
+            EntryState::Done(t) => return t.clone(),
+            EntryState::Checking => {
+                let pos = self.tokens.stack.iter().position(|x| *x == e).unwrap_or(0);
+                let path: Vec<String> = self.tokens.stack[pos..]
+                    .iter()
+                    .chain(std::iter::once(&e))
+                    .map(|i| format!("`${}`", self.tokens.entries[*i].path))
+                    .collect();
+                let p = self.tokens.entries[e].path.clone();
+                self.error(
+                    "check::cycle",
+                    format!("static cycle: {}", path.join(" → ")),
+                    span,
+                    format!("`${p}` depends on itself"),
+                )
+                .help = Some("derived tokens must bottom out in the palette or a value".into());
+                return Ty::Error;
+            }
+            EntryState::Pending => {}
+        }
+        self.tokens.entries[e].state = EntryState::Checking;
+        self.tokens.stack.push(e);
+        let entry = self.tokens.entries[e].clone();
+        let want = self.schema.tokens.get(&entry.path).map(|t| t.ty.clone());
+        let ctx = Ctx {
+            token_entry: Some(e),
+            ..Ctx::default()
+        };
+        let h = self.with_place(entry.module, 0, 0, ctx, |c| {
+            c.token_value(entry.value, want.as_ref(), &entry.path)
+        });
+        self.tokens.stack.pop();
+        let ty = want.unwrap_or_else(|| h.ty.clone());
+        self.tokens.entries[e].hir = Some(h);
+        self.tokens.entries[e].state = EntryState::Done(ty.clone());
+        ty
+    }
+
+    /// A token's value: like a prop value, but shadows and fonts are
+    /// inferred for tokens the schema does not type.
+    fn token_value(&mut self, value: &'a ast::Expr, want: Option<&Ty>, path: &str) -> hir::Expr {
+        let what = format!("`${path}`");
+        match want {
+            Some(t) => self.prop_value(value, t, &what),
+            None => match &value.kind {
+                ast::ExprKind::Spaced(items) => {
+                    let font = matches!(
+                        items.first().map(|i| &i.kind),
+                        Some(ast::ExprKind::String(_))
+                    );
+                    let t = if font { Ty::FONT } else { Ty::SHADOW };
+                    self.prop_value(value, &t, &what)
+                }
+                ast::ExprKind::Commas(items)
+                    if items
+                        .iter()
+                        .any(|i| matches!(i.kind, ast::ExprKind::Spaced(_))) =>
+                {
+                    self.prop_value(value, &Ty::SHADOW, &what)
+                }
+                _ => self.expr(value, None),
+            },
+        }
+    }
+
+    /// `$path`.
+    pub(super) fn token_expr(&mut self, key: &ast::TokenKey) -> hir::Expr {
+        let path = key_path(key);
+        self.add_ref(key.span, Target::Token(path.clone()));
+        let ty = self.token_ty(&path, key.span);
+        hir::Expr {
+            kind: hir::ExprKind::Token(path),
+            ty,
+            span: key.span,
+        }
+    }
+
+    fn token_ty(&mut self, path: &str, span: Span) -> Ty {
+        if let Some(cur) = self.ctx.token_entry
+            && let Owner::Set(s) = self.tokens.entries[cur].owner
+        {
+            // `override x: $x.alpha(0.5)` reads the parent's `x`.
+            let own = self.tokens.entries[cur].path == path;
+            let start = if own {
+                self.tokens.sets[s].extends
+            } else {
+                Some(s)
+            };
+            if let Some(e) = self.tokens.find_in_chain(start, path) {
+                return self.entry_ty(e, span);
+            }
+        }
+        if let Some(t) = self.schema.tokens.get(path) {
+            return t.ty.clone();
+        }
+        if let Some(&e) = self.tokens.by_path.get(path).and_then(|v| v.first()) {
+            return self.entry_ty(e, span);
+        }
+        let prefix = format!("{path}.");
+        let mut members: Vec<String> = self
+            .tokens
+            .all_paths(self.schema)
+            .into_iter()
+            .filter(|p| p.starts_with(&prefix))
+            .collect();
+        if !members.is_empty() {
+            members.sort();
+            members.dedup();
+            let shown: Vec<String> = members.iter().take(4).map(|m| format!("`${m}`")).collect();
+            self.error(
+                "check::unknown_token",
+                format!("`${path}` is a group of tokens, not one token"),
+                span,
+                "a group",
+            )
+            .help = Some(format!("pick one: {}", shown.join(", ")));
+            return Ty::Error;
+        }
+        let candidates = self.tokens.all_paths(self.schema);
+        let help = suggest_path(path, &candidates);
+        self.error(
+            "check::unknown_token",
+            format!("unknown token `${path}`"),
+            span,
+            "not a token",
+        )
+        .help = help;
+        Ty::Error
+    }
+
+    /// `$fg-muted`: the parser reads a subtraction (and warns); when the
+    /// joined name is near a token, this reports the token instead of an
+    /// unknown name `muted`.
+    pub(super) fn kebab_token(
+        &mut self,
+        key: &ast::TokenKey,
+        name: &ast::Ident,
+        span: Span,
+    ) -> Option<hir::Expr> {
+        if key.span.end + 1 != name.span.start || self.lookup_scope(&name.name).is_some() {
+            return None;
+        }
+        let path = key_path(key);
+        let candidates = self.tokens.all_paths(self.schema);
+        let exact = [
+            format!("{path}.{}", name.name),
+            format!("{path}_{}", name.name),
+        ]
+        .into_iter()
+        .find(|p| candidates.contains(p));
+        let meant = exact.or_else(|| {
+            crate::diagnostic::suggest(
+                &format!("{path}.{}", name.name),
+                candidates.iter().map(String::as_str),
+            )
+            .map(str::to_string)
+        })?;
+        self.error(
+            "check::unknown_token",
+            format!("unknown token `${path}-{}`", name.name),
+            span,
+            format!("read as `${path} - {}`", name.name),
+        )
+        .help = Some(format!("did you mean `${meant}`?"));
+        Some(hir::Expr::error(span))
+    }
+
+    /// `set { $x: … }`: overrides for a subtree. Every key must be a token;
+    /// on the right, `$x` is the inherited value.
+    pub(super) fn set_block(
+        &mut self,
+        block: &'a ast::Block<ast::TokenEntry>,
+    ) -> Vec<hir::TokenDef> {
+        let mut out = Vec::new();
+        self.set_entries(&block.items, "", &mut out);
+        out
+    }
+
+    fn set_entries(
+        &mut self,
+        items: &'a [ast::TokenEntry],
+        prefix: &str,
+        out: &mut Vec<hir::TokenDef>,
+    ) {
+        let saved = self.ctx;
+        self.ctx.prop = false;
+        for e in items {
+            let key = key_path(&e.key);
+            let path = if prefix.is_empty() {
+                key
+            } else {
+                format!("{prefix}.{key}")
+            };
+            match &e.body {
+                ast::TokenBody::Group(b) => self.set_entries(&b.items, &path, out),
+                ast::TokenBody::Value(v) => {
+                    let want = if self.tokens.known(self.schema, &path) {
+                        self.add_ref(e.key.span, Target::Token(path.clone()));
+                        Some(self.token_ty(&path, e.key.span))
+                    } else {
+                        let candidates = self.tokens.all_paths(self.schema);
+                        let help = suggest_path(&path, &candidates);
+                        self.error(
+                            "check::unknown_token",
+                            format!("`set` overrides `${path}`, which is not a token"),
+                            e.key.span,
+                            "not a token",
+                        )
+                        .help = help;
+                        None
+                    };
+                    let value = self.token_value(v, want.as_ref(), &path);
+                    out.push(hir::TokenDef {
+                        path,
+                        span: e.key.span,
+                        override_: true,
+                        value,
+                    });
+                }
+            }
+        }
+        self.ctx = saved;
+    }
+
+    /// `use tokens a, palette b`.
+    pub(super) fn use_decl(&mut self, u: &'a ast::Use, _span: Span) -> hir::Use {
+        let mut out = hir::Use {
+            tokens: None,
+            palette: None,
+        };
+        for c in &u.clauses {
+            match c.kind.name.as_str() {
+                "tokens" => {
+                    out.tokens =
+                        Some(self.expect(&c.value, &Ty::opaque("TokenSet"), "`use tokens`"));
+                    self.uses.push((self.module, c.span, "tokens"));
+                }
+                "palette" => {
+                    out.palette =
+                        Some(self.expect(&c.value, &Ty::opaque("Palette"), "`use palette`"));
+                    self.uses.push((self.module, c.span, "palette"));
+                }
+                _ => {
+                    self.expr(&c.value, None);
+                }
+            }
+        }
+        out
+    }
+}
+
+/// Did-you-mean for token paths: compares the whole path, then its last
+/// segment within the same group.
+fn suggest_path(path: &str, candidates: &[String]) -> Option<String> {
+    if let Some(s) = crate::diagnostic::suggest(path, candidates.iter().map(String::as_str)) {
+        return Some(format!("did you mean `${s}`?"));
+    }
+    None
+}

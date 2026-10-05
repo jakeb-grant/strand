@@ -1,0 +1,26 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::unknown_name
+
+  × unknown name `volum`
+   ╭─[unknown_name.strand:7:21]
+ 6 │ state open = false
+ 7 │ let label = kind == volum ? "volume" : "brightness"
+   ·                     ──┬──
+   ·                       ╰── not a name, nor a variant of `Kind`
+ 8 │ let shown = opn && kind == brightness
+   ╰────
+  help: did you mean `volume`?
+
+check::unknown_name
+
+  × unknown name `opn`
+   ╭─[unknown_name.strand:8:13]
+ 7 │ let label = kind == volum ? "volume" : "brightness"
+ 8 │ let shown = opn && kind == brightness
+   ·             ─┬─
+   ·              ╰── not found
+   ╰────
+  help: did you mean `open`?

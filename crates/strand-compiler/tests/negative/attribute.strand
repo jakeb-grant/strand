@@ -1,0 +1,5 @@
+// expect: check::attribute
+// `@reset` is the only attribute, and goes on `state` or `let`.
+@rest state a = 1
+@reset component C { box { } }
+@reset state b = 1

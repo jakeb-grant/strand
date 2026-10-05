@@ -1,0 +1,15 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::read_only
+
+  × cannot assign `percent`: `battery` does not mark it `rw`
+   ╭─[read_only.strand:5:16]
+ 4 │   box {
+ 5 │     on click { battery.percent = 1 }
+   ·                ───────┬───────
+   ·                       ╰── read-only
+ 6 │     on scroll(dy) { audio.sink.volume -= dy * 0.05 }
+   ╰────
+  help: only `state`, settings fields and `rw` service fields can be written

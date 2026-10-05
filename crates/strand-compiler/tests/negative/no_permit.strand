@@ -1,0 +1,3 @@
+// expect: check::no_permit
+// Running commands needs an explicit `permit exec`.
+service uptime from poll "uptime -p" every 60s { text: text }

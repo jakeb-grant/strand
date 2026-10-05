@@ -1,0 +1,87 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::unknown_element
+
+  × unknown element `sloot`
+   ╭─[misspelt_tree_keyword.strand:7:5]
+ 6 │   col {
+ 7 │     sloot
+   ·     ──┬──
+   ·       ╰── not an element or component
+ 8 │     elze { box { } }
+   ╰────
+  help: did you mean `slot`?
+
+check::unknown_element
+
+  × unknown element `elze`
+   ╭─[misspelt_tree_keyword.strand:8:5]
+ 7 │     sloot
+ 8 │     elze { box { } }
+   ·     ──┬─
+   ·       ╰── not an element or component
+ 9 │   }
+   ╰────
+  help: did you mean `else`?
+
+check::unknown_element
+
+  × unknown element `whn`
+    ╭─[misspelt_tree_keyword.strand:13:5]
+ 12 │   box { size: 8
+ 13 │     whn hover { bg: $accent }
+    ·     ─┬─
+    ·      ╰── not an element or component
+ 14 │     enterr { opacity: 0 }
+    ╰────
+  help: did you mean `when`?
+
+check::unknown_element
+
+  × unknown element `enterr`
+    ╭─[misspelt_tree_keyword.strand:14:5]
+ 13 │     whn hover { bg: $accent }
+ 14 │     enterr { opacity: 0 }
+    ·     ───┬──
+    ·        ╰── not an element or component
+ 15 │     exitt { opacity: 0 }
+    ╰────
+  help: did you mean `enter`?
+
+check::unknown_element
+
+  × unknown element `exitt`
+    ╭─[misspelt_tree_keyword.strand:15:5]
+ 14 │     enterr { opacity: 0 }
+ 15 │     exitt { opacity: 0 }
+    ·     ──┬──
+    ·       ╰── not an element or component
+ 16 │     sett { }
+    ╰────
+  help: did you mean `exit`?
+
+check::unknown_element
+
+  × unknown element `sett`
+    ╭─[misspelt_tree_keyword.strand:16:5]
+ 15 │     exitt { opacity: 0 }
+ 16 │     sett { }
+    ·     ──┬─
+    ·       ╰── not an element or component
+ 17 │     playy shake
+    ╰────
+  help: did you mean `set`?
+
+check::unknown_element
+
+  × unknown element `playy`
+    ╭─[misspelt_tree_keyword.strand:17:5]
+ 16 │     sett { }
+ 17 │     playy shake
+    ·     ──┬──
+    ·       ╰── not an element or component
+ 18 │   }
+    ╰────
+  help: did you mean `play`?

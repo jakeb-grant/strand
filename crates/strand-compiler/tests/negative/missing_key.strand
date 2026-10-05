@@ -1,0 +1,12 @@
+// expect: check::missing_key
+// A `for` over plain data needs a `key`; service items and keyed
+// collections bring their own.
+type Pin { app: text; label: text }
+state pins: [Pin] = []
+component C {
+  col {
+    for p in pins { text p.label }
+    for p in pins key p.app { text p.label }
+    for ws in workspaces.all { text ws.name }
+  }
+}

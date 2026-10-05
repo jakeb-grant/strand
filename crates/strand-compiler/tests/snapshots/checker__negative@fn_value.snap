@@ -1,0 +1,14 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::fn_value
+
+  × `f` has no value
+   ╭─[fn_value.strand:3:25]
+ 2 │ // A fn's value is its last expression.
+ 3 │ fn f(x: float) -> float { let y = x * 2 }
+   ·                         ────────┬────────
+   ·                                 ╰── the last statement is not an expression
+   ╰────
+  help: a fn's value is its last expression: `fn f(x: float) -> float { x * 2 }`

@@ -1,0 +1,7 @@
+// expect: check::assign_to_let
+// A `let` is derived and read-only; the fix makes it `state`.
+state count = 0
+let double = count * 2
+component C {
+  box { on click { double = 3 } }
+}

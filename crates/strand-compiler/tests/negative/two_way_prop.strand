@@ -1,0 +1,6 @@
+// expect: check::two_way_prop
+// Only props the element writes back can be bound two-way.
+state level = 0.5
+component C {
+  meter level { value: <-> level }
+}

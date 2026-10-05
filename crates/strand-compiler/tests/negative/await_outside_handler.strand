@@ -1,0 +1,6 @@
+// expect: check::await_outside_handler
+// Bindings never wait.
+let ready = await sleep(1s)
+component C {
+  box { on click { await sleep(200ms) } }
+}

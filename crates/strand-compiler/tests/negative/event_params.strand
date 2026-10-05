@@ -1,0 +1,8 @@
+// expect: check::too_many_args, check::type_mismatch
+// Event parameters are the values the event gives.
+component C {
+  box {
+    on scroll(dy, dx, dz) { }
+    on drop(p: text, at: text) { }
+  }
+}

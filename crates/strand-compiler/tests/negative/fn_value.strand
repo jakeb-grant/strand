@@ -1,0 +1,3 @@
+// expect: check::fn_value
+// A fn's value is its last expression.
+fn f(x: float) -> float { let y = x * 2 }

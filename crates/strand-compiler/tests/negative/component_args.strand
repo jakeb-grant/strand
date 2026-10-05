@@ -1,0 +1,11 @@
+// expect: check::missing_arg, check::unknown_param
+// Component calls fill parameters positionally and by name; parameters
+// with defaults may be left out.
+component Toast(n: Notification, dense: bool = false) { col { slot } }
+component C(n: Notification) {
+  col {
+    Toast n { dense: true }
+    Toast n { dens: true }
+    Toast
+  }
+}

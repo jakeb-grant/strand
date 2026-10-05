@@ -1,0 +1,24 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::duplicate_arg
+
+  × `l` is given twice
+   ╭─[duplicate_arg.strand:3:33]
+ 2 │ // An argument is given once.
+ 3 │ let c = oklch(0.7, 0.1, 120deg, l: 0.5)
+   ·                                 ───┬──
+   ·                                    ╰── given again here
+ 4 │ let d = material(seed: $accent, seed: $fg)
+   ╰────
+
+check::duplicate_arg
+
+  × `seed` is given twice
+   ╭─[duplicate_arg.strand:4:33]
+ 3 │ let c = oklch(0.7, 0.1, 120deg, l: 0.5)
+ 4 │ let d = material(seed: $accent, seed: $fg)
+   ·                                 ────┬────
+   ·                                     ╰── given again here
+   ╰────

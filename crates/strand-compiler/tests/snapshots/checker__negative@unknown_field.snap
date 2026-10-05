@@ -1,0 +1,27 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::unknown_field
+
+  × `battery` has no field `precent`
+   ╭─[unknown_field.strand:5:18]
+ 4 │   col {
+ 5 │     text battery.precent
+   ·                  ───┬───
+   ·                     ╰── unknown field
+ 6 │     for ws in workspaces.all { text ws.nme }
+   ╰────
+  help: did you mean `percent`?
+
+check::unknown_field
+
+  × `ws` has no field `nme`
+   ╭─[unknown_field.strand:6:40]
+ 5 │     text battery.precent
+ 6 │     for ws in workspaces.all { text ws.nme }
+   ·                                        ─┬─
+   ·                                         ╰── unknown field
+ 7 │   }
+   ╰────
+  help: did you mean `name`?

@@ -3,6 +3,27 @@ source: crates/strand-compiler/tests/fixtures.rs
 expression: tree
 ---
 file
+  state open (= false)
+  state shown (= false)
+  state query (= "")
+  state ticks (= 0)
+  state visible (= true)
+  state level (= 0.5)
+  state progress (= 0.5)
+  state loading (= false)
+  state y :duration? (= null)
+  state log :[Notification] (key id) (= array)
+  let hits (= (call (. apps search) query))
+  let q (= "")
+  let wallpaper (= "~/Pictures/wall.jpg")
+  let fallback (= (call material (seed: #7aa2f7ff)))
+  let expr (= "A tooltip")
+  let pin (= (call Pin (app: "firefox") (label: "Firefox")))
+  enum Page wifi bluetooth
+  state page (= wifi)
+  component Dot (params (ws :Workspace))
+    element box
+      prop size: 8
   bar Top
     prop edge: top
   component GoodTable
@@ -25,30 +46,33 @@ file
       for h (in hits)
         element text (. (. h app) name)
   component Expire (params (n :Notification))
-    after 6s (while (! hover))
-      expr (call (. n expire))
-  component Rules
+    element box
+      after 6s (while (! hover))
+        expr (call (. n expire))
+  component Rules (params (ws :Workspace) (n :Notification) (xs :[Workspace]))
     element Dot ws
     element Toast n
       prop dense: true
     element box
       prop id: vol
-    when (. vol hover)
-      prop bg: $accent
+    element box
+      when (. vol hover)
+        prop bg: $accent
+      on click
+        assign = open (! open)
+      on scroll (params dy)
+        assign -= (. (. audio sink) volume) (* dy 0.05)
     for x (in xs) (key (. x id))
       element text (. x name)
-    on click
-      assign = open (! open)
-    on scroll (params dy)
-      assign -= (. (. audio sink) volume) (* dy 0.05)
-    on show
-      assign = query ""
     on change x
-      assign = y x
+      assign += ticks 1
     on change x (after 1.2s)
       assign = shown false
     every 1s (while visible)
       assign += ticks 1
+  panel Shows
+    on show
+      assign = query ""
   component Toast (params (n :Notification) (dense :bool (= false)))
     element col
       slot
@@ -64,13 +88,14 @@ file
   let art (= (?? (call material (image: wallpaper)) fallback))
   on notifications.received (params n)
     expr (call (. log push) n)
-  component Pins
-    on drop (params (p :Pin) (at :int))
-      expr (call (. pins move) (. p app) at)
-    on secondary
-      expr (call (. pins remove_key) (. p app))
-      expr (call (. pins insert) 0 p)
-      expr (call (. pins update) (. p app) (=> (params q) q))
+  component Pins (params (p :Pin))
+    element box
+      on drop (params (p :Pin) (at :int))
+        expr (call (. pins move) (. p app) at)
+      on secondary
+        expr (call (. pins remove_key) (. p app))
+        expr (call (. pins insert) 0 p)
+        expr (call (. pins update) (. p app) (=> (params q) q))
   tokens snippets
     token $surface.hi (call (. $surface mix) $fg 8%)
     token $fg.muted (call (. $fg alpha) 0.65)
@@ -105,6 +130,8 @@ file
       prop width: 24 (~ instant)
     element input
       prop nav: results
+    element list
+      prop id: results
     element box
       prop drag: pin
     element pages (current: page)
@@ -247,7 +274,7 @@ file
     element box
       prop parallax: 6px
       prop tilt: 8deg
-  component Media
+  component Media (params (w :Window))
     element effect lightning
       prop speed: 1
     element effect sparks

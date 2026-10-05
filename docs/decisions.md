@@ -787,3 +787,97 @@ schema from `strand-compiler`).
   only the newer stable reported. Bump the pin deliberately, fixing new
   lints in the same commit. CI also installs `pkg-config` and
   `libfontconfig1-dev` for parley's font discovery.
+
+## wave2-check
+
+- **2026-10-05 · wave2-check: the schema is data.** Elements, records,
+  services, functions, methods on builtin types, palette roles and base
+  tiers are written in a small declaration language
+  (`crates/strand-compiler/src/schema/builtin.schema`) parsed once, not in
+  Rust tables, so the checker, the LSP and later service crates read one
+  table. A service crate hands its own text to `Schema::extend` (records
+  with `rw` fields, `fn` methods, `action`s, `event`s, `service` globals)
+  and the config is checked with `compile_with`. Services are types only
+  until M3. Beyond the services the doc's examples read (`clock`,
+  `calendar`, `battery`, `windows`, `workspaces`, `audio`, `brightness`,
+  `tray`, `notifications`, `apps`, `media`, `system`, `cpu`, `screens`,
+  `wm`; `screen` is in scope in a `bar`), the schema types the ones its
+  prose names (`network`, `bluetooth` for the Wi-Fi and Bluetooth pages,
+  `memory`, and `auth` for the lock screen's PAM helper).
+- **2026-10-05 · wave2-check: the palette is Material 3's system roles**
+  under Strand's names: `accent` is primary, `fg` is on-surface, `bg` is
+  background, and the `*_container`, `on_*`, `surface_*`, `inverse_*`,
+  `outline*`, `shadow`, `scrim` and `surface_tint` roles follow M3. Base
+  tiers (`space`, `radius`, `font`, `motion`, `elevation`) and the derived
+  names design.md uses (`surface.hi`, `fg.muted`, `fg.faint`,
+  `accent.hover`, `accent.container`, `border`) are typed in the schema and
+  valued by a theme's `tokens` set; defining them in a set is not a
+  redefinition, but redefining a palette role in a set needs `override`
+  (roles come from `use palette`).
+- **2026-10-05 · wave2-check: what is global, what is per file.**
+  Components, surfaces, enums, `type`s, `fn`s, token sets, keyframes and
+  custom services share one namespace across the config; a second
+  declaration is an error naming both places. Top-level `state` and `let`
+  belong to their file: design.md's own shells declare `shown` in both
+  `toasts.strand` and `osd.strand`, so a config-wide namespace would reject
+  them together. Another file (and the CLI) reaches a value only as
+  `file.name`, and only if it is exported; two files with one stem that
+  both export are an error. Declaring a name twice in one file or block is
+  an error. One `use tokens` and one `use palette` per config.
+- **2026-10-05 · wave2-check: `Async<[T]>` reads as its last list.** The
+  launcher reads `hits.len` and loops `for h in hits` over `apps.search`'s
+  `Async<[Hit]>`, so list members and iteration of an `Async` list see the
+  last value (empty before the first). Any other use of an `Async<T>` where
+  `T` is expected is an error whose fix is `?? fallback`; `.pending`,
+  `.error` (`text?`) and `.value` (`T?`) are its own members. `??` takes
+  the inner type of an `Async` or a `T?`.
+- **2026-10-05 · wave2-check: events and node booleans need an element.**
+  A component body has no node of its own, so `when`, `hover`, `self`,
+  poses and element events (`on click`) directly in it are errors pointing
+  into an element; `on show` belongs on a surface. The snippet fixtures,
+  which placed table one-liners at component level, now wrap them in the
+  smallest valid element. `id:` names are visible across their whole
+  component or surface body (before the element that declares them) and
+  read as that node.
+- **2026-10-05 · wave2-check: bare variants.** `edge: top` resolves `top`
+  against the enum the position expects. With no expected type, a variant
+  unique across all enums resolves (`state kind = volume`); one shared by
+  several enums is an error asking for `Enum.variant`.
+- **2026-10-05 · wave2-check: checked on first use.** Top-level and block
+  `let`s, `state`s and `fn`s without a return type are typed the first
+  time they are read (or when their file is walked), so a static cycle is
+  found as it closes and reported with its whole path (`a → b → c → a`);
+  token entries the same way (`$surface.hi → $fg.muted → $surface.hi`). A
+  `fn` with a declared return type may recurse.
+- **2026-10-05 · wave2-check: assignment kills no binding.** Assigning to a
+  `let`, a component parameter, a prop (`width = 30` in a handler, where
+  `width` is the enclosing element's prop, or `self.opacity = …`) or a
+  read-only field is an error with a fix; `<->` targets follow the same
+  rule (state, settings fields and `rw` service fields, or fields and
+  indices inside them), and only props the element writes back (`value`,
+  `text`, `open`, `current`) take `<->`. Fields of a user `type` held in
+  `state` are writable through it.
+- **2026-10-05 · wave2-check: the raw-colour lint covers prop values
+  only:** props, `when` and pose blocks and component arguments. Settings
+  defaults, `let`s, token values and `set { }` right-hand sides are exempt
+  (they are where colours are meant to live).
+- **2026-10-05 · wave2-check: `persist`.** It stores plain data (numbers,
+  text, colours, enums, records, lists), so a function or `Async` state is
+  an error. `let x = … persist` and `state x persist = …` are parse errors
+  with the fix (`syntax::persist`) rather than "expected a line break".
+- **2026-10-05 · wave2-check: parameter types where needed.** A component
+  parameter without a type or default is an error only where it is read
+  (the doc writes `Toast(n)`); `fn` parameters always need types.
+- **2026-10-05 · wave2-check: one mistake, one diagnostic.** Names and
+  expressions that fail become `Ty::Error`, accepted everywhere; an action
+  called in a binding, a field of an unknown base or a bare variant given
+  to an unknown prop (`elipsis: end`) report once. `$fg-muted`, which the
+  parser reads as a subtraction and warns about, becomes one checker error
+  naming the token meant (`$fg.muted`) when one is near, and the warning is
+  dropped. Did-you-mean ties go to the alphabetically first name.
+- **2026-10-05 · wave2-check: `strand check` type-checks.** It runs
+  `compile` over the `find_files` module set, so the wave-1 notes that it
+  reports syntax only, and the checker TODOs left in the compiler section
+  (misspelt tree keywords via unknown-element did-you-mean, `Spaced` values
+  outside shadows and fonts, missing `for` keys, `await` outside handlers,
+  `play` targets, parameter types where they cannot be inferred), are done.

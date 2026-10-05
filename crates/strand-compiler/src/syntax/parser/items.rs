@@ -931,6 +931,17 @@ impl Parser<'_> {
             }
             self.expr()
         });
+        // `state x persist = 0`: the clause is in the wrong place.
+        let early_persist =
+            (self.same_line() && self.at_kw("persist") && self.nth_kind(1) == K::Eq).then(|| {
+                let t = self.bump();
+                self.push_error(
+                    Diagnostic::error("syntax::persist", "`persist` goes after the value")
+                        .with_label(t.span, "before the value")
+                        .with_help(format!("write `state {} = … persist`", name.name)),
+                );
+                t.span
+            });
         let value = if self.eat(K::Eq).is_some() {
             self.expr()
         } else {
@@ -940,7 +951,9 @@ impl Parser<'_> {
             );
             self.error_expr()
         };
-        let persist = if self.same_line() && self.at_kw("persist") {
+        let persist = if early_persist.is_some() {
+            early_persist
+        } else if self.same_line() && self.at_kw("persist") {
             Some(self.bump().span)
         } else {
             let at = self.cur().span;
@@ -968,6 +981,17 @@ impl Parser<'_> {
             self.expected("`=` and a value");
             self.error_expr()
         };
+        if self.same_line() && self.at_kw("persist") {
+            let t = self.bump();
+            self.push_error(
+                Diagnostic::error("syntax::persist", "`persist` goes on `state`, not `let`")
+                    .with_label(t.span, "a `let` is derived, so there is nothing to store")
+                    .with_help(format!(
+                        "to keep a value across restarts, make it `state {} = … persist`",
+                        name.name
+                    )),
+            );
+        }
         Let {
             export,
             name,

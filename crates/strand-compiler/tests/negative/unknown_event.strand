@@ -1,0 +1,6 @@
+// expect: check::unknown_event
+// Events are checked against the element, or the service.
+component C {
+  box { on clik { } }
+}
+on notifications.recieved(n) { }

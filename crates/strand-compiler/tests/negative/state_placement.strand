@@ -1,0 +1,10 @@
+// expect: check::state_placement
+// State lives on components, surfaces and list items, never on leaf
+// elements.
+component C {
+  state open = false
+  text "a" { state hovered = false }
+  col {
+    for t in tray.items { row { state shown = false; text t.title } }
+  }
+}

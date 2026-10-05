@@ -1,0 +1,4 @@
+// expect: check::duplicate_arg
+// An argument is given once.
+let c = oklch(0.7, 0.1, 120deg, l: 0.5)
+let d = material(seed: $accent, seed: $fg)

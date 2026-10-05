@@ -1,0 +1,6 @@
+// expect: check::persist, syntax::persist
+// `persist` stores plain data, and only `state` has anything to store.
+state pick = (x: float) => x * 2 persist
+state ok = 1 persist
+state early persist = 2
+let doubled = ok * 2 persist

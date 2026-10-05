@@ -1,6 +1,6 @@
-//! The parser never panics, always terminates quickly, and keeps lexing
-//! lossless on arbitrary damaged input: 10,000 random edits of the design
-//! fixtures, plus pathological nesting.
+//! The parser and the checker never panic, always terminate quickly, and
+//! lexing stays lossless on arbitrary damaged input: 10,000 random edits of
+//! the design fixtures, plus pathological nesting.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
@@ -243,6 +243,23 @@ fn check(src: &str, render_too: bool) -> (Duration, Vec<&'static str>) {
             );
         }
     });
+    // The checker runs on every damaged tree too (the reload pipeline and
+    // the LSP check what does not parse cleanly).
+    let map = SourceMap::single("fuzz.strand", String::from(src)).0;
+    let compiled = match catch_unwind(AssertUnwindSafe(|| strand_compiler::compile(&map))) {
+        Ok(c) => c,
+        Err(_) => panic!("checker panicked on:\n----\n{src}\n----"),
+    };
+    for d in &compiled.diagnostics {
+        assert!(!d.labels.is_empty(), "diagnostic without a label: {d:?}");
+        for l in &d.labels {
+            let r = l.span.range();
+            assert!(
+                r.end <= src.len() && src.is_char_boundary(r.start) && src.is_char_boundary(r.end),
+                "bad label span {r:?} in {d:?}\n----\n{src}\n----"
+            );
+        }
+    }
     if render_too {
         let out = catch_unwind(AssertUnwindSafe(|| {
             render(
@@ -334,6 +351,13 @@ fn pathological_nesting_reports_instead_of_overflowing() {
         ),
         format!("state x: {}int = 1", "[".repeat(n)),
         format!("let x = {}", "(".repeat(n) + &")".repeat(n)),
+        format!(
+            "component X {{ on click {{ {} }} }}",
+            "for a in b { ".repeat(n)
+        ),
+        format!("component X {{ {} }}", "if a { ".repeat(n)),
+        format!("let x = {}", "[".repeat(n)),
+        format!("let x = {}1", "a + ".repeat(n)),
     ];
     for src in &cases {
         // Run on a thread with the default 2 MiB stack used by test threads.

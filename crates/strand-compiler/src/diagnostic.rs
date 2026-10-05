@@ -99,6 +99,22 @@ impl Diagnostic {
         self
     }
 
+    /// Adds a secondary label in place, for builders holding `&mut`.
+    pub fn add_secondary(
+        &mut self,
+        file: FileId,
+        span: Span,
+        message: impl Into<String>,
+    ) -> &mut Self {
+        self.labels.push(Label {
+            file,
+            span,
+            message: message.into(),
+            primary: false,
+        });
+        self
+    }
+
     /// Moves every label into `file`: for stages that see one file and
     /// build labels with [`Diagnostic::with_label`].
     pub fn in_file(mut self, file: FileId) -> Self {
@@ -154,7 +170,9 @@ pub fn suggest<'a>(word: &str, candidates: impl IntoIterator<Item = &'a str>) ->
         .filter(|c| *c != word)
         .map(|c| (strsim::osa_distance(word, c), c))
         .filter(|(d, _)| *d <= limit)
-        .min_by_key(|(d, _)| *d)
+        // Ties go to the alphabetically first, so a suggestion never
+        // depends on the order a hash map lists its names in.
+        .min_by_key(|&(d, c)| (d, c))
         .map(|(_, c)| c)
 }
 

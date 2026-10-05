@@ -1,0 +1,27 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::unknown_prop
+
+  × unknown prop `hieght` on `box`
+   ╭─[unknown_prop.strand:4:9]
+ 3 │ component C {
+ 4 │   box { hieght: 32 }
+   ·         ───┬──
+   ·            ╰── not a prop of this element
+ 5 │   text "x" { elipsis: end }
+   ╰────
+  help: did you mean `height`?
+
+check::unknown_prop
+
+  × unknown prop `elipsis` on `text`
+   ╭─[unknown_prop.strand:5:14]
+ 4 │   box { hieght: 32 }
+ 5 │   text "x" { elipsis: end }
+   ·              ───┬───
+   ·                 ╰── not a prop of this element
+ 6 │ }
+   ╰────
+  help: did you mean `ellipsis`?

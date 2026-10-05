@@ -271,8 +271,10 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
 
 ### `strand-compiler`
 
-`syntax` (lossless lexer and parser with spans and recovery), `check` (names,
-types, did-you-mean), `lower` (bytecode), `vm` (evaluates bytecode against
+`syntax` (lossless lexer and parser with spans and recovery), `schema`
+(builtin elements, services, functions and tokens as data), `ty` (types),
+`check` (names, types, did-you-mean) producing `hir` (the typed program),
+`lower` (bytecode), `vm` (evaluates bytecode against
 `strand-core` signals), `reconcile` (old program + new program → identity map
 → `SceneDiff` and state migration). One crate serves runtime, `strand check`
 and the LSP. The grammar is specified in `docs/grammar.md`.
@@ -307,7 +309,76 @@ Public interfaces other crates and later stages build on:
   file); `render_short(&[Diagnostic], &SourceMap)` gives one
   `file:line:col: severity[code]: message` line each, for the reload
   overlay's list and editors. `suggest`/`did_you_mean` give the shared
-  near-miss logic.
+  near-miss logic (ties go to the alphabetically first name, so a
+  suggestion never depends on hash-map order).
+- **Schema** (`strand_compiler::schema`): everything the language knows
+  before reading a config, as data: element kinds (typed props with
+  `two_way`/`inherited` flags and sub-blocks, positional argument type,
+  events with payload types, names in scope such as `screen`, `leaf` /
+  `surface` / `only_in` flags), records and enums, services (global names
+  bound to records whose fields carry `rw`, with `fn` methods, `action`s and
+  `event`s), builtin functions with overloads (`lift` passes null through,
+  `Async<T>` returns), builtin values (`t`), methods on builtin types,
+  palette roles and base-tier tokens. It is written in a small declaration
+  language (`schema/builtin.schema`, described in the module docs) and
+  parsed once by `Schema::builtin() -> &'static Schema`. Service crates
+  contribute their schemas the same way: clone the builtin, call
+  `Schema::extend(text) -> Result<(), Vec<SchemaError { line, message }>>`,
+  and check with `compile_with(&map, &schema)`; the LSP reads the same
+  table for completion and hover (M3, "service schemas drive type checking
+  and LSP hover").
+- **Types** (`strand_compiler::ty`): `Ty` is `Error` (already reported,
+  accepted everywhere), `Any`, `Null`, `Unit`, `Prim(Prim)` (`bool int float
+  length percent angle duration color paint text path font shadow insets
+  corners`), `Opaque(name)` (`Palette`, `Spring`, `Mask`, …), `Enum(EnumId)`,
+  `EnumType(EnumId)` (an enum as a value, `options: Look`), `Record(RecordId)`,
+  `List(T, keyed)`, `Optional(T)`, `Async(T)`, `Fn(Arc<FnSig>)`, `Tuple`
+  (comma shorthands) and `Union` (schema props only). Records and enums live
+  in a `TypeTable` (schema first, then the config's `type`, `enum`,
+  settings files and custom services), with `assignable(from, to)`,
+  `join(a, b)` and `show(ty)` for messages.
+- **Checking**: `strand_compiler::compile(&SourceMap) -> Compiled { parses,
+  program: hir::Program, diagnostics }` parses every file and checks them as
+  one program (`check::check(&[Module { file, name, ast }], &Schema) ->
+  Checked { program, diagnostics }` for callers holding parses already); the
+  module name is the file stem. It never panics and always returns a
+  program: an unresolved name or ill-typed expression becomes `Ty::Error`,
+  so one mistake gives one diagnostic. Diagnostics are sorted by file and
+  position, syntax and checker together. Scoping: components, surfaces,
+  enums, `type`s, `fn`s, token sets, keyframes and custom services are
+  global across the config's files; top-level `state`/`let` belong to their
+  file and are reachable elsewhere (and from the CLI) only as `file.name`
+  when exported; `state`/`let` in a tree belong to their component,
+  surface or list item.
+- **HIR** (`strand_compiler::hir`), the typed, resolved program the VM
+  lowering, the reconciler and the LSP consume. `Program { files:
+  Vec<FileHir { file, name, items }>, defs: Vec<Def>, locals: Vec<Local>,
+  types: TypeTable, tokens: BTreeMap<path, Ty>, refs: Vec<Reference> }`.
+  Declarations are `DefId`s (`Def { name, kind, file, span, ty, exported,
+  owner }`, `DefKind::{Component, Surface(kind), State, Settings, Let, Fn,
+  Enum, Type, Tokens, Keyframes, Service}`); parameters, `for` bindings,
+  event parameters, handler `let`s, element-scope names and `id:` names are
+  `LocalId`s; every element has a program-unique `NodeIdx`. Items mirror the
+  syntax (`Component { def, params, tokens, body, has_slot }`, `Surface {
+  def, element }`, `StateDecl`, `LetDecl`, `FnDecl`, `TokenSet` with
+  flattened `TokenDef { path, span, override_, value }`, `Use`,
+  `ServiceDecl`, `Keyframes`, `Handler`, `Timer`, `Permit`); tree `Node`s
+  are `Element { node, kind: Builtin|Component|Unknown, span, arg, id,
+  props, children }`, `When`, `If`, `For { binding, iter, key, body }`
+  (`key: None` when items bring their own), `Match`, `Handler { event,
+  params, body }`, `Timer`, `Pose`, `Slot`, `Set`, `Selector`, `Play`,
+  `State`, `Let`. An element's props are split from its children; `Prop {
+  name, span, value, two_way, transition, sub, inherited }`. Every `Expr {
+  kind, ty, span }` is typed; names are resolved in the kind (`Local`,
+  `Def`, `Service`, `Value`, `Node` for `self`/`hover`/an `id:` name,
+  `Variant`, `EnumType`, `Token(path)`), calls name their `Callee`
+  (`Fn`, `Builtin { name, overload }`, `Method { receiver, name, overload
+  }`, `Record`, `Value`) and arguments their parameter index. Spans are
+  file-local (the file is the enclosing `FileHir`'s). `refs` lists every
+  resolved name use with its `Target` (def, local, service, builtin,
+  variant, token, field, element, file); `Program::reference_at(file,
+  offset)` serves go-to-definition, hover and rename, and
+  `Program::exports()` lists `file.name` paths for the CLI.
 
 ### Config files
 

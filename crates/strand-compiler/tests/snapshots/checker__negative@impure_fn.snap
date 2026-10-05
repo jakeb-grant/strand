@@ -1,0 +1,27 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::impure
+
+  × fns are pure: they cannot assign
+   ╭─[impure_fn.strand:4:30]
+ 3 │ state open = false
+ 4 │ fn toggle(x: bool) -> bool { open = x; !x }
+   ·                              ──┬─
+   ·                                ╰── an assignment
+ 5 │ fn focus(w: Workspace) -> bool { w.focus(); true }
+   ╰────
+  help: return the new value instead, and assign it in a handler
+
+check::impure
+
+  × `w.focus` is an action, and fns are pure
+   ╭─[impure_fn.strand:5:36]
+ 4 │ fn toggle(x: bool) -> bool { open = x; !x }
+ 5 │ fn focus(w: Workspace) -> bool { w.focus(); true }
+   ·                                    ──┬──
+   ·                                      ╰── changes something
+ 6 │ fn fine(x: float) -> float { x * 2 }
+   ╰────
+  help: call it from a handler instead

@@ -1,0 +1,36 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::not_a_value
+
+  × `Dot` is a component: use it as an element (`Name arg { … }`)
+   ╭─[not_a_value.strand:5:9]
+ 4 │ component Dot { box { } }
+ 5 │ let a = Dot
+   ·         ─┬─
+   ·          ╰── not a value
+ 6 │ let b = Pin
+   ╰────
+
+check::not_a_value
+
+  × `Pin` is a type: build one with `Name(field: value, …)`
+   ╭─[not_a_value.strand:6:9]
+ 5 │ let a = Dot
+ 6 │ let b = Pin
+   ·         ─┬─
+   ·          ╰── not a value
+ 7 │ let c = "x".upper
+   ╰────
+
+check::not_a_value
+
+  × `upper` is a method
+   ╭─[not_a_value.strand:7:13]
+ 6 │ let b = Pin
+ 7 │ let c = "x".upper
+   ·             ──┬──
+   ·               ╰── call it
+   ╰────
+  help: write `upper(…)`

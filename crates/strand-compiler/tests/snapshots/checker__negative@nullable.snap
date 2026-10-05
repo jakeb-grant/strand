@@ -1,0 +1,26 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::nullable
+
+  × `windows.focused` may be null
+   ╭─[nullable.strand:3:19]
+ 2 │ // `T?` is not `T`: read through null with `?.` and give a fallback.
+ 3 │ let title: text = windows.focused.title
+   ·                   ───────┬───────
+   ·                          ╰── this is `Window?`
+ 4 │ let fine: text = windows.focused?.title ?? ""
+   ╰────
+  help: use `?.` to read through null: `windows.focused?.…`, then `?? default`
+
+check::nullable
+
+  × `left` expects `duration`, but this may be null
+   ╭─[nullable.strand:5:22]
+ 4 │ let fine: text = windows.focused?.title ?? ""
+ 5 │ let left: duration = battery.time_left
+   ·                      ────────┬────────
+   ·                              ╰── this is `duration?`
+   ╰────
+  help: give a fallback: `… ?? default`

@@ -1,0 +1,4 @@
+// expect: check::unknown_type
+// Types: builtin names, records and enums, with did-you-mean.
+type Pin { app: text; label: txt }
+state pins: [Pn] = []

@@ -1,0 +1,27 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::two_way_target
+
+  × `<->` binds to a `state`, a settings field or an `rw` service field
+   ╭─[two_way_target.strand:6:23]
+ 5 │ component C {
+ 6 │   slider { value: <-> half }
+   ·                       ──┬─
+   ·                         ╰── `half`: it is a `let`
+ 7 │   slider { value: <-> battery.percent }
+   ╰────
+  help: a `let` follows its expression; to bind it, make it `state half = …`
+
+check::two_way_target
+
+  × `<->` binds to a `state`, a settings field or an `rw` service field
+   ╭─[two_way_target.strand:7:23]
+ 6 │   slider { value: <-> half }
+ 7 │   slider { value: <-> battery.percent }
+   ·                       ───────┬───────
+   ·                              ╰── `percent`: `battery` does not mark it `rw`
+ 8 │   slider { value: <-> audio.sink.volume }
+   ╰────
+  help: only `state`, settings fields and `rw` service fields can be written

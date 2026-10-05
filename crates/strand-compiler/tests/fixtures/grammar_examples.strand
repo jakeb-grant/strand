@@ -1,4 +1,21 @@
-// Examples from docs/grammar.md that design.md does not spell out.
+// Examples from docs/grammar.md that design.md does not spell out, with
+// the declarations they read. The raw colour in the shadow below is the
+// one intended lint (`check::raw_color`).
+
+type Pin { app: AppId; label: text }
+type Item { name: text; visible: bool; hidden: bool }
+type Inner { c: text }
+type Outer { b: Inner? }
+enum Net { wifi, wired }
+state pins: [Pin] key app = []
+state password = ""
+state items: [Item] = []
+state xs: [Item] = []
+state a = Outer(b: null)
+state d: text? = null
+state cond = true
+state visible = true
+state ticks = 0
 
 fn clamp01(x: float) -> float { x < 0 ? 0 : x > 1 ? 1 : x }
 
@@ -30,6 +47,8 @@ lock {
 
 component Grammar(level: float, side: Side = left) {
   state page = wifi
+  state cur = level
+  state dir = side
   let lines = [
     "a",
     "b",
@@ -53,14 +72,16 @@ component Grammar(level: float, side: Side = left) {
     text "low"
   }
   for p in pins key p.app { text p.label }
-  on click {
-    let next = level + 0.1
-    if next > 1 { level = 1 } else { level = next }
-    match side { left => side = right, _ => side = left }
-    for p in pins { p.touch() }
-    await sleep(200ms)
+  box {
+    on click {
+      let next = cur + 0.1
+      if next > 1 { cur = 1 } else { cur = next }
+      match dir { left => dir = right, _ => dir = left }
+      for p in pins { pins.remove_key(p.app) }
+      await sleep(200ms)
+    }
+    on key(k) { propagate() }
   }
-  on key(k) { propagate() }
   text items
     .filter(i => i.visible && !i.hidden)
     .map((i: Item) => i.name)
@@ -75,7 +96,7 @@ component Grammar(level: float, side: Side = left) {
   }
   canvas { draw: (c) => {
     c.fill($accent)
-    c.line(0, 0, width, height)
+    c.line(0, 0, c.width, c.height)
   } }
   text xs[0].name
 }

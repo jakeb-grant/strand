@@ -1,0 +1,27 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::unknown_token
+
+  × `override spcae` overrides nothing
+   ╭─[misspelt_override.strand:5:12]
+ 4 │ tokens compact extends base {
+ 5 │   override spcae { 1: 2px }
+   ·            ──┬──
+   ·              ╰── no such token group
+ 6 │   override fg.mutde: $fg.alpha(0.5)
+   ╰────
+  help: did you mean `space`?
+
+check::unknown_token
+
+  × `override fg.mutde` overrides nothing
+   ╭─[misspelt_override.strand:6:12]
+ 5 │   override spcae { 1: 2px }
+ 6 │   override fg.mutde: $fg.alpha(0.5)
+   ·            ────┬───
+   ·                ╰── no such token
+ 7 │ }
+   ╰────
+  help: did you mean `fg.muted`?

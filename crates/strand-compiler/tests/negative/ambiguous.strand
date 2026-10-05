@@ -1,0 +1,7 @@
+// expect: check::ambiguous
+// A bare variant shared by several enums needs its enum where nothing
+// says which one is meant.
+enum Size { small, large }
+enum Weight { light, large }
+let pick = large
+let fine: Size = large

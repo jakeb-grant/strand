@@ -1,0 +1,14 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::no_permit
+
+  × running `uptime` needs `permit exec`
+   ╭─[no_permit.strand:3:21]
+ 2 │ // Running commands needs an explicit `permit exec`.
+ 3 │ service uptime from poll "uptime -p" every 60s { text: text }
+   ·                     ─────────────┬────────────
+   ·                                  ╰── not permitted
+   ╰────
+  help: add `permit exec "uptime"` at the top level

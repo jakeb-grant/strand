@@ -1,0 +1,15 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::raw_color
+
+  ⚠ raw colour in a prop
+   ╭─[raw_color.strand:8:13]
+ 7 │ component C {
+ 8 │   box { bg: #ff0000; color: prefs.accent }
+   ·             ───┬───
+   ·                ╰── this colour ignores the theme
+ 9 │ }
+   ╰────
+  help: use a token such as `$accent` or `$fg.muted`, so theme swaps reach it

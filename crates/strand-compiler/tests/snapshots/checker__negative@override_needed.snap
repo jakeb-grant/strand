@@ -1,0 +1,29 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::override_needed
+
+  × `$space.1` is already defined by `base`
+   ╭─[override_needed.strand:4:39]
+ 2 │ // Redefining a token needs `override`.
+ 3 │ tokens base { space { 1: 4px; 2: 8px } }
+   ·                       ┬
+   ·                       ╰── defined here
+ 4 │ tokens compact extends base { space { 1: 2px }; override space { 2: 4px } }
+   ·                                       ┬
+   ·                                       ╰── redefined without `override`
+ 5 │ tokens other { accent: #7aa2f7 }
+   ╰────
+  help: redefining a token is loud: `override space.1: …`
+
+check::override_needed
+
+  × `$accent` is a palette role
+   ╭─[override_needed.strand:5:16]
+ 4 │ tokens compact extends base { space { 1: 2px }; override space { 2: 4px } }
+ 5 │ tokens other { accent: #7aa2f7 }
+   ·                ───┬──
+   ·                   ╰── redefined without `override`
+   ╰────
+  help: palette roles come from `use palette …`; to replace one here, write `override accent: …`

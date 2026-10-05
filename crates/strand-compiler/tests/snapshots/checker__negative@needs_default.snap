@@ -1,0 +1,14 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::needs_default
+
+  × setting `accent` needs a default
+   ╭─[needs_default.strand:3:33]
+ 2 │ // Settings fields have defaults, so a missing key springs back.
+ 3 │ state prefs from "prefs.toml" { accent: color; compact: bool = false }
+   ·                                 ───┬──
+   ·                                    ╰── no default
+   ╰────
+  help: a deleted or bad key springs back to its default: `accent: … = value`

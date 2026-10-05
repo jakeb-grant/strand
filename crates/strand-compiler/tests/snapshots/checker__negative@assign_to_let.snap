@@ -1,0 +1,15 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::assign_to_let
+
+  × cannot assign `double`: it is a `let`
+   ╭─[assign_to_let.strand:6:20]
+ 5 │ component C {
+ 6 │   box { on click { double = 3 } }
+   ·                    ───┬──
+   ·                       ╰── derived, read-only
+ 7 │ }
+   ╰────
+  help: a `let` follows its expression; to assign it, make it `state double = …`
