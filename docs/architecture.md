@@ -19,6 +19,17 @@ Channels are the only coupling between threads. Logic → render is one
 (`self.width` for container queries). No locks are shared across threads on a
 hot path.
 
+`strand run [dir]` (`crates/strand/src/run.rs`) is this wiring: the main
+thread's surface host forwards the monitor hooks (`screens` as a list of
+plain `ScreenInfo`s, `monitor_forgotten` as `Forget(id)`), surface-level
+input and surface sizes to the logic thread over an `mpsc` channel
+(`run::ToLogic`); the logic thread owns the runtime, `SchemaHost::real`
+and the `Instance`, loops on `Instance::step`, sends each non-empty diff
+on a calloop channel, and sleeps in `recv_timeout(Wake::sleep_for)`, the
+runtime's wake hook sending `ToLogic::Wake`. Until render hit-tests and
+lays out inside surfaces (M2), input and size facts address the
+surface's node.
+
 ## Crate graph
 
 ```

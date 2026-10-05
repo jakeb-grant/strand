@@ -5,6 +5,7 @@
 mod check;
 mod demo;
 mod logging;
+mod run;
 
 use std::io::IsTerminal;
 use std::process::ExitCode;
@@ -19,7 +20,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 const COMMANDS: &[(&str, &str, &str)] = &[
     (
         "run",
-        "start the shell from the config directory (--demo: the M0 hello bar)",
+        "run the config [dir] (default $XDG_CONFIG_HOME/strand; --demo: the M0 hello bar)",
         "M1",
     ),
     ("check", "check the config without running it [dir]", "M1"),
@@ -65,6 +66,8 @@ enum Action {
     Print(String),
     /// `strand run --demo`.
     Demo,
+    /// `strand run [dir]`.
+    Run(Option<std::path::PathBuf>),
 }
 
 fn dispatch(args: &[String]) -> Result<Action, String> {
@@ -78,6 +81,11 @@ fn dispatch(args: &[String]) -> Result<Action, String> {
         Some("run") if args[1..].iter().any(|a| a == "--demo") => {
             Err("strand run --demo: takes no other arguments".into())
         }
+        Some("run") => match &args[1..] {
+            [] => Ok(Action::Run(None)),
+            [dir] if !dir.starts_with('-') => Ok(Action::Run(Some(dir.into()))),
+            _ => Err("usage: strand run [dir | --demo]".into()),
+        },
         Some(cmd) => match COMMANDS.iter().find(|(name, ..)| *name == cmd) {
             Some((name, _, milestone)) => {
                 Err(format!("strand {name}: not implemented yet ({milestone})"))
@@ -109,6 +117,27 @@ fn main() -> ExitCode {
             let log = logging::LogConfig::from_env();
             log.install();
             match demo::run(&log) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(err) => {
+                    eprintln!("strand run: {err}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Ok(Action::Run(dir)) => {
+            let log = logging::LogConfig::from_env();
+            log.install();
+            let dir = dir.or_else(|| {
+                check::default_dir(
+                    std::env::var_os("XDG_CONFIG_HOME"),
+                    std::env::var_os("HOME"),
+                )
+            });
+            let Some(dir) = dir else {
+                eprintln!("strand run: no config directory (set XDG_CONFIG_HOME or HOME)");
+                return ExitCode::FAILURE;
+            };
+            match run::run(&dir, &log) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(err) => {
                     eprintln!("strand run: {err}");
@@ -152,11 +181,13 @@ mod tests {
     #[test]
     fn run_demo_is_the_m0_bar() {
         assert_eq!(run(&["run", "--demo"]).unwrap(), Action::Demo);
+        assert_eq!(run(&["run"]).unwrap(), Action::Run(None));
         assert_eq!(
-            run(&["run"]).unwrap_err(),
-            "strand run: not implemented yet (M1)"
+            run(&["run", "conf"]).unwrap(),
+            Action::Run(Some("conf".into()))
         );
         assert!(run(&["run", "--demo", "x"]).is_err());
+        assert!(run(&["run", "a", "b"]).is_err());
     }
 
     #[test]

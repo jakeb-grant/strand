@@ -37,6 +37,12 @@ impl Drop for Sway {
 
 impl Sway {
     fn start() -> Option<Self> {
+        Self::start_as("demo")
+    }
+
+    /// A sway of its own for each test (`tag` keeps their directories
+    /// apart when tests run in parallel).
+    fn start_as(tag: &str) -> Option<Self> {
         for tool in ["sway", "swaymsg", "grim"] {
             if Command::new(tool).arg("--version").output().is_err() {
                 // CI sets STRAND_REQUIRE_SWAY so a missing tool fails loudly
@@ -52,7 +58,7 @@ impl Sway {
             }
         }
         // Short: the IPC socket path must fit in sun_path.
-        let dir = std::env::temp_dir().join(format!("strand-demo-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("strand-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         let cfg = dir.join("sway.cfg");
@@ -379,5 +385,116 @@ fn demo_bar_on_two_outputs_then_idle() {
     Shot::take(&sway, "HEADLESS-3").assert_aligned("HEADLESS-3", 1.0);
     Shot::take(&sway, "HEADLESS-1").assert_aligned("HEADLESS-1", 1.0);
     Shot::take(&sway, "HEADLESS-2").assert_aligned("HEADLESS-2", 1.25);
+    drop(strand);
+}
+
+/// `strand run <dir>` on the hello bar of the design: the compiled config,
+/// not the demo, with one bar per output (the `screens` service fed from
+/// the surface layer's monitor hooks), and a bar for a monitor plugged in
+/// later.
+#[test]
+fn strand_run_boots_the_hello_bar_on_every_output() {
+    let Some(sway) = Sway::start_as("run") else {
+        return;
+    };
+    sway.msg(&["create_output"]).unwrap();
+    sway.msg(&[
+        "output",
+        "HEADLESS-2",
+        "resolution",
+        "2560x1440",
+        "position",
+        "2560",
+        "0",
+        "scale",
+        "1.25",
+    ])
+    .unwrap();
+    let config = sway.dir.join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("hello_bar.strand"),
+        include_str!("../../strand-compiler/tests/fixtures/hello_bar.strand"),
+    )
+    .unwrap();
+    let log = sway.dir.join("strand.log");
+    let child = Command::new(env!("CARGO_BIN_EXE_strand"))
+        .arg("run")
+        .arg(&config)
+        .env("XDG_RUNTIME_DIR", &sway.dir)
+        .env("XDG_STATE_HOME", sway.dir.join("state"))
+        .env("WAYLAND_DISPLAY", &sway.display)
+        .env("STRAND_LOG", "damage")
+        .stdin(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .spawn()
+        .unwrap();
+    let mut strand = Proc(child);
+    let wait_for = |strand: &mut Proc, what: &str, buffer: &str| {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !damage_lines(&log).iter().any(|l| l.contains(buffer)) {
+            assert!(
+                strand.0.try_wait().unwrap().is_none(),
+                "strand exited: {}",
+                std::fs::read_to_string(&log).unwrap_or_default()
+            );
+            assert!(
+                Instant::now() < deadline,
+                "no {what}: {}",
+                std::fs::read_to_string(&log).unwrap_or_default()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    // `height: 32`: 2560×32 at 1.0, 2560×40 at 1.25, each its own bar.
+    wait_for(&mut strand, "bar on HEADLESS-1", "buffer=2560x32 ");
+    wait_for(&mut strand, "bar on HEADLESS-2", "buffer=2560x40 ");
+    let surfaces: std::collections::BTreeSet<String> = damage_lines(&log)
+        .iter()
+        .filter_map(|l| l.split_whitespace().find(|w| w.starts_with("surface=")))
+        .map(String::from)
+        .collect();
+    assert_eq!(surfaces.len(), 2, "{surfaces:?}");
+    // Each bar draws its text (where in the bar is render's layout, M2):
+    // pixels in the bar's rows unlike the desktop below it.
+    std::thread::sleep(Duration::from_millis(700));
+    for (output, scale) in [("HEADLESS-1", 1.0), ("HEADLESS-2", 1.25)] {
+        let shot = Shot::take(&sway, output);
+        let bar_h = (32.0 * scale) as usize;
+        let desktop = shot.px(shot.w - 1, bar_h + 8);
+        let drawn = (0..shot.w).any(|x| (0..bar_h).any(|y| shot.px(x, y) != desktop));
+        assert!(drawn, "{output}: the bar drew nothing");
+    }
+    // A monitor plugged in later gets its own bar.
+    sway.msg(&["create_output"]).unwrap();
+    sway.msg(&[
+        "output",
+        "HEADLESS-3",
+        "resolution",
+        "1920x1080",
+        "position",
+        "4608",
+        "0",
+        "scale",
+        "1",
+    ])
+    .unwrap();
+    wait_for(&mut strand, "bar on HEADLESS-3", "buffer=1920x32 ");
+    // Unplugged: its bar is parked (logic keeps it for a return), the
+    // shell goes on.
+    sway.msg(&["output", "HEADLESS-3", "unplug"]).unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        strand.0.try_wait().unwrap().is_none(),
+        "strand exited: {}",
+        std::fs::read_to_string(&log).unwrap_or_default()
+    );
+    let errors: Vec<String> = std::fs::read_to_string(&log)
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.contains("ERROR"))
+        .map(String::from)
+        .collect();
+    assert!(errors.is_empty(), "{errors:?}");
     drop(strand);
 }

@@ -1353,6 +1353,19 @@ see wave2-core; the compiler supplies the field schema.)
   graph. Date arithmetic (`d.add(months:, years:)`) and `noise` use
   checked or wrapping arithmetic: a huge config value is an error value
   or a wrapped cell, not an overflow panic.
+- **2026-10-05 · wave2-vm: `strand run` before hit testing.** The
+  binary is wired as architecture.md's host-loop recipe says, made on
+  this branch because the user asked for the carried items to be fixed
+  in this wave (it touches `crates/strand`, which no other wave-2 track
+  changes beyond `main.rs`'s command table). Two interpretations until
+  M2 and M3: input and layout facts are per surface (the pointer over a
+  surface is its node's `hover`, a release is `click`/`secondary`, a
+  scroll `scroll(dy, dx)`, the surface's logical size its node's
+  `width`/`height`), since render does not hit-test inside surfaces or
+  lay them out yet; and `screens.focused` (and `Screen.focused`) is the
+  first monitor in plug order until a compositor service reports
+  focus. A config with errors is printed and not run (the overlay over
+  a last good tree is the live-reload track's).
 
 ## wave2-core
 
