@@ -50,9 +50,14 @@ use strand_scene::{
 
 use crate::clock::{FrameClock, Presentation, PresentationClock};
 use crate::input::{AxisDelta, AxisSource, ButtonState, InputEvent};
-use crate::monitor::{Monitor, MonitorId, Monitors};
+use crate::monitor::{Geometry, Monitor, MonitorId, Monitors};
 use crate::placement::{LayerConfig, PlacementError, layer_config};
 use crate::shm::{BufferData, MAX_BUFFERS, ShmBuffers};
+
+/// How long an unmapped surface whose paint drew nothing, while its
+/// painter still wants a frame, waits before it is painted again (no frame
+/// callbacks come before the first buffer): about one 60 Hz frame.
+const UNMAPPED_RETRY: Duration = Duration::from_millis(16);
 
 /// What the surface manager calls on the main thread: the [`Painter`]
 /// (render) plus surface lifecycle notifications, which the binary forwards
@@ -85,6 +90,12 @@ pub trait SurfaceHost: Painter {
     fn monitor_added(&mut self, monitor: &Monitor, reconnected: bool) {
         let _ = (monitor, reconnected);
     }
+    /// A plugged-in monitor's scale, logical size or position changed
+    /// (its identity did not; a new make, model or description is an
+    /// unplug and a plug).
+    fn monitor_changed(&mut self, monitor: &Monitor) {
+        let _ = monitor;
+    }
     /// A monitor was unplugged; it is remembered for 30 s.
     fn monitor_removed(&mut self, monitor: &Monitor) {
         let _ = monitor;
@@ -93,10 +104,13 @@ pub trait SurfaceHost: Painter {
     fn monitor_forgotten(&mut self, monitor: &Monitor) {
         let _ = monitor;
     }
-    /// When a surface whose last paint drew nothing while
-    /// [`Painter::wants_frame`] stayed true should be asked again
-    /// (`Renderer::frame_deadline`). `None` asks again on the next frame
-    /// callback.
+    /// The painter is holding `surface`'s frame until this instant
+    /// (`Renderer::frame_deadline`: a first frame waiting for its text).
+    /// While it is `Some` and [`Painter::wants_frame`] is false, nothing
+    /// is painted, even on a first configure or resize; the manager asks
+    /// again at the deadline or on the next `poll()`. Also used after a
+    /// paint that drew nothing while `wants_frame` stayed true; `None`
+    /// then asks again on the next frame callback.
     fn frame_deadline(&self, surface: SurfaceId) -> Option<Instant> {
         let _ = surface;
         None
@@ -348,6 +362,30 @@ impl Surface {
     /// Waiting for a frame callback or for the last frame's presentation.
     fn throttled(&self) -> bool {
         self.callback_pending || self.in_flight.is_some()
+    }
+
+    /// A buffer has been committed since the surface was created, so the
+    /// compositor maps it (and only then sends frame callbacks).
+    fn mapped(&self) -> bool {
+        self.commit_seq > 0
+    }
+
+    /// The scale buffers are painted at: the fractional one, or the
+    /// integer buffer scale on the fallback path.
+    fn effective_scale(&self) -> Scale {
+        if self.is_fractional() {
+            self.scale
+        } else {
+            Scale::from_integer(self.integer_scale.max(1) as u32).unwrap_or(Scale::ONE)
+        }
+    }
+
+    /// The latest configure or preferred scale asks for a buffer size or
+    /// scale not painted yet.
+    fn geometry_changed(&self) -> bool {
+        self.configured
+            && (self.buffer_size() != self.buffers.size()
+                || self.reported_scale != Some(self.effective_scale()))
     }
 
     /// The buffer size for the current logical size and scale.
@@ -1073,9 +1111,7 @@ impl<H: SurfaceHost + 'static> State<H> {
         };
         self.by_wl.remove(&s.wl().id());
         self.dirty.remove(&id);
-        if let Some(t) = self.deadline_timers.remove(&id) {
-            self.handle.remove(t);
-        }
+        self.cancel_deadline(id);
         s.buffers.destroy();
         if let Some(f) = s.fractional.take() {
             f.destroy();
@@ -1110,10 +1146,13 @@ impl<H: SurfaceHost + 'static> State<H> {
             info.name.clone(),
             now,
         );
+        let monitor = self
+            .monitors
+            .set_geometry(global, output_geometry(&info))
+            .unwrap_or(plugged.monitor);
         self.output_globals.insert(output.id(), global);
         self.outputs.insert(global, output);
-        self.host
-            .monitor_added(&plugged.monitor, plugged.reconnected);
+        self.host.monitor_added(&monitor, plugged.reconnected);
         self.reconcile_all();
     }
 
@@ -1186,11 +1225,7 @@ impl<H: SurfaceHost + 'static> State<H> {
             return false;
         }
         let size = s.buffer_size();
-        let scale = if s.is_fractional() {
-            s.scale
-        } else {
-            Scale::from_integer(s.integer_scale.max(1) as u32).unwrap_or(Scale::ONE)
-        };
+        let scale = s.effective_scale();
         s.scale = scale;
         if size == s.buffers.size() && s.reported_scale == Some(scale) {
             return true;
@@ -1213,29 +1248,58 @@ impl<H: SurfaceHost + 'static> State<H> {
             return;
         }
         if s.throttled() {
-            // The frame in flight's callback or presentation marks it
-            // again; whatever changed meanwhile is painted then, once.
-            s.stats.throttled += 1;
-            self.stats.throttled += 1;
-            return;
+            if s.geometry_changed() {
+                // A new size or scale supersedes the frame in flight: paint
+                // now, so a surface the compositor does not present (an
+                // occluded bar, an output in DPMS off) still applies its
+                // configure. The old frame's feedback comes back discarded
+                // and no longer matches `in_flight`; a late frame callback
+                // only marks the surface again.
+                s.in_flight = None;
+                s.callback_pending = false;
+            } else {
+                // The frame in flight's callback or presentation marks it
+                // again; whatever changed meanwhile is painted then, once.
+                // A same-size configure's ack is committed then too (a
+                // bare commit now would only discard the frame's
+                // presentation feedback).
+                s.stats.throttled += 1;
+                self.stats.throttled += 1;
+                return;
+            }
         }
         if !self.update_geometry(id) {
             return;
         }
+        let wants = self.host.wants_frame(id);
+        if !wants {
+            if let Some(at) = self.host.frame_deadline(id) {
+                // The painter holds this frame (a first frame whose text is
+                // still being shaped): ask again at its deadline, or sooner
+                // when new content marks the surface. The paint stays owed.
+                if let Some(s) = self.surfaces.get_mut(&id) {
+                    s.repaint = true;
+                }
+                self.commit_ack(id);
+                self.arm_deadline(id, at);
+                return;
+            }
+        }
         let Some(s) = self.surfaces.get_mut(&id) else {
             return;
         };
-        if !(s.repaint || self.host.wants_frame(id)) {
-            if s.ack_pending {
-                // A configure that needs no new frame (margins, exclusive
-                // zone) still takes effect only with a commit.
-                s.ack_pending = false;
-                s.layer.commit();
-                s.stats.bare_commits += 1;
-                self.stats.bare_commits += 1;
-            }
+        if !(s.repaint || wants) {
+            // A configure that needs no new frame (margins, exclusive zone)
+            // still takes effect only with a commit.
+            self.commit_ack(id);
             return;
         }
+        // Painting now: a deadline armed for an earlier, held or empty
+        // paint would only wake the loop for nothing.
+        self.cancel_deadline(id);
+        let Some(s) = self.surfaces.get_mut(&id) else {
+            return;
+        };
         let acquired = match s.buffers.acquire(&self.shm, &self.qh) {
             Ok(Some(a)) => a,
             Ok(None) => {
@@ -1281,17 +1345,24 @@ impl<H: SurfaceHost + 'static> State<H> {
             // Nothing drawn, nothing recorded: the buffer keeps its age.
             s.stats.empty_paints += 1;
             self.stats.empty_paints += 1;
+            let mapped = s.mapped();
+            if !mapped {
+                // No buffer yet: the first frame is still owed.
+                s.repaint = true;
+            }
             if !wants_more {
-                if s.ack_pending {
-                    s.ack_pending = false;
-                    wl.commit();
-                    s.stats.bare_commits += 1;
-                    self.stats.bare_commits += 1;
-                }
+                self.commit_ack(id);
                 return;
             }
             if let Some(at) = self.host.frame_deadline(id) {
+                self.commit_ack(id);
                 self.arm_deadline(id, at);
+            } else if !mapped {
+                // The compositor sends no frame callbacks to an unmapped
+                // surface: one would never come and would block every
+                // later paint. Ask again after about a frame instead.
+                self.commit_ack(id);
+                self.arm_deadline(id, Instant::now() + UNMAPPED_RETRY);
             } else {
                 wl.frame(&self.qh, FrameCallbackData(wl.clone()));
                 s.callback_pending = true;
@@ -1384,10 +1455,30 @@ impl<H: SurfaceHost + 'static> State<H> {
         self.stats.commits += 1;
     }
 
-    fn arm_deadline(&mut self, id: SurfaceId, at: Instant) {
+    /// Sends a bare commit if a configure was acked and nothing has
+    /// committed since, so the ack takes effect.
+    fn commit_ack(&mut self, id: SurfaceId) {
+        let Some(s) = self.surfaces.get_mut(&id) else {
+            return;
+        };
+        if s.ack_pending {
+            s.ack_pending = false;
+            s.wl().commit();
+            s.stats.bare_commits += 1;
+            self.stats.bare_commits += 1;
+        }
+    }
+
+    fn cancel_deadline(&mut self, id: SurfaceId) {
         if let Some(t) = self.deadline_timers.remove(&id) {
             self.handle.remove(t);
         }
+    }
+
+    /// Marks `id` again at `at` (one timer per surface; re-arming replaces
+    /// it).
+    fn arm_deadline(&mut self, id: SurfaceId, at: Instant) {
+        self.cancel_deadline(id);
         let token = self.handle.insert_source(
             Timer::from_deadline(at),
             move |_, _, state: &mut State<H>| {
@@ -1439,6 +1530,16 @@ impl<H: SurfaceHost + 'static> State<H> {
 
 fn clamp_i32(v: u32) -> i32 {
     i32::try_from(v).unwrap_or(i32::MAX)
+}
+
+/// A monitor's scale, logical size and position from its output info.
+fn output_geometry(info: &smithay_client_toolkit::output::OutputInfo) -> Geometry {
+    let integer = Scale::from_integer(info.scale_factor.max(1) as u32).unwrap_or(Scale::ONE);
+    Geometry {
+        scale: estimate_scale(info).unwrap_or(integer),
+        logical_size: info.logical_size,
+        position: info.logical_position,
+    }
 }
 
 /// The output's fractional scale from its current mode and xdg-output
@@ -1607,6 +1708,8 @@ impl<H: SurfaceHost + 'static> OutputHandler for State<H> {
         if !same {
             self.output_removed(&output);
             self.output_added(output);
+        } else if let Some(monitor) = self.monitors.set_geometry(global, output_geometry(&info)) {
+            self.host.monitor_changed(&monitor);
         }
     }
 

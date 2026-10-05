@@ -14,16 +14,32 @@ use strand_scene::{
     Size, SurfaceId,
 };
 use strand_surface::{Config, Monitor, SurfaceHost, SurfaceManager};
-use strand_text::{FontConfig, TEST_FONT_FAMILY, TextEngine, test_font_path};
+use strand_text::{FontConfig, TEST_FONT_FAMILY, TextEngine, TextWorker, test_font_path};
 
 /// What the binary will do: forward lifecycle hooks to the renderer.
 struct Host {
     renderer: Renderer,
+    /// For each non-empty paint: was text still being shaped?
+    text_pending_at_paint: Vec<bool>,
+}
+
+impl Host {
+    fn new(renderer: Renderer) -> Self {
+        Self {
+            renderer,
+            text_pending_at_paint: Vec::new(),
+        }
+    }
 }
 
 impl Painter for Host {
     fn paint(&mut self, surface: SurfaceId, target: &mut PaintTarget<'_>) -> Damage {
-        self.renderer.paint(surface, target)
+        let pending = self.renderer.text_pending();
+        let damage = self.renderer.paint(surface, target);
+        if !damage.is_empty() {
+            self.text_pending_at_paint.push(pending);
+        }
+        damage
     }
 
     fn wants_frame(&self, surface: SurfaceId) -> bool {
@@ -127,9 +143,7 @@ fn renderer_paints_a_bar_through_the_surface_manager() {
     };
     let font = std::fs::read(test_font_path()).unwrap();
     let engine = TextEngine::new(FontConfig::isolated(vec![Arc::new(font)]));
-    let host = Host {
-        renderer: Renderer::new(TextBackend::Inline(Box::new(engine))),
-    };
+    let host = Host::new(Renderer::new(TextBackend::Inline(Box::new(engine))));
     let mut mgr = SurfaceManager::with_connection(sway.connect(), host, Config::default()).unwrap();
     apply(&mut mgr, scene());
     let ok = mgr
@@ -183,5 +197,72 @@ fn renderer_paints_a_bar_through_the_surface_manager() {
     let t = Instant::now();
     mgr.dispatch(Some(Duration::from_millis(700))).unwrap();
     assert!(t.elapsed() >= Duration::from_millis(650), "woke while idle");
+    assert_eq!(mgr.state().stats(), before);
+}
+
+/// With the real text worker, the first frame waits for its text (up to
+/// the renderer's first-frame wait) instead of going out without it.
+#[test]
+fn first_frame_waits_for_its_text() {
+    let Some(sway) = Sway::start("first_frame_waits_for_its_text") else {
+        return;
+    };
+    let font = std::fs::read(test_font_path()).unwrap();
+    let (ping, ping_source) = calloop::ping::make_ping().unwrap();
+    let worker = TextWorker::spawn_with_waker(
+        FontConfig::isolated(vec![Arc::new(font)]),
+        Some(Box::new(move || ping.ping())),
+    )
+    .unwrap();
+    let mut renderer = Renderer::new(TextBackend::Worker(worker));
+    // Long enough that only the text's arrival can end the hold here.
+    let wait = Duration::from_millis(800);
+    renderer.set_first_frame_wait(wait);
+    let mut mgr =
+        SurfaceManager::with_connection(sway.connect(), Host::new(renderer), Config::default())
+            .unwrap();
+    // The binary's wiring: text delivered → `update`, then `poll`.
+    mgr.loop_handle()
+        .insert_source(ping_source, |_, _, state| {
+            state.host_mut().renderer.update();
+            state.poll();
+        })
+        .unwrap();
+    let t = Instant::now();
+    apply(&mut mgr, scene());
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            let st = s.stats();
+            st.commits > 0 && st.presented + st.discarded >= st.commits
+        })
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surfaces());
+    let first_commit = t.elapsed();
+    let host = mgr.state().host();
+    assert_eq!(
+        host.text_pending_at_paint.first(),
+        Some(&false),
+        "the first frame went out while its text was being shaped"
+    );
+    assert!(
+        first_commit < wait,
+        "held until the deadline: {first_commit:?}"
+    );
+    assert_eq!(mgr.state().stats().commits, 1, "{:?}", mgr.state().stats());
+    let shot = sway.grim("HEADLESS-1");
+    let lit = (20..80).any(|x| (8..30).any(|y| shot.rgb(x, y)[0] > 0xc0));
+    assert!(lit, "no text in the first frame");
+
+    // The hold's deadline timer was cancelled by the paint: nothing wakes
+    // the loop when it would have fired.
+    let before = mgr.state().stats();
+    let t = Instant::now();
+    mgr.dispatch(Some(wait + Duration::from_millis(200)))
+        .unwrap();
+    assert!(
+        t.elapsed() >= wait + Duration::from_millis(150),
+        "woke after {:?}",
+        t.elapsed()
+    );
     assert_eq!(mgr.state().stats(), before);
 }

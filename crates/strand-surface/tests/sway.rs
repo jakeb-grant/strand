@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use common::*;
 use strand_scene::{
-    Damage, LogicalRect, LogicalSize, NodeId, NodeKind, Scale, Size, SurfaceChange,
+    Damage, Insets, LogicalRect, LogicalSize, NodeId, NodeKind, Scale, Size, SurfaceChange,
 };
 use strand_surface::{ButtonState, Config, FakeClock, InputEvent, MAX_BUFFERS, Request};
 
@@ -93,6 +93,142 @@ fn bar_on_every_output_with_hotplug() {
     pump(&mut mgr, Duration::from_millis(100));
     assert_eq!(sway.workspace_rect("HEADLESS-1").1, 0);
     assert_eq!(mgr.state().host().age_errors, 0);
+}
+
+#[test]
+fn replugged_monitor_keeps_its_surface_ids() {
+    let Some((sway, mut mgr)) = start("replugged_monitor_keeps_its_surface_ids", Config::default())
+    else {
+        return;
+    };
+    wait_for_bars(&mut mgr, 1);
+    let second = sway.create_output();
+    wait_for_bars(&mut mgr, 2);
+    let monitor = mgr
+        .state()
+        .monitors()
+        .into_iter()
+        .find(|m| m.connector.as_deref() == Some(second.as_str()))
+        .unwrap();
+    assert_eq!(monitor.logical_size, Some((1920, 1080)));
+    assert_eq!(monitor.scale, Scale::ONE);
+    assert!(monitor.position.is_some());
+    let bar = mgr
+        .state()
+        .surfaces()
+        .into_iter()
+        .find(|s| s.monitor.as_ref() == Some(&monitor.id))
+        .unwrap();
+
+    // A scale change is a monitor change, not a new monitor.
+    sway.msg(&["output", &second, "scale", "2"]);
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.host()
+                .monitors_changed
+                .iter()
+                .any(|m| m.id == monitor.id && m.scale == Scale::new(240).unwrap())
+        })
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().host().monitors_changed);
+    let changed = mgr.state().host().monitors_changed.last().unwrap().clone();
+    assert_eq!(changed.logical_size, Some((960, 540)));
+    assert_eq!(mgr.state().host().monitors_added.len(), 2);
+
+    // Disabling the output withdraws its wl_output global; enabling it
+    // brings back the same monitor (same make, model, description).
+    sway.msg(&["output", &second, "disable"]);
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surfaces().len() == 1 && s.remembered_monitors().len() == 1
+        })
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surfaces());
+    assert_eq!(mgr.state().remembered_monitors()[0].id, monitor.id);
+    assert_eq!(mgr.state().host().detached, vec![bar.id]);
+
+    sway.msg(&["output", &second, "enable"]);
+    wait_for_bars(&mut mgr, 2);
+    let host = mgr.state().host();
+    let (added, reconnected) = host.monitors_added.last().unwrap().clone();
+    assert_eq!(added.id, monitor.id);
+    assert!(reconnected, "a monitor back within 30 s is reconnected");
+    assert!(mgr.state().remembered_monitors().is_empty());
+    let again = mgr
+        .state()
+        .surfaces()
+        .into_iter()
+        .find(|s| s.monitor.as_ref() == Some(&monitor.id))
+        .unwrap();
+    assert_eq!(again.id, bar.id, "the same surface id comes back");
+    assert_eq!(
+        host.attached.last(),
+        Some(&(bar.id, BAR, Some(monitor.id.clone())))
+    );
+    assert_eq!(again.logical_size, (960, 36));
+    assert_eq!(again.buffer_size, Size::new(1920, 72));
+}
+
+#[test]
+fn floating_bar_margins() {
+    let Some(sway) = Sway::start("floating_bar_margins") else {
+        return;
+    };
+    let mut mgr = strand_surface::SurfaceManager::with_connection(
+        sway.connect(),
+        TestHost::default(),
+        Config::default(),
+    )
+    .unwrap();
+    // `margin: 8, 8, 0` (design example a, `$space.2`).
+    let margin = Insets::from_values(&[8.0, 8.0, 0.0]).unwrap();
+    mgr.state_mut().apply_surface_change(
+        BAR,
+        SurfaceChange::Created(bar_spec_with_margin("Top", 36.0, margin)),
+    );
+    wait_for_bars(&mut mgr, 1);
+    settle(&mut mgr);
+    assert_eq!(mgr.state().surfaces()[0].logical_size, (1904, 36));
+    let shot = sway.grim("HEADLESS-1");
+    assert_eq!(shot.rgb(8, 8), BLUE);
+    assert_eq!(shot.rgb(1911, 43), BLUE);
+    assert_ne!(shot.rgb(7, 20), BLUE);
+    assert_ne!(shot.rgb(1912, 20), BLUE);
+    assert_ne!(shot.rgb(100, 7), BLUE);
+    assert_ne!(shot.rgb(100, 44), BLUE);
+    // Windows start below the margin plus the bar.
+    assert_eq!(sway.workspace_rect("HEADLESS-1").1, 44);
+}
+
+#[test]
+fn empty_first_paint_does_not_stall() {
+    let Some(sway) = Sway::start("empty_first_paint_does_not_stall") else {
+        return;
+    };
+    let mut host = TestHost::default();
+    host.empty_first = true;
+    let mut mgr =
+        strand_surface::SurfaceManager::with_connection(sway.connect(), host, Config::default())
+            .unwrap();
+    mgr.state_mut()
+        .apply_surface_change(BAR, SurfaceChange::Created(bar_spec("Top", 36.0)));
+    // The unmapped surface gets no frame callback, so the manager must
+    // not wait for one: it paints again and maps.
+    wait_for_bars(&mut mgr, 1);
+    settle(&mut mgr);
+    let stats = mgr.state().stats();
+    assert_eq!(stats.empty_paints, 1, "{stats:?}");
+    assert_eq!(stats.frame_requests, stats.frames_done, "{stats:?}");
+    assert_eq!(sway.grim("HEADLESS-1").rgb(10, 10), BLUE);
+    // And it keeps working afterwards.
+    mgr.state_mut()
+        .host_mut()
+        .set_square(Some(LogicalRect::new(50.0, 8.0, 10.0, 10.0)));
+    mgr.state_mut().poll();
+    let ok = mgr
+        .dispatch_until(WAIT, |s| s.stats().commits > stats.commits)
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().stats());
 }
 
 #[test]
@@ -366,6 +502,25 @@ fn fractional_buffers_are_crisp() {
             .physical_size(LogicalSize::new(1280.0, 33.0))
     );
     assert_checker(&sway.grim("HEADLESS-1"), 50, 96, "scale 1.5");
+
+    // 33 × 2 = 66 rows, and 33 at 1.0, both through the fractional path.
+    for (scale, rows) in [("2", 66), ("1", 33)] {
+        sway.msg(&["output", "HEADLESS-1", "scale", scale]);
+        let ok = mgr
+            .dispatch_until(WAIT, |s| {
+                s.surfaces()[0].buffer_size == Size::new(1920, rows)
+            })
+            .unwrap();
+        assert!(ok, "{:?}", mgr.state().surfaces());
+        settle(&mut mgr);
+        assert!(mgr.state().surfaces()[0].fractional);
+        assert_checker(
+            &sway.grim("HEADLESS-1"),
+            rows,
+            96,
+            &format!("scale {scale}"),
+        );
+    }
     assert_configured_sizes_painted(mgr.state().host());
     assert_eq!(mgr.state().host().age_errors, 0);
 }

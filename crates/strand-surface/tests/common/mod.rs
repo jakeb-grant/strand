@@ -2,7 +2,7 @@
 //! host, and screenshots through grim.
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::BufReader;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
@@ -299,6 +299,12 @@ pub struct TestHost {
     pub detached: Vec<SurfaceId>,
     pub monitors_added: Vec<(Monitor, bool)>,
     pub monitors_removed: Vec<Monitor>,
+    pub monitors_changed: Vec<Monitor>,
+    /// The first paint of each surface draws nothing and returns empty
+    /// damage (the `Painter` contract allows it) while still wanting a
+    /// frame.
+    pub empty_first: bool,
+    empty_done: HashSet<SurfaceId>,
     /// Pixels found not to hold the frame the buffer age claimed.
     pub age_errors: u64,
 }
@@ -344,6 +350,9 @@ pub fn checker_at(x: u32, y: u32) -> [u8; 3] {
 
 impl Painter for TestHost {
     fn paint(&mut self, surface: SurfaceId, target: &mut PaintTarget<'_>) -> Damage {
+        if self.empty_first && self.empty_done.insert(surface) {
+            return Damage::new();
+        }
         let scale = target.scale;
         let square = self.square_px(scale);
         let bounds = target.bounds();
@@ -478,6 +487,10 @@ impl SurfaceHost for TestHost {
     fn monitor_removed(&mut self, monitor: &Monitor) {
         self.monitors_removed.push(monitor.clone());
     }
+
+    fn monitor_changed(&mut self, monitor: &Monitor) {
+        self.monitors_changed.push(monitor.clone());
+    }
 }
 
 /// A `panel` or `osd` of `w`×`h` at `anchor` with default `screens`
@@ -496,11 +509,16 @@ pub fn layer_spec(kind: NodeKind, name: &str, anchor: &str, w: f32, h: f32) -> S
 
 /// `bar <name> { edge: top; height: <h> }` as the renderer would report it.
 pub fn bar_spec(name: &str, height: f32) -> SurfaceSpec {
+    bar_spec_with_margin(name, height, Insets::all(0.0))
+}
+
+/// `bar <name> { edge: top; height: <h>; margin: <margin> }`.
+pub fn bar_spec_with_margin(name: &str, height: f32, margin: Insets) -> SurfaceSpec {
     let props: HashMap<Prop, PropValue> = [
         (Prop::Name, PropValue::Text(name.into())),
         (Prop::Edge, PropValue::Keyword("top".into())),
         (Prop::Height, PropValue::Number(height)),
-        (Prop::Margin, PropValue::Insets(Insets::all(0.0))),
+        (Prop::Margin, PropValue::Insets(margin)),
     ]
     .into_iter()
     .collect();

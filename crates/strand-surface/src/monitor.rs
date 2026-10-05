@@ -13,6 +13,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::time::{Duration, Instant};
 
+use strand_scene::Scale;
+
 /// How long an unplugged monitor is remembered.
 pub const MONITOR_RETENTION: Duration = Duration::from_secs(30);
 
@@ -74,6 +76,32 @@ pub struct Monitor {
     pub make: String,
     pub model: String,
     pub description: String,
+    /// The output's scale (fractional when the compositor's mode and
+    /// logical size give one, else its integer scale).
+    pub scale: Scale,
+    /// Size in logical pixels (xdg-output), when known.
+    pub logical_size: Option<(i32, i32)>,
+    /// Position in the compositor's logical layout (xdg-output), when
+    /// known.
+    pub position: Option<(i32, i32)>,
+}
+
+/// The part of a [`Monitor`] that changes while it stays plugged in.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Geometry {
+    pub scale: Scale,
+    pub logical_size: Option<(i32, i32)>,
+    pub position: Option<(i32, i32)>,
+}
+
+impl Default for Geometry {
+    fn default() -> Self {
+        Self {
+            scale: Scale::ONE,
+            logical_size: None,
+            position: None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -136,6 +164,9 @@ impl Monitors {
             make: make.to_owned(),
             model: model.to_owned(),
             description: description.to_owned(),
+            scale: Scale::ONE,
+            logical_size: None,
+            position: None,
         };
         let reconnected = self.records.contains_key(&id);
         self.records.insert(
@@ -150,6 +181,25 @@ impl Monitors {
             monitor,
             reconnected,
         }
+    }
+
+    /// Records a plugged-in monitor's scale, logical size and position.
+    /// Returns the updated monitor when any of them changed.
+    pub fn set_geometry(&mut self, global: u32, g: Geometry) -> Option<Monitor> {
+        let id = self.outputs.get(&global)?;
+        let m = &mut self.records.get_mut(id)?.monitor;
+        let old = Geometry {
+            scale: m.scale,
+            logical_size: m.logical_size,
+            position: m.position,
+        };
+        if old == g {
+            return None;
+        }
+        m.scale = g.scale;
+        m.logical_size = g.logical_size;
+        m.position = g.position;
+        Some(m.clone())
     }
 
     /// A `wl_output` global went away. Its record is kept for
@@ -299,6 +349,25 @@ mod tests {
         assert!(b.reconnected);
         assert_eq!(b.monitor.id, a.monitor.id);
         assert_eq!(m.next_expiry(), None);
+    }
+
+    #[test]
+    fn geometry_updates_report_changes_only() {
+        let mut m = Monitors::default();
+        let t = Instant::now();
+        m.plug(4, "A", "B", "C", None, t);
+        let g = Geometry {
+            scale: Scale::new(180).unwrap(),
+            logical_size: Some((1280, 720)),
+            position: Some((1920, 0)),
+        };
+        let changed = m.set_geometry(4, g).unwrap();
+        assert_eq!(changed.scale, Scale::new(180).unwrap());
+        assert_eq!(changed.logical_size, Some((1280, 720)));
+        assert_eq!(changed.position, Some((1920, 0)));
+        assert_eq!(m.set_geometry(4, g), None);
+        assert_eq!(m.set_geometry(5, g), None);
+        assert_eq!(m.present().next().unwrap(), &changed);
     }
 
     #[test]

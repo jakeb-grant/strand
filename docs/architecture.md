@@ -245,7 +245,8 @@ and the connection):
   compositor places), `surface_entered(surface, &Monitor)` (where that
   one was shown), `surface_configured(surface, size, scale)` (once per
   wakeup, right before the first paint at that size), `surface_detached`,
-  `monitor_added(&Monitor, reconnected)`, `monitor_removed`,
+  `monitor_added(&Monitor, reconnected)`, `monitor_changed` (scale,
+  logical size or position; same identity), `monitor_removed`,
   `monitor_forgotten` (30 s after an unplug), `frame_deadline(surface) ->
   Option<Instant>`, `frame_dropped(surface)` and `input(&InputEvent)`
   (main thread, for hit testing). The binary implements it on a wrapper
@@ -268,6 +269,15 @@ and the connection):
   stays true, or always without `wp_presentation`) or its presentation
   feedback (`presented`/`discarded`, requested for every commit). Changes
   arriving meanwhile coalesce into the next paint.
+- Monitors reach logic through the binary: it forwards the `monitor_*`
+  hooks as the `screens` service (design: Monitors → `screens`), from
+  which logic instantiates per-monitor surfaces (`Screens::Named`).
+  `Monitor` carries identity, connector, make, model, description,
+  `scale`, `logical_size` and `position`.
+- A painter's hold is honoured: while `wants_frame` is false and
+  `frame_deadline` is `Some`, no buffer is committed (the first frame
+  waits for its text); a timer at the deadline asks again, and any
+  `poll()` before it does too.
 - `screens: focused` is one layer surface created without an output
   (wlr-layer-shell puts it on the output the user last interacted with);
   `State::set_focused_monitor(Some(id))` (a compositor IPC service, M3)

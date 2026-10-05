@@ -182,9 +182,20 @@ Each track appends under its own heading.
   Configure and `preferred_scale` only mark the surface; size and scale
   are resolved right before the paint, so one wakeup gives one
   `surface_configured`. A configure that needs no new frame gets a bare
-  commit so the ack takes effect. A paint that returns no damage while
+  commit so the ack takes effect (while a frame is in flight it waits for
+  that frame's callback or feedback: a bare commit would discard the
+  feedback). A configure or scale that needs a new buffer size skips the
+  wait, so a surface the compositor does not present still applies it
+  (review round 2; not reproducible on headless sway 1.9, which presents
+  occluded surfaces and defers output changes while powered off, so it
+  has no sway test). Before painting, a host hold (`wants_frame` false,
+  `frame_deadline` Some: the renderer's first-frame text wait) arms a
+  timer at the deadline and commits nothing but a pending ack; the paint
+  cancels any armed deadline. A paint that returns no damage while
   `wants_frame` stays true arms a timer at `frame_deadline` if the host
-  gives one, else requests a callback with a bare commit. Presentation
+  gives one; on a surface that has not committed a buffer yet (unmapped:
+  no frame callbacks come) it retries after 16 ms; otherwise it requests
+  a callback with a bare commit. Presentation
   feedback is requested for every buffer commit (none while idle).
   `State` methods called between dispatches take effect on the next
   `SurfaceManager::dispatch`, which does not sleep while work is pending.
@@ -204,7 +215,12 @@ Each track appends under its own heading.
   the connector into `wl_output.description` (`"… (DP-1)"`); a trailing
   `" (<connector>)"` equal to the output's own name is dropped from the
   identity, so a monitor moved to another port is the same monitor.
-  Numbering of identical monitors follows plug order.
+  Numbering of identical monitors follows plug order. `Monitor` also
+  carries the output's scale (estimated fractional, else integer),
+  xdg-output logical size and position; changes to those (same identity)
+  go to `SurfaceHost::monitor_changed`. On sway, `output X disable` /
+  `enable` withdraws and re-adds the `wl_output` global with the same
+  description, which is how the replug test exercises reconnection.
 - 2026-10-05 · surface: `screens: focused` is one layer surface per node
   created with `output = null`; wlr-layer-shell lets the compositor put
   it on the output the user last interacted with (sway: the focused

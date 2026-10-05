@@ -81,13 +81,17 @@ impl Predictor {
         if now < last.time {
             // Clock skew between feedback and our reading: the next vblank
             // after the last presentation is the best guess.
-            return last.time + refresh;
+            return last.time.checked_add(refresh).unwrap_or(now);
         }
         let elapsed = (now - last.time).as_nanos();
         let period = refresh.as_nanos();
         let periods = elapsed / period + 1;
         let offset = periods.saturating_mul(period);
-        last.time + Duration::from_nanos(u64::try_from(offset).unwrap_or(u64::MAX))
+        // Timestamps come from the compositor: a bogus one must not panic.
+        u64::try_from(offset)
+            .ok()
+            .and_then(|o| last.time.checked_add(Duration::from_nanos(o)))
+            .unwrap_or(now)
     }
 }
 
@@ -315,6 +319,29 @@ mod tests {
         present(&mut clock, ms(40.0), refresh);
         present(&mut clock, ms(10.0), refresh);
         assert_eq!(clock.predict(S), ms(40.0) + refresh);
+    }
+
+    #[test]
+    fn bogus_timestamps_do_not_panic() {
+        // A presentation time near the end of the clock (a compositor bug)
+        // cannot be extended by a period: predict "now".
+        let refresh = Duration::from_nanos(16_666_667);
+        let mut clock = FakeClock::new(ms(5.0));
+        present(&mut clock, Duration::new(u64::MAX, 999_999_990), refresh);
+        assert_eq!(clock.predict(S), ms(5.0));
+        // A next boundary past the end of `Duration` (beyond what the
+        // fake clock can hold, so on the predictor itself).
+        let mut p = Predictor::default();
+        p.presented(
+            S,
+            Presentation {
+                time: Duration::new(u64::MAX, 990_000_000),
+                refresh: Some(refresh),
+                seq: 0,
+            },
+        );
+        let now = Duration::MAX;
+        assert_eq!(p.predict(S, now), now);
     }
 
     #[test]
