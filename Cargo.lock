@@ -1742,6 +1742,7 @@ dependencies = [
  "log",
  "mimalloc",
  "rustix",
+ "serde_json",
  "strand-compiler",
  "strand-core",
  "strand-render",

@@ -4,7 +4,10 @@
 
 mod check;
 mod demo;
+mod ipc;
+mod live;
 mod logging;
+mod overlay;
 mod run;
 
 use std::io::IsTerminal;
@@ -108,6 +111,30 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         };
     }
+    match args.first().map(String::as_str) {
+        Some("reload") => {
+            return match ipc::reload_cli(&args[1..]) {
+                Ok(text) => {
+                    print!("{text}");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("strand reload: {e}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        Some("watch") => {
+            return match ipc::watch_cli(&args[1..], &mut std::io::stdout()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("strand watch: {e}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        _ => {}
+    }
     match dispatch(&args) {
         Ok(Action::Print(out)) => {
             print!("{out}");
@@ -173,8 +200,8 @@ mod tests {
     #[test]
     fn known_commands_name_their_milestone() {
         assert_eq!(
-            run(&["watch"]).unwrap_err(),
-            "strand watch: not implemented yet (M1)"
+            run(&["get"]).unwrap_err(),
+            "strand get: not implemented yet (M5)"
         );
     }
 
