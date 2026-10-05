@@ -8,6 +8,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+foldhash = "0.2.0"
 slotmap = "1.1.1"
 
 [dev-dependencies]
@@ -16,6 +17,10 @@ criterion = { version = "0.8.2", default-features = false, features = ["cargo_be
 
 [[bench]]
 name = "graph"
+harness = false
+
+[[bench]]
+name = "keyed"
 harness = false
 
 [lints]

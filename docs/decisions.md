@@ -787,3 +787,18 @@ schema from `strand-compiler`).
   only the newer stable reported. Bump the pin deliberately, fixing new
   lints in the same commit. CI also installs `pkg-config` and
   `libfontconfig1-dev` for parley's font discovery.
+
+## wave2-core
+
+**2026-10-05 · Keyed collections at 2,000 rows.** `KeyedVec` keeps a key →
+position map that tolerates stale entries (keys are unique, so an entry is
+proved by one comparison; a stale one is found by an outward search and
+fixed), so mutations never re-index the items after them and lookups are
+O(1) amortised. `keyed_diff` is hash-based with the longest increasing run
+of survivors left in place: the fewest `Move`s, never a remove and
+re-insert of a surviving key; repeated keys give a `Reset` instead of a
+panic. A derived collection that receives more than 128 diffs covering at
+least a quarter of its source rebuilds and publishes the keyed diff of its
+output (identity kept), because `sort_by` costs O(n) per diff. Hashing uses
+`foldhash` (already in the tree), not SipHash. Numbers in
+`docs/benchmarks.md`.

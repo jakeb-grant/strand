@@ -22,6 +22,8 @@ use std::hash::Hash;
 use std::marker::PhantomData;
 use std::rc::Rc;
 
+use foldhash::HashSetExt;
+
 use super::ops::{Filter, IncrementalOp, Map, SortBy, Take};
 use super::{KeyedVec, VecDiff, keyed_diff};
 use crate::error::Error;
@@ -519,7 +521,7 @@ impl Runtime {
     {
         let step = move |rt: &Runtime| -> Result<Step<K, T>, Error> {
             let values = f(rt)?;
-            let mut seen = std::collections::HashSet::with_capacity(values.len());
+            let mut seen = foldhash::HashSet::with_capacity(values.len());
             let mut items = Vec::with_capacity(values.len());
             for v in values {
                 let k = key_of(&v);
@@ -574,6 +576,16 @@ impl<T: Clone + PartialEq + 'static> crate::AsyncMemo<Vec<T>> {
     }
 }
 
+/// More source diffs than this in one step, and at least a quarter of the
+/// source length, rebuild instead: operators cost up to O(n) per diff
+/// (`sort_by` index bookkeeping), a rebuild O(n log n) plus an O(n) keyed
+/// diff of the output (a launcher query that reshuffles 2,000 rows).
+const BULK_DIFFS: u64 = 128;
+
+fn is_bulk(pending: u64, len: usize) -> bool {
+    pending > BULK_DIFFS && pending.saturating_mul(4) > len as u64
+}
+
 /// Build a derived collection from an operator factory and tracked params.
 fn derive<K, T, U, P, O, S>(
     rt: &Runtime,
@@ -609,6 +621,7 @@ where
         if let Some(st) = state.as_mut()
             && st.params == p
             && Rc::ptr_eq(&st.log, &snap.log)
+            && !is_bulk(snap.version.saturating_sub(st.version), snap.len())
             && let Some(diffs) = snap.diffs_since(st.version)
         {
             let mut out = Vec::new();
@@ -624,7 +637,8 @@ where
                 return Ok(Step::Diffs(out));
             }
         }
-        // Rebuild: first run, params changed, log gap or a bad diff.
+        // Rebuild: first run, params changed, log gap, a bulk change or a
+        // bad diff.
         rt.bump(|s| s.rebuilds += 1);
         let mut op = make(&p);
         let mut out = Vec::new();
