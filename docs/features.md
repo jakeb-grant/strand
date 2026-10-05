@@ -15,7 +15,7 @@ correction frame after boot); see `docs/m0-report.md`; in `cargo test`:
 `crates/strand/tests/demo.rs` (`demo_bar_on_two_outputs_then_idle`: PSS,
 idle, alignment on 2560@1.0, 2560@1.25 and a hotplugged 1920@1.0; PSS held to
 34 MB in a release run, to a 40 MB debug ceiling in a debug run; SKIPPED
-without sway, so not yet in CI, see the CI line below), `crates/strand/src/demo/mod.rs`
+without sway locally; CI requires sway, see the CI line below), `crates/strand/src/demo/mod.rs`
 (`a_minute_tick_repaints_at_most_2000_px2`)
 
 - [x] `strand-scene` vocabulary: geometry, colour (sRGB ↔ OKLab), `Damage` (≤8 rects, merge), `Painter`, scene protocol types — `crates/strand-scene/src/{geometry,color,damage,id,paint,protocol,surface,tokens}.rs` (unit + proptest), `crates/strand-render/tests/damage.rs` (`surface_specs_resolve_tokens_and_report_changes`)
@@ -35,7 +35,7 @@ without sway, so not yet in CI, see the CI line below), `crates/strand/src/demo/
 - [x] 10k-node reactive graph benchmark (propagation latency, memory per node) — `crates/strand-core/benches/graph.rs`, shape checked by `crates/strand-core/tests/bench_graph.rs`, results in `docs/benchmarks.md`
 - [x] mimalloc allocator in the runtime binary — `crates/strand/src/main.rs` (`mimalloc_is_the_global_allocator`)
 - [x] Measurement script: PSS, wakeups, damage per tick, on headless sway with 2 outputs — `scripts/m0-exit.sh` (also a hotplugged third output of another width at the same scale; results in `docs/m0-report.md`)
-- [ ] CI runs the Wayland and budget tiers on every push (design.md, "Testing"): install sway, grim and fonts-dejavu-core in `.github/workflows/ci.yml` (`sudo apt-get install -y sway grim fonts-dejavu-core`) so `crates/strand/tests/demo.rs` and `crates/strand-surface/tests/sway.rs` run instead of printing SKIPPED, and add `cargo test --release -p strand --test demo` so the 34 MB gate is checked on a release build. Until then the budgets are checked by hand with `scripts/m0-exit.sh`. Owner: the lead (`ci.yml` belongs to no track); needed before M1 links in the compiler, VM and watcher.
+- [x] CI runs the Wayland and budget tiers on every push (design.md, "Testing"): `.github/workflows/ci.yml` installs sway, grim, fonts-dejavu-core (and fontconfig headers), sets `STRAND_REQUIRE_SWAY=1` so `crates/strand/tests/demo.rs`, `crates/strand-surface/tests/sway.rs` and `crates/strand-surface/tests/render.rs` fail instead of skipping without sway, and runs `cargo test --release -p strand --test demo` for the 34 MB PSS gate on a release build — first green run: https://github.com/jakeb-grant/strand/actions/runs/37268841209 (Rust pinned to 1.97.0, see `docs/decisions.md`, integration)
 
 ## M1 Language and live reload (weeks 7–16)
 
