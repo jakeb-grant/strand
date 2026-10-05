@@ -48,8 +48,9 @@ pub fn markdown(code: &str, doc: Option<&str>) -> String {
     out
 }
 
-/// The `//` comment lines directly above the line holding `span`.
-pub fn leading_comments(src: &str, span: Span) -> Option<String> {
+/// The `//` comment lines directly above the line holding `span`, and
+/// where the first of them starts.
+pub fn leading_comments(src: &str, span: Span) -> Option<(usize, String)> {
     let start = (span.start as usize).min(src.len());
     let line_start = src[..start].rfind('\n').map_or(0, |i| i + 1);
     let mut lines = Vec::new();
@@ -67,7 +68,7 @@ pub fn leading_comments(src: &str, span: Span) -> Option<String> {
         return None;
     }
     lines.reverse();
-    Some(lines.join("\n"))
+    Some((end, lines.join("\n")))
 }
 
 /// The declaration of a config name, as hover shows it.
@@ -177,6 +178,14 @@ pub fn service(schema: &Schema, types: &TypeTable, name: &str) -> (String, Optio
 }
 
 /// The doc comment of a config declaration, or of a schema entry.
+///
+/// A comment block that opens the file and starts with the file's own name
+/// (`// launcher.strand. Bind a key to: …`) is the file's header, not the
+/// doc of the declaration under it.
 pub fn def_doc(an: &Analysis, file: FileId, span: Span) -> Option<String> {
-    leading_comments(an.text(file), span)
+    let (start, doc) = leading_comments(an.text(file), span)?;
+    let name = an.map.get(file).map_or("", |f| f.name.as_str());
+    let base = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    let header = start == 0 && !base.is_empty() && doc.starts_with(base);
+    (!header).then_some(doc)
 }

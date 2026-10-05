@@ -20,7 +20,7 @@ use strand_compiler::{FileId, SourceMap};
 
 use crate::check::default_dir;
 
-const USAGE: &str = "usage: strand fmt [--check] [dir | file]...\n\n\
+const USAGE: &str = "usage: strand fmt [--check] [--] [dir | file]...\n\n\
     Formats .strand files in place (a directory means its .strand files, \
     as `strand check` loads them; default $XDG_CONFIG_HOME/strand). With \
     --check, writes nothing, lists the files that are not formatted and \
@@ -44,8 +44,11 @@ pub struct Report {
 pub fn run(args: &[String], style: Style) -> (String, bool) {
     let mut check = false;
     let mut paths = Vec::new();
+    let mut options = true;
     for a in args {
         match a.as_str() {
+            s if !options => paths.push(PathBuf::from(s)),
+            "--" => options = false,
             "-h" | "--help" => return (USAGE.into(), true),
             "--check" => check = true,
             s if s.starts_with('-') => {
@@ -58,22 +61,32 @@ pub fn run(args: &[String], style: Style) -> (String, bool) {
         }
     }
     if paths.is_empty() {
-        match default_dir(
+        match config_dir(
             std::env::var_os("XDG_CONFIG_HOME"),
             std::env::var_os("HOME"),
         ) {
-            Some(d) => paths.push(d),
-            None => {
-                return (
-                    "strand fmt: set XDG_CONFIG_HOME or HOME, or pass a path\n".into(),
-                    false,
-                );
-            }
+            Ok(d) => paths.push(d),
+            Err(msg) => return (msg, false),
         }
     }
     let report = fmt_paths(&paths, check, style);
     let ok = report.failed == 0 && (!check || report.changed.is_empty());
     (report.text, ok)
+}
+
+/// The config directory formatted when no path is given.
+fn config_dir(
+    xdg_config_home: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Result<PathBuf, String> {
+    match default_dir(xdg_config_home, home) {
+        Some(d) if d.is_dir() => Ok(d),
+        Some(d) => Err(format!(
+            "strand fmt: the config directory {} does not exist; pass a path\n",
+            d.display()
+        )),
+        None => Err("strand fmt: set XDG_CONFIG_HOME or HOME, or pass a path\n".into()),
+    }
 }
 
 /// Formats (or, with `check`, inspects) every file the paths stand for.
@@ -99,6 +112,9 @@ pub fn fmt_paths(paths: &[PathBuf], check: bool, style: Style) -> Report {
             files.push(p.clone());
         }
     }
+    // A file named twice (`strand fmt dir dir/a.strand`) is done once.
+    let mut seen = std::collections::HashSet::new();
+    files.retain(|f| seen.insert(std::fs::canonicalize(f).unwrap_or_else(|_| f.clone())));
     for file in &files {
         report.files += 1;
         match fmt_file(file, check, style) {
@@ -308,6 +324,39 @@ mod tests {
                 .is_symlink()
         );
         assert_eq!(t.read("dotfiles/bar.strand"), TIDY);
+    }
+
+    #[test]
+    fn a_file_named_twice_is_formatted_once() {
+        let t = TempDir::new();
+        let file = t.write("bar.strand", MESSY);
+        let dir = t.0.display().to_string();
+        let (text, ok) = run(&args(&[&dir, &file.display().to_string()]), Style::Plain);
+        assert!(ok, "{text}");
+        assert!(text.contains("1 file, 1 reformatted"), "{text}");
+    }
+
+    #[test]
+    fn a_double_dash_ends_options() {
+        // A path starting with `-` (relative to the working directory, so
+        // missing here) is taken as a path, not an option.
+        let (text, ok) = run(&args(&["--check", "--", "-no-such.strand"]), Style::Plain);
+        assert!(!ok);
+        assert!(!text.contains("unknown option"), "{text}");
+        assert!(text.contains("-no-such.strand"), "{text}");
+    }
+
+    #[test]
+    fn a_missing_config_directory_is_named() {
+        let t = TempDir::new();
+        let home = t.0.join("nobody");
+        let err = config_dir(None, Some(home.clone().into_os_string())).unwrap_err();
+        assert!(
+            err.contains("config directory") && err.contains("does not exist"),
+            "{err}"
+        );
+        std::fs::create_dir_all(home.join(".config/strand")).unwrap();
+        assert!(config_dir(None, Some(home.into_os_string())).is_ok());
     }
 
     #[test]

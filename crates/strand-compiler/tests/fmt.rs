@@ -153,6 +153,11 @@ fn layout_rules() {
             "bar B { shadow: 0 (-2px) 8px $shadow }\n",
             "bar B { shadow: 0 (-2px) 8px $shadow }\n",
         ),
+        // Two prefix minuses stay apart: `--b` reads like a decrement.
+        (
+            "let a = - -b\nlet c = -  -1\nlet d = !-e\nlet f = -g\n",
+            "let a = - -b\nlet c = - -1\nlet d = !-e\nlet f = -g\n",
+        ),
         // Types are written tight, ternaries spaced.
         (
             "let h : Async< [ Hit ] >? = x?y:z\n",

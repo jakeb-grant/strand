@@ -904,6 +904,13 @@ impl Layout<'_> {
                     Gap::None
                 }
             }
+            // `- -b` stays apart: `--b` reads like a decrement.
+            (K::Minus, _)
+                if self.facts.unary.contains(&self.toks[p].span.start)
+                    && self.text(i).starts_with('-') =>
+            {
+                Gap::Space
+            }
             (K::Minus | K::Bang, _) if self.facts.unary.contains(&self.toks[p].span.start) => {
                 Gap::None
             }

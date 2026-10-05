@@ -51,6 +51,11 @@ const TREE_KEYWORDS: &[&str] = &[
     "set", "play",
 ];
 
+/// Keywords at the start of an item in the block of a call of a component
+/// with a `slot` (handlers, timers, `when`, poses and `state` belong inside
+/// the component's own elements).
+const CALL_KEYWORDS: &[&str] = &["if", "match", "for", "let"];
+
 /// Keywords at the start of a handler statement.
 const STMT_KEYWORDS: &[&str] = &["let", "if", "match", "for", "play"];
 
@@ -78,7 +83,7 @@ const LIST_METHODS: &[&str] = &[
 ];
 
 pub fn complete(an: &Analysis, file: FileId, offset: u32) -> Vec<CompletionItem> {
-    let schema = Schema::builtin();
+    let schema = &*an.schema;
     let src = an.text(file);
     let off = (offset as usize).min(src.len());
     if !src.is_char_boundary(off) {
@@ -111,7 +116,9 @@ pub fn complete(an: &Analysis, file: FileId, offset: u32) -> Vec<CompletionItem>
             return c.items;
         }
         let optional = before.ends_with("?.");
-        c.members(ws, we, word.is_empty(), optional);
+        // Nothing typed and no name after the cursor either: the text
+        // needs a stand-in name to parse.
+        c.members(ws, we, word.is_empty() && we == ws, optional);
         return c.items;
     }
     let line = line_before(src, ws);
@@ -152,7 +159,7 @@ fn is_ident(s: &str) -> bool {
 struct Completer<'a> {
     an: &'a Analysis,
     file: FileId,
-    schema: &'static Schema,
+    schema: &'a Schema,
     items: Vec<CompletionItem>,
     /// Labels already offered.
     seen: BTreeSet<String>,
@@ -546,7 +553,18 @@ impl<'a> Completer<'a> {
                 if *props_only {
                     return;
                 }
-                for k in TREE_KEYWORDS {
+                // A component call's block holds its parameters, and
+                // children only if the component has a `slot`.
+                let call = element.as_deref().and_then(|el| self.call_slot(el));
+                if call == Some(false) {
+                    return;
+                }
+                let keywords = if call.is_some() {
+                    CALL_KEYWORDS
+                } else {
+                    TREE_KEYWORDS
+                };
+                for k in keywords {
                     self.push(*k, CompletionItemKind::KEYWORD, None, None, edit(k), "2");
                 }
                 for (name, el) in &self.schema.elements {
@@ -589,6 +607,20 @@ impl<'a> Completer<'a> {
                 }
             }
         }
+    }
+
+    /// For a component's name (not a schema element), whether the
+    /// component has a `slot`.
+    fn call_slot(&self, name: &str) -> Option<bool> {
+        if self.schema.element(name).is_some() {
+            return None;
+        }
+        let p = self.program();
+        let id = p
+            .defs
+            .iter()
+            .position(|d| d.kind == DefKind::Component && d.name == name)?;
+        walk::component(p, strand_compiler::hir::DefId(id as u32)).map(|c| c.has_slot)
     }
 
     /// Props an element (or a component call) takes.
@@ -873,7 +905,24 @@ mod tests {
             .any(|d| d.code == "check::unknown_field")
     }
 
-    /// The checker knows every list method completion offers.
+    /// The checker's private list of list methods, read from its source.
+    fn checker_list_methods() -> BTreeSet<String> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../strand-compiler/src/check/expr.rs");
+        let src = std::fs::read_to_string(&path).unwrap();
+        let start = src
+            .find("const LIST_METHODS: &[&str] = &[")
+            .expect("the checker's LIST_METHODS moved; update this test");
+        let body = &src[start..];
+        let body = &body[body.find('[').unwrap() + 1..];
+        let body = &body[body.find('[').unwrap() + 1..body.find("];").unwrap()];
+        body.split(',')
+            .map(|s| s.trim().trim_matches('"').to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    }
+
+    /// Completion offers exactly the list methods the checker knows.
     #[test]
     fn list_methods_are_the_checkers() {
         assert!(unknown_member("let xs = [1, 2]\nlet y = xs.frob()\n"));
@@ -883,5 +932,7 @@ mod tests {
                 "the checker does not know `{m}`"
             );
         }
+        let ours: BTreeSet<String> = LIST_METHODS.iter().map(|m| m.to_string()).collect();
+        assert_eq!(ours, checker_list_methods());
     }
 }

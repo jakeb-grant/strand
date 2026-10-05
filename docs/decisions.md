@@ -1109,14 +1109,48 @@ schema from `strand-compiler`).
   a link and the watcher sees one `MOVED_TO`. `--check` writes nothing,
   lists unformatted files and fails if there are any.
 - **2026-10-05 · wave2-lsp: which files a document is checked with.** The
-  same rule as `strand check <file>`: the workspace folder holding the
-  document, if the file is in that folder's module set
-  (`source::find_files`); else its own directory's module set; else the
-  document alone (unsaved buffers, hidden or too-deep files). Open
+  rule of `strand check <file>`, plus workspace folders that are configs:
+  the default config directory (`$XDG_CONFIG_HOME/strand`, else
+  `~/.config/strand`; `initializationOptions.configDir` overrides it) if
+  the file is inside it (alone if that directory's module set
+  (`source::find_files`) leaves it out, as `strand check` does); else a
+  workspace folder that holds `.strand` files itself and has the file in
+  its module set (a dotfiles repo's `strand/` opened as the workspace),
+  the deepest first; else the file's own directory's module set; else the
+  file alone (unsaved buffers, hidden or too-deep files). A workspace
+  folder that only holds configs in sub-directories is never merged into
+  one config: two sibling configs, or examples next to the real config,
+  are checked apart, as the runtime loader would load them. Open
   documents replace their files' text on disk, so cross-file errors show
   while typing, and diagnostics are published for every file of the
   config, not only open ones (design.md "What you see" #2 relies on a
   rename in one file being seen in another).
+- **2026-10-05 · wave2-lsp (round 1): files changed outside the editor.**
+  An analysis remembers the size and modification time of every file it
+  read from disk and of every directory `find_files` scanned, and is
+  compiled again when any differs, so `strand fmt` in a terminal, a git
+  checkout or another editor is seen by the next request even when the
+  client does not watch files. A client that supports dynamic
+  registration is asked to watch `**/*.strand`
+  (`workspace/didChangeWatchedFiles`); a reported change re-checks every
+  published config after the debounce. A client that takes
+  `documentChanges` gets rename and quick-fix edits with the open
+  documents' versions (`null` for files read from disk), so it refuses
+  edits computed for text it no longer has. Which config a URI belongs to
+  is cached until a document opens, closes or saves, a watched file
+  changes or a stale analysis is seen. Closing the last open document of a
+  config outside every workspace folder and the default config directory
+  clears its diagnostics and drops its analysis.
+- **2026-10-05 · wave2-lsp (round 1): the schema the server checks
+  with.** `strand_dev::serve_with(conn, Arc<Schema>)` takes the schema
+  once (the builtin one extended by the service crates the caller links,
+  `Schema::extend`); `serve` uses the builtin schema. Checking, hover,
+  completion and rename's refusal of schema tokens all read that one
+  schema, so service schemas drive hovers as design.md asks once M3's
+  crates extend it.
+- **2026-10-05 · wave2-lsp (round 1): bad notifications.** A notification
+  whose params do not parse is reported with `window/logMessage` (and on
+  stderr) and ignored; only a closed connection ends the server.
 - **2026-10-05 · wave2-lsp: debounce.** Diagnostics wait 200 ms after the
   last change (`initializationOptions.debounceMs` overrides it), so typing
   does not flash errors, and are published at once on open and save.
@@ -1132,9 +1166,15 @@ schema from `strand-compiler`).
   exports. Members are fields, methods, `Async`'s `pending`/`error`/
   `value` and list members; the list methods mirror the checker's private
   `LIST_METHODS`, and a test (`completion.rs`,
-  `list_methods_are_the_checkers`) fails if the checker stops knowing one
-  (the checker could publish the list, e.g. as `methods list { … }` in
-  the schema, so the copy goes).
+  `list_methods_are_the_checkers`) reads the checker's list from its
+  source and fails if the two differ either way (the checker could
+  publish the list, e.g. as `methods list { … }` in the schema, so the
+  copy goes; `check/expr.rs` belongs to the lang track). With the cursor
+  right after a dot and a name after it (`battery.|present`), that name is
+  the member being completed. In a component call's block, children and
+  their keywords are offered only if the component has a `slot`;
+  otherwise only its parameters (`when`, handlers, timers, poses and
+  `state` are not allowed in a call at all).
 - **2026-10-05 · wave2-lsp: what `<->` offers.** Only places a widget can
   write (design.md "Two-way"): this file's states and the enclosing
   component's or surface's own, other files' exported states as
@@ -1151,7 +1191,9 @@ schema from `strand-compiler`).
   and the schema's own tokens (palette roles and the base tiers, which the
   schema types even when a theme values them) are refused with a reason.
   A token key inside a group (`2` in `space { 2: 8px }`) is renamed in
-  place, so the new name must keep the group's prefix. Every edited file
+  place, so the new name must keep the group's prefix; a new name without
+  a `.` is taken as the new key in the same group (what an editor sends
+  after the user edits the key `prepareRename` offered). Every edited file
   is re-checked before the edit is returned: a rename that would add an
   error (a clash, a name taken) is refused with that error, and one that
   would change what another name refers to without an error (a component
@@ -1159,9 +1201,32 @@ schema from `strand-compiler`).
   accepts) is refused too, by comparing every declaration's reference
   count before and after.
 - **2026-10-05 · wave2-lsp: quick fixes.** A diagnostic whose help is
-  "did you mean `x`?" offers one preferred quick fix replacing its primary
-  span with `x`, or only a misspelt unit's letters (`12pz` → `px`). Other
-  fixes (extract component, missing key) are M5.
+  "did you mean `x`?" offers one preferred quick fix replacing the
+  misspelt word with `x`, or only a misspelt unit's letters (`12pz` →
+  `px`). A diagnostic's primary span is not always the misspelt word (the
+  parser points at `a` in `on chnage a, b`), so the replaced text must be
+  a plausible misspelling of `x` by the checker's own `suggest` rule: the
+  span, its last segment after a `.`, or else the word just before the
+  span on its line; otherwise no fix is offered. An unknown parameter of a
+  component call (`check::unknown_param`, help "it takes `a`, `b`")
+  offers one fix per parameter the call does not give yet, preferred when
+  only one is left: design.md "What you see" #2 (`expanded` left at a
+  call site after the parameter became `open`). The checker words that
+  help "it takes …" even when one parameter is left; matching design.md's
+  `did you mean "open"?` there is the lang track's call (`check/tree.rs`).
+  Other fixes (extract component, missing key) are M5.
+- **2026-10-05 · wave2-lsp (round 1): hover docs.** A declaration's doc is
+  the `//` block directly above it, except a block that opens the file
+  and starts with the file's own name (`// launcher.strand. Bind a key
+  to: …`), which is the file's header. A token's hover lists each value
+  with the token set (or component) that defines it, marking overrides:
+  `base: 8px`, `compact (override): 4px`.
+- **2026-10-05 · wave2-lsp (round 1): `strand fmt` arguments.** A file
+  named twice (`strand fmt dir dir/a.strand`) is formatted once
+  (deduplicated by canonical path); `--` ends options, so a path may
+  start with `-`; with no path, a missing default config directory is
+  named as such. `- -b` keeps its space (`--b` reads like a decrement,
+  though it lexes the same).
 - **2026-10-05 · wave2-lsp: tree-sitter is out of scope this wave.** The
   M1 checklist's tree-sitter grammar for editor highlighting stays open;
   editors get diagnostics, completion, hover, navigation, rename and

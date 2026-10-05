@@ -67,8 +67,8 @@ pub fn find(an: &Analysis, file: FileId, offset: u32) -> Option<(Span, Found)> {
                 return Some((prop.span, Found::CallProp(l.local)));
             }
             ElementKind::Builtin(k) => {
-                let schema = Schema::builtin();
-                let ty = schema
+                let ty = an
+                    .schema
                     .element(k)
                     .and_then(|e| e.prop(&prop.name))
                     .map_or(prop.value.ty.clone(), |s| s.ty.clone());
@@ -92,7 +92,7 @@ pub fn find(an: &Analysis, file: FileId, offset: u32) -> Option<(Span, Found)> {
 
 pub fn hover(an: &Analysis, file: FileId, offset: u32) -> Option<Hover> {
     let p = &an.compiled.program;
-    let schema = Schema::builtin();
+    let schema = &*an.schema;
     let types = &p.types;
     let (span, value) = match find(an, file, offset) {
         Some((span, found)) => (span, describe_found(an, &found)),
@@ -200,7 +200,7 @@ fn method_text(
 /// Hover text for what [`find`] found.
 pub fn describe_found(an: &Analysis, found: &Found) -> String {
     let p = &an.compiled.program;
-    let schema = Schema::builtin();
+    let schema = &*an.schema;
     let types = &p.types;
     match found {
         Found::Ref(Target::Def(d)) => {
@@ -264,7 +264,9 @@ pub fn describe_found(an: &Analysis, found: &Found) -> String {
             for (f, d) in walk::token_defs(p) {
                 if d.path == *path {
                     let value = d.value.span.text(an.text(f));
-                    let _ = write!(code, "\n${path}: {value}");
+                    let set = token_set_of(p, f, d.span);
+                    let over = if d.override_ { " (override)" } else { "" };
+                    let _ = write!(code, "\n{set}{over}: {value}");
                 }
             }
             describe::markdown(&code, schema.doc(&DocKey::Token(path.clone())))
@@ -301,6 +303,29 @@ pub fn describe_found(an: &Analysis, found: &Found) -> String {
             schema.doc(&DocKey::Prop(element.clone(), name.clone())),
         ),
     }
+}
+
+/// Where the token defined at `span` is: its token set's name, the
+/// component whose `tokens` block holds it, or `set` for a subtree's.
+fn token_set_of(p: &Program, file: FileId, span: Span) -> String {
+    let holds = |entries: &[strand_compiler::hir::TokenDef]| entries.iter().any(|d| d.span == span);
+    for item in p
+        .files
+        .iter()
+        .filter(|h| h.file == file)
+        .flat_map(|h| &h.items)
+    {
+        match item {
+            strand_compiler::hir::Item::Tokens(t) if holds(&t.entries) => {
+                return p.def(t.def).name.clone();
+            }
+            strand_compiler::hir::Item::Component(c) if holds(&c.tokens) => {
+                return p.def(c.def).name.clone();
+            }
+            _ => {}
+        }
+    }
+    "set".into()
 }
 
 // ---------------------------------------------------------------------------
@@ -425,7 +450,7 @@ fn renamable(an: &Analysis, found: &Found) -> Result<(), String> {
             _ => Ok(()),
         },
         Found::Ref(Target::Token(path)) => {
-            if Schema::builtin().tokens.contains_key(path) {
+            if an.schema.tokens.contains_key(path) {
                 Err(format!(
                     "`${path}` is a palette role or base token the schema names; it cannot be renamed"
                 ))
@@ -455,6 +480,8 @@ pub fn rename(an: &Analysis, file: FileId, offset: u32, new_name: &str) -> Resul
             v.push((s, t));
         }
     };
+    // The new name as references see it (a token's whole path).
+    let mut new_path = new_name.trim_start_matches('$').to_string();
     match &found {
         Found::Ref(Target::Token(path)) => {
             let new = new_name.trim_start_matches('$');
@@ -473,6 +500,18 @@ pub fn rename(an: &Analysis, file: FileId, offset: u32, new_name: &str) -> Resul
                     .filter(|(_, d)| d.path == *path)
                     .map(|(f, d)| (f, d.span)),
             );
+            // Renamed from its key inside a group (`soft` in `glow { soft:
+            // … }`), a bare name is the new key in the same group.
+            let group = spots.iter().find_map(|(f, s)| {
+                let key = s.text(an.text(*f)).trim_start_matches('$');
+                (key != path).then(|| path.strip_suffix(key)).flatten()
+            });
+            if let Some(prefix) = group.filter(|p| !p.is_empty())
+                && !new.contains('.')
+            {
+                new_path = format!("{prefix}{new}");
+            }
+            let new = new_path.as_str();
             for (f, s) in spots {
                 let text = s.text(an.text(f));
                 let dollar = text.starts_with('$');
@@ -532,18 +571,10 @@ pub fn rename(an: &Analysis, file: FileId, offset: u32, new_name: &str) -> Resul
     }
     // A rename must not break the config.
     let before = an.compiled.errors();
-    let files: Vec<_> = an
-        .files()
-        .map(|f| {
-            let text = apply(an.text(f), edits.get(&f).map_or(&[][..], Vec::as_slice));
-            (
-                an.uri(f).to_string(),
-                an.map.get(f).map_or(String::new(), |s| s.name.clone()),
-                text.into(),
-            )
-        })
-        .collect();
-    let after = Analysis::new(an.key.clone(), files);
+    let after = an.with_texts(|f, text| match edits.get(&f) {
+        Some(list) => apply(&text, list).into(),
+        None => text,
+    });
     if after.compiled.errors() > before {
         let first = after
             .compiled
@@ -571,7 +602,7 @@ pub fn rename(an: &Analysis, file: FileId, offset: u32, new_name: &str) -> Resul
         (Found::Ref(Target::Token(a)), Target::Token(b)) => a == b,
         _ => false,
     };
-    let new_name = new_name.trim_start_matches('$');
+    let new_name = new_path.as_str();
     let was = ref_counts(p, |t| renamed(t).then_some(new_name));
     let now = ref_counts(&after.compiled.program, |_| None);
     if was != now {

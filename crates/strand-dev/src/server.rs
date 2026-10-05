@@ -9,27 +9,30 @@
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::RecvTimeoutError;
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
 use lsp_types::{
-    CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams,
+    CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams,
     CodeActionProviderCapability, CompletionOptions, CompletionParams, CompletionResponse,
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DidSaveTextDocumentParams, DocumentFormattingParams, GotoDefinitionParams,
+    DidSaveTextDocumentParams, DocumentChanges, DocumentFormattingParams, GotoDefinitionParams,
     GotoDefinitionResponse, HoverParams, HoverProviderCapability, Location, OneOf,
-    PrepareRenameResponse, PublishDiagnosticsParams, RenameOptions, RenameParams,
-    ServerCapabilities, TextDocumentPositionParams, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextDocumentSyncOptions, TextDocumentSyncSaveOptions, TextEdit, Uri,
-    WorkspaceEdit,
+    OptionalVersionedTextDocumentIdentifier, PrepareRenameResponse, PublishDiagnosticsParams,
+    RenameOptions, RenameParams, ServerCapabilities, TextDocumentEdit, TextDocumentPositionParams,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
+    TextDocumentSyncSaveOptions, TextEdit, Uri, WorkspaceEdit,
 };
 use serde_json::{Value, json};
+use strand_compiler::FileId;
 use strand_compiler::fmt::format;
+use strand_compiler::schema::Schema;
 use strand_compiler::syntax::Span;
 
 use crate::text::uri_to_path;
-use crate::workspace::{ConfigKey, Workspace};
+use crate::workspace::{Analysis, ConfigKey, Workspace, default_dir};
 use crate::{completion, diag, nav};
 
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
@@ -75,9 +78,16 @@ pub fn capabilities() -> ServerCapabilities {
     }
 }
 
-/// Runs the server on `conn`: the initialize handshake, then requests and
-/// notifications until `shutdown` and `exit`.
+/// Runs the server on `conn` against the builtin schema: the initialize
+/// handshake, then requests and notifications until `shutdown` and `exit`.
 pub fn serve(conn: &Connection) -> Result<()> {
+    serve_with(conn, Arc::new(Schema::builtin().clone()))
+}
+
+/// [`serve`] against `schema`: the builtin schema as the service crates
+/// linked into the caller extend it (`Schema::extend`), so hover,
+/// completion and checking see their services.
+pub fn serve_with(conn: &Connection, schema: Arc<Schema>) -> Result<()> {
     let caps = serde_json::to_value(capabilities())?;
     let (id, params) = conn.initialize_start()?;
     conn.initialize_finish(
@@ -98,13 +108,40 @@ pub fn serve(conn: &Connection) -> Result<()> {
     {
         roots.push(root);
     }
-    let debounce = params["initializationOptions"]["debounceMs"]
+    let options = &params["initializationOptions"];
+    let debounce = options["debounceMs"]
         .as_u64()
         .map_or(DEBOUNCE, Duration::from_millis);
+    // The default config directory, as `strand check` finds it; a client
+    // (or a test) may name another.
+    let config_dir = match options["configDir"].as_str() {
+        Some(d) => Some(PathBuf::from(d)),
+        None => default_dir(
+            std::env::var_os("XDG_CONFIG_HOME"),
+            std::env::var_os("HOME"),
+        ),
+    };
+    let client = &params["capabilities"];
+    let document_changes = client["workspace"]["workspaceEdit"]["documentChanges"]
+        .as_bool()
+        .unwrap_or(false);
+    // Hear about `.strand` files changed outside the editor.
+    if client["workspace"]["didChangeWatchedFiles"]["dynamicRegistration"].as_bool() == Some(true) {
+        conn.sender.send(Message::Request(Request::new(
+            RequestId::from("strand-dev/watch".to_string()),
+            "client/registerCapability".into(),
+            json!({ "registrations": [{
+                "id": "strand-dev/watch",
+                "method": "workspace/didChangeWatchedFiles",
+                "registerOptions": { "watchers": [{ "globPattern": "**/*.strand" }] },
+            }]}),
+        )))?;
+    }
     let mut server = Server {
         conn,
-        ws: Workspace::new(roots),
+        ws: Workspace::new(roots, config_dir, schema),
         debounce,
+        document_changes,
         dirty: HashSet::new(),
         deadline: None,
         published: HashMap::new(),
@@ -116,10 +153,14 @@ struct Server<'c> {
     conn: &'c Connection,
     ws: Workspace,
     debounce: Duration,
+    /// The client applies versioned `documentChanges`, so it can refuse
+    /// edits made for text it no longer has.
+    document_changes: bool,
     /// Configs whose diagnostics wait for the debounce.
     dirty: HashSet<ConfigKey>,
     deadline: Option<Instant>,
-    /// URIs with diagnostics published, per config, to clear them later.
+    /// The configs published, with the URIs that show diagnostics (to
+    /// clear them later).
     published: HashMap<ConfigKey, HashSet<String>>,
 }
 
@@ -174,8 +215,16 @@ impl Server<'_> {
                     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         self.notification(n)
                     })) {
-                        Ok(r) => r?,
-                        Err(_) => eprintln!("strand-dev: internal error handling {method}"),
+                        Ok(Ok(())) => {}
+                        // Bad params: say so and carry on. Only a closed
+                        // channel ends the server.
+                        Ok(Err(e)) if e.is::<serde_json::Error>() => {
+                            self.log(&format!("strand-dev: ignored {method}: {e}"))?;
+                        }
+                        Ok(Err(e)) => return Err(e),
+                        Err(_) => {
+                            self.log(&format!("strand-dev: internal error handling {method}"))?
+                        }
                     }
                 }
                 Message::Response(_) => {}
@@ -207,7 +256,7 @@ impl Server<'_> {
             }
             "textDocument/didSave" => {
                 let p: DidSaveTextDocumentParams = serde_json::from_value(n.params)?;
-                self.ws.touch();
+                self.ws.disk_changed();
                 self.publish_now(p.text_document.uri.as_str())?;
             }
             "textDocument/didClose" => {
@@ -215,16 +264,25 @@ impl Server<'_> {
                 let uri = p.text_document.uri.as_str().to_string();
                 let key = self.ws.config_of(&uri);
                 self.ws.close(&uri);
-                if let ConfigKey::Single(_) = key {
-                    // Nothing checks it any more.
+                self.dirty.remove(&key);
+                if self.ws.has_open(&key) || self.ws.is_workspace(&key) {
+                    // Still checked: as the disk has it now.
+                    self.publish(&key)?;
+                } else {
+                    // Nothing shows it any more.
                     if let Some(set) = self.published.remove(&key) {
                         for u in set {
                             self.send_diagnostics(&u, Vec::new(), None)?;
                         }
                     }
-                } else {
-                    self.publish(&key)?;
+                    self.ws.forget(&key);
                 }
+            }
+            "workspace/didChangeWatchedFiles" => {
+                self.ws.disk_changed();
+                // Re-check what is shown, after the debounce.
+                self.dirty.extend(self.published.keys().cloned());
+                self.deadline = Some(Instant::now() + self.debounce);
             }
             _ => {}
         }
@@ -251,21 +309,38 @@ impl Server<'_> {
     /// that had some and no longer belong to it or have none.
     fn publish(&mut self, key: &ConfigKey) -> Result<()> {
         let an = self.ws.analysis(key);
-        let mut now = HashSet::new();
+        let old = self.published.remove(key).unwrap_or_default();
+        let mut shown = HashSet::new();
+        let mut in_config = HashSet::new();
         for f in an.files() {
             let uri = an.uri(f).to_string();
             let diags = diag::for_file(&an, f);
             let version = self.ws.docs.get(&uri).map(|d| d.version);
-            let had = self.published.get(key).is_some_and(|s| s.contains(&uri));
-            if !diags.is_empty() || had || self.ws.docs.contains_key(&uri) {
+            if !diags.is_empty() || old.contains(&uri) || self.ws.docs.contains_key(&uri) {
+                if !diags.is_empty() {
+                    shown.insert(uri.clone());
+                }
                 self.send_diagnostics(&uri, diags, version)?;
             }
-            now.insert(uri);
+            in_config.insert(uri);
         }
-        let old = self.published.insert(key.clone(), now.clone());
-        for gone in old.into_iter().flatten().filter(|u| !now.contains(u)) {
-            self.send_diagnostics(&gone, Vec::new(), None)?;
+        for gone in old.iter().filter(|u| !in_config.contains(*u)) {
+            self.send_diagnostics(gone, Vec::new(), None)?;
         }
+        // URIs showing diagnostics, to clear them later.
+        self.published.insert(key.clone(), shown);
+        Ok(())
+    }
+
+    /// A message for the client's log.
+    fn log(&self, message: &str) -> Result<()> {
+        eprintln!("{message}");
+        self.conn
+            .sender
+            .send(Message::Notification(Notification::new(
+                "window/logMessage".into(),
+                json!({ "type": 1, "message": message }),
+            )))?;
         Ok(())
     }
 
@@ -380,16 +455,19 @@ impl Server<'_> {
         )?)
     }
 
+    /// A workspace edit of the config's files. With a client that takes
+    /// `documentChanges`, edits to open documents carry their version, so
+    /// the client refuses them if the text changed since.
     // `WorkspaceEdit::changes` is keyed by `Uri`, whose parsed form caches
     // through a `Cell`; the key is never mutated here.
     #[allow(clippy::mutable_key_type)]
-    fn rename(&mut self, params: Value) -> Reply {
-        let p: RenameParams = serde_json::from_value(params)?;
-        let Some((an, file, offset)) = self.locate(&p.text_document_position) else {
-            return Ok(Value::Null);
-        };
-        let edits = nav::rename(&an, file, offset, &p.new_name).map_err(Failed)?;
+    fn workspace_edit(
+        &self,
+        an: &Analysis,
+        edits: Vec<(FileId, Vec<(Span, String)>)>,
+    ) -> WorkspaceEdit {
         let mut changes = HashMap::new();
+        let mut documents = Vec::new();
         for (f, list) in edits {
             let Ok(uri) = an.uri(f).parse::<Uri>() else {
                 continue;
@@ -401,12 +479,38 @@ impl Server<'_> {
                     new_text,
                 })
                 .collect();
-            changes.insert(uri, edits);
+            if self.document_changes {
+                let version = self.ws.docs.get(an.uri(f)).map(|d| d.version);
+                documents.push(TextDocumentEdit {
+                    text_document: OptionalVersionedTextDocumentIdentifier { uri, version },
+                    edits: edits.into_iter().map(OneOf::Left).collect(),
+                });
+            } else {
+                changes.insert(uri, edits);
+            }
         }
-        Ok(serde_json::to_value(WorkspaceEdit {
-            changes: Some(changes),
-            ..WorkspaceEdit::default()
-        })?)
+        if self.document_changes {
+            WorkspaceEdit {
+                document_changes: Some(DocumentChanges::Edits(documents)),
+                ..WorkspaceEdit::default()
+            }
+        } else {
+            WorkspaceEdit {
+                changes: Some(changes),
+                ..WorkspaceEdit::default()
+            }
+        }
+    }
+
+    fn rename(&mut self, params: Value) -> Reply {
+        let p: RenameParams = serde_json::from_value(params)?;
+        let Some((an, file, offset)) = self.locate(&p.text_document_position) else {
+            return Ok(Value::Null);
+        };
+        let edits = nav::rename(&an, file, offset, &p.new_name).map_err(Failed)?;
+        Ok(serde_json::to_value(
+            self.workspace_edit(&an, edits.into_iter().collect()),
+        )?)
     }
 
     fn code_action(&mut self, params: Value) -> Reply {
@@ -419,7 +523,18 @@ impl Server<'_> {
         let range = Span::new(an.offset(file, p.range.start), an.offset(file, p.range.end));
         let actions: Vec<CodeActionOrCommand> = diag::quick_fixes(&an, file, range)
             .into_iter()
-            .map(CodeActionOrCommand::CodeAction)
+            .map(|fix| {
+                CodeActionOrCommand::CodeAction(CodeAction {
+                    title: fix.title,
+                    kind: Some(CodeActionKind::QUICKFIX),
+                    diagnostics: Some(vec![fix.diagnostic]),
+                    edit: Some(
+                        self.workspace_edit(&an, vec![(file, vec![(fix.span, fix.new_text)])]),
+                    ),
+                    is_preferred: Some(fix.preferred),
+                    ..CodeAction::default()
+                })
+            })
             .collect();
         Ok(serde_json::to_value(actions)?)
     }

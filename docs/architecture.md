@@ -570,19 +570,29 @@ and the connection):
 The language server, `strand-dev lsp` (stdio), built on `lsp-server` and
 `lsp-types`; the runtime binary never links it. `strand_dev::serve(&
 lsp_server::Connection)` runs the protocol on any connection (tests drive
-it in process over `Connection::memory()`), `run_stdio()` on stdin and
-stdout, and `capabilities()` is what it advertises. It reads only
-`strand-compiler`'s public interfaces: `compile` for one config at a time,
-`hir::Program` (`refs`/`reference_at`, defs, locals, `tokens`, the typed
-tree) for hover, definition, rename and completion, `Schema::builtin()`
-and `Schema::doc` for completion and hover text, `fmt::format` for
+it in process over `Connection::memory()`) against the builtin schema;
+`serve_with(&Connection, Arc<Schema>)` takes the schema to check with,
+chosen once by the caller (the builtin schema extended with
+`Schema::extend` by the service crates it links); `run_stdio()` serves
+stdin and stdout, and `capabilities()` is what it advertises. It reads
+only `strand-compiler`'s public interfaces: `compile_with` for one config
+at a time against that schema, `hir::Program` (`refs`/`reference_at`,
+defs, locals, `tokens`, the typed tree) for hover, definition, rename and
+completion, `Schema::doc` (of the same schema) for completion and hover
+text, `diagnostic::suggest` for quick fixes, `fmt::format` for
 formatting, and `source::find_files` for which files a document is
-checked with (the workspace folder's module set if the document is in
-it, else its directory's, else the document alone, as `strand check
-<file>` does). Open documents replace their files' text on disk.
-Positions are UTF-16 (the protocol default), sync is full-document, and
-diagnostics are published per config after a 200 ms debounce
-(`initializationOptions.debounceMs`), at once on open and save.
+checked with (the rule of `strand check <file>`: the default config
+directory if the file is in it, else a workspace folder that is itself a
+config, else the file's directory, else the file alone; see
+`docs/decisions.md`, wave2-lsp). Open documents replace their files' text
+on disk; files read from disk are re-read when their size or mtime (or a
+scanned directory's) changes, and clients that can are asked to watch
+`**/*.strand`. Positions are UTF-16 (the protocol default), sync is
+full-document, diagnostics are published per config after a 200 ms
+debounce (`initializationOptions.debounceMs`), at once on open and save,
+and workspace edits use versioned `documentChanges` when the client
+supports them. `initializationOptions.configDir` overrides the default
+config directory.
 
 The inspector joins it in M5; tree-sitter highlighting is not built yet
 (see `docs/decisions.md`, wave2-lsp).

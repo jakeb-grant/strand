@@ -43,6 +43,23 @@ impl Drop for TempDir {
     }
 }
 
+/// The shells' files with (file, from, to) replacements.
+fn shell_files(edits: &[(&str, &str, &str)]) -> Vec<(String, String)> {
+    SHELLS
+        .iter()
+        .map(|n| {
+            let mut text = fixture(n);
+            for (file, from, to) in edits {
+                if *file == *n {
+                    assert!(text.contains(from), "{from:?} not in {n}");
+                    text = text.replacen(from, to, 1);
+                }
+            }
+            (format!("{n}.strand"), text)
+        })
+        .collect()
+}
+
 /// A minimal LSP client.
 struct Client {
     conn: Connection,
@@ -50,6 +67,8 @@ struct Client {
     next: i32,
     /// Notifications received while waiting for responses.
     queue: VecDeque<Notification>,
+    /// Methods of the requests the server sent.
+    server_requests: Vec<String>,
     dir: TempDir,
 }
 
@@ -58,9 +77,17 @@ const WAIT: Duration = Duration::from_secs(20);
 impl Client {
     /// Starts a server on a workspace holding `files` (name, text).
     fn start(files: &[(&str, String)]) -> Self {
+        Client::start_with(files, |_| {})
+    }
+
+    /// [`Client::start`] with the `initialize` params changed by `init`
+    /// (`files` may name sub-directories).
+    fn start_with(files: &[(&str, String)], init: impl FnOnce(&mut Value)) -> Self {
         let dir = TempDir::new();
         for (name, text) in files {
-            std::fs::write(dir.0.join(name), text).unwrap();
+            let path = dir.0.join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
         }
         let (server_conn, conn) = Connection::memory();
         let server = std::thread::spawn(move || {
@@ -71,22 +98,31 @@ impl Client {
             server: Some(server),
             next: 0,
             queue: VecDeque::new(),
+            server_requests: Vec::new(),
             dir,
         };
         let root = path_to_uri(&c.dir.0);
-        let caps = c.request(
-            "initialize",
-            json!({
-                "processId": null,
-                "rootUri": root,
-                "workspaceFolders": [{ "uri": root, "name": "strand" }],
-                "capabilities": {},
-                "initializationOptions": { "debounceMs": 150 },
-            }),
-        );
+        let mut params = json!({
+            "processId": null,
+            "rootUri": root,
+            "workspaceFolders": [{ "uri": root, "name": "strand" }],
+            "capabilities": {},
+            "initializationOptions": { "debounceMs": 150 },
+        });
+        init(&mut params);
+        let caps = c.request("initialize", params);
         assert_eq!(caps["serverInfo"]["name"], "strand-dev");
         c.notify("initialized", json!({}));
         c
+    }
+
+    /// Answers a request the server sent (`client/registerCapability`).
+    fn answer(&mut self, r: Request) {
+        self.server_requests.push(r.method.clone());
+        self.conn
+            .sender
+            .send(Message::Response(Response::new_ok(r.id, Value::Null)))
+            .unwrap();
     }
 
     fn shells() -> Self {
@@ -95,19 +131,7 @@ impl Client {
 
     /// The shells with (file, from, to) replacements.
     fn shells_edited(edits: &[(&str, &str, &str)]) -> Self {
-        let files: Vec<(String, String)> = SHELLS
-            .iter()
-            .map(|n| {
-                let mut text = fixture(n);
-                for (file, from, to) in edits {
-                    if *file == *n {
-                        assert!(text.contains(from), "{from:?} not in {n}");
-                        text = text.replacen(from, to, 1);
-                    }
-                }
-                (format!("{n}.strand"), text)
-            })
-            .collect();
+        let files = shell_files(edits);
         let refs: Vec<(&str, String)> =
             files.iter().map(|(n, t)| (n.as_str(), t.clone())).collect();
         Client::start(&refs)
@@ -152,6 +176,7 @@ impl Client {
             match self.conn.receiver.recv_timeout(left).expect("no response") {
                 Message::Response(r) if r.id == id => return r,
                 Message::Notification(n) => self.queue.push_back(n),
+                Message::Request(r) => self.answer(r),
                 other => panic!("unexpected {other:?}"),
             }
         }
@@ -221,6 +246,7 @@ impl Client {
                     return Some(n.params["diagnostics"].as_array().unwrap().clone());
                 }
                 Ok(Message::Notification(n)) => self.queue.push_back(n),
+                Ok(Message::Request(r)) => self.answer(r),
                 Ok(other) => panic!("unexpected {other:?}"),
                 Err(_) => return None,
             }
@@ -264,7 +290,7 @@ impl Client {
 
     /// Applies a workspace edit's changes to this file's text.
     fn applied(&self, edit: &Value, name: &str, text: &str) -> String {
-        let Some(edits) = edit["changes"][self.uri(name)].as_array() else {
+        let Some(edits) = Client::edits_of(edit, &self.uri(name)) else {
             return text.to_string();
         };
         let lines = Lines::new(text);
@@ -290,6 +316,19 @@ impl Client {
             out.replace_range(s as usize..e as usize, &t);
         }
         out
+    }
+
+    /// A workspace edit's edits for `uri`, from `changes` or
+    /// `documentChanges`.
+    fn edits_of<'v>(edit: &'v Value, uri: &str) -> Option<&'v Vec<Value>> {
+        if let Some(e) = edit["changes"][uri].as_array() {
+            return Some(e);
+        }
+        edit["documentChanges"]
+            .as_array()?
+            .iter()
+            .find(|d| d["textDocument"]["uri"] == uri)?["edits"]
+            .as_array()
     }
 
     fn rename(&mut self, name: &str, pos: Position, new_name: &str) -> Value {
@@ -507,6 +546,15 @@ fn completion_after_dot() {
     c.change("bar.strand", 6, &text);
     let labels = c.completion("bar.strand", Client::pos(&text, "launcher. {", 0, 9));
     assert_eq!(labels, ["open"]);
+    // Right after the dot, with a name already after the cursor.
+    c.change("bar.strand", 7, &base);
+    let labels = c.completion("bar.strand", Client::pos(&base, "battery.present", 0, 8));
+    for want in ["percent", "present"] {
+        assert!(
+            labels.iter().any(|l| l == want),
+            "{want} missing: {labels:?}"
+        );
+    }
 }
 
 #[test]
@@ -588,6 +636,13 @@ fn completion_of_elements_props_and_events() {
     c.change("bar.strand", 3, &text);
     let labels = c.completion("bar.strand", Client::pos(&text, "{ w }", 0, 3));
     assert!(labels.iter().any(|l| l == "ws"), "{labels:?}");
+    // `Dot` has no `slot`, so no children are offered.
+    assert!(
+        !labels
+            .iter()
+            .any(|l| l == "text" || l == "box" || l == "if" || l == "Dot"),
+        "{labels:?}"
+    );
     // Events after `on`.
     let text = base.replace(
         "on secondary { item.menu.open() }",
@@ -651,9 +706,22 @@ fn hover_shows_types_and_schema_docs() {
         Client::pos(&launcher, "$surface.hi", 0, 3),
     );
     assert!(
-        h.contains("$surface.hi: color") && h.contains("$surface.mix($fg, 8%)"),
+        h.contains("$surface.hi: color") && h.contains("base: $surface.mix($fg, 8%)"),
         "{h}"
     );
+    // An overridden token names each value's token set.
+    let h = c.hover("bar.strand", Client::pos(&bar, "$space.2", 0, 3));
+    assert!(
+        h.contains("base: 8px") && h.contains("compact (override): 4px"),
+        "{h}"
+    );
+    // A file's header comment is not the doc of its first declaration.
+    let h = c.hover(
+        "launcher.strand",
+        Client::pos(&launcher, "state open", 0, 7),
+    );
+    assert!(h.contains("state open: bool"), "{h}");
+    assert!(!h.contains("Bind a key"), "{h}");
 }
 
 #[test]
@@ -780,6 +848,17 @@ fn rename_tokens_across_files() {
         c.applied(&edit, "toasts.strand", &toasts)
             .contains("glow: 4, $glow.dim }")
     );
+    // From the key in its group, a bare name stays in the group.
+    c.open("theme.strand");
+    let edit = c.rename("theme.strand", Client::pos(&theme, "soft:", 0, 1), "dim");
+    assert!(
+        c.applied(&edit, "theme.strand", &theme)
+            .contains("glow { dim: $accent.alpha(0.4); hard")
+    );
+    assert!(
+        c.applied(&edit, "launcher.strand", &launcher)
+            .contains("bg: $glow.dim }")
+    );
     // The new name must stay in the group.
     let e = c.rename_err(
         "launcher.strand",
@@ -788,7 +867,6 @@ fn rename_tokens_across_files() {
     );
     assert!(e.contains("inside the `glow` group"), "{e}");
     // A dotted key outside a group, renamed from its definition.
-    c.open("theme.strand");
     let edit = c.rename(
         "theme.strand",
         Client::pos(&theme, "card.fill", 0, 1),
@@ -901,6 +979,64 @@ fn quick_fix_for_did_you_mean() {
     assert_eq!(fixed, c.text("toasts.strand"));
 }
 
+/// The code actions offered for the diagnostics of `name`, opened with
+/// `text`, asked for the whole text.
+fn fixes_for(c: &mut Client, name: &str, text: &str) -> Vec<Value> {
+    c.open_text(name, text);
+    let diags = c.diagnostics(name);
+    assert!(!diags.is_empty(), "no diagnostics in {text}");
+    let r = c.request(
+        "textDocument/codeAction",
+        json!({
+            "textDocument": { "uri": c.uri(name) },
+            "range": { "start": Client::pos(text, "", 0, 0), "end": Client::pos(text, "", 0, text.len()) },
+            "context": { "diagnostics": diags },
+        }),
+    );
+    r.as_array().unwrap().clone()
+}
+
+#[test]
+fn quick_fix_for_a_renamed_parameter_and_a_misplaced_span() {
+    let cal = "component Calendar(open: bool = false, day: int = 1) {\n  text \"x\"\n}\n";
+    // design.md "What you see" #2: the call site still says `expanded`.
+    let side = "component Side {\n  Calendar { day: 2; expanded: true }\n}\n";
+    let mut c = Client::start(&[
+        ("cal.strand", cal.to_string()),
+        ("side.strand", side.to_string()),
+        ("a.strand", String::new()),
+    ]);
+    let actions = fixes_for(&mut c, "side.strand", side);
+    assert_eq!(actions.len(), 1, "{actions:?}");
+    assert_eq!(actions[0]["title"], "Change to `open`");
+    assert_eq!(actions[0]["isPreferred"], true);
+    assert_eq!(
+        c.applied(&actions[0]["edit"], "side.strand", side),
+        "component Side {\n  Calendar { day: 2; open: true }\n}\n"
+    );
+    // Two parameters left: both offered, neither preferred.
+    let side = "component Side {\n  Calendar { expanded: true }\n}\n";
+    c.change("side.strand", 2, side);
+    let _ = c.diagnostics("side.strand");
+    let actions = fixes_for(&mut c, "side.strand", side);
+    let titles: Vec<&str> = actions
+        .iter()
+        .map(|a| a["title"].as_str().unwrap())
+        .collect();
+    assert_eq!(titles, ["Change to `open`", "Change to `day`"]);
+    assert!(actions.iter().all(|a| a["isPreferred"] == false));
+    // The parser points past the misspelt keyword; the fix still
+    // replaces the keyword.
+    let a = "component A {\n  on chnage a, b { x = 1 }\n}\n";
+    let actions = fixes_for(&mut c, "a.strand", a);
+    assert_eq!(actions.len(), 1, "{actions:?}");
+    assert_eq!(actions[0]["title"], "Change to `change`");
+    assert_eq!(
+        c.applied(&actions[0]["edit"], "a.strand", a),
+        "component A {\n  on change a, b { x = 1 }\n}\n"
+    );
+}
+
 #[test]
 fn formatting_whole_documents() {
     let mut c = Client::shells();
@@ -997,6 +1133,202 @@ fn requests_anywhere_never_fail() {
             }
         }
     }
+}
+
+const READS_LAUNCHER: (&str, &str, &str) = (
+    "bar",
+    "if battery.present { Battery }",
+    "if launcher.open { Battery } else if extra.on { Battery }",
+);
+
+/// Files changed on disk behind the editor's back (by `strand fmt`, git, or
+/// another editor) are read again before a request is answered.
+#[test]
+fn files_changed_on_disk_are_seen() {
+    let mut c = Client::shells_edited(&[READS_LAUNCHER]);
+    let bar = c.text("bar.strand");
+    c.open("bar.strand");
+    let diags = c.diagnostics("bar.strand");
+    assert!(
+        messages(&diags).iter().any(|m| m.contains("extra")),
+        "{diags:?}"
+    );
+    let at = Client::pos(&bar, "launcher.open", 0, 10);
+    assert!(c.hover("bar.strand", at).contains("state open"));
+    // Two lines added at the top of an unopened file.
+    let launcher = format!("// one\n// two\n{}", c.text("launcher.strand"));
+    std::fs::write(c.dir.0.join("launcher.strand"), &launcher).unwrap();
+    let edit = c.rename("bar.strand", at, "shown");
+    let renamed = c.applied(&edit, "launcher.strand", &launcher);
+    assert!(
+        renamed.starts_with("// one\n// two\n// launcher.strand."),
+        "{renamed}"
+    );
+    assert!(
+        renamed.contains("\nexport state shown = false\n"),
+        "{renamed}"
+    );
+    assert!(renamed.contains("open: <-> shown"), "{renamed}");
+    assert!(!renamed.contains("export state open"), "{renamed}");
+    // A file added next to the others joins the config.
+    std::fs::write(c.dir.0.join("extra.strand"), "export state on = true\n").unwrap();
+    let h = c.hover("bar.strand", Client::pos(&bar, "extra.on", 0, 7));
+    assert!(h.contains("state on: bool"), "{h}");
+}
+
+/// A client that watches files gets a registration for `.strand` files,
+/// and a change it reports is re-checked.
+#[test]
+fn watched_files_are_registered_and_rechecked() {
+    let files = shell_files(&[]);
+    let refs: Vec<(&str, String)> = files.iter().map(|(n, t)| (n.as_str(), t.clone())).collect();
+    let mut c = Client::start_with(&refs, |p| {
+        p["capabilities"] =
+            json!({ "workspace": { "didChangeWatchedFiles": { "dynamicRegistration": true } } });
+    });
+    c.open("bar.strand");
+    assert_eq!(c.diagnostics("bar.strand"), Vec::<Value>::new());
+    assert_eq!(c.server_requests, ["client/registerCapability"]);
+    let theme = format!("{}state broken = nope\n", c.text("theme.strand"));
+    std::fs::write(c.dir.0.join("theme.strand"), theme).unwrap();
+    c.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({ "changes": [{ "uri": c.uri("theme.strand"), "type": 2 }] }),
+    );
+    let diags = c.diagnostics("theme.strand");
+    assert!(
+        messages(&diags).iter().any(|m| m.contains("`nope`")),
+        "{diags:?}"
+    );
+}
+
+/// With a client that takes `documentChanges`, edits to open documents
+/// carry their version, so stale edits are refused by the client.
+#[test]
+fn rename_edits_are_versioned() {
+    let files = shell_files(&[READS_LAUNCHER]);
+    let refs: Vec<(&str, String)> = files.iter().map(|(n, t)| (n.as_str(), t.clone())).collect();
+    let mut c = Client::start_with(&refs, |p| {
+        p["capabilities"] =
+            json!({ "workspace": { "workspaceEdit": { "documentChanges": true } } });
+    });
+    let bar = c.text("bar.strand");
+    c.open("bar.strand");
+    c.change("bar.strand", 3, &bar);
+    let edit = c.rename(
+        "bar.strand",
+        Client::pos(&bar, "launcher.open", 0, 10),
+        "shown",
+    );
+    assert!(edit.get("changes").is_none_or(Value::is_null), "{edit}");
+    let docs = edit["documentChanges"].as_array().unwrap();
+    let version = |name: &str| {
+        docs.iter()
+            .find(|d| d["textDocument"]["uri"] == c.uri(name))
+            .map(|d| d["textDocument"]["version"].clone())
+    };
+    assert_eq!(version("bar.strand"), Some(json!(3)));
+    assert_eq!(version("launcher.strand"), Some(Value::Null));
+    assert!(
+        c.applied(&edit, "bar.strand", &bar)
+            .contains("launcher.shown")
+    );
+}
+
+/// A notification with bad params is logged; the server carries on.
+#[test]
+fn bad_notifications_do_not_stop_the_server() {
+    let mut c = Client::shells();
+    let bar = c.text("bar.strand");
+    c.notify(
+        "textDocument/didOpen",
+        json!({ "textDocument": { "uri": c.uri("bar.strand"), "version": 1, "text": bar } }),
+    );
+    c.notify("textDocument/didChange", json!({ "textDocument": 7 }));
+    let h = c.hover("bar.strand", Client::pos(&bar, "open = !open", 0, 1));
+    assert!(h.contains("state open: bool"), "{h}");
+    let logged: Vec<&Notification> = c
+        .queue
+        .iter()
+        .filter(|n| n.method == "window/logMessage")
+        .collect();
+    assert_eq!(logged.len(), 2, "{logged:?}");
+}
+
+/// Configs are found as `strand check <file>` finds them: sibling
+/// configs in one workspace folder stay apart, and a file deep in the
+/// default config directory is checked with all of it.
+#[test]
+fn configs_are_found_as_strand_check_finds_them() {
+    let mut c = Client::start(&[
+        ("a/one.strand", "let x = two.shared\n".into()),
+        ("b/two.strand", "export let shared = 1\n".into()),
+    ]);
+    c.open("a/one.strand");
+    let diags = c.diagnostics("a/one.strand");
+    assert!(
+        messages(&diags).iter().any(|m| m.contains("`two`")),
+        "{diags:?}"
+    );
+
+    let mut c = Client::start_with(
+        &[
+            ("cfg/root.strand", "export let shared = 1\n".into()),
+            ("cfg/widgets/clock.strand", "let x = root.shared\n".into()),
+        ],
+        |p| {
+            let root = strand_dev::text::uri_to_path(p["rootUri"].as_str().unwrap()).unwrap();
+            p["rootUri"] = Value::Null;
+            p["workspaceFolders"] = Value::Null;
+            p["initializationOptions"]["configDir"] = json!(root.join("cfg"));
+        },
+    );
+    c.open("cfg/widgets/clock.strand");
+    assert_eq!(
+        c.diagnostics("cfg/widgets/clock.strand"),
+        Vec::<Value>::new()
+    );
+}
+
+/// Closing the last open file of a config outside the workspace clears
+/// its diagnostics, and a pending debounce does not bring them back.
+#[test]
+fn closing_clears_diagnostics_outside_the_workspace() {
+    let c = Client::start(&[]);
+    let other = TempDir::new();
+    std::fs::write(other.0.join("x.strand"), "state a = b\n").unwrap();
+    std::fs::write(other.0.join("y.strand"), "state y = 1\n").unwrap();
+    let uri = path_to_uri(&other.0.join("x.strand"));
+    let doc = |text: &str, version: i32| {
+        json!({ "textDocument": {
+            "uri": uri, "languageId": "strand", "version": version, "text": text,
+        }})
+    };
+    c.notify("textDocument/didOpen", doc("state a = b\n", 1));
+    c.notify(
+        "textDocument/didChange",
+        json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "contentChanges": [{ "text": "state a = c\n" }],
+        }),
+    );
+    c.notify(
+        "textDocument/didClose",
+        json!({ "textDocument": { "uri": uri } }),
+    );
+    // Every diagnostics notification for it, until none comes for a while.
+    let mut last = None;
+    let deadline = Instant::now() + Duration::from_millis(1500);
+    while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+        match c.conn.receiver.recv_timeout(left) {
+            Ok(Message::Notification(n)) if n.params["uri"] == uri.as_str() => {
+                last = Some(n.params["diagnostics"].clone());
+            }
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+    assert_eq!(last, Some(json!([])));
 }
 
 /// `strand-dev lsp` speaks the protocol on stdin and stdout.

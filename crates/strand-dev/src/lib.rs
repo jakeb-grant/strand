@@ -16,4 +16,4 @@ pub mod text;
 mod walk;
 pub mod workspace;
 
-pub use server::{capabilities, run_stdio, serve};
+pub use server::{capabilities, run_stdio, serve, serve_with};
