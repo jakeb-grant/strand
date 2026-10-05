@@ -30,8 +30,9 @@ use crate::core::{
 use crate::event::{CacheKind, ChangeEvent, ContentHash, EventSink, Notice, RescanReason, Role};
 
 enum Ctl {
-    AddFile(PathBuf, Role, Sender<()>),
-    RemoveFile(PathBuf, Role, Sender<()>),
+    /// A registration; with a hash, the caller does not wait (no ack).
+    AddFile(PathBuf, Role, Option<ContentHash>, Option<Sender<()>>),
+    RemoveFile(PathBuf, Role),
     SetReferenced(Vec<Referenced>, Sender<()>),
     AddTree(PathBuf, usize, CacheKind, Sender<()>),
     Rescan,
@@ -39,10 +40,13 @@ enum Ctl {
 }
 
 /// What a directory watch listens for. Never `IN_OPEN`, `IN_ACCESS`,
-/// `IN_CLOSE_NOWRITE` or `IN_ATTRIB`: reads cost nothing. `IN_MODIFY` only
-/// keeps an already-open batch waiting. An ancestor watch hears only its
-/// children being moved away or deleted (and itself going): writes, new
-/// files and edits in `~` or `/` queue nothing.
+/// `IN_CLOSE_NOWRITE` or `IN_ATTRIB`: reads cost nothing. `IN_MODIFY`
+/// marks a write in progress, so the file is not read before its
+/// `IN_CLOSE_WRITE`. A parent watch (`~/.config` above the config root, a
+/// missing directory's nearest ancestor) hears names come and go, never
+/// writes. An ancestor watch hears only its children being moved away or
+/// deleted (and itself going): writes, new files and edits in `~` or `/`
+/// queue nothing.
 fn watch_mask(kind: WatchKind) -> WatchFlags {
     let gone = WatchFlags::MOVED_FROM
         | WatchFlags::DELETE
@@ -52,6 +56,7 @@ fn watch_mask(kind: WatchKind) -> WatchFlags {
         | WatchFlags::EXCL_UNLINK;
     match kind {
         WatchKind::Ancestor => gone,
+        WatchKind::Parent => gone | WatchFlags::CREATE | WatchFlags::MOVED_TO,
         WatchKind::Full => {
             gone | WatchFlags::CLOSE_WRITE
                 | WatchFlags::MOVED_TO
@@ -155,8 +160,9 @@ impl Inotify {
 }
 
 /// Reduce one inotify event to what Strand acts on: completed writes
-/// (`CLOSE_WRITE`, `MOVED_TO`, a new symlink or hard link), removals,
-/// directory changes. `MODIFY` is only ever a "write in progress" hint.
+/// (`CLOSE_WRITE`, `MOVED_TO`), names created complete (a symlink, a hard
+/// link), removals, directory changes. `MODIFY` and an empty new file are
+/// a write in progress: the file is not read until it is closed.
 /// `named` is false for events about the watched directory itself.
 pub(crate) fn classify(flags: ReadFlags, named: bool, path: PathBuf) -> Option<Raw> {
     if !named {
@@ -182,17 +188,18 @@ pub(crate) fn classify(flags: ReadFlags, named: bool, path: PathBuf) -> Option<R
         } else {
             match std::fs::symlink_metadata(&path) {
                 // `ln -s` makes no CLOSE_WRITE: the link is complete now.
-                Ok(m) if m.file_type().is_symlink() => Raw::Written(path),
+                Ok(m) if m.file_type().is_symlink() => Raw::Linked(path),
                 Ok(m) if m.is_dir() => Raw::Dir(path),
                 // An empty new file is being written: wait for CLOSE_WRITE.
-                // But `ln` (a new name for complete content), a file
-                // linked in complete from `O_TMPFILE` (its CLOSE_WRITE, if
-                // any, came under its `#<ino>` name), `mkfifo` and the
-                // like make no CLOSE_WRITE either. A file that already has
-                // bytes when its creation is read is reported; a write
-                // still in progress extends the batch with MODIFY.
                 Ok(m) if m.is_file() && m.nlink() == 1 && m.len() == 0 => Raw::Busy(path),
-                Ok(_) => Raw::Written(path),
+                // `ln` (a new name for complete content), a file linked in
+                // complete from `O_TMPFILE` (its writes and CLOSE_WRITE, if
+                // any, came under its `#<ino>` name), `mkfifo` and the like
+                // make no CLOSE_WRITE. A writer that wrote its first bytes
+                // before this creation was read looks the same, but its
+                // MODIFY is queued right behind and holds the file until
+                // its CLOSE_WRITE.
+                Ok(_) => Raw::Linked(path),
                 Err(_) => Raw::Busy(path),
             }
         }
@@ -312,34 +319,54 @@ impl Watcher {
 
     /// Watch a referenced file (settings TOML, wallpaper, shader) for
     /// `role`: its directory and every symlink's directory. Neither the
-    /// file nor its directory need exist yet. Registrations are counted
-    /// per (path, role); a path watched for several roles gets one change
-    /// per role.
+    /// file nor its directory need exist yet. This is an ad-hoc
+    /// registration, counted per (path, role), that
+    /// [`Watcher::set_referenced`] never replaces; a path watched for
+    /// several roles gets one change per role.
     ///
     /// Register, then read: a save made after this returns is reported.
-    /// A file read before registering is passed with the hash of what was
-    /// read through [`Watcher::set_referenced`] instead.
+    /// It blocks until the watch exists and a new file's baseline is read
+    /// (on the watcher thread), so call it from the loader or a worker,
+    /// never from the logic thread: there, read first and use
+    /// [`Watcher::watch_file_loaded`].
     pub fn watch_file(&self, path: impl Into<PathBuf>, role: Role) -> io::Result<()> {
         let path = path.into();
-        self.call(|ack| Ctl::AddFile(path, role, ack))
+        self.call(|ack| Ctl::AddFile(path, role, None, Some(ack)))
+    }
+
+    /// [`Watcher::watch_file`] for a file the caller already read, with
+    /// `hash` ([`hash_bytes`](crate::hash_bytes)) of the bytes it holds.
+    /// Returns at once (safe on the logic thread): the watcher compares
+    /// the file with `hash` once the watch is in place, so a save made at
+    /// any time after the read is reported.
+    pub fn watch_file_loaded(
+        &self,
+        path: impl Into<PathBuf>,
+        role: Role,
+        hash: ContentHash,
+    ) -> io::Result<()> {
+        self.send(Ctl::AddFile(path.into(), role, Some(hash), None))
     }
 
     /// Drop one [`Watcher::watch_file`] registration of `path` for `role`.
-    /// The path stays watched while other registrations (or the module
-    /// set) hold it.
+    /// The path stays watched while other registrations (the loader's
+    /// set, the module set) hold it. Returns at once.
     pub fn unwatch_file(&self, path: impl Into<PathBuf>, role: Role) -> io::Result<()> {
-        let path = path.into();
-        self.call(|ack| Ctl::RemoveFile(path, role, ack))
+        self.send(Ctl::RemoveFile(path.into(), role))
     }
 
-    /// Replace every [`Watcher::watch_file`] registration with this set:
-    /// the referenced paths the compiler collected from the whole program
-    /// after a reload, as `(path, role)` or `(path, role, hash)` where
-    /// `hash` is [`hash_bytes`](crate::hash_bytes) of what the loader
-    /// read. Paths that stay keep their baseline; new ones get one;
-    /// dropped ones are no longer watched (unless they are modules). A
-    /// file that no longer holds the bytes its `hash` names (saved between
-    /// the read and this call) is reported at the next quiet period.
+    /// Replace the loader's registrations with this set: the referenced
+    /// paths the compiler collected from the whole program after a reload,
+    /// as `(path, role)` or `(path, role, hash)` where `hash` is
+    /// [`hash_bytes`](crate::hash_bytes) of what the loader read.
+    /// [`Watcher::watch_file`] registrations are separate and kept. Paths
+    /// that stay keep their baseline; dropped ones are no longer watched
+    /// (unless something else holds them). A file that no longer holds
+    /// the bytes its `hash` names (saved between the read and this call)
+    /// is reported at the next quiet period. It blocks until the watches
+    /// exist; a new path given without a hash is also read before it
+    /// returns, one given with a hash is not (the watcher compares it
+    /// later). Call it from the loader, not the logic thread.
     pub fn set_referenced<R: Into<Referenced>>(
         &self,
         refs: impl IntoIterator<Item = R>,
@@ -350,7 +377,9 @@ impl Watcher {
 
     /// Watch a cache-invalidation tree (`applications/`, an icon theme
     /// directory, a font directory) to `depth` directories below `root`.
-    /// Changes come as [`Role::Cache`] entries, unhashed.
+    /// Changes come as [`Role::Cache`] entries, unhashed. It blocks while
+    /// the tree is walked and watched; call it at boot or from the
+    /// service that owns the cache, not from the logic thread.
     pub fn watch_tree(
         &self,
         root: impl Into<PathBuf>,
@@ -367,9 +396,12 @@ impl Watcher {
     /// (a temporary file renamed over `path`): an in-place write can be
     /// read half done, and that content is not the registered one.
     pub fn register_own_write(&self, path: impl Into<PathBuf>, hash: ContentHash) {
-        let path = path.into();
+        // Resolved before taking the lock the watcher thread takes for
+        // every file it hashes: resolving can be slow on NFS.
+        let path = crate::paths::absolute(&path.into());
+        let canonical = crate::paths::resolve(&path).path;
         let mut own = self.own.lock().unwrap_or_else(|e| e.into_inner());
-        own.register(&path, hash, Instant::now());
+        own.register(path, canonical, hash, Instant::now());
     }
 
     /// Rescan everything now (`strand reload`); the batch is marked
@@ -391,14 +423,13 @@ impl Drop for Watcher {
 /// Handle one control message; `false` to stop.
 fn control(core: &mut Core<Kernel>, ctl: Ctl) -> bool {
     match ctl {
-        Ctl::AddFile(p, role, ack) => {
-            core.add_file(&p, role, None);
-            let _ = ack.send(());
+        Ctl::AddFile(p, role, loaded, ack) => {
+            core.add_file(&p, role, loaded);
+            if let Some(ack) = ack {
+                let _ = ack.send(());
+            }
         }
-        Ctl::RemoveFile(p, role, ack) => {
-            core.remove_file(&p, role);
-            let _ = ack.send(());
-        }
+        Ctl::RemoveFile(p, role) => core.remove_file(&p, role),
         Ctl::SetReferenced(refs, ack) => {
             core.set_referenced(refs);
             let _ = ack.send(());
@@ -548,9 +579,9 @@ mod tests {
             vec![
                 Some(Raw::Busy(file.clone())),
                 Some(Raw::Busy(alone)),
-                Some(Raw::Written(whole)),
-                Some(Raw::Written(link)),
-                Some(Raw::Written(hard)),
+                Some(Raw::Linked(whole)),
+                Some(Raw::Linked(link)),
+                Some(Raw::Linked(hard)),
                 Some(Raw::Written(file.clone())),
                 None,
                 None,
@@ -597,6 +628,46 @@ mod tests {
         std::fs::write(dir.join("other"), "x").unwrap();
         ino.read(&mut out).unwrap();
         assert!(out.contains(&Raw::Written(dir.join("other"))), "{out:?}");
+    }
+
+    /// A parent watch (`~/.config` above the config root) hears names
+    /// come and go, never writes: an app writing its own file there wakes
+    /// nothing.
+    #[test]
+    fn a_parent_watch_hears_names_not_writes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = std::fs::canonicalize(tmp.path()).unwrap();
+        let sibling = dir.join("other-app.conf");
+        std::fs::write(&sibling, "a").unwrap();
+        let mut ino = Inotify::new().unwrap();
+        ino.watch(&dir, WatchKind::Parent).unwrap();
+        let mut out = Vec::new();
+        for i in 0..50 {
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(&sibling)
+                .unwrap();
+            std::io::Write::write_all(&mut f, format!("{i}").as_bytes()).unwrap();
+        }
+        std::fs::read(&sibling).unwrap();
+        ino.read(&mut out).unwrap();
+        assert_eq!(out, vec![], "writes to a sibling queue nothing");
+        // The config directory appearing, going, and a link to it do.
+        let cfg = dir.join("strand");
+        std::fs::create_dir(&cfg).unwrap();
+        std::fs::rename(&cfg, dir.join("strand.bak")).unwrap();
+        std::os::unix::fs::symlink(dir.join("strand.bak"), &cfg).unwrap();
+        ino.read(&mut out).unwrap();
+        assert_eq!(
+            out,
+            vec![
+                Raw::Dir(cfg.clone()),
+                Raw::Gone(cfg.clone()),
+                Raw::Dir(dir.join("strand.bak")),
+                Raw::Linked(cfg),
+            ]
+        );
     }
 
     /// A moved directory's descriptor follows the inode; once core drops

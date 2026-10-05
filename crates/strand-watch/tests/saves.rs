@@ -183,6 +183,76 @@ fn save_delete_and_create() {
     only_theme_changed(&fx, NEW);
 }
 
+/// A writer that stalls mid-write: the file is never read before its
+/// `CLOSE_WRITE`, however long the pause (past the removal grace and past
+/// `max_delay`).
+fn write_in_two_halves(path: &Path, body: &str, pause: Duration) {
+    let mut f = fs::File::create(path).unwrap();
+    f.write_all(&body.as_bytes()[..10]).unwrap();
+    f.flush().unwrap();
+    std::thread::sleep(pause);
+    f.write_all(&body.as_bytes()[10..]).unwrap();
+}
+
+/// Delete, then create, with the writer stalling mid-write: one batch with
+/// the full content, never the first half.
+#[test]
+fn a_stalled_delete_and_create_is_read_once_closed() {
+    let fx = fixture();
+    let theme = fx.cfg.join("theme.strand");
+    fs::remove_file(&theme).unwrap();
+    write_in_two_halves(&theme, NEW, Duration::from_millis(200));
+    only_theme_changed(&fx, NEW);
+    // Longer than `max_delay` (500 ms).
+    fs::remove_file(&theme).unwrap();
+    let newer = "tokens base { accent: #9ece6a }\n";
+    write_in_two_halves(&theme, newer, Duration::from_millis(700));
+    only_theme_changed(&fx, newer);
+}
+
+/// Vim `backupcopy=auto` with the new file's write stalling: one batch.
+#[test]
+fn a_stalled_backup_then_rename_is_read_once_closed() {
+    let fx = fixture();
+    let theme = fx.cfg.join("theme.strand");
+    fs::rename(&theme, fx.cfg.join("theme.strand~")).unwrap();
+    write_in_two_halves(&theme, NEW, Duration::from_millis(200));
+    fs::remove_file(fx.cfg.join("theme.strand~")).unwrap();
+    only_theme_changed(&fx, NEW);
+}
+
+/// A new module and a new settings file written in two halves (`curl -o`,
+/// `cp` from slow media): created with the full content, once.
+#[test]
+fn new_files_written_in_two_halves_are_read_once_closed() {
+    let fx = fixture();
+    let osd = fx.cfg.join("osd.strand");
+    write_in_two_halves(&osd, "osd { visible: false }\n", Duration::from_millis(100));
+    let b = one_batch(&fx);
+    assert_eq!(b.changes.len(), 1, "{b:#?}");
+    assert_eq!(b.changes[0].path, osd);
+    assert_eq!(b.changes[0].kind, ChangeKind::Created);
+    assert_eq!(
+        b.changes[0].hash,
+        Some(hash_bytes(b"osd { visible: false }\n"))
+    );
+
+    let prefs = fx.cfg.join("prefs.toml");
+    fx.watcher.watch_file(&prefs, Role::Settings).unwrap();
+    write_in_two_halves(
+        &prefs,
+        "compact = true\nscale = 2\n",
+        Duration::from_millis(100),
+    );
+    let b = one_batch(&fx);
+    assert_eq!(b.changes.len(), 1, "{b:#?}");
+    assert_eq!(b.changes[0].kind, ChangeKind::Created);
+    assert_eq!(
+        b.changes[0].hash,
+        Some(hash_bytes(b"compact = true\nscale = 2\n"))
+    );
+}
+
 /// home-manager: the file is a link into a read-only store; a switch swaps
 /// the link (new link, renamed over). The link's directory sees it.
 #[test]
@@ -673,10 +743,13 @@ fn registrations_are_counted_per_role() {
     fs::write(&theme, NEW).unwrap();
     only_theme_changed(&fx, NEW);
 
-    // The whole set at once: only `wall.png` for the wallpaper remains.
+    // The loader's set is separate: with the ad-hoc registrations gone,
+    // only its `wall.png` for the wallpaper remains.
     fx.watcher
         .set_referenced([(wall.clone(), Role::Wallpaper)])
         .unwrap();
+    fx.watcher.unwatch_file(&wall, Role::Wallpaper).unwrap();
+    fx.watcher.unwatch_file(&wall, Role::Other).unwrap();
     fs::write(&wall, "png 3").unwrap();
     let b = one_batch(&fx);
     let roles: Vec<_> = b.changes.iter().map(|c| c.role).collect();
@@ -686,6 +759,59 @@ fn registrations_are_counted_per_role() {
         .unwrap();
     fs::write(&wall, "png 4").unwrap();
     no_batch(&fx);
+}
+
+/// `set_referenced` replaces only the loader's registrations: a wallpaper
+/// registered with `watch_file` by its owner (a runtime settings value,
+/// not a path the compiler collects) stays watched across reloads.
+#[test]
+fn set_referenced_keeps_watch_file_registrations() {
+    let fx = fixture();
+    let wall = fx.base.join("wall.png");
+    let shader = fx.cfg.join("glow.wgsl");
+    fs::write(&wall, "png 1").unwrap();
+    fs::write(&shader, "fn a() {}").unwrap();
+    fx.watcher.watch_file(&wall, Role::Wallpaper).unwrap();
+    fx.watcher
+        .set_referenced([(shader.clone(), Role::Shader)])
+        .unwrap();
+    // A reload whose program references nothing any more.
+    fx.watcher
+        .set_referenced(Vec::<(PathBuf, Role)>::new())
+        .unwrap();
+    fs::write(&wall, "png 2").unwrap();
+    fs::write(&shader, "fn b() {}").unwrap();
+    let b = one_batch(&fx);
+    assert_eq!(b.changes.len(), 1, "{b:#?}");
+    assert_modified(&b.changes[0], &wall, "png 2");
+    assert_eq!(b.changes[0].role, Role::Wallpaper);
+}
+
+/// The non-blocking registration for a file the caller already read: a
+/// save made between the read and the registration is reported, an
+/// unchanged file is not.
+#[test]
+fn watch_file_loaded_compares_with_the_caller_s_read() {
+    let fx = fixture();
+    let wall = fx.base.join("wall.png");
+    let prefs = fx.base.join("prefs.toml");
+    fs::write(&wall, "png 1").unwrap();
+    fs::write(&prefs, "a = 1").unwrap();
+    let read = hash_bytes(b"png 1");
+    fs::write(&wall, "png 2").unwrap();
+    fx.watcher
+        .watch_file_loaded(&wall, Role::Wallpaper, read)
+        .unwrap();
+    fx.watcher
+        .watch_file_loaded(&prefs, Role::Settings, hash_bytes(b"a = 1"))
+        .unwrap();
+    let b = one_batch(&fx);
+    assert_eq!(b.changes.len(), 1, "{b:#?}");
+    assert_modified(&b.changes[0], &wall, "png 2");
+    fs::write(&prefs, "a = 2").unwrap();
+    let b = one_batch(&fx);
+    assert_eq!(b.changes.len(), 1, "{b:#?}");
+    assert_modified(&b.changes[0], &prefs, "a = 2");
 }
 
 /// A slider writes prefs.toml twice in one quiet period: the superseded
@@ -962,6 +1088,45 @@ fn a_save_between_read_and_registration_is_reported() {
     fs::write(&wall, "png 2").unwrap();
     let b = one_batch(&fx);
     assert_modified(&b.changes[0], &wall, "png 2");
+}
+
+/// One file reached through several registered paths (directly, through
+/// a symlink alias, through a `..` spelling): Strand's own write to it is
+/// silent under every one of them, and a user save is reported under each.
+#[test]
+fn own_writes_are_skipped_under_every_alias() {
+    let fx = fixture();
+    let prefs = fx.cfg.join("prefs.toml");
+    fs::write(&prefs, "v = 0\n").unwrap();
+    fs::create_dir(fx.base.join("sub")).unwrap();
+    let dotdot = fx.base.join("sub/../cfg/prefs.toml");
+    let alias = fx.base.join("alias.toml");
+    symlink(&prefs, &alias).unwrap();
+    fx.watcher
+        .set_referenced([
+            (prefs.clone(), Role::Settings),
+            (dotdot.clone(), Role::Settings),
+            (alias.clone(), Role::Settings),
+        ])
+        .unwrap();
+    let ours = "v = 1\n";
+    fx.watcher
+        .register_own_write(&alias, hash_bytes(ours.as_bytes()));
+    let tmp = fx.cfg.join(".prefs.toml.tmp");
+    fs::write(&tmp, ours).unwrap();
+    fs::rename(&tmp, &prefs).unwrap();
+    no_batch(&fx);
+
+    fs::write(&prefs, "v = 2\n").unwrap();
+    let b = one_batch(&fx);
+    let mut paths: Vec<_> = b.changes.iter().map(|c| c.path.clone()).collect();
+    paths.sort();
+    let mut want = vec![prefs.clone(), dotdot, alias];
+    want.sort();
+    assert_eq!(paths, want, "{b:#?}");
+    for c in &b.changes {
+        assert_eq!(c.hash, Some(hash_bytes(b"v = 2\n")));
+    }
 }
 
 /// `register_own_write` is in place when it returns, whatever the watcher

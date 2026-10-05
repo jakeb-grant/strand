@@ -98,6 +98,10 @@ pub enum Notice {
     RescanFailed(String),
     /// Reading the inotify queue (or waiting on it) failed.
     Backend(String),
+    /// This watched file was being written (`MODIFY` seen) and its writer
+    /// neither wrote again nor closed it for `Options::stalled_write`
+    /// (5 s), so it was read anyway; the content may be incomplete.
+    StalledWrite(PathBuf),
 }
 
 /// Why a directory is polled.

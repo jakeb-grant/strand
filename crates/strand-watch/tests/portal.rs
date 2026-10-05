@@ -30,11 +30,11 @@ impl Drop for Daemon {
 }
 
 /// A private session bus. Skips (returns `None`) when `dbus-daemon` is not
-/// installed, unless `STRAND_REQUIRE_DBUS` or `CI` (set by GitHub Actions)
-/// is set: there the portal tier must run, not pass silently.
+/// installed, unless `STRAND_REQUIRE_DBUS` is set: there the portal tier
+/// must run, not pass silently. (CI setting it, and installing `dbus`, is
+/// an integration change outside this crate; see docs/decisions.md.)
 fn daemon() -> Option<Daemon> {
-    let required =
-        std::env::var_os("STRAND_REQUIRE_DBUS").is_some() || std::env::var_os("CI").is_some();
+    let required = std::env::var_os("STRAND_REQUIRE_DBUS").is_some();
     let dir = tempfile::tempdir().unwrap();
     let spawned = Command::new("dbus-daemon")
         .args(["--session", "--nofork", "--print-address=1"])

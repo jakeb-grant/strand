@@ -11,8 +11,8 @@ file fixes boundaries; each crate is free inside its own boundary.
 | Logic | `strand-core`, `strand-compiler` (VM, reconciler) | Reactive graph, state, handlers, timers, the live program | Touch Wayland or pixels |
 | Compiler worker | `strand-compiler` | Parse, check, lower changed modules off-thread | Mutate live state (it hands a compiled `Program` to logic) |
 | Text worker | `strand-text` | parley shaping, swash rasterisation, per-scale glyph atlases | Block render: a painted surface keeps drawing its last layout (or a realigned stand-in from another scale or width) until the new one arrives |
-| Watcher | `strand-watch` | inotify, portal, IPC socket | Parse files (it sends paths and hashes) |
-| Services | `strand-services` | tokio current-thread runtime; PipeWire and toplevel get their own threads | Block logic: they send state diffs and events |
+| Watcher | `strand-watch` | inotify directory watches and polling (one `strand-watch` thread) | Parse files (it sends paths and hashes) |
+| Services | `strand-services` | tokio current-thread runtime (the portal Settings client `strand_watch::follow` and the compositor IPC adapters run here); PipeWire and toplevel get their own threads | Block logic: they send state diffs and events |
 
 Channels are the only coupling between threads. Logic → render is one
 `SceneDiff` per tick. Render → logic is `InputEvent`s (`strand-scene`) and layout facts
@@ -484,21 +484,37 @@ It does not depend on `strand-compiler` or `strand-core`.
   each item `(path, role)` or `(path, role, hash)` with `hash` the
   `hash_bytes` of what the loader read, for every `(path,
   Role::{Shader, Settings, Wallpaper, Other})` the program references;
-  it replaces all registrations, and a file that no longer holds the
-  bytes its `hash` names (saved between the read and the call) is
-  reported. `watch_file(path, role)` / `unwatch_file(path, role)` add or
-  drop one (counted per path and role); `watch_file` is register, then
-  read. Module-set membership is separate, so a
+  it replaces the loader's previous set (and only that), and a file that
+  no longer holds the bytes its `hash` names (saved between the read
+  and the call) is reported. `watch_file(path, role)` /
+  `unwatch_file(path, role)` add or drop one ad-hoc registration
+  (counted per path and role) for owners whose paths the compiler does
+  not collect (the wallpaper owner: `prefs.wallpaper` is a runtime
+  value); `set_referenced` never replaces them. `watch_file` is
+  register, then read; `watch_file_loaded(path, role, hash)` is read,
+  then register. Module-set membership is separate, so a
   module file registered for another role stays a module. Neither a
   referenced file nor its directory need exist yet. Cache sources come
   through `watch_tree(dir, depth, CacheKind::{Apps, Icons, Fonts})`.
+  **Blocking:** `watch_file`, `set_referenced` and `watch_tree` wait for
+  the watcher thread (watches synced; a new path given without a hash
+  is read before they return, one given with a hash is compared later
+  on the watcher thread); call them from the loader, the compile worker,
+  boot or a service thread, never from logic. `watch_file_loaded`,
+  `unwatch_file`, `register_own_write` and `rescan` return at once and
+  are safe on the logic thread.
   `register_own_write(path, hash_bytes(&bytes))` before Strand writes a
   file (settings write-back) makes the matching write silent; the
-  registration is in place when it returns. Own writes must be atomic
-  (temporary file renamed over the path): an in-place write can be read
-  half done. Every ancestor of a watched directory holds a light watch
-  (moves and deletions of its children only), so moving any directory
-  on the way reports the files below as `Removed`.
+  registration is in place when it returns, and it silences the write
+  under every registered path that resolves to that file. Own writes
+  should be atomic (temporary file renamed over the path). A file with a
+  write in progress (`MODIFY` seen, no `CLOSE_WRITE` yet) is never read;
+  after 5 s (`Options::stalled_write`) with no further write it is read
+  anyway with `Notice::StalledWrite(path)`. The config root's parent and
+  the stand-in for a missing directory are watched for names only, and
+  every ancestor of a watched directory holds a light watch (moves and
+  deletions of its children only), so moving any directory on the way
+  reports the files below as `Removed`.
   `rescan()` is `strand reload`.
 - **`FileBatch { changes, rescan, notices, first_event, last_event }`.**
   One batch per quiet period: 15 ms after the last completed write
@@ -516,7 +532,8 @@ It does not depend on `strand-compiler` or `strand-core`.
   hashed; anything else (a FIFO, a device) has `error:
   Some(InvalidInput)`. Cache-tree entries are not hashed. `rescan` is
   `Some(Overflow | Requested)` for a full rescan; `notices` reports
-  polled directories and rescan-callback failures. `first_event` and
+  polled directories, rescan-callback failures, backend errors and
+  stalled writes. `first_event` and
   `last_event` (`Instant`) let latency measurements subtract the quiet
   period.
 - **System settings.** `strand_watch::follow(&zbus::Connection,

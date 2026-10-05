@@ -826,9 +826,13 @@ schema from `strand-compiler`).
   a sub-directory) rescans the module set. Removals (`DELETE`, `MOVED_FROM`, a watched directory
   deleted or moved) mark a path for an existence check: a removal cannot
   be half-written, and a module deleted for good must be reported.
-  `MODIFY` and a plain-file `CREATE` are never read; they only keep an
+  `MODIFY` and an empty plain-file `CREATE` mark a write in progress on
+  that path: the file is not read until its `CLOSE_WRITE` or `MOVED_TO`
+  (or its removal), however long the writer pauses, and they keep an
   already-open batch waiting, so a slow multi-file save stays one batch.
-  A stream that never goes quiet is cut 500 ms after its first event.
+  A stream that never goes quiet is cut 500 ms after its first event; a
+  file still being written at that cut is held, not read (see "Writes
+  in progress are held").
 - **2026-10-05 · Removal grace 50 ms.** When the latest event on a
   watched path was a removal the quiet period is 50 ms instead of 15, so
   delete-and-create and Vim's rename-then-write are one `Modified`, never
@@ -914,8 +918,10 @@ schema from `strand-compiler`).
   `accent-color` component outside 0..=1 means unset. Tests use a zbus
   mock portal on a private `dbus-daemon` the test starts itself
   (python3-dbusmock is not installed); they skip when `dbus-daemon` is
-  missing unless `STRAND_REQUIRE_DBUS` or `CI` is set, and CI sets the
-  former and installs `dbus`, so the tier cannot pass silently there. A
+  missing unless `STRAND_REQUIRE_DBUS` is set. Making CI set it (and
+  install `dbus`) is a change to `.github/workflows/ci.yml`, which this
+  track does not own: it is requested from the integrator, and until it
+  lands the tier may skip in CI. A
   `SettingChanged` that arrives while a late or restart re-read is in
   flight wins: the read's value for that key is dropped, since the
   signal is at least as new as the read's answer and sending the read
@@ -939,8 +945,9 @@ schema from `strand-compiler`).
   at the flush, re-resolves, re-watches and re-hashes every file below,
   so `mv cfg cfg.bak; mv cfg.new cfg` reports the changed files in
   sub-directories and nothing written in `cfg.bak` is reported under
-  the old names. As a backstop, each flush re-checks the inode of every
-  watched directory and re-watches one that changed. Watch, then list:
+  the old names. As a backstop, a full rescan (overflow, `strand
+  reload`) re-checks the inode of every watched directory and re-watches
+  one that changed. Watch, then list:
   when a flush adds a watch on a config or cache-tree directory, the
   module set (or tree) is listed once more after the next quiet period,
   because the rescan listed that directory before its watch existed and
@@ -957,9 +964,10 @@ schema from `strand-compiler`).
   membership is separate from registrations, so registering or
   unregistering a module file never changes its module status. A change
   is reported once per role (`changes` sorted by path, then role).
-  `set_referenced(pairs)` replaces every registration with the set the
-  compiler collected from the whole program, so the loader does not diff
-  path sets itself.
+  `set_referenced(pairs)` replaces the loader's registrations with the
+  set the compiler collected from the whole program, so the loader does
+  not diff path sets itself. It never touches `watch_file`
+  registrations (see "Two registration sets").
 - **2026-10-05 · Only regular files are read.** A watched path is
   `stat`ed, opened with `O_NONBLOCK`, `fstat`ed, and hashed only if it is
   a regular file, streaming (`blake3::Hasher::update_reader`), so a FIFO
@@ -999,13 +1007,18 @@ schema from `strand-compiler`).
   (`Arc<Mutex<_>>`) instead of queueing a control message, so a flush
   already under way when Strand writes sees the registration. Strand's
   own writes are atomic (temporary file renamed over the path); an
-  in-place write can be read half done and that content is reported.
+  in-place write is held until it is closed, but a crash mid-write
+  would leave a half file on disk.
 - **2026-10-05 · Files linked in complete.** A `CREATE` of a regular
-  file with one link and non-zero length is a completed write: its bytes
-  existed before its name (`O_TMPFILE` + `linkat`, as systemd's
-  `link_tmpfile` does; its `CLOSE_WRITE` is reported under the unnamed
-  `#<ino>`, if at all). An empty new file still waits for `CLOSE_WRITE`;
-  a write still in progress extends the batch with `MODIFY`.
+  file with one link and non-zero length is read like a completed write
+  unless a `MODIFY` for it follows: its bytes may have existed before its
+  name (`O_TMPFILE` + `linkat`, as systemd's `link_tmpfile` does; its
+  writes and `CLOSE_WRITE` are reported under the unnamed `#<ino>`, if
+  at all). A plain `open(O_CREAT)` + `write` writer whose creation is
+  read after its first write looks the same at `CREATE`, but the kernel
+  queues its `MODIFY` for the name right behind, which marks the write
+  in progress and holds the file until `CLOSE_WRITE`. An empty new file
+  waits for `CLOSE_WRITE` from the start.
 - **2026-10-05 · Light ancestor watches.** A watched directory's inotify
   descriptor follows its inode, so moving an unwatched ancestor
   (`mv ~/x ~/w` with only `~/x/y/z` watched) made no event and the file
@@ -1013,7 +1026,8 @@ schema from `strand-compiler`).
   watched in full now holds a light watch (`MOVED_FROM`, `DELETE`,
   `DELETE_SELF`, `MOVE_SELF` only, no writes or creations), so the move
   forgets the watches below, re-resolves and reports `Removed`; the
-  ancestor then becomes the full watch waiting for the path to return.
+  ancestor then becomes the parent watch (names only) waiting for the
+  path to return.
   Writes in `~` or `/` queue nothing; renames and deletions there wake
   the thread for a map lookup and no batch. Ancestor watches are best
   effort and silent: on a network or read-only filesystem, or past the
@@ -1026,3 +1040,70 @@ schema from `strand-compiler`).
   (not `EAGAIN`) leaves the fd readable, so the watcher drops inotify,
   polls every directory (each reported once as `WatchFailed`) and
   rescans everything (`RescanReason::Overflow`: events were lost).
+- **2026-10-05 · Writes in progress are held (review round 4).** The
+  watcher keeps the paths with a write in progress (`MODIFY`, or an
+  empty file created, and no `CLOSE_WRITE`, `MOVED_TO` or removal since).
+  At a flush, a touched file whose resolved path is among them is not
+  read: it is held, and looked at again at every later flush, so a
+  delete-and-create or Vim save whose writer stalls mid-write (past the
+  50 ms removal grace, past the 500 ms cut) is one batch with the full
+  content. A held file adds no busy loop: the next deadline is its
+  `CLOSE_WRITE` (an event) or the stall limit. A writer that neither
+  writes nor closes for `Options::stalled_write` (5 s; a program keeping
+  the file open) has the file read anyway, with
+  `Notice::StalledWrite(path)`; a lost `CLOSE_WRITE` (overflow) ends the
+  same way. Polled directories have no `MODIFY` and compare content as
+  before.
+- **2026-10-05 · Two registration sets (review round 4).** Each watched
+  path counts the loader's registrations (`set_referenced`, replaced
+  whole after each reload) and ad-hoc ones (`watch_file` /
+  `unwatch_file`) separately, and is watched while either (or module
+  membership) holds it. The wallpaper is a runtime settings value
+  (`prefs.wallpaper`, changed by `strand set`), not a path the compiler
+  collects, so its owner registers it with `watch_file`; replacing all
+  registrations on every reload would silently drop it (design.md:
+  "Both the wallpaper path and its symlink target are watched").
+- **2026-10-05 · Parent watches (review round 4).** The config root's
+  parent (`~/.config`), the directories holding a symlink on the root's
+  or a cache tree's way, and the nearest existing ancestor that stands in
+  for a missing directory are watched for names only: `CREATE`,
+  `MOVED_TO`, `MOVED_FROM`, `DELETE`, `DELETE_SELF`, `MOVE_SELF`. Every
+  app writing its own file in `~/.config` would otherwise wake the
+  watcher on each `write(2)` (`MODIFY`) and close, which the move to raw
+  inotify was meant to stop. A directory wanted for several reasons gets
+  the strongest kind (full, then parent, then ancestor). The directories
+  of a referenced file's symlinks stay full watches: a save that replaces
+  the link with a plain file (delete and create) writes there.
+- **2026-10-05 · Content-only batches leave the watches alone (review
+  round 4).** A flush re-syncs the watches only when the structure may
+  have changed: a full rescan, a module-set or cache-tree rescan, a
+  watched directory gone or replaced, a missing directory appearing, or
+  a touched file that now resolves elsewhere. A batch of content edits
+  (the common save) costs the files it hashes, not the number of watched
+  directories (a 3000-directory icon tree added ~23 ms per save before).
+  A re-sync stats only directories not yet watched; the per-directory
+  inode audit runs on full rescans only
+  (`content_only_flushes_do_not_resync`).
+- **2026-10-05 · Own writes across aliases (review round 4).** Within one
+  flush, an own-write match is a fact about the resolved file: once one
+  registered path matched `(canonical, hash)`, every other registered
+  path that resolves to the same file with the same hash (a symlink
+  alias, a `..` spelling, which `paths::absolute` does not normalise) is
+  own too. `register_own_write` resolves the path before taking the lock
+  the watcher thread takes per hashed file, so a slow `readlink` on NFS
+  never stalls a flush.
+- **2026-10-05 · Which thread may block (review round 4).**
+  `watch_file`, `set_referenced` and `watch_tree` block until the
+  watcher thread has synced the watches (and, for a new path given no
+  hash, read its baseline: watch, then read). They are for the loader,
+  the compile worker, boot and service threads, never the logic thread.
+  A path given with the hash of what the caller read is not read at
+  registration: its baseline is that hash and the watcher compares the
+  file at the next quiet period on its own thread. For the logic thread,
+  `watch_file_loaded(path, role, hash)` and `unwatch_file` return at
+  once (a control message), and `register_own_write` takes only a short
+  lock. `watch_tree` still walks the tree before it returns: deferring
+  the walk would lose files created in a sub-directory between the
+  return and its watch (the re-walk lists directories, not files), and
+  its callers (boot, the apps/icons/fonts services) are not on a hot
+  path.
