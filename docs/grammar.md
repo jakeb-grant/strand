@@ -152,20 +152,31 @@ in full:
    .  ?.  ?  :  ~  =>  <->  else
    ```
 
-   None of these can start an item, so this is never ambiguous:
-
    ```
    wallpaper => material(image: prefs.wallpaper, variant: tonal_spot, dark: dark)
                 ?? material(seed: prefs.accent, dark: dark),
    ```
 
-4. **A line that ends with a binary operator, `,`, `:`, `=`, `=>`, `<->` or
-   `~` also continues**, because those tokens need a right-hand side and the
-   parser simply reads it from the next line.
+   Only `-` can also start an item (a negative pattern `-1 => …`, a handler
+   statement `-x.f()`). So **a line starting with `-` that touches its
+   operand (`-1`, `-y`) starts a new item**; `- 1` with a space after the
+   sign continues the line as subtraction. With that rule no continuation
+   token is ambiguous.
+
+4. **A line that ends with a binary operator, `,`, `=`, `=>`, `<->`, `~`
+   or a ternary's `?` or `:` also continues**, because those tokens need a
+   right-hand side and the parser simply reads it from the next line.
 
 5. **Everything else stops at a line break.** In particular a call's `(`, an
    index's `[`, a positional argument, a space-separated value term and an
    optional block's `{` must be on the same line as what precedes them.
+   Two cases are errors rather than continuations, because a half-typed line
+   is exactly where an editor completes:
+   - a `.` or `?.` ending a line: `text audio.` reports "expected a field
+     name", and the next line is its own item;
+   - a prop's or token's `:` ending a line: `bg:` reports "`bg:` has no
+     value" (props end at a line break, `design.md`), and the next line is
+     its own item.
 
 6. **Mandatory `{` may follow a line break.** Where a block is required
    (declarations, `when`, `if`, `for`, `match`, `on`, `after`, `every`,
@@ -401,10 +412,15 @@ space-separation, then ordinary expression precedence. So:
   same line, and never with an identifier followed by `:` (that is a missing
   `;`) or with a tree keyword.
 - **Operators always bind.** `-` between two terms is subtraction, never the
-  sign of the next term: `0 -2px 8px` is the two terms `0 - 2px` and `8px`.
-  Write a negative term in parentheses: `0 (-2px) 8px $shadow`. This keeps
-  whitespace from changing meaning (`design.md`, "Bad").
+  sign of the next term, so whitespace never changes meaning (`design.md`,
+  "Bad"). Because `0 -2px 8px` *looks* like three terms, a `+` or `-` in a
+  space-separated value with a space before it and none after is an error
+  (`syntax::ambiguous_sign`) whose help offers both readings: `(-2px)` for a
+  negative term, `0 - 2px` to subtract. Write a negative term in
+  parentheses: `0 (-2px) 8px $shadow`.
 - Parentheses after a space are a new term, not a call (see "Calls touch").
+  When the term before them is a name (`bg: f (x)`), a warning
+  (`syntax::spaced_call`) says it is two values and how to call `f`.
 - `<->` takes a single expression: no commas, no spaces.
 - A prop may carry a sub-block of props for structured values:
   `stroke: 3, $accent { trim: 0, progress; wave: 2, 18px; cap: round }`.
@@ -473,7 +489,8 @@ svg "icon.svg" { #needle { rotate: level * 270deg } }
 
 `on change` takes one or more watched expressions; the comma separates them,
 so they end before `after` or `{`. `change` directly followed by `(` or `{`
-is an ordinary event name (`on change(x) { … }` declares a parameter), so
+is an ordinary event name (`on change(x) { … }` declares a parameter), and
+so is `change` followed by `.` (an event path such as `on change.done`), so
 the watched expressions are never wrapped in parentheses. Timers and `on` handlers are allowed at
 the top level (the OSD example) and in tree blocks.
 
@@ -502,7 +519,8 @@ checker rejects `let`s and bound props.
 
 ```
 expr     = lambda | ternary
-lambda   = ( IDENT | '(' ( param ( ',' param )* ','? )? ')' ) '=>' ( stmt_block | expr )
+lambda   = ( IDENT | '(' ( lparam ( ',' lparam )* ','? )? ')' ) '=>' ( stmt_block | expr )
+lparam   = IDENT ( ':' type )?          // no defaults: a lambda is called with every argument
 ternary  = coalesce ( '?' expr ':' expr )?
 coalesce = or ( '??' coalesce )?
 or       = and ( '||' and )*
@@ -512,7 +530,7 @@ compare  = additive ( ( '<' | '<=' | '>' | '>=' ) additive )?
 additive = multiplicative ( ( '+' | '-' ) multiplicative )*
 multiplicative = unary ( ( '*' | '/' | '%' ) unary )*
 unary    = ( '!' | '-' | kw:await ) unary | postfix
-postfix  = primary ( '.' ( IDENT | INT ) | '?.' IDENT | TOUCH '(' args? ')' | TOUCH '[' expr ']' )*
+postfix  = primary ( ( '.' | '?.' ) SAME_LINE ( IDENT | INT ) | TOUCH '(' args? ')' | TOUCH '[' expr ']' )*
 primary  = NUMBER | STRING | HASH | kw:true | kw:false | kw:null
          | token_path | IDENT | '(' expr ')' | '[' ( expr ( ',' expr )* ','? )? ']'
          | match_expr
@@ -592,6 +610,8 @@ pattern = IDENT ( '.' IDENT )*                // a variant, or `_`
         | '-'? NUMBER | STRING | HASH | kw:true | kw:false | kw:null
 ```
 
+A negative pattern on its own line (`-1 => …`) is a new arm, by rule 3.
+
 `_` is the wildcard pattern.
 
 ## Error recovery
@@ -603,10 +623,17 @@ diagnostic and resynchronises:
   closing `}` at its own brace depth, then continues with the next item.
 - An expression that cannot start yields an error node without consuming
   the token, so the enclosing list or block decides how to recover.
-- A missing `}` at end of file is reported at the unclosed `{`.
-- Nesting deeper than 128 levels (blocks, brackets, operator and call
-  chains all count) is an error, never a stack overflow; a
-  per-file step budget guarantees termination.
+- A missing `}` is reported once, at the unclosed `{`, when the file ends
+  or when a top-level declaration keyword (`component`, `bar`, `enum`,
+  `tokens`, …, and in `match` arms and `enum` variants also `let` and
+  `state`) appears at column 0; every enclosing block closes there and the
+  declaration parses normally. A `{` inside the unclosed block whose `}` was
+  indented differently from its opening line is named as the likely culprit.
+- Nesting deeper than 128 levels (blocks, brackets, prefix operators,
+  operands) is an error, never a stack overflow. Flat chains (`a + b + c`,
+  `a.b.c`, `else if`) are parsed in loops, but each link deepens the tree,
+  so the tree as a whole may be at most 256 levels deep; past that is one
+  `syntax::too_deep` error. A per-file step budget guarantees termination.
 - Unknown words where a keyword was expected get a did-you-mean from the
   keywords valid at that position (`componnet` → `component`,
   `on chnage a` → `change`, `for x im xs` → `in`, `dbsu` → `dbus`).

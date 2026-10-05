@@ -8,12 +8,10 @@ use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+use strand_compiler::SourceMap;
 use strand_compiler::diagnostic::{Style, render};
+use strand_compiler::source::find_files;
 use strand_compiler::syntax::parse;
-
-/// How deep below the config directory files are loaded, matching the
-/// watcher's depth (`design.md`, "Change sources").
-pub const MAX_DEPTH: usize = 3;
 
 /// What a check found.
 #[derive(Debug, Default)]
@@ -44,51 +42,30 @@ pub fn default_dir(xdg_config_home: Option<OsString>, home: Option<OsString>) ->
     .map(|base| base.join("strand"))
 }
 
-/// Every `.strand` file under `dir`, at most [`MAX_DEPTH`] directories
-/// down, sorted. Hidden directories are skipped; symlinks are followed.
-pub fn find_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
-    let mut out = Vec::new();
-    walk(dir, 0, &mut out)?;
-    out.sort();
-    Ok(out)
-}
-
-fn walk(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(dir)? {
-        let path = entry?.path();
-        let hidden = path
-            .file_name()
-            .is_some_and(|n| n.to_string_lossy().starts_with('.'));
-        // `metadata` follows symlinks, so stowed dotfiles are found.
-        let Ok(meta) = std::fs::metadata(&path) else {
-            continue; // dangling link
-        };
-        if meta.is_dir() {
-            if depth < MAX_DEPTH && !hidden {
-                walk(&path, depth + 1, out)?;
-            }
-        } else if meta.is_file() && path.extension().is_some_and(|e| e == "strand") {
-            out.push(path);
-        }
-    }
-    Ok(())
-}
-
-/// Parses every file under `dir` and renders what it found.
+/// Parses every `.strand` file under `dir` (or `dir` itself, if it is a
+/// file) and renders what it found. Which files count is
+/// [`strand_compiler::source::find_files`], the same rule the loader and
+/// watcher use.
 pub fn check_dir(dir: &Path, style: Style) -> Result<Report, String> {
-    let files =
+    let found =
         find_files(dir).map_err(|e| format!("strand check: cannot read {}: {e}", dir.display()))?;
-    if files.is_empty() {
+    let mut report = Report {
+        files: found.files.len(),
+        ..Report::default()
+    };
+    for (path, e) in &found.errors {
+        report.errors += 1;
+        let _ = writeln!(report.text, "error: cannot read {}: {e}\n", path.display());
+    }
+    if found.files.is_empty() && found.errors.is_empty() {
         return Err(format!(
             "strand check: no .strand files in {}",
             dir.display()
         ));
     }
-    let mut report = Report {
-        files: files.len(),
-        ..Report::default()
-    };
-    for path in &files {
+    let mut map = SourceMap::new();
+    let mut diags = Vec::new();
+    for path in &found.files {
         let name = path.display().to_string();
         let src = match std::fs::read(path).map(String::from_utf8) {
             Ok(Ok(src)) => src,
@@ -103,18 +80,17 @@ pub fn check_dir(dir: &Path, style: Style) -> Result<Report, String> {
                 continue;
             }
         };
-        let parsed = parse(&src);
-        for d in &parsed.diagnostics {
-            if d.is_error() {
-                report.errors += 1;
-            } else {
-                report.warnings += 1;
-            }
-        }
-        report
-            .text
-            .push_str(&render(&parsed.diagnostics, &name, &src, style));
+        let id = map.add(name, src.as_str());
+        diags.extend(parse(id, &src).diagnostics);
     }
+    for d in &diags {
+        if d.is_error() {
+            report.errors += 1;
+        } else {
+            report.warnings += 1;
+        }
+    }
+    report.text.push_str(&render(&diags, &map, style));
     let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
     let _ = writeln!(
         report.text,
@@ -144,7 +120,7 @@ pub fn run(args: &[String], style: Style) -> (String, bool) {
             }
         },
         [dir] if !dir.starts_with('-') => PathBuf::from(dir),
-        _ => return ("usage: strand check [dir]\n".into(), false),
+        _ => return ("usage: strand check [dir | file]\n".into(), false),
     };
     match check_dir(&dir, style) {
         Ok(report) => {
@@ -212,13 +188,49 @@ mod tests {
         t.write("a/b/c/deep.strand", "");
         t.write("a/b/c/d/too_deep.strand", "");
         t.write(".git/hidden.strand", "");
+        t.write(".hidden.strand", "");
         t.write("notes.txt", "");
-        let files = find_files(&t.0).unwrap();
-        let names: Vec<_> = files
+        std::os::unix::fs::symlink(t.0.join("bar.strand"), t.0.join("z_alias.strand")).unwrap();
+        let found = find_files(&t.0).unwrap();
+        assert!(found.errors.is_empty());
+        let names: Vec<_> = found
+            .files
             .iter()
             .map(|p| p.strip_prefix(&t.0).unwrap().to_string_lossy().into_owned())
             .collect();
+        // The link to bar.strand is the same file, so it loads once.
         assert_eq!(names, ["a/b/c/deep.strand", "bar.strand"]);
+    }
+
+    #[test]
+    fn unreadable_subdirectories_do_not_stop_the_check() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = TempDir::new();
+        t.write("ok.strand", "state x = 1\n");
+        t.write("locked/inner.strand", "state y = 1\n");
+        let locked = t.0.join("locked");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Root can read anything; the rule is only observable as a user.
+        let readable = std::fs::read_dir(&locked).is_ok();
+        let report = check_dir(&t.0, Style::Plain);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let report = report.unwrap();
+        if !readable {
+            assert_eq!(report.files, 1);
+            assert_eq!(report.errors, 1);
+            assert!(report.text.contains("cannot read"), "{}", report.text);
+            assert!(report.text.contains("locked"), "{}", report.text);
+        }
+    }
+
+    #[test]
+    fn a_single_file_can_be_checked() {
+        let t = TempDir::new();
+        t.write("one.strand", "state x = \n");
+        let report = check_dir(&t.0.join("one.strand"), Style::Plain).unwrap();
+        assert_eq!(report.files, 1);
+        assert!(!report.ok());
+        assert!(report.text.contains("one.strand:1:"), "{}", report.text);
     }
 
     #[test]

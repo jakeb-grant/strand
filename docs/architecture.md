@@ -92,6 +92,49 @@ types, did-you-mean), `lower` (bytecode), `vm` (evaluates bytecode against
 → `SceneDiff` and state migration). One crate serves runtime, `strand check`
 and the LSP. The grammar is specified in `docs/grammar.md`.
 
+Public interfaces other crates and later stages build on:
+
+- **Files** (`strand_compiler::source`): `FileId(u32)` indexes a
+  `SourceMap` (`add(name, text) -> FileId`, `get(id) -> Option<&SourceFile
+  { name, text: Arc<str> }>`). A `Span { start, end }` is a byte range
+  inside one file; `(FileId, Span)` locates text across the config.
+- **Parsing** (`strand_compiler::syntax`): `parse(file: FileId, src: &str)
+  -> Parse { file_id, file: ast::File, tokens: Vec<Token>, diagnostics }`.
+  Never panics. `tokens` is the lossless token stream (trivia included) for
+  semantic highlighting, formatting and keyword spans the tree does not
+  store. Spans live on `Item`, `Stmt`, `Expr`, `Block`, `Ident` and the
+  other wrapper nodes; payload structs use their wrapper's span. Trees are
+  at most 256 levels deep (`docs/grammar.md`, "Error recovery"), so passes
+  may recurse over them on a 2 MiB stack.
+- **Identity and change detection.** AST `PartialEq` compares spans, which
+  shift on every edit above a node. Reload identity and "did this handler
+  change" use a span-insensitive structural hash over the texts of the
+  significant tokens inside a node's span (comments and whitespace
+  excluded), computed from `Parse::tokens`; `reconcile` owns it.
+- **Diagnostics** (`strand_compiler::diagnostic`): `Diagnostic { severity,
+  code: &'static str, message, labels: Vec<Label { file: FileId, span,
+  message, primary }>, help: Option<String> }`, built with
+  `Diagnostic::error/warning(code, msg).with_label(span, msg)`,
+  `.with_secondary(..)`, `.with_label_in(file, ..)`,
+  `.with_secondary_in(file, ..)`, `.with_help(..)`, and `.in_file(file)` for
+  single-file stages. `render(&[Diagnostic], &SourceMap, Style)` draws
+  miette reports (labels in other files as related reports, at most 50 per
+  file); `render_short(&[Diagnostic], &SourceMap)` gives one
+  `file:line:col: severity[code]: message` line each, for the reload
+  overlay's list and editors. `suggest`/`did_you_mean` give the shared
+  near-miss logic.
+
+### Config files
+
+`strand_compiler::source::find_files(dir) -> io::Result<Discovery { files,
+errors }>` defines which files a config loads: `.strand` files at most
+`MAX_DEPTH = 3` directories below the config directory, names starting with
+`.` skipped (files and directories), symlinks followed, files deduplicated
+by canonical path, unreadable sub-directories reported in `errors` and
+skipped. `strand check`, the loader and `strand-watch` all use this rule (the
+watcher calls it or matches it exactly), so they never disagree on the file
+set.
+
 ### `strand-text`
 
 Request/response over a channel: `TextRequest { key, text, style, max_width,

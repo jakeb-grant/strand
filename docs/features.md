@@ -13,6 +13,7 @@ Exit: [ ] ≤34 MB PSS on 2 monitors · [ ] no wakeups between minute ticks ·
 - [ ] `strand-scene` vocabulary: geometry, colour (sRGB ↔ OKLab), `Damage` (≤8 rects, merge), `Painter`, scene protocol types
 - [ ] SCTK layer-shell bar on every output, anchored to an edge, exclusive zone
 - [ ] Output hotplug: bar appears on a new output and is destroyed when one goes; layer-surface `closed` handled
+- [ ] Monitor identity is make + model + description; a monitor's state survives a 30-second unplug and is restored when it returns
 - [ ] wl_shm pool, 2–3 buffers per surface, buffer age tracked per buffer
 - [ ] `damage_buffer` with exact rects; `set_opaque_region` when opaque
 - [ ] Fractional scale (`wp_fractional_scale_v1`) + viewporter; crisp at 1.0, 1.25, 1.5, 2.0
@@ -46,15 +47,21 @@ Language (`docs/grammar.md`):
 - [ ] Two-way binding `prop: <-> target` (syntax done: `crates/strand-compiler/tests/grammar_rules.rs::commas_spaces_and_transitions_in_values`; writable-target check pending)
 - [x] Expressions: `?.`, `??`, ternary, lambdas `x => e`, method calls, named args `f(months: -1)`, `match` expressions — `crates/strand-compiler/tests/grammar_rules.rs` (`precedence`, `lambdas`, `named_and_from_arguments`, `match_arms_split_on_commas_or_lines`)
 - [x] Spring override `prop: value ~ $motion.bouncy | ~ 200ms | ~ instant | ~ ease(..) | ~ bezier(..)` — `crates/strand-compiler/tests/fixtures.rs` (`snippets.strand`), `crates/strand-compiler/tests/grammar_rules.rs::commas_spaces_and_transitions_in_values`
-- [x] Token declarations: `tokens base { … }`, `extends`, `override`, `use tokens … , palette …`, `set { $x: … }` — `crates/strand-compiler/tests/fixtures.rs` (`theme.strand`, `snippets.strand`), `crates/strand-compiler/tests/grammar_rules.rs::tokens_keys`
+- [x] Token declarations (syntax only; override rules are under Checking): `tokens base { … }`, `extends`, `override`, `use tokens … , palette …`, `set { $x: … }` — `crates/strand-compiler/tests/fixtures.rs` (`theme.strand`, `snippets.strand`), `crates/strand-compiler/tests/grammar_rules.rs::tokens_keys`
 - [x] `service x from dbus system "…" { field: type rw = Prop }`, `from file|listen|poll`, `permit exec` — `crates/strand-compiler/tests/fixtures.rs` (`grammar_examples.strand`, `snippets.strand`), `crates/strand-compiler/tests/diagnostics.rs::did_you_mean_keywords`
 - [ ] `fn` (pure), `keyframes`, `shader "x.wgsl" { uniforms }`, `canvas { draw: … }` (syntax done: `crates/strand-compiler/tests/fixtures.rs` (`grammar_examples.strand`, `snippets.strand`); purity check pending)
-- [x] Parser recovery: never panics; every error has file, line, caret, label — `crates/strand-compiler/tests/robustness.rs` (10,000 random edits, pathological nesting), `crates/strand-compiler/tests/diagnostics.rs`
+- [x] Parser recovery: never panics; every error has file, line, caret, label — `crates/strand-compiler/tests/robustness.rs` (10,000 random edits with span nesting checked, pathological nesting), `crates/strand-compiler/tests/diagnostics.rs` (`unclosed_enum_and_match_stop_at_the_next_declaration`, `missing_brace_hint_stays_inside_the_unclosed_block`)
+- [x] Diagnostics carry file identity (`FileId` + `SourceMap`); one diagnostic can label several files; rendering capped per file — `crates/strand-compiler/src/diagnostic.rs` (tests `labels_in_other_files_render_there`, `rendering_is_capped_per_file`), `crates/strand-compiler/tests/diagnostics.rs::diagnostics_carry_their_file`
+- [ ] Formatter (`strand fmt` / LSP formatting) and format-on-save that never flashes the error overlay
+- [ ] tree-sitter grammar for `.strand` in `strand-dev` (editor highlighting), kept in step with `docs/grammar.md`
 
 Checking and runtime:
 - [ ] Name resolution across files, no imports; `file.name` export paths
 - [ ] Type checker: records, enums, `Async<T>` vs `T`, nullable `?`, durations, colours, lengths
 - [ ] Errors: unknown name with did-you-mean; redeclaration across files; assignment to `let` or bound prop; static cycles name the path
+- [ ] Unknown-element did-you-mean includes tree and top-level keywords (`whn hover { … }` → `when`, `enterr { … }` → `enter`)
+- [ ] Loud token overrides: redefining a token needs `override`; a misspelt `override` is an unknown-name error, not a new token
+- [ ] Lint: a raw hex colour in a prop warns (use a token); defaults in settings files are exempt
 - [ ] Bytecode lowering + VM evaluating bindings against `strand-core` signals
 - [ ] Handlers as cancellable coroutines; errors as values; cancelled at next `await` on unmount
 - [ ] Reactive graph: push-pull, glitch-free, equality cut-off, generational ids, stale read is an error value
@@ -75,6 +82,7 @@ Live reload:
 - [ ] Edit table: token swap, prop patch animates, node add/remove poses, state default adoption rules, name/type change resets one cell, handler restart, timer rescale, surface recreate, service restart, lock deferral
 - [ ] Merkle hashes over handler reachability
 - [ ] Error overlay after 250 ms quiet; did-you-mean; click to `$EDITOR`; runtime fault freezes one component outlined red
+- [x] Config file discovery shared by `strand check`, loader and watcher: depth 3, hidden names skipped, symlinks followed, canonical dedup, unreadable sub-directories reported — `crates/strand/src/check.rs` (`finds_strand_files_to_depth_three`, `unreadable_subdirectories_do_not_stop_the_check`, `a_single_file_can_be_checked`)
 - [ ] `strand check`, `strand watch [--json]`, `strand reload [--hard]`, `@reset` (`strand check` parses and reports: `crates/strand/src/check.rs` tests; `@reset` parses: `snippets.strand`; checker, watch, reload pending)
 - [ ] Basic LSP in `strand-dev`: diagnostics, completion after `$` `.` `<->`, hover, rename
 - [ ] Reload fuzzer: five save styles, cold-boot equivalence
@@ -86,6 +94,8 @@ Exit: [ ] theme swap under 5 ms · [ ] contrast never below 3:1 · [ ] the four 
 - [ ] taffy layout: `row`, `col`, `stack`, `grid`, `scroll`, `list` (virtualised), `split`, `spacer`; flex + min/max; `place: absolute`
 - [ ] Container queries `when self.width < N` with 4 px hysteresis, ≤1 extra pass
 - [ ] Hit testing on rounded shape; `hit: grow(n)`; shadows don't enlarge input region
+- [ ] Event routing: events go to the innermost handler; `propagate()` passes one on; `keyboard: none | on_demand | exclusive` sets focus
+- [ ] `hover` stays latched on the pressed node while dragging
 - [ ] Springs on every visual prop; `$motion.spatial` vs `$motion.effects`; retarget keeps velocity
 - [ ] Paint-only props never relayout; size springs relayout only under nearest size-stable ancestor
 - [ ] FLIP reordering; `enter`/`exit` on surfaces, `if` branches, list items, pages
@@ -111,6 +121,7 @@ Exit: [ ] runs on Hyprland, niri and sway · [ ] 100 reloads with no reconnects 
 - [ ] Hyprland, niri, sway IPC adapters (own implementations)
 - [ ] No-code services `from dbus` checked against introspection; `from file|listen|poll`; `permit exec`
 - [ ] Service schemas drive type checking and LSP hover
+- [ ] The compiler collects the service paths a shell uses; only those services start (lazy start input)
 - [ ] Notification name conflict with dunst/mako fails clearly
 - [ ] python-dbusmock CI tier
 
@@ -121,6 +132,7 @@ Exit: [ ] smooth 2,000-row scrolling · [ ] GPU released when idle · [ ] lock f
 - [ ] GPU promotion (vello_gpu/wgpu) for large long animations; switch only when settled; device dropped after 30 s idle
 - [ ] Compositor-animated poses: alpha modifier, viewporter scale, layer-shell margins
 - [ ] Popups as nested xdg_popups; tray menus; tooltips
+- [ ] Popup/panel `open: <-> x` is written false by Escape, click-away and focus loss
 - [ ] Virtualised long lists; keyboard `nav:`
 - [ ] Drag and drop: `drag:`, typed `Drop`, springs by key
 - [ ] `pages current:` with directional transitions; hidden pages unmount

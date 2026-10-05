@@ -223,6 +223,11 @@ impl Lexer<'_> {
     }
 
     fn run(&mut self) {
+        // A leading byte-order mark (some editors write one) is trivia.
+        if self.src.starts_with('\u{feff}') {
+            self.pos = '\u{feff}'.len_utf8();
+            self.push(TokenKind::Whitespace, 0);
+        }
         while self.pos < self.bytes.len() {
             let start = self.pos;
             let b = self.bytes[self.pos];
@@ -515,6 +520,19 @@ mod tests {
         let (toks, _) = lex(src);
         let joined: String = toks.iter().map(|t| t.span.text(src)).collect();
         assert_eq!(joined, src);
+    }
+
+    #[test]
+    fn leading_bom_is_trivia() {
+        let src = "\u{feff}state x = 1\n";
+        let (toks, diags) = lex(src);
+        assert!(diags.is_empty(), "{diags:?}");
+        assert_eq!(toks[0].kind, TokenKind::Whitespace);
+        assert_eq!(toks[0].span, Span::new(0, 3));
+        let joined: String = toks.iter().map(|t| t.span.text(src)).collect();
+        assert_eq!(joined, src);
+        // Only at the start: elsewhere it is still an invalid character.
+        assert!(!lex("a \u{feff}").1.is_empty());
     }
 
     #[test]

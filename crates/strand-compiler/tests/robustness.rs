@@ -7,7 +7,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use strand_compiler::diagnostic::{Style, render};
-use strand_compiler::syntax::{lexer, parse};
+use strand_compiler::syntax::{Span, dump, lexer, parse};
+use strand_compiler::{FileId, SourceMap};
 
 /// splitmix64: small, deterministic, good enough to drive edits.
 struct Rng(u64);
@@ -196,7 +197,7 @@ fn mutate(rng: &mut Rng, src: &mut String) {
 
 fn check(src: &str, render_too: bool) -> Duration {
     let started = Instant::now();
-    let result = catch_unwind(AssertUnwindSafe(|| parse(src)));
+    let result = catch_unwind(AssertUnwindSafe(|| parse(FileId::default(), src)));
     let elapsed = started.elapsed();
     let parsed = match result {
         Ok(p) => p,
@@ -218,9 +219,36 @@ fn check(src: &str, render_too: bool) -> Duration {
             );
         }
     }
+    // Every node lies inside its parent, even in a damaged tree: the LSP's
+    // node-at-offset lookup and reload identity rely on it.
+    let len = src.len() as u32;
+    dump::tree(&parsed.file).walk(&mut |node, parent| {
+        assert!(
+            node.span.start <= node.span.end && node.span.end <= len,
+            "bad span {:?} on `{}`\n----\n{src}\n----",
+            node.span,
+            node.label
+        );
+        if let Some(parent) = parent {
+            if node.span != Span::default() {
+                assert!(
+                    parent.span.contains(node.span),
+                    "`{}` {:?} escapes `{}` {:?}\n----\n{src}\n----",
+                    node.label,
+                    node.span,
+                    parent.label,
+                    parent.span
+                );
+            }
+        }
+    });
     if render_too {
         let out = catch_unwind(AssertUnwindSafe(|| {
-            render(&parsed.diagnostics, "fuzz.strand", src, Style::Plain)
+            render(
+                &parsed.diagnostics,
+                &SourceMap::single("fuzz.strand", String::from(src)).0,
+                Style::Plain,
+            )
         }));
         assert!(out.is_ok(), "rendering panicked on:\n----\n{src}\n----");
     }

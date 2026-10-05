@@ -123,11 +123,11 @@ impl Parser<'_> {
 
     /// A prop or token value: comma shorthand of space-separated groups.
     pub(crate) fn value(&mut self) -> Expr {
-        let start = self.cur().span.start;
         let first = self.spaced();
         if !self.at(K::Comma) {
             return first;
         }
+        let start = first.span.start;
         let mut items = vec![first];
         while self.eat(K::Comma).is_some() {
             items.push(self.spaced());
@@ -139,14 +139,24 @@ impl Parser<'_> {
     }
 
     fn spaced(&mut self) -> Expr {
-        let start = self.cur().span.start;
+        let outer = self.value_level.replace(self.nl.len());
+        let e = self.spaced_terms();
+        self.value_level = outer;
+        e
+    }
+
+    fn spaced_terms(&mut self) -> Expr {
         let first = self.expr();
         if !(self.same_line() && self.starts_term()) {
             return first;
         }
+        let start = first.span.start;
         let mut terms = vec![first];
         while self.same_line() && self.starts_term() {
             let before = self.pos;
+            if self.at(K::LParen) {
+                self.spaced_call_hint(terms.last());
+            }
             terms.push(self.expr());
             if self.pos == before {
                 break;
@@ -156,6 +166,51 @@ impl Parser<'_> {
             kind: ExprKind::Spaced(terms),
             span: self.finish(start),
         }
+    }
+
+    /// `bg: f (x)` is two values, `f` and `(x)`; warn when the first looks
+    /// like something meant to be called.
+    fn spaced_call_hint(&mut self, prev: Option<&Expr>) {
+        let callee = match prev.map(|e| &e.kind) {
+            Some(ExprKind::Name(id)) => id.name.clone(),
+            Some(ExprKind::Field { name, .. }) => name.name.clone(),
+            _ => return,
+        };
+        let paren = self.cur().span;
+        self.diags.push(
+            Diagnostic::warning(
+                "syntax::spaced_call",
+                format!("`{callee} (…)` is two values, not a call"),
+            )
+            .with_label(paren, "a separate value")
+            .with_help(format!("to call `{callee}`, remove the space before `(`")),
+        );
+    }
+
+    /// In a space-separated value, `0 -2px` (space before the sign, none
+    /// after) could mean a negative term or a subtraction; it parses as a
+    /// subtraction, so say so instead of silently changing the meaning.
+    fn check_sign(&mut self, op: Tok) {
+        if self.value_level != Some(self.nl.len()) || !op.ws_before || self.cur().ws_before {
+            return;
+        }
+        let sign = self.text(op);
+        let operand = self.text(self.cur());
+        self.push_error(
+            Diagnostic::error(
+                "syntax::ambiguous_sign",
+                format!("`{sign}{operand}` here is ambiguous"),
+            )
+            .with_label(
+                op.span.to(self.cur().span),
+                format!("this subtracts `{operand}` from the term before it"),
+            )
+            .with_help(format!(
+                "write `({sign}{operand})` for a separate term, \
+                 or put a space after the sign (`{sign} {operand}`) to {}",
+                if sign == "-" { "subtract" } else { "add" }
+            )),
+        );
     }
 
     /// A full expression, including lambdas.
@@ -225,11 +280,11 @@ impl Parser<'_> {
     }
 
     fn ternary(&mut self) -> Expr {
-        let start = self.cur().span.start;
         let cond = self.binary(0);
         if !self.at(K::Question) {
             return cond;
         }
+        let start = cond.span.start;
         self.bump();
         let then = self.expr();
         let else_ = if self.expect(K::Colon).is_some() {
@@ -248,18 +303,29 @@ impl Parser<'_> {
     }
 
     fn binary(&mut self, min: u8) -> Expr {
-        let start = self.cur().span.start;
         let mut lhs = self.unary();
+        // An error operand sits at the end of the previous token, which
+        // may be before the current one: start the node at whichever is
+        // first so children stay inside it.
+        let start = lhs.span.start;
         let mut last_compare = false;
         // Each link of a left-associative chain deepens the tree, so it
-        // counts toward the nesting limit like recursion does.
-        let mut entered = 0;
+        // counts toward the tree-depth limit.
+        let mut links = 0;
         while let Some((op, prec, right)) = binary_op(self.kind()) {
-            if prec < min || !self.enter() {
+            // A line starting with a sign touching its operand (`-1 => b`,
+            // `-y.f()`) starts a new item; `- 1` continues the line.
+            if self.kind() == K::Minus && self.on_new_line() && !self.nth(1).ws_before {
                 break;
             }
-            entered += 1;
+            if prec < min || !self.enter_link() {
+                break;
+            }
+            links += 1;
             let op_tok = self.bump();
+            if matches!(op, BinaryOp::Add | BinaryOp::Sub) {
+                self.check_sign(op_tok);
+            }
             if prec == COMPARE && last_compare {
                 self.push_error(
                     Diagnostic::error(
@@ -287,9 +353,7 @@ impl Parser<'_> {
                 span: self.finish(start),
             };
         }
-        for _ in 0..entered {
-            self.leave();
-        }
+        self.leave_links(links);
         lhs
     }
 
@@ -324,16 +388,16 @@ impl Parser<'_> {
     }
 
     fn postfix(&mut self) -> Expr {
-        let start = self.cur().span.start;
         let mut e = self.primary();
-        let mut entered = 0;
+        let start = e.span.start;
+        let mut links = 0;
         loop {
             let link = matches!(self.kind(), K::Dot | K::QuestionDot)
                 || (matches!(self.kind(), K::LParen | K::LBracket) && self.touching());
-            if !link || !self.enter() {
+            if !link || !self.enter_link() {
                 break;
             }
-            entered += 1;
+            links += 1;
             match self.kind() {
                 K::Dot | K::QuestionDot => {
                     let optional = self.bump().kind == K::QuestionDot;
@@ -375,14 +439,21 @@ impl Parser<'_> {
                 _ => break,
             }
         }
-        for _ in 0..entered {
-            self.leave();
-        }
+        self.leave_links(links);
         e
     }
 
-    /// A field name after `.`: a word, or digits (`x.0`).
+    /// A field name after `.`: a word, or digits (`x.0`). It must be on the
+    /// same line: `audio.` at the end of a line is unfinished, and the next
+    /// line is its own item.
     fn field_name(&mut self) -> Ident {
+        if self.on_new_line() {
+            self.expected("a field name");
+            return Ident {
+                name: String::new(),
+                span: Span::at(self.prev_end()),
+            };
+        }
         let t = self.cur();
         if t.kind == K::Number && self.text(t).bytes().all(|b| b.is_ascii_digit()) {
             self.bump();
@@ -520,6 +591,9 @@ impl Parser<'_> {
                 break;
             }
             let seg = self.nth(1);
+            if seg.nl_before && self.nl_significant() {
+                break; // `$a.` ending a line: postfix reports it
+            }
             let seg_ok = seg.kind == K::Ident
                 || (seg.kind == K::Number && self.text(seg).bytes().all(|b| b.is_ascii_digit()));
             let call = self.nth_kind(2) == K::LParen && !self.nth(2).ws_before;
@@ -576,6 +650,7 @@ impl Parser<'_> {
             ArgKind::Positional
         };
         let value = self.expr();
+        let start = start.min(value.span.start);
         Arg {
             kind,
             value,
@@ -737,14 +812,7 @@ impl Parser<'_> {
         self.with_nl(true, |p| {
             loop {
                 while p.eat(K::Comma).is_some() || p.eat(K::Semi).is_some() {}
-                if p.eat(K::RBrace).is_some() {
-                    break;
-                }
-                if p.at(K::Eof) {
-                    p.push_error(
-                        Diagnostic::error("syntax::unclosed", "unclosed `{`")
-                            .with_label(open.span, "this `match` has no closing `}`"),
-                    );
+                if p.block_ends(open, true) {
                     break;
                 }
                 let before = p.pos;
@@ -752,6 +820,7 @@ impl Parser<'_> {
                 let pattern = p.pattern();
                 p.expect(K::FatArrow);
                 let body = arm_body(p);
+                let start = start.min(pattern.span.start);
                 arms.push(Arm {
                     pattern,
                     body,

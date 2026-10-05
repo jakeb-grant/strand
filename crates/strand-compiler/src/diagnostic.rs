@@ -1,13 +1,17 @@
 //! Diagnostics: errors and warnings with labelled spans and fixes.
 //!
-//! Shared by every compiler stage. A [`Diagnostic`] is plain data; it is
-//! rendered with miette (file, line, column, caret and labels) by
+//! Shared by every compiler stage. A [`Diagnostic`] is plain data whose
+//! labels each name a file ([`FileId`]) and a file-local [`Span`], so one
+//! diagnostic can point into several files. It is rendered against a
+//! [`SourceMap`] with miette (file, line, column, caret and labels) by
 //! [`render`], or as one `file:line:col` line by [`render_short`].
 
 use std::fmt;
+use std::sync::Arc;
 
 use miette::{GraphicalReportHandler, GraphicalTheme, LabeledSpan, NamedSource, SourceSpan};
 
+use crate::source::{FileId, SourceMap};
 use crate::syntax::{LineIndex, Span};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -19,6 +23,10 @@ pub enum Severity {
 /// A span with an explanation. The primary label marks where the problem is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Label {
+    /// The file `span` is in. Labels added with [`Diagnostic::with_label`]
+    /// start in `FileId::default()`; a stage that works on one file stamps
+    /// them with [`Diagnostic::in_file`] (the parser does this itself).
+    pub file: FileId,
     pub span: Span,
     pub message: String,
     pub primary: bool,
@@ -54,8 +62,19 @@ impl Diagnostic {
     }
 
     /// Adds the primary label.
-    pub fn with_label(mut self, span: Span, message: impl Into<String>) -> Self {
+    pub fn with_label(self, span: Span, message: impl Into<String>) -> Self {
+        self.with_label_in(FileId::default(), span, message)
+    }
+
+    /// Adds a secondary label, such as the `{` an unclosed block opened at.
+    pub fn with_secondary(self, span: Span, message: impl Into<String>) -> Self {
+        self.with_secondary_in(FileId::default(), span, message)
+    }
+
+    /// Adds the primary label in a given file.
+    pub fn with_label_in(mut self, file: FileId, span: Span, message: impl Into<String>) -> Self {
         self.labels.push(Label {
+            file,
             span,
             message: message.into(),
             primary: true,
@@ -63,13 +82,29 @@ impl Diagnostic {
         self
     }
 
-    /// Adds a secondary label, such as the `{` an unclosed block opened at.
-    pub fn with_secondary(mut self, span: Span, message: impl Into<String>) -> Self {
+    /// Adds a secondary label in a given file, such as the other
+    /// declaration of a name declared in two files.
+    pub fn with_secondary_in(
+        mut self,
+        file: FileId,
+        span: Span,
+        message: impl Into<String>,
+    ) -> Self {
         self.labels.push(Label {
+            file,
             span,
             message: message.into(),
             primary: false,
         });
+        self
+    }
+
+    /// Moves every label into `file`: for stages that see one file and
+    /// build labels with [`Diagnostic::with_label`].
+    pub fn in_file(mut self, file: FileId) -> Self {
+        for l in &mut self.labels {
+            l.file = file;
+        }
         self
     }
 
@@ -82,13 +117,23 @@ impl Diagnostic {
         self.severity == Severity::Error
     }
 
-    /// The span of the primary label, or of the first label.
-    pub fn primary_span(&self) -> Option<Span> {
+    /// The primary label, or the first label.
+    pub fn primary(&self) -> Option<&Label> {
         self.labels
             .iter()
             .find(|l| l.primary)
             .or(self.labels.first())
-            .map(|l| l.span)
+    }
+
+    /// The span of the primary label, or of the first label.
+    pub fn primary_span(&self) -> Option<Span> {
+        self.primary().map(|l| l.span)
+    }
+
+    /// The file of the primary label (the first file if there are no
+    /// labels).
+    pub fn file(&self) -> FileId {
+        self.primary().map(|l| l.file).unwrap_or_default()
     }
 }
 
@@ -130,9 +175,21 @@ pub enum Style {
     Plain,
 }
 
+/// Diagnostics past this many per file are summarised, not drawn: each
+/// drawn report scans its file, and a file with an error on every line
+/// would otherwise take quadratic time to render.
+pub const MAX_RENDERED_PER_FILE: usize = 50;
+
+/// One miette report: the labels of a diagnostic that lie in one file.
+/// Labels in other files become related reports.
 struct Report<'a> {
     diag: &'a Diagnostic,
-    source: NamedSource<String>,
+    file: FileId,
+    source: NamedSource<Arc<str>>,
+    message: String,
+    /// False for the part showing labels in another file.
+    main: bool,
+    related: Vec<Report<'a>>,
 }
 
 impl fmt::Debug for Report<'_> {
@@ -143,7 +200,7 @@ impl fmt::Debug for Report<'_> {
 
 impl fmt::Display for Report<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.diag.message)
+        f.write_str(&self.message)
     }
 }
 
@@ -151,7 +208,8 @@ impl std::error::Error for Report<'_> {}
 
 impl miette::Diagnostic for Report<'_> {
     fn code<'b>(&'b self) -> Option<Box<dyn fmt::Display + 'b>> {
-        Some(Box::new(self.diag.code))
+        self.main
+            .then(|| Box::new(self.diag.code) as Box<dyn fmt::Display + 'b>)
     }
 
     fn severity(&self) -> Option<miette::Severity> {
@@ -162,6 +220,9 @@ impl miette::Diagnostic for Report<'_> {
     }
 
     fn help<'b>(&'b self) -> Option<Box<dyn fmt::Display + 'b>> {
+        if !self.main {
+            return None; // the main report carries the help
+        }
         self.diag
             .help
             .as_ref()
@@ -174,22 +235,77 @@ impl miette::Diagnostic for Report<'_> {
 
     fn labels(&self) -> Option<Box<dyn Iterator<Item = LabeledSpan> + '_>> {
         let len = self.source.inner().len();
-        Some(Box::new(self.diag.labels.iter().map(move |l| {
-            let start = (l.span.start as usize).min(len);
-            let end = (l.span.end as usize).clamp(start, len);
-            let span = SourceSpan::from(start..end);
-            let msg = (!l.message.is_empty()).then(|| l.message.clone());
-            if l.primary {
-                LabeledSpan::new_primary_with_span(msg, span)
-            } else {
-                LabeledSpan::new_with_span(msg, span)
-            }
-        })))
+        let file = self.file;
+        Some(Box::new(
+            self.diag
+                .labels
+                .iter()
+                .filter(move |l| l.file == file)
+                .map(move |l| {
+                    let start = (l.span.start as usize).min(len);
+                    let end = (l.span.end as usize).clamp(start, len);
+                    let span = SourceSpan::from(start..end);
+                    let msg = (!l.message.is_empty()).then(|| l.message.clone());
+                    if l.primary {
+                        LabeledSpan::new_primary_with_span(msg, span)
+                    } else {
+                        LabeledSpan::new_with_span(msg, span)
+                    }
+                }),
+        ))
+    }
+
+    fn related<'b>(&'b self) -> Option<Box<dyn Iterator<Item = &'b dyn miette::Diagnostic> + 'b>> {
+        if self.related.is_empty() {
+            return None;
+        }
+        Some(Box::new(
+            self.related.iter().map(|r| r as &dyn miette::Diagnostic),
+        ))
     }
 }
 
-/// Renders diagnostics for one file with source snippets, carets and labels.
-pub fn render(diags: &[Diagnostic], file_name: &str, source: &str, style: Style) -> String {
+fn named(map: &SourceMap, file: FileId) -> NamedSource<Arc<str>> {
+    match map.get(file) {
+        Some(f) => NamedSource::new(&f.name, Arc::clone(&f.text)),
+        None => NamedSource::new("<unknown file>", Arc::from("")),
+    }
+}
+
+fn report<'a>(diag: &'a Diagnostic, map: &SourceMap) -> Report<'a> {
+    let home = diag.file();
+    let mut others: Vec<FileId> = Vec::new();
+    for l in &diag.labels {
+        if l.file != home && !others.contains(&l.file) {
+            others.push(l.file);
+        }
+    }
+    let related = others
+        .into_iter()
+        .map(|file| Report {
+            diag,
+            file,
+            source: named(map, file),
+            message: format!("see also {}", map.get(file).map_or("?", |f| &f.name)),
+            main: false,
+            related: Vec::new(),
+        })
+        .collect();
+    Report {
+        diag,
+        file: home,
+        source: named(map, home),
+        message: diag.message.clone(),
+        main: true,
+        related,
+    }
+}
+
+/// Renders diagnostics with source snippets, carets and labels, each label
+/// in its own file. At most [`MAX_RENDERED_PER_FILE`] diagnostics are drawn
+/// per file (by the file of their primary label); the rest are counted in
+/// an "and N more" line.
+pub fn render(diags: &[Diagnostic], map: &SourceMap, style: Style) -> String {
     let theme = match style {
         Style::Color => GraphicalTheme::unicode(),
         Style::Plain => GraphicalTheme::unicode_nocolor(),
@@ -198,33 +314,54 @@ pub fn render(diags: &[Diagnostic], file_name: &str, source: &str, style: Style)
         .with_width(100)
         .with_links(false);
     let mut out = String::new();
+    let mut drawn: std::collections::HashMap<FileId, usize> = Default::default();
+    let mut hidden: Vec<(FileId, usize)> = Vec::new();
     for diag in diags {
-        let report = Report {
-            diag,
-            source: NamedSource::new(file_name, source.to_string()),
-        };
-        if handler.render_report(&mut out, &report).is_err() {
-            out.push_str(&render_short(std::slice::from_ref(diag), file_name, source));
+        let file = diag.file();
+        let n = drawn.entry(file).or_default();
+        if *n >= MAX_RENDERED_PER_FILE {
+            match hidden.iter_mut().find(|(f, _)| *f == file) {
+                Some((_, c)) => *c += 1,
+                None => hidden.push((file, 1)),
+            }
+            continue;
+        }
+        *n += 1;
+        if handler.render_report(&mut out, &report(diag, map)).is_err() {
+            out.push_str(&render_short(std::slice::from_ref(diag), map));
         }
         out.push('\n');
+    }
+    for (file, count) in hidden {
+        let name = map.get(file).map_or("?", |f| &f.name);
+        let plural = if count == 1 { "" } else { "s" };
+        out.push_str(&format!(
+            "{name}: and {count} more diagnostic{plural} not shown\n\n"
+        ));
     }
     out
 }
 
-/// One line per diagnostic: `file:line:col: error[code]: message`.
-pub fn render_short(diags: &[Diagnostic], file_name: &str, source: &str) -> String {
-    let index = LineIndex::new(source);
+/// One line per diagnostic: `file:line:col: error[code]: message`, at the
+/// primary label.
+pub fn render_short(diags: &[Diagnostic], map: &SourceMap) -> String {
+    let mut indexes: std::collections::HashMap<FileId, LineIndex> = Default::default();
     let mut out = String::new();
     for d in diags {
+        let file = d.file();
+        let (name, text) = map
+            .get(file)
+            .map_or(("?", ""), |f| (f.name.as_str(), &*f.text));
+        let index = indexes.entry(file).or_insert_with(|| LineIndex::new(text));
         let (line, col) = d
             .primary_span()
-            .map_or((1, 1), |s| index.line_col(source, s.start));
+            .map_or((1, 1), |s| index.line_col(text, s.start));
         let sev = match d.severity {
             Severity::Error => "error",
             Severity::Warning => "warning",
         };
         out.push_str(&format!(
-            "{file_name}:{line}:{col}: {sev}[{}]: {}",
+            "{name}:{line}:{col}: {sev}[{}]: {}",
             d.code, d.message
         ));
         if let Some(help) = &d.help {
@@ -255,10 +392,52 @@ mod tests {
         let d = Diagnostic::error("syntax::expected", "expected `}`")
             .with_label(Span::new(4, 5), "here")
             .with_help("did you mean `x`?");
-        let out = render_short(&[d], "bar.strand", "a\nbc\n");
+        let (map, _) = SourceMap::single("bar.strand", "a\nbc\n");
+        let out = render_short(&[d], &map);
         assert_eq!(
             out,
             "bar.strand:2:3: error[syntax::expected]: expected `}` (did you mean `x`?)\n"
+        );
+    }
+
+    #[test]
+    fn labels_in_other_files_render_there() {
+        let mut map = SourceMap::new();
+        let a = map.add("a.strand", "state volume = 0\n");
+        let b = map.add("b.strand", "\nstate volume = 1\n");
+        let d = Diagnostic::error("check::redeclared", "`volume` is declared twice")
+            .with_label_in(b, Span::new(7, 13), "declared again here")
+            .with_secondary_in(a, Span::new(6, 12), "first declared here");
+        assert_eq!(d.file(), b);
+        let out = render(std::slice::from_ref(&d), &map, Style::Plain);
+        assert!(out.contains("[b.strand:2:7]"), "{out}");
+        assert!(out.contains("[a.strand:1:7]"), "{out}");
+        assert!(out.contains("first declared here"), "{out}");
+        assert_eq!(
+            render_short(&[d], &map),
+            "b.strand:2:7: error[check::redeclared]: `volume` is declared twice\n"
+        );
+    }
+
+    #[test]
+    fn rendering_is_capped_per_file() {
+        let src: String = "x\n".repeat(200);
+        let (map, file) = SourceMap::single("many.strand", src);
+        let diags: Vec<_> = (0..200u32)
+            .map(|i| {
+                Diagnostic::error("syntax::expected", "bad")
+                    .with_label(Span::new(i * 2, i * 2 + 1), "here")
+                    .in_file(file)
+            })
+            .collect();
+        let out = render(&diags, &map, Style::Plain);
+        assert_eq!(
+            out.matches("syntax::expected").count(),
+            MAX_RENDERED_PER_FILE
+        );
+        assert!(
+            out.contains("many.strand: and 150 more diagnostics not shown"),
+            "{out}"
         );
     }
 }

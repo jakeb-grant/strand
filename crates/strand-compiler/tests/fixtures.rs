@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use strand_compiler::diagnostic::{Style, render};
 use strand_compiler::syntax::{Span, dump, lexer, parse};
+use strand_compiler::{FileId, SourceMap};
 
 fn fixtures() -> Vec<PathBuf> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
@@ -70,15 +71,14 @@ fn fixtures_parse_without_diagnostics() {
     assert!(files.len() >= 9, "fixtures missing: {files:?}");
     for path in files {
         let src = std::fs::read_to_string(&path).unwrap();
-        let parsed = parse(&src);
+        let parsed = parse(FileId::default(), &src);
         assert!(
             parsed.diagnostics.is_empty(),
             "{}:\n{}",
             path.display(),
             render(
                 &parsed.diagnostics,
-                &path.display().to_string(),
-                &src,
+                &SourceMap::single(path.display().to_string(), String::from(&src)).0,
                 Style::Plain
             )
         );
@@ -100,7 +100,7 @@ fn fixtures_lex_losslessly() {
 fn fixture_spans_nest() {
     for path in fixtures() {
         let src = std::fs::read_to_string(&path).unwrap();
-        let tree = dump::tree(&parse(&src).file);
+        let tree = dump::tree(&parse(FileId::default(), &src).file);
         let len = src.len() as u32;
         let mut count = 0;
         tree.walk(&mut |node, parent| {
@@ -147,7 +147,7 @@ fn fixture_spans_nest() {
 fn fixture_ast_snapshots() {
     for path in fixtures() {
         let src = std::fs::read_to_string(&path).unwrap();
-        let tree = dump::tree(&parse(&src).file).render();
+        let tree = dump::tree(&parse(FileId::default(), &src).file).render();
         insta::with_settings!({ snapshot_suffix => name(&path), prepend_module_to_snapshot => false }, {
             insta::assert_snapshot!("ast", tree);
         });

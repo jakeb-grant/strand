@@ -300,17 +300,23 @@ impl Parser<'_> {
                 ItemKind::Error
             }
             _ => {
-                let el = self.element();
+                let el = self.element(ctx != Ctx::Top);
                 if ctx == Ctx::Top {
                     let mut d = Diagnostic::error(
                         "syntax::misplaced",
                         format!("expected a declaration, found `{word}`"),
                     )
                     .with_label(t.span, "elements must be inside a surface or component");
-                    if let Some(h) = did_you_mean(word, TOP_KEYWORDS.iter().copied()) {
-                        d = d.with_help(h);
+                    let help = did_you_mean(word, TOP_KEYWORDS.iter().copied());
+                    if let Some(h) = &help {
+                        d = d.with_help(h.clone());
                     }
                     self.push_error(d);
+                    if help.is_some() && !self.at_item_end() {
+                        // A misspelt keyword (`stat y = 1`): one error is
+                        // enough, so skip the rest of the line quietly.
+                        self.recover_line();
+                    }
                 }
                 ItemKind::Element(el)
             }
@@ -324,6 +330,15 @@ impl Parser<'_> {
     fn prop(&mut self) -> Prop {
         let name = self.ident("a prop name");
         self.bump(); // ':'
+        if let Some(value) = self.missing_value(&name.name) {
+            return Prop {
+                name,
+                two_way: None,
+                value,
+                transition: None,
+                block: None,
+            };
+        }
         let (two_way, value) = if let Some(t) = self.eat(K::TwoWay) {
             (Some(t.span), self.expr())
         } else {
@@ -341,8 +356,25 @@ impl Parser<'_> {
         }
     }
 
-    /// `kind [positional] { … }`.
-    fn element(&mut self) -> Element {
+    /// After `name:`: a line break, `;`, `}` or the end of the file means
+    /// the value is missing (a prop never continues onto the next line
+    /// after its `:`). Reports it and returns the error value.
+    fn missing_value(&mut self, name: &str) -> Option<Expr> {
+        if !(self.at_item_end() && self.prev_kind() == Some(K::Colon)) {
+            return None;
+        }
+        let at = Span::at(self.prev_end());
+        self.push_error(
+            Diagnostic::error("syntax::missing_value", format!("`{name}:` has no value"))
+                .with_label(at, "expected a value here, on the same line"),
+        );
+        Some(self.error_expr())
+    }
+
+    /// `kind [positional] { … }`. With `report_typo`, a kind one letter
+    /// from a tree keyword followed by more than an element can hold
+    /// (`stat x = 0`) says what was meant.
+    fn element(&mut self, report_typo: bool) -> Element {
         let kind = self.ident("an element");
         let mut arg = None;
         if self.same_line() && self.starts_expr() {
@@ -357,7 +389,7 @@ impl Parser<'_> {
         let block =
             (self.same_line() && self.at(K::LBrace)).then(|| self.tree_block("the element body"));
         let spaced_call = matches!(self.kind(), K::LParen | K::LBracket) && self.cur().ws_before;
-        if !self.at_item_end() && !spaced_call {
+        if report_typo && !self.at_item_end() && !spaced_call {
             // `stat x = 0` reads as element `stat`; say what was meant.
             let close = suggest(&kind.name, TREE_KEYWORDS.iter().copied())
                 .filter(|kw| strsim::osa_distance(&kind.name, kw) == 1);
@@ -420,25 +452,52 @@ impl Parser<'_> {
     }
 
     /// `if cond { … } else if … else { … }` with body parser `body`.
+    /// `else if` chains are parsed in a loop (each link counts toward the
+    /// tree-depth limit, not the parser's stack).
     pub(crate) fn if_<T>(&mut self, body: &mut impl FnMut(&mut Self) -> Block<T>) -> If<T> {
-        self.bump(); // if
-        let cond = self.expr();
-        let then = body(self);
-        let mut else_ = None;
-        if self.at_kw("else") {
+        // Each `if` of the chain: its start, condition and body.
+        let mut chain = Vec::new();
+        let mut last_else = None;
+        let mut links = 0;
+        loop {
+            let start = self.bump().span.start; // if
+            let cond = self.expr();
+            let then = body(self);
+            chain.push((start, cond, then));
+            if !self.at_kw("else") {
+                break;
+            }
             self.bump();
-            if self.at_kw("if") {
-                let start = self.cur().span.start;
-                if self.enter() {
-                    let nested = self.if_(body);
-                    self.leave();
-                    else_ = Some(Else::If(Box::new(nested), self.finish(start)));
-                }
-            } else {
-                else_ = Some(Else::Block(body(self)));
+            if !self.at_kw("if") {
+                last_else = Some(Else::Block(body(self)));
+                break;
+            }
+            if !self.enter_link() {
+                break;
+            }
+            links += 1;
+        }
+        self.leave_links(links);
+        // Fold from the end: each `else if` holds the rest of the chain.
+        let end = self.prev_end();
+        let mut else_ = last_else;
+        while chain.len() > 1 {
+            if let Some((start, cond, then)) = chain.pop() {
+                let node = If { cond, then, else_ };
+                else_ = Some(Else::If(Box::new(node), Span::new(start, end.max(start))));
             }
         }
-        If { cond, then, else_ }
+        match chain.pop() {
+            Some((_, cond, then)) => If { cond, then, else_ },
+            None => If {
+                cond: self.error_expr(),
+                then: Block {
+                    items: Vec::new(),
+                    span: Span::at(end),
+                },
+                else_,
+            },
+        }
     }
 
     /// `for x in xs key e { … }`.
@@ -654,14 +713,7 @@ impl Parser<'_> {
             self.with_nl(true, |p| {
                 loop {
                     while p.eat(K::Comma).is_some() || p.eat(K::Semi).is_some() {}
-                    if p.eat(K::RBrace).is_some() {
-                        break;
-                    }
-                    if p.at(K::Eof) {
-                        p.push_error(
-                            Diagnostic::error("syntax::unclosed", "unclosed `{`")
-                                .with_label(open.span, "this `{` has no matching `}`"),
-                        );
+                    if p.block_ends(open, true) {
                         break;
                     }
                     if p.at(K::Ident) {
@@ -704,6 +756,7 @@ impl Parser<'_> {
                 span: Span::at(self.prev_end()),
             }
         };
+        let start = start.min(name.span.start);
         let rw = (self.same_line() && self.at_kw("rw")).then(|| self.bump().span);
         let default = (self.same_line() && self.at(K::Eq)).then(|| {
             self.bump();
@@ -758,13 +811,15 @@ impl Parser<'_> {
         .then(|| self.bump().span);
         let key = self.token_key();
         let body = if self.eat(K::Colon).is_some() {
-            TokenBody::Value(self.value())
+            let name = key.span.text(self.src).to_string();
+            TokenBody::Value(self.missing_value(&name).unwrap_or_else(|| self.value()))
         } else if self.at(K::LBrace) {
             TokenBody::Group(self.token_block("the token group"))
         } else {
             self.expected("`:` and a value, or `{` and a group");
             TokenBody::Value(self.error_expr())
         };
+        let start = start.min(key.span.start);
         TokenEntry {
             override_,
             key,
@@ -844,6 +899,7 @@ impl Parser<'_> {
             }
             let kind = self.ident("`tokens` or `palette`");
             let value = self.expr();
+            let start = start.min(kind.span.start);
             clauses.push(UseClause {
                 kind,
                 value,
@@ -881,6 +937,7 @@ impl Parser<'_> {
             self.bump();
             self.expr()
         });
+        let start = start.min(kind.span.start);
         let source = ServiceSource {
             kind,
             args,

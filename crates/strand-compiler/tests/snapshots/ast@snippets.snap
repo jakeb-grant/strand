@@ -103,12 +103,6 @@ file
       prop width: 24 (~ 200ms)
     element box
       prop width: 24 (~ instant)
-    element panel_body
-      prop keyboard: none
-    element panel_body
-      prop keyboard: on_demand
-    element panel_body
-      prop keyboard: exclusive
     element input
       prop nav: results
     element box
@@ -120,6 +114,12 @@ file
         element text "Bluetooth"
     element box
       prop tooltip: expr
+  panel KeyboardNone
+    prop keyboard: none
+  panel KeyboardOnDemand
+    prop keyboard: on_demand
+  panel KeyboardExclusive
+    prop keyboard: exclusive
   component Hatches
     element shader "aurora.wgsl"
       prop u_speed: 0.4

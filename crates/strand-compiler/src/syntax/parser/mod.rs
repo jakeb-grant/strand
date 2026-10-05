@@ -10,6 +10,7 @@ mod items;
 use std::cell::Cell;
 
 use crate::diagnostic::{Diagnostic, did_you_mean};
+use crate::source::FileId;
 
 use super::ast::*;
 use super::lexer::{Token, TokenKind, lex};
@@ -17,10 +18,18 @@ use super::span::Span;
 
 use TokenKind as K;
 
-/// The result of parsing one file: a tree (always) and its diagnostics.
+/// The result of parsing one file: a tree (always), the lossless token
+/// stream it was parsed from, and diagnostics.
 #[derive(Clone, Debug)]
 pub struct Parse {
+    /// Which file this is; every diagnostic label is in this file.
+    pub file_id: FileId,
     pub file: File,
+    /// Every token, trivia included: concatenated, they are the source.
+    /// Keyword spans that the tree does not store (`when`, `else`, `key`,
+    /// `after`, …) are found here by offset, for semantic highlighting,
+    /// formatting and hover.
+    pub tokens: Vec<Token>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -30,14 +39,17 @@ impl Parse {
     }
 }
 
-/// Parses one `.strand` file.
-pub fn parse(src: &str) -> Parse {
+/// Parses one `.strand` file, `file` in the caller's
+/// [`SourceMap`](crate::SourceMap).
+pub fn parse(file_id: FileId, src: &str) -> Parse {
     if u32::try_from(src.len()).is_err() {
         return Parse {
+            file_id,
             file: File {
                 items: Vec::new(),
                 span: Span::default(),
             },
+            tokens: Vec::new(),
             diagnostics: vec![Diagnostic::error(
                 "syntax::too_large",
                 "file is larger than 4 GiB",
@@ -60,12 +72,27 @@ pub fn parse(src: &str) -> Parse {
     }
     diagnostics.append(&mut p.diags);
     diagnostics.sort_by_key(|d| d.primary_span().map_or(0, |s| s.start));
-    Parse { file, diagnostics }
+    let diagnostics = diagnostics
+        .into_iter()
+        .map(|d| d.in_file(file_id))
+        .collect();
+    Parse {
+        file_id,
+        file,
+        tokens,
+        diagnostics,
+    }
 }
 
 /// Maximum nesting of blocks and expressions before the parser reports an
 /// error instead of recursing further.
 pub(crate) const MAX_DEPTH: u32 = 128;
+
+/// Maximum depth of the tree, counting the links of flat chains
+/// (`a + b + c`, `a.b.c`, `else if`) as well as nesting. Chains are parsed
+/// in loops, so they cost no parser stack, but every later pass that walks
+/// the tree recursively sees their full depth.
+pub(crate) const MAX_TREE_DEPTH: u32 = 256;
 
 /// Peeks without consuming before the parser decides it is stuck.
 const STALL_LIMIT: u32 = 50_000;
@@ -99,14 +126,19 @@ pub(crate) struct Parser<'s> {
     nl: Vec<bool>,
     diags: Vec<Diagnostic>,
     depth: u32,
+    /// Chain links open on the current path (see [`MAX_TREE_DEPTH`]).
+    links: u32,
     depth_reported: bool,
     eof_reported: bool,
     last_error_at: Option<u32>,
     stall: Cell<u32>,
     gave_up: Cell<bool>,
-    /// A `{` whose closing `}` was indented differently from its opening
-    /// line: the likely home of a missing `}`.
-    suspect: Option<Span>,
+    /// `{`s whose closing `}` was indented differently from their opening
+    /// line, in the current top-level item: likely homes of a missing `}`.
+    suspects: Vec<Span>,
+    /// The nesting level (length of `nl`) of the space-separated value being
+    /// parsed, if any: where `0 -2px` is ambiguous.
+    pub(crate) value_level: Option<usize>,
     /// Blocks are closing early because a top-level declaration started;
     /// only the innermost one reports it.
     unwinding: bool,
@@ -194,12 +226,14 @@ impl<'s> Parser<'s> {
             nl: vec![true],
             diags: Vec::new(),
             depth: 0,
+            links: 0,
             depth_reported: false,
             eof_reported: false,
             last_error_at: None,
             stall: Cell::new(0),
             gave_up: Cell::new(false),
-            suspect: None,
+            suspects: Vec::new(),
+            value_level: None,
             unwinding: false,
         }
     }
@@ -283,9 +317,16 @@ impl<'s> Parser<'s> {
         self.pos.checked_sub(1).map(|i| self.toks[i].kind)
     }
 
-    /// Span from `start` to the end of the last consumed token.
+    /// Span from `start` to the end of the last consumed token. A node that
+    /// consumed nothing is empty at the end of the last consumed token, like
+    /// an error node, so it never lies outside its parent.
     pub(crate) fn finish(&self, start: u32) -> Span {
-        Span::new(start, self.prev_end().max(start))
+        let end = self.prev_end();
+        if end < start {
+            Span::at(end)
+        } else {
+            Span::new(start, end)
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -327,18 +368,8 @@ impl<'s> Parser<'s> {
     /// Enters one level of nesting; false (after reporting once) when too
     /// deep.
     pub(crate) fn enter(&mut self) -> bool {
-        if self.depth >= MAX_DEPTH {
-            if !self.depth_reported {
-                self.depth_reported = true;
-                let span = self.cur().span;
-                self.push_error(
-                    Diagnostic::error(
-                        "syntax::too_deep",
-                        format!("nesting is deeper than {MAX_DEPTH} levels"),
-                    )
-                    .with_label(span, "too deeply nested"),
-                );
-            }
+        if self.depth >= MAX_DEPTH || self.depth + self.links >= MAX_TREE_DEPTH {
+            self.too_deep();
             return false;
         }
         self.depth += 1;
@@ -347,6 +378,37 @@ impl<'s> Parser<'s> {
 
     pub(crate) fn leave(&mut self) {
         self.depth = self.depth.saturating_sub(1);
+    }
+
+    /// Adds one link to a flat chain; false (after reporting once) when the
+    /// tree would get too deep.
+    pub(crate) fn enter_link(&mut self) -> bool {
+        if self.depth + self.links >= MAX_TREE_DEPTH {
+            self.too_deep();
+            return false;
+        }
+        self.links += 1;
+        true
+    }
+
+    pub(crate) fn leave_links(&mut self, n: u32) {
+        self.links = self.links.saturating_sub(n);
+    }
+
+    fn too_deep(&mut self) {
+        if self.depth_reported {
+            return;
+        }
+        self.depth_reported = true;
+        let span = self.cur().span;
+        let msg = if self.depth >= MAX_DEPTH {
+            format!("nesting is deeper than {MAX_DEPTH} levels")
+        } else {
+            format!("this is more than {MAX_TREE_DEPTH} levels deep, counting chained operators")
+        };
+        self.push_error(
+            Diagnostic::error("syntax::too_deep", msg).with_label(span, "too deeply nested"),
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -439,9 +501,10 @@ impl<'s> Parser<'s> {
             };
         }
         self.expected(what);
+        // At the end of what was consumed, so it stays inside its parent.
         Ident {
             name: String::new(),
-            span: Span::at(self.error_span().start),
+            span: Span::at(self.prev_end()),
         }
     }
 
@@ -526,40 +589,17 @@ impl<'s> Parser<'s> {
         let mut out = Vec::new();
         loop {
             while self.eat(K::Semi).is_some() {}
-            if open.is_none() {
-                self.unwinding = false;
-            }
             if let Some(open) = open {
-                if self.at_column_zero_decl() {
-                    if !self.unwinding {
-                        self.unwinding = true;
-                        let at = self.cur().span;
-                        self.unclosed(open, at, "the next declaration starts here");
-                    }
+                if self.block_ends(open, false) {
                     break;
                 }
+            } else {
+                self.unwinding = false;
+                self.suspects.clear();
             }
             match self.kind() {
-                K::Eof => {
-                    if let Some(open) = open {
-                        if !self.eof_reported {
-                            self.eof_reported = true;
-                            self.unclosed(open, Span::at(self.prev_end()), "the file ends here");
-                        }
-                    }
-                    break;
-                }
+                K::Eof => break,
                 K::RBrace => {
-                    if let Some(open) = open {
-                        let close = self.bump();
-                        if close.nl_before
-                            && self.indent_of(close.span.start) != self.indent_of(open.span.start)
-                            && self.suspect.is_none()
-                        {
-                            self.suspect = Some(open.span);
-                        }
-                        break;
-                    }
                     let t = self.bump();
                     self.push_error(
                         Diagnostic::error("syntax::unmatched", "unmatched `}`")
@@ -589,11 +629,56 @@ impl<'s> Parser<'s> {
         out
     }
 
+    /// At the head of each turn of a `{ … }` loop: consumes the closing `}`,
+    /// or sees the end of the file or a declaration at column 0 and reports
+    /// the block unclosed (once, for the innermost block). True when the
+    /// loop should stop.
+    ///
+    /// `arms` is for `match` arms and `enum` variants, which no item can
+    /// start, so `let` and `state` at column 0 also end them.
+    pub(crate) fn block_ends(&mut self, open: Tok, arms: bool) -> bool {
+        if self.at_column_zero_decl(arms) {
+            if !self.unwinding {
+                self.unwinding = true;
+                let at = self.cur().span;
+                self.unclosed(open, at, "the next declaration starts here");
+            }
+            return true;
+        }
+        match self.kind() {
+            K::Eof => {
+                if !self.eof_reported {
+                    self.eof_reported = true;
+                    self.unclosed(open, Span::at(self.prev_end()), "the file ends here");
+                }
+                true
+            }
+            K::RBrace => {
+                let close = self.bump();
+                if close.nl_before
+                    && self.indent_of(close.span.start) != self.indent_of(open.span.start)
+                {
+                    self.suspects.push(open.span);
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn unclosed(&mut self, open: Tok, cut: Span, cut_label: &str) {
         let mut d = Diagnostic::error("syntax::unclosed", "unclosed `{`")
             .with_label(open.span, "this `{` has no matching `}`")
             .with_secondary(cut, cut_label);
-        if let Some(s) = self.suspect.filter(|s| *s != open.span) {
+        // Only a sloppy `}` inside the unclosed block can explain it; the
+        // most recent one is the closest to the cut.
+        let suspect = self
+            .suspects
+            .iter()
+            .rev()
+            .find(|s| s.start > open.span.start)
+            .copied();
+        if let Some(s) = suspect {
             d = d.with_secondary(
                 s,
                 "probably missing its `}`: the `}` that closed it is indented differently",
@@ -609,13 +694,16 @@ impl<'s> Parser<'s> {
         line.len() - line.trim_start_matches([' ', '\t']).len()
     }
 
-    /// A top-level declaration keyword at the very start of a line.
-    fn at_column_zero_decl(&self) -> bool {
+    /// A top-level declaration keyword at the very start of a line (with
+    /// `also_items`, `let` and `state` count too).
+    fn at_column_zero_decl(&self, also_items: bool) -> bool {
         let t = self.cur();
         if t.kind != K::Ident || !t.nl_before || self.indent_of(t.span.start) != 0 {
             return false;
         }
-        DECL_STARTS.contains(&self.text(t)) && self.nth_kind(1) == K::Ident
+        let word = self.text(t);
+        (DECL_STARTS.contains(&word) || also_items && matches!(word, "let" | "state"))
+            && self.nth_kind(1) == K::Ident
     }
 
     /// Skips a balanced `{ … }` whose `{` was just consumed.

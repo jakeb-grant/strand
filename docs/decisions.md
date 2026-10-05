@@ -15,6 +15,10 @@ Interpretations of ambiguities in `design.md`, one short entry each.
 - **2026-10-05 · Operators always bind in space-separated values.** `0 -2px`
   is subtraction, never a negative term, so whitespace never changes meaning
   (design.md "Bad" table). Negative terms in shadows need parentheses.
+  Because `0 -2px 8px` looks like three terms, a `+`/`-` in a
+  space-separated value with a space before and none after is an error
+  (`syntax::ambiguous_sign`) offering `(-2px)` or `0 - 2px`: loud, not a
+  silently different shadow. `bg: f (x)` warns that it is two values.
 - **2026-10-05 · Value precedence.** In a prop value: `~` loosest, then `,`,
   then space separation, then expression operators. So
   `lg: 0 8px 24px $a, 0 1px 2px $b` is a two-shadow list and
@@ -22,9 +26,13 @@ Interpretations of ambiguities in `design.md`, one short entry each.
 - **2026-10-05 · Line structure.** Newlines are ignored in `()`/`[]`,
   significant in `{}`. A line continues only if it starts with a binary
   operator, `.`, `?.`, `?`, `:`, `~`, `=>`, `<->` or `else`, or the previous
-  line ended with an operator or comma. Optional blocks (element bodies,
-  prop sub-blocks) must open on the head's line; mandatory ones may open
-  on the next.
+  line ended with a binary operator, `,`, `=`, `=>`, `<->`, `~` or a
+  ternary's `?`/`:`. A line ending in `.`/`?.` or a prop's `:` does *not*
+  continue: it is an error at the end of the line and the next line is its
+  own item (props end at a line break; the LSP completes there). A line
+  starting with `-` touching its operand (`-1 => b`, `-x.f()`) is a new
+  item; `- x` continues. Optional blocks (element bodies, prop sub-blocks)
+  must open on the head's line; mandatory ones may open on the next.
   Clause words (`key`, `persist`, `while`, `after`, `extends`, `rw`) stay on
   their line.
 - **2026-10-05 · `pages current: page { … }`.** An element's single head
@@ -56,20 +64,51 @@ Interpretations of ambiguities in `design.md`, one short entry each.
   `||`.
 - **2026-10-05 · Surface names.** `bar`, `panel` and `osd` need a name (it
   becomes the `strand-<Name>` namespace); `lock` may omit it.
-- **2026-10-05 · Nesting limit 128.** Blocks, brackets, and operator/call
-  chains all count. Measured: 256 fits a 2 MiB stack in a debug build, 512
-  does not; 128 leaves room for later passes over the same tree.
+- **2026-10-05 · Nesting limit 128, tree depth 256.** Recursive nesting
+  (blocks, brackets, prefix operators) is capped at 128. Flat chains
+  (`a + b + …`, `a.b.c`, `else if`) are parsed in loops and only count
+  toward a tree-depth cap of 256, so a 200-link chain in a few blocks is
+  fine. Measured: a 256-deep tree parses, dumps and drops on a 2 MiB
+  debug stack; 512 does not. Later passes that recurse over the tree can
+  rely on depth ≤ 256.
 - **2026-10-05 · Missing `}` recovery.** A top-level declaration keyword at
-  column 0 inside an open block closes the open blocks with one "unclosed
-  `{`" error, and a `}` indented unlike its `{` marks that block as the
-  likely culprit, so the error points at the right line (design.md "What
-  you see" #3).
-- **2026-10-05 · `strand check`.** Loads `.strand` files up to three
-  directories down (the watcher's depth), follows symlinks, skips hidden
-  directories, and treats an empty or missing directory as an error. Until
-  the checker lands it reports syntax diagnostics only.
+  column 0 inside an open block (also an `enum` body or `match` arms, where
+  `let`/`state` count too) closes the open blocks with one "unclosed `{`"
+  error, and a `}` indented unlike its `{` *inside the unclosed block*
+  (the latest one) marks the likely culprit, so the error points at the
+  right line (design.md "What you see" #3).
+- **2026-10-05 · Config file discovery is one function.**
+  `strand_compiler::source::find_files`: `.strand` files up to three
+  directories down (the watcher's depth), symlinks followed, names starting
+  with `.` skipped (files and directories), files deduplicated by canonical
+  path (design.md: Strand canonicalises each loaded file), unreadable
+  sub-directories reported and skipped. A file argument checks that file.
+  `strand check` and the watcher use it, so they load the same set. Until
+  the checker lands `strand check` reports syntax diagnostics only.
 - **2026-10-05 · Diagnostics live at `strand_compiler::diagnostic`,** not
-  under `syntax`, because the checker and reconciler will share them.
+  under `syntax`, because the checker and reconciler will share them. Each
+  label carries a `FileId` (into a `SourceMap`) and a file-local `Span`, so
+  one diagnostic can point at two files (a name declared twice). Rendering
+  draws at most 50 diagnostics per file, then "and N more".
+- **2026-10-05 · Lambda parameters take no defaults.** `(a: int, b) => …`;
+  a lambda is always called with every argument, so `= default` would add
+  a concept for nothing.
+- **2026-10-05 · Misspelt tree keywords.** `whn hover { … }` and
+  `enterr { … }` are valid element syntax, so the parser cannot flag them
+  without the element list. The wave-2 checker's unknown-element
+  did-you-mean must include the tree and top-level keywords as candidates
+  (TODO for `check`). `stat x = 0` (an element followed by more than an
+  element holds) is flagged by the parser; at the top level it is one
+  error.
+- **2026-10-05 · Transitions and poses on `if` branches and pages.**
+  design.md puts `transition: wipe(left)` "on `if`, `pages` and image
+  swaps", but `if` has no prop position. A branch's transition or pose is
+  written on the branch's root node (`if open { box { transition: wipe(left)
+  } }`); for `pages`, on the `pages` element.
+- **2026-10-05 · Keyframe stops** are percentages followed by a block, comma
+  separated for shared stops: `keyframes shake { 0%, 100% { x: 0 }; 25% { x:
+  -4 } }`.
+- **2026-10-05 · A leading UTF-8 byte-order mark is trivia.**
 - **2026-10-05 · Snippet fixtures.** design.md's code blocks are fixtures
   byte for byte (a test enforces it). Table snippets are placed in minimal
   context; doc ellipses `…` are filled and `a | b` alternatives (notation,

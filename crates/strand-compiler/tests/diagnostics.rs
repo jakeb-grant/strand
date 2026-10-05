@@ -4,16 +4,21 @@
 use strand_compiler::diagnostic::{Style, render, render_short};
 use strand_compiler::syntax::ast::ItemKind;
 use strand_compiler::syntax::{dump, parse};
+use strand_compiler::{FileId, SourceMap};
 
 /// Renders every diagnostic for `src` as the overlay and `strand check`
 /// would (without colour).
 fn report(src: &str) -> String {
-    let parsed = parse(src);
-    render(&parsed.diagnostics, "e.strand", src, Style::Plain)
+    let parsed = parse(FileId::default(), src);
+    render(
+        &parsed.diagnostics,
+        &SourceMap::single("e.strand", String::from(src)).0,
+        Style::Plain,
+    )
 }
 
 fn helps(src: &str) -> Vec<String> {
-    parse(src)
+    parse(FileId::default(), src)
         .diagnostics
         .into_iter()
         .filter_map(|d| d.help)
@@ -79,13 +84,16 @@ fn every_error_has_a_located_label() {
         "let x = 1 &",
         "@reset",
     ] {
-        let parsed = parse(src);
+        let parsed = parse(FileId::default(), src);
         assert!(!parsed.diagnostics.is_empty(), "{src}: expected an error");
         for d in &parsed.diagnostics {
             let span = d.primary_span().expect("label");
             assert!(span.end as usize <= src.len());
         }
-        let short = render_short(&parsed.diagnostics, "e.strand", src);
+        let short = render_short(
+            &parsed.diagnostics,
+            &SourceMap::single("e.strand", String::from(src)).0,
+        );
         assert!(short.starts_with("e.strand:1:"), "{short}");
     }
 }
@@ -125,7 +133,7 @@ fn missing_brace_in_bar_points_at_the_block() {
         1,
     );
     assert_ne!(broken, src);
-    let parsed = parse(&broken);
+    let parsed = parse(FileId::default(), &broken);
     assert_eq!(parsed.diagnostics.len(), 1, "{:?}", parsed.diagnostics);
     let d = &parsed.diagnostics[0];
     assert_eq!(d.code, "syntax::unclosed");
@@ -160,7 +168,7 @@ component A {
 }
 component B { text \"b\" }
 ";
-    let parsed = parse(src);
+    let parsed = parse(FileId::default(), src);
     assert!(parsed.has_errors());
     let tree = dump::tree(&parsed.file).render();
     assert!(tree.contains("element text \"ok\""), "{tree}");
@@ -179,14 +187,17 @@ fn errors_do_not_cascade() {
         "let x = f(1, 2\nlet y = 3\n",
         "component A {\n  for x im xs { text x }\n}\n",
     ] {
-        let n = parse(src).diagnostics.len();
+        let n = parse(FileId::default(), src).diagnostics.len();
         assert_eq!(n, 1, "{src}\n{}", report(src));
     }
 }
 
 #[test]
 fn misplaced_items_are_reported_but_parsed() {
-    let parsed = parse("text \"top level\"\ncomponent A {\n  component B { }\n  enum E { a }\n}\n");
+    let parsed = parse(
+        FileId::default(),
+        "text \"top level\"\ncomponent A {\n  component B { }\n  enum E { a }\n}\n",
+    );
     let codes: Vec<_> = parsed.diagnostics.iter().map(|d| d.code).collect();
     assert_eq!(
         codes,
@@ -197,4 +208,138 @@ fn misplaced_items_are_reported_but_parsed() {
         ]
     );
     assert_eq!(parsed.file.items.len(), 2);
+}
+
+fn fixture(name: &str) -> String {
+    let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
+    std::fs::read_to_string(path).unwrap()
+}
+
+fn component_names(file: &strand_compiler::syntax::ast::File) -> Vec<String> {
+    file.items
+        .iter()
+        .filter_map(|i| match &i.kind {
+            ItemKind::Component(c) => Some(c.name.name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A missing `}` in an `enum` or a `match` stops at the next declaration
+/// at column 0, like any other block.
+#[test]
+fn unclosed_enum_and_match_stop_at_the_next_declaration() {
+    let src = fixture("theme.strand") + &fixture("bar.strand");
+    let clean = parse(FileId::default(), &src);
+    assert!(clean.diagnostics.is_empty());
+    let want = component_names(&clean.file);
+    assert!(want.len() >= 5, "{want:?}");
+    let breaks = [
+        // The enum's `}`.
+        ("mocha }\n", "mocha\n"),
+        // A one-line `match`'s `}`.
+        ("_ => true }\n", "_ => true\n"),
+        // A multi-line `match`'s `}`, alone at column 0.
+        (
+            "contrast: system.contrast),\n}\n",
+            "contrast: system.contrast),\n",
+        ),
+    ];
+    for (from, to) in breaks {
+        let broken = src.replacen(from, to, 1);
+        assert_ne!(broken, src, "{from:?}");
+        let parsed = parse(FileId::default(), &broken);
+        assert_eq!(
+            parsed.diagnostics.len(),
+            1,
+            "{from:?}:\n{}",
+            report(&broken)
+        );
+        assert_eq!(parsed.diagnostics[0].code, "syntax::unclosed");
+        assert_eq!(component_names(&parsed.file), want, "{from:?}");
+        // Every top-level item after the break survives.
+        assert_eq!(parsed.file.items.len(), clean.file.items.len(), "{from:?}");
+    }
+}
+
+/// The "probably missing its `}`" hint only names a sloppy `}` inside the
+/// unclosed block, never one in an earlier, balanced declaration.
+#[test]
+fn missing_brace_hint_stays_inside_the_unclosed_block() {
+    let src = fixture("bar.strand");
+    // Mis-indent (but keep) the `}` of `image item.icon {` in `bar Top`.
+    let sloppy = src.replacen(
+        "          on secondary { item.menu.open() }\n        }\n",
+        "          on secondary { item.menu.open() }\n      }\n",
+        1,
+    );
+    assert_ne!(sloppy, src);
+    assert!(parse(FileId::default(), &sloppy).diagnostics.is_empty());
+    // Then lose a `}` inside `component Calendar`.
+    let broken = sloppy.replacen(
+        "      button \"›\" { on click { month = month.add(months: 1) } }\n    }\n",
+        "      button \"›\" { on click { month = month.add(months: 1) } }\n",
+        1,
+    );
+    assert_ne!(broken, sloppy);
+    let parsed = parse(FileId::default(), &broken);
+    assert_eq!(parsed.diagnostics.len(), 1, "{}", report(&broken));
+    let image = broken.find("image item.icon {").unwrap() as u32;
+    let calendar = broken.find("component Calendar").unwrap() as u32;
+    for l in &parsed.diagnostics[0].labels {
+        assert!(
+            l.span.start > calendar,
+            "label {:?} points before Calendar (image at {image}):\n{}",
+            l,
+            report(&broken)
+        );
+    }
+    // The same with two tiny components.
+    let src = "component A {\n  box {\n    text \"a\"\n      }\n}\ncomponent B {\n  box {\n    text \"b\"\n}\ncomponent C { }\n";
+    let parsed = parse(FileId::default(), src);
+    assert_eq!(parsed.diagnostics.len(), 1, "{}", report(src));
+    let b = src.find("component B").unwrap() as u32;
+    assert!(
+        parsed.diagnostics[0]
+            .labels
+            .iter()
+            .all(|l| l.span.start > b),
+        "{}",
+        report(src)
+    );
+}
+
+#[test]
+fn a_misspelt_top_level_keyword_is_one_error() {
+    let src = "stat y = 1\ncomponent A { }\n";
+    let parsed = parse(FileId::default(), src);
+    assert_eq!(parsed.diagnostics.len(), 1, "{}", report(src));
+    assert_eq!(
+        parsed.diagnostics[0].help.as_deref(),
+        Some("did you mean `state`?")
+    );
+    assert_eq!(component_names(&parsed.file), ["A"]);
+}
+
+#[test]
+fn a_leading_byte_order_mark_is_fine() {
+    let src = "\u{feff}component A { text \"x\" }\n";
+    assert!(parse(FileId::default(), src).diagnostics.is_empty());
+}
+
+#[test]
+fn diagnostics_carry_their_file() {
+    let mut map = SourceMap::new();
+    let _ = map.add("a.strand", "state x = 1\n");
+    let b_src = "component B { box { width: 12pz } }\n";
+    let b = map.add("b.strand", b_src);
+    let parsed = parse(b, b_src);
+    assert_eq!(parsed.file_id, b);
+    assert!(!parsed.diagnostics.is_empty());
+    assert!(parsed.diagnostics.iter().all(|d| d.file() == b));
+    let out = render(&parsed.diagnostics, &map, Style::Plain);
+    assert!(out.contains("[b.strand:1:30]"), "{out}");
+    // The token stream is part of the result and is lossless.
+    let joined: String = parsed.tokens.iter().map(|t| t.span.text(b_src)).collect();
+    assert_eq!(joined, b_src);
 }

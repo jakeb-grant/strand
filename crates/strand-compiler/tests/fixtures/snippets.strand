@@ -87,14 +87,16 @@ component Layout {
   box { width: 24 ~ $motion.bouncy }
   box { width: 24 ~ 200ms }
   box { width: 24 ~ instant }
-  panel_body { keyboard: none }
-  panel_body { keyboard: on_demand }
-  panel_body { keyboard: exclusive }
   input { nav: results }
   box { drag: pin }
   pages current: page { page wifi { text "Wi-Fi" }; page bluetooth { text "Bluetooth" } }
   box { tooltip: expr }
 }
+
+// `keyboard:` belongs to a popup or panel surface.
+panel KeyboardNone { keyboard: none }
+panel KeyboardOnDemand { keyboard: on_demand }
+panel KeyboardExclusive { keyboard: exclusive }
 
 // --- Escape hatches ------------------------------------------------------------
 

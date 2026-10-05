@@ -7,11 +7,15 @@
 //! See `docs/design.md`, "The proposed API" and "Live reload and real-time
 //! config changes". The syntax is specified in `docs/grammar.md`.
 //!
+//! - [`source`]: file identity ([`FileId`], [`SourceMap`]) and which files
+//!   a config directory loads ([`source::find_files`]).
 //! - [`syntax`]: lexer, parser and syntax tree with spans (M1).
 //! - [`diagnostic`]: errors with labels and did-you-mean fixes, rendered
 //!   with miette.
 
 pub mod diagnostic;
+pub mod source;
 pub mod syntax;
 
 pub use diagnostic::{Diagnostic, Severity};
+pub use source::{FileId, SourceMap};

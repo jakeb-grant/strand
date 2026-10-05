@@ -1,4 +1,18 @@
-//! The syntax tree. Every node carries the byte span of its source text.
+//! The syntax tree, with byte spans.
+//!
+//! Spans live on the wrapper nodes: every [`Item`], [`Stmt`], [`Expr`],
+//! [`Block`], [`Ident`], [`Type`], [`Pattern`], [`Arm`], [`Arg`], [`Param`]
+//! and [`Field`] has one. The payload structs inside an item or statement
+//! (`Component`, `Prop`, `When`, `On`, `Timer`, …) use the span of the
+//! `Item`/`Stmt` that holds them. Keywords (`when`, `else`, `key`, `after`,
+//! `while`, `extends`, …) are not stored; find them in
+//! [`Parse::tokens`](super::Parse::tokens) by offset within the node's span.
+//!
+//! Spans are absolute offsets, so `PartialEq` on nodes is span-sensitive:
+//! an edit above a node changes its spans. Comparing nodes for "did this
+//! change" (reload identity, handler hashing) must use a span-insensitive
+//! structural hash, such as one over the texts of the significant tokens
+//! inside the node's span (`docs/architecture.md`, `strand-compiler`).
 //!
 //! The tree mirrors `docs/grammar.md` production by production. It is a
 //! syntax tree, not a semantic one: names are unresolved, element kinds are

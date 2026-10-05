@@ -2,15 +2,20 @@
 
 use strand_compiler::diagnostic::{Style, render};
 use strand_compiler::syntax::{dump, parse};
+use strand_compiler::{FileId, SourceMap};
 
 /// The rendered tree of the items inside `component R { … }`.
 fn body(src: &str) -> String {
     let full = format!("component R {{\n{src}\n}}\n");
-    let parsed = parse(&full);
+    let parsed = parse(FileId::default(), &full);
     assert!(
         parsed.diagnostics.is_empty(),
         "{}",
-        render(&parsed.diagnostics, "t.strand", &full, Style::Plain)
+        render(
+            &parsed.diagnostics,
+            &SourceMap::single("t.strand", String::from(&full)).0,
+            Style::Plain
+        )
     );
     let tree = dump::tree(&parsed.file).render();
     tree.lines()
@@ -21,11 +26,15 @@ fn body(src: &str) -> String {
 }
 
 fn top(src: &str) -> String {
-    let parsed = parse(src);
+    let parsed = parse(FileId::default(), src);
     assert!(
         parsed.diagnostics.is_empty(),
         "{}",
-        render(&parsed.diagnostics, "t.strand", src, Style::Plain)
+        render(
+            &parsed.diagnostics,
+            &SourceMap::single("t.strand", String::from(src)).0,
+            Style::Plain
+        )
     );
     let tree = dump::tree(&parsed.file).render();
     tree.lines()
@@ -36,7 +45,21 @@ fn top(src: &str) -> String {
 }
 
 fn errors(src: &str) -> usize {
-    parse(src).diagnostics.len()
+    parse(FileId::default(), src).diagnostics.len()
+}
+
+/// Codes of the diagnostics for `src`, in order.
+fn codes(src: &str) -> Vec<&'static str> {
+    parse(FileId::default(), src)
+        .diagnostics
+        .iter()
+        .map(|d| d.code)
+        .collect()
+}
+
+/// The tree of `src` whatever its diagnostics.
+fn tree(src: &str) -> String {
+    dump::tree(&parse(FileId::default(), src).file).render()
 }
 
 #[test]
@@ -72,6 +95,66 @@ fn leading_operators_continue_the_line() {
         body("box { w: 1\n  ~ instant }"),
         "element box\n  prop w: 1 (~ instant)"
     );
+}
+
+#[test]
+fn a_dot_or_colon_ending_a_line_does_not_take_the_next_line() {
+    // `audio.` is unfinished; `slider` is its own element with its block.
+    let src = "component R {\n  text audio.\n  slider { value: 1 }\n}\n";
+    assert_eq!(codes(src), ["syntax::expected"]);
+    let t = tree(src);
+    assert!(t.contains("element slider\n"), "{t}");
+    assert!(!t.contains("(. audio slider)"), "{t}");
+    let src = "component R {\n  icon a?.\n  image b\n}\n";
+    assert_eq!(codes(src), ["syntax::expected"]);
+    assert!(tree(src).contains("element image b"), "{}", tree(src));
+    let src = "component R {\n  text $fg.\n  image b\n}\n";
+    assert_eq!(codes(src), ["syntax::expected"]);
+    assert!(tree(src).contains("element image b"), "{}", tree(src));
+    // A prop's `:` at the end of a line is a missing value.
+    let src = "component R {\n  box {\n    bg:\n    text \"x\" { color: red }\n  }\n}\n";
+    assert_eq!(codes(src), ["syntax::missing_value"]);
+    let t = tree(src);
+    assert!(t.contains("element text \"x\"\n"), "{t}");
+    assert_eq!(
+        codes("tokens t {\n  accent:\n  fg: #fff\n}\n"),
+        ["syntax::missing_value"]
+    );
+}
+
+#[test]
+fn a_line_starting_with_a_touching_sign_is_a_new_item() {
+    // A negative pattern on its own line is the next arm.
+    assert_eq!(
+        body("text match x {\n  1 => a\n  -1 => b\n}"),
+        "element text (match x (arm 1 a) (arm (neg 1) b))"
+    );
+    assert_eq!(
+        top("fn f() {\n  x = 1\n  -y.foo()\n}"),
+        "fn f params\n  assign = x 1\n  expr (neg (call (. y foo)))"
+    );
+    // With a space after it, `-` still continues the line.
+    assert_eq!(
+        top("fn f() {\n  x = 1\n    - y\n}"),
+        "fn f params\n  assign = x (- 1 y)"
+    );
+}
+
+#[test]
+fn long_chains_are_not_nesting() {
+    // A flat chain of 200 links inside a few blocks is fine.
+    let sum = vec!["a"; 200].join(" + ");
+    body(&format!("box {{ box {{ box {{ w: {sum} }} }} }}"));
+    let chain = (0..200)
+        .map(|i| format!("if a{i} {{ x }}"))
+        .collect::<Vec<_>>()
+        .join(" else ");
+    let t = body(&chain);
+    assert!(t.contains("a199"), "{t}");
+    // Past the tree-depth limit it is one clear error.
+    let sum = vec!["a"; 2000].join(" + ");
+    let c = codes(&format!("let x = {sum}"));
+    assert_eq!(c.first(), Some(&"syntax::too_deep"), "{c:?}");
 }
 
 #[test]
@@ -170,9 +253,23 @@ fn commas_spaces_and_transitions_in_values() {
 
 #[test]
 fn operators_always_bind_so_whitespace_never_changes_meaning() {
+    // `0 -2px` in a space-separated value is loud, not silently `0 - 2px`.
+    let src = "component R { box { s: 0 -2px 8px $c } }";
+    assert_eq!(codes(src), ["syntax::ambiguous_sign"]);
+    let d = &parse(FileId::default(), src).diagnostics[0];
+    assert!(d.help.as_deref().unwrap().contains("`(-2px)`"), "{d:?}");
     assert_eq!(
-        body("box { s: 0 -2px 8px }"),
-        "element box\n  prop s: (spaced (- 0 2px) 8px)"
+        codes("component R { box { s: 0 +2px } }"),
+        ["syntax::ambiguous_sign"]
+    );
+    // Outside a space-separated value there is no second reading.
+    assert_eq!(
+        codes("component R { on click { x = a -1 } }"),
+        Vec::<&str>::new()
+    );
+    assert_eq!(
+        codes("component R { box { s: f(0 -2px) } }"),
+        Vec::<&str>::new()
     );
     assert_eq!(
         body("box { s: 0 - 2px 8px }"),
@@ -190,9 +287,19 @@ fn calls_touch() {
         body("box { v: pct(x) }"),
         "element box\n  prop v: (call pct x)"
     );
+    // Two values, with a warning that it is not a call.
+    let src = "component R { box { v: pct (x) } }";
+    assert_eq!(codes(src), ["syntax::spaced_call"]);
+    assert!(
+        tree(src).contains("prop v: (spaced pct (paren x))"),
+        "{}",
+        tree(src)
+    );
+    assert!(parse(FileId::default(), src).diagnostics[0].help.is_some());
+    // A number before `(…)` is an ordinary term.
     assert_eq!(
-        body("box { v: pct (x) }"),
-        "element box\n  prop v: (spaced pct (paren x))"
+        body("box { s: 0 (-2px) }"),
+        "element box\n  prop s: (spaced 0 (paren (neg 2px)))"
     );
     assert_eq!(body("text xs[0]"), "element text (index xs 0)");
 }

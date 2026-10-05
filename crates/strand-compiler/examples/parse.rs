@@ -4,6 +4,7 @@
 
 use strand_compiler::diagnostic::{Style, render};
 use strand_compiler::syntax::{dump, parse};
+use strand_compiler::{FileId, SourceMap};
 
 fn main() {
     for path in std::env::args().skip(1) {
@@ -14,8 +15,15 @@ fn main() {
                 continue;
             }
         };
-        let parsed = parse(&src);
+        let parsed = parse(FileId::default(), &src);
         print!("{}", dump::tree(&parsed.file).render());
-        eprint!("{}", render(&parsed.diagnostics, &path, &src, Style::Plain));
+        eprint!(
+            "{}",
+            render(
+                &parsed.diagnostics,
+                &SourceMap::single(&path, String::from(&src)).0,
+                Style::Plain
+            )
+        );
     }
 }
