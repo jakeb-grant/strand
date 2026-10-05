@@ -43,7 +43,9 @@ pub struct Outcome {
     pub build: Option<Build>,
     /// Files whose new text the build commits.
     pub committed: Vec<PathBuf>,
-    /// Changed files held back (they, or what they break, have errors).
+    /// Changed files held back (they, or what they break, have errors),
+    /// and files that cannot be read: those keep running their last good
+    /// text (an unreadable file is never taken for a deleted one).
     pub held: Vec<PathBuf>,
     /// Errors and warnings of the whole attempt (every saved file), with
     /// the sources they point into. Empty when everything committed
@@ -78,6 +80,9 @@ pub struct Loader {
     cache: Option<Cache>,
     /// Directories the module set was found in (for the watcher).
     dirs: Vec<PathBuf>,
+    /// Directories and entries the last listing could not read: running
+    /// files under them are kept, not dropped.
+    unlisted: Vec<(PathBuf, String)>,
     cache_error: Option<String>,
 }
 
@@ -99,6 +104,7 @@ impl Loader {
             last: None,
             cache,
             dirs: Vec::new(),
+            unlisted: Vec::new(),
             cache_error: None,
         }
     }
@@ -128,6 +134,11 @@ impl Loader {
     pub fn list(&mut self) -> io::Result<Vec<PathBuf>> {
         let found = find_files(&self.root)?;
         self.dirs = found.dirs;
+        self.unlisted = found
+            .errors
+            .into_iter()
+            .map(|(p, e)| (p, e.to_string()))
+            .collect();
         Ok(found.files)
     }
 
@@ -203,6 +214,18 @@ impl Loader {
                 for f in &files {
                     self.disk.insert(f.clone(), read(f));
                 }
+                // A running file under a directory (or link) the listing
+                // could not read is unreadable, not deleted: it keeps its
+                // last good text.
+                for p in self.live.keys() {
+                    if self.disk.contains_key(p) {
+                        continue;
+                    }
+                    if let Some((d, e)) = self.unlisted.iter().find(|(d, _)| p.starts_with(d)) {
+                        self.disk
+                            .insert(p.clone(), Err(format!("{}: {e}", d.display())));
+                    }
+                }
                 self.reconcile(false)
             }
             Err(e) => Outcome {
@@ -245,13 +268,18 @@ impl Loader {
                 Err(e) => unreadable.push((p.clone(), e.clone())),
             }
         }
+        // Only a file gone from the listing (or reported removed) is
+        // removed; one that cannot be read keeps its live text (it is not
+        // in `changed`, so `assemble` keeps it) and is held back.
         for p in self.live.keys() {
-            if !matches!(self.disk.get(p), Some(Ok(_))) {
+            if !self.disk.contains_key(p) {
                 changed.insert(p.clone());
             }
         }
+        let unread: Vec<PathBuf> = unreadable.iter().map(|(p, _)| p.clone()).collect();
         if changed.is_empty() && !(force || self.last.is_none()) {
             return Outcome {
+                held: unread,
                 unreadable,
                 ..Outcome::default()
             };
@@ -266,6 +294,7 @@ impl Loader {
         if compiled.errors() == 0 {
             out.build = Some(self.commit(&changed, full, &compiled));
             out.committed = changed.into_iter().collect();
+            out.held = unread;
             out.compile_time = started.elapsed();
             return out;
         }
@@ -342,6 +371,7 @@ impl Loader {
             out.held = changed.into_iter().collect();
             out.committed.clear();
         }
+        out.held.extend(unread);
         out.diagnostics = compiled.diagnostics;
         out.sources = Arc::new(full);
         out.compile_time = started.elapsed();
@@ -354,7 +384,10 @@ impl Loader {
                 Some(Ok(t)) => {
                     self.live.insert(p.clone(), t.clone());
                 }
-                _ => {
+                // Unreadable: never in a committed set, but if it were,
+                // its last good text stays.
+                Some(Err(_)) => {}
+                None => {
                     self.live.remove(p);
                 }
             }

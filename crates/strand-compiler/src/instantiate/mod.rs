@@ -743,13 +743,20 @@ impl Instance {
             Some(h) => build.hashes.changed_services(h),
             None => Vec::new(),
         };
+        let removed_services = match &old.hashes {
+            Some(h) => build.hashes.removed_services(h),
+            None => Vec::new(),
+        };
         let host = old.vm.host.clone();
         // Only custom services whose declaration changed (or that are
-        // new) restart.
+        // new) restart; removed ones stop.
         for (name, record) in build.program.services.values() {
             if changed_services.contains(name) {
                 host.restart(&rt, name, *record, &build.program.types);
             }
+        }
+        for name in &removed_services {
+            host.stop(&rt, name);
         }
         let em = Emitter::continuing(&old.em.borrow());
         let ctx = Ctx::create(
@@ -799,7 +806,7 @@ impl Instance {
         if reduced.surfaces > 0 {
             report.class(EditClass::Surface);
         }
-        if !changed_services.is_empty() {
+        if !changed_services.is_empty() || !removed_services.is_empty() {
             report.class(EditClass::Service);
         }
         let mut ops = pending_ops;
@@ -875,7 +882,19 @@ impl Instance {
     /// `strand reload --hard`: drop every non-persisted state and
     /// recreate every surface (the old instance is unmounted first, so
     /// persisted cells are written and read again).
+    ///
+    /// The lock is exempt from reload (design.md, "Lock screen"): while a
+    /// `lock` is shown nothing is torn down, and the report says
+    /// [`EditClass::LockDeferred`] for the caller to retry after the
+    /// unlock, as [`Instance::reload`] does.
+    ///
+    /// [`EditClass::LockDeferred`]: crate::reconcile::EditClass::LockDeferred
     pub fn reload_hard(&mut self, build: &crate::reconcile::Build) -> crate::reconcile::Report {
+        if self.lock_shown() {
+            let mut r = crate::reconcile::Report::default();
+            r.class(crate::reconcile::EditClass::LockDeferred);
+            return r;
+        }
         let host = self.ctx.vm.host.clone();
         let storage = self.ctx.storage.clone();
         let parked = std::mem::take(&mut *self.ctx.pending.borrow_mut());
@@ -904,6 +923,11 @@ impl Instance {
         for (name, record) in build.program.services.values() {
             if changed.contains(name) {
                 host.restart(&self.rt, name, *record, &build.program.types);
+            }
+        }
+        if let Some(h) = &self.ctx.hashes {
+            for name in build.hashes.removed_services(h) {
+                host.stop(&self.rt, &name);
             }
         }
         let ctx = Ctx::create(
@@ -1433,20 +1457,47 @@ impl Instance {
 
     /// `@reset` and the overlay's `[reset]`: forget the stored value of
     /// the persisted cell at `path` (`toasts.dnd`, `TopBar[<id>].expanded`)
-    /// and go back to its default.
+    /// and go back to its default. A cell that is not persisted (one a
+    /// reload kept over a changed default: `launcher.query: kept "fir"
+    /// (default changed) [reset]`) is set to its current default.
     pub fn reset(&self, path: &str) -> Result<(), Error> {
-        let cells = self.ctx.persisted.borrow();
         let mut found = false;
-        for (p, cell) in cells.values() {
-            if p == path {
-                cell.reset(&self.rt)?;
+        {
+            let cells = self.ctx.persisted.borrow();
+            for (p, cell) in cells.values() {
+                if p == path {
+                    cell.reset(&self.rt)?;
+                    found = true;
+                }
+            }
+        }
+        if !found {
+            let plain: Vec<(strand_core::Signal<Value>, Value)> = self
+                .ctx
+                .registry
+                .borrow()
+                .cells
+                .values()
+                .filter_map(|c| match c {
+                    reload::CellRec::Plain {
+                        sig,
+                        default,
+                        path: p,
+                        persisted: None,
+                        ..
+                    } if p == path => Some((*sig, default.clone())),
+                    _ => None,
+                })
+                .collect();
+            for (sig, default) in plain {
+                sig.set(&self.rt, default)?;
                 found = true;
             }
         }
         if found {
             Ok(())
         } else {
-            Err(Error::failed(format!("no persisted cell `{path}`")))
+            Err(Error::failed(format!("no state cell `{path}`")))
         }
     }
 

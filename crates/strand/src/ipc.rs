@@ -13,7 +13,13 @@
 //! - `{"cmd": "reload", "hard": false}`: rescan the config now; the
 //!   answer comes once that reload is committed (or held back) and
 //!   carries its event: `{"ok": true, "event": {…}}`.
-//! - `{"cmd": "watch"}`: `{"ok": true}`, then one event object per line
+//!   While a lock is shown the reload waits for the unlock: the answer
+//!   comes at once with `"deferred": true` in its event.
+//! - `{"cmd": "reset", "path": "launcher.query"}`: the overlay's
+//!   `[reset]`: the state cell back to its default (a persisted one
+//!   forgets its stored value). `{"ok": true}` or why not.
+//! - `{"cmd": "watch"}` (`strand watch --json` prints `{"event":
+//!   "watching"}` once subscribed): `{"ok": true}`, then one event object per line
 //!   for as long as the connection stays open: `{"event": "reload", …}`
 //!   (files, edit classes, kept and reset cells, notices, timing,
 //!   diagnostics), `{"event": "fault", …}` (a runtime error that froze a
@@ -82,8 +88,14 @@ fn socket_path_from(
 /// What a client asked for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Request {
-    Reload { hard: bool },
+    Reload {
+        hard: bool,
+    },
     Watch,
+    /// `[reset]` from the command line: a state cell back to its default.
+    Reset {
+        path: String,
+    },
 }
 
 /// Parse one request line.
@@ -100,6 +112,10 @@ pub fn parse(line: &str) -> Result<Request, String> {
             hard: v.get("hard").and_then(Json::as_bool).unwrap_or(false),
         }),
         Some("watch") => Ok(Request::Watch),
+        Some("reset") => match v.get("path").and_then(Json::as_str) {
+            Some(p) if !p.is_empty() => Ok(Request::Reset { path: p.into() }),
+            _ => Err("`reset` needs a `path`".into()),
+        },
         Some(other) => Err(format!("unknown command `{other}`")),
         None => Err("a request needs a `cmd`".into()),
     }
@@ -110,6 +126,7 @@ pub fn encode(req: &Request) -> String {
     let v = match req {
         Request::Reload { hard } => json!({"v": VERSION, "cmd": "reload", "hard": hard}),
         Request::Watch => json!({"v": VERSION, "cmd": "watch"}),
+        Request::Reset { path } => json!({"v": VERSION, "cmd": "reset", "path": path}),
     };
     format!("{v}\n")
 }
@@ -120,10 +137,16 @@ pub type ClientId = u64;
 #[derive(Debug)]
 struct Client {
     stream: UnixStream,
-    token: RegistrationToken,
+    /// Its read source (`None` once it sent EOF).
+    token: Option<RegistrationToken>,
     inbuf: Vec<u8>,
     out: Vec<u8>,
     watching: bool,
+    /// Requests handed to the shell and not answered yet.
+    pending: usize,
+    /// It shut its writing side (`nc -N`, `socat`): nothing more to
+    /// read, but it is kept until its answers and events are written.
+    eof: bool,
     closed: bool,
 }
 
@@ -216,10 +239,12 @@ impl Server {
                         id,
                         Client {
                             stream,
-                            token,
+                            token: Some(token),
                             inbuf: Vec::new(),
                             out: Vec::new(),
                             watching: false,
+                            pending: 0,
+                            eof: false,
                             closed: false,
                         },
                     );
@@ -241,10 +266,10 @@ impl Server {
             return out;
         };
         let mut buf = [0u8; 4096];
-        loop {
+        while !c.eof {
             match c.stream.read(&mut buf) {
                 Ok(0) => {
-                    c.closed = true;
+                    c.eof = true;
                     break;
                 }
                 Ok(n) => c.inbuf.extend_from_slice(&buf[..n]),
@@ -269,7 +294,10 @@ impl Server {
                     c.watching = true;
                     answers.push(json!({"ok": true}));
                 }
-                Ok(r) => out.push(r),
+                Ok(r) => {
+                    c.pending += 1;
+                    out.push(r);
+                }
                 Err(e) => answers.push(json!({"ok": false, "error": e})),
             }
         }
@@ -293,6 +321,15 @@ impl Server {
             log::warn!("ipc: client {id} does not read its events: dropped");
             c.closed = true;
         }
+    }
+
+    /// Queue the answer to one of `id`'s requests that [`Server::read`]
+    /// handed out.
+    pub fn answer(&mut self, id: ClientId, v: &Json) {
+        if let Some(c) = self.clients.get_mut(&id) {
+            c.pending = c.pending.saturating_sub(1);
+        }
+        self.send(id, v);
     }
 
     /// Queue `event` for every watching client.
@@ -325,6 +362,17 @@ impl Server {
                 }
             }
             queued |= !c.out.is_empty() && !c.closed;
+            // Half-closed: its socket stays readable (EOF) for good, so
+            // it leaves the loop now; once everything it waits for is
+            // written (a watcher: until a write fails), it goes.
+            if c.eof {
+                if let Some(t) = c.token.take() {
+                    handle.remove(t);
+                }
+                if c.out.is_empty() && c.pending == 0 && !c.watching {
+                    c.closed = true;
+                }
+            }
         }
         let gone: Vec<ClientId> = self
             .clients
@@ -333,8 +381,10 @@ impl Server {
             .map(|(id, _)| *id)
             .collect();
         for id in gone {
-            if let Some(c) = self.clients.remove(&id) {
-                handle.remove(c.token);
+            if let Some(c) = self.clients.remove(&id)
+                && let Some(t) = c.token
+            {
+                handle.remove(t);
             }
         }
         queued
@@ -358,18 +408,26 @@ pub fn connect() -> Result<UnixStream, String> {
     })
 }
 
-/// Send `req` and read the answer line (`timeout` at most).
-pub fn request(stream: &UnixStream, req: &Request, timeout: Duration) -> Result<Json, String> {
-    let mut w = stream;
+/// Send `req` and read the answer line (`timeout` at most). The reader
+/// is the connection's for its whole life: what the server sent after
+/// the answer (a watcher's first events) stays buffered in it.
+pub fn request(
+    conn: &mut BufReader<UnixStream>,
+    req: &Request,
+    timeout: Duration,
+) -> Result<Json, String> {
+    let mut w = conn.get_ref();
     w.write_all(encode(req).as_bytes())
         .map_err(|e| format!("send: {e}"))?;
-    stream
+    conn.get_ref()
         .set_read_timeout(Some(timeout))
         .map_err(|e| e.to_string())?;
     let mut line = String::new();
-    BufReader::new(stream)
-        .read_line(&mut line)
-        .map_err(|e| format!("no answer: {e}"))?;
+    match conn.read_line(&mut line) {
+        Ok(0) => return Err("no answer: the shell closed the connection".into()),
+        Ok(_) => {}
+        Err(e) => return Err(format!("no answer: {e}")),
+    }
     serde_json::from_str(&line).map_err(|e| format!("bad answer {line:?}: {e}"))
 }
 
@@ -380,8 +438,12 @@ pub fn reload_cli(args: &[String]) -> Result<String, String> {
         [a] if a == "--hard" => true,
         _ => return Err("usage: strand reload [--hard]".into()),
     };
-    let stream = connect()?;
-    let answer = request(&stream, &Request::Reload { hard }, Duration::from_secs(30))?;
+    let mut conn = BufReader::new(connect()?);
+    let answer = request(
+        &mut conn,
+        &Request::Reload { hard },
+        Duration::from_secs(30),
+    )?;
     if answer.get("ok").and_then(Json::as_bool) != Some(true) {
         return Err(answer
             .get("error")
@@ -399,13 +461,24 @@ pub fn watch_cli(args: &[String], out: &mut dyn Write) -> Result<(), String> {
         [a] if a == "--json" => true,
         _ => return Err("usage: strand watch [--json]".into()),
     };
-    let stream = connect()?;
-    let answer = request(&stream, &Request::Watch, Duration::from_secs(10))?;
+    let mut conn = BufReader::new(connect()?);
+    let answer = request(&mut conn, &Request::Watch, Duration::from_secs(10))?;
     if answer.get("ok").and_then(Json::as_bool) != Some(true) {
         return Err(format!("refused: {answer}"));
     }
-    stream.set_read_timeout(None).map_err(|e| e.to_string())?;
-    for line in BufReader::new(&stream).lines() {
+    conn.get_ref()
+        .set_read_timeout(None)
+        .map_err(|e| e.to_string())?;
+    // Scripts know from this line on that no event is missed.
+    if json
+        && out
+            .write_all(format!("{}\n", json!({"event": "watching", "v": VERSION})).as_bytes())
+            .and_then(|_| out.flush())
+            .is_err()
+    {
+        return Ok(());
+    }
+    for line in conn.lines() {
         let line = line.map_err(|e| e.to_string())?;
         let text = if json {
             format!("{line}\n")
@@ -523,6 +596,9 @@ mod tests {
             Request::Reload { hard: true },
             Request::Reload { hard: false },
             Request::Watch,
+            Request::Reset {
+                path: "launcher.query".into(),
+            },
         ] {
             assert_eq!(parse(encode(&r).trim()), Ok(r));
         }
@@ -541,6 +617,7 @@ mod tests {
                 .contains("newer")
         );
         assert!(parse("watch").is_err());
+        assert!(parse(r#"{"cmd":"reset"}"#).is_err());
     }
 
     #[test]

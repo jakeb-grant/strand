@@ -6,10 +6,20 @@
 //! - The main thread runs the surface manager and the renderer, as the
 //!   demo does. Its host forwards the surface layer's monitor hooks to the
 //!   logic thread as the `screens` service (`Screen.id` is the
-//!   `MonitorId`; `monitor_forgotten` is `Instance::forget_screen`), and
-//!   surface-level input and layout facts as `event`/`set_flag`/
-//!   `set_size` on the surface's node (hit testing inside a surface is
-//!   M2).
+//!   `MonitorId`; `monitor_forgotten` is `Instance::forget_screen`).
+//!   Pointer input goes to the node under the pointer
+//!   (`Renderer::hit`'s chain, topmost in paint order): the chain is
+//!   hovered and pressed, a release clicks the innermost node both the
+//!   press and the release were over, a scroll goes to the innermost
+//!   node, and logic bubbles events to the nearest handler. Layout facts
+//!   (`self.width`) are still per surface, `set_size` on the surface's
+//!   node: layout boxes, and hits on containers that paint nothing, are
+//!   M2.
+//! - The compiler worker (`live.rs`) compiles saves off the logic
+//!   thread; [`Shell::commit`] reloads the instance with each result
+//!   (a lock edit, or a hard reload, waits while a lock is shown), puts
+//!   diagnostics and reload notices on the overlay and streams the event
+//!   to `strand watch`.
 //! - The logic thread owns the runtime, the real service host
 //!   (`SchemaHost::real`: the wall clock and calendar) and the
 //!   `Instance`, and loops on `Instance::step(now, wall)`, sending one
@@ -306,6 +316,9 @@ struct Shell {
     /// A build that changes a lock while one is shown: committed after
     /// the unlock.
     deferred: Option<Box<Loaded>>,
+    /// A hard reload asked for while a lock was shown, owed after the
+    /// unlock (its load went stale under a newer commit).
+    deferred_hard: bool,
     /// Reload events waiting for the step that draws them (their total
     /// time ends when its diff is sent).
     events: Vec<(Json, Instant)>,
@@ -328,8 +341,14 @@ impl Shell {
                 if name == "click"
                     && let Some(c) = self.overlay.click(node, inst)
                 {
-                    if let Click::Open(file, line, col) = c {
-                        overlay::open_editor(&file, line, col);
+                    match c {
+                        Click::Open(file, line, col) => overlay::open_editor(&file, line, col),
+                        Click::Reset(path) => {
+                            if let Err(e) = inst.reset(&path) {
+                                log::warn!("[reset] {path}: {e}");
+                            }
+                        }
+                        Click::Dismissed | Click::Nothing => {}
                     }
                     return;
                 }
@@ -358,9 +377,24 @@ impl Shell {
     }
 
     /// Commit a load: the new build into the running instance (a hard
-    /// reload recreates everything), its diagnostics to the overlay, its
-    /// event queued for the watchers.
+    /// reload recreates everything), its diagnostics and reload notices
+    /// to the overlay, its event queued for the watchers.
+    ///
+    /// While a lock is shown, a build that changes a lock (or a hard
+    /// reload) is not committed (decisions.md, wave2-runtime): it waits
+    /// in [`Shell::deferred`], a newer deferred load absorbing it, and is
+    /// committed after the unlock; its event goes out at once (classes
+    /// `lock-deferred`, `"deferred": true`), answering `strand reload`.
+    /// A build committed meanwhile makes the deferred one stale: it is
+    /// dropped (a deferred hard reload is still owed).
     fn commit(&mut self, l: Box<Loaded>) {
+        self.apply(l, true);
+    }
+
+    /// [`Shell::commit`]; `overlay`: the load's diagnostics replace the
+    /// overlay's (not for a hard reload replayed after an unlock, whose
+    /// load carries none).
+    fn apply(&mut self, mut l: Box<Loaded>, overlay: bool) {
         let began = Instant::now();
         let build = l.outcome.build.clone();
         let report = match (&build, l.hard) {
@@ -371,46 +405,98 @@ impl Shell {
             }
             (None, false) => None,
         };
-        if let Some(r) = &report
-            && r.classes == [EditClass::LockDeferred]
-        {
+        let deferred = report
+            .as_ref()
+            .is_some_and(|r| r.classes == [EditClass::LockDeferred]);
+        if deferred {
             log::info!("a lock is shown: the reload waits for the unlock");
-            self.deferred = Some(l);
-            return;
-        }
-        if let Some(b) = build.or_else(|| l.hard.then(|| self.build.clone())) {
-            self.build = b;
+            if let Some(old) = self.deferred.take() {
+                absorb(&mut l, &old);
+            }
+        } else if report.is_some() {
+            // Committed: an older deferred build is stale (this one is
+            // newer and has everything it had, the lock edit aside,
+            // which this one either reverted or kept).
+            if let Some(old) = self.deferred.take()
+                && old.hard
+                && !l.hard
+            {
+                self.deferred_hard = true;
+            }
+            if l.hard {
+                self.deferred_hard = false;
+            }
+            if let Some(b) = build.or_else(|| l.hard.then(|| self.build.clone())) {
+                self.build = b;
+            }
         }
         let commit = began.elapsed();
-        // The overlay: every diagnostic of the attempt (none when it all
-        // committed).
-        let lines = overlay::lines(
-            &l.outcome.diagnostics,
-            &l.outcome.sources,
-            &l.outcome.unreadable,
-        );
-        let errors = l.outcome.errors();
-        self.overlay.set(
-            if errors > 0 || !l.outcome.unreadable.is_empty() {
-                lines
-            } else {
-                Vec::new()
-            },
-            Instant::now(),
-            &self.inst,
-        );
-        for n in report.iter().flat_map(|r| &r.notices) {
-            log::info!("{n}");
+        if overlay {
+            // The overlay: every diagnostic of the attempt (none when it
+            // all committed).
+            let lines = overlay::lines(
+                &l.outcome.diagnostics,
+                &l.outcome.sources,
+                &l.outcome.unreadable,
+            );
+            let errors = l.outcome.errors();
+            self.overlay.set(
+                if errors > 0 || !l.outcome.unreadable.is_empty() {
+                    lines
+                } else {
+                    Vec::new()
+                },
+                Instant::now(),
+                &self.inst,
+            );
         }
-        if errors > 0 {
+        if let Some(r) = report.as_ref().filter(|_| !deferred) {
+            for n in &r.notices {
+                log::info!("{n}");
+            }
+            // Kept-over-a-new-default cells (with their `[reset]`),
+            // renamed or retyped cells reset, cancelled `await`s:
+            // overlay rows, after the same quiet period.
+            self.overlay
+                .note(overlay::report_lines(r), Instant::now(), &self.inst);
+        }
+        if l.outcome.errors() > 0 {
             log::warn!(
                 "{}",
                 render(&l.outcome.diagnostics, &l.outcome.sources, Style::Plain)
             );
         }
         self.watch_settings();
-        let ev = reload_event(&l, report.as_ref(), commit);
+        let mut ev = reload_event(&l, report.as_ref(), commit);
+        ev["deferred"] = json!(deferred);
         self.events.push((ev, l.saved.unwrap_or(l.started)));
+        if deferred {
+            self.deferred = Some(l);
+        }
+    }
+
+    /// After the unlock: the deferred load (or a hard reload still
+    /// owed), committed now.
+    fn unlocked(&mut self) {
+        if self.inst.lock_shown() {
+            return;
+        }
+        if let Some(mut l) = self.deferred.take() {
+            l.hard |= std::mem::take(&mut self.deferred_hard);
+            self.commit(l);
+        } else if std::mem::take(&mut self.deferred_hard) {
+            let now = Instant::now();
+            let l = Loaded {
+                outcome: Outcome::default(),
+                requested: true,
+                hard: true,
+                files: Vec::new(),
+                saved: None,
+                started: now,
+                notices: Vec::new(),
+            };
+            self.apply(Box::new(l), false);
+        }
     }
 
     /// Give the worker the settings files the program now mounts.
@@ -433,13 +519,22 @@ impl Shell {
                 Some(j) if j.send(Job::Reload { hard }).is_ok() => self.waiting.push(id),
                 _ => {
                     if let Some(s) = &mut self.server {
-                        s.send(
+                        s.answer(
                             id,
                             &json!({"ok": false, "error": "this shell does not reload"}),
                         );
                     }
                 }
             },
+            ipc::Request::Reset { path } => {
+                let ans = match self.inst.reset(&path) {
+                    Ok(()) => json!({"ok": true}),
+                    Err(e) => json!({"ok": false, "error": e.to_string()}),
+                };
+                if let Some(s) = &mut self.server {
+                    s.answer(id, &ans);
+                }
+            }
             // Answered by the server itself.
             ipc::Request::Watch => {}
         }
@@ -474,6 +569,15 @@ impl Shell {
         for n in &update.notices {
             log::info!("{n}");
         }
+        if !update.notices.is_empty() {
+            // Persisted cells kept over a changed default at boot.
+            let rows = update
+                .notices
+                .iter()
+                .map(|n| overlay::notice_line(n))
+                .collect();
+            self.overlay.note(rows, Instant::now(), &self.inst);
+        }
         let now = Instant::now();
         for (mut ev, since) in self.events.drain(..) {
             ev["timing"]["total_ms"] = json!(ms(now.saturating_duration_since(since)));
@@ -481,9 +585,40 @@ impl Shell {
             if let Some(s) = &mut self.server {
                 s.broadcast(&ev);
                 for id in self.waiting.drain(..) {
-                    s.send(id, &json!({"ok": true, "event": ev.clone()}));
+                    s.answer(id, &json!({"ok": true, "event": ev.clone()}));
                 }
             }
+        }
+    }
+}
+
+/// A newer deferred load `l` takes in an older one it replaces: the
+/// files it named and committed, and whether it was asked for (hard).
+fn absorb(l: &mut Loaded, old: &Loaded) {
+    for f in &old.files {
+        if !l.files.contains(f) {
+            l.files.push(f.clone());
+        }
+    }
+    for f in &old.outcome.committed {
+        if !l.outcome.committed.contains(f) {
+            l.outcome.committed.push(f.clone());
+        }
+    }
+    // A deferred hard reload of the same sources has no build of its
+    // own: it applies the deferred one.
+    if l.outcome.build.is_none() {
+        l.outcome.build = old.outcome.build.clone();
+    }
+    l.requested |= old.requested;
+    l.hard |= old.hard;
+    l.saved = match (l.saved, old.saved) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
+    for n in &old.notices {
+        if !l.notices.contains(n) {
+            l.notices.push(n.clone());
         }
     }
 }
@@ -498,12 +633,14 @@ fn reload_event(l: &Loaded, report: Option<&Report>, commit: Duration) -> Json {
     let paths =
         |v: &[PathBuf]| -> Vec<String> { v.iter().map(|p| p.display().to_string()).collect() };
     let diagnostics: Vec<Json> = {
-        let short = render_short(&l.outcome.diagnostics, &l.outcome.sources);
         l.outcome
             .diagnostics
             .iter()
-            .zip(short.lines())
-            .map(|(d, line)| {
+            .map(|d| {
+                // One rendering per diagnostic: a multi-line one cannot
+                // shift the others.
+                let short = render_short(std::slice::from_ref(d), &l.outcome.sources);
+                let line = short.trim_end();
                 let at = d.primary().and_then(|lab| {
                     l.outcome.sources.get(lab.file).map(|f| {
                         let (ln, col) = overlay::line_col(&f.text, lab.span.start);
@@ -584,8 +721,15 @@ pub fn logic(
         });
     let rt = Runtime::new();
     rt.set_wake_hook(move || ping.ping());
+    // With nothing to run yet (broken at boot, no last good version),
+    // the host still serves the builtin services (`screens`, the clock):
+    // the fixed config later mounts against this host.
+    let host_types = match &boot.build {
+        Some(b) => b.program.types.clone(),
+        None => strand_compiler::schema::Schema::builtin().types.clone(),
+    };
     let build = boot.build.clone().unwrap_or_else(Build::empty);
-    let host = Rc::new(SchemaHost::real(&rt, &build.program.types));
+    let host = Rc::new(SchemaHost::real(&rt, &host_types));
     // Monitors the main thread already knows about.
     let mut inbox = Inbox::default();
     sleeper
@@ -609,6 +753,7 @@ pub fn logic(
         server,
         jobs: live.jobs,
         deferred: None,
+        deferred_hard: false,
         events: Vec::new(),
         waiting: Vec::new(),
         watched: Vec::new(),
@@ -626,12 +771,8 @@ pub fn logic(
     shell.watch_settings();
     let start = Instant::now();
     while !stop {
-        if let Some(l) = shell.deferred.take() {
-            if shell.inst.lock_shown() {
-                shell.deferred = Some(l);
-            } else {
-                shell.commit(l);
-            }
+        if shell.deferred.is_some() || shell.deferred_hard {
+            shell.unlocked();
         }
         let wall = SystemTime::now();
         let (mut update, wake) = shell.inst.step(start.elapsed(), wall);
@@ -655,7 +796,7 @@ pub fn logic(
                 .map(|d| d.saturating_duration_since(now)),
         );
         also(queued.then_some(Duration::from_millis(50)));
-        if shell.deferred.is_some() {
+        if shell.deferred.is_some() || shell.deferred_hard {
             also(Some(Duration::from_millis(250)));
         }
         sleeper
@@ -1082,10 +1223,10 @@ mod tests {
             .unwrap();
         m.until("a click", |s| s.texts() == ["n 1"]);
         // A watcher.
-        let watch = std::os::unix::net::UnixStream::connect(&socket).unwrap();
-        let ok = ipc::request(&watch, &ipc::Request::Watch, Duration::from_secs(10)).unwrap();
+        let mut events =
+            std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
+        let ok = ipc::request(&mut events, &ipc::Request::Watch, Duration::from_secs(10)).unwrap();
         assert_eq!(ok["ok"], true);
-        let mut events = std::io::BufReader::new(watch.try_clone().unwrap());
         let mut next_event = || {
             let mut line = String::new();
             std::io::BufRead::read_line(&mut events, &mut line).unwrap();
@@ -1132,18 +1273,33 @@ mod tests {
         let ev = next_event();
         assert_eq!(ev["diagnostics"], json!([]), "{ev}");
         // `strand reload`: answered with its event once done.
-        let client = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+        let mut client =
+            std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
         let ans = ipc::request(
-            &client,
+            &mut client,
             &ipc::Request::Reload { hard: false },
             Duration::from_secs(10),
         )
         .unwrap();
         assert_eq!(ans["ok"], true, "{ans}");
         assert_eq!(ans["event"]["requested"], true, "{ans}");
+        // A client that half-closes after its request (`nc -N`) still
+        // gets its answer.
+        {
+            use std::io::{Read, Write};
+            let mut raw = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+            raw.write_all(ipc::encode(&ipc::Request::Reload { hard: false }).as_bytes())
+                .unwrap();
+            raw.shutdown(std::net::Shutdown::Write).unwrap();
+            raw.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            let mut answer = String::new();
+            raw.read_to_string(&mut answer).unwrap();
+            let ans: Json = serde_json::from_str(answer.trim()).unwrap();
+            assert_eq!(ans["ok"], true, "{ans}");
+        }
         // `--hard`: state dropped, every surface recreated.
         let ans = ipc::request(
-            &client,
+            &mut client,
             &ipc::Request::Reload { hard: true },
             Duration::from_secs(10),
         )
@@ -1154,6 +1310,141 @@ mod tests {
         assert_eq!(t.join().unwrap(), Ok(()));
         drop(compiler);
         assert!(!socket.exists(), "the socket is removed at exit");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The live pipeline on `dir` (no cache): the compiler worker, the
+    /// logic thread with one monitor, a mirror of its scene.
+    fn spawn_live(
+        dir: &Path,
+        socket: Option<PathBuf>,
+    ) -> (
+        Worker,
+        calloop::channel::Sender<ToLogic>,
+        std::thread::JoinHandle<Result<(), String>>,
+        Mirror,
+    ) {
+        let (wtx, wrx) = calloop::channel::channel();
+        let (compiler, boot) = Worker::spawn(dir, None, wtx).unwrap();
+        let live = Live {
+            worker: Some(wrx),
+            jobs: Some(compiler.jobs()),
+            socket,
+        };
+        let (to_logic, from_main) = calloop::channel::channel();
+        let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+        to_logic
+            .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+            .unwrap();
+        let t = std::thread::spawn(move || logic(boot, Storage::none(), from_main, tx, live));
+        (compiler, to_logic, t, Mirror::new(rx))
+    }
+
+    /// A first config with a typo and no last good version: nothing runs
+    /// but the overlay; the fix mounts the per-monitor bar with `screen`
+    /// in scope (the builtin services are there from the start).
+    #[test]
+    fn a_config_broken_at_first_boot_runs_once_fixed() {
+        let dir = temp_dir("first-boot");
+        let file = dir.join("bar.strand");
+        std::fs::write(&file, "bar Top {\n  txet screen.name\n}\n").unwrap();
+        let (compiler, to_logic, t, mut m) = spawn_live(&dir, None);
+        m.until("the overlay", |s| {
+            s.of_kind(strand_scene::NodeKind::Panel).len() == 1
+        });
+        std::fs::write(&file, "bar Top {\n  text screen.name\n}\n").unwrap();
+        m.until("the bar", |s| {
+            s.of_kind(strand_scene::NodeKind::Panel).is_empty() && s.texts() == ["DP-1"]
+        });
+        to_logic.send(ToLogic::Shutdown).unwrap();
+        assert_eq!(t.join().unwrap(), Ok(()));
+        drop(compiler);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// While the lock is shown, saves that change it wait: `strand watch`
+    /// and `strand reload` hear `"deferred": true` at once, a second
+    /// deferred save absorbs the first, and after the unlock both the
+    /// lock edit and the bar edit land.
+    #[test]
+    fn lock_edits_wait_for_the_unlock_and_then_land() {
+        let dir = temp_dir("lock");
+        let src = |lock: &str, bar: &str| {
+            format!(
+                "export state locked = true\nlock L {{\n  open: locked\n  on click {{ locked = false }}\n  text \"{lock}\"\n}}\nbar Top {{\n  on click {{ locked = true }}\n  text \"{bar}\"\n}}\n"
+            )
+        };
+        let file = dir.join("shell.strand");
+        std::fs::write(&file, src("lock a", "bar a")).unwrap();
+        let socket = dir.join("ipc.sock");
+        let (compiler, to_logic, t, mut m) = spawn_live(&dir, Some(socket.clone()));
+        m.until("lock and bar", |s| {
+            let mut t = s.texts();
+            t.sort();
+            t == ["bar a", "lock a"]
+        });
+        let mut events =
+            std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
+        let ok = ipc::request(&mut events, &ipc::Request::Watch, Duration::from_secs(10)).unwrap();
+        assert_eq!(ok["ok"], true);
+        let mut next_event = || {
+            let mut line = String::new();
+            std::io::BufRead::read_line(&mut events, &mut line).unwrap();
+            serde_json::from_str::<Json>(&line).unwrap()
+        };
+        std::fs::write(&file, src("lock b", "bar b")).unwrap();
+        let ev = next_event();
+        assert_eq!(ev["deferred"], true, "{ev}");
+        assert_eq!(ev["classes"], json!(["lock-deferred"]), "{ev}");
+        // `strand reload --hard` while locked: answered at once,
+        // deferred (and it absorbs the deferred save).
+        let mut client =
+            std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
+        std::fs::write(&file, src("lock b", "bar c")).unwrap();
+        let ev = next_event();
+        assert_eq!(ev["deferred"], true, "{ev}");
+        let ans = ipc::request(
+            &mut client,
+            &ipc::Request::Reload { hard: true },
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        assert_eq!(ans["event"]["deferred"], true, "{ans}");
+        let _ = next_event();
+        assert_eq!(m.texts(), ["bar a", "lock a"], "nothing committed yet");
+        // Unlock: the newest deferred build lands, with both edits.
+        let lock = m.scene.of_kind(strand_scene::NodeKind::Lock)[0];
+        to_logic
+            .send(ToLogic::Event {
+                node: lock,
+                name: "click",
+                args: Vec::new(),
+            })
+            .unwrap();
+        m.until("the bar edit", |s| s.texts().contains(&"bar c".to_string()));
+        let ev = next_event();
+        assert_eq!(ev["deferred"], false, "{ev}");
+        assert!(
+            ev["files"].as_array().is_some_and(|f| f
+                .iter()
+                .any(|p| p.as_str().is_some_and(|p| p.ends_with("shell.strand")))),
+            "{ev}"
+        );
+        // Locked again: the lock shows its edit.
+        let bar = m.scene.of_kind(strand_scene::NodeKind::Bar)[0];
+        to_logic
+            .send(ToLogic::Event {
+                node: bar,
+                name: "click",
+                args: Vec::new(),
+            })
+            .unwrap();
+        m.until("the lock edit", |s| {
+            s.texts().contains(&"lock b".to_string())
+        });
+        to_logic.send(ToLogic::Shutdown).unwrap();
+        assert_eq!(t.join().unwrap(), Ok(()));
+        drop(compiler);
         let _ = std::fs::remove_dir_all(dir);
     }
 

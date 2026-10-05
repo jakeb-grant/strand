@@ -165,3 +165,27 @@ fn handler_hashes_follow_what_they_reach() {
     assert_ne!(hb[0], hc[0]);
     assert_eq!(hb[1], hc[1]);
 }
+
+/// Mutually recursive `fn`s: a handler that names either one changes
+/// when the other is edited, whichever the hashing reached first.
+#[test]
+fn handler_hashes_cover_a_whole_cycle() {
+    let src = |k: &str| {
+        format!(
+            "fn a(x: int) -> int {{ x > 10 ? x : b(x + {k}) }}\nfn b(x: int) -> int {{ a(x * 2) }}\nstate n = 0\nbar Top {{\n  text join(\"\", n) {{\n    on click {{ n = a(n) }}\n    on secondary {{ n = b(n) }}\n  }}\n}}\n"
+        )
+    };
+    let hashes = |b: &Build| -> Vec<u64> {
+        b.identity
+            .entries()
+            .filter(|(l, ..)| l.starts_with("on "))
+            .map(|(_, f, sp, _)| b.hashes.get(f, sp).unwrap())
+            .collect()
+    };
+    let a = build(None, &[("bar.strand", &src("1"))]);
+    let b = build(Some(&a), &[("bar.strand", &src("2"))]);
+    let (ha, hb) = (hashes(&a), hashes(&b));
+    assert_eq!(ha.len(), 2);
+    assert_ne!(ha[0], hb[0], "the handler naming `a`");
+    assert_ne!(ha[1], hb[1], "the handler naming `b`, which calls `a`");
+}

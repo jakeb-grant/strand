@@ -42,6 +42,8 @@ pub(crate) struct Forward {
     hovered: HashMap<SurfaceId, Vec<NodeId>>,
     /// The chain the left button went down on, per surface.
     pressed: HashMap<SurfaceId, Vec<NodeId>>,
+    /// The chain a right button press went down on, per surface.
+    right_down: HashMap<SurfaceId, Vec<NodeId>>,
 }
 
 impl Forward {
@@ -52,6 +54,7 @@ impl Forward {
             surfaces: HashMap::new(),
             hovered: HashMap::new(),
             pressed: HashMap::new(),
+            right_down: HashMap::new(),
         }
     }
 
@@ -102,6 +105,7 @@ impl Forward {
         self.surfaces.remove(&surface);
         self.hovered.remove(&surface);
         self.pressed.remove(&surface);
+        self.right_down.remove(&surface);
     }
 
     /// Plugged in, or back within 30 s (`reconnected`) at its old place.
@@ -139,9 +143,10 @@ impl Forward {
     /// on the chain is `hover`ed (a row is hovered while a child is), a
     /// left button held marks the chain under it `pressed` (and latches
     /// `hover` there until it is released, as a drag does), a left or
-    /// right release is `click`/`secondary` on the innermost node (logic
-    /// bubbles it to the nearest handler), a scroll is `scroll(dy, dx)`
-    /// there. Other buttons have no design event and are dropped.
+    /// right release is `click`/`secondary` on the innermost node that
+    /// both the press and the release were over (logic bubbles it to the
+    /// nearest handler; a release with no press on this surface clicks
+    /// nothing), a scroll is `scroll(dy, dx)` on the innermost node. Other buttons have no design event and are dropped.
     pub(crate) fn input(
         &mut self,
         event: &InputEvent,
@@ -175,6 +180,19 @@ impl Forward {
                 ..
             } => {
                 let under = chain(*position);
+                // The chain the matching press went down on: a release
+                // clicks the innermost node on both chains (pressed on
+                // one button, released on its sibling: their row), and
+                // nothing without a press on this surface.
+                let down = match (*b, *state) {
+                    (button::LEFT, ButtonState::Released) => self.pressed.get(&surface).cloned(),
+                    (button::RIGHT, ButtonState::Pressed) => {
+                        self.right_down.insert(surface, under.clone());
+                        None
+                    }
+                    (button::RIGHT, ButtonState::Released) => self.right_down.remove(&surface),
+                    _ => None,
+                };
                 if *b == button::LEFT {
                     match state {
                         ButtonState::Pressed => {
@@ -202,8 +220,14 @@ impl Forward {
                     button::RIGHT => "secondary",
                     _ => return,
                 };
+                let Some(down) = down else {
+                    return;
+                };
+                let Some(&node) = under.iter().find(|n| down.contains(n)) else {
+                    return;
+                };
                 self.send(ToLogic::Event {
-                    node: under[0],
+                    node,
                     name,
                     args: Vec::new(),
                 });
@@ -582,6 +606,29 @@ mod tests {
                     args: Vec::new()
                 },
             ]
+        );
+        // Pressed on `a`, released on `b`: their row is clicked, not `b`.
+        f.input(&button(5.0, ButtonState::Pressed), &hit);
+        f.input(&button(15.0, ButtonState::Released), &hit);
+        let clicks: Vec<ToLogic> = drain(&mut el)
+            .into_iter()
+            .filter(|m| matches!(m, ToLogic::Event { .. }))
+            .collect();
+        assert_eq!(
+            clicks,
+            [ToLogic::Event {
+                node: row,
+                name: "click",
+                args: Vec::new()
+            }]
+        );
+        // A release with no press (the press was on another surface):
+        // no click.
+        f.input(&button(5.0, ButtonState::Released), &hit);
+        assert!(
+            !drain(&mut el)
+                .iter()
+                .any(|m| matches!(m, ToLogic::Event { .. }))
         );
     }
 

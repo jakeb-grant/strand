@@ -286,6 +286,12 @@ fn state_defaults_are_adopted_only_if_unchanged() {
         ["launcher.q: kept \"fir\" (default changed) [reset]"]
     );
     assert!(shell.scene.find_text("2 fir").is_some());
+    // The notice's `[reset]`: back to the new default.
+    shell.inst.reset("launcher.q").unwrap();
+    shell.flush();
+    assert_eq!(shell.value("launcher", "q"), Value::text("x"));
+    assert!(shell.scene.find_text("2 x").is_some());
+    assert!(shell.inst.reset("launcher.nope").is_err());
 }
 
 /// A renamed or retyped cell resets with a warning; the others are kept.
@@ -485,6 +491,25 @@ fn a_lock_edit_is_deferred_while_shown() {
     assert_eq!(report.classes, [EditClass::LockDeferred]);
     shell.flush();
     assert_eq!(shell.scene.texts(), ["a"]);
+}
+
+/// A hard reload while a lock is shown tears nothing down: the lock
+/// keeps its node and state, and the reload waits for the unlock.
+#[test]
+fn a_hard_reload_is_deferred_while_a_lock_is_shown() {
+    let src = "lock L {\n  state n = 0\n  on click { n += 1 }\n  text join(\"\", n)\n}\n";
+    let mut shell = boot(&[("t.strand", src)]);
+    assert!(shell.inst.lock_shown());
+    let lock = shell.scene.of_kind(NodeKind::Lock)[0];
+    shell.inst.event(lock, "click", Vec::new());
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["1"]);
+    let build = compile(Some(&shell.build), &[("t.strand", src)]);
+    let report = shell.inst.reload_hard(&build);
+    assert_eq!(report.classes, [EditClass::LockDeferred]);
+    shell.flush();
+    assert_eq!(shell.scene.of_kind(NodeKind::Lock), [lock]);
+    assert_eq!(shell.scene.texts(), ["1"]);
 }
 
 /// `strand reload --hard` drops non-persisted state and recreates every
@@ -803,6 +828,14 @@ fn a_changed_service_declaration_restarts_only_it() {
     assert_eq!(shell.value("t", "n"), Value::int(3));
     let (report, _) = shell.reload(&[("t.strand", &src("mode").replace("= 0", "= 0 "))]);
     assert!(!report.classes.contains(&EditClass::Service), "{report:?}");
+    // Its declaration deleted: the service stops, its fields gone.
+    use strand_compiler::vm::host::ServiceHost;
+    assert!(shell.host.read(&shell.rt, "ppd", "mode").is_ok());
+    let (report, _) =
+        shell.reload(&[("t.strand", "state n = 0\nbar Top { text join(\" \", n) }\n")]);
+    assert!(report.classes.contains(&EditClass::Service), "{report:?}");
+    assert!(shell.host.read(&shell.rt, "ppd", "mode").is_err());
+    assert_eq!(shell.value("t", "n"), Value::int(3));
 }
 
 /// A 2,000-row keyed list survives a prop edit of its item template:
@@ -826,4 +859,214 @@ fn a_long_list_is_patched_in_place() {
     assert_eq!((creates(&ops), removes(&ops)), (0, 0));
     assert_eq!(ops.len(), 2000);
     assert_eq!(shell.scene.walk(), before);
+}
+
+/// One `export state` of the state fuzzer's model.
+#[derive(Clone, Debug, PartialEq)]
+struct FuzzCell {
+    name: String,
+    text: bool,
+    default: i64,
+}
+
+impl FuzzCell {
+    fn default_value(&self) -> Value {
+        if self.text {
+            Value::text(format!("s{}", self.default))
+        } else {
+            Value::int(self.default)
+        }
+    }
+}
+
+fn fuzz_cells_src(cells: &[FuzzCell]) -> String {
+    cells
+        .iter()
+        .map(|c| match c.text {
+            true => format!("export state {} = \"s{}\"\n", c.name, c.default),
+            false => format!("export state {} = {}\n", c.name, c.default),
+        })
+        .collect()
+}
+
+fn fuzz_bar_src(cells: &[FuzzCell]) -> String {
+    let names: Vec<String> = cells.iter().map(|c| format!("cells.{}", c.name)).collect();
+    format!("bar Top {{\n  text join(\" \", {})\n}}\n", names.join(", "))
+}
+
+/// design.md, "How reload is tested": random state written before each
+/// random edit (defaults changed, cells renamed across both files,
+/// retyped, moved, broken saves, renames saved one file at a time),
+/// routed through the loader so broken and partial saves are held back
+/// and land with the fix. After every commit each cell holds exactly
+/// what the table says: kept; the new default where it still held the
+/// old one; reset when renamed or retyped. No surface leaks, nothing is
+/// ever blank.
+#[test]
+fn random_state_edits_follow_the_table() {
+    use strand_compiler::reconcile::loader::Loader;
+    let dir = std::env::temp_dir().join(format!("strand-state-fuzz-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (cells_path, bar_path) = (dir.join("cells.strand"), dir.join("bar.strand"));
+    let pool = ["a", "b", "c", "d", "e", "f", "g", "h"];
+    let mut model: Vec<FuzzCell> = (0..4)
+        .map(|i| FuzzCell {
+            name: pool[i].to_string(),
+            text: i % 2 == 1,
+            default: i as i64,
+        })
+        .collect();
+    std::fs::write(&cells_path, fuzz_cells_src(&model)).unwrap();
+    std::fs::write(&bar_path, fuzz_bar_src(&model)).unwrap();
+    let mut loader = Loader::new(&dir, Schema::builtin().clone(), None);
+    let build = loader.boot().build.expect("the first config compiles");
+    let rt = Runtime::new();
+    let host = Rc::new(SchemaHost::mock(&rt, &build.program.types));
+    screens(&rt, &host, &["DP-1"]);
+    let inst = Instance::from_build(&rt, &build, host.clone(), Storage::none());
+    let mut shell = Shell {
+        rt,
+        host,
+        inst,
+        scene: SceneMirror::new(),
+        build,
+        now: 0.0,
+    };
+    shell.flush();
+    let mut rng = Rng(0x0dd_ba11_cafe_f00d);
+    let iterations = std::env::var("STRAND_STATE_FUZZ")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(120);
+    let (mut committed, mut held, mut resets) = (0, 0, 0);
+    for round in 0..iterations {
+        // Random state.
+        for _ in 0..1 + rng.below(3) {
+            let c = &model[rng.below(model.len())];
+            let v = match c.text {
+                true => Value::text(format!("s{}", rng.below(6))),
+                false => Value::int(rng.below(6) as i64),
+            };
+            shell.inst.set_value("cells", &c.name, v).unwrap();
+        }
+        shell.flush();
+        let before: Vec<Value> = model
+            .iter()
+            .map(|c| shell.value("cells", &c.name))
+            .collect();
+        // A random edit of the model.
+        let mut next = model.clone();
+        let i = rng.below(next.len());
+        let mut partial = false;
+        let mut broken = false;
+        match rng.below(6) {
+            0 => next[i].default = rng.below(6) as i64,
+            1 | 2 => {
+                let free: Vec<&str> = pool
+                    .iter()
+                    .copied()
+                    .filter(|n| !next.iter().any(|c| c.name == *n))
+                    .collect();
+                next[i].name = free[rng.below(free.len())].to_string();
+                partial = rng.below(2) == 0;
+            }
+            3 => {
+                next[i].text = !next[i].text;
+                next[i].default = rng.below(6) as i64;
+            }
+            4 => {
+                let j = rng.below(next.len());
+                next.swap(i, j);
+            }
+            _ => broken = true,
+        }
+        if !broken && next == model {
+            continue;
+        }
+        let outcome = if broken {
+            std::fs::write(&cells_path, fuzz_cells_src(&model) + "export state = \n").unwrap();
+            loader.changed([(cells_path.clone(), true)])
+        } else if partial {
+            // The rename saved in cells.strand alone breaks bar.strand:
+            // held back; the second file's save lands both.
+            std::fs::write(&cells_path, fuzz_cells_src(&next)).unwrap();
+            let first = loader.changed([(cells_path.clone(), true)]);
+            assert!(
+                first.build.is_none(),
+                "round {round}: a partial rename committed"
+            );
+            assert_eq!(first.held, std::slice::from_ref(&cells_path));
+            held += 1;
+            std::fs::write(&bar_path, fuzz_bar_src(&next)).unwrap();
+            loader.changed([(bar_path.clone(), true)])
+        } else {
+            std::fs::write(&cells_path, fuzz_cells_src(&next)).unwrap();
+            std::fs::write(&bar_path, fuzz_bar_src(&next)).unwrap();
+            loader.changed([(cells_path.clone(), true), (bar_path.clone(), true)])
+        };
+        let Some(build) = outcome.build else {
+            assert!(
+                broken || outcome.committed.is_empty(),
+                "round {round}: {:?}",
+                outcome.diagnostics
+            );
+            assert!(broken, "round {round}: nothing committed");
+            held += 1;
+            // Held back: the running shell and its state are untouched.
+            for (c, v) in model.iter().zip(&before) {
+                assert_eq!(&shell.value("cells", &c.name), v, "round {round}");
+            }
+            // The fix (the model as it was) lands, changing nothing.
+            std::fs::write(&cells_path, fuzz_cells_src(&model)).unwrap();
+            let fixed = loader.changed([(cells_path.clone(), true)]);
+            assert!(fixed.diagnostics.is_empty(), "round {round}");
+            assert!(fixed.held.is_empty(), "round {round}");
+            if let Some(b) = fixed.build {
+                shell.inst.reload(&b);
+                shell.build = b;
+                shell.flush();
+            }
+            continue;
+        };
+        let report = shell.inst.reload(&build);
+        shell.build = build;
+        let u = shell.flush();
+        assert!(u.errors.is_empty(), "round {round}: {:?}", u.errors);
+        committed += 1;
+        // The table.
+        for c in &next {
+            let old = model
+                .iter()
+                .position(|o| o.name == c.name && o.text == c.text);
+            let want = match old {
+                Some(k) if model[k].default == c.default => before[k].clone(),
+                Some(k) if before[k] == model[k].default_value() => c.default_value(),
+                Some(k) => before[k].clone(),
+                None => {
+                    resets += 1;
+                    c.default_value()
+                }
+            };
+            assert_eq!(
+                shell.value("cells", &c.name),
+                want,
+                "round {round}: `{}` after {model:?} -> {next:?}\n{report:?}",
+                c.name
+            );
+        }
+        if next
+            .iter()
+            .any(|c| !model.iter().any(|o| o.name == c.name && o.text == c.text))
+        {
+            assert!(!report.reset.is_empty(), "round {round}: {report:?}");
+        }
+        // One bar, nothing leaked, never blank.
+        assert_eq!(shell.scene.roots().len(), 1, "round {round}");
+        assert_eq!(shell.scene.of_kind(NodeKind::Bar).len(), 1, "round {round}");
+        model = next;
+    }
+    eprintln!("{committed} committed, {held} held back, {resets} cells reset");
+    assert!(committed > iterations / 3 && held > 0 && resets > 0);
+    let _ = std::fs::remove_dir_all(dir);
 }

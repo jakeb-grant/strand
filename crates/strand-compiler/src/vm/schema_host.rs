@@ -153,6 +153,29 @@ impl SchemaHost {
         SchemaHost::new(rt, types, Some(clock))
     }
 
+    /// Dispose service `name`'s fields and forget its events.
+    fn drop_service(&self, rt: &Runtime, name: &str) {
+        let old: Vec<(String, String)> = self
+            .fields
+            .borrow()
+            .keys()
+            .filter(|(s, _)| s == name)
+            .cloned()
+            .collect();
+        for k in old {
+            let f = self.fields.borrow_mut().remove(&k);
+            match f {
+                Some(Field::Plain(s)) => rt.dispose(s.id()),
+                Some(Field::Keyed(k, l)) => {
+                    rt.dispose(l.id());
+                    rt.dispose(k.id());
+                }
+                None => {}
+            }
+        }
+        self.events.borrow_mut().retain(|(s, _), _| s != name);
+    }
+
     fn add_service(&self, rt: &Runtime, name: &str, r: RecordId) {
         let types = self.types.clone();
         self.add_service_in(rt, name, r, &types);
@@ -471,27 +494,17 @@ impl ServiceHost for SchemaHost {
     fn restart(&self, rt: &Runtime, name: &str, record: RecordId, types: &TypeTable) {
         // Its old cells go (nobody reads them after the reload); the new
         // declaration's fields start at their defaults.
-        let old: Vec<(String, String)> = self
-            .fields
-            .borrow()
-            .keys()
-            .filter(|(s, _)| s == name)
-            .cloned()
-            .collect();
-        for k in old {
-            if let Some(f) = self.fields.borrow_mut().remove(&k) {
-                match f {
-                    Field::Plain(s) => rt.dispose(s.id()),
-                    Field::Keyed(k, l) => {
-                        rt.dispose(l.id());
-                        rt.dispose(k.id());
-                    }
-                }
-            }
-        }
-        self.events.borrow_mut().retain(|(s, _), _| s != name);
+        self.drop_service(rt, name);
         let types = Rc::new(types.clone());
         self.add_service_in(rt, name, record, &types);
+    }
+
+    fn stop(&self, rt: &Runtime, name: &str) {
+        if crate::schema::Schema::builtin().services.contains_key(name) {
+            return;
+        }
+        self.drop_service(rt, name);
+        self.services.borrow_mut().remove(name);
     }
 
     fn read(&self, rt: &Runtime, service: &str, field: &str) -> Result<Value, Error> {

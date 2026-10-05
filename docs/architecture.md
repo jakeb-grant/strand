@@ -25,8 +25,9 @@ thread's surface host forwards the monitor hooks (`screens` as a list of
 plain `ScreenInfo`s, `monitor_forgotten` as `Forget(id)`), pointer input
 on the node under the pointer (`Renderer::hit`'s chain: `hover` along
 it and `pressed` on the chain under a press as `Flag`,
-`click`/`secondary`/`scroll` on the innermost node as `Event`, which
-logic bubbles to the nearest handler) and surface sizes to the logic
+`click`/`secondary` on the innermost node both the press and the release
+were over and `scroll` on the innermost node as `Event`, which logic
+bubbles to the nearest handler) and surface sizes to the logic
 thread over a calloop channel (`run::ToLogic`). Before the logic thread
 starts, `live::Worker::spawn` starts the `strand-watch` watcher (module
 set from `find_files`, rescan callback calling it again), boots the
@@ -37,7 +38,10 @@ sends `live::FromWorker::{Loaded, Settings}` on a calloop channel; logic
 sends it `Job::{Reload { hard }, Referenced(settings files)}`. The
 persist store's `on_written` registers Strand's own writes with the
 watcher. The logic thread commits each `Loaded` (`Instance::reload`,
-`reload_hard`, held back while a lock is shown), keeps the error overlay
+`reload_hard`, held back while a lock is shown: the newest such load
+waits, absorbing older ones, and is committed after the unlock; a load
+committed meanwhile drops it), keeps the error overlay (diagnostics, and
+reload notices with their `[reset]`, which calls `Instance::reset`)
 (`overlay.rs`, external nodes; 250 ms quiet) and freezes faulting
 components, and serves the IPC socket (`ipc.rs`) as sources on its loop;
 it owns the runtime, `SchemaHost::real`
@@ -62,7 +66,9 @@ JSON. Requests are `{"v": 1, "cmd": …}`; each is answered with one line
 or a newer `v` is refused without closing the connection, so M5's `get`,
 `set`, `toggle` and `call` are new `cmd`s on the same socket. Version 1:
 `reload` (`"hard"`; answered once the reload is committed or held, with
-its event) and `watch` (`{"ok": true}`, then one event per line:
+its event; at once with `"deferred": true` in the event while a lock is
+shown), `reset` (`"path"`: a state cell back to its default, as the
+overlay's `[reset]`) and `watch` (`{"ok": true}`, then one event per line:
 `{"event": "reload", files, committed, held, unreadable, from_cache,
 classes, kept, reset: [{cell, why}], notices, restarted, cancelled,
 timing: {watch_ms, compile_ms, commit_ms, total_ms}, diagnostics:
@@ -201,8 +207,9 @@ be built and tested without the language, and the language without pixels.
   token changes that move a resolved value count as updates.
 - **Hit testing**: `Renderer::hit(surface, LogicalPoint) -> Vec<NodeId>`
   is the node painted under a surface-local logical point in the last
-  frame and its ancestors up to the surface's root (the root alone where
-  nothing is drawn). Until taffy layout boxes (M2), a node is hit where
+  frame (the topmost in paint order: later siblings over earlier ones
+  and their children) and its ancestors up to the surface's root (the
+  root alone where nothing is drawn). Until taffy layout boxes (M2), a node is hit where
   it painted ink; a container without paint is reached through the chain.
 
 - **Render loop** (the binary wires this; surface calls `Painter`):
@@ -807,6 +814,10 @@ Public interfaces other crates and later stages build on:
   is an error value, as a token in arithmetic without numbers is now.
 - **Services** (`strand_compiler::vm::ServiceHost`): the VM's only way
   to services.
+  - `restart(rt, name, record, types)` / `stop(rt, name)`: a reload
+    changed (or added) / removed custom service `name`'s declaration;
+    only that service restarts or stops. Built-ins never do. Both
+    default to nothing.
   - `read(rt, service, field)` and `call(rt, service, method, args)`
     (`fn` methods: `clock.format`, `calendar.days`, `workspaces.on`)
     must read through the graph (a `Signal<Value>` per field) so
@@ -923,7 +934,8 @@ Public interfaces other crates and later stages build on:
   surface's), `TopBar[<monitor id>].expanded` (a bar on every monitor),
   `Row[<item key>].open` (state in a `for` item); two live instances on
   one path are core's `PersistPathInUse`. The `Persisted` handles are
-  kept: `Instance::reset(path)` is `@reset`. A keyed list `state` that
+  kept: `Instance::reset(path)` is `@reset` (and the overlay's
+  `[reset]`; a cell that is not persisted is set to its default). A keyed list `state` that
   is persisted stays a plain signal (core persists `Signal`s).
   `state prefs from "prefs.toml" { typed fields }` is `rt.settings_file(
   store, path, fields)`: the path resolved against `config_dir` (`~/`

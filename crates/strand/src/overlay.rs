@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 
 use strand_compiler::diagnostic::{Diagnostic, Severity};
 use strand_compiler::instantiate::Instance;
+use strand_compiler::reconcile::Report;
 use strand_compiler::source::SourceMap;
 use strand_scene::{Color, Font, NodeId, NodeKind, Prop, PropValue};
 
@@ -27,14 +28,62 @@ const ROW_H: f32 = 18.0;
 const PAD: f32 = 12.0;
 const WIDTH: f32 = 960.0;
 
-/// One overlay line: a diagnostic, one of its labels or its help.
-#[derive(Clone, Debug, PartialEq)]
+/// One overlay line: a diagnostic, one of its labels or its help, or a
+/// reload notice.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Line {
     pub text: String,
     /// Where a click goes (file, 1-based line and column).
     pub at: Option<(PathBuf, u32, u32)>,
     /// An error's own line (drawn in the error colour).
     pub error: bool,
+    /// A reload notice (drawn in the warning colour).
+    pub notice: bool,
+    /// The state cell a click on its `[reset]` resets
+    /// (`launcher.query: kept "fir" (default changed) [reset]`).
+    pub reset: Option<String>,
+}
+
+/// A reload notice as an overlay row: one that ends in `[reset]` resets
+/// the cell it names when clicked.
+pub fn notice_line(n: &str) -> Line {
+    let reset = n
+        .strip_suffix(" [reset]")
+        .and_then(|head| head.split_once(": kept "))
+        .map(|(path, _)| path.to_string());
+    Line {
+        text: n.to_string(),
+        notice: true,
+        reset,
+        ..Line::default()
+    }
+}
+
+/// The overlay rows of a reload's report: its notices (kept over a
+/// changed default, ambiguous identities, an `await` cancelled by a
+/// handler restart), the cells it reset and why.
+pub fn report_lines(r: &Report) -> Vec<Line> {
+    let mut out: Vec<Line> = r.notices.iter().map(|n| notice_line(n)).collect();
+    for (cell, why) in &r.reset {
+        out.push(Line {
+            text: format!("{cell}: reset ({why})"),
+            notice: true,
+            ..Line::default()
+        });
+    }
+    if r.cancelled > 0 {
+        out.push(Line {
+            text: format!(
+                "{} handler{} restarted: {} in-flight `await` cancelled",
+                r.restarted,
+                if r.restarted == 1 { "" } else { "s" },
+                r.cancelled
+            ),
+            notice: true,
+            ..Line::default()
+        });
+    }
+    out
 }
 
 /// The 1-based line and column of byte `offset` in `text`.
@@ -53,8 +102,8 @@ pub fn lines(diags: &[Diagnostic], map: &SourceMap, unreadable: &[(PathBuf, Stri
     for (p, why) in unreadable {
         out.push(Line {
             text: format!("{}: cannot read: {why}", p.display()),
-            at: None,
             error: true,
+            ..Line::default()
         });
     }
     let locate = |file, offset: u32| {
@@ -80,6 +129,7 @@ pub fn lines(diags: &[Diagnostic], map: &SourceMap, unreadable: &[(PathBuf, Stri
             text: format!("{place}{sev}[{}]: {}", d.code, d.message),
             at: at.clone(),
             error: d.severity == Severity::Error,
+            ..Line::default()
         });
         for l in &d.labels {
             if l.message.is_empty() || (l.primary && l.message == d.message) {
@@ -93,14 +143,14 @@ pub fn lines(diags: &[Diagnostic], map: &SourceMap, unreadable: &[(PathBuf, Stri
             out.push(Line {
                 text: format!("    {place}{}", l.message),
                 at,
-                error: false,
+                ..Line::default()
             });
         }
         if let Some(h) = &d.help {
             out.push(Line {
                 text: format!("    help: {h}"),
                 at: at.clone(),
-                error: false,
+                ..Line::default()
             });
         }
     }
@@ -123,8 +173,11 @@ fn short(p: &Path) -> String {
 pub enum Click {
     /// Open this file at this line and column.
     Open(PathBuf, u32, u32),
-    /// The close button: hidden until the diagnostics change.
+    /// The close button: hidden until the diagnostics change (and the
+    /// reload notices it listed are cleared).
     Dismissed,
+    /// A notice's `[reset]`: reset this state cell to its default.
+    Reset(String),
     /// A line with nowhere to go, or the panel itself.
     Nothing,
 }
@@ -133,13 +186,16 @@ pub enum Click {
 struct Shown {
     panel: NodeId,
     close: NodeId,
-    rows: Vec<(NodeId, usize)>,
+    rows: Vec<(NodeId, Line)>,
 }
 
 /// See the module docs.
 #[derive(Debug, Default)]
 pub struct Overlay {
+    /// The diagnostics of the last attempt.
     lines: Vec<Line>,
+    /// Reload notices, kept until dismissed (or reset, one by one).
+    notes: Vec<Line>,
     /// When the current lines were set (the quiet period runs from here).
     since: Option<Instant>,
     shown: Option<Shown>,
@@ -154,8 +210,32 @@ impl Overlay {
             return;
         }
         self.lines = lines;
+        self.changed(now, inst);
+    }
+
+    /// Reload notices to list (after the errors) until dismissed; they
+    /// open the overlay after the same quiet period.
+    pub fn note(&mut self, notes: Vec<Line>, now: Instant, inst: &Instance) {
+        let mut any = false;
+        for n in notes {
+            if !self.notes.contains(&n) {
+                self.notes.push(n);
+                any = true;
+            }
+        }
+        if any {
+            self.changed(now, inst);
+        }
+    }
+
+    /// Everything listed: the errors, then the notices.
+    fn all(&self) -> Vec<Line> {
+        self.lines.iter().chain(&self.notes).cloned().collect()
+    }
+
+    fn changed(&mut self, now: Instant, inst: &Instance) {
         self.dismissed = false;
-        if self.lines.is_empty() {
+        if self.lines.is_empty() && self.notes.is_empty() {
             self.since = None;
             self.hide(inst);
             return;
@@ -191,8 +271,8 @@ impl Overlay {
 
     /// The lines it lists (or would list).
     #[cfg(test)]
-    pub fn lines(&self) -> &[Line] {
-        &self.lines
+    pub fn lines(&self) -> Vec<Line> {
+        self.all()
     }
 
     /// A click on `node`: `None` if it is not the overlay's.
@@ -200,11 +280,26 @@ impl Overlay {
         let shown = self.shown.as_ref()?;
         if node == shown.close {
             self.hide(inst);
+            self.notes.clear();
+            self.since = None;
             self.dismissed = true;
             return Some(Click::Dismissed);
         }
-        if let Some((_, i)) = shown.rows.iter().find(|(n, _)| *n == node) {
-            return Some(match &self.lines[*i].at {
+        if let Some((_, line)) = shown.rows.iter().find(|(n, _)| *n == node) {
+            let line = line.clone();
+            if let Some(path) = &line.reset {
+                // Done with: its row goes.
+                self.notes.retain(|n| *n != line);
+                if self.lines.is_empty() && self.notes.is_empty() {
+                    self.since = None;
+                    self.hide(inst);
+                } else {
+                    self.hide(inst);
+                    self.show(inst);
+                }
+                return Some(Click::Reset(path.clone()));
+            }
+            return Some(match &line.at {
                 Some((p, l, c)) => Click::Open(p.clone(), *l, *c),
                 None => Click::Nothing,
             });
@@ -219,10 +314,11 @@ impl Overlay {
     }
 
     fn show(&mut self, inst: &Instance) {
-        if self.lines.is_empty() {
+        let all = self.all();
+        if all.is_empty() {
             return;
         }
-        let rows = self.lines.len().min(MAX_ROWS);
+        let rows = all.len().min(MAX_ROWS);
         let height = PAD * 2.0 + ROW_H * (rows as f32 + 1.0);
         let panel = inst.external_create(NodeKind::Panel, None, 0);
         let color = |hex: &str| Color::from_hex(hex).map_or(PropValue::Unset, PropValue::Color);
@@ -248,18 +344,22 @@ impl Overlay {
         ] {
             inst.external_set(panel, p, v);
         }
-        let errors = self.lines.iter().filter(|l| l.error).count();
+        let errors = all.iter().filter(|l| l.error).count();
         let header = inst.external_create(NodeKind::Text, Some(panel), 0);
-        let more = self.lines.len().saturating_sub(rows);
-        let title = format!(
-            "strand: {errors} error{} — the last good config is running; click a line to open it{}",
-            if errors == 1 { "" } else { "s" },
-            if more > 0 {
-                format!(" ({more} more lines)")
-            } else {
-                String::new()
-            }
-        );
+        let more = all.len().saturating_sub(rows);
+        let more = if more > 0 {
+            format!(" ({more} more lines)")
+        } else {
+            String::new()
+        };
+        let title = if errors > 0 {
+            format!(
+                "strand: {errors} error{} — the last good config is running; click a line to open it{more}",
+                if errors == 1 { "" } else { "s" },
+            )
+        } else {
+            format!("strand: reloaded with notices — click [reset] to go back to a default{more}")
+        };
         for (p, v) in [
             (Prop::Text, PropValue::Text(title)),
             (Prop::X, PropValue::Number(PAD)),
@@ -277,7 +377,7 @@ impl Overlay {
             inst.external_set(close, p, v);
         }
         let mut row_nodes = Vec::new();
-        for (i, l) in self.lines.iter().take(rows).enumerate() {
+        for (i, l) in all.into_iter().take(rows).enumerate() {
             let n = inst.external_create(NodeKind::Text, Some(panel), i + 2);
             inst.external_set(n, Prop::Text, PropValue::Text(l.text.clone()));
             inst.external_set(n, Prop::X, PropValue::Number(PAD));
@@ -289,8 +389,10 @@ impl Overlay {
             inst.external_set(n, Prop::MaxWidth, PropValue::Number(WIDTH - PAD * 2.0));
             if l.error {
                 inst.external_set(n, Prop::Color, color("#f38ba8"));
+            } else if l.notice {
+                inst.external_set(n, Prop::Color, color("#f9e2af"));
             }
-            row_nodes.push((n, i));
+            row_nodes.push((n, l));
         }
         self.shown = Some(Shown {
             panel,
@@ -300,17 +402,27 @@ impl Overlay {
     }
 }
 
+/// Editors that need a terminal (run from a shell with no tty they exit
+/// at once or hang).
+const TERMINAL_EDITORS: &[&str] = &[
+    "vi", "vim", "nvim", "nano", "micro", "kak", "hx", "helix", "ne", "joe", "mg",
+];
+
 /// The command that opens `file` at `line`: `$STRAND_EDITOR` as a
 /// template (`{file}`, `{line}`, `{col}`, split on spaces, e.g. `foot -e
 /// nvim +{line} {file}`), else `$VISUAL` or `$EDITOR` as `<editor>
-/// +<line> <file>` (vi, vim, nvim, emacs, nano, micro, kakoune), else
-/// `xdg-open <file>`.
+/// +<line> <file>`, run inside `terminal` (the command prefix that
+/// starts a terminal: `xdg-terminal-exec`, or `$TERMINAL -e`) when it is
+/// a terminal editor (vi, vim, nvim, nano, micro, kakoune, helix), else
+/// `xdg-open <file>` (a terminal editor with no terminal to run in
+/// included: the click then opens the desktop's editor for the file).
 pub fn editor_command(
     file: &Path,
     line: u32,
     col: u32,
     template: Option<&str>,
     editor: Option<&str>,
+    terminal: Option<&[String]>,
 ) -> Vec<String> {
     let f = file.display().to_string();
     if let Some(t) = template.filter(|t| !t.trim().is_empty()) {
@@ -326,10 +438,48 @@ pub fn editor_command(
     if let Some(e) = editor.filter(|e| !e.trim().is_empty()) {
         let mut cmd: Vec<String> = e.split_whitespace().map(String::from).collect();
         cmd.push(format!("+{line}"));
-        cmd.push(f);
-        return cmd;
+        cmd.push(f.clone());
+        let name = Path::new(&cmd[0])
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if !TERMINAL_EDITORS.contains(&name.as_str()) {
+            return cmd;
+        }
+        if let Some(term) = terminal.filter(|t| !t.is_empty()) {
+            let mut wrapped = term.to_vec();
+            wrapped.extend(cmd);
+            return wrapped;
+        }
     }
     vec!["xdg-open".into(), f]
+}
+
+/// `name` is an executable on `$PATH`.
+fn on_path(name: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|d| {
+            let p = d.join(name);
+            std::fs::metadata(&p).is_ok_and(|m| {
+                use std::os::unix::fs::PermissionsExt;
+                m.is_file() && m.permissions().mode() & 0o111 != 0
+            })
+        })
+    })
+}
+
+/// The terminal a terminal editor runs in: `xdg-terminal-exec` when it
+/// is installed, else `$TERMINAL -e`.
+fn terminal() -> Option<Vec<String>> {
+    if on_path("xdg-terminal-exec") {
+        return Some(vec!["xdg-terminal-exec".into()]);
+    }
+    let t = std::env::var("TERMINAL")
+        .ok()
+        .filter(|t| !t.trim().is_empty())?;
+    let mut cmd: Vec<String> = t.split_whitespace().map(String::from).collect();
+    cmd.push("-e".into());
+    Some(cmd)
 }
 
 /// Open the editor (detached; its exit is reaped on a thread of its own).
@@ -338,7 +488,23 @@ pub fn open_editor(file: &Path, line: u32, col: u32) {
     let editor = std::env::var("VISUAL")
         .ok()
         .or_else(|| std::env::var("EDITOR").ok());
-    let cmd = editor_command(file, line, col, template.as_deref(), editor.as_deref());
+    let term = terminal();
+    let cmd = editor_command(
+        file,
+        line,
+        col,
+        template.as_deref(),
+        editor.as_deref(),
+        term.as_deref(),
+    );
+    if cmd.first().map(String::as_str) == Some("xdg-open") && editor.is_some() {
+        log::info!(
+            "opening {} with xdg-open: $EDITOR needs a terminal and none was found \
+             (install xdg-terminal-exec, set $TERMINAL, or set $STRAND_EDITOR, \
+             e.g. `foot -e nvim +{{line}} {{file}}`)",
+            file.display()
+        );
+    }
     let Some((prog, args)) = cmd.split_first() else {
         return;
     };
@@ -421,6 +587,7 @@ mod tests {
             text: t.into(),
             at: Some((PathBuf::from("/c/bar.strand"), 2, 3)),
             error: true,
+            ..Line::default()
         }
     }
 
@@ -467,19 +634,81 @@ mod tests {
         assert_eq!(m.find_text("a"), None);
     }
 
+    /// Reload notices are listed after the quiet period as warning rows;
+    /// a `[reset]` row asks for its cell and goes; clean reloads leave
+    /// them; dismissal clears them.
+    #[test]
+    fn reload_notices_and_their_reset() {
+        let (_rt, inst) = instance();
+        let mut o = Overlay::default();
+        let t0 = Instant::now();
+        let report = Report {
+            notices: vec!["launcher.query: kept \"fir\" (default changed) [reset]".into()],
+            reset: vec![("t.b".into(), "renamed".into())],
+            ..Report::default()
+        };
+        let rows = report_lines(&report);
+        assert_eq!(rows[0].reset.as_deref(), Some("launcher.query"));
+        assert_eq!(rows[1].text, "t.b: reset (renamed)");
+        assert!(rows[1].reset.is_none() && rows.iter().all(|l| l.notice));
+        o.note(rows, t0, &inst);
+        // A clean reload in the meantime keeps them.
+        o.set(Vec::new(), t0, &inst);
+        o.tick(t0 + Duration::from_millis(100), &inst);
+        assert!(!o.is_shown());
+        o.tick(t0 + QUIET, &inst);
+        assert!(o.is_shown());
+        let mut m = strand_compiler::instantiate::SceneMirror::new();
+        m.apply(&inst.flush().diff).unwrap();
+        let row = m
+            .find_text("launcher.query: kept \"fir\" (default changed) [reset]")
+            .unwrap();
+        assert_eq!(
+            o.click(row, &inst),
+            Some(Click::Reset("launcher.query".into()))
+        );
+        m.apply(&inst.flush().diff).unwrap();
+        assert!(m.find_text("t.b: reset (renamed)").is_some());
+        assert_eq!(o.lines().len(), 1, "the reset row is gone");
+        let close = m.find_text("×").unwrap();
+        assert_eq!(o.click(close, &inst), Some(Click::Dismissed));
+        assert!(o.lines().is_empty());
+        m.apply(&inst.flush().diff).unwrap();
+        assert!(m.find_text("t.b: reset (renamed)").is_none());
+        assert_eq!(notice_line("x: ambiguous").reset, None);
+    }
+
     #[test]
     fn the_editor_command() {
         let f = Path::new("/c/bar.strand");
+        let term = ["foot".to_string(), "-e".to_string()];
         assert_eq!(
-            editor_command(f, 3, 7, Some("foot -e nvim +{line} {file}"), Some("vim")),
+            editor_command(
+                f,
+                3,
+                7,
+                Some("foot -e nvim +{line} {file}"),
+                Some("vim"),
+                None
+            ),
             ["foot", "-e", "nvim", "+3", "/c/bar.strand"]
         );
+        // A GUI editor runs as it is.
         assert_eq!(
-            editor_command(f, 3, 7, None, Some("emacsclient -n")),
+            editor_command(f, 3, 7, None, Some("emacsclient -n"), Some(&term)),
             ["emacsclient", "-n", "+3", "/c/bar.strand"]
         );
+        // A terminal editor runs in the terminal, or not at all.
         assert_eq!(
-            editor_command(f, 3, 7, Some(" "), None),
+            editor_command(f, 3, 7, None, Some("/usr/bin/nvim"), Some(&term)),
+            ["foot", "-e", "/usr/bin/nvim", "+3", "/c/bar.strand"]
+        );
+        assert_eq!(
+            editor_command(f, 3, 7, None, Some("nano"), None),
+            ["xdg-open", "/c/bar.strand"]
+        );
+        assert_eq!(
+            editor_command(f, 3, 7, Some(" "), None, None),
             ["xdg-open", "/c/bar.strand"]
         );
     }

@@ -1432,3 +1432,49 @@ fn hit_finds_the_painted_node_and_its_ancestors() {
         assert!(r.hit(SurfaceId(99), LogicalPoint::new(1.0, 1.0)).is_empty());
     }
 }
+
+/// Overlapping nodes: the hit is the one painted on top (later siblings
+/// over earlier ones and their children), not the deepest one.
+#[test]
+fn hit_follows_paint_order() {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let under = b.node(
+        NodeKind::Box,
+        Some(root),
+        vec![
+            (Prop::X, num(10.0)),
+            (Prop::Y, num(4.0)),
+            (Prop::Size, num(20.0)),
+            (Prop::Bg, color("#89b4fa")),
+        ],
+    );
+    let inner = b.node(
+        NodeKind::Box,
+        Some(under),
+        vec![
+            (Prop::X, num(10.0)),
+            (Prop::Y, num(0.0)),
+            (Prop::Size, num(10.0)),
+            (Prop::Bg, color("#f38ba8")),
+        ],
+    );
+    let over = b.node(
+        NodeKind::Box,
+        Some(root),
+        vec![
+            (Prop::X, num(20.0)),
+            (Prop::Y, num(4.0)),
+            (Prop::Size, num(20.0)),
+            (Prop::Bg, color("#a6e3a1")),
+        ],
+    );
+    let (r, _buf) = fresh(b.diff, 200, 36, Scale::ONE);
+    // Under `over` and `inner` both: `over` is painted last.
+    assert_eq!(r.hit(BAR, LogicalPoint::new(25.0, 8.0)), [over, root]);
+    // Only `under` (left of `over`).
+    assert_eq!(r.hit(BAR, LogicalPoint::new(12.0, 8.0)), [under, root]);
+    // `inner` alone is never on top here; its own chain is reachable
+    // where nothing covers it.
+    assert!(!r.hit(BAR, LogicalPoint::new(25.0, 8.0)).contains(&inner));
+}

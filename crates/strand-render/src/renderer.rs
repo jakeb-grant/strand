@@ -448,35 +448,30 @@ impl Renderer {
             (point.x as f64 * k).floor().clamp(-1e9, 1e9) as i32,
             (point.y as f64 * k).floor().clamp(-1e9, 1e9) as i32,
         );
-        let depth = |mut id: NodeId| {
-            let mut d = 0usize;
-            while let Some(parent) = self.tree.get(id).and_then(|n| n.parent) {
-                if id == s.root {
-                    break;
+        // The topmost hit node in paint order: children paint over their
+        // parent and later siblings over earlier ones, so the walk goes
+        // through children last-first and takes the first hit.
+        fn topmost(
+            tree: &SceneTree,
+            records: &BTreeMap<NodeId, NodeRecord>,
+            id: NodeId,
+            p: Point,
+        ) -> Option<NodeId> {
+            if let Some(n) = tree.get(id) {
+                for &c in n.children.iter().rev() {
+                    if let Some(h) = topmost(tree, records, c, p) {
+                        return Some(h);
+                    }
                 }
-                id = parent;
-                d += 1;
             }
-            d
-        };
-        // The deepest hit node on this surface; the later one in paint
-        // order (a higher id among equals is not paint order, so prefer
-        // the last child) on a tie.
-        let mut best: Option<(usize, NodeId)> = None;
-        for (&id, rec) in &s.records {
-            if rec.bounds.w == 0 || rec.bounds.h == 0 || !rec.bounds.contains(p) {
-                continue;
-            }
-            if self.tree.root_of(id) != Some(s.root) {
-                continue;
-            }
-            let d = depth(id);
-            if best.is_none_or(|(bd, _)| d >= bd) {
-                best = Some((d, id));
-            }
+            records
+                .get(&id)
+                .filter(|r| r.bounds.w != 0 && r.bounds.h != 0 && r.bounds.contains(p))
+                .map(|_| id)
         }
+        let best = topmost(&self.tree, &s.records, s.root, p);
         let mut chain = Vec::new();
-        let mut cur = best.map_or(s.root, |b| b.1);
+        let mut cur = best.unwrap_or(s.root);
         loop {
             chain.push(cur);
             if cur == s.root {

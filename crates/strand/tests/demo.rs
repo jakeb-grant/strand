@@ -235,6 +235,23 @@ impl Shot {
         [self.rgb[i], self.rgb[i + 1], self.rgb[i + 2]]
     }
 
+    /// Dark (default text colour) pixels in columns `xs` of a red bar
+    /// (`bar_h` rows).
+    fn ink(&self, xs: std::ops::Range<usize>, bar_h: usize) -> usize {
+        xs.into_iter()
+            .map(|x| (0..bar_h).filter(|&y| self.px(x, y)[0] < 0x40).count())
+            .sum()
+    }
+
+    /// Some pixel of column `x` in rows `ys` has the overlay panel's
+    /// colour (`#1e1e2ef0`).
+    fn overlay_at(&self, x: usize, ys: std::ops::Range<usize>) -> bool {
+        ys.into_iter().any(|y| {
+            let [r, g, b] = self.px(x, y);
+            (0x16..=0x22).contains(&r) && (0x16..=0x22).contains(&g) && b >= r + 10
+        })
+    }
+
     /// Some pixel in columns `xs` of the bar (`bar_h` rows) is light text.
     fn lit(&self, xs: std::ops::Range<usize>, bar_h: usize) -> bool {
         xs.into_iter()
@@ -755,6 +772,19 @@ impl Watch {
         }
     }
 
+    /// Wait for `{"event": "watching"}`: subscribed, no event missed.
+    fn ready(&self) {
+        loop {
+            let ev = self
+                .events
+                .recv_timeout(Duration::from_secs(20))
+                .expect("strand watch never subscribed");
+            if ev["event"] == "watching" {
+                return;
+            }
+        }
+    }
+
     /// The next reload event (20 s at most).
     fn next(&self) -> serde_json::Value {
         loop {
@@ -861,8 +891,8 @@ fn strand_run_reloads_live_with_state_kept() {
         damage_after(0, "buffer=2560x40 ")
     });
     let watch = Watch::start(&sway);
-    // Give the watcher's connection a moment to be accepted.
-    std::thread::sleep(Duration::from_millis(300));
+    // Wait until the watcher is subscribed (its `{"ok": true}` read).
+    watch.ready();
     let mark = damage_count();
     let fresh = |from: usize| damage_after(from, "buffer=2560x32 ");
 
@@ -880,14 +910,36 @@ fn strand_run_reloads_live_with_state_kept() {
     settle();
     assert_eq!(bg(&sway), [0x80, 0x20, 0x20]);
 
-    // 3. A node added, then removed.
+    // 3. A node added, then removed: more ink on the bar, then exactly
+    // as before. Until flex layout (M2) every text is placed by its own
+    // x/y, so all of them, the clock included, draw (in the default dark
+    // colour) at the bar's top left: start on a fresh minute so the clock
+    // does not tick between the shots, and keep away from the pointer.
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        % 60;
+    if secs > 50 {
+        std::thread::sleep(Duration::from_secs(61 - secs));
+    }
+    let end_ink = |sway: &Sway| Shot::take(sway, "HEADLESS-1").ink(0..1600, 40);
+    let before = end_ink(&sway);
     let added = "    end { text \"added\" }\n";
     save(&file, &hello("#208040", "#802020", added));
     let ev = watch.next();
     assert_eq!(ev["classes"], serde_json::json!(["node-added"]), "{ev}");
+    settle();
+    let with = end_ink(&sway);
+    assert!(
+        with > before,
+        "no ink for the added node: {with} <= {before}"
+    );
     save(&file, &hello("#208040", "#802020", ""));
     let ev = watch.next();
     assert_eq!(ev["classes"], serde_json::json!(["node-removed"]), "{ev}");
+    settle();
+    assert_eq!(end_ink(&sway), before, "the removed node's ink stays");
 
     // 4. Broken: held back, the last good bar stays; after 250 ms the
     // overlay (a 960 px wide panel) opens.
@@ -907,6 +959,9 @@ fn strand_run_reloads_live_with_state_kept() {
     });
     settle();
     assert_eq!(bg(&sway), [0x80, 0x20, 0x20], "the last good bar runs");
+    // The panel is centred below the bar: its left padding, x = 805.
+    let overlay_shown = |sway: &Sway| Shot::take(sway, "HEADLESS-1").overlay_at(805, 40..400);
+    assert!(overlay_shown(&sway), "no overlay pixels");
 
     // 5. Fixed: committed, the overlay goes.
     save(&file, &hello("#208040", "#802020", "    text \"fixed\"\n"));
@@ -917,6 +972,8 @@ fn strand_run_reloads_live_with_state_kept() {
         text().matches(" detached").count() >= 1
     });
     assert!(text().matches("surface ").count() > surfaces_before);
+    settle();
+    assert!(!overlay_shown(&sway), "the overlay is still drawn");
 
     // Through it all the bar kept n: never 32 px again.
     assert!(!fresh(mark), "a reload reset the bar: {}", text());

@@ -51,6 +51,11 @@ pub trait ServiceHost {
     ) {
     }
 
+    /// A live reload removed custom service `name`'s declaration: dispose
+    /// its fields and events. Built-ins never stop. The default does
+    /// nothing.
+    fn stop(&self, _rt: &Runtime, _name: &str) {}
+
     /// The value of `service.field`, tracked.
     fn read(&self, rt: &Runtime, service: &str, field: &str) -> Result<Value, Error>;
 

@@ -3002,14 +3002,71 @@ and says so); a stale one is.
 
 **2026-10-05 · Pointer input goes to the node under the pointer.**
 `Renderer::hit` answers from the last painted frame's node records (ink
-bounds), deepest first. `hover` is set on the whole chain from that
+bounds), the topmost node in paint order (corrected in fixer round 1:
+it was the deepest, which put a child of an earlier sibling above the
+later sibling painted over it). `hover` is set on the whole chain from that
 node to the surface (a row is hovered while its child is), `pressed` on
 the chain under a left press, which also latches `hover` there until the
-release (a drag); `click`/`secondary`/`scroll` go to the innermost node
-and logic bubbles them to the nearest handler. Containers without paint
+release (a drag); `click`/`secondary` go to the innermost node that
+both the press and the release were over (pressed on one button and
+released on its sibling clicks their row, as toolkits do; a release
+with no press on the surface clicks nothing), `scroll` to the innermost
+node, and logic bubbles them to the nearest handler. Containers without paint
 are reached through their children until taffy gives them boxes (M2).
 
 **2026-10-05 · Reload timing.** A reload event's `total_ms` runs from
 the watcher's last event behind the save to the moment the diff that
 holds the reload is sent to render; render's frame adds at most one
 frame interval. The save-to-pixels benchmark (M1 exit) builds on it.
+
+**2026-10-05 · A lock edit holds back the whole build while a lock is
+shown.** design.md defers "anything inside `lock`" until unlock. Mounting
+a new program around an old lock subtree (its nodes, cells and handlers
+running old bytecode against new declarations it may name) adds a
+concept, a mixed program, for a case that lasts until the user unlocks;
+holding the build back removes it. So while a lock is shown, a build
+whose lock hashes changed (they cover everything the lock mounts) is not
+committed, nor is `strand reload --hard` (the lock is exempt from
+reload: a hard reload would recreate it). The deferred load's event goes
+out at once with `"deferred": true` (answering `strand reload`); a newer
+deferred load absorbs the older one (files, committed, requested, hard);
+a newer load that commits normally (the lock edit reverted) makes it
+stale and drops it, a deferred hard reload still owed; after the unlock
+the newest deferred load commits. Edits that do not touch a lock commit
+at once, lock shown or not.
+
+**2026-10-05 · An unreadable file is held back, never removed.** A
+module whose saved bytes cannot be read (EACCES, not UTF-8, a dangling
+link mid-restow, a directory the listing cannot read) keeps its last
+good text in the build and is reported as held and unreadable; only a
+file the watcher reports removed, or that a rescan no longer lists (and
+not under a directory the listing failed on), is removed. design.md:
+"On error, the live shell stays."
+
+**2026-10-05 · Reload notices are overlay rows.** The report's notices
+(`launcher.query: kept "fir" (default changed) [reset]`, ambiguous
+identities), its reset cells (`t.b: reset (renamed)`) and cancelled
+`await`s are listed on the error overlay after the same 250 ms quiet
+period, in the warning colour, after any errors, and stay until
+dismissed (a clean save does not take them away). Clicking a `[reset]`
+row calls `Instance::reset(path)`, which now also resets a cell that is
+not persisted (to its current default), and removes the row. IPC
+`reset` does the same from a script.
+
+**2026-10-05 · Terminal editors run in a terminal.** A click on an
+overlay row with `$VISUAL`/`$EDITOR` naming a terminal editor (vi, vim,
+nvim, nano, micro, kak, hx, …) runs it under `xdg-terminal-exec` when
+installed, else `$TERMINAL -e`; with neither it falls back to
+`xdg-open <file>` and logs how to set `$STRAND_EDITOR`. GUI editors run
+as before.
+
+**2026-10-05 · Removed custom services stop.** A reload whose program no
+longer declares a custom service calls `ServiceHost::stop(name)`, which
+disposes its fields and events (`Hashes::removed_services`), as a changed
+declaration calls `restart`.
+
+**2026-10-05 · IPC clients that half-close are answered.** A client that
+shuts its writing side after a request (`nc -N`, `socat`) stays until its
+answers and events are written; the server stops polling it for reads.
+`strand watch` reads the `{"ok": true}` and the events through one
+buffered reader, so an event in the same read as the answer is kept.

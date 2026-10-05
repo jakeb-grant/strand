@@ -57,6 +57,18 @@ impl Hashes {
         out
     }
 
+    /// Custom services `old` declared that are gone now.
+    pub fn removed_services(&self, old: &Hashes) -> Vec<String> {
+        let mut out: Vec<String> = old
+            .services
+            .keys()
+            .filter(|n| !self.services.contains_key(*n))
+            .cloned()
+            .collect();
+        out.sort();
+        out
+    }
+
     pub(crate) fn compute(
         id: &Identity,
         map: &SourceMap,
@@ -71,6 +83,7 @@ impl Hashes {
             hir,
             refs,
             defs: HashMap::new(),
+            low: usize::MAX,
             out: Hashes::default(),
         };
         for f in &prog.files {
@@ -102,6 +115,9 @@ struct Merkle<'a> {
     refs: Vec<&'a hir::Reference>,
     /// Memoised declaration hashes (with and without components).
     defs: HashMap<(DefId, bool), u64>,
+    /// The lowest `stack` position a back edge reached while hashing the
+    /// current declaration (`usize::MAX`: none).
+    low: usize,
     out: Hashes,
 }
 
@@ -197,9 +213,12 @@ impl Merkle<'_> {
         }
         // A recursive `fn` (or `let`s naming each other) counts by name
         // inside its own cycle.
-        if stack.contains(&d) {
+        if let Some(pos) = stack.iter().position(|x| *x == d) {
+            self.low = self.low.min(pos);
             return 0;
         }
+        let me = stack.len();
+        let outer = std::mem::replace(&mut self.low, usize::MAX);
         stack.push(d);
         let def = self.hir.def(d);
         let braced = !matches!(def.kind, DefKind::Let | DefKind::State);
@@ -211,7 +230,16 @@ impl Merkle<'_> {
             _ => 0,
         };
         stack.pop();
-        self.defs.insert((d, components), v);
+        let low = self.low;
+        self.low = outer.min(low);
+        // Inside a cycle entered above this declaration, `v` counted a
+        // member it is still hashing as 0: it is only a partial value,
+        // so it is not memoised (a handler naming this declaration
+        // directly hashes it again, over the whole cycle). The cycle's
+        // entry covers every member's text.
+        if low >= me {
+            self.defs.insert((d, components), v);
+        }
         v
     }
 }

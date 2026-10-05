@@ -163,3 +163,87 @@ fn the_cache_follows_the_schema() {
     assert!(c.load(&other).is_none(), "cached against another schema");
     let _ = std::fs::remove_dir_all(d);
 }
+
+/// The manifest of the one config cached under `d/cache`.
+fn cached_manifest(d: &Path) -> String {
+    let entry = std::fs::read_dir(d.join("cache"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .find(|e| !e.file_name().to_string_lossy().starts_with('.'))
+        .unwrap();
+    std::fs::read_to_string(entry.path().join("manifest")).unwrap()
+}
+
+/// design.md, "The pipeline" 5: on error the live shell stays. A file
+/// that cannot be read (here: not UTF-8, as a half-written save or a
+/// stray binary would be) is held back at its last good text; it is
+/// never committed as a deletion, and the last-good cache keeps it.
+#[test]
+fn an_unreadable_file_keeps_its_last_good_text() {
+    let d = dir("unreadable");
+    let bar = write(&d, "bar.strand", BAR);
+    write(&d, "clock.strand", CLOCK);
+    let mut l = loader(&d);
+    let first = l.boot().build.unwrap();
+    let manifest = cached_manifest(&d);
+    std::fs::write(&bar, [0xff, 0xfe, b'b', b'a', b'r']).unwrap();
+    let out = l.changed([(bar.clone(), true)]);
+    assert!(out.build.is_none(), "committed {:?}", out.committed);
+    assert_eq!(out.held, std::slice::from_ref(&bar));
+    assert_eq!(out.unreadable.len(), 1);
+    assert!(std::sync::Arc::ptr_eq(
+        &l.last().unwrap().program,
+        &first.program
+    ));
+    assert_eq!(cached_manifest(&d), manifest);
+    // Another file saved meanwhile commits with the bar still in it.
+    let clock = d.join("conf").join("clock.strand");
+    std::fs::write(&clock, CLOCK.replace("shut", "closed")).unwrap();
+    let out = l.changed([(clock.clone(), true)]);
+    let build = out.build.expect("the clock commits");
+    assert_eq!(out.committed, [clock]);
+    assert_eq!(out.held, std::slice::from_ref(&bar));
+    assert!(
+        build
+            .sources
+            .iter()
+            .any(|(_, f)| f.name.ends_with("bar.strand")),
+        "the bar is still in the build"
+    );
+    assert!(cached_manifest(&d).contains("bar.strand"));
+    // Readable again: it commits.
+    std::fs::write(&bar, BAR.replace("true", "false")).unwrap();
+    let out = l.changed([(bar.clone(), true)]);
+    assert!(out.build.is_some());
+    assert!(out.held.is_empty() && out.unreadable.is_empty());
+    let _ = std::fs::remove_dir_all(d);
+}
+
+/// A dangling `*.strand` link (a restow in progress) is reported by the
+/// listing as unreadable: `strand reload` keeps the file it pointed at
+/// running instead of dropping it.
+#[test]
+fn a_rescan_keeps_files_the_listing_cannot_read() {
+    let d = dir("dangling");
+    std::fs::create_dir_all(d.join("stow")).unwrap();
+    let target = d.join("stow").join("bar.strand");
+    std::fs::write(&target, BAR).unwrap();
+    let bar = d.join("conf").join("bar.strand");
+    std::os::unix::fs::symlink(&target, &bar).unwrap();
+    write(&d, "clock.strand", CLOCK);
+    let mut l = loader(&d);
+    let first = l.boot().build.unwrap();
+    std::fs::remove_file(&target).unwrap();
+    let out = l.rescan();
+    assert!(out.build.is_none(), "committed {:?}", out.committed);
+    assert_eq!(out.held, std::slice::from_ref(&bar));
+    assert!(std::sync::Arc::ptr_eq(
+        &l.last().unwrap().program,
+        &first.program
+    ));
+    // Restowed: back, and nothing to commit (same text).
+    std::fs::write(&target, BAR).unwrap();
+    let out = l.rescan();
+    assert!(out.held.is_empty() && out.unreadable.is_empty());
+    let _ = std::fs::remove_dir_all(d);
+}
