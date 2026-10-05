@@ -264,7 +264,13 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   should call for every assignment and `emit` it lowers (a reader is then
   ordered after its writer as soon as the reader has run once, before the
   first write is seen); `rt.rank(id)` exposes the rank.
-  Service events are `EventQueue`s.
+  Service events are `EventQueue`s. Keyed collection writes from
+  graph-triggered handlers are rate-guarded too (wave 2): a throttled
+  handler writes to a held copy that lands as one keyed diff, so the
+  emitter only ever sees `VecDiff`s. `KeyedVec` lookups by key are O(1);
+  a `KeyedVec` clone shares its key index, so read through a temporary
+  (`xs.get_untracked(rt)?.get(&k)`) rather than holding a clone across a
+  write, which would copy the index.
   Service `rw` writes use `write_tagged(value, send)` (throttled writes are
   held, then sent) and reports come back through `receive`. `let x =
   svc.call(input)` returning `Async` is `rt.async_memo(input, fetch)`, a
