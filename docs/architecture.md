@@ -413,6 +413,15 @@ Public interfaces other crates and later stages build on:
   offset)` serves go-to-definition, hover and rename, and
   `Program::exports()` lists `file.name` paths for the CLI.
 
+- **Formatting** (`strand_compiler::fmt`): `format(src) -> Result<String,
+  FormatError>` (and `format_parsed(src, &Parse)`), the one formatter
+  behind `strand fmt` and LSP formatting. It never changes a file's
+  meaning: a file with syntax errors is `FormatError::Syntax(errors)`, and
+  a result whose tree differs from the input's up to spans
+  (`fmt::shape(&ast::File) -> String`, the tree's `Debug` with spans
+  removed) is `FormatError::Unstable` rather than written. The output is
+  idempotent, keeps comments and line breaks, and ends with one `\n`.
+
 ### Config files
 
 `strand_compiler::source::find_files(dir) -> io::Result<Discovery { files,
@@ -555,6 +564,28 @@ and the connection):
   - M4: `raw_handles(surface)` (display + `wl_surface`) for GPU promotion
     on the same surface; `State::recreate_all()` for `strand reload
     --hard`.
+
+### `strand-dev`
+
+The language server, `strand-dev lsp` (stdio), built on `lsp-server` and
+`lsp-types`; the runtime binary never links it. `strand_dev::serve(&
+lsp_server::Connection)` runs the protocol on any connection (tests drive
+it in process over `Connection::memory()`), `run_stdio()` on stdin and
+stdout, and `capabilities()` is what it advertises. It reads only
+`strand-compiler`'s public interfaces: `compile` for one config at a time,
+`hir::Program` (`refs`/`reference_at`, defs, locals, `tokens`, the typed
+tree) for hover, definition, rename and completion, `Schema::builtin()`
+and `Schema::doc` for completion and hover text, `fmt::format` for
+formatting, and `source::find_files` for which files a document is
+checked with (the workspace folder's module set if the document is in
+it, else its directory's, else the document alone, as `strand check
+<file>` does). Open documents replace their files' text on disk.
+Positions are UTF-16 (the protocol default), sync is full-document, and
+diagnostics are published per config after a 200 ms debounce
+(`initializationOptions.debounceMs`), at once on open and save.
+
+The inspector joins it in M5; tree-sitter highlighting is not built yet
+(see `docs/decisions.md`, wave2-lsp).
 
 ### `strand-services`, `strand-watch`
 

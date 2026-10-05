@@ -1108,3 +1108,55 @@ schema from `strand-compiler`).
   temporary file renamed over the canonical path, so a stowed symlink stays
   a link and the watcher sees one `MOVED_TO`. `--check` writes nothing,
   lists unformatted files and fails if there are any.
+- **2026-10-05 · wave2-lsp: which files a document is checked with.** The
+  same rule as `strand check <file>`: the workspace folder holding the
+  document, if the file is in that folder's module set
+  (`source::find_files`); else its own directory's module set; else the
+  document alone (unsaved buffers, hidden or too-deep files). Open
+  documents replace their files' text on disk, so cross-file errors show
+  while typing, and diagnostics are published for every file of the
+  config, not only open ones (design.md "What you see" #2 relies on a
+  rename in one file being seen in another).
+- **2026-10-05 · wave2-lsp: debounce.** Diagnostics wait 200 ms after the
+  last change (`initializationOptions.debounceMs` overrides it), so typing
+  does not flash errors, and are published at once on open and save.
+  Requests (completion, hover, rename) always analyse the latest text but
+  do not publish, so a completion request mid-word never flashes an
+  error either. The 200 ms is below the overlay's 250 ms quiet rule.
+- **2026-10-05 · wave2-lsp: completion on half-typed text.** After `.`
+  with nothing typed yet the line does not parse (grammar.md rule 5), so
+  the server checks a copy with a placeholder name after the dot and
+  reads the type of the expression before it from the typed tree (the
+  checker keeps a field's base typed when the field is unknown). An
+  enum's name, a file stem and a schema enum complete their variants and
+  exports. Members are fields, methods, `Async`'s `pending`/`error`/
+  `value` and list members; the list methods mirror the checker's private
+  `LIST_METHODS` (open issue: the checker should publish that list, e.g.
+  as `methods list { … }` in the schema).
+- **2026-10-05 · wave2-lsp: what `<->` offers.** Only places a widget can
+  write (design.md "Two-way"): this file's states and the enclosing
+  component's or surface's own, other files' exported states as
+  `file.name`, settings fields (`prefs.accent`; never the record, which
+  the checker refuses), and `rw` service fields as full paths up to three
+  fields deep (`audio.sink.volume`). After a dot inside `<->` only
+  writable fields and records leading to one are offered; under a
+  `state` every field is (the checker allows writing through it).
+- **2026-10-05 · wave2-lsp: rename.** States, lets, settings, components,
+  fns, enums, types, token sets, keyframes, custom services, parameters
+  (a component's parameter also at every call site's prop, design.md
+  "What you see" #2), handler and `for` locals, `id:` names, and tokens
+  the config declares. Built-in names, schema services, fields, variants
+  and the schema's own tokens (palette roles and the base tiers, which the
+  schema types even when a theme values them) are refused with a reason.
+  A token key inside a group (`2` in `space { 2: 8px }`) is renamed in
+  place, so the new name must keep the group's prefix. A rename that would
+  add an error (a clash, a name taken) is refused with that error: every
+  edited file is re-checked before the edit is returned.
+- **2026-10-05 · wave2-lsp: quick fixes.** A diagnostic whose help is
+  "did you mean `x`?" offers one preferred quick fix replacing its primary
+  span with `x`, or only a misspelt unit's letters (`12pz` → `px`). Other
+  fixes (extract component, missing key) are M5.
+- **2026-10-05 · wave2-lsp: tree-sitter is out of scope this wave.** The
+  M1 checklist's tree-sitter grammar for editor highlighting stays open;
+  editors get diagnostics, completion, hover, navigation, rename and
+  formatting from the server meanwhile.
