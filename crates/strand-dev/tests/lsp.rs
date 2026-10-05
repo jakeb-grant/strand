@@ -81,7 +81,7 @@ impl Client {
                 "rootUri": root,
                 "workspaceFolders": [{ "uri": root, "name": "strand" }],
                 "capabilities": {},
-                "initializationOptions": { "debounceMs": 50 },
+                "initializationOptions": { "debounceMs": 150 },
             }),
         );
         assert_eq!(caps["serverInfo"]["name"], "strand-dev");
