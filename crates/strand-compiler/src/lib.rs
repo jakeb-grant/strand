@@ -12,10 +12,15 @@
 //! - [`syntax`]: lexer, parser and syntax tree with spans (M1).
 //! - [`diagnostic`]: errors with labels and did-you-mean fixes, rendered
 //!   with miette.
+//! - [`schema`]: the builtin elements, services, functions and tokens, as
+//!   data that service crates extend.
+//! - [`ty`]: the types of the language.
 
 pub mod diagnostic;
+pub mod schema;
 pub mod source;
 pub mod syntax;
+pub mod ty;
 
 pub use diagnostic::{Diagnostic, Severity};
 pub use source::{FileId, SourceMap};

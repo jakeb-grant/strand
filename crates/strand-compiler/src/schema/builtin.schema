@@ -1,0 +1,641 @@
+// The builtin schema: the elements, services, functions and tokens of
+// docs/design.md, as data. The language is described in schema/mod.rs.
+// Services are types only until M3 brings the real ones; a service crate
+// adds its own entries with `Schema::extend`.
+
+// ---------------------------------------------------------------------------
+// Enums used by props and functions. Variants are written bare in source
+// (`edge: top`) and resolved by the type the position expects.
+
+enum Edge { top, bottom, left, right }
+enum Anchor { center, top, bottom, left, right, top_left, top_right, bottom_left, bottom_right }
+enum Align { start, center, end, stretch, baseline }
+enum Axis { vertical, horizontal }
+enum Layer { background, bottom, top, overlay }
+enum Keyboard { none, on_demand, exclusive }
+enum Screens { all, focused }
+enum Ellipsis { none, start, middle, end }
+enum Markup { none, basic }
+enum Fit { cover, contain, fill, none }
+enum CornerStyle { round, squircle }
+enum RadiusKeyword { full }
+enum Place { flow, absolute }
+enum Blend { normal, screen, add, multiply, overlay, difference }
+enum BlurFallback { tint, none }
+enum Shape { rect, circle, pill, cookie, clover, burst, flower, gem, sunny, triangle, pentagon, hexagon, heart }
+enum Cap { butt, round, square }
+enum PoseName { none, fade, slidefade }
+enum SwapKind { none, crossfade, disc, dissolve, pixelate }
+enum Curve { linear, ease_in, ease_out, ease_in_out, in_back, out_back, out_elastic, out_bounce, standard, emphasized }
+enum Instant { instant }
+enum SpectrumStyle { bars, mirror, wave, line }
+enum EffectKind { lightning, sparks, shimmer, ripple, aurora }
+enum InputKind { text, password }
+enum Urgency { low, normal, critical }
+enum Variant { tonal_spot, vibrant, expressive, neutral, monochrome, fidelity, content, rainbow, fruit_salad }
+
+// Values with no inner structure the language can see.
+opaque Palette, TokenSet, Spring, Easing, Pose, SwapTransition, Mask, Filter, HitArea, Sprite
+
+alias AppId = text
+
+// ---------------------------------------------------------------------------
+// Records
+
+// A node of the tree: `self`, or an element given an `id:`.
+record Node {
+  hover: bool
+  pressed: bool
+  focused: bool
+  selected: bool
+  width: float
+  height: float
+}
+
+record Range { start: int; end: int }
+
+record Key {
+  name: text
+  text: text
+  ctrl: bool
+  shift: bool
+  alt: bool
+  logo: bool
+}
+
+record Date {
+  year: int
+  month: int
+  day: int
+  weekday: int
+  fn month_start() -> Date
+  fn add(days: int = 0, months: int = 0, years: int = 0) -> Date
+  fn format(pattern: text) -> text
+}
+
+record Day key date {
+  date: Date
+  in_month: bool
+  today: bool
+  weekend: bool
+}
+
+record Screen key name {
+  name: text
+  make: text
+  model: text
+  description: text
+  scale: float
+  width: float
+  height: float
+  focused: bool
+}
+
+record Window key id {
+  id: text
+  title: text
+  app_id: text
+  icon: text
+  workspace: int?
+  focused: bool
+  minimized: bool
+  fullscreen: bool
+  action focus()
+  action close()
+  action minimize()
+}
+
+record Workspace key id {
+  id: int
+  name: text
+  focused: bool
+  occupied: bool
+  urgent: bool
+  screen: text
+  windows: [Window]
+  action focus()
+}
+
+record AudioDevice key id {
+  id: int
+  name: text
+  description: text
+  volume: float rw
+  muted: bool rw
+  icon: text
+  default: bool
+  action make_default()
+}
+
+record TrayMenu { action open() }
+
+record TrayItem key id {
+  id: text
+  title: text
+  icon: text
+  tooltip: text?
+  status: text
+  menu: TrayMenu
+  action activate()
+  action secondary()
+  action scroll(dy: float)
+}
+
+record NotificationApp { name: text; icon: text }
+
+record NotificationAction key id {
+  id: text
+  label: text
+  action invoke()
+}
+
+record Notification key id {
+  id: int
+  app: NotificationApp
+  summary: text
+  body: text
+  image: text?
+  urgency: Urgency
+  timeout: duration?
+  time: Date
+  actions: [NotificationAction]
+  action expire()
+  action dismiss()
+  action activate()
+}
+
+record App key id {
+  id: AppId
+  name: text
+  comment: text?
+  icon: text
+  categories: [text]
+  action launch()
+}
+
+// A launcher search result: the app, its score and the matched ranges.
+record Hit key app.id {
+  app: App
+  score: float
+  ranges: [Range]
+}
+
+record BluetoothDevice key address {
+  address: text
+  name: text
+  connected: bool
+  battery: float?
+  icon: text
+  action connect()
+  action disconnect()
+}
+
+record Canvas {
+  width: float
+  height: float
+  fn fill(paint: paint)
+  fn stroke(paint: paint, width: length = 1)
+  fn line(x1: float, y1: float, x2: float, y2: float)
+  fn rect(x: float, y: float, w: float, h: float)
+  fn circle(x: float, y: float, r: float)
+  fn text(t: text, x: float, y: float)
+}
+
+// ---------------------------------------------------------------------------
+// Services: global names whose fields are live values.
+
+service clock {
+  today: Date
+  now: Date
+  // Wakes only as often as the pattern changes (once a minute for %H:%M).
+  fn format(pattern: text) -> text
+}
+
+service calendar {
+  fn days(month: Date) -> [Day]
+}
+
+service battery {
+  present: bool
+  percent: float
+  charging: bool
+  time_left: duration?
+  icon: text
+  power: float
+}
+
+service windows {
+  focused: Window?
+  all: [Window]
+}
+
+service workspaces {
+  all: [Workspace]
+  focused: Workspace?
+  fn on(screen: Screen) -> [Workspace]
+}
+
+service audio {
+  sink: AudioDevice
+  source: AudioDevice
+  sinks: [AudioDevice]
+  sources: [AudioDevice]
+}
+
+service brightness {
+  level: float rw
+  available: bool
+}
+
+service tray {
+  items: [TrayItem]
+}
+
+service notifications {
+  popups: [Notification]
+  all: [Notification]
+  count: int
+  action clear()
+  event received(n: Notification)
+}
+
+service apps {
+  all: [App]
+  // Fuzzy match plus frecency; keeps its last result while searching.
+  fn search(query: text) -> Async<[Hit]>
+}
+
+service media {
+  playing: bool
+  title: text?
+  artist: text?
+  album: text?
+  art: text?
+  // Fraction of the track played, 0 to 1.
+  position: float
+  elapsed: duration
+  length: duration?
+  action play_pause()
+  action next()
+  action previous()
+}
+
+// Portal settings.
+service system {
+  dark: bool
+  accent: color?
+  contrast: float
+  reduced_motion: bool
+  hostname: text
+}
+
+service cpu {
+  usage: float
+  cores: [float]
+  temperature: float?
+}
+
+service memory {
+  usage: float
+  used: float
+  total: float
+}
+
+service screens {
+  all: [Screen]
+  focused: Screen?
+}
+
+service wm {
+  name: text
+  event config_reloaded()
+}
+
+service network {
+  connected: bool
+  ssid: text?
+  strength: float
+  wifi: bool rw
+}
+
+service bluetooth {
+  powered: bool rw
+  devices: [BluetoothDevice]
+}
+
+// The lock screen's PAM helper.
+service auth {
+  busy: bool
+  failed: bool
+  action submit(password: text)
+}
+
+// ---------------------------------------------------------------------------
+// Functions. Overloads are tried in order.
+
+fn pct(fraction: float) -> text lift
+fn dur(duration: duration) -> text lift
+// Joins the parts that are not null.
+fn join(sep: text, ...parts: any?) -> text
+
+fn material(seed: color, variant: Variant = tonal_spot, dark: bool = false, contrast: float = 0) -> Palette
+fn material(image: path, variant: Variant = tonal_spot, dark: bool = false, contrast: float = 0) -> Async<Palette>
+fn import(source: text) -> Palette
+
+// `oklch(from $surface, l: l + 0.12)`: `l`, `c`, `h` and `alpha` name the
+// source colour's channels inside the arguments.
+fn oklch(from: color, l: float = l, c: float = c, h: angle = h, alpha: float = alpha) -> color
+fn oklch(l: float, c: float, h: angle, alpha: float = 1) -> color
+fn rgb(r: float, g: float, b: float, alpha: float = 1) -> color
+
+fn linear(angle: angle, ...stops: color) -> paint
+fn radial(...stops: color) -> paint
+fn radial(at: Anchor, size: length) -> Mask
+fn conic(from: angle = 0, ...stops: color) -> paint
+
+fn spring(stiffness: float, damping: float) -> Spring
+fn ease(curve: Curve, duration: duration) -> Easing
+fn bezier(x1: float, y1: float, x2: float, y2: float) -> Easing
+
+fn wave(period: duration, phase: float = 0) -> float
+fn noise(x: float) -> float
+
+fn grow(by: length) -> HitArea
+fn blur(radius: length) -> Filter
+fn grayscale(amount: float) -> Filter
+fn saturate(amount: float) -> Filter
+fn hue(angle: angle) -> Filter
+fn brightness(amount: float) -> Filter
+fn contrast(amount: float) -> Filter
+fn invert(amount: float) -> Filter
+fn tint(color: color) -> Filter
+
+fn fade(edge: Edge, size: length) -> Mask
+fn shape(shape: Shape) -> Mask
+
+fn popin(scale: float) -> Pose
+fn slide(edge: Edge) -> Pose
+fn wipe(edge: Edge) -> SwapTransition
+fn dot(size: length) -> Sprite
+
+fn min(a: float, b: float) -> float
+fn max(a: float, b: float) -> float
+fn clamp(x: float, lo: float, hi: float) -> float
+
+// Handlers only.
+action propagate()
+fn sleep(duration: duration) -> Async<unit>
+
+// Time signal: seconds, for `rotate: t * 20deg`.
+value t: float
+
+// ---------------------------------------------------------------------------
+// Methods on builtin types.
+
+methods color {
+  fn alpha(alpha: float) -> color
+  fn mix(other: color, amount: float) -> color
+  fn lighten(amount: float) -> color
+  fn darken(amount: float) -> color
+}
+
+methods text {
+  fn upper() -> text
+  fn lower() -> text
+  fn trim() -> text
+  fn contains(part: text) -> bool
+  fn starts_with(prefix: text) -> bool
+  fn ends_with(suffix: text) -> bool
+  fn split(sep: text) -> [text]
+  fn replace(from: text, to: text) -> text
+}
+
+methods float {
+  fn abs() -> float
+  fn round() -> int
+  fn floor() -> int
+  fn ceil() -> int
+  fn min(other: float) -> float
+  fn max(other: float) -> float
+  fn clamp(lo: float, hi: float) -> float
+}
+
+// ---------------------------------------------------------------------------
+// Elements. `node` holds what every element accepts; `inherit` props
+// (font, color) reach every descendant.
+
+group node {
+  id: Node
+  width: length
+  height: length
+  min_width: length
+  min_height: length
+  max_width: length
+  max_height: length
+  size: length
+  grow: float
+  shrink: float
+  pad: insets
+  margin: insets
+  gap: length
+  align: Align
+  justify: Align
+  place: Place
+  stagger: duration
+  x: length
+  y: length
+  scale: float
+  rotate: angle
+  opacity: float
+  bg: paint
+  color: color inherit
+  font: font inherit
+  weight: int inherit
+  radius: corners | RadiusKeyword
+  corners: CornerStyle
+  border: (length, paint)
+  shadow: shadow
+  inner_shadow: shadow
+  blur: length
+  blur_fallback: BlurFallback
+  backdrop: Filter
+  clip: bool
+  hit: HitArea
+  tooltip: text
+  filter: Filter | [Filter]
+  blend: Blend
+  mask: Mask
+  glow: (length, color)
+  rim: (Edge, color)
+  grain: float
+  morph: text
+  jelly: float
+  parallax: length
+  tilt: angle
+  shape: Shape
+  stroke: (length, paint) {
+    trim: (float, float)
+    wave: (float, length)
+    cap: Cap
+    dash: (length, length)
+  }
+  enter: Pose | PoseName
+  exit: Pose | PoseName
+  transition: SwapTransition | SwapKind
+  drag: any
+  on click
+  on secondary
+  on middle
+  on scroll(dy: float, dx: float)
+  on drop(value: any, at: int)
+  on key(key: Key)
+  on activate
+}
+
+group surface: node {
+  screens: Screens | [text] | text
+  layer: Layer
+  open: bool <->
+  keyboard: Keyboard
+  anchor: Anchor
+  attach: Edge
+  scrim: paint
+  exclusive: bool
+  on show
+  on hide
+}
+
+// Surfaces. A bar is on every monitor with `screen` in scope.
+element bar: surface { edge: Edge; let screen: Screen; flags surface }
+element panel: surface { flags surface }
+element osd: surface { flags surface }
+element lock: surface { flags surface }
+// Anchored to its parent element; nests (tray menus).
+element popup: surface { on dismiss }
+
+// Containers.
+element row: node {}
+element col: node {}
+element stack: node {}
+element grid: node { columns: int; rows: int }
+element scroll: node { axis: Axis }
+// Virtualised; arrow keys move the selection.
+element list: node {}
+// Start, centre and end, with a truly centred middle.
+element split: node {}
+element start: node { flags only_in split }
+element center: node { flags only_in split }
+element end: node { flags only_in split }
+element spacer: node { flags leaf }
+element pages: node { current: any <-> }
+element page(any): node { flags only_in pages }
+
+// Widgets.
+element box: node {}
+element text(text): node {
+  ellipsis: Ellipsis
+  max_lines: int
+  marks: [Range]
+  mark_color: paint
+  markup: Markup
+  roll: bool
+  wrap: bool
+  italic: bool
+  text_stroke: (length, paint)
+  fill: paint
+  flags leaf
+}
+element icon(text): node { flags leaf }
+// A null source shows nothing.
+element image(text?): node { fit: Fit; flags leaf }
+element button(text): node {}
+element slider: node {
+  value: float <->
+  min: float
+  max: float
+  step: float
+  track: paint
+  flags leaf
+}
+element input: node {
+  text: text <->
+  placeholder: text
+  focus: bool
+  nav: Node
+  type: InputKind
+  flags leaf
+}
+element meter(float): node {
+  value: float
+  min: float
+  max: float
+  track: paint
+  wave: float
+  flags leaf
+}
+element segmented: node { options: any; value: any <->; flags leaf }
+element tooltip: node {}
+
+// Effects and media nodes.
+element arc: node { value: float; sweep: angle; start: angle; track: paint; flags leaf }
+element graph(float): node {
+  history: duration
+  fill: paint
+  smooth: float
+  min: float
+  max: float
+  flags leaf
+}
+element spectrum(AudioDevice): node { bars: int; smooth: float; style: SpectrumStyle; flags leaf }
+element shader(path): node { flags leaf uniforms }
+element canvas: node { draw: fn(Canvas); flags leaf }
+element svg(path): node { flags leaf selectors }
+element lottie(path): node { speed: float; loop: bool; playing: bool; flags leaf }
+element thumbnail(Window): node { fit: Fit; flags leaf }
+element effect(EffectKind): node { speed: float; intensity: float; tint: color; flags leaf }
+element particles: node {
+  rate: float
+  life: duration
+  sprite: Sprite
+  glow: length
+  speed: float
+  spread: angle
+  gravity: float
+  flags leaf
+}
+// Animates each letter of its text; `index` is the letter's position.
+element letters: node { let index: int; let count: int }
+// Goo merge: children melt together within the given distance.
+element merge(length): node {}
+
+// ---------------------------------------------------------------------------
+// Tokens. The palette maps 1:1 onto Material 3 system roles (primary is
+// `accent`, on_surface is `fg`, background is `bg`); base tiers and the
+// derived roles design.md uses are typed here and valued by a theme.
+
+palette {
+  accent, on_accent, accent_container, on_accent_container
+  secondary, on_secondary, secondary_container, on_secondary_container
+  tertiary, on_tertiary, tertiary_container, on_tertiary_container
+  error, on_error, error_container, on_error_container
+  bg, on_bg
+  surface, fg, surface_variant, fg_variant
+  surface_dim, surface_bright
+  surface_lowest, surface_low, surface_container, surface_high, surface_highest
+  inverse_surface, inverse_fg, inverse_accent
+  outline, outline_variant, shadow, scrim, surface_tint
+}
+
+tokens {
+  space { 1: length; 2: length; 3: length; 4: length }
+  radius { sm: length; md: length; lg: length; xl: length; full: length }
+  font { ui: font; title: font; caption: font; mono: font }
+  motion { spatial: Spring; effects: Spring; bouncy: Spring }
+  elevation { md: shadow; lg: shadow; xl: shadow }
+  surface.hi: color
+  fg.muted: color
+  fg.faint: color
+  accent.hover: color
+  accent.container: color
+  border: color
+}
