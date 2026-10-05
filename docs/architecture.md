@@ -28,7 +28,8 @@ strand-scene      shared vocabulary: ids, geometry, colour, scene protocol, Pain
   |   strand-render ── strand-text
   strand-core ── strand-compiler ── strand-dev (LSP, inspector)
      ^
-     strand-services, strand-watch
+     strand-services ──> strand-watch (EventSink, CompositorEvent; portal follow;
+                                       strand-watch depends on no Strand crate)
 strand (binary) wires everything.
 ```
 
@@ -467,37 +468,58 @@ It does not depend on `strand-compiler` or `strand-core`.
   `ConfigWatch { root, modules: ModuleSet { files, dirs }, rescan }` is
   `source::find_files`'s `Discovery` (`files`, `dirs`) plus a
   `FnMut() -> io::Result<ModuleSet>` the binary implements with
-  `find_files`; the watcher calls it when a `.strand` name or a
-  directory appears or vanishes in a config directory, a directory link
-  on the way is swapped, or on a rescan. When `spawn` returns, every
-  watch is in place and every module file's baseline hash is recorded:
-  start the watcher, then load. Referenced paths come from the compiler
-  through `watch_file(path, Role::{Shader, Settings, Wallpaper, Other})`
-  / `unwatch_file`; cache sources through `watch_tree(dir, depth,
-  CacheKind::{Apps, Icons, Fonts})`. `register_own_write(path,
-  hash_bytes(&bytes))` before Strand writes a file (settings
-  write-back) makes the matching write silent. `rescan()` is `strand
-  reload`.
-- **`FileBatch { changes, rescan, notices }`.** One batch per quiet
-  period: 15 ms after the last completed write (`CLOSE_WRITE`,
-  `MOVED_TO`, a new symlink; 50 ms when the latest event removed a
-  watched file; at most 500 ms after the first event). `changes` is
-  sorted by path, each `FileChange { path, canonical, kind:
-  Created|Modified|Removed, hash: Option<blake3::Hash>, role, error }`;
-  unchanged hashes and own writes are dropped before sending, so every
-  change is real. `path` is the path as registered (module files as
-  `find_files` returned them, under the config root even when a
-  directory link points elsewhere); `canonical` is the resolved target.
-  Cache-tree entries are not hashed. `rescan` is `Some(Overflow |
-  Requested)` for a full rescan; `notices` reports polled directories
-  and rescan-callback failures.
-- **System settings.** `PortalSettings::spawn(Bus::Session, sink)` runs
-  a `strand-portal` thread (tokio current-thread runtime, zbus 5). It
-  sends one `SystemBatch { settings, at_boot: true }` (empty when there
-  is no portal; `on change` must not fire for it), then one batch per
-  `SettingChanged`: `SystemSetting::Dark { dark, scheme }`,
+  `find_files`; the watcher calls it when a `.strand` name, a directory
+  or a directory link appears or vanishes in a config directory, a
+  directory link on the way is swapped, the config directory itself is
+  replaced, or on a rescan. When `spawn` returns, every watch is in place
+  and every module file's baseline hash is recorded: start the watcher,
+  then load. Referenced paths come from the compiler: after each reload
+  the loader calls `set_referenced(impl IntoIterator<Item = (PathBuf,
+  Role)>)` with every `(path, Role::{Shader, Settings, Wallpaper,
+  Other})` the program references, which replaces all registrations;
+  `watch_file(path, role)` / `unwatch_file(path, role)` add or drop one
+  (counted per path and role). Module-set membership is separate, so a
+  module file registered for another role stays a module. Neither a
+  referenced file nor its directory need exist yet. Cache sources come
+  through `watch_tree(dir, depth, CacheKind::{Apps, Icons, Fonts})`.
+  `register_own_write(path, hash_bytes(&bytes))` before Strand writes a
+  file (settings write-back) makes the matching write silent.
+  `rescan()` is `strand reload`.
+- **`FileBatch { changes, rescan, notices, first_event, last_event }`.**
+  One batch per quiet period: 15 ms after the last completed write
+  (`CLOSE_WRITE`, `MOVED_TO`, a new symlink or hard link; 50 ms when the
+  latest event removed a watched file; at most 500 ms after the first
+  event). `changes` is sorted by path then role, each `FileChange {
+  path, canonical, kind: Created|Modified|Removed, hash:
+  Option<blake3::Hash>, role, error }`, one per role the path is watched
+  for; unchanged hashes and own writes are dropped before sending, so
+  every change is real. A `Modified` whose hash is unchanged means a
+  link now resolves elsewhere: skip the recompile, update the path.
+  `path` is the path as registered (module files as `find_files`
+  returned them, under the config root even when a directory link points
+  elsewhere); `canonical` is the resolved target. Only regular files are
+  hashed; anything else (a FIFO, a device) has `error:
+  Some(InvalidInput)`. Cache-tree entries are not hashed. `rescan` is
+  `Some(Overflow | Requested)` for a full rescan; `notices` reports
+  polled directories and rescan-callback failures. `first_event` and
+  `last_event` (`Instant`) let latency measurements subtract the quiet
+  period.
+- **System settings.** `strand_watch::follow(&zbus::Connection,
+  EventSink)` is the async portal client; `strand-services` runs it on
+  the shared tokio current-thread runtime and session connection.
+  `PortalSettings::spawn(Bus::Session, sink)` runs the same on its own
+  `strand-portal` thread and connection. It sends one `SystemBatch {
+  settings, at_boot: true, received }` within `BOOT_READ_TIMEOUT` (500
+  ms; empty when there is no portal; `on change` must not fire for it),
+  then one batch per `SettingChanged`, plus `at_boot: false` batches for
+  boot reads that came late and for a full re-read whenever the portal
+  starts or restarts: `SystemSetting::Dark { dark, scheme }`,
   `Accent(Option<[f64; 3]>)`, `Contrast(Normal | High)`, each with
   `.path()` = `system.dark` / `system.accent` / `system.contrast`.
-- **Compositor.** `CompositorEvent::ConfigReloaded { failed }` is
-  `wm.config_reloaded`; the M3 Hyprland and niri adapters send it
-  through a clone of the same `EventSink`.
+- **Compositor.** `CompositorEvent::ConfigReloaded { failed:
+  Option<bool> }` is `wm.config_reloaded` (`None` from Hyprland, which
+  does not say). The M3 Hyprland and niri adapters live in
+  `strand-services` (design.md's services table lists them) and send it
+  through a clone of the same `EventSink`, so `strand-services` depends
+  on `strand-watch` for `EventSink` and `CompositorEvent`; `strand-watch`
+  depends on neither `strand-services` nor `strand-core`.

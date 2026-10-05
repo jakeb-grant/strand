@@ -2,6 +2,7 @@
 //! [`FileBatch`](crate::FileBatch)es out through an [`EventSink`].
 
 use std::io;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::JoinHandle;
@@ -20,7 +21,8 @@ enum Msg {
 
 enum Ctl {
     AddFile(PathBuf, Role, Sender<()>),
-    RemoveFile(PathBuf, Sender<()>),
+    RemoveFile(PathBuf, Role, Sender<()>),
+    SetReferenced(Vec<(PathBuf, Role)>, Sender<()>),
     AddTree(PathBuf, usize, CacheKind, Sender<()>),
     OwnWrite(PathBuf, ContentHash),
     Rescan,
@@ -43,8 +45,9 @@ impl Backend for NotifyBackend {
 }
 
 /// Reduce one notify event to what Strand acts on: completed writes
-/// (`CLOSE_WRITE`, `MOVED_TO`, a new symlink), removals, directory changes
-/// and overflow. `MODIFY` is only ever a "write in progress" hint.
+/// (`CLOSE_WRITE`, `MOVED_TO`, a new symlink or hard link), removals,
+/// directory changes and overflow. `MODIFY` is only ever a "write in
+/// progress" hint.
 pub(crate) fn translate(event: notify::Event, out: &mut Vec<Raw>) {
     if event.need_rescan() {
         out.push(Raw::Overflow);
@@ -63,14 +66,20 @@ pub(crate) fn translate(event: notify::Event, out: &mut Vec<Raw>) {
             }
             EventKind::Modify(ModifyKind::Name(RenameMode::From)) => Raw::Gone(p),
             EventKind::Modify(ModifyKind::Data(_)) => Raw::Busy(p),
-            EventKind::Create(CreateKind::Folder) | EventKind::Remove(RemoveKind::Folder) => {
-                Raw::Dir(p)
-            }
+            EventKind::Create(CreateKind::Folder) => Raw::Dir(p),
+            // A directory deleted (`IN_DELETE` in its parent, or
+            // `DELETE_SELF` of a watched one, whose watch is gone).
+            EventKind::Remove(RemoveKind::Folder) => Raw::Gone(p),
             EventKind::Create(_) => match std::fs::symlink_metadata(&p) {
                 // `ln -s` makes no CLOSE_WRITE: the link is complete now.
                 Ok(m) if m.file_type().is_symlink() => Raw::Written(p),
                 Ok(m) if m.is_dir() => Raw::Dir(p),
-                _ => Raw::Busy(p),
+                // A plain new file is being written: wait for CLOSE_WRITE.
+                // But `ln` (a new name for complete content) and `mkfifo`
+                // and the like make no CLOSE_WRITE either.
+                Ok(m) if m.is_file() && m.nlink() == 1 => Raw::Busy(p),
+                Ok(_) => Raw::Written(p),
+                Err(_) => Raw::Busy(p),
             },
             EventKind::Remove(_) => Raw::Gone(p),
             _ => continue,
@@ -131,17 +140,34 @@ impl Watcher {
         done.recv().map_err(|_| stopped())
     }
 
-    /// Watch a referenced file (settings TOML, wallpaper, shader): its
-    /// directory and every symlink's directory. It need not exist yet.
+    /// Watch a referenced file (settings TOML, wallpaper, shader) for
+    /// `role`: its directory and every symlink's directory. Neither the
+    /// file nor its directory need exist yet. Registrations are counted
+    /// per (path, role); a path watched for several roles gets one change
+    /// per role.
     pub fn watch_file(&self, path: impl Into<PathBuf>, role: Role) -> io::Result<()> {
         let path = path.into();
         self.call(|ack| Ctl::AddFile(path, role, ack))
     }
 
-    /// Stop watching a file added with [`Watcher::watch_file`].
-    pub fn unwatch_file(&self, path: impl Into<PathBuf>) -> io::Result<()> {
+    /// Drop one [`Watcher::watch_file`] registration of `path` for `role`.
+    /// The path stays watched while other registrations (or the module
+    /// set) hold it.
+    pub fn unwatch_file(&self, path: impl Into<PathBuf>, role: Role) -> io::Result<()> {
         let path = path.into();
-        self.call(|ack| Ctl::RemoveFile(path, ack))
+        self.call(|ack| Ctl::RemoveFile(path, role, ack))
+    }
+
+    /// Replace every [`Watcher::watch_file`] registration with this set:
+    /// the referenced paths the compiler collected from the whole program
+    /// after a reload. Paths that stay keep their baseline; new ones get
+    /// one; dropped ones are no longer watched (unless they are modules).
+    pub fn set_referenced(
+        &self,
+        refs: impl IntoIterator<Item = (PathBuf, Role)>,
+    ) -> io::Result<()> {
+        let refs: Vec<_> = refs.into_iter().collect();
+        self.call(|ack| Ctl::SetReferenced(refs, ack))
     }
 
     /// Watch a cache-invalidation tree (`applications/`, an icon theme
@@ -206,8 +232,12 @@ fn run(mut core: Core<NotifyBackend>, rx: Receiver<Msg>, sink: EventSink, opts: 
                     core.add_file(&p, role);
                     let _ = ack.send(());
                 }
-                Ctl::RemoveFile(p, ack) => {
-                    core.remove_file(&p);
+                Ctl::RemoveFile(p, role, ack) => {
+                    core.remove_file(&p, role);
+                    let _ = ack.send(());
+                }
+                Ctl::SetReferenced(refs, ack) => {
+                    core.set_referenced(refs);
                     let _ = ack.send(());
                 }
                 Ctl::AddTree(p, depth, kind, ack) => {
@@ -247,6 +277,10 @@ mod tests {
         std::fs::write(&file, "x").unwrap();
         let link = tmp.path().join("link.strand");
         std::os::unix::fs::symlink(&file, &link).unwrap();
+        let alone = tmp.path().join("alone.strand");
+        std::fs::write(&alone, "y").unwrap();
+        let hard = tmp.path().join("hard.strand");
+        std::fs::hard_link(&file, &hard).unwrap();
         let ev = |kind: EventKind, p: &Path| notify::Event::new(kind).add_path(p.to_path_buf());
         let mut out = Vec::new();
         translate(
@@ -256,8 +290,9 @@ mod tests {
             ),
             &mut out,
         );
-        translate(ev(EventKind::Create(CreateKind::File), &file), &mut out);
+        translate(ev(EventKind::Create(CreateKind::File), &alone), &mut out);
         translate(ev(EventKind::Create(CreateKind::File), &link), &mut out);
+        translate(ev(EventKind::Create(CreateKind::File), &hard), &mut out);
         translate(
             ev(
                 EventKind::Access(AccessKind::Close(AccessMode::Write)),
@@ -296,8 +331,9 @@ mod tests {
             out,
             vec![
                 Raw::Busy(file.clone()),
-                Raw::Busy(file.clone()),
+                Raw::Busy(alone),
                 Raw::Written(link),
+                Raw::Written(hard),
                 Raw::Written(file.clone()),
                 Raw::Written(file.clone()),
                 Raw::Dir(tmp.path().to_path_buf()),

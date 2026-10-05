@@ -134,9 +134,10 @@ pub enum FsKind {
     Local,
     /// Writes from other machines produce no events: poll.
     NoEvents,
-    /// Mounted read-only (`/nix/store`): nothing changes in place, so no
-    /// watch is needed; a link swap is seen in the link's directory.
-    ReadOnly,
+    /// An immutable store (`/nix/store`, `/gnu/store`) on a read-only
+    /// mount: nothing changes in place, so no watch is needed; a link swap
+    /// is seen in the link's directory.
+    Immutable,
 }
 
 /// statfs `f_type` values of filesystems whose remote writes produce no
@@ -154,19 +155,27 @@ const NO_EVENT_MAGICS: &[u64] = &[
     0x6573_5546, // FUSE (sshfs, rclone, …)
 ];
 
+/// Content-addressed stores whose paths never change once written.
+const STORES: &[&str] = &["/nix/store", "/gnu/store"];
+
 /// Classify the filesystem holding `dir`.
 pub fn fs_kind(dir: &Path) -> FsKind {
     let read_only = rustix::fs::statvfs(dir)
         .is_ok_and(|v| v.f_flag.contains(rustix::fs::StatVfsMountFlags::RDONLY));
     let magic = rustix::fs::statfs(dir).map_or(0, |fs| fs.f_type as u64);
-    classify(magic, read_only)
+    let store = STORES.iter().any(|s| dir.starts_with(s));
+    classify(magic, read_only, store)
 }
 
-fn classify(magic: u64, read_only: bool) -> FsKind {
-    if read_only {
-        FsKind::ReadOnly
-    } else if NO_EVENT_MAGICS.contains(&(magic & 0xFFFF_FFFF)) {
+/// Network and FUSE filesystems are polled even when mounted read-only
+/// (the server's copy still changes). Other read-only mounts are watched
+/// (a read-only bind mount of a writable tree still gets events) unless
+/// they hold an immutable store.
+fn classify(magic: u64, read_only: bool, store: bool) -> FsKind {
+    if NO_EVENT_MAGICS.contains(&(magic & 0xFFFF_FFFF)) {
         FsKind::NoEvents
+    } else if read_only && store {
+        FsKind::Immutable
     } else {
         FsKind::Local
     }
@@ -237,13 +246,20 @@ mod tests {
 
     #[test]
     fn network_and_read_only_filesystems() {
-        assert_eq!(classify(0x6969, false), FsKind::NoEvents); // NFS
-        assert_eq!(classify(0xFF53_4D42, false), FsKind::NoEvents); // CIFS
-        assert_eq!(classify(0x6573_5546, false), FsKind::NoEvents); // FUSE
-        assert_eq!(classify(0xEF53, false), FsKind::Local); // ext4
-        assert_eq!(classify(0x0102_1994, false), FsKind::Local); // tmpfs
-        assert_eq!(classify(0x6969, true), FsKind::ReadOnly);
-        assert_eq!(classify(0xEF53, true), FsKind::ReadOnly);
+        assert_eq!(classify(0x6969, false, false), FsKind::NoEvents); // NFS
+        assert_eq!(classify(0xFF53_4D42, false, false), FsKind::NoEvents); // CIFS
+        assert_eq!(classify(0x6573_5546, false, false), FsKind::NoEvents); // FUSE
+        assert_eq!(classify(0xEF53, false, false), FsKind::Local); // ext4
+        assert_eq!(classify(0x0102_1994, false, false), FsKind::Local); // tmpfs
+        // A read-only NFS mount still changes on the server: poll it.
+        assert_eq!(classify(0x6969, true, false), FsKind::NoEvents);
+        assert_eq!(classify(0x6969, true, true), FsKind::NoEvents);
+        // A read-only bind mount of a writable tree still gets events.
+        assert_eq!(classify(0xEF53, true, false), FsKind::Local);
+        // /nix/store is read-only and immutable: no watch.
+        assert_eq!(classify(0xEF53, true, true), FsKind::Immutable);
+        // A writable /nix/store (single-user Nix) is still watched.
+        assert_eq!(classify(0xEF53, false, true), FsKind::Local);
     }
 
     #[test]

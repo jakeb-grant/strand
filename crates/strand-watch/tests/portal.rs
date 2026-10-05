@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::Receiver;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use strand_watch::{
     Bus, ChangeEvent, ColorScheme, Contrast, PortalSettings, SystemBatch, SystemSetting, channel,
@@ -62,6 +62,16 @@ struct Mock {
     values: HashMap<String, OwnedValue>,
     /// Portal version 1: no `ReadOne`.
     v1: bool,
+    /// A key whose read hangs this long (a portal stuck on its backend).
+    slow: Option<(&'static str, Duration)>,
+}
+
+fn mock(values: HashMap<String, OwnedValue>) -> Mock {
+    Mock {
+        values,
+        v1: false,
+        slow: None,
+    }
 }
 
 #[zbus::interface(name = "org.freedesktop.portal.Settings")]
@@ -69,6 +79,11 @@ impl Mock {
     async fn read_one(&self, namespace: &str, key: &str) -> zbus::fdo::Result<OwnedValue> {
         if self.v1 {
             return Err(zbus::fdo::Error::UnknownMethod("ReadOne".into()));
+        }
+        if let Some((slow, delay)) = self.slow
+            && slow == key
+        {
+            tokio::time::sleep(delay).await;
         }
         self.lookup(namespace, key)
     }
@@ -140,9 +155,26 @@ fn emit(rt: &tokio::runtime::Runtime, conn: &zbus::Connection, ns: &str, key: &s
 
 fn next_system(rx: &Receiver<ChangeEvent>) -> SystemBatch {
     match rx.recv_timeout(Duration::from_secs(10)) {
-        Ok(ChangeEvent::System(b)) => b,
+        Ok(ChangeEvent::System(b)) => {
+            assert!(b.received <= Instant::now());
+            b
+        }
         other => panic!("expected a system batch, got {other:?}"),
     }
+}
+
+/// The settings and boot flag of the next batch.
+fn next(rx: &Receiver<ChangeEvent>) -> (Vec<SystemSetting>, bool) {
+    let b = next_system(rx);
+    (b.settings, b.at_boot)
+}
+
+fn initial() -> Vec<SystemSetting> {
+    vec![
+        DARK,
+        SystemSetting::Accent(Some([0.2, 0.4, 1.0])),
+        SystemSetting::Contrast(Contrast::Normal),
+    ]
 }
 
 const DARK: SystemSetting = SystemSetting::Dark {
@@ -154,27 +186,10 @@ const DARK: SystemSetting = SystemSetting::Dark {
 fn boot_read_then_changes() {
     let Some(d) = daemon() else { return };
     let rt = runtime();
-    let conn = serve(
-        &rt,
-        &d.address,
-        Mock {
-            values: appearance(),
-            v1: false,
-        },
-    );
+    let conn = serve(&rt, &d.address, mock(appearance()));
     let (sink, rx) = channel();
     let portal = PortalSettings::spawn(Bus::Address(d.address.clone()), sink).unwrap();
-    assert_eq!(
-        next_system(&rx),
-        SystemBatch {
-            settings: vec![
-                DARK,
-                SystemSetting::Accent(Some([0.2, 0.4, 1.0])),
-                SystemSetting::Contrast(Contrast::Normal),
-            ],
-            at_boot: true,
-        }
-    );
+    assert_eq!(next(&rx), (initial(), true));
 
     emit(
         &rt,
@@ -185,14 +200,14 @@ fn boot_read_then_changes() {
     );
     let b = next_system(&rx);
     assert_eq!(
-        b,
-        SystemBatch {
-            settings: vec![SystemSetting::Dark {
+        (b.settings.clone(), b.at_boot),
+        (
+            vec![SystemSetting::Dark {
                 dark: false,
                 scheme: ColorScheme::PreferLight
             }],
-            at_boot: false,
-        }
+            false
+        )
     );
     assert_eq!(b.settings[0].path(), "system.dark");
 
@@ -253,8 +268,8 @@ fn version_one_portal_uses_read() {
         &rt,
         &d.address,
         Mock {
-            values: appearance(),
             v1: true,
+            ..mock(appearance())
         },
     );
     let (sink, rx) = channel();
@@ -265,39 +280,88 @@ fn version_one_portal_uses_read() {
     assert_eq!(b.settings.len(), 3);
 }
 
-/// No portal at boot: an empty boot batch, then changes once one starts.
+/// No portal at boot: an empty boot batch. When one starts, its current
+/// values are read without any signal, then its changes follow; when it
+/// restarts with other values, they are read again.
 #[test]
-fn a_late_portal_is_followed() {
+fn a_late_portal_is_read_and_followed() {
     let Some(d) = daemon() else { return };
     let (sink, rx) = channel();
     let _portal = PortalSettings::spawn(Bus::Address(d.address.clone()), sink).unwrap();
-    assert_eq!(
-        next_system(&rx),
-        SystemBatch {
-            settings: vec![],
-            at_boot: true
-        }
-    );
+    assert_eq!(next(&rx), (vec![], true));
     let rt = runtime();
-    let conn = serve(
-        &rt,
-        &d.address,
-        Mock {
-            values: appearance(),
-            v1: false,
-        },
-    );
-    // The client learns the new owner from NameOwnerChanged; give it a
-    // moment before emitting.
-    std::thread::sleep(Duration::from_millis(200));
+    let conn = serve(&rt, &d.address, mock(appearance()));
+    assert_eq!(next(&rx), (initial(), false));
+
     emit(
         &rt,
         &conn,
         "org.freedesktop.appearance",
-        "color-scheme",
+        "contrast",
         Value::from(1u32),
     );
-    assert_eq!(next_system(&rx).settings, vec![DARK]);
+    assert_eq!(
+        next(&rx),
+        (vec![SystemSetting::Contrast(Contrast::High)], false)
+    );
+
+    // The portal restarts (crash, backend switch) with other values.
+    rt.block_on(conn.close()).unwrap();
+    let mut values = appearance();
+    values.insert("color-scheme".into(), owned(Value::from(2u32)));
+    let _conn = serve(&rt, &d.address, mock(values));
+    let (settings, at_boot) = next(&rx);
+    assert!(!at_boot);
+    assert_eq!(
+        settings[0],
+        SystemSetting::Dark {
+            dark: false,
+            scheme: ColorScheme::PreferLight
+        }
+    );
+}
+
+/// A portal whose read hangs does not hold the boot batch past
+/// `BOOT_READ_TIMEOUT`; the slow value follows when it arrives, and
+/// dropping the client meanwhile returns at once.
+#[test]
+fn a_hanging_read_does_not_hold_the_boot_batch() {
+    let Some(d) = daemon() else { return };
+    let rt = runtime();
+    let _conn = serve(
+        &rt,
+        &d.address,
+        Mock {
+            slow: Some(("contrast", Duration::from_millis(1500))),
+            ..mock(appearance())
+        },
+    );
+    let (sink, rx) = channel();
+    let start = Instant::now();
+    let portal = PortalSettings::spawn(Bus::Address(d.address.clone()), sink).unwrap();
+    assert_eq!(next(&rx), (initial()[..2].to_vec(), true));
+    assert!(
+        start.elapsed() < Duration::from_millis(1400),
+        "{:?}",
+        start.elapsed()
+    );
+    assert_eq!(
+        next(&rx),
+        (vec![SystemSetting::Contrast(Contrast::Normal)], false)
+    );
+
+    // Stopping while a read is outstanding does not wait for it.
+    let (sink, _rx2) = channel();
+    let slow = PortalSettings::spawn(Bus::Address(d.address.clone()), sink).unwrap();
+    std::thread::sleep(Duration::from_millis(700));
+    let stop = Instant::now();
+    drop(slow);
+    drop(portal);
+    assert!(
+        stop.elapsed() < Duration::from_millis(500),
+        "{:?}",
+        stop.elapsed()
+    );
 }
 
 #[test]
@@ -308,11 +372,5 @@ fn an_unreachable_bus_sends_an_empty_boot_batch() {
         sink,
     )
     .unwrap();
-    assert_eq!(
-        next_system(&rx),
-        SystemBatch {
-            settings: vec![],
-            at_boot: true
-        }
-    );
+    assert_eq!(next(&rx), (vec![], true));
 }

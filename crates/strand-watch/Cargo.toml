@@ -16,6 +16,9 @@ zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 futures-lite = { version = "2.6", default-features = false, features = ["std"] }
 
 [dev-dependencies]
+# Tests build the module set with the real `source::find_files`; the
+# runtime boundary is unchanged (the binary passes the set in).
+strand-compiler.workspace = true
 tempfile = "3.27.0"
 tokio = { version = "1.53", features = ["rt-multi-thread"] }
 

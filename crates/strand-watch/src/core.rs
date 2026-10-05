@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ffi::OsString;
 use std::io;
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -29,7 +29,15 @@ pub struct Options {
     /// after its first event.
     pub max_delay: Duration,
     /// How often polled directories (network filesystems) are compared.
+    /// A watched file in a polled directory is re-hashed only when its
+    /// stat stamp (inode, size, times; refreshed by an `open`) changed.
     pub poll_interval: Duration,
+    /// How often polled files are re-hashed even with an unchanged stamp,
+    /// in case an attribute cache hid an edit.
+    pub content_sweep: Duration,
+    /// Files larger than this are never swept, only compared by stamp (a
+    /// wallpaper is not re-read over the network every sweep).
+    pub sweep_max_bytes: u64,
     /// Poll every directory instead of using inotify (tests, or a user who
     /// knows their filesystem drops events).
     pub force_polling: bool,
@@ -42,6 +50,8 @@ impl Default for Options {
             removal_grace: Duration::from_millis(50),
             max_delay: Duration::from_millis(500),
             poll_interval: Duration::from_secs(1),
+            content_sweep: Duration::from_secs(30),
+            sweep_max_bytes: 1 << 20,
             force_polling: false,
         }
     }
@@ -83,12 +93,13 @@ impl std::fmt::Debug for ConfigWatch {
 /// One directory event, already reduced to what Strand acts on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Raw {
-    /// A completed write: `CLOSE_WRITE`, `MOVED_TO`, a symlink created, or a
-    /// polled entry that changed.
+    /// A completed write: `CLOSE_WRITE`, `MOVED_TO`, a symlink or hard link
+    /// created, or a polled entry that changed.
     Written(PathBuf),
-    /// `DELETE`, `MOVED_FROM`, or a watched directory deleted or moved.
+    /// `DELETE`, `MOVED_FROM`, a directory deleted, or a watched directory
+    /// deleted or moved.
     Gone(PathBuf),
-    /// A directory created, removed or moved in.
+    /// A directory created or moved in.
     Dir(PathBuf),
     /// `MODIFY` or a plain file created: a write in progress. Never read;
     /// it only keeps an open batch waiting.
@@ -107,16 +118,65 @@ pub(crate) trait Backend {
 enum Mode {
     Inotify,
     Poll,
-    /// Read-only mount: nothing changes in place.
+    /// An immutable store: nothing changes in place.
     Skip,
 }
 
 #[derive(Debug)]
 struct Entry {
-    role: Role,
+    /// In the config's module set.
+    module: bool,
+    /// Joined the module set since the last check while already watched
+    /// for another role: `Role::Module` is reported `Created` even though
+    /// the bytes are known.
+    module_new: bool,
+    /// Explicit registrations (`watch_file`, `set_referenced`), counted
+    /// per role.
+    refs: BTreeMap<Role, usize>,
     resolved: Resolved,
     hash: Option<ContentHash>,
+    stamp: Option<Stamp>,
+    /// Set when the path exists but could not be hashed.
+    error: Option<io::ErrorKind>,
     exists: bool,
+    /// The canonical path last reported (or seen at registration): a link
+    /// swap to identical bytes still reports the new path.
+    reported: PathBuf,
+}
+
+impl Entry {
+    /// A new entry with the file's current state as its baseline.
+    fn baseline(path: &Path) -> Entry {
+        let resolved = paths::resolve(path);
+        let (hash, stamp, error, exists) = match read_hash(path) {
+            Ok((h, s)) => (Some(h), Some(s), None, true),
+            Err(e) if is_missing(&e) => (None, None, None, false),
+            Err(e) => (None, current_stamp(path), Some(e.kind()), true),
+        };
+        Entry {
+            module: false,
+            module_new: false,
+            refs: BTreeMap::new(),
+            reported: resolved.path.clone(),
+            resolved,
+            hash,
+            stamp,
+            error,
+            exists,
+        }
+    }
+
+    fn unused(&self) -> bool {
+        !self.module && self.refs.is_empty()
+    }
+
+    fn roles(&self) -> BTreeSet<Role> {
+        let mut roles: BTreeSet<Role> = self.refs.keys().copied().collect();
+        if self.module {
+            roles.insert(Role::Module);
+        }
+        roles
+    }
 }
 
 #[derive(Debug)]
@@ -130,6 +190,7 @@ struct Tree {
 
 #[derive(Debug)]
 struct OwnWrite {
+    seq: u64,
     canonical: PathBuf,
     path: PathBuf,
     hash: ContentHash,
@@ -149,6 +210,16 @@ struct Stamp {
 }
 
 impl Stamp {
+    fn of(m: &std::fs::Metadata) -> Stamp {
+        Stamp {
+            dir: m.is_dir(),
+            ino: m.ino(),
+            len: m.len(),
+            mtime: (m.mtime(), m.mtime_nsec()),
+            ctime: (m.ctime(), m.ctime_nsec()),
+        }
+    }
+
     fn same(&self, other: &Stamp) -> bool {
         if self.dir && other.dir {
             // A directory's times change whenever an entry does; only its
@@ -166,16 +237,7 @@ fn snapshot(dir: &Path) -> Option<Snapshot> {
     let mut snap = Snapshot::new();
     for entry in std::fs::read_dir(dir).ok()?.flatten() {
         let Ok(m) = entry.metadata() else { continue };
-        snap.insert(
-            entry.file_name(),
-            Stamp {
-                dir: m.is_dir(),
-                ino: m.ino(),
-                len: m.len(),
-                mtime: (m.mtime(), m.mtime_nsec()),
-                ctime: (m.ctime(), m.ctime_nsec()),
-            },
-        );
+        snap.insert(entry.file_name(), Stamp::of(&m));
     }
     Some(snap)
 }
@@ -209,14 +271,22 @@ pub(crate) struct Core<B> {
     files: BTreeMap<PathBuf, Entry>,
     trees: Vec<Tree>,
     own: Vec<OwnWrite>,
+    own_seq: u64,
     watched: BTreeMap<PathBuf, Mode>,
+    /// Inode of each watched directory when its watch was added.
+    watched_ino: HashMap<PathBuf, u64>,
     snaps: HashMap<PathBuf, Snapshot>,
-    // Index, rebuilt by `reindex`.
+    next_sweep: Instant,
+    // Index, rebuilt by `sync_watches`.
     by_path: HashMap<PathBuf, Vec<PathBuf>>,
     rescan_paths: HashSet<PathBuf>,
     config_dirs: HashSet<PathBuf>,
     tree_dirs: HashMap<PathBuf, usize>,
     tree_hops: HashMap<PathBuf, usize>,
+    /// For each wanted directory that does not exist, the first missing
+    /// path below its nearest existing ancestor (which is watched): when it
+    /// appears, the watches are brought up to date.
+    waiting: HashSet<PathBuf>,
     pending: Pending,
 }
 
@@ -229,8 +299,55 @@ impl<B> std::fmt::Debug for Core<B> {
     }
 }
 
-fn read_hash(path: &Path) -> io::Result<ContentHash> {
-    std::fs::read(path).map(|b| blake3::hash(&b))
+fn is_missing(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+    )
+}
+
+fn open_nonblocking(path: &Path) -> io::Result<std::fs::File> {
+    // O_NONBLOCK: a FIFO swapped in after the `stat` still opens at once
+    // (and is then refused by `fstat`) instead of blocking this thread.
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32)
+        .open(path)
+}
+
+/// Hash a regular file, streaming. Anything else (a FIFO, a device, a
+/// directory) is `InvalidInput` and never read: a FIFO would block the
+/// watcher thread and `/dev/zero` never ends.
+fn read_hash(path: &Path) -> io::Result<(ContentHash, Stamp)> {
+    let not_regular = || io::Error::new(io::ErrorKind::InvalidInput, "not a regular file");
+    if !std::fs::metadata(path)?.is_file() {
+        return Err(not_regular());
+    }
+    let file = open_nonblocking(path)?;
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        return Err(not_regular());
+    }
+    let mut hasher = blake3::Hasher::new();
+    hasher.update_reader(&file)?;
+    Ok((hasher.finalize(), Stamp::of(&meta)))
+}
+
+/// The stamp of what `path` resolves to, without reading it.
+fn current_stamp(path: &Path) -> Option<Stamp> {
+    std::fs::metadata(path).ok().map(|m| Stamp::of(&m))
+}
+
+/// Like [`current_stamp`], but a regular file is opened first: on NFS an
+/// `open` revalidates the attribute cache (close-to-open consistency),
+/// where a `stat` may serve stale attributes.
+fn fresh_stamp(path: &Path) -> Option<Stamp> {
+    let m = std::fs::metadata(path).ok()?;
+    if !m.is_file() {
+        return Some(Stamp::of(&m));
+    }
+    let file = open_nonblocking(path).ok()?;
+    file.metadata().ok().map(|m| Stamp::of(&m))
 }
 
 fn canonical_dirs(dirs: &[PathBuf]) -> Vec<PathBuf> {
@@ -284,19 +401,23 @@ impl<B: Backend> Core<B> {
     pub(crate) fn new(backend: B, opts: Options, config: Option<ConfigWatch>) -> Self {
         let mut core = Core {
             backend,
+            next_sweep: Instant::now() + opts.content_sweep,
             opts,
             config: None,
             config_root: None,
             files: BTreeMap::new(),
             trees: Vec::new(),
             own: Vec::new(),
+            own_seq: 0,
             watched: BTreeMap::new(),
+            watched_ino: HashMap::new(),
             snaps: HashMap::new(),
             by_path: HashMap::new(),
             rescan_paths: HashSet::new(),
             config_dirs: HashSet::new(),
             tree_dirs: HashMap::new(),
             tree_hops: HashMap::new(),
+            waiting: HashSet::new(),
             pending: Pending::default(),
         };
         if let Some(mut cfg) = config {
@@ -304,7 +425,11 @@ impl<B: Backend> Core<B> {
             cfg.modules.dirs = canonical_dirs(&cfg.modules.dirs);
             core.config_root = Some(paths::resolve(&cfg.root));
             for f in &cfg.modules.files {
-                core.insert_baseline(paths::absolute(f), Role::Module);
+                let path = paths::absolute(f);
+                core.files
+                    .entry(path.clone())
+                    .or_insert_with(|| Entry::baseline(&path))
+                    .module = true;
             }
             core.config = Some(cfg);
         }
@@ -313,47 +438,66 @@ impl<B: Backend> Core<B> {
         core
     }
 
-    fn insert_baseline(&mut self, path: PathBuf, role: Role) {
-        let resolved = paths::resolve(&path);
-        let hash = read_hash(&path);
-        let exists = !matches!(&hash, Err(e) if e.kind() == io::ErrorKind::NotFound
-            || e.kind() == io::ErrorKind::NotADirectory);
-        self.files.insert(
-            path,
-            Entry {
-                role,
-                resolved,
-                hash: hash.ok(),
-                exists,
-            },
-        );
-    }
-
-    /// Watch one more file (settings TOML, wallpaper, shader, …). It need
-    /// not exist yet; its directory is watched and creation is reported.
+    /// Watch one more file (settings TOML, wallpaper, shader, …) for
+    /// `role`. Registrations are counted per (path, role). The file need
+    /// not exist yet, nor its directory: creation is reported.
     pub(crate) fn add_file(&mut self, path: &Path, role: Role) {
         let path = paths::absolute(path);
-        match self.files.get_mut(&path) {
-            Some(e) => e.role = role,
-            None => self.insert_baseline(path, role),
-        }
+        let e = self
+            .files
+            .entry(path.clone())
+            .or_insert_with(|| Entry::baseline(&path));
+        *e.refs.entry(role).or_default() += 1;
         self.sync_watches();
         self.mark_if_notices();
     }
 
-    /// Stop watching a file added with [`Core::add_file`]. Module files
+    /// Drop one registration made with [`Core::add_file`]. Module files
     /// belong to the module set and stay.
-    pub(crate) fn remove_file(&mut self, path: &Path) {
+    pub(crate) fn remove_file(&mut self, path: &Path, role: Role) {
         let path = paths::absolute(path);
-        if self
-            .files
-            .get(&path)
-            .is_some_and(|e| e.role != Role::Module)
-        {
+        let Some(e) = self.files.get_mut(&path) else {
+            return;
+        };
+        match e.refs.get_mut(&role) {
+            Some(n) if *n > 1 => *n -= 1,
+            Some(_) => {
+                e.refs.remove(&role);
+            }
+            None => return,
+        }
+        if e.unused() {
             self.files.remove(&path);
             self.pending.files.remove(&path);
-            self.sync_watches();
         }
+        self.sync_watches();
+    }
+
+    /// Replace every registration made with [`Core::add_file`] by this
+    /// set (what the compiler collected from the whole program). A pair
+    /// listed twice counts twice.
+    pub(crate) fn set_referenced(&mut self, refs: Vec<(PathBuf, Role)>) {
+        let mut wanted: BTreeMap<PathBuf, BTreeMap<Role, usize>> = BTreeMap::new();
+        for (p, role) in refs {
+            *wanted
+                .entry(paths::absolute(&p))
+                .or_default()
+                .entry(role)
+                .or_default() += 1;
+        }
+        for (p, e) in self.files.iter_mut() {
+            e.refs = wanted.remove(p).unwrap_or_default();
+        }
+        self.files.retain(|_, e| !e.unused());
+        for (p, refs) in wanted {
+            let mut e = Entry::baseline(&p);
+            e.refs = refs;
+            self.files.insert(p, e);
+        }
+        let files = &self.files;
+        self.pending.files.retain(|p| files.contains_key(p));
+        self.sync_watches();
+        self.mark_if_notices();
     }
 
     /// Watch a cache-invalidation tree (apps, icons, fonts).
@@ -376,8 +520,12 @@ impl<B: Backend> Core<B> {
     /// The next write of `path` whose content hashes to `hash` is Strand's
     /// own and is not reported.
     pub(crate) fn register_own_write(&mut self, path: &Path, hash: ContentHash, now: Instant) {
+        self.own
+            .retain(|o| now.saturating_duration_since(o.at) < OWN_WRITE_TTL);
         let path = paths::absolute(path);
+        self.own_seq += 1;
         self.own.push(OwnWrite {
+            seq: self.own_seq,
             canonical: paths::resolve(&path).path,
             path,
             hash,
@@ -455,9 +603,7 @@ impl<B: Backend> Core<B> {
         if let Some(files) = self.by_path.get(&p) {
             for f in files {
                 self.pending.files.insert(f.clone());
-                if what != What::Written
-                    && self.files.get(f).is_some_and(|e| e.role == Role::Module)
-                {
+                if what != What::Written && self.files.get(f).is_some_and(|e| e.module) {
                     self.pending.config = true;
                 }
             }
@@ -472,13 +618,27 @@ impl<B: Backend> Core<B> {
             self.pending.config = true;
             hit = true;
         }
+        if what != What::Gone && self.waiting.contains(&p) {
+            self.wake_under(&p);
+            hit = true;
+        }
         if let Some(&t) = self.tree_hops.get(&p) {
             self.pending.trees = true;
             let tree = &self.trees[t];
             self.pending.cache.insert(tree.root.clone(), tree.kind);
             hit = true;
         }
-        if what != What::Written && self.watched.contains_key(&p) {
+        // A watched directory deleted or moved away, or another directory
+        // now at its path (a `Dir` for the one already watched, e.g. its
+        // own creation event arriving late, changes nothing).
+        let replaced = match what {
+            What::Gone => true,
+            What::Dir => {
+                std::fs::metadata(&p).map(|m| m.ino()).ok() != self.watched_ino.get(&p).copied()
+            }
+            What::Written => false,
+        };
+        if replaced && self.watched.contains_key(&p) {
             self.forget_watch(&p);
             self.pending.config |= self.config_dirs.contains(&p);
             self.pending.trees |= self.tree_dirs.contains_key(&p);
@@ -492,9 +652,19 @@ impl<B: Backend> Core<B> {
         if let Some(parent) = p.parent()
             && !paths::is_hidden(name)
         {
+            // A `.strand` name or a directory (a directory link included:
+            // `ln -s` and a renamed-in link arrive as `Written`) can change
+            // the module set.
+            let set_may_change = || match what {
+                What::Dir => true,
+                What::Written => {
+                    is_module_name(&p) || std::fs::metadata(&p).is_ok_and(|m| m.is_dir())
+                }
+                What::Gone => false,
+            };
             if self.config_dirs.contains(parent)
                 && !self.by_path.contains_key(&p)
-                && (what == What::Dir || (what == What::Written && is_module_name(&p)))
+                && set_may_change()
             {
                 self.pending.config = true;
                 hit = true;
@@ -512,16 +682,40 @@ impl<B: Backend> Core<B> {
         }
     }
 
+    /// A missing path on the way to watched things appeared: re-check
+    /// everything below it at the next flush (which re-resolves and
+    /// re-watches).
+    fn wake_under(&mut self, p: &Path) {
+        for (f, e) in &self.files {
+            if e.resolved.path.starts_with(p) || e.resolved.hops.iter().any(|h| h.starts_with(p)) {
+                self.pending.files.insert(f.clone());
+            }
+        }
+        let config_below = self
+            .config_root
+            .as_ref()
+            .is_some_and(|r| r.path.starts_with(p))
+            || self.config_dirs.iter().any(|d| d.starts_with(p));
+        self.pending.config |= config_below;
+        self.pending.trees |= self.trees.iter().any(|t| t.resolved.path.starts_with(p));
+    }
+
     fn forget_watch(&mut self, dir: &Path) {
         if self.watched.remove(dir) == Some(Mode::Inotify) {
             self.backend.unwatch(dir);
         }
+        self.watched_ino.remove(dir);
         self.snaps.remove(dir);
     }
 
     /// Compare every polled directory with its last listing, and mark the
-    /// files watched through it for a content comparison.
+    /// watched files in it whose stamp changed (or, every
+    /// `content_sweep`, every small one) for a content comparison.
     pub(crate) fn poll(&mut self, now: Instant) {
+        let sweep = now >= self.next_sweep;
+        if sweep {
+            self.next_sweep = now + self.opts.content_sweep;
+        }
         let dirs: Vec<PathBuf> = self
             .watched
             .iter()
@@ -529,48 +723,59 @@ impl<B: Backend> Core<B> {
             .map(|(d, _)| d.clone())
             .collect();
         for dir in dirs {
-            let Some(new) = snapshot(&dir) else {
-                self.on_path(dir, What::Gone, now);
-                continue;
-            };
-            let old = self
-                .snaps
-                .insert(dir.clone(), new.clone())
-                .unwrap_or_default();
-            for (name, st) in &new {
-                match old.get(name) {
-                    None => {
-                        let what = if st.dir { What::Dir } else { What::Written };
-                        self.on_path(dir.join(name), what, now);
-                    }
-                    Some(o) if !o.same(st) => {
-                        let what = if st.dir || o.dir {
-                            What::Dir
-                        } else {
-                            What::Written
-                        };
-                        self.on_path(dir.join(name), what, now);
-                    }
-                    Some(_) => {}
+            match snapshot(&dir) {
+                Some(new) => self.compare_listing(&dir, new, now),
+                // Exists but cannot be listed (EACCES): keep the last
+                // listing and keep polling, quietly.
+                None if dir.is_dir() => {}
+                None => {
+                    self.on_path(dir, What::Gone, now);
+                    continue;
                 }
             }
-            for (name, o) in &old {
-                if !new.contains_key(name) {
-                    let what = if o.dir { What::Dir } else { What::Gone };
-                    self.on_path(dir.join(name), what, now);
-                }
-            }
-            // Content comparison: attribute caches on network filesystems
-            // can hide a change from the listing, never from the bytes.
             let mut any = false;
             for (f, e) in &self.files {
-                if e.exists && e.resolved.watch_dirs().any(|d| d == dir) {
+                if !e.exists || !e.resolved.watch_dirs().any(|d| d == dir) {
+                    continue;
+                }
+                let stamp = fresh_stamp(f);
+                let swept = sweep && stamp.is_some_and(|s| s.len <= self.opts.sweep_max_bytes);
+                if stamp != e.stamp || swept {
                     self.pending.files.insert(f.clone());
                     any = true;
                 }
             }
             if any {
                 self.mark(now);
+            }
+        }
+    }
+
+    fn compare_listing(&mut self, dir: &Path, new: Snapshot, now: Instant) {
+        let old = self
+            .snaps
+            .insert(dir.to_path_buf(), new.clone())
+            .unwrap_or_default();
+        for (name, st) in &new {
+            match old.get(name) {
+                None => {
+                    let what = if st.dir { What::Dir } else { What::Written };
+                    self.on_path(dir.join(name), what, now);
+                }
+                Some(o) if !o.same(st) => {
+                    let what = if st.dir || o.dir {
+                        What::Dir
+                    } else {
+                        What::Written
+                    };
+                    self.on_path(dir.join(name), what, now);
+                }
+                Some(_) => {}
+            }
+        }
+        for name in old.keys() {
+            if !new.contains_key(name) {
+                self.on_path(dir.join(name), What::Gone, now);
             }
         }
     }
@@ -608,9 +813,7 @@ impl<B: Backend> Core<B> {
         self.sync_watches();
         notices.append(&mut self.pending.notices);
         for path in &touched {
-            if let Some(c) = self.check(path) {
-                changes.push(c);
-            }
+            self.check(path, &mut changes);
         }
         for (path, kind) in cache {
             let exists = std::fs::symlink_metadata(&path).is_ok();
@@ -628,8 +831,10 @@ impl<B: Backend> Core<B> {
             });
         }
         self.own
-            .retain(|o| now.duration_since(o.at) < OWN_WRITE_TTL);
-        changes.sort_by(|a, b| a.path.cmp(&b.path));
+            .retain(|o| now.saturating_duration_since(o.at) < OWN_WRITE_TTL);
+        // Stable: of two entries for one (path, role) the first pushed (a
+        // module-set change from the rescan) is kept.
+        changes.sort_by(|a, b| (&a.path, a.role).cmp(&(&b.path, b.role)));
         changes.dedup_by(|a, b| a.path == b.path && a.role == b.role);
         if changes.is_empty() && notices.is_empty() && p.full.is_none() {
             return None;
@@ -638,6 +843,8 @@ impl<B: Backend> Core<B> {
             changes,
             rescan: p.full,
             notices,
+            first_event: p.first.unwrap_or(now),
+            last_event: p.last.unwrap_or(now),
         })
     }
 
@@ -660,19 +867,15 @@ impl<B: Backend> Core<B> {
         };
         cfg.modules.dirs = canonical_dirs(&set.dirs);
         let new: BTreeSet<PathBuf> = set.files.iter().map(|f| paths::absolute(f)).collect();
-        let gone: Vec<PathBuf> = self
-            .files
-            .iter()
-            .filter(|(p, e)| e.role == Role::Module && !new.contains(*p))
-            .map(|(p, _)| p.clone())
-            .collect();
-        for path in gone {
-            touched.remove(&path);
-            if let Some(e) = self.files.remove(&path)
-                && e.exists
-            {
+        for (path, e) in self.files.iter_mut() {
+            if !e.module || new.contains(path) {
+                continue;
+            }
+            e.module = false;
+            e.module_new = false;
+            if e.exists {
                 changes.push(FileChange {
-                    path,
+                    path: path.clone(),
                     canonical: None,
                     kind: ChangeKind::Removed,
                     hash: None,
@@ -681,91 +884,145 @@ impl<B: Backend> Core<B> {
                 });
             }
         }
+        self.files.retain(|path, e| {
+            let keep = !e.unused();
+            if !keep {
+                touched.remove(path);
+            }
+            keep
+        });
         for path in new {
-            if !self.files.contains_key(&path) {
-                self.files.insert(
-                    path.clone(),
-                    Entry {
-                        role: Role::Module,
-                        resolved: paths::resolve(&path),
-                        hash: None,
-                        exists: false,
-                    },
-                );
-                touched.insert(path);
+            match self.files.get_mut(&path) {
+                Some(e) if e.module => {}
+                Some(e) => {
+                    e.module = true;
+                    e.module_new = true;
+                    touched.insert(path);
+                }
+                None => {
+                    let resolved = paths::resolve(&path);
+                    self.files.insert(
+                        path.clone(),
+                        Entry {
+                            module: true,
+                            module_new: false,
+                            refs: BTreeMap::new(),
+                            reported: resolved.path.clone(),
+                            resolved,
+                            hash: None,
+                            stamp: None,
+                            error: None,
+                            exists: false,
+                        },
+                    );
+                    touched.insert(path);
+                }
             }
         }
         cfg.modules.files = set.files;
     }
 
+    /// Whether `hash` at `path` is a registered own write. Registrations
+    /// for the same file made before the matched one were superseded (a
+    /// slider written several times in one quiet period) and are dropped
+    /// too, so a later user save with those bytes is not swallowed.
     fn take_own_write(&mut self, path: &Path, canonical: &Path, hash: ContentHash) -> bool {
-        match self
+        let same_file = |o: &OwnWrite| o.path == path || o.canonical == canonical;
+        let Some(seq) = self
             .own
             .iter()
-            .position(|o| o.hash == hash && (o.path == path || o.canonical == canonical))
-        {
-            Some(i) => {
-                self.own.swap_remove(i);
-                true
-            }
-            None => false,
-        }
+            .filter(|o| o.hash == hash && same_file(o))
+            .map(|o| o.seq)
+            .max()
+        else {
+            return false;
+        };
+        self.own.retain(|o| !(same_file(o) && o.seq <= seq));
+        true
     }
 
-    fn check(&mut self, path: &Path) -> Option<FileChange> {
-        let e = self.files.get(path)?;
+    /// Compare `path` with its last known state and push one change per
+    /// role it is watched for.
+    fn check(&mut self, path: &Path, out: &mut Vec<FileChange>) {
+        let Some(e) = self.files.get(path) else {
+            return;
+        };
         let was = e.exists;
         let old = e.hash;
-        let role = e.role;
+        let old_error = e.error;
         let canonical = e.resolved.path.clone();
-        let (kind, hash, error) = match read_hash(path) {
-            Ok(h) => {
+        let moved = e.reported != canonical;
+        let (base, hash, error) = match read_hash(path) {
+            Ok((h, stamp)) => {
                 let own = self.take_own_write(path, &canonical, h);
-                let e = self.files.get_mut(path)?;
+                let Some(e) = self.files.get_mut(path) else {
+                    return;
+                };
                 e.exists = true;
                 e.hash = Some(h);
-                if own || (was && old == Some(h)) {
-                    return None;
-                }
-                let kind = if was {
-                    ChangeKind::Modified
+                e.stamp = Some(stamp);
+                e.error = None;
+                let base = if own {
+                    None
+                } else if !was {
+                    Some(ChangeKind::Created)
+                } else if old != Some(h) || moved {
+                    Some(ChangeKind::Modified)
                 } else {
-                    ChangeKind::Created
+                    None
                 };
-                (kind, Some(h), None)
+                (base, Some(h), None)
             }
-            Err(err)
-                if err.kind() == io::ErrorKind::NotFound
-                    || err.kind() == io::ErrorKind::NotADirectory =>
-            {
-                let e = self.files.get_mut(path)?;
+            Err(err) if is_missing(&err) => {
+                let Some(e) = self.files.get_mut(path) else {
+                    return;
+                };
                 e.exists = false;
                 e.hash = None;
-                if !was {
-                    return None;
-                }
-                (ChangeKind::Removed, None, None)
+                e.stamp = None;
+                e.error = None;
+                (was.then_some(ChangeKind::Removed), None, None)
             }
             Err(err) => {
-                let e = self.files.get_mut(path)?;
+                let kind = err.kind();
+                let Some(e) = self.files.get_mut(path) else {
+                    return;
+                };
                 e.exists = true;
                 e.hash = None;
-                let kind = if was {
-                    ChangeKind::Modified
+                e.stamp = current_stamp(path);
+                e.error = Some(kind);
+                let base = if !was {
+                    Some(ChangeKind::Created)
+                } else if old.is_some() || old_error != Some(kind) || moved {
+                    Some(ChangeKind::Modified)
                 } else {
-                    ChangeKind::Created
+                    None
                 };
-                (kind, None, Some(err.kind()))
+                (base, None, Some(kind))
             }
         };
-        Some(FileChange {
-            path: path.to_path_buf(),
-            canonical: (kind != ChangeKind::Removed).then_some(canonical),
-            kind,
-            hash,
-            role,
-            error,
-        })
+        let Some(e) = self.files.get_mut(path) else {
+            return;
+        };
+        e.reported = canonical.clone();
+        let module_new = std::mem::take(&mut e.module_new) && e.exists;
+        for role in e.roles() {
+            let kind = if role == Role::Module && module_new {
+                Some(ChangeKind::Created)
+            } else {
+                base
+            };
+            let Some(kind) = kind else { continue };
+            out.push(FileChange {
+                path: path.to_path_buf(),
+                canonical: (kind != ChangeKind::Removed).then(|| canonical.clone()),
+                kind,
+                hash,
+                role,
+                error,
+            });
+        }
     }
 
     fn reindex(&mut self) {
@@ -783,13 +1040,19 @@ impl<B: Backend> Core<B> {
                         .or_default()
                         .push(logical.clone());
                 }
-                if e.role == Role::Module && hop.is_dir() {
+                if e.module && hop.is_dir() {
                     self.rescan_paths.insert(hop.clone());
                 }
             }
         }
         if let Some(root) = &self.config_root {
             self.rescan_paths.extend(root.hops.iter().cloned());
+            // The root itself, seen from its parent: a config directory
+            // that is replaced or deleted and recreated.
+            self.rescan_paths.insert(root.path.clone());
+        }
+        if let Some(cfg) = &self.config {
+            self.rescan_paths.insert(cfg.root.clone());
         }
         self.config_dirs = self
             .config
@@ -820,11 +1083,13 @@ impl<B: Backend> Core<B> {
                     .filter_map(|h| h.parent())
                     .map(Path::to_path_buf),
             );
+            dirs.extend(root.path.parent().map(Path::to_path_buf));
         }
         for e in self.files.values() {
             dirs.extend(e.resolved.watch_dirs().map(Path::to_path_buf));
         }
         for t in &self.trees {
+            dirs.insert(t.resolved.path.clone());
             dirs.extend(t.dirs.iter().cloned());
             dirs.extend(
                 t.resolved
@@ -837,10 +1102,33 @@ impl<B: Backend> Core<B> {
         dirs
     }
 
-    /// Bring the backend's watches in line with what the state needs.
+    /// Bring the backend's watches in line with what the state needs. A
+    /// wanted directory that does not exist is replaced by its nearest
+    /// existing ancestor, and the first missing path below that ancestor
+    /// is remembered in `waiting`.
     fn sync_watches(&mut self) {
         self.reindex();
-        let desired = self.desired_dirs();
+        self.waiting.clear();
+        let mut desired = BTreeSet::new();
+        for d in self.desired_dirs() {
+            if d.is_dir() {
+                desired.insert(d);
+                continue;
+            }
+            let mut child = d.as_path();
+            let mut ancestor = d.parent();
+            while let Some(a) = ancestor {
+                if a.is_dir() {
+                    break;
+                }
+                child = a;
+                ancestor = a.parent();
+            }
+            if let Some(a) = ancestor {
+                desired.insert(a.to_path_buf());
+                self.waiting.insert(child.to_path_buf());
+            }
+        }
         let stale: Vec<PathBuf> = self
             .watched
             .keys()
@@ -856,7 +1144,7 @@ impl<B: Backend> Core<B> {
             }
             let poll = |reason| (Mode::Poll, Some(reason));
             let (mode, reason) = match paths::fs_kind(&d) {
-                FsKind::ReadOnly => (Mode::Skip, None),
+                FsKind::Immutable => (Mode::Skip, None),
                 _ if self.opts.force_polling => poll(PollReason::Forced),
                 FsKind::NoEvents => poll(PollReason::NoEventsFilesystem),
                 FsKind::Local => match self.backend.watch(&d) {
@@ -873,6 +1161,9 @@ impl<B: Backend> Core<B> {
                     dir: d.clone(),
                     reason,
                 });
+            }
+            if let Ok(m) = std::fs::metadata(&d) {
+                self.watched_ino.insert(d.clone(), m.ino());
             }
             self.watched.insert(d, mode);
         }
@@ -925,21 +1216,28 @@ mod tests {
         fn unwatch(&mut self, _: &Path) {}
     }
 
+    /// A temp dir holding `cfg/`; returns (guard, canonical cfg).
+    fn cfg_dir() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = std::fs::canonicalize(tmp.path()).unwrap().join("cfg");
+        std::fs::create_dir(&cfg).unwrap();
+        (tmp, cfg)
+    }
+
     #[test]
     fn a_failed_watch_falls_back_to_polling() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        let (_tmp, root) = cfg_dir();
         std::fs::write(root.join("a.strand"), "a").unwrap();
         let mut core = Core::new(Full, Options::default(), Some(config(&root)));
         assert!(core.has_polled_dirs());
         let t0 = Instant::now();
         let b = core.flush(core.deadline().unwrap()).unwrap();
-        assert_eq!(
-            b.notices,
-            vec![Notice::Polling {
+        assert!(
+            b.notices.contains(&Notice::Polling {
                 dir: root.clone(),
                 reason: PollReason::WatchFailed("inotify watch limit reached".into()),
-            }]
+            }),
+            "{b:#?}"
         );
         // Same size, same mtime second: only a content comparison sees it.
         std::fs::write(root.join("a.strand"), "b").unwrap();
@@ -947,9 +1245,46 @@ mod tests {
         let b = core.flush(core.deadline().unwrap()).unwrap();
         assert_eq!(b.changes.len(), 1);
         assert_eq!(b.changes[0].hash, Some(blake3::hash(b"b")));
+        assert!(b.notices.is_empty(), "each polled dir is reported once");
         // Nothing changed: a poll produces no batch.
         core.poll(t0);
-        assert!(core.flush(core.deadline().unwrap()).is_none());
+        assert!(core.deadline().is_none());
+    }
+
+    /// Polling reads a file only when its stamp changed, except in the
+    /// slow content sweep, which skips files over `sweep_max_bytes`.
+    #[test]
+    fn polling_rehashes_only_on_stamp_change_or_sweep() {
+        let (_tmp, root) = cfg_dir();
+        std::fs::write(root.join("a.strand"), "a").unwrap();
+        std::fs::write(root.join("big.png"), vec![0u8; 64]).unwrap();
+        let opts = Options {
+            force_polling: true,
+            sweep_max_bytes: 16,
+            ..Options::default()
+        };
+        let mut core = Core::new(Silent::default(), opts.clone(), Some(config(&root)));
+        core.add_file(&root.join("big.png"), Role::Wallpaper);
+        core.flush(core.deadline().unwrap());
+        let t0 = Instant::now();
+
+        // An edit an attribute cache hides: the bytes change, the stamp the
+        // watcher remembers is made to match the new one.
+        for (name, body) in [("a.strand", vec![b'b']), ("big.png", vec![1u8; 64])] {
+            let p = root.join(name);
+            std::fs::write(&p, body).unwrap();
+            core.files.get_mut(&p).unwrap().stamp = fresh_stamp(&p);
+        }
+        core.snaps.insert(root.clone(), snapshot(&root).unwrap());
+        core.poll(t0);
+        assert!(core.deadline().is_none(), "unchanged stamps are not read");
+
+        // The sweep reads the small file, never the large one.
+        core.poll(t0 + opts.content_sweep + Duration::from_secs(1));
+        let b = core.flush(core.deadline().unwrap()).unwrap();
+        let names: Vec<_> = b.changes.iter().map(|c| c.path.clone()).collect();
+        assert_eq!(names, vec![root.join("a.strand")]);
+        assert_eq!(b.changes[0].hash, Some(blake3::hash(b"b")));
     }
 
     fn strand_files(dir: &Path) -> ModuleSet {
@@ -983,8 +1318,7 @@ mod tests {
     /// made behind the watcher's back, including new and removed files.
     #[test]
     fn overflow_rescans_everything() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        let (_tmp, root) = cfg_dir();
         std::fs::write(root.join("bar.strand"), "bar").unwrap();
         std::fs::write(root.join("theme.strand"), "theme").unwrap();
         std::fs::write(root.join("old.strand"), "old").unwrap();
@@ -993,6 +1327,8 @@ mod tests {
         let mut core = Core::new(backend.clone(), Options::default(), Some(config(&root)));
         core.add_file(&root.join("prefs.toml"), Role::Settings);
         assert!(backend.0.lock().unwrap().contains(&root));
+        // The root's parent too: a replaced config directory is seen there.
+        assert!(backend.0.lock().unwrap().contains(root.parent().unwrap()));
 
         // Changes nobody hears about.
         std::fs::write(root.join("bar.strand"), "bar 2").unwrap();
@@ -1006,6 +1342,7 @@ mod tests {
         assert_eq!(deadline, t0 + Options::default().coalesce);
         let batch = core.flush(deadline).unwrap();
         assert_eq!(batch.rescan, Some(RescanReason::Overflow));
+        assert_eq!((batch.first_event, batch.last_event), (t0, t0));
         let got: Vec<_> = batch
             .changes
             .iter()
@@ -1034,8 +1371,7 @@ mod tests {
 
     #[test]
     fn busy_extends_only_an_open_batch() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        let (_tmp, root) = cfg_dir();
         std::fs::write(root.join("a.strand"), "a").unwrap();
         let mut core = Core::new(Silent::default(), Options::default(), Some(config(&root)));
         let t0 = Instant::now();
@@ -1069,5 +1405,28 @@ mod tests {
             core.watched_dirs(),
             vec![root.join("cfg"), root.join("store")]
         );
+    }
+
+    /// A file whose directory does not exist yet is waited for from its
+    /// nearest existing ancestor.
+    #[test]
+    fn a_missing_directory_is_waited_for_from_its_ancestor() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        let mut core = Core::new(Silent::default(), Options::default(), None);
+        let prefs = root.join("state/strand/prefs.toml");
+        core.add_file(&prefs, Role::Settings);
+        assert_eq!(core.watched_dirs(), vec![root.clone()]);
+        assert!(core.waiting.contains(&root.join("state")));
+
+        std::fs::create_dir_all(root.join("state/strand")).unwrap();
+        std::fs::write(&prefs, "a = 1").unwrap();
+        let t0 = Instant::now();
+        core.on_raw(Raw::Dir(root.join("state")), t0);
+        let b = core.flush(core.deadline().unwrap()).unwrap();
+        assert_eq!(b.changes.len(), 1, "{b:#?}");
+        assert_eq!(b.changes[0].kind, ChangeKind::Created);
+        assert_eq!(core.watched_dirs(), vec![root.join("state/strand")]);
+        assert!(core.waiting.is_empty());
     }
 }

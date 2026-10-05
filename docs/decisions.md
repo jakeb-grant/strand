@@ -802,8 +802,11 @@ schema from `strand-compiler`).
   directory, so depth (3, from `find_files`) and symlink handling stay
   ours.
 - **2026-10-05 · What counts as an event.** Acted on: `CLOSE_WRITE`,
-  `MOVED_TO`, and `CREATE` of a symlink (`ln -s` makes no
-  `CLOSE_WRITE`). Removals (`DELETE`, `MOVED_FROM`, a watched directory
+  `MOVED_TO`, and a `CREATE` that no `CLOSE_WRITE` will follow: a
+  symlink (`ln -s`), a hard link (`ln`, a regular file with more than
+  one link), or a FIFO, socket or device node. A `CREATE` or `MOVED_TO`
+  of a symlink to a directory in a config directory (GNU stow folding in
+  a sub-directory) rescans the module set. Removals (`DELETE`, `MOVED_FROM`, a watched directory
   deleted or moved) mark a path for an existence check: a removal cannot
   be half-written, and a module deleted for good must be reported.
   `MODIFY` and a plain-file `CREATE` are never read; they only keep an
@@ -828,18 +831,33 @@ schema from `strand-compiler`).
   that is a directory link of a module file, or of the config root, also
   calls the module-set rescan. Watches are always on canonical
   directories, so one inode is never watched under two paths. A link
-  swap whose new target has the same bytes is a no-op (BLAKE3).
-- **2026-10-05 · Read-only mounts are not watched.** A directory on a
-  read-only mount (`/nix/store`) cannot change in place; home-manager's
-  switch swaps the link, which the link's directory sees. This avoids an
-  inotify watch on the very busy `/nix/store`.
+  swap whose new target has the same bytes is still reported as
+  `Modified` with the unchanged hash and the new `canonical`: design.md
+  counts a link swap as an edit, and the loader must stop pointing
+  diagnostics and click-to-`$EDITOR` at a store path that may be
+  garbage-collected; it skips the recompile by hash.
+- **2026-10-05 · Immutable stores are not watched.** A directory under
+  `/nix/store` or `/gnu/store` on a read-only mount cannot change in
+  place; home-manager's switch swaps the link, which the link's directory
+  sees. Other read-only mounts are watched (a read-only bind mount of a
+  writable tree still gets events), and a network or FUSE filesystem is
+  polled even when mounted read-only (the server's copy still changes):
+  the filesystem type is checked before the read-only flag.
 - **2026-10-05 · Polling.** Directories on NFS, SMB/CIFS, 9p, Ceph, AFS,
   Coda or FUSE (statfs magic), or whose inotify watch fails (limit
   reached), are polled every second (`Options::poll_interval`): the
-  listing is compared (inode, size, times) and every watched file in the
-  directory is re-hashed, so attribute caching cannot hide an edit.
-  FUSE is polled because remote writes (sshfs, rclone) make no events.
-  Each polled directory is reported once as `Notice::Polling`.
+  listing is compared (inode, size, times), and a watched file in the
+  directory is re-hashed only when its stamp changed. The stamp is taken
+  after an `open` (`O_NONBLOCK`) and `fstat`, which on NFS revalidates
+  the attribute cache (close-to-open consistency), so a stale cache does
+  not hide an edit and a 20 MB wallpaper on an NFS home is not re-read
+  every second. As a backstop, every 30 s (`Options::content_sweep`)
+  watched files up to 1 MiB (`Options::sweep_max_bytes`) are re-hashed
+  whatever their stamp; larger ones are compared by stamp only. FUSE is
+  polled because remote writes (sshfs, rclone) make no events. Each
+  polled directory is reported once as `Notice::Polling`; a polled
+  directory that exists but cannot be listed keeps its last listing and
+  is polled quietly instead of being dropped and re-added every poll.
 - **2026-10-05 · Cache trees are not hashed.** App, icon and font
   directories report `Role::Cache(kind)` paths, `Modified` or `Removed`
   by existence, with no hash: a font can be tens of MB and the cache
@@ -847,16 +865,74 @@ schema from `strand-compiler`).
   tree's depth.
 - **2026-10-05 · Own writes.** `register_own_write(path, hash)` matches
   the next completed write of that path (or of its resolved target) with
-  that hash, once; unmatched registrations expire after 10 s.
-- **2026-10-05 · Portal thread.** zbus is built with its `tokio` feature
-  (the services runtime, design.md) and the portal client runs on its own
-  current-thread runtime, so it works the same once `strand-services`
-  links zbus too. It subscribes to `SettingChanged` before `ReadOne`, so
-  no change is lost between them, falls back to `Read` (portal version 1,
-  value wrapped in one more variant), and always sends the boot batch,
-  empty when the bus or portal is missing; a portal that starts later is
-  still followed. `color-scheme` keeps the raw preference next to
-  `dark`; an `accent-color` component outside 0..=1 means unset.
-  Tests use a zbus mock portal on a private `dbus-daemon` the test
-  starts itself (python3-dbusmock is not installed); they skip when
-  `dbus-daemon` is missing unless `STRAND_REQUIRE_DBUS` is set.
+  that hash, once; unmatched registrations expire after 10 s (pruned on
+  every registration and every batch). When a match is found, earlier
+  registrations for the same file are dropped too: Strand writing a file
+  several times in one quiet period (a slider) leaves only the last
+  content on disk, and the superseded hashes must not swallow a later
+  user save (an editor undo) with those bytes.
+- **2026-10-05 · Portal client.** zbus is built with its `tokio`
+  feature (the services runtime, design.md). The async core is
+  `strand_watch::follow(&Connection, EventSink)`, so `strand-services`
+  can host it on the shared current-thread runtime and session
+  connection; `PortalSettings::spawn` is a convenience that runs it on
+  its own thread and runtime (tests, or before services exist). It
+  subscribes to `SettingChanged` and to owner changes of
+  `org.freedesktop.portal.Desktop` before reading, so no change is lost
+  between them. The three keys are read concurrently (`ReadOne`, falling
+  back to `Read` for portal version 1, value wrapped in one more
+  variant), each under a 500 ms limit (`BOOT_READ_TIMEOUT`); connecting
+  and subscribing have a 2 s limit. The boot batch (`at_boot: true`) is
+  always sent, with what arrived in time, empty when the bus or portal
+  is missing. A key that missed the limit is read again without the
+  short limit (zbus's own 25 s) and sent with `at_boot: false`. When the
+  portal starts or restarts later (a new name owner), all three keys are
+  re-read and sent with `at_boot: false`: they are real changes against
+  the defaults logic holds, and a value equal to the current one changes
+  nothing in the graph. Dropping `PortalSettings` cancels the whole task,
+  including outstanding calls, so shutdown never waits on a hung portal.
+  `color-scheme` keeps the raw preference next to `dark`; an
+  `accent-color` component outside 0..=1 means unset. Tests use a zbus
+  mock portal on a private `dbus-daemon` the test starts itself
+  (python3-dbusmock is not installed); they skip when `dbus-daemon` is
+  missing unless `STRAND_REQUIRE_DBUS` is set.
+- **2026-10-05 · Missing and replaced directories.** A directory the
+  watcher wants (a config directory, a referenced file's directory, a
+  link's directory, a cache tree root) that does not exist is replaced
+  by its nearest existing ancestor, and the first missing path below it
+  is remembered; when that path appears (a directory, or a link), the
+  files below it are re-resolved, re-watched and re-checked, and the
+  module set is rescanned if the config lies below it. The config
+  directory's parent is always watched and the root itself triggers a
+  rescan, so a config directory that is deleted and recreated (dotfile
+  scripts, `mv new strand`) is watched again. Directory removals
+  (`IN_DELETE` of a directory, `DELETE_SELF`) are removals; a creation
+  event for a path already watched with the same inode changes nothing.
+  A write that lands between the rescan and the new watch is still read,
+  since files are hashed after the watch is in place.
+- **2026-10-05 · Registrations per role.** A referenced path can be
+  wanted for several reasons (two `state … from "prefs.toml"`, a
+  wallpaper also shown by an `image`), so registrations are counted per
+  (path, role) and `unwatch_file(path, role)` drops one. Module-set
+  membership is separate from registrations, so registering or
+  unregistering a module file never changes its module status. A change
+  is reported once per role (`changes` sorted by path, then role).
+  `set_referenced(pairs)` replaces every registration with the set the
+  compiler collected from the whole program, so the loader does not diff
+  path sets itself.
+- **2026-10-05 · Only regular files are read.** A watched path is
+  `stat`ed, opened with `O_NONBLOCK`, `fstat`ed, and hashed only if it is
+  a regular file, streaming (`blake3::Hasher::update_reader`), so a FIFO
+  cannot block the watcher thread (or `watch_file`, which waits for it),
+  `/dev/zero` cannot exhaust memory, and a 50 MB wallpaper is not
+  buffered whole. Anything else is reported once with
+  `error: Some(InvalidInput)` and no hash.
+- **2026-10-05 · Batch timestamps.** `FileBatch` carries `first_event`
+  and `last_event` (the event that last kept the quiet period open) and
+  `SystemBatch` carries `received`, so the reload-latency benchmark and
+  `strand watch --json` can separate the watcher's quiet period from
+  compile and commit time.
+- **2026-10-05 · `ConfigReloaded { failed: Option<bool> }`.** niri's
+  `ConfigLoaded { failed }` gives `Some(failed)`; Hyprland's
+  `configreloaded` says nothing about success, so its adapter sends
+  `None` rather than inventing `false`.

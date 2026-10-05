@@ -1,8 +1,11 @@
 //! `org.freedesktop.portal.Settings` client: `ReadOne` at boot, then
 //! `SettingChanged`, for `color-scheme`, `accent-color` and `contrast`.
 
+use std::future::Future;
 use std::io;
+use std::pin::Pin;
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use futures_lite::StreamExt;
 use zbus::zvariant::{OwnedValue, Value};
@@ -96,62 +99,188 @@ async fn read_setting(proxy: &SettingsProxy<'_>, key: &str) -> Option<SystemSett
     parse_setting(key, &value)
 }
 
-async fn run(
-    bus: Bus,
-    sink: EventSink,
-    mut stop: tokio::sync::oneshot::Receiver<()>,
-) -> zbus::Result<()> {
-    let conn = match bus {
-        Bus::Session => zbus::Connection::session().await?,
-        Bus::Address(a) => {
-            zbus::connection::Builder::address(a.as_str())?
-                .build()
-                .await?
+/// How long the boot read waits for the portal before sending what it
+/// has. A portal frontend stuck on a hung backend at login answers only
+/// after its own 25 s timeout; the rest follows as a later batch.
+pub const BOOT_READ_TIMEOUT: Duration = Duration::from_millis(500);
+/// How long connecting to the bus and subscribing may take.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// One key's read: a value (or `None` when the portal has none), or late.
+enum Read {
+    Done(Option<SystemSetting>),
+    Late,
+}
+
+async fn read_key(proxy: &SettingsProxy<'_>, key: &str, limit: Option<Duration>) -> Read {
+    match limit {
+        Some(t) => match tokio::time::timeout(t, read_setting(proxy, key)).await {
+            Ok(v) => Read::Done(v),
+            Err(_) => Read::Late,
+        },
+        None => Read::Done(read_setting(proxy, key).await),
+    }
+}
+
+/// Read `keys` concurrently. Returns the settings read and the keys that
+/// did not answer within `limit`.
+async fn read_keys(
+    proxy: &SettingsProxy<'_>,
+    keys: &[&'static str],
+    limit: Option<Duration>,
+) -> (Vec<SystemSetting>, Vec<&'static str>) {
+    let one = |key: &'static str| async move {
+        if keys.contains(&key) {
+            read_key(proxy, key, limit).await
+        } else {
+            Read::Done(None)
         }
     };
-    let proxy = SettingsProxy::new(&conn).await?;
-    // Subscribe before reading, so a change between the two is not lost.
-    let mut changes = proxy.receive_setting_changed().await?;
-    let mut boot = Vec::new();
-    for key in KEYS {
-        if let Some(s) = read_setting(&proxy, key).await {
-            boot.push(s);
+    let (a, b, c) = tokio::join!(one(KEYS[0]), one(KEYS[1]), one(KEYS[2]));
+    let mut settings = Vec::new();
+    let mut late = Vec::new();
+    for (key, read) in KEYS.into_iter().zip([a, b, c]) {
+        match read {
+            Read::Done(Some(s)) => settings.push(s),
+            Read::Done(None) => {}
+            Read::Late => late.push(key),
         }
     }
-    if !sink.send(ChangeEvent::System(SystemBatch {
-        settings: boot,
-        at_boot: true,
-    })) {
+    (settings, late)
+}
+
+/// Read `keys` with no short limit (a late boot read, or a portal that
+/// just appeared).
+async fn read_late(proxy: &SettingsProxy<'_>, keys: Vec<&'static str>) -> Vec<SystemSetting> {
+    read_keys(proxy, &keys, None).await.0
+}
+
+fn send(sink: &EventSink, settings: Vec<SystemSetting>, at_boot: bool) -> bool {
+    sink.send(ChangeEvent::System(SystemBatch {
+        settings,
+        at_boot,
+        received: Instant::now(),
+    }))
+}
+
+fn timed_out() -> zbus::Error {
+    zbus::Error::Failure("timed out".into())
+}
+
+enum Next {
+    Changed(Option<SettingChanged>),
+    Owner(Option<Option<zbus::names::UniqueName<'static>>>),
+    Read(Vec<SystemSetting>),
+}
+
+type ReadFuture<'a> = Pin<Box<dyn Future<Output = Vec<SystemSetting>> + Send + 'a>>;
+
+/// Follow the portal's appearance settings on `conn` until the sink's
+/// receiver or the connection goes away. This is the async core of
+/// [`PortalSettings`]; `strand-services` can run it on the shared services
+/// runtime and session connection instead.
+///
+/// Sends the boot batch (`at_boot: true`, after at most
+/// [`BOOT_READ_TIMEOUT`]; empty when there is no portal), then one batch
+/// per `SettingChanged`. Keys the boot read did not get in time, and all
+/// three keys whenever the portal (re)starts (a new owner of
+/// `org.freedesktop.portal.Desktop`), are read again and sent with
+/// `at_boot: false`. If subscribing fails the boot batch is still sent
+/// (empty) and the error returned.
+pub async fn follow(conn: &zbus::Connection, sink: EventSink) -> zbus::Result<()> {
+    let setup = async {
+        let proxy = SettingsProxy::new(conn).await?;
+        // Subscribe before reading, so a change between the two is not
+        // lost.
+        let changes = proxy.receive_setting_changed().await?;
+        let owners = proxy.inner().receive_owner_changed().await?;
+        zbus::Result::Ok((proxy, changes, owners))
+    };
+    let (proxy, mut changes, mut owners) = match tokio::time::timeout(CONNECT_TIMEOUT, setup).await
+    {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            send(&sink, Vec::new(), true);
+            return Err(e);
+        }
+        Err(_) => {
+            send(&sink, Vec::new(), true);
+            return Err(timed_out());
+        }
+    };
+    let (boot, late) = read_keys(&proxy, &KEYS, Some(BOOT_READ_TIMEOUT)).await;
+    if !send(&sink, boot, true) {
         return Ok(());
     }
+    let mut pending: Option<ReadFuture<'_>> =
+        (!late.is_empty()).then(|| Box::pin(read_late(&proxy, late)) as ReadFuture<'_>);
     loop {
-        let signal = tokio::select! {
-            _ = &mut stop => return Ok(()),
-            s = changes.next() => s,
+        let next = tokio::select! {
+            s = changes.next() => Next::Changed(s),
+            o = owners.next() => Next::Owner(o),
+            r = async {
+                match pending.as_mut() {
+                    Some(read) => read.await,
+                    None => std::future::pending().await,
+                }
+            }, if pending.is_some() => Next::Read(r),
         };
-        let Some(signal) = signal else {
-            return Ok(());
+        let sent = match next {
+            Next::Changed(None) | Next::Owner(None) => return Ok(()),
+            Next::Changed(Some(signal)) => {
+                let Ok(args) = signal.args() else {
+                    continue;
+                };
+                if *args.namespace() != APPEARANCE {
+                    continue;
+                }
+                match parse_setting(args.key(), args.value()) {
+                    Some(s) => send(&sink, vec![s], false),
+                    None => continue,
+                }
+            }
+            // The portal (re)started: its values may differ from ours.
+            Next::Owner(Some(Some(_))) => {
+                pending = Some(Box::pin(read_late(&proxy, KEYS.to_vec())));
+                continue;
+            }
+            // The portal went away; keep the last values.
+            Next::Owner(Some(None)) => continue,
+            Next::Read(settings) => {
+                pending = None;
+                if settings.is_empty() {
+                    continue;
+                }
+                send(&sink, settings, false)
+            }
         };
-        let Ok(args) = signal.args() else {
-            continue;
-        };
-        if *args.namespace() != APPEARANCE {
-            continue;
-        }
-        if let Some(s) = parse_setting(args.key(), args.value())
-            && !sink.send(ChangeEvent::System(SystemBatch {
-                settings: vec![s],
-                at_boot: false,
-            }))
-        {
+        if !sent {
             return Ok(());
         }
     }
 }
 
-/// Follows the portal's appearance settings on its own thread. The boot
-/// read is always sent (empty when there is no portal), then one batch per
-/// `SettingChanged`. Dropping it stops the thread.
+async fn connect(bus: Bus) -> zbus::Result<zbus::Connection> {
+    let connect = async {
+        match bus {
+            Bus::Session => zbus::Connection::session().await,
+            Bus::Address(a) => {
+                zbus::connection::Builder::address(a.as_str())?
+                    .build()
+                    .await
+            }
+        }
+    };
+    tokio::time::timeout(CONNECT_TIMEOUT, connect)
+        .await
+        .unwrap_or_else(|_| Err(timed_out()))
+}
+
+/// Follows the portal's appearance settings on its own thread, with its
+/// own connection and current-thread runtime (see [`follow`] to share
+/// both). The boot read is always sent (empty when there is no bus or
+/// portal), then changes. Dropping it stops the thread at once, even
+/// while a portal call is outstanding.
 #[derive(Debug)]
 pub struct PortalSettings {
     stop: Option<tokio::sync::oneshot::Sender<()>>,
@@ -165,17 +294,26 @@ impl PortalSettings {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
         let thread = std::thread::Builder::new()
             .name("strand-portal".into())
             .spawn(move || {
-                let fallback = sink.clone();
-                if rt.block_on(run(bus, sink, stop_rx)).is_err() {
-                    fallback.send(ChangeEvent::System(SystemBatch {
-                        settings: Vec::new(),
-                        at_boot: true,
-                    }));
-                }
+                rt.block_on(async move {
+                    let run = async {
+                        match connect(bus).await {
+                            Ok(conn) => {
+                                let _ = follow(&conn, sink).await;
+                            }
+                            Err(_) => {
+                                send(&sink, Vec::new(), true);
+                            }
+                        }
+                    };
+                    tokio::select! {
+                        _ = stop_rx => {}
+                        () = run => {}
+                    }
+                });
             })?;
         Ok(PortalSettings {
             stop: Some(stop_tx),

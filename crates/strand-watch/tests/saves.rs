@@ -20,30 +20,14 @@ use strand_watch::{
 const SETTLE: Duration = Duration::from_millis(300);
 const FIRST: Duration = Duration::from_secs(5);
 
-/// The module set as `source::find_files` defines it: `.strand` files up to
-/// three directories down, hidden names skipped, links followed.
+/// The module set from the real `source::find_files`, as the binary
+/// builds it.
 fn modules(root: &Path) -> std::io::Result<ModuleSet> {
-    let mut set = ModuleSet::default();
-    let mut queue = vec![(root.to_path_buf(), 0)];
-    while let Some((dir, depth)) = queue.pop() {
-        set.dirs.push(fs::canonicalize(&dir)?);
-        for e in fs::read_dir(&dir)?.flatten() {
-            let name = e.file_name();
-            if name.to_string_lossy().starts_with('.') {
-                continue;
-            }
-            let p = e.path();
-            if p.is_dir() {
-                if depth < 3 {
-                    queue.push((p, depth + 1));
-                }
-            } else if p.extension().is_some_and(|x| x == "strand") && p.exists() {
-                set.files.push(p);
-            }
-        }
-    }
-    set.files.sort();
-    Ok(set)
+    let found = strand_compiler::source::find_files(root)?;
+    Ok(ModuleSet {
+        files: found.files,
+        dirs: found.dirs,
+    })
 }
 
 fn config(root: &Path) -> ConfigWatch {
@@ -231,13 +215,18 @@ fn save_symlink_swap() {
     fs::write(fx.base.join("store/v1/theme.strand"), "old target").unwrap();
     no_batch(&fx);
 
-    // A swap to a target with the same bytes is a no-op.
+    // A swap to a target with the same bytes is still an edit: the hash
+    // is unchanged (no recompile) but the canonical path is new (the old
+    // store path may be garbage-collected).
     let v3 = fx.base.join("store/v3");
     fs::create_dir_all(&v3).unwrap();
     fs::write(v3.join("theme.strand"), "x").unwrap();
     symlink(v3.join("theme.strand"), &tmp).unwrap();
     fs::rename(&tmp, fx.cfg.join("theme.strand")).unwrap();
-    no_batch(&fx);
+    let b = one_batch(&fx);
+    assert_eq!(b.changes.len(), 1, "{b:#?}");
+    assert_modified(&b.changes[0], &fx.cfg.join("theme.strand"), "x");
+    assert_eq!(b.changes[0].canonical, Some(v3.join("theme.strand")));
 }
 
 // --- Filtering and hashing -------------------------------------------------
@@ -313,6 +302,7 @@ fn save_all_is_one_batch() {
     }
     let b = one_batch(&fx);
     assert_eq!(b.changes.len(), 3, "{b:#?}");
+    assert!(b.first_event <= b.last_event && b.last_event <= Instant::now());
     expect.sort();
     for (c, (p, body)) in b.changes.iter().zip(&expect) {
         assert_eq!(&c.path, p);
@@ -440,7 +430,7 @@ fn settings_file_created_later_and_edited() {
     fs::rename(&tmp, &prefs).unwrap();
     no_batch(&fx);
 
-    fx.watcher.unwatch_file(&prefs).unwrap();
+    fx.watcher.unwatch_file(&prefs, Role::Settings).unwrap();
     fs::write(&prefs, "compact = true\n").unwrap();
     no_batch(&fx);
 }
@@ -518,7 +508,8 @@ fn polling_compares_content() {
         ..Options::default()
     };
     let tmp = tempfile::tempdir().unwrap();
-    let cfg = fs::canonicalize(tmp.path()).unwrap();
+    let cfg = fs::canonicalize(tmp.path()).unwrap().join("cfg");
+    fs::create_dir(&cfg).unwrap();
     fs::write(cfg.join("bar.strand"), "bar {}\n").unwrap();
     let (sink, rx) = channel();
     let _w = Watcher::spawn(Some(config(&cfg)), opts, sink).unwrap();
@@ -540,4 +531,223 @@ fn polling_compares_content() {
     fs::write(cfg.join("new.strand"), "new").unwrap();
     let b = next_files(&rx, FIRST).expect("polled new file");
     assert_eq!(b.changes[0].kind, ChangeKind::Created);
+}
+
+// --- Directories that come and go ---------------------------------------------
+
+/// Wait for a batch that satisfies `pred`, skipping others (a removal
+/// batch, notices).
+fn until(rx: &Receiver<ChangeEvent>, what: &str, pred: impl Fn(&FileBatch) -> bool) -> FileBatch {
+    let end = Instant::now() + FIRST;
+    while let Some(b) = next_files(rx, end.saturating_duration_since(Instant::now())) {
+        if pred(&b) {
+            return b;
+        }
+    }
+    panic!("no batch with {what}");
+}
+
+fn has(b: &FileBatch, path: &Path, kind: ChangeKind) -> bool {
+    b.changes.iter().any(|c| c.path == path && c.kind == kind)
+}
+
+/// A dotfile script replaces the whole config directory: the root's parent
+/// is watched, so the recreated directory is watched again.
+#[test]
+fn a_recreated_config_directory_is_watched_again() {
+    let fx = fixture();
+    fs::remove_dir_all(&fx.cfg).unwrap();
+    let bar = fx.cfg.join("bar.strand");
+    until(&fx.rx, "the removal", |b| has(b, &bar, ChangeKind::Removed));
+    fs::create_dir(&fx.cfg).unwrap();
+    fs::write(&bar, "bar { new: 1 }\n").unwrap();
+    until(&fx.rx, "the recreated module", |b| {
+        has(b, &bar, ChangeKind::Created)
+    });
+    fs::write(&bar, "bar { new: 2 }\n").unwrap();
+    let b = until(&fx.rx, "an edit", |b| has(b, &bar, ChangeKind::Modified));
+    assert_modified(&b.changes[0], &bar, "bar { new: 2 }\n");
+}
+
+/// A settings file in a directory created later (`~/.local/state/strand`).
+#[test]
+fn a_file_whose_directory_is_created_later() {
+    let fx = fixture();
+    let prefs = fx.base.join("state/strand/prefs.toml");
+    fx.watcher.watch_file(&prefs, Role::Settings).unwrap();
+    fs::create_dir_all(prefs.parent().unwrap()).unwrap();
+    fs::write(&prefs, "a = 1\n").unwrap();
+    let b = until(&fx.rx, "the new file", |b| {
+        has(b, &prefs, ChangeKind::Created)
+    });
+    assert_eq!(b.changes[0].hash, Some(hash_bytes(b"a = 1\n")));
+    fs::write(&prefs, "a = 2\n").unwrap();
+    let b = one_batch(&fx);
+    assert_modified(&b.changes[0], &prefs, "a = 2\n");
+}
+
+/// GNU stow folding a new sub-directory in as a directory link, by `ln -s`
+/// and by renaming a link in.
+#[test]
+fn a_new_directory_link_is_scanned() {
+    let fx = fixture();
+    for (i, how) in ["ln", "rename"].iter().enumerate() {
+        let src = fx.base.join(format!("dotfiles/widgets{i}"));
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("osd.strand"), "osd {}\n").unwrap();
+        no_batch(&fx);
+        let link = fx.cfg.join(format!("widgets{i}"));
+        if *how == "ln" {
+            symlink(&src, &link).unwrap();
+        } else {
+            let tmp = fx.cfg.join(format!(".widgets{i}.tmp"));
+            symlink(&src, &tmp).unwrap();
+            fs::rename(&tmp, &link).unwrap();
+        }
+        let b = one_batch(&fx);
+        assert_eq!(b.changes.len(), 1, "{how}: {b:#?}");
+        assert_eq!(b.changes[0].path, link.join("osd.strand"));
+        assert_eq!(b.changes[0].kind, ChangeKind::Created);
+        assert_eq!(b.changes[0].canonical, Some(src.join("osd.strand")));
+    }
+}
+
+/// `ln a.strand b.strand` makes only IN_CREATE: still a new module.
+#[test]
+fn a_hard_linked_module_is_seen() {
+    let fx = fixture();
+    let copy = fx.cfg.join("bar2.strand");
+    fs::hard_link(fx.cfg.join("bar.strand"), &copy).unwrap();
+    let b = one_batch(&fx);
+    assert_eq!(b.changes.len(), 1, "{b:#?}");
+    assert_eq!(b.changes[0].path, copy);
+    assert_eq!(b.changes[0].kind, ChangeKind::Created);
+}
+
+/// `find_files` loads `.strand` files at most three directories down; the
+/// watcher follows the set it returns.
+#[test]
+fn depth_three_is_watched_and_depth_four_is_not() {
+    let fx = fixture();
+    let c = fx.cfg.join("a/b/c");
+    fs::create_dir_all(c.join("d")).unwrap();
+    fs::write(c.join("x.strand"), "x {}\n").unwrap();
+    fs::write(c.join("d/y.strand"), "y {}\n").unwrap();
+    let b = one_batch(&fx);
+    let paths: Vec<_> = b.changes.iter().map(|c| c.path.clone()).collect();
+    assert_eq!(paths, vec![c.join("x.strand")]);
+    assert_eq!(b.changes[0].kind, ChangeKind::Created);
+    // The depth-3 directory is watched; the depth-4 one is not.
+    fs::write(c.join("d/y.strand"), "y { b: 1 }\n").unwrap();
+    no_batch(&fx);
+    fs::write(c.join("x.strand"), "x { b: 1 }\n").unwrap();
+    let b = one_batch(&fx);
+    assert_modified(&b.changes[0], &c.join("x.strand"), "x { b: 1 }\n");
+}
+
+// --- Registrations -----------------------------------------------------------
+
+/// Registrations are counted per (path, role); a path held for two roles
+/// is reported once per role; a module registered as a file stays a
+/// module.
+#[test]
+fn registrations_are_counted_per_role() {
+    let fx = fixture();
+    let wall = fx.base.join("wall.png");
+    fs::write(&wall, "png 1").unwrap();
+    fx.watcher.watch_file(&wall, Role::Wallpaper).unwrap();
+    fx.watcher.watch_file(&wall, Role::Other).unwrap();
+    fx.watcher.watch_file(&wall, Role::Other).unwrap();
+    fx.watcher.unwatch_file(&wall, Role::Other).unwrap();
+    fs::write(&wall, "png 2").unwrap();
+    let b = one_batch(&fx);
+    let roles: Vec<_> = b.changes.iter().map(|c| (c.path.clone(), c.role)).collect();
+    assert_eq!(
+        roles,
+        vec![(wall.clone(), Role::Wallpaper), (wall.clone(), Role::Other)]
+    );
+
+    let theme = fx.cfg.join("theme.strand");
+    fx.watcher.watch_file(&theme, Role::Settings).unwrap();
+    fx.watcher.unwatch_file(&theme, Role::Settings).unwrap();
+    fs::write(&theme, NEW).unwrap();
+    only_theme_changed(&fx, NEW);
+
+    // The whole set at once: only `wall.png` for the wallpaper remains.
+    fx.watcher
+        .set_referenced([(wall.clone(), Role::Wallpaper)])
+        .unwrap();
+    fs::write(&wall, "png 3").unwrap();
+    let b = one_batch(&fx);
+    let roles: Vec<_> = b.changes.iter().map(|c| c.role).collect();
+    assert_eq!(roles, vec![Role::Wallpaper]);
+    fx.watcher.set_referenced([]).unwrap();
+    fs::write(&wall, "png 4").unwrap();
+    no_batch(&fx);
+}
+
+/// A slider writes prefs.toml twice in one quiet period: the superseded
+/// registration must not swallow a later user save with those bytes.
+#[test]
+fn superseded_own_writes_are_dropped() {
+    let fx = fixture();
+    let prefs = fx.cfg.join("prefs.toml");
+    fs::write(&prefs, "v = 0\n").unwrap();
+    fx.watcher.watch_file(&prefs, Role::Settings).unwrap();
+    for v in ["v = 1\n", "v = 2\n"] {
+        fx.watcher
+            .register_own_write(&prefs, hash_bytes(v.as_bytes()));
+        fs::write(&prefs, v).unwrap();
+    }
+    no_batch(&fx);
+    // The user (an undo in an editor) writes the first value again.
+    fs::write(&prefs, "v = 1\n").unwrap();
+    let b = one_batch(&fx);
+    assert_modified(&b.changes[0], &prefs, "v = 1\n");
+}
+
+/// A FIFO or device at a watched path is never read: the watcher (and
+/// `watch_file`) must not block, and later saves still arrive.
+#[test]
+fn fifos_are_not_read() {
+    let fx = fixture();
+    let fifo = fx.base.join("fifo");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .is_ok_and(|s| s.success());
+    if !made {
+        eprintln!("skipping: mkfifo unavailable");
+        return;
+    }
+    let (done_tx, done) = std::sync::mpsc::channel();
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            fx.watcher.watch_file(&fifo, Role::Settings).unwrap();
+            let _ = done_tx.send(());
+        });
+        done.recv_timeout(FIRST)
+            .expect("watch_file blocked on a FIFO");
+    });
+
+    // A module renamed over by a FIFO is reported as unreadable.
+    let theme = fx.cfg.join("theme.strand");
+    let fifo2 = fx.base.join("fifo2");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo2)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    fs::rename(&fifo2, &theme).unwrap();
+    let b = until(&fx.rx, "the unreadable module", |b| {
+        b.changes
+            .iter()
+            .any(|c| c.path == theme && c.error == Some(std::io::ErrorKind::InvalidInput))
+    });
+    assert!(b.changes.iter().all(|c| c.hash.is_none()), "{b:#?}");
+
+    // The watcher is not wedged.
+    fs::write(fx.cfg.join("bar.strand"), "bar { ok: 1 }\n").unwrap();
+    let b = one_batch(&fx);
+    assert_modified(&b.changes[0], &fx.cfg.join("bar.strand"), "bar { ok: 1 }\n");
 }

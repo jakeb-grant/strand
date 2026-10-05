@@ -4,6 +4,7 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::time::Instant;
 
 /// BLAKE3 hash of a file's bytes.
 pub type ContentHash = blake3::Hash;
@@ -13,8 +14,10 @@ pub fn hash_bytes(bytes: &[u8]) -> ContentHash {
     blake3::hash(bytes)
 }
 
-/// Why a path is watched, echoed on every change to it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Why a path is watched, echoed on every change to it. A path watched
+/// for several reasons (a module also registered as a settings file, a
+/// wallpaper also shown by an `image`) gets one [`FileChange`] per role.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Role {
     /// A `.strand` file of the config's module set (`source::find_files`).
     Module,
@@ -31,7 +34,7 @@ pub enum Role {
 }
 
 /// Cache-invalidation sources (design.md, "Change sources").
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum CacheKind {
     /// `applications/` directories (desktop entries).
     Apps,
@@ -46,8 +49,10 @@ pub enum CacheKind {
 pub enum ChangeKind {
     /// The path did not exist (or was not in the set) and now does.
     Created,
-    /// The content changed (for a symlink: the target or the target's
-    /// content). Cache-tree changes are always `Modified` or `Removed`.
+    /// The content changed, or a symlink on the way now resolves to
+    /// another file (`canonical` differs; `hash` may be the same, so a
+    /// loader skips the recompile but updates the path). Cache-tree
+    /// changes are always `Modified` or `Removed`.
     Modified,
     /// The path is gone (or left the module set).
     Removed,
@@ -108,14 +113,21 @@ pub enum PollReason {
 }
 
 /// All file changes of one coalesced quiet period ("save all" is one batch).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileBatch {
-    /// Changed paths, sorted by path; each path at most once.
+    /// Changed paths, sorted by path then role; each (path, role) at most
+    /// once.
     pub changes: Vec<FileChange>,
     /// Set when this batch comes from a full rescan.
     pub rescan: Option<RescanReason>,
     /// Polling fallbacks, rescan failures and backend errors.
     pub notices: Vec<Notice>,
+    /// When the first event of this quiet period arrived.
+    pub first_event: Instant,
+    /// When the last event that kept the period open arrived; the batch is
+    /// cut a quiet period (15 ms, or the removal grace) after it. Sent
+    /// minus `last_event` is the watcher's share of save-to-pixels.
+    pub last_event: Instant,
 }
 
 /// An `org.freedesktop.appearance` setting from the portal, already typed.
@@ -163,16 +175,22 @@ pub struct SystemBatch {
     /// Each setting at most once.
     pub settings: Vec<SystemSetting>,
     /// True for the boot read: these are initial values, not changes, so
-    /// `on change` must not fire for them.
+    /// `on change` must not fire for them. Values read later (a portal that
+    /// starts or restarts after boot, a boot read that timed out) come with
+    /// `at_boot: false`; logic writes them like changes, and a value equal
+    /// to the current one changes nothing.
     pub at_boot: bool,
+    /// When the values were read or the signal arrived.
+    pub received: Instant,
 }
 
 /// Compositor events (M3 adapters: Hyprland socket2, niri event stream).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompositorEvent {
-    /// `wm.config_reloaded`: Hyprland `configreloaded`, niri
-    /// `ConfigLoaded { failed }`.
-    ConfigReloaded { failed: bool },
+    /// `wm.config_reloaded`: niri `ConfigLoaded { failed }` gives
+    /// `Some(failed)`; Hyprland's `configreloaded` carries no result, so
+    /// `None`.
+    ConfigReloaded { failed: Option<bool> },
 }
 
 /// Everything the watcher thread and its sources send to logic.
