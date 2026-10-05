@@ -649,3 +649,106 @@ schema from `strand-compiler`).
   track's, so the bump is left to the integration step. Headless wlroots reports refresh 0
   in presentation feedback, so predictions there fall back to "now";
   refresh locking is covered by fake-clock unit tests.
+
+## m0
+
+- 2026-10-05 · m0: `strand run --demo` builds the hello bar's scene by
+  hand (`crates/strand/src/demo/scene.rs`), standing in for what the
+  compiler will emit. M0 layout is absolute placement, so `split`'s
+  `start`/`center`/`end` each span the bar and align their text (start
+  and end padded by `$space.3` = 12 px, done as `x` = +12 / -12 on
+  the full-width start and end sections, so each overhangs the opposite
+  edge by 12 px with nothing drawn there). The offsets stand in for the
+  `pad` the M1 compiler will emit on the split (`split { pad: 0,
+  $space.3 }`), which taffy honours in M2; they are not emitter output
+  to copy. The
+  start and end texts are static placeholders until the window and
+  battery services (M3). Colours are literals (`#1e1e2e` / `#cdd6f4`)
+  until tokens and palettes are wired; the font is `$font.ui` written as
+  `"Inter, sans-serif" 13px 500`, which falls back to DejaVu Sans in the
+  dev container.
+- 2026-10-05 · m0: the demo has one `bar` node with the default `screens`
+  (every output), so the surface manager makes one layer surface per
+  monitor and render paints the one subtree at each output's scale.
+  Per-monitor instances with their own state (`Screens::Named`) arrive
+  with the language in M1. `strand run` without `--demo` stays "not
+  implemented (M1)": there is no config to run before the compiler.
+- 2026-10-05 · m0: the clock is a `strand-core` `Signal<i64>` of Unix
+  minutes, a `Memo` formatting it with chrono (`%H:%M`, local time) and
+  the scene emitter at the edge, which (as `architecture.md` specifies
+  for the compiler's emitter) calls `rt.watch(memo.id())` and turns
+  `Tick::changed` into `SetProp(text)` in the tick's `SceneDiff`, rather
+  than a writing `Effect`; the logic thread sends at most one diff per
+  tick over a calloop channel. It sleeps
+  on a `CLOCK_REALTIME` timerfd armed at the absolute next minute
+  (`TFD_TIMER_ABSTIME | TFD_TIMER_CANCEL_ON_SET`, so a clock step wakes it
+  to re-arm) plus `Runtime::next_deadline` and the runtime's wake hook.
+  The real `clock` service (M3) takes this over.
+- 2026-10-05 · m0: gate readings. Damage "per tick" is checked both per
+  committed frame (per surface) and as the sum over all outputs at a
+  tick, on the damage actually submitted (already widened by buffer
+  age); every frame after boot is also held to the gate. "No wakeups" is zero growth of voluntary + involuntary
+  context switches summed over every thread of the process from :03 to
+  :57 of a minute. PSS is `Pss:` of `smaps_rollup` after the bars are up
+  and two ticks have passed.
+- 2026-10-05 · m0 (gate fix in strand-surface): a freshly created shm
+  buffer starts as a copy of the buffer holding the newest frame
+  (copy-forward, a ~330 KB memcpy for a 1440p bar) and reports age 1.
+  Before this the first change after boot, when the compositor still held
+  the boot frame, was painted into a new buffer of age 0 and repainted
+  the whole bar (81,920 px² at 1.0, 102,400 px² at 1.25), failing the
+  damage gate on the first tick.
+- 2026-10-05 · m0: `STRAND_LOG` is a comma list of a level (`error`,
+  `warn` (default), `info`, `debug`, `trace`, `off`) and topics; `damage`
+  prints one `strand: damage surface=… buffer=WxH scale=… age=… area=…
+  rects=…` line per painted frame, plus `strand: dropped surface=…` when
+  that frame's commit then fails; `scripts/m0-exit.sh` parses both.
+- 2026-10-05 · m0 (gate fix in strand-render): text layouts are keyed by
+  node, scale **and line box width** (`max_width`), not node and scale.
+  `center`/`end` alignment happens inside the shaped line box, so one bar
+  node on two outputs of the same scale but different widths (2560 and
+  1920 at 1.0, the common pair) drew whichever width was shaped last on
+  both: the clock off-centre and the end text off-screen on one bar. The
+  same cache let the 1.25 bar's first frame borrow the 1.0 bar's layout
+  shaped for 2560 logical px, a boot correction frame that a later tick
+  then repainted with (3,738 px², over the gate) about 1 boot in 5–10.
+  Now each surface draws the layout for its own scale and width; a
+  surface not yet painted holds its first frame for exactly that layout
+  (up to the first-frame wait), and a painted one, while its layout is
+  re-shaped, draws a stand-in from another scale or width resampled and
+  shifted so its alignment lands where the right one's would. Slots no
+  surface wants are pruned.
+- 2026-10-05 · m0: the demo holds a new bar's first frame up to 500 ms
+  for its text (the renderer's default is 50 ms), so a boot under load,
+  while the text worker loads fonts, still paints text-complete first
+  frames instead of a stand-in corrected a moment later.
+- 2026-10-05 · m0: `strand run --demo` exits 0 when the compositor goes
+  away (the Wayland connection reports a broken pipe or reset), and with
+  the logic thread's error as soon as that thread's channel closes.
+- 2026-10-05 · m0: the demo's one `bar` node shown on every output is
+  an M0 shortcut, not the M1 model. In M1, `strand run` forwards the
+  `SurfaceHost` `monitor_*` hooks to logic as the `screens` service and
+  pins one `bar` instance per monitor (`Screens::Named`); state survives
+  an unplug through `rt.reparent`. It also adds a render → logic channel
+  for `InputEvent`s and layout facts. The per-width text slots in render
+  exist because of the shared node; their M2 costs are under "Later" in
+  `architecture.md` (render).
+- 2026-10-05 · m0: the 34 MB PSS gate is asserted on a release build
+  (`cargo test --release -p strand --test demo`, and
+  `scripts/m0-exit.sh`). A debug run of `demo.rs` is held to a separate
+  40 MB debug ceiling: debug builds carry about 9 MB that release does
+  not.
+- 2026-10-05 · m0 (test fix in strand-surface):
+  `commits_lock_to_the_refresh_rate` checks presentation timestamps from
+  the compositor, recorded by a `FakeClock`, so each frame is on a later
+  refresh than the one before. It no longer derives a bound from
+  wall-clock time × 60. Headless sway reports `seq` 0 and refresh 0, so
+  the test assumes 60 Hz with 2 ms slack and compares `seq` only when it
+  moves.
+- 2026-10-05 · m0 (round 3, render gate-adjacent fix): when
+  `prune_texts` drops a slot that had a layout, every surface wanting a
+  slot of the same node with no layout (it may have drawn the dropped one
+  as a stand-in) is marked dirty; `flatten_surface` re-flattens if it is
+  itself one. A poisoned surface then stops drawing a gone layout.
+- 2026-10-05 · m0: `scripts/m0-exit.sh` gates damage per tick as the sum
+  over all bars in every scenario, the 3-bar tick after hotplug included.

@@ -109,6 +109,29 @@ impl Slots {
         None
     }
 
+    /// The buffer holding the frame committed last, if any.
+    pub fn newest(&self) -> Option<usize> {
+        if self.commits == 0 {
+            return None;
+        }
+        self.slots
+            .iter()
+            .position(|s| s.frame == Some(self.commits))
+    }
+
+    /// Buffer `index` was given a copy of the newest frame's pixels
+    /// (copy-forward): it now holds that frame, so its age is 1.
+    pub fn adopt_newest(&mut self, index: usize) -> u8 {
+        let commits = self.commits;
+        match self.slots.get_mut(index) {
+            Some(slot) if commits > 0 => {
+                slot.frame = Some(commits);
+                1
+            }
+            _ => 0,
+        }
+    }
+
     /// Drops the slot the last [`Slots::acquire`] created (`fresh`) when
     /// its buffer could not be made.
     pub fn discard_last(&mut self) {
@@ -262,7 +285,7 @@ impl ShmBuffers {
         if size.is_empty() {
             return Err(too_large());
         }
-        let Some(acquired) = self.slots.acquire() else {
+        let Some(mut acquired) = self.slots.acquire() else {
             return Ok(None);
         };
         if acquired.fresh {
@@ -302,6 +325,21 @@ impl ShmBuffers {
                 pool.create_buffer(offset, w, h, stride, wl_shm::Format::Argb8888, data, qh);
             debug_assert_eq!(self.buffers.len(), index);
             self.buffers.push(buffer);
+            // Copy-forward: start the new buffer from the newest frame (a
+            // busy buffer is only read here, never written), so painting
+            // into it costs the frame's damage, not a full repaint. Without
+            // this the first change after boot, when the compositor still
+            // holds the boot frame, repaints the whole bar.
+            if let Some(src) = self.slots.newest().filter(|&src| src != index)
+                && let Some(pool) = self.pool.as_mut()
+            {
+                let mmap = pool.mmap();
+                let from = src * len;
+                if mmap.len() >= (index + 1) * len && mmap.len() >= from + len {
+                    mmap.copy_within(from..from + len, index * len);
+                    acquired.age = self.slots.adopt_newest(index);
+                }
+            }
         }
         Ok(Some(acquired))
     }
@@ -358,6 +396,25 @@ mod tests {
         let d = s.acquire().unwrap();
         assert_eq!((d.index, d.age), (1, 2));
         assert_eq!(s.len(), 2);
+    }
+
+    #[test]
+    fn a_fresh_buffer_copied_forward_has_age_one() {
+        let mut s = Slots::new(3);
+        assert_eq!(s.newest(), None, "nothing committed yet");
+        let a = s.acquire().unwrap();
+        assert_eq!(s.adopt_newest(a.index), 0, "nothing to copy");
+        s.commit(a.index);
+        assert_eq!(s.newest(), Some(0));
+        // Buffer 0 is on screen; the new buffer starts as its copy.
+        let b = s.acquire().unwrap();
+        assert!(b.fresh);
+        assert_eq!(s.adopt_newest(b.index), 1);
+        s.commit(b.index);
+        assert_eq!(s.newest(), Some(1));
+        s.release(0);
+        // Buffer 0 still holds frame 1 of 2.
+        assert_eq!(s.acquire().unwrap().age, 2);
     }
 
     #[test]

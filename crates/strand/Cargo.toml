@@ -16,6 +16,14 @@ strand-services.workspace = true
 strand-surface.workspace = true
 strand-text.workspace = true
 strand-watch.workspace = true
+calloop = "0.14.5"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+log = { version = "0.4.34", features = ["std"] }
+mimalloc = { version = "0.1.52", default-features = false }
+rustix = { version = "1.1.5", features = ["event", "time"] }
+
+[dev-dependencies]
+libmimalloc-sys = { version = "0.1.49", features = ["extended"] }
 
 [lints]
 workspace = true

@@ -10,7 +10,7 @@ file fixes boundaries; each crate is free inside its own boundary.
 | Main: render + surface | `strand-render`, `strand-surface` | Wayland connection (calloop), springs, token evaluation per frame, layout, damage, paint, presentation | Wait on the logic thread, run handlers, evaluate bytecode |
 | Logic | `strand-core`, `strand-compiler` (VM, reconciler) | Reactive graph, state, handlers, timers, the live program | Touch Wayland or pixels |
 | Compiler worker | `strand-compiler` | Parse, check, lower changed modules off-thread | Mutate live state (it hands a compiled `Program` to logic) |
-| Text worker | `strand-text` | parley shaping, swash rasterisation, per-scale glyph atlases | Block render: render keeps the last layout until a new one arrives |
+| Text worker | `strand-text` | parley shaping, swash rasterisation, per-scale glyph atlases | Block render: a painted surface keeps drawing its last layout (or a realigned stand-in from another scale or width) until the new one arrives |
 | Watcher | `strand-watch` | inotify, portal, IPC socket | Parse files (it sends paths and hashes) |
 | Services | `strand-services` | tokio current-thread runtime; PipeWire and toplevel get their own threads | Block logic: they send state diffs and events |
 
@@ -168,11 +168,32 @@ be built and tested without the language, and the language without pixels.
      `paint`. Commit only a non-empty result, with exactly that damage
      (`damage_buffer`) and the converted `opaque_region`; if the commit
      fails, call `invalidate(surface)`. Text still being shaped does not
-     keep `wants_frame` true: the delivery does, through step 2. A
-     surface that has never painted (or whose text worker restarted) holds
-     its first frame while its text is shaped, at most 50 ms: if
+     keep `wants_frame` true: the delivery does, through step 2. Text
+     layouts are per (node, scale, line box width), since `center`/`end`
+     alignment happens in the line box. A surface that has never painted
+     (or whose text worker restarted) holds its first frame for its own
+     layouts, up to the first-frame wait (default 50 ms, set with
+     `Renderer::set_first_frame_wait`; the demo uses 500 ms): if
      `frame_deadline(surface)` is `Some(t)`, arm a timer for `t` and check
-     `wants_frame` again then.
+     `wants_frame` again then. A surface that has painted draws, while its
+     layout is re-shaped, a stand-in from another scale or width,
+     resampled and shifted so its alignment lands where the right one's
+     will; layouts no surface wants are pruned.
+
+- Later (render, planned with taffy and size springs in M2):
+  - Single-line text that neither wraps nor truncates should be shaped
+    once without a width bound, with the start/center/end offset applied
+    at flatten time, and keyed by (node, scale) only. Keying it by the
+    exact `max_width` bits, as now, means a box whose width springs
+    re-shapes every frame. It also means a reconfigure paints a stand-in
+    frame and then a correction frame per text, even when the two are
+    pixel-identical (1.7–3.3k px² on sway, never on a tick). Only
+    wrapping or truncating text needs a layout per width.
+  - `flatten_surface` rebuilds the map of every delivered layout and
+    prunes text across all surfaces on each call, which is O(surfaces ×
+    texts) per surface. Before popups and launchers share the main
+    thread, scope the map to the surface's root, or keep it per node
+    and update it in `deliver`, and prune once per update.
 
 ### `strand-core`
 

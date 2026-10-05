@@ -11,7 +11,7 @@ use strand_scene::{
 };
 use strand_text::{TextEngine, TextError, TextKey, TextLayout, TextRequest, TextWorker};
 
-use crate::flatten::{Flattened, NodeRecord, TextSpec, flatten, scope_tables};
+use crate::flatten::{Flattened, NodeRecord, Shaped, TextSpec, flatten, scope_tables};
 use crate::raster::{AtlasMirror, Raster};
 use crate::tree::{SceneError, SceneTree};
 
@@ -53,6 +53,27 @@ impl TextBackend {
                 let _ = w.drop_scale(scale);
             }
             TextBackend::Inline(e) => e.drop_scale(scale),
+        }
+    }
+}
+
+/// What one text layout is shaped for: a node at one scale, in a line box
+/// of one width. Alignment happens inside the line box, so a node shown on
+/// two surfaces of the same scale but different widths needs two layouts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct TextSlot {
+    node: NodeId,
+    scale: Scale,
+    /// `max_width` as bits (`None` when unbounded).
+    width: Option<u32>,
+}
+
+impl TextSlot {
+    fn of(node: NodeId, spec: &TextSpec) -> Self {
+        Self {
+            node,
+            scale: spec.scale,
+            width: spec.max_width.map(f32::to_bits),
         }
     }
 }
@@ -99,7 +120,8 @@ struct SurfaceState {
     /// Until when the first frame waits for text being shaped (set when
     /// the surface is first configured).
     wait_until: Option<Instant>,
-    /// Some text on the surface has no layout at any scale yet.
+    /// Some text on the surface is being shaped and has no layout for
+    /// the surface's own scale and width yet.
     awaiting_text: bool,
     dirty: bool,
     /// Fully opaque part of the last painted frame.
@@ -110,6 +132,8 @@ struct SurfaceState {
     /// The flattened scene for the current state, reused by `paint` after
     /// `update`; `None` once anything it depends on changes.
     cache: Option<Flattened>,
+    /// The text slots the last flatten wanted.
+    wanted: Vec<TextSlot>,
 }
 
 impl SurfaceState {
@@ -141,10 +165,10 @@ pub struct Renderer {
     tree: SceneTree,
     surfaces: BTreeMap<SurfaceId, SurfaceState>,
     text: TextBackend,
-    /// Text per node and scale: a node shown on outputs of different scales
-    /// keeps one layout per scale.
-    texts: HashMap<(NodeId, Scale), TextState>,
-    pending: HashMap<TextKey, (NodeId, Scale)>,
+    /// Text per node, scale and line box width: a node shown on outputs of
+    /// different scales or widths keeps one layout for each.
+    texts: HashMap<TextSlot, TextState>,
+    pending: HashMap<TextKey, TextSlot>,
     next_key: u64,
     /// Scales text was requested at whose atlases may still exist.
     text_scales: BTreeSet<Scale>,
@@ -261,6 +285,7 @@ impl Renderer {
                 opaque: Damage::new(),
                 time: Duration::ZERO,
                 cache: None,
+                wanted: Vec::new(),
             },
         );
         self.raster.set_surfaces(self.surfaces.len());
@@ -299,6 +324,63 @@ impl Renderer {
         self.last_damage.remove(&surface);
         self.raster.set_surfaces(self.surfaces.len());
         self.prune_scales();
+        self.prune_texts();
+    }
+
+    /// Drops text no surface wants any more: slots for a width or scale
+    /// a surface has left. A slot drawn as a stand-in (its node's wanted
+    /// slot has no layout yet) is kept until the wanted one arrives; a
+    /// poisoned slot never gets one, so it keeps no stand-ins.
+    ///
+    /// A surface whose wanted slot has no layout may have drawn a dropped
+    /// slot as its stand-in: it is marked dirty (its cache cleared) so it
+    /// stops drawing it. Returns those surfaces.
+    fn prune_texts(&mut self) -> Vec<SurfaceId> {
+        let mut keep: HashSet<TextSlot> = HashSet::new();
+        let mut standing_in: HashSet<NodeId> = HashSet::new();
+        for s in self.surfaces.values() {
+            for slot in &s.wanted {
+                keep.insert(*slot);
+                if self
+                    .texts
+                    .get(slot)
+                    .is_none_or(|t| t.layout.is_none() && !t.poisoned)
+                {
+                    standing_in.insert(slot.node);
+                }
+            }
+        }
+        let mut dropped: HashSet<NodeId> = HashSet::new();
+        let text = &self.text;
+        self.texts.retain(|slot, t| {
+            let k = keep.contains(slot) || standing_in.contains(&slot.node);
+            if !k {
+                if let Some((key, _)) = t.requested.take() {
+                    text.cancel(key);
+                }
+                if t.layout.is_some() {
+                    dropped.insert(slot.node);
+                }
+            }
+            k
+        });
+        let mut marked = Vec::new();
+        if dropped.is_empty() {
+            return marked;
+        }
+        let texts = &self.texts;
+        self.pending.retain(|_, slot| texts.contains_key(slot));
+        for (id, s) in &mut self.surfaces {
+            let drew_stand_in = s.wanted.iter().any(|w| {
+                dropped.contains(&w.node) && texts.get(w).is_none_or(|t| t.layout.is_none())
+            });
+            if drew_stand_in {
+                s.mark_dirty();
+                marked.push(*id);
+            }
+        }
+        self.refresh_retries();
+        marked
     }
 
     /// When a surface that is holding its first frame for text will want
@@ -338,15 +420,15 @@ impl Renderer {
             self.text_scales.remove(&scale);
             self.atlas.retain_scales(|s| s != scale);
             let text = &self.text;
-            self.texts.retain(|(_, s), t| {
-                if *s == scale
+            self.texts.retain(|slot, t| {
+                if slot.scale == scale
                     && let Some((k, _)) = t.requested.take()
                 {
                     text.cancel(k);
                 }
-                *s != scale
+                slot.scale != scale
             });
-            self.pending.retain(|_, (_, s)| *s != scale);
+            self.pending.retain(|_, slot| slot.scale != scale);
             self.text.drop_scale(scale);
         }
     }
@@ -394,8 +476,8 @@ impl Renderer {
         let tree = &self.tree;
         let text = &self.text;
         let before = self.texts.len();
-        self.texts.retain(|(id, _), t| {
-            let keep = tree.get(*id).is_some_and(|n| {
+        self.texts.retain(|slot, t| {
+            let keep = tree.get(slot.node).is_some_and(|n| {
                 matches!(n.kind, NodeKind::Text | NodeKind::Button) && n.get(Prop::Text).is_some()
             });
             if !keep && let Some((k, _)) = t.requested.take() {
@@ -436,10 +518,10 @@ impl Renderer {
     /// Retries themselves never refresh, so this cannot loop.
     fn refresh_retries(&mut self) {
         let mut roots = BTreeSet::new();
-        for ((id, _), t) in self.texts.iter_mut() {
+        for (slot, t) in self.texts.iter_mut() {
             if t.incomplete() {
                 t.retries = 0;
-                roots.extend(self.tree.root_of(*id));
+                roots.extend(self.tree.root_of(slot.node));
             }
         }
         for s in self.surfaces.values_mut() {
@@ -465,20 +547,16 @@ impl Renderer {
             .collect();
         for id in ids {
             let f = self.flatten_surface(id);
-            // Text with a request in flight and no layout at any scale.
-            let mut shown = HashSet::new();
-            let mut asked = HashSet::new();
-            for ((node, _), t) in &self.texts {
-                if t.layout.is_some() {
-                    shown.insert(*node);
-                } else if t.requested.is_some() {
-                    asked.insert(*node);
-                }
-            }
-            let awaiting = f
-                .text
-                .iter()
-                .any(|(node, _)| asked.contains(node) && !shown.contains(node));
+            // Text with a request in flight and no layout for this
+            // surface's scale and width yet. A stand-in from another scale
+            // or width does not count: a first frame drawn with one would
+            // be repainted as soon as the right layout lands.
+            let texts = &self.texts;
+            let awaiting = f.text.iter().any(|(node, spec)| {
+                texts
+                    .get(&TextSlot::of(*node, spec))
+                    .is_some_and(|t| t.layout.is_none() && t.requested.is_some())
+            });
             if let Some(s) = self.surfaces.get_mut(&id) {
                 if s.valid && s.records == f.records && s.opaque == f.opaque {
                     s.dirty = false;
@@ -596,7 +674,7 @@ impl Renderer {
             self.refresh_retries();
         }
         // Surfaces at other scales may draw it resampled meanwhile.
-        let root = self.tree.root_of(slot.0);
+        let root = self.tree.root_of(slot.node);
         for s in self.surfaces.values_mut() {
             if Some(s.root) == root {
                 s.mark_dirty();
@@ -629,15 +707,24 @@ impl Renderer {
         }
     }
 
-    /// The layouts to draw at `scale`: each node's layout for that scale,
-    /// or, while that is being shaped, one for another scale (resampled).
-    fn layouts_for(&self, scale: Scale) -> HashMap<NodeId, Arc<TextLayout>> {
-        let mut out: HashMap<NodeId, Arc<TextLayout>> = HashMap::new();
-        for ((id, s), t) in &self.texts {
+    /// Every delivered layout per node, with the width it was shaped for.
+    /// `flatten` draws the one for the surface's scale and width or, while
+    /// that is being shaped, a stand-in (resampled and re-aligned).
+    fn shaped(&self) -> HashMap<NodeId, Vec<Shaped>> {
+        let mut out: HashMap<NodeId, Vec<Shaped>> = HashMap::new();
+        for (slot, t) in &self.texts {
             let Some(l) = &t.layout else { continue };
-            if *s == scale || !out.contains_key(id) {
-                out.insert(*id, l.clone());
-            }
+            out.entry(slot.node).or_default().push(Shaped {
+                layout: l.clone(),
+                max_width: slot.width.map(f32::from_bits),
+            });
+        }
+        // Stand-in choice must not depend on hash order.
+        for v in out.values_mut() {
+            v.sort_by(|a, b| {
+                (a.layout.scale, a.max_width.map(f32::to_bits))
+                    .cmp(&(b.layout.scale, b.max_width.map(f32::to_bits)))
+            });
         }
         out
     }
@@ -651,7 +738,7 @@ impl Renderer {
             let Some(s) = self.surfaces.get(&id) else {
                 return Flattened::default();
             };
-            let layouts = self.layouts_for(s.scale);
+            let layouts = self.shaped();
             let flat = flatten(&self.tree, s.root, s.size, s.scale, &layouts);
             if !self.request_text(&flat.text) {
                 stable = Some(flat);
@@ -664,7 +751,7 @@ impl Renderer {
                 let Some(s) = self.surfaces.get(&id) else {
                     return Flattened::default();
                 };
-                let layouts = self.layouts_for(s.scale);
+                let layouts = self.shaped();
                 flatten(&self.tree, s.root, s.size, s.scale, &layouts)
             }
         };
@@ -673,14 +760,26 @@ impl Renderer {
         let texts = &self.texts;
         let settled = f.text.iter().all(|(node, spec)| {
             texts
-                .get(&(*node, spec.scale))
+                .get(&TextSlot::of(*node, spec))
                 .is_some_and(|t| t.requested.is_none())
         });
-        if settled
-            && let Some(s) = self.surfaces.get_mut(&id)
-            && s.prev_scale.take().is_some()
-        {
-            self.prune_scales();
+        if let Some(s) = self.surfaces.get_mut(&id) {
+            s.wanted = f
+                .text
+                .iter()
+                .map(|(node, spec)| TextSlot::of(*node, spec))
+                .collect();
+            if settled && s.prev_scale.take().is_some() {
+                self.prune_scales();
+            }
+        }
+        if self.prune_texts().contains(&id) {
+            // `f` drew a stand-in that is gone now.
+            let Some(s) = self.surfaces.get(&id) else {
+                return Flattened::default();
+            };
+            let layouts = self.shaped();
+            return flatten(&self.tree, s.root, s.size, s.scale, &layouts);
         }
         f
     }
@@ -690,7 +789,7 @@ impl Renderer {
     fn request_text(&mut self, needs: &[(NodeId, TextSpec)]) -> bool {
         let mut delivered = false;
         for (node, spec) in needs {
-            let slot = (*node, spec.scale);
+            let slot = TextSlot::of(*node, spec);
             let state = self.texts.entry(slot).or_default();
             if state.requested.as_ref().is_some_and(|(_, s)| s == spec) {
                 continue;
@@ -876,6 +975,99 @@ mod tests {
         Renderer::new(TextBackend::Inline(Box::new(engine())))
     }
 
+    /// The text state of `n` at scale 1 (tests show one width per node).
+    fn text_at(r: &Renderer, n: NodeId) -> &TextState {
+        r.texts
+            .iter()
+            .find(|(s, _)| s.node == n && s.scale == Scale::ONE)
+            .map(|(_, t)| t)
+            .unwrap()
+    }
+
+    /// A bar with one full-width text aligned `align`.
+    fn aligned_text(text: &str, align: &str) -> (SceneDiff, NodeId, NodeId) {
+        let (root, txt) = (NodeId::new(0, 0), NodeId::new(1, 0));
+        let mut d = SceneDiff::new();
+        d.create(root, NodeKind::Bar, None, 0)
+            .set(root, Prop::Color, PropValue::Color(Color::WHITE))
+            .create(txt, NodeKind::Text, Some(root), 0)
+            .set(txt, Prop::Text, PropValue::Text(text.into()))
+            .set(
+                txt,
+                Prop::Width,
+                PropValue::Length(strand_scene::Length::Percent(100.0)),
+            )
+            .set(txt, Prop::Align, PropValue::Keyword(align.into()));
+        (d, root, txt)
+    }
+
+    fn paint_sized(r: &mut Renderer, id: u32, size: Size, age: u8) -> (Vec<u8>, Damage) {
+        let mut px = vec![0u8; size.w as usize * size.h as usize * 4];
+        let mut t = PaintTarget::new(&mut px, size, size.w * 4, Scale::ONE, age).unwrap();
+        let d = r.paint(SurfaceId(id), &mut t);
+        (px, d)
+    }
+
+    /// The frame a renderer showing only this surface paints from scratch.
+    fn alone(diffs: &[SceneDiff], root: NodeId, size: Size) -> Vec<u8> {
+        let mut r = renderer();
+        for d in diffs {
+            assert!(r.apply(d.clone()).is_empty());
+        }
+        r.attach_surface(SurfaceId(1), root);
+        r.configure_surface(SurfaceId(1), size, Scale::ONE);
+        paint_sized(&mut r, 1, size, 0).0
+    }
+
+    /// One text node on two surfaces of the same scale but different widths
+    /// (a 2560 and a 1920 monitor at scale 1): alignment happens in the
+    /// line box, so each surface needs its own layout. Every frame on each
+    /// equals that surface painted alone, from the first and after a change.
+    #[test]
+    fn one_text_on_two_widths_at_one_scale_aligns_on_each() {
+        for align in ["center", "end"] {
+            let (wide, narrow) = (Size::new(200, 20), Size::new(120, 20));
+            let (d, root, txt) = aligned_text("12:59", align);
+            let mut r = renderer();
+            assert!(r.apply(d.clone()).is_empty());
+            r.attach_surface(SurfaceId(1), root);
+            r.attach_surface(SurfaceId(2), root);
+            r.configure_surface(SurfaceId(1), wide, Scale::ONE);
+            r.configure_surface(SurfaceId(2), narrow, Scale::ONE);
+            let (a, _) = paint_sized(&mut r, 1, wide, 0);
+            let (b, _) = paint_sized(&mut r, 2, narrow, 0);
+            assert!(
+                a == alone(std::slice::from_ref(&d), root, wide),
+                "{align}: wide boot"
+            );
+            assert!(
+                b == alone(std::slice::from_ref(&d), root, narrow),
+                "{align}: narrow boot"
+            );
+            assert_eq!(r.texts.len(), 2, "one layout per width");
+
+            let mut tick = SceneDiff::new();
+            tick.set(txt, Prop::Text, PropValue::Text("13:00".into()));
+            assert!(r.apply(tick.clone()).is_empty());
+            // Paint the narrow one first this time.
+            let mut nb = b.clone();
+            let mut t = PaintTarget::new(&mut nb, narrow, narrow.w * 4, Scale::ONE, 1).unwrap();
+            let dn = r.paint(SurfaceId(2), &mut t);
+            let mut na = a.clone();
+            let mut t = PaintTarget::new(&mut na, wide, wide.w * 4, Scale::ONE, 1).unwrap();
+            let dw = r.paint(SurfaceId(1), &mut t);
+            let both = [d.clone(), tick];
+            assert!(na == alone(&both, root, wide), "{align}: wide tick");
+            assert!(nb == alone(&both, root, narrow), "{align}: narrow tick");
+            assert!(dn.area() < narrow.w as u64 * 20 && dw.area() < wide.w as u64 * 20);
+            assert_eq!(r.texts.len(), 2, "replaced layouts are not kept");
+
+            // The narrow output goes: its width's layout is dropped.
+            r.detach_surface(SurfaceId(2));
+            assert_eq!(r.texts.len(), 1);
+        }
+    }
+
     fn paint(r: &mut Renderer, px: &mut [u8], age: u8) -> Damage {
         let mut t = PaintTarget::new(px, Size::new(80, 20), 320, Scale::ONE, age).unwrap();
         r.paint(SurfaceId(1), &mut t)
@@ -948,8 +1140,7 @@ mod tests {
         assert!(r.apply(d).is_empty());
         r.attach_surface(SurfaceId(1), root);
         r.configure_surface(SurfaceId(1), Size::new(80, 20), Scale::ONE);
-        let key_of =
-            |r: &Renderer, n: NodeId| r.texts[&(n, Scale::ONE)].requested.as_ref().unwrap().0;
+        let key_of = |r: &Renderer, n: NodeId| text_at(r, n).requested.as_ref().unwrap().0;
         // Flattening without polling the worker: what `update` would ask.
         let ask = |r: &mut Renderer| {
             r.surfaces.get_mut(&SurfaceId(1)).unwrap().cache = None;
@@ -958,25 +1149,72 @@ mod tests {
         let ka = key_of(&r, a);
         r.deliver(TextLayout::reset(ka, Scale::ONE));
         ask(&mut r);
-        assert!(r.texts[&(a, Scale::ONE)].poisoned);
-        assert!(
-            r.texts[&(a, Scale::ONE)].requested.is_none(),
-            "not asked again"
-        );
+        assert!(text_at(&r, a).poisoned);
+        assert!(text_at(&r, a).requested.is_none(), "not asked again");
         // A second crash (here: the other text) keeps the first culprit
         // poisoned too.
         let kb = key_of(&r, b);
         r.deliver(TextLayout::reset(kb, Scale::ONE));
         ask(&mut r);
         assert!(r.pending.is_empty(), "{:?}", r.pending);
-        assert!(r.texts[&(a, Scale::ONE)].poisoned && r.texts[&(b, Scale::ONE)].poisoned);
+        assert!(text_at(&r, a).poisoned && text_at(&r, b).poisoned);
         // New text for the culprit is asked for.
         let mut d = SceneDiff::new();
         d.set(a, Prop::Text, PropValue::Text("other".into()));
         r.apply(d);
         assert!(r.wait_for_text(Duration::from_secs(10)));
-        assert!(r.texts[&(a, Scale::ONE)].layout.is_some());
-        assert!(!r.texts[&(a, Scale::ONE)].poisoned);
+        assert!(text_at(&r, a).layout.is_some());
+        assert!(!text_at(&r, a).poisoned);
+    }
+
+    /// A poisoned slot never gets a layout, so it does not hold on to the
+    /// node's layouts at other widths as stand-ins: when the other surface
+    /// goes, its layout goes too.
+    #[test]
+    fn a_poisoned_slot_keeps_no_stand_ins() {
+        let mut r = Renderer::new(worker());
+        let (d, root, txt) = aligned_text("12:59", "center");
+        assert!(r.apply(d).is_empty());
+        r.attach_surface(SurfaceId(1), root);
+        r.attach_surface(SurfaceId(2), root);
+        r.configure_surface(SurfaceId(1), Size::new(200, 20), Scale::ONE);
+        r.configure_surface(SurfaceId(2), Size::new(120, 20), Scale::ONE);
+        for id in [1, 2] {
+            r.flatten_surface(SurfaceId(id));
+        }
+        // The engine crashes on the wide one's request.
+        let wide = Some(200f32.to_bits());
+        let key = r
+            .texts
+            .iter()
+            .find(|(s, _)| s.node == txt && s.width == wide)
+            .and_then(|(_, t)| t.requested.as_ref())
+            .unwrap()
+            .0;
+        r.deliver(TextLayout::reset(key, Scale::ONE));
+        for id in [1, 2] {
+            r.surfaces.get_mut(&SurfaceId(id)).unwrap().cache = None;
+            r.flatten_surface(SurfaceId(id));
+        }
+        assert!(r.wait_for_text(Duration::from_secs(10)));
+        let slot = |r: &Renderer, w: f32| {
+            r.texts
+                .iter()
+                .find(|(s, _)| s.width == Some(w.to_bits()))
+                .map(|(_, t)| (t.poisoned, t.layout.is_some()))
+        };
+        assert_eq!(slot(&r, 200.0), Some((true, false)));
+        assert_eq!(slot(&r, 120.0), Some((false, true)));
+        r.update();
+        let s1 = &r.surfaces[&SurfaceId(1)];
+        assert!(s1.cache.is_some());
+        r.detach_surface(SurfaceId(2));
+        assert_eq!(slot(&r, 120.0), None, "kept as a stand-in for nothing");
+        assert_eq!(r.texts.len(), 1);
+        // Surface 1 drew that layout as its stand-in: it must not keep
+        // showing glyphs that are gone.
+        let s1 = &r.surfaces[&SurfaceId(1)];
+        assert!(s1.dirty && s1.cache.is_none(), "stale stand-in kept");
     }
 
     /// A layout missing glyphs for want of atlas room is retried a bounded
@@ -1003,15 +1241,8 @@ mod tests {
         let mut px = vec![0u8; 200 * 40 * 4];
         let mut t = PaintTarget::new(&mut px, Size::new(200, 40), 800, Scale::ONE, 0).unwrap();
         r.paint(SurfaceId(1), &mut t);
-        let state = |r: &Renderer, n| r.texts[&(n, Scale::ONE)].incomplete();
-        let n = |r: &Renderer, x| {
-            r.texts[&(x, Scale::ONE)]
-                .layout
-                .as_ref()
-                .unwrap()
-                .glyphs()
-                .count()
-        };
+        let state = |r: &Renderer, n| text_at(r, n).incomplete();
+        let n = |r: &Renderer, x| text_at(r, x).layout.as_ref().unwrap().glyphs().count();
         assert!(
             !state(&r, b) && state(&r, a),
             "B fills the only page: {} {} {} {}",
@@ -1034,15 +1265,7 @@ mod tests {
         d.push(SceneOp::Remove { id: b });
         r.apply(d);
         assert!(!state(&r, a));
-        assert_eq!(
-            r.texts[&(a, Scale::ONE)]
-                .layout
-                .as_ref()
-                .unwrap()
-                .glyphs()
-                .count(),
-            4
-        );
+        assert_eq!(text_at(&r, a).layout.as_ref().unwrap().glyphs().count(), 4);
     }
 
     /// Several outputs of different sizes keep a context per cell size

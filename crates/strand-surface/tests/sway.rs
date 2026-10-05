@@ -527,12 +527,19 @@ fn fractional_buffers_are_crisp() {
 
 #[test]
 fn commits_lock_to_the_refresh_rate() {
-    let Some((sway, mut mgr)) = start("commits_lock_to_the_refresh_rate", Config::default()) else {
+    // The fake clock records every presentation the compositor reports.
+    let clock = FakeClock::new(Duration::from_secs(1));
+    let config = Config {
+        clock: Box::new(clock.clone()),
+        ..Config::default()
+    };
+    let Some((sway, mut mgr)) = start("commits_lock_to_the_refresh_rate", config) else {
         return;
     };
     wait_for_bars(&mut mgr, 1);
     settle(&mut mgr);
     let before = mgr.state().stats();
+    let seen = clock.presentations().len();
     // 100 content changes, each followed by a poll, about every 2 ms: far
     // faster than the 60 Hz output.
     let t = Instant::now();
@@ -547,12 +554,29 @@ fn commits_lock_to_the_refresh_rate() {
     settle(&mut mgr);
     let after = mgr.state().stats();
     let commits = after.commits - before.commits;
-    let refreshes = (elapsed.as_secs_f64() * 60.0).ceil() as u64;
     eprintln!("{commits} commits for 100 changes in {elapsed:?}: {after:?}");
-    assert!(
-        commits <= refreshes + 2,
-        "{commits} commits in {elapsed:?} ({refreshes} refreshes): {after:?}"
-    );
+    // Every commit was presented, each on a later refresh than the one
+    // before: at most one frame per refresh. Read from the compositor's
+    // presentation timestamps rather than estimated from wall-clock time,
+    // which a loaded machine stretches.
+    let shown: Vec<_> = clock.presentations()[seen..]
+        .iter()
+        .map(|(_, p)| *p)
+        .collect();
+    assert_eq!(shown.len() as u64, commits, "{shown:?} {after:?}");
+    for w in shown.windows(2) {
+        // Headless sway reports neither a refresh period nor a retrace
+        // counter: assume 60 Hz and compare the counter only when it moves.
+        let refresh = w[1].refresh.unwrap_or(Duration::from_micros(16_667));
+        let gap = w[1].time.saturating_sub(w[0].time);
+        let next_retrace = w[1].seq > w[0].seq || w[1].seq == 0;
+        assert!(
+            next_retrace && gap + Duration::from_millis(2) >= refresh,
+            "two frames within one refresh ({gap:?} apart, refresh {refresh:?}): {shown:?}"
+        );
+    }
+    // Coalesced: far fewer commits than changes.
+    assert!(commits < 50, "{commits} commits for 100 changes: {after:?}");
     assert!(commits >= 2, "{after:?}");
     assert!(after.throttled > before.throttled, "{after:?}");
     // Nothing is lost: the last change is on screen.
