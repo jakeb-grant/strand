@@ -1,8 +1,33 @@
 //! Surface manager.
 //!
-//! Layer-shell surfaces via smithay-client-toolkit, compositor-animated poses
-//! (alpha modifier, viewporter, margins), the blur ladder
-//! (`ext-background-effect-v1`, Hyprland rules, tint), input regions,
-//! fractional scale and `wp_presentation` frame timing.
+//! Owns the Wayland connection on the main (render + surface) thread with
+//! smithay-client-toolkit on calloop: a layer-shell surface per output for
+//! each surface node (a `bar` on every monitor), output hotplug with monitor
+//! identity (make + model + description), a 2–3 buffer `wl_shm` pool per
+//! surface with buffer age, exact `damage_buffer` and `set_opaque_region`,
+//! `wp_fractional_scale_v1` + `wp_viewporter` (integer buffer scale as the
+//! fallback), frame callbacks only while something is dirty or unsettled,
+//! `wp_presentation` timing through a [`FrameClock`], and pointer input as
+//! [`InputEvent`]s.
 //!
-//! See `docs/design.md`, "Rendering, performance and memory budget". Lands in M0.
+//! Compositor-animated poses (alpha modifier, viewporter, margins), the
+//! blur ladder and input regions land in M4.
+//!
+//! See `docs/architecture.md`, "strand-surface" and "Render loop".
+
+pub mod clock;
+pub mod input;
+mod manager;
+pub mod monitor;
+pub mod placement;
+pub mod shm;
+
+pub use clock::{FakeClock, FrameClock, Presentation, PresentationClock};
+pub use input::{AxisDelta, AxisSource, ButtonState, InputEvent};
+pub use manager::{
+    Config, RepaintHandle, Request, State, Stats, SurfaceError, SurfaceHost, SurfaceInfo,
+    SurfaceManager,
+};
+pub use monitor::{MONITOR_RETENTION, Monitor, MonitorId};
+pub use placement::{Anchors, LayerConfig, PlacementError, layer_config};
+pub use shm::MAX_BUFFERS;
