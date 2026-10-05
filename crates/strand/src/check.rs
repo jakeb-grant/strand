@@ -1,8 +1,6 @@
-//! `strand check [dir]`: parse every `.strand` file in the config directory
-//! and report diagnostics without running anything.
-//!
-//! Syntax only for now; name resolution and type checking join when the
-//! checker lands (M1, wave 2).
+//! `strand check [dir]`: parse, resolve and type-check every `.strand` file
+//! in the config directory as one program, and report diagnostics (with
+//! did-you-mean fixes) without running anything.
 
 use std::ffi::OsString;
 use std::fmt::Write as _;
@@ -11,7 +9,6 @@ use std::path::{Path, PathBuf};
 use strand_compiler::SourceMap;
 use strand_compiler::diagnostic::{Style, render};
 use strand_compiler::source::find_files;
-use strand_compiler::syntax::parse;
 
 /// What a check found.
 #[derive(Debug, Default)]
@@ -42,8 +39,8 @@ pub fn default_dir(xdg_config_home: Option<OsString>, home: Option<OsString>) ->
     .map(|base| base.join("strand"))
 }
 
-/// Parses every `.strand` file under `dir` (or `dir` itself, if it is a
-/// file) and renders what it found. Which files count is
+/// Checks every `.strand` file under `dir` (or `dir` itself, if it is a
+/// file) as one config and renders what it found. Which files count is
 /// [`strand_compiler::source::find_files`], the same rule the loader and
 /// watcher use.
 pub fn check_dir(dir: &Path, style: Style) -> Result<Report, String> {
@@ -74,7 +71,6 @@ pub fn check_dir(dir: &Path, style: Style) -> Result<Report, String> {
         ));
     }
     let mut map = SourceMap::new();
-    let mut diags = Vec::new();
     for path in &found.files {
         let name = path.display().to_string();
         let src = match std::fs::read(path).map(String::from_utf8) {
@@ -90,9 +86,9 @@ pub fn check_dir(dir: &Path, style: Style) -> Result<Report, String> {
                 continue;
             }
         };
-        let id = map.add(name, src.as_str());
-        diags.extend(parse(id, &src).diagnostics);
+        map.add(name, src);
     }
+    let diags = strand_compiler::compile(&map).diagnostics;
     for d in &diags {
         if d.is_error() {
             report.errors += 1;
@@ -114,8 +110,9 @@ pub fn check_dir(dir: &Path, style: Style) -> Result<Report, String> {
 }
 
 const USAGE: &str = "usage: strand check [dir | file]\n\n\
-    Parses every .strand file under the directory (default \
-    $XDG_CONFIG_HOME/strand) and prints diagnostics; exits non-zero on errors.\n";
+    Parses and type-checks every .strand file under the directory (default \
+    $XDG_CONFIG_HOME/strand) as one config and prints diagnostics; exits \
+    non-zero on errors.\n";
 
 /// Runs `strand check` with its arguments (after `check`). Returns the text
 /// for stderr and whether the check passed.
@@ -359,11 +356,63 @@ mod tests {
         }
     }
 
+    /// design.md's four shells, theme and rice as one config, and its
+    /// hello bar as another, type-check with no diagnostics.
     #[test]
     fn design_examples_check_clean() {
         let fixtures =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../strand-compiler/tests/fixtures");
-        let (text, ok) = run(&[fixtures.display().to_string()], Style::Plain);
-        assert!(ok, "{text}");
+        let configs: [&[&str]; 2] = [
+            &["bar", "launcher", "toasts", "osd", "theme", "rice_now"],
+            &["hello_bar"],
+        ];
+        for files in configs {
+            let t = TempDir::new();
+            for f in files {
+                let text = std::fs::read_to_string(fixtures.join(format!("{f}.strand"))).unwrap();
+                t.write(&format!("{f}.strand"), &text);
+            }
+            let report = check_dir(&t.0, Style::Plain).unwrap();
+            assert!(report.ok(), "{}", report.text);
+            assert_eq!(report.warnings, 0, "{}", report.text);
+        }
+    }
+
+    #[test]
+    fn type_errors_have_did_you_mean_across_files() {
+        let t = TempDir::new();
+        t.write(
+            "theme.strand",
+            "enum Look { light, dark }\nexport state look = light\n",
+        );
+        t.write(
+            "bar.strand",
+            "bar Top {\n  edge: top\n  text theme.look == drak ? \"d\" : \"l\"\n  whn hover { bg: $accent }\n}\n",
+        );
+        let report = check_dir(&t.0, Style::Plain).unwrap();
+        assert_eq!(report.errors, 2, "{}", report.text);
+        assert!(report.text.contains("bar.strand:3:"), "{}", report.text);
+        assert!(
+            report.text.contains("did you mean `dark`?"),
+            "{}",
+            report.text
+        );
+        assert!(
+            report.text.contains("did you mean `when`?"),
+            "{}",
+            report.text
+        );
+    }
+
+    #[test]
+    fn redeclaring_across_files_names_both() {
+        let t = TempDir::new();
+        t.write("a.strand", "component Dot { box {} }\n");
+        t.write("b.strand", "component Dot { box {} }\n");
+        let report = check_dir(&t.0, Style::Plain).unwrap();
+        assert_eq!(report.errors, 1, "{}", report.text);
+        assert!(report.text.contains("declared twice"), "{}", report.text);
+        assert!(report.text.contains("a.strand"), "{}", report.text);
+        assert!(report.text.contains("b.strand"), "{}", report.text);
     }
 }
