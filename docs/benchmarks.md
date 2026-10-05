@@ -139,8 +139,8 @@ cut-off 815 → 823 ns (unchanged within noise), idle flush 44.9 → 50.0 ns
 (+5 ns: the flush now drains the ready and event lists into its heap and
 clears the reload marks; still far below a frame).
 
-Wave 2 review round 7 (each listener delivered at its own rank, handler
-reads tracked, persist queue indexed by file). The review asked about the
+Wave 2 review round 7 (2ecfb76: each listener delivered at its own
+rank, handler reads tracked; b2a677a: persist queue indexed by file). The review asked about the
 ranked cases of round 6 (1.92 ms ranked single write against 1.72 ms
 unranked, +12%, where round 4 had +1.5%), which round 6's A/B had not
 covered. One session, back to back, criterion baseline of d3e29a5, then
@@ -321,8 +321,8 @@ the list.
 a field under an instance-qualified path (`list[<i>].x`), files present,
 mounted and unmounted in one runtime (a live reload, or a long list
 scrolled in and out). Mount creates the cells (reading every file) and
-flushes; unmount disposes them and flushes. Medians, review round 7, A/B
-against the previous commit (2ecfb76) on the same machine:
+flushes; unmount disposes them and flushes. Medians, review round 7
+(b2a677a), A/B against the previous commit (2ecfb76) on the same machine:
 
 | Rows | Mount before | Mount after | Unmount before | Unmount after |
 | --- | --- | --- | --- | --- |
