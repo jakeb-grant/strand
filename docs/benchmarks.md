@@ -114,7 +114,7 @@ The bench asserts that the handler write runs every sink once
 rank walk for an unchanged source list, review round 4 measured the
 ranked fan-out at 3–10% over unranked (2.33–2.42 ms vs 2.18–2.35 ms).
 
-Wave 2 review round 6 (ROUND6: event deliveries and woken tasks are
+Wave 2 review round 6 (4440bd2: event deliveries and woken tasks are
 items of the ranked queue instead of being checked before every sink;
 `set_reloaded` marks; strict-edge reporting off by default). Full run,
 same machine, medians, under load from the other agent:
@@ -219,7 +219,7 @@ superseded; the in-place path is unchanged), same machine: get by key
 20.0 µs, remove + push 26.0 µs, move 25.7 µs, filter query change 358 µs,
 `keyed_memo` one row 52 µs, rotated 131 µs: unchanged within noise.
 
-Review round 6 re-run (ROUND6; the review asked for a re-run after the
+Review round 6 re-run (4440bd2; the review asked for a re-run after the
 write-path changes of 77cf7be and 822905c, which this includes), as an
 A/B against d3e29a5 on the same machine, back to back, medians (before →
 after): get by key 11.2 → 11.5 ns, update by key 26.6 → 26.7 ns, chain
