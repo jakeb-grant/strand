@@ -262,7 +262,11 @@ be built and tested without the language, and the language without pixels.
      layouts, up to the first-frame wait (default 50 ms, set with
      `Renderer::set_first_frame_wait`; the demo uses 500 ms): if
      `frame_deadline(surface)` is `Some(t)`, arm a timer for `t` and check
-     `wants_frame` again then. A surface that has painted draws, while its
+     `wants_frame` again then. A surface that has painted holds a frame
+     the same way while some text on it has no layout at any scale or
+     width (a node just added), up to `NEW_TEXT_WAIT` = 16 ms (set with
+     `Renderer::set_new_text_wait`), so a new node and its glyphs reach
+     the screen in one frame. A surface that has painted draws, while its
      layout is re-shaped, a stand-in from another scale or width,
      resampled and shifted so its alignment lands where the right one's
      will; layouts no surface wants are pruned.
@@ -1239,7 +1243,8 @@ and the connection):
   `scale`, `logical_size` and `position`.
 - A painter's hold is honoured: while `wants_frame` is false and
   `frame_deadline` is `Some`, no buffer is committed (the first frame
-  waits for its text); a timer at the deadline asks again, and any
+  waits for its text, a later one for a new node's); a timer at the
+  deadline asks again, and any
   `poll()` before it does too.
 - `screens: focused` is one layer surface created without an output
   (wlr-layer-shell puts it on the output the user last interacted with);

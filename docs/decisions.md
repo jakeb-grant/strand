@@ -3213,65 +3213,129 @@ design.md: "Each edit is replayed through five save styles". The fuzzer
 (`crates/strand/src/fuzz.rs::random_edits_through_five_save_styles`)
 runs five live `strand run` pipelines side by side (the real watcher,
 compiler worker, logic thread and IPC socket, without Wayland), one per
-style, each on its own copy of the config on tmpfs (`/dev/shm`), and
-saves every random edit into all five: in place, write-and-rename,
-backup-then-rename, delete-and-create, and a symlink swapped to a new
-target in a store directory. Replaying one edit five times into one
-pipeline would make the second to fifth saves no-ops (same hashes), so
-it would test the no-op path, not the styles. The edits are drawn from
-a model of a three-file config (`theme.strand` with tokens, an exported
-`let` and the `Chip` component; `cells.strand` with exported state;
-`bar.strand`): token values, a binding, a prop, nodes added and removed,
-nodes reordered and wrapped (moves), the component moved to the other
-file, `state` defaults, cells renamed and retyped across two files,
-syntax and name errors, and partial multi-file saves. Before each edit
-some state is changed by clicks, as a user would.
+style, each on its own copy of the config on tmpfs (`/dev/shm`) with two
+screens plugged in, and saves every random edit into all five: in place,
+write-and-rename, backup-then-rename, delete-and-create (0–25 ms apart,
+inside the watcher's 50 ms grace after a removal and past its 15 ms
+coalescing; a delete and create the test thread got further apart than the 50 ms grace, on a loaded machine, fails the run as such rather than as a reload fault) and a symlink swapped to a new target in a store directory.
+Replaying one edit five times into one pipeline would make the second to
+fifth saves no-ops (same hashes), so it would test the no-op path, not
+the styles. The edits are drawn from a model of a three-file config and
+cover the rows of design.md's "What each edit does":
+token values, props and bindings, nodes added, removed and moved, keyed
+list entries, `state` defaults, names and types, handler code, a timer's
+duration, and the surface's layer, namespace and kind (`bar` on two
+screens ↔ one `panel`). Two rows are not in the model: a custom service
+declaration (a service needs a D-Bus name, a file, a socket or a
+`permit exec`ed command to run) and anything inside `lock` (deferred
+only while a session lock is shown, which needs a compositor); their
+rows have their own tests (`reload.rs::a_changed_service_declaration_restarts_only_it`,
+`run.rs::lock_edits_wait_for_the_unlock_and_then_land`, wave2-runtime). "Renames" are a cell, a token path, the component's
+parameter and the cells' module (its file renamed with `mv`); "moves"
+are nodes reordered and wrapped, a list entry moved, the component moved
+to the other file and the module's file renamed. Syntax errors come from
+templates and from a random word of a file deleted or duplicated
+(redrawn when it still compiles). Before each edit some state is changed
+by clicks, as a user would, and now and then the overlay is closed.
 
-**2026-10-05 · What the fuzzer asserts.** Every diff keeps exactly one
-bar and adds no root but the error overlay (no blank frame, no leaked
-surface: at the logic level a surface is a scene root). A partial save
-(one file of a multi-file edit whose text alone does not type-check
-with the others' old text, checked in the test with `Build::compile`)
-and a broken save are held back and change nothing. After each
-committed edit the scene (without the overlay) and the token table
-equal a cold boot of the same files with the state the edit table keeps
-written into it (`set_value` for the cells, clicks for the chips'
-component state): kept where the table keeps it, the new default where
-the cell still held the old one, reset when renamed or retyped, fresh
-for a node added. The number of cells `strand watch` reports reset
-equals the table's. The overlay itself is not compared: reset notices
-open it and stay until dismissed (wave2-runtime), and a broken save may
-stand 250 ms under load. A logic thread that panics fails the run (its
-events stop; it must also join with `Ok`). `STRAND_FUZZ_EDITS` (60 by
-default, every push) and `STRAND_FUZZ_SEED`; the nightly CI job runs
-10,000 with a new seed each night. Edits drawn that change nothing are
-drawn again, so the count is saves made.
+**2026-10-05 · What the fuzzer asserts.** After every diff the shell
+looks like it did before the step or like it must after it (scene
+without the overlay, and token table): a commit is one tick, never an
+intermediate frame. Every surface is up with its texts after every
+diff; its scene id is kept unless the edit changed the surface's layer,
+namespace or kind, which replaces all of them in one diff; at most one
+overlay root exists. The overlay opens only once something was held
+back or a reload left notices not yet dismissed (a flash on a valid save
+fails), and after a clean commit it lists no errors. A partial save (one
+change of a multi-file edit that does not type-check with the others'
+old text nor with the last good text, checked with `Build::compile`)
+and a broken save are reported `held` (an `unreadable` file is a watcher
+bug, not a hold) and change nothing for 50 ms after the event; a
+partial save may commit what is consistent without it (a new module
+beside the one whose removal is held), which changes nothing shown. A
+single file's save that lands in two loads fails the run; a multi-file
+save may (the files were saved one after the other), and is counted.
+After each step the scene and the token table equal a cold boot of the
+same files with the state the edit table keeps written into it
+(`set_value` for the cells, clicks for the chips' component state; a
+chip the test means to set that the cold boot does not show fails at
+once), and the number of cells `strand watch` reports reset equals the
+table's. One pipeline also feeds an offline `Renderer` (vello_cpu,
+inline shaping), a surface per surface-kind node, each painted with
+buffer age 1 after every diff: no surface's frame may be only its
+background, the painted surfaces must be the scene's, and after each
+step the pixels must equal (within 2 per channel) a fresh renderer's
+painting of the cold boot, so a stale paint cache, a wrong damage rect
+or a removed node still painted fails the run. `STRAND_FUZZ_EDITS` (60
+by default, every push) and `STRAND_FUZZ_SEED` (decimal or `0x` hex, as
+printed; a value that does not parse fails the run); the nightly CI job
+runs 10,000 with a new seed each night. Edits drawn that change nothing
+are drawn again, so the count is saves made.
 
-**2026-10-05 · Save → pixels ends at the compositor's presentation.**
-The M1 gate "under 50 ms from save to pixels" is measured to the
-`wp_presentation_feedback.presented` timestamp of the first frame that
-carries the edit (painted with damage and with no text still being
-shaped), on a headless sway at 2560×1440 and 60 Hz
+**2026-10-05 · The edit table, as the fuzzer reads it.** A cell takes a
+new default only if it still holds the old one; renamed or retyped, it
+resets. Handler code and timer durations keep state (the next click
+runs the new code). A surface's layer or namespace change recreates it
+with its state; a `bar` on two screens turned into one `panel`, or back,
+resets the cells under it, the chips' component state here, with a
+reset each (wave2-runtime: whose would the single surface keep?). A
+module renamed (its file) in one load resets its cells, reported
+`renamed` (the cells' scope gets fresh cells, the reload's rename rule).
+Renamed in two loads (the new file saved first, so the old one's
+removal is held while the new module commits beside it) it is a module
+added and then one removed: the old cells go with their declarations
+and nothing is reported, as for any deleted `state`. The values are the
+same either way; telling a file rename from a deletion would be
+guessing, which design.md rules out ("Strand never guesses").
+
+**2026-10-05 · Save → pixels ends at the presentation, as a monitor
+would show it.** The M1 gate "under 50 ms from save to pixels" is
+measured to the `wp_presentation_feedback.presented` timestamp of the
+first frame that carries the edit (painted with damage and with no text
+still being shaped, and presented after that paint), on a headless sway
+at 2560×1440 and 60 Hz
 (`crates/strand/src/bench.rs::reload_latency_to_the_presented_frame`).
 The time starts just before the write, on `CLOCK_MONOTONIC`, the clock
-sway announces (asserted). The bench drives `strand run`'s own main
-loop pieces (`Host`, `demo::apply`, the text worker and its waker, the
-logic thread and compiler worker) with a test-only probe on `Host`
-(paints and monitor changes) and a `FrameClock` that wraps
+sway announces (asserted). Headless sway presents a commit at once (0.4
+ms after the paint, measured in the run), where a monitor waits for its
+next vblank, so the gates apply to each sample plus a vblank wait drawn
+evenly over one refresh (20 phases; the p95 of all of them): token 35
+ms, markup 50 ms. The bench drives `strand run`'s own main loop pieces
+(`Host`, `demo::apply`, the text worker and its waker, the logic thread
+and compiler worker) with a test-only probe on `Host` (paints with their
+scale, configures and monitor changes) and a `FrameClock` that wraps
 `PresentationClock`; the shipped binary has no probe. The painted-buffer
 bench (`run.rs::reload_latency_meets_its_budget`) stays as the
-Wayland-free reading of the same pipeline. Both fail the build when p95
-misses 35 ms (token) or 50 ms (markup).
+Wayland-free reading of the same pipeline. CI runs both one at a time
+(`--test-threads=1`).
 
-**2026-10-05 · "Monitor changes on the next frame", measured.** On sway
-a plugged monitor (`swaymsg create_output`) is timed from the main
-thread hearing of it (`wl_output.done`, `SurfaceHost::monitor_added`)
-to the presentation of its bar's first frame, gated at two refresh
-intervals: a new layer surface must wait for its configure round trip
-before it may commit, then shows at the next refresh. The logic side is
-exact: `run.rs::a_monitor_change_is_in_the_next_diff` checks that a
-plug, a scale change, an unplug and a replug are each wholly in the
-first diff the logic thread sends after the message. Portal changes are
-not measured: `system.dark`, `system.accent` and `system.contrast` are
-not fed into `strand run` yet (the portal item under M2), so the
+**2026-10-05 · "Monitor changes on the next frame", measured.** The
+first frame the shell paints once it hears of the change shows it,
+within one refresh: a scale change from `wl_output.done` to the first
+frame painted at the new scale; a monitor plugged in from its new layer
+surface's first configure (the round trip a layer surface must wait for
+before it may commit; measured and printed) to its bar's first frame. A
+frame lost on the shell's side misses that by a refresh. That frame must
+then be the one presented, under two refreshes: headless sway presents
+the first frame after an output change, or on a new output, at its next
+frame timer, which is the compositor's. The logic side is exact:
+`run.rs::a_monitor_change_is_in_the_next_diff` checks that a plug, a
+scale change, an unplug and a replug are each wholly in the first diff
+the logic thread sends after the message. Portal changes are not
+measured: `system.dark`, `system.accent` and `system.contrast` are not
+fed into `strand run` yet (the portal item under M2), so the
 features.md benchmark line stays open for that clause.
+
+**2026-10-05 · A frame waits briefly for a new node's text.** A node
+added to a painted surface used to reach the screen one refresh before
+its text: the frame that committed it was painted while the text worker
+shaped the text, and the frame with the glyphs waited for that frame's
+callback (34 ms save → presented against 18 ms for a node removed).
+`strand-render` now holds a painted surface's frame while some text on
+it has no layout at any scale or width to stand in (a node just added),
+up to `NEW_TEXT_WAIT` = 16 ms (about a refresh; `set_new_text_wait`),
+the way a first frame is held for its text; `frame_deadline` reports
+the hold so `strand-surface` wakes for it. Changed text holds nothing:
+its old layout shows until the new one lands. A node added is now
+presented in 18 ms
+(`crates/strand-render/tests/damage.rs::a_new_text_node_holds_the_frame_for_its_glyphs`).

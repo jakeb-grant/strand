@@ -105,7 +105,8 @@ pub trait SurfaceHost: Painter {
         let _ = monitor;
     }
     /// The painter is holding `surface`'s frame until this instant
-    /// (`Renderer::frame_deadline`: a first frame waiting for its text).
+    /// (`Renderer::frame_deadline`: a first frame waiting for its text, or
+    /// a later one for a new node's).
     /// While it is `Some` and [`Painter::wants_frame`] is false, nothing
     /// is painted, even on a first configure or resize; the manager asks
     /// again at the deadline or on the next `poll()`. Also used after a
@@ -1273,8 +1274,8 @@ impl<H: SurfaceHost + 'static> State<H> {
         }
         let wants = self.host.wants_frame(id);
         if !wants && let Some(at) = self.host.frame_deadline(id) {
-            // The painter holds this frame (a first frame whose text is
-            // still being shaped): ask again at its deadline, or sooner
+            // The painter holds this frame (text it would show is still
+            // being shaped): ask again at its deadline, or sooner
             // when new content marks the surface. The paint stays owed.
             if let Some(s) = self.surfaces.get_mut(&id) {
                 s.repaint = true;

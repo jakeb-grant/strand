@@ -1241,6 +1241,69 @@ fn first_frame_of_a_new_surface_has_its_text() {
     assert!(r.wants_frame(BAR));
 }
 
+/// A text node added to a painted surface holds the frame for its glyphs
+/// (up to `NEW_TEXT_WAIT`), so the frame that shows the node shows its
+/// text, not an empty node a refresh before it; changed text holds
+/// nothing (its old layout shows until the new one lands).
+#[test]
+fn a_new_text_node_holds_the_frame_for_its_glyphs() {
+    use std::time::Duration;
+    let added = |root: NodeId| {
+        let mut d = SceneDiff::new();
+        let id = NodeId::new(100, 0);
+        d.create(id, NodeKind::Text, Some(root), u32::MAX);
+        d.set(id, Prop::X, num(2000.0));
+        d.set(id, Prop::Y, num(10.0));
+        d.set(id, Prop::Text, text("added"));
+        d
+    };
+    let mut r = worker_renderer();
+    r.set_new_text_wait(Duration::from_secs(30));
+    let (diff, clock) = bar("12:59");
+    r.apply(diff);
+    let root = r.tree().roots()[0];
+    r.attach_surface(BAR, root);
+    r.configure_surface(BAR, Size::new(2560, 36), Scale::ONE);
+    assert!(r.wait_for_text(Duration::from_secs(10)));
+    let mut buf = Buffer::new(2560, 36, Scale::ONE);
+    buf.paint(&mut r, BAR, 0);
+
+    r.apply(added(root));
+    assert!(
+        !r.wants_frame(BAR),
+        "no frame with the node but not its text"
+    );
+    assert!(r.frame_deadline(BAR).is_some());
+    assert!(r.wait_for_text(Duration::from_secs(10)));
+    assert!(r.wants_frame(BAR), "its text is here: paint");
+    assert!(r.frame_deadline(BAR).is_none());
+    buf.paint(&mut r, BAR, 1);
+    let mut want = bar("12:59").0;
+    want.ops.extend(added(root).ops);
+    let (_, want) = fresh(want, 2560, 36, Scale::ONE);
+    assert!(buf.pixels == want.pixels, "the frame has the new text");
+
+    // Changed text shows its old layout meanwhile: nothing is held.
+    let mut d = SceneDiff::new();
+    d.set(clock, Prop::Text, text("13:00"));
+    r.apply(d);
+    assert!(
+        r.frame_deadline(BAR).is_none(),
+        "changed text holds nothing"
+    );
+
+    // With no wait, the node is painted at once.
+    let mut r = worker_renderer();
+    r.set_new_text_wait(Duration::ZERO);
+    r.apply(bar("12:59").0);
+    r.attach_surface(BAR, root);
+    r.configure_surface(BAR, Size::new(2560, 36), Scale::ONE);
+    assert!(r.wait_for_text(Duration::from_secs(10)));
+    buf.paint(&mut r, BAR, 0);
+    r.apply(added(root));
+    assert!(r.wants_frame(BAR));
+}
+
 /// `ellipsis` and `max_lines` reach the text engine: a long title with
 /// `max_width` stays on one line; `marks` paint in `mark_color`.
 #[test]

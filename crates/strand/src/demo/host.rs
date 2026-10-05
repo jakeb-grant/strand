@@ -33,8 +33,12 @@ pub struct Host {
 /// What the latency benchmark watches on the main thread.
 #[cfg(test)]
 pub(crate) trait Probe {
-    /// `surface` was painted (`drew`: with damage, so committed).
-    fn painted(&self, surface: SurfaceId, drew: bool, renderer: &Renderer);
+    /// `surface` was painted at `scale` (`drew`: with damage, so
+    /// committed).
+    fn painted(&self, surface: SurfaceId, drew: bool, scale: Scale, renderer: &Renderer);
+    /// `surface` was configured (its first configure: the layer
+    /// surface's round trip is over).
+    fn configured(&self, surface: SurfaceId);
     /// A monitor was plugged in or changed.
     fn monitor(&self);
 }
@@ -333,7 +337,7 @@ impl Painter for Host {
         let damage = self.renderer.paint(surface, target);
         #[cfg(test)]
         if let Some(p) = &self.probe {
-            p.0.painted(surface, !damage.is_empty(), &self.renderer);
+            p.0.painted(surface, !damage.is_empty(), target.scale, &self.renderer);
         }
         if !damage.is_empty() && self.log_damage {
             let rects: Vec<String> = damage
@@ -382,6 +386,10 @@ impl SurfaceHost for Host {
     }
 
     fn surface_configured(&mut self, surface: SurfaceId, size: Size, scale: Scale) {
+        #[cfg(test)]
+        if let Some(p) = &self.probe {
+            p.0.configured(surface);
+        }
         self.renderer.configure_surface(surface, size, scale);
         if let Some(f) = &self.logic {
             f.configured(surface, size, scale);

@@ -23,6 +23,14 @@ pub const DAMAGE_HISTORY: usize = 4;
 /// frame (see [`Renderer::frame_deadline`]).
 pub const FIRST_FRAME_TEXT_WAIT: Duration = Duration::from_millis(50);
 
+/// How long a painted surface holds a frame that would show a text with
+/// no glyphs yet (a node just added: no layout at any scale or width to
+/// stand in): about one refresh at 60 Hz. Shaping takes about a
+/// millisecond, so the frame usually goes out with its text instead of
+/// one refresh later; past this the frame is painted without it (see
+/// [`Renderer::frame_deadline`]).
+pub const NEW_TEXT_WAIT: Duration = Duration::from_millis(16);
+
 /// How often a layout that came back incomplete (no atlas room) is asked
 /// for again before waiting for other text to change or go.
 pub const MAX_TEXT_RETRIES: u8 = 2;
@@ -123,6 +131,10 @@ struct SurfaceState {
     /// Some text on the surface is being shaped and has no layout for
     /// the surface's own scale and width yet.
     awaiting_text: bool,
+    /// Until when a painted surface holds a frame for text with no layout
+    /// at all (a new node): set when such text shows up, cleared when
+    /// none is left.
+    new_text_until: Option<Instant>,
     dirty: bool,
     /// Fully opaque part of the last painted frame.
     opaque: Damage,
@@ -179,6 +191,7 @@ pub struct Renderer {
     specs: BTreeMap<NodeId, SurfaceSpec>,
     surface_changes: Vec<(NodeId, SurfaceChange)>,
     first_frame_wait: Duration,
+    new_text_wait: Duration,
 }
 
 impl Renderer {
@@ -197,6 +210,7 @@ impl Renderer {
             specs: BTreeMap::new(),
             surface_changes: Vec::new(),
             first_frame_wait: FIRST_FRAME_TEXT_WAIT,
+            new_text_wait: NEW_TEXT_WAIT,
         }
     }
 
@@ -204,6 +218,12 @@ impl Renderer {
     /// still being shaped ([`FIRST_FRAME_TEXT_WAIT`] by default).
     pub fn set_first_frame_wait(&mut self, wait: Duration) {
         self.first_frame_wait = wait;
+    }
+
+    /// How long a painted surface holds a frame for text that has no
+    /// glyphs to show yet ([`NEW_TEXT_WAIT`] by default; zero: never).
+    pub fn set_new_text_wait(&mut self, wait: Duration) {
+        self.new_text_wait = wait;
     }
 
     /// The resolved surface parameters of a surface-kind node (as of the
@@ -281,6 +301,7 @@ impl Renderer {
                 painted: false,
                 wait_until: None,
                 awaiting_text: false,
+                new_text_until: None,
                 dirty: true,
                 opaque: Damage::new(),
                 time: Duration::ZERO,
@@ -383,15 +404,21 @@ impl Renderer {
         marked
     }
 
-    /// When a surface that is holding its first frame for text will want
-    /// it anyway: the loop should wake by then (a calloop timer) and check
+    /// When a surface that is holding a frame for text will want it
+    /// anyway: the loop should wake by then (a calloop timer) and check
     /// [`Painter::wants_frame`] again. `None` when it is not waiting.
+    ///
+    /// A first frame waits for all of its text (up to the first-frame
+    /// wait); a later one only for text with nothing to show yet, a node
+    /// just added (up to [`NEW_TEXT_WAIT`]). Changed text keeps showing
+    /// its old layout meanwhile, so it holds nothing.
     pub fn frame_deadline(&self, surface: SurfaceId) -> Option<Instant> {
         let s = self.surfaces.get(&surface)?;
-        (!s.painted && s.awaiting_text)
-            .then_some(s.wait_until)
-            .flatten()
-            .filter(|t| Instant::now() < *t)
+        let until = match s.painted {
+            false => s.awaiting_text.then_some(s.wait_until).flatten(),
+            true => s.new_text_until,
+        };
+        until.filter(|t| Instant::now() < *t)
     }
 
     /// Frees everything held for scales no surface uses any more: text
@@ -604,16 +631,37 @@ impl Renderer {
             // or width does not count: a first frame drawn with one would
             // be repainted as soon as the right layout lands.
             let texts = &self.texts;
-            let awaiting = f.text.iter().any(|(node, spec)| {
-                texts
-                    .get(&TextSlot::of(*node, spec))
-                    .is_some_and(|t| t.layout.is_none() && t.requested.is_some())
-            });
+            let waiting: Vec<NodeId> = f
+                .text
+                .iter()
+                .filter(|(node, spec)| {
+                    texts
+                        .get(&TextSlot::of(*node, spec))
+                        .is_some_and(|t| t.layout.is_none() && t.requested.is_some())
+                })
+                .map(|(node, _)| *node)
+                .collect();
+            // Of those, text with no layout anywhere to stand in.
+            let blank = !waiting.is_empty() && {
+                let shown: HashSet<NodeId> = texts
+                    .iter()
+                    .filter(|(_, t)| t.layout.is_some())
+                    .map(|(slot, _)| slot.node)
+                    .collect();
+                waiting.iter().any(|n| !shown.contains(n))
+            };
+            let wait = self.new_text_wait;
             if let Some(s) = self.surfaces.get_mut(&id) {
                 if s.valid && s.records == f.records && s.opaque == f.opaque {
                     s.dirty = false;
                 }
-                s.awaiting_text = awaiting;
+                s.awaiting_text = !waiting.is_empty();
+                s.new_text_until = match (blank, s.new_text_until) {
+                    (false, _) => None,
+                    (true, Some(t)) => Some(t),
+                    (true, None) if s.painted && !wait.is_zero() => Some(Instant::now() + wait),
+                    (true, None) => None,
+                };
                 s.cache = Some(f);
             }
         }

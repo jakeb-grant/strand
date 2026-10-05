@@ -8,18 +8,27 @@
 //! 2560×1440, 60 Hz. Each edit is saved in place; the time runs from just
 //! before the write to the `wp_presentation_feedback.presented`
 //! timestamp of the first frame that carries it (painted with its text
-//! shaped), both on `CLOCK_MONOTONIC`. A monitor plugged in is timed from
-//! the moment the main thread hears of it (`wl_output.done`) to the
-//! presentation of its bar's first frame, which must come within two
-//! refresh intervals: the layer surface's configure round trip, then the
-//! next frame (`run.rs::a_monitor_change_is_in_the_next_diff` shows the
-//! logic thread answers in its first diff). Portal changes are not wired
-//! into `strand run` yet (the `system` service, M2).
+//! shaped, and painted before that presentation), both on
+//! `CLOCK_MONOTONIC`. Headless sway presents a commit at once (the
+//! painted → presented gap is printed); a monitor waits for its vblank,
+//! so the gates apply to each sample plus a vblank wait drawn over one
+//! refresh ([`on_a_monitor`]).
+//!
+//! Monitor changes: a scale change (`swaymsg output … scale`) is timed
+//! from the main thread hearing of it (`wl_output.done`) to the
+//! presentation of the bar's first frame at the new scale, within one
+//! refresh; a monitor plugged in, from its new surface's first configure
+//! (the layer surface's round trip, measured and printed) to its bar's
+//! first presented frame, within one refresh
+//! (`run.rs::a_monitor_change_is_in_the_next_diff` shows the logic
+//! thread answers in its first diff). Portal changes are not wired into
+//! `strand run` yet (the `system` service, M2).
 //!
 //! A budget test: ignored in debug builds, run optimised in CI
-//! (`cargo test --release -p strand --bin strand reload_latency`).
-//! Skipped when sway is not installed, unless `STRAND_REQUIRE_SWAY` is
-//! set (CI). `STRAND_LATENCY_ROUNDS` sets the edits per kind (20).
+//! (`cargo test --release -p strand --bin strand reload_latency --
+//! --test-threads=1`). Skipped when sway is not installed, unless
+//! `STRAND_REQUIRE_SWAY` is set (CI). `STRAND_LATENCY_ROUNDS` sets the
+//! edits per kind (20).
 
 use std::cell::RefCell;
 use std::os::unix::fs::PermissionsExt;
@@ -32,7 +41,7 @@ use std::time::{Duration, Instant};
 use calloop::channel::Event;
 use strand_compiler::instantiate::Storage;
 use strand_render::{Renderer, TextBackend};
-use strand_scene::{SceneDiff, SceneOp, SurfaceId};
+use strand_scene::{Scale, SceneDiff, SceneOp, SurfaceId};
 use strand_surface::{Config, FrameClock, Presentation, PresentationClock, SurfaceManager};
 use strand_text::{FontConfig, TextWorker};
 
@@ -162,40 +171,64 @@ struct Watch {
     awaiting: Await,
     /// The next frame painted with damage and all text shaped counts.
     armed: bool,
-    /// A monitor change arms it (set before the change is made).
+    /// A monitor plugged in arms it (set before the plug).
     on_monitor: bool,
     /// Then only a surface never painted before counts.
     new_surface: bool,
+    /// A scale change: only a frame painted at this scale counts (its
+    /// text may still be a resampled stand-in: the change is shown).
+    scale: Option<Scale>,
     known: Vec<SurfaceId>,
     /// When the main thread heard of the monitor.
     monitor_at: Option<Duration>,
-    /// The counted frame, painted: waiting for its presentation.
-    painted: Option<SurfaceId>,
-    presented: Option<Presentation>,
+    /// When the new surface was first configured (the layer surface's
+    /// configure round trip over).
+    configured_at: Option<Duration>,
+    /// The counted frame and when it was painted: waiting for its
+    /// presentation.
+    painted: Option<(SurfaceId, Duration)>,
+    /// Its presentation, and when it was painted.
+    presented: Option<(Presentation, Duration)>,
     discarded: u32,
+    /// Presentations of the counted surface timed before its counted
+    /// frame was painted (an older frame's), not taken for it.
+    stale: u32,
 }
 
 #[derive(Clone)]
 struct Shared(Rc<RefCell<Watch>>);
 
 impl Probe for Shared {
-    fn painted(&self, surface: SurfaceId, drew: bool, renderer: &Renderer) {
+    fn painted(&self, surface: SurfaceId, drew: bool, scale: Scale, renderer: &Renderer) {
         let mut w = self.0.borrow_mut();
         let new = !w.known.contains(&surface);
         if new {
             w.known.push(surface);
         }
-        if w.armed && drew && !renderer.text_pending() && (!w.new_surface || new) {
+        let shown = match w.scale {
+            Some(s) => s == scale,
+            None => !renderer.text_pending(),
+        };
+        if w.armed && drew && shown && (!w.new_surface || new) {
             w.armed = false;
-            w.painted = Some(surface);
+            w.painted = Some((surface, monotonic()));
+        }
+    }
+
+    fn configured(&self, surface: SurfaceId) {
+        let mut w = self.0.borrow_mut();
+        if w.new_surface && !w.known.contains(&surface) && w.configured_at.is_none() {
+            w.configured_at = Some(monotonic());
         }
     }
 
     fn monitor(&self) {
         let mut w = self.0.borrow_mut();
+        if w.monitor_at.is_none() {
+            w.monitor_at = Some(monotonic());
+        }
         if w.on_monitor {
             w.on_monitor = false;
-            w.monitor_at = Some(monotonic());
             w.armed = true;
         }
     }
@@ -220,16 +253,24 @@ impl FrameClock for Clock {
     fn presented(&mut self, surface: SurfaceId, presentation: Presentation) {
         self.inner.presented(surface, presentation);
         let mut w = self.watch.0.borrow_mut();
-        if w.painted == Some(surface) {
-            w.painted = None;
-            w.presented = Some(presentation);
+        if let Some((s, at)) = w.painted
+            && s == surface
+        {
+            if presentation.time < at {
+                // An older frame of the surface: the counted one is
+                // still to come.
+                w.stale += 1;
+            } else {
+                w.painted = None;
+                w.presented = Some((presentation, at));
+            }
         }
     }
 
     fn discarded(&mut self, surface: SurfaceId) {
         self.inner.discarded(surface);
         let mut w = self.watch.0.borrow_mut();
-        if w.painted == Some(surface) {
+        if w.painted.is_some_and(|(s, _)| s == surface) {
             // Never shown: the next frame of it carries the change.
             w.painted = None;
             w.armed = true;
@@ -272,12 +313,48 @@ fn since(p: &Presentation, from: Duration) -> f64 {
     p.time.saturating_sub(from).as_secs_f64() * 1e3
 }
 
+/// A monitor change in two steps: until the shell painted its first
+/// frame showing it, then until the compositor presented that frame.
+#[derive(Clone, Copy, Debug)]
+struct Steps {
+    to_paint: f64,
+    to_present: f64,
+}
+
+fn ms(d: Duration) -> f64 {
+    d.as_secs_f64() * 1e3
+}
+
+/// The p95 the same samples would have on a real output: headless sway
+/// presents a commit at once (the paint → presented gap is measured),
+/// where a monitor shows it at its next vblank, 0 to one refresh later
+/// with the save's phase uniform against the vblank. Each sample is
+/// taken at 20 evenly spaced phases.
+fn on_a_monitor(samples: &[f64], refresh: f64) -> f64 {
+    const PHASES: usize = 20;
+    let all: Vec<f64> = samples
+        .iter()
+        .flat_map(|s| (0..PHASES).map(move |j| s + (j as f64 + 0.5) / PHASES as f64 * refresh))
+        .collect();
+    p95(&all)
+}
+
 struct Measured {
     tokens: Vec<f64>,
     markup: Vec<f64>,
-    monitors: Vec<f64>,
+    /// Painted → presented, for each edit's counted frame.
+    gaps: Vec<f64>,
+    /// A monitor plugged in: heard → its surface configured (the layer
+    /// surface's round trip), then configured → its bar painted →
+    /// presented.
+    round_trips: Vec<f64>,
+    plugs: Vec<Steps>,
+    /// A scale change: heard → the bar painted at the new scale →
+    /// presented.
+    scales: Vec<Steps>,
     refresh: Duration,
     discarded: u32,
+    stale: u32,
 }
 
 fn measure(rounds: usize) -> Option<Measured> {
@@ -316,11 +393,14 @@ fn measure(rounds: usize) -> Option<Measured> {
         armed: true,
         on_monitor: false,
         new_surface: false,
+        scale: None,
         known: Vec::new(),
         monitor_at: None,
+        configured_at: None,
         painted: None,
         presented: None,
         discarded: 0,
+        stale: 0,
     })));
     let (to_logic, from_main) = calloop::channel::channel::<ToLogic>();
     let mut host = Host::new(renderer, false).forwarding(to_logic.clone());
@@ -370,8 +450,9 @@ fn measure(rounds: usize) -> Option<Measured> {
             }
         })
         .unwrap();
-    // Dispatch until the watched frame is presented.
-    let presented = |mgr: &mut SurfaceManager<Host>, what: &str| -> Presentation {
+    // Dispatch until the watched frame is presented: the presentation
+    // and when the frame was painted.
+    let presented = |mgr: &mut SurfaceManager<Host>, what: &str| -> (Presentation, Duration) {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             if let Some(p) = watch.0.borrow_mut().presented.take() {
@@ -388,11 +469,11 @@ fn measure(rounds: usize) -> Option<Measured> {
                 .unwrap();
         }
     };
-    let first = presented(&mut mgr, "the boot");
+    let (first, _) = presented(&mut mgr, "the boot");
     let refresh = first.refresh.unwrap_or(Duration::from_micros(16_667));
     idle(&mut mgr, Duration::from_millis(300));
 
-    let (mut tokens, mut markup, mut monitors) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut tokens, mut markup, mut gaps) = (Vec::new(), Vec::new(), Vec::new());
     let mut extra = false;
     for i in 1..=rounds {
         // A token edit: the bar's colour.
@@ -400,8 +481,9 @@ fn measure(rounds: usize) -> Option<Measured> {
         watch.0.borrow_mut().awaiting = Await::Tokens;
         let saved = monotonic();
         std::fs::write(&file, bar_src(&bg, extra)).unwrap();
-        let p = presented(&mut mgr, "a token edit");
+        let (p, painted) = presented(&mut mgr, "a token edit");
         tokens.push(since(&p, saved));
+        gaps.push(since(&p, painted));
         // Let the colour's transition finish before the next save.
         idle(&mut mgr, Duration::from_millis(250));
         // A markup edit: a node added or removed.
@@ -409,25 +491,62 @@ fn measure(rounds: usize) -> Option<Measured> {
         watch.0.borrow_mut().awaiting = Await::Markup;
         let saved = monotonic();
         std::fs::write(&file, bar_src(&bg, extra)).unwrap();
-        let p = presented(&mut mgr, "a markup edit");
+        let (p, painted) = presented(&mut mgr, "a markup edit");
         markup.push(since(&p, saved));
+        gaps.push(since(&p, painted));
         idle(&mut mgr, Duration::from_millis(250));
     }
+    // The output's scale changed: the bar is shown at the new scale.
+    let mut scales: Vec<Steps> = Vec::new();
+    for (k, s) in [180u32, 120, 180, 120].into_iter().enumerate() {
+        {
+            let mut w = watch.0.borrow_mut();
+            w.scale = Scale::new(s);
+            w.monitor_at = None;
+            w.armed = true;
+        }
+        let factor = format!("{}", s as f64 / 120.0);
+        sway.msg(&["output", "HEADLESS-1", "scale", &factor])
+            .unwrap();
+        let (p, painted) = presented(&mut mgr, &format!("scale change {k}"));
+        let heard = watch.0.borrow().monitor_at.expect("the scale change heard");
+        scales.push(Steps {
+            to_paint: ms(painted.saturating_sub(heard)),
+            to_present: since(&p, painted),
+        });
+        idle(&mut mgr, Duration::from_millis(200));
+    }
+    watch.0.borrow_mut().scale = None;
     // Monitors plugged in: each gets its bar on its first frame.
+    let (mut round_trips, mut plugs) = (Vec::new(), Vec::new());
     for k in 0..5 {
         {
             let mut w = watch.0.borrow_mut();
             w.on_monitor = true;
             w.new_surface = true;
             w.monitor_at = None;
+            w.configured_at = None;
         }
         sway.msg(&["create_output"]).unwrap();
-        let p = presented(&mut mgr, &format!("monitor {k}"));
-        let heard = watch.0.borrow().monitor_at.unwrap();
-        monitors.push(since(&p, heard));
+        let (p, painted) = presented(&mut mgr, &format!("monitor {k}"));
+        let (heard, configured) = {
+            let w = watch.0.borrow();
+            (
+                w.monitor_at.expect("the plug heard"),
+                w.configured_at.expect("the new surface configured"),
+            )
+        };
+        round_trips.push(ms(configured.saturating_sub(heard)));
+        plugs.push(Steps {
+            to_paint: ms(painted.saturating_sub(configured)),
+            to_present: since(&p, painted),
+        });
         idle(&mut mgr, Duration::from_millis(200));
     }
-    let discarded = watch.0.borrow().discarded;
+    let (discarded, stale) = {
+        let w = watch.0.borrow();
+        (w.discarded, w.stale)
+    };
     to_logic.send(ToLogic::Shutdown).unwrap();
     assert_eq!(logic.join().unwrap(), Ok(()));
     drop(mgr);
@@ -437,15 +556,20 @@ fn measure(rounds: usize) -> Option<Measured> {
     Some(Measured {
         tokens,
         markup,
-        monitors,
+        gaps,
+        round_trips,
+        plugs,
+        scales,
         refresh,
         discarded,
+        stale,
     })
 }
 
 /// The M1 exit gate on a compositor: p95 save → presented frame within
-/// 35 ms for a token edit and 50 ms for a markup edit, and a monitor's
-/// bar on the next frame.
+/// 35 ms for a token edit and 50 ms for a markup edit, as a monitor
+/// would show them (each sample plus the vblank wait headless sway does
+/// not have), and a monitor change on the next frame.
 #[test]
 #[cfg_attr(
     debug_assertions,
@@ -454,42 +578,85 @@ fn measure(rounds: usize) -> Option<Measured> {
 fn reload_latency_to_the_presented_frame() {
     let rounds = std::env::var("STRAND_LATENCY_ROUNDS")
         .ok()
-        .and_then(|n| n.parse().ok())
+        .map(|n| {
+            n.parse()
+                .unwrap_or_else(|e| panic!("STRAND_LATENCY_ROUNDS={n:?}: {e}"))
+        })
         .unwrap_or(20);
     let Some(m) = measure(rounds) else {
         return;
     };
     let max = |v: &[f64]| v.iter().copied().fold(0.0, f64::max);
-    let (pt, pm, pmon) = (p95(&m.tokens), p95(&m.markup), p95(&m.monitors));
-    eprintln!(
-        "save → presented over {rounds} edits each at {:.2} ms refresh: token p95 {pt:.1} ms (max {:.1}), markup p95 {pm:.1} ms (max {:.1}; a node added p95 {:.1}, removed {:.1}); monitor plugged → its bar presented {:?} ms; {} frames discarded",
-        m.refresh.as_secs_f64() * 1e3,
-        max(&m.tokens),
-        max(&m.markup),
-        p95(&m.markup.iter().copied().step_by(2).collect::<Vec<_>>()),
-        p95(&m
-            .markup
-            .iter()
-            .copied()
-            .skip(1)
-            .step_by(2)
-            .collect::<Vec<_>>()),
-        m.monitors
-            .iter()
+    let round = |v: &[f64]| {
+        v.iter()
             .map(|x| (x * 10.0).round() / 10.0)
-            .collect::<Vec<_>>(),
+            .collect::<Vec<_>>()
+    };
+    let frame = ms(m.refresh);
+    let (pt, pm) = (p95(&m.tokens), p95(&m.markup));
+    let (ht, hm) = (
+        on_a_monitor(&m.tokens, frame),
+        on_a_monitor(&m.markup, frame),
+    );
+    let added: Vec<f64> = m.markup.iter().copied().step_by(2).collect();
+    let removed: Vec<f64> = m.markup.iter().copied().skip(1).step_by(2).collect();
+    let steps = |v: &[Steps]| {
+        v.iter()
+            .map(|s| format!("{:.1} + {:.1}", s.to_paint, s.to_present))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    eprintln!(
+        "save → presented over {rounds} edits each at {frame:.2} ms refresh:\n\
+         \x20 token p95 {pt:.1} ms (max {:.1}); on a monitor p95 {ht:.1} ms, at worst {:.1}\n\
+         \x20 markup p95 {pm:.1} ms (max {:.1}; a node added p95 {:.1}, removed {:.1}); on a monitor p95 {hm:.1} ms, at worst {:.1}\n\
+         \x20 painted → presented p95 {:.2} ms (max {:.2}); {} frames discarded, {} stale presentations\n\
+         \x20 scale change heard → painted at the new scale + → presented: {} ms\n\
+         \x20 monitor plugged: heard → configured {:?} ms, then → painted + → presented: {} ms",
+        max(&m.tokens),
+        pt + frame,
+        max(&m.markup),
+        p95(&added),
+        p95(&removed),
+        pm + frame,
+        p95(&m.gaps),
+        max(&m.gaps),
         m.discarded,
+        m.stale,
+        steps(&m.scales),
+        round(&m.round_trips),
+        steps(&m.plugs),
     );
-    assert!(pt <= 35.0, "token edits: p95 {pt:.1} ms: {:?}", m.tokens);
-    assert!(pm <= 50.0, "markup edits: p95 {pm:.1} ms: {:?}", m.markup);
-    // The next frame: a new bar needs one configure round trip before it
-    // may commit, then shows at the next refresh; two refresh intervals
-    // (33.3 ms at 60 Hz) leave no room for a frame of its own lost.
-    let frame = m.refresh.as_secs_f64() * 1e3;
     assert!(
-        pmon <= 2.0 * frame,
-        "monitors: p95 {pmon:.1} ms (two frames are {:.1} ms): {:?}",
-        2.0 * frame,
-        m.monitors
+        ht <= 35.0,
+        "token edits: p95 on a monitor {ht:.1} ms (headless {pt:.1}): {:?}",
+        m.tokens
     );
+    assert!(
+        hm <= 50.0,
+        "markup edits: p95 on a monitor {hm:.1} ms (headless {pm:.1}): {:?}",
+        m.markup
+    );
+    // The next frame: the first frame the shell paints once it hears of
+    // a scale change (a plugged monitor: once its new layer surface is
+    // configured, the round trip it must wait for) shows the change,
+    // within one refresh; a frame lost on the shell's side (painted
+    // without the change, or superseded before it was shown) misses by a
+    // refresh. That frame is then the one presented: headless sway
+    // presents an edit's frame at once, but the first frame after an
+    // output change, or on a new output, at its next frame timer (17 ms
+    // after the paint for a scale change), so the presentation is held
+    // to the compositor's next frame, under two refreshes.
+    for (what, v) in [
+        ("a scale change", &m.scales),
+        ("a plugged monitor", &m.plugs),
+    ] {
+        let paint = p95(&v.iter().map(|s| s.to_paint).collect::<Vec<_>>());
+        let present = p95(&v.iter().map(|s| s.to_present).collect::<Vec<_>>());
+        assert!(
+            paint <= frame && present < 2.0 * frame,
+            "{what}: p95 {paint:.1} ms to the frame showing it (one frame is {frame:.1}), then {present:.1} ms to its presentation: {}",
+            steps(v)
+        );
+    }
 }

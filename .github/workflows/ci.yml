@@ -40,7 +40,7 @@ jobs:
       # Save → pixels p95 within design.md's 35 ms (token) and 50 ms
       # (markup) on an optimised build, to the painted buffer and to the
       # frame sway presents; ignored in debug builds.
-      - run: cargo test --release -p strand --bin strand reload_latency -- --nocapture
+      - run: cargo test --release -p strand --bin strand reload_latency -- --nocapture --test-threads=1
       # The reload fuzzer's short run (60 edits through the five save
       # styles) is part of `cargo test --workspace` above, on tmpfs.
 
@@ -70,6 +70,6 @@ jobs:
         env:
           STRAND_RELOAD_FUZZ: "10000"
           STRAND_STATE_FUZZ: "2000"
-      - run: cargo test --release -p strand --bin strand reload_latency -- --nocapture
+      - run: cargo test --release -p strand --bin strand reload_latency -- --nocapture --test-threads=1
         env:
           STRAND_LATENCY_ROUNDS: "200"
