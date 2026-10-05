@@ -261,9 +261,10 @@ echo "all $POST_N frames after boot: largest damage ${POST_MAX:-none} px^2 (gate
 if [ "$THIRD" = 1 ]; then
   echo "hotplug of HEADLESS-3 (1920x1080 at 1.0): $HOTPLUG_OTHER frames on the other bars (gate 0)"
   [ "$HOTPLUG_OTHER" -eq 0 ] || { echo "  FAIL: hotplug repainted other bars"; fail=1; }
-  echo "tick on three bars: $T3_N frames, largest ${T3_MAX:-none} px^2, all ${T3_AREA:-0} px^2; off-centre frames: $T3_OFF"
+  echo "tick on three bars: $T3_N frames, largest ${T3_MAX:-none} px^2, all ${T3_AREA:-0} px^2 (gate $DAMAGE_GATE per frame and per tick); off-centre frames: $T3_OFF"
   [ "$T3_N" -ge 3 ] || { echo "  FAIL: a bar did not tick"; fail=1; }
   [ "${T3_MAX:-0}" -le "$DAMAGE_GATE" ] || { echo "  FAIL: damage per frame"; fail=1; }
+  [ "${T3_AREA:-0}" -le "$DAMAGE_GATE" ] || { echo "  FAIL: damage per tick"; fail=1; }
   [ "$T3_OFF" -eq 0 ] || { echo "  FAIL: tick damage not centred (misaligned clock)"; fail=1; }
 fi
 echo "frames painted but not committed: $DROPPED"

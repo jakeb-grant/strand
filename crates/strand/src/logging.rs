@@ -1,6 +1,7 @@
 //! `STRAND_LOG`: a comma-separated list of a level (`error`, `warn`,
 //! `info`, `debug`, `trace`; default `warn`) and topics (`damage`: one
-//! stderr line per committed frame with its damage area).
+//! stderr line per painted frame with its damage area, followed by a
+//! `dropped` line if that frame's commit fails).
 
 use log::{LevelFilter, Log, Metadata, Record};
 

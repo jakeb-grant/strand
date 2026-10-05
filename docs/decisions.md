@@ -495,7 +495,12 @@ schema from `strand-compiler`).
   hand (`crates/strand/src/demo/scene.rs`), standing in for what the
   compiler will emit. M0 layout is absolute placement, so `split`'s
   `start`/`center`/`end` each span the bar and align their text (start
-  and end padded by `$space.3` = 12 px); taffy replaces this in M2. The
+  and end padded by `$space.3` = 12 px, done as `x` = +12 / -12 on
+  the full-width start and end sections, so each overhangs the opposite
+  edge by 12 px with nothing drawn there). The offsets stand in for the
+  `pad` the M1 compiler will emit on the split (`split { pad: 0,
+  $space.3 }`), which taffy honours in M2; they are not emitter output
+  to copy. The
   start and end texts are static placeholders until the window and
   battery services (M3). Colours are literals (`#1e1e2e` / `#cdd6f4`)
   until tokens and palettes are wired; the font is `$font.ui` written as
@@ -579,3 +584,10 @@ schema from `strand-compiler`).
   wall-clock time × 60. Headless sway reports `seq` 0 and refresh 0, so
   the test assumes 60 Hz with 2 ms slack and compares `seq` only when it
   moves.
+- 2026-10-05 · m0 (round 3, render gate-adjacent fix): when
+  `prune_texts` drops a slot that had a layout, every surface wanting a
+  slot of the same node with no layout (it may have drawn the dropped one
+  as a stand-in) is marked dirty; `flatten_surface` re-flattens if it is
+  itself one. A poisoned surface then stops drawing a gone layout.
+- 2026-10-05 · m0: `scripts/m0-exit.sh` gates damage per tick as the sum
+  over all bars in every scenario, the 3-bar tick after hotplug included.

@@ -5,8 +5,14 @@ shared with another build), headless sway 1.x with the pixman renderer,
 release build of `strand run --demo` (thin LTO, one codegen unit,
 mimalloc). Reproduce with `scripts/m0-exit.sh` (about 4 minutes plus the
 benchmark; `--no-bench` skips it, `--no-third` the hotplug scenario). The
-script exits non-zero when a gate fails. Numbers below are from review
-round 1: one full run plus five more boots with `--ticks 1 --no-third`.
+script exits non-zero when a gate fails. Ranges below are from review
+round 1 (one full run plus five more boots with `--ticks 1 --no-third`);
+the final-code reading (review round 3, one full run) falls inside every
+range and is listed under "Final-code reading".
+
+Units: MB here means MiB, 1,024 kB, as `/proc/<pid>/smaps_rollup`
+reports kB and the script's gate is 34 × 1,024 = 34,816 kB (the same
+gate `crates/strand/tests/demo.rs` asserts).
 
 ## Result
 
@@ -86,7 +92,9 @@ as `architecture.md` says:
 
 Automated tests cover the same ground in `cargo test` without the full
 minute: `crates/strand/tests/demo.rs` (the debug binary on sway with two
-2560×1440 outputs at 1.0 and 1.25: PSS ≤ 34 MB (about 31 MB in debug),
+2560×1440 outputs at 1.0 and 1.25: PSS ≤ 34 MB in a release run
+(`cargo test --release`), ≤ 40 MB debug ceiling in a debug run (about
+31 MB),
 both bars' clock centred and end text at the edge on grim captures, zero
 context switches over 2 s of idle, then a hotplugged 1920×1080 output at
 1.0 aligned to its own width while the others stay put; it prints a
@@ -195,6 +203,29 @@ Review round 2 changes (no gate number moved):
 - **demo.rs.** The 34 MB PSS gate is asserted in release, and a debug run
   is held to a 40 MB debug ceiling. The hotplug step waits for the new
   bar's own 1920x32 frame.
+
+Review round 3 changes (no gate number moved):
+
+- **m0-exit.sh** gates the per-tick total over all three bars after the
+  hotplug as well (it already gated each frame and centring).
+- **Dropped stand-in.** In strand-render, `prune_texts` marks dirty (and
+  clears the cached flatten of) any surface that may have drawn a
+  dropped slot as its stand-in, so a poisoned surface stops showing
+  glyphs whose layout is gone (`a_poisoned_slot_keeps_no_stand_ins`).
+
+### Final-code reading
+
+`scripts/m0-exit.sh --no-bench` on the round-3 head, all gates passed:
+
+| Reading | Value | Gate |
+| --- | --- | --- |
+| PSS after boot / after 2 ticks | 21,171 kB / 21,835 kB (20.7 / 21.3 MB) | 34,816 kB |
+| Context switches, :03 → :57, two windows | 0 and 0 (21 → 21, 26 → 26) | 0 |
+| Tick damage per frame (1.0 / 1.25) | 456 / 705 px² (38×12, 47×15), age 2 | 2,000 px² |
+| Tick damage, both outputs | 1,161 px² (both ticks) | 2,000 px² |
+| Hotplug of HEADLESS-3 | 1 frame on the new bar only, 0 on the others | 0 |
+| Tick on three bars | 456 / 705 / 444 px², 1,605 px² in all, all centred | 2,000 px² per frame and per tick |
+| Frames painted but not committed | 0 | — |
 
 ## strand-core 10k-node benchmark
 

@@ -331,7 +331,11 @@ impl Renderer {
     /// a surface has left. A slot drawn as a stand-in (its node's wanted
     /// slot has no layout yet) is kept until the wanted one arrives; a
     /// poisoned slot never gets one, so it keeps no stand-ins.
-    fn prune_texts(&mut self) {
+    ///
+    /// A surface whose wanted slot has no layout may have drawn a dropped
+    /// slot as its stand-in: it is marked dirty (its cache cleared) so it
+    /// stops drawing it. Returns those surfaces.
+    fn prune_texts(&mut self) -> Vec<SurfaceId> {
         let mut keep: HashSet<TextSlot> = HashSet::new();
         let mut standing_in: HashSet<NodeId> = HashSet::new();
         for s in self.surfaces.values() {
@@ -346,20 +350,37 @@ impl Renderer {
                 }
             }
         }
-        let before = self.texts.len();
+        let mut dropped: HashSet<NodeId> = HashSet::new();
         let text = &self.text;
         self.texts.retain(|slot, t| {
             let k = keep.contains(slot) || standing_in.contains(&slot.node);
-            if !k && let Some((key, _)) = t.requested.take() {
-                text.cancel(key);
+            if !k {
+                if let Some((key, _)) = t.requested.take() {
+                    text.cancel(key);
+                }
+                if t.layout.is_some() {
+                    dropped.insert(slot.node);
+                }
             }
             k
         });
-        if self.texts.len() != before {
-            let texts = &self.texts;
-            self.pending.retain(|_, slot| texts.contains_key(slot));
-            self.refresh_retries();
+        let mut marked = Vec::new();
+        if dropped.is_empty() {
+            return marked;
         }
+        let texts = &self.texts;
+        self.pending.retain(|_, slot| texts.contains_key(slot));
+        for (id, s) in &mut self.surfaces {
+            let drew_stand_in = s.wanted.iter().any(|w| {
+                dropped.contains(&w.node) && texts.get(w).is_none_or(|t| t.layout.is_none())
+            });
+            if drew_stand_in {
+                s.mark_dirty();
+                marked.push(*id);
+            }
+        }
+        self.refresh_retries();
+        marked
     }
 
     /// When a surface that is holding its first frame for text will want
@@ -752,7 +773,14 @@ impl Renderer {
                 self.prune_scales();
             }
         }
-        self.prune_texts();
+        if self.prune_texts().contains(&id) {
+            // `f` drew a stand-in that is gone now.
+            let Some(s) = self.surfaces.get(&id) else {
+                return Flattened::default();
+            };
+            let layouts = self.shaped();
+            return flatten(&self.tree, s.root, s.size, s.scale, &layouts);
+        }
         f
     }
 
@@ -1177,9 +1205,16 @@ mod tests {
         };
         assert_eq!(slot(&r, 200.0), Some((true, false)));
         assert_eq!(slot(&r, 120.0), Some((false, true)));
+        r.update();
+        let s1 = &r.surfaces[&SurfaceId(1)];
+        assert!(s1.cache.is_some());
         r.detach_surface(SurfaceId(2));
         assert_eq!(slot(&r, 120.0), None, "kept as a stand-in for nothing");
         assert_eq!(r.texts.len(), 1);
+        // Surface 1 drew that layout as its stand-in: it must not keep
+        // showing glyphs that are gone.
+        let s1 = &r.surfaces[&SurfaceId(1)];
+        assert!(s1.dirty && s1.cache.is_none(), "stale stand-in kept");
     }
 
     /// A layout missing glyphs for want of atlas room is retried a bounded

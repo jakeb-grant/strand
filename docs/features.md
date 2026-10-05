@@ -9,10 +9,10 @@ boxes and its exit criteria are ticked.
 
 Exit: [x] ≤34 MB PSS on 2 monitors · [x] no wakeups between minute ticks ·
 [x] ≤2,000 px² damage per tick — measured by `scripts/m0-exit.sh` over six
-boots (21.3–21.6 MB, 0 context switches from :03 to :57, 444–456 / 690–705 px²
+boots (21.3–21.6 MB, MB = MiB = 1,024 kB as the script's 34 × 1,024 kB gate; final code 21,835 kB; 0 context switches from :03 to :57, 444–456 / 690–705 px²
 per frame at 1.0 / 1.25, at most 1,161 px² per tick over both outputs, no
 correction frame after boot); see `docs/m0-report.md`; in `cargo test`:
-`crates/strand/tests/demo.rs` (`demo_bar_on_two_outputs_then_idle`: PSS ≤ 34 MB,
+`crates/strand/tests/demo.rs` (`demo_bar_on_two_outputs_then_idle`: PSS,
 idle, alignment on 2560@1.0, 2560@1.25 and a hotplugged 1920@1.0; PSS held to
 34 MB in a release run, to a 40 MB debug ceiling in a debug run; SKIPPED
 without sway, so not yet in CI, see the CI line below), `crates/strand/src/demo/mod.rs`
