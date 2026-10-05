@@ -38,6 +38,19 @@ pub trait ServiceHost {
     /// with its record. Called once at instantiation.
     fn declare(&self, _rt: &Runtime, _name: &str, _record: crate::ty::RecordId) {}
 
+    /// A live reload changed (or added) custom service `name`: restart
+    /// it with `record`, a record of `types` (the new program's table).
+    /// Only that service restarts; built-ins never do. The default does
+    /// nothing.
+    fn restart(
+        &self,
+        _rt: &Runtime,
+        _name: &str,
+        _record: crate::ty::RecordId,
+        _types: &crate::ty::TypeTable,
+    ) {
+    }
+
     /// The value of `service.field`, tracked.
     fn read(&self, rt: &Runtime, service: &str, field: &str) -> Result<Value, Error>;
 

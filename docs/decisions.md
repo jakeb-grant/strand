@@ -2917,3 +2917,99 @@ listener)
   `no_batch`. The loop now stops at 1,000 writes (5,000 events), and the
   test checks that no batch carries a change (a change-less rescan
   batch is allowed), naming the body behind each reported hash.
+
+## wave2-runtime
+
+**2026-10-05 · A reload mounts the new program beside the old one.**
+`Instance::reload` builds the new program's tree on the same runtime with
+the old instance's registry as a carry, keyed by reload key: the scope's
+place in the instance tree (`/s<sid>[<monitor>]/c<sid>/f<sid>[<key>]`,
+the `Sid`s from `reconcile::Identity`) plus the node's own `Sid`. Scene
+nodes, state cells and handlers found under the same key are taken over
+(nodes keep their ids, cells are reparented, unchanged handlers keep
+their tasks); whatever is left is disposed with the old root. This reuses
+the mount code instead of a second, diff-driven mounter, and makes
+"identity by source span, then key/id, then position" a property of the
+keys alone. The scene diff is then computed from what render shows
+(`Emitter::reduce`): only changed props (with their own transitions, so
+a patch animates from the current value), moves, creates and removes.
+A random-edit test over the design's shells checks every reload lands on
+the scene and token table of a cold boot (`crates/strand-compiler/tests/
+reload.rs::random_edits_land_on_a_cold_boot`, 10,000 edits run once).
+
+**2026-10-05 · Surfaces share one identity label.** `bar Top` edited to
+`panel Top` keeps its `Sid` (its state and its children's identities);
+the scene node is new because the kind changed. A kept surface whose
+`layer` or `name` (namespace) changed gets a new scene id in the reduced
+diff, its kept children moved under it and the old node removed after:
+the compositor cannot move a layer surface between layers, and render's
+`needs_recreate` already recreates on those, so the diff says what
+happens. This is design.md's "only that surface is recreated".
+
+**2026-10-05 · The loader compiles the whole program per batch.** The
+checker is whole-program (names are global across files), so "changed
+modules and their dependents" is every module; checking a config takes
+milliseconds, on the `strand-compile` thread. The largest consistent set
+is found by holding back changed files with errors of their own first,
+then the changed file whose absence clears most errors (64 compiles per
+batch at most). The cache keeps the last good *sources* (manifest keyed by
+the sources' hashes, `COMPILER_VERSION` and `Schema::fingerprint()`),
+recompiled at boot: the lowered program has no serialised form, and a
+recompile of known-good sources costs what a boot costs anyway.
+
+**2026-10-05 · The kept-value notice quotes text.** design.md's
+`launcher.query: kept "fir" (default changed) [reset]` shows a text value
+quoted; other values use the VM's `show`. The boot notice of a persisted
+cell kept over a changed default uses the same line.
+
+**2026-10-05 · A parked bar's cells survive a reload.** A bar parked by
+an unplug is not mounted by the new program; its cells move to a pending
+table with the program that made them (values are translated between
+programs' type tables by name), and the bar takes them when its monitor
+returns, or they go with `forget_screen`.
+
+**2026-10-05 · Runtime faults: frozen and outlined.** `Instance::freeze`
+suspends the faulting component's scope (as before) and forces a 2 px
+`border` of `#e5484d` on its top scene nodes (the failing node for a
+fault at the config's top level); `thaw` restores the border it had. The
+`strand run` logic thread freezes every runtime error's component as it
+is reported; a reload's new tree never carries the outline, so the
+fixing save clears it.
+
+**2026-10-05 · The error overlay is made of external nodes.** The
+overlay belongs to no `.strand` file, but it must share the instance's
+scene ids and its one diff per tick. `Instance::external_create` makes
+nodes in the emitter's id space that reloads (hard ones too) leave alone.
+It is a `panel` named `StrandErrors` (namespace `strand-StrandErrors`),
+overlay layer, anchored top, 960 px wide, rows placed with `x`/`y` until
+layout lands (M2). Errors must stand 250 ms with no newer load to open
+it; a dismissed overlay stays closed until the diagnostics change; a
+load without errors closes it. A click on a row opens the editor:
+`$STRAND_EDITOR` as a template (`{file}`, `{line}`, `{col}`) if set,
+else `$VISUAL`/`$EDITOR` as `<editor> +<line> <file>` (the convention
+vi, emacs, nano, micro and kakoune share), else `xdg-open <file>`.
+
+**2026-10-05 · The IPC protocol.** One socket per Wayland display
+(`$XDG_RUNTIME_DIR/strand-<display>.sock`, `$STRAND_SOCKET` overrides),
+JSON lines, versioned (`"v": 1`), one answer per request, unknown
+commands refused without closing the connection: M5 adds `get`, `set`,
+`toggle` and `call` as new commands. `reload` answers when its reload
+is done, with the event, so `strand reload` can print what happened. The
+server is a set of non-blocking sources on the logic loop; a watcher
+that stops reading is dropped at 1 MiB queued. A live socket is never
+replaced (a second `strand run` on the same display runs without IPC
+and says so); a stale one is.
+
+**2026-10-05 · Pointer input goes to the node under the pointer.**
+`Renderer::hit` answers from the last painted frame's node records (ink
+bounds), deepest first. `hover` is set on the whole chain from that
+node to the surface (a row is hovered while its child is), `pressed` on
+the chain under a left press, which also latches `hover` there until the
+release (a drag); `click`/`secondary`/`scroll` go to the innermost node
+and logic bubbles them to the nearest handler. Containers without paint
+are reached through their children until taffy gives them boxes (M2).
+
+**2026-10-05 · Reload timing.** A reload event's `total_ms` runs from
+the watcher's last event behind the save to the moment the diff that
+holds the reload is sent to render; render's frame adds at most one
+frame interval. The save-to-pixels benchmark (M1 exit) builds on it.

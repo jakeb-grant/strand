@@ -719,3 +719,224 @@ fn strand_run_keeps_a_replugged_monitors_bar() {
         .collect();
     assert!(errors.is_empty(), "{errors:?}");
 }
+
+/// `strand watch --json`'s events, read on a thread of their own.
+struct Watch {
+    _child: Proc,
+    events: std::sync::mpsc::Receiver<serde_json::Value>,
+}
+
+impl Watch {
+    fn start(sway: &Sway) -> Watch {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_strand"))
+            .args(["watch", "--json"])
+            .env("XDG_RUNTIME_DIR", &sway.dir)
+            .env("WAYLAND_DISPLAY", &sway.display)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let out = child.stdout.take().unwrap();
+        let (tx, events) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for line in std::io::BufReader::new(out).lines() {
+                let Ok(line) = line else { return };
+                if let Ok(v) = serde_json::from_str(&line)
+                    && tx.send(v).is_err()
+                {
+                    return;
+                }
+            }
+        });
+        Watch {
+            _child: Proc(child),
+            events,
+        }
+    }
+
+    /// The next reload event (20 s at most).
+    fn next(&self) -> serde_json::Value {
+        loop {
+            let ev = self
+                .events
+                .recv_timeout(Duration::from_secs(20))
+                .expect("no reload event");
+            if ev["event"] == "reload" {
+                return ev;
+            }
+        }
+    }
+}
+
+/// Save `text` to `path` the way editors with atomic saves do: a
+/// temporary file renamed over it.
+fn save(path: &Path, text: &str) {
+    let tmp = path.with_extension("strand.tmp~");
+    std::fs::write(&tmp, text).unwrap();
+    std::fs::rename(&tmp, path).unwrap();
+}
+
+/// The acceptance run of live reload (M1): the hello bar from a config
+/// directory, then a token edit, a prop edit, a node added and removed,
+/// and a broken save then its fix, each reloaded live with the bar's
+/// state kept (its click count keeps it 40 px tall; a fresh bar is 32
+/// px), checked through `strand watch --json` and with grim's pixels.
+/// The broken save keeps the last good bar on screen and opens the error
+/// overlay; the fix closes it. `strand reload` answers once its reload is
+/// done.
+#[test]
+fn strand_run_reloads_live_with_state_kept() {
+    let Some(sway) = Sway::start_as("live") else {
+        return;
+    };
+    let config = sway.dir.join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    let file = config.join("bar.strand");
+    let hello = |bg_token: &str, bg_prop: &str, extra: &str| {
+        format!(
+            "tokens base {{ bar.bg: {bg_token} }}\n\
+             bar Top {{\n\
+             \x20 state n = 0\n\
+             \x20 edge: top; height: n > 0 ? 40 : 32\n\
+             \x20 bg: {bg_prop}\n\
+             \x20 on click {{ n += 1 }}\n\
+             \x20 split {{\n\
+             \x20   start  {{ text windows.focused?.title ?? \"\" }}\n\
+             \x20   center {{ text clock.format(\"%H:%M\") }}\n\
+             \x20   end    {{ text pct(battery.percent) }}\n\
+             {extra}\
+             \x20 }}\n\
+             }}\n"
+        )
+    };
+    std::fs::write(&file, hello("#204080", "$bar.bg", "")).unwrap();
+    let log = sway.dir.join("strand.log");
+    let child = Command::new(env!("CARGO_BIN_EXE_strand"))
+        .arg("run")
+        .arg(&config)
+        .env("XDG_RUNTIME_DIR", &sway.dir)
+        .env("XDG_CACHE_HOME", sway.dir.join("cache"))
+        .env("XDG_STATE_HOME", sway.dir.join("state"))
+        .env("WAYLAND_DISPLAY", &sway.display)
+        .env("STRAND_LOG", "damage,info")
+        .stdin(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .spawn()
+        .unwrap();
+    let mut strand = Proc(child);
+    let text = || std::fs::read_to_string(&log).unwrap_or_default();
+    let damage_count = || damage_lines(&log).len();
+    let damage_after = |from: usize, buffer: &str| {
+        damage_lines(&log)
+            .iter()
+            .skip(from)
+            .any(|l| l.contains(buffer))
+    };
+    let wait = |strand: &mut Proc, what: &str, done: &dyn Fn() -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !done() {
+            assert!(
+                strand.0.try_wait().unwrap().is_none(),
+                "strand exited: {}",
+                text()
+            );
+            assert!(Instant::now() < deadline, "no {what}: {}", text());
+            std::thread::sleep(Duration::from_millis(30));
+        }
+    };
+    wait(&mut strand, "the bar", &|| {
+        damage_after(0, "buffer=2560x32 ")
+    });
+    // The bar's colour, away from its text.
+    let bg = |sway: &Sway| Shot::take(sway, "HEADLESS-1").px(1800, 1);
+    let settle = || std::thread::sleep(Duration::from_millis(400));
+    settle();
+    assert_eq!(bg(&sway), [0x20, 0x40, 0x80]);
+    // A click: n = 1, the bar grows to 40 px.
+    let mut pointer = pointer::Pointer::new(&sway.dir.join(&sway.display));
+    std::thread::sleep(Duration::from_millis(300));
+    pointer.click(1800, 10, 2560, 1440);
+    wait(&mut strand, "the click", &|| {
+        damage_after(0, "buffer=2560x40 ")
+    });
+    let watch = Watch::start(&sway);
+    // Give the watcher's connection a moment to be accepted.
+    std::thread::sleep(Duration::from_millis(300));
+    let mark = damage_count();
+    let fresh = |from: usize| damage_after(from, "buffer=2560x32 ");
+
+    // 1. A token edit: the table swaps, the bar keeps its state.
+    save(&file, &hello("#208040", "$bar.bg", ""));
+    let ev = watch.next();
+    assert_eq!(ev["classes"], serde_json::json!(["token"]), "{ev}");
+    settle();
+    assert_eq!(bg(&sway), [0x20, 0x80, 0x40]);
+
+    // 2. A prop edit: patched in place.
+    save(&file, &hello("#208040", "#802020", ""));
+    let ev = watch.next();
+    assert_eq!(ev["classes"], serde_json::json!(["prop"]), "{ev}");
+    settle();
+    assert_eq!(bg(&sway), [0x80, 0x20, 0x20]);
+
+    // 3. A node added, then removed.
+    let added = "    end { text \"added\" }\n";
+    save(&file, &hello("#208040", "#802020", added));
+    let ev = watch.next();
+    assert_eq!(ev["classes"], serde_json::json!(["node-added"]), "{ev}");
+    save(&file, &hello("#208040", "#802020", ""));
+    let ev = watch.next();
+    assert_eq!(ev["classes"], serde_json::json!(["node-removed"]), "{ev}");
+
+    // 4. Broken: held back, the last good bar stays; after 250 ms the
+    // overlay (a 960 px wide panel) opens.
+    let surfaces_before = text().matches("surface ").count();
+    save(&file, &hello("#208040", "#802020", "    txet \"oops\"\n"));
+    let ev = watch.next();
+    assert_eq!(ev["held"].as_array().map(Vec::len), Some(1), "{ev}");
+    let diags = ev["diagnostics"].as_array().unwrap();
+    assert!(
+        diags
+            .iter()
+            .any(|d| d["severity"] == "error" && d["help"] == "did you mean `text`?"),
+        "{ev}"
+    );
+    wait(&mut strand, "the overlay", &|| {
+        damage_lines(&log).iter().any(|l| l.contains("buffer=960x"))
+    });
+    settle();
+    assert_eq!(bg(&sway), [0x80, 0x20, 0x20], "the last good bar runs");
+
+    // 5. Fixed: committed, the overlay goes.
+    save(&file, &hello("#208040", "#802020", "    text \"fixed\"\n"));
+    let ev = watch.next();
+    assert_eq!(ev["held"], serde_json::json!([]), "{ev}");
+    assert_eq!(ev["classes"], serde_json::json!(["node-added"]), "{ev}");
+    wait(&mut strand, "the overlay to close", &|| {
+        text().matches(" detached").count() >= 1
+    });
+    assert!(text().matches("surface ").count() > surfaces_before);
+
+    // Through it all the bar kept n: never 32 px again.
+    assert!(!fresh(mark), "a reload reset the bar: {}", text());
+    // `strand reload` answers once its reload is done.
+    let out = Command::new(env!("CARGO_BIN_EXE_strand"))
+        .arg("reload")
+        .env("XDG_RUNTIME_DIR", &sway.dir)
+        .env("WAYLAND_DISPLAY", &sway.display)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).starts_with("reload ("));
+    let errors: Vec<String> = text()
+        .lines()
+        .filter(|l| l.contains("ERROR"))
+        .map(String::from)
+        .collect();
+    assert!(errors.is_empty(), "{errors:?}");
+}

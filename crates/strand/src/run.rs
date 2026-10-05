@@ -920,7 +920,16 @@ mod tests {
             while !done(&self.scene) {
                 let left = deadline.saturating_duration_since(Instant::now());
                 match self.inbox.recv_timeout(left) {
-                    Ok(diff) => self.scene.apply(&diff).unwrap(),
+                    Ok(diff) => {
+                        let had = !self.scene.roots().is_empty();
+                        self.scene.apply(&diff).unwrap();
+                        // No blank frame: once something shows, a diff
+                        // never leaves nothing.
+                        assert!(
+                            !had || !self.scene.roots().is_empty(),
+                            "{what}: a blank frame"
+                        );
+                    }
                     Err(_) => panic!("{what}:\n{}", self.scene.render()),
                 }
             }
@@ -1145,6 +1154,166 @@ mod tests {
         assert_eq!(t.join().unwrap(), Ok(()));
         drop(compiler);
         assert!(!socket.exists(), "the socket is removed at exit");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The scene as text with surfaces in a fixed order.
+    fn canonical(scene: &SceneMirror) -> String {
+        let mut blocks: Vec<String> = Vec::new();
+        for line in scene.render().lines() {
+            if !line.starts_with(' ') || blocks.is_empty() {
+                blocks.push(String::new());
+            }
+            if let Some(b) = blocks.last_mut() {
+                b.push_str(line);
+                b.push('\n');
+            }
+        }
+        blocks.sort();
+        blocks.concat()
+    }
+
+    /// What a cold boot of `dir` shows (on one monitor `A`).
+    fn cold_boot(dir: &Path) -> String {
+        let out = load(dir);
+        let build = out.build.unwrap();
+        let rt = Runtime::new();
+        let host = Rc::new(SchemaHost::real(&rt, &build.program.types));
+        set_screens(&rt, &host, &[screen("A", "DP-1")]);
+        let inst = Instance::from_build(&rt, &build, host, Storage::none());
+        let mut m = SceneMirror::new();
+        m.apply(&inst.flush().diff).unwrap();
+        canonical(&m)
+    }
+
+    /// The reload fuzzer at the process level: random valid edits of a
+    /// two-file config, each saved in one of five editor styles (in
+    /// place, rename over, backup-then-rename, delete-then-create, a
+    /// symlink swapped to a new target), go through the real watcher and
+    /// compiler worker; after each the running scene equals a cold boot
+    /// of the same files, and no diff ever blanks it.
+    #[test]
+    fn five_save_styles_land_on_a_cold_boot() {
+        let dir = temp_dir("styles");
+        let store = dir.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        let config = dir.join("config");
+        std::fs::create_dir_all(&config).unwrap();
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut rnd = |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        // Valid variants of each file, chosen at random.
+        let bar = |r: &mut dyn FnMut(u64) -> u64| -> String {
+            let mut s = String::from("bar Top {\n  state n = ");
+            s.push_str(&r(5).to_string());
+            s.push_str("\n  height: ");
+            s.push_str(&(24 + r(3) * 8).to_string());
+            s.push('\n');
+            if r(2) == 0 {
+                s.push_str("  opacity: 0.");
+                s.push_str(&(1 + r(9)).to_string());
+                s.push('\n');
+            }
+            s.push_str("  row {\n");
+            for i in 0..r(4) {
+                s.push_str(&format!("    text join(\" \", theme.label, n, {i})\n"));
+            }
+            if r(2) == 0 {
+                s.push_str("    Pill\n");
+            }
+            s.push_str("  }\n}\n");
+            s
+        };
+        let theme = |r: &mut dyn FnMut(u64) -> u64| -> String {
+            format!(
+                "export let label = \"v{}\"\ntokens base {{ pill.gap: {}px }}\ncomponent Pill {{\n  state on = false\n  box {{ width: {}; on click {{ on = !on }} }}\n}}\n",
+                r(7),
+                r(9),
+                10 + r(5)
+            )
+        };
+        let bar_path = config.join("bar.strand");
+        let theme_path = config.join("theme.strand");
+        let first_bar = bar(&mut rnd);
+        std::fs::write(&bar_path, &first_bar).unwrap();
+        // theme.strand is a link into the store, as home-manager makes it.
+        let mut version = 0;
+        let target = store.join(format!("theme-{version}.strand"));
+        std::fs::write(&target, theme(&mut rnd)).unwrap();
+        std::os::unix::fs::symlink(&target, &theme_path).unwrap();
+        let (wtx, wrx) = calloop::channel::channel();
+        let (compiler, boot) = Worker::spawn(&config, None, wtx).unwrap();
+        let live = Live {
+            worker: Some(wrx),
+            jobs: Some(compiler.jobs()),
+            socket: None,
+        };
+        let (to_logic, from_main) = calloop::channel::channel();
+        let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+        to_logic
+            .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+            .unwrap();
+        let t = std::thread::spawn(move || logic(boot, Storage::none(), from_main, tx, live));
+        let mut m = Mirror::new(rx);
+        let expect = cold_boot(&config);
+        m.until("the boot", |s| canonical(s) == expect);
+        let rounds = std::env::var("STRAND_SAVE_FUZZ")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(25);
+        for round in 0..rounds {
+            let which = rnd(2);
+            let style = round % 5;
+            let (path, text) = if which == 0 {
+                (bar_path.clone(), bar(&mut rnd))
+            } else {
+                (theme_path.clone(), theme(&mut rnd))
+            };
+            match style {
+                // In place: truncate and write.
+                0 => std::fs::write(&path, &text).unwrap(),
+                // Rename over (Helix, VS Code's atomic save).
+                1 => {
+                    let tmp = config.join(".tmp-save");
+                    std::fs::write(&tmp, &text).unwrap();
+                    std::fs::rename(&tmp, &path).unwrap();
+                }
+                // Backup then rename (Vim's backupcopy=no).
+                2 => {
+                    let backup = path.with_extension("strand~");
+                    std::fs::rename(&path, &backup).unwrap();
+                    std::fs::write(&path, &text).unwrap();
+                    std::fs::remove_file(&backup).unwrap();
+                }
+                // Delete, then create.
+                3 => {
+                    std::fs::remove_file(&path).unwrap();
+                    std::thread::sleep(Duration::from_millis(5));
+                    std::fs::write(&path, &text).unwrap();
+                }
+                // A symlink swapped to a new target.
+                _ => {
+                    version += 1;
+                    let target = store.join(format!("v{version}.strand"));
+                    std::fs::write(&target, &text).unwrap();
+                    let link = config.join(".link-tmp");
+                    let _ = std::fs::remove_file(&link);
+                    std::os::unix::fs::symlink(&target, &link).unwrap();
+                    std::fs::rename(&link, &path).unwrap();
+                }
+            }
+            let expect = cold_boot(&config);
+            m.until(&format!("round {round} (style {style})"), |s| {
+                canonical(s) == expect
+            });
+        }
+        to_logic.send(ToLogic::Shutdown).unwrap();
+        assert_eq!(t.join().unwrap(), Ok(()));
+        drop(compiler);
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -744,8 +744,12 @@ impl Instance {
             None => Vec::new(),
         };
         let host = old.vm.host.clone();
+        // Only custom services whose declaration changed (or that are
+        // new) restart.
         for (name, record) in build.program.services.values() {
-            host.declare(&rt, name, *record);
+            if changed_services.contains(name) {
+                host.restart(&rt, name, *record, &build.program.types);
+            }
         }
         let em = Emitter::continuing(&old.em.borrow());
         let ctx = Ctx::create(
@@ -896,8 +900,14 @@ impl Instance {
             let old = self.ctx.em.borrow();
             prior.extend(em.drop_all(&old));
         }
+        let changed = match &self.ctx.hashes {
+            Some(h) => build.hashes.changed_services(h),
+            None => Vec::new(),
+        };
         for (name, record) in build.program.services.values() {
-            host.declare(&self.rt, name, *record);
+            if changed.contains(name) {
+                host.restart(&self.rt, name, *record, &build.program.types);
+            }
         }
         let ctx = Ctx::create(
             Vm::new(build.program.clone(), host),

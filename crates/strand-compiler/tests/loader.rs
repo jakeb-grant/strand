@@ -138,3 +138,28 @@ fn a_config_broken_at_boot_runs_its_last_good_version() {
     assert_eq!(out.held, [clock]);
     let _ = std::fs::remove_dir_all(d);
 }
+
+/// The cache is keyed by the sources' hashes, the compiler version and
+/// the schema hash: a schema with one more service extension does not
+/// boot from what was cached against the builtin one.
+#[test]
+fn the_cache_follows_the_schema() {
+    let d = dir("schema");
+    write(&d, "bar.strand", BAR);
+    write(&d, "clock.strand", CLOCK);
+    let cache = d.join("cache");
+    let root = d.join("conf");
+    let c = strand_compiler::reconcile::loader::Cache::new(&cache, &root);
+    {
+        let mut l = Loader::new(&root, Schema::builtin().clone(), Some(cache.clone()));
+        assert!(l.boot().build.is_some());
+    }
+    assert!(c.load(Schema::builtin()).is_some());
+    let mut other = Schema::builtin().clone();
+    other
+        .extend("service extra_test_service { level: float }")
+        .unwrap();
+    assert_ne!(other.fingerprint(), Schema::builtin().fingerprint());
+    assert!(c.load(&other).is_none(), "cached against another schema");
+    let _ = std::fs::remove_dir_all(d);
+}

@@ -696,6 +696,8 @@ fn random_edits_land_on_a_cold_boot() {
         shell.inst.reload(&build);
         shell.build = build;
         shell.flush();
+        // No blank frame: the bars are still there.
+        assert!(!shell.scene.roots().is_empty(), "a blank frame");
         files = next;
         committed += 1;
         shell.assert_cold_boot_on(&as_refs(&files), desktop);
@@ -782,4 +784,23 @@ fn external_nodes_survive_reloads() {
         shell.scene.of_kind(NodeKind::Panel),
         Vec::<strand_scene::NodeId>::new()
     );
+}
+
+/// A custom service whose declaration changed is reported (only it
+/// restarts; the rest of the shell, and its state, stay).
+#[test]
+fn a_changed_service_declaration_restarts_only_it() {
+    let src = |field: &str| {
+        format!(
+            "service ppd from dbus system \"net.hadess.PowerProfiles\" {{ {field}: text rw = ActiveProfile }}\nstate n = 0\nbar Top {{ text join(\" \", ppd.{field} ?? \"\", n) }}\n"
+        )
+    };
+    let mut shell = boot(&[("t.strand", &src("profile"))]);
+    shell.inst.set_value("t", "n", Value::int(3)).unwrap();
+    shell.flush();
+    let (report, _) = shell.reload(&[("t.strand", &src("mode"))]);
+    assert!(report.classes.contains(&EditClass::Service), "{report:?}");
+    assert_eq!(shell.value("t", "n"), Value::int(3));
+    let (report, _) = shell.reload(&[("t.strand", &src("mode").replace("= 0", "= 0 "))]);
+    assert!(!report.classes.contains(&EditClass::Service), "{report:?}");
 }

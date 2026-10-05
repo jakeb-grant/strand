@@ -100,6 +100,18 @@ impl std::fmt::Debug for SchemaHost {
     }
 }
 
+/// A list of keyed records of `types` is published as a keyed
+/// collection: its key path.
+fn list_key(types: &TypeTable, ty: &Ty) -> Option<Option<Vec<String>>> {
+    let Ty::List(item, true) = ty else {
+        return None;
+    };
+    match &**item {
+        Ty::Record(r) => types.records.get(r.0 as usize)?.key.clone().map(Some),
+        _ => None,
+    }
+}
+
 fn fail(msg: impl Into<String>) -> Error {
     Error::failed(msg.into())
 }
@@ -142,20 +154,28 @@ impl SchemaHost {
     }
 
     fn add_service(&self, rt: &Runtime, name: &str, r: RecordId) {
-        let def = self.types.record(r).clone();
+        let types = self.types.clone();
+        self.add_service_in(rt, name, r, &types);
+    }
+
+    /// [`SchemaHost::add_service`] for a record of `types`.
+    fn add_service_in(&self, rt: &Runtime, name: &str, r: RecordId, types: &Rc<TypeTable>) {
+        let Some(def) = types.records.get(r.0 as usize).cloned() else {
+            return;
+        };
         // Created with no owner, so a service outlives whatever first read
         // it.
         rt.untrack(|rt| {
             for f in &def.fields {
-                let field = match self.list_key(&f.ty) {
+                let field = match list_key(types, &f.ty) {
                     Some(path) => {
-                        let k = rt.keyed(keyed_vec(self.types.clone(), |t| &**t, path));
+                        let k = rt.keyed(keyed_vec(types.clone(), |t| &**t, path));
                         rt.set_name(k.id(), format!("{name}.{}", f.name));
                         let list = rt.memo(move |rt| k.with(rt, list_of));
                         Field::Keyed(k, list)
                     }
                     None => {
-                        let s = rt.signal(default_of(&self.types, &f.ty));
+                        let s = rt.signal(default_of(types, &f.ty));
                         rt.set_name(s.id(), format!("{name}.{}", f.name));
                         Field::Plain(s)
                     }
@@ -172,18 +192,6 @@ impl SchemaHost {
             }
         });
         self.services.borrow_mut().insert(name.to_string(), r);
-    }
-
-    /// A list of keyed records is published as a keyed collection: its
-    /// key path.
-    fn list_key(&self, ty: &Ty) -> Option<Option<Vec<String>>> {
-        let Ty::List(item, true) = ty else {
-            return None;
-        };
-        match &**item {
-            Ty::Record(r) => self.types.record(*r).key.clone().map(Some),
-            _ => None,
-        }
     }
 
     pub fn types(&self) -> &TypeTable {
@@ -458,6 +466,32 @@ impl ServiceHost for SchemaHost {
         if !self.services.borrow().contains_key(name) {
             self.add_service(rt, name, record);
         }
+    }
+
+    fn restart(&self, rt: &Runtime, name: &str, record: RecordId, types: &TypeTable) {
+        // Its old cells go (nobody reads them after the reload); the new
+        // declaration's fields start at their defaults.
+        let old: Vec<(String, String)> = self
+            .fields
+            .borrow()
+            .keys()
+            .filter(|(s, _)| s == name)
+            .cloned()
+            .collect();
+        for k in old {
+            if let Some(f) = self.fields.borrow_mut().remove(&k) {
+                match f {
+                    Field::Plain(s) => rt.dispose(s.id()),
+                    Field::Keyed(k, l) => {
+                        rt.dispose(l.id());
+                        rt.dispose(k.id());
+                    }
+                }
+            }
+        }
+        self.events.borrow_mut().retain(|(s, _), _| s != name);
+        let types = Rc::new(types.clone());
+        self.add_service_in(rt, name, record, &types);
     }
 
     fn read(&self, rt: &Runtime, service: &str, field: &str) -> Result<Value, Error> {
