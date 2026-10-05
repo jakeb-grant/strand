@@ -19,11 +19,13 @@ or more, `( … )` grouping, `|` alternatives. Upper-case names (`IDENT`,
 `NUMBER`, …) are tokens. `kw:name` is an identifier token whose text is
 `name` used as a keyword (see "Keywords are contextual").
 
-Two pseudo-tokens describe line structure (see "Lines and termination"):
+Three pseudo-tokens describe line structure (see "Lines and termination"):
 
 - `SAME_LINE` asserts that the next token is on the same line as the previous
   one. It consumes nothing.
 - `SEP` is an item separator: one or more `;`, or a line break.
+- `TOUCH` asserts that the next token directly follows the previous one,
+  with no whitespace or comment between them.
 
 ## Lexical structure
 
@@ -181,7 +183,7 @@ in full:
 ```
 file      = SEP? ( top_item ( SEP top_item )* )? SEP? EOF
 top_item  = attribute* top_decl
-attribute = AT ( '(' args? ')' )?            // @reset
+attribute = AT ( TOUCH '(' args? ')' )?      // @reset
 top_decl  = component | surface | state | let | export | enum_decl | type_decl
           | fn_decl | tokens_decl | use_decl | service | permit | keyframes
           | on_handler | timer
@@ -233,7 +235,7 @@ state  = kw:state IDENT ( ':' type )? ( SAME_LINE kw:key expr )? '=' expr ( SAME
        | kw:state IDENT kw:from STRING field_block
 let    = kw:let IDENT ( ':' type )? '=' expr
 field_block = '{' SEP? ( field ( SEP field )* )? SEP? '}'
-field  = IDENT ':' type ( SAME_LINE kw:rw )? ( '=' expr )?
+field  = IDENT ':' type ( SAME_LINE kw:rw )? ( SAME_LINE '=' expr )?
 ```
 
 ```
@@ -470,7 +472,9 @@ svg "icon.svg" { #needle { rotate: level * 270deg } }
 ```
 
 `on change` takes one or more watched expressions; the comma separates them,
-so they end before `after` or `{`. Timers and `on` handlers are allowed at
+so they end before `after` or `{`. `change` directly followed by `(` or `{`
+is an ordinary event name (`on change(x) { … }` declares a parameter), so
+the watched expressions are never wrapped in parentheses. Timers and `on` handlers are allowed at
 the top level (the OSD example) and in tree blocks.
 
 ## Handler blocks
@@ -482,7 +486,7 @@ stmt_block = '{' SEP? ( stmt ( SEP stmt )* )? SEP? '}'
 stmt  = let
       | kw:if expr stmt_block ( kw:else ( stmt_if | stmt_block ) )?
       | kw:match expr '{' SEP? ( stmt_arm ( ( ',' | SEP ) stmt_arm )* ','? )? SEP? '}'
-      | kw:for IDENT kw:in expr stmt_block
+      | kw:for IDENT kw:in expr ( SAME_LINE kw:key expr )? stmt_block
       | play
       | expr ( assign_op expr )?
 stmt_arm  = pattern '=>' ( stmt_block | stmt )
@@ -581,7 +585,7 @@ plain identifiers; the checker resolves them by expected type.
 ## Types, patterns, parameters
 
 ```
-type    = type_atom '?'*
+type    = type_atom ( TOUCH '?' )*
 type_atom = '[' type ']'                      // [Pin]
           | IDENT ( '.' IDENT )* ( '<' type ( ',' type )* '>' )?   // Async<[Hit]>
 pattern = IDENT ( '.' IDENT )*                // a variant, or `_`

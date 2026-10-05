@@ -32,24 +32,24 @@ Exit: [ ] ≤34 MB PSS on 2 monitors · [ ] no wakeups between minute ticks ·
 Exit: [ ] 10k random edits with no panic or blank frame · [ ] under 50 ms from save to pixels
 
 Language (`docs/grammar.md`):
-- [ ] Lexer: snake_case idents, `$token.path`, numbers with units (`px`, `%`, `deg`, `ch`, `s`, `ms`), hex colours, strings, comments
-- [ ] One call shape `kind [positional] { props; children }`; props end at `;` or newline; comma shorthands
-- [ ] Surfaces: `bar`, `panel`, `osd`, `popup`, `lock`; `screens:`; `bar` on every monitor with `screen` in scope
-- [ ] `component Name(params with defaults)` + `slot`; component `tokens { }` block
-- [ ] `state` / `state … persist` / `state x from "file.toml" { typed fields }` / `let` / `export`
-- [ ] `enum`, `type` (records), keyed collections `state xs: [T] key f = []`
-- [ ] `when cond { props }`; `hover`, `pressed`, `focused`, `selected`; `id:` and `other.hover`; later `when` wins
-- [ ] `if`/`else`, `match`, `for x in xs [key e]`; plain data without a key is an error
-- [ ] `enter {}` / `exit {}` poses; exit mirrors enter
-- [ ] Events: `on click`, `on secondary`, `on scroll(dy)`, `on show`, `on activate`, `on drop(p: T, at: int)`, `on change a, b [after T]`, `on notifications.received(n)`
-- [ ] Timers: `after T while cond { }`, `every T while cond { }`
-- [ ] Two-way binding `prop: <-> target`
-- [ ] Expressions: `?.`, `??`, ternary, lambdas `x => e`, method calls, named args `f(months: -1)`, `match` expressions
-- [ ] Spring override `prop: value ~ $motion.bouncy | ~ 200ms | ~ instant | ~ ease(..) | ~ bezier(..)`
-- [ ] Token declarations: `tokens base { … }`, `extends`, `override`, `use tokens … , palette …`, `set { $x: … }`
-- [ ] `service x from dbus system "…" { field: type rw = Prop }`, `from file|listen|poll`, `permit exec`
-- [ ] `fn` (pure), `keyframes`, `shader "x.wgsl" { uniforms }`, `canvas { draw: … }`
-- [ ] Parser recovery: never panics; every error has file, line, caret, label
+- [x] Lexer: snake_case idents, `$token.path`, numbers with units (`px`, `%`, `deg`, `ch`, `s`, `ms`), hex colours, strings, comments — `crates/strand-compiler/src/syntax/lexer.rs` (tests), `crates/strand-compiler/tests/fixtures.rs::fixtures_lex_losslessly`, `crates/strand-compiler/tests/grammar_rules.rs::literals_and_units`
+- [x] One call shape `kind [positional] { props; children }`; props end at `;` or newline; comma shorthands — `crates/strand-compiler/tests/grammar_rules.rs` (`positional_then_block`, `items_end_at_semicolons_and_line_breaks`, `commas_spaces_and_transitions_in_values`)
+- [ ] Surfaces: `bar`, `panel`, `osd`, `popup`, `lock`; `screens:`; `bar` on every monitor with `screen` in scope (syntax done: `crates/strand-compiler/tests/fixtures.rs`; per-monitor runtime pending)
+- [ ] `component Name(params with defaults)` + `slot`; component `tokens { }` block (syntax done: `crates/strand-compiler/tests/fixtures.rs` (`snippets.strand`); slot rendering and `$Name.token` resolution pending)
+- [ ] `state` / `state … persist` / `state x from "file.toml" { typed fields }` / `let` / `export` (syntax done: `crates/strand-compiler/tests/fixtures.rs` (`theme.strand`, `toasts.strand`); storage and export paths pending)
+- [x] `enum`, `type` (records), keyed collections `state xs: [T] key f = []` — `crates/strand-compiler/tests/grammar_rules.rs::types`, `crates/strand-compiler/tests/fixtures.rs` (`snippets.strand`, `osd.strand`)
+- [ ] `when cond { props }`; `hover`, `pressed`, `focused`, `selected`; `id:` and `other.hover`; later `when` wins (syntax done: `crates/strand-compiler/tests/fixtures.rs` (`bar.strand`); evaluation order pending)
+- [ ] `if`/`else`, `match`, `for x in xs [key e]`; plain data without a key is an error (syntax done: `crates/strand-compiler/tests/grammar_rules.rs`, `grammar_examples.strand`; missing-key error is the checker's)
+- [ ] `enter {}` / `exit {}` poses; exit mirrors enter (syntax done: `crates/strand-compiler/tests/fixtures.rs` (`toasts.strand`); mirroring is runtime)
+- [x] Events: `on click`, `on secondary`, `on scroll(dy)`, `on show`, `on activate`, `on drop(p: T, at: int)`, `on change a, b [after T]`, `on notifications.received(n)` — `crates/strand-compiler/tests/fixtures.rs` (`osd.strand`, `snippets.strand`), `crates/strand-compiler/tests/diagnostics.rs::did_you_mean_keywords`
+- [ ] Timers: `after T while cond { }`, `every T while cond { }` (syntax done: `crates/strand-compiler/tests/fixtures.rs` (`toasts.strand`, `snippets.strand`); pausing timers are runtime)
+- [ ] Two-way binding `prop: <-> target` (syntax done: `crates/strand-compiler/tests/grammar_rules.rs::commas_spaces_and_transitions_in_values`; writable-target check pending)
+- [x] Expressions: `?.`, `??`, ternary, lambdas `x => e`, method calls, named args `f(months: -1)`, `match` expressions — `crates/strand-compiler/tests/grammar_rules.rs` (`precedence`, `lambdas`, `named_and_from_arguments`, `match_arms_split_on_commas_or_lines`)
+- [x] Spring override `prop: value ~ $motion.bouncy | ~ 200ms | ~ instant | ~ ease(..) | ~ bezier(..)` — `crates/strand-compiler/tests/fixtures.rs` (`snippets.strand`), `crates/strand-compiler/tests/grammar_rules.rs::commas_spaces_and_transitions_in_values`
+- [x] Token declarations: `tokens base { … }`, `extends`, `override`, `use tokens … , palette …`, `set { $x: … }` — `crates/strand-compiler/tests/fixtures.rs` (`theme.strand`, `snippets.strand`), `crates/strand-compiler/tests/grammar_rules.rs::tokens_keys`
+- [x] `service x from dbus system "…" { field: type rw = Prop }`, `from file|listen|poll`, `permit exec` — `crates/strand-compiler/tests/fixtures.rs` (`grammar_examples.strand`, `snippets.strand`), `crates/strand-compiler/tests/diagnostics.rs::did_you_mean_keywords`
+- [ ] `fn` (pure), `keyframes`, `shader "x.wgsl" { uniforms }`, `canvas { draw: … }` (syntax done: `crates/strand-compiler/tests/fixtures.rs` (`grammar_examples.strand`, `snippets.strand`); purity check pending)
+- [x] Parser recovery: never panics; every error has file, line, caret, label — `crates/strand-compiler/tests/robustness.rs` (10,000 random edits, pathological nesting), `crates/strand-compiler/tests/diagnostics.rs`
 
 Checking and runtime:
 - [ ] Name resolution across files, no imports; `file.name` export paths
@@ -75,7 +75,7 @@ Live reload:
 - [ ] Edit table: token swap, prop patch animates, node add/remove poses, state default adoption rules, name/type change resets one cell, handler restart, timer rescale, surface recreate, service restart, lock deferral
 - [ ] Merkle hashes over handler reachability
 - [ ] Error overlay after 250 ms quiet; did-you-mean; click to `$EDITOR`; runtime fault freezes one component outlined red
-- [ ] `strand check`, `strand watch [--json]`, `strand reload [--hard]`, `@reset`
+- [ ] `strand check`, `strand watch [--json]`, `strand reload [--hard]`, `@reset` (`strand check` parses and reports: `crates/strand/src/check.rs` tests; `@reset` parses: `snippets.strand`; checker, watch, reload pending)
 - [ ] Basic LSP in `strand-dev`: diagnostics, completion after `$` `.` `<->`, hover, rename
 - [ ] Reload fuzzer: five save styles, cold-boot equivalence
 
