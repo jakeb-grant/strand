@@ -49,7 +49,8 @@ strand-scene      shared vocabulary: ids, geometry, colour, scene protocol, Pain
   |   strand-render ── strand-text
   strand-core ── strand-compiler ── strand-dev (LSP, inspector)
      ^
-     strand-services, strand-watch
+     strand-services ──> strand-watch (EventSink, CompositorEvent; portal follow;
+                                       strand-watch depends on no Strand crate)
 strand (binary) wires everything.
 ```
 
@@ -952,10 +953,96 @@ and the connection):
     on the same surface; `State::recreate_all()` for `strand reload
     --hard`.
 
-### `strand-services`, `strand-watch`
+### `strand-services`
 
-Specified when their milestones start (M3, M1). Both only produce writes and
-events into `strand-core`.
+Specified when M3 starts. It only produces writes and events into
+`strand-core`.
+
+### `strand-watch`
+
+Produces typed events, never parsed content; logic turns them into writes.
+It does not depend on `strand-compiler` or `strand-core`.
+
+- **One channel.** `strand_watch::channel() -> (EventSink, Receiver<
+  ChangeEvent>)`; `EventSink` is `Clone + Send` and
+  `.with_waker(Fn())` calls a waker after each send (a calloop `Ping` on
+  the logic loop). `ChangeEvent` is `Files(FileBatch)`,
+  `System(SystemBatch)` or `Compositor(CompositorEvent)`.
+- **Files.** `Watcher::spawn(Option<ConfigWatch>, Options, EventSink)`
+  runs the `strand-watch` thread (one thread: a raw inotify fd and a
+  control eventfd under `poll(2)`; with no inotify instance, everything
+  is polled).
+  `ConfigWatch { root, modules: ModuleSet { files, dirs }, rescan }` is
+  `source::find_files`'s `Discovery` (`files`, `dirs`) plus a
+  `FnMut() -> io::Result<ModuleSet>` the binary implements with
+  `find_files`; the watcher calls it when a `.strand` name, a directory
+  or a directory link appears or vanishes in a config directory, a
+  directory link on the way is swapped, the config directory itself is
+  replaced, or on a rescan. When `spawn` returns, every watch is in place
+  and every module file's baseline hash was read after its watch:
+  start the watcher, then load. The `modules` passed in were listed
+  before the watches existed, so the watcher lists the set once more at
+  the first quiet period and reports a module created in between as
+  `Created` (nothing when the set is unchanged). Referenced paths come
+  from the compiler: after each reload the loader calls
+  `set_referenced(impl IntoIterator<Item = impl Into<Referenced>>)`,
+  each item `(path, role)` or `(path, role, hash)` with `hash` the
+  `hash_bytes` of what the loader read, for every `(path,
+  Role::{Shader, Settings, Wallpaper, Other})` the program references;
+  it replaces all registrations, and a file that no longer holds the
+  bytes its `hash` names (saved between the read and the call) is
+  reported. `watch_file(path, role)` / `unwatch_file(path, role)` add or
+  drop one (counted per path and role); `watch_file` is register, then
+  read. Module-set membership is separate, so a
+  module file registered for another role stays a module. Neither a
+  referenced file nor its directory need exist yet. Cache sources come
+  through `watch_tree(dir, depth, CacheKind::{Apps, Icons, Fonts})`.
+  `register_own_write(path, hash_bytes(&bytes))` before Strand writes a
+  file (settings write-back) makes the matching write silent; the
+  registration is in place when it returns. Own writes must be atomic
+  (temporary file renamed over the path): an in-place write can be read
+  half done. Every ancestor of a watched directory holds a light watch
+  (moves and deletions of its children only), so moving any directory
+  on the way reports the files below as `Removed`.
+  `rescan()` is `strand reload`.
+- **`FileBatch { changes, rescan, notices, first_event, last_event }`.**
+  One batch per quiet period: 15 ms after the last completed write
+  (`CLOSE_WRITE`, `MOVED_TO`, a new symlink or hard link; 50 ms when the
+  latest event removed a watched file; at most 500 ms after the first
+  event). `changes` is sorted by path then role, each `FileChange {
+  path, canonical, kind: Created|Modified|Removed, hash:
+  Option<blake3::Hash>, role, error }`, one per role the path is watched
+  for; unchanged hashes and own writes are dropped before sending, so
+  every change is real. A `Modified` whose hash is unchanged means a
+  link now resolves elsewhere: skip the recompile, update the path.
+  `path` is the path as registered (module files as `find_files`
+  returned them, under the config root even when a directory link points
+  elsewhere); `canonical` is the resolved target. Only regular files are
+  hashed; anything else (a FIFO, a device) has `error:
+  Some(InvalidInput)`. Cache-tree entries are not hashed. `rescan` is
+  `Some(Overflow | Requested)` for a full rescan; `notices` reports
+  polled directories and rescan-callback failures. `first_event` and
+  `last_event` (`Instant`) let latency measurements subtract the quiet
+  period.
+- **System settings.** `strand_watch::follow(&zbus::Connection,
+  EventSink)` is the async portal client; `strand-services` runs it on
+  the shared tokio current-thread runtime and session connection.
+  `PortalSettings::spawn(Bus::Session, sink)` runs the same on its own
+  `strand-portal` thread and connection. It sends one `SystemBatch {
+  settings, at_boot: true, received }` within `BOOT_READ_TIMEOUT` (500
+  ms; empty when there is no portal; `on change` must not fire for it),
+  then one batch per `SettingChanged`, plus `at_boot: false` batches for
+  boot reads that came late and for a full re-read whenever the portal
+  starts or restarts: `SystemSetting::Dark { dark, scheme }`,
+  `Accent(Option<[f64; 3]>)`, `Contrast(Normal | High)`, each with
+  `.path()` = `system.dark` / `system.accent` / `system.contrast`.
+- **Compositor.** `CompositorEvent::ConfigReloaded { failed:
+  Option<bool> }` is `wm.config_reloaded` (`None` from Hyprland, which
+  does not say). The M3 Hyprland and niri adapters live in
+  `strand-services` (design.md's services table lists them) and send it
+  through a clone of the same `EventSink`, so `strand-services` depends
+  on `strand-watch` for `EventSink` and `CompositorEvent`; `strand-watch`
+  depends on neither `strand-services` nor `strand-core`.
 
 Settings files (fixed in wave 2 by `strand-core`): the watcher should not
 read a settings file twice or parse it on the logic thread. For each

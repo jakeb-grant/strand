@@ -1724,3 +1724,242 @@ sweep only matches `.<name>.tmp.<pid>.<n>`. `rt.is_idle()` is false while
 an IO thread's failure waits to be reported. `KeyedSignal::get_untracked`
 inside the collection's own `update` returns `Error::Reentrant` instead of
 panicking.
+
+## wave2-watch
+
+- **2026-10-05 · Raw inotify (rustix), not notify, and no debouncer.**
+  The spec allows raw inotify where notify cannot express the event set,
+  and notify 8.2 cannot: it always adds `IN_OPEN` and `IN_ATTRIB` to
+  every watch, so every open of any file in a watched directory by any
+  process (each font an app loads in a `watch_tree` font directory, every
+  read in `~/.config`, which is watched as the config root's parent)
+  would wake its thread and ours, against design.md's "an idle shell
+  does zero work". It also removes, on a watched directory's
+  `MOVED_FROM` or delete, every watch whose path starts with it, behind
+  the caller's back. `rustix::fs::inotify` (rustix is already a
+  dependency) with the mask `CLOSE_WRITE | MOVED_TO | MOVED_FROM |
+  CREATE | DELETE | DELETE_SELF | MOVE_SELF | MODIFY | ONLYDIR |
+  EXCL_UNLINK` queues nothing for reads (`reading_a_watched_file_queues_no_events`).
+  The watcher thread `poll(2)`s the inotify fd and an eventfd that control
+  calls write, so there is one thread and no wake-up without work. The
+  wd-to-path map lives with core, which decides when watches go.
+  `Q_OVERFLOW` is a full rescan; an `IGNORED` for a still-mapped
+  descriptor is a removal. If `inotify_init` fails
+  (`max_user_instances` reached, common with Electron apps), every
+  directory is polled and reported as `Polling { WatchFailed }` instead
+  of the watcher failing to start. The debouncer is not used: it
+  debounces per path on a tick, which cannot express "15 ms after the
+  last completed write across all files" (save all = one batch), and its
+  rename stitching is unneeded because the watcher never follows renames:
+  it marks the paths an event names and decides at the end of the quiet
+  period, by `lstat` and BLAKE3, what each one is now. Watches are
+  non-recursive, one per directory, so depth (3, from `find_files`) and
+  symlink handling stay ours.
+- **2026-10-05 · What counts as an event.** Acted on: `CLOSE_WRITE`,
+  `MOVED_TO`, and a `CREATE` that no `CLOSE_WRITE` will follow: a
+  symlink (`ln -s`), a hard link (`ln`, a regular file with more than
+  one link), or a FIFO, socket or device node. A `CREATE` or `MOVED_TO`
+  of a symlink to a directory in a config directory (GNU stow folding in
+  a sub-directory) rescans the module set. Removals (`DELETE`, `MOVED_FROM`, a watched directory
+  deleted or moved) mark a path for an existence check: a removal cannot
+  be half-written, and a module deleted for good must be reported.
+  `MODIFY` and a plain-file `CREATE` are never read; they only keep an
+  already-open batch waiting, so a slow multi-file save stays one batch.
+  A stream that never goes quiet is cut 500 ms after its first event.
+- **2026-10-05 · Removal grace 50 ms.** When the latest event on a
+  watched path was a removal the quiet period is 50 ms instead of 15, so
+  delete-and-create and Vim's rename-then-write are one `Modified`, never
+  `Removed` then `Created` (and never a missing-module error on the
+  reload overlay). Saves without a removal keep design.md's 15 ms.
+- **2026-10-05 · Scratch names.** design.md's `4913`, `*.swp`, `*~`,
+  `*___jb_*___`, plus `*.swo` and `*.swx` (Vim's next swap names when a
+  `.swp` exists). Hidden names are ignored in config and cache
+  directories, as `find_files` skips them; an explicitly watched hidden
+  file (`~/.wallpaper`) still works because explicit paths match exactly.
+  Other extensions in a config directory are not reported unless a path
+  is registered (`.wgsl` comes from the compiler's `shader "…"` paths).
+- **2026-10-05 · Symlinks hop by hop.** Each watched path is resolved one
+  component at a time; every symlink met (file or directory, up to 40)
+  is a hop, and the watcher watches each hop's directory plus the final
+  target's directory. An event on any hop re-resolves the file; a hop
+  that is a directory link of a module file, or of the config root, also
+  calls the module-set rescan. Watches are always on canonical
+  directories, so one inode is never watched under two paths. A link
+  swap whose new target has the same bytes is still reported as
+  `Modified` with the unchanged hash and the new `canonical`: design.md
+  counts a link swap as an edit, and the loader must stop pointing
+  diagnostics and click-to-`$EDITOR` at a store path that may be
+  garbage-collected; it skips the recompile by hash.
+- **2026-10-05 · Immutable stores are not watched.** A directory under
+  `/nix/store` or `/gnu/store` on a read-only mount cannot change in
+  place; home-manager's switch swaps the link, which the link's directory
+  sees. Other read-only mounts are watched (a read-only bind mount of a
+  writable tree still gets events), and a network or FUSE filesystem is
+  polled even when mounted read-only (the server's copy still changes):
+  the filesystem type is checked before the read-only flag. A polled
+  file that exists but cannot be opened is compared by `stat` stamp, as
+  it was stored, so it is not re-checked on every poll.
+- **2026-10-05 · Polling.** Directories on NFS, SMB/CIFS, 9p, Ceph, AFS,
+  Coda or FUSE (statfs magic), or whose inotify watch fails (limit
+  reached), are polled every second (`Options::poll_interval`): the
+  listing is compared (inode, size, times), and a watched file in the
+  directory is re-hashed only when its stamp changed. The stamp is taken
+  after an `open` (`O_NONBLOCK`) and `fstat`, which on NFS revalidates
+  the attribute cache (close-to-open consistency), so a stale cache does
+  not hide an edit and a 20 MB wallpaper on an NFS home is not re-read
+  every second. As a backstop, every 30 s (`Options::content_sweep`)
+  watched files up to 1 MiB (`Options::sweep_max_bytes`) are re-hashed
+  whatever their stamp; larger ones are compared by stamp only. FUSE is
+  polled because remote writes (sshfs, rclone) make no events. Each
+  polled directory is reported once as `Notice::Polling`; a polled
+  directory that exists but cannot be listed keeps its last listing and
+  is polled quietly instead of being dropped and re-added every poll.
+- **2026-10-05 · Cache trees are not hashed.** App, icon and font
+  directories report `Role::Cache(kind)` paths, `Modified` or `Removed`
+  by existence, with no hash: a font can be tens of MB and the cache
+  owner re-reads what it needs. A new sub-directory is watched up to the
+  tree's depth.
+- **2026-10-05 · Own writes.** `register_own_write(path, hash)` matches
+  the next completed write of that path (or of its resolved target) with
+  that hash, once; unmatched registrations expire after 10 s (pruned on
+  every registration and every batch). When a match is found, earlier
+  registrations for the same file are dropped too: Strand writing a file
+  several times in one quiet period (a slider) leaves only the last
+  content on disk, and the superseded hashes must not swallow a later
+  user save (an editor undo) with those bytes.
+- **2026-10-05 · Portal client.** zbus is built with its `tokio`
+  feature (the services runtime, design.md). The async core is
+  `strand_watch::follow(&Connection, EventSink)`, so `strand-services`
+  can host it on the shared current-thread runtime and session
+  connection; `PortalSettings::spawn` is a convenience that runs it on
+  its own thread and runtime (tests, or before services exist). It
+  subscribes to `SettingChanged` and to owner changes of
+  `org.freedesktop.portal.Desktop` before reading, so no change is lost
+  between them. The three keys are read concurrently (`ReadOne`, falling
+  back to `Read` for portal version 1, value wrapped in one more
+  variant), each under a 500 ms limit (`BOOT_READ_TIMEOUT`); connecting
+  and subscribing have a 2 s limit. The boot batch (`at_boot: true`) is
+  always sent, with what arrived in time, empty when the bus or portal
+  is missing. A key that missed the limit is read again without the
+  short limit (zbus's own 25 s) and sent with `at_boot: false`. When the
+  portal starts or restarts later (a new name owner), all three keys are
+  re-read and sent with `at_boot: false`: they are real changes against
+  the defaults logic holds, and a value equal to the current one changes
+  nothing in the graph. Dropping `PortalSettings` cancels the whole task,
+  including outstanding calls, so shutdown never waits on a hung portal.
+  `color-scheme` keeps the raw preference next to `dark`; an
+  `accent-color` component outside 0..=1 means unset. Tests use a zbus
+  mock portal on a private `dbus-daemon` the test starts itself
+  (python3-dbusmock is not installed); they skip when `dbus-daemon` is
+  missing unless `STRAND_REQUIRE_DBUS` or `CI` is set, and CI sets the
+  former and installs `dbus`, so the tier cannot pass silently there. A
+  `SettingChanged` that arrives while a late or restart re-read is in
+  flight wins: the read's value for that key is dropped, since the
+  signal is at least as new as the read's answer and sending the read
+  after it would revert the change (dark mode flipping back).
+- **2026-10-05 · Missing and replaced directories.** A directory the
+  watcher wants (a config directory, a referenced file's directory, a
+  link's directory, a cache tree root) that does not exist is replaced
+  by its nearest existing ancestor, and the first missing path below it
+  is remembered; when that path appears (a directory, or a link), the
+  files below it are re-resolved, re-watched and re-checked, and the
+  module set is rescanned if the config lies below it. The config
+  directory's parent is always watched and the root itself triggers a
+  rescan, so a config directory that is deleted and recreated (dotfile
+  scripts, `mv new strand`) is watched again. Directory removals
+  (`IN_DELETE` of a directory, `DELETE_SELF`) are removals; a creation
+  event for a path already watched with the same inode changes nothing.
+  A watched directory that is moved or deleted takes every watch below
+  it along: a moved directory's descriptors follow the inodes, so the
+  paths they were added under are stale for the whole subtree. The
+  watcher drops them all (`MOVE_SELF`, `MOVED_FROM`, `DELETE_SELF`) and,
+  at the flush, re-resolves, re-watches and re-hashes every file below,
+  so `mv cfg cfg.bak; mv cfg.new cfg` reports the changed files in
+  sub-directories and nothing written in `cfg.bak` is reported under
+  the old names. As a backstop, each flush re-checks the inode of every
+  watched directory and re-watches one that changed. Watch, then list:
+  when a flush adds a watch on a config or cache-tree directory, the
+  module set (or tree) is listed once more after the next quiet period,
+  because the rescan listed that directory before its watch existed and
+  a file created in between (a slow `cp -r`, a `git checkout`) made no
+  event. The second listing adds no new watch, so it ends there, and an
+  unchanged set sends no batch. The same holds at boot (the caller's
+  `find_files` ran before `spawn` added any watch: the set is listed
+  again at the first quiet period) and for a new cache tree (walked
+  again once watched).
+- **2026-10-05 · Registrations per role.** A referenced path can be
+  wanted for several reasons (two `state … from "prefs.toml"`, a
+  wallpaper also shown by an `image`), so registrations are counted per
+  (path, role) and `unwatch_file(path, role)` drops one. Module-set
+  membership is separate from registrations, so registering or
+  unregistering a module file never changes its module status. A change
+  is reported once per role (`changes` sorted by path, then role).
+  `set_referenced(pairs)` replaces every registration with the set the
+  compiler collected from the whole program, so the loader does not diff
+  path sets itself.
+- **2026-10-05 · Only regular files are read.** A watched path is
+  `stat`ed, opened with `O_NONBLOCK`, `fstat`ed, and hashed only if it is
+  a regular file, streaming (`blake3::Hasher::update_reader`), so a FIFO
+  cannot block the watcher thread (or `watch_file`, which waits for it),
+  `/dev/zero` cannot exhaust memory, and a 50 MB wallpaper is not
+  buffered whole. Anything else is reported once with
+  `error: Some(InvalidInput)` and no hash.
+- **2026-10-05 · Batch timestamps.** `FileBatch` carries `first_event`
+  and `last_event` (the event that last kept the quiet period open) and
+  `SystemBatch` carries `received`, so the reload-latency benchmark and
+  `strand watch --json` can separate the watcher's quiet period from
+  compile and commit time.
+- **2026-10-05 · `ConfigReloaded { failed: Option<bool> }`.** niri's
+  `ConfigLoaded { failed }` gives `Some(failed)`; Hyprland's
+  `configreloaded` says nothing about success, so its adapter sends
+  `None` rather than inventing `false`.
+- **2026-10-05 · Watch, then read, for every baseline.** A file's
+  baseline hash is read after its directory watch exists (module files
+  at `spawn`, `watch_file`, `set_referenced`): the entry is created
+  resolved but unread, the watches are synced, then the file is hashed
+  without reporting anything. A save in between is either in the
+  baseline or makes an event; reading first left a stale baseline, so a
+  later undo to the old bytes was dropped as a no-op.
+- **2026-10-05 · Loaded hashes.** The loader reads referenced files
+  before it knows to register them (the compiler collects the paths), so
+  a save between its read and `set_referenced` would be lost.
+  `set_referenced` takes `Referenced { path, role, loaded }`, built from
+  `(path, role)` or `(path, role, hash)`; when `loaded` differs from
+  what the watcher holds, the baseline becomes `loaded` and the path is
+  re-checked at the next quiet period, so the file is compared with what
+  the loader holds. Every role of that path sees the change (a module
+  also registered as `Other` gets a redundant `Modified`, which a hash
+  check on the logic side ignores). `watch_file` stays "register, then
+  read".
+- **2026-10-05 · Own writes are registered synchronously.**
+  `register_own_write` pushes into a list shared with the watcher thread
+  (`Arc<Mutex<_>>`) instead of queueing a control message, so a flush
+  already under way when Strand writes sees the registration. Strand's
+  own writes are atomic (temporary file renamed over the path); an
+  in-place write can be read half done and that content is reported.
+- **2026-10-05 · Files linked in complete.** A `CREATE` of a regular
+  file with one link and non-zero length is a completed write: its bytes
+  existed before its name (`O_TMPFILE` + `linkat`, as systemd's
+  `link_tmpfile` does; its `CLOSE_WRITE` is reported under the unnamed
+  `#<ino>`, if at all). An empty new file still waits for `CLOSE_WRITE`;
+  a write still in progress extends the batch with `MODIFY`.
+- **2026-10-05 · Light ancestor watches.** A watched directory's inotify
+  descriptor follows its inode, so moving an unwatched ancestor
+  (`mv ~/x ~/w` with only `~/x/y/z` watched) made no event and the file
+  kept being reported under its old path. Every ancestor of a directory
+  watched in full now holds a light watch (`MOVED_FROM`, `DELETE`,
+  `DELETE_SELF`, `MOVE_SELF` only, no writes or creations), so the move
+  forgets the watches below, re-resolves and reports `Removed`; the
+  ancestor then becomes the full watch waiting for the path to return.
+  Writes in `~` or `/` queue nothing; renames and deletions there wake
+  the thread for a map lookup and no batch. Ancestor watches are best
+  effort and silent: on a network or read-only filesystem, or past the
+  watch limit, they are skipped (polled directories already notice a
+  vanished directory when listing fails). A periodic inode audit was
+  rejected: it would wake an idle shell.
+- **2026-10-05 · Backend errors do not spin.** A failing `poll(2)` is
+  retried after a pause that doubles from 10 ms up to `poll_interval`,
+  and each distinct error is reported once. A failing inotify `read`
+  (not `EAGAIN`) leaves the fd readable, so the watcher drops inotify,
+  polls every directory (each reported once as `WatchFailed`) and
+  rescans everything (`RescanReason::Overflow`: events were lost).
