@@ -1084,6 +1084,77 @@ fn quick_fix_for_a_renamed_parameter_and_a_misplaced_span() {
     );
 }
 
+/// A private declaration in another file is a help (the edit is `export`
+/// over there), never a replacement for the name read here.
+#[test]
+fn no_quick_fix_for_a_private_declaration_elsewhere() {
+    let b = "let y = secret + 1\n";
+    let mut c = Client::start(&[
+        ("a.strand", "state secret = 1\n".to_string()),
+        ("b.strand", b.to_string()),
+    ]);
+    c.open_text("b.strand", b);
+    let diags = c.diagnostics("b.strand");
+    let msgs = messages(&diags);
+    assert!(
+        msgs.iter().any(|m| m.contains("private to a.strand")),
+        "{msgs:?}"
+    );
+    let r = c.request(
+        "textDocument/codeAction",
+        json!({
+            "textDocument": { "uri": c.uri("b.strand") },
+            "range": { "start": Client::pos(b, "", 0, 0), "end": Client::pos(b, "", 0, b.len()) },
+            "context": { "diagnostics": diags },
+        }),
+    );
+    assert_eq!(r, json!([]), "{r}");
+    // A name that did not type has no hover, not `secret: {unknown}`.
+    assert_eq!(c.hover("b.strand", Client::pos(b, "secret", 0, 2)), "");
+    // A file nobody opened is answered, and answered again after its
+    // analysis was let go.
+    for _ in 0..2 {
+        let h = c.hover(
+            "a.strand",
+            Client::pos("state secret = 1\n", "secret", 0, 2),
+        );
+        assert!(h.contains("state secret: int"), "{h}");
+    }
+}
+
+/// A client that keeps the server busy does not hold the debounced
+/// diagnostics back: with a 1 ms debounce, a burst of hovers sent right
+/// after a change is still being answered when the diagnostics are due.
+#[test]
+fn busy_clients_still_get_diagnostics() {
+    let files = shell_files(&[]);
+    let refs: Vec<(&str, String)> = files.iter().map(|(n, t)| (n.as_str(), t.clone())).collect();
+    let mut c = Client::start_with(&refs, |p| {
+        p["initializationOptions"]["debounceMs"] = json!(1)
+    });
+    c.open("toasts.strand");
+    assert_eq!(c.diagnostics("toasts.strand"), Vec::<Value>::new());
+    let good = c.text("toasts.strand");
+    let bad = good.replace("n.urgency == critical {", "n.urgency == critcal {");
+    c.change("toasts.strand", 2, &bad);
+    let params = c.at("toasts.strand", Client::pos(&bad, "shown", 0, 1));
+    let ids: Vec<RequestId> = (0..500)
+        .map(|_| c.send("textDocument/hover", params.clone()))
+        .collect();
+    for id in ids {
+        let _ = c.response(id);
+    }
+    // Published while the burst was answered, so already queued.
+    let msgs = messages(
+        &c.diagnostics_within("toasts.strand", Duration::ZERO)
+            .expect("diagnostics held back by a busy client"),
+    );
+    assert!(
+        msgs.iter().any(|m| m.contains("did you mean `critical`?")),
+        "{msgs:?}"
+    );
+}
+
 #[test]
 fn formatting_whole_documents() {
     let mut c = Client::shells();

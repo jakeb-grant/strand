@@ -2944,8 +2944,6 @@ fn accepts_int(t: &Ty) -> bool {
     }
 }
 
-/// The parameters of `sig` that `args` set: by name, by `from`, or by
-/// position (in order, past the named ones).
 /// What an unknown name's diagnostic offers: a replacement for the name
 /// (a quick fix), or only a help line.
 enum NameHint {
@@ -2953,6 +2951,8 @@ enum NameHint {
     Help(String),
 }
 
+/// The parameters of `sig` that `args` set: by name, by `from`, or by
+/// position (in order, past the named ones).
 fn given_args(sig: &FnSig, args: &[ast::Arg]) -> Vec<String> {
     let mut given: Vec<String> = args
         .iter()

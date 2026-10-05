@@ -172,6 +172,12 @@ struct Server<'c> {
 impl Server<'_> {
     fn run(&mut self) -> Result<()> {
         loop {
+            // Past the debounce, publish before reading on: a client that
+            // keeps the channel busy (hovers, cancels) must not hold the
+            // diagnostics back.
+            if self.deadline.is_some_and(|d| d <= Instant::now()) {
+                self.flush()?;
+            }
             let msg = match self.deadline {
                 Some(d) => {
                     match self
@@ -212,6 +218,7 @@ impl Server<'_> {
                     });
                     self.conn.sender.send(Message::Response(resp))?;
                     self.recheck_rebuilt();
+                    self.evict_unshown();
                 }
                 Message::Notification(n) => {
                     if n.method == "exit" {
@@ -383,6 +390,23 @@ impl Server<'_> {
         self.owner.retain(|u, k| k != key || in_config.contains(u));
         self.published.insert(key.clone(), shown);
         Ok(())
+    }
+
+    /// Forgets the analyses requests compiled for configs that show
+    /// nothing and wait for nothing (a hover in a file never opened), so
+    /// a long session does not keep every config it was asked about.
+    fn evict_unshown(&mut self) {
+        let unshown: Vec<ConfigKey> = self
+            .ws
+            .cached_keys()
+            .into_iter()
+            .filter(|k| !self.published.contains_key(k) && !self.dirty.contains(k))
+            .collect();
+        for k in unshown {
+            if !self.ws.has_open(&k) {
+                self.ws.forget(&k);
+            }
+        }
     }
 
     /// Clears what `key` shows and forgets it.

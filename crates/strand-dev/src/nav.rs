@@ -97,8 +97,10 @@ pub fn hover(an: &Analysis, file: FileId, offset: u32) -> Option<Hover> {
     let (span, value) = match find(an, file, offset) {
         Some((span, found)) => (span, describe_found(an, &found)),
         None => {
-            // A method name, else the narrowest expression's type.
-            let mut best: Option<(Span, String)> = None;
+            // A method name, else the narrowest expression's type; nothing
+            // when that expression did not type (`a.` half typed), rather
+            // than `{unknown}`.
+            let mut best: Option<(Span, Option<String>)> = None;
             for (f, e) in walk::exprs(p) {
                 if f != file || !(e.span.start <= offset && offset <= e.span.end) {
                     continue;
@@ -117,19 +119,24 @@ pub fn hover(an: &Analysis, file: FileId, offset: u32) -> Option<Hover> {
                     && offset <= at.end
                 {
                     let text = method_text(schema, types, &receiver.ty, name, *overload);
-                    best = Some((at, text));
+                    best = Some((at, Some(text)));
                     break;
                 }
                 if best.as_ref().is_none_or(|(s, _)| e.span.len() < s.len()) {
-                    let code = format!(
-                        "{}: {}",
-                        e.span.text(an.text(file)).lines().next().unwrap_or(""),
-                        describe::ty(types, &e.ty)
-                    );
-                    best = Some((e.span, describe::markdown(&code, None)));
+                    let text =
+                        (!e.ty.is_error() && !matches!(e.kind, ExprKind::Error)).then(|| {
+                            let code = format!(
+                                "{}: {}",
+                                e.span.text(an.text(file)).lines().next().unwrap_or(""),
+                                describe::ty(types, &e.ty)
+                            );
+                            describe::markdown(&code, None)
+                        });
+                    best = Some((e.span, text));
                 }
             }
-            best?
+            let (span, text) = best?;
+            (span, text?)
         }
     };
     Some(Hover {

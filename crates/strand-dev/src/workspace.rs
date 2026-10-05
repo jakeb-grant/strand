@@ -414,6 +414,11 @@ impl Workspace {
         self.analysis(&key)
     }
 
+    /// The configs whose analyses are kept.
+    pub fn cached_keys(&self) -> Vec<ConfigKey> {
+        self.cache.keys().cloned().collect()
+    }
+
     /// Forgets the analysis of a config nothing has open.
     pub fn forget(&mut self, key: &ConfigKey) {
         self.cache.remove(key);

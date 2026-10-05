@@ -1572,6 +1572,29 @@ see wave2-core; the compiler supplies the field schema.)
   start with `-`; with no path, a missing default config directory is
   named as such. `- -b` keeps its space (`--b` reads like a decrement,
   though it lexes the same).
+- **2026-10-05 · wave2-lsp (round 4): help-only hints are never fixes.**
+  An unknown name's hint is a `NameHint` (`check/expr.rs`): `Fix(name)`
+  becomes a `Diagnostic::suggestions` replacement and so a quick fix;
+  `Help(text)` stays a help line only. A private declaration of the same
+  name in another file (`secret` read bare while `a.strand` declares
+  `state secret` without `export`) is a `Help`: the edit is `export` over
+  there, and offering the help sentence as a replacement for the name
+  would write prose into the code
+  (`lsp.rs::no_quick_fix_for_a_private_declaration_elsewhere`). Only an
+  identifier replacement is ever a suggestion. This split lives in
+  checker code the lang track owns and is to be carried on wave2/lang
+  (asked of that track) so later merges keep it.
+- **2026-10-05 · wave2-lsp (round 4): server housekeeping.** Diagnostics
+  due after the debounce are published before the next message is read,
+  so a client that keeps the channel busy cannot hold them back
+  (`lsp.rs::busy_clients_still_get_diagnostics`). After each request,
+  analyses of configs that are neither published, waiting for the
+  debounce nor holding an open document (a hover in a file never opened)
+  are dropped, so a long session does not keep every config it was asked
+  about. A hover on an expression that did not type answers nothing
+  rather than `{unknown}`. An attribute on its own line (`@reset` above
+  `state x = 1`) leaves the declaration under it at the item's
+  indentation in the formatter (`fmt.rs::layout_rules`).
 - **2026-10-05 · wave2-lsp: tree-sitter is out of scope this wave.** The
   M1 checklist's tree-sitter grammar for editor highlighting stays open;
   editors get diagnostics, completion, hover, navigation, rename and

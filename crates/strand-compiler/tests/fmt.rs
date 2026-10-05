@@ -184,6 +184,16 @@ fn layout_rules() {
             "\u{feff}state a = 1\r\nstate b = 2\rstate c = 3",
             "state a = 1\nstate b = 2\nstate c = 3\n",
         ),
+        // A declaration under an attribute on its own line is an item,
+        // at the top level and in a tree, not a continuation.
+        (
+            "@reset\n  state x = 1\n@a(1)\n@b\nlet y = 2\n",
+            "@reset\nstate x = 1\n@a(1)\n@b\nlet y = 2\n",
+        ),
+        (
+            "component C {\n  @reset\n    row { text \"a\" }\n  @reset\n  state s = 0\n}\n",
+            "component C {\n  @reset\n  row { text \"a\" }\n  @reset\n  state s = 0\n}\n",
+        ),
         // Empty blocks close up.
         ("component C { }\n", "component C {}\n"),
         // A mandatory block's `{` on its own line sits at its head.

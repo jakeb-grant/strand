@@ -151,6 +151,9 @@ struct Facts {
     /// Offsets where an item, statement, field, token entry, match arm or
     /// enum variant starts: a line starting there is not a continuation.
     item_starts: HashSet<u32>,
+    /// Where attributes end: the declaration after each one starts an
+    /// item too when it opens a line (`@reset` / `state x = 1`).
+    attr_ends: Vec<u32>,
     /// Offsets of prefix `-` and `!`.
     unary: HashSet<u32>,
     /// The gaps holding a ternary's `?` and `:`.
@@ -175,6 +178,8 @@ impl Facts {
     fn item(&mut self, it: &Item) {
         self.item_starts.insert(it.span.start);
         for a in &it.attrs {
+            self.item_starts.insert(a.span.start);
+            self.attr_ends.push(a.span.end);
             self.args(&a.args);
         }
         match &it.kind {
@@ -582,8 +587,13 @@ enum Gap {
 impl<'a> Layout<'a> {
     fn new(src: &'a str, parsed: &'a Parse) -> Self {
         let toks = parsed.tokens.as_slice();
-        let facts = Facts::of(&parsed.file);
+        let mut facts = Facts::of(&parsed.file);
         let index_at = |offset: u32| toks.partition_point(|t| t.span.start < offset);
+        for &end in &facts.attr_ends {
+            if let Some(t) = toks[index_at(end)..].iter().find(|t| !t.kind.is_trivia()) {
+                facts.item_starts.insert(t.span.start);
+            }
+        }
         let mut ternary = HashSet::new();
         for gap in &facts.ternary_gaps {
             let mut i = index_at(gap.start);
