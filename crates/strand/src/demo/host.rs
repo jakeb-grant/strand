@@ -10,7 +10,8 @@ use calloop::channel::Sender;
 use strand_compiler::instantiate::NodeFlag;
 use strand_render::Renderer;
 use strand_scene::{
-    ButtonState, Damage, InputEvent, NodeId, PaintTarget, Painter, Scale, Size, SurfaceId,
+    ButtonState, Damage, InputEvent, LogicalPoint, NodeId, PaintTarget, Painter, Scale, Size,
+    SurfaceId,
 };
 use strand_surface::{Monitor, SurfaceHost};
 
@@ -37,6 +38,10 @@ pub(crate) struct Forward {
     monitors: Vec<(Monitor, bool)>,
     /// The node each surface shows.
     surfaces: HashMap<SurfaceId, NodeId>,
+    /// The hovered chain per surface (innermost first).
+    hovered: HashMap<SurfaceId, Vec<NodeId>>,
+    /// The chain the left button went down on, per surface.
+    pressed: HashMap<SurfaceId, Vec<NodeId>>,
 }
 
 impl Forward {
@@ -45,6 +50,8 @@ impl Forward {
             tx,
             monitors: Vec::new(),
             surfaces: HashMap::new(),
+            hovered: HashMap::new(),
+            pressed: HashMap::new(),
         }
     }
 
@@ -93,6 +100,8 @@ impl Forward {
 
     pub(crate) fn detached(&mut self, surface: SurfaceId) {
         self.surfaces.remove(&surface);
+        self.hovered.remove(&surface);
+        self.pressed.remove(&surface);
     }
 
     /// Plugged in, or back within 30 s (`reconnected`) at its old place.
@@ -125,28 +134,65 @@ impl Forward {
         self.send(ToLogic::Forget(monitor.id.as_str().to_string()));
     }
 
-    /// Surface-level input until render hit-tests inside surfaces (M2):
-    /// the pointer over a surface is its node's `hover`, a left button
-    /// held on it is `pressed`, a left or right release is
-    /// `click`/`secondary` on it, a scroll is `scroll(dy, dx)`. Other
-    /// buttons have no design event and are dropped.
-    pub(crate) fn input(&self, event: &InputEvent) {
-        let Some(&node) = self.surfaces.get(&event.surface()) else {
+    /// Pointer input on the node under the pointer (`hit`: render's hit
+    /// chain, innermost first, ending at the surface's node): every node
+    /// on the chain is `hover`ed (a row is hovered while a child is), a
+    /// left button held marks the chain under it `pressed` (and latches
+    /// `hover` there until it is released, as a drag does), a left or
+    /// right release is `click`/`secondary` on the innermost node (logic
+    /// bubbles it to the nearest handler), a scroll is `scroll(dy, dx)`
+    /// there. Other buttons have no design event and are dropped.
+    pub(crate) fn input(
+        &mut self,
+        event: &InputEvent,
+        hit: &dyn Fn(SurfaceId, LogicalPoint) -> Vec<NodeId>,
+    ) {
+        let surface = event.surface();
+        let Some(&root) = self.surfaces.get(&surface) else {
             return;
         };
-        let flag = |flag, on| ToLogic::Flag { node, flag, on };
+        let chain = |at: LogicalPoint| {
+            let c = hit(surface, at);
+            if c.is_empty() { vec![root] } else { c }
+        };
         match event {
-            InputEvent::PointerEnter { .. } => self.send(flag(NodeFlag::Hover, true)),
+            InputEvent::PointerEnter { position, .. }
+            | InputEvent::PointerMotion { position, .. } => {
+                if self.pressed.contains_key(&surface) {
+                    return;
+                }
+                let now = chain(*position);
+                self.hover(surface, now);
+            }
             InputEvent::PointerLeave { .. } => {
-                self.send(flag(NodeFlag::Pressed, false));
-                self.send(flag(NodeFlag::Hover, false));
+                self.release(surface);
+                self.hover(surface, Vec::new());
             }
             InputEvent::PointerButton {
-                button: b, state, ..
+                button: b,
+                state,
+                position,
+                ..
             } => {
+                let under = chain(*position);
                 if *b == button::LEFT {
-                    let on = *state == ButtonState::Pressed;
-                    self.send(flag(NodeFlag::Pressed, on));
+                    match state {
+                        ButtonState::Pressed => {
+                            self.hover(surface, under.clone());
+                            for &n in under.iter().rev() {
+                                self.send(ToLogic::Flag {
+                                    node: n,
+                                    flag: NodeFlag::Pressed,
+                                    on: true,
+                                });
+                            }
+                            self.pressed.insert(surface, under.clone());
+                        }
+                        ButtonState::Released => {
+                            self.release(surface);
+                            self.hover(surface, under.clone());
+                        }
+                    }
                 }
                 if *state != ButtonState::Released {
                     return;
@@ -157,7 +203,7 @@ impl Forward {
                     _ => return,
                 };
                 self.send(ToLogic::Event {
-                    node,
+                    node: under[0],
                     name,
                     args: Vec::new(),
                 });
@@ -165,13 +211,55 @@ impl Forward {
             InputEvent::PointerAxis {
                 horizontal,
                 vertical,
+                position,
                 ..
-            } => self.send(ToLogic::Event {
-                node,
-                name: "scroll",
-                args: vec![vertical.pixels, horizontal.pixels],
-            }),
-            InputEvent::PointerMotion { .. } => {}
+            } => {
+                let under = chain(*position);
+                self.send(ToLogic::Event {
+                    node: under[0],
+                    name: "scroll",
+                    args: vec![vertical.pixels, horizontal.pixels],
+                });
+            }
+        }
+    }
+
+    /// The hovered chain of `surface` becomes `now`: nodes it left lose
+    /// `hover` (innermost first), nodes it reached get it (outermost
+    /// first).
+    fn hover(&mut self, surface: SurfaceId, now: Vec<NodeId>) {
+        let was = self.hovered.remove(&surface).unwrap_or_default();
+        for &n in &was {
+            if !now.contains(&n) {
+                self.send(ToLogic::Flag {
+                    node: n,
+                    flag: NodeFlag::Hover,
+                    on: false,
+                });
+            }
+        }
+        for &n in now.iter().rev() {
+            if !was.contains(&n) {
+                self.send(ToLogic::Flag {
+                    node: n,
+                    flag: NodeFlag::Hover,
+                    on: true,
+                });
+            }
+        }
+        if !now.is_empty() {
+            self.hovered.insert(surface, now);
+        }
+    }
+
+    /// The left button is up (or the pointer left): nothing is pressed.
+    fn release(&mut self, surface: SurfaceId) {
+        for n in self.pressed.remove(&surface).unwrap_or_default() {
+            self.send(ToLogic::Flag {
+                node: n,
+                flag: NodeFlag::Pressed,
+                on: false,
+            });
         }
     }
 }
@@ -282,8 +370,9 @@ impl SurfaceHost for Host {
     }
 
     fn input(&mut self, event: &InputEvent) {
-        if let Some(f) = &self.logic {
-            f.input(event);
+        let renderer = &self.renderer;
+        if let Some(f) = &mut self.logic {
+            f.input(event, &|surface, at| renderer.hit(surface, at));
         }
     }
 
@@ -302,7 +391,7 @@ impl SurfaceHost for Host {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use strand_scene::{AxisDelta, LogicalPoint};
+    use strand_scene::AxisDelta;
     use strand_surface::MonitorId;
 
     fn monitor(model: &str, connector: &str) -> Monitor {
@@ -359,6 +448,7 @@ mod tests {
             state,
             time: 0,
         };
+        let root_only = |_: SurfaceId, _: LogicalPoint| Vec::new();
         for e in [
             InputEvent::PointerEnter {
                 surface: s,
@@ -392,7 +482,7 @@ mod tests {
                 position: at,
             },
         ] {
-            f.input(&e);
+            f.input(&e, &root_only);
         }
         let flag = |flag, on| ToLogic::Flag { node, flag, on };
         let event = |name: &'static str, args: Vec<f64>| ToLogic::Event { node, name, args };
@@ -410,13 +500,89 @@ mod tests {
                 event("click", vec![]),
                 event("secondary", vec![]),
                 event("scroll", vec![15.0, 0.0]),
-                flag(NodeFlag::Pressed, false),
                 flag(NodeFlag::Hover, false),
             ]
         );
         f.detached(s);
-        f.input(&button(button::LEFT, ButtonState::Released));
+        f.input(&button(button::LEFT, ButtonState::Released), &root_only);
         assert!(drain(&mut el).is_empty());
+    }
+
+    /// Inside a surface the node under the pointer gets the input: its
+    /// whole chain is hovered (left nodes lose it), the chain under a
+    /// press is pressed and keeps `hover` until the release, and clicks
+    /// and scrolls go to the innermost node.
+    #[test]
+    fn input_goes_to_the_hit_node() {
+        let (mut f, mut el) = setup();
+        let s = SurfaceId(1);
+        let (root, row, a, b) = (
+            NodeId::new(1, 0),
+            NodeId::new(2, 0),
+            NodeId::new(3, 0),
+            NodeId::new(4, 0),
+        );
+        f.attached(s, root);
+        // x < 10: over `a` in `row`; x < 20: over `b` in `row`; else bare.
+        let hit = move |_: SurfaceId, p: LogicalPoint| {
+            if p.x < 10.0 {
+                vec![a, row, root]
+            } else if p.x < 20.0 {
+                vec![b, row, root]
+            } else {
+                vec![root]
+            }
+        };
+        let at = |x| LogicalPoint::new(x, 1.0);
+        let motion = |x| InputEvent::PointerMotion {
+            surface: s,
+            position: at(x),
+            time: 0,
+        };
+        let button = |x, state| InputEvent::PointerButton {
+            surface: s,
+            position: at(x),
+            button: button::LEFT,
+            state,
+            time: 0,
+        };
+        f.input(
+            &InputEvent::PointerEnter {
+                surface: s,
+                position: at(5.0),
+            },
+            &hit,
+        );
+        f.input(&motion(15.0), &hit);
+        f.input(&button(15.0, ButtonState::Pressed), &hit);
+        // Dragging out keeps hover latched on the pressed chain.
+        f.input(&motion(30.0), &hit);
+        f.input(&button(30.0, ButtonState::Released), &hit);
+        let flag = |node, flag, on| ToLogic::Flag { node, flag, on };
+        use NodeFlag::{Hover, Pressed};
+        assert_eq!(
+            drain(&mut el),
+            vec![
+                flag(root, Hover, true),
+                flag(row, Hover, true),
+                flag(a, Hover, true),
+                flag(a, Hover, false),
+                flag(b, Hover, true),
+                flag(root, Pressed, true),
+                flag(row, Pressed, true),
+                flag(b, Pressed, true),
+                flag(b, Pressed, false),
+                flag(row, Pressed, false),
+                flag(root, Pressed, false),
+                flag(b, Hover, false),
+                flag(row, Hover, false),
+                ToLogic::Event {
+                    node: root,
+                    name: "click",
+                    args: Vec::new()
+                },
+            ]
+        );
     }
 
     /// Monitors are `screens` in plug order; one that comes back within

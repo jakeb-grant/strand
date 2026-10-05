@@ -1409,3 +1409,26 @@ fn new_surface_of_another_width_waits_for_its_own_layout() {
         assert!(buf.pixels == want.pixels, "{w}: tick differs from fresh");
     }
 }
+
+/// Hit testing: the node painted under a point, innermost first, up to
+/// the surface root; the root alone where nothing is drawn; positions are
+/// logical, so a fractional scale hits the same nodes.
+#[test]
+fn hit_finds_the_painted_node_and_its_ancestors() {
+    for scale in [Scale::ONE, Scale::from_f64(1.25).unwrap()] {
+        let (diff, clock) = bar("12:34");
+        let w = (2560.0 * scale.as_f64()) as u32;
+        let h = (36.0 * scale.as_f64()) as u32;
+        let (r, _buf) = fresh(diff, w, h, scale);
+        let root = r.tree().roots()[0];
+        // The first workspace dot spans x 12..20, y 14..22.
+        let dot = r.tree().get(root).unwrap().children[0];
+        assert_eq!(r.hit(BAR, LogicalPoint::new(15.0, 17.0)), [dot, root]);
+        // Over the clock text.
+        let hit = r.hit(BAR, LogicalPoint::new(1270.0, 18.0));
+        assert_eq!(hit, [clock, root], "{scale:?}");
+        // Empty bar background: the root.
+        assert_eq!(r.hit(BAR, LogicalPoint::new(700.0, 30.0)), [root]);
+        assert!(r.hit(SurfaceId(99), LogicalPoint::new(1.0, 1.0)).is_empty());
+    }
+}

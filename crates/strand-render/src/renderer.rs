@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use strand_scene::{
-    Damage, NodeId, NodeKind, PaintTarget, Painter, Prop, Scale, SceneDiff, SceneOp, Size,
-    SurfaceChange, SurfaceId, SurfaceSpec, TokenScope,
+    Damage, LogicalPoint, NodeId, NodeKind, PaintTarget, Painter, Point, Prop, Scale, SceneDiff,
+    SceneOp, Size, SurfaceChange, SurfaceId, SurfaceSpec, TokenScope,
 };
 use strand_text::{TextEngine, TextError, TextKey, TextLayout, TextRequest, TextWorker};
 
@@ -431,6 +431,63 @@ impl Renderer {
             self.pending.retain(|_, slot| slot.scale != scale);
             self.text.drop_scale(scale);
         }
+    }
+
+    /// The nodes under the logical `point` of `surface` in its last
+    /// painted frame, innermost first, ending at the surface's root (just
+    /// the root when nothing drawn is there). A node is hit where it
+    /// painted (until layout boxes land in M2, a container with no paint
+    /// of its own is hit through its children: the chain still names
+    /// it). Empty for an unknown surface.
+    pub fn hit(&self, surface: SurfaceId, point: LogicalPoint) -> Vec<NodeId> {
+        let Some(s) = self.surfaces.get(&surface) else {
+            return Vec::new();
+        };
+        let k = s.scale.as_f64();
+        let p = Point::new(
+            (point.x as f64 * k).floor().clamp(-1e9, 1e9) as i32,
+            (point.y as f64 * k).floor().clamp(-1e9, 1e9) as i32,
+        );
+        let depth = |mut id: NodeId| {
+            let mut d = 0usize;
+            while let Some(parent) = self.tree.get(id).and_then(|n| n.parent) {
+                if id == s.root {
+                    break;
+                }
+                id = parent;
+                d += 1;
+            }
+            d
+        };
+        // The deepest hit node on this surface; the later one in paint
+        // order (a higher id among equals is not paint order, so prefer
+        // the last child) on a tie.
+        let mut best: Option<(usize, NodeId)> = None;
+        for (&id, rec) in &s.records {
+            if rec.bounds.w == 0 || rec.bounds.h == 0 || !rec.bounds.contains(p) {
+                continue;
+            }
+            if self.tree.root_of(id) != Some(s.root) {
+                continue;
+            }
+            let d = depth(id);
+            if best.is_none_or(|(bd, _)| d >= bd) {
+                best = Some((d, id));
+            }
+        }
+        let mut chain = Vec::new();
+        let mut cur = best.map_or(s.root, |b| b.1);
+        loop {
+            chain.push(cur);
+            if cur == s.root {
+                break;
+            }
+            match self.tree.get(cur).and_then(|n| n.parent) {
+                Some(p) => cur = p,
+                None => break,
+            }
+        }
+        chain
     }
 
     /// Presentation time of the last frame painted for `surface`.
