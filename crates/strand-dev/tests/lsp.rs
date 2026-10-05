@@ -735,6 +735,29 @@ fn hover_shows_types_and_schema_docs() {
 }
 
 #[test]
+fn list_members_come_from_the_schema() {
+    // Completion and hover read the checker's own member table
+    // (`schema::members_of`), so a list's methods carry their docs and a
+    // keyed list offers the keyed mutations.
+    let src = "type Pin { id: int; label: text }\nstate pins: [Pin] key id = []\nlet few = pins.take(3)\n";
+    let mut c = Client::start(&[("a.strand", src.into())]);
+    c.open("a.strand");
+    assert_eq!(c.diagnostics("a.strand"), Vec::<Value>::new());
+    let h = c.hover("a.strand", Client::pos(src, "take(3)", 0, 1));
+    assert!(h.contains("take(count: int)"), "{h}");
+    assert!(h.contains("The first `count` items."), "{h}");
+    let text = src.replace("pins.take(3)", "pins.");
+    c.change("a.strand", 2, &text);
+    let labels = c.completion("a.strand", Client::pos(&text, "pins.\n", 0, 5));
+    for want in ["len", "first", "take", "filter", "remove_key", "update"] {
+        assert!(
+            labels.iter().any(|l| l == want),
+            "{want} missing: {labels:?}"
+        );
+    }
+}
+
+#[test]
 fn definition_across_files() {
     let mut c = Client::shells();
     let bar = c.text("bar.strand");

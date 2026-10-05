@@ -161,38 +161,28 @@ fn method_text(
     name: &str,
     overload: usize,
 ) -> String {
-    let mut t = receiver.non_null().clone();
-    if let Ty::Async(inner) = t {
-        t = *inner;
-    }
-    match &t {
-        Ty::Record(r) => {
-            let rec = types.record(*r);
-            if let Some(m) = rec.method(name)
-                && let Some(s) = m.sigs.get(overload).or(m.sigs.first())
-            {
-                return describe::markdown(
-                    &format!("{}.{}", rec.name, describe::sig(types, name, s)),
-                    schema.doc(&DocKey::Member(rec.name.clone(), name.into())),
-                );
-            }
-        }
-        Ty::Prim(p) => {
-            let ty_name = match p {
-                strand_compiler::ty::Prim::Path => "text",
-                strand_compiler::ty::Prim::Int => "float",
-                p => p.name(),
-            };
-            if let Some(m) = schema.methods_of(ty_name).iter().find(|m| m.name == name)
-                && let Some(s) = m.sigs.get(overload).or(m.sigs.first())
-            {
-                return describe::markdown(
-                    &format!("{ty_name}.{}", describe::sig(types, name, s)),
-                    schema.doc(&DocKey::Method(ty_name.into(), name.into())),
-                );
-            }
-        }
-        _ => {}
+    // The checker's own member table: records, services, builtin types,
+    // lists and `Async` values alike.
+    let t = receiver.non_null();
+    let owner = match t {
+        Ty::Record(r) => types.record(*r).name.clone(),
+        Ty::Prim(p) => p.name().to_string(),
+        Ty::List(..) | Ty::Async(_) => describe::ty(types, t),
+        Ty::Opaque(n) => n.to_string(),
+        _ => String::new(),
+    };
+    if let Some(m) = strand_compiler::schema::members_of(t, schema, types)
+        .into_iter()
+        .find(|m| m.name == name && m.kind == strand_compiler::schema::MemberKind::Method)
+        && let Some(s) = m.sigs.get(overload).or(m.sigs.first())
+    {
+        let sig = describe::sig(types, name, s);
+        let code = if owner.is_empty() {
+            sig
+        } else {
+            format!("{owner}.{sig}")
+        };
+        return describe::markdown(&code, m.doc.as_deref());
     }
     describe::markdown(&format!("fn {name}"), None)
 }
