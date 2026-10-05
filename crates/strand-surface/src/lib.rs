@@ -7,11 +7,12 @@
 //! surface with buffer age, exact `damage_buffer` and `set_opaque_region`,
 //! `wp_fractional_scale_v1` + `wp_viewporter` (integer buffer scale as the
 //! fallback), frame callbacks only while something is dirty or unsettled,
-//! `wp_presentation` timing through a [`FrameClock`], and pointer input as
-//! [`InputEvent`]s.
+//! `wp_presentation` timing through a [`FrameClock`] with paints locked to
+//! the refresh rate, and pointer input as [`InputEvent`]s (the types live
+//! in `strand-scene`).
 //!
 //! Compositor-animated poses (alpha modifier, viewporter, margins), the
-//! blur ladder and input regions land in M4.
+//! blur ladder and shaped input regions land in M4.
 //!
 //! See `docs/architecture.md`, "strand-surface" and "Render loop".
 
@@ -28,6 +29,6 @@ pub use manager::{
     Config, RepaintHandle, Request, State, Stats, SurfaceError, SurfaceHost, SurfaceInfo,
     SurfaceManager,
 };
-pub use monitor::{MONITOR_RETENTION, Monitor, MonitorId};
+pub use monitor::{MONITOR_RETENTION, Monitor, MonitorId, identity_description};
 pub use placement::{Anchors, LayerConfig, PlacementError, layer_config};
 pub use shm::MAX_BUFFERS;

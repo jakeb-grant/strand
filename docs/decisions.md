@@ -171,8 +171,18 @@ Each track appends under its own heading.
   callback only if `wants_frame` is still true after the paint, so a
   single repaint (a clock tick) costs one commit and no callback.
   Repaint requests and Wayland events mark surfaces dirty; marked surfaces
-  are painted once at the end of the loop wakeup (calloop idle), and wait
-  for an outstanding callback. A paint that returns no damage while
+  are painted once at the end of the loop wakeup (calloop idle). A
+  surface whose last frame is still in flight waits: for its frame
+  callback, or, when none was requested, for that commit's presentation
+  feedback (`presented` or `discarded`), so paints lock to the refresh
+  rate however often content changes (review round 1). Without
+  `wp_presentation` every buffer commit requests a frame callback.
+  Feedback carries the surface's generation and commit number, so
+  feedback for a destroyed surface whose id was reused is ignored.
+  Configure and `preferred_scale` only mark the surface; size and scale
+  are resolved right before the paint, so one wakeup gives one
+  `surface_configured`. A configure that needs no new frame gets a bare
+  commit so the ack takes effect. A paint that returns no damage while
   `wants_frame` stays true arms a timer at `frame_deadline` if the host
   gives one, else requests a callback with a bare commit. Presentation
   feedback is requested for every buffer commit (none while idle).
@@ -190,10 +200,18 @@ Each track appends under its own heading.
   ` #2`. `Screens::Named` matches the identity or the connector name
   (`DP-1`). An unplugged monitor is remembered for 30 s (one timer, armed
   only while something is remembered) and keeps its per-node
-  `SurfaceId`s, so a quick replug reattaches the same ids. `screens:
-  focused` means the output the pointer last entered one of our surfaces
-  on, else the first output; it is re-evaluated on hotplug and spec
-  changes only until keyboard focus tracking lands.
+  `SurfaceId`s, so a quick replug reattaches the same ids. wlroots puts
+  the connector into `wl_output.description` (`"… (DP-1)"`); a trailing
+  `" (<connector>)"` equal to the output's own name is dropped from the
+  identity, so a monitor moved to another port is the same monitor.
+  Numbering of identical monitors follows plug order.
+- 2026-10-05 · surface: `screens: focused` is one layer surface per node
+  created with `output = null`; wlr-layer-shell lets the compositor put
+  it on the output the user last interacted with (sway: the focused
+  workspace's). Its monitor is learnt from `wl_surface.enter`
+  (`SurfaceHost::surface_entered`); `surface_attached` gets `None`.
+  `State::set_focused_monitor` (for a compositor IPC service) pins it and
+  moves an open one; when that output goes, the compositor picks again.
 - 2026-10-05 · surface: a layer surface the compositor `closed` is
   destroyed and detached; it is recreated only when outputs change or its
   spec is updated, never in a loop. Content-sized surfaces (a bar without
@@ -203,10 +221,21 @@ Each track appends under its own heading.
   Spec updates reconfigure anchor, size, margins, exclusive zone and
   keyboard in place with a bare commit; layer or namespace changes
   recreate.
+- 2026-10-05 · surface: `InputEvent` and its parts moved to
+  `strand-scene` (`strand_scene::input`; `strand_surface` re-exports
+  them) so render and logic can name them. `SurfaceHost::input` gives the
+  host every event on the main thread before the channel; the channel is
+  created by `take_input` and nothing is queued before. Wayland serials
+  stay in `strand-surface` (`State::last_button_serial` for popup grabs).
+  The cursor is set to `default` on every enter through SCTK's themed
+  pointer (`wp_cursor_shape_v1`, else the cursor theme). An `osd` gets an
+  empty input region before its first commit (design example d:
+  "click-through").
 - 2026-10-05 · surface: SCTK is used without default features (no
   xkbcommon until keyboard input); `rustix` reads the clock
   `wp_presentation.clock_id` names. SCTK 0.21.1 declares rust-version
-  1.86 while the workspace says 1.85. Headless wlroots reports refresh 0
+  1.86 while the workspace says 1.85; the root manifest is not this
+  track's, so the bump is left to the integration step. Headless wlroots reports refresh 0
   in presentation feedback, so predictions there fall back to "now";
   refresh locking is covered by fake-clock unit tests.
 

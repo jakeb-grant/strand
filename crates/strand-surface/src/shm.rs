@@ -109,6 +109,12 @@ impl Slots {
         None
     }
 
+    /// Drops the slot the last [`Slots::acquire`] created (`fresh`) when
+    /// its buffer could not be made.
+    pub fn discard_last(&mut self) {
+        self.slots.pop();
+    }
+
     /// The painted buffer `index` was committed: it now holds the newest
     /// frame and belongs to the compositor until released.
     pub fn commit(&mut self, index: usize) {
@@ -261,20 +267,31 @@ impl ShmBuffers {
         };
         if acquired.fresh {
             let index = acquired.index;
-            let needed = len
+            let grown = len
                 .checked_mul(index + 1)
                 .filter(|n| i32::try_from(*n).is_ok())
-                .ok_or_else(too_large)?;
-            let offset = i32::try_from(len * index).map_err(|_| too_large())?;
-            let pool = match &mut self.pool {
-                Some(pool) => {
-                    pool.resize(needed)
-                        .map_err(|e| BufferError::Pool(e.to_string()))?;
-                    pool
+                .zip(i32::try_from(len * index).ok())
+                .ok_or_else(too_large)
+                .and_then(|(needed, offset)| {
+                    let grown = match &mut self.pool {
+                        Some(pool) => pool.resize(needed).map_err(|e| e.to_string()),
+                        None => RawPool::new(needed, shm)
+                            .map(|p| self.pool = Some(p))
+                            .map_err(|e| e.to_string()),
+                    };
+                    grown.map(|()| offset).map_err(BufferError::Pool)
+                });
+            let offset = match grown {
+                Ok(offset) => offset,
+                Err(e) => {
+                    // No buffer behind the new slot: forget it.
+                    self.slots.discard_last();
+                    return Err(e);
                 }
-                None => self.pool.insert(
-                    RawPool::new(needed, shm).map_err(|e| BufferError::Pool(e.to_string()))?,
-                ),
+            };
+            let Some(pool) = self.pool.as_mut() else {
+                self.slots.discard_last();
+                return Err(BufferError::Pool("no pool".into()));
             };
             let data = BufferData {
                 surface: self.surface,
@@ -397,6 +414,20 @@ mod tests {
             s.release(a.index);
         }
         assert_eq!(s.commits(), 5);
+    }
+
+    #[test]
+    fn a_discarded_fresh_slot_is_not_handed_out() {
+        let mut s = Slots::new(3);
+        let a = s.acquire().unwrap();
+        s.commit(a.index);
+        let b = s.acquire().unwrap();
+        assert!(b.fresh);
+        // Its pool could not grow.
+        s.discard_last();
+        assert_eq!(s.len(), 1);
+        let c = s.acquire().unwrap();
+        assert_eq!((c.index, c.fresh), (1, true));
     }
 
     #[test]

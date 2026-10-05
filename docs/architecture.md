@@ -15,7 +15,7 @@ file fixes boundaries; each crate is free inside its own boundary.
 | Services | `strand-services` | tokio current-thread runtime; PipeWire and toplevel get their own threads | Block logic: they send state diffs and events |
 
 Channels are the only coupling between threads. Logic → render is one
-`SceneDiff` per tick. Render → logic is `InputEvent`s and layout facts
+`SceneDiff` per tick. Render → logic is `InputEvent`s (`strand-scene`) and layout facts
 (`self.width` for container queries). No locks are shared across threads on a
 hot path.
 
@@ -82,6 +82,12 @@ be built and tested without the language, and the language without pixels.
   inward and never claims a translucent pixel. The input region (shadows
   grow the buffer but not the input region) joins this trait with M2
   layout.
+
+- **Input**: `InputEvent` (`PointerEnter`/`Leave`/`Motion`/`Button`/`Axis`
+  with `ButtonState`, `AxisDelta`, `AxisSource`) in surface-local logical
+  pixels, per `SurfaceId`. `strand-surface` produces it; render hit-tests
+  it on the main thread and forwards node events to logic. Wayland
+  serials stay in `strand-surface`.
 
 - **Scene protocol** (logic → render, one batch per tick): `SceneDiff`
   holding ordered `SceneOp`s over a retained tree: `Create { id, kind,
@@ -235,12 +241,15 @@ and the connection):
 
 - `trait SurfaceHost: Painter` is what it calls: `paint`/`wants_frame`/
   `opaque_region` plus no-op-default hooks `surface_attached(surface,
-  node, &Monitor)`, `surface_configured(surface, size, scale)` (before the
-  first paint at that size), `surface_detached`, `monitor_added(&Monitor,
-  reconnected)`, `monitor_removed`, `monitor_forgotten` (30 s after an
-  unplug), `frame_deadline(surface) -> Option<Instant>` and
-  `frame_dropped(surface)`. The binary implements it on a wrapper around
-  `Renderer`, forwarding to `attach_surface`, `configure_surface`,
+  node, Option<&Monitor>)` (`None` for a `screens: focused` surface the
+  compositor places), `surface_entered(surface, &Monitor)` (where that
+  one was shown), `surface_configured(surface, size, scale)` (once per
+  wakeup, right before the first paint at that size), `surface_detached`,
+  `monitor_added(&Monitor, reconnected)`, `monitor_removed`,
+  `monitor_forgotten` (30 s after an unplug), `frame_deadline(surface) ->
+  Option<Instant>`, `frame_dropped(surface)` and `input(&InputEvent)`
+  (main thread, for hit testing). The binary implements it on a wrapper
+  around `Renderer`, forwarding to `attach_surface`, `configure_surface`,
   `detach_surface`, `frame_deadline` and `invalidate`.
 - `SurfaceManager::connect(host, Config)` / `with_connection(conn, ..)`;
   `Config { clock: Box<dyn FrameClock>, fractional_scale, max_buffers }`.
@@ -250,15 +259,41 @@ and the connection):
   change)` for each `take_surface_changes()` entry and `poll()` (ask
   `wants_frame` again) or `repaint(surface)` (force a paint).
 - `repaint_handle()` gives a `Send` `RepaintHandle` (a calloop channel:
-  `Request::{Repaint(id), RepaintAll, Poll}`); `take_input()` gives the
-  `mpsc::Receiver<InputEvent>` (pointer enter/leave/motion/button/axis in
-  surface-local logical pixels; keyboard later).
+  `Request::{Repaint(id), RepaintAll, Poll}`); `take_input()` creates the
+  `mpsc::Receiver<InputEvent>` (events are not queued before; keyboard
+  later). The cursor is set on enter (`wp_cursor_shape_v1`, else the
+  cursor theme); `State::last_button_serial()` is for popup grabs.
+- Frames lock to the refresh rate: after a buffer commit a surface paints
+  again only after that frame's callback (requested while `wants_frame`
+  stays true, or always without `wp_presentation`) or its presentation
+  feedback (`presented`/`discarded`, requested for every commit). Changes
+  arriving meanwhile coalesce into the next paint.
+- `screens: focused` is one layer surface created without an output
+  (wlr-layer-shell puts it on the output the user last interacted with);
+  `State::set_focused_monitor(Some(id))` (a compositor IPC service, M3)
+  pins it, moving an open one. An `osd` has an empty input region
+  (click-through).
 - `FrameClock` (`now`, `presented`, `discarded`, `predict(surface)`) is fed
   by `wp_presentation` feedback; `PresentationClock` is the real one,
   `FakeClock` the injectable one. `predict` becomes `PaintTarget::time`.
-- `MonitorId` is `"make | model | description"` (a duplicate gets ` #2`);
-  `Screens::Named` matches it or the connector name. `SurfaceId`s are
-  stable per (node, monitor) while the monitor is remembered.
+- `MonitorId` is `"make | model | description"`, minus a trailing
+  `" (<connector>)"` wlroots appends (a duplicate gets ` #2`, in plug
+  order); `Screens::Named` matches it or the connector name. `SurfaceId`s
+  are stable per (node, monitor), or (node, focused), while the monitor is
+  remembered.
+- Later (planned, so the current shape does not block them):
+  - M2: a shadowed surface needs `overhang: Insets` (painter-reported or
+    spec-resolved) that grows the layer size and shifts the margins while
+    `exclusive_zone` stays, plus `Painter::input_region`; `LayerConfig` is
+    built in one place (`placement::layer_config`) so this stays local.
+  - M2/M4: surface `exit` poses need the unmap delayed until exit
+    settles: render holds `Removed`/`open: false` until its exit is done
+    (or a `SurfaceHost::exit_done` hook); spec changes (compositor-animated
+    margins) get applied with the next buffer commit when a paint is
+    pending instead of a bare commit.
+  - M4: `raw_handles(surface)` (display + `wl_surface`) for GPU promotion
+    on the same surface; `State::recreate_all()` for `strand reload
+    --hard`.
 
 ### `strand-services`, `strand-watch`
 

@@ -36,7 +36,7 @@ impl Painter for Host {
 }
 
 impl SurfaceHost for Host {
-    fn surface_attached(&mut self, surface: SurfaceId, node: NodeId, _: &Monitor) {
+    fn surface_attached(&mut self, surface: SurfaceId, node: NodeId, _: Option<&Monitor>) {
         self.renderer.attach_surface(surface, node);
     }
 

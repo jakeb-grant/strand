@@ -16,7 +16,9 @@ use smithay_client_toolkit::dispatch2::Dispatch2;
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
-use smithay_client_toolkit::seat::pointer::{PointerEvent, PointerEventKind, PointerHandler};
+use smithay_client_toolkit::seat::pointer::{
+    CursorIcon, PointerEvent, PointerEventKind, PointerHandler, ThemeSpec, ThemedPointer,
+};
 use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::{
@@ -42,8 +44,8 @@ use wayland_protocols::wp::viewporter::client::{
 };
 
 use strand_scene::{
-    Keyboard, Layer, LogicalPoint, LogicalSize, NodeId, PaintTarget, Painter, Rect, Scale, Screens,
-    Size, SurfaceChange, SurfaceId, SurfaceSpec,
+    Keyboard, Layer, LogicalPoint, LogicalSize, NodeId, NodeKind, PaintTarget, Painter, Rect,
+    Scale, Screens, Size, SurfaceChange, SurfaceId, SurfaceSpec,
 };
 
 use crate::clock::{FrameClock, Presentation, PresentationClock};
@@ -57,9 +59,16 @@ use crate::shm::{BufferData, MAX_BUFFERS, ShmBuffers};
 /// to `Renderer::attach_surface`, `configure_surface` and `detach_surface`.
 /// Every method but `paint` and `wants_frame` has a no-op default.
 pub trait SurfaceHost: Painter {
-    /// A Wayland surface now shows `node` on `monitor`.
-    fn surface_attached(&mut self, surface: SurfaceId, node: NodeId, monitor: &Monitor) {
+    /// A Wayland surface now shows `node` on `monitor`. `None` for a
+    /// `screens: focused` surface the compositor places itself; its
+    /// monitor follows in [`SurfaceHost::surface_entered`].
+    fn surface_attached(&mut self, surface: SurfaceId, node: NodeId, monitor: Option<&Monitor>) {
         let _ = (surface, node, monitor);
+    }
+    /// The compositor showed a `screens: focused` surface on `monitor`
+    /// (first `wl_surface.enter`, after its first frame).
+    fn surface_entered(&mut self, surface: SurfaceId, monitor: &Monitor) {
+        let _ = (surface, monitor);
     }
     /// The surface's buffer size or scale changed; called before the first
     /// paint at that size.
@@ -96,6 +105,13 @@ pub trait SurfaceHost: Painter {
     /// painter must not count that frame (`Renderer::invalidate`).
     fn frame_dropped(&mut self, surface: SurfaceId) {
         let _ = surface;
+    }
+    /// Pointer input on one of the surfaces, on the main thread, before
+    /// it goes out on the [`SurfaceManager::take_input`] channel: render
+    /// hit-tests here (`hover`, `pressed`) and forwards node events to
+    /// logic.
+    fn input(&mut self, event: &InputEvent) {
+        let _ = event;
     }
 }
 
@@ -222,6 +238,12 @@ pub struct Stats {
     pub opaque_updates: u64,
     pub presented: u64,
     pub discarded: u64,
+    /// Dirty marks that waited because the surface's last frame was still
+    /// in flight (refresh-rate throttling).
+    pub throttled: u64,
+    /// Cursor images set on pointer enter (`wp_cursor_shape_v1` or the
+    /// cursor theme).
+    pub cursor_sets: u64,
 }
 
 /// A snapshot of one surface.
@@ -229,7 +251,13 @@ pub struct Stats {
 pub struct SurfaceInfo {
     pub id: SurfaceId,
     pub node: NodeId,
-    pub monitor: MonitorId,
+    pub kind: NodeKind,
+    /// The monitor it is on: the one its spec chose, or for `screens:
+    /// focused` the one the compositor showed it on (`None` until then).
+    pub monitor: Option<MonitorId>,
+    /// A `screens: focused` surface (one per node, placed by the
+    /// compositor or by [`State::set_focused_monitor`]).
+    pub focused: bool,
     pub namespace: String,
     /// The compositor configured it.
     pub configured: bool,
@@ -243,14 +271,38 @@ pub struct SurfaceInfo {
     pub fractional: bool,
     /// shm buffers currently allocated.
     pub buffers: usize,
+    /// `damage_buffer` rects of the last buffer commit.
+    pub last_damage: Vec<Rect>,
+    /// The opaque region last sent, in surface-local logical pixels.
+    pub opaque_region: Vec<Rect>,
+    /// Input passes through (an `osd`: empty input region).
+    pub click_through: bool,
     pub stats: Stats,
+}
+
+/// Where a surface of a node goes; with the node, the key of its stable
+/// [`SurfaceId`].
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum Placement {
+    Monitor(MonitorId),
+    /// `screens: focused`: one surface, on the focused output.
+    Focused,
 }
 
 struct Surface {
     id: SurfaceId,
+    /// Unique per created surface (ids are reused across recreation):
+    /// stale protocol events carry an older one.
+    generation: u64,
     node: NodeId,
-    monitor: MonitorId,
-    output: u32,
+    kind: NodeKind,
+    placement: Placement,
+    /// The monitor and `wl_output` global it is on (for `Focused`, known
+    /// after the first enter).
+    monitor: Option<MonitorId>,
+    output: Option<u32>,
+    /// The output asked for at creation (`None`: the compositor picks).
+    requested_output: Option<u32>,
     layer: LayerSurface,
     config: LayerConfig,
     viewport: Option<WpViewport>,
@@ -268,10 +320,19 @@ struct Surface {
     /// buffer.
     geometry_dirty: bool,
     callback_pending: bool,
+    /// Buffer commits so far; tags presentation feedback.
+    commit_seq: u64,
+    /// The buffer commit whose presentation (or discard) we wait for
+    /// before painting again: frames lock to the refresh rate.
+    in_flight: Option<u64>,
+    /// A configure was acked and no commit has followed yet.
+    ack_pending: bool,
     /// A paint is owed: first configure, resize, rescale or a request.
     repaint: bool,
     /// Last opaque region sent, in logical pixels.
     opaque: Vec<Rect>,
+    last_damage: Vec<Rect>,
+    click_through: bool,
     stats: Stats,
 }
 
@@ -282,6 +343,11 @@ impl Surface {
 
     fn is_fractional(&self) -> bool {
         self.viewport.is_some() && self.fractional.is_some()
+    }
+
+    /// Waiting for a frame callback or for the last frame's presentation.
+    fn throttled(&self) -> bool {
+        self.callback_pending || self.in_flight.is_some()
     }
 
     /// The buffer size for the current logical size and scale.
@@ -300,7 +366,9 @@ impl Surface {
         SurfaceInfo {
             id: self.id,
             node: self.node,
+            kind: self.kind,
             monitor: self.monitor.clone(),
+            focused: self.placement == Placement::Focused,
             namespace: self.config.namespace.clone(),
             configured: self.configured,
             logical_size: self.logical,
@@ -308,6 +376,9 @@ impl Surface {
             scale: self.scale,
             fractional: self.is_fractional(),
             buffers: self.buffers.slots.len(),
+            last_damage: self.last_damage.clone(),
+            opaque_region: self.opaque.clone(),
+            click_through: self.click_through,
             stats: self.stats,
         }
     }
@@ -321,9 +392,14 @@ pub struct StrandGlobal;
 #[derive(Debug)]
 pub struct SurfaceTag(SurfaceId);
 
-/// User data for presentation feedback.
+/// User data for presentation feedback: the surface, its generation and
+/// the buffer commit the feedback is for.
 #[derive(Debug)]
-pub struct FeedbackTag(SurfaceId);
+pub struct FeedbackTag {
+    surface: SurfaceId,
+    generation: u64,
+    seq: u64,
+}
 
 /// The event loop's shared data: everything the surface manager owns plus
 /// the host. Reached through [`SurfaceManager::state`] or in calloop
@@ -351,15 +427,20 @@ pub struct State<H: SurfaceHost + 'static> {
     specs: BTreeMap<NodeId, SurfaceSpec>,
     surfaces: BTreeMap<SurfaceId, Surface>,
     by_wl: HashMap<ObjectId, SurfaceId>,
-    /// Stable ids per (node, monitor), kept while the monitor is
+    /// Stable ids per (node, placement), kept while the monitor is
     /// remembered so a replugged monitor gets its surface id back.
-    ids: HashMap<(NodeId, MonitorId), SurfaceId>,
+    ids: HashMap<(NodeId, Placement), SurfaceId>,
     next_id: u32,
+    next_generation: u64,
     dirty: BTreeSet<SurfaceId>,
     flush_scheduled: bool,
-    pointers: Vec<(wl_seat::WlSeat, wl_pointer::WlPointer)>,
+    pointers: Vec<SeatPointer>,
+    /// Set by [`State::set_focused_monitor`]; `None` lets the compositor
+    /// place `screens: focused` surfaces.
     focused: Option<MonitorId>,
-    input: mpsc::Sender<InputEvent>,
+    /// Created by [`SurfaceManager::take_input`]; events are dropped
+    /// until then.
+    input: Option<mpsc::Sender<InputEvent>>,
     stats: Stats,
     expiry_timer: Option<RegistrationToken>,
     deadline_timers: HashMap<SurfaceId, RegistrationToken>,
@@ -375,6 +456,16 @@ impl<H: SurfaceHost + 'static> std::fmt::Debug for State<H> {
     }
 }
 
+/// A seat's pointer, with the cursor it shows over our surfaces.
+struct SeatPointer {
+    seat: wl_seat::WlSeat,
+    pointer: ThemedPointer,
+    /// Serial of the last button press (for popup grabs), and of the
+    /// last enter.
+    button_serial: Option<u32>,
+    enter_serial: Option<u32>,
+}
+
 /// Owns the Wayland connection and the event loop of the main thread.
 ///
 /// Typical wiring (see `docs/architecture.md`, "Render loop"): build it
@@ -386,7 +477,6 @@ impl<H: SurfaceHost + 'static> std::fmt::Debug for State<H> {
 pub struct SurfaceManager<H: SurfaceHost + 'static> {
     event_loop: EventLoop<'static, State<H>>,
     state: State<H>,
-    input: Option<mpsc::Receiver<InputEvent>>,
     repaint: channel::Sender<Request>,
 }
 
@@ -449,7 +539,6 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             })
             .map_err(|e| SurfaceError::EventLoop(e.error))?;
 
-        let (input_tx, input_rx) = mpsc::channel();
         let state = State {
             host,
             conn,
@@ -474,11 +563,12 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             by_wl: HashMap::new(),
             ids: HashMap::new(),
             next_id: 1,
+            next_generation: 1,
             dirty: BTreeSet::new(),
             flush_scheduled: false,
             pointers: Vec::new(),
             focused: None,
-            input: input_tx,
+            input: None,
             stats: Stats::default(),
             expiry_timer: None,
             deadline_timers: HashMap::new(),
@@ -486,7 +576,6 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
         Ok(Self {
             event_loop,
             state,
-            input: Some(input_rx),
             repaint,
         })
     }
@@ -549,9 +638,16 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
         }
     }
 
-    /// The receiving end of the input channel (once).
+    /// The receiving end of the input channel (once). Input arriving
+    /// before this is called is not queued (the host still sees it through
+    /// [`SurfaceHost::input`]).
     pub fn take_input(&mut self) -> Option<mpsc::Receiver<InputEvent>> {
-        self.input.take()
+        if self.state.input.is_some() {
+            return None;
+        }
+        let (tx, rx) = mpsc::channel();
+        self.state.input = Some(tx);
+        Some(rx)
     }
 }
 
@@ -690,67 +786,118 @@ impl<H: SurfaceHost + 'static> State<H> {
 
     // ---- outputs and surfaces -------------------------------------------
 
-    fn focused_monitor(&self) -> Option<MonitorId> {
-        self.focused
-            .clone()
-            .filter(|id| self.monitors.present().any(|m| &m.id == id))
-            .or_else(|| {
-                self.outputs
-                    .keys()
-                    .find_map(|g| self.monitors.id_of(*g).cloned())
-            })
+    /// Places `screens: focused` surfaces on `monitor` (from a compositor
+    /// IPC service), moving open ones there. `None` (the default) lets the
+    /// compositor choose: wlr-layer-shell puts a surface created without
+    /// an output on the output the user last interacted with.
+    pub fn set_focused_monitor(&mut self, monitor: Option<MonitorId>) {
+        if self.focused == monitor {
+            return;
+        }
+        self.focused = monitor;
+        self.reconcile_all();
     }
 
-    fn wants(&self, spec: &SurfaceSpec, monitor: &Monitor, focused: Option<&MonitorId>) -> bool {
-        if !spec.open || layer_config(spec).is_err() {
-            return false;
-        }
+    /// The focused monitor set by [`State::set_focused_monitor`].
+    pub fn focused_monitor(&self) -> Option<&MonitorId> {
+        self.focused.as_ref()
+    }
+
+    /// Serial of the last pointer button press on one of our surfaces, for
+    /// popup grabs (`xdg_popup.grab`).
+    pub fn last_button_serial(&self) -> Option<u32> {
+        self.pointers.iter().filter_map(|p| p.button_serial).max()
+    }
+
+    /// The `wl_output` global of the focused monitor, when one is set and
+    /// plugged in.
+    fn focused_output(&self) -> Option<u32> {
+        let id = self.focused.as_ref()?;
+        self.outputs
+            .keys()
+            .copied()
+            .find(|g| self.monitors.id_of(*g) == Some(id))
+    }
+
+    fn wants(spec: &SurfaceSpec, monitor: &Monitor) -> bool {
         match &spec.screens {
             Screens::All => true,
-            Screens::Focused => focused == Some(&monitor.id),
+            Screens::Focused => false,
             Screens::Named(names) => names.iter().any(|n| {
                 n == monitor.id.as_str() || monitor.connector.as_deref() == Some(n.as_str())
             }),
         }
     }
 
+    fn reconcile_all(&mut self) {
+        let nodes: Vec<NodeId> = self.specs.keys().copied().collect();
+        for node in nodes {
+            self.reconcile(node);
+        }
+    }
+
     /// Creates and destroys `node`'s surfaces so there is exactly one on
-    /// each monitor its spec asks for.
+    /// each monitor its spec asks for (one in all for `screens: focused`).
     fn reconcile(&mut self, node: NodeId) {
         let Some(spec) = self.specs.get(&node).cloned() else {
             return;
         };
-        if let Err(e) = layer_config(&spec) {
-            log::warn!("{}: {e}", spec.namespace());
-        }
-        let focused = self.focused_monitor();
-        let wanted: Vec<(u32, Monitor)> = self
-            .outputs
-            .keys()
-            .filter_map(|g| {
-                let id = self.monitors.id_of(*g)?;
-                let m = self.monitors.get(id)?;
-                self.wants(&spec, m, focused.as_ref())
-                    .then(|| (*g, m.clone()))
-            })
-            .collect();
+        let mapped = match layer_config(&spec) {
+            Ok(_) => spec.open,
+            Err(e) => {
+                log::warn!("{}: {e}", spec.namespace());
+                false
+            }
+        };
+        let focused = spec.screens == Screens::Focused;
+        let wanted: Vec<(u32, Monitor)> = if mapped && !focused {
+            self.outputs
+                .keys()
+                .filter_map(|g| {
+                    let m = self.monitors.get(self.monitors.id_of(*g)?)?;
+                    Self::wants(&spec, m).then(|| (*g, m.clone()))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let want_focused = mapped && focused && !self.outputs.is_empty();
+        let target = self.focused_output();
         let stale: Vec<SurfaceId> = self
             .surfaces
             .values()
-            .filter(|s| s.node == node && !wanted.iter().any(|(_, m)| m.id == s.monitor))
+            .filter(|s| s.node == node)
+            .filter(|s| match &s.placement {
+                Placement::Monitor(m) => !wanted.iter().any(|(_, w)| &w.id == m),
+                Placement::Focused => {
+                    !want_focused
+                        || target.is_some_and(|t| match s.output {
+                            // Shown elsewhere, or asked for elsewhere and
+                            // not shown yet: move it.
+                            Some(on) => on != t,
+                            None => s.requested_output != Some(t),
+                        })
+                }
+            })
             .map(|s| s.id)
             .collect();
         for id in stale {
             self.destroy_surface(id);
         }
-        for (global, monitor) in wanted {
-            let exists = self
+        let has = |state: &Self, p: &Placement| {
+            state
                 .surfaces
                 .values()
-                .any(|s| s.node == node && s.monitor == monitor.id);
-            if !exists {
-                self.create_surface(node, &spec, global, &monitor);
+                .any(|s| s.node == node && &s.placement == p)
+        };
+        for (global, monitor) in wanted {
+            let placement = Placement::Monitor(monitor.id.clone());
+            if !has(self, &placement) {
+                self.create_surface(node, &spec, placement, Some(global));
             }
+        }
+        if want_focused && !has(self, &Placement::Focused) {
+            self.create_surface(node, &spec, Placement::Focused, target);
         }
     }
 
@@ -785,15 +932,64 @@ impl<H: SurfaceHost + 'static> State<H> {
         }
     }
 
-    fn create_surface(&mut self, node: NodeId, spec: &SurfaceSpec, global: u32, monitor: &Monitor) {
+    /// The initial buffer scale for a surface on `output` (`None`: wherever
+    /// the compositor puts it) until the compositor states its preference.
+    fn initial_scale(&self, output: Option<u32>, fractional: bool) -> (Scale, i32) {
+        let infos: Vec<_> = match output {
+            Some(g) => self
+                .outputs
+                .get(&g)
+                .and_then(|o| self.output_state.info(o))
+                .into_iter()
+                .collect(),
+            None => self
+                .outputs
+                .values()
+                .filter_map(|o| self.output_state.info(o))
+                .collect(),
+        };
+        // Unknown output: a value every output shares, else the default.
+        fn shared<T: PartialEq + Copy>(mut v: impl Iterator<Item = T>) -> Option<T> {
+            let first = v.next()?;
+            v.all(|x| x == first).then_some(first)
+        }
+        let integer_scale = shared(infos.iter().map(|i| i.scale_factor.max(1))).unwrap_or(1);
+        let fallback = Scale::from_integer(integer_scale as u32).unwrap_or(Scale::ONE);
+        let scale = if fractional {
+            // From the output's mode and logical size, so the first frame
+            // is already sharp.
+            shared(infos.iter().map(estimate_scale))
+                .flatten()
+                .unwrap_or(fallback)
+        } else {
+            fallback
+        };
+        (scale, integer_scale)
+    }
+
+    fn create_surface(
+        &mut self,
+        node: NodeId,
+        spec: &SurfaceSpec,
+        placement: Placement,
+        global: Option<u32>,
+    ) {
         let config = match layer_config(spec) {
             Ok(c) => c,
             Err(PlacementError::AutoSize(_) | PlacementError::NotLayerSurface(_)) => return,
         };
-        let Some(output) = self.outputs.get(&global).cloned() else {
-            return;
+        let output = match global {
+            Some(g) => match self.outputs.get(&g) {
+                Some(o) => Some(o.clone()),
+                None => return,
+            },
+            None => None,
         };
-        let key = (node, monitor.id.clone());
+        let monitor = global
+            .and_then(|g| self.monitors.id_of(g))
+            .and_then(|id| self.monitors.get(id))
+            .cloned();
+        let key = (node, placement.clone());
         let id = match self.ids.get(&key) {
             Some(id) => *id,
             None => {
@@ -803,13 +999,15 @@ impl<H: SurfaceHost + 'static> State<H> {
                 id
             }
         };
+        let generation = self.next_generation;
+        self.next_generation += 1;
         let wl = self.compositor.create_surface(&self.qh);
         let layer = self.layer_shell.create_layer_surface(
             &self.qh,
             wl.clone(),
             to_sctk_layer(config.layer),
             Some(config.namespace.clone()),
-            Some(&output),
+            output.as_ref(),
         );
         apply_layer_config(&layer, &config);
         let (viewport, fractional) = match (&self.viewporter, &self.fractional_manager) {
@@ -819,25 +1017,27 @@ impl<H: SurfaceHost + 'static> State<H> {
             ),
             _ => (None, None),
         };
-        let info = self.output_state.info(&output);
-        let integer_scale = info.as_ref().map_or(1, |i| i.scale_factor.max(1));
-        // Until the compositor says otherwise, guess the fractional scale
-        // from the output's mode and logical size so the first frame is
-        // already sharp.
-        let scale = if fractional.is_some() {
-            info.as_ref()
-                .and_then(estimate_scale)
-                .unwrap_or_else(|| Scale::from_integer(integer_scale as u32).unwrap_or(Scale::ONE))
-        } else {
-            Scale::from_integer(integer_scale as u32).unwrap_or(Scale::ONE)
-        };
+        let (scale, integer_scale) = self.initial_scale(global, fractional.is_some());
+        // An OSD is click-through (design example d): an empty input region
+        // lets clicks reach the windows beneath it.
+        let click_through = spec.kind == NodeKind::Osd;
+        if click_through {
+            match Region::new(&self.compositor) {
+                Ok(region) => wl.set_input_region(Some(region.wl_region())),
+                Err(e) => log::warn!("{}: no input region: {e}", config.namespace),
+            }
+        }
         layer.commit();
         self.by_wl.insert(wl.id(), id);
         let surface = Surface {
             id,
+            generation,
             node,
-            monitor: monitor.id.clone(),
+            kind: spec.kind,
+            placement,
+            monitor: monitor.as_ref().map(|m| m.id.clone()),
             output: global,
+            requested_output: global,
             layer,
             config,
             viewport,
@@ -850,8 +1050,13 @@ impl<H: SurfaceHost + 'static> State<H> {
             buffers: ShmBuffers::new(id, self.max_buffers),
             geometry_dirty: true,
             callback_pending: false,
+            commit_seq: 0,
+            in_flight: None,
+            ack_pending: false,
             repaint: true,
             opaque: Vec::new(),
+            last_damage: Vec::new(),
+            click_through,
             stats: Stats {
                 bare_commits: 1,
                 ..Stats::default()
@@ -859,7 +1064,7 @@ impl<H: SurfaceHost + 'static> State<H> {
         };
         self.stats.bare_commits += 1;
         self.surfaces.insert(id, surface);
-        self.host.surface_attached(id, node, monitor);
+        self.host.surface_attached(id, node, monitor.as_ref());
     }
 
     fn destroy_surface(&mut self, id: SurfaceId) {
@@ -909,10 +1114,7 @@ impl<H: SurfaceHost + 'static> State<H> {
         self.outputs.insert(global, output);
         self.host
             .monitor_added(&plugged.monitor, plugged.reconnected);
-        let nodes: Vec<NodeId> = self.specs.keys().copied().collect();
-        for node in nodes {
-            self.reconcile(node);
-        }
+        self.reconcile_all();
     }
 
     fn output_removed(&mut self, output: &wl_output::WlOutput) {
@@ -923,24 +1125,18 @@ impl<H: SurfaceHost + 'static> State<H> {
         let ids: Vec<SurfaceId> = self
             .surfaces
             .values()
-            .filter(|s| s.output == global)
+            .filter(|s| s.output == Some(global) || s.requested_output == Some(global))
             .map(|s| s.id)
             .collect();
         for id in ids {
             self.destroy_surface(id);
         }
         if let Some(monitor) = self.monitors.unplug(global, Instant::now()) {
-            if self.focused.as_ref() == Some(&monitor.id) {
-                self.focused = None;
-            }
             self.host.monitor_removed(&monitor);
             self.arm_expiry();
         }
-        // `screens: focused` surfaces follow the new focus.
-        let nodes: Vec<NodeId> = self.specs.keys().copied().collect();
-        for node in nodes {
-            self.reconcile(node);
-        }
+        // `screens: focused` surfaces it showed come back on another one.
+        self.reconcile_all();
     }
 
     fn arm_expiry(&mut self) {
@@ -970,21 +1166,24 @@ impl<H: SurfaceHost + 'static> State<H> {
 
     fn forget_expired(&mut self, now: Instant) {
         for monitor in self.monitors.expire(now) {
-            self.ids.retain(|(_, m), _| *m != monitor.id);
+            self.ids
+                .retain(|(_, p), _| *p != Placement::Monitor(monitor.id.clone()));
             self.host.monitor_forgotten(&monitor);
         }
     }
 
     // ---- geometry ---------------------------------------------------------
 
-    /// Re-derives the buffer size after a configure or a scale change and
-    /// schedules a paint if it changed.
-    fn update_geometry(&mut self, id: SurfaceId) {
+    /// Re-derives the buffer size from the latest configure and scale, right
+    /// before a paint, so all the events of one wakeup (a configure plus a
+    /// `preferred_scale`) make one `surface_configured` and one resize.
+    /// Returns false if the surface is gone or not configured.
+    fn update_geometry(&mut self, id: SurfaceId) -> bool {
         let Some(s) = self.surfaces.get_mut(&id) else {
-            return;
+            return false;
         };
         if !s.configured {
-            return;
+            return false;
         }
         let size = s.buffer_size();
         let scale = if s.is_fractional() {
@@ -994,14 +1193,14 @@ impl<H: SurfaceHost + 'static> State<H> {
         };
         s.scale = scale;
         if size == s.buffers.size() && s.reported_scale == Some(scale) {
-            return;
+            return true;
         }
         s.reported_scale = Some(scale);
         s.buffers.resize(size);
         s.geometry_dirty = true;
         s.repaint = true;
         self.host.surface_configured(id, size, scale);
-        self.mark(id);
+        true
     }
 
     // ---- painting ----------------------------------------------------------
@@ -1010,10 +1209,31 @@ impl<H: SurfaceHost + 'static> State<H> {
         let Some(s) = self.surfaces.get_mut(&id) else {
             return;
         };
-        if !s.configured || s.callback_pending {
+        if !s.configured {
             return;
         }
+        if s.throttled() {
+            // The frame in flight's callback or presentation marks it
+            // again; whatever changed meanwhile is painted then, once.
+            s.stats.throttled += 1;
+            self.stats.throttled += 1;
+            return;
+        }
+        if !self.update_geometry(id) {
+            return;
+        }
+        let Some(s) = self.surfaces.get_mut(&id) else {
+            return;
+        };
         if !(s.repaint || self.host.wants_frame(id)) {
+            if s.ack_pending {
+                // A configure that needs no new frame (margins, exclusive
+                // zone) still takes effect only with a commit.
+                s.ack_pending = false;
+                s.layer.commit();
+                s.stats.bare_commits += 1;
+                self.stats.bare_commits += 1;
+            }
             return;
         }
         let acquired = match s.buffers.acquire(&self.shm, &self.qh) {
@@ -1062,6 +1282,12 @@ impl<H: SurfaceHost + 'static> State<H> {
             s.stats.empty_paints += 1;
             self.stats.empty_paints += 1;
             if !wants_more {
+                if s.ack_pending {
+                    s.ack_pending = false;
+                    wl.commit();
+                    s.stats.bare_commits += 1;
+                    self.stats.bare_commits += 1;
+                }
                 return;
             }
             if let Some(at) = self.host.frame_deadline(id) {
@@ -1069,6 +1295,7 @@ impl<H: SurfaceHost + 'static> State<H> {
             } else {
                 wl.frame(&self.qh, FrameCallbackData(wl.clone()));
                 s.callback_pending = true;
+                s.ack_pending = false;
                 wl.commit();
                 s.stats.frame_requests += 1;
                 s.stats.bare_commits += 1;
@@ -1098,32 +1325,59 @@ impl<H: SurfaceHost + 'static> State<H> {
             for r in damage.rects() {
                 wl.damage_buffer(r.x, r.y, clamp_i32(r.w), clamp_i32(r.h));
             }
+            s.last_damage = damage.rects().to_vec();
         } else {
             wl.damage(0, 0, i32::MAX, i32::MAX);
+            s.last_damage = vec![Rect::new(0, 0, size.w, size.h)];
         }
         let opaque = scale.inner_logical_region(&self.host.opaque_region(id));
         if opaque != s.opaque {
-            if opaque.is_empty() {
+            let sent = if opaque.is_empty() {
                 wl.set_opaque_region(None);
-            } else if let Ok(region) = Region::new(&self.compositor) {
-                for r in &opaque {
-                    region.add(r.x, r.y, clamp_i32(r.w), clamp_i32(r.h));
+                true
+            } else {
+                match Region::new(&self.compositor) {
+                    Ok(region) => {
+                        for r in &opaque {
+                            region.add(r.x, r.y, clamp_i32(r.w), clamp_i32(r.h));
+                        }
+                        wl.set_opaque_region(Some(region.wl_region()));
+                        true
+                    }
+                    Err(e) => {
+                        log::warn!("{}: no opaque region: {e}", s.config.namespace);
+                        false
+                    }
                 }
-                wl.set_opaque_region(Some(region.wl_region()));
+            };
+            // Unsent regions are retried with the next frame.
+            if sent {
+                s.opaque = opaque;
+                s.stats.opaque_updates += 1;
+                self.stats.opaque_updates += 1;
             }
-            s.opaque = opaque;
-            s.stats.opaque_updates += 1;
-            self.stats.opaque_updates += 1;
         }
+        s.commit_seq += 1;
         if let Some(p) = &self.presentation {
-            p.feedback(&wl, &self.qh, FeedbackTag(id));
+            let tag = FeedbackTag {
+                surface: id,
+                generation: s.generation,
+                seq: s.commit_seq,
+            };
+            p.feedback(&wl, &self.qh, tag);
         }
-        if wants_more {
+        // Throttle to the refresh rate: paint again only after this frame's
+        // callback, or (when nothing is animating) its presentation, which
+        // is requested anyway and costs no extra wakeup when idle.
+        if wants_more || self.presentation.is_none() {
             wl.frame(&self.qh, FrameCallbackData(wl.clone()));
             s.callback_pending = true;
             s.stats.frame_requests += 1;
             self.stats.frame_requests += 1;
+        } else {
+            s.in_flight = Some(s.commit_seq);
         }
+        s.ack_pending = false;
         wl.commit();
         s.buffers.slots.commit(acquired.index);
         s.stats.commits += 1;
@@ -1150,15 +1404,36 @@ impl<H: SurfaceHost + 'static> State<H> {
         }
     }
 
+    /// Presentation feedback for commit `seq` of `surface` arrived (or was
+    /// discarded): the frame is no longer in flight.
+    fn frame_settled(&mut self, tag: &FeedbackTag) -> bool {
+        let Some(s) = self.surfaces.get_mut(&tag.surface) else {
+            return false;
+        };
+        if s.generation != tag.generation {
+            return false;
+        }
+        if s.in_flight == Some(tag.seq) {
+            s.in_flight = None;
+            self.mark(tag.surface);
+        }
+        true
+    }
+
     // ---- events ----------------------------------------------------------
 
     fn surface_for(&self, wl: &wl_surface::WlSurface) -> Option<SurfaceId> {
         self.by_wl.get(&wl.id()).copied()
     }
 
-    fn send_input(&self, event: InputEvent) {
-        // A dropped receiver means nobody listens; that is fine.
-        let _ = self.input.send(event);
+    fn send_input(&mut self, event: InputEvent) {
+        self.host.input(&event);
+        if let Some(tx) = &self.input {
+            if tx.send(event).is_err() {
+                // Nobody listens any more: stop queueing.
+                self.input = None;
+            }
+        }
     }
 }
 
@@ -1222,7 +1497,8 @@ impl<H: SurfaceHost + 'static> CompositorHandler for State<H> {
         if let Some(s) = self.surfaces.get_mut(&id) {
             s.integer_scale = new_factor.max(1);
         }
-        self.update_geometry(id);
+        // Resolved with the next paint (see `update_geometry`).
+        self.mark(id);
     }
 
     fn transform_changed(
@@ -1257,9 +1533,33 @@ impl<H: SurfaceHost + 'static> CompositorHandler for State<H> {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_surface::WlSurface,
-        _: &wl_output::WlOutput,
+        surface: &wl_surface::WlSurface,
+        output: &wl_output::WlOutput,
     ) {
+        // A `screens: focused` surface learns where the compositor put it.
+        let Some(id) = self.surface_for(surface) else {
+            return;
+        };
+        let Some(global) = self.output_globals.get(&output.id()).copied() else {
+            return;
+        };
+        let Some(monitor) = self
+            .monitors
+            .id_of(global)
+            .and_then(|m| self.monitors.get(m))
+            .cloned()
+        else {
+            return;
+        };
+        let Some(s) = self.surfaces.get_mut(&id) else {
+            return;
+        };
+        if s.placement != Placement::Focused || s.monitor.as_ref() == Some(&monitor.id) {
+            return;
+        }
+        s.monitor = Some(monitor.id.clone());
+        s.output = Some(global);
+        self.host.surface_entered(id, &monitor);
     }
 
     fn surface_leave(
@@ -1356,10 +1656,11 @@ impl<H: SurfaceHost + 'static> LayerShellHandler for State<H> {
         s.logical = (w, h);
         let first = !s.configured;
         s.configured = true;
+        s.ack_pending = true;
         if first {
             s.repaint = true;
         }
-        self.update_geometry(id);
+        // Size and scale are resolved once, right before the next paint.
         self.mark(id);
     }
 }
@@ -1378,9 +1679,23 @@ impl<H: SurfaceHost + 'static> SeatHandler for State<H> {
         seat: wl_seat::WlSeat,
         capability: Capability,
     ) {
-        if capability == Capability::Pointer {
-            match self.seat_state.get_pointer(qh, &seat) {
-                Ok(p) => self.pointers.push((seat, p)),
+        if capability == Capability::Pointer && !self.pointers.iter().any(|p| p.seat == seat) {
+            // A themed pointer sets the cursor through wp_cursor_shape_v1
+            // when the compositor has it, else from the cursor theme.
+            let cursor_surface = self.compositor.create_surface(qh);
+            match self.seat_state.get_pointer_with_theme::<_, ()>(
+                qh,
+                &seat,
+                self.shm.wl_shm(),
+                cursor_surface,
+                ThemeSpec::default(),
+            ) {
+                Ok(pointer) => self.pointers.push(SeatPointer {
+                    seat,
+                    pointer,
+                    button_serial: None,
+                    enter_serial: None,
+                }),
                 Err(e) => log::warn!("cannot get the pointer: {e}"),
             }
         }
@@ -1394,13 +1709,8 @@ impl<H: SurfaceHost + 'static> SeatHandler for State<H> {
         capability: Capability,
     ) {
         if capability == Capability::Pointer {
-            self.pointers.retain(|(s, p)| {
-                let mine = *s == seat;
-                if mine {
-                    p.release();
-                }
-                !mine
-            });
+            // Dropping a themed pointer releases it.
+            self.pointers.retain(|p| p.seat != seat);
         }
     }
 
@@ -1422,20 +1732,33 @@ fn axis_delta(a: &smithay_client_toolkit::seat::pointer::AxisScroll) -> AxisDelt
 impl<H: SurfaceHost + 'static> PointerHandler for State<H> {
     fn pointer_frame(
         &mut self,
-        _: &Connection,
+        conn: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_pointer::WlPointer,
+        pointer: &wl_pointer::WlPointer,
         events: &[PointerEvent],
     ) {
+        let seat = self
+            .pointers
+            .iter()
+            .position(|p| p.pointer.pointer() == pointer);
         for e in events {
             let Some(surface) = self.surface_for(&e.surface) else {
                 continue;
             };
             let position = LogicalPoint::new(e.position.0 as f32, e.position.1 as f32);
             let event = match &e.kind {
-                PointerEventKind::Enter { .. } => {
-                    if let Some(s) = self.surfaces.get(&surface) {
-                        self.focused = Some(s.monitor.clone());
+                PointerEventKind::Enter { serial } => {
+                    if let Some(p) = seat.and_then(|i| self.pointers.get_mut(i)) {
+                        p.enter_serial = Some(*serial);
+                        match p.pointer.set_cursor(conn, CursorIcon::Default) {
+                            Ok(()) => {
+                                self.stats.cursor_sets += 1;
+                                if let Some(s) = self.surfaces.get_mut(&surface) {
+                                    s.stats.cursor_sets += 1;
+                                }
+                            }
+                            Err(e) => log::debug!("cannot set the cursor: {e}"),
+                        }
                     }
                     InputEvent::PointerEnter { surface, position }
                 }
@@ -1445,16 +1768,27 @@ impl<H: SurfaceHost + 'static> PointerHandler for State<H> {
                     position,
                     time: *time,
                 },
-                PointerEventKind::Press { time, button, .. }
-                | PointerEventKind::Release { time, button, .. } => InputEvent::PointerButton {
+                PointerEventKind::Press {
+                    time,
+                    button,
+                    serial,
+                } => {
+                    if let Some(p) = seat.and_then(|i| self.pointers.get_mut(i)) {
+                        p.button_serial = Some(*serial);
+                    }
+                    InputEvent::PointerButton {
+                        surface,
+                        position,
+                        button: *button,
+                        state: ButtonState::Pressed,
+                        time: *time,
+                    }
+                }
+                PointerEventKind::Release { time, button, .. } => InputEvent::PointerButton {
                     surface,
                     position,
                     button: *button,
-                    state: if matches!(e.kind, PointerEventKind::Press { .. }) {
-                        ButtonState::Pressed
-                    } else {
-                        ButtonState::Released
-                    },
+                    state: ButtonState::Released,
                     time: *time,
                 },
                 PointerEventKind::Axis {
@@ -1571,9 +1905,11 @@ impl<H: SurfaceHost + 'static> Dispatch2<WpFractionalScaleV1, State<H>> for Surf
                 return;
             };
             if let Some(s) = state.surfaces.get_mut(&self.0) {
-                s.scale = scale;
+                if s.scale != scale {
+                    s.scale = scale;
+                    state.mark(self.0);
+                }
             }
-            state.update_geometry(self.0);
         }
     }
 }
@@ -1619,16 +1955,20 @@ impl<H: SurfaceHost + 'static> Dispatch2<WpPresentationFeedback, State<H>> for F
                     seq: (u64::from(seq_hi) << 32) | u64::from(seq_lo),
                 };
                 state.stats.presented += 1;
-                if let Some(s) = state.surfaces.get_mut(&self.0) {
-                    s.stats.presented += 1;
-                    state.clock.presented(self.0, presentation);
+                if state.frame_settled(self) {
+                    if let Some(s) = state.surfaces.get_mut(&self.surface) {
+                        s.stats.presented += 1;
+                    }
+                    state.clock.presented(self.surface, presentation);
                 }
             }
             wp_presentation_feedback::Event::Discarded => {
                 state.stats.discarded += 1;
-                if let Some(s) = state.surfaces.get_mut(&self.0) {
-                    s.stats.discarded += 1;
-                    state.clock.discarded(self.0);
+                if state.frame_settled(self) {
+                    if let Some(s) = state.surfaces.get_mut(&self.surface) {
+                        s.stats.discarded += 1;
+                    }
+                    state.clock.discarded(self.surface);
                 }
             }
             _ => {}

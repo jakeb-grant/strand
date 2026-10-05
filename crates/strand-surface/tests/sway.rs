@@ -7,7 +7,9 @@ mod common;
 use std::time::{Duration, Instant};
 
 use common::*;
-use strand_scene::{LogicalRect, Scale, Size, SurfaceChange};
+use strand_scene::{
+    Damage, LogicalRect, LogicalSize, NodeId, NodeKind, Scale, Size, SurfaceChange,
+};
 use strand_surface::{ButtonState, Config, FakeClock, InputEvent, MAX_BUFFERS, Request};
 
 #[test]
@@ -42,7 +44,7 @@ fn bar_on_every_output_with_hotplug() {
         .find(|m| m.connector.as_deref() == Some(second.as_str()))
         .unwrap()
         .clone();
-    assert_eq!(on_second.monitor, second_monitor.id);
+    assert_eq!(on_second.monitor.as_ref(), Some(&second_monitor.id));
     assert_eq!(on_second.logical_size, (1920, 36));
     assert_eq!(mgr.state().host().attached.len(), 2);
 
@@ -179,6 +181,11 @@ fn renders_pixels_with_exact_damage() {
         }
         let new = Scale::ONE.snap_rect(sq);
         assert!(paint.damage.covers(new));
+        // Exactly the painter's rects went out as damage_buffer.
+        assert_eq!(
+            mgr.state().surfaces()[0].last_damage,
+            paint.damage.rects().to_vec()
+        );
         if let Some(old) = previous {
             assert!(paint.damage.covers(Scale::ONE.snap_rect(old)));
         }
@@ -214,12 +221,24 @@ fn fractional_scale_buffers_and_viewport() {
     )
     .unwrap();
     assert!(mgr.state().fractional_available());
+    mgr.state_mut().host_mut().opaque = true;
     mgr.state_mut()
         .apply_surface_change(BAR, SurfaceChange::Created(bar_spec("Top", 36.0)));
     wait_for_bars(&mut mgr, 1);
     settle(&mut mgr);
     let info = mgr.state().surfaces()[0].clone();
     assert!(info.fractional);
+    // The opaque region went out in logical pixels: the whole 1920×54
+    // buffer is the whole 1280×36 surface.
+    let scale = Scale::new(180).unwrap();
+    assert_eq!(
+        info.opaque_region,
+        scale.inner_logical_region(&Damage::full(Size::new(1920, 54)))
+    );
+    assert_eq!(
+        info.opaque_region,
+        vec![strand_scene::Rect::new(0, 0, 1280, 36)]
+    );
     assert_eq!(info.scale, Scale::new(180).unwrap());
     assert_eq!(info.logical_size, (1280, 36));
     // 1280 × 1.5 and 36 × 1.5 are exact.
@@ -279,6 +298,179 @@ fn fractional_scale_buffers_and_viewport() {
         Size::new(1920, 72)
     );
     assert_eq!(mgr.state().host().age_errors, 0);
+    // Each output-scale change reached the host as one configure, at a
+    // size that was then painted (never an intermediate one).
+    assert_configured_sizes_painted(mgr.state().host());
+    assert_eq!(mgr.state().host().configured.len(), 3);
+}
+
+/// Checks every pixel of the first and last `cols` columns of `rows` rows
+/// against the 1-px checkerboard, and that the row below is not the bar.
+fn assert_checker(shot: &Image, rows: u32, cols: u32, what: &str) {
+    for y in 0..rows {
+        for x in (0..cols).chain(shot.width - cols..shot.width) {
+            assert_eq!(
+                shot.rgb(x, y),
+                checker_at(x, y),
+                "{what}: pixel ({x}, {y}) was resampled"
+            );
+        }
+    }
+    for x in 0..cols {
+        let below = shot.rgb(x, rows);
+        assert!(
+            below != BLUE && below != WHITE,
+            "{what}: bar taller than {rows} rows"
+        );
+    }
+}
+
+#[test]
+fn fractional_buffers_are_crisp() {
+    let Some(sway) = Sway::start("fractional_buffers_are_crisp") else {
+        return;
+    };
+    // 33 × 1.25 = 41.25: the buffer is 41 rows and shown 1:1.
+    sway.msg(&["output", "HEADLESS-1", "scale", "1.25"]);
+    let mut host = TestHost::default();
+    host.checker = true;
+    let mut mgr =
+        strand_surface::SurfaceManager::with_connection(sway.connect(), host, Config::default())
+            .unwrap();
+    mgr.state_mut()
+        .apply_surface_change(BAR, SurfaceChange::Created(bar_spec("Top", 33.0)));
+    wait_for_bars(&mut mgr, 1);
+    settle(&mut mgr);
+    let info = mgr.state().surfaces()[0].clone();
+    let scale = Scale::new(150).unwrap();
+    assert_eq!(info.scale, scale);
+    assert_eq!(info.logical_size, (1536, 33));
+    assert_eq!(
+        info.buffer_size,
+        scale.physical_size(LogicalSize::new(1536.0, 33.0))
+    );
+    assert_eq!(info.buffer_size, Size::new(1920, 41));
+    assert_checker(&sway.grim("HEADLESS-1"), 41, 96, "scale 1.25");
+
+    // 33 × 1.5 = 49.5: 50 rows.
+    sway.msg(&["output", "HEADLESS-1", "scale", "1.5"]);
+    let ok = mgr
+        .dispatch_until(WAIT, |s| s.surfaces()[0].buffer_size == Size::new(1920, 50))
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surfaces());
+    settle(&mut mgr);
+    assert_eq!(
+        mgr.state().surfaces()[0].buffer_size,
+        Scale::new(180)
+            .unwrap()
+            .physical_size(LogicalSize::new(1280.0, 33.0))
+    );
+    assert_checker(&sway.grim("HEADLESS-1"), 50, 96, "scale 1.5");
+    assert_configured_sizes_painted(mgr.state().host());
+    assert_eq!(mgr.state().host().age_errors, 0);
+}
+
+#[test]
+fn commits_lock_to_the_refresh_rate() {
+    let Some((sway, mut mgr)) = start("commits_lock_to_the_refresh_rate", Config::default()) else {
+        return;
+    };
+    wait_for_bars(&mut mgr, 1);
+    settle(&mut mgr);
+    let before = mgr.state().stats();
+    // 100 content changes, each followed by a poll, about every 2 ms: far
+    // faster than the 60 Hz output.
+    let t = Instant::now();
+    let mut last = LogicalRect::new(0.0, 0.0, 0.0, 0.0);
+    for i in 0..100 {
+        last = LogicalRect::new(10.0 + (i * 7 % 1800) as f32, 8.0, 12.0, 12.0);
+        mgr.state_mut().host_mut().set_square(Some(last));
+        mgr.state_mut().poll();
+        pump(&mut mgr, Duration::from_millis(2));
+    }
+    let elapsed = t.elapsed();
+    settle(&mut mgr);
+    let after = mgr.state().stats();
+    let commits = after.commits - before.commits;
+    let refreshes = (elapsed.as_secs_f64() * 60.0).ceil() as u64;
+    eprintln!("{commits} commits for 100 changes in {elapsed:?}: {after:?}");
+    assert!(
+        commits <= refreshes + 2,
+        "{commits} commits in {elapsed:?} ({refreshes} refreshes): {after:?}"
+    );
+    assert!(commits >= 2, "{after:?}");
+    assert!(after.throttled > before.throttled, "{after:?}");
+    // Nothing is lost: the last change is on screen.
+    let shot = sway.grim("HEADLESS-1");
+    assert_eq!(shot.rgb(last.x as u32 + 1, last.y as u32 + 1), RED);
+    assert_eq!(mgr.state().host().age_errors, 0);
+}
+
+#[test]
+fn focused_surfaces_open_on_the_focused_output() {
+    let Some(sway) = Sway::start("focused_surfaces_open_on_the_focused_output") else {
+        return;
+    };
+    let second = sway.create_output();
+    sway.msg(&["focus", "output", &second]);
+    let mut mgr = strand_surface::SurfaceManager::with_connection(
+        sway.connect(),
+        TestHost::default(),
+        Config::default(),
+    )
+    .unwrap();
+    const PANEL: NodeId = NodeId::new(5, 0);
+    let spec = layer_spec(NodeKind::Panel, "Launcher", "center", 400.0, 200.0);
+    assert_eq!(spec.screens, strand_scene::Screens::Focused);
+    mgr.state_mut()
+        .apply_surface_change(PANEL, SurfaceChange::Created(spec));
+    // One surface, placed by the compositor on the focused output.
+    let on = |s: &strand_surface::State<TestHost>, output: &str| {
+        let surfaces = s.surfaces();
+        surfaces.len() == 1
+            && surfaces[0].stats.commits > 0
+            && surfaces[0].monitor.as_ref().is_some_and(|m| {
+                s.monitors()
+                    .iter()
+                    .any(|x| &x.id == m && x.connector.as_deref() == Some(output))
+            })
+    };
+    let ok = mgr.dispatch_until(WAIT, |s| on(s, &second)).unwrap();
+    assert!(ok, "{:?}", mgr.state().surfaces());
+    let info = mgr.state().surfaces()[0].clone();
+    assert!(info.focused);
+    assert_eq!(info.logical_size, (400, 200));
+    let host = mgr.state().host();
+    assert_eq!(host.attached, vec![(info.id, PANEL, None)]);
+    assert_eq!(host.entered.len(), 1);
+    settle(&mut mgr);
+    let shot = sway.grim(&second);
+    assert_eq!(shot.rgb(960, 540), BLUE, "panel centred on {second}");
+    assert_ne!(sway.grim("HEADLESS-1").rgb(960, 540), BLUE);
+
+    // Focus set from outside (a compositor IPC service) moves it.
+    let first = mgr
+        .state()
+        .monitors()
+        .into_iter()
+        .find(|m| m.connector.as_deref() == Some("HEADLESS-1"))
+        .unwrap();
+    mgr.state_mut().set_focused_monitor(Some(first.id.clone()));
+    let ok = mgr.dispatch_until(WAIT, |s| on(s, "HEADLESS-1")).unwrap();
+    assert!(ok, "{:?}", mgr.state().surfaces());
+    // Same node, same placement: the same surface id.
+    assert_eq!(mgr.state().surfaces()[0].id, info.id);
+    assert_eq!(
+        mgr.state().host().attached.last(),
+        Some(&(info.id, PANEL, Some(first.id.clone())))
+    );
+    settle(&mut mgr);
+    assert_eq!(sway.grim("HEADLESS-1").rgb(960, 540), BLUE);
+
+    // Unplugging its output brings it back on the other one.
+    sway.msg(&["output", "HEADLESS-1", "unplug"]);
+    let ok = mgr.dispatch_until(WAIT, |s| on(s, &second)).unwrap();
+    assert!(ok, "{:?}", mgr.state().surfaces());
 }
 
 #[test]
@@ -454,15 +646,31 @@ fn pointer_events_arrive_in_surface_coordinates() {
     delegate_noop!(Client: ignore ZwlrVirtualPointerManagerV1);
     delegate_noop!(Client: ignore ZwlrVirtualPointerV1);
 
-    let Some((sway, mut mgr)) = start(
-        "pointer_events_arrive_in_surface_coordinates",
-        Config::default(),
-    ) else {
+    let Some(sway) = Sway::start("pointer_events_arrive_in_surface_coordinates") else {
         return;
     };
+    // At 1.5, positions are logical: physical (150, 15) is (100, 10).
+    sway.msg(&["output", "HEADLESS-1", "scale", "1.5"]);
+    let mut mgr = strand_surface::SurfaceManager::with_connection(
+        sway.connect(),
+        TestHost::default(),
+        Config::default(),
+    )
+    .unwrap();
+    mgr.state_mut()
+        .apply_surface_change(BAR, SurfaceChange::Created(bar_spec("Top", 36.0)));
+    // An OSD in the middle of the screen, click-through.
+    const OSD: NodeId = NodeId::new(9, 0);
+    mgr.state_mut().apply_surface_change(
+        OSD,
+        SurfaceChange::Created(layer_spec(NodeKind::Osd, "Level", "center", 200.0, 100.0)),
+    );
     let input = mgr.take_input().unwrap();
-    wait_for_bars(&mut mgr, 1);
-    let id = mgr.state().surfaces()[0].id;
+    wait_for_bars(&mut mgr, 2);
+    let id = mgr.state().surfaces_of(BAR)[0];
+    let osd = mgr.state().surfaces_of(OSD)[0];
+    assert!(mgr.state().surface(osd).unwrap().click_through);
+    assert!(!mgr.state().surface(id).unwrap().click_through);
 
     // A virtual pointer gives the seat a pointer.
     let conn = sway.connect();
@@ -473,19 +681,23 @@ fn pointer_events_arrive_in_surface_coordinates() {
     queue.roundtrip(&mut Client).unwrap();
     pump(&mut mgr, Duration::from_millis(200));
 
-    pointer.motion_absolute(1, 100, 10, 1920, 1080);
+    use wayland_client::protocol::wl_pointer;
+    // A click in the middle of the OSD goes through it.
+    pointer.motion_absolute(1, 960, 540, 1920, 1080);
     pointer.frame();
-    pointer.button(
-        2,
-        0x110,
-        wayland_client::protocol::wl_pointer::ButtonState::Pressed,
-    );
+    pointer.button(2, 0x110, wl_pointer::ButtonState::Pressed);
     pointer.frame();
-    pointer.button(
-        3,
-        0x110,
-        wayland_client::protocol::wl_pointer::ButtonState::Released,
-    );
+    pointer.button(3, 0x110, wl_pointer::ButtonState::Released);
+    pointer.frame();
+    // Then one on the bar, and a scroll.
+    pointer.motion_absolute(4, 150, 15, 1920, 1080);
+    pointer.frame();
+    pointer.button(5, 0x110, wl_pointer::ButtonState::Pressed);
+    pointer.frame();
+    pointer.axis_source(wl_pointer::AxisSource::Wheel);
+    pointer.axis(6, wl_pointer::Axis::VerticalScroll, 15.0);
+    pointer.frame();
+    pointer.button(7, 0x110, wl_pointer::ButtonState::Released);
     pointer.frame();
     queue.roundtrip(&mut Client).unwrap();
 
@@ -535,6 +747,35 @@ fn pointer_events_arrive_in_surface_coordinates() {
     assert_eq!(buttons[0].2, ButtonState::Pressed);
     assert_eq!(buttons[1].2, ButtonState::Released);
     assert!(buttons.iter().all(|b| b.0 == id));
-    assert!((buttons[0].3.x - 100.0).abs() < 1.0);
+    assert!(
+        (buttons[0].3.x - 100.0).abs() < 1.0 && (buttons[0].3.y - 10.0).abs() < 1.0,
+        "{buttons:?}"
+    );
+    // Nothing for the OSD: clicks pass through it.
+    assert!(events.iter().all(|e| e.surface() != osd), "{events:?}");
+    let axis = events
+        .iter()
+        .find_map(|e| match e {
+            InputEvent::PointerAxis {
+                surface,
+                vertical,
+                source,
+                ..
+            } => Some((*surface, *vertical, *source)),
+            _ => None,
+        })
+        .expect("a scroll");
+    assert_eq!(axis.0, id);
+    assert!((axis.1.pixels - 15.0).abs() < 0.01, "{axis:?}");
+    assert_eq!(axis.2, Some(strand_surface::AxisSource::Wheel));
+    // The host saw the same events, on the main thread.
+    assert_eq!(mgr.state().host().input, events);
+    // The cursor was set on enter, and the press serial kept for popups.
+    assert!(
+        mgr.state().stats().cursor_sets >= 1,
+        "{:?}",
+        mgr.state().stats()
+    );
+    assert!(mgr.state().last_button_serial().is_some());
     drop(pointer);
 }

@@ -15,7 +15,7 @@ use strand_scene::{
     Damage, Insets, LogicalRect, NodeId, NodeKind, PaintTarget, Painter, Prop, PropValue, Rect,
     Scale, Size, SurfaceChange, SurfaceId, SurfaceSpec,
 };
-use strand_surface::{Config, Monitor, MonitorId, SurfaceHost, SurfaceManager};
+use strand_surface::{Config, InputEvent, Monitor, MonitorId, SurfaceHost, SurfaceManager};
 use wayland_client::Connection;
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -246,6 +246,8 @@ impl Image {
 /// Straight RGB colours the test paints (opaque).
 pub const BLUE: [u8; 3] = [0x20, 0x60, 0xe0];
 pub const RED: [u8; 3] = [0xe0, 0x30, 0x20];
+/// The second colour of the checkerboard background.
+pub const WHITE: [u8; 3] = [0xf0, 0xf0, 0xf0];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct PaintRecord {
@@ -283,8 +285,16 @@ pub struct TestHost {
     /// Frames still to animate (square moves 1 px per frame).
     pub animate: u32,
     pub opaque: bool,
+    /// Background is a 1-physical-pixel BLUE/WHITE checkerboard (crispness
+    /// checks) instead of plain BLUE.
+    pub checker: bool,
     pub paints: Vec<PaintRecord>,
-    pub attached: Vec<(SurfaceId, NodeId, MonitorId)>,
+    /// Monitor `None`: a `screens: focused` surface placed by the
+    /// compositor.
+    pub attached: Vec<(SurfaceId, NodeId, Option<MonitorId>)>,
+    pub entered: Vec<(SurfaceId, MonitorId)>,
+    /// What [`SurfaceHost::input`] saw.
+    pub input: Vec<InputEvent>,
     pub configured: Vec<(SurfaceId, Size, Scale)>,
     pub detached: Vec<SurfaceId>,
     pub monitors_added: Vec<(Monitor, bool)>,
@@ -319,11 +329,17 @@ fn put(px: &mut [u8], rgb: [u8; 3]) {
     px[3] = 0xff;
 }
 
-fn color_at(square: Option<Rect>, x: i32, y: i32) -> [u8; 3] {
+fn color_at(square: Option<Rect>, checker: bool, x: i32, y: i32) -> [u8; 3] {
     match square {
         Some(r) if r.contains(strand_scene::Point::new(x, y)) => RED,
+        _ if checker && (x + y) % 2 != 0 => WHITE,
         _ => BLUE,
     }
+}
+
+/// The checkerboard colour of physical pixel `(x, y)`.
+pub fn checker_at(x: u32, y: u32) -> [u8; 3] {
+    color_at(None, true, x as i32, y as i32)
 }
 
 impl Painter for TestHost {
@@ -355,7 +371,7 @@ impl Painter for TestHost {
             .chain(held.iter().map(|r| (r.x, r.y)))
             {
                 let i = y as usize * stride + x as usize * 4;
-                let want = color_at(held, x, y);
+                let want = color_at(held, self.checker, x, y);
                 let got = [target.pixels[i + 2], target.pixels[i + 1], target.pixels[i]];
                 if got != want {
                     self.age_errors += 1;
@@ -391,7 +407,10 @@ impl Painter for TestHost {
             for y in r.y..r.y + r.h as i32 {
                 for x in r.x..r.x + r.w as i32 {
                     let i = y as usize * stride + x as usize * 4;
-                    put(&mut target.pixels[i..i + 4], color_at(square, x, y));
+                    put(
+                        &mut target.pixels[i..i + 4],
+                        color_at(square, self.checker, x, y),
+                    );
                 }
             }
         }
@@ -429,8 +448,17 @@ impl Painter for TestHost {
 }
 
 impl SurfaceHost for TestHost {
-    fn surface_attached(&mut self, surface: SurfaceId, node: NodeId, monitor: &Monitor) {
-        self.attached.push((surface, node, monitor.id.clone()));
+    fn surface_attached(&mut self, surface: SurfaceId, node: NodeId, monitor: Option<&Monitor>) {
+        self.attached
+            .push((surface, node, monitor.map(|m| m.id.clone())));
+    }
+
+    fn surface_entered(&mut self, surface: SurfaceId, monitor: &Monitor) {
+        self.entered.push((surface, monitor.id.clone()));
+    }
+
+    fn input(&mut self, event: &InputEvent) {
+        self.input.push(event.clone());
     }
 
     fn surface_configured(&mut self, surface: SurfaceId, size: Size, scale: Scale) {
@@ -450,6 +478,20 @@ impl SurfaceHost for TestHost {
     fn monitor_removed(&mut self, monitor: &Monitor) {
         self.monitors_removed.push(monitor.clone());
     }
+}
+
+/// A `panel` or `osd` of `w`×`h` at `anchor` with default `screens`
+/// (focused), as the renderer would report it.
+pub fn layer_spec(kind: NodeKind, name: &str, anchor: &str, w: f32, h: f32) -> SurfaceSpec {
+    let props: HashMap<Prop, PropValue> = [
+        (Prop::Name, PropValue::Text(name.into())),
+        (Prop::Anchor, PropValue::Keyword(anchor.into())),
+        (Prop::Width, PropValue::Number(w)),
+        (Prop::Height, PropValue::Number(h)),
+    ]
+    .into_iter()
+    .collect();
+    SurfaceSpec::resolve(kind, |p| props.get(&p))
 }
 
 /// `bar <name> { edge: top; height: <h> }` as the renderer would report it.
@@ -493,6 +535,20 @@ pub fn wait_for_bars(mgr: &mut SurfaceManager<TestHost>, n: usize) {
         "expected {n} painted bars, have {:?}",
         mgr.state().surfaces()
     );
+}
+
+/// Every size and scale reported through `surface_configured` was painted
+/// (no configure for a size nobody saw).
+pub fn assert_configured_sizes_painted(host: &TestHost) {
+    for (surface, size, scale) in &host.configured {
+        assert!(
+            host.paints
+                .iter()
+                .any(|p| p.surface == *surface && p.size == *size && p.scale == *scale),
+            "configured {surface:?} at {size:?} @ {scale:?} but never painted it: {:?}",
+            host.configured
+        );
+    }
 }
 
 /// Dispatches for `d` (events only; returns early never).

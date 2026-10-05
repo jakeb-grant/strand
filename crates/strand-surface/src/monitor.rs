@@ -2,9 +2,12 @@
 //!
 //! `wl_output` exposes no EDID serial, so a monitor is identified by make,
 //! model and description (design: "Monitors match on make, model and
-//! description, and their state survives a 30-second unplug"). The
-//! registry keeps unplugged monitors for [`MONITOR_RETENTION`] so a monitor
-//! that comes back in time is recognised as the same one.
+//! description, and their state survives a 30-second unplug"). wlroots
+//! appends the connector to the description (`"Dell Inc. DELL U2720Q XYZ
+//! (DP-1)"`); that suffix is dropped from the identity so a monitor moved
+//! to another port is still the same monitor (see [`identity_description`]).
+//! The registry keeps unplugged monitors for [`MONITOR_RETENTION`] so a
+//! monitor that comes back in time is recognised as the same one.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -21,7 +24,8 @@ pub const MONITOR_RETENTION: Duration = Duration::from_secs(30);
 pub struct MonitorId(String);
 
 impl MonitorId {
-    /// `make`, `model` and `description` joined by `" | "`. A second
+    /// `make`, `model` and `description` joined by `" | "` (pass the
+    /// description through [`identity_description`] first). A second
     /// monitor with the same three values gets `" #2"` appended (see
     /// `docs/decisions.md`).
     pub fn new(make: &str, model: &str, description: &str) -> Self {
@@ -43,12 +47,29 @@ impl fmt::Display for MonitorId {
     }
 }
 
+/// The part of a `wl_output` description that identifies the monitor: the
+/// description without a trailing `" (<connector>)"` naming the output's
+/// own connector, which wlroots appends and which changes when the same
+/// monitor is plugged into another port.
+pub fn identity_description<'a>(description: &'a str, connector: Option<&str>) -> &'a str {
+    let Some(connector) = connector.filter(|c| !c.is_empty()) else {
+        return description;
+    };
+    description
+        .strip_suffix(')')
+        .and_then(|d| d.strip_suffix(connector))
+        .and_then(|d| d.strip_suffix(" ("))
+        .unwrap_or(description)
+}
+
 /// What is known about a monitor.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Monitor {
     pub id: MonitorId,
     /// The connector name (`DP-1`, `HEADLESS-2`), when the compositor gives
     /// one. Not part of the identity: connectors move between ports.
+    /// Identical monitors are numbered in plug order (` #2`), so which of
+    /// two identical monitors is `#2` can change across restarts.
     pub connector: Option<String>,
     pub make: String,
     pub model: String,
@@ -92,7 +113,11 @@ impl Monitors {
         now: Instant,
     ) -> Plugged {
         self.expire(now);
-        let base = MonitorId::new(make, model, description);
+        let base = MonitorId::new(
+            make,
+            model,
+            identity_description(description, connector.as_deref()),
+        );
         // Identical monitors plugged in at once get numbered; an unplugged
         // record with the identity is reclaimed first.
         let mut id = base.clone();
@@ -207,10 +232,55 @@ mod tests {
             Some("DP-1".into()),
             t,
         );
-        assert_eq!(a.monitor.id.as_str(), "Dell | U2720Q | Dell U2720Q (DP-1)");
+        assert_eq!(a.monitor.id.as_str(), "Dell | U2720Q | Dell U2720Q");
+        assert_eq!(a.monitor.description, "Dell U2720Q (DP-1)");
         assert!(!a.reconnected);
         assert_eq!(m.id_of(7), Some(&a.monitor.id));
         assert_eq!(m.present().count(), 1);
+    }
+
+    #[test]
+    fn connector_suffix_is_not_identity() {
+        assert_eq!(
+            identity_description("Dell Inc. DELL U2720Q XYZ (DP-1)", Some("DP-1")),
+            "Dell Inc. DELL U2720Q XYZ"
+        );
+        // Only the output's own connector, only as a suffix.
+        assert_eq!(
+            identity_description("Dell U2720Q (DP-1)", Some("DP-2")),
+            "Dell U2720Q (DP-1)"
+        );
+        assert_eq!(
+            identity_description("Panel (DP-1) rev 2", Some("DP-1")),
+            "Panel (DP-1) rev 2"
+        );
+        assert_eq!(identity_description("eDP-1", Some("eDP-1")), "eDP-1");
+        assert_eq!(identity_description("X (DP-1)", None), "X (DP-1)");
+
+        // The same monitor moved from DP-1 to DP-2 within 30 s is the same
+        // monitor.
+        let mut m = Monitors::default();
+        let t = Instant::now();
+        let a = m.plug(
+            1,
+            "Dell",
+            "U2720Q",
+            "Dell U2720Q (DP-1)",
+            Some("DP-1".into()),
+            t,
+        );
+        m.unplug(1, t);
+        let b = m.plug(
+            2,
+            "Dell",
+            "U2720Q",
+            "Dell U2720Q (DP-2)",
+            Some("DP-2".into()),
+            t,
+        );
+        assert!(b.reconnected);
+        assert_eq!(b.monitor.id, a.monitor.id);
+        assert_eq!(b.monitor.connector.as_deref(), Some("DP-2"));
     }
 
     #[test]
