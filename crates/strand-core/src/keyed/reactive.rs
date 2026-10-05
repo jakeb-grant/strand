@@ -22,6 +22,8 @@ use std::hash::Hash;
 use std::marker::PhantomData;
 use std::rc::Rc;
 
+use foldhash::HashSetExt;
+
 use super::ops::{Filter, IncrementalOp, Map, SortBy, Take};
 use super::{KeyedVec, VecDiff, keyed_diff};
 use crate::error::Error;
@@ -155,6 +157,13 @@ pub trait KeyedSource<K, T>: Copy + 'static {
 
 // ----- cell ---------------------------------------------------------------
 
+/// A throttled handler's held copy of a collection: the list it started
+/// from and the list with its changes.
+struct Held<K, T> {
+    base: KeyedVec<K, T>,
+    work: KeyedVec<K, T>,
+}
+
 struct CellData<K, T> {
     vec: RefCell<KeyedVec<K, T>>,
     log: Rc<RefCell<DiffLog<K, T>>>,
@@ -223,28 +232,164 @@ where
 
     /// Run a mutation and publish the diffs it applied, even when it then
     /// failed part-way (so the log always matches the items).
+    ///
+    /// Writes from graph-triggered handlers go through the 30 writes/s
+    /// guard like any cell write (see [`crate::rate`]). A throttled handler
+    /// keeps a held copy of the list together with the list it started
+    /// from: its later operations apply to that copy (read-your-writes, so
+    /// errors such as a duplicate key are reported at once), and when its
+    /// window has room the copy's changes land as one keyed diff. A held
+    /// copy is a set of changes, not a latest value: a write that goes
+    /// through meanwhile (an input handler, a service batch, another
+    /// handler's landing) does not supersede it; the held changes are
+    /// re-applied by key onto the new list ([`super::rebase`]), so no
+    /// `push` is lost. Changes that no longer apply (inserting a key the
+    /// other write also inserted, updating or moving an item it removed)
+    /// are skipped and reported as [`crate::Diagnostic::KeyedConflict`].
     fn mutate(
         self,
         rt: &Runtime,
         f: impl FnOnce(&mut KeyedVec<K, T>) -> (Vec<VecDiff<K, T>>, Result<(), Error>),
     ) -> Result<(), Error> {
         rt.check_write_allowed(self.id)?;
-        let (changed, r) = rt.with_data::<CellData<K, T>, _>(self.id, |d| {
+        rt.note_write(self.id);
+        let held = rt.take_deferred::<Held<K, T>>(self.id);
+        if held.is_none() && rt.rate_would_pass(self.id) {
+            // In place; counted only if something changed.
+            let (changed, r) = rt.with_data::<CellData<K, T>, _>(self.id, |d| {
+                let Ok(mut vec) = d.vec.try_borrow_mut() else {
+                    return (false, Err(Error::Reentrant));
+                };
+                let (diffs, r) = f(&mut vec);
+                let changed = !diffs.is_empty();
+                let mut log = d.log.borrow_mut();
+                for diff in diffs {
+                    log.push(diff);
+                }
+                (changed, r)
+            })?;
+            if changed {
+                rt.rate_gate(self.id);
+                rt.cell_changed(self.id);
+            }
+            return r;
+        }
+        let had_held = held.is_some();
+        let mut held = match held {
+            Some(h) => h,
+            None => {
+                let live = self.get_untracked(rt)?;
+                Held {
+                    base: live.clone(),
+                    work: live,
+                }
+            }
+        };
+        let (diffs, r) = f(&mut held.work);
+        if diffs.is_empty() && !had_held {
+            return r;
+        }
+        // An operation that changed nothing is not an attempt: a held copy
+        // just waits for its turn again.
+        if !diffs.is_empty() && rt.rate_gate(self.id) {
+            let writer = rt.current_writer().unwrap_or_default();
+            self.land(rt, writer, held)?;
+        } else {
+            self.hold(rt, held);
+        }
+        r
+    }
+
+    /// Queue a held copy until the writer's window has room.
+    fn hold(self, rt: &Runtime, held: Held<K, T>) {
+        let writer = rt.current_writer().unwrap_or_default();
+        let rebase: crate::rate::Rebase = Rc::new(move |rt: &Runtime, writer, v: Box<dyn Any>| {
+            match v.downcast::<Held<K, T>>() {
+                Ok(held) => match self.rebased(rt, writer, *held) {
+                    Ok(h) => Box::new(h),
+                    Err(h) => Box::new(h),
+                },
+                Err(v) => v,
+            }
+        });
+        rt.defer_write(
+            self.id,
+            Some(Box::new(held)),
+            Box::new(move |rt: &Runtime, held| {
+                if let Some(Ok(held)) = held.map(|h| h.downcast::<Held<K, T>>()) {
+                    let _ = self.land(rt, writer, *held);
+                }
+            }),
+            Some(rebase),
+        );
+    }
+
+    /// `held` re-based onto the live list (another write went through).
+    /// `Err` gives it back unchanged when the cell is gone.
+    fn rebased(
+        self,
+        rt: &Runtime,
+        writer: NodeId,
+        held: Held<K, T>,
+    ) -> Result<Held<K, T>, Held<K, T>> {
+        let Ok(live) = self.get_untracked(rt) else {
+            return Err(held);
+        };
+        if live.same_items(&held.base) {
+            return Ok(held);
+        }
+        let (items, lost) = super::rebase(live.items(), held.base.items(), held.work.items());
+        if lost > 0 {
+            rt.diagnose(crate::Diagnostic::KeyedConflict {
+                cell: self.id,
+                writer,
+                skipped: lost,
+            });
+        }
+        match live.with_items(items) {
+            Some(work) => Ok(Held { base: live, work }),
+            None => Err(held),
+        }
+    }
+
+    /// Land a held copy: re-apply its changes onto the live list (a plain
+    /// replacement when nothing else wrote since it started) and publish
+    /// the keyed diff.
+    fn land(self, rt: &Runtime, writer: NodeId, held: Held<K, T>) -> Result<(), Error> {
+        let (changed, lost) = rt.with_data::<CellData<K, T>, _>(self.id, |d| {
             let Ok(mut vec) = d.vec.try_borrow_mut() else {
-                return (false, Err(Error::Reentrant));
+                return Err(Error::Reentrant);
             };
-            let (diffs, r) = f(&mut vec);
+            let (new, lost) = if vec.same_items(&held.base) {
+                (held.work, 0)
+            } else {
+                let (items, lost) =
+                    super::rebase(vec.items(), held.base.items(), held.work.items());
+                match vec.with_items(items) {
+                    Some(v) => (v, lost),
+                    None => return Err(super::KeyedError::DuplicateKey.into()),
+                }
+            };
+            let diffs = keyed_diff(vec.items(), new.items());
+            *vec = new;
             let changed = !diffs.is_empty();
             let mut log = d.log.borrow_mut();
             for diff in diffs {
                 log.push(diff);
             }
-            (changed, r)
-        })?;
+            Ok((changed, lost))
+        })??;
+        if lost > 0 {
+            rt.diagnose(crate::Diagnostic::KeyedConflict {
+                cell: self.id,
+                writer,
+                skipped: lost,
+            });
+        }
         if changed {
             rt.cell_changed(self.id);
         }
-        r
+        Ok(())
     }
 
     /// `xs.push(v)`.
@@ -302,8 +447,37 @@ where
     }
 
     /// The current list as a [`KeyedVec`] (cheap clone), untracked.
+    ///
+    /// Holding the clone across a write to this cell makes that write copy
+    /// the items and the key index (O(n)); to read without holding a copy,
+    /// use [`KeyedSignal::with`], [`KeyedSignal::with_untracked`] or
+    /// [`KeyedSignal::get_key`].
     pub fn get_untracked(self, rt: &Runtime) -> Result<KeyedVec<K, T>, Error> {
-        rt.with_data::<CellData<K, T>, _>(self.id, |d| d.vec.borrow().clone())
+        self.with_untracked(rt, KeyedVec::clone)
+    }
+
+    /// Borrow the list (tracked) without cloning it: the VM's read path
+    /// (`xs.len`, `xs[k]`, a loop over `xs` inside a handler).
+    pub fn with<R>(self, rt: &Runtime, f: impl FnOnce(&KeyedVec<K, T>) -> R) -> Result<R, Error> {
+        rt.track(self.id);
+        self.with_untracked(rt, f)
+    }
+
+    /// [`KeyedSignal::with`] without tracking (handler bodies).
+    pub fn with_untracked<R>(
+        self,
+        rt: &Runtime,
+        f: impl FnOnce(&KeyedVec<K, T>) -> R,
+    ) -> Result<R, Error> {
+        rt.with_data::<CellData<K, T>, _>(self.id, |d| {
+            let vec = d.vec.try_borrow().map_err(|_| Error::Reentrant)?;
+            Ok(f(&vec))
+        })?
+    }
+
+    /// The item with `key` (cloned), untracked: no copy of the list.
+    pub fn get_key(self, rt: &Runtime, key: &K) -> Result<Option<T>, Error> {
+        self.with_untracked(rt, |v| v.get(key).cloned())
     }
 }
 
@@ -519,7 +693,7 @@ impl Runtime {
     {
         let step = move |rt: &Runtime| -> Result<Step<K, T>, Error> {
             let values = f(rt)?;
-            let mut seen = std::collections::HashSet::with_capacity(values.len());
+            let mut seen = foldhash::HashSet::with_capacity(values.len());
             let mut items = Vec::with_capacity(values.len());
             for v in values {
                 let k = key_of(&v);
@@ -574,6 +748,16 @@ impl<T: Clone + PartialEq + 'static> crate::AsyncMemo<Vec<T>> {
     }
 }
 
+/// More source diffs than this in one step, and at least a quarter of the
+/// source length, rebuild instead: operators cost up to O(n) per diff
+/// (`sort_by` index bookkeeping), a rebuild O(n log n) plus an O(n) keyed
+/// diff of the output (a launcher query that reshuffles 2,000 rows).
+const BULK_DIFFS: u64 = 128;
+
+fn is_bulk(pending: u64, len: usize) -> bool {
+    pending > BULK_DIFFS && pending.saturating_mul(4) > len as u64
+}
+
 /// Build a derived collection from an operator factory and tracked params.
 fn derive<K, T, U, P, O, S>(
     rt: &Runtime,
@@ -609,6 +793,7 @@ where
         if let Some(st) = state.as_mut()
             && st.params == p
             && Rc::ptr_eq(&st.log, &snap.log)
+            && !is_bulk(snap.version.saturating_sub(st.version), snap.len())
             && let Some(diffs) = snap.diffs_since(st.version)
         {
             let mut out = Vec::new();
@@ -624,7 +809,8 @@ where
                 return Ok(Step::Diffs(out));
             }
         }
-        // Rebuild: first run, params changed, log gap or a bad diff.
+        // Rebuild: first run, params changed, log gap, a bulk change or a
+        // bad diff.
         rt.bump(|s| s.rebuilds += 1);
         let mut op = make(&p);
         let mut out = Vec::new();

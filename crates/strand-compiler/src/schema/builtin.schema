@@ -117,9 +117,15 @@ record Day key date {
   weekend: bool
 }
 
-/// A monitor.
-record Screen key name {
-  /// Its output name, such as `DP-1`.
+/// A monitor. `id` is its identity (make, model and description, with
+/// ` #2` for a second identical one): what a `bar` instance is keyed and
+/// pinned by, kept across a replug to another port. `name` is the
+/// connector (`DP-1`).
+record Screen key id {
+  /// Its identity: make, model and description, with ` #2` for a second
+  /// identical one. Kept across a replug to another port.
+  id: text
+  /// Its connector name, such as `DP-1`.
   name: text
   /// Its maker.
   make: text

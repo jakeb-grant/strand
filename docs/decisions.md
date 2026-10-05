@@ -28,6 +28,7 @@ with the settled values, even when an effect created after it writes `x`
 from `y`; a write the handler makes still reaches other effects in the
 same flush. A learned rank (Incremental-style heights) would remove the
 remaining re-runs of plain effects; not needed while those are idempotent.
+(Superseded in wave 2: wave2-core, "Topological effect order".)
 
 **2026-10-05 · Runtime cycles.** Past `MAX_RUNS_PER_FLUSH` (16) runs of
 one sink (or deliveries of one event queue) in one flush, the runtime
@@ -88,6 +89,8 @@ identity** is stable: the listener, effect or timer node; a task inherits
 the identity of the handler that spawned it; `spawn_for(site, fut)` counts
 against `site`. Keyed collections are not gated: their diffs can't be
 coalesced to a latest value; revisit if a collection loop shows up.
+(Superseded in wave 2: wave2-core, "Keyed writes under the 30 writes/s
+guard".)
 
 **2026-10-05 · Echo suppression.** `write_tagged(value, send)` applies a
 local write, remembers it as pending and calls `send(value, generation)`;
@@ -222,7 +225,8 @@ frozen component ignores clicks); service and component events are
 lossless, so they are kept per listener and delivered in order, once, when
 it is released. `rt.resume(scope)` (the fixing reload) runs held work at
 the next flush and calls the wake hook; timers that came due fire at the
-next tick (they count while frozen). Work is also released when it leaves
+next tick (they count while frozen; superseded in wave 2: frozen timers
+pause, wave2-core). Work is also released when it leaves
 the frozen scope another way: `reparent` out of it, or disposal of the
 frozen scope after its live parts were moved out.
 
@@ -235,7 +239,8 @@ memos read lazily by the emitter, not visibility.
 
 **2026-10-05 · Left for wave 2.** `persist` storage with a default hash and
 settings files are not in `strand-core` yet (they need file IO and the
-schema from `strand-compiler`).
+schema from `strand-compiler`). (Wave 2: both are done in `strand-core`,
+see wave2-core; the compiler supplies the field schema.)
 
 ## compiler
 
@@ -1258,3 +1263,452 @@ schema from `strand-compiler`).
   M1 checklist's tree-sitter grammar for editor highlighting stays open;
   editors get diagnostics, completion, hover, navigation, rename and
   formatting from the server meanwhile.
+
+## wave2-vm
+
+- **2026-10-05 · wave2-vm: tokens stay symbolic in the VM.** `$accent`
+  evaluates to a `Value::Token` holding a `strand_scene::TokenExpr`, and
+  colour methods, channel arithmetic (`oklch(from $surface, l: l +
+  0.12)`) and comma or space values containing tokens stay expressions.
+  The emitter turns them into `PropValue::Token` (a `Template` when a
+  token fills a colour slot of a border, shadow or gradient), so render
+  resolves them every frame and a palette spring reaches every prop
+  without logic re-sending it (design.md, "Token model").
+- **2026-10-05 · wave2-vm: the positional argument's prop.** `text x`,
+  `button x` and `letters x` fill `text`; `meter x`, `graph x` and
+  `merge x` fill `value`; `effect x` fills `style`; `page x` fills
+  `name`; every other element (`icon`, `image`, `svg`, `lottie`,
+  `shader`, `spectrum`, `thumbnail`) fills `source`. A record (a
+  `Window` for `thumbnail`, an `AudioDevice` for `spectrum`) is sent as
+  its key's text.
+- **2026-10-05 · wave2-vm: palettes before M2.** `material(seed:)` is a
+  deterministic stand-in for Material 3 (`vm/palette.rs`): five tonal
+  palettes in OKLCH from the seed's hue and chroma, every role at its M3
+  tone (light or dark), contrast pushing tones apart. It fills the whole
+  palette schema, so themes written against M3 roles run now; the
+  `material-colors` crate replaces it in M2. `material(image:)` is a
+  failed `Async` until wallpaper quantisation lands, so the theme's `??
+  material(seed: …)` takes over. `import()` knows the four Catppuccin
+  flavours. A config without `use palette` gets `material(seed:
+  #7aa2f7, dark: system.dark)` (the design's default accent); without
+  `use tokens`, the first declared token set applies.
+- **2026-10-05 · wave2-vm: component tokens are global defaults.** A
+  component's `tokens { radius: … }` entries (`$Toast.radius`) go into
+  the global token table, not onto the component's nodes, so an
+  ancestor's `set { $Toast.radius: … }` overrides them (nearest scope
+  wins) as "knobs a component exposes for overriding" requires.
+- **2026-10-05 · wave2-vm: `exit` mirrors `enter` in the emitter.** An
+  element with `enter` (block or prop form) and no `exit` is sent the
+  same pose as its `exit`, so render only ever plays what it is given.
+- **2026-10-05 · wave2-vm: `~` without a duration.** `~ bezier(…)`
+  names a curve but no duration; it runs 300 ms
+  (`instantiate::BEZIER_DURATION`). `~ 200ms` uses the standard curve.
+  A `when` block's own `~` applies while that block wins.
+- **2026-10-05 · wave2-vm: `play`.** `play shake` sets the node's `play`
+  prop to `[shake, n]` with a sequence number, so playing the same
+  keyframes twice is two changes. Render plays keyframes in M4.
+- **2026-10-05 · wave2-vm: time signals until M4.** `t`, `wave(…)` and
+  `noise(…)` read 0 on the logic thread: they are render-side signals
+  ("only that node repaints, only while visible") that arrive with the
+  effects catalogue. Node-valued props (`nav: results`) are not sent
+  until keyboard navigation (M4).
+- **2026-10-05 · wave2-vm: numbers carry units at run time.** A
+  `Value::Num` keeps `int`, `float`, `px`, `%`, `ch`, `deg` or ms;
+  arithmetic follows the checker's unit rules, `int / int` is a
+  `float`, and `==` compares values whatever their units (`1 == 1.0`).
+  Division by zero is an error value, not infinity.
+- **2026-10-05 · wave2-vm: handlers always run as tasks.** Every handler
+  invocation is a core task, awaiting or not: element events through an
+  input queue and `rt.spawn_input(Some(site), …)` (not rate-counted up
+  to the first `await`), service events through `rt.spawn_for(site, …)`,
+  `on change` and timer bodies through `rt.spawn` inside their handler
+  (owned by their site). A task is polled in the flush that started it,
+  so a click's writes land in the same tick. `<->` writes and `strand
+  set` are made outside any handler.
+- **2026-10-05 · wave2-vm: `on change` identity.** A target that is a
+  field of a keyed record (`audio.sink.volume`, a `sink` has `key id`)
+  re-baselines when the record's identity changes
+  (`rt.on_change_keyed`), so switching sinks pops no OSD; other targets
+  compare values only.
+- **2026-10-05 · wave2-vm: per-monitor bars.** A `bar` is instantiated
+  once per item of `screens.all`, keyed by the screen's `name` (the
+  connector), with `screen` in scope and `screens: "<name>"`; its state
+  lives in that instance. Keeping it across a 30-second unplug (monitor
+  identity is make, model and description) needs the binary's `screens`
+  service to keep a replugged monitor's item; that wiring is the `strand
+  run` item.
+- **2026-10-05 · wave2-vm: service readers.** Every mounted component,
+  surface instance and the config's top level acquires the services its
+  body reads and releases them when unmounted, so a service's reader
+  count is the number of mounted readers (a bar and its `Battery` both
+  count).
+- **2026-10-05 · wave2-vm: `persist` storage lives in the compiler.**
+  strand-core has no persistence, so `vm::persist` stores cells as JSON
+  by declared type (enums by variant name, records by field name) with
+  the BLAKE3 hash of the default's encoding. A stored value that is
+  still the old default takes a changed default; one the user changed is
+  kept and reported (`toasts.dnd: kept true (default changed)`); one that
+  no longer fits the type resets. Keys are `module.name`, or
+  `Component.name` for component state (shared by its instances).
+- **2026-10-05 · wave2-vm: settings files hold their defaults until
+  M2.** `state prefs from "….toml" { … }` is a record of its fields'
+  defaults, written field by field (`prefs.compact = true`, `<->`);
+  reading the TOML file, per-field validation and `toml_edit` write-back
+  are the M2 settings item.
+- **2026-10-05 · wave2-vm: errors keep the last good value.** A binding
+  that fails reports its error in the tick's `Update::errors` and its
+  prop keeps the value last sent; a failing `if` condition keeps the
+  mounted branch. Keyed mutations that would duplicate a key, or name a
+  missing one, fail the handler and change nothing.
+- **2026-10-05 · wave2-vm: the mock's behaviour.** `SchemaHost::mock`
+  models what tests need beyond storing fields: `apps.search` is a
+  ready `Async` of substring matches, `workspaces.on(screen)` filters by
+  the workspace's `screen`, `calendar` and `clock` run on a fixed clock,
+  and a notification's `expire`, `dismiss` or `activate` removes it from
+  `notifications.popups`. Every action is logged.
+- **2026-10-05 · wave2-vm: awaiting.** `await` waits on the pending
+  future an `Async` carries (`sleep(d)`); an `Async` without one (a
+  service load) gives its current value or its error. Service crates
+  give their `Async` results a future in M3.
+- **2026-10-05 · wave2-vm: render → logic input.** Until render hit
+  tests (M2) the instance takes scene `NodeId`s: `event(node, name,
+  args)`, `set_flag(node, hover | pressed | focused | selected, on)`,
+  `set_size(node, w, h)` and `write(node, prop, value)`. An event goes
+  to the innermost element with a handler for it; `propagate()` passes
+  it to the next. A surface (a `popup` included) is the top of its own
+  event tree: a click on a calendar day does not reach the clock text the
+  popup is anchored to.
+- **2026-10-05 · wave2-vm: a keyed reset is reconciled.** A `for` gets
+  `Insert`/`Remove`/`Move`/`Update` diffs from core, but a `Reset` (its
+  first publish, or more than 256 diffs since it last read, which one
+  item moved far in a long list can cause) is matched by key against the
+  mounted items: items that left are unmounted, new ones mounted, and
+  only the items outside the longest run already in order move. Items
+  keep their nodes and state either way
+  (`tests/instantiate.rs::keyed_lists_match_the_list_after_random_edits`,
+  `a_long_list_touches_only_what_changed`).
+- **2026-10-05 · wave2-vm: element flags belong to their scope.** An
+  element's `hover`, `pressed`, `focused`, `selected` and size live in
+  the component, surface or `for` item that owns the element (so `id:`
+  names read them from anywhere in the body), created on first use but
+  owned by that scope, never by the binding that first read them; an
+  element an `if` unmounts and mounts again keeps working, and an
+  unmounted element reads as not hovered.
+
+## wave2-core
+
+**2026-10-05 · Keyed collections at 2,000 rows.** `KeyedVec` keeps a key →
+position map that tolerates stale entries (keys are unique, so an entry is
+proved by one comparison; a stale one is found by an outward search and
+fixed), so mutations never re-index the items after them. A lookup is
+O(1) when its entry is fresh and otherwise costs the entry's drift since
+it was last looked up, bounded by the list length (a queue that pushes at
+the back and removes at the front drifts every entry by up to n; its
+`Vec::remove` is O(n) anyway). Not "O(1) amortised" for every pattern, as
+round 0 of this section said. `keyed_diff` is hash-based with the longest increasing run
+of survivors left in place: the fewest `Move`s, never a remove and
+re-insert of a surviving key; repeated keys give a `Reset` instead of a
+panic. A derived collection that receives more than 128 diffs covering at
+least a quarter of its source rebuilds and publishes the keyed diff of its
+output (identity kept), because `sort_by` costs O(n) per diff. Hashing uses
+`foldhash` (already in the tree), not SipHash. Numbers in
+`docs/benchmarks.md`.
+
+**2026-10-05 · Keyed writes under the 30 writes/s guard.** Replaces wave
+1's "keyed collections are not gated". A throttled handler gets a held
+copy of the list plus the list it started from: its later operations
+apply to that copy (read-your-writes: a duplicate key or a missing key is
+reported at once against what it has written), and when its window has
+room the copy's changes land as one keyed diff, so items keep identity.
+Diffs cannot be held one by one (that would grow without bound in a
+runaway loop); one copy is bounded. Unlike plain state, a held copy is a
+*set of changes*, not a latest value (review round 1: round 0 let any
+write that went through supersede it, silently dropping every row a
+throttled `on notifications.received(n) { history.push(n) }` had pushed
+when the user dismissed one). A write that goes through (an input
+handler, a service batch, another handler's landing) rebases the held
+copy: the changes from its base to it (removals, value updates, moves of
+survivors outside the longest in-order run, inserts) are re-applied by
+key onto the new list, moved and inserted items going before the next
+held item the new list still has in place (so pushes stay at the end,
+after what others appended). Changes that no longer apply (a key both
+inserted; an item the handler updated or moved but the other write
+removed) are skipped and counted in one `Diagnostic::KeyedConflict`. A
+cancelled handler's copy still never lands. The rate is checked before an
+in-place write and counted only when the operation changed something, so
+the unthrottled path stays in place (no copy). Held writes are indexed by
+`(cell, writer)` and a rate window keeps only its newest 31 attempts, so a
+throttled handler writing a cell per row stays linear
+(`docs/benchmarks.md`).
+
+**2026-10-05 · Frozen = paused, with a bounded backlog.** Refines wave 1's
+"timers count while frozen". A timer inside a suspended component is
+paused exactly as if its `while` condition had turned false: it keeps the
+time counted so far and counts again from `rt.resume` (or from leaving the
+frozen scope), so a toast frozen by a fault does not expire behind the
+user's back, and an `every` does not fire a catch-up tick on release. A
+timer created or restarted while frozen starts counting at the release.
+`await sleep(..)` in a frozen handler pauses the same way (review round 1:
+round 0 let it keep counting, so `await sleep(5s); n.expire()` still
+expired a toast the moment it was released): each sleep knows the task
+polling it and keeps its time left while that task is frozen. A release
+does not count from the logic clock's last tick: the clock only moves
+when the host ticks, and a host sleeps while everything is frozen, so a
+released timer or sleep starts counting at the next clock advance (the
+host's real time), reports no deadline until then, and the release calls
+the wake hook. Freezing pauses as of the last tick (it may under-count by
+less than a tick; never over-counts). State needs no bound (a cell
+keeps its latest value, a held sink runs once on release with it; the held
+list is a set). Events of lossless queues are kept per frozen listener up
+to `MAX_FROZEN_EVENTS` (256, the size of a collection's diff log); past
+that the oldest are dropped and the release reports one
+`Diagnostic::EventsDropped { queue, listener, dropped }` before delivering
+the rest in order. Reported at release rather than per drop: a chatty
+service would otherwise flood the overlay, which already outlines the
+frozen component.
+
+**2026-10-05 · `persist` storage.** (Refined by "Persist IO thread and
+handle" below.) One file per persisted cell under
+`$XDG_STATE_HOME/strand/persist/` (falling back to
+`~/.local/state/strand/persist/`; a relative `XDG_STATE_HOME` is ignored, as
+the XDG spec says), named by the cell's `file.name` path with every byte
+outside `[A-Za-z0-9_.-]` (and a leading `.`) percent-escaped, so no path
+escapes the directory. One file per cell keeps writes small and atomic and
+a corrupt file costs one cell. The file is a text header (`strand-persist
+1`, `default <hash>`, `check <hash>`) and the value's bytes; the VM owns
+the value codec, `strand-core` stores opaque bytes. Hashes are FNV-1a 64
+(stable across builds, unlike `std`'s hasher; not a security boundary).
+"Noticing a changed default" follows the reload rule for state defaults: a
+value that still equals its old default (its hash equals the stored
+default hash) adopts the new default; a changed value is kept, reported
+once as `Diagnostic::PersistDefaultChanged`, and re-stamped. A file that
+fails its header or checksum, or whose value no longer decodes (a type
+change), is moved to `<name>.corrupt` and the cell starts from its default
+with `Diagnostic::PersistFailed`. Writes go to a temp file in the same
+directory, are `fsync`ed and renamed over the target (directory created
+0700), debounced by 250 ms of logic time so a slider drag writes once, and
+a pending write is flushed when the owning component is disposed or at
+shutdown. Nothing is written while the value equals what the file (or the
+default) already says.
+
+**2026-10-05 · Topological effect order.** Replaces wave 1's "effects run
+in creation order" deviation: sinks now run "once per tick in topological
+order". The order is a rank (an Incremental-style height, `src/order.rs`)
+over read edges, ownership (owners first) and the edges the graph can't
+see: a handler writing a cell or emitting to a queue ranks the target one
+above itself, and a queue's listeners rank with the queue. A flush runs
+queued sinks by `(rank, creation order)` from a priority queue, and runs
+woken tasks and due event deliveries before choosing each next sink, so a
+non-sink writer also comes before the readers of what it writes. Write
+edges are learned the first time a handler writes (attempts count: writing
+an equal value still teaches the edge) once its run is over, or declared
+with `rt.writes_to(handler, target)`; ranks only rise. So a sink runs once
+per flush and sees final values, except that a dependency seen for the
+first time (a write edge, or a read edge to a higher-ranked node) can
+re-run a sink that already ran in that flush, once; property-tested by
+`tests/order_props.rs` (a sink running twice must have risen in rank).
+`on change` handlers start at rank 2^20, above anything ordinary writes
+reach, which keeps wave 1's late phase: one outside write fires them once
+with settled values; sinks downstream of what an `on change` writes rank
+above it and run after it in the same flush. A write edge that would close
+a loop (a handler writing what it reads, directly or through other
+handlers, including a read edge that appears later) is a feedback edge: it
+is left unranked (the rank walk never goes round it) and the cycle guard
+bounds the loop as before. Not ordered: a task woken by something other
+than a handler of the flush (another thread's waker) writes when it is
+polled. Ranks live in a side map (most nodes are rank 0), so the node and
+the 10k-node numbers stay as they were (`docs/benchmarks.md`). (Refined by
+"Declared reads" and "Foreign wakes" below: the first flush and woken
+tasks are now ordered too.)
+
+**2026-10-05 · Declared reads and the provisional phase (review round
+1).** Read edges exist only once a node has run, so round 0 ran a reader
+created before its writer at rank 0 on the first flush, then again after
+the writer: a glitch per mount, even with `rt.writes_to` declared, and a
+reader switching to a higher-ranked branch re-ran too. The compiler now
+also declares reads: `rt.reads_from(node, &sources)` with the syntactic
+read set of every binding and handler (every branch, a conservative
+superset; an empty set still counts as declared). Declared read edges are
+rank-only: `rank(node) >= rank(source)`, walked by rank raises like
+observer edges, and a declared read closing a loop through write edges
+turns those into feedback edges, as a learned one does. With reads and
+writes declared, ranks are complete before anything runs, so every sink
+runs exactly once per flush with final values from the first flush on,
+`Pick` branch switches included; `tests/order_props.rs` checks every flush
+of declared graphs, the first one included, with written cells starting
+unsettled. A sink that has never run and declares nothing (no reads, no
+write edges) runs its first time in a provisional phase at rank
+2^20 - 1, after every ranked sink and before `on change` handlers, so it
+sees what declared writers wrote. Residual, without declarations only: a
+learned edge can re-run a sink once in that flush (its last run sees the
+final values, also property-tested), and undeclared fresh sinks in the
+provisional phase run in creation order among themselves. So "once per
+flush" holds for declared graphs; `features.md` says so.
+
+**2026-10-05 · Foreign wakes (review round 1).** A task woken by another
+thread (an IO or D-Bus reply) used to be polled between sinks of the
+running flush, writing behind readers that had already run. The ready
+queue now keeps wakes from other threads apart (by thread id) and polls
+them only when a flush starts; one arriving mid-flush waits for the next
+flush (the wake hook brings the host back). Both lists merge back in wake
+order. Wakes on the logic thread (a handler's write completing a future,
+`spawn`) are still polled before the next sink, where they are ordered.
+
+**2026-10-05 · Persist IO thread and handle (review round 1).** Writes no
+longer run on the logic thread: each `PersistStore` has one IO thread,
+started on first use, fed by a queue coalesced to the latest operation
+per file (write, remove, move aside). `load` sees queued operations before
+the disk, so a component remounted by a reload reads what its predecessor
+just queued. Failures come back through a per-runtime sink drained into
+the next tick's diagnostics, with a wake-hook call. `Runtime::shutdown`
+waits for the queue (bounded, 5 s); dropping the last store handle drains
+it (bounded) and joins the thread; a persisted cell's writer queues its
+pending value when dropped, so a runtime dropped without `shutdown` still
+writes. The file's baseline is updated when a write is queued, not when it
+lands (a failed write is reported; the next change writes again).
+`rt.persisted` returns a `Persisted` handle with `redeclare(rt,
+new_default)` (the reload rule for state defaults: adopt if the value
+still holds the old default, removing the file; else keep, report
+`PersistDefaultChanged` once and re-stamp) and `reset(rt)` (cancels the
+pending and queued write, removes the file, sets the default), so the
+default hash follows reloads and `@reset` cannot be undone by a late
+write. A path names one live cell: the reconciler qualifies it with the
+instance identity (`bar[<make model description>].x`, a list item's key);
+a second live cell on a path in use reports `PersistPathInUse` and does
+not write while the first owns the file (round 2: it waits and takes over,
+see "Persist path hand-over"). A stored value that no longer decodes is
+moved aside like a corrupt file (round 0 left it, so the warning repeated
+on every start; round 2 renamed the quarantine to `.<name>.corrupt`). Temp files of dead processes (or
+older than a minute and not ours) are swept on a store's first write.
+
+**2026-10-05 · Settings files (review round 2).** Round 1 deferred
+`state x from "file.toml" { .. }` to M2; that was wrong: wave 1 carried it
+into wave 2 and the core side does not need the compiler, so it is built
+now. `strand_core::settings`: `rt.settings_file(&store, path, fields)`
+with one `FieldSpec { name, default, decode(&toml_edit::Item) ->
+Result<V, String>, encode(&V) -> Item }` per field, generic over the VM's
+value type `V` like `persist`'s codec (the compiler fills the schema from
+the checked field types). Each field is an ordinary `Signal`, so `<->`
+bindings, UI writes and `strand set` are plain writes; after 250 ms of
+quiet (`PERSIST_DEBOUNCE`, as for `persist`) the changed fields are queued
+as per-field edits on the persist IO thread, merged per file, and applied
+with `toml_edit` to what the file holds when the thread gets to it
+(replaced values keep their decor, keys their order and comments, new keys
+are appended), written via temp file in the resolved target's directory
+(symlinks followed, the target's permissions kept), `fsync` and rename.
+Interpretations: (1) the "runtime overlay" of "Who wins" and the
+read-only "overlay in `$XDG_STATE_HOME`" are one layer, a TOML file in
+`$XDG_STATE_HOME/strand/settings/` named by the declared (link) path, so
+it survives restarts and a `home-manager switch` that swaps the link; it
+holds redirected writes and explicit `set_overlay` values, and `[clear]`
+is `clear_overlay`. (2) A target is read-only when neither it nor its
+directory has a write bit (`/nix/store`: 0444 in 0555; checked before
+writing, so root does not write there either) or the write fails with
+`EACCES`/`EROFS`; the write then goes to the overlay, with one
+`SettingsIssue::ReadOnly` notice per file. (3) A UI write to a field that
+has an overlay value updates the overlay (a file write would be shadowed
+and look ignored). (4) A UI write never overwrites a file that has a
+syntax error (the user is mid-edit): `WriteFailed`, the value stays live.
+(5) `Shadowed` ("file changed but runtime overlay wins [clear]") is
+reported by a reload whose read of that field differs from the previous
+read, not at boot (no previous read). (6) Withdrawn in round 3: boot
+falls back to a last-good snapshot, not the defaults (see "Settings files
+(review round 3)"). (7) A reload applies edits still queued for the IO
+thread and leaves a field the user wrote since the last write-out alone,
+so it never undoes a write that has not reached the disk (round 3 made
+this hold for reads made before a write landed, too).
+
+**2026-10-05 · Settings files (review round 3).** (a) *Last good values
+survive a restart.* Principle 5 and "a TOML syntax error keeps every last
+good value" leave no room for a default-colour flash at boot, so each
+settings file has a last-good snapshot,
+`$XDG_STATE_HOME/strand/settings/last-good/<escaped declared path>.toml`
+(a subdirectory, so it cannot collide with an overlay name). Whenever a
+field's file layer changes (a good read, a deleted key, a UI write to the
+file) the changed fields are queued to it on the IO thread; at boot (and
+for fields a redeclare adds or resets) a file that has a syntax error or
+cannot be read, or a field with a bad value, takes the snapshot's value,
+and the diagnostic is still reported. A snapshot with a syntax error is
+simply replaced. (b) *Stale reads.* Every settings job has a process-wide
+sequence number; the IO thread records, per file, the highest one done.
+A read first takes a mark (that number plus the edits queued or in
+flight, under one lock) and only then reads the file, so an edit landing
+in between is applied twice, harmlessly; a field whose last edit is newer
+than the mark keeps its layer, so a read made before Strand's own write
+landed (the watcher's thread is slower than the IO thread) can never undo
+it. (c) *Reads off the logic thread.* `Settings::sources()` gives a
+`Send` `SettingsSources`; strand-watch calls `mark()`, reads the bytes
+(which it hashes anyway), then `read_from(mark, text)`, which also reads
+the overlay and probes writability, and posts the `SettingsRead` to the
+logic thread for `Settings::reload_with`. `reload` does both on the
+calling thread. Boot (`settings_file`) and `redeclare` still read on the
+logic thread: once per declaration, small files, before the first frame.
+(d) *Writability is probed on every read*, so a link swapped from
+`/nix/store` to a writable file takes writes again; when the probe goes
+from read-only to writable the once-per-file notice is re-armed. A file
+the IO thread found read-only (EACCES) while the probe says writable stays
+redirected. (e) *One file, several handles* (a component mounted per
+monitor): each `settings_file` call keeps its own signals (sharing them
+would tie them to the first owner, whose unmount would dispose them), and
+the runtime keeps a registry of live handles by overlay path (one per
+store and declared path); a write-out, `set_overlay` or `clear_overlay`
+through one is adopted by the others in the same call, without IO, unless
+a sibling declares the field with a type that does not decode it. (f)
+*`redeclare(rt, fields)`* matches fields by name and keeps their signals;
+a new default is adopted where neither file nor overlay sets the field and
+the user has not written it (the state-default rule); a field whose
+declared type (`FieldSpec::with_type`, the compiler's type name) changed
+is reset and read again under the new type, with
+`SettingsIssue::TypeChanged`; an added field is read from the file (or
+the snapshot); a removed field's cell is disposed and its key stays in the
+file. `Settings::layer(field)` reports `Overlay | File | Default` for the
+inspector. (g) *The overlay is Strand's file*: one with a syntax error is
+moved aside to `.<name>.corrupt` (reported once as `CorruptOverlay`, by
+the read that saw it or by the IO thread when a write finds it first) and
+the overlay starts empty. (h) *A missing directory* of the settings file
+is created on the first write, with the user's umask (`create_dir_all`),
+as editors do. (i) Temp files `.<name>.tmp.<pid>.<n>` a crash left next to
+the resolved target are swept when the file is declared (that file name
+only; not this process's; dead processes or older than a minute). (j)
+`show` moves the field's "shown" value only once the signal holds it, and
+a write-out to the file updates the field's last-seen value, so a reload
+from inside a derived value cannot turn a stale signal into a write, and
+Strand's own write is not reported as `Shadowed`.
+
+**2026-10-05 · Persist path hand-over (review round 2).** A second live
+cell on a persist path no longer stays inactive for good: it is kept in a
+per-path waiting list, and when the owner is disposed (its pending value
+is queued first) the oldest live waiter takes the path over. If it still
+holds the value it started from, it continues from what the old owner left
+(the state-default rule applied through `restore`); if it was changed
+while it waited, its value wins and is written. This makes a reconcile that
+mounts the replacement before disposing the old instance (surface
+recreate, monitor replug, a list item re-created under its key) safe
+without an ordering rule for the reconciler.
+
+**2026-10-05 · Feedback edges are not errors (review round 2).**
+`rt.writes_to` returns `Ok(WriteEdge::Ranked | WriteEdge::Feedback)` and
+errs only for disposed ids (round 1 returned `Err(Cycle)` for a valid
+self-normalising handler, and only when its reads were declared first).
+When a read declared later closes a loop, the write edge is demoted and its
+target (a cell or event queue) lowered to what its remaining edges need
+(owner, ranked writers + 1, sources), so the ranks match those of the other
+declaration order. `rt.write_edge(w, t)` tells what an edge became.
+
+**2026-10-05 · Composite nodes declare their own edges (review round
+2).** `rt.async_memo` declares its internal effect's write edge to the
+value (load bookkeeping also counts as a write for learned edges now), and
+`AsyncMemo::effect_id()` lets the VM declare the input's reads, so a
+declared reader of `let hits = apps.search(q)` runs once per flush, after
+the load started and (when ready at once) resolved. `Debounced` already
+exposes `effect` (tracked reads) and `timer` (the body's writes). Persisted
+and settings cells write nothing in the graph from their internal
+handlers; keyed derived collections are pull-based.
+
+**2026-10-05 · Small fixes (review round 2).** A quarantined persist file
+is `.<name>.corrupt` (a name no cell path maps to; round 1's
+`<name>.corrupt` was what the path `<name>.corrupt` reads), and the temp
+sweep only matches `.<name>.tmp.<pid>.<n>`. `rt.is_idle()` is false while
+an IO thread's failure waits to be reported. `KeyedSignal::get_untracked`
+inside the collection's own `update` returns `Error::Reentrant` instead of
+panicking.

@@ -16,6 +16,12 @@
 //!   data that service crates extend.
 //! - [`ty`]: types; [`check`]: name resolution and type checking, which
 //!   produce the typed [`hir`] the VM and the LSP consume.
+//! - [`lower`]: the HIR to bytecode and a mountable tree ([`lower::Program`]).
+//! - [`vm`]: the dynamic [`vm::Value`], the interpreter, builtins, the
+//!   [`vm::ServiceHost`] trait with the schema-populated mock and the real
+//!   clock, and `persist` storage.
+//! - [`instantiate`]: mounts a program on a `strand-core` runtime and
+//!   emits one `strand_scene::SceneDiff` per tick.
 //! - [`fmt`]: the formatter behind `strand fmt` and LSP formatting.
 //!
 //! [`compile`] runs the front end over every file of a config.
@@ -24,10 +30,13 @@ pub mod check;
 pub mod diagnostic;
 pub mod fmt;
 pub mod hir;
+pub mod instantiate;
+pub mod lower;
 pub mod schema;
 pub mod source;
 pub mod syntax;
 pub mod ty;
+pub mod vm;
 
 pub use diagnostic::{Diagnostic, Severity};
 pub use source::{FileId, SourceMap};

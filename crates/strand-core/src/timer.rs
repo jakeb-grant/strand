@@ -14,6 +14,16 @@
 //! periods are not replayed). A zero period pauses an `every` timer and
 //! reports [`Diagnostic::ZeroPeriod`]; periods under [`MIN_EVERY_PERIOD`]
 //! are clamped to it. Deadlines past the end of time mean "never".
+//!
+//! A timer inside a suspended (frozen) component is paused like a false
+//! condition: it keeps the time counted so far and counts again once the
+//! component is released ([`Runtime::resume`]), so a toast frozen with a
+//! fault does not expire behind the user's back. The logic clock only
+//! moves when the host ticks, and a host can sleep while everything is
+//! frozen, so a released timer starts counting at the next clock advance
+//! (the host's real time), not at the last tick: until then it reports no
+//! deadline, and the release calls the wake hook so the host ticks.
+//! `await sleep(..)` in a frozen handler is paused the same way.
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
@@ -47,6 +57,9 @@ struct State {
     cond: bool,
     /// A zero `every` period was reported (cleared when it turns positive).
     zero: bool,
+    /// Released from a frozen scope: starts counting at the next clock
+    /// advance (the logic clock may be far behind the host's).
+    resume_pending: bool,
 }
 
 type DurationFn = Box<dyn Fn(&Runtime) -> Result<Duration, Error>>;
@@ -108,13 +121,22 @@ impl NodeData for TimerData {
         s.duration = duration;
         s.cond = cond;
         s.zero = zero;
-        // A zero `every` period counts nothing, like a false condition.
-        match (cond && s.armed && !zero, s.since) {
+        // A zero `every` period counts nothing, like a false condition, and
+        // so does a frozen component (frozen = paused).
+        match (cond && s.armed && !zero && !rt.is_suspended(id), s.since) {
             // A resume found while catching up before a clock advance
             // happened somewhere in (previous now, new now]: count from the
             // new now, so the timer never counts time the condition may not
             // have held.
-            (true, None) => s.since = Some(rt.inner.resume_at.get().unwrap_or(now)),
+            (true, None) => match rt.inner.resume_at.get() {
+                Some(at) => {
+                    s.since = Some(at);
+                    s.resume_pending = false;
+                }
+                // Released while the host slept: wait for its clock.
+                None if s.resume_pending => {}
+                None => s.since = Some(now),
+            },
             (false, Some(t)) => {
                 s.elapsed = s.elapsed.saturating_add(now.saturating_sub(t));
                 s.since = None;
@@ -213,6 +235,7 @@ impl Timer {
             };
             (s.armed, fraction)
         })?;
+        let frozen = rt.is_suspended(self.id);
         self.with(rt, |t| {
             let mut s = t.st.get();
             s.armed = armed;
@@ -223,7 +246,8 @@ impl Timer {
             } else {
                 Duration::ZERO
             };
-            s.since = (armed && s.cond && !s.zero).then_some(now);
+            s.since = (armed && s.cond && !s.zero && !frozen).then_some(now);
+            s.resume_pending &= frozen;
             t.st.set(s);
         })
     }
@@ -231,11 +255,13 @@ impl Timer {
     /// Restart counting from zero (debounce).
     pub fn restart(self, rt: &Runtime) -> Result<(), Error> {
         let now = rt.now();
+        let frozen = rt.is_suspended(self.id);
         self.with(rt, |t| {
             let mut s = t.st.get();
             s.armed = true;
             s.elapsed = Duration::ZERO;
-            s.since = s.cond.then_some(now);
+            s.since = (s.cond && !frozen).then_some(now);
+            s.resume_pending &= frozen;
             t.st.set(s);
         })
     }
@@ -366,6 +392,59 @@ impl Runtime {
             .min()
     }
 
+    /// Pause timers (and sleeping handlers) inside suspended scopes and
+    /// mark the ones released: frozen = paused, like a `while` condition
+    /// that turned false (time counted so far is kept). A released timer
+    /// counts again from the next clock advance ([`Runtime::advance_to`]
+    /// with the host's time), since the logic clock stands still while the
+    /// host sleeps. Returns whether something is waiting for that advance
+    /// (the caller wakes the host).
+    pub(crate) fn sync_frozen_timers(&self) -> bool {
+        let now = self.now();
+        self.inner.timers.borrow_mut().retain(|&t| self.exists(t));
+        let timers = self.inner.timers.borrow().clone();
+        let mut resumed = false;
+        for id in timers {
+            let frozen = self.is_suspended(id);
+            let _ = self.with_data::<TimerData, _>(id, |t| {
+                let mut s = t.st.get();
+                match (frozen, s.since) {
+                    (true, Some(since)) => {
+                        s.elapsed = s.elapsed.saturating_add(now.saturating_sub(since));
+                        s.since = None;
+                    }
+                    (false, None) if s.cond && s.armed && !s.zero => {
+                        s.resume_pending = true;
+                        resumed = true;
+                    }
+                    _ => {}
+                }
+                t.st.set(s);
+            });
+        }
+        resumed |= self.sync_frozen_sleepers();
+        resumed
+    }
+
+    /// Start released timers and sleepers counting at `at` (the clock
+    /// advance after their release).
+    fn start_released(&self, at: Duration) {
+        let timers = self.inner.timers.borrow().clone();
+        for id in timers {
+            let _ = self.with_data::<TimerData, _>(id, |t| {
+                let mut s = t.st.get();
+                if s.resume_pending && !self.is_suspended(id) {
+                    s.resume_pending = false;
+                    if s.since.is_none() && s.cond && s.armed && !s.zero {
+                        s.since = Some(at);
+                    }
+                    t.st.set(s);
+                }
+            });
+        }
+        self.start_released_sleepers(at);
+    }
+
     /// Bring timers whose condition or duration inputs changed up to date
     /// before the clock moves to `upcoming`: a pause counts up to the
     /// current (previous) time, a resume counts from `upcoming`. Either way
@@ -373,13 +452,15 @@ impl Runtime {
     pub(crate) fn refresh_timers(&self, upcoming: Duration) {
         self.inner.timers.borrow_mut().retain(|&t| self.exists(t));
         let timers = self.inner.timers.borrow().clone();
-        self.inner.resume_at.set(Some(upcoming.max(self.now())));
+        let at = upcoming.max(self.now());
+        self.inner.resume_at.set(Some(at));
         for id in timers {
             if self.is_stale(id) {
                 let _ = self.update_if_necessary(id);
             }
         }
         self.inner.resume_at.set(None);
+        self.start_released(at);
     }
 
     /// Run every timer whose deadline has passed, earliest first.
@@ -397,7 +478,7 @@ impl Runtime {
                     .ok()
                     .flatten()?;
                 let seq = self.inner.nodes.borrow().get(id)?.seq;
-                // A frozen timer stays due and fires on resume.
+                // (A frozen timer is paused, so it has no deadline.)
                 (d <= now && !self.is_suspended(id)).then_some((d, seq, id))
             })
             .collect();

@@ -8,8 +8,10 @@
 //! writes, nothing is dirty, nothing is scheduled
 //! ([`Runtime::next_deadline`] is `None`) and no work happens: true idle.
 //!
-//! Writes batch: [`Runtime::flush`] ends a tick, runs dirty effects in
-//! creation order and returns a [`Tick`] listing what changed, from which
+//! Writes batch: [`Runtime::flush`] ends a tick, runs dirty effects once
+//! each in a computed topological order (read edges plus the write edges
+//! handlers make, see [`Runtime::writes_to`]) and returns a [`Tick`]
+//! listing what changed, from which
 //! the scene emitter builds one diff per tick for the render thread, which
 //! never waits on this one.
 //!
@@ -39,8 +41,11 @@ mod echo;
 mod error;
 mod events;
 pub mod keyed;
+mod order;
+pub mod persist;
 pub mod rate;
 mod runtime;
+pub mod settings;
 mod signal;
 mod task;
 mod timer;
@@ -51,9 +56,15 @@ pub use error::{CyclePath, Error};
 pub use events::EventQueue;
 pub use keyed::reactive::{KeyedMemo, KeyedOps, KeyedSignal, KeyedSource, Snapshot};
 pub use keyed::{KeyedError, KeyedVec, VecDiff, keyed_diff};
+pub use order::WriteEdge;
+pub use persist::{PersistError, PersistStore, PersistValue, Persisted, Redeclared, Restore};
 pub use runtime::{
-    Diagnostic, HARD_RUNS_PER_FLUSH, MAX_RUNS_PER_FLUSH, NodeId, NodeKind, Runtime, Scope, Stats,
-    Tick, WeakRuntime,
+    Diagnostic, HARD_RUNS_PER_FLUSH, MAX_FROZEN_EVENTS, MAX_RUNS_PER_FLUSH, NodeId, NodeKind,
+    Runtime, Scope, Stats, Tick, WeakRuntime,
+};
+pub use settings::{
+    FieldSpec, Layer as SettingsLayer, ReadMark, Settings, SettingsIssue, SettingsNotice,
+    SettingsRead, SettingsSources, SettingsStore,
 };
 pub use signal::{Effect, Memo, Signal};
 pub use task::{Sleep, Task};

@@ -29,7 +29,8 @@ pub enum Error {
         /// The memo that was computing.
         memo: NodeId,
     },
-    /// `flush` or `tick` was called from inside a flush.
+    /// `flush` or `tick` was called from inside a flush, or a collection
+    /// was read from inside its own `update` closure.
     Reentrant,
     /// A handler was cancelled before it finished (its owner unmounted).
     Cancelled,
@@ -58,7 +59,7 @@ impl fmt::Display for Error {
                     "write to {cell:?} while computing derived value {memo:?}"
                 )
             }
-            Self::Reentrant => f.write_str("flush called from inside a flush"),
+            Self::Reentrant => f.write_str("reentrant flush or read during a write"),
             Self::Cancelled => f.write_str("handler cancelled"),
             Self::Keyed(e) => write!(f, "{e}"),
             Self::Failed(msg) => f.write_str(msg),

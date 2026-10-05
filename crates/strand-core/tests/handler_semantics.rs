@@ -665,3 +665,145 @@ fn an_on_change_handler_write_reaches_effects_in_the_same_flush() {
     assert_eq!(c.get(&rt), Ok(7));
     assert!(rt.is_idle());
 }
+
+/// A future that parks its waker in `slot` until `done` is set.
+struct Parked {
+    slot: std::sync::Arc<std::sync::Mutex<Option<std::task::Waker>>>,
+    done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl std::future::Future for Parked {
+    type Output = ();
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<()> {
+        if self.done.load(std::sync::atomic::Ordering::Acquire) {
+            return Poll::Ready(());
+        }
+        *self.slot.lock().unwrap() = Some(cx.waker().clone());
+        Poll::Pending
+    }
+}
+
+#[test]
+fn a_wake_from_another_thread_mid_flush_waits_for_the_next_flush() {
+    // A reply arriving from an IO thread while sinks run must not write
+    // behind a reader that already ran in this flush.
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    let rt = Runtime::new();
+    let x = rt.signal(0);
+    let reply = rt.signal(0);
+    let slot = Arc::new(Mutex::new(None::<std::task::Waker>));
+    let done = Arc::new(AtomicBool::new(false));
+    let (s, d) = (slot.clone(), done.clone());
+    rt.spawn(async move {
+        Parked { slot: s, done: d }.await;
+        Ok(())
+    });
+    let weak = rt.downgrade();
+    let (s, d) = (slot.clone(), done.clone());
+    rt.spawn(async move {
+        Parked { slot: s, done: d }.await;
+        if let Some(rt) = weak.upgrade() {
+            reply.set(&rt, 7)?;
+        }
+        Ok(())
+    });
+    let runs = Rc::new(RefCell::new(Vec::new()));
+    let r = runs.clone();
+    // The reader runs first (creation order, both rank 0) ...
+    rt.effect(move |rt| {
+        r.borrow_mut().push((x.get(rt)?, reply.get(rt)?));
+        Ok(())
+    });
+    // ... then this one completes the IO on another thread mid-flush.
+    let (s, d) = (slot.clone(), done.clone());
+    rt.effect(move |rt| {
+        if x.get(rt)? == 1 {
+            let (s, d) = (s.clone(), d.clone());
+            std::thread::spawn(move || {
+                d.store(true, Ordering::Release);
+                if let Some(w) = s.lock().unwrap().take() {
+                    w.wake();
+                }
+            })
+            .join()
+            .unwrap();
+        }
+        Ok(())
+    });
+    rt.flush();
+    assert!(slot.lock().unwrap().is_some(), "the task is parked");
+    runs.borrow_mut().clear();
+    x.set(&rt, 1).unwrap();
+    let tick = rt.flush();
+    assert!(tick.errors.is_empty(), "{:?}", tick.errors);
+    assert_eq!(*runs.borrow(), vec![(1, 0)], "once in this flush");
+    assert!(!rt.is_idle(), "the reply waits for the next flush");
+    rt.flush();
+    assert_eq!(*runs.borrow(), vec![(1, 0), (1, 7)]);
+}
+
+#[test]
+fn a_sink_retriggered_without_a_feedback_path_stops_at_the_hard_cap() {
+    // Each run of the reader wakes the next of 300 parked tasks, and each
+    // task writes what the reader reads. A wake is not an edge the cycle
+    // guard can follow, so only the hard cap stops it.
+    use strand_core::HARD_RUNS_PER_FLUSH;
+    let rt = Runtime::new();
+    let n = rt.signal(0usize);
+    let weak = rt.downgrade();
+    for i in 0..300usize {
+        let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (s, d) = (slot.clone(), done.clone());
+        let w = weak.clone();
+        rt.spawn(async move {
+            Parked { slot: s, done: d }.await;
+            if let Some(rt) = w.upgrade() {
+                n.set(&rt, i + 1)?;
+            }
+            Ok(())
+        });
+        // Keep the handles so the reader can release task `i`.
+        HANDLES.with(|h| h.borrow_mut().push((slot, done)));
+    }
+    rt.flush();
+    let runs = Rc::new(RefCell::new(0u32));
+    let r = runs.clone();
+    let reader = rt.effect(move |rt| {
+        let i = n.get(rt)?;
+        *r.borrow_mut() += 1;
+        HANDLES.with(|h| {
+            if let Some((slot, done)) = h.borrow().get(i) {
+                done.store(true, std::sync::atomic::Ordering::Release);
+                if let Some(w) = slot.lock().unwrap().take() {
+                    w.wake();
+                }
+            }
+        });
+        Ok(())
+    });
+    let tick = rt.flush();
+    assert_eq!(*runs.borrow(), HARD_RUNS_PER_FLUSH, "stopped at the cap");
+    assert!(
+        matches!(&tick.errors[..], [(id, Error::Cycle(_))] if *id == reader.id()),
+        "{:?}",
+        tick.errors
+    );
+    // The flush ended and the reader is parked: nothing is left to run
+    // until something outside writes `n` again.
+    assert!(rt.is_idle());
+    assert!(rt.flush().errors.is_empty());
+    assert_eq!(*runs.borrow(), HARD_RUNS_PER_FLUSH, "parked");
+    HANDLES.with(|h| h.borrow_mut().clear());
+}
+
+/// A parked task's waker slot and its "done" flag.
+type ParkedHandle = (
+    std::sync::Arc<std::sync::Mutex<Option<std::task::Waker>>>,
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+);
+
+thread_local! {
+    static HANDLES: RefCell<Vec<ParkedHandle>> = const { RefCell::new(Vec::new()) };
+}
