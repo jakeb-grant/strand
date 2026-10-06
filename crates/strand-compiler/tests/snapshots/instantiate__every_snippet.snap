@@ -24,7 +24,7 @@ bar screens="Mock | DP-1 | Display" name="Everything"
     segmented value=auto options=[auto, light, dark, wallpaper, mocha]
     col tokens={$surface: $surface.alpha(0.5)}
     box place=absolute
-    box gap=0
+    box gap=0 watch=query
     box hit=grow(6)
     box width=24
     box width=24
