@@ -4358,7 +4358,7 @@ and a bar and panel in `$surface`, `$surface.hi`, `$accent`,
 `$accent.container`: `strand set theme.look dark` showed the frames
 150 and 300 ms in moving through greys with readable text, then the
 dark scheme; `mocha` after it sprang likewise. Merging the widgets of
-wave3-pixels, a `segmented`, `meter` and `slider` that name no `color`
+wave3-pixels, a `segmented`, `meter`, `slider` and symbolic `icon` that name no `color`
 or `font` take the theme's `$fg` and `$font.ui` in their own scope, as
 text, buttons and inputs do.
 
@@ -5023,3 +5023,31 @@ boundaries per line), added for this.
 `segmented` needs one layout per option label; text requests carry a
 `part` (0 a node's own text, 1 + i its i-th label), so labels are shaped,
 cached, pruned and measured like any text.
+
+**2026-10-06 · wave3-pixels (p3): `image` and `icon` sources.** An `icon`
+names an icon of the freedesktop theme (freedesktop-icons 0.4, at the
+box's logical size and integer scale); an `image` takes a path (absolute,
+`~/`, `./`, `file://`, or anything ending in `.png`, `.jpg`, `.jpeg`,
+`.svg`) and otherwise an icon name too, since `image h.app.icon`, `image
+item.icon` and `image n.image ?? n.app.icon` in design.md hand it names.
+The theme is `$STRAND_ICON_THEME`, else `gtk-icon-theme-name` from
+`gtk-3.0`/`gtk-4.0` `settings.ini`, else Adwaita (hicolor follows as
+the spec's fallback); freedesktop-icons' own `default_theme_gtk` runs
+`gsettings` as a subprocess and is not used. A symbolic icon (`-symbolic`
+in its name or file) is drawn as a mask in the node's `color`. PNG (png
+0.18), JPEG (zune-jpeg 0.5) and SVG (resvg 0.48, no text or embedded
+rasters) are decoded and fitted (`fit`, default `contain`) to the box's
+physical size, which is all the 6 MB LRU (`IMAGE_CACHE_BYTES`) keeps;
+images a frame draws are never evicted for another of that frame. An
+unsized `image` stays 0 × 0 until sized (its natural size would need a
+decode before layout). Failed loads are remembered (512 at most) so a
+missing icon is not looked up every frame; icon-theme changes are not
+watched yet (M3's cache invalidation).
+
+**2026-10-06 · wave3-pixels (p3): images decode off the render
+thread.** With a text worker (`strand run`), images decode on a
+`strand-image` thread that wakes the render loop through the text
+worker's waker (`TextWorker::waker`, added for this), so the binary needs
+no new wiring; `Renderer::update` takes the results and repaints. With
+the inline text backend (tests, offline renders) images decode inline
+and the frame flattens again to draw them, as text does.

@@ -14,9 +14,15 @@ strand-text.workspace = true
 # panic multi-threaded), and none of the default png/text extras.
 vello_cpu = { version = "0.3", default-features = false, features = ["std", "f32_pipeline"] }
 taffy = { version = "0.14", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "content_size"] }
+# Images and icons (design.md: decoded at drawn size into a 6 MB LRU,
+# icons from the freedesktop icon theme). resvg without text, system
+# fonts or embedded raster images: icons need none of them.
+png = "0.18"
+zune-jpeg = "0.5"
+resvg = { version = "0.48", default-features = false }
+freedesktop-icons = "0.4"
 
 [dev-dependencies]
-png = "0.18"
 # Theme renders: real palettes and the built-in base tokens.
 strand-theme.workspace = true
 criterion = "0.8"
