@@ -310,7 +310,8 @@ be built and tested without the language, and the language without pixels.
   measured from delivered layouts (estimated until the first arrives).
 - **Animation** (`anim.rs`, on the render thread): the render thread owns
   every spring. A prop of `ANIMATED` (`x`, `y`, `opacity`, `scale`,
-  `rotate`, `bg`, `color`, `border`, `shadow`, `radius`) that logic sets
+  `rotate`, `bg`, `color`, `border`, `shadow`, `radius`, `value`,
+  `track`) that logic sets
   on a node of a surface shown with a clock springs from its old value
   along `TokenScope::transition(prop's ~, prop)`; `width`/`height`/`size`
   spring the laid-out size (laid out at rest to learn the target when a
@@ -370,9 +371,9 @@ be built and tested without the language, and the language without pixels.
   they spring (`radius: full` is half the shorter side, a percentage
   `x`/`y` is of the parent's box). Not yet animated: gradients, `mark_color`
   (span colours are part of the text shaping request, so a spring would
-  reshape every frame) and the props of widgets and effects still to be
-  drawn (`value`, `stroke`, `fill`, `trim`, `track`, `glow`, `blur`);
-  they join `ANIMATED` when they render. Presets: `fade`, `slidefade`, `popin(s)`, `slide(edge)`.
+  reshape every frame) and the props of effects still to be drawn
+  (`stroke`, `fill`, `trim`, `glow`, `blur`); they join `ANIMATED` when
+  they render. Presets: `fade`, `slidefade`, `popin(s)`, `slide(edge)`.
   `PaintTarget::time` zero (no clock, offline) and `reduced_motion`
   (`Renderer::set_reduced_motion`, or the global token `motion.reduced:
   true`) snap everything, size springs already in flight included (at
@@ -439,6 +440,24 @@ be built and tested without the language, and the language without pixels.
      resampled and shifted so its alignment lands where the right one's
      will; layouts no surface wants are pruned.
 
+- **Widgets and paint** (decisions.md, wave3-pixels (p3)): widget state
+  the router owns but widgets draw (hover, press, focus, an `input`'s
+  caret and selection, a slider's value while dragged) lives in render
+  (`strand_render::widgets::Widgets`, `Renderer::widgets`), written by the
+  router through `InputScene` (`set_flag`, `set_caret`, `set_drag`;
+  `node_rect` and `caret_at` read layout and the last frame), so widgets
+  answer on the frame the input arrives; logic still gets flags and
+  two-way writes (`value` of a slider or `segmented`, `text` of an
+  `input`). A node may shape several texts (`TextSpec::part`: a
+  `segmented`'s labels). `icon`/`image` sources decode at the box's
+  physical size into a 6 MB LRU (`strand_render::image`, freedesktop icon
+  theme, PNG/JPEG/SVG), on a worker with a text worker, inline offline.
+  Gradients draw from dithered pixmaps and shadows from cached ones (a
+  4 MB paint cache). A `popup`'s spec gets `parent` and `anchor_rect` (its
+  element's laid-out box in the parent surface); `tooltip: expr` makes a
+  render-owned popup (`SceneTree::add_overlay`, ids from `OVERLAY_INDEX`)
+  after `TOOLTIP_DELAY` of rest, reported as a spec with `tooltip: true`;
+  `Renderer::next_wake` includes its due time.
 - Text is shaped once without a width bound per (node, scale) and
   aligned in its box at flatten time; only a box narrower than it asks
   for a layout of its (whole-pixel) width (decisions.md, wave3-pixels).
@@ -1373,7 +1392,13 @@ text at `MAX_TEXT_BYTES` (64 KiB) per request. A layout that had to
 skip glyphs for want of atlas room says so (`is_incomplete`; render asks
 again a bounded number of times), and each layout lists its scale's live
 pages (`atlas_pages`), so the mirror drops pages the worker trimmed.
-Dropping the worker discards its queue.
+Dropping the worker discards its queue. Each layout lists its caret stops
+(`TextLayout::carets`: every cluster boundary per line, byte offset and x
+in logical pixels), from which render draws an `input`'s caret and
+selection and places the caret under a click. `TextWorker::waker()`
+hands out the render loop's waker (the one the worker was spawned with)
+for render's other workers: the image decoder and the tooltip timer
+wake the loop through it, so the binary wires one waker only.
 
 ### `strand-surface`
 
@@ -1468,6 +1493,21 @@ and the connection):
 - The keyboard: one `wl_keyboard` per seat with xkbcommon keymaps and
   key repeat (`get_keyboard_with_repeat`), as `InputEvent::Key` on the
   surface with keyboard focus (`State::keyboard_focus`).
+- Popups (`NodeKind::Popup` specs): an `xdg_popup` (`xdg_wm_base` bound
+  directly, versions 1–6) nested in a mapped surface of
+  `SurfaceSpec::parent` (the one last pressed, when several), through
+  `zwlr_layer_surface.get_popup` or the parent popup's `xdg_surface`,
+  positioned by `placement::popup_config` (a `PopupConfig`: box size,
+  overhang, anchor rect in the parent's window geometry, side and gap)
+  with slide and flip; its window geometry is its box, its buffer the
+  box plus the overhang. Size or anchor changes reposition it
+  (`xdg_popup.reposition`). It grabs with the last press's serial unless
+  it is a tooltip (`SurfaceSpec::tooltip`: no grab, empty input region).
+  `popup_done` is sent as `InputEvent::ClickAway { surface }` (before the
+  surface goes), then the popup and the popups nested in it are destroyed
+  (innermost first, as any surface's are), and it is not shown again until
+  its spec closes. `Painter::blur_region` is read for the blur ladder
+  (M4); nothing is sent yet.
 - Later (planned, so the current shape does not block them):
   - M2/M4: surface `exit` poses need the unmap delayed until exit
     settles: render holds `Removed`/`open: false` until its exit is done

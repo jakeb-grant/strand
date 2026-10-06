@@ -4542,3 +4542,16 @@ has them. The delay is woken through the render loop's waker (a sleeping
 thread pings it), so hosts need no timer of their own;
 `Renderer::next_wake` reports it too. The `tooltip { … }` element (rich
 content) is not drawn yet.
+
+**2026-10-06 · wave3-pixels (p3): the M2 exit's shells.** The paragraph
+above that kept "the four example shells run unchanged" open on popups
+and widgets is resolved: on the mock desktop the bar (icons, the volume
+row's hover slider, the calendar popup), the launcher, the toasts (close
+icons, markup) and the OSD (icon, meter) run unchanged and were judged
+against design.md from sway screenshots
+(`crates/strand/tests/demo.rs::the_design_shells_draw_their_widgets_and_the_calendar_popup`;
+`STRAND_SHOTS=<dir>` keeps them). On headless sway a new virtual
+pointer's first buttons reach no surface, so the test's first click goes
+to the desktop; the older launcher test's "a click inside keeps it open"
+may pass for that reason without the click arriving (integrator: worth a
+look).
