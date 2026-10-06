@@ -49,3 +49,12 @@ WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 \
 
 Always kill the sway you started. The machine has 4 CPUs; avoid running
 more than one heavy `cargo` build at a time per task.
+
+## Disk and restarts (dev container)
+
+- The disk is small. Build with `CARGO_PROFILE_DEV_DEBUG=0
+  CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0` exported. If `df -h /`
+  shows under 8 GB free, delete your own worktree's `target/` before
+  building; never delete another worktree's.
+- The container can restart without warning. On a parallel-build branch,
+  `git push origin <branch>` after every commit so nothing is lost.
