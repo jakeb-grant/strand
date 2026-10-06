@@ -6021,3 +6021,124 @@ shell is never woken by it. Proof:
 ## wave3-cleanup
 
 2026-10-06. Build settings live in the repo: `[profile.dev]` and `[profile.test]` set `debug = 0` in `Cargo.toml`, and `.cargo/config.toml` turns incremental compilation off. Until now agents relied on exporting `CARGO_PROFILE_*_DEBUG=0 CARGO_INCREMENTAL=0` by hand; some did not, so cargo kept a second copy of every crate per setting (a wave 3 worktree reached 21 GB with 18 copies of `strand_compiler`). One checked-in setting stops the duplicates at the source. M1's four open boxes are given owners in `features.md`: keyframes/shader/canvas drawing and the `.wgsl` watch paths go to M4, the latency bench's portal clause to M3, the tree-sitter grammar to M5.
+
+## wave4-wm
+
+**2026-10-06 · wave4-wm: the compositor service is library code with a
+typed change stream.** `strand_services::wm` holds `Workspace`, `Window`
+and `WmState` (the schema's records field for field, plus
+`Workspace::active` and `Window::urgent`, which the provisional schema
+does not show yet: every compositor reports them and a per-screen bar
+needs "shown on this screen" apart from "focused"), and `wm::run(config,
+sink, requests)`, one `Send` future for the shared current-thread
+runtime that sends batches of `WmChange` (keyed `VecDiff`s of
+`workspaces.all` / `windows.all` from `strand_core::keyed::keyed_diff`,
+the focused workspace, window and screen, `ConfigReloaded { failed }`,
+`Sources`). The first publish is a `Reset` per list; after that only
+what changed, and an unchanged state sends nothing (a batch is never
+empty). The `#[service]`/`#[derive(Store)]` wiring is the next step, on
+top of this stream. `Window::icon` is the app id until the apps service
+resolves desktop entries. Proof: `crates/strand-services/src/wm/
+model.rs` (tests), the `Mirror` checks in every adapter test.
+
+**2026-10-06 · wave4-wm: "protocol preferred where it covers a field"
+means a join, not two lists.** With an IPC adapter its workspace and
+window sets and ids stand: only IPC relates windows to workspaces and
+carries the ids `dispatch`/`Action`/commands need. A workspace joined to
+an `ext-workspace-v1` handle by name (and by screen when names repeat
+across outputs) takes `active`, `screen` and (or-ed) `urgent` from the
+protocol; a window joined to an `ext-foreign-toplevel-list-v1` handle
+takes `title` and `app_id` from it. The only stable join key for windows
+is the toplevel identifier, which sway 1.10+ reports in IPC
+(`foreign_toplevel_identifier`); Hyprland and niri do not, so their
+windows come from IPC alone (the same values the compositor would send
+in the protocol). Without an adapter the protocols are the whole state:
+workspaces not `hidden`, numbered by a per-handle key the client assigns
+(the protocol has no integer id), `focused` where `active`; windows by
+identifier, with no workspace, focus or actions (the list protocol has
+none); `ws.focus()` is `activate` + `commit`. Proof: `src/wm/mod.rs`
+(tests `the_protocol_wins_where_it_covers_a_field`,
+`protocols_alone_make_the_whole_state`), `tests/protocol.rs::
+the_protocols_alone_serve_workspaces_and_windows`.
+
+**2026-10-06 · wave4-wm: which compositor.** `HYPRLAND_INSTANCE_SIGNATURE`
+(sockets under `$XDG_RUNTIME_DIR/hypr/<sig>/`, falling back to
+`/tmp/hypr/<sig>/` before Hyprland 0.40), `NIRI_SOCKET` (with the `niri`
+feature) and `SWAYSOCK`; a variable whose socket does not exist is
+skipped. A nested compositor inherits its parent's variables, so when
+several remain the one `XDG_CURRENT_DESKTOP` names wins, then Hyprland,
+niri, sway. Proof: `src/wm/detect.rs` (test).
+
+**2026-10-06 · wave4-wm: Hyprland.** One request per `.socket.sock`
+connection (Hyprland answers and closes; 5 s timeout, it answers
+synchronously). The adapter subscribes to `.socket2.sock` before its
+first read so nothing falls between them. Events that carry the change
+patch the state (`workspacev2`, `focusedmonv2`, `activewindowv2`,
+`windowtitlev2` split at its first comma, `urgent`, `minimized`); the
+others that change structure (`openwindow`, `closewindow`,
+`movewindowv2`, workspace and monitor events, `fullscreen`,
+`configreloaded`) re-read `j/monitors`, `j/workspaces`, `j/clients`,
+`j/activewindow` once per burst (every line already received is applied
+before the read). Special workspaces (`special:…`, Hyprland's
+scratchpads) are left out of `workspaces.all` and their windows count
+as minimised, as does a window a taskbar minimised (`minimized>>…,1`);
+`win.minimize()` is `Unsupported` (Hyprland has no minimise).
+Urgency comes only from `urgent>>` and clears when the window takes
+the focus. Named workspaces (negative ids) are focused with `dispatch
+workspace name:<name>`, ordered after numbered ones. `fullscreen` is a
+bool before 0.42 and a mode number since; both are read. The fixtures
+are Hyprland 0.56.2's format (`HyprCtl.cpp` at that tag, the wiki's IPC
+page). Known gap: 0.56's optional Lua config turns `dispatch` into
+`hl.dispatch(…)`; the old syntax then fails and the action reports
+`Rejected` with Hyprland's message. Proof: `tests/hyprland.rs`.
+
+**2026-10-06 · wave4-wm: niri.** Our own JSON-lines client behind the
+default-on `niri` feature (design.md's "reimplement niri IPC behind a
+feature flag"; `--no-default-features` drops it and niri falls back to
+the protocols). Events are parsed by name into lenient structs (every
+field defaulted, unknown fields and events ignored), since niri adds
+both in patch versions. Each event stream starts by replaying the whole
+state, ending with `ConfigLoaded` for the last load: that first one is
+not a reload, so a reconnect never fires `wm.config_reloaded`; later
+ones give `Some(failed)`. An unnamed workspace is named by its index;
+workspaces are ordered per output by index. niri's IPC reports no
+fullscreen and has no minimise (`Unsupported`). Proof: `tests/niri.rs`
+(fixtures: niri 26.04's `niri-ipc`).
+
+**2026-10-06 · wave4-wm: sway.** swayipc-async 3.0, as design.md names;
+it runs on async-io, whose reactor thread blocks in `epoll` with
+nothing to do (measured: no wakeup). A `window` `title` event is
+patched; every other `workspace`/`window` event re-reads `get_workspaces`
+and `get_tree` once per burst; `workspace` `reload` is
+`wm.config_reloaded` (`failed: None`: sway does not say). Scratchpad
+windows are minimised (no workspace), `win.minimize()` is `move
+scratchpad` and `win.focus()` brings one back. `shutdown` ends the
+session (the adapter then retries with backoff). The sway in the dev
+container and CI (1.9, wlroots 0.17) advertises neither
+`ext_foreign_toplevel_list_v1` (sway 1.10) nor `ext_workspace_manager_v1`,
+so the protocol client is proven against an in-process wayland-server
+compositor that implements both, and the sway tests assert what 1.9
+lacks. Proof: `tests/sway.rs`, `tests/protocol.rs`.
+
+**2026-10-06 · wave4-wm: lost sockets.** Every adapter reconnects with
+backoff (100 ms doubling to 10 s, reset once connected); actions while
+away answer `NotConnected`. The last state stays while away (no flicker
+to empty), `Sources::connected` says it is stale, and the fresh read on
+reconnecting goes out as a diff. Idle costs nothing: the runtime has no
+timer, the protocol thread sleeps in `poll(2)` on its socket and an
+eventfd, so with nothing changing in the compositor none of the
+service's threads is woken (`tests/idle.rs` counts their context
+switches over 2 s on sway: zero). Proof: `tests/hyprland.rs::
+hyprland_adapter_reconnects_after_losing_its_socket`, `tests/niri.rs::
+niri_adapter_reconnects_without_a_spurious_reload`, `tests/idle.rs`.
+
+**2026-10-06 · wave4-wm: the protocol client is plain wayland-client.**
+The spec names wayland-protocols 0.32 (staging) and smithay-client-toolkit
+0.21. SCTK 0.21 has a helper for `ext-foreign-toplevel-list-v1` but none
+for `ext-workspace-v1`, and its helpers bring its registry and output
+state machinery with them; the client needs one event queue on its own
+thread, `wl_output` names for workspace groups and nothing else. So both
+protocols are dispatched directly with wayland-client 0.31 and
+wayland-protocols 0.32's `staging` bindings (the same crates SCTK sits
+on), which removes a layer rather than adding one. Proof:
+`crates/strand-services/tests/protocol.rs`.

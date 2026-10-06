@@ -310,6 +310,9 @@ where
                         Some(req) => route(req, kind.is_some(), ipc.as_ref(), &proto, &ctx, protocol.as_ref()),
                         None => requests_open = false,
                     },
+                    // Every source has ended (no adapter, the display gone,
+                    // no more requests): nothing can change any more.
+                    else => std::future::pending::<()>().await,
                 }
             }
             let ready = if kind.is_some() {
@@ -494,6 +497,35 @@ mod tests {
         // No identifier: the IPC title stays.
         let s = merge(Some(&ipc), &[], &proto);
         assert_eq!(s.windows[0].title, "old");
+    }
+
+    /// With no adapter, no display and no requester left, the service
+    /// publishes its empty state once and then waits quietly (it does not
+    /// spin or panic once every source has ended).
+    #[tokio::test]
+    async fn every_source_gone_leaves_it_waiting() {
+        let (tx, rx) = mpsc::unbounded_channel::<WmRequest>();
+        drop(tx);
+        let batches = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = batches.clone();
+        let config = WmConfig {
+            wayland: Some(WaylandTarget::Socket("/nonexistent/wayland-0".into())),
+            ..Default::default()
+        };
+        let fut = run(config, move |b| seen.lock().unwrap().push(b), rx);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(300), fut)
+                .await
+                .is_err(),
+            "it keeps running until dropped"
+        );
+        let batches = batches.lock().unwrap();
+        assert_eq!(batches.len(), 1, "{batches:?}");
+        assert!(
+            batches[0]
+                .iter()
+                .any(|c| matches!(c, WmChange::Sources(s) if !s.toplevel_list))
+        );
     }
 
     /// The service future can go on any runtime (Send).

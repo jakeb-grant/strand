@@ -1770,6 +1770,31 @@ The inspector joins it in M5; tree-sitter highlighting is not built yet
 Specified when M3 starts. It only produces writes and events into
 `strand-core`.
 
+- **Compositor (`strand_services::wm`, the `workspaces`, `windows` and
+  `wm` services).** Typed records (`Workspace`, `Window`: the schema's
+  fields plus `Workspace::active` and `Window::urgent`) in a `WmState`,
+  and `wm::run(WmConfig { backend, wayland, events }, sink,
+  requests) -> impl Future + Send`: the service on the shared runtime,
+  stopped by dropping it. `sink: FnMut(Vec<WmChange>)` gets one
+  non-empty batch per change: `Workspaces`/`Windows`
+  (`Vec<strand_core::keyed::VecDiff<i64 | String, _>>`, a `Reset` on the
+  first publish), `FocusedWorkspace`, `FocusedWindow`, `FocusedScreen`
+  (for `screens.focused`), `Name`, `ConfigReloaded { failed }` (also
+  sent to `events` as `ChangeEvent::Compositor(ConfigReloaded)`) and
+  `Sources` (adapter, connected, which protocols exist). `requests` takes
+  `WmRequest { action: WmAction::{FocusWorkspace, FocusWindow,
+  CloseWindow, MinimizeWindow}, reply: Option<oneshot> }`, answered
+  `Ok` or a `WmError` (`NotConnected`, `Unsupported`, `Unknown…`,
+  `Rejected`, `Io`). `wm::detect()` picks the `Backend` (Hyprland, niri
+  behind the default-on `niri` feature, sway through swayipc-async) from
+  the environment; `ProtocolClient::spawn(WaylandTarget, tx)` runs
+  `ext-foreign-toplevel-list-v1` and `ext-workspace-v1` on its own
+  `strand-toplevel` thread (own connection, `poll(2)` on the socket and an
+  eventfd), sending a `ProtocolState` per atomic update; `wm::merge`
+  joins the two (`docs/decisions.md`, wave4-wm). `wm::Mirror` applies the
+  stream, for tests and for the store that will hold it. The
+  `#[service]`/`#[derive(Store)]` wiring builds on this stream.
+
 ### `strand-watch`
 
 Produces typed events, never parsed content; logic turns them into writes.
