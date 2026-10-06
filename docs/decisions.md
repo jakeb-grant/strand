@@ -5934,3 +5934,18 @@ in one `[anon:mimalloc]` mapping, 55 MB PSS in all. `main` now calls
 `PR_SET_THP_DISABLE` first thing (rustix's `thread` feature), and both
 PSS tests in `demo.rs` assert `THP_enabled: 0` in `/proc/<pid>/status`
 before reading PSS.
+
+**2026-10-06 · wave3-pixels (carried r1): the 32-scope `apply` on
+GitHub's runners.** The first CI run to get that far reached the optimised
+theme-swap bench, which then measured `apply` at 6.2 ms for 32 distinct
+`set { }` scopes on `spring(120, 1)` (4.7 ms on `spring(1600, 1)`; 3.5
+and 3.0 ms on the dev container); every other number there was about
+1.4 to 1.8 times the dev container's too. At 32 scopes the contrast
+check plays the swap through until its work budget (`CHECK_WORK`, in
+steps) is nearly spent, so its time is the machine's speed times a
+fixed amount of work. Following wave3-theme fixer round 3, which gated
+only the parts at 32 scopes for the same reason, `apply` at 32 scopes is
+now held to twice the budget (10 ms), a check of its shape; with 0 and
+8 scopes `apply`, each frame and (along `spring(1600, 1)`) the whole
+swap stay held to 5 ms, and the claim in features.md is narrowed to
+match.

@@ -637,9 +637,15 @@ fn set_scopes_and_slow_springs_stay_within_the_budget() {
                 "{scopes} scopes, spring({stiffness}, 1): {whole:?} of work in all, over {gate:?}"
             );
         }
+        // At 32 scopes the contrast check plays the swap through until
+        // its work budget (`CHECK_WORK`, counted in steps, not time) is
+        // nearly spent: about 3.5 ms here, 6.2 ms on GitHub's slower
+        // runners, so there `apply` is held to twice the budget, a check
+        // of its shape (decisions.md, wave3-pixels carried r1).
+        let apply_gate = if scopes > 8 { gate * 2 } else { gate };
         assert!(
-            apply < gate,
-            "{scopes} scopes, spring({stiffness}, 1): apply {apply:?}, over {gate:?}"
+            apply < apply_gate,
+            "{scopes} scopes, spring({stiffness}, 1): apply {apply:?}, over {apply_gate:?}"
         );
         assert!(
             each < gate_frame,
