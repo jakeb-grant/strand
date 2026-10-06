@@ -357,13 +357,19 @@ design.
   new seed, the instance-level fuzzers for 10,000 and 2,000, the latency
   benches for 200 edits per kind.
 
-These steps have not run on a GitHub runner yet: the branch is not
-pushed from this work (the M0 steps have a green run on record). The
-numbers here are the dev container's. The per-push latency step has
-about 1.6 ms of headroom in the model, so the first green run, or a
-miss, should be recorded here and in `docs/features.md` next to the
-gates; a miss on a slower runner is to be reported, not met by relaxing
-the budget.
+First green run of these steps on a GitHub runner: CI run 37403286721
+(https://github.com/jakeb-grant/strand/actions/runs/37403286721), the
+push of the wave 2 merge `cb42824` on 2026-10-06. Over 50 edits each,
+save → presented: token p95 16.5 ms (max 16.8; break-even 19.3), on a
+monitor in the model p95 32.3 ms (worst phase 33.2); markup p95 16.6 ms
+(max 17.7), on a monitor 32.3 ms; painted → presented p95 0.18 ms; scale
+change 0.7–1.0 ms to the painted frame; plugged monitors 0.9–1.0 ms
+heard → painted. Save → painted buffer: token p95 16.7 ms, markup 16.5
+ms. The 60-edit fuzzer through the five save styles and the sway
+pipeline passed in 11.1 s. The other numbers here are the dev
+container's. The token gate's headroom in the model is small (2.7 ms on
+that runner), so a miss on a slower runner is to be reported, not met by
+relaxing the budget.
 
 ## Open
 
@@ -375,14 +381,12 @@ the budget.
   phase, idle surface) on headless sway; nothing is measured on
   hardware. The token edit has about 1.6 ms of headroom in the model,
   and a busy surface is not measured (above).
-- No CI run of the new per-push fuzzer and latency steps is on record
-  yet (above).
 - The fuzzer does not exercise the edit table's custom-service and
   `lock` rows (their own tests are named above), and a compiling
   mutation's own frame is not modelled (only that it keeps every cell
   and that the save back lands on the cold boot).
 - Other M1 items not part of the exit gates are open in
-  `docs/features.md`: the formatter, the tree-sitter grammar and the
-  basic LSP (`strand-dev`), the render parts of `keyframes`, `shader` and
+  `docs/features.md`: the tree-sitter grammar (the formatter and the
+  basic LSP in `strand-dev` landed with the wave 2 merge), the render parts of `keyframes`, `shader` and
   `canvas`, and the watcher registrations for `.wgsl` files and
   wallpapers.
