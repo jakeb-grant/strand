@@ -38,6 +38,11 @@ jobs:
         run: |
           sway --version
           dpkg -s fonts-dejavu-core adwaita-icon-theme | grep -E '^(Package|Version)'
+          # Every font fontconfig sees (text references depend on which
+          # family a style or a missing glyph falls back to).
+          dpkg -l 'fonts-*' | grep '^ii' || true
+          fc-list : family style file | sort
+          fc-match -s 'sans-serif:italic' | head -5
           # The acceptance tests pin XCURSOR_THEME=Adwaita (size 24); the
           # default theme only matters to processes outside them.
           readlink -f /usr/share/icons/default/index.theme || true
