@@ -19,9 +19,9 @@ pub(crate) mod builtins;
 pub mod clock;
 mod exec;
 pub mod host;
-mod palette;
 pub mod persist;
 pub mod schema_host;
+pub mod theme;
 pub mod value;
 
 use std::cell::{Cell, RefCell};
@@ -358,6 +358,9 @@ pub struct Vm {
     /// The longest frame or closure capture seen ([`Vm::peak_frame`]).
     peak: Cell<usize>,
     hooks: RefCell<Option<std::rc::Weak<dyn VmHooks>>>,
+    /// `material(image:)` and file imports (the instance's, kept across
+    /// reloads); without one those read nothing.
+    theme: RefCell<Option<Rc<theme::ThemeHost>>>,
     /// Where errors raised since the last [`Vm::clear_faults`] came from:
     /// the failing op's file and span.
     faults: RefCell<std::collections::VecDeque<(Error, FileId, Span)>>,
@@ -391,6 +394,7 @@ impl Vm {
             calls: Cell::new(0),
             peak: Cell::new(0),
             hooks: RefCell::new(None),
+            theme: RefCell::new(None),
             faults: RefCell::default(),
         })
     }
@@ -427,6 +431,16 @@ impl Vm {
     /// VM).
     pub fn set_hooks(&self, hooks: std::rc::Weak<dyn VmHooks>) {
         *self.hooks.borrow_mut() = Some(hooks);
+    }
+
+    /// Give the VM its theme host (`material(image:)`, file imports).
+    pub fn set_theme(&self, theme: Rc<theme::ThemeHost>) {
+        *self.theme.borrow_mut() = Some(theme);
+    }
+
+    /// The theme host, if the VM has one.
+    pub fn theme(&self) -> Option<Rc<theme::ThemeHost>> {
+        self.theme.borrow().clone()
     }
 
     pub(crate) fn hooks(&self) -> Option<Rc<dyn VmHooks>> {
@@ -641,10 +655,4 @@ impl Vm {
             .map(|(i, l)| (l.name.clone(), LocalId(i as u32)))
             .collect()
     }
-}
-
-/// `material(seed:, dark:)` with the default variant: the palette a
-/// config without `use palette` gets.
-pub fn palette_material(seed: strand_scene::Color, dark: bool) -> value::Palette {
-    palette::material(seed, "tonal_spot", dark, 0.0)
 }

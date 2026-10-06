@@ -13,7 +13,7 @@ use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::BTreeMap;
 
-use crate::color::{Color, Oklch};
+use crate::color::{Color, MIN_CONTRAST, Oklch};
 use crate::protocol::{Length, Paint, Prop, PropClass, PropValue, Transition};
 
 /// Deepest chain of token references followed before giving up (a cycle
@@ -150,6 +150,14 @@ pub struct TokenTable {
     pub tokens: BTreeMap<String, PropValue>,
     /// Derived tokens: `fg.muted: $fg.alpha(0.65)`.
     pub derived: BTreeMap<String, TokenExpr>,
+    /// Declared text/background pairs (the contrast guard): a text token
+    /// by path, and the background tokens it is drawn on. Wherever the
+    /// text token is evaluated (the global table's pairs apply in every
+    /// scope, so a palette mid-spring or a `set { }` override is guarded
+    /// too), its OKLCH lightness is solved to keep at least
+    /// [`MIN_CONTRAST`] over each background
+    /// ([`Color::with_contrast`]).
+    pub contrast: BTreeMap<String, Vec<String>>,
 }
 
 impl TokenTable {
@@ -158,16 +166,27 @@ impl TokenTable {
         self.tokens.get(path)
     }
 
+    /// Sets a plain value at `path`, replacing a derived one there.
     pub fn insert(&mut self, path: impl Into<String>, value: PropValue) {
-        self.tokens.insert(path.into(), value);
+        let path = path.into();
+        self.derived.remove(&path);
+        self.tokens.insert(path, value);
     }
 
+    /// Sets a derived token at `path`, replacing a plain one there.
     pub fn insert_derived(&mut self, path: impl Into<String>, expr: TokenExpr) {
-        self.derived.insert(path.into(), expr);
+        let path = path.into();
+        self.tokens.remove(&path);
+        self.derived.insert(path, expr);
     }
 
     pub fn is_empty(&self) -> bool {
         self.tokens.is_empty() && self.derived.is_empty()
+    }
+
+    /// Declare that `text` is drawn on `bgs` (see [`TokenTable::contrast`]).
+    pub fn insert_contrast(&mut self, text: impl Into<String>, bgs: Vec<String>) {
+        self.contrast.insert(text.into(), bgs);
     }
 
     /// Evaluates the token at `path`, plain or derived.
@@ -328,14 +347,44 @@ impl<'a> TokenScope<'a> {
             } else {
                 TokenScope::new(&self.levels[..i])
             };
-            if let Some(v) = table.tokens.get(path) {
-                return scope.resolve_in(v, depth + 1, budget).map(Cow::into_owned);
-            }
-            if let Some(e) = table.derived.get(path) {
-                return scope.eval_in(e, depth + 1, None, budget);
-            }
+            let v = if let Some(v) = table.tokens.get(path) {
+                scope.resolve_in(v, depth + 1, budget).map(Cow::into_owned)
+            } else if let Some(e) = table.derived.get(path) {
+                scope.eval_in(e, depth + 1, None, budget)
+            } else {
+                continue;
+            };
+            return self.guard(path, v, depth, budget);
         }
         None
+    }
+
+    /// The contrast guard: a declared text token keeps [`MIN_CONTRAST`]
+    /// over its backgrounds, as evaluated in this scope.
+    fn guard(
+        &self,
+        path: &str,
+        v: Option<PropValue>,
+        depth: u32,
+        budget: &Budget,
+    ) -> Option<PropValue> {
+        let Some(PropValue::Color(text)) = v else {
+            return v;
+        };
+        let Some(bgs) = self.levels.first().and_then(|t| t.contrast.get(path)) else {
+            return v;
+        };
+        let bgs: Vec<Color> = bgs
+            .iter()
+            .filter(|b| b.as_str() != path)
+            .filter_map(|b| match self.eval_ref(b, depth + 1, budget) {
+                // A translucent background shows what is under it; only
+                // opaque ones can be judged.
+                Some(PropValue::Color(c)) if c.a >= 1.0 => Some(c),
+                _ => None,
+            })
+            .collect();
+        Some(PropValue::Color(text.with_contrast(&bgs, MIN_CONTRAST)))
     }
 
     fn eval_in(
@@ -455,11 +504,10 @@ fn shift_l(c: Color, d: f32) -> Color {
     Color::from_oklch(lch)
 }
 
-/// Brings a derived colour back into sRGB. M0 clips per channel; the
-/// chroma-reducing gamut mapping design asks for lands with the M2 token
-/// evaluator.
+/// Brings a derived colour back into sRGB by lowering OKLCH chroma
+/// (CSS Color 4 gamut mapping, [`Color::gamut_mapped`]).
 fn gamut_map(c: Color) -> Color {
-    c.clamped()
+    c.gamut_mapped()
 }
 
 #[cfg(test)]
@@ -788,6 +836,50 @@ mod tests {
         assert!(start.elapsed() < std::time::Duration::from_millis(500));
         // A small fan-out still resolves.
         assert_eq!(t.lookup("n1"), Some(PropValue::Number(64.0)));
+    }
+
+    #[test]
+    fn declared_pairs_keep_their_contrast_in_every_scope() {
+        let mut t = TokenTable::default();
+        let surface = Color::from_hex("#1e1e2e").unwrap();
+        t.insert("surface", PropValue::Color(surface));
+        // Too dark to read on the surface.
+        t.insert("fg", PropValue::Color(Color::from_hex("#303040").unwrap()));
+        t.insert_contrast("fg", vec!["surface".into()]);
+        let PropValue::Color(fg) = t.lookup("fg").unwrap() else {
+            panic!()
+        };
+        assert!(
+            fg.contrast(surface) >= MIN_CONTRAST,
+            "{}",
+            fg.contrast(surface)
+        );
+        // Derived tokens see the guarded value.
+        t.insert_derived(
+            "fg.muted",
+            TokenExpr::path("fg").call(
+                TokenMethod::Alpha,
+                vec![TokenExpr::value(PropValue::Number(0.65))],
+            ),
+        );
+        assert_eq!(
+            t.lookup("fg.muted"),
+            Some(PropValue::Color(fg.with_alpha(0.65)))
+        );
+        // A subtree that lightens the surface gets darker text.
+        let mut set = TokenTable::default();
+        set.insert(
+            "surface",
+            PropValue::Color(Color::from_hex("#c0c0d0").unwrap()),
+        );
+        let levels = [&t, &set];
+        let PropValue::Color(inner) = TokenScope::new(&levels).lookup("fg").unwrap() else {
+            panic!()
+        };
+        assert!(inner.contrast(Color::from_hex("#c0c0d0").unwrap()) >= MIN_CONTRAST);
+        // A pair that already passes is untouched.
+        t.insert("fg", PropValue::Color(Color::WHITE));
+        assert_eq!(t.lookup("fg"), Some(PropValue::Color(Color::WHITE)));
     }
 
     #[test]

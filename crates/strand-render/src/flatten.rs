@@ -189,9 +189,17 @@ pub fn flatten(
         layouts,
         out: &mut out,
     };
+    // Text with no `color` or `font` above it is themed: `$fg` and
+    // `$font.ui` when the token table has them (the built-in theme does).
     let mut inh = Inherited {
-        color: Color::BLACK,
-        font: Font::default(),
+        color: match tree.tokens.lookup("fg") {
+            Some(PropValue::Color(c)) => c,
+            _ => Color::BLACK,
+        },
+        font: match tree.tokens.lookup("font.ui") {
+            Some(PropValue::Font(f)) => sane_font(f),
+            _ => Font::default(),
+        },
         tokens: vec![&tree.tokens],
         ctx: 0,
         clip: full,

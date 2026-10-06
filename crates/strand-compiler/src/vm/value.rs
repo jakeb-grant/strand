@@ -48,17 +48,9 @@ pub struct Record {
     pub fields: Vec<Value>,
 }
 
-/// A palette: Material 3 system roles under Strand's names.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Palette {
-    pub roles: Vec<(String, Color)>,
-}
-
-impl Palette {
-    pub fn get(&self, role: &str) -> Option<Color> {
-        self.roles.iter().find(|(r, _)| r == role).map(|(_, c)| *c)
-    }
-}
+/// A palette: every Material 3 system role under Strand's names
+/// (`strand-theme`).
+pub use strand_theme::Palette;
 
 /// A call-shaped builtin value: `linear(45deg, $accent, $tertiary)`,
 /// `spring(700, 0.9)`, `grow(6)`, `blur(16)`. The emitter turns it into a
@@ -145,13 +137,14 @@ impl AsyncValue {
         }
     }
 
-    /// `??` takes the value only when it is settled and good.
+    /// What `??` takes: the value whenever there is one, the kept one
+    /// while a newer one loads included (strand-core's `Async::or`: a
+    /// search box keeps its last results while typing, a theme keeps its
+    /// old palette while a wallpaper is quantised). Only a value still
+    /// loading the first time, or a failure with nothing kept, falls
+    /// through to the right-hand side.
     pub fn usable(&self) -> Option<&Value> {
-        if self.pending || self.error.is_some() {
-            None
-        } else {
-            self.value.as_ref()
-        }
+        self.value.as_ref()
     }
 }
 
@@ -821,7 +814,9 @@ mod tests {
         assert_eq!(a.usable(), Some(&Value::int(3)));
         let mut p = a.clone();
         p.pending = true;
-        assert_eq!(p.usable(), None);
+        assert_eq!(p.usable(), Some(&Value::int(3)), "kept while loading");
+        p.value = None;
+        assert_eq!(p.usable(), None, "loading the first time");
         assert_eq!(AsyncValue::failed("x").usable(), None);
     }
 }

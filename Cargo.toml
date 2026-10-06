@@ -17,6 +17,7 @@ strand-scene = { path = "crates/strand-scene" }
 strand-services = { path = "crates/strand-services" }
 strand-surface = { path = "crates/strand-surface" }
 strand-text = { path = "crates/strand-text" }
+strand-theme = { path = "crates/strand-theme" }
 strand-watch = { path = "crates/strand-watch" }
 
 [workspace.lints.rust]

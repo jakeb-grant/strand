@@ -351,27 +351,50 @@ impl Ctx {
         false
     }
 
+    /// The built-in palette: `material(seed: system.accent ?? #7aa2f7,
+    /// dark: system.dark, contrast: system.contrast)`.
+    fn default_palette(&self, rt: &Runtime) -> Result<strand_theme::Palette, Error> {
+        let host = &self.vm.host;
+        let dark = host.read(rt, "system", "dark")?.truthy();
+        let seed = match host.read(rt, "system", "accent")? {
+            Value::Color(c) => c,
+            _ => Color::from_hex(DEFAULT_SEED).unwrap_or(Color::BLACK),
+        };
+        let contrast = match host.read(rt, "system", "contrast")? {
+            Value::Num(n, _) => n,
+            _ => 0.0,
+        };
+        Ok(strand_theme::from_seed(
+            seed,
+            strand_theme::Options {
+                dark,
+                contrast,
+                ..Default::default()
+            },
+        ))
+    }
+
     fn token_table(self: &Rc<Self>, rt: &Runtime) -> Result<TokenTable, Error> {
         let prog = self.vm.prog.clone();
         let types = &prog.types;
         let root = self.vm.root.clone();
-        let mut t = TokenTable::default();
+        // The built-in theme's base tokens under everything: a config
+        // with no theme file (the hello bar) is themed, and a theme that
+        // defines only some base tokens keeps the rest.
+        let mut t = strand_theme::defaults::base_tokens();
         let palette = match prog.use_palette {
             Some(c) => self.vm.eval(rt, c, &root)?,
-            None => {
-                let dark = self.vm.host.read(rt, "system", "dark")?.truthy();
-                let seed = Color::from_hex(DEFAULT_SEED).unwrap_or(Color::BLACK);
-                Value::Palette(Rc::new(crate::vm::palette_material(seed, dark)))
-            }
+            None => Value::Palette(Rc::new(self.default_palette(rt)?)),
         };
         let palette = match palette {
             Value::Async(a) => a.usable().cloned().unwrap_or(Value::Null),
             v => v,
         };
-        if let Value::Palette(p) = &palette {
-            for (role, c) in &p.roles {
-                t.insert(role.as_str(), PropValue::Color(*c));
-            }
+        match &palette {
+            Value::Palette(p) => p.insert_into(&mut t),
+            // A palette still loading with no fallback: the built-in one
+            // rather than no colours at all.
+            _ => self.default_palette(rt)?.insert_into(&mut t),
         }
         // Component token defaults (`$Toast.radius`) before the sets, so
         // a set's `override Toast.radius` replaces them.
@@ -526,6 +549,13 @@ impl Storage {
         }
     }
 
+    /// Where wallpaper seeds are cached: `palettes` beside the persist
+    /// store (`$XDG_STATE_HOME/strand/palettes`); `None` without one.
+    pub fn palette_dir(&self) -> Option<PathBuf> {
+        let p = self.persist.as_ref()?;
+        Some(p.dir().parent()?.join("palettes"))
+    }
+
     /// A settings file's path: `~/…` from `$HOME`, absolute as is, else
     /// relative to the config directory.
     pub fn resolve(&self, file: &str) -> Option<PathBuf> {
@@ -553,7 +583,7 @@ pub(crate) const SETTINGS_PRUNE_MIN: usize = 16;
 
 /// The seed of the palette a config without `use palette` gets: the
 /// design's default accent.
-pub const DEFAULT_SEED: &str = "#7aa2f7";
+pub const DEFAULT_SEED: &str = strand_theme::defaults::DEFAULT_SEED;
 
 /// A program running on a runtime. See the module docs.
 pub struct Instance {
@@ -614,13 +644,13 @@ impl Instance {
             host.declare(rt, name, *record);
         }
         let warnings = program.warnings.clone();
-        let ctx = Ctx::create(
-            Vm::new(program, host),
-            Emitter::default(),
-            storage,
-            identity,
-            hashes,
-        );
+        let vm = Vm::new(program, host);
+        vm.set_theme(crate::vm::theme::ThemeHost::new(
+            rt,
+            storage.palette_dir(),
+            storage.config_dir.clone(),
+        ));
+        let ctx = Ctx::create(vm, Emitter::default(), storage, identity, hashes);
         // Lowering's warnings (a frozen time signal), once, in the boot
         // tick.
         ctx.notices
@@ -700,7 +730,10 @@ impl Instance {
                     .flat_map(|c| c.tokens.iter().map(|e| e.value)),
             )
             .collect();
-        let system = ctx.vm.host.sources(&rt, "system", Some("dark"));
+        let system: Vec<_> = ["dark", "accent", "contrast"]
+            .into_iter()
+            .flat_map(|f| ctx.vm.host.sources(&rt, "system", Some(f)))
+            .collect();
         ctx.declare_reads(&rt, memo.id(), &chunks, &root_env, &system);
         if fresh {
             match memo.get_untracked(&rt) {
@@ -766,8 +799,12 @@ impl Instance {
             host.stop(&rt, name);
         }
         let em = Emitter::continuing(&old.em.borrow());
+        let vm = Vm::new(build.program.clone(), host);
+        if let Some(t) = old.vm.theme() {
+            vm.set_theme(t);
+        }
         let ctx = Ctx::create(
-            Vm::new(build.program.clone(), host),
+            vm,
             em,
             old.storage.clone(),
             Some(build.identity.clone()),
@@ -963,8 +1000,12 @@ impl Instance {
                 host.stop(&self.rt, &name);
             }
         }
+        let vm = Vm::new(build.program.clone(), host);
+        if let Some(t) = self.ctx.vm.theme() {
+            vm.set_theme(t);
+        }
         let ctx = Ctx::create(
-            Vm::new(build.program.clone(), host),
+            vm,
             em,
             storage,
             Some(build.identity.clone()),
@@ -1444,6 +1485,34 @@ impl Instance {
             any |= f(&self.rt, &key);
         }
         any
+    }
+
+    /// The files the theme reads, for the watcher: wallpapers given to
+    /// `material(image:)` (their link targets are watched too) and files
+    /// given to `import(…)`.
+    pub fn theme_files(&self) -> (Vec<PathBuf>, Vec<PathBuf>) {
+        self.ctx.vm.theme().map(|t| t.files()).unwrap_or_default()
+    }
+
+    /// Whether [`Instance::theme_files`] grew since the last call (a
+    /// wallpaper path changed at run time).
+    pub fn take_theme_files_changed(&self) -> bool {
+        self.ctx.vm.theme().is_some_and(|t| t.take_files_changed())
+    }
+
+    /// The watcher saw these files change: palettes read from them are
+    /// made again (a wallpaper re-quantised only if its content changed;
+    /// the old palette holds meanwhile). Returns whether any was read.
+    pub fn theme_files_changed(&self, paths: &[PathBuf]) -> bool {
+        self.ctx
+            .vm
+            .theme()
+            .is_some_and(|t| t.files_changed(&self.rt, paths))
+    }
+
+    /// The instance's theme host (tests: wait for wallpaper jobs).
+    pub fn theme(&self) -> Option<Rc<crate::vm::theme::ThemeHost>> {
+        self.ctx.vm.theme()
     }
 
     /// The settings files the mounted program reads (for the watcher).

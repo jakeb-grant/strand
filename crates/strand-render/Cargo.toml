@@ -16,6 +16,8 @@ vello_cpu = { version = "0.3", default-features = false, features = ["std", "f32
 
 [dev-dependencies]
 png = "0.18"
+# Theme renders: real palettes and the built-in base tokens.
+strand-theme.workspace = true
 criterion = "0.8"
 
 [lints]

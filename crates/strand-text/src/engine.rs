@@ -406,6 +406,35 @@ impl TextEngine {
     }
 }
 
+/// CSS generic family names.
+const GENERICS: [&str; 9] = [
+    "serif",
+    "sans-serif",
+    "monospace",
+    "cursive",
+    "fantasy",
+    "system-ui",
+    "emoji",
+    "math",
+    "fangsong",
+];
+
+/// `family` with `sans-serif` appended when it names no generic family,
+/// so a theme's `"Inter"` on a machine without Inter falls back to the
+/// system sans (whole words, not a per-glyph mix of fallback fonts)
+/// (decisions.md, wave3-theme).
+fn with_generic(family: &str) -> std::borrow::Cow<'_, str> {
+    let has_generic = family.split(',').any(|f| {
+        let f = f.trim().trim_matches(|c| c == '"' || c == '\'');
+        GENERICS.iter().any(|g| g.eq_ignore_ascii_case(f))
+    });
+    if has_generic {
+        family.into()
+    } else {
+        format!("{family}, sans-serif").into()
+    }
+}
+
 /// Shaping parameters shared by every attempt at one request.
 #[derive(Copy, Clone)]
 struct Shape<'a> {
@@ -429,7 +458,7 @@ impl Shape<'_> {
     ) -> parley::Layout<u32> {
         let mut builder = layout_cx.ranged_builder(font_cx, text, self.scale, true);
         builder.push_default(StyleProperty::FontFamily(FontFamily::Source(
-            self.family.into(),
+            with_generic(self.family),
         )));
         builder.push_default(StyleProperty::FontSize(self.size));
         builder.push_default(StyleProperty::FontWeight(FontWeight::new(self.weight)));

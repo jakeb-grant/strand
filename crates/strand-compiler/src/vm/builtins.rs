@@ -9,7 +9,6 @@ use strand_scene::{BinOp, Color, Oklch, TokenExpr, TokenMethod};
 
 use super::Vm;
 use super::exec::{Args, EventCtx};
-use super::palette;
 use super::value::{AsyncValue, CallValue, Num, PendingOp, Value};
 use crate::hir::{BinaryOp, UnaryOp};
 use crate::ty::{Prim, Ty, TypeTable};
@@ -403,26 +402,64 @@ pub(crate) fn call(
             let dark = args.get(2).is_some_and(Value::truthy);
             let contrast = num(3).unwrap_or(0.0);
             let variant = args.get(1).map(|v| v.show(types)).unwrap_or_default();
+            let opts = strand_theme::Options {
+                variant: super::theme::variant(&variant),
+                dark,
+                contrast,
+            };
             if overload == 0 {
                 let seed = match args.get(0) {
                     Some(Value::Color(c)) => *c,
                     _ => return Ok(Value::Null),
                 };
-                Value::Palette(Rc::new(palette::material(seed, &variant, dark, contrast)))
+                Value::Palette(Rc::new(strand_theme::from_seed(seed, opts)))
             } else {
-                // Wallpaper quantisation lands with `material-colors` in
-                // M2; until then the image palette is a failed `Async`, so
-                // `?? material(seed: …)` takes over.
-                Value::Async(Rc::new(AsyncValue::failed(
-                    "wallpaper palettes are not available yet (M2)",
-                )))
+                // `material(image:)`: quantised off-thread; while that
+                // runs the last image palette holds (`??` takes a kept
+                // value), and with none yet the fallback after `??`.
+                use super::theme::ImagePalette;
+                let Some(path) = args
+                    .get(0)
+                    .and_then(Value::as_text)
+                    .filter(|p| !p.is_empty())
+                else {
+                    return Ok(Value::Async(Rc::new(AsyncValue::failed("no image path"))));
+                };
+                let Some(theme) = vm.theme() else {
+                    return Ok(Value::Async(Rc::new(AsyncValue::failed(
+                        "wallpaper palettes need a running instance",
+                    ))));
+                };
+                let palette = |p: strand_theme::Palette| Value::Palette(Rc::new(p));
+                let a = match theme.material_image(rt, path, opts)? {
+                    ImagePalette::Ready(p) => AsyncValue::ready(palette(p)),
+                    ImagePalette::Pending(last) => AsyncValue {
+                        value: last.map(palette),
+                        pending: true,
+                        error: None,
+                        op: None,
+                    },
+                    // A missing wallpaper is not held on to: `??` takes
+                    // the fallback ("or if missing").
+                    ImagePalette::Failed(e, _) => AsyncValue {
+                        value: None,
+                        pending: false,
+                        error: Some(e.into()),
+                        op: None,
+                    },
+                };
+                Value::Async(Rc::new(a))
             }
         }
         "import" => {
             let src = args.get(0).and_then(Value::as_text).unwrap_or_default();
-            match palette::import(src) {
-                Some(p) => Value::Palette(Rc::new(p)),
-                None => return Err(fail(format!("unknown palette `{src}`"))),
+            let result = match vm.theme() {
+                Some(theme) => theme.import(rt, src),
+                None => strand_theme::import(src, None).map_err(|e| e.to_string()),
+            };
+            match result {
+                Ok(p) => Value::Palette(Rc::new(p)),
+                Err(e) => return Err(fail(e)),
             }
         }
         "oklch" => {
