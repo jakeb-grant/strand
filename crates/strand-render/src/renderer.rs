@@ -457,6 +457,24 @@ pub fn affects_layout(prop: Prop) -> bool {
 
 impl Renderer {
     pub fn new(text: TextBackend) -> Self {
+        // With a text worker, images decode on a worker of their own that
+        // wakes the render loop through the same waker.
+        let images = match &text {
+            TextBackend::Worker(w) => {
+                crate::image::ImageWorker::spawn(crate::image::IconTheme::system(), w.waker())
+                    .map(crate::image::ImageBackend::Worker)
+                    .unwrap_or_else(|_| {
+                        crate::image::ImageBackend::Inline(crate::image::IconTheme::system())
+                    })
+            }
+            TextBackend::Inline(_) => {
+                crate::image::ImageBackend::Inline(crate::image::IconTheme::system())
+            }
+        };
+        let extras = Extras {
+            images: crate::image::ImageStore::new(images),
+            ..Extras::default()
+        };
         Self {
             tree: SceneTree::new(),
             surfaces: BTreeMap::new(),
@@ -492,8 +510,24 @@ impl Renderer {
             born: Vec::new(),
             opening: BTreeSet::new(),
             laid_out_nodes: 0,
-            extras: Extras::default(),
+            extras,
         }
+    }
+
+    /// Decodes images and icons inline with icons from `theme` (offline
+    /// renders and tests; a worker-backed renderer decodes off-thread).
+    pub fn set_icon_theme_inline(&mut self, theme: &str) {
+        self.extras
+            .images
+            .set_backend(crate::image::ImageBackend::Inline(
+                crate::image::IconTheme::named(theme),
+            ));
+    }
+
+    /// Bytes of decoded images held (at most
+    /// [`crate::image::IMAGE_CACHE_BYTES`] beyond what one frame draws).
+    pub fn image_bytes(&self) -> usize {
+        self.extras.images.bytes()
     }
 
     /// The compositor blurs behind surfaces (`ext-background-effect-v1`,
@@ -2037,6 +2071,12 @@ impl Renderer {
     }
 
     fn poll_text(&mut self) {
+        // Decoded images: surfaces drawing them repaint.
+        if self.extras.images.poll() {
+            for s in self.surfaces.values_mut() {
+                s.mark_dirty();
+            }
+        }
         loop {
             let TextBackend::Worker(w) = &self.text else {
                 return;
@@ -2181,7 +2221,10 @@ impl Renderer {
         let mut stable = None;
         for _ in 0..6 {
             let flat = self.flatten_now(id);
-            if !self.request_text(&flat.text) {
+            let text = self.request_text(&flat.text);
+            // Decoded inline (offline): draw them at once too.
+            let images = self.extras.images.want(&flat.images);
+            if !text && !images {
                 stable = Some(flat);
                 break;
             }

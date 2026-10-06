@@ -566,6 +566,23 @@ fn draw(
                 ctx.set_fill_rule(Fill::NonZero);
                 ctx.reset_paint_transform();
             }
+            Item::Image { pixmap, rect, tint } => {
+                // Decoded at this size: drawn pixel for pixel unless a
+                // transform scales or turns it.
+                let smooth = cur != base;
+                let (p, t) = image_paint(pixmap, rect.x0, rect.y0, smooth);
+                if let Some(c) = tint {
+                    ctx.set_tint(Some(Tint {
+                        color: bgra(*c),
+                        mode: TintMode::AlphaMask,
+                    }));
+                }
+                ctx.set_paint(p);
+                ctx.set_paint_transform(t);
+                ctx.fill_rect(rect);
+                ctx.reset_paint_transform();
+                ctx.reset_tint();
+            }
             Item::Glyphs {
                 x,
                 y,

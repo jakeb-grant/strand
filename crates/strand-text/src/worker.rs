@@ -3,6 +3,7 @@
 use std::collections::{HashSet, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -50,6 +51,8 @@ pub struct TextWorker {
     requests: Option<Sender<Msg>>,
     layouts: Receiver<TextLayout>,
     thread: Option<JoinHandle<()>>,
+    /// The waker, shared with other workers of the render loop (images).
+    waker: Option<Arc<Mutex<Waker>>>,
 }
 
 impl std::fmt::Debug for TextWorker {
@@ -75,6 +78,8 @@ impl TextWorker {
     }
 
     pub fn spawn_with_waker(config: FontConfig, waker: Option<Waker>) -> Result<Self, TextError> {
+        let shared = waker.map(|w| Arc::new(Mutex::new(w)));
+        let waker = shared.clone();
         let (req_tx, req_rx) = mpsc::channel::<Msg>();
         let (out_tx, out_rx) = mpsc::channel::<TextLayout>();
         let thread = std::thread::Builder::new()
@@ -133,7 +138,9 @@ impl TextWorker {
                     if out_tx.send(layout).is_err() {
                         return;
                     }
-                    if let Some(w) = &waker {
+                    if let Some(w) = &waker
+                        && let Ok(w) = w.lock()
+                    {
                         w();
                     }
                 }
@@ -143,7 +150,20 @@ impl TextWorker {
             requests: Some(req_tx),
             layouts: out_rx,
             thread: Some(thread),
+            waker: shared,
         })
+    }
+
+    /// A waker that runs the one this worker was spawned with (the render
+    /// loop's ping), for other workers of the same loop: the image
+    /// decoder wakes it the same way.
+    pub fn waker(&self) -> Option<Waker> {
+        let w = self.waker.clone()?;
+        Some(Box::new(move || {
+            if let Ok(w) = w.lock() {
+                w();
+            }
+        }))
     }
 
     /// Queues a request. Never blocks.

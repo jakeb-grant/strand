@@ -173,6 +173,13 @@ pub enum Item {
         layout: Arc<TextLayout>,
         color: Color,
     },
+    /// A decoded `image` or `icon` filling `rect` (it was decoded at that
+    /// size); a symbolic icon is a mask painted in `tint`.
+    Image {
+        pixmap: Arc<vello_cpu::Pixmap>,
+        rect: kurbo::Rect,
+        tint: Option<Color>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -209,6 +216,8 @@ pub struct Flattened {
     /// Every drawn node's hit shape, in paint order (a node before its
     /// children, earlier siblings before later ones).
     pub hits: Vec<HitBox>,
+    /// Every image and icon the frame draws, decoded or not.
+    pub images: Vec<crate::image::ImageKey>,
     /// Each `input`'s text layout and the surface-logical x of its
     /// origin (a click places the caret from it).
     pub inputs: HashMap<NodeId, (Arc<TextLayout>, f32)>,
@@ -309,6 +318,8 @@ pub struct Extras {
     /// Hover, press, focus, carets and slider drags from the input
     /// router.
     pub widgets: crate::widgets::Widgets,
+    /// Decoded `image` and `icon` pixels.
+    pub images: crate::image::ImageStore,
 }
 
 /// Flattens the subtree under `root` for a surface of `size` at `scale`.
@@ -886,6 +897,14 @@ fn hash_item(h: &mut impl Hasher, item: &Item) {
             (x, y, layout.key, layout.scale).hash(h);
             hash_color(h, color);
         }
+        Item::Image { pixmap, rect, tint } => {
+            10u8.hash(h);
+            (Arc::as_ptr(pixmap) as usize).hash(h);
+            hash_rect(h, *rect);
+            if let Some(c) = tint {
+                hash_color(h, c);
+            }
+        }
     }
 }
 
@@ -1427,6 +1446,12 @@ impl<'a> Flattener<'a> {
                 font: &font,
             };
             self.widget(&wctx, &get, caret, &caret_at, &mask_map, &mut sig, &mut ink);
+        }
+        // An `icon` or `image`: decoded at the box's size.
+        if has_area && matches!(node.kind, NodeKind::Icon | NodeKind::Image) {
+            self.image(
+                node, &get, frame, phys, &box_path, &r, text_color, &mut sig, &mut ink,
+            );
         }
         // Text.
         if let Some((l, dx, dy)) = layout {
@@ -2027,6 +2052,73 @@ impl Flattener<'_> {
                 sig,
                 ink,
             );
+        }
+    }
+}
+
+impl Flattener<'_> {
+    /// Draws an `icon` or `image` node's source at its box's size, clipped
+    /// to its rounded box; asks for it to be decoded when it is not yet.
+    #[allow(clippy::too_many_arguments)]
+    fn image<'v>(
+        &mut self,
+        node: &Node,
+        get: &impl Fn(Prop) -> Option<&'v PropValue>,
+        frame: kurbo::Rect,
+        phys: Rect,
+        box_path: &BezPath,
+        r: &RoundedRectRadii,
+        color: Color,
+        sig: &mut DefaultHasher,
+        ink: &mut Rect,
+    ) {
+        let source = match get(Prop::Source) {
+            Some(PropValue::Text(t)) if !t.trim().is_empty() => t.clone(),
+            Some(PropValue::Keyword(k)) => k.clone(),
+            _ => return,
+        };
+        let icon = node.kind == NodeKind::Icon;
+        let fit = match get(Prop::Fit) {
+            Some(PropValue::Keyword(k)) => crate::image::Fit::from_name(k).unwrap_or_default(),
+            _ => crate::image::Fit::default(),
+        };
+        let key = crate::image::ImageKey {
+            source,
+            icon,
+            w: phys.w.min(4096),
+            h: phys.h.min(4096),
+            fit,
+            scale: self.scale.as_f32().ceil().clamp(1.0, 8.0) as u16,
+        };
+        let decoded = match self.extras.images.get(&key) {
+            Some(Ok(d)) => Some(d.clone()),
+            _ => None,
+        };
+        self.out.images.push(key);
+        let Some(d) = decoded else {
+            return;
+        };
+        let clip = (!radii_zero(r)).then(|| self.marker(Item::PushClip(box_path.clone())));
+        if let Some(i) = clip {
+            self.out.items[i].bounds = phys;
+        }
+        self.push(
+            Item::Image {
+                pixmap: d.pixmap,
+                rect: kurbo::Rect::new(
+                    frame.x0,
+                    frame.y0,
+                    frame.x0 + phys.w as f64,
+                    frame.y0 + phys.h as f64,
+                ),
+                tint: d.symbolic.then_some(color),
+            },
+            phys,
+            sig,
+            ink,
+        );
+        if clip.is_some() {
+            self.marker(Item::PopClip);
         }
     }
 }
