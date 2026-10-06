@@ -27,6 +27,7 @@ mod tree;
 pub use input::{Flag, HitOnly, InputScene, Intent, NodeEvent, Router, WHEEL_STEP};
 pub use layout::{Boxes, CH_EM, LIST_ROW_ESTIMATE, MAX_CONTENT_SIZE, RootSize, ScrollState};
 pub use renderer::{
-    BUSY_WINDOW, DAMAGE_HISTORY, NEW_TEXT_WAIT, QUERY_WAIT, RESIZE_WAIT, Renderer, TextBackend,
+    BUSY_WINDOW, DAMAGE_HISTORY, EXIT_STALL, MAX_GHOSTS_PER_PARENT, NEW_TEXT_WAIT, QUERY_WAIT,
+    RESIZE_WAIT, Renderer, TextBackend,
 };
 pub use tree::{Node, PropEntry, SceneError, SceneTree};

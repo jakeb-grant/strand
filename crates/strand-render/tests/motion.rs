@@ -253,49 +253,84 @@ fn paint_only_springs_never_relayout() {
 /// fixed width and height), not the whole surface.
 #[test]
 fn size_springs_relayout_only_under_the_nearest_size_stable_ancestor() {
-    let mut dot = None;
-    let mut st = Stage::new(240, 40, |b, root| {
-        let row = b.node(NodeKind::Row, Some(root), vec![(Prop::Gap, num(4.0))]);
-        let cell = b.node(
-            NodeKind::Row,
-            Some(row),
-            vec![(Prop::Width, num(60.0)), (Prop::Height, num(30.0))],
-        );
-        dot = Some(b.node(
-            NodeKind::Box,
-            Some(cell),
-            vec![(Prop::Size, num(8.0)), (Prop::Bg, color("#ff0000"))],
-        ));
-        b.node(NodeKind::Box, Some(cell), vec![(Prop::Size, num(8.0))]);
-        for _ in 0..6 {
-            let c = b.node(NodeKind::Col, Some(row), vec![]);
-            b.node(NodeKind::Text, Some(c), vec![(Prop::Text, text("label"))]);
-        }
-    });
-    let dot = dot.unwrap();
+    // The bar's Dot: a fixed-size cell holding the dot and a sibling,
+    // then six labels.
+    let build = || {
+        let mut ids = Vec::new();
+        let st = Stage::new(240, 40, |b, root| {
+            let row = b.node(NodeKind::Row, Some(root), vec![(Prop::Gap, num(4.0))]);
+            let cell = b.node(
+                NodeKind::Row,
+                Some(row),
+                vec![(Prop::Width, num(60.0)), (Prop::Height, num(30.0))],
+            );
+            ids.push(b.node(
+                NodeKind::Box,
+                Some(cell),
+                vec![(Prop::Size, num(8.0)), (Prop::Bg, color("#ff0000"))],
+            ));
+            ids.push(b.node(NodeKind::Box, Some(cell), vec![(Prop::Size, num(8.0))]));
+            for _ in 0..6 {
+                let c = b.node(NodeKind::Col, Some(row), vec![]);
+                ids.push(b.node(NodeKind::Text, Some(c), vec![(Prop::Text, text("label"))]));
+            }
+        });
+        (st, ids)
+    };
+    let (mut st, ids) = build();
+    let (dot, sib, label) = (ids[0], ids[1], ids[2]);
     let full = st.r.boxes(S).unwrap().rects.len();
+    let label_at = st.rect(label);
     let mut d = SceneDiff::new();
     d.set(dot, Prop::Width, num(24.0));
     st.apply(d);
+    // The same change on a twin that lays the whole surface out every
+    // frame (a layout length set to what it is forces a full pass).
+    let (mut twin, _) = build();
+    let mut d = SceneDiff::new();
+    d.set(dot, Prop::Width, num(24.0));
+    twin.apply(d);
     let mut widths = Vec::new();
     let mut partial = Vec::new();
     for k in 1..=12 {
         st.paint(frame(k));
+        let mut d = SceneDiff::new();
+        d.set(label, Prop::Pad, num(0.0));
+        twin.apply(d);
+        twin.paint(frame(k));
         widths.push(st.rect(dot).w);
         partial.push(st.r.last_layout_nodes());
+        // The sibling follows the dot inside the cell, and the subtree
+        // laid out alone matches the full layout.
+        assert_eq!(st.rect(sib).x, st.rect(dot).x + st.rect(dot).w, "frame {k}");
+        for id in [dot, sib, label] {
+            let (a, b) = (st.rect(id), twin.rect(id));
+            assert!(
+                (a.x - b.x).abs() < 0.01
+                    && (a.y - b.y).abs() < 0.01
+                    && (a.w - b.w).abs() < 0.01
+                    && (a.h - b.h).abs() < 0.01,
+                "frame {k}, {id:?}: {a:?} vs full {b:?}"
+            );
+        }
+        assert_eq!(st.rect(label), label_at, "outside the cell nothing moves");
     }
     assert!(widths[0] > 8.0 && widths[0] < 24.0, "{widths:?}");
     assert!(widths[5] > widths[0], "{widths:?}");
     // After the first frame (which lays the whole surface out once for
     // the change), each frame lays out the cell's subtree only (the cell
-    // and its two children, twice: at rest and in flight).
+    // and its two children, once: the springs' targets are kept).
     assert!(
-        partial[2..].iter().all(|n| *n <= 6 && *n < full),
+        partial[2..].iter().all(|n| *n <= 3 && *n < full),
         "{partial:?} of {full}"
     );
     st.settle(13);
     assert_eq!(st.rect(dot).w, 24.0);
-    // The sibling after the dot moved with it.
+    assert_eq!(
+        st.rect(sib).x,
+        st.rect(dot).x + 24.0,
+        "the sibling moved with it"
+    );
     assert!(!st.r.wants_frame(S));
 }
 
@@ -418,7 +453,17 @@ fn enter_and_exit_poses_and_siblings_slide_to_fill_the_gap() {
         first.is_none_or(|x| x > 40),
         "starts at its pose: {first:?}"
     );
-    st.settle(end + 1);
+    // Frame by frame towards its place (not a jump to rest).
+    let mut xs = vec![first.unwrap_or(80)];
+    for k in 1..=5 {
+        st.paint(frame(end + k));
+        xs.push(white(&st).unwrap_or(80));
+    }
+    // (Faint at first: its opacity springs from 0 too.)
+    assert!(xs.windows(2).all(|w| w[1] <= w[0]), "glides in: {xs:?}");
+    assert!(xs[3..].windows(2).all(|w| w[1] < w[0]), "glides in: {xs:?}");
+    assert!(xs[5] > 0, "still moving: {xs:?}");
+    st.settle(end + 6);
     assert_eq!(white(&st), Some(0));
 }
 
@@ -443,11 +488,20 @@ fn surfaces_play_their_poses_when_they_open_and_close() {
     d.set(root, Prop::Open, PropValue::Bool(false));
     st.apply(d);
     assert!(st.r.surface_spec(root).unwrap().open, "open while it plays");
-    st.paint(frame(end + 2));
-    let mid = st.buf.px(30, 15);
-    assert!(mid[3] < 250 && mid[3] > 0, "fading: {mid:?}");
-    let end = st.settle(end + 3);
-    st.r.update();
+    let mut alphas = Vec::new();
+    for k in 2..=5 {
+        st.paint(frame(end + k));
+        alphas.push(st.buf.px(30, 15)[3]);
+    }
+    assert!(alphas[0] < 250 && alphas[3] > 0, "fading: {alphas:?}");
+    assert!(
+        alphas.windows(2).all(|w| w[1] < w[0]),
+        "frame by frame: {alphas:?}"
+    );
+    // No `update` here: the frame that ends the pose reports the close
+    // (the host is woken by `has_surface_changes`).
+    let end = st.settle(end + 6);
+    assert!(st.r.has_surface_changes(), "the close wakes the host");
     assert!(
         !st.r.surface_spec(root).unwrap().open,
         "closed once settled"
@@ -465,9 +519,17 @@ fn surfaces_play_their_poses_when_they_open_and_close() {
         .set(root, Prop::Open, PropValue::Bool(true));
     st.apply(d);
     assert!(st.r.surface_spec(root).unwrap().open);
-    st.paint(frame(end + 1));
-    assert!(st.buf.px(30, 15)[3] < 128, "enters from transparent");
-    st.settle(end + 2);
+    let mut alphas = Vec::new();
+    for k in 1..=5 {
+        st.paint(frame(end + k));
+        alphas.push(st.buf.px(30, 15)[3]);
+    }
+    assert!(alphas[0] < 128, "enters from transparent: {alphas:?}");
+    assert!(
+        alphas.windows(2).all(|w| w[1] > w[0]) && alphas[4] < 255,
+        "frame by frame: {alphas:?}"
+    );
+    st.settle(end + 6);
     assert_eq!(st.buf.px(30, 15)[3], 255);
 }
 
@@ -808,10 +870,21 @@ fn if_branches_list_rows_and_pages_enter_and_exit() {
         let r = st.rect(id);
         st.buf.px((r.x + 10.0) as u32, (r.y + 10.0) as u32)[2]
     };
-    for id in &made {
-        assert!(alpha(&st, *id) < 200, "{id:?} enters from its pose");
+    let mut seen: Vec<Vec<u8>> = made.iter().map(|id| vec![alpha(&st, *id)]).collect();
+    for k in 2..=5 {
+        st.paint(frame(k));
+        for (i, id) in made.iter().enumerate() {
+            seen[i].push(alpha(&st, *id));
+        }
     }
-    let end = st.settle(2);
+    for (id, a) in made.iter().zip(&seen) {
+        assert!(a[0] < 200, "{id:?} enters from its pose: {a:?}");
+        assert!(
+            a.windows(2).all(|w| w[1] >= w[0]) && a[4] > a[0] && a[4] < 255,
+            "{id:?} fades in frame by frame: {a:?}"
+        );
+    }
+    let end = st.settle(6);
     for id in &made {
         assert_eq!(alpha(&st, *id), 255, "{id:?} at rest");
     }
@@ -826,8 +899,20 @@ fn if_branches_list_rows_and_pages_enter_and_exit() {
             "{id:?} plays its exit (mirrored enter)"
         );
     }
-    st.paint(frame(end));
-    st.settle(end + 1);
+    let mut seen: Vec<Vec<u8>> = vec![Vec::new(); made.len()];
+    for k in 0..4 {
+        st.paint(frame(end + k));
+        for (i, id) in made.iter().enumerate() {
+            seen[i].push(alpha(&st, *id));
+        }
+    }
+    for (id, a) in made.iter().zip(&seen) {
+        assert!(
+            a.windows(2).all(|w| w[1] <= w[0]) && a[3] < a[0] && a[0] < 255,
+            "{id:?} fades out frame by frame: {a:?}"
+        );
+    }
+    st.settle(end + 4);
     assert_eq!(st.r.tree().ghost_count(), 0);
 }
 
@@ -876,4 +961,509 @@ fn per_prop_transitions_override_the_default_spring() {
     assert!(min <= 8, "bouncy overshoots: {min}");
     st.settle(80);
     assert_eq!(st.red_from(10), Some(10));
+}
+
+/// A model of the surface manager's side of the loop (`strand run`'s
+/// host): diffs are applied and their surface changes handed on at once;
+/// after a paint the host hears of surface changes only if
+/// `has_surface_changes` says so (its wake), and then runs `update`
+/// before taking them. A spec that opens creates a surface (attach,
+/// configure at the spec's size: `configure_surface` runs `update`), one
+/// that closes destroys it (detach), one whose size changes is
+/// configured again. A surface is painted only while it wants frames.
+struct Host {
+    r: Renderer,
+    root: NodeId,
+    surface: Option<(SurfaceId, Buffer, u8)>,
+    made: u32,
+    k: u32,
+}
+
+impl Host {
+    fn new(diff: SceneDiff, root: NodeId) -> Host {
+        let mut h = Host {
+            r: renderer(),
+            root,
+            surface: None,
+            made: 0,
+            k: 1,
+        };
+        h.apply(diff);
+        h
+    }
+
+    fn apply(&mut self, d: SceneDiff) {
+        assert!(self.r.apply(d).is_empty());
+        self.sync();
+    }
+
+    fn sync(&mut self) {
+        while self.r.has_surface_changes() {
+            for (node, change) in self.r.take_surface_changes() {
+                if node != self.root {
+                    continue;
+                }
+                let spec = match change {
+                    SurfaceChange::Created(s) | SurfaceChange::Updated { spec: s, .. } => Some(s),
+                    _ => None,
+                };
+                match spec.filter(|s| s.open) {
+                    Some(s) => {
+                        let size = Size::new(
+                            s.width.unwrap_or(1.0) as u32,
+                            s.height.unwrap_or(1.0) as u32,
+                        );
+                        let fresh = self.surface.is_none();
+                        if fresh {
+                            self.made += 1;
+                            let id = SurfaceId(100 + self.made);
+                            self.r.attach_surface(id, node);
+                            self.surface = Some((id, Buffer::new(size.w, size.h, Scale::ONE), 0));
+                        }
+                        let (id, buf, age) = self.surface.as_mut().unwrap();
+                        if fresh || buf.size != size {
+                            *buf = Buffer::new(size.w, size.h, Scale::ONE);
+                            *age = 0;
+                            self.r.configure_surface(*id, size, Scale::ONE);
+                        }
+                    }
+                    None => {
+                        if let Some((id, ..)) = self.surface.take() {
+                            self.r.detach_surface(id);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Paints the next frame if the surface wants one, then handles a
+    /// wake. Returns false when nothing was painted.
+    fn frame(&mut self) -> bool {
+        let Some((id, buf, age)) = self.surface.as_mut() else {
+            return false;
+        };
+        if !self.r.wants_frame(*id) {
+            return false;
+        }
+        buf.paint_at(&mut self.r, *id, *age, frame(self.k));
+        *age = 1;
+        self.k += 1;
+        if self.r.has_surface_changes() {
+            self.r.update();
+            self.sync();
+        }
+        true
+    }
+
+    fn px(&self, x: u32, y: u32) -> Option<[u8; 4]> {
+        self.surface.as_ref().map(|(_, b, _)| b.px(x, y))
+    }
+
+    fn height(&self) -> Option<f32> {
+        self.r.surface_spec(self.root).and_then(|s| s.height)
+    }
+
+    /// Paints until nothing wants a frame; returns how many were painted.
+    fn run(&mut self) -> u32 {
+        let mut n = 0;
+        while self.frame() {
+            n += 1;
+            assert!(n < 400, "never settled");
+        }
+        n
+    }
+}
+
+/// A surface's poses under the real host order: opening attaches and
+/// configures it after its spec opens (with `update` previewing it at
+/// time zero), and `enter` still plays over several frames; closing
+/// plays `exit`, and once the pose settles the surface is destroyed
+/// with no other input; opening again makes a new surface that plays
+/// `enter` again.
+#[test]
+fn surface_poses_play_under_the_host_loop() {
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Width, num(60.0)),
+            (Prop::Height, num(30.0)),
+            (Prop::Bg, color("#ff0000")),
+            (Prop::Open, PropValue::Bool(false)),
+            (
+                Prop::Enter,
+                pose(vec![(Prop::Opacity, num(0.0)), (Prop::Scale, num(0.8))]),
+            ),
+        ],
+    );
+    let mut h = Host::new(b.diff, root);
+    assert!(h.surface.is_none(), "closed: no surface");
+    let alphas = |h: &mut Host| {
+        let mut out = Vec::new();
+        while h.frame() {
+            out.push(h.px(30, 15).map_or(0, |p| p[3]));
+            assert!(out.len() < 400, "never settled");
+        }
+        out
+    };
+    for round in 0..2 {
+        let mut d = SceneDiff::new();
+        d.set(root, Prop::Open, PropValue::Bool(true));
+        h.apply(d);
+        assert_eq!(h.made, round + 1, "a new surface each time it opens");
+        let a = alphas(&mut h);
+        assert!(a.len() >= 5, "enter plays over several frames: {a:?}");
+        assert!(a[0] < 128, "starts near transparent: {a:?}");
+        assert!(
+            a[..5].windows(2).all(|w| w[1] > w[0]),
+            "rises frame by frame: {a:?}"
+        );
+        assert_eq!(*a.last().unwrap(), 255, "{a:?}");
+        let mut d = SceneDiff::new();
+        d.set(root, Prop::Open, PropValue::Bool(false));
+        h.apply(d);
+        assert!(h.surface.is_some(), "stays while its exit plays");
+        let a = alphas(&mut h);
+        assert!(h.surface.is_none(), "destroyed once the exit settled");
+        assert!(a.len() >= 4, "exit plays over several frames: {a:?}");
+        assert!(
+            a[..4].windows(2).all(|w| w[1] < w[0]),
+            "fades frame by frame: {a:?}"
+        );
+        assert!(!h.r.surface_spec(root).unwrap().open);
+    }
+}
+
+/// A content-sized panel shrinks after a change that moves nothing (a
+/// row removed at the end, a height set `~ instant`), and after one that
+/// springs, once it settled, all with no other input.
+#[test]
+fn a_content_sized_panel_shrinks_when_nothing_moves() {
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Bg, color("#1e1e2e")),
+            (Prop::Open, PropValue::Bool(true)),
+        ],
+    );
+    let col = b.node(NodeKind::Col, Some(root), vec![(Prop::Width, num(40.0))]);
+    let first = b.node(NodeKind::Box, Some(col), vec![(Prop::Height, num(40.0))]);
+    let last = b.node(NodeKind::Box, Some(col), vec![(Prop::Height, num(50.0))]);
+    let mut h = Host::new(b.diff, root);
+    h.run();
+    assert_eq!(h.height(), Some(90.0));
+    // The last row goes: nothing glides.
+    let mut d = SceneDiff::new();
+    d.push(SceneOp::Remove { id: last });
+    h.apply(d);
+    h.run();
+    assert_eq!(h.height(), Some(40.0), "a plain removal shrinks");
+    // `~ instant`: the size snaps.
+    let mut d = SceneDiff::new();
+    d.push(SceneOp::SetProp {
+        id: first,
+        prop: Prop::Height,
+        value: num(10.0),
+        transition: Transition::Instant,
+    });
+    h.apply(d);
+    h.run();
+    assert_eq!(h.height(), Some(10.0), "an instant size change shrinks");
+    // Grows (`~ instant`), then springs smaller: held at its size while
+    // the spring moves, it shrinks once settled.
+    let mut d = SceneDiff::new();
+    d.push(SceneOp::SetProp {
+        id: first,
+        prop: Prop::Height,
+        value: num(60.0),
+        transition: Transition::Instant,
+    });
+    h.apply(d);
+    h.run();
+    assert_eq!(h.height(), Some(60.0));
+    let mut d = SceneDiff::new();
+    d.set(first, Prop::Height, num(20.0));
+    h.apply(d);
+    let mut frames = 0;
+    while h.frame() {
+        frames += 1;
+        if h.r.animating(h.surface.as_ref().unwrap().0) {
+            assert_eq!(h.height(), Some(60.0), "held while it springs");
+        }
+        assert!(frames < 400);
+    }
+    assert!(frames > 3, "springs over {frames} frames");
+    assert_eq!(h.height(), Some(20.0), "a spring shrinks once settled");
+}
+
+/// Rows created out of a list's view never draw, so their `enter` pose
+/// is dropped: the panel neither keeps asking for frames nor stays held
+/// at a larger size.
+#[test]
+fn entering_rows_out_of_view_do_not_hold_a_content_sized_panel() {
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Bg, color("#1e1e2e")),
+            (Prop::Open, PropValue::Bool(true)),
+        ],
+    );
+    let col = b.node(NodeKind::Col, Some(root), vec![(Prop::Width, num(40.0))]);
+    let list = b.node(NodeKind::List, Some(col), vec![(Prop::Height, num(40.0))]);
+    let tail = b.node(NodeKind::Box, Some(col), vec![(Prop::Height, num(50.0))]);
+    let mut h = Host::new(b.diff, root);
+    h.run();
+    assert_eq!(h.height(), Some(90.0));
+    let mut d = SceneDiff::new();
+    for i in 0..10u32 {
+        let row = NodeId::new(50 + i, 0);
+        d.create(row, NodeKind::Row, Some(list), i)
+            .set(row, Prop::Height, num(20.0))
+            .set(row, Prop::Bg, color("#ff0000"))
+            .set(row, Prop::Enter, pose(vec![(Prop::Opacity, num(0.0))]));
+    }
+    h.apply(d);
+    let n = h.run();
+    assert!(n > 3 && n < 120, "the visible rows enter, then idle: {n}");
+    let mut d = SceneDiff::new();
+    d.set(tail, Prop::Height, num(10.0));
+    h.apply(d);
+    h.run();
+    assert_eq!(h.height(), Some(50.0), "shrinks once the tail settled");
+}
+
+/// Exits are bounded without frames: rows removed with no frame painted
+/// leave at most a few ghosts per parent, and a closing surface whose
+/// frames stopped closes after the stall limit.
+#[test]
+fn exits_stay_bounded_without_frames() {
+    let mut col = None;
+    let mut st = Stage::new(60, 60, |b, root| {
+        col = Some(b.node(NodeKind::Col, Some(root), vec![]));
+    });
+    let col = col.unwrap();
+    let mut prev: Option<NodeId> = None;
+    for i in 0..500u32 {
+        let row = NodeId::new(10 + i, 0);
+        let mut d = SceneDiff::new();
+        d.create(row, NodeKind::Box, Some(col), 0)
+            .set(row, Prop::Height, num(4.0))
+            .set(row, Prop::Exit, pose(vec![(Prop::Opacity, num(0.0))]));
+        if let Some(p) = prev {
+            d.push(SceneOp::Remove { id: p });
+        }
+        st.apply(d);
+        prev = Some(row);
+        assert!(
+            st.r.tree().ghost_count() <= strand_render::MAX_GHOSTS_PER_PARENT,
+            "{} ghosts after {i} removals",
+            st.r.tree().ghost_count()
+        );
+    }
+    assert!(st.r.tree().ghost_count() > 0, "the last ones still play");
+    // Frames stop: a closing surface closes once the stall limit passes.
+    st.r.set_exit_stall(Duration::from_millis(20));
+    let root = st.root;
+    let mut d = SceneDiff::new();
+    d.set(root, Prop::Open, PropValue::Bool(true)).set(
+        root,
+        Prop::Exit,
+        pose(vec![(Prop::Opacity, num(0.0))]),
+    );
+    st.apply(d);
+    st.settle(1);
+    let mut d = SceneDiff::new();
+    d.set(root, Prop::Open, PropValue::Bool(false));
+    st.apply(d);
+    assert!(st.r.surface_spec(root).unwrap().open, "plays its exit");
+    std::thread::sleep(Duration::from_millis(60));
+    st.r.update();
+    assert!(
+        !st.r.surface_spec(root).unwrap().open,
+        "closed with no frame painted"
+    );
+    assert!(
+        st.r.tree().ghost_count() == 0,
+        "stalled ghosts unmounted too"
+    );
+}
+
+/// Frame time while the design's animated surfaces move (release builds
+/// only: `cargo test --release -p strand-render --test motion --
+/// --ignored`): the launcher's `enter { opacity: 0; scale: 0.96 }` over a
+/// 640×480 panel of rows, and a toast leaving a stack of three (slide,
+/// fade and collapse while the next slides up). Every frame must fit a
+/// 60 Hz refresh (16.7 ms), and most of them half of it.
+#[test]
+#[ignore = "release-mode frame-time bench"]
+fn animated_frames_fit_the_refresh_budget() {
+    fn check(name: &str, mut times: Vec<Duration>) {
+        assert!(times.len() >= 5, "{name}: only {} frames", times.len());
+        times.sort();
+        let median = times[times.len() / 2];
+        let worst = *times.last().unwrap();
+        eprintln!(
+            "{name}: {} frames, median {median:?}, worst {worst:?}",
+            times.len()
+        );
+        assert!(median < Duration::from_micros(8_333), "{name}: {median:?}");
+        assert!(worst < Duration::from_micros(16_667), "{name}: {worst:?}");
+    }
+    let timed = |h: &mut Host| {
+        let mut times = Vec::new();
+        loop {
+            let t = std::time::Instant::now();
+            if !h.frame() {
+                break;
+            }
+            times.push(t.elapsed());
+            assert!(times.len() < 400);
+        }
+        times
+    };
+
+    // The launcher opening.
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Width, num(640.0)),
+            (Prop::Height, num(480.0)),
+            (Prop::Bg, color("#1e1e2e")),
+            (Prop::Radius, num(16.0)),
+            (Prop::Open, PropValue::Bool(false)),
+            (
+                Prop::Enter,
+                pose(vec![(Prop::Opacity, num(0.0)), (Prop::Scale, num(0.96))]),
+            ),
+        ],
+    );
+    let col = b.node(
+        NodeKind::Col,
+        Some(root),
+        vec![(Prop::Pad, num(16.0)), (Prop::Gap, num(6.0))],
+    );
+    for i in 0..12 {
+        let row = b.node(
+            NodeKind::Row,
+            Some(col),
+            vec![
+                (Prop::Pad, num(6.0)),
+                (Prop::Radius, num(8.0)),
+                (Prop::Bg, color(if i == 0 { "#45475a" } else { "#313244" })),
+            ],
+        );
+        b.node(
+            NodeKind::Text,
+            Some(row),
+            vec![(Prop::Text, text(&format!("Application number {i}")))],
+        );
+    }
+    let mut h = Host::new(b.diff, root);
+    let mut d = SceneDiff::new();
+    d.set(root, Prop::Open, PropValue::Bool(true));
+    h.apply(d);
+    let times = timed(&mut h);
+    check("launcher enter", times);
+
+    // A toast leaving.
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![(Prop::Open, PropValue::Bool(true))],
+    );
+    let stack = b.node(
+        NodeKind::Col,
+        Some(root),
+        vec![
+            (Prop::Width, num(380.0)),
+            (Prop::Gap, num(8.0)),
+            (Prop::Pad, num(12.0)),
+        ],
+    );
+    let mut toasts = Vec::new();
+    for i in 0..3 {
+        let t = b.node(
+            NodeKind::Col,
+            Some(stack),
+            vec![
+                (Prop::Pad, num(12.0)),
+                (Prop::Radius, num(12.0)),
+                (Prop::Bg, color("#313244")),
+                (
+                    Prop::Shadow,
+                    PropValue::Shadow(vec![Shadow {
+                        x: 0.0,
+                        y: 4.0,
+                        blur: 12.0,
+                        spread: 0.0,
+                        color: hex("#00000080"),
+                    }]),
+                ),
+                (
+                    Prop::Exit,
+                    pose(vec![
+                        (Prop::X, num(420.0)),
+                        (Prop::Opacity, num(0.0)),
+                        (Prop::Height, num(0.0)),
+                    ]),
+                ),
+            ],
+        );
+        b.node(
+            NodeKind::Text,
+            Some(t),
+            vec![(Prop::Text, text(&format!("Mail: message {i} arrived")))],
+        );
+        toasts.push(t);
+    }
+    let mut h = Host::new(b.diff, root);
+    h.run();
+    let mut d = SceneDiff::new();
+    d.push(SceneOp::Remove { id: toasts[0] });
+    h.apply(d);
+    let times = timed(&mut h);
+    check("toast exit", times);
+}
+
+/// Logic creating a node under the id of a ghost still playing its exit
+/// (a fresh allocator after a hard reset) gets a plain live node: the
+/// ghost unmounts and none of its motion carries over.
+#[test]
+fn a_node_created_over_a_ghost_id_is_live_and_at_rest() {
+    let mut ids = Vec::new();
+    let mut st = Stage::new(40, 40, |b, root| {
+        let col = b.node(NodeKind::Col, Some(root), vec![]);
+        ids.push(col);
+        ids.push(red_box(
+            b,
+            col,
+            vec![(Prop::Exit, pose(vec![(Prop::Opacity, num(0.0))]))],
+        ));
+    });
+    let (col, id) = (ids[0], ids[1]);
+    let mut d = SceneDiff::new();
+    d.push(SceneOp::Remove { id });
+    st.apply(d);
+    st.paint(frame(1));
+    assert!(st.r.tree().is_ghost(id));
+    let mut d = SceneDiff::new();
+    d.create(id, NodeKind::Box, Some(col), 0)
+        .set(id, Prop::Size, num(20.0))
+        .set(id, Prop::Bg, color("#ff0000"));
+    st.apply(d);
+    assert!(!st.r.tree().is_ghost(id));
+    assert_eq!(st.r.tree().ghost_count(), 0);
+    assert_eq!(st.r.tree().get(col).unwrap().children, vec![id]);
+    st.settle(2);
+    assert_eq!(st.buf.px(10, 10)[3], 255, "drawn at rest");
+    assert_eq!(st.r.hit(S, LogicalPoint::new(10.0, 10.0))[0], id, "and hit");
 }

@@ -4250,3 +4250,58 @@ shrink.** While anything on it moves (an exit, a glide still to start),
 a content-sized surface keeps the larger of its old and new sizes, and
 asks for the smaller one once everything settled, so a leaving toast
 and the sibling sliding into its place are never cut off by the buffer.
+
+**2026-10-06 · wave3-pixels (p2) fixer round 1: the paint that ends a
+motion reports its surface change.** A closing surface's exit, a ghost
+unmounting and a content-sized surface allowed to shrink all change a
+spec at the end of a frame. `Painter::paint` now refreshes the specs
+itself when that happens, so `has_surface_changes()` is true after it
+and the host (which wakes only on that) destroys or resizes the surface
+with no other event. A content-sized surface records when it was held
+at a larger size, and asks for its own size once nothing on it moves,
+also after changes that never animate (a row removed at the end, a size
+set `~ instant`), not only when a spring settles.
+
+**2026-10-06 · wave3-pixels (p2) fixer round 1: a surface's first frame
+is never the time-zero preview.** The manager attaches a surface only
+after its spec opens, and `configure_surface` previews it at time zero,
+where everything is at rest. The first painted frame therefore flattens
+afresh whenever a motion on its surface waits to start (an `enter` pose,
+a touched prop), so `enter` plays from the first frame on screen. A
+first frame (no previous frame of that surface) starts its springs at
+its own time: it shows the pose exactly. Enter poses of nodes a frame
+did not draw (rows out of view, under a transparent parent) are dropped:
+they show at rest when they come into view, and never keep frames
+coming or hold a content-sized surface.
+
+**2026-10-06 · wave3-pixels (p2) fixer round 1: exits are bounded.**
+An exit is sampled only by frames, and an output that is asleep or
+covered sends no frame callbacks. So a parent keeps at most 8 ghosts (a
+new one ends the oldest exit), an exit older than 1 s on a surface that
+painted nothing for 1 s ends at the next `apply` or `update`, and any
+exit ends after `MAX_MOTION` + 1 s. A closing surface on a sleeping
+output closes the same way. A node logic creates under the id of a live
+ghost replaces it (the ghost unmounts and its motions are dropped), and
+the input router drops focus, edits and selections of ghosts at once.
+
+**2026-10-06 · wave3-pixels (p2) fixer round 1: what does not spring
+yet.** `ANIMATED` stays `x`, `y`, `opacity`, `scale`, `rotate`, `bg`,
+`color`, `border`, `shadow`, `radius`. `mark_color` snaps: span colours
+are part of the text shaping request (`TextSpan::color`), so a spring
+would reshape the text every frame; it springs once glyph runs are
+recoloured at paint time. `value` (the OSD's meter and the volume
+slider), `stroke`, `fill`, `trim`, `track`, `glow` and `blur` join
+`ANIMATED` when their widgets and effects are drawn (the M2 widgets item
+and the effects items). `reduced_motion` is honoured by render
+(`Renderer::set_reduced_motion`, token `motion.reduced`) but nothing
+produces it yet: the portal key, `system.reduced_motion` and the call in
+`strand run` belong to the watch, theme and integrator tracks, and the
+"loops, time signals and effects turn off" half of design.md §7 is
+logic's; the features.md box stays open on them.
+
+**2026-10-06 · wave3-pixels (p2) fixer round 1: size springs lay out
+once per frame.** A size spring's target is learnt by a pass at rest
+when a change starts or retargets it (an op, which already marks the
+surface for layout); frames where only springs move reuse those targets
+and lay out once with the in-flight sizes, under the nearest
+size-stable ancestor or, failing one, the whole surface.

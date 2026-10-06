@@ -295,10 +295,11 @@ be built and tested without the language, and the language without pixels.
   `rotate`, `bg`, `color`, `border`, `shadow`, `radius`) that logic sets
   on a node of a surface shown with a clock springs from its old value
   along `TokenScope::transition(prop's ~, prop)`; `width`/`height`/`size`
-  spring the laid-out size (laid out at rest to learn the target, then
-  with the in-flight size forced, and while only size springs move, only
-  the subtree under the nearest size-stable ancestor, a node of fixed px
-  width and height, is laid out: `Renderer::last_layout_nodes`). Other
+  spring the laid-out size (laid out at rest to learn the target when a
+  change starts them, then each frame once with the in-flight size
+  forced, and while only size springs move, only the subtree under the
+  nearest size-stable ancestor, a node of fixed px width and height, is
+  laid out: `Renderer::last_layout_nodes`). Other
   layout lengths snap and the boxes they move glide (FLIP), as do the
   siblings of created, removed and moved nodes and every box after a
   `SetTokens`; text changes never glide. A target changed by tokens or
@@ -308,10 +309,27 @@ be built and tested without the language, and the language without pixels.
   becomes true; `Remove` of a laid-out node with an `exit` (or `enter`)
   pose turns its subtree into a ghost (`SceneTree::ghost`: dead to
   logic, its slot free at once, kept in its parent's children and laid
-  out and drawn, never hit) that unmounts when the pose settles, and a
+  out and drawn, never hit; the input `Router` drops its focus and
+  selection at once) that unmounts when the pose settles, and a
   surface whose `open` goes false stays open in its spec until its exit
-  pose settles. A content-sized surface never shrinks while something on
-  it moves. Presets: `fade`, `slidefade`, `popin(s)`, `slide(edge)`.
+  pose settles. Exits are bounded: a parent keeps at most
+  `MAX_GHOSTS_PER_PARENT` (8) ghosts (a new one ends the oldest), and an
+  exit on a surface that painted nothing for `EXIT_STALL` (1 s; its
+  output asleep) or older than `MAX_MOTION` + 1 s ends at the next
+  `apply`/`update`. A node created under a ghost's id replaces the
+  ghost. A content-sized surface never shrinks while something on it
+  moves, and asks for its own size once nothing does. The paint that
+  finishes an exit (a ghost unmounted, a surface closed) or lets a held
+  surface shrink refreshes the specs itself, so `has_surface_changes()`
+  is true after it: the host must check it after every `paint` (the
+  demo host pings its loop, which runs `update` and hands the changes
+  on). A surface just attached previews at time zero (no motion), so
+  its first painted frame flattens afresh while any motion on it waits
+  to start: `enter` plays from that frame. Not yet animated: `mark_color`
+  (span colours are part of the text shaping request, so a spring would
+  reshape every frame) and the props of widgets and effects still to be
+  drawn (`value`, `stroke`, `fill`, `trim`, `track`, `glow`, `blur`);
+  they join `ANIMATED` when they render. Presets: `fade`, `slidefade`, `popin(s)`, `slide(edge)`.
   `PaintTarget::time` zero (no clock, offline) and `reduced_motion`
   (`Renderer::set_reduced_motion`, or the global token `motion.reduced:
   true`) snap everything. `Painter::wants_frame` is true while anything
@@ -345,7 +363,9 @@ be built and tested without the language, and the language without pixels.
      shaped ahead of it) and `detach_surface`; these also free per-scale
      atlases and text no surface uses.
   5. Request a frame callback while `wants_frame(surface)`, and in it call
-     `paint`. Commit only a non-empty result, with exactly that damage
+     `paint`; afterwards, if `has_surface_changes()`, run step 2 (an
+     exit that finished closes a surface or shrinks it with no other
+     event). Commit only a non-empty result, with exactly that damage
      (`damage_buffer`) and the converted `opaque_region`; if the commit
      fails, call `invalidate(surface)`. Text still being shaped does not
      keep `wants_frame` true: the delivery does, through step 2. Text

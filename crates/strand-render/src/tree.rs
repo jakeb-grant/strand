@@ -162,10 +162,22 @@ impl SceneTree {
 
     /// Unmounts a ghost subtree (its exit pose finished).
     pub fn drop_ghost(&mut self, id: NodeId) {
-        if !self.is_ghost(id) {
+        let Some(ghost) = self.ghosts.get(&id) else {
             return;
+        };
+        // Unlinked from the ghost's own parent: a live node may carry the
+        // same id (see `create`), and `get` would find that one.
+        let parent = ghost.parent;
+        let list = match parent {
+            Some(p) => match self.ghosts.get_mut(&p) {
+                Some(n) => Some(&mut n.children),
+                None => self.live_mut(p).map(|n| &mut n.children),
+            },
+            None => Some(&mut self.roots),
+        };
+        if let Some(list) = list {
+            list.retain(|c| *c != id);
         }
-        self.detach(id);
         let mut stack = vec![id];
         while let Some(n) = stack.pop() {
             if let Some(node) = self.take(n) {
@@ -303,6 +315,12 @@ impl SceneTree {
             None if !kind.is_surface() => return Err(SceneError::MissingParent(id)),
             _ => {}
         }
+        // A ghost under the same id (logic reused it while the exit
+        // played, e.g. a fresh allocator after a hard reset) is unmounted
+        // first: one id names one node.
+        if self.ghosts.contains_key(&id) {
+            self.drop_ghost(id);
+        }
         if self.slots.len() <= i {
             self.slots.resize_with(i + 1, || None);
         }
@@ -432,6 +450,29 @@ mod tests {
             .create(id(3), NodeKind::Box, Some(id(1)), 0);
         assert!(t.apply(d).is_empty());
         t
+    }
+
+    /// A node created under the id of a ghost replaces it: one id names
+    /// one node, and the ghost leaves its parent's children.
+    #[test]
+    fn creating_over_a_ghost_id_unmounts_the_ghost() {
+        let mut t = base();
+        t.ghost(id(3)).unwrap();
+        assert!(t.is_ghost(id(3)));
+        assert_eq!(t.get(id(1)).unwrap().children, vec![id(3)]);
+        let mut d = SceneDiff::new();
+        d.create(id(3), NodeKind::Box, Some(id(0)), 0);
+        assert!(t.apply(d).is_empty());
+        assert!(!t.is_ghost(id(3)));
+        assert!(t.contains_live(id(3)));
+        assert_eq!(t.get(id(3)).unwrap().parent, Some(id(0)));
+        assert!(t.get(id(1)).unwrap().children.is_empty());
+        assert_eq!(t.get(id(0)).unwrap().children, vec![id(3), id(1), id(2)]);
+        // Unmounting a ghost unlinks it from its own parent only.
+        t.ghost(id(1)).unwrap();
+        t.drop_ghost(id(1));
+        assert_eq!(t.get(id(0)).unwrap().children, vec![id(3), id(2)]);
+        assert_eq!(t.ghost_count(), 0);
     }
 
     #[test]

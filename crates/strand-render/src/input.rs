@@ -482,12 +482,14 @@ impl Router {
         let Some(tree) = tree else {
             return;
         };
+        // A node logic removed is gone at once, even while it plays its
+        // exit pose (a ghost): it keeps no focus, edit or selection.
+        let live = |n: NodeId| tree.contains_live(n);
         self.selected.retain(|list, row| {
-            tree.get(*list)
-                .is_some_and(|l| tree.get(*row).is_some_and(|r| r.parent == Some(l.id)))
+            live(*list) && live(*row) && tree.get(*row).is_some_and(|r| r.parent == Some(*list))
         });
-        self.edits.retain(|n, _| tree.contains(*n));
-        self.focus.retain(|_, n| tree.contains(*n));
+        self.edits.retain(|n, _| live(*n));
+        self.focus.retain(|_, n| live(*n));
     }
 
     /// Moves keyboard focus on `surface` to `node` (`focused`).

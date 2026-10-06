@@ -594,3 +594,64 @@ fn an_empty_axis_frame_is_no_scroll() {
         }]
     );
 }
+
+/// A focused `input` that logic removes loses focus at once, although
+/// it still plays its exit pose (a ghost): keys no longer reach its id.
+#[test]
+fn a_removed_input_playing_its_exit_loses_focus_at_once() {
+    use strand_scene::{Color, Modifiers, NodeKind, SceneDiff, SceneOp};
+    let data = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(data),
+    ]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    let id = |i| NodeId::new(i, 0);
+    let (panel, col, input) = (id(0), id(1), id(2));
+    let mut d = SceneDiff::new();
+    d.create(panel, NodeKind::Panel, None, 0)
+        .set(panel, Prop::Width, PropValue::Number(200.0))
+        .set(panel, Prop::Height, PropValue::Number(60.0))
+        .set(panel, Prop::Open, PropValue::Bool(true))
+        .set(panel, Prop::Bg, PropValue::Color(Color::WHITE))
+        .create(col, NodeKind::Col, Some(panel), 0)
+        .create(input, NodeKind::Input, Some(col), 0)
+        .set(input, Prop::Focus, PropValue::Bool(true))
+        .set(input, Prop::Text, PropValue::Text(String::new()))
+        .set(input, Prop::Exit, PropValue::Keyword("fade".into()));
+    assert!(r.apply(d).is_empty());
+    let s = SurfaceId(1);
+    r.attach_surface(s, panel);
+    let mut px = vec![0u8; 200 * 60 * 4];
+    // Painted with a clock: removals from now on play their exit.
+    let t = PaintTarget::new(&mut px, Size::new(200, 60), 800, Scale::ONE, 0).unwrap();
+    r.paint(s, &mut t.at(std::time::Duration::from_secs(1)));
+    let mut f = R::default();
+    f.attached(s, panel);
+    f.input(&InputEvent::KeyboardEnter { surface: s }, &mut r);
+    assert_eq!(f.router.focused(s), Some(input));
+    f.drain();
+    let mut d = SceneDiff::new();
+    d.push(SceneOp::Remove { id: input });
+    assert!(r.apply(d).is_empty());
+    assert!(r.tree().is_ghost(input), "it plays its exit");
+    let key = InputEvent::Key {
+        surface: s,
+        key: KeyInput {
+            name: "a".into(),
+            text: "a".into(),
+            state: ButtonState::Pressed,
+            repeat: false,
+            modifiers: Modifiers::default(),
+            time: 0,
+        },
+    };
+    f.input(&key, &mut r);
+    assert_eq!(f.router.focused(s), None, "a ghost keeps no focus");
+    assert!(
+        f.drain().iter().all(|m| match m {
+            Intent::Write { node, .. } | Intent::Event { node, .. } => *node != input,
+            _ => true,
+        }),
+        "nothing goes to the removed id"
+    );
+}

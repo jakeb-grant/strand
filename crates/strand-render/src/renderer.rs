@@ -61,6 +61,17 @@ pub const QUERY_WAIT: Duration = Duration::from_millis(30);
 /// at the old size, then the new one (a one-frame size pop).
 pub const RESIZE_WAIT: Duration = Duration::from_millis(50);
 
+/// How long an exit pose waits for frames: an exit older than this on a
+/// surface that painted nothing for as long (its output asleep or
+/// covered, so no frame callback comes) ends at once, so removed subtrees
+/// and closing surfaces never pile up. Any exit ends after
+/// `MAX_MOTION` plus this.
+pub const EXIT_STALL: Duration = Duration::from_secs(1);
+
+/// Ghosts (removed nodes playing their exit pose) one parent keeps at
+/// most: a new one ends the oldest's exit.
+pub const MAX_GHOSTS_PER_PARENT: usize = 8;
+
 /// Where text layouts come from.
 #[derive(Debug)]
 pub enum TextBackend {
@@ -309,6 +320,12 @@ pub struct Renderer {
     /// Surfaces whose closing pose finished: their spec reports them
     /// closed until they open again.
     closed: HashSet<NodeId>,
+    /// Content-sized surface nodes whose spec was held at a larger size
+    /// than their content while something on them moved: they shrink
+    /// once nothing does (see [`Renderer::release_holds`]).
+    held: BTreeSet<NodeId>,
+    /// See [`EXIT_STALL`].
+    exit_stall: Duration,
     /// Nodes laid out by the last layout step (tests: a size spring lays
     /// out only the subtree under its nearest size-stable ancestor).
     laid_out_nodes: usize,
@@ -446,6 +463,8 @@ impl Renderer {
             anim: Animator::default(),
             reduced_motion: false,
             closed: HashSet::new(),
+            held: BTreeSet::new(),
+            exit_stall: EXIT_STALL,
             laid_out_nodes: 0,
         }
     }
@@ -531,9 +550,67 @@ impl Renderer {
         self.anim.retain(|id| tree.contains(id));
     }
 
+    /// How long an exit waits for frames before it ends at once (see
+    /// [`EXIT_STALL`]; tests shorten it).
+    pub fn set_exit_stall(&mut self, stall: Duration) {
+        self.exit_stall = stall;
+    }
+
+    /// Ends exits no frame samples: older than the stall limit on a
+    /// surface that painted nothing for as long, or older than any motion
+    /// may run.
+    fn expire_exits(&mut self) {
+        let now = Instant::now();
+        let stall = self.exit_stall;
+        for (id, started) in self.anim.exit_times() {
+            let age = now.saturating_duration_since(started);
+            let root = self.tree.root_of(id);
+            let painting = self.surfaces.values().any(|s| {
+                Some(s.root) == root
+                    && s.painted_at
+                        .is_some_and(|t| now.saturating_duration_since(t) < stall)
+            });
+            if age >= strand_scene::motion::MAX_MOTION + stall || (age >= stall && !painting) {
+                self.anim.finish_now(id);
+            }
+        }
+    }
+
+    /// Something on surface node `id` moves or is about to (a spring, a
+    /// pose, a glide still to start).
+    fn moving(&self, id: NodeId) -> bool {
+        self.anim.busy(&self.tree, id)
+            || self
+                .surfaces
+                .values()
+                .any(|s| s.root == id && (s.animating || s.flip_all || !s.flip.is_empty()))
+    }
+
+    /// Content-sized surfaces held at a larger size while things moved
+    /// ask for their own size once nothing does, and any spec left dirty
+    /// (an exit finished, a surface closed) is refreshed, so the host
+    /// sees the change ([`Renderer::has_surface_changes`]) without
+    /// waiting for an unrelated event.
+    fn release_holds(&mut self) {
+        let ready: Vec<NodeId> = self
+            .held
+            .iter()
+            .copied()
+            .filter(|id| !self.moving(*id))
+            .collect();
+        for id in ready {
+            self.held.remove(&id);
+            self.spec_dirty.insert(id);
+        }
+        if !self.spec_dirty.is_empty() {
+            self.refresh_specs();
+        }
+    }
+
     /// Ends exits nobody can see any more (their surface went or never
-    /// showed).
+    /// showed, or it gets no frames).
     fn reap_exits(&mut self) {
+        self.expire_exits();
         let mut shown: HashSet<NodeId> = HashSet::new();
         for s in self.surfaces.values() {
             if s.painted {
@@ -903,13 +980,17 @@ impl Renderer {
                     // Never smaller while something on it moves (a toast
                     // collapsing, its siblings sliding up): it shrinks
                     // once everything settles.
-                    let moving = self.anim.busy(&self.tree, id)
-                        || self.surfaces.values().any(|s| {
-                            s.root == id && (s.animating || s.flip_all || !s.flip.is_empty())
-                        });
-                    if let Some(old) = old.filter(|_| moving) {
-                        b.size.w = b.size.w.max(old.width.unwrap_or(0.0));
-                        b.size.h = b.size.h.max(old.height.unwrap_or(0.0));
+                    let mut held = false;
+                    if let Some(old) = old.filter(|_| self.moving(id)) {
+                        let (w, h) = (old.width.unwrap_or(0.0), old.height.unwrap_or(0.0));
+                        held = b.size.w.ceil() < w || b.size.h.ceil() < h;
+                        b.size.w = b.size.w.max(w);
+                        b.size.h = b.size.h.max(h);
+                    }
+                    if held {
+                        self.held.insert(id);
+                    } else {
+                        self.held.remove(&id);
                     }
                     if content_sized {
                         let r = natural_texts(&self.tree, id, scale, &b.rects);
@@ -957,6 +1038,7 @@ impl Renderer {
             self.surface_changes.push((id, SurfaceChange::Removed));
         }
         self.content_sized.retain(|id| live.contains(id));
+        self.held.retain(|id| live.contains(id));
         self.spec_wanted.retain(|id, _| live.contains(id));
         if !requests.is_empty() && self.request_text(&requests) {
             // Shaped inline: size the surfaces with it at once.
@@ -1434,6 +1516,13 @@ impl Renderer {
         let reduced = self.anim.reduced();
         match op {
             SceneOp::Create { id, parent, .. } => {
+                // Logic reused the id of a ghost: the tree unmounts the
+                // ghost, and its motions must not carry over.
+                if self.tree.is_ghost(*id) {
+                    let old = self.tree.get(*id).and_then(|n| n.parent);
+                    self.anim.forget(*id);
+                    self.flip(old);
+                }
                 let root = parent.and_then(|p| self.tree.root_of(p));
                 if parent.is_some() && !reduced && self.shown(root) {
                     self.anim.enter(*id);
@@ -1457,6 +1546,22 @@ impl Renderer {
                     && self.shown(root)
                     && self.tree.ghost(*id).is_ok()
                 {
+                    // At most a few ghosts per parent: rows removed faster
+                    // than they leave (or with no frames to leave in) end
+                    // the oldest exit.
+                    if let Some(p) = parent.and_then(|p| self.tree.get(p)) {
+                        let mut ghosts: Vec<(Instant, NodeId)> = p
+                            .children
+                            .iter()
+                            .filter(|c| self.anim.exiting(**c) == Some(ExitKind::Ghost))
+                            .filter_map(|c| Some((self.anim.exit_started(*c)?, *c)))
+                            .collect();
+                        ghosts.sort();
+                        let over = (ghosts.len() + 1).saturating_sub(MAX_GHOSTS_PER_PARENT);
+                        for (_, g) in ghosts.into_iter().take(over) {
+                            self.anim.finish_now(g);
+                        }
+                    }
                     self.anim.exit(*id, ExitKind::Ghost);
                     return true;
                 }
@@ -1530,6 +1635,8 @@ impl Renderer {
     /// being dirty, so it asks for no frame until the layout arrives.
     pub fn update(&mut self) {
         self.poll_text();
+        self.expire_exits();
+        self.process_finished();
         self.refresh_specs();
         let ids: Vec<SurfaceId> = self
             .surfaces
@@ -1590,6 +1697,9 @@ impl Renderer {
                 s.cache = Some(f);
             }
         }
+        // A preview that laid out a change moving nothing (a row removed
+        // at the end, a size set `~ instant`) lets a held surface shrink.
+        self.release_holds();
     }
 
     /// True while text requests are in flight.
@@ -1884,7 +1994,13 @@ impl Renderer {
         }
         let sized = self.anim.size_work(&self.tree, root);
         let mut sizes = rest.clone();
-        let mut boxes = if sized {
+        let mut boxes = if sized && !full && !self.anim.size_pending(&self.tree, root) {
+            // Only springs moved: their targets are the ones learnt when
+            // they started (nothing layout reads changed since), so one
+            // pass with the in-flight sizes is enough.
+            sizes = self.anim.size_overrides(&self.tree, root, &rest);
+            self.run_layout(root, RootSize::Fixed(frame), &info, &sizes)
+        } else if sized {
             let at_rest = self.run_layout(root, RootSize::Fixed(frame), &info, &rest);
             let old_rects = old.as_ref().map(|b| &b.rects);
             self.anim
@@ -1986,7 +2102,10 @@ impl Renderer {
     /// Lays out only what size springs move: the subtree under each
     /// moving node's nearest size-stable ancestor (a node of fixed width
     /// and height, or a surface root of fixed size), into a copy of
-    /// `old`. `None` when that would be the whole surface.
+    /// `old`, once, with the in-flight sizes: their targets were learnt
+    /// when they started and nothing layout reads changed since. `None`
+    /// when that would be the whole surface, or a spring waits to start
+    /// (a full pass learns its target).
     fn relayout_sized(
         &mut self,
         root: NodeId,
@@ -1994,6 +2113,9 @@ impl Renderer {
         rest: &SizeMap,
         info: &TextInfo<'_>,
     ) -> Option<Boxes> {
+        if self.anim.size_pending(&self.tree, root) {
+            return None;
+        }
         let moving = self.anim.sized_nodes(&self.tree, root);
         let mut subs: Vec<NodeId> = Vec::new();
         for n in moving {
@@ -2020,26 +2142,14 @@ impl Renderer {
         subs.retain(|a| !all.iter().any(|b| b != a && tree.is_ancestor(*b, *a)));
         subs.sort();
         subs.dedup();
-        let mut at_rest = Vec::new();
+        let mut frames = Vec::with_capacity(subs.len());
         for a in &subs {
-            let frame = *old.rects.get(a)?;
-            let b = self.run_layout(*a, RootSize::Fixed(frame), info, rest);
-            at_rest.push((frame, b));
+            frames.push(*old.rects.get(a)?);
         }
-        let mut targets = HashMap::new();
-        for (_, b) in &at_rest {
-            targets.extend(b.rects.iter().map(|(k, v)| (*k, *v)));
-        }
-        self.anim
-            .start_sizes(&self.tree, root, &targets, Some(&old.rects), true);
         let sizes = self.anim.size_overrides(&self.tree, root, rest);
         let mut boxes = old.clone();
-        for (a, (frame, b)) in subs.iter().zip(at_rest) {
-            let b = if sizes == *rest {
-                b
-            } else {
-                self.run_layout(*a, RootSize::Fixed(frame), info, &sizes)
-            };
+        for (a, frame) in subs.iter().zip(frames) {
+            let b = self.run_layout(*a, RootSize::Fixed(frame), info, &sizes);
             let mut stack: Vec<NodeId> = self.tree.get(*a)?.children.clone();
             while let Some(n) = stack.pop() {
                 boxes.rects.remove(&n);
@@ -2180,8 +2290,11 @@ impl Painter for Renderer {
     fn paint(&mut self, surface: SurfaceId, target: &mut PaintTarget<'_>) -> Damage {
         let damage = self.paint_frame(surface, target);
         // Exits the frame finished: ghosts unmount (their siblings glide
-        // into the gap from the next frame), closing surfaces close.
+        // into the gap from the next frame), closing surfaces close, and
+        // a surface that settled shrinks: the specs are refreshed here so
+        // the host sees the change at once.
         self.process_finished();
+        self.release_holds();
         damage
     }
 
@@ -2230,8 +2343,17 @@ impl Renderer {
         let Some(s) = self.surfaces.get_mut(&surface) else {
             return Damage::new();
         };
-        let (root, was_animating) = (s.root, s.animating);
-        let cached = if s.animating { None } else { s.cache.take() };
+        let root = s.root;
+        // A scene flattened by `update` is drawn at rest: not while
+        // anything moves, nor while a motion waits to start (an `enter`
+        // pose a time-zero preview could not play: a surface just
+        // attached, a node just created).
+        let pending = self.anim.busy(&self.tree, root);
+        let cached = if s.animating || pending {
+            None
+        } else {
+            s.cache.take()
+        };
         self.anim.begin(target.time, s.painted_time, true);
         let fresh = cached.is_none();
         let f = match cached {
@@ -2246,11 +2368,8 @@ impl Renderer {
             let tree = &self.tree;
             self.anim
                 .finish_undrawn(|id| tree.root_of(id) == Some(root));
-        }
-        if was_animating && !animating {
-            // Settled: a content-sized surface held at its larger size
-            // while things moved can shrink now.
-            self.spec_dirty.insert(root);
+            self.anim
+                .drop_undrawn_enters(|id| tree.root_of(id) == Some(root));
         }
         let Some(s) = self.surfaces.get_mut(&surface) else {
             return Damage::new();

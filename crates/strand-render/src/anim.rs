@@ -21,7 +21,7 @@
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use strand_scene::motion::{channels_color, color_channels};
 use strand_scene::{
@@ -383,6 +383,9 @@ pub(crate) struct Animator {
     enter: HashSet<NodeId>,
     enter_size: HashSet<NodeId>,
     exits: HashMap<NodeId, ExitKind>,
+    /// When each exit started (wall clock): an exit no frame samples
+    /// (its output asleep) is ended by `Renderer` after a while.
+    exit_started: HashMap<NodeId, Instant>,
     /// Exiting nodes drawn since [`Animator::begin`].
     drawn: HashSet<NodeId>,
     finished: Vec<(NodeId, ExitKind)>,
@@ -444,6 +447,7 @@ impl Animator {
         self.enter.remove(&id);
         self.enter_size.remove(&id);
         self.exits.insert(id, kind);
+        self.exit_started.insert(id, Instant::now());
         let na = self.nodes.entry(id).or_default();
         na.respring = true;
         na.size_touched = true;
@@ -460,6 +464,46 @@ impl Animator {
 
     pub fn exiting(&self, id: NodeId) -> Option<ExitKind> {
         self.exits.get(&id).copied()
+    }
+
+    /// Every exit in flight, with when it started.
+    pub fn exit_times(&mut self) -> Vec<(NodeId, Instant)> {
+        let exits = &self.exits;
+        self.exit_started.retain(|id, _| exits.contains_key(id));
+        self.exit_started.iter().map(|(id, t)| (*id, *t)).collect()
+    }
+
+    /// When the exit of `id` started, if it is exiting.
+    pub fn exit_started(&self, id: NodeId) -> Option<Instant> {
+        self.exits
+            .contains_key(&id)
+            .then(|| self.exit_started.get(&id).copied())
+            .flatten()
+    }
+
+    /// Ends the exit of `id` now, as if its pose had settled.
+    pub fn finish_now(&mut self, id: NodeId) {
+        if let Some(k) = self.exits.remove(&id) {
+            self.exit_started.remove(&id);
+            self.finished.push((id, k));
+        }
+    }
+
+    /// Drops every motion of `id` (its id now names another node).
+    pub fn forget(&mut self, id: NodeId) {
+        self.nodes.remove(&id);
+        self.enter.remove(&id);
+        self.enter_size.remove(&id);
+        self.exits.remove(&id);
+        self.exit_started.remove(&id);
+    }
+
+    /// Drops the enter poses of nodes `under` the surface just painted
+    /// that it did not draw (a row out of view, a subtree under a
+    /// transparent parent): they show at rest when they come into view,
+    /// and a pose never drawn keeps no frames coming.
+    pub fn drop_undrawn_enters(&mut self, mut under: impl FnMut(NodeId) -> bool) {
+        self.enter.retain(|id| !under(*id));
     }
 
     /// Exits that finished in the frames painted since the last call.
@@ -501,6 +545,8 @@ impl Animator {
         self.enter.retain(|id| keep(*id));
         self.enter_size.retain(|id| keep(*id));
         self.exits.retain(|id, _| keep(*id));
+        let exits = &self.exits;
+        self.exit_started.retain(|id, _| exits.contains_key(id));
     }
 
     /// A FLIP: `id` is drawn `delta` away from its new box, then glides
@@ -564,7 +610,9 @@ impl Animator {
     ) {
         let id = node.id;
         let exiting = self.exits.get(&id).copied();
-        if exiting.is_some() || self.nodes.contains_key(&id) {
+        // Drawn this frame: its motions (an enter pose that starts now
+        // included) survive `finish_undrawn`.
+        if exiting.is_some() || self.nodes.contains_key(&id) || self.enter.contains(&id) {
             self.drawn.insert(id);
         }
         if self.snapping() {
@@ -715,6 +763,14 @@ impl Animator {
         self.nodes
             .iter()
             .any(|(id, n)| (n.size_touched || n.size.iter().any(Option::is_some)) && under(id))
+            || self.enter_size.iter().any(under)
+    }
+
+    /// A size spring under `root` waits to start (a size set, a pose
+    /// begun): the next layout learns its target at rest.
+    pub fn size_pending(&self, tree: &SceneTree, root: NodeId) -> bool {
+        let under = |id: &NodeId| tree.root_of(*id) == Some(root);
+        self.nodes.iter().any(|(id, n)| n.size_touched && under(id))
             || self.enter_size.iter().any(under)
     }
 
