@@ -588,6 +588,7 @@ fn draw(
                 y,
                 layout,
                 color,
+                spans,
             } => {
                 // A layout shaped for another scale (the surface moved
                 // to a different output) is drawn resampled until the
@@ -623,7 +624,7 @@ fn draw(
                     }
                     // Marks and markup spans paint in their own colour.
                     ctx.set_tint(Some(Tint {
-                        color: bgra(run_color.unwrap_or(*color)),
+                        color: bgra(crate::flatten::slot_color(run_color, spans, *color)),
                         mode: TintMode::AlphaMask,
                     }));
                     ctx.set_paint(PaintType::Image(Image {

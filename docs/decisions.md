@@ -4309,23 +4309,29 @@ text's lightest gamut-mapped colour stops short of white: a property
 test holds that whenever it says yes the solver meets every
 background). Before a swap starts, render plays the planned roots
 through at 240 Hz, and at 1 kHz between samples that only just reach
-3:1 (under 3.3:1), up to 3 s; if any moment leaves a declared pair of
-the global table with no reachable lightness (a pair that has one at
-both ends: a palette unreadable at rest is not the swap's doing), the
-swap does not spring. The table snaps and every surface shown with a
-clock snapshots its old frame once (its last display list, rasterised
-into an owned buffer; flattened at rest when it has none) and blends it
-under the new frames, premultiplied per channel, along the same curve,
-painting those frames in full and ending exactly on the new frame
-(`::an_unreadable_spring_crossfades_from_a_snapshot`). A surface
+3:1 (under 3.3:1), until the roots settle; if any moment leaves a
+declared pair with no reachable lightness, in the global scope or under
+the `set { }` override chain of any node shown (a pair that has one at
+both ends in that scope: a palette unreadable at rest is not the swap's
+doing), the swap does not spring. Nor does one whose roots are still
+moving after 10 s (`CHECK_SPAN`, a `~ 20s` palette) or whose shown
+nodes carry more than 32 distinct override chains (`CHECK_SCOPES`): the
+check stays bounded and nothing springs unchecked. The table snaps and
+every surface shown with a clock crossfades from a snapshot of its old
+frame, taken once at the fade's first frame on it: copied from the
+buffer it paints into when that still holds the old frame (age 1), else
+rasterised from the old frame's display list kept from planning. The
+snapshot is blended under the new frames, premultiplied per channel,
+along the same curve, those frames painted in full and ending exactly
+on the new frame (`::an_unreadable_spring_crossfades_from_a_snapshot`,
+`::a_subtree_that_a_spring_leaves_unreadable_crossfades`). A surface
 resized meanwhile drops its snapshot; a second swap during a crossfade
 keeps the first snapshot. Material light↔dark swaps never need it: all
 roots share one curve, and the surface roles move together, so their
 luminances never straddle 0.1 and 0.3 at once; it fires for palettes
 whose surfaces part ways (one darkening while another lightens), so
 design.md's "a light↔dark swap" is read as "a swap", decided by the
-pairs, not by a light/dark flag. `set { }` subtrees are not played
-through (their guarded text keeps its own background, the first one).
+pairs, not by a light/dark flag.
 
 **2026-10-06 · wave3-theme (t2): the contrast gate.** "Contrast never
 below 3:1" is `crates/strand-render/tests/theme_swap.rs::contrast_never_drops_below_three_to_one_during_swaps`:
@@ -4339,17 +4345,22 @@ the crossfade tests; the random swaps of this seed all spring.
 
 **2026-10-06 · wave3-theme (t2): the 5 ms of a swap.** design.md's "under
 5 ms of work" is read as the whole swap's work: logic's re-resolve (the
-write, the flush and the `SetTokens`), the render thread's swap work
-(planning with its play-through, a crossfade's snapshots and blends,
-every frame's roots: `Renderer::take_swap_work`) and the token graph
-evaluated once per frame until it settles (every path looked up, guard
-included). `crates/strand-render/tests/theme_swap_bench.rs` runs
-design.md's `theme.strand` with the hello bar through light↔dark,
-auto→mocha, mocha→wallpaper and wallpaper→auto: about 2 ms optimised
-here, 8 ms in a debug build. The budget is design.md's for an optimised
-build, so CI runs it with `--release` against 5 ms and a debug build
-holds it to four times that (catching a regression in the shape of the
-work, as a check per node would be).
+write, the flush and the `SetTokens`), the render thread applying the
+table (planning with its play-through, evaluating the new table once)
+and the swap's work in every frame until it settles (the roots sampled
+and the frame's token graph evaluated once from them,
+`TokenTable::freeze`; the frame's nodes then read those values:
+`Renderer::take_swap_work`). `crates/strand-render/tests/theme_swap_bench.rs`
+runs design.md's `theme.strand` with the hello bar through light↔dark,
+auto→mocha, mocha→wallpaper and wallpaper→auto: about 2.3 ms optimised
+here, 10 ms in a debug build. A crossfading swap (the split palette on
+two 2560×36 bars and a 1280×960 launcher-sized panel) is held to the
+same 5 ms with its snapshots: about 1.3 ms. Blending each crossfade
+frame is a cost of painting that frame, as rasterising it is, so it is
+held apart to 4 ms per frame for the three surfaces (about 2.7 ms). The
+budgets are for an optimised build, so CI runs the bench with
+`--release` and a debug build holds them to four times that (catching a
+regression in the shape of the work, as a check per node would be).
 
 **2026-10-06 · wave3-theme (t2): seen on sway, and widget defaults.**
 `strand run` on headless sway with design.md's `theme.strand` (its
@@ -4361,6 +4372,83 @@ dark scheme; `mocha` after it sprang likewise. Merging the widgets of
 wave3-pixels, a `segmented`, `meter`, `slider` and symbolic `icon` that name no `color`
 or `font` take the theme's `$fg` and `$font.ui` in their own scope, as
 text, buttons and inputs do.
+
+**2026-10-06 · wave3-theme (t2) fixer round 1: the token graph once per
+frame.** design.md's "each frame the render thread re-evaluates the
+small token graph" was true in effect but not in cost: flatten and
+layout evaluated each token reference where a node used it, derived
+chains included. Now the render thread evaluates the tree's whole table
+once, in its own scope, when a `SetTokens` lands and in every frame a
+swap moves the roots (`TokenTable::freeze`, strand-scene); a lookup in
+the global scope (and an override's right-hand side, which reads its
+parent scope) is a read of that value. A frozen table never makes two
+tables differ and a clone is not frozen; writing its fields directly
+leaves stale values, so the renderer freezes again right after writing
+the roots, and `insert`s thaw. Scopes under a `set { }` override still
+evaluate the global table's derived tokens in their own scope (that is
+what keeps `$surface.hi` following an overridden `$surface`), with the
+guard's memo solving each pair once per frame
+(`crates/strand-scene/src/tokens.rs::tests::a_frozen_table_is_read_not_evaluated`).
+
+**2026-10-06 · wave3-theme (t2) fixer round 1: span colours are painted,
+not shaped.** A text's span colours (`marks` in `mark_color`, `$accent`
+by default; markup links in `$accent`) were part of its shaping
+request, so a swap springing `$accent` asked the text worker to shape
+every marked or linked text again each frame and showed the old colour
+until each delivery. The request now carries stand-ins (slot `i` for
+the `i`th distinct colour, which still keeps the glyph runs apart) and
+the flattened glyph item carries the colours, mapped back where the
+glyphs and underlines are painted, so they follow each frame exactly
+and never reshape
+(`crates/strand-render/tests/theme_swap.rs::span_colours_follow_the_swap_without_reshaping`,
+worker backend). Seen on headless sway as well: `strand run` with
+design.md's `theme.strand` (its `$motion.effects` slowed to
+`spring(30, 1)`), the hello bar and a centred panel with a markup link,
+then `strand set theme.look dark`: the grim frames 150 and 300 ms in
+show the link in that moment's `$accent`, with the card, the accent
+pill and the bar moving together, then the dark scheme.
+
+**2026-10-06 · wave3-theme (t2) fixer round 1: crossfades on several
+surfaces, and what they cost.** A crossfade's progress is one curve,
+started by the first frame that shows it and from then on read at each
+surface's own presentation time; each surface drops its snapshot when
+the curve has settled at its time, and the fade ends when none is left,
+so a surface on another output's clock never jumps to the end because
+another settled first (`::two_surfaces_on_offset_clocks_swap_at_their_own_times`,
+with a spring on both as well: roots are shared, sampled at each
+surface's time, and dropped when settled at the first; a later frame
+of a surface a few ms behind shows the end value one frame early,
+within the spring's settling tolerance). A table that changes no colour
+(a length, a font, a re-sent table) arriving mid-crossfade leaves it
+running; only a snapping table (sent `Instant`, `reduced_motion`, or
+nothing shown) ends it (`::a_colourless_table_mid_crossfade_keeps_fading`).
+A blended frame reports no opaque region (the old frame may be
+translucent where the new one is opaque). Snapshots are owned buffers
+for the length of the fade, so they are capped: none over 1920×1080×4
+bytes (`SNAPSHOT_MAX`, about 8.3 MB) and no more than that for all
+surfaces together (`SNAPSHOTS_MAX`: two 1440p bars and a launcher at 2×
+fit); a surface past the cap snaps to the new frame
+(`::a_surface_too_large_to_snapshot_snaps`). design.md's memory table
+has no line for this: it is a transient of at most 8.3 MB for a fade's
+length (about 0.3 s), on top of the full shell's 59–64 MB. The GPU path
+(M4) blends differently; architecture.md notes it.
+
+**2026-10-06 · wave3-theme (t2) fixer round 1: guarded text and its
+side.** The guard solves each frame afresh, so it has no memory of the
+side the text was on. For every pair some text meets at both ends of a
+swap, the solved text changes sides of its own background at most once
+over the swap, in the global scope and in a `set { }` subtree
+(`::guarded_text_changes_sides_at_most_once_in_a_swap`, seven seeds both
+ways). The dark/white/dark frames of `refs/theme_swap.png` are the
+subtree of that scene, whose `$fg` is declared over all eight surfaces
+while only `$surface` is overridden: no text meets all eight at the
+dark end, so there the guard meets the text's own background, and for
+a frame mid-swap all eight come within reach from the light side.
+Holding the old side there would break 3:1 for pairs that are readable
+at both ends (a variant that preferred the text's side over meeting
+every background failed the contrast gate), and a per-frame memory
+would make a frame depend on the frames before it, so this is kept as
+it is.
 
 ## wave3-pixels
 

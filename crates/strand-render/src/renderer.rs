@@ -3003,7 +3003,9 @@ impl Renderer {
             Some(f) => f,
             None => self.flatten_surface(surface),
         };
-        // A theme crossfade on this surface paints every frame in full.
+        // A theme crossfade on this surface paints every frame in full,
+        // over the old frame taken before the first one is drawn.
+        self.take_snapshot(surface, target);
         let fade = self.fade_frame(surface, target.time, target.size);
         // A cached scene was drawn at rest.
         let animating = fresh && (self.anim.active() || self.swap_moving(surface));
@@ -3040,7 +3042,13 @@ impl Renderer {
         };
         s.animating = animating;
         let bounds = target.bounds();
-        s.opaque = f.opaque;
+        // A frame blended with a crossfade's snapshot may be translucent
+        // where the new one alone is opaque: it claims nothing.
+        s.opaque = if matches!(fade, swap::FadeFrame::Blend(_)) {
+            Damage::new()
+        } else {
+            f.opaque
+        };
         s.dirty = false;
 
         // This frame's changes.

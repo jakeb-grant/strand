@@ -333,6 +333,9 @@ impl SceneTree {
             }
             SceneOp::SetTokens { table, transition } => {
                 self.tokens = table;
+                // Evaluated once here; nodes read the values (a swap
+                // freezes again every frame it moves the roots).
+                self.tokens.freeze();
                 self.tokens_transition = transition;
                 Ok(())
             }

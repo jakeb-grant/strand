@@ -11,7 +11,7 @@
 
 use std::borrow::Cow;
 use std::cell::Cell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::color::{Color, MIN_CONTRAST, Oklch};
 use crate::protocol::{Length, Paint, Prop, PropClass, PropValue, Transition};
@@ -163,6 +163,39 @@ pub struct TokenTable {
     /// name (`palette:catppuccin:mocha`, `base`, `tokens compact`,
     /// `component Toast`). Informational: evaluation never reads it.
     pub origins: BTreeMap<String, String>,
+    /// Every token evaluated once, as the global scope sees it
+    /// ([`TokenTable::freeze`]).
+    frozen: Frozen,
+}
+
+/// A table's tokens evaluated once in its own scope: what the render
+/// thread works out once per frame (design.md, "each frame the render
+/// thread re-evaluates the small token graph"), so the nodes of the
+/// frame read their tokens instead of evaluating derived chains and
+/// solving contrast per use. A clone of the table does not carry it,
+/// and it never makes two tables differ.
+#[derive(Default)]
+struct Frozen(Option<HashMap<String, PropValue>>);
+
+impl Clone for Frozen {
+    fn clone(&self) -> Self {
+        Frozen(None)
+    }
+}
+
+impl PartialEq for Frozen {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl std::fmt::Debug for Frozen {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.0 {
+            Some(m) => write!(f, "Frozen({} tokens)", m.len()),
+            None => f.write_str("Frozen(none)"),
+        }
+    }
 }
 
 impl TokenTable {
@@ -185,6 +218,7 @@ impl TokenTable {
     /// Sets a plain value at `path`, replacing a derived one there.
     pub fn insert(&mut self, path: impl Into<String>, value: PropValue) {
         let path = path.into();
+        self.thaw();
         self.derived.remove(&path);
         self.tokens.insert(path, value);
     }
@@ -192,6 +226,7 @@ impl TokenTable {
     /// Sets a derived token at `path`, replacing a plain one there.
     pub fn insert_derived(&mut self, path: impl Into<String>, expr: TokenExpr) {
         let path = path.into();
+        self.thaw();
         self.tokens.remove(&path);
         self.derived.insert(path, expr);
     }
@@ -202,12 +237,44 @@ impl TokenTable {
 
     /// Declare that `text` is drawn on `bgs` (see [`TokenTable::contrast`]).
     pub fn insert_contrast(&mut self, text: impl Into<String>, bgs: Vec<String>) {
+        self.thaw();
         self.contrast.insert(text.into(), bgs);
     }
 
     /// Evaluates the token at `path`, plain or derived.
     pub fn lookup(&self, path: &str) -> Option<PropValue> {
         TokenScope::new(&[self]).lookup(path)
+    }
+
+    /// Evaluates every token of the table once, in its own scope, and
+    /// keeps the values: from then on a lookup in a scope whose global
+    /// table this is (and an override's right-hand side that reads it)
+    /// takes the kept value instead of evaluating the token again. The
+    /// render thread freezes the tree's table once per frame while a
+    /// palette springs, and once per `SetTokens` otherwise.
+    ///
+    /// Writing to [`TokenTable::tokens`], [`TokenTable::derived`] or
+    /// [`TokenTable::contrast`] directly afterwards leaves stale values:
+    /// freeze again (or [`TokenTable::thaw`]). The `insert` methods thaw.
+    pub fn freeze(&mut self) {
+        self.frozen = Frozen(None);
+        let mut out = HashMap::with_capacity(self.tokens.len() + self.derived.len());
+        for path in self.tokens.keys().chain(self.derived.keys()) {
+            if let Some(v) = self.lookup(path) {
+                out.insert(path.clone(), v);
+            }
+        }
+        self.frozen = Frozen(Some(out));
+    }
+
+    /// Drops what [`TokenTable::freeze`] kept: lookups evaluate again.
+    pub fn thaw(&mut self) {
+        self.frozen = Frozen(None);
+    }
+
+    /// True while [`TokenTable::freeze`]'s values are kept.
+    pub fn is_frozen(&self) -> bool {
+        self.frozen.0.is_some()
     }
 
     /// Resolves a prop value: token references are evaluated, everything
@@ -449,6 +516,15 @@ impl<'a> TokenScope<'a> {
     fn eval_ref(&self, path: &str, depth: u32, budget: &Budget) -> Option<PropValue> {
         if depth > MAX_TOKEN_DEPTH || !budget.step() {
             return None;
+        }
+        // The global scope of a frozen table reads the kept values (not
+        // while the guard evaluates a pair's backgrounds: those are read
+        // unguarded, one level).
+        if let [only] = self.levels
+            && budget.guarding.get()
+            && let Some(kept) = &only.frozen.0
+        {
+            return kept.get(path).cloned();
         }
         for (i, table) in self.levels.iter().enumerate().rev() {
             // Overrides see their parent scope; global derived tokens see
@@ -1209,5 +1285,52 @@ mod tests {
             Transition::Instant
         );
         assert_eq!(s.transition(&spring, Prop::Width), spring);
+    }
+
+    /// A frozen table answers every lookup of its global scope with the
+    /// values it evaluated once (one step each, the same values), an
+    /// override's right-hand side reads them too while derived tokens
+    /// inside the override's scope still follow it, a clone is not
+    /// frozen, and an `insert` thaws.
+    #[test]
+    fn a_frozen_table_is_read_not_evaluated() {
+        let mut t = table();
+        t.insert_contrast("fg", vec!["surface".into(), "surface.hi".into()]);
+        let plain: Vec<(String, Option<PropValue>)> = t
+            .tokens
+            .keys()
+            .chain(t.derived.keys())
+            .map(|p| (p.clone(), t.lookup(p)))
+            .collect();
+        t.freeze();
+        assert!(t.is_frozen());
+        for (p, v) in &plain {
+            assert_eq!(&t.lookup(p), v, "{p}");
+            assert_eq!(last_token_steps(), 1, "{p}: read, not evaluated");
+        }
+        assert_eq!(t.lookup("nope"), None);
+        // An override: its own expression reads the frozen global value;
+        // the global derived `surface.hi` is evaluated in its scope.
+        let mut over = TokenTable::default();
+        over.insert(
+            "surface",
+            PropValue::Token(TokenExpr::path("surface").call(
+                TokenMethod::Mix,
+                vec![
+                    TokenExpr::path("fg"),
+                    TokenExpr::value(PropValue::Number(0.5)),
+                ],
+            )),
+        );
+        let thawed = t.clone();
+        assert!(!thawed.is_frozen());
+        for path in ["surface", "surface.hi", "fg", "border"] {
+            let frozen = TokenScope::new(&[&t, &over]).lookup(path);
+            let fresh = TokenScope::new(&[&thawed, &over]).lookup(path);
+            assert_eq!(frozen, fresh, "{path} under the override");
+        }
+        t.insert("surface", PropValue::Color(Color::WHITE));
+        assert!(!t.is_frozen());
+        assert_eq!(t.lookup("surface"), Some(PropValue::Color(Color::WHITE)));
     }
 }

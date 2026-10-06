@@ -3,16 +3,25 @@
 //! hello bar compiled and instantiated, a renderer showing the bar, and
 //! `theme.look` written for light↔dark, auto→mocha, mocha→wallpaper and
 //! wallpaper→auto. A swap's work is logic's re-resolve (the write, the
-//! flush and the `SetTokens` it sends), the render thread's swap work
-//! (planning with its contrast play-through, the roots of every frame:
-//! `Renderer::take_swap_work`) and the token graph evaluated in every
-//! frame until it settles (every token path looked up, the contrast
-//! guard included). The median of each swap must stay under 5 ms on an
-//! optimised build (CI: `cargo test --release -p strand-render --test
-//! theme_swap_bench`; about 2 ms here). A debug build does the same work
-//! about four times slower, so there the gate is four times the budget:
-//! it still fails on a regression of the work's shape (a check per
-//! node, a palette played through without end).
+//! flush and the `SetTokens` it sends), the render thread applying the
+//! table (planning with its contrast play-through, evaluating the new
+//! token graph once) and the swap's work in every frame until it
+//! settles (the roots sampled and the frame's token graph evaluated
+//! from them, which the frame's nodes then read:
+//! `Renderer::take_swap_work`). The median of each swap must stay under
+//! 5 ms on an optimised build (CI: `cargo test --release -p
+//! strand-render --test theme_swap_bench`). A debug build does the same
+//! work about four times slower, so there the gate is four times the
+//! budget: it still fails on a regression of the work's shape (a check
+//! per node, a palette played through without end).
+//!
+//! A swap no spring keeps readable crossfades instead; its work (the
+//! same, plus rasterising a snapshot of each surface once) is held to
+//! the same 5 ms, on two 2560×36 bars and a launcher-sized 1280×960
+//! panel. Blending each crossfade frame with its snapshot is a cost of
+//! painting that frame, held to [`BLEND_BUDGET`] per frame for all three
+//! surfaces in optimised builds (a per-byte loop unoptimised is some
+//! twenty times slower, so a debug build only reports it).
 
 mod common;
 
@@ -33,6 +42,10 @@ const S: SurfaceId = SurfaceId(1);
 /// design.md's budget, for optimised builds.
 const BUDGET: Duration = Duration::from_millis(5);
 
+/// What blending one crossfade frame of every surface may cost (a
+/// quarter of a 60 Hz frame), optimised.
+const BLEND_BUDGET: Duration = Duration::from_micros(4_000);
+
 /// The gate this build is held to (see the module doc).
 fn gate() -> Duration {
     if cfg!(debug_assertions) {
@@ -40,6 +53,12 @@ fn gate() -> Duration {
     } else {
         BUDGET
     }
+}
+
+fn median(v: &[Duration]) -> Duration {
+    let mut sorted = v.to_vec();
+    sorted.sort();
+    sorted[sorted.len() / 2]
 }
 
 fn fixture(name: &str) -> String {
@@ -130,31 +149,25 @@ impl Shell {
         Duration::from_secs(1) + Duration::from_micros(16_667 * self.k as u64)
     }
 
-    /// Paints frames until the bar is idle; returns the time spent
-    /// evaluating the whole token graph once per frame.
+    /// Paints frames until the bar is idle; returns the swap's work in
+    /// them (`Renderer::take_swap_work`).
     fn settle(&mut self) -> Duration {
-        let mut eval = Duration::ZERO;
         let mut frames = 0;
+        self.r.take_swap_work();
         while self.r.wants_frame(S) {
             self.k += 1;
             let t = self.time();
             self.buf.paint_at(&mut self.r, S, 1, t);
-            let tokens = &self.r.tree().tokens;
-            let started = Instant::now();
-            for path in tokens.tokens.keys().chain(tokens.derived.keys()) {
-                std::hint::black_box(tokens.lookup(path));
-            }
-            eval += started.elapsed();
             frames += 1;
             assert!(frames < 600, "never settled");
         }
-        eval
+        self.r.take_swap_work()
     }
 
     /// Writes `theme.look`; returns logic's time (the write and the
-    /// flush that sends the new table) and applies the diff.
-    /// `must`: the look changes the table.
-    fn look(&mut self, v: &str, must: bool) -> Duration {
+    /// flush that sends the new table) and the render thread's applying
+    /// it. `must`: the look changes the table.
+    fn look(&mut self, v: &str, must: bool) -> (Duration, Duration) {
         let look = self.host.variant("Look", v);
         let started = Instant::now();
         self.inst.set("theme.look", look).unwrap();
@@ -167,8 +180,12 @@ impl Shell {
             .iter()
             .any(|op| matches!(op, SceneOp::SetTokens { .. }));
         assert!(swapped || !must, "{v}: no SetTokens");
+        let started = Instant::now();
         assert!(self.r.apply(u.diff).is_empty());
-        logic
+        let apply = started.elapsed();
+        // Already counted in `apply`.
+        self.r.take_swap_work();
+        (logic, apply)
     }
 }
 
@@ -207,22 +224,19 @@ fn a_theme_swap_is_under_five_milliseconds_of_work() {
         for _ in 0..15 {
             shell.look(from, false);
             shell.settle();
-            shell.r.take_swap_work();
-            let logic = shell.look(to, true);
+            let (logic, apply) = shell.look(to, true);
             assert!(shell.r.swapping(), "{from} → {to}: nothing springs");
-            let eval = shell.settle();
-            let render = shell.r.take_swap_work();
-            totals.push(logic + render + eval);
-            parts.push((logic, render, eval));
+            assert_eq!(shell.r.swap_crossfades(), 0, "{from} → {to} crossfaded");
+            let frames = shell.settle();
+            totals.push(logic + apply + frames);
+            parts.push((logic, apply, frames));
         }
-        let mut sorted = totals.clone();
-        sorted.sort();
-        let median = sorted[sorted.len() / 2];
+        let median = median(&totals);
         let i = totals.iter().position(|t| *t == median).unwrap();
-        let (logic, render, eval) = parts[i];
+        let (logic, apply, frames) = parts[i];
         eprintln!(
-            "theme swap {from} → {to}: median {median:?} (logic {logic:?}, render swap {render:?}, \
-             token graph {eval:?} over the frames)"
+            "theme swap {from} → {to}: median {median:?} (logic {logic:?}, render apply {apply:?}, \
+             roots and token graph over the frames {frames:?})"
         );
         report.push((median, from, to));
     }
@@ -238,4 +252,136 @@ fn a_theme_swap_is_under_five_milliseconds_of_work() {
         assert!(p.sync(Duration::from_secs(5)));
     }
     let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A table for the crossfade: the built-in base tokens over a Material
+/// palette, with `$fg` declared over `$surface` and `$surface.split`,
+/// which head to black and white (`grey`: both grey).
+fn split_table(grey: bool) -> TokenTable {
+    let mut t = strand_theme::defaults::base_tokens();
+    strand_theme::from_seed(
+        hex(strand_theme::defaults::DEFAULT_SEED),
+        strand_theme::Options::default(),
+    )
+    .insert_into(&mut t);
+    t.insert("font.ui", PropValue::Font(font(14.0)));
+    let mid = Color::from_oklch(Oklch {
+        l: 0.6,
+        c: 0.0,
+        h: 0.0,
+        alpha: 1.0,
+    });
+    let (a, b) = if grey {
+        (mid, mid)
+    } else {
+        (Color::BLACK, Color::WHITE)
+    };
+    t.insert("surface", PropValue::Color(a));
+    t.insert("surface.split", PropValue::Color(b));
+    t.insert_contrast("fg", vec!["surface".into(), "surface.split".into()]);
+    t
+}
+
+#[test]
+fn a_crossfading_swap_is_under_five_milliseconds_of_work() {
+    let tok = |p: &str| PropValue::Token(TokenExpr::path(p));
+    let mut b = Builder::default();
+    b.diff.set_tokens(split_table(true), Transition::Instant);
+    // Two bars and a launcher-sized panel, each with a card and text.
+    let mut roots = Vec::new();
+    for kind in [NodeKind::Bar, NodeKind::Bar, NodeKind::Panel] {
+        let root = b.node(kind, None, vec![(Prop::Bg, tok("surface"))]);
+        b.node(
+            NodeKind::Box,
+            Some(root),
+            vec![
+                (Prop::X, num(8.0)),
+                (Prop::Y, num(4.0)),
+                (Prop::Width, num(200.0)),
+                (Prop::Height, num(28.0)),
+                (Prop::Bg, tok("surface.split")),
+                (Prop::Radius, tok("radius.md")),
+            ],
+        );
+        for i in 0..6 {
+            b.node(
+                NodeKind::Text,
+                Some(root),
+                vec![
+                    (Prop::X, num(240.0 + 120.0 * i as f32)),
+                    (Prop::Y, num(8.0)),
+                    (Prop::Text, text("Strand 12:59")),
+                ],
+            );
+        }
+        roots.push(root);
+    }
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    let sizes = [(2560, 36), (2560, 36), (1280, 960)];
+    let mut bufs: Vec<(SurfaceId, Buffer)> = Vec::new();
+    for (i, (root, (w, h))) in roots.iter().zip(sizes).enumerate() {
+        let id = SurfaceId(10 + i as u32);
+        r.attach_surface(id, *root);
+        bufs.push((id, Buffer::new(w, h, Scale::ONE)));
+    }
+    let mut k = 0u32;
+    let time = |k: u32| Duration::from_secs(1) + Duration::from_micros(16_667 * k as u64);
+    for (id, buf) in &mut bufs {
+        buf.paint_at(&mut r, *id, 0, time(0));
+    }
+    let mut totals = Vec::new();
+    let mut parts = Vec::new();
+    let mut blends = Vec::new();
+    for round in 0..12 {
+        let to = split_table(round % 2 == 1);
+        let before = r.swap_crossfades();
+        r.take_swap_work();
+        let mut d = SceneDiff::new();
+        d.set_tokens(to, Transition::Default);
+        let started = Instant::now();
+        assert!(r.apply(d).is_empty());
+        let apply = started.elapsed();
+        r.take_swap_work();
+        assert_eq!(
+            r.swap_crossfades(),
+            before + 1,
+            "round {round}: no crossfade"
+        );
+        r.take_fade_blend_work();
+        let mut frames = 0;
+        while bufs.iter().any(|(id, _)| r.wants_frame(*id)) {
+            k += 1;
+            for (id, buf) in &mut bufs {
+                buf.paint_at(&mut r, *id, 1, time(k));
+            }
+            blends.push(r.take_fade_blend_work());
+            frames += 1;
+            assert!(frames < 600, "never settled");
+        }
+        let work = r.take_swap_work();
+        totals.push(apply + work);
+        parts.push((apply, work, frames));
+    }
+    let m = median(&totals);
+    let i = totals.iter().position(|t| *t == m).unwrap();
+    let (apply, work, frames) = parts[i];
+    let blend = median(&blends);
+    eprintln!(
+        "crossfading swap: median {m:?} (apply with snapshots {apply:?}, frames {work:?} over \
+         {frames} frames); blend per frame {blend:?}"
+    );
+    let gate = gate();
+    assert!(
+        m < gate,
+        "{m:?} of work, over {gate:?} (design.md: {BUDGET:?} optimised)"
+    );
+    // A per-byte loop runs some twenty times slower unoptimised: the
+    // blend is held to its budget in optimised builds only (CI).
+    if !cfg!(debug_assertions) {
+        assert!(
+            blend < BLEND_BUDGET,
+            "{blend:?} blending a frame, over {BLEND_BUDGET:?}"
+        );
+    }
 }

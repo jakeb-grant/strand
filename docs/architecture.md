@@ -317,7 +317,13 @@ be built and tested without the language, and the language without pixels.
   nearest first). An override's right-hand side sees its parent scope
   (`set { $surface: $surface.alpha(0.5) }` is not a cycle) and global
   derived tokens are evaluated in the asking node's scope, so they stay
-  derived inside the subtree. `enter`/`exit` are props whose
+  derived inside the subtree. `TokenTable::freeze()` evaluates every
+  token of a table once in its own scope and keeps the values; a lookup
+  in a scope whose global table is frozen (and an override's right-hand
+  side reading it) reads them. Render freezes the tree's table when a
+  `SetTokens` lands and in each frame a swap moves the roots; a clone is
+  not frozen, equality ignores it, `insert`s thaw it, and a direct write
+  to its pub fields needs a `freeze()` again (or `thaw()`). `enter`/`exit` are props whose
   value is a `PropValue::Pose` (prop/value pairs) or a preset keyword.
 
 - **Surfaces**: `SurfaceSpec` (in `strand-scene`) is what a surface-kind
@@ -432,17 +438,32 @@ be built and tested without the language, and the language without pixels.
   time into `SceneTree::tokens` before flattening (gamut-mapped; a
   settled root gets logic's exact colour), so derived tokens and the
   contrast guard are evaluated from them exactly; a newer table
-  retargets roots in flight with their velocity. Before springing, the
-  planned roots are played through (240 Hz, 1 kHz next to moments
-  under 3.3:1, at most 3 s); if a declared pair of the global table
-  that is readable at both ends has a moment where no text lightness
-  reaches 3:1 (`Color::contrast_reachable`), the table snaps instead and
-  each shown surface crossfades from a snapshot of its old frame
-  (rasterised once) to the new frames along the same curve, those
-  frames painted in full. `Renderer::swapping()` is true while roots
-  spring or a crossfade runs, `swap_crossfades()` counts crossfades,
-  and `take_swap_work()` (hidden, for the bench) returns the render
-  thread's swap work since the last call.
+  retargets roots in flight with their velocity, and the table is
+  frozen again from the frame's roots (the frame's nodes read it). Span
+  colours (marks, markup links) are not part of a text's shaping
+  request: it carries slot stand-ins and the glyph item the colours, so
+  a springing `$accent` never reshapes. Before springing, the planned
+  roots are played through (240 Hz, 1 kHz next to moments under 3.3:1,
+  until they settle, at most 10 s) in the global scope and under each
+  distinct `set { }` chain of the shown nodes (at most 32); if a declared
+  pair readable at both ends there has a moment where no text lightness
+  reaches 3:1 (`Color::contrast_reachable`), or the check cannot finish,
+  the table snaps instead and each shown surface crossfades from a
+  snapshot of its old frame to the new frames along the same curve,
+  those frames painted in full and reporting no opaque region. The
+  snapshot is taken at the fade's first frame on the surface: copied
+  from the `PaintTarget` when its age is 1, else rasterised from the
+  old display list kept from planning; at most 1920×1080×4 bytes per
+  surface and in all (a larger surface snaps). The fade's curve is read
+  at each surface's own presentation time and ends per surface; a
+  table that changes no colour leaves it running, a snapping one ends
+  it. The blend works on the CPU `PaintTarget`; the GPU path (M4) needs
+  its own (keep the old frame's texture, blend in the shader).
+  `Renderer::swapping()` is true while roots spring or a crossfade
+  runs, `swap_crossfades()` counts crossfades, and `take_swap_work()`
+  and `take_fade_blend_work()` (hidden, for the bench) return the
+  render thread's swap work, and the time spent blending, since the
+  last call.
 - **Hit testing**: `Renderer::hit(surface, LogicalPoint) -> Vec<NodeId>`
   is the node under a surface-local logical point in the last frame (the
   topmost in paint order: later siblings over earlier ones and their

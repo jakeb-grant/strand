@@ -172,6 +172,9 @@ pub enum Item {
         y: i32,
         layout: Arc<TextLayout>,
         color: Color,
+        /// The colours of the layout's span slots ([`span_slots`]): a
+        /// run whose colour is slot `i` paints in `spans[i]`.
+        spans: Vec<Color>,
     },
     /// A decoded `image` or `icon` filling `rect` (it was decoded at that
     /// size); a symbolic icon is a mask painted in `tint`.
@@ -918,10 +921,14 @@ fn hash_item(h: &mut impl Hasher, item: &Item) {
             y,
             layout,
             color,
+            spans,
         } => {
             7u8.hash(h);
             (x, y, layout.key, layout.scale).hash(h);
             hash_color(h, color);
+            for c in spans {
+                hash_color(h, c);
+            }
         }
         Item::Image { pixmap, rect, tint } => {
             10u8.hash(h);
@@ -935,14 +942,16 @@ fn hash_item(h: &mut impl Hasher, item: &Item) {
 }
 
 /// The unbounded text request of a text node whose resolved props `get`
-/// reads, and its `align`: markup parsed, marks as spans, shaped at
-/// `scale` with `font`.
+/// reads, its `align` and its span colours: markup parsed, marks as
+/// spans, shaped at `scale` with `font`. Span colours are not shaped
+/// with: the request carries slots ([`span_slots`]), so a mark or link
+/// colour that springs (`$accent` in a theme swap) never reshapes.
 fn natural_spec<'v>(
     get: &impl Fn(Prop) -> Option<&'v PropValue>,
     scope: &TokenScope<'_>,
     font: &Font,
     scale: Scale,
-) -> Option<(TextSpec, TextAlign)> {
+) -> Option<(TextSpec, TextAlign, Vec<Color>)> {
     let Some(PropValue::Text(text)) = get(Prop::Text) else {
         return None;
     };
@@ -973,6 +982,7 @@ fn natural_spec<'v>(
             _ => accent(),
         }
     }));
+    let colors = span_slots(&mut spans);
     Some((
         TextSpec {
             text: shown,
@@ -989,7 +999,46 @@ fn natural_spec<'v>(
             part: 0,
         },
         align,
+        colors,
     ))
+}
+
+/// Replaces the colours of `spans` by slots and returns the colours: the
+/// `i`th distinct colour becomes [`slot`]`(i)`, a stand-in that only
+/// keeps the glyph runs apart. The painter maps a run's slot back with
+/// [`slot_color`].
+pub(crate) fn span_slots(spans: &mut [TextSpan]) -> Vec<Color> {
+    let mut colors: Vec<Color> = Vec::new();
+    for sp in spans.iter_mut() {
+        if let Some(c) = sp.color {
+            let i = match colors.iter().position(|k| *k == c) {
+                Some(i) => i,
+                None => {
+                    colors.push(c);
+                    colors.len() - 1
+                }
+            };
+            sp.color = Some(slot(i));
+        }
+    }
+    colors
+}
+
+/// The stand-in colour of span slot `i`.
+fn slot(i: usize) -> Color {
+    Color {
+        r: i as f32,
+        g: 0.0,
+        b: 0.0,
+        a: 1.0,
+    }
+}
+
+/// The colour a glyph run of `run` colour paints in: its slot's colour in
+/// `spans`, or the node's colour.
+pub(crate) fn slot_color(run: Option<Color>, spans: &[Color], node: Color) -> Color {
+    run.and_then(|c| spans.get(c.r as usize).copied())
+        .unwrap_or(node)
 }
 
 /// The unbounded text requests of the text nodes under the surface node
@@ -1052,7 +1101,7 @@ pub fn natural_texts(
             if let Some(w) = inh.weight {
                 font.weight = w;
             }
-            if let Some((spec, _)) = natural_spec(&get, &scope, &font, scale) {
+            if let Some((spec, _, _)) = natural_spec(&get, &scope, &font, scale) {
                 out.push((node.id, spec));
             }
         }
@@ -1249,13 +1298,16 @@ impl<'a> Flattener<'a> {
         // Text: the unbounded layout (layout measures with it) and, for a
         // box narrower than it, one shaped for the box's width.
         let mut layout = None;
+        // Its span colours (marks, markup links), by slot.
+        let mut span_colors = Vec::new();
         // An `input`'s text that is wider than its box is clipped to it.
         let mut clip_text = false;
         // An `input`'s caret and selection: their x in its text layout
         // (logical), and the layout's shift in the box.
         let mut caret_at: Option<(Arc<TextLayout>, f32)> = None;
         if is_text
-            && let Some((natural, align)) = natural_spec(&text_get, &scope, &font, self.scale)
+            && let Some((natural, align, colors)) =
+                natural_spec(&text_get, &scope, &font, self.scale)
         {
             let shaped: &[Shaped] = self.layouts.get(&node.id).map_or(&[], Vec::as_slice);
             let (fit, placed) = if input {
@@ -1304,6 +1356,7 @@ impl<'a> Flattener<'a> {
                 ));
             }
             layout = placed.map(|(l, dx, dy)| (l, dx + pad.left, dy + pad.top));
+            span_colors = colors;
         }
         // A focused `input` with nothing typed still shows its caret.
         if input
@@ -1541,7 +1594,7 @@ impl<'a> Flattener<'a> {
                 let lines: Vec<(Rect, Color)> = l
                     .runs
                     .iter()
-                    .filter_map(|r| Some((r.underline?, r.color.unwrap_or(color))))
+                    .filter_map(|r| Some((r.underline?, slot_color(r.color, &span_colors, color))))
                     .collect();
                 self.push(
                     Item::Glyphs {
@@ -1549,6 +1602,7 @@ impl<'a> Flattener<'a> {
                         y,
                         layout: l,
                         color,
+                        spans: span_colors,
                     },
                     bounds,
                     &mut sig,
@@ -2105,6 +2159,7 @@ impl Flattener<'_> {
                     y,
                     layout: l,
                     color: if chosen { on_accent } else { w.color },
+                    spans: Vec::new(),
                 },
                 bounds,
                 sig,
