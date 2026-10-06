@@ -192,13 +192,18 @@ pub struct Flattened {
 }
 
 /// A node's hit shape: its rounded box in physical pixels, grown by
-/// `hit: grow(n)`, inside the clip of its ancestors.
+/// `hit: grow(n)`, inside the clip of its ancestors. Under `scale` or
+/// `rotate` the box is in the node's untransformed space and `inverse`
+/// maps a surface point into it, so a rotated pill is hit on its rounded
+/// shape, not its bounding box.
 #[derive(Clone, Debug)]
 pub struct HitBox {
     pub node: NodeId,
     pub rect: kurbo::Rect,
     pub radii: RoundedRectRadii,
     pub clip: Rect,
+    /// Surface pixels to the node's own space (`None`: identity).
+    pub inverse: Option<kurbo::Affine>,
 }
 
 impl HitBox {
@@ -213,6 +218,13 @@ impl HitBox {
         {
             return false;
         }
+        let (x, y) = match self.inverse {
+            Some(inv) => {
+                let p = inv * kurbo::Point::new(x, y);
+                (p.x, p.y)
+            }
+            None => (x, y),
+        };
         let r = self.rect;
         if x < r.x0 || y < r.y0 || x >= r.x1 || y >= r.y1 {
             return false;
@@ -372,6 +384,15 @@ fn number(v: Option<&PropValue>) -> Option<f32> {
         PropValue::Number(n) => finite(*n),
         PropValue::Length(Length::Px(n)) => finite(*n),
         _ => None,
+    }
+}
+
+/// An angle in degrees: `rotate: 90deg` arrives as [`PropValue::Angle`]
+/// (and so does every in-flight rotate sample); a bare number is degrees.
+fn angle(v: Option<&PropValue>) -> Option<f32> {
+    match v? {
+        PropValue::Angle(n) => n.is_finite().then_some(*n),
+        other => number(Some(other)),
     }
 }
 
@@ -1039,7 +1060,7 @@ impl<'a> Flattener<'a> {
         if zoom <= 0.0 {
             return Rect::default();
         }
-        let turn = number(get(Prop::Rotate)).unwrap_or(0.0) % 360.0;
+        let turn = angle(get(Prop::Rotate)).unwrap_or(0.0) % 360.0;
         let saved = self.xform;
         let transform_group = (zoom != 1.0 || turn != 0.0).then(|| {
             let c = frame.center();
@@ -1217,34 +1238,27 @@ impl<'a> Flattener<'a> {
         .clamp(0.0, 1000.0) as f64
             * s;
         if !inert {
-            let k = self.xform.determinant().abs().sqrt();
             let grown = frame.inflate(grow, grow);
-            let (rect, radii) = if self.xform == kurbo::Affine::IDENTITY {
-                (
-                    grown,
-                    RoundedRectRadii::new(
-                        r.top_left + grow,
-                        r.top_right + grow,
-                        r.bottom_right + grow,
-                        r.bottom_left + grow,
-                    ),
-                )
-            } else {
-                // Transformed: its bounding box, corners scaled.
-                (
-                    self.xform.transform_rect_bbox(grown),
-                    RoundedRectRadii::new(
-                        (r.top_left + grow) * k,
-                        (r.top_right + grow) * k,
-                        (r.bottom_right + grow) * k,
-                        (r.bottom_left + grow) * k,
-                    ),
-                )
-            };
+            let radii = RoundedRectRadii::new(
+                r.top_left + grow,
+                r.top_right + grow,
+                r.bottom_right + grow,
+                r.bottom_left + grow,
+            );
+            // Transformed: the untransformed shape, hit through the
+            // inverse (a degenerate transform is never hit).
+            let inverse = (self.xform != kurbo::Affine::IDENTITY).then(|| {
+                if self.xform.determinant().abs() > 1e-12 {
+                    self.xform.inverse()
+                } else {
+                    kurbo::Affine::translate((f64::INFINITY, f64::INFINITY))
+                }
+            });
             self.out.hits.push(HitBox {
                 node: node.id,
-                rect,
+                rect: grown,
                 radii,
+                inverse,
                 clip: inh.clip,
             });
         }

@@ -643,8 +643,23 @@ fn snap_rules_and_reduced_motion() {
     assert!(top < 10, "glides from where it was: {top}");
     pad.settle(2);
     assert_eq!(pad.red_top(15), Some(10));
-    // reduced_motion: everything snaps.
+    // reduced_motion turned on mid size spring: it snaps at the next
+    // frame, which is the last.
+    let mut d = SceneDiff::new();
+    d.set(bx, Prop::Width, num(60.0));
+    st.apply(d);
+    for k in 0..3 {
+        st.paint(frame(end + k));
+    }
+    let mid = st.rect(bx).w;
+    assert!(mid > 20.0 && mid < 60.0, "springing: {mid}");
     st.r.set_reduced_motion(true);
+    assert!(st.r.wants_frame(S));
+    st.paint(frame(end + 3));
+    assert_eq!(st.rect(bx).w, 60.0, "snapped");
+    assert!(!st.r.wants_frame(S), "and settled");
+    let end = end + 4;
+    // reduced_motion: everything snaps.
     let mut d = SceneDiff::new();
     d.set(bx, Prop::X, num(50.0))
         .set(bx, Prop::Width, num(40.0));
@@ -1466,4 +1481,285 @@ fn a_node_created_over_a_ghost_id_is_live_and_at_rest() {
     st.settle(2);
     assert_eq!(st.buf.px(10, 10)[3], 255, "drawn at rest");
     assert_eq!(st.r.hit(S, LogicalPoint::new(10.0, 10.0))[0], id, "and hit");
+}
+
+/// The design's toasts in their most common case, one toast at a time:
+/// `open: shown.len > 0` changes in the same tick as the list. The first
+/// toast is created by the diff that opens the panel and still slides in
+/// over several frames; the last one is removed by the diff that closes
+/// it and plays its exit before the surface goes.
+#[test]
+fn a_lone_toast_enters_with_its_panel_and_leaves_before_it_closes() {
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Bg, color("#1e1e2e")),
+            (Prop::Open, PropValue::Bool(false)),
+        ],
+    );
+    let col = b.node(NodeKind::Col, Some(root), vec![(Prop::Width, num(100.0))]);
+    let mut h = Host::new(b.diff, root);
+    assert!(h.surface.is_none());
+    let toast = NodeId::new(50, 0);
+    let mut d = SceneDiff::new();
+    d.create(toast, NodeKind::Col, Some(col), 0)
+        .set(toast, Prop::Height, num(30.0))
+        .set(toast, Prop::Bg, color("#ff0000"))
+        .set(
+            toast,
+            Prop::Enter,
+            pose(vec![(Prop::X, num(60.0)), (Prop::Opacity, num(0.0))]),
+        )
+        .set(
+            toast,
+            Prop::Exit,
+            pose(vec![
+                (Prop::X, num(60.0)),
+                (Prop::Opacity, num(0.0)),
+                (Prop::Height, num(0.0)),
+            ]),
+        )
+        .set(root, Prop::Open, PropValue::Bool(true));
+    h.apply(d);
+    assert!(h.surface.is_some(), "opened");
+    assert_eq!(h.height(), Some(30.0));
+    // The red edge on row 15, frame by frame (None: nothing red yet).
+    let edge = |h: &Host| (0..100).find(|x| h.px(*x, 15).is_some_and(|p| p[2] > 128));
+    let mut edges = Vec::new();
+    while h.frame() {
+        edges.push(edge(&h));
+        assert!(edges.len() < 400, "never settled");
+    }
+    assert!(edges.len() >= 5, "enters over several frames: {edges:?}");
+    assert_ne!(
+        edges[0],
+        Some(0),
+        "the first frame shows the pose: {edges:?}"
+    );
+    assert_eq!(*edges.last().unwrap(), Some(0), "{edges:?}");
+    let seen: Vec<u32> = edges.iter().flatten().copied().collect();
+    assert!(seen.len() >= 3, "slides in, visibly: {edges:?}");
+    assert!(seen.windows(2).all(|w| w[1] <= w[0]), "{edges:?}");
+    // The last toast leaves as the panel closes.
+    let mut d = SceneDiff::new();
+    d.push(SceneOp::Remove { id: toast });
+    d.set(root, Prop::Open, PropValue::Bool(false));
+    h.apply(d);
+    assert!(h.surface.is_some(), "stays while the toast leaves");
+    assert!(h.r.surface_spec(root).unwrap().open);
+    let mut edges = Vec::new();
+    while h.surface.is_some() && h.frame() {
+        edges.push(edge(&h));
+        assert!(edges.len() < 400, "never settled");
+    }
+    assert!(h.surface.is_none(), "closed once the exit played");
+    assert!(!h.r.surface_spec(root).unwrap().open);
+    assert!(
+        edges.len() >= 4,
+        "exit plays over several frames: {edges:?}"
+    );
+    let seen: Vec<u32> = edges.iter().flatten().copied().collect();
+    assert!(
+        seen.len() >= 2 && seen.windows(2).all(|w| w[1] >= w[0]),
+        "slides out: {edges:?}"
+    );
+    assert!(seen[0] < 30, "starts where it was: {edges:?}");
+    // Opening again with a new toast plays its enter again.
+    let again = NodeId::new(51, 0);
+    let mut d = SceneDiff::new();
+    d.create(again, NodeKind::Col, Some(col), 0)
+        .set(again, Prop::Height, num(30.0))
+        .set(again, Prop::Bg, color("#ff0000"))
+        .set(again, Prop::Enter, pose(vec![(Prop::Opacity, num(0.0))]))
+        .set(root, Prop::Open, PropValue::Bool(true));
+    h.apply(d);
+    let mut alphas = Vec::new();
+    while h.frame() {
+        alphas.push(h.px(50, 15).map_or(0, |p| p[2]));
+        assert!(alphas.len() < 400);
+    }
+    assert!(alphas.len() >= 4 && alphas[0] < 128, "{alphas:?}");
+    assert_eq!(*alphas.last().unwrap(), 255);
+}
+
+/// A panel that opens with rows created at boot (reported closed, then
+/// opened by a later diff) shows them at rest: only rows born with the
+/// opening enter.
+#[test]
+fn rows_older_than_the_opening_show_at_rest() {
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Bg, color("#1e1e2e")),
+            (Prop::Open, PropValue::Bool(false)),
+        ],
+    );
+    let col = b.node(NodeKind::Col, Some(root), vec![(Prop::Width, num(40.0))]);
+    b.node(
+        NodeKind::Box,
+        Some(col),
+        vec![
+            (Prop::Height, num(20.0)),
+            (Prop::Bg, color("#ff0000")),
+            (Prop::Enter, pose(vec![(Prop::Opacity, num(0.0))])),
+        ],
+    );
+    let mut h = Host::new(b.diff, root);
+    let mut d = SceneDiff::new();
+    d.set(root, Prop::Open, PropValue::Bool(true));
+    h.apply(d);
+    assert!(h.frame());
+    assert_eq!(h.px(20, 10).unwrap()[2], 255, "at rest on the first frame");
+    assert!(!h.frame(), "nothing moves");
+}
+
+/// `rotate` arrives from the compiler as an angle and every in-flight
+/// sample is one: a static `rotate: 90deg` turns an 80 × 10 bar upright,
+/// and a rotate spring draws it in between while it moves.
+#[test]
+fn rotate_draws_static_and_in_flight() {
+    // Red rows down the centre column.
+    let rows = |st: &Stage| (0..100).filter(|y| st.buf.px(50, *y)[2] > 128).count();
+    let bar = |b: &mut Builder, root: NodeId, extra: Vec<(Prop, PropValue)>| {
+        let mut props = vec![
+            (Prop::Place, kw("absolute")),
+            (Prop::X, num(10.0)),
+            (Prop::Y, num(45.0)),
+            (Prop::Width, num(80.0)),
+            (Prop::Height, num(10.0)),
+            (Prop::Bg, color("#ff0000")),
+        ];
+        props.extend(extra);
+        b.node(NodeKind::Box, Some(root), props)
+    };
+    let st = Stage::new(100, 100, |b, root| {
+        bar(b, root, vec![(Prop::Rotate, PropValue::Angle(90.0))]);
+    });
+    let n = rows(&st);
+    assert!((78..=82).contains(&n), "upright: {n} rows");
+    let mut id = None;
+    let mut st = Stage::new(100, 100, |b, root| {
+        id = Some(bar(b, root, vec![]));
+    });
+    assert!((9..=11).contains(&rows(&st)), "flat: {}", rows(&st));
+    let mut d = SceneDiff::new();
+    d.set(id.unwrap(), Prop::Rotate, PropValue::Angle(90.0));
+    st.apply(d);
+    let mut seen = Vec::new();
+    for k in 1..60 {
+        st.paint(frame(k));
+        seen.push(rows(&st));
+    }
+    assert!(
+        seen.iter().any(|n| (14..=70).contains(n)),
+        "drawn between flat and upright: {seen:?}"
+    );
+    let n = *seen.last().unwrap();
+    assert!((78..=82).contains(&n), "{seen:?}");
+}
+
+/// A rotated pill is hit on its rounded shape, not on its bounding box.
+#[test]
+fn a_rotated_pill_is_hit_on_its_shape() {
+    let mut id = None;
+    let mut st = Stage::new(100, 100, |b, root| {
+        id = Some(b.node(
+            NodeKind::Box,
+            Some(root),
+            vec![
+                (Prop::Place, kw("absolute")),
+                (Prop::X, num(10.0)),
+                (Prop::Y, num(40.0)),
+                (Prop::Width, num(80.0)),
+                (Prop::Height, num(20.0)),
+                (Prop::Radius, num(10.0)),
+                (Prop::Bg, color("#ff0000")),
+                (Prop::Rotate, PropValue::Angle(45.0)),
+            ],
+        ));
+    });
+    let id = id.unwrap();
+    st.paint(frame(1));
+    let hit =
+        |st: &Stage, x: f32, y: f32| st.r.hit(S, LogicalPoint::new(x, y)).first() == Some(&id);
+    assert!(hit(&st, 50.0, 50.0), "centre");
+    assert!(hit(&st, 70.0, 70.0), "along its axis");
+    assert!(hit(&st, 30.0, 30.0), "along its axis");
+    // Inside the bounding box (14.6 … 85.4) but off the shape.
+    assert!(!hit(&st, 20.0, 80.0), "a bounding-box corner");
+    assert!(!hit(&st, 80.0, 20.0), "a bounding-box corner");
+    assert!(!hit(&st, 50.0, 67.0), "beside it");
+    // The rounded end: past the cap along the axis.
+    assert!(!hit(&st, 19.0, 19.0), "past the rounded end");
+}
+
+fn kw(k: &str) -> PropValue {
+    PropValue::Keyword(k.into())
+}
+
+/// One root on two outputs of different widths (`screens: all`): a row
+/// leaving where only the wide one shows it still plays its exit there,
+/// though the narrow one's frames do not draw it.
+#[test]
+fn an_exit_seen_on_one_of_two_outputs_plays_there() {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Panel, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    // As tall as its output: the short one shows two rows.
+    let list = b.node(
+        NodeKind::List,
+        Some(root),
+        vec![
+            (Prop::Width, num(60.0)),
+            (Prop::Height, PropValue::Length(Length::Percent(100.0))),
+        ],
+    );
+    let mut rows = Vec::new();
+    for i in 0..6 {
+        rows.push(b.node(
+            NodeKind::Box,
+            Some(list),
+            vec![
+                (Prop::Height, num(20.0)),
+                (Prop::Bg, color(if i == 4 { "#ff0000" } else { "#203040" })),
+                (Prop::Exit, pose(vec![(Prop::Opacity, num(0.0))])),
+            ],
+        ));
+    }
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    let (wide, narrow) = (SurfaceId(1), SurfaceId(2));
+    r.attach_surface(wide, root);
+    r.attach_surface(narrow, root);
+    let mut wb = Buffer::new(60, 120, Scale::ONE);
+    let mut nb = Buffer::new(60, 40, Scale::ONE);
+    wb.paint_at(&mut r, wide, 0, T0);
+    nb.paint_at(&mut r, narrow, 0, T0);
+    assert!(wb.px(30, 90)[2] > 200, "row 4 shows on the tall output");
+    // Row 0, on both, changes colour as row 4 leaves: the short output
+    // paints frames too, none of which draws row 4.
+    let mut d = SceneDiff::new();
+    d.push(SceneOp::Remove { id: rows[4] });
+    d.set(rows[0], Prop::Bg, color("#80a0c0"));
+    assert!(r.apply(d).is_empty());
+    let mut reds = Vec::new();
+    let mut narrow_frames = 0;
+    for k in 1..60 {
+        if r.wants_frame(narrow) {
+            nb.paint_at(&mut r, narrow, 1, frame(k));
+            narrow_frames += 1;
+        }
+        if !r.wants_frame(wide) {
+            break;
+        }
+        wb.paint_at(&mut r, wide, 1, frame(k));
+        reds.push(wb.px(30, 90)[2]);
+    }
+    assert!(narrow_frames >= 3, "{narrow_frames}");
+    assert!(reds.len() >= 4, "fades over several frames: {reds:?}");
+    assert!(reds[0] > 100, "{reds:?}");
+    assert!(reds[..4].windows(2).all(|w| w[1] < w[0]), "{reds:?}");
 }

@@ -17,7 +17,10 @@
 //! - [`Motion<N>`] is an `N`-channel value in flight (one channel for a
 //!   length, four for a colour in premultiplied OKLab). [`Motion::retarget`]
 //!   starts a new segment from wherever the value is at the next sample,
-//!   *keeping its velocity*, so interrupted animations never jolt.
+//!   *keeping its velocity*, so interrupted animations never jolt. A
+//!   spring starts with that velocity; a timed curve adds it as a term
+//!   that fades out over its duration (`v0·t·(1 − t/d)²`), on top of
+//!   the curve's own start velocity (zero for the `~ 200ms` default).
 //!
 //! The theme's palette springs and the renderer's prop springs share this
 //! module; see `docs/architecture.md` ("`strand-scene`", Motion).
@@ -157,6 +160,29 @@ pub fn ease(easing: Easing, p: f32) -> f32 {
     let p = if p.is_nan() { 1.0 } else { p.clamp(0.0, 1.0) };
     match easing {
         Easing::Linear => p,
+        Easing::OutElastic => {
+            if p <= 0.0 || p >= 1.0 {
+                return p;
+            }
+            let c4 = std::f32::consts::TAU / 3.0;
+            2f32.powf(-10.0 * p) * ((p * 10.0 - 0.75) * c4).sin() + 1.0
+        }
+        Easing::OutBounce => {
+            const N1: f32 = 7.5625;
+            const D1: f32 = 2.75;
+            if p < 1.0 / D1 {
+                N1 * p * p
+            } else if p < 2.0 / D1 {
+                let q = p - 1.5 / D1;
+                N1 * q * q + 0.75
+            } else if p < 2.5 / D1 {
+                let q = p - 2.25 / D1;
+                N1 * q * q + 0.9375
+            } else {
+                let q = p - 2.625 / D1;
+                N1 * q * q + 0.984375
+            }
+        }
         Easing::Bezier { x1, y1, x2, y2 } => {
             if p <= 0.0 || p >= 1.0 {
                 return p;
@@ -248,10 +274,17 @@ impl<const N: usize> Segment<N> {
                 } else {
                     0.0
                 };
+                // The velocity it was moving with when retargeted fades
+                // out over the duration: `v0·t·(1 − t/d)²` starts at v0
+                // and ends at rest exactly on the target, so a timed curve
+                // interrupting a moving value never jolts.
+                let u = (t / d).min(1.0);
+                let carry = (t.min(d) * (1.0 - u) * (1.0 - u)) as f32;
+                let dcarry = ((1.0 - u) * (1.0 - 3.0 * u)) as f32;
                 for i in 0..N {
                     let span = self.target[i] - self.from[i];
-                    pos[i] = self.from[i] + span * e;
-                    vel[i] = span * de;
+                    pos[i] = self.from[i] + span * e + self.vel[i] * carry;
+                    vel[i] = span * de + if p < 1.0 { self.vel[i] * dcarry } else { 0.0 };
                 }
             }
         }
@@ -406,10 +439,7 @@ impl<const N: usize> Motion<N> {
         self.seg = Segment {
             start,
             from: pos,
-            vel: match p.curve {
-                Curve::Spring(_) => vel,
-                _ => [0.0; N],
-            },
+            vel,
             target: p.target,
             curve: p.curve,
         };
@@ -587,6 +617,48 @@ mod tests {
     }
 
     #[test]
+    fn a_timed_retarget_keeps_velocity() {
+        let t0 = Duration::from_secs(2);
+        let mut m = Motion::<1>::rest([0.0], 0.01);
+        m.retarget_at([100.0], Curve::Spring(SPATIAL), t0);
+        let mid = t0 + ms(60);
+        let (x0, v0) = (m.peek(mid)[0], m.velocity(mid)[0]);
+        assert!(v0 > 100.0);
+        // `~ 200ms` (the standard curve, which starts at rest) back the
+        // other way, mid-flight.
+        let timed = Curve::of(&Transition::Duration {
+            duration: ms(200),
+            easing: Easing::STANDARD,
+        });
+        m.retarget_at([-50.0], timed, mid);
+        assert_eq!(m.peek(mid)[0], x0);
+        let v = m.velocity(mid)[0];
+        assert!((v - v0).abs() < v0 * 0.02, "{v} vs {v0}");
+        // Still moving the old way just after, with no step in position
+        // or speed between 1 ms samples.
+        let xs: Vec<f32> = (0..=200).map(|i| m.peek(mid + ms(i))[0]).collect();
+        assert!(xs[5] > x0);
+        for w in xs.windows(3) {
+            let (d1, d2) = (w[1] - w[0], w[2] - w[1]);
+            assert!((d2 - d1).abs() < 0.6, "{w:?}");
+        }
+        // Ends exactly on target, at rest.
+        assert_eq!(m.sample(mid + ms(200)), [-50.0]);
+        assert!(m.is_settled(mid + ms(200)));
+        // From rest the curve is unchanged.
+        let mut r = Motion::<1>::rest([0.0], 0.01);
+        r.retarget_at(
+            [10.0],
+            Curve::Timed {
+                duration: ms(200),
+                easing: Easing::Linear,
+            },
+            t0,
+        );
+        assert!((r.peek(t0 + ms(100))[0] - 5.0).abs() < 1e-4);
+    }
+
+    #[test]
     fn shift_jumps_then_returns() {
         let t0 = Duration::from_secs(1);
         let mut m = Motion::<2>::rest([0.0, 0.0], 0.01);
@@ -637,6 +709,49 @@ mod tests {
             assert!(v >= last - 1e-6);
             last = v;
         }
+    }
+
+    #[test]
+    fn elastic_and_bounce_are_not_beziers() {
+        let bounce = Easing::named("out_bounce").unwrap();
+        let elastic = Easing::named("out_elastic").unwrap();
+        let samples = |e: Easing| {
+            (0..=1000)
+                .map(|i| ease(e, i as f32 / 1000.0))
+                .collect::<Vec<_>>()
+        };
+        // Bounce: never past 1, touches it at each of three bounces and
+        // falls back in between.
+        let b = samples(bounce);
+        assert!(b.iter().all(|v| *v <= 1.0 + 1e-6 && *v >= 0.0));
+        let touches = b
+            .windows(3)
+            .filter(|w| w[1] > 0.97 && w[1] >= w[0] && w[1] >= w[2] && (w[0] < w[1] || w[2] < w[1]))
+            .count();
+        assert!(touches >= 3, "{touches} touches");
+        assert!(b[500] < 0.8 && b[364] > 0.99, "{} {}", b[500], b[364]);
+        // Elastic: overshoots 1, then undershoots, then settles there.
+        let e = samples(elastic);
+        let peak = e.iter().copied().fold(f32::MIN, f32::max);
+        assert!(peak > 1.3, "{peak}");
+        let crossings = (1..e.len())
+            .filter(|&i| (e[i - 1] < 1.0) != (e[i] < 1.0))
+            .count();
+        assert!(crossings >= 4, "{crossings} crossings");
+        assert_eq!((e[0], e[1000]), (0.0, 1.0));
+        assert_eq!((b[0], b[1000]), (0.0, 1.0));
+        // A timed motion along them ends exactly on its target.
+        let t0 = Duration::from_secs(1);
+        let mut m = Motion::<1>::rest([0.0], 0.01);
+        m.retarget_at(
+            [10.0],
+            Curve::Timed {
+                duration: ms(300),
+                easing: bounce,
+            },
+            t0,
+        );
+        assert_eq!(m.sample(t0 + ms(300)), [10.0]);
     }
 
     #[test]

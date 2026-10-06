@@ -4305,3 +4305,53 @@ when a change starts or retargets it (an op, which already marks the
 surface for layout); frames where only springs move reuse those targets
 and lay out once with the in-flight sizes, under the nearest
 size-stable ancestor or, failing one, the whole surface.
+
+**2026-10-06 · wave3-pixels (p2) fixer round 2: list poses play when
+their surface opens or closes with them.** The toasts change `open:
+shown.len > 0` in the same tick as the list, so with one toast at a time
+the first toast is created by the diff that opens the panel and the
+last is removed by the diff that closes it. A node created by the diff
+that opens its surface (reported closed before; a surface first seen in
+that diff, at boot, still shows at rest) now plays its `enter` from the
+surface's first frame, and a surface closed with no exit pose of its own
+stays open in its spec while ghosts under it play their exit, closing
+when the last one unmounts. This narrows "a node on a surface not yet
+shown shows values at rest" (the paragraph above) to nodes older than
+the opening: design.md applies `enter`/`exit` to list items, and "a
+removed subtree plays exit, then unmounts".
+
+**2026-10-06 · wave3-pixels (p2) fixer round 2: named curves and timed
+retargets.** `out_elastic` and `out_bounce`, which the checker's `enum
+Curve` accepts, are closed forms (easings.net), not béziers: they used
+to fall back to the standard curve. `Easing::NAMES` lists every name
+render knows; the schema must not accept one outside it (its extra
+render names `in_out_back`, `emphasized_decelerate`,
+`emphasized_accelerate` are the compiler owner's to add). A timed curve
+(`~ 200ms`, `~ ease(…)`) that interrupts a moving value keeps its
+velocity: the segment adds `v0·t·(1 − t/d)²`, which starts at the old
+velocity and is gone, with no velocity, at the end of the duration, so
+the curve still ends exactly on its target at its duration; from rest
+the curve is unchanged.
+
+**2026-10-06 · wave3-pixels (p2) fixer round 2: transforms, hit shapes,
+several outputs.** `rotate` is read as a `PropValue::Angle` in degrees
+(what the schema's `angle` and every rotate sample are; a bare number is
+degrees too). Under `scale`/`rotate` a node is hit on its untransformed
+rounded box through the inverse transform, not on the transformed
+bounding box. Motion state is per node, while one root may be shown on
+several outputs (`screens: all`); a frame ends an exit, or drops an
+enter it did not draw, only when no other surface of that root drew the
+node in its last frame. `reduced_motion` turning on snaps size springs
+already in flight at the next frame (each surface with motion lays out
+again).
+
+**2026-10-06 · wave3-pixels (p2) fixer round 2: known limits.** When a
+content-sized surface grows, its size springs snap: the first layout of
+the change runs in the old, smaller buffer, where `flex-shrink` caps the
+target, and the configure at the new size lays it out at rest.
+Shrinking springs (the surface is held at its larger size until
+everything settles). Learning targets in an unconstrained content pass
+first is the fix, left for M4 with the compositor-animated poses.
+Removing a surface root (an `if` around a surface, a reload dropping
+it), as opposed to closing it with `open: false`, still unmounts it at
+once without its exit pose.

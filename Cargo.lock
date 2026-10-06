@@ -1855,6 +1855,8 @@ version = "0.0.0"
 dependencies = [
  "criterion",
  "png",
+ "strand-compiler",
+ "strand-core",
  "strand-scene",
  "strand-text",
  "taffy",

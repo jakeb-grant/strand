@@ -504,3 +504,114 @@ fn a_toggling_panel_plays_its_poses_and_goes_away() {
         assert_ne!(shot.rgb(960, 540), rgb("#89b4fa"), "round {round}: gone");
     }
 }
+
+const TOASTS: NodeId = NodeId::new(30, 0);
+const STACK: NodeId = NodeId::new(31, 0);
+const TOAST: NodeId = NodeId::new(32, 0);
+
+/// The design's toasts with one toast at a time: the diff that creates
+/// the toast opens the content-sized panel, and the toast still fades in
+/// over several frames; the diff that removes it closes the panel, and
+/// the toast fades out before the surface is destroyed.
+#[test]
+fn a_lone_toast_plays_its_poses_as_its_panel_opens_and_closes() {
+    let Some(sway) = Sway::start("a_lone_toast_plays_its_poses_as_its_panel_opens_and_closes")
+    else {
+        return;
+    };
+    let font = std::fs::read(test_font_path()).unwrap();
+    let engine = TextEngine::new(FontConfig::isolated(vec![Arc::new(font)]));
+    let host = Host::new(Renderer::new(TextBackend::Inline(Box::new(engine))));
+    let mut mgr = SurfaceManager::with_connection(sway.connect(), host, Config::default()).unwrap();
+    let mut d = SceneDiff::default();
+    d.create(TOASTS, NodeKind::Panel, None, 0)
+        .set(TOASTS, Prop::Name, PropValue::Text("Toasts".into()))
+        .set(TOASTS, Prop::Open, PropValue::Bool(false))
+        .create(STACK, NodeKind::Col, Some(TOASTS), 0)
+        .set(STACK, Prop::Width, PropValue::Number(240.0));
+    apply(&mut mgr, d);
+    mgr.dispatch(Some(Duration::from_millis(50))).unwrap();
+    assert!(mgr.state().surfaces_of(TOASTS).is_empty(), "closed");
+    for round in 0..2 {
+        let opened = mgr.state().host().drawn.len();
+        let toast = NodeId::new(TOAST.index + round, 0);
+        let mut d = SceneDiff::default();
+        d.create(toast, NodeKind::Col, Some(STACK), 0)
+            .set(toast, Prop::Height, PropValue::Number(120.0))
+            .set(
+                toast,
+                Prop::Bg,
+                PropValue::Color(Color::from_hex("#f38ba8").unwrap()),
+            )
+            .set(
+                toast,
+                Prop::Enter,
+                PropValue::Pose(vec![(Prop::Opacity, PropValue::Number(0.0))]),
+            )
+            .set(
+                toast,
+                Prop::Exit,
+                PropValue::Pose(vec![
+                    (Prop::Opacity, PropValue::Number(0.0)),
+                    (Prop::X, PropValue::Number(40.0)),
+                ]),
+            )
+            .set(TOASTS, Prop::Open, PropValue::Bool(true));
+        apply(&mut mgr, d);
+        let mut id = None;
+        let ok = run_until(&mut mgr, Duration::from_secs(5), |s| {
+            id = s.surfaces_of(TOASTS).first().copied();
+            id.is_some_and(|id| {
+                s.host().drawn[opened..].iter().any(|p| p.0 == id)
+                    && !s.host().renderer.wants_frame(id)
+                    && s.stats().presented >= s.stats().commits
+            })
+        });
+        assert!(ok, "round {round}: never settled open");
+        let id = id.unwrap();
+        let frames: Vec<u8> = mgr.state().host().drawn[opened..]
+            .iter()
+            .filter(|p| p.0 == id)
+            .map(|p| p.2)
+            .collect();
+        assert!(frames.len() >= 5, "round {round}: enter frames {frames:?}");
+        assert!(frames[0] < 128, "starts near transparent: {frames:?}");
+        assert!(
+            frames[..5].windows(2).all(|w| w[1] > w[0]),
+            "fades in frame by frame: {frames:?}"
+        );
+        assert_eq!(*frames.last().unwrap(), 255, "{frames:?}");
+        std::thread::sleep(Duration::from_millis(50));
+        let shot = sway.grim("HEADLESS-1");
+        assert_eq!(shot.rgb(960, 540), rgb("#f38ba8"), "round {round}: shown");
+
+        let before = mgr.state().host().drawn.len();
+        let mut d = SceneDiff::default();
+        d.push(SceneOp::Remove { id: toast });
+        d.set(TOASTS, Prop::Open, PropValue::Bool(false));
+        apply(&mut mgr, d);
+        assert_eq!(
+            mgr.state().surfaces_of(TOASTS),
+            vec![id],
+            "stays while the toast leaves"
+        );
+        let ok = run_until(&mut mgr, Duration::from_secs(5), |s| {
+            s.surfaces_of(TOASTS).is_empty()
+        });
+        assert!(ok, "round {round}: never closed after the exit");
+        let exit: Vec<u8> = mgr.state().host().drawn[before..]
+            .iter()
+            .filter(|p| p.0 == id)
+            .map(|p| p.2)
+            .collect();
+        assert!(exit.len() >= 3, "round {round}: exit frames {exit:?}");
+        assert!(
+            exit.windows(2).all(|w| w[1] <= w[0]) && exit[0] < 255,
+            "fades out: {exit:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+        mgr.dispatch(Some(Duration::from_millis(20))).unwrap();
+        let shot = sway.grim("HEADLESS-1");
+        assert_ne!(shot.rgb(960, 540), rgb("#f38ba8"), "round {round}: gone");
+    }
+}

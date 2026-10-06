@@ -462,6 +462,16 @@ impl Animator {
         }
     }
 
+    /// Nodes with motion state drawn since [`Animator::begin`].
+    pub fn drawn(&self) -> &HashSet<NodeId> {
+        &self.drawn
+    }
+
+    /// Every exit in flight.
+    pub fn exits(&self) -> impl Iterator<Item = (NodeId, ExitKind)> + '_ {
+        self.exits.iter().map(|(id, k)| (*id, *k))
+    }
+
     pub fn exiting(&self, id: NodeId) -> Option<ExitKind> {
         self.exits.get(&id).copied()
     }
@@ -888,6 +898,19 @@ impl Animator {
     pub fn size_overrides(&mut self, tree: &SceneTree, root: NodeId, rest: &SizeMap) -> SizeMap {
         let mut out = rest.clone();
         let (at, commit) = (self.time, self.commit);
+        if self.snapping() {
+            // `reduced_motion` (or a frame without a clock): sizes in
+            // flight snap to rest.
+            if commit {
+                for (id, na) in self.nodes.iter_mut() {
+                    if tree.root_of(*id) == Some(root) {
+                        na.size = [None, None];
+                    }
+                }
+                self.nodes.retain(|_, n| !n.is_empty());
+            }
+            return out;
+        }
         let mut moving = false;
         for (id, na) in self.nodes.iter_mut() {
             if na.size.iter().all(Option::is_none) || tree.root_of(*id) != Some(root) {

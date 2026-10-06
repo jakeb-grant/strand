@@ -157,13 +157,26 @@ be built and tested without the language, and the language without pixels.
   damping *ratio*), `Spring::step(x0, v0, t) -> (x, v)` its closed form;
   `SPATIAL`, `EFFECTS`, `BOUNCY` are the design's `$motion.*` springs.
   `Curve` (`Instant`, `Spring`, `Timed { duration, easing }`) is a
-  resolved transition (`Curve::of(&Transition)`), `ease(Easing, p)` a
-  CSS cubic bézier. `Motion<N>` is an `N`-channel value in flight:
+  resolved transition (`Curve::of(&Transition)`), `ease(Easing, p)`
+  evaluates an `Easing`: `Linear`, a CSS cubic `Bezier`, or the closed
+  forms `OutElastic` and `OutBounce` (easings.net), which no bézier can
+  draw. `Easing::named` knows exactly `Easing::NAMES`: `linear`,
+  `standard`, `ease`, `ease_in`/`in`, `ease_out`/`out`,
+  `ease_in_out`/`in_out`, `in_back`, `out_back`, `in_out_back`,
+  `out_elastic`, `out_bounce`, `emphasized`, `emphasized_decelerate`,
+  `emphasized_accelerate`. The checker's `enum Curve`
+  (`strand-compiler`'s `builtin.schema`) must stay a subset of that
+  list, so a name it accepts never runs as `STANDARD` (compiler
+  owner: add `in_out_back`, `emphasized_decelerate`,
+  `emphasized_accelerate` and the aliases there, or keep them out).
+  `Motion<N>` is an `N`-channel value in flight:
   `rest(value, eps)`, `retarget(target, curve)` and `shift(delta, curve)`
   (a FLIP jump) take effect at the next `sample(at)`, which starts them
   at `at` less one frame (at most `START_LEAD`, never before the previous
   sample: `sampled_at(prev)` seeds it) from wherever the value is there,
-  *keeping its velocity*; `retarget_at` starts at a given time;
+  *keeping its velocity* (a spring starts with it; a timed curve adds
+  it as `v0·t·(1 − t/d)²`, which fades out by the end of the duration);
+  `retarget_at` starts at a given time;
   `peek(at)`, `velocity(at)`, `is_settled(at)` read without starting
   anything. Everything is a pure function of the timestamps sampled, so
   frames are testable as images. `color_channels`/`channels_color` map a
@@ -304,15 +317,26 @@ be built and tested without the language, and the language without pixels.
   siblings of created, removed and moved nodes and every box after a
   `SetTokens`; text changes never glide. A target changed by tokens or
   inheritance snaps at rest and steers a motion in flight. `scale` and
-  `rotate` draw the subtree under `Item::PushTransform`. `enter` plays
-  for a node created on a shown surface and for a surface whose `open`
-  becomes true; `Remove` of a laid-out node with an `exit` (or `enter`)
+  `rotate` (a `PropValue::Angle` in degrees, as the compiler sends it
+  and every rotate sample is; a bare number reads as degrees) draw the
+  subtree under `Item::PushTransform`, and its hit shape is the
+  untransformed rounded box tested through the inverse transform
+  (`HitBox::inverse`). `enter` plays
+  for a node created on a shown surface, for a node created by the diff
+  that opens its surface (a surface reported closed before, not one
+  first seen in that diff: the first toast and `open: shown.len > 0`),
+  and for a surface whose `open` becomes true; `Remove` of a laid-out node with an `exit` (or `enter`)
   pose turns its subtree into a ghost (`SceneTree::ghost`: dead to
   logic, its slot free at once, kept in its parent's children and laid
   out and drawn, never hit; the input `Router` drops its focus and
   selection at once) that unmounts when the pose settles, and a
   surface whose `open` goes false stays open in its spec until its exit
-  pose settles. Exits are bounded: a parent keeps at most
+  pose settles, or, with no exit pose of its own, until the ghosts under
+  it have unmounted (the last toast leaving as the panel closes).
+  Motion state is per node: when one root is shown on several surfaces
+  (`screens: all`), a frame ends an exit or drops an enter only for a
+  node no other surface of that root drew (in its last frame's records
+  or motions). Exits are bounded: a parent keeps at most
   `MAX_GHOSTS_PER_PARENT` (8) ghosts (a new one ends the oldest), and an
   exit on a surface that painted nothing for `EXIT_STALL` (1 s; its
   output asleep) or older than `MAX_MOTION` + 1 s ends at the next
@@ -332,7 +356,15 @@ be built and tested without the language, and the language without pixels.
   they join `ANIMATED` when they render. Presets: `fade`, `slidefade`, `popin(s)`, `slide(edge)`.
   `PaintTarget::time` zero (no clock, offline) and `reduced_motion`
   (`Renderer::set_reduced_motion`, or the global token `motion.reduced:
-  true`) snap everything. `Painter::wants_frame` is true while anything
+  true`) snap everything, size springs already in flight included (at
+  the next frame). Where it comes from: the host maps the portal's
+  `org.freedesktop.appearance` `reduced-motion` key (a
+  `SystemSetting`, strand-watch) to `Renderer::set_reduced_motion` and
+  to the `system.reduced_motion` value logic reads; a theme writes
+  `motion { reduced: system.reduced_motion }` (or a settings field) to
+  reach render through the token table
+  (`crates/strand-render/tests/reduced_motion.rs`). Wiring the key in
+  strand-watch and `strand run` is an integrator item (features.md). `Painter::wants_frame` is true while anything
   moves (`Renderer::animating`), so frame callbacks stop once it
   settles.
 - **Hit testing**: `Renderer::hit(surface, LogicalPoint) -> Vec<NodeId>`

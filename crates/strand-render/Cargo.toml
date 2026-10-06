@@ -18,6 +18,10 @@ taffy = { version = "0.14", default-features = false, features = ["std", "taffy_
 [dev-dependencies]
 png = "0.18"
 criterion = "0.8"
+# End-to-end tests only: `.strand` sources compiled to the diffs render
+# takes (strand-compiler does not depend on strand-render).
+strand-compiler.workspace = true
+strand-core.workspace = true
 
 [lints]
 workspace = true

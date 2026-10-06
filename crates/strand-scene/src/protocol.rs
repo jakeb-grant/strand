@@ -592,10 +592,17 @@ impl PropValue {
     }
 }
 
-/// Named easing curves are cubic béziers; see [`Easing::named`].
+/// A timed curve's easing. Named curves are cubic béziers, except the
+/// two a bézier cannot draw (`out_elastic`, `out_bounce`), which are
+/// closed forms; see [`Easing::named`].
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Easing {
     Linear,
+    /// `out_elastic`: overshoots and rings down
+    /// (`2^(-10p)·sin((10p − 0.75)·2π/3) + 1`).
+    OutElastic,
+    /// `out_bounce`: falls to 1 and bounces off it three times.
+    OutBounce,
     /// CSS `cubic-bezier(x1, y1, x2, y2)`.
     Bezier {
         x1: f32,
@@ -614,6 +621,29 @@ impl Easing {
         y2: 1.0,
     };
 
+    /// Every name [`Easing::named`] knows. The checker's `enum Curve`
+    /// (`strand-compiler`'s `builtin.schema`) must not accept a name
+    /// outside this list.
+    pub const NAMES: &'static [&'static str] = &[
+        "linear",
+        "standard",
+        "ease",
+        "ease_in",
+        "in",
+        "ease_out",
+        "out",
+        "ease_in_out",
+        "in_out",
+        "in_back",
+        "out_back",
+        "in_out_back",
+        "out_elastic",
+        "out_bounce",
+        "emphasized",
+        "emphasized_decelerate",
+        "emphasized_accelerate",
+    ];
+
     /// Looks up a named curve for `~ ease(name, T)`.
     pub fn named(name: &str) -> Option<Easing> {
         let b = |x1, y1, x2, y2| Some(Easing::Bezier { x1, y1, x2, y2 });
@@ -627,6 +657,8 @@ impl Easing {
             "in_back" => b(0.36, 0.0, 0.66, -0.56),
             "out_back" => b(0.34, 1.56, 0.64, 1.0),
             "in_out_back" => b(0.68, -0.6, 0.32, 1.6),
+            "out_elastic" => Some(Easing::OutElastic),
+            "out_bounce" => Some(Easing::OutBounce),
             "emphasized" => b(0.2, 0.0, 0.0, 1.0),
             "emphasized_decelerate" => b(0.05, 0.7, 0.1, 1.0),
             "emphasized_accelerate" => b(0.3, 0.0, 0.8, 0.15),
@@ -851,6 +883,9 @@ mod tests {
             Some(Easing::Bezier { y1, .. }) if y1 > 1.0
         ));
         assert_eq!(Easing::named("nope"), None);
+        for name in Easing::NAMES {
+            assert!(Easing::named(name).is_some(), "{name}");
+        }
     }
 
     #[test]

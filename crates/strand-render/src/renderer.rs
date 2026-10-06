@@ -217,6 +217,11 @@ struct SurfaceState {
     flip_all: bool,
     /// Presentation time of the last frame it painted.
     painted_time: Option<Duration>,
+    /// Nodes with motion state its last fresh frame drew. With
+    /// `records`, what it shows: a node another surface showing the same
+    /// root (`screens: all`) does not draw keeps its motions while this
+    /// one still does.
+    drawn: HashSet<NodeId>,
 }
 
 impl SurfaceState {
@@ -326,6 +331,14 @@ pub struct Renderer {
     held: BTreeSet<NodeId>,
     /// See [`EXIT_STALL`].
     exit_stall: Duration,
+    /// Nodes the diff being applied creates on a surface not shown: if
+    /// the same diff opens that surface (the first toast and `open:
+    /// shown.len > 0`), they play their `enter` pose on its first frame.
+    born: Vec<NodeId>,
+    /// Surface nodes kept open, though logic closed them, while ghosts
+    /// under them play their exit (the last toast leaving as the panel
+    /// closes).
+    ghost_held: BTreeSet<NodeId>,
     /// Nodes laid out by the last layout step (tests: a size spring lays
     /// out only the subtree under its nearest size-stable ancestor).
     laid_out_nodes: usize,
@@ -465,6 +478,8 @@ impl Renderer {
             closed: HashSet::new(),
             held: BTreeSet::new(),
             exit_stall: EXIT_STALL,
+            born: Vec::new(),
+            ghost_held: BTreeSet::new(),
             laid_out_nodes: 0,
         }
     }
@@ -487,7 +502,17 @@ impl Renderer {
             self.tree.tokens.get("motion.reduced"),
             Some(PropValue::Bool(true))
         );
-        self.anim.set_reduced(self.reduced_motion || token);
+        let on = self.reduced_motion || token;
+        if on && !self.anim.reduced() {
+            // Springs in flight snap at the next frame: sizes too, which
+            // only a layout pass lets go of.
+            for s in self.surfaces.values_mut() {
+                if self.anim.busy(&self.tree, s.root) {
+                    s.mark_layout();
+                }
+            }
+        }
+        self.anim.set_reduced(on);
     }
 
     /// Nodes laid out by the last layout step of any surface.
@@ -509,6 +534,22 @@ impl Renderer {
                 .values()
                 .any(|s| s.root == r && s.painted && s.painted_time.is_some_and(|t| !t.is_zero()))
         })
+    }
+
+    /// The surfaces showing surface node `root` lay out again.
+    fn mark_layout_of(&mut self, root: NodeId) {
+        for s in self.surfaces.values_mut() {
+            if s.root == root {
+                s.mark_layout();
+            }
+        }
+    }
+
+    /// Ghosts under surface node `root` still play their exit.
+    fn ghosts_under(&self, root: NodeId) -> bool {
+        self.anim
+            .exits()
+            .any(|(id, k)| k == ExitKind::Ghost && self.tree.root_of(id) == Some(root))
     }
 
     /// The children of `parent` change place: the next layout of its
@@ -902,18 +943,47 @@ impl Renderer {
             let reduced = self.anim.reduced();
             if spec.open {
                 self.closed.remove(&id);
+                self.ghost_held.remove(&id);
                 if self.anim.exiting(id) == Some(ExitKind::Close) {
                     self.anim.cancel_exit(id);
+                    // Its pose may have sized it: the next layout lets go.
+                    self.mark_layout_of(id);
                 } else if reported != Some(true) && !reduced && is_pose(node.get(Prop::Enter)) {
                     self.anim.enter(id);
+                }
+                // Opened by the diff that created these nodes: they
+                // enter with it (a surface that was never reported, at
+                // boot, shows at rest).
+                if reported == Some(false) && !reduced {
+                    for n in &self.born {
+                        if self.tree.root_of(*n) == Some(id)
+                            && self.tree.contains_live(*n)
+                            && self
+                                .tree
+                                .get(*n)
+                                .is_some_and(|c| is_pose(c.get(Prop::Enter)))
+                        {
+                            self.anim.enter(*n);
+                        }
+                    }
                 }
             } else if reported == Some(true) && !self.closed.contains(&id) {
                 if self.anim.exiting(id) == Some(ExitKind::Close) {
                     spec.open = true;
                 } else if !reduced && is_pose(exit_pose(node)) && self.shown(Some(id)) {
                     self.anim.exit(id, ExitKind::Close);
+                    self.mark_layout_of(id);
                     spec.open = true;
+                } else if !reduced && self.ghosts_under(id) && self.shown(Some(id)) {
+                    // Rows still leaving keep it open; it closes when the
+                    // last ghost unmounts (which refreshes the specs).
+                    spec.open = true;
+                    self.ghost_held.insert(id);
+                } else {
+                    self.ghost_held.remove(&id);
                 }
+            } else {
+                self.ghost_held.remove(&id);
             }
             let bar = spec.kind == NodeKind::Bar;
             let vertical = matches!(spec.edge, Some(Edge::Left | Edge::Right));
@@ -1039,6 +1109,7 @@ impl Renderer {
         }
         self.content_sized.retain(|id| live.contains(id));
         self.held.retain(|id| live.contains(id));
+        self.ghost_held.retain(|id| live.contains(id));
         self.spec_wanted.retain(|id, _| live.contains(id));
         if !requests.is_empty() && self.request_text(&requests) {
             // Shaped inline: size the surfaces with it at once.
@@ -1095,6 +1166,7 @@ impl Renderer {
                 dirty: true,
                 opaque: Damage::new(),
                 time: Duration::ZERO,
+                drawn: HashSet::new(),
                 cache: None,
                 wanted: Vec::new(),
                 boxes: None,
@@ -1503,6 +1575,7 @@ impl Renderer {
         // `update` refreshes the specs (after collecting delivered text,
         // so nothing asked for here can already be answered).
         self.update();
+        self.born.clear();
         errors
     }
 
@@ -1524,8 +1597,12 @@ impl Renderer {
                     self.flip(old);
                 }
                 let root = parent.and_then(|p| self.tree.root_of(p));
-                if parent.is_some() && !reduced && self.shown(root) {
-                    self.anim.enter(*id);
+                if parent.is_some() && !reduced {
+                    if self.shown(root) {
+                        self.anim.enter(*id);
+                    } else {
+                        self.born.push(*id);
+                    }
                 }
                 self.flip(*parent);
             }
@@ -2364,12 +2441,25 @@ impl Renderer {
         let animating = fresh && self.anim.active();
         if fresh {
             // Exits under this surface it did not draw (a row scrolled
-            // out of view) end: nobody sees them.
+            // out of view) end: nobody sees them, unless another surface
+            // showing the same root drew it in its last frame.
+            if let Some(s) = self.surfaces.get_mut(&surface) {
+                s.drawn = self.anim.drawn().clone();
+            }
             let tree = &self.tree;
-            self.anim
-                .finish_undrawn(|id| tree.root_of(id) == Some(root));
-            self.anim
-                .drop_undrawn_enters(|id| tree.root_of(id) == Some(root));
+            let surfaces = &self.surfaces;
+            // Drawn there: reached by its last frame (a record), or
+            // sampled by it (an exit faded to nothing has no record).
+            let elsewhere = |id: NodeId| {
+                surfaces.iter().any(|(sid, o)| {
+                    *sid != surface
+                        && o.root == root
+                        && (o.drawn.contains(&id) || o.records.contains_key(&id))
+                })
+            };
+            let unseen = |id: NodeId| tree.root_of(id) == Some(root) && !elsewhere(id);
+            self.anim.finish_undrawn(unseen);
+            self.anim.drop_undrawn_enters(unseen);
         }
         let Some(s) = self.surfaces.get_mut(&surface) else {
             return Damage::new();
