@@ -227,6 +227,10 @@ pub struct Router {
     focus: HashMap<SurfaceId, NodeId>,
     /// The selected row of each list arrows or clicks have moved in.
     selected: HashMap<NodeId, NodeId>,
+    /// The rows a focused input's `nav` list had when its selection was
+    /// last settled: rows that change (new results for a new query)
+    /// select the first again.
+    nav_rows: HashMap<NodeId, Vec<NodeId>>,
     /// Each `input`'s writes still on their way through logic.
     edits: HashMap<NodeId, InFlight>,
     /// The slider being dragged on each surface (the left button went
@@ -343,8 +347,10 @@ impl Router {
 
     /// After logic's diff is applied: a focused `input`'s `nav` list that
     /// has rows and no selected row (its rows just arrived, or the one
-    /// selected left) selects its first, so `selected` shows which row
-    /// Return will `activate`. Returns what logic hears of it.
+    /// selected left), or whose rows changed since (new results: the
+    /// query changed, or `on show` cleared it), selects its first, so
+    /// `selected` shows which row Return will `activate`. Returns what
+    /// logic hears of it.
     pub fn settle(&mut self, scene: &mut dyn InputScene) -> Vec<Intent> {
         self.prune(scene.tree());
         self.select_first_rows(scene);
@@ -374,15 +380,28 @@ impl Router {
             let (NodeKind::Input, Some(PropValue::Node(list))) = (n.kind, n.get(Prop::Nav)) else {
                 continue;
             };
+            let rows: Vec<NodeId> = tree.get(*list).map_or_else(Vec::new, |l| {
+                l.children
+                    .iter()
+                    .copied()
+                    .filter(|r| tree.contains_live(*r))
+                    .collect()
+            });
             if self.selected.contains_key(list) {
-                continue;
+                match self.nav_rows.get(list) {
+                    Some(seen) if *seen != rows => {}
+                    Some(_) => continue,
+                    // Selected by a click or an arrow before any settle.
+                    None => {
+                        self.nav_rows.insert(*list, rows);
+                        continue;
+                    }
+                }
             }
-            let first = tree
-                .get(*list)
-                .and_then(|l| l.children.iter().copied().find(|r| tree.contains_live(*r)));
-            if let Some(row) = first {
+            if let Some(&row) = rows.first() {
                 want.push((*list, row));
             }
+            self.nav_rows.insert(*list, rows);
         }
         for (list, row) in want {
             self.select(scene, list, Some(row));
@@ -664,6 +683,7 @@ impl Router {
         // A node logic removed is gone at once, even while it plays its
         // exit pose (a ghost): it keeps no focus, edit or selection.
         let live = |n: NodeId| tree.contains_live(n);
+        self.nav_rows.retain(|list, _| live(*list));
         self.selected.retain(|list, row| {
             live(*list) && live(*row) && tree.get(*row).is_some_and(|r| r.parent == Some(*list))
         });

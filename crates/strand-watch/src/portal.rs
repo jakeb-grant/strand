@@ -398,6 +398,7 @@ mod tests {
             parse_setting("reduced-motion", &Value::U32(0)),
             Some(SystemSetting::ReducedMotion(false))
         );
-        assert_eq!(parse_setting("reduced-motion", &Value::U32(1)), None);
+        // A key that is not ours.
+        assert_eq!(parse_setting("cursor-size", &Value::U32(1)), None);
     }
 }

@@ -351,6 +351,20 @@ fn keys_go_to_the_focused_input_and_its_list() {
         msgs.contains(&flag(rows[1], Flag::Selected, true)),
         "{msgs:?}"
     );
+    // New results while a row is selected (a new query, or `on show`
+    // clearing it): the first row is selected again.
+    let mut d = SceneDiff::new();
+    let top = id(8);
+    d.create(top, NodeKind::Row, Some(list), 0)
+        .set(top, Prop::Height, PropValue::Number(20.0));
+    assert!(r.apply(d).is_empty());
+    f.router.settle(&mut r);
+    assert_eq!(f.router.selected(list), Some(top));
+    // Arrows then move from it, and keep their row while rows stay.
+    f.input(&key("Down", ""), &mut r);
+    assert_eq!(f.router.selected(list), Some(rows[0]));
+    f.router.settle(&mut r);
+    assert_eq!(f.router.selected(list), Some(rows[0]));
 }
 
 /// The keyboard back on a surface without a leave first (a popup that

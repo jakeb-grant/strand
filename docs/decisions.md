@@ -5623,7 +5623,12 @@ query was cleared (`on show { query = "" }`). When a surface gets the
 keyboard with no focus held from before (it opened, or came back after a
 real leave), the focused `input`'s `nav` list drops its selection and
 the first row is selected again. Focus kept across a popup's grab keeps
-the selection.
+the selection. And when the rows of a focused input's `nav` list change
+(new results: the query changed, or `on show` cleared it, which also
+covers a launcher reopened before its old surface was gone), the first
+row is selected again; arrows move from it and keep their row while the
+rows stay (`crates/strand-render/tests/input.rs::
+keys_go_to_the_focused_input_and_its_list`).
 
 **2026-10-06 · wave3-pixels (exit): reference screenshots.** Each
 acceptance test compares settled regions (unchanged for 500 ms) with

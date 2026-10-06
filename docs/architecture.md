@@ -119,7 +119,13 @@ shadowed field's `[clear]`) and `strand watch` notices. Layout facts
 instance sets `Prop::Watch` on an element whose `width`/`height` a
 binding read: `size`, or `query` from a `when`); a surface's configured
 size still arrives as `Size` on its node. `STRAND_MOCK=desktop` fills the
-host with a mock desktop for screenshots before M3 (`mock.rs`).
+host with a mock desktop for screenshots before M3 (`mock.rs`);
+`STRAND_MOCK=acceptance` is the same desktop with no notifications at
+boot and the clock frozen (UTC, `SchemaHost`'s `MOCK_TIME`; the logic
+loop arms no wall-clock wake), which the M2 acceptance tests drive. With
+either, the IPC command `mock` (`{"v": 1, "cmd": "mock", "notify": {…}
+| "volume" | "muted" | "brightness"}`) reports a service change as the
+M3 services will; without `STRAND_MOCK` it is refused.
 
 **IPC** (`crates/strand/src/ipc.rs`): a Unix socket at `$STRAND_SOCKET`
 or `$XDG_RUNTIME_DIR/strand-<WAYLAND_DISPLAY>.sock`, newline-delimited
