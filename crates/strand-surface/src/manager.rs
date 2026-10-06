@@ -628,6 +628,10 @@ pub struct State<H: SurfaceHost + 'static> {
     repeat_info: HashMap<ObjectId, RepeatInfo>,
     /// The key repeating now: its keyboard, its key and its timer.
     key_repeat: Option<(ObjectId, u32, RegistrationToken)>,
+    /// The last `wl_keyboard.modifiers` state (depressed, latched, locked,
+    /// layout): a change stops the key repeating, since its text was
+    /// computed with the old one.
+    raw_modifiers: (u32, u32, u32, u32),
     /// The surface with keyboard focus, and the modifiers held.
     keyboard_focus: Option<SurfaceId>,
     modifiers: Modifiers,
@@ -804,6 +808,7 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             keyboards: Vec::new(),
             repeat_info: HashMap::new(),
             key_repeat: None,
+            raw_modifiers: (0, 0, 0, 0),
             keyboard_focus: None,
             last_pressed: None,
             last_action: None,
@@ -2034,6 +2039,9 @@ impl<H: SurfaceHost + 'static> State<H> {
         self.dirty.remove(&id);
         if self.keyboard_focus == Some(id) {
             self.keyboard_focus = None;
+            // A compositor may skip the leave for a destroyed surface:
+            // the release would then never reach us.
+            self.stop_repeat();
         }
         self.cancel_deadline(id);
         s.buffers.destroy();
@@ -2500,11 +2508,18 @@ impl<H: SurfaceHost + 'static> State<H> {
         if event.keysym.is_modifier_key() {
             return;
         }
-        let interval = Duration::from_micros(1_000_000 / u64::from(rate.get()));
+        let interval = repeat_interval(rate.get());
         let raw = event.raw_code;
         let token = self.handle.insert_source(
             Timer::from_duration(Duration::from_millis(u64::from(*delay))),
             move |_, _, state: &mut State<H>| {
+                // Nothing focused (its surface went without a leave): the
+                // release will go elsewhere, so stop rather than wake at
+                // the repeat rate forever.
+                if state.grab_focus.or(state.keyboard_focus).is_none() {
+                    state.key_repeat = None;
+                    return TimeoutAction::Drop;
+                }
                 state.key(event.clone(), ButtonState::Pressed, true);
                 TimeoutAction::ToDuration(interval)
             },
@@ -2557,6 +2572,13 @@ fn key_name(sym: Keysym) -> String {
         Some(n) => n.strip_prefix("XK_").unwrap_or(n).to_string(),
         None => format!("0x{:x}", sym.raw()),
     }
+}
+
+/// The time between repeats at `rate` keys a second, at least 1 ms: the
+/// rate is the compositor's (SCTK casts a negative one to a huge `u32`),
+/// and a zero interval would fire on every loop iteration.
+fn repeat_interval(rate: u32) -> Duration {
+    Duration::from_micros((1_000_000 / u64::from(rate.max(1))).max(1_000))
 }
 
 fn clamp_i32(v: u32) -> i32 {
@@ -3264,9 +3286,17 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
         _: &wl_keyboard::WlKeyboard,
         _: u32,
         m: XkbModifiers,
-        _: RawModifiers,
-        _: u32,
+        raw: RawModifiers,
+        layout: u32,
     ) {
+        let raw = (raw.depressed, raw.latched, raw.locked, layout);
+        if raw != self.raw_modifiers {
+            self.raw_modifiers = raw;
+            // The repeating key's text was computed under the old
+            // modifiers; repeating it under the new ones would send e.g.
+            // "a" with Shift held.
+            self.stop_repeat();
+        }
         self.modifiers = Modifiers {
             ctrl: m.ctrl,
             alt: m.alt,
@@ -3446,5 +3476,19 @@ impl<H: SurfaceHost + 'static> Dispatch2<WpPresentationFeedback, State<H>> for F
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_repeat_interval_never_busy_loops() {
+        assert_eq!(repeat_interval(25), Duration::from_millis(40));
+        assert_eq!(repeat_interval(1_000), Duration::from_millis(1));
+        assert_eq!(repeat_interval(2_000_000), Duration::from_millis(1));
+        assert_eq!(repeat_interval(u32::MAX), Duration::from_millis(1));
+        assert_eq!(repeat_interval(0), Duration::from_secs(1));
     }
 }

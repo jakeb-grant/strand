@@ -799,6 +799,43 @@ fn the_bar_and_its_calendar_on_two_outputs() {
     }
     drop(keys);
 
+    // Volume's `if hover { slider … }`: hovering the row reveals the
+    // slider (90 wide, its `$accent` fill at the mock's 0.6), springing
+    // in from `width: 0`; the pointer leaving hides it again.
+    let right = rect(1960, 0, 600, 64);
+    let accent_px = |img: &Img| {
+        (14..38)
+            .flat_map(|y| (0..img.w).map(move |x| (x, y)))
+            .filter(|&(x, y)| blue(img.px(x, y)))
+            .count()
+    };
+    let before = desk.settled("HEADLESS-1", right);
+    assert!(accent_px(&before) < 20, "a slider before the hover");
+    let bg = before.px(10, 12);
+    let speaker = runs(&ink_cols(&before, 240..580, 14..38, bg))[0];
+    pointer.motion(
+        (right.x + (speaker.0 + speaker.1) / 2) as u32,
+        26,
+        LAYOUT.0,
+        LAYOUT.1,
+    );
+    desk.wait("the volume slider on hover", 10, |d| {
+        accent_px(&d.region("HEADLESS-1", right)) > 100
+    });
+    let hover = desk.settled_ref("HEADLESS-1", right, "bar_volume_hover");
+    let fill: Vec<usize> = (0..hover.w)
+        .filter(|&x| (14..38).any(|y| blue(hover.px(x, y))))
+        .collect();
+    let width = fill.last().unwrap() - fill[0] + 1;
+    assert!(
+        (40..=70).contains(&width),
+        "the slider's fill is {width} px, 0.6 of 90"
+    );
+    pointer.motion(1800, 900, LAYOUT.0, LAYOUT.1);
+    desk.wait("the volume slider to hide", 10, |d| {
+        accent_px(&d.region("HEADLESS-1", right)) < 20
+    });
+
     // The theme's looks: dark, then Catppuccin mocha. The clock's text
     // keeps 3:1 against the bar in every frame grim catches.
     let clock_contrast = |img: &Img| {
@@ -1159,6 +1196,45 @@ fn toasts_arrive_stack_slide_and_leave() {
         runs(&lit(&d.region("HEADLESS-1", TOASTS), col)).len() == 3
     });
     desk.wait("the fourth toast to expire", 10, |d| {
+        runs(&lit(&d.region("HEADLESS-1", TOASTS), col)).len() == 2
+    });
+    // `after … while !hover`: a toast under the pointer outlives its
+    // timeout, drawn in `$surface.hi` (`when hover`), and expires once
+    // the pointer leaves.
+    let mut held = note(5, "Timer", "alarm", "Tea", "Steeped");
+    held["notify"]["timeout_ms"] = 4000.into();
+    let at = Instant::now();
+    desk.mock(held);
+    desk.wait("the fifth toast", 10, |d| {
+        runs(&lit(&d.region("HEADLESS-1", TOASTS), col)).len() == 3
+    });
+    let fifth = runs(&lit(&desk.region("HEADLESS-1", TOASTS), col))[2];
+    pointer.motion(
+        (TOASTS.x + 40 + 200) as u32,
+        ((fifth.0 + fifth.1) / 2) as u32,
+        LAYOUT.0,
+        LAYOUT.1,
+    );
+    if let Some(left) = Duration::from_millis(6000).checked_sub(at.elapsed()) {
+        std::thread::sleep(left);
+    }
+    assert_eq!(
+        runs(&lit(&desk.region("HEADLESS-1", TOASTS), col)).len(),
+        3,
+        "the hovered toast expired"
+    );
+    let hovered = desk.settled_ref("HEADLESS-1", TOASTS, "toasts_hover");
+    // The hovered toast's background is not the others' (`$surface.hi`).
+    let fill_at = |b: (usize, usize)| hovered.px(40 + 300, b.0 + 6);
+    let bands_h = runs(&lit(&hovered, col));
+    assert_eq!(bands_h.len(), 3, "{bands_h:?}");
+    assert_ne!(
+        fill_at(bands_h[2]),
+        fill_at(bands_h[1]),
+        "the hovered toast is not in `$surface.hi`"
+    );
+    pointer.motion(1200, 700, LAYOUT.0, LAYOUT.1);
+    desk.wait("the fifth toast to expire after the hover", 10, |d| {
         runs(&lit(&d.region("HEADLESS-1", TOASTS), col)).len() == 2
     });
     // A click on the chat toast activates it (it leaves); a right click

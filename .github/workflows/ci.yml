@@ -21,13 +21,21 @@ env:
 jobs:
   check:
     if: github.event_name != 'schedule'
-    runs-on: ubuntu-latest
+    # Pinned: the pixel references (crates/strand/tests/refs) come from
+    # 24.04's sway 1.9, fonts-dejavu-core 2.37 and adwaita-icon-theme 46;
+    # a newer image would change glyph and icon pixels.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Install headless sway, grim, dbus, fonts, icons and fontconfig headers
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends sway grim dbus fonts-dejavu-core adwaita-icon-theme pkg-config libfontconfig1-dev
+      # The versions the references depend on, to trace a mismatch.
+      - name: Reference package versions
+        run: |
+          sway --version
+          dpkg -s fonts-dejavu-core adwaita-icon-theme | grep -E '^(Package|Version)'
       # Pinned to the dev container's toolchain so a new stable release's
       # lints and deprecations cannot fail -D warnings on unchanged code.
       - uses: dtolnay/rust-toolchain@master
@@ -79,7 +87,7 @@ jobs:
 
   nightly:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
