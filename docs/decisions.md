@@ -5574,3 +5574,63 @@ open it: `strand toggle`/`strand set` are M5, and the M1 IPC offers only
 reload, watch and reset. Its sway test substitutes `true`, so
 features.md leaves the exit box unticked with a partial note rather than
 pulling a CLI command forward from M5.
+
+## wave3-pixels (exit)
+
+**2026-10-06 · wave3-pixels (exit): the launcher opens with `strand
+set`.** design.md's launcher comment binds a key to `strand toggle
+launcher.open`; `toggle` is M5's, but `strand set` (wave3-theme) writes
+an exported `state`, and `strand set launcher.open true` is the same
+write a toggle makes from `false`. The acceptance test opens the
+unchanged launcher that way, so all four shells run byte for byte as
+design.md prints them; `strand toggle` stays in M5's CLI item.
+
+**2026-10-06 · wave3-pixels (exit): the acceptance mock.**
+`STRAND_MOCK=acceptance` is the deterministic service host the M2
+acceptance tests drive (real services are M3): the mock desktop with no
+notifications at boot and two more workspaces on `HEADLESS-2`, and the
+clock frozen at `SchemaHost`'s `MOCK_TIME` (Mon 5 Oct 2026 09:41:07
+UTC) in UTC, so screenshots are the same every run; the logic loop
+then arms no wall-clock wake. Either mock answers the IPC command
+`{"v": 1, "cmd": "mock", …}` with `notify` (a notification joins the
+popups and `notifications.received` fires), `volume`, `muted` (the
+sink's icon name follows, as PipeWire integrations name it) and
+`brightness`; a shell run without `STRAND_MOCK` refuses it. The mock's
+`ws.focus()` focuses that workspace (`workspaces.all`,
+`workspaces.focused`), as a compositor would report it. A write the
+shell makes (`audio.sink.muted = …`) is applied as sent but nothing
+echoes the icon back (the M3 service will).
+
+**2026-10-06 · wave3-pixels (exit): `on scroll(dy)` counts notches.**
+design.md writes `on scroll(dy) { audio.sink.volume -= dy * 0.05 }`,
+5% a wheel notch. The router passed pixels (15 a detent), so one notch
+moved the volume by 75%. A handler's `dy`/`dx` are now detents: a
+wheel's own (`value120 / 120`), or smooth-scroll pixels over the legacy
+15 px step. `scroll`/`list` containers still scroll by pixels.
+
+**2026-10-06 · wave3-pixels (exit): an `image` of a symbolic icon takes
+the foreground colour.** The bar's tray is `image item.icon`; a name
+resolved to a `-symbolic` icon (Adwaita's `network-wireless`) was drawn
+black, invisible on the dark looks. freedesktop symbolic icons are
+always recoloured with the foreground, so `image` now inherits `color`
+(the scope's `$fg` by default) for its symbolic tint, as `icon` does;
+bitmaps and full-colour icons are unchanged.
+
+**2026-10-06 · wave3-pixels (exit): fresh focus starts a `nav` list at
+the top.** A launcher closed with its second hit selected and opened
+again showed that row selected, so Return would launch it although the
+query was cleared (`on show { query = "" }`). When a surface gets the
+keyboard with no focus held from before (it opened, or came back after a
+real leave), the focused `input`'s `nav` list drops its selection and
+the first row is selected again. Focus kept across a popup's grab keeps
+the selection.
+
+**2026-10-06 · wave3-pixels (exit): reference screenshots.** Each
+acceptance test compares settled regions (unchanged for 500 ms) with
+PNGs in `crates/strand/tests/refs/acceptance/`: a pixel differs when a
+channel is more than 24 apart, and at most 0.5% may differ (antialiasing
+and dither move a few pixels; a moved widget or a wrong colour moves
+thousands). The references come from the dev container (Ubuntu 24.04,
+sway 1.9, fonts-dejavu-core 2.37, adwaita-icon-theme 46), the same
+packages CI installs; `STRAND_UPDATE_REFS=1` rewrites them and every one
+was read before it was committed.

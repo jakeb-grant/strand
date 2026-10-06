@@ -546,7 +546,7 @@ mod tests {
                 flag(NodeFlag::Pressed, false),
                 event(NodeEvent::Click),
                 event(NodeEvent::Secondary),
-                event(NodeEvent::Scroll { dy: 15.0, dx: 0.0 }),
+                event(NodeEvent::Scroll { dy: 1.0, dx: 0.0 }),
                 flag(NodeFlag::Hover, false),
             ]
         );

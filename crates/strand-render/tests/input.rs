@@ -121,7 +121,8 @@ fn input_goes_to_the_hit_node() {
     f.input(&button(5.0, ButtonState::Released), &mut HitOnly(hit));
     assert!(!f.drain().iter().any(|m| matches!(m, Intent::Event { .. })));
     // Scrolls go to the innermost node under the pointer, `dy` from
-    // the vertical axis and `dx` from the horizontal one.
+    // the vertical axis and `dx` from the horizontal one, in notches
+    // (smooth scrolling: `WHEEL_STEP` pixels a notch).
     let scroll = |x, dy, dx| InputEvent::PointerAxis {
         surface: s,
         position: at(x),
@@ -138,9 +139,9 @@ fn input_goes_to_the_hit_node() {
         source: None,
         time: 0,
     };
-    f.input(&scroll(15.0, 3.0, -2.0), &mut HitOnly(hit));
-    f.input(&scroll(5.0, -1.0, 0.0), &mut HitOnly(hit));
-    f.input(&scroll(30.0, 0.0, 4.0), &mut HitOnly(hit));
+    f.input(&scroll(15.0, 45.0, -30.0), &mut HitOnly(hit));
+    f.input(&scroll(5.0, -15.0, 0.0), &mut HitOnly(hit));
+    f.input(&scroll(30.0, 0.0, 60.0), &mut HitOnly(hit));
     // Right clicks are `secondary` on the innermost node under both
     // the press and the release, like left clicks.
     let right = |x, state| InputEvent::PointerButton {
@@ -287,8 +288,11 @@ fn keys_go_to_the_focused_input_and_its_list() {
             close,
         ]
     );
-    // Keys reach `on key` on the focused node, as `key(k)`.
+    // Focus back after a real leave (the launcher opened again): its
+    // list starts at the top again, not at the row selected last time.
     f.input(&InputEvent::KeyboardEnter { surface: s }, &mut r);
+    assert_eq!(f.router.selected(list), Some(rows[0]));
+    // Keys reach `on key` on the focused node, as `key(k)`.
     f.input(&key("a", "a"), &mut r);
     assert!(f.drain().contains(&Intent::Event {
         node: input,
@@ -651,10 +655,8 @@ fn an_empty_axis_frame_is_no_scroll() {
         f.drain(),
         [Intent::Event {
             node: root,
-            event: NodeEvent::Scroll {
-                dy: strand_render::WHEEL_STEP,
-                dx: 0.0
-            }
+            // One detent: `on scroll(dy)` counts notches.
+            event: NodeEvent::Scroll { dy: 1.0, dx: 0.0 }
         }]
     );
 }

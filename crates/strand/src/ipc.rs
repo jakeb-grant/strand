@@ -102,6 +102,9 @@ pub enum Request {
         path: String,
         value: String,
     },
+    /// A mock service change (`STRAND_MOCK` only; the acceptance tests'
+    /// driver): the request as sent, read by `mock::command`.
+    Mock(Json),
 }
 
 /// Parse one request line.
@@ -132,6 +135,7 @@ pub fn parse(line: &str) -> Result<Request, String> {
             }),
             _ => Err("`set` needs a `path` and a `value`".into()),
         },
+        Some("mock") => Ok(Request::Mock(v)),
         Some(other) => Err(format!("unknown command `{other}`")),
         None => Err("a request needs a `cmd`".into()),
     }
@@ -146,6 +150,7 @@ pub fn encode(req: &Request) -> String {
         Request::Set { path, value } => {
             json!({"v": VERSION, "cmd": "set", "path": path, "value": value})
         }
+        Request::Mock(v) => v.clone(),
     };
     format!("{v}\n")
 }

@@ -44,8 +44,10 @@ pub enum NodeEvent {
     Secondary,
     /// A middle click (`on middle`).
     Middle,
-    /// A scroll in logical pixels, positive down and right
-    /// (`on scroll(dy, dx)`).
+    /// A scroll in wheel detents, positive down and right (`on
+    /// scroll(dy, dx)`): one notch is 1, so design.md's `volume -= dy *
+    /// 0.05` moves 5% a notch; smooth (touchpad) scrolling counts
+    /// [`WHEEL_STEP`] logical pixels as one.
     Scroll { dy: f64, dx: f64 },
     /// A list row chosen with Enter or a click (`on activate`).
     Activate,
@@ -471,6 +473,16 @@ impl Router {
                 if dy != 0.0 {
                     scene.scroll(surface, *position, dy as f32);
                 }
+                // The handler counts detents (a wheel's own, else pixels
+                // over the legacy step).
+                let notches = |a: &strand_scene::AxisDelta, px: f64| {
+                    if a.value120 != 0 {
+                        f64::from(a.value120) / 120.0
+                    } else {
+                        px / WHEEL_STEP
+                    }
+                };
+                let (dy, dx) = (notches(vertical, dy), notches(horizontal, dx));
                 self.event(under[0], NodeEvent::Scroll { dy, dx });
             }
             InputEvent::KeyboardEnter { .. } => {
@@ -485,6 +497,19 @@ impl Router {
                     .and_then(|t| first_with_focus(t, root))
                     .unwrap_or(root);
                 self.set_focus(surface, Some(first));
+                // Fresh focus (the surface opened again) starts its
+                // `nav` list at the top: the first row is selected again
+                // (`settle`), not the one selected when it last closed.
+                let nav = scene.tree().and_then(|t| match t.get(first) {
+                    Some(n) if n.kind == NodeKind::Input => match n.get(Prop::Nav) {
+                        Some(PropValue::Node(list)) => Some(*list),
+                        _ => None,
+                    },
+                    _ => None,
+                });
+                if let Some(list) = nav {
+                    self.select(scene, list, None);
+                }
             }
             InputEvent::KeyboardLeave { .. } => {
                 self.set_focus(surface, None);

@@ -41,6 +41,21 @@ jobs:
       - run: cargo test --workspace -- --skip random_edits_through_five_save_styles
       # The 34 MB PSS gate is checked on a release build (design.md, "Testing": budgets).
       - run: cargo test --release -p strand --test demo
+      # M2 exit: design.md's four example shells and theme.strand, byte
+      # for byte, in `strand run` on headless sway with two outputs
+      # against the deterministic mock services, driven by clicks, the
+      # wheel, keys, `strand set` and mock service changes; settled
+      # screenshots compared with crates/strand/tests/refs/acceptance.
+      # Release, so frames of the slides and swaps are caught (the
+      # workspace step above runs them in debug without those).
+      - run: cargo test --release -p strand --test acceptance -- --nocapture --test-threads=1
+      # A screenshot that missed its reference, with its diff.
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: acceptance-shots
+          path: target/acceptance/
+          if-no-files-found: ignore
       # A theme swap within design.md's 5 ms of work (logic's re-resolve,
       # the render thread's springs and contrast check, the token graph
       # of every frame) on an optimised build.

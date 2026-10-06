@@ -52,6 +52,7 @@ use strand_compiler::instantiate::{Instance, NodeFlag, Storage};
 use strand_compiler::reconcile::loader::Outcome;
 use strand_compiler::reconcile::{Build, EditClass, Report};
 use strand_compiler::vm::Value;
+use strand_compiler::vm::clock::{Clock, Zone};
 use strand_compiler::vm::schema_host::SchemaHost;
 use strand_core::Runtime;
 use strand_render::{Renderer, TextBackend};
@@ -790,6 +791,19 @@ impl Shell {
                     s.answer(id, &ans);
                 }
             }
+            ipc::Request::Mock(req) => {
+                let ans = if crate::mock::requested().is_none() {
+                    json!({"ok": false, "error": "`mock` needs a shell run with STRAND_MOCK"})
+                } else {
+                    match crate::mock::command(self.inst.runtime(), &self.host, &req) {
+                        Ok(()) => json!({"ok": true}),
+                        Err(e) => json!({"ok": false, "error": e}),
+                    }
+                };
+                if let Some(s) = &mut self.server {
+                    s.answer(id, &ans);
+                }
+            }
             // Answered by the server itself.
             ipc::Request::Watch => {}
         }
@@ -1029,9 +1043,20 @@ pub fn logic(
         None => strand_compiler::schema::Schema::builtin().types.clone(),
     };
     let build = boot.build.clone().unwrap_or_else(Build::empty);
-    let host = Rc::new(SchemaHost::real(&rt, &host_types));
-    if let Some(screen) = crate::mock::requested() {
-        crate::mock::desktop(&rt, &host, &screen);
+    let mock = crate::mock::requested();
+    // The acceptance mock's clock stands still (UTC), so its screenshots
+    // are the same every run.
+    let frozen = crate::mock::frozen_time();
+    let host = Rc::new(match frozen {
+        Some(at) => {
+            let utc = chrono::FixedOffset::east_opt(0).map_or(Zone::Local, Zone::Fixed);
+            let clock = Clock::new(&rt, &host_types, utc, at);
+            SchemaHost::new(&rt, &host_types, Some(clock))
+        }
+        None => SchemaHost::real(&rt, &host_types),
+    });
+    if let Some(m) = &mock {
+        crate::mock::desktop(&rt, &host, m);
     }
     // Monitors the main thread already knows about.
     let mut inbox = Inbox::default();
@@ -1125,7 +1150,7 @@ pub fn logic(
         if shell.deferred.is_some() || shell.deferred_hard {
             shell.unlocked();
         }
-        let wall = SystemTime::now();
+        let wall = frozen.unwrap_or_else(SystemTime::now);
         let (mut update, wake) = shell.inst.step(start.elapsed(), wall);
         let mut diff = std::mem::take(&mut update.diff);
         diff.layout_seen = shell.layout_seen.take();
@@ -1157,7 +1182,12 @@ pub fn logic(
             also(Some(Duration::ZERO));
         }
         sleeper
-            .sleep(timeout, wake.wall, wall, &mut inbox)
+            .sleep(
+                timeout,
+                wake.wall.filter(|_| frozen.is_none()),
+                wall,
+                &mut inbox,
+            )
             .map_err(|e| format!("logic loop: {e}"))?;
         for m in inbox.msgs.drain(..) {
             if m == ToLogic::Shutdown {

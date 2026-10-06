@@ -495,6 +495,40 @@ impl SchemaHost {
                 }
             }
         }
+        if self.types.record(r.ty).name == "Workspace" && name == "focus" {
+            self.focus_workspace(rt, item)?;
+        }
+        Ok(())
+    }
+
+    /// The mock's `ws.focus()`: that workspace becomes the focused one
+    /// (`workspaces.all` and `workspaces.focused`), the others lose focus.
+    fn focus_workspace(&self, rt: &Runtime, ws: &Value) -> Result<(), Error> {
+        let types = &self.types;
+        let key = ValueKey(ws.identity(types));
+        let all = rt.untrack(|rt| self.read(rt, "workspaces", "all"))?;
+        let Some(list) = all.as_list() else {
+            return Ok(());
+        };
+        let path = [PathSeg::Field("focused".into())];
+        let mut focused = Value::Null;
+        let items: Vec<Value> = list
+            .iter()
+            .map(|w| {
+                let on = ValueKey(w.identity(types)) == key;
+                let new = self
+                    .set_path(w, &path, Value::Bool(on))
+                    .unwrap_or_else(|_| w.clone());
+                if on {
+                    focused = new.clone();
+                }
+                new
+            })
+            .collect();
+        if items != list {
+            self.set(rt, "workspaces.all", Value::list(items))?;
+            self.set(rt, "workspaces.focused", focused)?;
+        }
         Ok(())
     }
 }

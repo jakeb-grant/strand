@@ -1207,7 +1207,9 @@ impl<'a> Flattener<'a> {
         }
         // What this node draws with; theme defaults come from its scope
         // (text, the widgets that draw labels, tracks and fills, and a
-        // symbolic icon).
+        // symbolic icon, which an `image` of an icon name can resolve to
+        // too: freedesktop symbolic icons are always drawn in the
+        // foreground colour).
         let is_text = matches!(
             node.kind,
             NodeKind::Text | NodeKind::Button | NodeKind::Input
@@ -1215,7 +1217,11 @@ impl<'a> Flattener<'a> {
         let themed = is_text
             || matches!(
                 node.kind,
-                NodeKind::Segmented | NodeKind::Meter | NodeKind::Slider | NodeKind::Icon
+                NodeKind::Segmented
+                    | NodeKind::Meter
+                    | NodeKind::Slider
+                    | NodeKind::Icon
+                    | NodeKind::Image
             );
         let color = if themed {
             own_color.unwrap_or_else(|| default_color(&scope))
