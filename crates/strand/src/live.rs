@@ -38,6 +38,9 @@ pub enum FromWorker {
     Loaded(Box<Loaded>),
     /// Settings files that changed (`Instance::reload_settings`).
     Settings(Vec<PathBuf>),
+    /// Wallpapers and imported palette files that changed
+    /// (`Instance::theme_files_changed`).
+    Theme(Vec<PathBuf>),
 }
 
 /// One load attempt and how it came about.
@@ -73,7 +76,8 @@ pub enum Job {
         hard: bool,
         client: Option<u64>,
     },
-    /// Watch these referenced files (settings files the program mounts).
+    /// Watch these referenced files (settings files the program mounts,
+    /// wallpapers and imported palette files the theme reads).
     Referenced(Vec<(PathBuf, Role)>),
     Stop,
 }
@@ -301,6 +305,7 @@ fn run(
         let started = Instant::now();
         let mut modules: Vec<(PathBuf, bool)> = Vec::new();
         let mut settings: Vec<PathBuf> = Vec::new();
+        let mut theme: Vec<PathBuf> = Vec::new();
         let mut rescan = false;
         let mut saved: Option<Instant> = None;
         let mut notices = Vec::new();
@@ -317,6 +322,9 @@ fn run(
                     Role::Settings if !settings.contains(&c.path) => {
                         settings.push(c.path.clone());
                     }
+                    Role::Wallpaper | Role::Other if !theme.contains(&c.path) => {
+                        theme.push(c.path.clone());
+                    }
                     _ => {}
                 }
             }
@@ -325,6 +333,9 @@ fn run(
             log::warn!("{n}");
         }
         if !settings.is_empty() && out.send(FromWorker::Settings(settings)).is_err() {
+            return;
+        }
+        if !theme.is_empty() && out.send(FromWorker::Theme(theme)).is_err() {
             return;
         }
         if let (Some(_), Some(w)) = (reload, &watcher) {

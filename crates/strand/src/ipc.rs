@@ -96,6 +96,12 @@ pub enum Request {
     Reset {
         path: String,
     },
+    /// `strand set <path> <value>`: an exported state cell (or a field of
+    /// one), the value as text read by the cell's type.
+    Set {
+        path: String,
+        value: String,
+    },
 }
 
 /// Parse one request line.
@@ -116,6 +122,16 @@ pub fn parse(line: &str) -> Result<Request, String> {
             Some(p) if !p.is_empty() => Ok(Request::Reset { path: p.into() }),
             _ => Err("`reset` needs a `path`".into()),
         },
+        Some("set") => match (
+            v.get("path").and_then(Json::as_str),
+            v.get("value").and_then(Json::as_str),
+        ) {
+            (Some(p), Some(value)) if !p.is_empty() => Ok(Request::Set {
+                path: p.into(),
+                value: value.into(),
+            }),
+            _ => Err("`set` needs a `path` and a `value`".into()),
+        },
         Some(other) => Err(format!("unknown command `{other}`")),
         None => Err("a request needs a `cmd`".into()),
     }
@@ -127,6 +143,9 @@ pub fn encode(req: &Request) -> String {
         Request::Reload { hard } => json!({"v": VERSION, "cmd": "reload", "hard": hard}),
         Request::Watch => json!({"v": VERSION, "cmd": "watch"}),
         Request::Reset { path } => json!({"v": VERSION, "cmd": "reset", "path": path}),
+        Request::Set { path, value } => {
+            json!({"v": VERSION, "cmd": "set", "path": path, "value": value})
+        }
     };
     format!("{v}\n")
 }
@@ -495,6 +514,30 @@ pub fn reload_cli(args: &[String]) -> Result<String, String> {
     Ok(answer.get("event").map(describe).unwrap_or_default())
 }
 
+/// `strand set <path> <value>` (`strand set theme.look mocha`).
+pub fn set_cli(args: &[String]) -> Result<String, String> {
+    let [path, value] = args else {
+        return Err("usage: strand set <file.name> <value>".into());
+    };
+    let mut conn = BufReader::new(connect()?);
+    let answer = request(
+        &mut conn,
+        &Request::Set {
+            path: path.clone(),
+            value: value.clone(),
+        },
+        Duration::from_secs(10),
+    )?;
+    if answer.get("ok").and_then(Json::as_bool) != Some(true) {
+        return Err(answer
+            .get("error")
+            .and_then(Json::as_str)
+            .unwrap_or("failed")
+            .to_string());
+    }
+    Ok(String::new())
+}
+
 /// `strand watch [--json]`: print every event until the shell ends.
 pub fn watch_cli(args: &[String], out: &mut dyn Write) -> Result<(), String> {
     let json = match args {
@@ -721,6 +764,10 @@ mod tests {
             Request::Watch,
             Request::Reset {
                 path: "launcher.query".into(),
+            },
+            Request::Set {
+                path: "theme.look".into(),
+                value: "mocha".into(),
             },
         ] {
             assert_eq!(parse(encode(&r).trim()), Ok(r));

@@ -48,6 +48,10 @@ pub struct Line {
     /// The state cell the row is about: a newer row for the same cell
     /// replaces it, and resetting the cell removes it.
     pub cell: Option<String>,
+    /// The settings file and field whose runtime overlay a click on its
+    /// `[clear]` drops (`accent: file changed but runtime overlay wins
+    /// [clear]`).
+    pub clear: Option<(String, String)>,
 }
 
 /// The row key of the notice that edits wait for the unlock (not a
@@ -59,6 +63,31 @@ pub fn notice_line(n: &str) -> Line {
     Line {
         text: n.to_string(),
         notice: true,
+        ..Line::default()
+    }
+}
+
+/// A settings-file notice (a bad value kept at its last good value, a
+/// syntax error, a read-only file whose changes go to an overlay, a file
+/// change the runtime overlay shadows) as an overlay row. Rows about one
+/// file and field replace each other; a shadowed field's row carries its
+/// `[clear]`.
+pub fn settings_line(n: &strand_core::SettingsNotice) -> Line {
+    let key = match &n.field {
+        Some(f) => format!("settings:{}#{f}", n.file),
+        None => format!("settings:{}", n.file),
+    };
+    let clear = match (&n.issue, &n.field) {
+        (strand_core::SettingsIssue::Shadowed, Some(f)) => {
+            Some((n.file.to_string(), f.to_string()))
+        }
+        _ => None,
+    };
+    Line {
+        text: n.to_string(),
+        notice: true,
+        cell: Some(key),
+        clear,
         ..Line::default()
     }
 }
@@ -210,6 +239,9 @@ pub enum Click {
     Dismissed,
     /// A notice's `[reset]`: reset this state cell to its default.
     Reset(String),
+    /// A settings notice's `[clear]`: drop the runtime overlay of this
+    /// field of this settings file.
+    Clear(String, String),
     /// A line with nowhere to go, or the panel itself.
     Nothing,
 }
@@ -357,6 +389,12 @@ impl Overlay {
         }
         if let Some((_, line)) = shown.rows.iter().find(|(n, _)| *n == node) {
             let line = line.clone();
+            if let Some((file, field)) = &line.clear {
+                // Done with: its row goes.
+                self.notes.retain(|n| *n != line);
+                self.refresh(inst);
+                return Some(Click::Clear(file.clone(), field.clone()));
+            }
             if let Some(path) = &line.reset {
                 // Done with: its rows go.
                 self.notes
@@ -702,6 +740,71 @@ mod tests {
         assert!(o.deadline().is_some(), "new ones show again");
         m.apply(&inst.flush().diff).unwrap();
         assert_eq!(m.find_text("a"), None);
+    }
+
+    /// Settings-file notices are rows too: one per file and field (a
+    /// newer one replaces it), and a shadowed field's `[clear]` asks for
+    /// its runtime overlay to go.
+    #[test]
+    fn settings_notices_and_their_clear() {
+        use std::sync::Arc;
+        use strand_core::{SettingsIssue, SettingsNotice};
+        let (_rt, inst) = instance();
+        let mut o = Overlay::default();
+        let t0 = Instant::now();
+        let notice = |field: &str, issue| SettingsNotice {
+            file: Arc::from("/c/prefs.toml"),
+            field: Some(Arc::from(field)),
+            issue,
+        };
+        let bad = settings_line(&notice("gap", SettingsIssue::BadValue("not an int".into())));
+        assert!(bad.clear.is_none());
+        assert!(
+            bad.text.contains("keeping its last good value"),
+            "{}",
+            bad.text
+        );
+        let shadowed = settings_line(&notice("accent", SettingsIssue::Shadowed));
+        assert_eq!(
+            shadowed.text,
+            "accent: file changed but runtime overlay wins [clear]"
+        );
+        assert_eq!(
+            shadowed.clear,
+            Some(("/c/prefs.toml".into(), "accent".into()))
+        );
+        let read_only = settings_line(&SettingsNotice {
+            file: Arc::from("/nix/store/x/prefs.toml"),
+            field: None,
+            issue: SettingsIssue::ReadOnly {
+                overlay: PathBuf::from("/s/settings/prefs.toml"),
+            },
+        });
+        assert!(
+            read_only
+                .text
+                .contains("is read-only; changes are kept in /s/settings/prefs.toml")
+        );
+        o.note(vec![bad, shadowed, read_only], t0, &inst);
+        // A newer notice about the same field replaces its row.
+        let worse = settings_line(&notice(
+            "gap",
+            SettingsIssue::BadValue("not a number".into()),
+        ));
+        o.note(vec![worse], t0, &inst);
+        assert_eq!(o.lines().len(), 3);
+        o.tick(t0 + QUIET, &inst);
+        assert!(o.is_shown());
+        let mut m = strand_compiler::instantiate::SceneMirror::new();
+        m.apply(&inst.flush().diff).unwrap();
+        let row = m
+            .find_text("accent: file changed but runtime overlay wins [clear]")
+            .unwrap();
+        assert_eq!(
+            o.click(row, &inst),
+            Some(Click::Clear("/c/prefs.toml".into(), "accent".into()))
+        );
+        assert_eq!(o.lines().len(), 2, "its row goes");
     }
 
     /// Reload notices are listed after the quiet period as warning rows;

@@ -457,9 +457,9 @@ impl Shape<'_> {
         spans: &[TextSpan],
     ) -> parley::Layout<u32> {
         let mut builder = layout_cx.ranged_builder(font_cx, text, self.scale, true);
-        builder.push_default(StyleProperty::FontFamily(FontFamily::Source(
-            with_generic(self.family),
-        )));
+        builder.push_default(StyleProperty::FontFamily(FontFamily::Source(with_generic(
+            self.family,
+        ))));
         builder.push_default(StyleProperty::FontSize(self.size));
         builder.push_default(StyleProperty::FontWeight(FontWeight::new(self.weight)));
         if let Some(lh) = self.line_height {

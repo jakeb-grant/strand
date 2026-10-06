@@ -262,6 +262,21 @@ impl SchemaHost {
         }
     }
 
+    /// [`SchemaHost::set`] for a value the service reports at boot (the
+    /// portal's boot read): readers update, but `on change` handlers
+    /// take it as their baseline instead of firing ("never at boot").
+    /// Only plain fields; a path inside a record is set as by `set`.
+    pub fn set_initial(&self, rt: &Runtime, path: &str, value: Value) -> Result<(), Error> {
+        let mut parts = path.split('.');
+        let (Some(service), Some(field), None) = (parts.next(), parts.next(), parts.next()) else {
+            return self.set(rt, path, value);
+        };
+        match self.field(service, field)? {
+            Field::Plain(sig) => sig.set_reloaded(rt, value).map(|_| ()),
+            Field::Keyed(..) => self.set(rt, path, value),
+        }
+    }
+
     /// The `rw` writes the program made, oldest first; clears the log
     /// (only the mock records them).
     pub fn take_writes(&self) -> Vec<WriteCall> {

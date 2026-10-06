@@ -1430,6 +1430,7 @@ impl Shell {
             worker: Some(wrx),
             jobs: Some(worker.jobs()),
             socket: Some(socket.clone()),
+            portal: None,
         };
         let (to_logic, from_main) = calloop::channel::channel();
         to_logic.send(ToLogic::Screens(screens())).unwrap();

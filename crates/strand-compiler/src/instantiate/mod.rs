@@ -570,6 +570,46 @@ impl Storage {
     }
 }
 
+/// A value of type `ty` written as text (`strand set`).
+fn parse_text(types: &crate::ty::TypeTable, ty: &crate::ty::Ty, text: &str) -> Option<Value> {
+    use crate::ty::{Prim, Ty};
+    use crate::vm::Num;
+    if let Ty::Optional(inner) = ty {
+        return if text == "null" {
+            Some(Value::Null)
+        } else {
+            parse_text(types, inner, text)
+        };
+    }
+    let number = |t: &str, suffix: &str| t.strip_suffix(suffix)?.trim().parse::<f64>().ok();
+    match ty {
+        Ty::Enum(e) => types.enum_(*e).variant(text).map(|v| Value::Enum(*e, v)),
+        Ty::Prim(p) => Some(match p {
+            Prim::Bool => match text {
+                "true" => Value::Bool(true),
+                "false" => Value::Bool(false),
+                _ => return None,
+            },
+            Prim::Int => Value::int(text.parse::<i64>().ok()?),
+            Prim::Float => Value::float(text.parse::<f64>().ok()?),
+            Prim::Length => match number(text, "px") {
+                Some(n) => Value::Num(n, Num::Px),
+                None => Value::Num(text.parse::<f64>().ok()?, Num::Px),
+            },
+            Prim::Percent => Value::Num(number(text, "%")?, Num::Percent),
+            Prim::Angle => Value::Num(number(text, "deg")?, Num::Deg),
+            Prim::Duration => match number(text, "ms") {
+                Some(n) => Value::Num(n, Num::Ms),
+                None => Value::Num(number(text, "s")? * 1000.0, Num::Ms),
+            },
+            Prim::Color => Value::Color(strand_scene::Color::from_hex(text)?),
+            Prim::Text | Prim::Path => Value::text(text),
+            _ => return None,
+        }),
+        _ => None,
+    }
+}
+
 /// The red outline of a faulty component.
 fn fault_outline() -> PropValue {
     PropValue::Border(strand_scene::Border {
@@ -1277,6 +1317,33 @@ impl Instance {
             .write_place(&self.rt, &place, Vec::new(), &root, value)
     }
 
+    /// `strand set theme.look mocha`: [`Instance::set`] with the value
+    /// written as text and read by the target's type: an enum variant by
+    /// name, `true`/`false`, a number (`int`, `float`, `px`, `%`, `deg`,
+    /// `ms`/`s`), a `#rrggbb` colour, text and paths as given, `null` for
+    /// an optional value.
+    pub fn set_text(&self, path: &str, text: &str) -> Result<(), Error> {
+        let (d, rest) = self.export(path)?;
+        let prog = self.ctx.vm.prog.clone();
+        let mut ty = prog.def(d).ty.clone();
+        for f in &rest {
+            let field = match ty.non_null() {
+                crate::ty::Ty::Record(r) => prog
+                    .types
+                    .record(*r)
+                    .fields
+                    .iter()
+                    .find(|x| x.name == *f)
+                    .map(|x| x.ty.clone()),
+                _ => None,
+            };
+            ty = field.ok_or_else(|| Error::failed(format!("`{path}` has no field `{f}`")))?;
+        }
+        let value = parse_text(&prog.types, &ty, text.trim())
+            .ok_or_else(|| Error::failed(format!("`{text}` is not a {}", prog.types.show(&ty))))?;
+        self.set(path, value)
+    }
+
     /// The exported declaration a `file.name[.field…]` path starts with,
     /// and the fields after it.
     fn export(&self, path: &str) -> Result<(DefId, Vec<String>), Error> {
@@ -1513,6 +1580,30 @@ impl Instance {
     /// The instance's theme host (tests: wait for wallpaper jobs).
     pub fn theme(&self) -> Option<Rc<crate::vm::theme::ThemeHost>> {
         self.ctx.vm.theme()
+    }
+
+    /// `[clear]` on "file changed but runtime overlay wins": drop the
+    /// runtime overlay of `field` in the settings file `file` (as its
+    /// notice names it), so the file's value applies. Returns whether a
+    /// mounted file had that field.
+    pub fn clear_settings_overlay(&self, file: &str, field: &str) -> bool {
+        let slots: Vec<_> = self
+            .ctx
+            .settings
+            .borrow()
+            .iter()
+            .filter_map(std::rc::Weak::upgrade)
+            .collect();
+        let mut done = false;
+        for s in slots {
+            if let Some(h) = &s.handle
+                && (h.path().to_string_lossy() == file
+                    || h.overlay_path().to_string_lossy() == file)
+            {
+                done |= h.clear_overlay(&self.rt, field).is_ok();
+            }
+        }
+        done
     }
 
     /// The settings files the mounted program reads (for the watcher).

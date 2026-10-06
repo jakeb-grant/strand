@@ -66,6 +66,7 @@ use crate::ipc;
 use crate::live::{self, FromWorker, Job, Loaded, Worker};
 use crate::logging::LogConfig;
 use crate::overlay::{self, Click, Overlay};
+use crate::system;
 use strand_watch::Role;
 
 /// A monitor as the `screens` service shows it (plain data: it crosses
@@ -335,6 +336,9 @@ pub struct Live {
     pub jobs: Option<std::sync::mpsc::Sender<Job>>,
     /// Where to serve `strand reload` and `strand watch`.
     pub socket: Option<PathBuf>,
+    /// Follow the portal's appearance settings (`system.dark`, `.accent`,
+    /// `.contrast`) on this bus; `None` keeps the last values.
+    pub portal: Option<strand_watch::Bus>,
 }
 
 /// What a load attempt found wrong (held and unreadable files, its
@@ -387,8 +391,8 @@ struct Shell {
     /// The newest load attempt's problems: a deferred load replayed after
     /// the unlock reports these, not its own older ones.
     latest: Problems,
-    /// The settings files last given to the watcher.
-    watched: Vec<PathBuf>,
+    /// The referenced files last given to the watcher.
+    watched: Vec<(PathBuf, Role)>,
     /// Cells kept over a changed default outside a reload while nobody
     /// watched (at boot): the next reload event lists them.
     unheard: Vec<strand_compiler::reconcile::KeptCell>,
@@ -414,6 +418,9 @@ impl Shell {
                                 log::warn!("[reset] {path}: {e}");
                             }
                         }
+                        Click::Clear(file, field) => {
+                            inst.clear_settings_overlay(&file, &field);
+                        }
                         Click::Dismissed | Click::Nothing => {}
                     }
                     return;
@@ -437,6 +444,9 @@ impl Shell {
                 for p in paths {
                     self.inst.reload_settings(&p);
                 }
+            }
+            FromWorker::Theme(paths) => {
+                self.inst.theme_files_changed(&paths);
             }
             FromWorker::Loaded(l) => self.commit(l),
         }
@@ -616,15 +626,23 @@ impl Shell {
         }
     }
 
-    /// Give the worker the settings files the program now mounts.
+    /// Give the worker the files the program now reads: its settings
+    /// files, and the wallpapers and palette files its theme read (a
+    /// wallpaper's link target is watched too).
     fn watch_settings(&mut self) {
-        let files = self.inst.settings_files();
+        let (images, imports) = self.inst.theme_files();
+        let files: Vec<(PathBuf, Role)> = self
+            .inst
+            .settings_files()
+            .into_iter()
+            .map(|f| (f, Role::Settings))
+            .chain(images.into_iter().map(|f| (f, Role::Wallpaper)))
+            .chain(imports.into_iter().map(|f| (f, Role::Other)))
+            .collect();
         if files != self.watched {
             self.watched = files.clone();
             if let Some(j) = &self.jobs {
-                let _ = j.send(Job::Referenced(
-                    files.into_iter().map(|f| (f, Role::Settings)).collect(),
-                ));
+                let _ = j.send(Job::Referenced(files));
             }
         }
     }
@@ -660,6 +678,15 @@ impl Shell {
                     s.answer(id, &ans);
                 }
             }
+            ipc::Request::Set { path, value } => {
+                let ans = match self.inst.set_text(&path, &value) {
+                    Ok(()) => json!({"ok": true}),
+                    Err(e) => json!({"ok": false, "error": e.to_string()}),
+                };
+                if let Some(s) = &mut self.server {
+                    s.answer(id, &ans);
+                }
+            }
             // Answered by the server itself.
             ipc::Request::Watch => {}
         }
@@ -688,8 +715,30 @@ impl Shell {
                 }));
             }
         }
+        let mut settings = Vec::new();
         for d in &update.diagnostics {
-            log::warn!("{d:?}");
+            match d {
+                strand_core::Diagnostic::Settings(n) => {
+                    log::warn!("{n}");
+                    settings.push(n);
+                }
+                d => log::warn!("{d:?}"),
+            }
+        }
+        if !settings.is_empty() {
+            // Settings files: a bad value kept, a syntax error, a
+            // read-only file going to an overlay, a file change shadowed
+            // by the runtime overlay (with its `[clear]`).
+            let rows: Vec<_> = settings.iter().map(|n| overlay::settings_line(n)).collect();
+            self.overlay.note(rows, Instant::now(), &self.inst);
+            if let Some(s) = &mut self.server {
+                let texts: Vec<String> = settings.iter().map(|n| n.to_string()).collect();
+                s.broadcast(&json!({
+                    "event": "notices",
+                    "kept_over_default": [],
+                    "notices": texts,
+                }));
+            }
         }
         for n in &update.notices {
             log::info!("{n}");
@@ -862,6 +911,7 @@ pub fn logic(
             }
         });
     let rt = Runtime::new();
+    let portal_ping = ping.clone();
     rt.set_wake_hook(move || ping.ping());
     // With nothing to run yet (broken at boot, no last good version),
     // the host still serves the builtin services (`screens`, the clock):
@@ -886,6 +936,26 @@ pub fn logic(
             _ => {}
         }
     }
+    // The portal's last values before the first frame (the boot read
+    // may take up to 500 ms), then the portal itself.
+    let system_file = system::Last::file(storage.palette_dir());
+    let mut last = system_file
+        .as_deref()
+        .map(system::Last::load)
+        .unwrap_or_default();
+    system::apply(&rt, &host, &last.settings, true);
+    let (sink, portal_rx) = strand_watch::channel();
+    let sink = sink.with_waker(move || portal_ping.ping());
+    let _portal =
+        live.portal
+            .clone()
+            .and_then(|bus| match strand_watch::PortalSettings::spawn(bus, sink) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    log::warn!("not following the portal's appearance settings: {e}");
+                    None
+                }
+            });
     let inst = Instance::from_build(&rt, &build, host.clone(), storage);
     let mut shell = Shell {
         inst,
@@ -961,6 +1031,25 @@ pub fn logic(
         stop |= inbox.closed;
         for w in inbox.worker.drain(..) {
             shell.worker(w);
+        }
+        while let Ok(ev) = portal_rx.try_recv() {
+            if let strand_watch::ChangeEvent::System(batch) = ev {
+                system::apply(
+                    shell.inst.runtime(),
+                    &shell.host,
+                    &batch.settings,
+                    batch.at_boot,
+                );
+                if last.merge(&batch)
+                    && let Some(f) = &system_file
+                    && let Err(e) = last.save(f)
+                {
+                    log::warn!("keeping the portal's settings: {e}");
+                }
+            }
+        }
+        if shell.inst.take_theme_files_changed() {
+            shell.watch_settings();
         }
         let ready = std::mem::take(&mut inbox.ipc);
         if let Some(s) = &mut shell.server {
@@ -1064,6 +1153,7 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
         worker: Some(worker_rx),
         jobs: Some(compiler.jobs()),
         socket: ipc::socket_path(),
+        portal: Some(strand_watch::Bus::Session),
     };
     let (ping, ping_source) = calloop::ping::make_ping()?;
     let worker =
@@ -1404,6 +1494,7 @@ pub(crate) mod tests {
             worker: Some(wrx),
             jobs: Some(compiler.jobs()),
             socket: Some(socket.clone()),
+            portal: None,
         };
         let (to_logic, from_main) = calloop::channel::channel();
         let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -1542,19 +1633,36 @@ pub(crate) mod tests {
         std::thread::JoinHandle<Result<(), String>>,
         Mirror,
     ) {
+        spawn_live_with(dir, socket, None, Storage::none())
+    }
+
+    /// [`spawn_live`] following a portal, with storage.
+    fn spawn_live_with(
+        dir: &Path,
+        socket: Option<PathBuf>,
+        portal: Option<strand_watch::Bus>,
+        storage: Storage,
+    ) -> (
+        Worker,
+        calloop::channel::Sender<ToLogic>,
+        std::thread::JoinHandle<Result<(), String>>,
+        Mirror,
+    ) {
         let (wtx, wrx) = calloop::channel::channel();
         let (compiler, boot) = Worker::spawn(dir, None, wtx).unwrap();
+        compiler.register_own_writes(&storage);
         let live = Live {
             worker: Some(wrx),
             jobs: Some(compiler.jobs()),
             socket,
+            portal,
         };
         let (to_logic, from_main) = calloop::channel::channel();
         let (tx, rx) = calloop::channel::channel::<SceneDiff>();
         to_logic
             .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
             .unwrap();
-        let t = std::thread::spawn(move || logic(boot, Storage::none(), from_main, tx, live));
+        let t = std::thread::spawn(move || logic(boot, storage, from_main, tx, live));
         (compiler, to_logic, t, Mirror::new(rx))
     }
 
@@ -2225,6 +2333,7 @@ pub(crate) mod tests {
             worker: Some(wrx),
             jobs: Some(compiler.jobs()),
             socket: None,
+            portal: None,
         };
         let (to_logic, from_main) = calloop::channel::channel();
         let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -2381,5 +2490,306 @@ pub(crate) mod tests {
         assert!(s.persist.is_none());
         assert!(s.settings.is_some());
         assert_eq!(s.config_dir.as_deref(), Some(dir));
+    }
+
+    /// A settings file edited by hand with a bad value: the field keeps
+    /// its last good value and the overlay says so; the fix applies.
+    #[test]
+    fn a_bad_settings_value_is_kept_and_shown() {
+        let dir = temp_dir("settings-notice");
+        std::fs::write(dir.join("prefs.toml"), "# mine\ngap = 6\n").unwrap();
+        std::fs::write(
+            dir.join("bar.strand"),
+            "state prefs from \"prefs.toml\" { gap: int = 4 }\nbar Top { text join(\" \", \"gap\", prefs.gap) }\n",
+        )
+        .unwrap();
+        let storage = Storage::in_dirs(dir.join("state"), &dir);
+        let (compiler, to_logic, t, mut m) = spawn_live_with(&dir, None, None, storage);
+        m.until("the file's value", |s| s.texts() == ["gap 6"]);
+        std::fs::write(dir.join("prefs.toml"), "# mine\ngap = \"wide\"\n").unwrap();
+        m.until("the notice", |s| {
+            s.texts()
+                .iter()
+                .any(|t| t.contains("gap") && t.contains("keeping its last good value"))
+        });
+        assert!(m.scene.texts().contains(&"gap 6".to_string()), "kept");
+        std::fs::write(dir.join("prefs.toml"), "# mine\ngap = 8\n").unwrap();
+        m.until("the fix", |s| s.texts().contains(&"gap 8".to_string()));
+        to_logic.send(ToLogic::Shutdown).unwrap();
+        assert_eq!(t.join().unwrap(), Ok(()));
+        drop(compiler);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A mock `org.freedesktop.portal.Settings` for the theme test.
+    struct MockPortal {
+        values: std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
+    }
+
+    #[zbus::interface(name = "org.freedesktop.portal.Settings")]
+    impl MockPortal {
+        async fn read_one(
+            &self,
+            namespace: &str,
+            key: &str,
+        ) -> zbus::fdo::Result<zbus::zvariant::OwnedValue> {
+            if namespace != "org.freedesktop.appearance" {
+                return Err(zbus::fdo::Error::Failed("not found".into()));
+            }
+            self.values
+                .get(key)
+                .map(|v| v.try_clone().unwrap())
+                .ok_or_else(|| zbus::fdo::Error::Failed("not found".into()))
+        }
+
+        #[zbus(property)]
+        fn version(&self) -> u32 {
+            2
+        }
+    }
+
+    struct Bus {
+        child: std::process::Child,
+        address: String,
+    }
+
+    impl Drop for Bus {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+
+    /// A private session bus (skipped without `dbus-daemon` unless
+    /// `STRAND_REQUIRE_DBUS` is set).
+    fn private_bus(dir: &Path) -> Option<Bus> {
+        use std::io::BufRead;
+        let spawned = std::process::Command::new("dbus-daemon")
+            .args(["--session", "--nofork", "--print-address=1"])
+            .arg(format!("--address=unix:path={}/bus", dir.display()))
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        let mut child = match spawned {
+            Ok(c) => c,
+            Err(e) if std::env::var_os("STRAND_REQUIRE_DBUS").is_none() => {
+                eprintln!("skipping: dbus-daemon unavailable ({e})");
+                return None;
+            }
+            Err(e) => panic!("dbus-daemon: {e}"),
+        };
+        let mut line = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        Some(Bus {
+            child,
+            address: line.trim().to_string(),
+        })
+    }
+
+    fn png(major: [u8; 3], minor: [u8; 3]) -> Vec<u8> {
+        let img = image::RgbImage::from_fn(320, 180, |x, _| {
+            image::Rgb(if x < 240 { major } else { minor })
+        });
+        let mut out = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .unwrap();
+        out
+    }
+
+    fn accent(s: &SceneMirror) -> Option<strand_scene::Color> {
+        match s.tokens.lookup("accent") {
+            Some(PropValue::Color(c)) => Some(c),
+            _ => None,
+        }
+    }
+
+    /// design.md's theme.strand in `strand run`, end to end: the portal's
+    /// boot read and changes (`system.dark`, `system.accent`), `strand
+    /// set theme.look …` over IPC, a wallpaper palette that follows the
+    /// file, its symlink and the link's target, and a restart that boots
+    /// straight into the last palette.
+    #[test]
+    fn the_theme_follows_the_portal_the_wallpaper_and_strand_set() {
+        use strand_theme::{Options, Role, from_seed};
+        use zbus::zvariant::{OwnedValue, Value as ZValue};
+        let dir = temp_dir("theme");
+        let config = dir.join("config");
+        let walls = dir.join("walls");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::create_dir_all(&walls).unwrap();
+        let Some(bus) = private_bus(&dir) else {
+            return;
+        };
+        let theme = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../strand-compiler/tests/fixtures/theme.strand"
+        ))
+        .unwrap()
+        .replace("~/.config/strand/prefs.toml", "prefs.toml");
+        std::fs::write(config.join("theme.strand"), theme).unwrap();
+        std::fs::write(
+            config.join("bar.strand"),
+            "bar Top {\n  bg: $surface\n  text \"themed\" { color: $fg }\n}\n",
+        )
+        .unwrap();
+        // The wallpaper is a link into the wallpapers directory.
+        let (blue, red, green) = (
+            png([30, 90, 200], [240, 200, 40]),
+            png([200, 40, 40], [20, 20, 20]),
+            png([40, 170, 60], [230, 230, 230]),
+        );
+        std::fs::write(walls.join("blue.png"), &blue).unwrap();
+        std::fs::write(walls.join("red.png"), &red).unwrap();
+        let wall = dir.join("wall.png");
+        std::os::unix::fs::symlink(walls.join("blue.png"), &wall).unwrap();
+        std::fs::write(
+            config.join("prefs.toml"),
+            format!("# my prefs\nwallpaper = \"{}\"\n", wall.display()),
+        )
+        .unwrap();
+
+        // The portal: dark, a red accent.
+        let tokio = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let owned = |v: ZValue<'_>| -> OwnedValue { v.try_into().unwrap() };
+        let values = std::collections::HashMap::from([
+            ("color-scheme".to_string(), owned(ZValue::from(1u32))),
+            (
+                "accent-color".to_string(),
+                owned(ZValue::from((0.88f64, 0.11f64, 0.14f64))),
+            ),
+            ("contrast".to_string(), owned(ZValue::from(0u32))),
+        ]);
+        let conn = tokio.block_on(async {
+            zbus::connection::Builder::address(bus.address.as_str())
+                .unwrap()
+                .name("org.freedesktop.portal.Desktop")
+                .unwrap()
+                .serve_at("/org/freedesktop/portal/desktop", MockPortal { values })
+                .unwrap()
+                .build()
+                .await
+                .unwrap()
+        });
+        let state = dir.join("state");
+        let storage = Storage::in_dirs(&state, &config);
+        let socket = dir.join("s.sock");
+        let (compiler, to_logic, t, mut m) = spawn_live_with(
+            &config,
+            Some(socket.clone()),
+            Some(strand_watch::Bus::Address(bus.address.clone())),
+            storage,
+        );
+        let portal_accent = strand_scene::Color::rgb(0.88, 0.11, 0.14);
+        let seeded = |dark| {
+            from_seed(
+                // The portal's accent arrives as f64 sRGB.
+                portal_accent,
+                Options {
+                    dark,
+                    ..Options::default()
+                },
+            )
+            .get(Role::Accent)
+        };
+        // look: auto → the portal's dark and accent.
+        m.until("the portal's boot read", |s| {
+            accent(s) == Some(seeded(true))
+        });
+        // The desktop switches to light.
+        tokio
+            .block_on(conn.emit_signal(
+                None::<&str>,
+                "/org/freedesktop/portal/desktop",
+                "org.freedesktop.portal.Settings",
+                "SettingChanged",
+                &(
+                    "org.freedesktop.appearance",
+                    "color-scheme",
+                    ZValue::from(2u32),
+                ),
+            ))
+            .unwrap();
+        m.until("light", |s| accent(s) == Some(seeded(false)));
+
+        let mut ipc_conn =
+            std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
+        let mut ask = |look: &str| -> Json {
+            ipc::request(
+                &mut ipc_conn,
+                &ipc::Request::Set {
+                    path: "theme.look".into(),
+                    value: look.into(),
+                },
+                Duration::from_secs(10),
+            )
+            .unwrap()
+        };
+        let mut set = |look: &str| {
+            let ans = ask(look);
+            assert_eq!(ans["ok"], json!(true), "{ans}");
+            ans
+        };
+        // strand set theme.look mocha.
+        set("mocha");
+        m.until("mocha", |s| {
+            accent(s) == strand_scene::Color::from_hex("#cba6f7")
+        });
+        // The wallpaper: quantised, then its palette.
+        let image_accent = |bytes: &[u8]| {
+            let seed = strand_theme::image::seed_from_bytes(bytes).unwrap();
+            from_seed(
+                seed,
+                Options {
+                    dark: true,
+                    ..Options::default()
+                },
+            )
+            .get(Role::Accent)
+        };
+        set("wallpaper");
+        m.until("the blue wallpaper", |s| {
+            accent(s) == Some(image_accent(&blue))
+        });
+        // swww-style: the link swapped to another file.
+        let tmp = dir.join("wall.png.new");
+        std::os::unix::fs::symlink(walls.join("red.png"), &tmp).unwrap();
+        std::fs::rename(&tmp, &wall).unwrap();
+        m.until("the link swapped to red", |s| {
+            accent(s) == Some(image_accent(&red))
+        });
+        // The link's target replaced in its own directory.
+        std::fs::write(walls.join("next.png"), &green).unwrap();
+        std::fs::rename(walls.join("next.png"), walls.join("red.png")).unwrap();
+        m.until("the target replaced by green", |s| {
+            accent(s) == Some(image_accent(&green))
+        });
+        set("auto");
+        m.until("auto again", |s| accent(s) == Some(seeded(false)));
+        // Bad input is refused without closing anything.
+        let ans = ask("sepia");
+        assert_eq!(ans["ok"], json!(false), "{ans}");
+        assert!(ans["error"].as_str().unwrap().contains("sepia"), "{ans}");
+        to_logic.send(ToLogic::Shutdown).unwrap();
+        assert_eq!(t.join().unwrap(), Ok(()));
+        drop(compiler);
+        drop(conn);
+        drop(bus);
+
+        // A restart without the portal: the last values are in the boot
+        // table itself (no default-colour frame while a portal answers).
+        let storage = Storage::in_dirs(&state, &config);
+        let (compiler, to_logic, t, mut m) = spawn_live_with(&config, None, None, storage);
+        m.until("the first table", |s| accent(s).is_some());
+        assert_eq!(accent(&m.scene), Some(seeded(false)));
+        to_logic.send(ToLogic::Shutdown).unwrap();
+        assert_eq!(t.join().unwrap(), Ok(()));
+        drop(compiler);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

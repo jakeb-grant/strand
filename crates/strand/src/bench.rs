@@ -426,6 +426,7 @@ fn measure(rounds: usize) -> Option<Measured> {
         worker: Some(wrx),
         jobs: Some(compiler.jobs()),
         socket: None,
+        portal: None,
     };
     let (ping, ping_source) = calloop::ping::make_ping().unwrap();
     let font = std::fs::read(strand_text::test_font_path()).unwrap();
