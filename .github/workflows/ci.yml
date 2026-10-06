@@ -27,10 +27,12 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Install headless sway, grim, dbus, fonts, icons and fontconfig headers
+      # smithay-client-toolkit's build script finds xkbcommon through
+      # pkg-config; wayland-sys and fontconfig link their system libraries.
+      - name: Install headless sway, grim, dbus, fonts, icons and build headers
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends sway grim dbus fonts-dejavu-core adwaita-icon-theme pkg-config libfontconfig1-dev
+          sudo apt-get install -y --no-install-recommends sway grim dbus fonts-dejavu-core adwaita-icon-theme pkg-config libfontconfig1-dev libxkbcommon-dev libwayland-dev
       # The versions the references depend on, to trace a mismatch.
       - name: Reference package versions
         run: |
@@ -95,10 +97,10 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-      - name: Install headless sway, grim, fonts, icons and fontconfig headers
+      - name: Install headless sway, grim, dbus, fonts, icons and build headers
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends sway grim fonts-dejavu-core adwaita-icon-theme pkg-config libfontconfig1-dev
+          sudo apt-get install -y --no-install-recommends sway grim dbus fonts-dejavu-core adwaita-icon-theme pkg-config libfontconfig1-dev libxkbcommon-dev libwayland-dev
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.97.0
