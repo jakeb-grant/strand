@@ -917,7 +917,11 @@ fn non_finite_and_huge_values_are_safe() {
 #[test]
 fn shadows_follow_per_corner_radii() {
     let mut b = Builder::default();
-    let root = b.node(NodeKind::Panel, None, vec![(Prop::Bg, color("#ffffff"))]);
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![(Prop::Bg, color("#ffffff")), (Prop::Size, num(100.0))],
+    );
     b.node(
         NodeKind::Box,
         Some(root),
@@ -1468,12 +1472,12 @@ fn centred_bar(clock: &str) -> SceneDiff {
 }
 
 /// With the text worker: a surface added at the same scale as a painted
-/// one but another width (a 1920 monitor next to a 2560 one) holds its
-/// first frame for its own layout, since the other width's is aligned
-/// for the wrong line box, and then shows exactly a fresh render; the
-/// first surface keeps its own layout and does not repaint.
+/// one but another width (a 1920 monitor next to a 2560 one) shares its
+/// text layout (text is shaped without a width bound and aligned in its
+/// box), so its first frame needs no wait and shows exactly a fresh
+/// render; the first surface does not repaint.
 #[test]
-fn new_surface_of_another_width_waits_for_its_own_layout() {
+fn new_surface_of_another_width_shares_the_layout() {
     use std::time::Duration;
     const WIDE: SurfaceId = SurfaceId(1);
     const NARROW: SurfaceId = SurfaceId(2);
@@ -1489,9 +1493,8 @@ fn new_surface_of_another_width_waits_for_its_own_layout() {
 
     r.attach_surface(NARROW, root);
     r.configure_surface(NARROW, Size::new(1920, 32), Scale::ONE);
-    assert!(!r.wants_frame(NARROW), "no first frame with a stand-in");
-    assert!(r.frame_deadline(NARROW).is_some());
-    assert!(r.wait_for_text(Duration::from_secs(10)));
+    assert!(!r.text_pending(), "nothing to shape for another width");
+    assert!(r.frame_deadline(NARROW).is_none());
     assert!(r.wants_frame(NARROW));
     assert!(!r.wants_frame(WIDE), "the wide bar keeps its layout");
     let mut narrow = Buffer::new(1920, 32, Scale::ONE);
@@ -1533,8 +1536,11 @@ fn hit_finds_the_painted_node_and_its_ancestors() {
         // Over the clock text.
         let hit = r.hit(BAR, LogicalPoint::new(1270.0, 18.0));
         assert_eq!(hit, [clock, root], "{scale:?}");
-        // Empty bar background: the root.
-        assert_eq!(r.hit(BAR, LogicalPoint::new(700.0, 30.0)), [root]);
+        // The texts stretch over the bar (a surface root stacks its
+        // children): bare background is under the topmost of them.
+        let hit = r.hit(BAR, LogicalPoint::new(700.0, 30.0));
+        assert_eq!(hit.len(), 2, "{hit:?}");
+        assert_eq!(hit[1], root);
         assert!(r.hit(SurfaceId(99), LogicalPoint::new(1.0, 1.0)).is_empty());
     }
 }

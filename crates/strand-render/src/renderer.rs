@@ -6,12 +6,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use strand_scene::{
-    Damage, LogicalPoint, NodeId, NodeKind, PaintTarget, Painter, Point, Prop, Scale, SceneDiff,
-    SceneOp, Size, SurfaceChange, SurfaceId, SurfaceSpec, TokenScope,
+    Damage, Edge, Insets, LogicalPoint, LogicalSize, NodeId, NodeKind, PaintTarget, Painter, Prop,
+    PropValue, Scale, SceneDiff, SceneOp, Size, SurfaceChange, SurfaceId, SurfaceSpec, TokenScope,
 };
 use strand_text::{TextEngine, TextError, TextKey, TextLayout, TextRequest, TextWorker};
 
-use crate::flatten::{Flattened, NodeRecord, Shaped, TextSpec, flatten, scope_tables};
+use crate::flatten::{
+    Flattened, HitBox, NodeRecord, Shaped, TextSpec, flatten, natural_texts, pick, scope_tables,
+};
+use crate::layout::{Boxes, RootSize, ScrollState, TextSizes, layout};
 use crate::raster::{AtlasMirror, Raster};
 use crate::tree::{SceneError, SceneTree};
 
@@ -156,12 +159,26 @@ struct SurfaceState {
     cache: Option<Flattened>,
     /// The text slots the last flatten wanted.
     wanted: Vec<TextSlot>,
+    /// The last layout pass, reused until something layout reads changes.
+    boxes: Option<Boxes>,
+    /// Something layout reads changed since `boxes` was computed.
+    layout_dirty: bool,
+    /// Hit shapes of the last painted frame, in paint order.
+    hits: Vec<HitBox>,
+    /// How far shadows reach past the root's box (from its spec).
+    overhang: strand_scene::Insets,
 }
 
 impl SurfaceState {
     fn mark_dirty(&mut self) {
         self.dirty = true;
         self.cache = None;
+    }
+
+    /// Something layout reads changed: lay out again before painting.
+    fn mark_layout(&mut self) {
+        self.mark_dirty();
+        self.layout_dirty = true;
     }
 
     /// Takes a new size and scale; returns true if the scale changed.
@@ -176,7 +193,7 @@ impl SurfaceState {
         self.size = size;
         self.scale = scale;
         self.valid = false;
-        self.mark_dirty();
+        self.mark_layout();
         rescaled
     }
 }
@@ -203,6 +220,68 @@ pub struct Renderer {
     first_frame_wait: Duration,
     new_text_wait: Duration,
     busy_window: Duration,
+    /// Scroll offsets and list row heights, by `scroll`/`list` node.
+    scrolls: HashMap<NodeId, ScrollState>,
+    /// Layout passes run (tests: paint-only changes run none).
+    layout_passes: u64,
+    /// Laid-out sizes not yet handed to logic (`self.width`), and the
+    /// last size handed per node.
+    facts: Vec<(NodeId, f32, f32)>,
+    facts_sent: HashMap<NodeId, (f32, f32)>,
+    /// Text slots content sizing of surfaces asks for (kept by pruning).
+    spec_wanted: HashMap<NodeId, Vec<TextSlot>>,
+    /// Surface nodes whose content size or overhang may have changed.
+    spec_dirty: BTreeSet<NodeId>,
+}
+
+/// Delivered text layouts as layout measures them.
+struct TextInfo<'a> {
+    shaped: &'a HashMap<NodeId, Vec<Shaped>>,
+    scale: Scale,
+}
+
+impl TextSizes for TextInfo<'_> {
+    fn natural(&self, node: NodeId) -> Option<strand_scene::LogicalSize> {
+        pick(self.shaped.get(&node)?, self.scale, None).map(|l| l.size)
+    }
+
+    fn fitted(&self, node: NodeId, width: f32) -> Option<strand_scene::LogicalSize> {
+        pick(self.shaped.get(&node)?, self.scale, Some(width)).map(|l| l.size)
+    }
+}
+
+/// True for props layout reads: a change to one relayouts its surface;
+/// any other prop (colours, `x`/`y`, opacity, shadows) only repaints.
+pub fn affects_layout(prop: Prop) -> bool {
+    use Prop::*;
+    matches!(
+        prop,
+        Width
+            | Height
+            | Size
+            | MinWidth
+            | MaxWidth
+            | MinHeight
+            | MaxHeight
+            | Pad
+            | Margin
+            | Gap
+            | Grow
+            | Shrink
+            | Align
+            | Justify
+            | Place
+            | Columns
+            | Edge
+            | Text
+            | Font
+            | Weight
+            | Ellipsis
+            | MaxLines
+            | Markup
+            | Marks
+            | Tokens
+    )
 }
 
 impl Renderer {
@@ -223,6 +302,94 @@ impl Renderer {
             first_frame_wait: FIRST_FRAME_TEXT_WAIT,
             new_text_wait: NEW_TEXT_WAIT,
             busy_window: BUSY_WINDOW,
+            scrolls: HashMap::new(),
+            layout_passes: 0,
+            facts: Vec::new(),
+            facts_sent: HashMap::new(),
+            spec_wanted: HashMap::new(),
+            spec_dirty: BTreeSet::new(),
+        }
+    }
+
+    /// Layout passes run so far (paint-only changes run none).
+    pub fn layout_passes(&self) -> u64 {
+        self.layout_passes
+    }
+
+    /// The last layout of `surface`: every laid-out node's box in
+    /// surface logical pixels (before paint offsets).
+    pub fn boxes(&self, surface: SurfaceId) -> Option<&Boxes> {
+        self.surfaces.get(&surface)?.boxes.as_ref()
+    }
+
+    /// Laid-out sizes that changed since the last call, `(node, width,
+    /// height)` in logical pixels: what logic's `self.width` and
+    /// container queries read. A node shown on several surfaces reports
+    /// the size of the last one laid out.
+    pub fn take_layout_facts(&mut self) -> Vec<(NodeId, f32, f32)> {
+        std::mem::take(&mut self.facts)
+    }
+
+    /// Scrolls the innermost `scroll` or `list` under `point` of
+    /// `surface` (in its last frame) by `dy` logical pixels. Returns the
+    /// node scrolled, if it moved.
+    pub fn scroll(&mut self, surface: SurfaceId, point: LogicalPoint, dy: f32) -> Option<NodeId> {
+        let chain = self.hit(surface, point);
+        let id = chain.into_iter().find(|n| {
+            self.tree
+                .get(*n)
+                .is_some_and(|n| matches!(n.kind, NodeKind::Scroll | NodeKind::List))
+        })?;
+        let moved = self.scrolls.entry(id).or_default().scroll_by(dy);
+        if !moved {
+            return None;
+        }
+        let root = self.tree.root_of(id);
+        for s in self.surfaces.values_mut() {
+            if Some(s.root) == root {
+                s.mark_layout();
+            }
+        }
+        Some(id)
+    }
+
+    /// Scrolls list or scroll `id` so that its child `row` is in view.
+    pub fn scroll_into_view(&mut self, id: NodeId, row: NodeId) {
+        let Some(node) = self.tree.get(id) else {
+            return;
+        };
+        let st = self.scrolls.entry(id).or_default();
+        let est = if st.heights.is_empty() {
+            crate::layout::LIST_ROW_ESTIMATE
+        } else {
+            st.heights.values().sum::<f32>() / st.heights.len() as f32
+        };
+        let gap = node
+            .get(Prop::Gap)
+            .and_then(PropValue::as_number)
+            .unwrap_or(0.0)
+            .max(0.0);
+        let mut y = 0.0;
+        for c in &node.children {
+            let h = st.heights.get(c).copied().unwrap_or(est);
+            if *c == row {
+                let before = st.offset;
+                if y < st.offset {
+                    st.offset = y;
+                } else if y + h > st.offset + st.viewport {
+                    st.offset = y + h - st.viewport;
+                }
+                if st.offset != before {
+                    let root = self.tree.root_of(id);
+                    for s in self.surfaces.values_mut() {
+                        if Some(s.root) == root {
+                            s.mark_layout();
+                        }
+                    }
+                }
+                return;
+            }
+            y += h + gap;
         }
     }
 
@@ -269,17 +436,101 @@ impl Renderer {
         self.atlas.bytes(scale)
     }
 
-    /// Re-resolves every surface spec and records what changed.
+    /// Re-resolves every surface spec and records what changed. A
+    /// surface with no size of its own (a panel, OSD or popup without
+    /// `width`/`height`, a bar without a thickness) is sized by its
+    /// content, laid out on its own; every surface reports how far its
+    /// shadows reach past its box (`SurfaceSpec::overhang`).
     fn refresh_specs(&mut self) {
-        let tree = &self.tree;
+        let dirty = std::mem::take(&mut self.spec_dirty);
+        let layouts = (!dirty.is_empty()).then(|| self.shaped());
+        let ids: Vec<NodeId> = self.tree.surface_nodes().collect();
         let mut live = BTreeSet::new();
-        for id in tree.surface_nodes() {
-            let Some(node) = tree.get(id) else { continue };
-            let tables = scope_tables(tree, id);
+        let mut requests = Vec::new();
+        for id in ids {
+            let Some(node) = self.tree.get(id) else {
+                continue;
+            };
+            let tables = scope_tables(&self.tree, id);
             let scope = TokenScope::new(&tables);
-            let spec =
+            let mut spec =
                 SurfaceSpec::resolve(node.kind, |p| node.get(p).and_then(|v| scope.resolve(v)));
             live.insert(id);
+            let bar = spec.kind == NodeKind::Bar;
+            let vertical = matches!(spec.edge, Some(Edge::Left | Edge::Right));
+            let content_sized = if bar {
+                if vertical {
+                    spec.width.is_none()
+                } else {
+                    spec.height.is_none()
+                }
+            } else {
+                spec.width.is_none() || spec.height.is_none()
+            };
+            // A surface already showing this node: its scale, and for a bar
+            // the length the compositor gave it.
+            let shown = self.surfaces.values().find(|s| s.root == id);
+            let scale = shown.map_or(Scale::ONE, |s| s.scale);
+            let old = self.specs.get(&id);
+            let (size, overhang) = match (&layouts, old) {
+                (Some(layouts), _) if dirty.contains(&id) => {
+                    let along = shown.map(|s| {
+                        let l = s.scale.logical_size(s.size);
+                        let o = s.overhang;
+                        if vertical {
+                            l.h - o.top - o.bottom
+                        } else {
+                            l.w - o.left - o.right
+                        }
+                    });
+                    let (w, h) = match (bar, vertical) {
+                        (true, false) => (along, spec.height),
+                        (true, true) => (spec.width, along),
+                        _ => (spec.width, spec.height),
+                    };
+                    let info = TextInfo {
+                        shaped: layouts,
+                        scale,
+                    };
+                    let b = layout(
+                        &self.tree,
+                        id,
+                        RootSize::Content {
+                            width: w,
+                            height: h,
+                        },
+                        &info,
+                        &mut self.scrolls,
+                    );
+                    self.layout_passes += 1;
+                    if content_sized {
+                        let r = natural_texts(&self.tree, id, scale);
+                        self.spec_wanted
+                            .insert(id, r.iter().map(|(n, t)| TextSlot::of(*n, t)).collect());
+                        requests.extend(r);
+                    } else {
+                        self.spec_wanted.remove(&id);
+                    }
+                    (b.size, b.overhang)
+                }
+                (_, Some(old)) => (
+                    LogicalSize::new(old.width.unwrap_or(0.0), old.height.unwrap_or(0.0)),
+                    old.overhang,
+                ),
+                _ => (LogicalSize::default(), Insets::default()),
+            };
+            spec.overhang = overhang;
+            if content_sized {
+                let (w, h) = (size.w.ceil().max(1.0), size.h.ceil().max(1.0));
+                match (bar, vertical) {
+                    (true, false) => spec.height = Some(h),
+                    (true, true) => spec.width = Some(w),
+                    _ => {
+                        spec.width.get_or_insert(w);
+                        spec.height.get_or_insert(h);
+                    }
+                }
+            }
             let change = match self.specs.get(&id) {
                 None => Some(SurfaceChange::Created(spec.clone())),
                 Some(old) if *old != spec => Some(SurfaceChange::Updated {
@@ -289,6 +540,13 @@ impl Renderer {
                 Some(_) => None,
             };
             if let Some(c) = change {
+                // Shown surfaces lay out again inside the new overhang.
+                for s in self.surfaces.values_mut() {
+                    if s.root == id && s.overhang != spec.overhang {
+                        s.overhang = spec.overhang;
+                        s.mark_layout();
+                    }
+                }
                 self.surface_changes.push((id, c));
                 self.specs.insert(id, spec);
             }
@@ -302,6 +560,13 @@ impl Renderer {
         for id in gone {
             self.specs.remove(&id);
             self.surface_changes.push((id, SurfaceChange::Removed));
+        }
+        self.spec_wanted.retain(|id, _| live.contains(id));
+        if !requests.is_empty() && self.request_text(&requests) {
+            // Shaped inline: size the surfaces with it at once.
+            self.spec_dirty
+                .extend(requests.iter().filter_map(|(n, _)| self.tree.root_of(*n)));
+            self.refresh_specs();
         }
     }
 
@@ -332,6 +597,14 @@ impl Renderer {
                 time: Duration::ZERO,
                 cache: None,
                 wanted: Vec::new(),
+                boxes: None,
+                layout_dirty: true,
+                hits: Vec::new(),
+                overhang: self
+                    .specs
+                    .get(&root)
+                    .map(|s| s.overhang)
+                    .unwrap_or_default(),
             },
         );
         self.raster.set_surfaces(self.surfaces.len());
@@ -382,7 +655,7 @@ impl Renderer {
     /// slot as its stand-in: it is marked dirty (its cache cleared) so it
     /// stops drawing it. Returns those surfaces.
     fn prune_texts(&mut self) -> Vec<SurfaceId> {
-        let mut keep: HashSet<TextSlot> = HashSet::new();
+        let mut keep: HashSet<TextSlot> = self.spec_wanted.values().flatten().copied().collect();
         let mut standing_in: HashSet<NodeId> = HashSet::new();
         for s in self.surfaces.values() {
             for slot in &s.wanted {
@@ -488,41 +761,24 @@ impl Renderer {
 
     /// The nodes under the logical `point` of `surface` in its last
     /// painted frame, innermost first, ending at the surface's root (just
-    /// the root when nothing drawn is there). A node is hit where it
-    /// painted (until layout boxes land in M2, a container with no paint
-    /// of its own is hit through its children: the chain still names
-    /// it). Empty for an unknown surface.
+    /// the root when nothing is there). A node is hit inside its laid-out
+    /// rounded box, grown by `hit: grow(n)` and cut by the clip of a
+    /// `scroll`, `list` or `clip: true` ancestor; the topmost in paint
+    /// order wins (children over their parent, later siblings over
+    /// earlier ones). Shadows are not part of a node's shape. Empty for an
+    /// unknown surface.
     pub fn hit(&self, surface: SurfaceId, point: LogicalPoint) -> Vec<NodeId> {
         let Some(s) = self.surfaces.get(&surface) else {
             return Vec::new();
         };
         let k = s.scale.as_f64();
-        let p = Point::new(
-            (point.x as f64 * k).floor().clamp(-1e9, 1e9) as i32,
-            (point.y as f64 * k).floor().clamp(-1e9, 1e9) as i32,
-        );
-        // The topmost hit node in paint order: children paint over their
-        // parent and later siblings over earlier ones, so the walk goes
-        // through children last-first and takes the first hit.
-        fn topmost(
-            tree: &SceneTree,
-            records: &BTreeMap<NodeId, NodeRecord>,
-            id: NodeId,
-            p: Point,
-        ) -> Option<NodeId> {
-            if let Some(n) = tree.get(id) {
-                for &c in n.children.iter().rev() {
-                    if let Some(h) = topmost(tree, records, c, p) {
-                        return Some(h);
-                    }
-                }
-            }
-            records
-                .get(&id)
-                .filter(|r| r.bounds.w != 0 && r.bounds.h != 0 && r.bounds.contains(p))
-                .map(|_| id)
-        }
-        let best = topmost(&self.tree, &s.records, s.root, p);
+        let (x, y) = (point.x as f64 * k, point.y as f64 * k);
+        let best = s
+            .hits
+            .iter()
+            .rev()
+            .find(|h| h.contains(x, y))
+            .map(|h| h.node);
         let mut chain = Vec::new();
         let mut cur = best.unwrap_or(s.root);
         loop {
@@ -553,29 +809,55 @@ impl Renderer {
     pub fn apply(&mut self, diff: SceneDiff) -> Vec<SceneError> {
         let mut errors = Vec::new();
         // Surface roots whose subtree an op touches; `None` means all.
+        // `relayout`: those whose layout it may change (anything but a
+        // paint-only prop).
         let mut touched: Option<Vec<NodeId>> = Some(Vec::new());
+        let mut relayout: Option<Vec<NodeId>> = Some(Vec::new());
         for op in diff.ops {
             // Where the node painted before the op, and the node whose
             // root to look up after it.
-            let (before, after) = match &op {
-                SceneOp::Create { id, .. } => (None, Some(*id)),
-                SceneOp::Remove { id } => (self.tree.root_of(*id), None),
-                SceneOp::SetProp { id, .. } => (self.tree.root_of(*id), None),
-                SceneOp::Move { id, .. } => (self.tree.root_of(*id), Some(*id)),
+            let (before, after, shapes) = match &op {
+                SceneOp::Create { id, .. } => (None, Some(*id), true),
+                SceneOp::Remove { id } => (self.tree.root_of(*id), None, true),
+                SceneOp::SetProp { id, prop, .. } => {
+                    (self.tree.root_of(*id), None, affects_layout(*prop))
+                }
+                SceneOp::Move { id, .. } => (self.tree.root_of(*id), Some(*id), true),
                 SceneOp::SetTokens { .. } => {
                     touched = None;
-                    (None, None)
+                    relayout = None;
+                    (None, None, true)
                 }
             };
+            // A shadow changes only the overhang a surface asks for.
+            let shadow = matches!(
+                &op,
+                SceneOp::SetProp {
+                    prop: Prop::Shadow,
+                    ..
+                }
+            );
             match self.tree.apply_op(op) {
                 Ok(()) => {
+                    let roots: Vec<NodeId> = before
+                        .into_iter()
+                        .chain(after.and_then(|id| self.tree.root_of(id)))
+                        .collect();
                     if let Some(t) = &mut touched {
-                        t.extend(before);
-                        t.extend(after.and_then(|id| self.tree.root_of(id)));
+                        t.extend(roots.iter().copied());
+                    }
+                    if shapes && let Some(t) = &mut relayout {
+                        t.extend(roots.iter().copied());
+                    }
+                    if shapes || shadow {
+                        self.spec_dirty.extend(roots);
                     }
                 }
                 Err(e) => errors.push(e),
             }
+        }
+        if relayout.is_none() {
+            self.spec_dirty.extend(self.tree.surface_nodes());
         }
         // Drop text state of nodes that are gone or no longer show text.
         let tree = &self.tree;
@@ -596,6 +878,9 @@ impl Renderer {
         }
         let texts = &self.texts;
         self.pending.retain(|_, slot| texts.contains_key(slot));
+        let tree = &self.tree;
+        self.facts_sent.retain(|n, _| tree.contains(*n));
+        self.scrolls.retain(|n, _| tree.contains(*n));
         // A surface nested in a touched one (a popup in a bar) inherits
         // from it, so it is touched too; `update` clears it again if
         // nothing it draws changed.
@@ -604,15 +889,18 @@ impl Renderer {
         // detached.
         let tree = &self.tree;
         for s in self.surfaces.values_mut() {
-            if !tree.contains(s.root)
-                || touched
-                    .as_ref()
+            let hit = |t: &Option<Vec<NodeId>>| {
+                t.as_ref()
                     .is_none_or(|t| t.iter().any(|r| tree.is_ancestor(*r, s.root)))
-            {
+            };
+            if !tree.contains(s.root) || hit(&relayout) {
+                s.mark_layout();
+            } else if hit(&touched) {
                 s.mark_dirty();
             }
         }
-        self.refresh_specs();
+        // `update` refreshes the specs (after collecting delivered text,
+        // so nothing asked for here can already be answered).
         self.update();
         errors
     }
@@ -644,6 +932,7 @@ impl Renderer {
     /// being dirty, so it asks for no frame until the layout arrives.
     pub fn update(&mut self) {
         self.poll_text();
+        self.refresh_specs();
         let ids: Vec<SurfaceId> = self
             .surfaces
             .iter()
@@ -805,13 +1094,15 @@ impl Renderer {
             // The layout it replaced released its atlas pages.
             self.refresh_retries();
         }
-        // Surfaces at other scales may draw it resampled meanwhile.
+        // Surfaces at other scales may draw it resampled meanwhile; its
+        // size feeds layout, and a content-sized surface's size.
         let root = self.tree.root_of(slot.node);
         for s in self.surfaces.values_mut() {
             if Some(s.root) == root {
-                s.mark_dirty();
+                s.mark_layout();
             }
         }
+        self.spec_dirty.extend(root);
     }
 
     /// The text worker restarted its engine: every mirrored page and every
@@ -835,7 +1126,7 @@ impl Renderer {
             s.valid = false;
             s.painted = false;
             s.wait_until = Some(until);
-            s.mark_dirty();
+            s.mark_layout();
         }
     }
 
@@ -866,12 +1157,8 @@ impl Renderer {
     /// again until text is stable.
     fn flatten_surface(&mut self, id: SurfaceId) -> Flattened {
         let mut stable = None;
-        for _ in 0..4 {
-            let Some(s) = self.surfaces.get(&id) else {
-                return Flattened::default();
-            };
-            let layouts = self.shaped();
-            let flat = flatten(&self.tree, s.root, s.size, s.scale, &layouts);
+        for _ in 0..6 {
+            let flat = self.flatten_now(id);
             if !self.request_text(&flat.text) {
                 stable = Some(flat);
                 break;
@@ -879,13 +1166,7 @@ impl Renderer {
         }
         let f = match stable {
             Some(f) => f,
-            None => {
-                let Some(s) = self.surfaces.get(&id) else {
-                    return Flattened::default();
-                };
-                let layouts = self.shaped();
-                flatten(&self.tree, s.root, s.size, s.scale, &layouts)
-            }
+            None => self.flatten_now(id),
         };
         // Once every text here has a layout at this scale, the previous
         // scale's layouts are no longer needed as stand-ins.
@@ -907,13 +1188,69 @@ impl Renderer {
         }
         if self.prune_texts().contains(&id) {
             // `f` drew a stand-in that is gone now.
-            let Some(s) = self.surfaces.get(&id) else {
-                return Flattened::default();
-            };
-            let layouts = self.shaped();
-            return flatten(&self.tree, s.root, s.size, s.scale, &layouts);
+            return self.flatten_now(id);
         }
         f
+    }
+
+    /// Lays `id` out if anything layout reads changed (at most one extra
+    /// pass, when a list measured rows it had only estimated), then
+    /// flattens it.
+    fn flatten_now(&mut self, id: SurfaceId) -> Flattened {
+        let layouts = self.shaped();
+        let Some(s) = self.surfaces.get(&id) else {
+            return Flattened::default();
+        };
+        if s.layout_dirty || s.boxes.is_none() {
+            let logical = s.scale.logical_size(s.size);
+            let o = s.overhang;
+            let frame = strand_scene::LogicalRect::new(
+                o.left,
+                o.top,
+                (logical.w - o.left - o.right).max(0.0),
+                (logical.h - o.top - o.bottom).max(0.0),
+            );
+            let info = TextInfo {
+                shaped: &layouts,
+                scale: s.scale,
+            };
+            let root = s.root;
+            let mut boxes = layout(
+                &self.tree,
+                root,
+                RootSize::Fixed(frame),
+                &info,
+                &mut self.scrolls,
+            );
+            self.layout_passes += 1;
+            if boxes.unsettled {
+                boxes = layout(
+                    &self.tree,
+                    root,
+                    RootSize::Fixed(frame),
+                    &info,
+                    &mut self.scrolls,
+                );
+                self.layout_passes += 1;
+            }
+            for (node, r) in &boxes.rects {
+                let size = (r.w, r.h);
+                if self.facts_sent.get(node) != Some(&size) {
+                    self.facts_sent.insert(*node, size);
+                    self.facts.push((*node, r.w, r.h));
+                }
+            }
+            if let Some(s) = self.surfaces.get_mut(&id) {
+                s.boxes = Some(boxes);
+                s.layout_dirty = false;
+            }
+        }
+        let Some(s) = self.surfaces.get(&id) else {
+            return Flattened::default();
+        };
+        let empty = Boxes::default();
+        let boxes = s.boxes.as_ref().unwrap_or(&empty);
+        flatten(&self.tree, s.root, s.size, s.scale, &layouts, boxes)
     }
 
     /// Sends requests for text whose spec changed. Returns true if a layout
@@ -1036,6 +1373,7 @@ impl Painter for Renderer {
             frame = Damage::full(target.size);
         }
         s.records = f.records.clone();
+        s.hits = f.hits.clone();
 
         // Widen by the buffer's age: it misses the last `age - 1` frames.
         let age = target.age as usize;
@@ -1179,7 +1517,7 @@ mod tests {
                 b == alone(std::slice::from_ref(&d), root, narrow),
                 "{align}: narrow boot"
             );
-            assert_eq!(r.texts.len(), 2, "one layout per width");
+            assert_eq!(r.texts.len(), 1, "one unbounded layout for both widths");
 
             let mut tick = SceneDiff::new();
             tick.set(txt, Prop::Text, PropValue::Text("13:00".into()));
@@ -1195,9 +1533,7 @@ mod tests {
             assert!(na == alone(&both, root, wide), "{align}: wide tick");
             assert!(nb == alone(&both, root, narrow), "{align}: narrow tick");
             assert!(dn.area() < narrow.w as u64 * 20 && dw.area() < wide.w as u64 * 20);
-            assert_eq!(r.texts.len(), 2, "replaced layouts are not kept");
-
-            // The narrow output goes: its width's layout is dropped.
+            assert_eq!(r.texts.len(), 1, "replaced layouts are not kept");
             r.detach_surface(SurfaceId(2));
             assert_eq!(r.texts.len(), 1);
         }
@@ -1308,13 +1644,29 @@ mod tests {
     #[test]
     fn a_poisoned_slot_keeps_no_stand_ins() {
         let mut r = Renderer::new(worker());
-        let (d, root, txt) = aligned_text("12:59", "center");
+        let (mut d, root, txt) = aligned_text(
+            "a window title much too long to fit on either of the two bars",
+            "center",
+        );
+        d.set(txt, Prop::Ellipsis, PropValue::Keyword("end".into()));
         assert!(r.apply(d).is_empty());
         r.attach_surface(SurfaceId(1), root);
         r.attach_surface(SurfaceId(2), root);
         r.configure_surface(SurfaceId(1), Size::new(200, 20), Scale::ONE);
         r.configure_surface(SurfaceId(2), Size::new(120, 20), Scale::ONE);
+        // The unbounded layout first: then each width asks for its own.
+        let start = std::time::Instant::now();
+        while r
+            .texts
+            .iter()
+            .all(|(s, t)| s.width.is_some() || t.layout.is_none())
+        {
+            r.poll_text();
+            std::thread::sleep(Duration::from_millis(1));
+            assert!(start.elapsed() < Duration::from_secs(10));
+        }
         for id in [1, 2] {
+            r.surfaces.get_mut(&SurfaceId(id)).unwrap().cache = None;
             r.flatten_surface(SurfaceId(id));
         }
         // The engine crashes on the wide one's request.
@@ -1345,7 +1697,11 @@ mod tests {
         assert!(s1.cache.is_some());
         r.detach_surface(SurfaceId(2));
         assert_eq!(slot(&r, 120.0), None, "kept as a stand-in for nothing");
-        assert_eq!(r.texts.len(), 1);
+        assert_eq!(
+            r.texts.len(),
+            2,
+            "the unbounded layout and the poisoned one"
+        );
         // Surface 1 drew that layout as its stand-in: it must not keep
         // showing glyphs that are gone.
         let s1 = &r.surfaces[&SurfaceId(1)];

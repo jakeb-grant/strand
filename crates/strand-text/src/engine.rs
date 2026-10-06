@@ -305,10 +305,20 @@ impl TextEngine {
                 };
                 let skew = synthesis.skew().unwrap_or(0.0);
                 let brush = glyph_run.style().brush as usize;
-                let color = brush
-                    .checked_sub(1)
-                    .and_then(|i| spans.get(i))
-                    .and_then(|sp| sp.color);
+                let span = brush.checked_sub(1).and_then(|i| spans.get(i));
+                let color = span.and_then(|sp| sp.color);
+                let underline = span.is_some_and(|sp| sp.underline).then(|| {
+                    let m = run.metrics();
+                    let top = (glyph_run.baseline() - m.underline_offset).round();
+                    let x0 = glyph_run.offset().floor();
+                    let x1 = (glyph_run.offset() + glyph_run.advance()).ceil();
+                    Rect::new(
+                        x0 as i32,
+                        top as i32,
+                        (x1 - x0).max(0.0) as u32,
+                        m.underline_size.round().max(1.0) as u32,
+                    )
+                });
                 let font_id = font.data.id();
                 let cache_key = *self.font_keys.entry((font_id, font.index)).or_default();
                 let Some(mut font_ref) = FontRef::from_index(font.data.data(), font.index as usize)
@@ -380,11 +390,15 @@ impl TextEngine {
                     ink = ink.union(Rect::new(placed.x, placed.y, slot.w as u32, slot.h as u32));
                     glyphs.push(placed);
                 }
-                if !glyphs.is_empty() {
+                if let Some(u) = underline {
+                    ink = ink.union(u);
+                }
+                if !glyphs.is_empty() || underline.is_some() {
                     runs.push(GlyphRun {
                         font_size,
                         color,
                         glyphs,
+                        underline,
                     });
                 }
             }
@@ -446,7 +460,10 @@ impl Shape<'_> {
                 );
             }
             if sp.italic {
-                builder.push(StyleProperty::FontStyle(FontStyle::Italic), r);
+                builder.push(StyleProperty::FontStyle(FontStyle::Italic), r.clone());
+            }
+            if sp.underline {
+                builder.push(StyleProperty::Underline(true), r);
             }
         }
         let mut layout: parley::Layout<u32> = builder.build(text);

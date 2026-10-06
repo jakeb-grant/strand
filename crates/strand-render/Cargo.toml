@@ -13,6 +13,7 @@ strand-text.workspace = true
 # Single-threaded f32 pipeline only: no worker threads (vello's filters
 # panic multi-threaded), and none of the default png/text extras.
 vello_cpu = { version = "0.3", default-features = false, features = ["std", "f32_pipeline"] }
+taffy = { version = "0.14", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "content_size"] }
 
 [dev-dependencies]
 png = "0.18"

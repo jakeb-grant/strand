@@ -274,6 +274,9 @@ impl Forward {
                     },
                 });
             }
+            InputEvent::KeyboardEnter { .. }
+            | InputEvent::KeyboardLeave { .. }
+            | InputEvent::Key { .. } => {}
         }
     }
 

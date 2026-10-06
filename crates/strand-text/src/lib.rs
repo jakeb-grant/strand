@@ -69,6 +69,9 @@ pub struct TextSpan {
     /// Overrides the weight (1–1000).
     pub weight: Option<u16>,
     pub italic: bool,
+    /// Underlines these glyphs (markup `<u>` and links): the run carries
+    /// the line in [`GlyphRun::underline`].
+    pub underline: bool,
     /// Overrides the paint colour of these glyphs ([`GlyphRun::color`]).
     pub color: Option<Color>,
 }
@@ -122,6 +125,9 @@ pub struct GlyphRun {
     /// with the node's colour.
     pub color: Option<Color>,
     pub glyphs: Vec<PlacedGlyph>,
+    /// The underline of an underlined span, physical pixels relative to
+    /// the layout origin; painted in the run's colour.
+    pub underline: Option<Rect>,
 }
 
 /// A shaped, rasterised paragraph.

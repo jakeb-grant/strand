@@ -911,10 +911,10 @@ fn strand_run_reloads_live_with_state_kept() {
     assert_eq!(bg(&sway), [0x80, 0x20, 0x20]);
 
     // 3. A node added, then removed: more ink on the bar, then exactly
-    // as before. Until flex layout (M2) every text is placed by its own
-    // x/y, so all of them, the clock included, draw (in the default dark
-    // colour) at the bar's top left: start on a fresh minute so the clock
-    // does not tick between the shots, and keep away from the pointer.
+    // as before. The added `end` section lays out in the split's end
+    // column, at the bar's right end: start on a fresh minute so the
+    // clock does not tick between the shots, and keep away from the
+    // pointer.
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -923,7 +923,7 @@ fn strand_run_reloads_live_with_state_kept() {
     if secs > 50 {
         std::thread::sleep(Duration::from_secs(61 - secs));
     }
-    let end_ink = |sway: &Sway| Shot::take(sway, "HEADLESS-1").ink(0..1600, 40);
+    let end_ink = |sway: &Sway| Shot::take(sway, "HEADLESS-1").ink(1900..2560, 40);
     let before = end_ink(&sway);
     let added = "    end { text \"added\" }\n";
     save(&file, &hello("#208040", "#802020", added));

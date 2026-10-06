@@ -153,6 +153,12 @@ props! {
     Margin = "margin": Spatial,
     Gap = "gap": Spatial,
     Grow = "grow": Spatial,
+    /// How much it gives up when its row or column is too small:
+    /// `shrink: 0` keeps its size (default 1, as CSS).
+    Shrink = "shrink": Spatial,
+    /// Main-axis distribution of a container's children: `start`,
+    /// `center`, `end`, `space_between`, `space_around`, `space_evenly`.
+    Justify = "justify": Snap,
     Align = "align": Snap,
     Place = "place": Snap,
     Columns = "columns": Snap,
@@ -495,6 +501,9 @@ pub enum PropValue {
         name: String,
         args: Vec<PropValue>,
     },
+    /// Another scene node, named by its `id:` (`nav: results` routes arrow
+    /// keys from an `input` to that `list`).
+    Node(crate::id::NodeId),
 }
 
 impl PropValue {

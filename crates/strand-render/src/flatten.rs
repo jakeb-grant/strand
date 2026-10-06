@@ -18,6 +18,7 @@ use strand_scene::{
 use strand_text::{Ellipsis, TextAlign, TextLayout, TextSpan, TextStyle};
 use vello_cpu::kurbo::{self, BezPath, RoundedRect, RoundedRectRadii, Shape};
 
+use crate::layout::Boxes;
 use crate::tree::{Node, SceneTree};
 
 /// Curve flattening tolerance in physical pixels.
@@ -50,34 +51,63 @@ pub struct Shaped {
     pub max_width: Option<f32>,
 }
 
-/// The layout to draw for a node whose spec wants `scale` and `max_width`,
-/// and the logical x shift that re-aligns it. Prefers an exact match, then
-/// the same width at another scale (drawn resampled), then a stand-in of
-/// another width, shifted so its `center`/`end` alignment lands where the
-/// right width's would.
-fn pick_layout(
+/// The delivered layout of a node for line box `width` (`None`: shaped
+/// unbounded), preferring `scale`, else the same width at another scale
+/// (drawn resampled).
+pub(crate) fn pick(shaped: &[Shaped], scale: Scale, width: Option<f32>) -> Option<Arc<TextLayout>> {
+    let same_w = |c: &&Shaped| c.max_width == width;
+    shaped
+        .iter()
+        .find(|c| same_w(c) && c.layout.scale == scale)
+        .or_else(|| shaped.iter().find(same_w))
+        .map(|c| c.layout.clone())
+}
+
+/// A layout to draw and its logical offset in the node's box.
+pub(crate) type PlacedText = (Arc<TextLayout>, f32, f32);
+
+/// Where a text node's glyphs go in its box: the layout to draw and the
+/// logical offset of its origin from the box's top-left. A text whose
+/// unbounded layout fits its box is drawn from that layout, aligned in
+/// the box by `align`; a narrower box draws the layout shaped for its
+/// width (wrapped or ellipsised, aligned by the text engine), or the
+/// unbounded one while that is being shaped. `align: center` also
+/// centres it vertically in a taller box; otherwise it sits at the top.
+pub(crate) fn place_text(
     shaped: &[Shaped],
     scale: Scale,
-    max_width: Option<f32>,
+    rect: LogicalRect,
     align: TextAlign,
-) -> Option<(Arc<TextLayout>, f32)> {
-    let same_w = |c: &&Shaped| c.max_width == max_width;
-    let same_s = |c: &&Shaped| c.layout.scale == scale;
-    let c = shaped
-        .iter()
-        .find(|c| same_w(c) && same_s(c))
-        .or_else(|| shaped.iter().find(same_w))
-        .or_else(|| shaped.iter().find(same_s))
-        .or_else(|| shaped.first())?;
-    let shift = match (c.max_width, max_width) {
-        (Some(old), Some(new)) => match align {
-            TextAlign::Center => (new - old) / 2.0,
-            TextAlign::End => new - old,
+) -> (Option<f32>, Option<PlacedText>) {
+    let natural = pick(shaped, scale, None);
+    let fit = natural
+        .as_ref()
+        .is_some_and(|n| rect.w + 0.5 < n.size.w)
+        .then(|| rect.w.round().max(0.0));
+    let chosen = match fit {
+        Some(w) => pick(shaped, scale, Some(w))
+            .map(|l| (l, 0.0))
+            .or_else(|| natural.clone().map(|l| (l, 0.0))),
+        None => natural.clone().map(|l| {
+            let slack = (rect.w - l.size.w).max(0.0);
+            let dx = match align {
+                TextAlign::Start => 0.0,
+                TextAlign::Center => slack / 2.0,
+                TextAlign::End => slack,
+            };
+            (l, dx)
+        }),
+    }
+    // Nothing for this width at all yet: any layout of the node stands in.
+    .or_else(|| shaped.first().map(|c| (c.layout.clone(), 0.0)));
+    let placed = chosen.map(|(l, dx)| {
+        let dy = match align {
+            TextAlign::Center => ((rect.h - l.size.h) / 2.0).max(0.0),
             _ => 0.0,
-        },
-        _ => 0.0,
-    };
-    Some((c.layout.clone(), shift))
+        };
+        (l, dx, dy)
+    });
+    (fit, placed)
 }
 
 /// One drawing command in physical pixels.
@@ -151,6 +181,61 @@ pub struct Flattened {
     pub text: Vec<(NodeId, TextSpec)>,
     /// Where the surface root paints fully opaque pixels.
     pub opaque: Damage,
+    /// Every drawn node's hit shape, in paint order (a node before its
+    /// children, earlier siblings before later ones).
+    pub hits: Vec<HitBox>,
+}
+
+/// A node's hit shape: its rounded box in physical pixels, grown by
+/// `hit: grow(n)`, inside the clip of its ancestors.
+#[derive(Clone, Debug)]
+pub struct HitBox {
+    pub node: NodeId,
+    pub rect: kurbo::Rect,
+    pub radii: RoundedRectRadii,
+    pub clip: Rect,
+}
+
+impl HitBox {
+    /// True if the physical point `(x, y)` (a pixel centre) is inside the
+    /// rounded shape and the clip.
+    pub fn contains(&self, x: f64, y: f64) -> bool {
+        let c = self.clip;
+        if x < c.left() as f64
+            || y < c.top() as f64
+            || x >= c.right() as f64
+            || y >= c.bottom() as f64
+        {
+            return false;
+        }
+        let r = self.rect;
+        if x < r.x0 || y < r.y0 || x >= r.x1 || y >= r.y1 {
+            return false;
+        }
+        // Outside a corner's quarter circle?
+        let corner = |cx: f64, cy: f64, rad: f64| {
+            let (dx, dy) = (x - cx, y - cy);
+            dx * dx + dy * dy <= rad * rad
+        };
+        let rr = &self.radii;
+        if x < r.x0 + rr.top_left && y < r.y0 + rr.top_left {
+            return corner(r.x0 + rr.top_left, r.y0 + rr.top_left, rr.top_left);
+        }
+        if x > r.x1 - rr.top_right && y < r.y0 + rr.top_right {
+            return corner(r.x1 - rr.top_right, r.y0 + rr.top_right, rr.top_right);
+        }
+        if x > r.x1 - rr.bottom_right && y > r.y1 - rr.bottom_right {
+            return corner(
+                r.x1 - rr.bottom_right,
+                r.y1 - rr.bottom_right,
+                rr.bottom_right,
+            );
+        }
+        if x < r.x0 + rr.bottom_left && y > r.y1 - rr.bottom_left {
+            return corner(r.x0 + rr.bottom_left, r.y1 - rr.bottom_left, rr.bottom_left);
+        }
+        true
+    }
 }
 
 #[derive(Clone)]
@@ -165,6 +250,8 @@ struct Inherited<'a> {
     ctx: u64,
     /// Accumulated clip in physical pixels.
     clip: Rect,
+    /// Accumulated paint offset (`x`, `y`) of the ancestors, logical.
+    offset: (f32, f32),
 }
 
 /// Flattens the subtree under `root` for a surface of `size` at `scale`.
@@ -175,6 +262,7 @@ pub fn flatten(
     size: Size,
     scale: Scale,
     layouts: &HashMap<NodeId, Vec<Shaped>>,
+    boxes: &Boxes,
 ) -> Flattened {
     let mut out = Flattened::default();
     let Some(node) = tree.get(root) else {
@@ -187,6 +275,7 @@ pub fn flatten(
         scale,
         surface: full,
         layouts,
+        boxes,
         out: &mut out,
     };
     let mut inh = Inherited {
@@ -195,6 +284,7 @@ pub fn flatten(
         tokens: vec![&tree.tokens],
         ctx: 0,
         clip: full,
+        offset: (0.0, 0.0),
     };
     // A surface nested in another (a popup in a bar) inherits tokens,
     // colour and font from its ancestors, though it paints on its own.
@@ -207,12 +297,12 @@ pub fn flatten(
     for a in ancestors.into_iter().rev() {
         inherit(a, &mut inh);
     }
-    f.node(
-        node,
-        LogicalRect::new(0.0, 0.0, logical.w, logical.h),
-        &inh,
-        true,
-    );
+    let frame = boxes
+        .rects
+        .get(&root)
+        .copied()
+        .unwrap_or(LogicalRect::new(0.0, 0.0, logical.w, logical.h));
+    f.node(node, frame, &inh, true);
     out
 }
 
@@ -221,6 +311,7 @@ struct Flattener<'a> {
     scale: Scale,
     surface: Rect,
     layouts: &'a HashMap<NodeId, Vec<Shaped>>,
+    boxes: &'a Boxes,
     out: &'a mut Flattened,
 }
 
@@ -322,6 +413,7 @@ fn marks(
             range,
             weight: color.is_none().then_some(700),
             italic: false,
+            underline: false,
             color,
         })
         .collect()
@@ -596,6 +688,120 @@ fn hash_item(h: &mut impl Hasher, item: &Item) {
     }
 }
 
+/// The unbounded text request of a text node whose resolved props `get`
+/// reads, and its `align`: markup parsed, marks as spans, shaped at
+/// `scale` with `font`.
+fn natural_spec<'v>(
+    get: &impl Fn(Prop) -> Option<&'v PropValue>,
+    scope: &TokenScope<'_>,
+    font: &Font,
+    scale: Scale,
+) -> Option<(TextSpec, TextAlign)> {
+    let Some(PropValue::Text(text)) = get(Prop::Text) else {
+        return None;
+    };
+    let align = match get(Prop::Align) {
+        Some(PropValue::Keyword(k)) if k == "center" => TextAlign::Center,
+        Some(PropValue::Keyword(k)) if k == "end" => TextAlign::End,
+        _ => TextAlign::Start,
+    };
+    let ellipsis = match get(Prop::Ellipsis) {
+        Some(PropValue::Keyword(k)) => Ellipsis::from_name(k),
+        Some(PropValue::Bool(true)) => Some(Ellipsis::End),
+        _ => None,
+    };
+    let max_lines = number(get(Prop::MaxLines))
+        .filter(|n| *n >= 1.0)
+        .map(|n| n.min(10_000.0) as u32);
+    let accent = || match scope.lookup("accent") {
+        Some(PropValue::Color(c)) => Some(c),
+        _ => None,
+    };
+    let (shown, mut spans) = match get(Prop::Markup) {
+        Some(PropValue::Keyword(k)) if k == "basic" => crate::markup::parse(text, accent()),
+        _ => (text.clone(), Vec::new()),
+    };
+    spans.extend(marks(&shown, get(Prop::Marks), || {
+        match get(Prop::MarkColor) {
+            Some(PropValue::Color(c)) => Some(*c),
+            _ => accent(),
+        }
+    }));
+    Some((
+        TextSpec {
+            text: shown,
+            style: TextStyle {
+                font: font.clone(),
+                line_height: None,
+                align: TextAlign::Start,
+                ellipsis,
+                max_lines,
+                spans,
+            },
+            max_width: None,
+            scale,
+        },
+        align,
+    ))
+}
+
+/// The unbounded text requests of every text node under the surface node
+/// `root` (not in nested surfaces), at `scale`: what laying it out by its
+/// content measures, before any surface shows it.
+pub fn natural_texts(tree: &SceneTree, root: NodeId, scale: Scale) -> Vec<(NodeId, TextSpec)> {
+    let mut out = Vec::new();
+    let Some(node) = tree.get(root) else {
+        return out;
+    };
+    let mut inh = Inherited {
+        color: Color::BLACK,
+        font: Font::default(),
+        tokens: vec![&tree.tokens],
+        ctx: 0,
+        clip: Rect::default(),
+        offset: (0.0, 0.0),
+    };
+    let mut ancestors = Vec::new();
+    let mut up = node.parent;
+    while let Some(a) = up.and_then(|p| tree.get(p)) {
+        ancestors.push(a);
+        up = a.parent;
+    }
+    for a in ancestors.into_iter().rev() {
+        inherit(a, &mut inh);
+    }
+    fn walk<'a>(
+        tree: &'a SceneTree,
+        node: &'a Node,
+        inh: &Inherited<'a>,
+        scale: Scale,
+        out: &mut Vec<(NodeId, TextSpec)>,
+    ) {
+        let mut inh = inh.clone();
+        inherit(node, &mut inh);
+        if matches!(node.kind, NodeKind::Text | NodeKind::Button) {
+            let scope = TokenScope::new(&inh.tokens);
+            let props: Vec<(Prop, Cow<'_, PropValue>)> = node
+                .props
+                .iter()
+                .filter(|e| e.prop != Prop::Tokens)
+                .filter_map(|e| scope.resolve(&e.value).map(|v| (e.prop, v)))
+                .collect();
+            let get = |p: Prop| props.iter().find(|(q, _)| *q == p).map(|(_, v)| v.as_ref());
+            if let Some((spec, _)) = natural_spec(&get, &scope, &inh.font, scale) {
+                out.push((node.id, spec));
+            }
+        }
+        for c in &node.children {
+            if let Some(child) = tree.get(*c).filter(|n| !n.kind.is_surface()) {
+                walk(tree, child, &inh, scale, out);
+            }
+        }
+    }
+    walk(tree, node, &inh, scale, &mut out);
+    out
+}
+
 impl<'a> Flattener<'a> {
     fn push(&mut self, item: Item, bounds: Rect, sig: &mut DefaultHasher, ink: &mut Rect) {
         hash_item(sig, &item);
@@ -649,73 +855,53 @@ impl<'a> Flattener<'a> {
             font.weight = w.clamp(1.0, 1000.0) as u16;
         }
 
-        // Text shaping need, and the layout to draw meanwhile.
-        let is_text = matches!(node.kind, NodeKind::Text | NodeKind::Button);
-        let explicit_w = length(get(Prop::Width), parent.w).or(number(get(Prop::Size)));
-        let explicit_h = length(get(Prop::Height), parent.h).or(number(get(Prop::Size)));
-        let mut layout = None;
-        if is_text && let Some(PropValue::Text(text)) = get(Prop::Text) {
-            let align = match get(Prop::Align) {
-                Some(PropValue::Keyword(k)) if k == "center" => TextAlign::Center,
-                Some(PropValue::Keyword(k)) if k == "end" => TextAlign::End,
-                _ => TextAlign::Start,
-            };
-            let max_width = explicit_w
-                .or(length(get(Prop::MaxWidth), parent.w))
-                .map(|w| w.max(0.0));
-            let ellipsis = match get(Prop::Ellipsis) {
-                Some(PropValue::Keyword(k)) => Ellipsis::from_name(k),
-                Some(PropValue::Bool(true)) => Some(Ellipsis::End),
-                _ => None,
-            };
-            let max_lines = number(get(Prop::MaxLines))
-                .filter(|n| *n >= 1.0)
-                .map(|n| n.min(10_000.0) as u32);
-            let spans = marks(text, get(Prop::Marks), || match get(Prop::MarkColor) {
-                Some(PropValue::Color(c)) => Some(*c),
-                _ => match scope.lookup("accent") {
-                    Some(PropValue::Color(c)) => Some(c),
-                    _ => None,
-                },
-            });
-            self.out.text.push((
-                node.id,
-                TextSpec {
-                    text: text.clone(),
-                    style: TextStyle {
-                        font: font.clone(),
-                        line_height: None,
-                        align,
-                        ellipsis,
-                        max_lines,
-                        spans,
-                    },
-                    max_width,
-                    scale: self.scale,
-                },
-            ));
-            layout = self
-                .layouts
-                .get(&node.id)
-                .and_then(|l| pick_layout(l, self.scale, max_width, align));
-        }
-
-        // Geometry.
-        let rect = if root {
+        // Geometry: the laid-out box, moved by the paint offsets (`x`,
+        // `y`) of this node and its ancestors. A node layout did not place
+        // (a list row out of view) draws nothing.
+        let laid = if root {
             parent
         } else {
-            let (lw, lh) = layout
-                .as_ref()
-                .map_or((0.0, 0.0), |(l, _)| (l.size.w, l.size.h));
-            let x = parent.x + length(get(Prop::X), parent.w).unwrap_or(0.0);
-            let y = parent.y + length(get(Prop::Y), parent.h).unwrap_or(0.0);
-            LogicalRect::new(
-                x,
-                y,
-                explicit_w.unwrap_or(lw).max(0.0),
-                explicit_h.unwrap_or(lh).max(0.0),
-            )
+            match self.boxes.rects.get(&node.id) {
+                Some(r) => *r,
+                None => return Rect::default(),
+            }
         };
+        let own = (
+            length(get(Prop::X), laid.w).unwrap_or(0.0),
+            length(get(Prop::Y), laid.h).unwrap_or(0.0),
+        );
+        let offset = (inh.offset.0 + own.0, inh.offset.1 + own.1);
+        let rect = LogicalRect::new(
+            laid.x + offset.0,
+            laid.y + offset.1,
+            laid.w.max(0.0),
+            laid.h.max(0.0),
+        );
+
+        // Text: the unbounded layout (layout measures with it) and, for a
+        // box narrower than it, one shaped for the box's width.
+        let is_text = matches!(node.kind, NodeKind::Text | NodeKind::Button);
+        let mut layout = None;
+        if is_text && let Some((natural, align)) = natural_spec(&get, &scope, &font, self.scale) {
+            let shaped: &[Shaped] = self.layouts.get(&node.id).map_or(&[], Vec::as_slice);
+            let (fit, placed) = place_text(shaped, self.scale, rect, align);
+            self.out.text.push((node.id, natural.clone()));
+            if let Some(w) = fit {
+                self.out.text.push((
+                    node.id,
+                    TextSpec {
+                        style: TextStyle {
+                            align,
+                            ..natural.style
+                        },
+                        max_width: Some(w),
+                        ..natural
+                    },
+                ));
+            }
+            layout = placed;
+        }
+
         let phys = self.scale.snap_rect(rect);
         let frame = kurbo_rect(phys);
         let opacity = number(get(Prop::Opacity)).unwrap_or(1.0).clamp(0.0, 1.0);
@@ -795,27 +981,32 @@ impl<'a> Flattener<'a> {
             );
         }
         // Text.
-        if let Some((l, shift)) = layout {
-            // A layout from another scale is drawn resampled (see raster);
-            // one shaped for another line box width is shifted to re-align.
-            let x = phys.x + (shift as f64 * s).round().clamp(-1e7, 1e7) as i32;
+        if let Some((l, dx, dy)) = layout {
+            // A layout from another scale is drawn resampled (see raster).
+            let x = phys.x + (dx as f64 * s).round().clamp(-1e7, 1e7) as i32;
+            let y = phys.y + (dy as f64 * s).round().clamp(-1e7, 1e7) as i32;
             let k = self.scale.as_f64() / l.scale.as_f64();
             let bounds = if k == 1.0 {
-                l.ink.translate(x, phys.y)
+                l.ink.translate(x, y)
             } else {
                 cover(kurbo::Rect::new(
                     x as f64 + l.ink.left() as f64 * k,
-                    phys.y as f64 + l.ink.top() as f64 * k,
+                    y as f64 + l.ink.top() as f64 * k,
                     x as f64 + l.ink.right() as f64 * k,
-                    phys.y as f64 + l.ink.bottom() as f64 * k,
+                    y as f64 + l.ink.bottom() as f64 * k,
                 ))
                 .inflate(1)
             };
             if !bounds.is_empty() {
+                let lines: Vec<(Rect, Color)> = l
+                    .runs
+                    .iter()
+                    .filter_map(|r| Some((r.underline?, r.color.unwrap_or(color))))
+                    .collect();
                 self.push(
                     Item::Glyphs {
                         x,
-                        y: phys.y,
+                        y,
                         layout: l,
                         color,
                     },
@@ -823,6 +1014,24 @@ impl<'a> Flattener<'a> {
                     &mut sig,
                     &mut ink,
                 );
+                for (u, c) in lines {
+                    let r = kurbo::Rect::new(
+                        x as f64 + u.left() as f64 * k,
+                        y as f64 + u.top() as f64 * k,
+                        x as f64 + u.right() as f64 * k,
+                        y as f64 + u.bottom() as f64 * k,
+                    );
+                    self.push(
+                        Item::Fill {
+                            shape: FillShape::Rect(r),
+                            paint: Paint::Solid(c),
+                            frame: r,
+                        },
+                        cover(r),
+                        &mut sig,
+                        &mut ink,
+                    );
+                }
             }
         }
 
@@ -835,8 +1044,30 @@ impl<'a> Flattener<'a> {
             },
         );
 
-        // Children.
-        let clips = matches!(get(Prop::Clip), Some(PropValue::Bool(true)));
+        // Hit shape: the rounded box, grown by `hit: grow(n)`.
+        let grow = match get(Prop::Hit) {
+            Some(PropValue::Call { name, args }) if name == "grow" => {
+                args.first().and_then(|a| number(Some(a))).unwrap_or(0.0)
+            }
+            _ => 0.0,
+        }
+        .clamp(0.0, 1000.0) as f64
+            * s;
+        self.out.hits.push(HitBox {
+            node: node.id,
+            rect: frame.inflate(grow, grow),
+            radii: RoundedRectRadii::new(
+                r.top_left + grow,
+                r.top_right + grow,
+                r.bottom_right + grow,
+                r.bottom_left + grow,
+            ),
+            clip: inh.clip,
+        });
+
+        // Children. A `scroll` or `list` always clips its content.
+        let clips = matches!(get(Prop::Clip), Some(PropValue::Bool(true)))
+            || matches!(node.kind, NodeKind::Scroll | NodeKind::List);
         let mut ctx = DefaultHasher::new();
         (inh.ctx, node.epoch).hash(&mut ctx);
         hash_f32(&mut ctx, opacity);
@@ -853,6 +1084,7 @@ impl<'a> Flattener<'a> {
             tokens,
             ctx: ctx.finish(),
             clip: child_clip,
+            offset,
         };
         let mut children = Rect::default();
         if !(clips && child_clip.is_empty()) {
@@ -953,86 +1185,72 @@ mod tests {
         t
     }
 
-    /// A layout shaped for another line box width stands in shifted so its
-    /// alignment lands where the right width's would; one of the right
-    /// width (even at another scale) is preferred.
+    struct NoText;
+    impl crate::layout::TextSizes for NoText {
+        fn natural(&self, _: NodeId) -> Option<strand_scene::LogicalSize> {
+            None
+        }
+        fn fitted(&self, _: NodeId, _: f32) -> Option<strand_scene::LogicalSize> {
+            None
+        }
+    }
+
+    /// Lays out and flattens the surface `id(0)`.
+    fn flat(t: &SceneTree, size: Size, scale: Scale) -> Flattened {
+        let l = scale.logical_size(size);
+        let boxes = crate::layout::layout(
+            t,
+            id(0),
+            crate::layout::RootSize::Fixed(LogicalRect::new(0.0, 0.0, l.w, l.h)),
+            &NoText,
+            &mut HashMap::new(),
+        );
+        flatten(t, id(0), size, scale, &HashMap::new(), &boxes)
+    }
+
+    /// Text that fits its box is drawn from its unbounded layout, placed
+    /// by `align` and centred vertically; a narrower box asks for a layout
+    /// of its width and draws the unbounded one until it arrives.
     #[test]
-    fn stand_in_of_another_width_is_realigned() {
+    fn text_is_aligned_in_its_box() {
         use strand_text::{FontConfig, TextEngine, TextKey, TextRequest, test_font_path};
         let data = std::fs::read(test_font_path()).unwrap();
         let mut engine = TextEngine::new(FontConfig::isolated(vec![Arc::new(data)]));
-        let mut t = SceneTree::new();
-        let mut d = SceneDiff::new();
-        d.create(id(0), NodeKind::Bar, None, 0)
-            .create(id(1), NodeKind::Text, Some(id(0)), 0)
-            .set(id(1), Prop::Text, PropValue::Text("12:59".into()))
-            .set(
-                id(1),
-                Prop::Width,
-                PropValue::Length(Length::Percent(100.0)),
-            );
-        assert!(t.apply(d).is_empty());
-        let x_of = |t: &SceneTree, size: Size, layouts: &HashMap<NodeId, Vec<Shaped>>| {
-            let f = flatten(t, id(0), size, Scale::ONE, layouts);
-            let spec = f.text[0].1.clone();
-            let x = f.items.iter().find_map(|i| match &i.item {
-                Item::Glyphs { x, .. } => Some(*x),
-                _ => None,
-            });
-            (spec, x)
-        };
-        for (align, want) in [("start", 0), ("center", -50), ("end", -100)] {
-            t.apply_op(SceneOp::SetProp {
-                id: id(1),
-                prop: Prop::Align,
-                value: PropValue::Keyword(align.into()),
-                transition: Transition::Instant,
-            })
-            .unwrap();
-            // Shaped for a 300 px wide surface.
-            let (spec, _) = x_of(&t, Size::new(300, 20), &HashMap::new());
-            let wide = Arc::new(engine.layout(&TextRequest {
-                key: TextKey(1),
-                text: spec.text.clone(),
-                style: spec.style.clone(),
-                max_width: spec.max_width,
-                scale: Scale::ONE,
-            }));
-            let mut layouts = HashMap::new();
-            layouts.insert(
-                id(1),
-                vec![Shaped {
-                    layout: wide.clone(),
-                    max_width: Some(300.0),
-                }],
-            );
-            assert_eq!(x_of(&t, Size::new(300, 20), &layouts).1, Some(0));
-            // Drawn on a 200 px surface until its own layout arrives.
-            assert_eq!(
-                x_of(&t, Size::new(200, 20), &layouts).1,
-                Some(want),
-                "{align}"
-            );
-            // The right width at another scale wins over the wrong width.
-            let other = Shaped {
-                layout: Arc::new(engine.layout(&TextRequest {
-                    key: TextKey(2),
-                    text: spec.text.clone(),
-                    style: spec.style.clone(),
-                    max_width: Some(200.0),
-                    scale: Scale::new(240).unwrap(),
-                })),
-                max_width: Some(200.0),
-            };
-            layouts.get_mut(&id(1)).unwrap().push(other);
-            assert_eq!(x_of(&t, Size::new(200, 20), &layouts).1, Some(0), "{align}");
+        let l = Arc::new(engine.layout(&TextRequest {
+            key: TextKey(1),
+            text: "12:59".into(),
+            style: TextStyle::default(),
+            max_width: None,
+            scale: Scale::ONE,
+        }));
+        let shaped = vec![Shaped {
+            layout: l.clone(),
+            max_width: None,
+        }];
+        let w = l.size.w;
+        let rect = LogicalRect::new(0.0, 0.0, 100.0, l.size.h + 10.0);
+        for (align, want) in [
+            (TextAlign::Start, 0.0),
+            (TextAlign::Center, (100.0 - w) / 2.0),
+            (TextAlign::End, 100.0 - w),
+        ] {
+            let (fit, placed) = place_text(&shaped, Scale::ONE, rect, align);
+            let (_, dx, dy) = placed.unwrap();
+            assert_eq!(fit, None);
+            assert!((dx - want).abs() < 1e-3, "{align:?}: {dx} vs {want}");
+            let want_dy = if align == TextAlign::Center { 5.0 } else { 0.0 };
+            assert!((dy - want_dy).abs() < 1e-3);
         }
+        let narrow = LogicalRect::new(0.0, 0.0, (w / 2.0).round(), l.size.h);
+        let (fit, placed) = place_text(&shaped, Scale::ONE, narrow, TextAlign::End);
+        assert_eq!(fit, Some((w / 2.0).round()));
+        assert_eq!(placed.unwrap().1, 0.0, "the stand-in is not aligned");
     }
 
     #[test]
     fn absolute_layout_and_records() {
         let t = tree();
-        let f = flatten(&t, id(0), Size::new(100, 20), Scale::ONE, &HashMap::new());
+        let f = flat(&t, Size::new(100, 20), Scale::ONE);
         assert_eq!(f.records[&id(0)].bounds, Rect::new(0, 0, 100, 20));
         assert_eq!(f.records[&id(1)].bounds, Rect::new(10, 4, 8, 8));
         assert_eq!(f.items.len(), 2);
@@ -1042,7 +1260,7 @@ mod tests {
     fn fractional_scale_snaps_edges() {
         let t = tree();
         let s = Scale::new(150).unwrap();
-        let f = flatten(&t, id(0), Size::new(125, 25), s, &HashMap::new());
+        let f = flat(&t, Size::new(125, 25), s);
         // 10 × 1.25 = 12.5 → 13, 18 × 1.25 = 22.5 → 23.
         assert_eq!(f.records[&id(1)].bounds, Rect::new(13, 5, 10, 10));
     }
@@ -1050,7 +1268,7 @@ mod tests {
     #[test]
     fn signatures_track_paint_changes_only() {
         let mut t = tree();
-        let a = flatten(&t, id(0), Size::new(100, 20), Scale::ONE, &HashMap::new());
+        let a = flat(&t, Size::new(100, 20), Scale::ONE);
         // Same value again: same signature.
         t.apply_op(SceneOp::SetProp {
             id: id(1),
@@ -1059,7 +1277,7 @@ mod tests {
             transition: Transition::Instant,
         })
         .unwrap();
-        let b = flatten(&t, id(0), Size::new(100, 20), Scale::ONE, &HashMap::new());
+        let b = flat(&t, Size::new(100, 20), Scale::ONE);
         assert_eq!(a.records, b.records);
         t.apply_op(SceneOp::SetProp {
             id: id(0),
@@ -1068,7 +1286,7 @@ mod tests {
             transition: Transition::Instant,
         })
         .unwrap();
-        let c = flatten(&t, id(0), Size::new(100, 20), Scale::ONE, &HashMap::new());
+        let c = flat(&t, Size::new(100, 20), Scale::ONE);
         // Parent opacity changes how the child paints.
         assert_ne!(a.records[&id(1)].sig, c.records[&id(1)].sig);
     }

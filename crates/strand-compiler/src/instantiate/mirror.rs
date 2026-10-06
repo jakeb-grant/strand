@@ -328,6 +328,7 @@ pub fn show(v: &PropValue) -> String {
             "{name}({})",
             args.iter().map(show).collect::<Vec<_>>().join(", ")
         ),
+        PropValue::Node(id) => format!("node {}", id.index),
     }
 }
 
