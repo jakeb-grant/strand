@@ -166,7 +166,12 @@ struct Build<'a> {
     map: Vec<(taffy::NodeId, NodeId)>,
     lists: Vec<(NodeId, taffy::NodeId, Inh<'a>)>,
     scrolls: Vec<NodeId>,
-    /// Shadow lists, with the node's own paint offset (`x`, `y`).
+    /// Shadow lists by node, with the node's offset when it is placed by
+    /// coordinates (`place: absolute`: its `x`/`y` are where it is). A
+    /// flow node's `x`/`y` are paint offsets (the channels enter and exit
+    /// animations spring) and count as zero: the overhang is the
+    /// shadows' at rest, so sliding a shadowed toast never resizes the
+    /// buffer, and content moved past it is clipped to the surface.
     shadows: Vec<(NodeId, (f32, f32), Vec<Shadow>)>,
     vertical_split: bool,
 }
@@ -613,10 +618,12 @@ impl<'a> Build<'a> {
             && let PropValue::Shadow(list) = v.as_ref()
             && !list.is_empty()
         {
+            let placed = keyword(get(Prop::Place).as_ref().map(AsRef::as_ref)) == Some("absolute");
             let off = |p: Prop| {
                 get(p)
                     .and_then(|v| v.as_ref().as_number())
                     .and_then(finite)
+                    .filter(|_| placed)
                     .unwrap_or(0.0)
             };
             self.shadows

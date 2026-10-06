@@ -635,12 +635,14 @@ fn the_design_bar_is_laid_out_start_centre_end() {
     drop(strand);
 }
 
-/// The design's launcher (theme + bar + launcher, unchanged but for
-/// starting open) on the mock desktop: it opens at one size (no frame at
-/// an estimated size first), its box is centred in the usable area below
-/// the bar although its shadow reaches further down than up, its input
-/// shows the placeholder, a click inside it keeps it open and a click
-/// outside closes it (`keyboard: exclusive`: the click-away catcher).
+/// The four design shells booted together (theme, bar, launcher, toasts
+/// and OSD, unchanged but for the launcher starting open) on the mock
+/// desktop: every surface paints at one size (no frame at an estimated
+/// size first, however the surfaces' text and configures interleave),
+/// the launcher's box is centred in the usable area below the bar
+/// although its shadow reaches further down than up, a click inside it
+/// keeps it open and a click on the bar (outside the usable area its
+/// click-away catcher covers) closes it.
 #[test]
 fn the_design_launcher_is_centred_and_closes_on_click_away() {
     let Some(sway) = Sway::start_as("launcher") else {
@@ -661,6 +663,14 @@ fn the_design_launcher_is_centred_and_closes_on_click_away() {
             include_str!("../../strand-compiler/tests/fixtures/bar.strand").to_string(),
         ),
         ("launcher.strand", launcher),
+        (
+            "toasts.strand",
+            include_str!("../../strand-compiler/tests/fixtures/toasts.strand").to_string(),
+        ),
+        (
+            "osd.strand",
+            include_str!("../../strand-compiler/tests/fixtures/osd.strand").to_string(),
+        ),
     ] {
         std::fs::write(config.join(name), text).unwrap();
     }
@@ -700,7 +710,7 @@ fn the_design_launcher_is_centred_and_closes_on_click_away() {
         }
         m
     };
-    while surfaces(&log).len() < 2 {
+    while surfaces(&log).len() < 3 {
         assert!(
             strand.0.try_wait().unwrap().is_none(),
             "strand exited: {}",
@@ -747,19 +757,18 @@ fn the_design_launcher_is_centred_and_closes_on_click_away() {
     let (w, h) = (shot.w as u32, shot.h as u32);
     pointer.click(x as u32, ((top + bottom) / 2) as u32, w, h);
     std::thread::sleep(Duration::from_millis(500));
+    let again = Shot::take(&sway, "HEADLESS-1");
     assert!(
-        bright(x, (top + bottom) / 2) && {
-            let again = Shot::take(&sway, "HEADLESS-1");
-            again
-                .px(x, (top + bottom) / 2)
-                .iter()
-                .map(|c| *c as u32)
-                .sum::<u32>()
-                > 450
-        },
+        again
+            .px(x, (top + bottom) / 2)
+            .iter()
+            .map(|c| *c as u32)
+            .sum::<u32>()
+            > 450,
         "a click inside closed it"
     );
-    pointer.click(200, h - 200, w, h);
+    // On the bar, clear of its text (between the clock and the end).
+    pointer.click(w * 3 / 4, 26, w, h);
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let after = Shot::take(&sway, "HEADLESS-1");
@@ -774,7 +783,7 @@ fn the_design_launcher_is_centred_and_closes_on_click_away() {
         }
         assert!(
             Instant::now() < deadline,
-            "a click outside did not close it"
+            "a click on the bar did not close it"
         );
         std::thread::sleep(Duration::from_millis(100));
     }

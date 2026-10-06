@@ -1340,3 +1340,223 @@ fn an_input_shows_its_text_or_placeholder() {
     assert!(max(&ph) < max(&tx), "{:?} {:?}", max(&ph), max(&tx));
     assert_matches_ref("layout_input", &buf, TOLERANCE);
 }
+
+/// A shadowed toast sliding in (`enter { x: 420 }`, the x offset
+/// stepped over ten frames) never changes its surface's spec: the
+/// overhang comes from the shadow at rest, so the buffer keeps its size
+/// and the frames run no layout pass.
+#[test]
+fn an_animated_offset_never_resizes_its_surface() {
+    let mut b = Builder::default();
+    let p = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Anchor, kw("top_right")),
+            (Prop::Font, PropValue::Font(font(13.0))),
+        ],
+    );
+    let toast = b.node(
+        NodeKind::Col,
+        Some(p),
+        vec![
+            (Prop::Width, num(380.0)),
+            (Prop::Pad, num(12.0)),
+            (Prop::X, num(420.0)),
+            (
+                Prop::Shadow,
+                PropValue::Shadow(vec![Shadow {
+                    x: 0.0,
+                    y: 8.0,
+                    blur: 24.0,
+                    spread: 0.0,
+                    color: hex("#0000004d"),
+                }]),
+            ),
+        ],
+    );
+    b.node(
+        NodeKind::Text,
+        Some(toast),
+        vec![(Prop::Text, text("Saved"))],
+    );
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    let spec = r.surface_spec(p).unwrap().clone();
+    let o = spec.overhang;
+    assert_eq!((o.left, o.right), (37.0, 37.0), "at rest: {o:?}");
+    r.take_surface_changes();
+    r.attach_surface(S, p);
+    let (w, h) = (
+        (spec.width.unwrap() + o.left + o.right) as u32,
+        (spec.height.unwrap() + o.top + o.bottom) as u32,
+    );
+    let mut buf = Buffer::new(w, h, Scale::ONE);
+    buf.paint(&mut r, S, 0);
+    let passes = r.layout_passes();
+    for i in 1..=10 {
+        let mut d = SceneDiff::new();
+        d.set(toast, Prop::X, num(420.0 - 42.0 * i as f32));
+        r.apply(d);
+        buf.paint(&mut r, S, 1);
+    }
+    assert!(r.take_surface_changes().is_empty(), "a spec changed");
+    assert_eq!(r.layout_passes(), passes, "an offset relayouts nothing");
+    assert_eq!(r.surface_spec(p).unwrap(), &spec);
+}
+
+/// A content-sized panel holding a short list of rows taller than the
+/// row estimate (the design's launcher) asks for its measured size at
+/// once: the content pass settles the list as the painted pass does, so
+/// the surface is never configured at an estimated size first.
+#[test]
+fn a_content_sized_list_asks_for_its_measured_size() {
+    let mut b = Builder::default();
+    let p = b.node(
+        NodeKind::Panel,
+        None,
+        vec![(Prop::Font, PropValue::Font(font(13.0)))],
+    );
+    let l = b.node(NodeKind::List, Some(p), vec![(Prop::Width, num(300.0))]);
+    // Icon rows (no text to shape, so no second content pass on its
+    // delivery settles the list by chance).
+    for _ in 0..3 {
+        let row = b.node(NodeKind::Row, Some(l), vec![(Prop::Pad, num(12.0))]);
+        swatch(&mut b, row, "#89b4fa", vec![(Prop::Size, num(24.0))]);
+    }
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    let spec = r.surface_spec(p).unwrap().clone();
+    let (w, h) = (spec.width.unwrap(), spec.height.unwrap());
+    let est = strand_render::LIST_ROW_ESTIMATE;
+    assert_eq!(h, 3.0 * 48.0, "three 48 px rows, not 3 × {est}");
+    r.take_surface_changes();
+    r.attach_surface(S, p);
+    let mut buf = Buffer::new(w as u32, h as u32, Scale::ONE);
+    buf.paint(&mut r, S, 0);
+    assert!(r.take_surface_changes().is_empty(), "painted at its size");
+    assert_eq!(r.boxes(S).unwrap().rows_laid_out, 3);
+}
+
+/// A content-sized surface whose spec changed after it was created but
+/// before its first configure (its text arrived meanwhile) holds its first
+/// frame when configured at the size it was created with, until the
+/// configure at the new size.
+#[test]
+fn a_first_configure_at_a_stale_size_is_held() {
+    let mut b = Builder::default();
+    let p = b.node(
+        NodeKind::Panel,
+        None,
+        vec![(Prop::Font, PropValue::Font(font(13.0)))],
+    );
+    let t = b.node(NodeKind::Text, Some(p), vec![(Prop::Text, text("short"))]);
+    let mut r = renderer();
+    r.set_resize_wait(std::time::Duration::from_secs(30));
+    assert!(r.apply(b.diff).is_empty());
+    let size = |r: &strand_render::Renderer| {
+        let s = r.surface_spec(p).unwrap();
+        Size::new(s.width.unwrap() as u32, s.height.unwrap() as u32)
+    };
+    let created = size(&r);
+    r.attach_surface(S, p);
+    let mut d = SceneDiff::new();
+    d.set(t, Prop::Text, text("a much longer line of text"));
+    r.apply(d);
+    let wanted = size(&r);
+    assert!(wanted.w > created.w);
+    r.configure_surface(S, created, Scale::ONE);
+    assert!(!r.wants_frame(S), "no first frame at the stale size");
+    r.configure_surface(S, wanted, Scale::ONE);
+    assert!(
+        r.wants_frame(S),
+        "the configure at the new size releases it"
+    );
+}
+
+/// An `input` whose text is wider than its box keeps it on one line:
+/// clipped to the box and shifted so its end, where typing happens, is
+/// in view; nothing draws below or beside the box.
+#[test]
+fn an_overlong_input_stays_on_one_line() {
+    let mut id = None;
+    let (d, root) = panel(300, 100, |b, root| {
+        let col = b.node(NodeKind::Col, Some(root), vec![(Prop::Pad, num(10.0))]);
+        id = Some(b.node(
+            NodeKind::Input,
+            Some(col),
+            vec![
+                (Prop::Width, num(100.0)),
+                (
+                    Prop::Text,
+                    text("a quite long search query that does not fit"),
+                ),
+            ],
+        ));
+    });
+    let (r, buf) = show(d, root, 300, 100, Scale::ONE);
+    let b = rect(&r, id.unwrap());
+    let bg = [0x2e, 0x1e, 0x1e, 0xff];
+    let lit = |x: u32, y: u32| buf.px(x, y) != bg;
+    let (x0, y0, x1, y1) = (
+        b.x as u32,
+        b.y as u32,
+        (b.x + b.w).ceil() as u32,
+        (b.y + b.h).ceil() as u32,
+    );
+    let mut outside = 0;
+    for y in 0..100 {
+        for x in 0..300 {
+            if lit(x, y) && !(x0..x1).contains(&x) | !(y0..y1).contains(&y) {
+                outside += 1;
+            }
+        }
+    }
+    assert_eq!(outside, 0, "text drawn outside its {b:?}");
+    // The end of the text is in view: ink near the box's right edge.
+    assert!(
+        (y0..y1).any(|y| (x1 - 12..x1).any(|x| lit(x, y))),
+        "the end of the text is not in view"
+    );
+    assert_matches_ref("layout_input_overlong", &buf, TOLERANCE);
+}
+
+/// A `place: absolute` node is placed by its `x`/`y`, so its shadow's
+/// reach counts from there: moving it past the box grows the overhang.
+#[test]
+fn an_absolute_shadow_counts_from_its_coordinates() {
+    let mut b = Builder::default();
+    let p = b.node(
+        NodeKind::Panel,
+        None,
+        vec![(Prop::Width, num(200.0)), (Prop::Height, num(100.0))],
+    );
+    let card = b.node(
+        NodeKind::Box,
+        Some(p),
+        vec![
+            (Prop::Place, kw("absolute")),
+            (Prop::X, num(150.0)),
+            (Prop::Size, num(40.0)),
+            (
+                Prop::Shadow,
+                PropValue::Shadow(vec![Shadow {
+                    x: 0.0,
+                    y: 0.0,
+                    blur: 4.0,
+                    spread: 0.0,
+                    color: hex("#000000"),
+                }]),
+            ),
+        ],
+    );
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    // 150 + 40 + reach 7 = 197: inside the box.
+    assert_eq!(r.surface_spec(p).unwrap().overhang.right, 0.0);
+    let mut d = SceneDiff::new();
+    d.set(card, Prop::X, num(170.0));
+    r.apply(d);
+    // 170 + 40 + 7 = 217: 17 past it.
+    assert_eq!(r.surface_spec(p).unwrap().overhang.right, 17.0);
+}

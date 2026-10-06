@@ -35,11 +35,13 @@ fn shapes_scene() -> SceneDiff {
             (Prop::Height, num(140.0)),
         ],
     );
-    // Rounded card with a soft shadow.
+    // Rounded card with a soft shadow, placed by coordinates (its
+    // shadow's reach counts from there).
     b.node(
         NodeKind::Box,
         Some(root),
         vec![
+            (Prop::Place, PropValue::Keyword("absolute".into())),
             (Prop::X, num(16.0)),
             (Prop::Y, num(16.0)),
             (Prop::Width, num(64.0)),

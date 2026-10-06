@@ -57,12 +57,13 @@ impl LayerConfig {
     /// anchored side).
     pub fn position_in(&self, (w, h): (u32, u32), (aw, ah): (u32, u32)) -> (i32, i32) {
         let axis = |size: u32, area: u32, lo: bool, hi: bool, mlo: i32, mhi: i32| -> i32 {
-            let (size, area) = (clamp(size), clamp(area));
-            match (lo, hi) {
-                (true, false) => mlo,
-                (false, true) => area - size - mhi,
+            let (size, area) = (i64::from(size), i64::from(area));
+            let v = match (lo, hi) {
+                (true, false) => i64::from(mlo),
+                (false, true) => area - size - i64::from(mhi),
                 _ => area / 2 - size / 2,
-            }
+            };
+            v.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
         };
         let [mt, mr, mb, ml] = self.margin;
         let a = self.anchors;
@@ -82,7 +83,7 @@ impl LayerConfig {
             Some(Some(r)) => r,
             _ => (0, 0, clamp(w), clamp(h)),
         };
-        (x + bx, y + by, bw, bh)
+        (x.saturating_add(bx), y.saturating_add(by), bw, bh)
     }
 
     /// Fits the requested size to an output of logical size `(w, h)`: the
@@ -152,11 +153,16 @@ impl std::fmt::Display for PlacementError {
 
 impl std::error::Error for PlacementError {}
 
+/// The largest magnitude, logical pixels, a size, margin or shadow
+/// reach from a `.strand` file is taken at: far past any output, and
+/// small enough that sums of a few of them never overflow `i32`.
+pub const MAX_LOGICAL: i32 = 1 << 20;
+
 /// Logical pixels as the integer the protocol takes: rounded, clamped to
-/// what `i32` holds.
+/// ±[`MAX_LOGICAL`].
 fn px(v: f32) -> i32 {
     if v.is_finite() {
-        v.round().clamp(i32::MIN as f32, i32::MAX as f32) as i32
+        v.round().clamp(-(MAX_LOGICAL as f32), MAX_LOGICAL as f32) as i32
     } else {
         0
     }
@@ -487,6 +493,52 @@ mod tests {
             c.box_in((400, 220), (1920, 1044)),
             (1920 - 8 - 380, 8, 380, 200)
         );
+    }
+
+    /// Values a `.strand` file can hold, however large, never overflow:
+    /// margins, a thickness and the shadow overhang are clamped, so the
+    /// sums the config takes stay in range (debug builds panic on
+    /// overflow; release builds would wrap into a huge margin).
+    #[test]
+    fn huge_values_do_not_overflow() {
+        let mut bar = spec(
+            NodeKind::Bar,
+            &[
+                (Prop::Height, PropValue::Number(1e12)),
+                (
+                    Prop::Margin,
+                    PropValue::Insets(Insets::from_values(&[-1e12, 1e12]).unwrap()),
+                ),
+            ],
+        );
+        bar.overhang = Insets::all(1e12);
+        let c = layer_config(&bar).unwrap();
+        assert_eq!(c.margin[0], -MAX_LOGICAL - MAX_LOGICAL);
+        assert_eq!(c.exclusive_zone, 2 * MAX_LOGICAL);
+        assert!(c.height > 0);
+        let mut p = spec(
+            NodeKind::Panel,
+            &[
+                (Prop::Anchor, kw("bottom_right")),
+                (Prop::Width, PropValue::Number(1e12)),
+                (Prop::Height, PropValue::Number(1e12)),
+                (
+                    Prop::Margin,
+                    PropValue::Insets(Insets::from_values(&[-1e12]).unwrap()),
+                ),
+            ],
+        );
+        p.overhang = Insets::all(1e12);
+        let c = layer_config(&p).unwrap();
+        let size = (c.width, c.height);
+        for area in [(1920, 1080), (u32::MAX, u32::MAX), (0, 0)] {
+            let _ = c.position_in(size, area);
+            let _ = c.box_in(size, area);
+            let _ = c.box_in((u32::MAX, u32::MAX), area);
+        }
+        let mut c = c;
+        c.fit((1920, 1080));
+        assert!(c.width >= 1);
     }
 
     #[test]

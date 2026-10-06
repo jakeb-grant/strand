@@ -950,11 +950,27 @@ impl<'a> Flattener<'a> {
             NodeKind::Text | NodeKind::Button | NodeKind::Input
         );
         let mut layout = None;
+        // An `input`'s text that is wider than its box is clipped to it.
+        let mut clip_text = false;
         if is_text
             && let Some((natural, align)) = natural_spec(&text_get, &scope, &font, self.scale)
         {
             let shaped: &[Shaped] = self.layouts.get(&node.id).map_or(&[], Vec::as_slice);
-            let (fit, placed) = place_text(shaped, self.scale, rect, align);
+            let (fit, placed) = if input {
+                // One line, never wrapped: wider than the box, it is
+                // clipped and shifted so its end (where typing happens)
+                // stays in view.
+                let placed = pick(shaped, self.scale, None)
+                    .or_else(|| shaped.first().map(|c| c.layout.clone()))
+                    .map(|l| {
+                        let dx = (rect.w - l.size.w).min(0.0);
+                        clip_text = dx < 0.0;
+                        (l, dx, 0.0)
+                    });
+                (None, placed)
+            } else {
+                place_text(shaped, self.scale, rect, align)
+            };
             self.out.text.push((node.id, natural.clone()));
             if let Some(w) = fit {
                 self.out.text.push((
@@ -1067,6 +1083,16 @@ impl<'a> Flattener<'a> {
                 ))
                 .inflate(1)
             };
+            let bounds = if clip_text {
+                bounds.intersect(phys).unwrap_or_default()
+            } else {
+                bounds
+            };
+            let clip = (clip_text && !bounds.is_empty())
+                .then(|| self.marker(Item::PushClip(frame.to_path(0.1))));
+            if let Some(i) = clip {
+                self.out.items[i].bounds = bounds;
+            }
             if !bounds.is_empty() {
                 let lines: Vec<(Rect, Color)> = l
                     .runs
@@ -1102,6 +1128,9 @@ impl<'a> Flattener<'a> {
                         &mut ink,
                     );
                 }
+            }
+            if clip.is_some() {
+                self.marker(Item::PopClip);
             }
         }
 

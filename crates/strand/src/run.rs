@@ -1139,13 +1139,16 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
         socket: ipc::socket_path(),
     };
     let (ping, ping_source) = calloop::ping::make_ping()?;
+    let wake = ping.clone();
     let worker =
         TextWorker::spawn_with_waker(FontConfig::default(), Some(Box::new(move || ping.ping())))
             .map_err(DemoError::Text)?;
     let mut renderer = Renderer::new(TextBackend::Worker(worker));
     renderer.set_first_frame_wait(FIRST_FRAME_TEXT_WAIT);
     let (to_logic, from_main) = calloop::channel::channel::<ToLogic>();
-    let host = Host::new(renderer, log.damage).forwarding(to_logic.clone());
+    let host = Host::new(renderer, log.damage)
+        .forwarding(to_logic.clone())
+        .waking(wake);
     let mut mgr = SurfaceManager::connect(host, Config::default())?;
     let handle = mgr.loop_handle();
     handle

@@ -3902,7 +3902,13 @@ and needs no knowledge of thresholds on the render side.
 
 **2026-10-06 · wave3-pixels: overhang and input region.** Shadows of the
 surface root and of any node reaching past the root's box give the spec
-an `overhang` (blur reach 1.5 × blur + 1 + spread, offsets included);
+an `overhang` (blur reach 1.5 × blur + 1 + spread, shadow offsets
+included; since fixer round 3 a flow node's own paint offset `x`/`y`
+is not: the overhang is the shadows' at rest, so an enter or exit
+animation sliding a shadowed toast never resizes its layer surface, and
+content moved past the overhang is clipped to the buffer; a `place:
+absolute` node's `x`/`y` are its coordinates and do count, and moving it
+refreshes the overhang);
 strand-surface grows the layer surface by it, moves each margin out by it
 (negative margins), keeps the bar's reserved space at margin + thickness
 by adding the overhang to the exclusive zone, and sets the input region to
@@ -4056,7 +4062,17 @@ older one the pointer), so the catcher does not rely on being below:
 its input region has a hole where the panel's box is
 (`LayerConfig::box_in`, computed as wlroots arranges both in the usable
 area, one pixel wider each way). Clicks on bars (outside the usable
-area) do not reach it; `on_demand` panels close on focus loss already.
+area) do not reach it; since fixer round 3 the router closes the panel on
+a left press on any other Strand surface instead (Strand's own bar
+included; the press still reaches the bar, so a workspace click both
+switches and closes, as focus moving would), and every other output that
+shows no surface of the same node gets a catcher of its own over the
+whole output (exclusive zone -1, bars included, no hole), made when the
+panel's output is known (at creation, or when it enters one). A foreign
+bar on the panel's own output (waybar) still takes its clicks: the hole's
+offset in the whole output would need the usable area's origin, which
+layer-shell does not tell a client. `on_demand` panels close on focus
+loss already.
 A one-way `open` gets no catcher, so a modal panel bound one way never
 swallows clicks. Popups' click-away comes with xdg_popup grabs (M4).
 
@@ -4075,10 +4091,25 @@ its configure.** When a shown content-sized surface's spec asks for a new
 size (its content grew, its text arrived), render holds its frames until
 it is configured at that size or `RESIZE_WAIT` (50 ms) passes, as it
 holds a frame for new text, so no frame is painted at the old size first
-(a one-frame size pop). Only a size the spec changed to after the surface
-was attached is waited for, and a size larger than the output (less
-margins) is waited for at the output's size. Offline renderers never
-hold (`set_resize_wait`, default zero); the binary's host sets it.
+(a one-frame size pop). A size larger than the output (less margins) is
+waited for at the output's size. Offline renderers never hold
+(`set_resize_wait`, default zero); the binary's host sets it. Fixer round
+3, after the four design shells booted together still showed a frame at
+the wrong size: (a) the content pass reruns once when a list measured
+rows it had only estimated (`Boxes::unsettled`), as the painted pass
+does, so a launcher asks for its measured size, not 3 × 32 px estimated
+rows; (b) any configure at another size than the spec asks for holds,
+whatever the order of the spec change and the configure (each size asked
+for holds at most once, so a compositor that configures another size
+costs one wait, not a stall); (c) text the paint itself collects from the
+worker refreshes the specs first, and a hold that appears then draws
+nothing (the surface manager arms its deadline); (d) the host wakes its
+loop when a call from the surface manager (a configure, a paint) leaves
+surface changes behind, so the manager reconfigures at once, not at the
+next logic tick; (e) a surface not painted yet waits up to its
+first-frame wait (500 ms in `strand run`) rather than `RESIZE_WAIT`, as
+nothing shows meanwhile and other surfaces painting at boot can delay
+the configure past one round trip.
 
 **2026-10-06 · wave3-pixels: fewer layout passes.** The content pass
 that sizes a surface runs only where it decides something: never for a
@@ -4110,3 +4141,48 @@ A node-valued prop whose target is not on the scene stays pending across
 ticks (while the naming node lives and the prop is still unset), so `nav:
 results` resolves when `list { id: results }` mounts inside an `if` that
 turns true later.
+
+**2026-10-06 · wave3-pixels: values from a file are clamped before
+placement.** Sizes, margins and shadow reach are taken at no more than
+±2^20 logical px (`placement::MAX_LOGICAL`), and the arithmetic that
+places a surface and its click-away hole saturates, so `margin: -1e12`
+or `height: 1e12` with a shadow cannot overflow (a panic in debug builds,
+a wrapped margin in release builds).
+
+**2026-10-06 · wave3-pixels: an `input` is one line.** An `input`'s text
+is shaped unwrapped and never refitted to its box; wider than the box it
+is clipped to it and shifted so its end (where typing happens) is in
+view. Scrolling back to a caret elsewhere comes with the caret (M2
+widgets item).
+
+**2026-10-06 · wave3-pixels: logic's own `input` text wins over edits in
+flight.** Keys typed faster than logic answers build on the router's last
+write, not on the scene's older text. The router now watches logic's
+diffs (`Router::observe`, before they are applied): a text that is one of
+the writes in flight answers it and those before it (logic answers in
+order), and any other text is logic's own (`query = ""` in a handler,
+`on show { query = "" }`), which drops the writes in flight, so the next
+key builds on it. No sequence number is echoed through logic.
+
+**2026-10-06 · wave3-pixels: an empty axis frame is no scroll.** A
+pointer axis frame with no motion (`axis_stop` alone, a touchpad finger
+lifted) delivers no `scroll`; one with detents but no pixel value scrolls
+15 px per detent (`WHEEL_STEP`, libinput's legacy wheel step).
+
+**2026-10-06 · wave3-pixels: a container query is decided per node, not
+per surface.** Facts are kept per surface and node, but logic holds one
+`self.width` per node: a bar node shown on two monitors of different
+widths takes the variant of whichever surface last reported a change,
+and that variant shows on both bars. Evaluating a query per surface
+needs an instance per surface (M4 or later, with per-monitor state).
+Also, a surface painted within `BUSY_WINDOW` (in motion) never holds a
+frame for a query, so a threshold crossed during a size animation shows
+the old variant for one frame; the features.md box says so.
+
+**2026-10-06 · wave3-pixels: the M2 exit depends on popups and
+widgets.** "The four example shells run unchanged" needs the bar's
+`Clock` calendar `popup` (xdg_popup lands in M4) and `icon`, `image`,
+`meter`, `slider` drawing (the M2 widgets item, not this track's): on
+sway the OSD shows only its percentage and the bar no volume, battery or
+tray icons. Layout, theming and routing for them are in place; the exit
+box stays open on those two items.

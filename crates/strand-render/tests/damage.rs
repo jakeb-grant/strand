@@ -926,6 +926,8 @@ fn shadows_follow_per_corner_radii() {
         NodeKind::Box,
         Some(root),
         vec![
+            // Placed by coordinates: its shadow's reach counts from there.
+            (Prop::Place, PropValue::Keyword("absolute".into())),
             (Prop::X, num(20.0)),
             (Prop::Y, num(20.0)),
             (Prop::Size, num(60.0)),

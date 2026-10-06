@@ -190,11 +190,6 @@ struct SurfaceState {
     /// A content-sized surface whose spec asks for another size than it
     /// is configured at: the buffer size it waits for, and until when.
     size_hold: Option<(LogicalSize, Instant)>,
-    /// The buffer size its spec asked for when last looked at (see
-    /// [`Renderer::wanted_size`]), and whether it changed since the
-    /// surface was attached: only then is a configure on its way.
-    spec_target: Option<(Option<f32>, Option<f32>)>,
-    retargeted: bool,
 }
 
 impl SurfaceState {
@@ -450,7 +445,11 @@ impl Renderer {
 
     /// Holds the frames of content-sized surfaces configured at another
     /// size than their spec asks for, until the configure (or
-    /// [`RESIZE_WAIT`]).
+    /// [`RESIZE_WAIT`]): whatever the order of the spec change and the
+    /// configure (a spec that changed before the surface's first
+    /// configure arrived holds its first frame too). Each size asked for
+    /// holds at most once, so a compositor that configures another size
+    /// costs one wait, not a stall.
     fn refresh_size_holds(&mut self) {
         let ids: Vec<(SurfaceId, NodeId)> =
             self.surfaces.iter().map(|(i, s)| (*i, s.root)).collect();
@@ -460,13 +459,7 @@ impl Renderer {
             let Some(s) = self.surfaces.get_mut(&id) else {
                 continue;
             };
-            if wanted != s.spec_target {
-                // The surface manager reconfigures it: a configure at the
-                // new size is on its way.
-                s.retargeted |= s.spec_target.is_some();
-                s.spec_target = wanted;
-            }
-            let holds = !self.resize_wait.is_zero() && s.size != Size::default() && s.retargeted;
+            let holds = !self.resize_wait.is_zero() && s.size != Size::default();
             let Some((w, h)) = wanted.filter(|_| holds) else {
                 s.size_hold = None;
                 continue;
@@ -477,12 +470,20 @@ impl Renderer {
             if !(off(w, have.w) || off(h, have.h)) {
                 // Configured at what it asked for.
                 s.size_hold = None;
-                s.retargeted = false;
                 continue;
             }
             let target = LogicalSize::new(w.unwrap_or(have.w), h.unwrap_or(have.h));
             if s.size_hold.is_none_or(|(t, _)| t != target) {
-                s.size_hold = Some((target, now + self.resize_wait));
+                // A first frame waits as long as it would for its text:
+                // nothing shows meanwhile, and a busy main thread (other
+                // surfaces painting at boot) can delay the configure
+                // past one round trip.
+                let wait = if s.painted {
+                    self.resize_wait
+                } else {
+                    self.resize_wait.max(self.first_frame_wait)
+                };
+                s.size_hold = Some((target, now + wait));
             }
         }
     }
@@ -625,6 +626,14 @@ impl Renderer {
         std::mem::take(&mut self.surface_changes)
     }
 
+    /// True if surface changes are waiting for
+    /// [`Renderer::take_surface_changes`]: a host that called in from the
+    /// surface manager (a configure, a paint) wakes its loop to hand
+    /// them over at once, as a resized surface's frame is held for them.
+    pub fn has_surface_changes(&self) -> bool {
+        !self.surface_changes.is_empty()
+    }
+
     /// Text layouts kept or asked for, over all nodes, scales and widths
     /// (tests: a virtualised list shapes only the rows in view).
     pub fn text_slots(&self) -> usize {
@@ -708,17 +717,19 @@ impl Renderer {
                         shaped: layouts,
                         scale,
                     };
-                    let b = layout(
-                        &self.tree,
-                        id,
-                        RootSize::Content {
-                            width: w,
-                            height: h,
-                        },
-                        &info,
-                        &mut self.scrolls,
-                    );
+                    let root_size = RootSize::Content {
+                        width: w,
+                        height: h,
+                    };
+                    let mut b = layout(&self.tree, id, root_size, &info, &mut self.scrolls);
                     self.layout_passes += 1;
+                    if b.unsettled {
+                        // A list measured rows it had only estimated: its
+                        // size (and so the surface's) comes from the
+                        // second pass, as the painted one does.
+                        b = layout(&self.tree, id, root_size, &info, &mut self.scrolls);
+                        self.layout_passes += 1;
+                    }
                     if content_sized {
                         let r = natural_texts(&self.tree, id, scale, &b.rects);
                         self.spec_wanted
@@ -829,8 +840,6 @@ impl Renderer {
                 query_hold: None,
                 query_held: false,
                 size_hold: None,
-                spec_target: None,
-                retargeted: false,
                 overhang: self
                     .specs
                     .get(&root)
@@ -1097,9 +1106,11 @@ impl Renderer {
                     ..
                 }
             );
-            // A shadow, or the offset of a node casting one, changes only
-            // the overhang a surface asks for (from its layout pass, so
-            // it lays out again).
+            // A shadow, or the coordinates of a `place: absolute` node
+            // casting one, changes only the overhang a surface asks for
+            // (from its layout pass, so it lays out again). A flow node's
+            // paint offset never does: the overhang is taken at rest, so
+            // an enter or exit animation never resizes the buffer.
             let shadow = match &op {
                 SceneOp::SetProp {
                     prop: Prop::Shadow, ..
@@ -1108,10 +1119,10 @@ impl Renderer {
                     id,
                     prop: Prop::X | Prop::Y,
                     ..
-                } => self
-                    .tree
-                    .get(*id)
-                    .is_some_and(|n| n.get(Prop::Shadow).is_some()),
+                } => self.tree.get(*id).is_some_and(|n| {
+                    n.get(Prop::Shadow).is_some()
+                        && matches!(n.get(Prop::Place), Some(PropValue::Keyword(k)) if k == "absolute")
+                }),
                 _ => false,
             };
             match self.tree.apply_op(op) {
@@ -1702,6 +1713,22 @@ impl Painter for Renderer {
             self.prune_scales();
         }
         self.poll_text();
+        if !self.spec_dirty.is_empty() {
+            // Text delivered just now may resize a content-sized surface:
+            // its spec is refreshed before painting, and a frame at the
+            // old size is held for the configure at the new one (the
+            // surface manager arms the deadline; the change reaches it
+            // with the next sync, which the text worker's waker runs).
+            let before = self.surfaces.get(&surface).and_then(|s| s.size_hold);
+            self.refresh_specs();
+            let now = Instant::now();
+            if let Some(s) = self.surfaces.get(&surface)
+                && s.size_hold != before
+                && s.size_hold.is_some_and(|(_, t)| now < t)
+            {
+                return Damage::new();
+            }
+        }
         let cached = self.surfaces.get_mut(&surface).and_then(|s| s.cache.take());
         let f = match cached {
             Some(f) => f,
@@ -1950,6 +1977,49 @@ mod tests {
         TextBackend::Worker(
             strand_text::TextWorker::spawn(FontConfig::isolated(vec![Arc::new(data)])).unwrap(),
         )
+    }
+
+    /// Text the worker delivers while a content-sized surface is being
+    /// painted resizes it: the paint refreshes its spec first and draws
+    /// nothing at the old size, holding the frame for the configure.
+    #[test]
+    fn text_collected_while_painting_holds_a_resized_surface() {
+        let (root, txt) = (NodeId::new(0, 0), NodeId::new(1, 0));
+        let mut d = SceneDiff::new();
+        d.create(root, NodeKind::Panel, None, 0)
+            .set(root, Prop::Color, PropValue::Color(Color::WHITE))
+            .create(txt, NodeKind::Text, Some(root), 0)
+            .set(txt, Prop::Text, PropValue::Text("short".into()));
+        let mut r = Renderer::new(worker());
+        r.set_resize_wait(Duration::from_secs(30));
+        assert!(r.apply(d).is_empty());
+        assert!(r.wait_for_text(Duration::from_secs(10)));
+        r.update();
+        let size = |r: &Renderer| {
+            let s = r.surface_spec(root).unwrap();
+            Size::new(s.width.unwrap() as u32, s.height.unwrap() as u32)
+        };
+        let first = size(&r);
+        r.attach_surface(SurfaceId(1), root);
+        r.configure_surface(SurfaceId(1), first, Scale::ONE);
+        assert!(r.wait_for_text(Duration::from_secs(10)));
+        r.update();
+        assert!(!paint_sized(&mut r, 1, first, 0).1.is_empty());
+        r.take_surface_changes();
+        let mut d = SceneDiff::new();
+        d.set(
+            txt,
+            Prop::Text,
+            PropValue::Text("a much longer line of text".into()),
+        );
+        r.apply(d);
+        // Shaped meanwhile, collected by the paint.
+        std::thread::sleep(Duration::from_millis(300));
+        let (_, damage) = paint_sized(&mut r, 1, first, 1);
+        assert!(damage.is_empty(), "painted at the old size");
+        assert!(r.frame_deadline(SurfaceId(1)).is_some());
+        assert!(size(&r).w > first.w);
+        assert!(!r.take_surface_changes().is_empty());
     }
 
     /// A request that crashes the worker's engine every time is not asked

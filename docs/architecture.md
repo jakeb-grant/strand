@@ -48,7 +48,11 @@ chains, scrolling, the tree): hover and pressed chains, keyboard focus
 (the focused node of the focused surface gets `key(k)`), list selection,
 `nav`, `input` edits, and `open: false` on a surface whose `open` is
 two-way (`Prop::TwoWay`) on Escape, focus loss and click-away
-(`InputEvent::ClickAway`). An `Intent` is `Flag { node, flag, on }`,
+(`InputEvent::ClickAway`, or a left press on another Strand surface while
+an open `keyboard: exclusive` one has a two-way `open`:
+`InputScene::exclusive_open`). The host passes each logic diff to
+`Router::observe` before applying it, so logic's own `input` text wins
+over edits in flight. An `Intent` is `Flag { node, flag, on }`,
 `Event { node, event }` or `Write { node, prop, value }`; the binary's
 host (`demo/host.rs`, `Forward`) only maps them to `ToLogic::Flag`,
 `Event` and `Write` (which logic applies with `Instance::write`, a
@@ -1334,10 +1338,16 @@ and the connection):
   output's size to render (`Renderer::set_surface_bounds`), and render
   holds a content-sized surface's frame for the configure at a new size
   (`Renderer::set_resize_wait`, `strand_render::RESIZE_WAIT`; zero
-  offline). A click-away catcher (`SurfaceInfo::click_away`) is a
+  offline). Spec changes render makes while the manager calls in (a
+  configure, a paint) are reported by `Renderer::has_surface_changes`;
+  the binary's host then pings its loop (`Host::waking`) so they reach
+  the manager at once. A click-away catcher (`SurfaceInfo::click_away`) is a
   transparent layer surface on the same layer and output with an input
   region holed at the surface's box (`LayerConfig::box_in`), since
-  layer-shell leaves the order within a layer undefined.
+  layer-shell leaves the order within a layer undefined; every other
+  output showing no surface of the same node gets one over the whole
+  output (exclusive zone -1, no hole). Placement clamps values to
+  ±`placement::MAX_LOGICAL` and saturates.
 - The keyboard: one `wl_keyboard` per seat with xkbcommon keymaps and
   key repeat (`get_keyboard_with_repeat`), as `InputEvent::Key` on the
   surface with keyboard focus (`State::keyboard_focus`).

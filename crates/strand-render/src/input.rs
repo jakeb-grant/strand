@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use strand_scene::input::button;
 use strand_scene::{
     ButtonState, InputEvent, KeyInput, LogicalPoint, Modifiers, NodeId, NodeKind, Prop, PropValue,
-    SurfaceId,
+    SceneDiff, SceneOp, SurfaceId,
 };
 
 use crate::renderer::Renderer;
@@ -94,6 +94,13 @@ pub trait InputScene {
     fn reveal(&mut self, list: NodeId, row: NodeId) {
         let _ = (list, row);
     }
+    /// True if surface node `root` is open with `keyboard: exclusive` and
+    /// a two-way `open` (the design's launcher): a press on another
+    /// surface is a click away from it.
+    fn exclusive_open(&self, root: NodeId) -> bool {
+        let _ = root;
+        false
+    }
 }
 
 impl InputScene for Renderer {
@@ -108,6 +115,11 @@ impl InputScene for Renderer {
     }
     fn reveal(&mut self, list: NodeId, row: NodeId) {
         self.scroll_into_view(list, row);
+    }
+    fn exclusive_open(&self, root: NodeId) -> bool {
+        self.surface_spec(root).is_some_and(|s| {
+            s.open && s.open_two_way && s.keyboard == strand_scene::Keyboard::Exclusive
+        })
     }
 }
 
@@ -130,6 +142,22 @@ impl<F: Fn(SurfaceId, LogicalPoint) -> Vec<NodeId>> InputScene for HitOnly<F> {
 /// scene shows (the write is still on its way through logic).
 pub const EDIT_IN_FLIGHT: Duration = Duration::from_millis(500);
 
+/// Logical pixels one wheel detent scrolls when an axis frame carries
+/// only detents.
+pub const WHEEL_STEP: f64 = 15.0;
+
+/// An `input`'s writes logic has not answered yet.
+#[derive(Debug)]
+struct Edit {
+    /// The text last written.
+    latest: String,
+    /// What the scene can show while those writes are on their way: the
+    /// text before the first, and each written since. Anything else is
+    /// logic's own value (a handler cleared the query), which wins.
+    pending: Vec<String>,
+    at: Instant,
+}
+
 /// The routing state of every surface: what is hovered, pressed and
 /// focused, which row each list has selected, and the text each `input`
 /// last wrote.
@@ -149,8 +177,8 @@ pub struct Router {
     focus: HashMap<SurfaceId, NodeId>,
     /// The selected row of each list arrows or clicks have moved in.
     selected: HashMap<NodeId, NodeId>,
-    /// The text each `input` last wrote, and when.
-    edits: HashMap<NodeId, (String, Instant)>,
+    /// Each `input`'s writes still on their way through logic.
+    edits: HashMap<NodeId, Edit>,
     /// Intents of the event being handled.
     out: Vec<Intent>,
 }
@@ -163,6 +191,43 @@ impl Router {
     /// `surface` shows the surface node `node`.
     pub fn attached(&mut self, surface: SurfaceId, node: NodeId) {
         self.surfaces.insert(surface, node);
+    }
+
+    /// Logic's next scene diff, before it is applied: an `input` text it
+    /// sets answers the writes in flight up to that one (logic answers in
+    /// order), and a text that is none of them is logic's own (a handler
+    /// cleared the query), which drops the writes in flight, so the next
+    /// key builds on it.
+    pub fn observe(&mut self, diff: &SceneDiff) {
+        if self.edits.is_empty() {
+            return;
+        }
+        for op in &diff.ops {
+            let SceneOp::SetProp {
+                id,
+                prop: Prop::Text,
+                value,
+                ..
+            } = op
+            else {
+                continue;
+            };
+            let Some(e) = self.edits.get_mut(id) else {
+                continue;
+            };
+            let shown = match value {
+                PropValue::Text(t) => t.as_str(),
+                _ => "",
+            };
+            match e.pending.iter().position(|p| p == shown) {
+                Some(i) if shown != e.latest => {
+                    e.pending.drain(..i);
+                }
+                _ => {
+                    self.edits.remove(id);
+                }
+            }
+        }
     }
 
     /// `surface` is gone: its hover, press and focus go with it.
@@ -262,6 +327,9 @@ impl Router {
                 ..
             } => {
                 let under = chain(scene, *position);
+                if *b == button::LEFT && *state == ButtonState::Pressed {
+                    self.click_away_from_others(surface, root, scene);
+                }
                 self.button(surface, *b, *state, under, scene);
             }
             InputEvent::PointerAxis {
@@ -270,17 +338,26 @@ impl Router {
                 position,
                 ..
             } => {
-                let under = chain(scene, *position);
-                if vertical.pixels != 0.0 {
-                    scene.scroll(surface, *position, vertical.pixels as f32);
+                // An axis frame with no motion (a finger lifted:
+                // `axis_stop` alone) scrolls nothing and wakes no handler.
+                // Detents alone (a wheel whose frame carries no pixel
+                // value) scroll 15 px each, as libinput's legacy wheel.
+                let px = |a: &strand_scene::AxisDelta| {
+                    if a.pixels == 0.0 && a.value120 != 0 {
+                        f64::from(a.value120) / 120.0 * WHEEL_STEP
+                    } else {
+                        a.pixels
+                    }
+                };
+                let (dy, dx) = (px(vertical), px(horizontal));
+                if dy == 0.0 && dx == 0.0 {
+                    return;
                 }
-                self.event(
-                    under[0],
-                    NodeEvent::Scroll {
-                        dy: vertical.pixels,
-                        dx: horizontal.pixels,
-                    },
-                );
+                let under = chain(scene, *position);
+                if dy != 0.0 {
+                    scene.scroll(surface, *position, dy as f32);
+                }
+                self.event(under[0], NodeEvent::Scroll { dy, dx });
             }
             InputEvent::KeyboardEnter { .. } => {
                 let first = scene
@@ -432,6 +509,27 @@ impl Router {
 
     /// `open: false` on the surface node `root` (Escape, click-away, focus
     /// loss); a popup is also told `dismiss`.
+    /// A left press on `surface` (showing `root`) is a click away from
+    /// every other open `keyboard: exclusive` surface whose `open` is
+    /// two-way: the catcher under such a surface covers only the usable
+    /// area of its own output, so a press on Strand's own bar (or a
+    /// surface on another output) is caught here. The press itself still
+    /// goes to what it landed on.
+    fn click_away_from_others(&mut self, surface: SurfaceId, root: NodeId, scene: &dyn InputScene) {
+        let mut others: Vec<NodeId> = self
+            .surfaces
+            .iter()
+            .filter(|(s, r)| **s != surface && **r != root)
+            .map(|(_, r)| *r)
+            .filter(|r| scene.exclusive_open(*r))
+            .collect();
+        others.sort();
+        others.dedup();
+        for other in others {
+            self.close(scene, other);
+        }
+    }
+
     fn close(&mut self, scene: &dyn InputScene, root: NodeId) {
         self.emit(Intent::Write {
             node: root,
@@ -518,10 +616,15 @@ impl Router {
         }
         if kind == Some(NodeKind::Input) {
             let m = key.modifiers;
-            let mut now = match self.edits.get(&focus) {
-                Some((sent, at)) if *sent != text && at.elapsed() < EDIT_IN_FLIGHT => sent.clone(),
-                _ => text,
-            };
+            // Keys typed faster than logic answers build on the last
+            // write; once the scene shows it, or a text of logic's own,
+            // they build on the scene.
+            let in_flight = self.edits.get(&focus).filter(|e| {
+                e.latest != text && e.at.elapsed() < EDIT_IN_FLIGHT && e.pending.contains(&text)
+            });
+            // (`observe` already dropped what logic answered.)
+            let mut pending = in_flight.map_or_else(|| vec![text.clone()], |e| e.pending.clone());
+            let mut now = in_flight.map_or(text, |e| e.latest.clone());
             let edited = if key.name == "BackSpace" {
                 now.pop().is_some()
             } else if !key.text.is_empty() && !m.ctrl && !m.alt && !m.logo {
@@ -531,7 +634,15 @@ impl Router {
                 false
             };
             if edited {
-                self.edits.insert(focus, (now.clone(), Instant::now()));
+                pending.push(now.clone());
+                self.edits.insert(
+                    focus,
+                    Edit {
+                        latest: now.clone(),
+                        pending,
+                        at: Instant::now(),
+                    },
+                );
                 self.emit(Intent::Write {
                     node: focus,
                     prop: Prop::Text,

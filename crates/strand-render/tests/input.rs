@@ -399,3 +399,198 @@ fn click_away_closes_only_a_two_way_open() {
         "a one-way open is not written"
     );
 }
+
+/// A left press on another Strand surface (the bar, which the launcher's
+/// click-away catcher does not cover) closes every open `keyboard:
+/// exclusive` surface with a two-way `open`, and still reaches the bar;
+/// a surface with a one-way `open` or no exclusive keyboard stays open,
+/// and a press on the launcher itself closes nothing.
+#[test]
+fn a_press_on_the_bar_closes_an_exclusive_launcher() {
+    use strand_scene::{NodeKind, SceneDiff};
+    let data = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(data),
+    ]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    let (bar, launcher, oneway, toasts) = (
+        NodeId::new(0, 0),
+        NodeId::new(1, 0),
+        NodeId::new(2, 0),
+        NodeId::new(3, 0),
+    );
+    let two_way = PropValue::List(vec![PropValue::Keyword("open".into())]);
+    let mut d = SceneDiff::new();
+    d.create(bar, NodeKind::Bar, None, 0)
+        .set(bar, Prop::Height, PropValue::Number(30.0));
+    for (p, exclusive, two) in [
+        (launcher, true, true),
+        (oneway, true, false),
+        (toasts, false, true),
+    ] {
+        d.create(p, NodeKind::Panel, None, 0)
+            .set(p, Prop::Size, PropValue::Number(50.0))
+            .set(p, Prop::Open, PropValue::Bool(true));
+        if exclusive {
+            d.set(p, Prop::Keyboard, PropValue::Keyword("exclusive".into()));
+        }
+        if two {
+            d.set(p, Prop::TwoWay, two_way.clone());
+        }
+    }
+    assert!(r.apply(d).is_empty());
+    let mut f = R::default();
+    for (i, n) in [bar, launcher, oneway, toasts].into_iter().enumerate() {
+        f.attached(SurfaceId(i as u32 + 1), n);
+    }
+    let press = |s, state| InputEvent::PointerButton {
+        surface: SurfaceId(s),
+        position: LogicalPoint::new(5.0, 5.0),
+        button: button::LEFT,
+        state,
+        time: 0,
+    };
+    let close = |node| Intent::Write {
+        node,
+        prop: Prop::Open,
+        value: PropValue::Bool(false),
+    };
+    f.input(&press(2, ButtonState::Pressed), &mut r);
+    f.input(&press(2, ButtonState::Released), &mut r);
+    let out = f.drain();
+    assert!(
+        !out.iter().any(|i| matches!(i, Intent::Write { .. })),
+        "{out:?}"
+    );
+    f.input(&press(1, ButtonState::Pressed), &mut r);
+    f.input(&press(1, ButtonState::Released), &mut r);
+    let out = f.drain();
+    let writes: Vec<&Intent> = out
+        .iter()
+        .filter(|i| matches!(i, Intent::Write { .. }))
+        .collect();
+    assert_eq!(writes, [&close(launcher)]);
+    assert!(
+        out.contains(&Intent::Event {
+            node: bar,
+            event: NodeEvent::Click
+        }),
+        "the press still reaches the bar: {out:?}"
+    );
+}
+
+/// Keys typed faster than logic answers build on the last write; logic
+/// answering in order does not undo them, and a text of logic's own (a
+/// handler clearing the query) wins over the writes in flight.
+#[test]
+fn logic_clearing_an_input_wins_over_edits_in_flight() {
+    use strand_scene::{NodeKind, SceneDiff};
+    let data = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(data),
+    ]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    let (p, i) = (NodeId::new(0, 0), NodeId::new(1, 0));
+    let mut d = SceneDiff::new();
+    d.create(p, NodeKind::Panel, None, 0)
+        .set(p, Prop::Size, PropValue::Number(80.0))
+        .create(i, NodeKind::Input, Some(p), 0)
+        .set(i, Prop::Text, PropValue::Text(String::new()))
+        .set(i, Prop::Focus, PropValue::Bool(true));
+    assert!(r.apply(d).is_empty());
+    let s = SurfaceId(1);
+    let mut f = R::default();
+    f.attached(s, p);
+    f.input(&InputEvent::KeyboardEnter { surface: s }, &mut r);
+    let key = |f: &mut R, r: &mut Renderer, t: &str| {
+        f.input(
+            &InputEvent::Key {
+                surface: s,
+                key: KeyInput {
+                    name: t.into(),
+                    text: t.into(),
+                    state: ButtonState::Pressed,
+                    repeat: false,
+                    modifiers: Default::default(),
+                    time: 0,
+                },
+            },
+            r,
+        );
+        f.drain()
+            .into_iter()
+            .find_map(|i| match i {
+                Intent::Write {
+                    value: PropValue::Text(t),
+                    ..
+                } => Some(t),
+                _ => None,
+            })
+            .unwrap()
+    };
+    // Logic sets the text: the router sees the diff first.
+    let logic = |f: &mut R, r: &mut Renderer, t: &str| {
+        let mut d = SceneDiff::new();
+        d.set(i, Prop::Text, PropValue::Text(t.into()));
+        f.router.observe(&d);
+        r.apply(d);
+    };
+    assert_eq!(key(&mut f, &mut r, "a"), "a");
+    assert_eq!(
+        key(&mut f, &mut r, "b"),
+        "ab",
+        "built on the write in flight"
+    );
+    logic(&mut f, &mut r, "a");
+    assert_eq!(key(&mut f, &mut r, "c"), "abc", "an answer in order");
+    logic(&mut f, &mut r, "ab");
+    logic(&mut f, &mut r, "abc");
+    // A handler clears the query (`query = ""`) within the in-flight
+    // window: the next key builds on that.
+    logic(&mut f, &mut r, "");
+    assert_eq!(key(&mut f, &mut r, "d"), "d", "logic's own text wins");
+}
+
+/// An axis frame with no motion (a touchpad finger lifted: `axis_stop`
+/// alone) delivers no `scroll`; detents alone scroll by wheel steps.
+#[test]
+fn an_empty_axis_frame_is_no_scroll() {
+    let mut f = R::default();
+    let s = SurfaceId(1);
+    let root = NodeId::new(1, 0);
+    f.attached(s, root);
+    let hit = |_: SurfaceId, _: LogicalPoint| vec![NodeId::new(1, 0)];
+    let axis = |vertical: AxisDelta| InputEvent::PointerAxis {
+        surface: s,
+        position: LogicalPoint::new(1.0, 1.0),
+        horizontal: AxisDelta::default(),
+        vertical,
+        source: None,
+        time: 0,
+    };
+    f.input(
+        &axis(AxisDelta {
+            stop: true,
+            ..AxisDelta::default()
+        }),
+        &mut HitOnly(hit),
+    );
+    assert!(f.drain().is_empty());
+    f.input(
+        &axis(AxisDelta {
+            value120: 120,
+            ..AxisDelta::default()
+        }),
+        &mut HitOnly(hit),
+    );
+    assert_eq!(
+        f.drain(),
+        [Intent::Event {
+            node: root,
+            event: NodeEvent::Scroll {
+                dy: strand_render::WHEEL_STEP,
+                dx: 0.0
+            }
+        }]
+    );
+}

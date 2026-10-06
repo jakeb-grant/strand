@@ -56,6 +56,7 @@ impl From<SurfaceError> for DemoError {
 /// Apply one logic tick's diff and hand surface changes to the manager
 /// (render loop steps 0 and 3).
 pub(crate) fn apply(state: &mut State<Host>, diff: SceneDiff) {
+    state.host_mut().observe(&diff);
     for error in state.host_mut().renderer.apply(diff) {
         log::error!("scene: {error:?}");
     }
@@ -115,12 +116,14 @@ pub(crate) fn connection_closed(e: &SurfaceError) -> bool {
 pub fn run(log: &LogConfig) -> Result<(), DemoError> {
     // Text worker, waking the main loop when layouts arrive (step 1–2).
     let (ping, ping_source) = calloop::ping::make_ping()?;
+    let wake = ping.clone();
     let worker =
         TextWorker::spawn_with_waker(FontConfig::default(), Some(Box::new(move || ping.ping())))
             .map_err(DemoError::Text)?;
     let mut renderer = Renderer::new(TextBackend::Worker(worker));
     renderer.set_first_frame_wait(FIRST_FRAME_TEXT_WAIT);
-    let mut mgr = SurfaceManager::connect(Host::new(renderer, log.damage), Config::default())?;
+    let host = Host::new(renderer, log.damage).waking(wake);
+    let mut mgr = SurfaceManager::connect(host, Config::default())?;
     let handle = mgr.loop_handle();
     handle
         .insert_source(ping_source, |_, _, state| text_ready(state))

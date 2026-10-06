@@ -9,7 +9,9 @@ use std::time::Instant;
 use calloop::channel::Sender;
 use strand_compiler::instantiate::NodeFlag;
 use strand_render::{Flag, InputScene, Intent, NodeEvent as RouteEvent, Renderer, Router};
-use strand_scene::{Damage, InputEvent, NodeId, PaintTarget, Painter, Scale, Size, SurfaceId};
+use strand_scene::{
+    Damage, InputEvent, NodeId, PaintTarget, Painter, Scale, SceneDiff, Size, SurfaceId,
+};
 use strand_surface::{Monitor, SurfaceHost};
 
 use crate::run::{NodeEvent, ScreenInfo, ToLogic};
@@ -20,6 +22,10 @@ pub struct Host {
     log_damage: bool,
     /// `strand run`: what the logic thread hears about.
     logic: Option<Forward>,
+    /// Wakes the main loop to hand surface changes the renderer made
+    /// while the surface manager called in (a configure, a paint, text
+    /// collected meanwhile) to the manager at once.
+    wake: Option<calloop::ping::Ping>,
     /// Tests: told of every paint and monitor change (`bench.rs`,
     /// `fuzz.rs`).
     #[cfg(test)]
@@ -221,6 +227,7 @@ impl Host {
             renderer,
             log_damage,
             logic: None,
+            wake: None,
             #[cfg(test)]
             probe: None,
         }
@@ -232,6 +239,30 @@ impl Host {
         self.logic = Some(Forward::new(tx));
         self.renderer.set_query_wait(strand_render::QUERY_WAIT);
         self
+    }
+
+    /// Wake the main loop with `ping` (its handler syncs surface
+    /// changes, see `demo::text_ready`) whenever a call from the surface
+    /// manager leaves surface changes behind.
+    pub fn waking(mut self, ping: calloop::ping::Ping) -> Self {
+        self.wake = Some(ping);
+        self
+    }
+
+    fn wake_if_changed(&self) {
+        if self.renderer.has_surface_changes()
+            && let Some(p) = &self.wake
+        {
+            p.ping();
+        }
+    }
+
+    /// Logic's next diff, before the renderer applies it: `input` texts
+    /// it sets answer (or override) the router's edits in flight.
+    pub(crate) fn observe(&mut self, diff: &SceneDiff) {
+        if let Some(f) = &mut self.logic {
+            f.router.observe(diff);
+        }
     }
 
     /// Hands laid-out sizes that changed to logic (`self.width`).
@@ -252,6 +283,7 @@ impl Painter for Host {
     fn paint(&mut self, surface: SurfaceId, target: &mut PaintTarget<'_>) -> Damage {
         let damage = self.renderer.paint(surface, target);
         self.forward_facts();
+        self.wake_if_changed();
         #[cfg(test)]
         if let Some(p) = &self.probe {
             p.0.painted(surface, !damage.is_empty(), target.scale, &self.renderer);
@@ -305,11 +337,13 @@ impl SurfaceHost for Host {
         if let Some(f) = &mut self.logic {
             f.attached(surface, node);
         }
+        self.wake_if_changed();
     }
 
     fn surface_entered(&mut self, surface: SurfaceId, monitor: &Monitor) {
         self.renderer
             .set_surface_bounds(surface, monitor_bounds(monitor));
+        self.wake_if_changed();
     }
 
     fn surface_configured(&mut self, surface: SurfaceId, size: Size, scale: Scale) {
@@ -324,6 +358,7 @@ impl SurfaceHost for Host {
         // Its first layout's sizes: a container query answers before the
         // first frame (the renderer holds it for that).
         self.forward_facts();
+        self.wake_if_changed();
     }
 
     fn surface_detached(&mut self, surface: SurfaceId) {
@@ -372,6 +407,7 @@ impl SurfaceHost for Host {
         }
         // A scroll lays out again: its sizes go with it.
         self.forward_facts();
+        self.wake_if_changed();
     }
 
     fn frame_deadline(&self, surface: SurfaceId) -> Option<Instant> {
