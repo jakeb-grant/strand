@@ -64,9 +64,23 @@ fn eps(p: Prop) -> f32 {
 /// Settling tolerance of laid-out sizes and glides, logical pixels.
 const PX_EPS: f32 = 0.05;
 
-/// Laid-out sizes forced on nodes for one layout pass: `[width, height]`
-/// in logical pixels.
-pub(crate) type SizeMap = HashMap<NodeId, [Option<f32>; 2]>;
+/// A size forced on a node for one layout pass.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub(crate) struct Forced {
+    /// `[width, height]` in logical pixels.
+    pub size: [Option<f32>; 2],
+    /// Per axis: the size moves to or from zero (a toast's `exit {
+    /// height: 0 }`). Its padding and the parent's gap beside it fold
+    /// with it, so its slot reaches zero as the spring settles and
+    /// unmounting it moves nothing.
+    pub collapse: [bool; 2],
+}
+
+/// Laid-out sizes forced on nodes for one layout pass.
+pub(crate) type SizeMap = HashMap<NodeId, Forced>;
+
+/// A size this small is zero: its slot collapses.
+const COLLAPSED: f32 = 0.5;
 
 #[derive(Clone, Debug, PartialEq)]
 enum Enc {
@@ -113,17 +127,41 @@ fn shadow_channels(s: &Shadow) -> [f32; 8] {
     ]
 }
 
+/// The boxes a value is resolved against: the node's own laid-out box
+/// (`radius: full`, a percentage radius) and its parent's (a percentage
+/// `x`/`y`, as flatten resolves them).
+#[derive(Copy, Clone, Debug, Default)]
+pub(crate) struct Extents {
+    pub own: (f32, f32),
+    pub parent: (f32, f32),
+}
+
 /// A prop value as channels (`None` value: the prop's default, `inh` for
-/// `color`). `None` when it cannot interpolate (a gradient, a percentage
-/// offset, `radius: full`): it snaps.
-fn encode(p: Prop, v: Option<&PropValue>, inh: Color) -> Option<Enc> {
+/// `color`), lengths resolved against `b`, so `radius: full` and
+/// percentage offsets spring in pixels. `None` when it cannot
+/// interpolate (a gradient): it snaps.
+fn encode(p: Prop, v: Option<&PropValue>, inh: Color, b: Extents) -> Option<Enc> {
     let solid = |v: &PropValue| match v {
         PropValue::Color(c) | PropValue::Paint(Paint::Solid(c)) => Some(*c),
         _ => None,
     };
+    let half = (b.own.0.min(b.own.1) / 2.0).max(0.0);
+    // A radius in pixels: `full` (a pill) is half the shorter side, as
+    // the CSS shrink of an infinite radius draws it.
+    let radius = |v: &PropValue| match v {
+        PropValue::Length(Length::Percent(q)) => Some(b.own.0.min(b.own.1) * q / 100.0),
+        PropValue::Keyword(k) if k == "full" => Some(half),
+        v => number(v),
+    };
     Some(match (p, v) {
         (Prop::X | Prop::Y | Prop::Rotate, None) => Enc::One([0.0]),
         (Prop::Opacity | Prop::Scale, None) => Enc::One([1.0]),
+        (Prop::X, Some(PropValue::Length(Length::Percent(q)))) => {
+            Enc::One([b.parent.0 * q / 100.0]).finite()?
+        }
+        (Prop::Y, Some(PropValue::Length(Length::Percent(q)))) => {
+            Enc::One([b.parent.1 * q / 100.0]).finite()?
+        }
         (Prop::X | Prop::Y | Prop::Opacity | Prop::Scale | Prop::Rotate, Some(v)) => {
             Enc::One([number(v)?])
         }
@@ -147,12 +185,13 @@ fn encode(p: Prop, v: Option<&PropValue>, inh: Color) -> Option<Enc> {
             let c = match v {
                 PropValue::Corners(c) => *c,
                 PropValue::List(items) => {
-                    let n: Option<Vec<f32>> = items.iter().map(number).collect();
+                    let n: Option<Vec<f32>> = items.iter().map(radius).collect();
                     Corners::from_values(&n?)?
                 }
-                v => Corners::all(number(v)?),
+                v => Corners::all(radius(v)?),
             };
-            let all = [c.top_left, c.top_right, c.bottom_right, c.bottom_left];
+            let all = [c.top_left, c.top_right, c.bottom_right, c.bottom_left]
+                .map(|r| if r == f32::INFINITY { half } else { r });
             if all.iter().any(|v| !v.is_finite() || *v > 1e5) {
                 return None;
             }
@@ -160,6 +199,15 @@ fn encode(p: Prop, v: Option<&PropValue>, inh: Color) -> Option<Enc> {
         }
         _ => return None,
     })
+}
+
+impl Enc {
+    fn finite(self) -> Option<Enc> {
+        match &self {
+            Enc::One([v]) if !v.is_finite() => None,
+            _ => Some(self),
+        }
+    }
 }
 
 fn decode(p: Prop, e: &Enc) -> PropValue {
@@ -287,6 +335,8 @@ struct NodeAnim {
     respring: bool,
     glide: Option<Motion<2>>,
     size: [Option<Motion<1>>; 2],
+    /// Per axis: the size spring moves to or from zero ([`Forced`]).
+    collapse: [bool; 2],
     /// `width`, `height` or `size` changed: the laid-out size springs to
     /// its new value.
     size_touched: bool,
@@ -609,7 +659,8 @@ impl Animator {
 
     /// Springs the animatable props of `node` (resolved in `props`, which
     /// get the values of this frame), playing its enter or exit pose.
-    /// `inh` is the colour it inherits; `rect` its laid-out box.
+    /// `inh` is the colour it inherits; `rect` its laid-out box, `parent`
+    /// its parent's (lengths resolve against them).
     pub fn paint(
         &mut self,
         node: &Node,
@@ -617,7 +668,12 @@ impl Animator {
         scope: &TokenScope<'_>,
         inh: Color,
         rect: Option<LogicalRect>,
+        parent: LogicalRect,
     ) {
+        let boxes = Extents {
+            own: rect.map_or((0.0, 0.0), |r| (r.w, r.h)),
+            parent: (parent.w, parent.h),
+        };
         let id = node.id;
         let exiting = self.exits.get(&id).copied();
         // Drawn this frame: its motions (an enter pose that starts now
@@ -671,7 +727,7 @@ impl Animator {
             let own_v = own.map(|i| props[i].1.as_ref().clone());
             let in_exit = exit_pose.iter().find(|(q, _)| *q == p).map(|(_, v)| v);
             let target_v = in_exit.cloned().or_else(|| own_v.clone());
-            let Some(target) = encode(p, target_v.as_ref(), inh) else {
+            let Some(target) = encode(p, target_v.as_ref(), inh, boxes) else {
                 // Cannot interpolate: snaps.
                 na.props.retain(|(q, _)| *q != p);
                 continue;
@@ -698,11 +754,11 @@ impl Animator {
                     // Where it starts: the enter pose, the value logic
                     // replaced, or (an exit) the node's own value.
                     let from = if let Some((_, v)) = enter_pose.iter().find(|(q, _)| *q == p) {
-                        Some(encode(p, Some(v), inh))
+                        Some(encode(p, Some(v), inh, boxes))
                     } else if let Some((_, old)) = touch {
-                        Some(encode(p, old.as_ref(), inh))
+                        Some(encode(p, old.as_ref(), inh, boxes))
                     } else if in_exit.is_some() || respring {
-                        Some(encode(p, own_v.as_ref(), inh))
+                        Some(encode(p, own_v.as_ref(), inh, boxes))
                     } else {
                         None
                     };
@@ -799,9 +855,10 @@ impl Animator {
             let Some(pose) = exit_pose(node) else {
                 continue;
             };
-            let s = pose_sizes(tree, node, pose);
-            if s.iter().any(Option::is_some) {
-                out.insert(*id, s);
+            let size = pose_sizes(tree, node, pose);
+            if size.iter().any(Option::is_some) {
+                let collapse = size.map(|v| v.is_some_and(|v| v < COLLAPSED));
+                out.insert(*id, Forced { size, collapse });
             }
         }
         out
@@ -842,6 +899,7 @@ impl Animator {
             let touched = std::mem::take(&mut na.size_touched);
             let Some(t) = targets.get(&id).filter(|_| !snapping) else {
                 na.size = [None, None];
+                na.collapse = [false; 2];
                 continue;
             };
             let target = [t.w, t.h];
@@ -868,6 +926,7 @@ impl Animator {
                     Some(m) => {
                         if (m.target()[0] - target[axis]).abs() > 0.01 {
                             m.retarget([target[axis]], curve);
+                            na.collapse[axis] |= target[axis] < COLLAPSED;
                         }
                     }
                     slot @ None => {
@@ -883,6 +942,7 @@ impl Animator {
                             let mut m = Motion::rest([f], PX_EPS).sampled_at(last);
                             m.retarget([target[axis]], curve);
                             *slot = Some(m);
+                            na.collapse[axis] = f < COLLAPSED || target[axis] < COLLAPSED;
                         }
                     }
                 }
@@ -905,6 +965,7 @@ impl Animator {
                 for (id, na) in self.nodes.iter_mut() {
                     if tree.root_of(*id) == Some(root) {
                         na.size = [None, None];
+                        na.collapse = [false; 2];
                     }
                 }
                 self.nodes.retain(|_, n| !n.is_empty());
@@ -916,22 +977,24 @@ impl Animator {
             if na.size.iter().all(Option::is_none) || tree.root_of(*id) != Some(root) {
                 continue;
             }
-            let mut o = rest.get(id).copied().unwrap_or([None, None]);
-            for (slot, forced) in na.size.iter_mut().zip(o.iter_mut()) {
-                let Some(m) = slot.as_mut() else {
+            let mut o = rest.get(id).copied().unwrap_or_default();
+            for axis in 0..2 {
+                let Some(m) = na.size[axis].as_mut() else {
                     continue;
                 };
                 let v = if commit { m.sample(at) } else { m.peek(at) };
                 if m.is_settled(at) {
                     if commit {
-                        *slot = None;
+                        na.size[axis] = None;
+                        na.collapse[axis] = false;
                     }
                 } else {
                     moving = true;
-                    *forced = Some(v[0].max(0.0));
+                    o.size[axis] = Some(v[0].max(0.0));
+                    o.collapse[axis] |= na.collapse[axis];
                 }
             }
-            if o.iter().any(Option::is_some) {
+            if o.size.iter().any(Option::is_some) {
                 out.insert(*id, o);
             }
         }
@@ -996,10 +1059,15 @@ fn pose_sizes(tree: &SceneTree, node: &Node, pose: &PropValue) -> [Option<f32>; 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use strand_scene::GradientStop;
 
     #[test]
     fn values_round_trip_through_channels() {
         let white = Color::WHITE;
+        let b = Extents {
+            own: (80.0, 30.0),
+            parent: (200.0, 100.0),
+        };
         for (p, v) in [
             (Prop::X, PropValue::Number(4.0)),
             (Prop::Rotate, PropValue::Angle(30.0)),
@@ -1016,28 +1084,57 @@ mod tests {
             ),
             (Prop::Radius, PropValue::Corners(Corners::all(6.0))),
         ] {
-            let e = encode(p, Some(&v), white).unwrap();
+            let e = encode(p, Some(&v), white, b).unwrap();
             let back = decode(p, &e);
-            let e2 = encode(p, Some(&back), white).unwrap();
+            let e2 = encode(p, Some(&back), white, b).unwrap();
             assert_eq!(e, e2, "{p:?}");
         }
-        assert!(
-            encode(
-                Prop::X,
-                Some(&PropValue::Length(Length::Percent(5.0))),
-                white
-            )
-            .is_none()
+        // Lengths resolve against the boxes: a percentage offset of the
+        // parent's, `radius: full` half the node's shorter side.
+        let pct = |v: f32| PropValue::Length(Length::Percent(v));
+        assert_eq!(
+            encode(Prop::X, Some(&pct(5.0)), white, b),
+            Some(Enc::One([10.0]))
         );
-        assert!(
+        assert_eq!(
+            encode(Prop::Y, Some(&pct(50.0)), white, b),
+            Some(Enc::One([50.0]))
+        );
+        let full = Some(Enc::Four([15.0; 4]));
+        assert_eq!(
             encode(
                 Prop::Radius,
                 Some(&PropValue::Corners(Corners::FULL)),
-                white
-            )
-            .is_none()
+                white,
+                b
+            ),
+            full
         );
-        assert_eq!(encode(Prop::Opacity, None, white), Some(Enc::One([1.0])));
+        assert_eq!(
+            encode(
+                Prop::Radius,
+                Some(&PropValue::Keyword("full".into())),
+                white,
+                b
+            ),
+            full
+        );
+        // A gradient cannot interpolate: it snaps.
+        let grad = PropValue::Paint(Paint::Linear {
+            angle: 0.0,
+            stops: vec![
+                GradientStop {
+                    offset: 0.0,
+                    color: Color::BLACK,
+                },
+                GradientStop {
+                    offset: 1.0,
+                    color: Color::WHITE,
+                },
+            ],
+        });
+        assert_eq!(encode(Prop::Bg, Some(&grad), white, b), None);
+        assert_eq!(encode(Prop::Opacity, None, white, b), Some(Enc::One([1.0])));
     }
 
     #[test]

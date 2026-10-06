@@ -335,10 +335,10 @@ pub struct Renderer {
     /// the same diff opens that surface (the first toast and `open:
     /// shown.len > 0`), they play their `enter` pose on its first frame.
     born: Vec<NodeId>,
-    /// Surface nodes kept open, though logic closed them, while ghosts
-    /// under them play their exit (the last toast leaving as the panel
-    /// closes).
-    ghost_held: BTreeSet<NodeId>,
+    /// Surface nodes that opened (reported closed, then open) and have
+    /// not painted a clocked frame yet: nodes created under them in the
+    /// meantime (a second toast in the configure round trip) enter too.
+    opening: BTreeSet<NodeId>,
     /// Nodes laid out by the last layout step (tests: a size spring lays
     /// out only the subtree under its nearest size-stable ancestor).
     laid_out_nodes: usize,
@@ -479,7 +479,7 @@ impl Renderer {
             held: BTreeSet::new(),
             exit_stall: EXIT_STALL,
             born: Vec::new(),
-            ghost_held: BTreeSet::new(),
+            opening: BTreeSet::new(),
             laid_out_nodes: 0,
         }
     }
@@ -615,6 +615,31 @@ impl Renderer {
                 self.anim.finish_now(id);
             }
         }
+    }
+
+    /// When the host's loop must run [`Renderer::update`] even if
+    /// nothing else happens: the earliest instant an exit in flight is
+    /// ended for want of frames (its output asleep, see [`EXIT_STALL`]),
+    /// so a closing surface whose frames stopped still closes and its
+    /// ghosts unmount. `None` when no exit is in flight. Arm a timer at
+    /// it after every `apply`, `update` and paint.
+    pub fn next_wake(&self) -> Option<Instant> {
+        let stall = self.exit_stall;
+        self.anim
+            .exits()
+            .filter_map(|(id, _)| {
+                let started = self.anim.exit_started(id)?;
+                let root = self.tree.root_of(id);
+                let last = self
+                    .surfaces
+                    .values()
+                    .filter(|s| Some(s.root) == root)
+                    .filter_map(|s| s.painted_at)
+                    .max();
+                let asleep = last.map_or(started, |t| t.max(started)) + stall;
+                Some(asleep.min(started + strand_scene::motion::MAX_MOTION + stall))
+            })
+            .min()
     }
 
     /// Something on surface node `id` moves or is about to (a spring, a
@@ -943,7 +968,6 @@ impl Renderer {
             let reduced = self.anim.reduced();
             if spec.open {
                 self.closed.remove(&id);
-                self.ghost_held.remove(&id);
                 if self.anim.exiting(id) == Some(ExitKind::Close) {
                     self.anim.cancel_exit(id);
                     // Its pose may have sized it: the next layout lets go.
@@ -955,6 +979,9 @@ impl Renderer {
                 // enter with it (a surface that was never reported, at
                 // boot, shows at rest).
                 if reported == Some(false) && !reduced {
+                    if !self.shown(Some(id)) {
+                        self.opening.insert(id);
+                    }
                     for n in &self.born {
                         if self.tree.root_of(*n) == Some(id)
                             && self.tree.contains_live(*n)
@@ -978,12 +1005,10 @@ impl Renderer {
                     // Rows still leaving keep it open; it closes when the
                     // last ghost unmounts (which refreshes the specs).
                     spec.open = true;
-                    self.ghost_held.insert(id);
-                } else {
-                    self.ghost_held.remove(&id);
                 }
-            } else {
-                self.ghost_held.remove(&id);
+            }
+            if !spec.open || self.shown(Some(id)) {
+                self.opening.remove(&id);
             }
             let bar = spec.kind == NodeKind::Bar;
             let vertical = matches!(spec.edge, Some(Edge::Left | Edge::Right));
@@ -1109,7 +1134,7 @@ impl Renderer {
         }
         self.content_sized.retain(|id| live.contains(id));
         self.held.retain(|id| live.contains(id));
-        self.ghost_held.retain(|id| live.contains(id));
+        self.opening.retain(|id| live.contains(id));
         self.spec_wanted.retain(|id, _| live.contains(id));
         if !requests.is_empty() && self.request_text(&requests) {
             // Shaped inline: size the surfaces with it at once.
@@ -1209,6 +1234,7 @@ impl Renderer {
     /// [`Renderer::frame_deadline`].
     pub fn configure_surface(&mut self, surface: SurfaceId, size: Size, scale: Scale) {
         let wait = self.first_frame_wait;
+        self.glide_origin(surface, size, scale);
         if let Some(s) = self.surfaces.get_mut(&surface) {
             s.resize(size, scale);
             if !s.painted && s.wait_until.is_none() && size != Size::default() {
@@ -1217,6 +1243,61 @@ impl Renderer {
         }
         self.prune_scales();
         self.update();
+    }
+
+    /// A shown content-sized surface is about to grow: where its anchor
+    /// moves its origin (centred: half the growth; anchored to the right
+    /// or bottom edge: all of it), its content is drawn where it was on
+    /// screen and glides to its new place, instead of jumping as the
+    /// compositor re-centres the buffer.
+    fn glide_origin(&mut self, surface: SurfaceId, size: Size, scale: Scale) {
+        let Some(s) = self.surfaces.get(&surface) else {
+            return;
+        };
+        if !s.painted || s.scale != scale || s.size == size || s.size == Size::default() {
+            return;
+        }
+        let root = s.root;
+        let (old, new) = (s.scale.logical_size(s.size), scale.logical_size(size));
+        let Some(spec) = self.specs.get(&root) else {
+            return;
+        };
+        if self.anim.reduced() || spec.kind == NodeKind::Bar || !self.content_sized.contains(&root)
+        {
+            return;
+        }
+        let (fx, fy) = match spec.anchor {
+            Anchor::Center => (0.5, 0.5),
+            Anchor::Top => (0.5, 0.0),
+            Anchor::Bottom => (0.5, 1.0),
+            Anchor::Left => (0.0, 0.5),
+            Anchor::Right => (1.0, 0.5),
+            Anchor::TopLeft => (0.0, 0.0),
+            Anchor::TopRight => (1.0, 0.0),
+            Anchor::BottomLeft => (0.0, 1.0),
+            Anchor::BottomRight => (1.0, 1.0),
+        };
+        // Growth only: content kept in place in a smaller buffer would be
+        // cut off at its edge (a shrink comes once everything settled,
+        // and steps; decisions.md, wave3-pixels fixer round 3).
+        let delta = [(new.w - old.w).max(0.0) * fx, (new.h - old.h).max(0.0) * fy];
+        if delta.iter().all(|d| d.abs() < 0.5) {
+            return;
+        }
+        let tables = [&self.tree.tokens];
+        let curve = Curve::of(
+            &TokenScope::new(&tables).transition(&strand_scene::Transition::Default, Prop::X),
+        );
+        let kids: Vec<NodeId> = self
+            .tree
+            .get(root)
+            .map(|n| n.children.clone())
+            .unwrap_or_default();
+        for k in kids {
+            if self.tree.get(k).is_some_and(|n| !n.kind.is_surface()) {
+                self.anim.glide(k, delta, curve);
+            }
+        }
     }
 
     pub fn detach_surface(&mut self, surface: SurfaceId) {
@@ -1598,7 +1679,10 @@ impl Renderer {
                 }
                 let root = parent.and_then(|p| self.tree.root_of(p));
                 if parent.is_some() && !reduced {
-                    if self.shown(root) {
+                    // On screen, or opening (its first frame still to
+                    // come): it enters.
+                    let opening = root.is_some_and(|r| self.opening.contains(&r));
+                    if opening || self.shown(root) {
                         self.anim.enter(*id);
                     } else {
                         self.born.push(*id);
@@ -2395,6 +2479,10 @@ impl Renderer {
             return Damage::new();
         };
         s.time = target.time;
+        self.glide_origin(surface, target.size, target.scale);
+        let Some(s) = self.surfaces.get_mut(&surface) else {
+            return Damage::new();
+        };
         if s.resize(target.size, target.scale) {
             self.prune_scales();
         }
@@ -2448,12 +2536,18 @@ impl Renderer {
             }
             let tree = &self.tree;
             let surfaces = &self.surfaces;
+            let (now, stall) = (Instant::now(), self.exit_stall);
             // Drawn there: reached by its last frame (a record), or
             // sampled by it (an exit faded to nothing has no record).
+            // Only a surface still getting frames counts: an output
+            // asleep (occluded, DPMS off) never samples its motions, so
+            // its stale frame would keep the exit from ending.
             let elsewhere = |id: NodeId| {
                 surfaces.iter().any(|(sid, o)| {
                     *sid != surface
                         && o.root == root
+                        && o.painted_at
+                            .is_some_and(|t| now.saturating_duration_since(t) < stall)
                         && (o.drawn.contains(&id) || o.records.contains_key(&id))
                 })
             };
@@ -2502,6 +2596,10 @@ impl Renderer {
         s.history.push_front(frame);
         s.history.truncate(DAMAGE_HISTORY);
         s.painted_time = Some(target.time);
+        if !target.time.is_zero() {
+            // Shown with a clock: it is no longer opening.
+            self.opening.remove(&root);
+        }
         s.valid = true;
         s.painted = true;
         s.query_hold = None;

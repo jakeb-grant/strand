@@ -177,6 +177,10 @@ struct Build<'a> {
     vertical_split: bool,
     /// Sizes springs (and exit poses) force on nodes this pass.
     sizes: &'a SizeMap,
+    /// For the child [`Build::node`] is about to build: its parent's
+    /// main axis (0 width, 1 height) and the margins added before and
+    /// after it there, folding the gap next to a collapsing sibling.
+    fold: Option<(usize, [f32; 2])>,
 }
 
 /// What a node inherits for layout: token tables and font size.
@@ -359,6 +363,7 @@ impl<'a> Build<'a> {
         if !root && node.kind.is_surface() {
             return None;
         }
+        let fold = self.fold.take();
         let mut inh = inh.clone();
         inherit(node, &mut inh);
         let scope = TokenScope::new(&inh.tokens);
@@ -380,7 +385,7 @@ impl<'a> Build<'a> {
         }
         // A size in flight: exactly that, however small its content (a
         // toast collapsing to `height: 0` clips what it holds).
-        let forced = self.sizes.get(&node.id).copied().unwrap_or([None, None]);
+        let forced = self.sizes.get(&node.id).copied().unwrap_or_default();
         if let Some(d) = dim(get(Prop::MinHeight).as_deref(), font) {
             style.min_size.height = d.lpa();
         }
@@ -390,17 +395,28 @@ impl<'a> Build<'a> {
         if let Some(d) = dim(get(Prop::MaxHeight).as_deref(), font) {
             style.max_size.height = d.lpa();
         }
-        if let Some(w) = forced[0] {
+        if let Some(w) = forced.size[0] {
             style.size.width = length(w);
             style.min_size.width = LengthPercentageAuto::length(0.0);
             style.max_size.width = LengthPercentageAuto::auto();
         }
-        if let Some(h) = forced[1] {
+        if let Some(h) = forced.size[1] {
             style.size.height = length(h);
             style.min_size.height = LengthPercentageAuto::length(0.0);
             style.max_size.height = LengthPercentageAuto::auto();
         }
-        if let Some(m) = insets(get(Prop::Margin).as_deref()) {
+        let mut margin = insets(get(Prop::Margin).as_deref());
+        if let Some((axis, [before, after])) = fold {
+            let m = margin.get_or_insert_with(Insets::default);
+            if axis == 0 {
+                m.left += before;
+                m.right += after;
+            } else {
+                m.top += before;
+                m.bottom += after;
+            }
+        }
+        if let Some(m) = margin {
             style.margin = taffy::Rect {
                 left: LengthPercentageAuto::length(m.left),
                 right: LengthPercentageAuto::length(m.right),
@@ -408,7 +424,23 @@ impl<'a> Build<'a> {
                 bottom: LengthPercentageAuto::length(m.bottom),
             };
         }
-        if let Some(p) = insets(get(Prop::Pad).as_deref()) {
+        if let Some(mut p) = insets(get(Prop::Pad).as_deref()) {
+            // A forced size smaller than the padding: the padding gives
+            // way (taffy never makes a box smaller than its padding), so
+            // a collapsing toast reaches zero.
+            let fit = |v: f32, a: &mut f32, b: &mut f32| {
+                let (x, y) = (a.max(0.0), b.max(0.0));
+                if x + y > v {
+                    let k = v.max(0.0) / (x + y);
+                    (*a, *b) = (x * k, y * k);
+                }
+            };
+            if let Some(w) = forced.size[0] {
+                fit(w, &mut p.left, &mut p.right);
+            }
+            if let Some(h) = forced.size[1] {
+                fit(h, &mut p.top, &mut p.bottom);
+            }
             let l = |v: f32| LengthPercentage::length(v.max(0.0));
             style.padding = taffy::Rect {
                 left: l(p.left),
@@ -616,7 +648,39 @@ impl<'a> Build<'a> {
         let mut kids = Vec::with_capacity(children.len());
         let mut child_inh = inh.clone();
         child_inh.font = inh.font.clone();
-        for (_, c) in children {
+        // The flex main axis and gap a collapsing child folds.
+        let main = match style.display {
+            Display::Flex if style.flex_direction == FlexDirection::Row => Some(0),
+            Display::Flex => Some(1),
+            _ => None,
+        };
+        let gap = num(get(Prop::Gap).as_deref()).unwrap_or(0.0).max(0.0);
+        let count = children.len();
+        // A slot collapsing to zero takes the gap beside it along: its
+        // share of the gap is never more than its own size. The
+        // neighbour across that gap gives it up (a negative margin on the
+        // collapsing node itself would not shrink an auto-sized parent:
+        // an outer size never goes below zero).
+        let mut folds = vec![[0.0f32; 2]; count];
+        if let Some(axis) = main.filter(|_| gap > 0.0 && count > 1) {
+            for (i, (_, c)) in children.iter().enumerate() {
+                let Some(f) = self.sizes.get(&c.id) else {
+                    continue;
+                };
+                let Some(v) = f.size[axis].filter(|v| f.collapse[axis] && gap > *v) else {
+                    continue;
+                };
+                if i + 1 < count {
+                    folds[i + 1][0] -= gap - v;
+                } else {
+                    folds[i - 1][1] -= gap - v;
+                }
+            }
+        }
+        for (i, (_, c)) in children.into_iter().enumerate() {
+            self.fold = main
+                .filter(|_| folds[i] != [0.0, 0.0])
+                .map(|axis| (axis, folds[i]));
             if let Some(t) = self.node(c, &child_inh, false) {
                 // A scroll's content scrolls instead of shrinking.
                 if kind == NodeKind::Scroll
@@ -977,6 +1041,7 @@ impl<'a> Build<'a> {
     fn new(tree: &'a SceneTree, vertical_split: bool, sizes: &'a SizeMap) -> Self {
         Build {
             sizes,
+            fold: None,
             tree,
             taffy: TaffyTree::new(),
             map: Vec::new(),
@@ -1163,7 +1228,12 @@ fn place_list(
         // A list or scroll inside the row: its own rows in view.
         b.place_lists(texts, scrolls, out);
         out.rows_laid_out += 1;
-        y += h + gap;
+        // A collapsing row takes its gap along (as in a column).
+        let g = match sizes.get(&rows[i]) {
+            Some(f) if f.collapse[1] && f.size[1].is_some() => gap.min(h),
+            _ => gap,
+        };
+        y += h + g;
         i += 1;
     }
     // Forget heights of rows that are gone.

@@ -950,7 +950,7 @@ impl<'a> Flattener<'a> {
         };
         // Springs: this frame's values of the props in flight.
         self.anim
-            .paint(node, &mut props, &scope, inh.color, Some(laid));
+            .paint(node, &mut props, &scope, inh.color, Some(laid), parent);
         let inert = inh.inert || self.tree.is_ghost(node.id);
         let get = |p: Prop| props.iter().find(|(q, _)| *q == p).map(|(_, v)| v.as_ref());
 

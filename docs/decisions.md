@@ -4355,3 +4355,41 @@ first is the fix, left for M4 with the compositor-animated poses.
 Removing a surface root (an `if` around a surface, a reload dropping
 it), as opposed to closing it with `open: false`, still unmounts it at
 once without its exit pose.
+
+**2026-10-06 · wave3-pixels (p2) fixer round 3: a collapsing slot
+reaches zero.** A size that springs to or from zero (the toast's `exit
+{ …; height: 0 }`) takes along what taffy would otherwise keep: its
+padding gives way once the forced size is smaller than it (scaled to
+fit), and the parent's gap beside it folds, so the slot is `h + min(gap,
+h)` and reaches zero as the spring settles; unmounting the ghost moves
+nothing ("siblings slide up to fill the gap", with no plateau at the
+padding plus the gap). The gap is folded by a negative margin on the
+neighbour across it (the next sibling, or the previous one for the last
+child), not on the collapsing node: an outer size never goes below zero
+in taffy, so a negative margin on a zero-height node would leave its
+auto-sized parent, and the surface's overhang, a gap too large. A list
+row collapsing advances by `min(gap, h)` too. Border width is drawn
+inside the box and takes no layout space, so it needs no folding.
+
+**2026-10-06 · wave3-pixels (p2) fixer round 3: a surface is opening
+until its first clocked frame.** A surface reported closed and then
+open is "opening" until it paints a frame with a clock: nodes created
+under it meanwhile (a second toast arriving in the configure round
+trip) play their `enter` like the ones created by the diff that opened
+it. `radius: full`, a percentage radius and percentage `x`/`y` now
+spring: they are resolved against the laid-out box (half its shorter
+side; the parent's width or height, as flatten resolves them) before
+interpolating. Gradients still snap (no interpolation between paints of
+different shapes). A content-sized surface that grows under an anchor
+that moves its origin (centred: half the growth; anchored right or
+bottom: all of it) draws its content where it was on screen and glides
+it to its new place (a FLIP of the root's children), so the launcher's
+results and an OSD never jump as the compositor re-centres the buffer.
+A shrink still steps: it comes once everything settled, and keeping the
+content in place in the smaller buffer would cut it off at the edge;
+springing the root box inside the held buffer first is left with the
+compositor-animated poses (M4). Another output's last frame counts as
+"drawn there" for an exit only while that output still gets frames
+(painted within `EXIT_STALL`), and `Renderer::next_wake` tells the
+host's loop when a stalled exit is due to end, so a closing surface on
+an output that stopped sending frame callbacks still closes.

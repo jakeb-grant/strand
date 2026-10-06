@@ -801,8 +801,27 @@ fn a_leaving_toast_lets_the_next_slide_up_in_a_content_sized_panel() {
             NodeKind::Col,
             Some(col),
             vec![
-                (Prop::Pad, num(6.0)),
+                // The design's toast: `pad: $space.3; border: 1, $border`.
+                (Prop::Pad, num(12.0)),
+                (
+                    Prop::Border,
+                    PropValue::Border(Border {
+                        width: 1.0,
+                        paint: Paint::Solid(Color::from_rgba8(40, 40, 60, 255)),
+                    }),
+                ),
                 (Prop::Bg, color(c)),
+                // `shadow: $elevation.lg`'s first: it sizes the overhang.
+                (
+                    Prop::Shadow,
+                    PropValue::Shadow(vec![Shadow {
+                        x: 0.0,
+                        y: 8.0,
+                        blur: 24.0,
+                        spread: 0.0,
+                        color: Color::from_rgba8(0, 0, 0, 60),
+                    }]),
+                ),
                 (
                     Prop::Exit,
                     pose(vec![
@@ -820,12 +839,21 @@ fn a_leaving_toast_lets_the_next_slide_up_in_a_content_sized_panel() {
     assert!(r.apply(b.diff).is_empty());
     let spec = r.surface_spec(root).unwrap().clone();
     let (w, h) = (spec.width.unwrap() as u32, spec.height.unwrap() as u32);
-    assert_eq!(h, 42 + 8 + 42);
+    assert_eq!(h, 54 + 8 + 54);
+    // The buffer takes the shadows' overhang around the content.
+    let o = spec.overhang;
+    assert!(o.bottom > 0.0);
+    let (ox, oy) = (o.left as u32, o.top as u32);
     r.attach_surface(S, root);
-    let mut buf = Buffer::new(w, h, Scale::ONE);
+    let mut buf = Buffer::new(
+        w + (o.left + o.right) as u32,
+        h + (o.top + o.bottom) as u32,
+        Scale::ONE,
+    );
     buf.paint_at(&mut r, S, 0, T0);
     let mut st = Stage { r, buf, root };
-    assert_eq!(st.red_top(50), Some(50));
+    // Its fill starts inside its 1 px border.
+    assert_eq!(st.red_top(ox + 50), Some(oy + 63));
     let mut d = SceneDiff::new();
     d.push(SceneOp::Remove { id: toasts[0] });
     st.apply(d);
@@ -833,8 +861,10 @@ fn a_leaving_toast_lets_the_next_slide_up_in_a_content_sized_panel() {
     let mut k = 1;
     while st.r.wants_frame(S) {
         st.paint(frame(k));
-        tops.push(st.red_top(50).unwrap() as i32);
-        assert!(st.r.surface_spec(root).unwrap().height.unwrap() as u32 == h || !st.r.animating(S));
+        tops.push(st.red_top(ox + 50).unwrap() as i32 - 1 - oy as i32);
+        // Held: neither its size nor its overhang changes while the
+        // toast leaves (a collapsing slot shrinks its parent fully).
+        assert!(st.r.surface_spec(root).unwrap() == &spec || !st.r.animating(S));
         k += 1;
         assert!(k < 200);
     }
@@ -843,10 +873,18 @@ fn a_leaving_toast_lets_the_next_slide_up_in_a_content_sized_panel() {
         tops.windows(2).all(|p| p[1] <= p[0] && p[0] - p[1] <= 12),
         "{tops:?}"
     );
+    // No plateau: the padding and the gap fold with the collapsing
+    // slot, so the next toast moves on every frame until it is within
+    // a pixel of its slot, and unmounting the ghost moves nothing.
+    let near = tops.iter().position(|t| *t <= 1).unwrap();
+    assert!(
+        tops[..=near].windows(2).all(|p| p[1] < p[0]),
+        "moves every frame: {tops:?}"
+    );
     st.r.update();
     assert_eq!(
         st.r.surface_spec(root).unwrap().height,
-        Some(42.0),
+        Some(54.0),
         "shrinks once settled"
     );
 }
@@ -1297,8 +1335,12 @@ fn exits_stay_bounded_without_frames() {
     d.set(root, Prop::Open, PropValue::Bool(false));
     st.apply(d);
     assert!(st.r.surface_spec(root).unwrap().open, "plays its exit");
+    // The host's loop is told when to look again with no frame coming.
+    let wake = st.r.next_wake().expect("a wake for the stalled exit");
+    assert!(wake <= std::time::Instant::now() + Duration::from_millis(20));
     std::thread::sleep(Duration::from_millis(60));
     st.r.update();
+    assert_eq!(st.r.next_wake(), None, "nothing left to wake for");
     assert!(
         !st.r.surface_spec(root).unwrap().open,
         "closed with no frame painted"
@@ -1582,6 +1624,164 @@ fn a_lone_toast_enters_with_its_panel_and_leaves_before_it_closes() {
     }
     assert!(alphas.len() >= 4 && alphas[0] < 128, "{alphas:?}");
     assert_eq!(*alphas.last().unwrap(), 255);
+}
+
+/// `radius: full` and a percentage offset spring like any length: the
+/// pill's corner fills in over several frames, and `x: 50%` (of the
+/// parent) slides there.
+#[test]
+fn full_radius_and_percentage_offsets_spring() {
+    let mut pill = NodeId::new(0, 0);
+    let mut st = Stage::new(200, 40, |b, root| {
+        pill = red_box(
+            b,
+            root,
+            vec![
+                (Prop::Width, num(60.0)),
+                (Prop::Height, num(30.0)),
+                (Prop::Radius, PropValue::Keyword("full".into())),
+            ],
+        );
+    });
+    let r = st.rect(pill);
+    let corner = |st: &Stage| st.buf.px(r.x as u32 + 2, r.y as u32 + 2)[2];
+    assert!(corner(&st) < 64, "a pill at rest");
+    let mut d = SceneDiff::new();
+    d.set(pill, Prop::Radius, num(0.0));
+    st.apply(d);
+    let mut seen = Vec::new();
+    let mut k = 1;
+    while st.r.wants_frame(S) {
+        st.paint(frame(k));
+        seen.push(corner(&st));
+        k += 1;
+        assert!(k < 400);
+    }
+    assert!(seen.len() >= 4, "springs, not snaps: {seen:?}");
+    assert!(seen[0] < 200, "{seen:?}");
+    assert!(*seen.last().unwrap() > 200, "{seen:?}");
+    assert!(seen.windows(2).all(|w| w[1] >= w[0]), "{seen:?}");
+    // `x: 50%` of the 200 px panel: 100 px, gliding there.
+    let mut d = SceneDiff::new();
+    d.set(pill, Prop::X, PropValue::Length(Length::Percent(50.0)));
+    st.apply(d);
+    let mut xs = Vec::new();
+    while st.r.wants_frame(S) {
+        st.paint(frame(k));
+        xs.push(st.red_from(r.y as u32 + 15).unwrap());
+        k += 1;
+        assert!(k < 800);
+    }
+    let x0 = r.x as u32;
+    assert!(xs.len() >= 4 && xs[0] > x0 && xs[0] < x0 + 90, "{xs:?}");
+    assert_eq!(*xs.last().unwrap(), x0 + 100, "{xs:?}");
+}
+
+/// A centred content-sized panel that grows (an `if` branch entering)
+/// is re-centred by the compositor: its rows are drawn where they were
+/// on screen and glide to their new place, never jumping by half the
+/// growth.
+#[test]
+fn a_centred_panel_keeps_its_rows_in_place_as_it_grows() {
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Bg, color("#1e1e2e")),
+            (Prop::Anchor, PropValue::Keyword("center".into())),
+        ],
+    );
+    let col = b.node(
+        NodeKind::Col,
+        Some(root),
+        vec![(Prop::Width, num(100.0)), (Prop::Gap, num(4.0))],
+    );
+    b.node(
+        NodeKind::Box,
+        Some(col),
+        vec![(Prop::Height, num(30.0)), (Prop::Bg, color("#ff0000"))],
+    );
+    let mut h = Host::new(b.diff, root);
+    h.run();
+    assert_eq!(h.height(), Some(30.0));
+    // Screen y of the red row's top: the compositor centres the buffer.
+    let screen = |h: &Host| {
+        let (_, buf, _) = h.surface.as_ref().unwrap();
+        let top = (0..buf.size.h).find(|y| buf.px(50, *y)[2] > 128).unwrap() as f32;
+        top - buf.size.h as f32 / 2.0
+    };
+    assert_eq!(screen(&h), -15.0);
+    let branch = NodeId::new(60, 0);
+    let mut d = SceneDiff::new();
+    d.create(branch, NodeKind::Box, Some(col), 1)
+        .set(branch, Prop::Height, num(20.0))
+        .set(branch, Prop::Bg, color("#00ff00"))
+        .set(branch, Prop::Enter, pose(vec![(Prop::Opacity, num(0.0))]));
+    h.apply(d);
+    assert_eq!(h.height(), Some(54.0));
+    let mut ys = Vec::new();
+    while h.frame() {
+        ys.push(screen(&h));
+        assert!(ys.len() < 400);
+    }
+    assert!(ys.len() >= 4, "{ys:?}");
+    assert!(ys[0] >= -16.0, "stays where it was: {ys:?}");
+    assert_eq!(*ys.last().unwrap(), -27.0, "{ys:?}");
+    assert!(
+        ys.windows(2).all(|w| w[1] <= w[0] && w[0] - w[1] < 6.0),
+        "glides there: {ys:?}"
+    );
+}
+
+/// Two toasts in quick succession: the first opens the panel, the second
+/// arrives in a later tick, before the panel's first frame (it waits for
+/// its configure). Both enter: the panel is still opening.
+#[test]
+fn a_toast_arriving_before_the_first_frame_enters_too() {
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Bg, color("#1e1e2e")),
+            (Prop::Open, PropValue::Bool(false)),
+        ],
+    );
+    let col = b.node(NodeKind::Col, Some(root), vec![(Prop::Width, num(100.0))]);
+    let mut h = Host::new(b.diff, root);
+    let enter = pose(vec![(Prop::X, num(60.0)), (Prop::Opacity, num(0.0))]);
+    let toast = |d: &mut SceneDiff, id: NodeId, c: &str, i: u32| {
+        d.create(id, NodeKind::Col, Some(col), i)
+            .set(id, Prop::Height, num(30.0))
+            .set(id, Prop::Bg, color(c))
+            .set(id, Prop::Enter, enter.clone());
+    };
+    let (a, b2) = (NodeId::new(50, 0), NodeId::new(51, 0));
+    let mut d = SceneDiff::new();
+    toast(&mut d, a, "#ff0000", 0);
+    d.set(root, Prop::Open, PropValue::Bool(true));
+    h.apply(d);
+    assert!(h.surface.is_some(), "opened");
+    let mut d = SceneDiff::new();
+    toast(&mut d, b2, "#00ff00", 1);
+    h.apply(d);
+    assert_eq!(h.height(), Some(60.0));
+    let red = |h: &Host| (0..100).find(|x| h.px(*x, 15).is_some_and(|p| p[2] > 128));
+    let green =
+        |h: &Host| (0..100).find(|x| h.px(*x, 45).is_some_and(|p| p[1] > 128 && p[2] < 128));
+    let mut edges = Vec::new();
+    while h.frame() {
+        edges.push((red(&h), green(&h)));
+        assert!(edges.len() < 400, "never settled");
+    }
+    assert!(edges.len() >= 5, "{edges:?}");
+    assert_ne!(edges[0].0, Some(0), "the first toast enters: {edges:?}");
+    assert_ne!(edges[0].1, Some(0), "the second toast enters: {edges:?}");
+    assert_eq!(*edges.last().unwrap(), (Some(0), Some(0)), "{edges:?}");
+    // Once the panel is shown, a later toast enters as usual, and the
+    // opening is over: nothing lingers.
+    assert!(!h.r.animating(h.surface.as_ref().unwrap().0));
 }
 
 /// A panel that opens with rows created at boot (reported closed, then

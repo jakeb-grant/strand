@@ -340,8 +340,20 @@ be built and tested without the language, and the language without pixels.
   `MAX_GHOSTS_PER_PARENT` (8) ghosts (a new one ends the oldest), and an
   exit on a surface that painted nothing for `EXIT_STALL` (1 s; its
   output asleep) or older than `MAX_MOTION` + 1 s ends at the next
-  `apply`/`update`. A node created under a ghost's id replaces the
-  ghost. A content-sized surface never shrinks while something on it
+  `apply`/`update`; `Renderer::next_wake() -> Option<Instant>` is the
+  earliest such instant, and the host's loop arms a timer at it (after
+  every `apply`, `update` and paint) that runs `update` and hands the
+  surface changes on, so a closing surface whose output stopped sending
+  frame callbacks still closes (wiring it in `strand run` is an
+  integrator item). Another surface's last frame counts as having drawn
+  a node only while that surface still paints (within `EXIT_STALL`). A node created under a ghost's id replaces the
+  ghost. A surface reported closed and then open is opening until
+  its first clocked frame: nodes created under it meanwhile enter too.
+  A size springing to or from zero folds its padding and the parent's
+  gap beside it, so the slot reaches zero (decisions.md, wave3-pixels
+  (p2) fixer round 3). A content-sized surface that grows under an
+  anchor moving its origin glides its root's children from where they
+  were on screen. A content-sized surface never shrinks while something on it
   moves, and asks for its own size once nothing does. The paint that
   finishes an exit (a ghost unmounted, a surface closed) or lets a held
   surface shrink refreshes the specs itself, so `has_surface_changes()`
@@ -349,7 +361,9 @@ be built and tested without the language, and the language without pixels.
   demo host pings its loop, which runs `update` and hands the changes
   on). A surface just attached previews at time zero (no motion), so
   its first painted frame flattens afresh while any motion on it waits
-  to start: `enter` plays from that frame. Not yet animated: `mark_color`
+  to start: `enter` plays from that frame. Lengths resolve against the laid-out boxes before
+  they spring (`radius: full` is half the shorter side, a percentage
+  `x`/`y` is of the parent's box). Not yet animated: gradients, `mark_color`
   (span colours are part of the text shaping request, so a spring would
   reshape every frame) and the props of widgets and effects still to be
   drawn (`value`, `stroke`, `fill`, `trim`, `track`, `glow`, `blur`);
