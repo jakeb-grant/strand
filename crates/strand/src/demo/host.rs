@@ -678,6 +678,57 @@ mod tests {
                 .iter()
                 .any(|m| matches!(m, ToLogic::Event { .. }))
         );
+        // Scrolls go to the innermost node under the pointer, `dy` from
+        // the vertical axis and `dx` from the horizontal one.
+        let scroll = |x, dy, dx| InputEvent::PointerAxis {
+            surface: s,
+            position: at(x),
+            horizontal: AxisDelta {
+                pixels: dx,
+                value120: 0,
+                stop: false,
+            },
+            vertical: AxisDelta {
+                pixels: dy,
+                value120: 0,
+                stop: false,
+            },
+            source: None,
+            time: 0,
+        };
+        f.input(&scroll(15.0, 3.0, -2.0), &hit);
+        f.input(&scroll(5.0, -1.0, 0.0), &hit);
+        f.input(&scroll(30.0, 0.0, 4.0), &hit);
+        // Right clicks are `secondary` on the innermost node under both
+        // the press and the release, like left clicks.
+        let right = |x, state| InputEvent::PointerButton {
+            surface: s,
+            position: at(x),
+            button: button::RIGHT,
+            state,
+            time: 0,
+        };
+        f.input(&right(15.0, ButtonState::Pressed), &hit);
+        f.input(&right(15.0, ButtonState::Released), &hit);
+        f.input(&right(5.0, ButtonState::Pressed), &hit);
+        f.input(&right(15.0, ButtonState::Released), &hit);
+        // A right release with no right press: nothing.
+        f.input(&right(15.0, ButtonState::Released), &hit);
+        let events: Vec<ToLogic> = drain(&mut el)
+            .into_iter()
+            .filter(|m| matches!(m, ToLogic::Event { .. }))
+            .collect();
+        let event = |node, event| ToLogic::Event { node, event };
+        assert_eq!(
+            events,
+            [
+                event(b, NodeEvent::Scroll { dy: 3.0, dx: -2.0 }),
+                event(a, NodeEvent::Scroll { dy: -1.0, dx: 0.0 }),
+                event(root, NodeEvent::Scroll { dy: 0.0, dx: 4.0 }),
+                event(b, NodeEvent::Secondary),
+                event(row, NodeEvent::Secondary),
+            ]
+        );
     }
 
     /// Monitors are `screens` in plug order; one that comes back within

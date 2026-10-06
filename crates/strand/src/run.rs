@@ -1273,7 +1273,8 @@ pub(crate) mod tests {
     }
 
     /// The logic side of `strand run` without Wayland: monitors arrive as
-    /// messages and each gets its bar; surface input and sizes reach it;
+    /// messages and each gets its bar; surface input (hover, pressed,
+    /// click, secondary, scroll with its `dy, dx`) and sizes reach it;
     /// an unplugged monitor's bar is parked and comes back with its
     /// state, and once forgotten comes back fresh; `Shutdown` ends the
     /// thread after the persisted state reached the disk.
@@ -1282,7 +1283,7 @@ pub(crate) mod tests {
         let dir = temp_dir("monitors");
         std::fs::write(
             dir.join("bar.strand"),
-            "state total = 0 persist\nbar Top {\n  state n = 0\n  opacity: hover ? 0.5 : 1\n  height: self.width > 1000 ? 40 : 32\n  when pressed { opacity: 0.25 }\n  on click {\n    n += 1\n    total += 1\n  }\n  text join(\" \", screen.name, n, total)\n}\n",
+            "state total = 0 persist\nbar Top {\n  state n = 0\n  state e = \"-\"\n  opacity: hover ? 0.5 : 1\n  height: self.width > 1000 ? 40 : 32\n  when pressed { opacity: 0.25 }\n  on click {\n    n += 1\n    total += 1\n  }\n  on secondary { e = \"secondary\" }\n  on scroll(dy, dx) { e = join(\",\", dy, dx) }\n  text join(\" \", screen.name, n, total, e)\n}\n",
         )
         .unwrap();
         let program = load(&dir);
@@ -1295,7 +1296,7 @@ pub(crate) mod tests {
             .unwrap();
         let t = std::thread::spawn(move || logic(program, storage, from_main, tx, Live::default()));
         let mut m = Mirror::new(rx);
-        m.until("A's bar", |s| s.texts() == ["DP-1 0 0"]);
+        m.until("A's bar", |s| s.texts() == ["DP-1 0 0 -"]);
         let a = m.scene.roots()[0];
         let send = |msg| to_logic.send(msg).unwrap();
         // Surface input and size reach the bar's node.
@@ -1326,11 +1327,23 @@ pub(crate) mod tests {
             flag: NodeFlag::Pressed,
             on: false,
         });
+        // A right click runs `on secondary` (not `on click`), and a
+        // scroll runs `on scroll(dy, dx)` with its deltas in that order.
+        send(ToLogic::Event {
+            node: a,
+            event: NodeEvent::Secondary,
+        });
+        m.until("a right click", |s| s.texts() == ["DP-1 0 0 secondary"]);
+        send(ToLogic::Event {
+            node: a,
+            event: NodeEvent::Scroll { dy: 1.5, dx: -2.5 },
+        });
+        m.until("a scroll", |s| s.texts() == ["DP-1 0 0 1.5,-2.5"]);
         send(ToLogic::Event {
             node: a,
             event: NodeEvent::Click,
         });
-        m.until("a click", |s| s.texts() == ["DP-1 1 1"]);
+        m.until("a click", |s| s.texts() == ["DP-1 1 1 1.5,-2.5"]);
         let two = || vec![screen("A", "DP-1"), screen("B", "HDMI-A-1")];
         send(ToLogic::Screens(two()));
         m.until("B's bar", |s| s.roots().len() == 2);
@@ -1342,14 +1355,14 @@ pub(crate) mod tests {
         m.until("a click on B", |s| {
             let mut t = s.texts();
             t.sort();
-            t == ["DP-1 1 2", "HDMI-A-1 1 2"]
+            t == ["DP-1 1 2 1.5,-2.5", "HDMI-A-1 1 2 -"]
         });
         // B unplugged: its bar is parked; back within 30 s, with its `n`.
         send(ToLogic::Screens(vec![screen("A", "DP-1")]));
         m.until("B parked", |s| s.roots().len() == 1);
         send(ToLogic::Screens(two()));
         m.until("B back", |s| s.roots().len() == 2);
-        assert_eq!(m.texts(), ["DP-1 1 2", "HDMI-A-1 1 2"]);
+        assert_eq!(m.texts(), ["DP-1 1 2 1.5,-2.5", "HDMI-A-1 1 2 -"]);
         // Unplugged and forgotten: B comes back fresh (the top-level
         // `total` stays).
         send(ToLogic::Screens(vec![screen("A", "DP-1")]));
@@ -1357,7 +1370,7 @@ pub(crate) mod tests {
         send(ToLogic::Forget("B".into()));
         send(ToLogic::Screens(two()));
         m.until("B fresh", |s| s.roots().len() == 2);
-        assert_eq!(m.texts(), ["DP-1 1 2", "HDMI-A-1 0 2"]);
+        assert_eq!(m.texts(), ["DP-1 1 2 1.5,-2.5", "HDMI-A-1 0 2 -"]);
         // Shutdown: the thread ends, and the persisted `total`, written
         // less than the 250 ms debounce ago, is on disk.
         send(ToLogic::Shutdown);
