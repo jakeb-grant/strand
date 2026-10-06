@@ -36,7 +36,9 @@ while muted and faint text is not guarded mid-swap). They are tested
 on a headless sway with two outputs, driven by clicks, the wheel and
 keys against mock services, with screenshots compared to references.
 design.md's bar on two 2560×1440 monitors uses about 26 MB, does no work
-between minute ticks and repaints about 230–480 px² per tick; the full
+between minute ticks and repaints about 230–750 px² per tick (about
+2,700 px² on the two ticks after midnight, when the centred clock moves:
+a documented exception, within design.md's 60×20 px per output); the full
 shell with the launcher open about 31 MB.
 
 `strand run [dir]` compiles your `.strand` files (type checker, bytecode

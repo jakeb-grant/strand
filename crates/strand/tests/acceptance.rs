@@ -19,6 +19,7 @@
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -27,6 +28,11 @@ mod support;
 use support::{keyboard, pointer};
 
 struct Proc(Child);
+
+/// The cursor theme and size of every process on the desk (sway and
+/// strand), pinned: the hover references show the pointer.
+const CURSOR_THEME: &str = "Adwaita";
+const CURSOR_SIZE: &str = "24";
 
 impl Drop for Proc {
     fn drop(&mut self) {
@@ -104,14 +110,33 @@ impl Desk {
         let cfg = dir.join("sway.cfg");
         std::fs::write(
             &cfg,
-            "xwayland disable\noutput HEADLESS-1 resolution 2560x1440 position 0 0 scale 1\n",
+            format!(
+                "xwayland disable\nseat * xcursor_theme {CURSOR_THEME} {CURSOR_SIZE}\n\
+                 output HEADLESS-1 resolution 2560x1440 position 0 0 scale 1\n"
+            ),
         )
         .unwrap();
         let log = std::fs::File::create(dir.join("sway.log")).unwrap();
-        let child = Command::new("sway")
+        let mut cmd = Command::new("sway");
+        // The compositor dies with the thread that started it, so a test
+        // binary killed before `Drop` never leaks it. SAFETY: the hook runs
+        // between fork and exec and makes one async-signal-safe syscall.
+        unsafe {
+            cmd.pre_exec(|| {
+                rustix::process::set_parent_process_death_signal(Some(
+                    rustix::process::Signal::KILL,
+                ))
+                .map_err(std::io::Error::from)
+            });
+        }
+        let child = cmd
             .arg("-c")
             .arg(&cfg)
             .env("XDG_RUNTIME_DIR", &dir)
+            // The pointer is in the hover shots: one cursor theme and size
+            // whatever the machine's default theme resolves to.
+            .env("XCURSOR_THEME", CURSOR_THEME)
+            .env("XCURSOR_SIZE", CURSOR_SIZE)
             .env("WLR_BACKENDS", "headless")
             .env("WLR_RENDERER", "pixman")
             .env("WLR_LIBINPUT_NO_DEVICES", "1")
@@ -205,6 +230,8 @@ impl Desk {
         vec![
             ("XDG_RUNTIME_DIR", self.dir.clone()),
             ("WAYLAND_DISPLAY", PathBuf::from(&self.display)),
+            ("XCURSOR_THEME", PathBuf::from(CURSOR_THEME)),
+            ("XCURSOR_SIZE", PathBuf::from(CURSOR_SIZE)),
         ]
     }
 

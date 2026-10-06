@@ -308,6 +308,49 @@ fn split_centre_is_truly_centred() {
     }
 }
 
+/// `split`'s sides never depend on the centre: as the centre's width
+/// changes through both parities (a clock going from "Mon 05  23:59" to
+/// "Tue 06  00:00"), every box in `start` and `end` keeps its rect to the
+/// pixel. The side tracks fall on half pixels when the bar's width less the
+/// centre's is odd; boxes are snapped from their absolute positions, so
+/// `end`'s content stays put against the right edge.
+#[test]
+fn split_sides_never_move_with_the_centre() {
+    let mut seen: Option<Vec<LogicalRect>> = None;
+    for cw in (81..=92).map(|w| w as f32).chain([82.5, 87.25, 90.75]) {
+        let mut b = Builder::default();
+        let root = b.node(NodeKind::Bar, None, vec![(Prop::Height, num(32.0))]);
+        let split = b.node(
+            NodeKind::Split,
+            Some(root),
+            vec![(Prop::Pad, list(&[0.0, 12.0]))],
+        );
+        let start = b.node(NodeKind::Start, Some(split), vec![(Prop::Gap, num(8.0))]);
+        let s1 = swatch(&mut b, start, "#f38ba8", vec![(Prop::Width, num(37.0))]);
+        let s2 = swatch(&mut b, start, "#f38ba8", vec![(Prop::Width, num(16.0))]);
+        let center = b.node(NodeKind::Center, Some(split), vec![]);
+        swatch(&mut b, center, "#cdd6f4", vec![(Prop::Width, num(cw))]);
+        let end = b.node(NodeKind::End, Some(split), vec![(Prop::Gap, num(6.0))]);
+        let row = b.node(NodeKind::Row, Some(end), vec![(Prop::Gap, num(4.0))]);
+        let e1 = swatch(&mut b, row, "#a6e3a1", vec![(Prop::Width, num(16.0))]);
+        let e2 = swatch(&mut b, row, "#a6e3a1", vec![(Prop::Width, num(111.0))]);
+        let e3 = swatch(&mut b, end, "#a6e3a1", vec![(Prop::Width, num(16.0))]);
+        let (r, _) = show(b.diff, root, 2560, 32, Scale::ONE);
+        let rects: Vec<LogicalRect> = [s1, s2, row, e1, e2, e3]
+            .iter()
+            .map(|id| rect(&r, *id))
+            .collect();
+        for x in &rects {
+            assert_eq!(x.x, x.x.round(), "whole pixels at {cw}: {x:?}");
+        }
+        assert_eq!(rects[5].x + rects[5].w, 2560.0 - 12.0, "{cw}: {rects:?}");
+        match &seen {
+            None => seen = Some(rects),
+            Some(first) => assert_eq!(first, &rects, "centre {cw} moved a side"),
+        }
+    }
+}
+
 /// The same split at a fractional scale: still centred, and painted.
 #[test]
 fn split_at_fractional_scale() {

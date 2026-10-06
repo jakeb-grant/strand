@@ -628,10 +628,10 @@ pub struct State<H: SurfaceHost + 'static> {
     repeat_info: HashMap<ObjectId, RepeatInfo>,
     /// The key repeating now: its keyboard, its key and its timer.
     key_repeat: Option<(ObjectId, u32, RegistrationToken)>,
-    /// The last `wl_keyboard.modifiers` state (depressed, latched, locked,
-    /// layout): a change stops the key repeating, since its text was
-    /// computed with the old one.
-    raw_modifiers: (u32, u32, u32, u32),
+    /// Each keyboard's last `wl_keyboard.modifiers` state (depressed,
+    /// latched, locked, layout): a change on the repeating key's keyboard
+    /// stops it, since its text was computed with the old one.
+    raw_modifiers: HashMap<ObjectId, (u32, u32, u32, u32)>,
     /// The surface with keyboard focus, and the modifiers held.
     keyboard_focus: Option<SurfaceId>,
     modifiers: Modifiers,
@@ -808,7 +808,7 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             keyboards: Vec::new(),
             repeat_info: HashMap::new(),
             key_repeat: None,
-            raw_modifiers: (0, 0, 0, 0),
+            raw_modifiers: HashMap::new(),
             keyboard_focus: None,
             last_pressed: None,
             last_action: None,
@@ -3036,6 +3036,7 @@ impl<H: SurfaceHost + 'static> SeatHandler for State<H> {
             }
             for k in &gone {
                 self.repeat_info.remove(k);
+                self.raw_modifiers.remove(k);
             }
             self.keyboards.retain(|(s, k)| {
                 let keep = *s != seat;
@@ -3283,18 +3284,19 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
+        keyboard: &wl_keyboard::WlKeyboard,
         _: u32,
         m: XkbModifiers,
         raw: RawModifiers,
         layout: u32,
     ) {
         let raw = (raw.depressed, raw.latched, raw.locked, layout);
-        if raw != self.raw_modifiers {
-            self.raw_modifiers = raw;
-            // The repeating key's text was computed under the old
-            // modifiers; repeating it under the new ones would send e.g.
-            // "a" with Shift held.
+        let id = keyboard.id();
+        let changed = self.raw_modifiers.insert(id.clone(), raw) != Some(raw);
+        if changed && self.key_repeat.as_ref().is_some_and(|(k, _, _)| *k == id) {
+            // The repeating key's text was computed under its keyboard's
+            // old modifiers; repeating it under the new ones would send
+            // e.g. "a" with Shift held. Another seat's keyboard leaves it.
             self.stop_repeat();
         }
         self.modifiers = Modifiers {

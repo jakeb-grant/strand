@@ -569,7 +569,24 @@ fn the_design_bar_keeps_the_m0_budget() {
         "the minute tick: {} frames, {area} px²: {tick:?}",
         tick.len()
     );
-    assert!(area <= 2000, "a tick repainted {area} px²: {tick:?}");
+    // The day change (local 00:00, and 00:01 whose age-2 buffer still
+    // holds the old day) moves the centred clock: it repaints whole, the
+    // documented midnight exception (decisions.md, wave3-pixels exit fixer
+    // r3; `damage.rs::the_midnight_tick_damages_only_the_centred_clock`).
+    let now = std::process::Command::new("date")
+        .arg("+%H%M")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    let gate = if now == "0000" || now == "0001" {
+        4000
+    } else {
+        2000
+    };
+    assert!(
+        area <= gate,
+        "a tick at {now} repainted {area} px²: {tick:?}"
+    );
     drop(strand);
     let _ = std::fs::remove_dir_all(&home);
 }

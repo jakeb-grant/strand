@@ -1693,3 +1693,141 @@ fn a_long_text_repaints_only_its_changed_glyph() {
     assert!(buf.pixels == full.pixels, "partial differs from full");
     eprintln!("6,000 glyphs, last one changed: {best:?} (best of 6)");
 }
+
+/// design.md's bar laid out by a `split`: dots in `start`, the clock
+/// (`"%a %d  %H:%M"`) in `center`, and in `end` the volume icon, the
+/// battery text and a tray icon. Returns the clock's id and `end`'s
+/// children.
+fn split_bar(clock: &str) -> (SceneDiff, NodeId, Vec<NodeId>) {
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Bar,
+        None,
+        vec![
+            (Prop::Height, num(32.0)),
+            (Prop::Bg, color("#1e1e2e")),
+            (Prop::Color, color("#cdd6f4")),
+            (Prop::Font, PropValue::Font(font(13.0))),
+        ],
+    );
+    let split = b.node(
+        NodeKind::Split,
+        Some(root),
+        vec![(Prop::Pad, PropValue::List(vec![num(0.0), num(12.0)]))],
+    );
+    let start = b.node(NodeKind::Start, Some(split), vec![(Prop::Gap, num(6.0))]);
+    for _ in 0..5 {
+        b.node(
+            NodeKind::Box,
+            Some(start),
+            vec![
+                (Prop::Size, num(8.0)),
+                (Prop::Radius, num(999.0)),
+                (Prop::Bg, color("#89b4fa")),
+            ],
+        );
+    }
+    let center = b.node(NodeKind::Center, Some(split), vec![]);
+    let clock_id = b.node(
+        NodeKind::Text,
+        Some(center),
+        vec![(Prop::Text, text(clock))],
+    );
+    let end = b.node(NodeKind::End, Some(split), vec![(Prop::Gap, num(8.0))]);
+    let mut ends = Vec::new();
+    for (c, w) in [("#a6e3a1", 16.0), ("", 0.0), ("#f9e2af", 16.0)] {
+        ends.push(if c.is_empty() {
+            b.node(
+                NodeKind::Text,
+                Some(end),
+                vec![(Prop::Text, text("87%  ▂▄▆"))],
+            )
+        } else {
+            b.node(
+                NodeKind::Box,
+                Some(end),
+                vec![
+                    (Prop::Width, num(w)),
+                    (Prop::Height, num(16.0)),
+                    (Prop::Bg, color(c)),
+                ],
+            )
+        });
+    }
+    (b.diff, clock_id, ends)
+}
+
+/// The clock's box in physical pixels, rounded out and widened by `m`.
+fn physical_box(r: &Renderer, id: NodeId, s: Scale, m: i32) -> Rect {
+    let b = r.boxes(BAR).unwrap().rects[&id];
+    let x0 = s.to_physical(b.x).floor() as i32 - m;
+    let y0 = s.to_physical(b.y).floor() as i32 - m;
+    let x1 = s.to_physical(b.x + b.w).ceil() as i32 + m;
+    let y1 = s.to_physical(b.y + b.h).ceil() as i32 + m;
+    Rect::new(x0, y0, (x1 - x0) as u32, (y1 - y0) as u32)
+}
+
+/// The midnight tick on design.md's centred clock: the day name changes
+/// width ("Mon 05  23:59" to "Tue 06  00:00", and every other day of the
+/// week, so both parities of the width change), so the centred text moves
+/// and every glyph is repainted where it was and where it is. Nothing
+/// else moves (`split`'s sides do not depend on the centre), so no damage
+/// falls outside the clock's old and new boxes; the partial repaint
+/// equals a full one. Per output the tick stays within design.md's
+/// "about 60×20 px" (scaled by scale²); summed over a 1× and a 1.25×
+/// output it is over M0's 2,000 px², the documented midnight exception
+/// (decisions.md, wave3-pixels exit fixer r3; m2-report.md).
+#[test]
+fn the_midnight_tick_damages_only_the_centred_clock() {
+    let days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun", "Mon"];
+    let mut worst = 0;
+    for w in days.windows(2) {
+        let (from, to) = (format!("{} 05  23:59", w[0]), format!("{} 06  00:00", w[1]));
+        let mut total = 0;
+        for s in [Scale::ONE, Scale::from_f64(1.25).unwrap()] {
+            let size = s.physical_size(LogicalSize::new(2560.0, 32.0));
+            let (diff, clock, ends) = split_bar(&from);
+            let (mut r, mut buf) = fresh(diff, size.w, size.h, s);
+            let before: Vec<LogicalRect> = ends
+                .iter()
+                .map(|id| r.boxes(BAR).unwrap().rects[id])
+                .collect();
+            let old = physical_box(&r, clock, s, 2);
+            r.apply(set_text(clock, &to));
+            let d = buf.paint(&mut r, BAR, 1);
+            let new = physical_box(&r, clock, s, 2);
+            let after: Vec<LogicalRect> = ends
+                .iter()
+                .map(|id| r.boxes(BAR).unwrap().rects[id])
+                .collect();
+            assert_eq!(
+                before, after,
+                "{from} -> {to} at {s:?}: the end section moved"
+            );
+            for rect in d.rects() {
+                assert!(
+                    old.contains_rect(*rect) || new.contains_rect(*rect),
+                    "{from} -> {to} at {s:?}: damage {rect:?} outside the clock \
+                     ({old:?}, {new:?})"
+                );
+            }
+            let budget = (60.0 * 20.0 * s.as_f64() * s.as_f64()) as u64;
+            assert!(
+                d.area() > 0 && d.area() <= budget,
+                "{from} -> {to} at {s:?}: {}",
+                d.area()
+            );
+            total += d.area();
+            let (_, full) = fresh(split_bar(&to).0, size.w, size.h, s);
+            assert!(buf.pixels == full.pixels, "{to} at {s:?}: partial differs");
+            // The next minute is an ordinary tick again.
+            r.apply(set_text(clock, &format!("{} 06  00:01", w[1])));
+            let d = buf.paint(&mut r, BAR, 1);
+            assert!(d.area() <= budget / 4, "{to} at {s:?}: 00:01 {}", d.area());
+        }
+        eprintln!("{from} -> {to} over 1× + 1.25×: {total} px²");
+        worst = worst.max(total);
+    }
+    eprintln!("worst midnight tick: {worst} px²");
+    assert!(worst <= 2 * 2000, "{worst}");
+}

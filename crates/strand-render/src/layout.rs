@@ -1115,11 +1115,18 @@ fn rows_height(tree: &SceneTree, id: NodeId, st: &ScrollState, gap: f32) -> f32 
 
 impl<'a> Build<'a> {
     fn new(tree: &'a SceneTree, vertical_split: bool, sizes: &'a SizeMap) -> Self {
+        // Rounded in `read_back`, from absolute positions: taffy rounds
+        // each location relative to its parent, so a box under two
+        // half-pixel offsets (the `end` of a `split` whose centre is an odd
+        // number of pixels narrower than the bar) lands a pixel off, and
+        // moves whenever the centre's width changes parity.
+        let mut taffy = TaffyTree::new();
+        taffy.disable_rounding();
         Build {
             sizes,
             fold: None,
             tree,
-            taffy: TaffyTree::new(),
+            taffy,
             map: Vec::new(),
             lists: Vec::new(),
             scrolls: Vec::new(),
@@ -1166,19 +1173,26 @@ impl<'a> Build<'a> {
     ) {
         let ids: HashMap<taffy::NodeId, NodeId> = self.map.iter().copied().collect();
         let scroll_ids: HashSet<NodeId> = self.scrolls.iter().copied().collect();
-        let mut stack = vec![(t, origin.0, origin.1)];
-        while let Some((tn, px, py)) = stack.pop() {
+        // Each box is snapped to whole logical pixels from its unrounded
+        // position relative to `t` (`cx`, `cy`), so its edges depend only
+        // on where they fall, never on its ancestors' rounding. `ox`, `oy`
+        // carry the origin and scroll offsets, which stay unrounded.
+        let mut stack = vec![(t, 0.0f32, 0.0f32, origin.0, origin.1)];
+        while let Some((tn, px, py, ox, oy)) = stack.pop() {
             let Ok(l) = self.taffy.layout(tn) else {
                 continue;
             };
-            let (x, y) = (px + l.location.x, py + l.location.y);
+            let (cx, cy) = (px + l.location.x, py + l.location.y);
+            let (x0, y0) = (cx.round(), cy.round());
+            let w = (cx + l.size.width).round() - x0;
+            let h = (cy + l.size.height).round() - y0;
             let Some(&id) = ids.get(&tn) else { continue };
             out.rects
-                .insert(id, LogicalRect::new(x, y, l.size.width, l.size.height));
+                .insert(id, LogicalRect::new(ox + x0, oy + y0, w, h));
             let mut dy = 0.0;
             if scroll_ids.contains(&id) {
                 let st = scrolls.entry(id).or_default();
-                st.viewport = l.size.height;
+                st.viewport = h;
                 // The content's extent: its lowest child, plus the bottom
                 // pad.
                 let bottom = self
@@ -1187,9 +1201,9 @@ impl<'a> Build<'a> {
                     .unwrap_or_default()
                     .iter()
                     .filter_map(|k| self.taffy.layout(*k).ok())
-                    .map(|k| k.location.y + k.size.height)
+                    .map(|k| (cy + k.location.y + k.size.height).round() - y0)
                     .fold(0.0f32, f32::max);
-                st.content = (bottom + l.padding.bottom).max(l.size.height);
+                st.content = (bottom + l.padding.bottom.round()).max(h);
                 if !st.offset.is_finite() {
                     st.offset = 0.0;
                 }
@@ -1198,7 +1212,7 @@ impl<'a> Build<'a> {
             }
             if let Ok(kids) = self.taffy.children(tn) {
                 for k in kids {
-                    stack.push((k, x, y - dy));
+                    stack.push((k, cx, cy, ox, oy - dy));
                 }
             }
         }
@@ -1293,7 +1307,7 @@ fn place_list(
             texts,
             scrolls,
         );
-        let h = b.taffy.layout(t).map_or(0.0, |l| l.size.height);
+        let h = b.taffy.layout(t).map_or(0.0, |l| l.size.height.round());
         let st = scrolls.entry(id).or_default();
         // Off what this pass assumed for it: the rows below are misplaced.
         let assumed = st.heights.insert(rows[i], h).unwrap_or(est);

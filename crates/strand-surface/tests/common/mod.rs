@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::BufReader;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -57,7 +58,20 @@ impl Sway {
         )
         .unwrap();
         let log = std::fs::File::create(dir.join("sway.log")).unwrap();
-        let child = Command::new("sway")
+        let mut cmd = Command::new("sway");
+        // The compositor dies with the thread that started it, so a test
+        // binary killed before `Drop` (a timeout, SIGKILL, an abort) never
+        // leaks it. SAFETY: the hook runs between fork and exec and makes
+        // one async-signal-safe syscall (prctl), allocating nothing.
+        unsafe {
+            cmd.pre_exec(|| {
+                rustix::process::set_parent_process_death_signal(Some(
+                    rustix::process::Signal::KILL,
+                ))
+                .map_err(std::io::Error::from)
+            });
+        }
+        let child = cmd
             .arg("-c")
             .arg(&cfg)
             .env("XDG_RUNTIME_DIR", &dir)

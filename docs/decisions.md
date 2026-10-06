@@ -5775,3 +5775,54 @@ The acceptance, `demo.rs` and M0 references are pixels of 24.04's sway
 change, so both jobs pin `ubuntu-24.04` and print those versions. Moving
 to a newer image means regenerating the references with
 `STRAND_UPDATE_REFS=1` and reading every one.
+
+**2026-10-06 · wave3-pixels (exit, fixer r3): boxes snap from absolute
+positions.** Taffy rounds each node's location relative to its parent.
+`split`'s side tracks are `minmax(0, 1fr)`, so when the bar's width less
+the centre's is odd they start on half pixels; `end`'s column and its
+`FLEX_END` content then both round up, and everything in `end` sat one
+logical pixel right of where it belongs (one past the bar's padding),
+moving back and forth as the centred clock's width changed parity (Fri
+and Sat at midnight on design.md's bar). Layout now runs taffy unrounded
+and `read_back` snaps each box from its unrounded position relative to
+the layout root: left edge `round(x)`, width `round(x + w) - round(x)`;
+origin and scroll offsets are added after, unrounded, as before. A box's
+edges depend only on where they fall, so `end`'s content is placed from
+the right edge whatever the centre holds (the reading of design.md's
+"centre is truly centred": the centre moves, the sides never do). Two
+split references moved one pixel left, to end at the bar's padding
+(`tests/refs/layout_split*.png`); `tests/layout.rs::
+split_sides_never_move_with_the_centre`, `tests/damage.rs::
+the_midnight_tick_damages_only_the_centred_clock`.
+
+**2026-10-06 · wave3-pixels (exit, fixer r3): the midnight tick is a
+documented exception to M0's 2,000 px².** design.md's clock is `"%a %d
+%H:%M"` centred on the bar. At local midnight the day name changes
+width, the centred text moves, and every glyph is repainted where it was
+and where it is: 902–924 px² at 1× and 1,206–1,365 px² at 1.25 offline
+(every day of the week, `damage.rs::
+the_midnight_tick_damages_only_the_centred_clock`), 2,108–2,289 px² over
+the two outputs. The next tick (00:01) repaints as much again on an
+output whose buffer is two frames old, since that buffer still shows the
+old day. This cannot be brought under 2,000 px² by smarter damage: the
+old text must be erased and the new one drawn, and the age-2 buffer's
+catch-up is exactly that again. M0's gate sums both outputs; design.md's
+own budget is per tick and per output ("a clock tick repaints about
+60×20 px", 1,200 px² at 1×, 1,875 at 1.25), which the moved clock meets
+on each output. So the gate stands for every other tick of the day
+(about 90–750 px²), and the two ticks after local midnight are held to
+design.md's 60×20 px per output instead (`scripts/m2-exit.sh` section
+1b moves `TZ` so local midnight is two to three minutes away, after an
+ordinary tick, and measures both;
+`demo.rs` allows 4,000 px² in all when its measured tick falls at local
+00:00 or 00:01).
+
+**2026-10-06 · wave3-pixels (exit, fixer r3): test compositors die with
+their test.** The sway harnesses (`strand-surface/tests/common`,
+`strand/tests/acceptance.rs`) set `PR_SET_PDEATHSIG` to SIGKILL in a
+`pre_exec` hook, so a test binary killed before `Drop` (a timeout, a
+SIGKILL, an abort) never leaks its compositor onto the shared machine.
+The signal follows the spawning thread; every harness drops its sway on
+the thread that started it. The acceptance desk pins the pointer's
+cursor (`XCURSOR_THEME=Adwaita`, `XCURSOR_SIZE=24`, and sway's `seat *
+xcursor_theme`), since two hover references show it.

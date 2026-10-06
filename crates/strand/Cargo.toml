@@ -38,6 +38,7 @@ libmimalloc-sys = { version = "0.1.49", features = ["extended"] }
 wayland-client = "0.31.15"
 wayland-protocols-misc = { version = "0.3.12", features = ["client"] }
 wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
+rustix = { version = "1.1.5", features = ["process"] }
 
 [lints]
 workspace = true

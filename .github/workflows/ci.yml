@@ -36,6 +36,10 @@ jobs:
         run: |
           sway --version
           dpkg -s fonts-dejavu-core adwaita-icon-theme | grep -E '^(Package|Version)'
+          # The acceptance tests pin XCURSOR_THEME=Adwaita (size 24); the
+          # default theme only matters to processes outside them.
+          readlink -f /usr/share/icons/default/index.theme || true
+          ls /usr/share/icons/Adwaita/cursors/default
       # Pinned to the dev container's toolchain so a new stable release's
       # lints and deprecations cannot fail -D warnings on unchanged code.
       - uses: dtolnay/rust-toolchain@master

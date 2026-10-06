@@ -11,6 +11,15 @@
 #      PSS from /proc/<pid>/smaps_rollup                     gate <= 34 MB
 #      context switches over every thread, :03 -> :57        gate 0
 #      damage per clock tick, all outputs (STRAND_LOG=damage) gate <= 2000 px^2
+#   1b. the midnight tick: the bar again with TZ set so that local
+#      midnight falls on the first minute boundary at least 100 s away (an
+#      ordinary tick first repairs the age-2 buffer's boot leftovers); the
+#      00:00 tick (the day name changes width, so the centred clock moves
+#      and repaints whole) and the 00:01 tick (HEADLESS-1's age-2 buffer
+#      still holds the old day). Reported against M0's 2,000 px^2 and
+#      against the documented midnight exception (decisions.md,
+#      wave3-pixels exit fixer r3): each output within design.md's
+#      "about 60x20 px" per tick, 1,200 x scale^2 px^2.
 #   2. full shell (all five files), launcher opened with
 #      `strand set launcher.open true`, two toasts up: PSS reported against
 #      design.md's 59-64 MB estimate (not a gate in M2: M3 measures it with
@@ -40,7 +49,7 @@ while [ $# -gt 0 ]; do
     --no-build) BUILD=0 ;;
     --ticks) TICKS=$2; shift ;;
     --images) IMAGES=1 ;;
-    -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
@@ -182,6 +191,54 @@ echo "PSS after $TICKS tick(s): $PSS kB (gate $PSS_GATE_KB kB)"
 [ "$PSS" -le "$PSS_GATE_KB" ] || { echo "  FAIL: PSS"; fail=1; }
 grep -E '^(Rss|Pss|Pss_Anon|Pss_File|Pss_Shmem):' "/proc/$STRAND_PID/smaps_rollup" >"$OUT/bar_smaps_rollup.txt"
 grim -g "0,0 2560x64" "$OUT/m2-bar.png"
+stop
+
+echo
+echo "== 1b. the midnight tick (TZ moved so local midnight is two to three minutes away)"
+: >"$LOG"
+now=$(date -u +%s)
+u=$((now % 86400))
+m=$(((u + 100 + 59) / 60 * 60))
+MIDNIGHT=$((now - u + m))
+off=$(((86400 - m % 86400) % 86400))
+# POSIX TZ: the sign is west of UTC, so local = UTC + off is "-off".
+if [ "$off" -gt 43200 ]; then
+  off=$((off - 86400))
+fi
+if [ "$off" -ge 0 ]; then sign=-; a=$off; else sign=+; a=$((-off)); fi
+MIDNIGHT_TZ=$(printf 'MID%s%d:%02d' "$sign" $((a / 3600)) $((a % 3600 / 60)))
+echo "TZ=$MIDNIGHT_TZ: local now $(TZ=$MIDNIGHT_TZ date +%H:%M:%S)"
+export TZ=$MIDNIGHT_TZ
+start midnight theme.strand bar.strand
+unset TZ
+sleep_until_epoch() {
+  local now
+  now=$(date +%s%N)
+  [ "$1"000000000 -gt "$now" ] || return 0
+  sleep "$((($1 * 1000000000 - now) / 1000000000)).$(printf '%09d' $((($1 * 1000000000 - now) % 1000000000)))"
+}
+per_output() {
+  awk '{ for (i = 1; i <= NF; i++) { if ($i ~ /^scale=/) s = substr($i, 7); if ($i ~ /^area=/) a = substr($i, 6) }
+         t[s] += a }
+       END { for (s in t) printf "%s %d\n", s, t[s] }'
+}
+for k in 0 1; do
+  label=00:0$k
+  sleep_until_epoch $((MIDNIGHT + 60 * k - 3))
+  before=$(frames)
+  sleep_until_epoch $((MIDNIGHT + 60 * k + 4))
+  lines=$(damage_from $((before + 1)))
+  area=$(echo "$lines" | areas | sum)
+  echo "tick $label (local $(TZ=$MIDNIGHT_TZ date +%a\ %H:%M)): all $area px^2 (M0 gate $DAMAGE_GATE)"
+  echo "$lines" | sed 's/^/  /'
+  while read -r sc a; do
+    [ -n "$sc" ] || continue
+    lim=$(awk -v s="$sc" 'BEGIN { printf "%d", 1200 * s * s }')
+    echo "  scale $sc: $a px^2 (midnight exception: <= $lim per output)"
+    [ "$a" -le "$lim" ] || { echo "  FAIL: midnight tick over 60x20 px at scale $sc"; fail=1; }
+  done < <(echo "$lines" | per_output)
+  [ "$(echo "$lines" | grep -c .)" -ge 2 ] || { echo "  FAIL: a bar did not tick"; fail=1; }
+done
 stop
 
 echo

@@ -6,10 +6,12 @@ sway 1.9 with the pixman renderer, fonts-dejavu-core 2.37,
 adwaita-icon-theme 46; release builds (thin LTO, one codegen unit,
 mimalloc). Every number comes from a test or script in the tree that
 fails when its gate is missed; each is given with the command that
-reproduces it. The budget tables below come from one run, at commit
-`6730392` (fixer round 2) on 2026-10-06 between 16:02 and 16:09 UTC:
-`scripts/m0-exit.sh --no-build --no-bench`, `scripts/m2-exit.sh
---no-build` and `cargo test --release -p strand --test demo`. CI runs the
+reproduces it. The budget tables below come from one run of fixer round
+3's code on 2026-10-06 between 17:02 and 17:16 UTC: `scripts/m2-exit.sh`
+(with its new midnight section), `cargo test --release -p strand --test
+demo` and `scripts/m0-exit.sh --no-build --no-bench`; round 2's run at
+`6730392` (16:02–16:09) gave the same within a few hundred kB and the
+same ticks. CI runs the
 same tests on `ubuntu-24.04` (pinned, not `ubuntu-latest`: the reference
 screenshots depend on its sway, fonts and icons) with the same packages,
 and prints their versions (`.github/workflows/ci.yml`).
@@ -27,9 +29,18 @@ two-monitor bar"):
 
 | | Budget | M0 demo (`scripts/m0-exit.sh`) | design.md's bar (`scripts/m2-exit.sh`) |
 | --- | --- | --- | --- |
-| PSS, two 2560×1440 outputs (1.0, 1.25) | ≤ 34 MB | **11.0 MB** after boot, **11.6 MB** after two ticks (21.6 MB at M0) | **26.0 MB** after boot, **26.8 MB** after two ticks (`demo.rs`: 26.5 MB) |
+| PSS, two 2560×1440 outputs (1.0, 1.25) | ≤ 34 MB | **10.5 MB** after boot, **11.1 MB** after two ticks (21.6 MB at M0; `demo.rs`: 10.4 MB) | **25.3 MB** after boot, **26.0 MB** after two ticks (`demo.rs`: 25.2 MB) |
 | Context switches between ticks (:03 → :57) | 0 | **0, 0** | **0, 0** |
-| Damage per clock tick, both outputs | ≤ 2,000 px² | **239, 239 px²** (largest frame 140) | **484, 228 px²** (88 + 140 px² a tick; `demo.rs`: 484 px²) |
+| Damage per clock tick, both outputs | ≤ 2,000 px² | **1,005, 1,005 px²** at 17:12 and 17:13 (largest frame 615; 239 at round 2's 16:0x ticks) | **239, 228 px²** (88 + 140 px² a tick; `demo.rs`: 228 px²) |
+| The two ticks after local midnight | ≤ 2,000 px² (exception: 60×20 px per output) | — | **2,686, 2,686 px²** (1,034 + 1,652; per output within 1,200 / 1,875) |
+
+The M0 demo's tick cost depends on the minute: at 17:12 → 17:13 and
+17:20 → 17:21 its whole "HH:MM" text is repainted (five glyph cells on
+each output, 350 + 516 px² offline), at 09:58 → 09:59 one cell (88 +
+130). Its clock is centred and shaped as a whole, so a change in the
+string's advance moves every glyph; the same happens with the round-2
+layout (checked offline against both), so it is not this round's
+change, and every such tick is under the gate.
 
 The first tick after boot is the larger one, in `m2-exit.sh` and
 `demo.rs` alike: `HEADLESS-1` paints into a buffer of age 2, which was
@@ -39,18 +50,48 @@ buffer-age catch-up makes a tick at the hour larger: an earlier run of
 the same commit straddled 16:00, where `15:59` → `16:00` changes three
 digit cells, and measured 745 px² on that tick and on the next (whose
 age-2 buffer still held `15:59`). The builder's run measured 1,123 px²
-on a first tick, which likely held both; every one is under the gate.
-The midnight tick, where the date changes too, was not measured.
+on a first tick, which likely held both. Every tick of the day but two
+is under the gate; the two ticks after local midnight are not.
+
+**The midnight tick is over 2,000 px² in all, a documented exception.**
+At local midnight the day name changes width (`"%a %d  %H:%M"`), so the
+centred clock moves and every glyph is repainted where it was and where
+it is. `scripts/m2-exit.sh` section 1b sets `TZ` so local midnight falls
+two to three minutes after boot and logs both ticks: Tue → Wed 00:00
+repainted **1,034 px²** on `HEADLESS-1` (1.0) and **1,652 px²** on
+`HEADLESS-2` (1.25), **2,686 px²** in all, and 00:01 the same again
+(both buffers were two frames old and still showed Tuesday). Offline,
+over every day of the week, `crates/strand-render/tests/damage.rs::
+the_midnight_tick_damages_only_the_centred_clock` measures 902–924 px²
+at 1× and 1,206–1,365 at 1.25 (2,108–2,289 in all) and asserts that no
+damage falls outside the clock's old and new boxes. No damage scheme can
+do better: the old text has to be erased and the new one drawn, and an
+age-2 buffer's catch-up is the same work again. Each output stays within
+design.md's own per-tick budget, "a clock tick repaints about 60×20 px"
+(1,200 px² at 1×, 1,875 at 1.25), and the script fails above it; the M0
+gate stays as written for every other tick (decisions.md, wave3-pixels
+(exit, fixer r3)). `demo.rs` allows 4,000 px² in all when its measured
+tick falls at local 00:00 or 00:01, so a CI run that straddles midnight
+does not fail.
+
+The midnight measurement also caught a layout bug: `split`'s `end`
+section moved one pixel whenever the centred clock's width changed
+parity (Fri and Sat at midnight), repainting the whole end section on
+both outputs (8,278 px² on a reviewer's run). Boxes are now snapped from
+their absolute positions; the sides no longer depend on the centre
+(`crates/strand-render/tests/layout.rs::
+split_sides_never_move_with_the_centre`), and in the run above no damage
+fell outside the clock.
 
 Full shell with the launcher open (design.md's estimate 59–64 MB, not an
-M2 gate; M3 measures it with real services), same run: **31.2 MB** PSS
+M2 gate; M3 measures it with real services), same run: **30.9 MB** PSS
 with the bar on two outputs, the mock's notifications up and the
-launcher open on `HEADLESS-1` at scale 1 (28.0 MB before it opened,
-27.7 MB after it closed). design.md's estimate budgets the launcher's
+launcher open on `HEADLESS-1` at scale 1 (27.3 MB before it opened,
+25.8 MB after it closed). design.md's estimate budgets the launcher's
 buffers at 2×: with `HEADLESS-1` at scale 2 (the launcher's buffer
-1492×754), **38.5 MB** with it open, 33.6 MB before. PSS moves between
-runs with what other processes share: the earlier run of the same commit
-gave 31.6 and 35.1 MB. (A run in fixer round 1 counted 8 and 1
+1492×754), **34.2 MB** with it open, 29.0 MB before. PSS moves between
+runs with what other processes share: round 2's runs gave 31.2–31.6 and
+35.1–38.5 MB. (A run in fixer round 1 counted 8 and 1
 switches: the script kept its homes under `/tmp`, where the config
 watcher's ancestor watches woke for other processes' directories; the
 homes now live under `$OUT`, as `demo.rs` already did.)
@@ -147,7 +188,11 @@ show it focused (the launcher above):
 with the mock desktop and the real clock, measures PSS from
 `/proc/<pid>/smaps_rollup`, context switches summed over every thread
 from :03 to :57 of two minutes, and the damage of each tick
-(`STRAND_LOG=damage`); then the five files with the launcher opened by
+(`STRAND_LOG=damage`); then the bar again with `TZ` set to a fixed
+offset (`MID-h:mm`) that puts local midnight on the first minute
+boundary at least 100 s away, logging the 00:00 and 00:01 ticks per
+output against design.md's 60×20 px (1,200 × scale² px²); then the
+five files with the launcher opened by
 `strand set launcher.open true` and the mock's notifications up, then
 again with `HEADLESS-1` at scale 2 (the launcher's buffers at 2×, as
 design.md's estimate budgets them). The homes live under the script's
@@ -157,7 +202,8 @@ design.md's estimate budgets them). The homes live under the script's
 In `cargo test`, `crates/strand/tests/demo.rs::
 the_design_bar_keeps_the_m0_budget` holds the bar to 34 MB (release; CI),
 to no wakeup from the end of boot work (by :45) to :57, and the minute
-tick that follows to 2,000 px² over both outputs.
+tick that follows to 2,000 px² over both outputs (4,000 when that tick
+is local 00:00 or 00:01, the midnight exception).
 
 PSS is reported as measured; its file-backed part moves with what other
 processes share (2–14 MB here between runs); the anonymous part of the
@@ -181,6 +227,9 @@ design bar is stable at about 11 MB.
 | the same | a one-glyph change to a 6,000-glyph text took 16 ms (the glyph diff was quadratic) | prefix and suffix skipped, the middle compared or boxed: about 5 ms, mostly shaping |
 | fixer round 2 | the OSD test's meter reading took the meter's own track as "the pill" for the rows below it; a frame caught near the end of the OSD's entrance, within tolerance of its reference, then read 0% (3 of 14 release runs) | the pill is the image's most common light colour (`acceptance.rs::meter_fill`; 12 of 12 runs since) |
 | fixer round 2 | key repeat could busy-loop on a compositor rate above 1,000,000/s, outlive a destroyed focused surface, and repeat stale text after a modifier change | a 1 ms floor, a stop with no focus, a stop on a modifiers change (decisions.md) |
+| fixer round 3 (midnight measured on sway) | `split`'s `end` moved one pixel whenever the centre's width changed parity: taffy rounds each location relative to its parent, and `end` and its content both sat on half pixels; everything in `end` was also one pixel past the bar's padding | taffy runs unrounded and each box is snapped from its absolute position (`layout.rs::split_sides_never_move_with_the_centre`, `damage.rs::the_midnight_tick_damages_only_the_centred_clock`); two split references moved one pixel left |
+| fixer round 3 | the midnight tick (2,686 px² in all on sway) was unmeasured and over M0's 2,000 px² | measured (`m2-exit.sh` section 1b, `damage.rs`) and held to design.md's 60×20 px per output as a documented exception (decisions.md) |
+| fixer round 3 | a killed test binary leaked its headless sway; the hover references depended on the machine's default cursor theme; a second seat's modifiers stopped the first seat's key repeat | `PR_SET_PDEATHSIG` on the test compositors; the acceptance desk pins `XCURSOR_THEME=Adwaita`, size 24; modifiers are kept per keyboard |
 
 Each is recorded in `docs/decisions.md` (wave3-pixels (exit)), with the
 portal's `reduced-motion` key now wired to render, which closed the last
