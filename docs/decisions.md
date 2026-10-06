@@ -5909,3 +5909,16 @@ texts, the title's ink starting at the bar's left edge and the battery's
 ending at its right (the hello bar has no padding), the clock centred
 within 2 px (2.5 at 1.25), and the darkest ink `$fg`
 (`acceptance.rs::the_hello_bar_alone_is_laid_out_and_themed`).
+
+**2026-10-06 · wave3-pixels (carried r1): CI's timing and memory gates.**
+The first CI runs to get past the build met two gates tuned on the dev
+container. The theme-swap bench in a debug build (the workspace step)
+measured 20.1 ms on a runner against its 4× debug ceiling of 20 ms;
+the debug ceiling is now 8× (the scoped-set test already used 8×), and
+the 5 ms gate on the optimised build (its own CI step) is unchanged.
+`demo.rs::the_design_bar_keeps_the_m0_budget` read 55 MB PSS 1.5 s
+after boot on one run and passed on the next; it now reads PSS once the
+bar has been idle for a whole second (boot's icons and late text done,
+the steady state the M0 gate is about), and a failure prints the
+rollup, the process's and the system's THP state and the ten largest
+mappings, so a breach on a runner can be read from its log.

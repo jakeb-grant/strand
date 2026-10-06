@@ -214,6 +214,58 @@ fn pss_limit() -> (u64, &'static str) {
     }
 }
 
+/// What a PSS failure needs to be read on a machine we cannot log into:
+/// the rollup, the process's THP state, the system's THP modes and the
+/// largest mappings.
+fn memory_report(pid: u32) -> String {
+    let read = |p: &str| std::fs::read_to_string(p).unwrap_or_else(|e| format!("{p}: {e}\n"));
+    let mut out = read(&format!("/proc/{pid}/smaps_rollup"));
+    out.extend(
+        read(&format!("/proc/{pid}/status"))
+            .lines()
+            .filter(|l| l.starts_with("THP") || l.starts_with("Vm") || l.starts_with("Rss"))
+            .map(|l| format!("{l}\n")),
+    );
+    let thp = "/sys/kernel/mm/transparent_hugepage";
+    out.push_str(&format!(
+        "{thp}/enabled: {}",
+        read(&format!("{thp}/enabled"))
+    ));
+    if let Ok(dir) = std::fs::read_dir(thp) {
+        for e in dir.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with("hugepages-") {
+                let mode = read(&format!("{thp}/{name}/enabled"));
+                out.push_str(&format!("{name}: {mode}"));
+            }
+        }
+    }
+    // The ten mappings with the most PSS.
+    let smaps = read(&format!("/proc/{pid}/smaps"));
+    let mut maps: Vec<(u64, String)> = Vec::new();
+    let mut head = String::new();
+    for l in smaps.lines() {
+        if l.split_whitespace()
+            .next()
+            .is_some_and(|w| w.contains('-') && !w.ends_with(':'))
+        {
+            head = l.to_string();
+        } else if let Some(v) = l.strip_prefix("Pss:") {
+            let kb = v
+                .split_whitespace()
+                .next()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            maps.push((kb, head.clone()));
+        }
+    }
+    maps.sort_by_key(|m| std::cmp::Reverse(m.0));
+    for (kb, m) in maps.iter().take(10) {
+        out.push_str(&format!("{kb:>7} kB  {m}\n"));
+    }
+    out
+}
+
 fn pss_kb(pid: u32) -> u64 {
     let rollup = std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup")).unwrap();
     rollup
@@ -376,7 +428,11 @@ fn demo_bar_on_two_outputs_then_idle() {
     let pss = pss_kb(pid);
     let (limit, what) = pss_limit();
     eprintln!("strand PSS with two 2560x1440 bars: {pss} kB ({what} {limit} kB)");
-    assert!(pss <= limit, "PSS {pss} kB over the {limit} kB {what}");
+    assert!(
+        pss <= limit,
+        "PSS {pss} kB over the {limit} kB {what}\n{}",
+        memory_report(pid)
+    );
 
     // Idle: no thread of the process wakes. Skip a window that would
     // contain a minute boundary (the clock tick is the one wakeup).
@@ -505,18 +561,6 @@ fn the_design_bar_keeps_the_m0_budget() {
         assert!(Instant::now() < deadline, "bars did not paint");
         std::thread::sleep(Duration::from_millis(50));
     }
-    // Late text and icons settle.
-    std::thread::sleep(Duration::from_millis(1500));
-    let pss = pss_kb(pid);
-    // A debug build of the whole language path carries about 25 MB more
-    // than release (49 against 14–27 MB here): its own ceiling.
-    let (limit, what) = if cfg!(debug_assertions) {
-        (64 * 1024, "debug ceiling")
-    } else {
-        pss_limit()
-    };
-    eprintln!("design bar PSS on two 2560x1440 outputs: {pss} kB ({what} {limit} kB)");
-    assert!(pss <= limit, "PSS {pss} kB over the {limit} kB {what}");
     // Boot work done (late icons and glyphs, a loaded machine): a whole
     // second with no wakeup and no frame, early enough in the minute
     // that the window below ends before the next tick.
@@ -533,6 +577,23 @@ fn the_design_bar_keeps_the_m0_budget() {
         }
         assert!(Instant::now() < deadline, "boot never settled");
     }
+    // Measured once boot work is done and the bar is idle (the steady
+    // state the M0 gate is about): a loaded runner can still be decoding
+    // icons or shaping late text 1.5 s in.
+    let pss = pss_kb(pid);
+    // A debug build of the whole language path carries about 25 MB more
+    // than release (49 against 14–27 MB here): its own ceiling.
+    let (limit, what) = if cfg!(debug_assertions) {
+        (64 * 1024, "debug ceiling")
+    } else {
+        pss_limit()
+    };
+    eprintln!("design bar PSS on two 2560x1440 outputs: {pss} kB ({what} {limit} kB)");
+    assert!(
+        pss <= limit,
+        "PSS {pss} kB over the {limit} kB {what}\n{}",
+        memory_report(pid)
+    );
     // Then nothing until :57 (at least 12 s).
     let frames = damage_lines(&log).len();
     let before = switches(pid);

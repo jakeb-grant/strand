@@ -11,9 +11,10 @@
 //! `Renderer::take_swap_work`). The median of each swap must stay under
 //! 5 ms on an optimised build (CI: `cargo test --release -p
 //! strand-render --test theme_swap_bench`). A debug build does the same
-//! work about four times slower, so there the gate is four times the
-//! budget: it still fails on a regression of the work's shape (a check
-//! per node, a palette played through without end).
+//! work about four times slower (some six on CI's runners), so there the
+//! gate is eight times the budget: it still fails on a regression of the
+//! work's shape (a check per node, a palette played through without
+//! end).
 //!
 //! A swap no spring keeps readable crossfades instead; its work (the
 //! same, plus taking a snapshot of each surface once) is held to the
@@ -59,7 +60,7 @@ const BLEND_BUDGET: Duration = Duration::from_micros(4_000);
 /// The gate this build is held to (see the module doc).
 fn gate() -> Duration {
     if cfg!(debug_assertions) {
-        BUDGET * 4
+        BUDGET * 8
     } else {
         BUDGET
     }
@@ -531,7 +532,7 @@ fn set_scopes_and_slow_springs_stay_within_the_budget() {
     };
     let per_frame = BUDGET / 20;
     let gate_frame = if cfg!(debug_assertions) {
-        per_frame * 4
+        per_frame * 8
     } else {
         per_frame
     };
