@@ -312,10 +312,10 @@ fn a_click_on_the_clock_opens_the_calendar_popup() {
         ));
     }
     for i in intents {
-        if let strand_render::Intent::Event { node, event } = i {
-            if event == strand_render::NodeEvent::Click {
-                inst.event(node, "click", Vec::new());
-            }
+        if let strand_render::Intent::Event { node, event } = i
+            && event == strand_render::NodeEvent::Click
+        {
+            inst.event(node, "click", Vec::new());
         }
     }
     assert!(r.apply(inst.flush().diff).is_empty());
