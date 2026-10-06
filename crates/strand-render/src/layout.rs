@@ -156,6 +156,9 @@ enum Ctx {
         shrinks: bool,
         wraps: bool,
         max_lines: Option<u32>,
+        /// A `text` showing nothing (`h.app.comment ?? ""`): no line, as
+        /// an empty block in CSS.
+        empty: bool,
     },
     /// A leaf with a size of its own when its props give none.
     Fixed(f32, f32),
@@ -498,6 +501,11 @@ impl<'a> Build<'a> {
         if is_leaf(kind) {
             let ctx = match kind {
                 NodeKind::Text | NodeKind::Button => {
+                    let empty = kind == NodeKind::Text
+                        && match get(Prop::Text).as_deref() {
+                            Some(PropValue::Text(t)) => t.is_empty(),
+                            _ => true,
+                        };
                     let (text, word) = match get(Prop::Text).as_deref() {
                         Some(PropValue::Text(t)) => (
                             t.chars().count(),
@@ -526,6 +534,7 @@ impl<'a> Build<'a> {
                         shrinks: ellipsis || max_lines.is_some(),
                         wraps: !ellipsis || max_lines.is_some_and(|n| n > 1),
                         max_lines,
+                        empty,
                     })
                 }
                 NodeKind::Spacer => {
@@ -1023,7 +1032,14 @@ fn measure_leaf(
                 shrinks,
                 wraps,
                 max_lines,
+                empty,
             }) => {
+                if *empty {
+                    return taffy::Size {
+                        width: known.width.unwrap_or(0.0),
+                        height: known.height.unwrap_or(0.0),
+                    };
+                }
                 let leaf = TextLeaf {
                     node: *node,
                     font: *font,

@@ -265,7 +265,18 @@ impl Host {
         }
     }
 
-    /// Hands laid-out sizes that changed to logic (`self.width`).
+    /// After logic's diff is applied: what routing settles on the new
+    /// scene (`Router::settle`: a focused input's list selects its first
+    /// row) goes to logic.
+    pub(crate) fn settle_input(&mut self) {
+        if let Some(f) = &mut self.logic {
+            for intent in f.router.settle(&mut self.renderer) {
+                f.send(to_logic(intent));
+            }
+        }
+    }
+
+    //// Hands laid-out sizes that changed to logic (`self.width`).
     pub(crate) fn forward_facts(&mut self) {
         let facts = self.renderer.take_layout_facts();
         if !facts.is_empty()

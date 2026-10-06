@@ -361,15 +361,18 @@ pub struct Renderer {
     /// Wakes the render loop from another thread (the text worker's
     /// waker), so a tooltip shows when its delay ends.
     waker: Option<LoopWaker>,
-    /// One timer thread for tooltip delays, re-armed with the latest due
-    /// time (started on first use).
-    tooltip_timer: Option<std::sync::mpsc::Sender<Instant>>,
+    /// One timer thread for the render loop's own wakes (a tooltip's
+    /// delay, the paint cache's idle free), re-armed with the earliest
+    /// due time (started on first use).
+    timer: Option<std::sync::mpsc::Sender<Instant>>,
+    /// The due time last sent to `timer`.
+    timer_due: Option<Instant>,
 }
 
 /// Starts the thread that wakes the render loop at the latest due time
 /// it was sent; a newer one replaces the one waited for. It ends when the
 /// renderer (the sender) goes.
-fn spawn_tooltip_timer(waker: LoopWaker) -> Option<std::sync::mpsc::Sender<Instant>> {
+fn spawn_timer(waker: LoopWaker) -> Option<std::sync::mpsc::Sender<Instant>> {
     use std::sync::mpsc::RecvTimeoutError;
     let (tx, rx) = std::sync::mpsc::channel::<Instant>();
     std::thread::Builder::new()
@@ -592,9 +595,16 @@ impl Renderer {
             tooltip: None,
             tooltip_delay: TOOLTIP_DELAY,
             tooltip_seq: 0,
-            tooltip_timer: None,
+            timer: None,
+            timer_due: None,
             waker,
         }
+    }
+
+    /// How long a cached shadow or gradient nothing draws lives
+    /// (10 s; tests shorten it).
+    pub fn set_paint_cache_idle(&mut self, idle: Duration) {
+        self.raster.set_idle_free(idle);
     }
 
     /// How long the pointer rests before a tooltip shows (tests shorten
@@ -677,13 +687,38 @@ impl Renderer {
             due,
             popup: None,
         });
-        if self.tooltip_timer.is_none() {
-            self.tooltip_timer = self.waker.clone().and_then(spawn_tooltip_timer);
+        self.arm_timer();
+    }
+
+    /// Arms the render loop's timer at its earliest due wake: a tooltip
+    /// waiting to show, or the paint cache's next idle free (design.md:
+    /// cached groups are "freed when idle", so a surface that stops
+    /// painting still lets them go). Its wake calls [`Renderer::update`].
+    fn arm_timer(&mut self) {
+        let tooltip = self
+            .tooltip
+            .as_ref()
+            .filter(|t| t.popup.is_none())
+            .map(|t| t.due);
+        let due = match (tooltip, self.raster.idle_at()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        let Some(due) = due else {
+            return;
+        };
+        if self.timer_due == Some(due) {
+            return;
         }
-        if let Some(tx) = &self.tooltip_timer
-            && tx.send(due).is_err()
-        {
-            self.tooltip_timer = None;
+        if self.timer.is_none() {
+            self.timer = self.waker.clone().and_then(spawn_timer);
+        }
+        match &self.timer {
+            Some(tx) if tx.send(due).is_ok() => self.timer_due = Some(due),
+            _ => {
+                self.timer = None;
+                self.timer_due = None;
+            }
         }
     }
 
@@ -2315,6 +2350,12 @@ impl Renderer {
     /// last painted frame (only text still being shaped changed) stops
     /// being dirty, so it asks for no frame until the layout arrives.
     pub fn update(&mut self) {
+        let now = Instant::now();
+        if self.timer_due.is_some_and(|d| d <= now) {
+            // Fired (or about to): the thread waits for a new due time.
+            self.timer_due = None;
+        }
+        self.raster.trim_idle(now);
         self.show_tooltip();
         self.poll_text();
         self.expire_exits();
@@ -2384,6 +2425,7 @@ impl Renderer {
         // A preview that laid out a change moving nothing (a row removed
         // at the end, a size set `~ instant`) lets a held surface shrink.
         self.release_holds();
+        self.arm_timer();
     }
 
     /// True while text requests are in flight.
@@ -3012,6 +3054,7 @@ impl Painter for Renderer {
         // the host sees the change at once.
         self.process_finished();
         self.release_holds();
+        self.arm_timer();
         damage
     }
 

@@ -52,7 +52,11 @@ two-way (`Prop::TwoWay`) on Escape, focus loss and click-away
 an open `keyboard: exclusive` one has a two-way `open`:
 `InputScene::exclusive_open`). The host passes each logic diff to
 `Router::observe` before applying it, so logic's own `input` text wins
-over edits in flight. An `Intent` is `Flag { node, flag, on }`,
+over edits in flight, and calls `Router::settle(&mut dyn InputScene)`
+after applying it (a focused `input`'s `nav` list with rows and no
+selection selects its first row), sending its intents like `handle`'s.
+A `KeyboardEnter` with no leave before it (the keyboard back from a
+grabbing popup) keeps the surface's focused node. An `Intent` is `Flag { node, flag, on }`,
 `Event { node, event }` or `Write { node, prop, value }`; the binary's
 host (`demo/host.rs`, `Forward`) only maps them to `ToLogic::Flag`,
 `Event` and `Write` (which logic applies with `Instance::write`, a
@@ -550,9 +554,12 @@ be built and tested without the language, and the language without pixels.
   inline offline; while a size springs the latest decode draws placed
   by its fit (`Decoded::placed_in`, `Item::Image::dest`). Gradients draw
   from dithered pixmaps and shadows from cached ones (a 4 MB paint
-  cache, entries unused for `IDLE_FREE` (10 s) freed at the next paint);
-  a gradient whose paint changes every frame is dithered cell by cell,
-  uncached. `marks:` arrives as a list of `[start, end]` pairs: the
+  cache, entries unused for `IDLE_FREE` (10 s) freed at the next paint
+  or, when nothing paints, by `Renderer::update` woken by the renderer's
+  own timer thread at the cache's next idle time); a gradient is cached
+  only when a second frame draws the same paint at the same size, so one
+  whose paint or size changes every frame is dithered cell by cell,
+  uncached. An empty `text` lays out as 0 × 0. `marks:` arrives as a list of `[start, end]` pairs: the
   compiler's scene conversion turns a `Range` record into that pair. A `popup`'s spec gets `parent` and `anchor_rect` (its
   element's laid-out box in the parent surface); `tooltip: expr` makes a
   render-owned popup (`SceneTree::add_overlay`, ids from `OVERLAY_INDEX`)

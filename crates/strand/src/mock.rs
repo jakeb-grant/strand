@@ -114,22 +114,25 @@ pub(crate) fn desktop(rt: &Runtime, host: &SchemaHost, screen: &str) {
             ),
         ]),
     );
-    let app = |id: &str, name: &str, icon: &str| {
+    // With a `comment`, as real .desktop entries have: the launcher's
+    // second line.
+    let app = |id: &str, name: &str, icon: &str, comment: &str| {
         host.record(
             "App",
             &[
                 ("id", Value::text(id)),
                 ("name", Value::text(name)),
                 ("icon", Value::text(icon)),
+                ("comment", Value::text(comment)),
             ],
         )
     };
     set(
         "apps.all",
         Value::list(vec![
-            app("firefox", "Firefox", "web-browser"),
-            app("foot", "Foot", "utilities-terminal"),
-            app("files", "Files", "system-file-manager"),
+            app("firefox", "Firefox", "web-browser", "Browse the web"),
+            app("foot", "Foot", "utilities-terminal", "Terminal emulator"),
+            app("files", "Files", "system-file-manager", "Manage files"),
         ]),
     );
 }

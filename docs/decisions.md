@@ -5493,17 +5493,22 @@ conversion now makes a `Range` record its `[start, end]` pair; other
 records keep converting to their identity.
 
 **2026-10-06 · wave3-pixels (p3): the paint cache is freed when idle,
-and animated gradients bypass it.** design.md: the cached offscreen
-groups are "about 4 MB, freed when idle". Entries no frame has used for
-`IDLE_FREE` (10 s) are freed at the next paint; an idle bar's minute tick
-paints only its clock, so its bar-wide shadow pixmap goes then and the
-cache does not count against the bar-only budget at rest. A gradient
-built again within 250 ms of another of the same frame size and kind, in
-another frame, is animated (the rice's `conic(from: t * 40deg, …)`
-ring): it is dithered cell by cell like a gradient too large to cache,
-uncached, so it neither rebuilds a pixmap per frame nor evicts the
-shadows. The pixels are the same either way (each is a function of its
-position in the frame), so a partial repaint still matches a full one.
+and a gradient is cached on its second frame.** design.md: the cached
+offscreen groups are "about 4 MB, freed when idle". Entries no frame has
+used for `IDLE_FREE` (10 s) are freed at the next paint, or, when nothing
+paints (an idle panel with no clock), when the render loop's own timer
+(the one the tooltip delay uses) wakes at the cache's next idle time and
+`Renderer::update` trims it. A gradient pixmap is built only when a
+second frame asks for the same key (paint and size): before that it is
+dithered cell by cell like one too large to cache. A gradient whose paint
+or size changes every frame (the rice's `conic(from: t * 40deg, …)`
+ring, however many share a size, or a gradient box whose size springs)
+never repeats a key, so it never builds a pixmap and never evicts the
+shadows. A still gradient costs one uncached frame. The pixels are the
+same either way (each is a function of its position in the frame), so a
+partial repaint still matches a full one. (This replaces the round-2 rule
+keyed on frame size and kind, which missed two animated gradients of one
+size and size springs.)
 
 **2026-10-06 · wave3-pixels (p3): stand-in decodes keep their aspect.**
 A decode standing in while an image's box springs is placed by its
@@ -5519,3 +5524,44 @@ and notification apps carry icon names the Adwaita theme ships (as
 `utilities-terminal`, `system-file-manager`, `mail-unread`,
 `battery-caution`, so the sway screenshots show the launcher's and the
 toasts' images, their radius clip and the theme lookup.
+
+**2026-10-06 · wave3-pixels (p3): an empty `text` takes no line.**
+design.md's launcher writes `text h.app.comment ?? ""` as its second line;
+an app with no comment should show one line centred on its icon, not a
+blank caption line below the name. A `text` whose text is empty is laid
+out as 0 × 0 (an explicit `width`/`height` still applies), as an empty
+block is in CSS. A `button` and an `input` keep their line.
+
+**2026-10-06 · wave3-pixels (p3): a focused input's list selects its
+first row.** design.md's launcher activates a hit with Return and draws
+`when selected { bg: $accent.container }`, but says nothing about which
+row is selected before an arrow key. When the focused `input`'s `nav`
+list has rows and none is selected (it just filled, or the selected row
+left), the router selects the first, through the same path as the arrows
+(`Router::settle`, called after each logic diff is applied, and after
+every input event), so the row Return will launch is always shown.
+Up/Down move from it.
+
+**2026-10-06 · wave3-pixels (p3): focus survives a popup's grab.** While
+a popup holds the keyboard grab, the layer surface under it gets no
+`KeyboardLeave` (a leave would close a surface whose `open` is two-way),
+and when the grab ends it gets `KeyboardEnter` again. The router now keeps
+a surface's focused node across an enter with no leave before it, so a
+second input focused by a click keeps focus after a menu opens and
+closes. A real leave still clears focus, and the next enter focuses the
+first `focus: true` node. The layer's focused input keeps drawing its
+caret while the popup has the keys (accepted).
+
+**2026-10-06 · wave3-pixels (p3): `apps.search` ranges count
+characters.** The builtin schema's `Range` is in characters, and text
+`marks` read them as characters, so the mock's search matches case-folded
+character by character and reports character offsets in the name as
+shown ("Écrire" with "cr" marks 1..3, not the byte offsets 2..4).
+
+**2026-10-06 · wave3-pixels (p3): the four-shells exit item is partial.**
+Three of design.md's four example shells run unchanged on sway. The
+launcher is `export state open = false`, and nothing in an M2 build can
+open it: `strand toggle`/`strand set` are M5, and the M1 IPC offers only
+reload, watch and reset. Its sway test substitutes `true`, so
+features.md leaves the exit box unticked with a partial note rather than
+pulling a CLI command forward from M5.

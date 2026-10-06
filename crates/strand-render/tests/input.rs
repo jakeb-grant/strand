@@ -268,15 +268,18 @@ fn keys_go_to_the_focused_input_and_its_list() {
         msgs,
         vec![
             flag(input, Flag::Focused, true),
+            // The first row is selected at once: Return's row shows.
+            flag(rows[0], Flag::Selected, true),
             text("f"),
             // Typed before logic answered: from what was written.
             text("fo"),
             text("f"),
-            flag(rows[0], Flag::Selected, true),
             flag(rows[0], Flag::Selected, false),
             flag(rows[1], Flag::Selected, true),
+            flag(rows[1], Flag::Selected, false),
+            flag(rows[2], Flag::Selected, true),
             Intent::Event {
-                node: rows[1],
+                node: rows[2],
                 event: NodeEvent::Activate
             },
             close.clone(),
@@ -312,7 +315,8 @@ fn keys_go_to_the_focused_input_and_its_list() {
         node: rows[2],
         event: NodeEvent::Click
     }));
-    assert!(msgs.contains(&flag(rows[2], Flag::Selected, true)));
+    // (Already selected by the arrows.)
+    assert_eq!(f.router.selected(list), Some(rows[2]));
     assert!(msgs.contains(&Intent::Event {
         node: rows[2],
         event: NodeEvent::Activate
@@ -325,21 +329,81 @@ fn keys_go_to_the_focused_input_and_its_list() {
             .iter()
             .any(|m| matches!(m, Intent::Write { node, prop: Prop::Text, .. } if *node == input))
     );
-    // Rows refilled (the selected one gone): the selection is
-    // forgotten, and Down starts again from the first row.
+    // Rows refilled (the selected one gone): once the diff is applied
+    // the first row is selected again, and Down moves on from it.
     let mut d = SceneDiff::new();
     d.push(strand_scene::SceneOp::Remove { id: rows[2] });
     let fresh = id(7);
     d.create(fresh, NodeKind::Row, Some(list), 2)
         .set(fresh, Prop::Height, PropValue::Number(20.0));
     assert!(r.apply(d).is_empty());
+    let msgs = f.router.settle(&mut r);
+    assert_eq!(msgs, [flag(rows[0], Flag::Selected, true)]);
+    assert_eq!(f.router.selected(list), Some(rows[0]));
+    assert!(f.router.settle(&mut r).is_empty(), "settled");
     f.input(&key("Down", ""), &mut r);
     let msgs = f.drain();
     assert!(
-        msgs.contains(&flag(rows[0], Flag::Selected, true)),
+        msgs.contains(&flag(rows[1], Flag::Selected, true)),
         "{msgs:?}"
     );
-    assert_ne!(f.router.selected(list), Some(rows[2]));
+}
+
+/// The keyboard back on a surface without a leave first (a popup that
+/// grabbed it closed) keeps the focus where a click had moved it; after
+/// a real leave, focus starts again at the first `focus: true` node.
+#[test]
+fn focus_survives_a_popup_grab() {
+    use strand_scene::{NodeKind, SceneDiff};
+    let data = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(data),
+    ]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    let id = |i| NodeId::new(i, 0);
+    let (panel, col, first, second) = (id(0), id(1), id(2), id(3));
+    let mut d = SceneDiff::new();
+    d.create(panel, NodeKind::Panel, None, 0)
+        .set(panel, Prop::Width, PropValue::Number(200.0))
+        .set(panel, Prop::Height, PropValue::Number(80.0))
+        .create(col, NodeKind::Col, Some(panel), 0);
+    for (i, n) in [first, second].into_iter().enumerate() {
+        d.create(n, NodeKind::Input, Some(col), i as u32)
+            .set(n, Prop::Height, PropValue::Number(30.0))
+            .set(n, Prop::Text, PropValue::Text(String::new()));
+    }
+    d.set(first, Prop::Focus, PropValue::Bool(true));
+    assert!(r.apply(d).is_empty());
+    let s = SurfaceId(1);
+    r.attach_surface(s, panel);
+    let mut px = vec![0u8; 200 * 80 * 4];
+    let mut t = PaintTarget::new(&mut px, Size::new(200, 80), 800, Scale::ONE, 0).unwrap();
+    r.paint(s, &mut t);
+    let mut f = R::default();
+    f.attached(s, panel);
+    f.input(&InputEvent::KeyboardEnter { surface: s }, &mut r);
+    assert_eq!(f.router.focused(s), Some(first));
+    let b = r.boxes(s).unwrap().rects[&second];
+    let at = LogicalPoint::new(b.x + 5.0, b.y + 5.0);
+    for state in [ButtonState::Pressed, ButtonState::Released] {
+        let e = InputEvent::PointerButton {
+            surface: s,
+            position: at,
+            button: button::LEFT,
+            state,
+            time: 0,
+        };
+        f.input(&e, &mut r);
+    }
+    assert_eq!(f.router.focused(s), Some(second));
+    f.drain();
+    // A popup grabbed the keyboard and let it go: enter again, no leave.
+    f.input(&InputEvent::KeyboardEnter { surface: s }, &mut r);
+    assert_eq!(f.router.focused(s), Some(second));
+    assert!(f.drain().is_empty(), "no focus moved");
+    f.input(&InputEvent::KeyboardLeave { surface: s }, &mut r);
+    f.input(&InputEvent::KeyboardEnter { surface: s }, &mut r);
+    assert_eq!(f.router.focused(s), Some(first));
 }
 
 /// A press on a surface's click-away catcher (`ClickAway`), Escape and

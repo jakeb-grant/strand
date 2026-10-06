@@ -676,7 +676,7 @@ impl ServiceHost for SchemaHost {
                 ))
             }
             ("apps", "search") => {
-                let q = arg(0).as_text().unwrap_or("").to_lowercase();
+                let q: Vec<char> = arg(0).as_text().unwrap_or("").chars().collect();
                 let all = self.read(rt, "apps", "all")?;
                 let (Some(hit), Some(range)) = (
                     self.types.find_record("Hit"),
@@ -691,13 +691,15 @@ impl ServiceHost for SchemaHost {
                         .and_then(Value::as_text)
                         .unwrap_or("")
                         .to_string();
-                    let Some(at) = name.to_lowercase().find(&q) else {
+                    // `Range` counts characters of the name as shown.
+                    let chars: Vec<char> = name.chars().collect();
+                    let Some(at) = find_folded(&chars, &q) else {
                         continue;
                     };
                     let score = if q.is_empty() {
                         0.0
                     } else {
-                        q.len() as f64 / name.len().max(1) as f64
+                        q.len() as f64 / chars.len().max(1) as f64
                     };
                     let ranges = if q.is_empty() {
                         Vec::new()
@@ -779,4 +781,11 @@ impl ServiceHost for SchemaHost {
 /// this one).
 pub fn default_value(types: &TypeTable, ty: &Ty) -> Value {
     default_of(types, ty)
+}
+
+/// Where `q` first occurs in `name`, ignoring case, in characters.
+fn find_folded(name: &[char], q: &[char]) -> Option<usize> {
+    let same = |a: char, b: char| a == b || a.to_lowercase().eq(b.to_lowercase());
+    (0..=name.len().checked_sub(q.len())?)
+        .find(|&i| q.iter().zip(&name[i..]).all(|(&c, &n)| same(n, c)))
 }
