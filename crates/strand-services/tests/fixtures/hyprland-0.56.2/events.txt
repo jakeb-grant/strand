@@ -1,0 +1,36 @@
+# Hyprland 0.56.2 .socket2.sock traffic for the scenario in SOURCE.txt.
+
+## switch
+# Super+2: the focus moves to the empty workspace 2 (no window).
+workspace>>2
+workspacev2>>2,2
+activewindow>>,
+activewindowv2>>
+
+## open
+# foot starts on workspace 2 and takes the focus (replies now: opened/).
+openwindow>>55d0c0a1c3d0,2,foot,foot
+activewindow>>foot,foot
+activewindowv2>>55d0c0a1c3d0
+
+## title
+windowtitle>>55d0c0a1c3d0
+windowtitlev2>>55d0c0a1c3d0,~/src, strand
+
+## urgent
+urgent>>55d0c0a1b2c0
+
+## layout
+# Nothing the services show.
+activelayout>>at-translated-set-2-keyboard,English (US)
+openlayer>>strand-bar
+submap>>
+
+## reload
+configreloaded>>
+
+## close
+# foot exits (replies now: closed/).
+closewindow>>55d0c0a1c3d0
+activewindow>>,
+activewindowv2>>
