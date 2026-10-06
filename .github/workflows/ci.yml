@@ -17,6 +17,10 @@ env:
   # The theme's end-to-end test (mock portal on a private bus) fails
   # instead of skipping when dbus-daemon is missing.
   STRAND_REQUIRE_DBUS: "1"
+  # No debug info: a full debug test build of the workspace with it does
+  # not fit the runner's disk (as in the dev container, CLAUDE.md).
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
 
 jobs:
   check:
@@ -27,12 +31,25 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      # Room for the debug and release builds: the image's SDKs we never
+      # use take most of the disk.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
       # smithay-client-toolkit's build script finds xkbcommon through
       # pkg-config; wayland-sys and fontconfig link their system libraries.
       - name: Install headless sway, grim, dbus, fonts, icons and build headers
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends sway grim dbus fonts-dejavu-core adwaita-icon-theme pkg-config libfontconfig1-dev libxkbcommon-dev libwayland-dev
+      # The references are drawn with fonts-dejavu-core alone, whose DejaVu
+      # Sans has no oblique face (italic text is slanted from the upright
+      # one). The image also ships fonts-dejavu-extra, whose real
+      # DejaVuSans-Oblique would change every italic glyph; take it out
+      # without touching what depends on it.
+      - name: Fonts as the references were drawn
+        run: sudo dpkg --remove --force-depends fonts-dejavu fonts-dejavu-extra || true
       # The versions the references depend on, to trace a mismatch.
       - name: Reference package versions
         run: |
@@ -102,10 +119,17 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+      # Room for the debug and release builds: the image's SDKs we never
+      # use take most of the disk.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
       - name: Install headless sway, grim, dbus, fonts, icons and build headers
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends sway grim dbus fonts-dejavu-core adwaita-icon-theme pkg-config libfontconfig1-dev libxkbcommon-dev libwayland-dev
+          sudo dpkg --remove --force-depends fonts-dejavu fonts-dejavu-extra || true
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.97.0
