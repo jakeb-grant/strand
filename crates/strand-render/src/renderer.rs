@@ -829,14 +829,22 @@ impl Renderer {
                     (None, None, true)
                 }
             };
-            // A shadow changes only the overhang a surface asks for.
-            let shadow = matches!(
-                &op,
+            // A shadow, or the offset of a node casting one, changes only
+            // the overhang a surface asks for.
+            let shadow = match &op {
                 SceneOp::SetProp {
-                    prop: Prop::Shadow,
+                    prop: Prop::Shadow, ..
+                } => true,
+                SceneOp::SetProp {
+                    id,
+                    prop: Prop::X | Prop::Y,
                     ..
-                }
-            );
+                } => self
+                    .tree
+                    .get(*id)
+                    .is_some_and(|n| n.get(Prop::Shadow).is_some()),
+                _ => false,
+            };
             match self.tree.apply_op(op) {
                 Ok(()) => {
                     let roots: Vec<NodeId> = before

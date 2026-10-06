@@ -623,14 +623,8 @@ fn the_design_bar_is_laid_out_start_centre_end() {
         "end ink at {last}"
     );
     // Nothing between the title and the clock, or the clock and the end.
-    assert!(
-        !(700..l - 1).any(&dark),
-        "ink between start and centre"
-    );
-    assert!(
-        !(r + 1..1950).any(&dark),
-        "ink between centre and end"
-    );
+    assert!(!(700..l - 1).any(&dark), "ink between start and centre");
+    assert!(!(r + 1..1950).any(&dark), "ink between centre and end");
     let errors: Vec<String> = std::fs::read_to_string(&log)
         .unwrap_or_default()
         .lines()
