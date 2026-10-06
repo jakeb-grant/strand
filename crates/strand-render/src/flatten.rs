@@ -12,8 +12,8 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use strand_scene::{
-    BlurRegion, Border, Color, Corners, Damage, Font, Length, LogicalRect, NodeId, NodeKind, Paint,
-    Prop, PropValue, Rect, Scale, Shadow, Size, TokenScope, TokenTable,
+    BlurRegion, Border, Color, Corners, Damage, Font, Insets, Length, LogicalRect, NodeId,
+    NodeKind, Paint, Prop, PropValue, Rect, Scale, Shadow, Size, TokenScope, TokenTable,
 };
 use strand_text::{Ellipsis, TextAlign, TextLayout, TextSpan, TextStyle};
 use vello_cpu::kurbo::{self, BezPath, RoundedRect, RoundedRectRadii, Shape};
@@ -40,6 +40,9 @@ pub struct TextSpec {
     pub style: TextStyle,
     pub max_width: Option<f32>,
     pub scale: Scale,
+    /// Which of the node's texts: 0 its own (`text`, a button's label,
+    /// an `input`'s text), 1 + i the i-th label of a `segmented`.
+    pub part: u8,
 }
 
 /// A delivered layout of a text node and the line box width it was shaped
@@ -50,13 +53,25 @@ pub struct TextSpec {
 pub struct Shaped {
     pub layout: Arc<TextLayout>,
     pub max_width: Option<f32>,
+    /// See [`TextSpec::part`].
+    pub part: u8,
 }
 
 /// The delivered layout of a node for line box `width` (`None`: shaped
 /// unbounded), preferring `scale`, else the same width at another scale
 /// (drawn resampled).
 pub(crate) fn pick(shaped: &[Shaped], scale: Scale, width: Option<f32>) -> Option<Arc<TextLayout>> {
-    let same_w = |c: &&Shaped| c.max_width == width;
+    pick_part(shaped, 0, scale, width)
+}
+
+/// [`pick`] for one of a node's texts (see [`TextSpec::part`]).
+pub(crate) fn pick_part(
+    shaped: &[Shaped],
+    part: u8,
+    scale: Scale,
+    width: Option<f32>,
+) -> Option<Arc<TextLayout>> {
+    let same_w = |c: &&Shaped| c.part == part && c.max_width == width;
     shaped
         .iter()
         .find(|c| same_w(c) && c.layout.scale == scale)
@@ -100,7 +115,12 @@ pub(crate) fn place_text(
         }),
     }
     // Nothing for this width at all yet: any layout of the node stands in.
-    .or_else(|| shaped.first().map(|c| (c.layout.clone(), 0.0)));
+    .or_else(|| {
+        shaped
+            .iter()
+            .find(|c| c.part == 0)
+            .map(|c| (c.layout.clone(), 0.0))
+    });
     let placed = chosen.map(|(l, dx)| {
         let dy = match align {
             TextAlign::Center => ((rect.h - l.size.h) / 2.0).max(0.0),
@@ -189,6 +209,9 @@ pub struct Flattened {
     /// Every drawn node's hit shape, in paint order (a node before its
     /// children, earlier siblings before later ones).
     pub hits: Vec<HitBox>,
+    /// Each `input`'s text layout and the surface-logical x of its
+    /// origin (a click places the caret from it).
+    pub inputs: HashMap<NodeId, (Arc<TextLayout>, f32)>,
     /// Where nodes with `blur` ask the compositor to blur behind the
     /// surface: their rounded boxes in buffer pixels, with the radius
     /// (the blur ladder's first rung, M4).
@@ -283,6 +306,9 @@ pub struct Extras {
     /// The compositor blurs behind surfaces (`ext-background-effect-v1`,
     /// M4): `blur` needs no tint fallback.
     pub compositor_blur: bool,
+    /// Hover, press, focus, carets and slider drags from the input
+    /// router.
+    pub widgets: crate::widgets::Widgets,
 }
 
 /// Flattens the subtree under `root` for a surface of `size` at `scale`.
@@ -915,6 +941,7 @@ fn natural_spec<'v>(
             },
             max_width: None,
             scale,
+            part: 0,
         },
         align,
     ))
@@ -976,6 +1003,21 @@ pub fn natural_texts(
                 .collect();
             let get = |p: Prop| props.iter().find(|(q, _)| *q == p).map(|(_, v)| v.as_ref());
             if let Some((spec, _)) = natural_spec(&get, &scope, &inh.font, scale) {
+                out.push((node.id, spec));
+            }
+        }
+        if node.kind == NodeKind::Segmented {
+            let scope = TokenScope::new(&inh.tokens);
+            let options = node.get(Prop::Options).and_then(|v| scope.resolve(v));
+            let font = match node
+                .get(Prop::Font)
+                .and_then(|v| scope.resolve(v))
+                .as_deref()
+            {
+                Some(PropValue::Font(f)) => sane_font(f.clone()),
+                _ => inh.font.clone(),
+            };
+            for spec in segment_specs(options.as_deref(), &font, scale) {
                 out.push((node.id, spec));
             }
         }
@@ -1073,12 +1115,31 @@ impl<'a> Flattener<'a> {
             laid.h.max(0.0),
         );
 
-        // An `input` shows its `text`, or its `placeholder` in `$fg.muted`
-        // while that is empty (plain text: no markup or marks; caret and
-        // selection come with the M2 widgets item).
+        // An `input` shows its `text` (bullets for `type: password`), or
+        // its `placeholder` in `$fg.muted` while that is empty (plain
+        // text: no markup or marks), with its caret and selection while
+        // it has focus.
         let input = node.kind == NodeKind::Input;
-        let placeholder =
-            input && !matches!(get(Prop::Text), Some(PropValue::Text(t)) if !t.is_empty());
+        let button = node.kind == NodeKind::Button;
+        let widgets = &self.extras.widgets;
+        let own_text = match get(Prop::Text) {
+            Some(PropValue::Text(t)) => t.as_str(),
+            _ => "",
+        };
+        let placeholder = input && own_text.is_empty();
+        let password =
+            input && matches!(get(Prop::InputType), Some(PropValue::Keyword(k)) if k == "password");
+        let (masked, mask_map) = crate::widgets::shown_text(own_text, password);
+        let masked = PropValue::Text(masked);
+        let caret = (input && widgets.focused.contains(&node.id)).then(|| {
+            widgets
+                .carets
+                .get(&node.id)
+                .copied()
+                .unwrap_or(crate::widgets::Caret::at(own_text.len()))
+                .clamped(own_text)
+        });
+        let text_color = color;
         let color = if placeholder {
             match scope.lookup("fg.muted") {
                 Some(PropValue::Color(c)) => c,
@@ -1087,38 +1148,77 @@ impl<'a> Flattener<'a> {
         } else {
             color
         };
+        let centre = PropValue::Keyword("center".into());
         let text_get = |p: Prop| match p {
             Prop::Text if placeholder => get(Prop::Placeholder),
+            Prop::Text if password => Some(&masked),
             Prop::Markup | Prop::Marks | Prop::Ellipsis | Prop::MaxLines if input => None,
+            // A button's label is centred unless it says otherwise.
+            Prop::Align if button && get(Prop::Align).is_none() => Some(&centre),
             _ => get(p),
         };
-        // Text: the unbounded layout (layout measures with it) and, for a
-        // box narrower than it, one shaped for the box's width.
+        // Text sits in the content box (inside `pad`; a button pads its
+        // label unless it says otherwise).
         let is_text = matches!(
             node.kind,
             NodeKind::Text | NodeKind::Button | NodeKind::Input
         );
+        let pad = if is_text {
+            get(Prop::Pad)
+                .and_then(PropValue::insets)
+                .or(button.then_some(crate::widgets::BUTTON_PAD))
+                .unwrap_or_default()
+        } else {
+            Insets::default()
+        };
+        let content = LogicalRect::new(
+            rect.x + pad.left,
+            rect.y + pad.top,
+            (rect.w - pad.left - pad.right).max(0.0),
+            (rect.h - pad.top - pad.bottom).max(0.0),
+        );
+        // Text: the unbounded layout (layout measures with it) and, for a
+        // box narrower than it, one shaped for the box's width.
         let mut layout = None;
         // An `input`'s text that is wider than its box is clipped to it.
         let mut clip_text = false;
+        // An `input`'s caret and selection: their x in its text layout
+        // (logical), and the layout's shift in the box.
+        let mut caret_at: Option<(Arc<TextLayout>, f32)> = None;
         if is_text
             && let Some((natural, align)) = natural_spec(&text_get, &scope, &font, self.scale)
         {
             let shaped: &[Shaped] = self.layouts.get(&node.id).map_or(&[], Vec::as_slice);
             let (fit, placed) = if input {
                 // One line, never wrapped: wider than the box, it is
-                // clipped and shifted so its end (where typing happens)
-                // stays in view.
+                // clipped and shifted so the caret stays in view (its end,
+                // where typing happens, without focus).
                 let placed = pick(shaped, self.scale, None)
-                    .or_else(|| shaped.first().map(|c| c.layout.clone()))
+                    .or_else(|| {
+                        shaped
+                            .iter()
+                            .find(|c| c.part == 0)
+                            .map(|c| c.layout.clone())
+                    })
                     .map(|l| {
-                        let dx = (rect.w - l.size.w).min(0.0);
+                        let end = (content.w - l.size.w).min(0.0);
+                        let dx = match caret.filter(|_| !placeholder) {
+                            Some(c) => {
+                                let x = caret_x(&l, mask_map(c.pos));
+                                (content.w - crate::widgets::CARET_WIDTH - x)
+                                    .min(0.0)
+                                    .max(end - crate::widgets::CARET_WIDTH)
+                                    .min(0.0)
+                            }
+                            None => end,
+                        };
                         clip_text = dx < 0.0;
+                        caret_at = Some((l.clone(), dx));
                         (l, dx, 0.0)
                     });
                 (None, placed)
             } else {
-                place_text(shaped, self.scale, rect, align)
+                place_text(shaped, self.scale, content, align)
             };
             self.out.text.push((node.id, natural.clone()));
             if let Some(w) = fit {
@@ -1134,8 +1234,20 @@ impl<'a> Flattener<'a> {
                     },
                 ));
             }
-            layout = placed;
+            layout = placed.map(|(l, dx, dy)| (l, dx + pad.left, dy + pad.top));
         }
+        // A focused `input` with nothing typed still shows its caret.
+        if input
+            && !placeholder
+            && let Some((l, dx)) = &caret_at
+        {
+            self.out
+                .inputs
+                .insert(node.id, (l.clone(), rect.x + pad.left + dx));
+        }
+        let caret_at: Option<CaretAt> = caret_at
+            .map(|(l, dx)| (Some(l), dx + pad.left, pad.top))
+            .or_else(|| caret.is_some().then_some((None, pad.left, pad.top)));
 
         let phys = self.scale.snap_rect(rect);
         let frame = kurbo_rect(phys);
@@ -1171,8 +1283,24 @@ impl<'a> Flattener<'a> {
         let mut ink = Rect::default();
 
         let opacity_group = (opacity < 1.0).then(|| self.marker(Item::PushOpacity(opacity)));
+        // Widgets' default radius: `$radius.md` for buttons and segmented
+        // controls, a pill for meters.
+        let default_radius = match node.kind {
+            NodeKind::Button | NodeKind::Segmented => Some(
+                scope
+                    .lookup("radius.md")
+                    .filter(|v| v.as_number().is_some())
+                    .unwrap_or(PropValue::Number(8.0)),
+            ),
+            NodeKind::Meter => Some(PropValue::Keyword("full".into())),
+            _ => None,
+        };
         let r = radii(
-            corners_of(get(Prop::Radius), rect.w, rect.h),
+            corners_of(
+                get(Prop::Radius).or(default_radius.as_ref()),
+                rect.w,
+                rect.h,
+            ),
             frame.width(),
             frame.height(),
             s,
@@ -1212,9 +1340,25 @@ impl<'a> Flattener<'a> {
                 radius: radius.min(MAX_BLUR),
             });
         }
-        // Background.
+        // Background. A button and a segmented control without one get
+        // `$surface.hi` (the label colour at 10 % without it); a meter's
+        // is its track.
+        let default_bg = match node.kind {
+            NodeKind::Button | NodeKind::Segmented => {
+                Some(Paint::Solid(match scope.lookup("surface.hi") {
+                    Some(PropValue::Color(c)) => c,
+                    _ => text_color.alpha(0.1),
+                }))
+            }
+            NodeKind::Meter => {
+                Some(paint_of(get(Prop::Track)).unwrap_or(Paint::Solid(text_color.alpha(0.15))))
+            }
+            _ => None,
+        };
         if has_area
-            && let Some(paint) = paint_of(get(Prop::Bg)).map(|p| if tint { tinted(p) } else { p })
+            && let Some(paint) = paint_of(get(Prop::Bg))
+                .or(default_bg)
+                .map(|p| if tint { tinted(p) } else { p })
         {
             if root
                 && opacity >= 1.0
@@ -1268,6 +1412,21 @@ impl<'a> Flattener<'a> {
                 &mut sig,
                 &mut ink,
             );
+        }
+        // Widgets: a button's hover and press state layer, a meter's fill,
+        // a slider's track and knob, a segmented control's options, an
+        // input's selection.
+        if has_area {
+            let wctx = WidgetCtx {
+                node,
+                frame,
+                radii: r,
+                box_path: &box_path,
+                color: text_color,
+                scope: &scope,
+                font: &font,
+            };
+            self.widget(&wctx, &get, caret, &caret_at, &mask_map, &mut sig, &mut ink);
         }
         // Text.
         if let Some((l, dx, dy)) = layout {
@@ -1335,6 +1494,19 @@ impl<'a> Flattener<'a> {
             if clip.is_some() {
                 self.marker(Item::PopClip);
             }
+        }
+        // An input's caret, over its text.
+        if has_area && let (Some(c), Some(at)) = (caret, &caret_at) {
+            self.caret(
+                frame,
+                at,
+                mask_map(c.pos),
+                &scope,
+                text_color,
+                &font,
+                &mut sig,
+                &mut ink,
+            );
         }
 
         let bounds = ink.intersect(inh.clip).unwrap_or_default();
@@ -1489,6 +1661,395 @@ impl<'a> Flattener<'a> {
     }
 }
 
+/// Where an `input`'s caret stops are drawn: its text layout (none while
+/// nothing is typed) and the layout's logical offset in the box.
+type CaretAt = (Option<Arc<TextLayout>>, f32, f32);
+
+/// The x of byte offset `byte` in `l`'s first line, logical pixels (the
+/// nearest stop at or before it).
+fn caret_x(l: &TextLayout, byte: usize) -> f32 {
+    let byte = byte as u32;
+    let mut best: Option<(u32, f32)> = None;
+    for c in l.carets.iter().filter(|c| c.line == 0) {
+        if c.byte == byte {
+            return c.x;
+        }
+        if c.byte < byte && best.is_none_or(|(b, _)| c.byte > b) {
+            best = Some((c.byte, c.x));
+        }
+    }
+    best.map_or(0.0, |(_, x)| x)
+}
+
+/// The byte offset of the caret stop nearest to `x` (logical pixels in
+/// `l`'s first line).
+pub(crate) fn caret_index(l: &TextLayout, x: f32) -> usize {
+    l.carets
+        .iter()
+        .filter(|c| c.line == 0)
+        .min_by(|a, b| (a.x - x).abs().total_cmp(&(b.x - x).abs()))
+        .map_or(0, |c| c.byte as usize)
+}
+
+/// What a widget draws with.
+struct WidgetCtx<'n, 's> {
+    node: &'n Node,
+    frame: kurbo::Rect,
+    radii: RoundedRectRadii,
+    box_path: &'s BezPath,
+    /// The colour its labels use (inherited or its own `color`).
+    color: Color,
+    scope: &'s TokenScope<'s>,
+    font: &'s Font,
+}
+
+impl WidgetCtx<'_, '_> {
+    fn token_color(&self, path: &str) -> Option<Color> {
+        match self.scope.lookup(path) {
+            Some(PropValue::Color(c)) => Some(c),
+            _ => None,
+        }
+    }
+
+    /// `$accent`, or the label colour without one.
+    fn accent(&self) -> Color {
+        self.token_color("accent").unwrap_or(self.color)
+    }
+}
+
+/// The text on `bg`: `$on_accent` when it is the accent, else black or
+/// white, whichever contrasts more.
+fn on(bg: Color) -> Color {
+    let l = bg.to_oklab().l;
+    if l > 0.62 { Color::BLACK } else { Color::WHITE }
+}
+
+impl Flattener<'_> {
+    /// Draws what a widget adds over its background (see
+    /// `crate::widgets`).
+    #[allow(clippy::too_many_arguments)]
+    fn widget<'v>(
+        &mut self,
+        w: &WidgetCtx<'_, '_>,
+        get: &impl Fn(Prop) -> Option<&'v PropValue>,
+        caret: Option<crate::widgets::Caret>,
+        caret_at: &Option<CaretAt>,
+        mask: &dyn Fn(usize) -> usize,
+        sig: &mut DefaultHasher,
+        ink: &mut Rect,
+    ) {
+        let s = self.scale.as_f64();
+        let id = w.node.id;
+        let widgets = &self.extras.widgets;
+        let (hovered, pressed) = (widgets.hovered.contains(&id), widgets.pressed.contains(&id));
+        let f = w.frame;
+        let phys = cover(f);
+        match w.node.kind {
+            NodeKind::Button => {
+                // A state layer of the label colour: 8 % hovered, 12 %
+                // pressed, over whatever background it has.
+                let a = if pressed {
+                    0.12
+                } else if hovered {
+                    0.08
+                } else {
+                    0.0
+                };
+                if a > 0.0 {
+                    self.push(
+                        Item::Fill {
+                            shape: FillShape::Path(w.box_path.clone()),
+                            paint: Paint::Solid(w.color.alpha(a)),
+                            frame: f,
+                        },
+                        phys,
+                        sig,
+                        ink,
+                    );
+                }
+            }
+            NodeKind::Meter => {
+                // The fill: `color` (its own, else `$accent`) up to
+                // `value`, cut to the track's shape.
+                let v = number(get(Prop::Value)).unwrap_or(0.0).clamp(0.0, 1.0) as f64;
+                if v <= 0.0 {
+                    return;
+                }
+                let fill = match w.node.get(Prop::Color).and(get(Prop::Color)) {
+                    Some(PropValue::Color(c)) => *c,
+                    _ => w.accent(),
+                };
+                let r = kurbo::Rect::new(f.x0, f.y0, f.x0 + f.width() * v, f.y1);
+                let clip = self.marker(Item::PushClip(w.box_path.clone()));
+                self.out.items[clip].bounds = phys;
+                self.push(
+                    Item::Fill {
+                        shape: FillShape::Path(shape_path(r, w.radii, false)),
+                        paint: Paint::Solid(fill),
+                        frame: r,
+                    },
+                    cover(r),
+                    sig,
+                    ink,
+                );
+                self.marker(Item::PopClip);
+            }
+            NodeKind::Slider => {
+                let v = widgets
+                    .drags
+                    .get(&id)
+                    .copied()
+                    .or(number(get(Prop::Value)))
+                    .unwrap_or(0.0)
+                    .clamp(0.0, 1.0) as f64;
+                let knob = (crate::widgets::SLIDER_KNOB as f64
+                    + if hovered || pressed { 2.0 } else { 0.0 })
+                    * s
+                    / 2.0;
+                let track = (crate::widgets::SLIDER_TRACK as f64 * s).max(1.0);
+                let cy = f.center().y;
+                let (x0, x1) = (f.x0 + knob, (f.x1 - knob).max(f.x0 + knob));
+                let x = x0 + (x1 - x0) * v;
+                let bar =
+                    |a: f64, b: f64| kurbo::Rect::new(a, cy - track / 2.0, b, cy + track / 2.0);
+                let pill = |r: kurbo::Rect| {
+                    let rr = r.height() / 2.0;
+                    shape_path(r, RoundedRectRadii::from_single_radius(rr), false)
+                };
+                let accent = match w.node.get(Prop::Color).and(get(Prop::Color)) {
+                    Some(PropValue::Color(c)) => *c,
+                    _ => w.accent(),
+                };
+                let rest = paint_of(get(Prop::Track)).unwrap_or(Paint::Solid(w.color.alpha(0.2)));
+                for (r, paint) in [
+                    (bar(f.x0, f.x1), rest),
+                    (bar(f.x0, x), Paint::Solid(accent)),
+                ] {
+                    if r.width() > 0.0 {
+                        self.push(
+                            Item::Fill {
+                                shape: FillShape::Path(pill(r)),
+                                paint,
+                                frame: r,
+                            },
+                            cover(r),
+                            sig,
+                            ink,
+                        );
+                    }
+                }
+                let k = kurbo::Rect::new(x - knob, cy - knob, x + knob, cy + knob);
+                self.push(
+                    Item::Fill {
+                        shape: FillShape::Path(kurbo::Ellipse::from_rect(k).to_path(TOLERANCE)),
+                        paint: Paint::Solid(accent),
+                        frame: k,
+                    },
+                    cover(k),
+                    sig,
+                    ink,
+                );
+            }
+            NodeKind::Segmented => self.segmented(w, get, sig, ink),
+            NodeKind::Input => {
+                // The selection, under the text.
+                let (Some(c), Some((Some(l), dx, dy))) = (caret, caret_at) else {
+                    return;
+                };
+                let sel = c.selection();
+                if sel.is_empty() {
+                    return;
+                }
+                let (a, b) = (caret_x(l, mask(sel.start)), caret_x(l, mask(sel.end)));
+                let color = w
+                    .token_color("accent.container")
+                    .unwrap_or(w.accent().alpha(0.3));
+                let r = kurbo::Rect::new(
+                    f.x0 + (*dx + a) as f64 * s,
+                    f.y0 + *dy as f64 * s,
+                    f.x0 + (*dx + b) as f64 * s,
+                    f.y0 + (*dy + l.size.h) as f64 * s,
+                )
+                .intersect(f);
+                if r.width() > 0.0 && r.height() > 0.0 {
+                    self.push(
+                        Item::Fill {
+                            shape: FillShape::Rect(r),
+                            paint: Paint::Solid(color),
+                            frame: r,
+                        },
+                        cover(r),
+                        sig,
+                        ink,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// A focused `input`'s caret: `$accent` (the text colour without
+    /// it), `CARET_WIDTH` wide, as tall as its line, at byte `at` of the
+    /// shown text, kept inside the box.
+    #[allow(clippy::too_many_arguments)]
+    fn caret(
+        &mut self,
+        f: kurbo::Rect,
+        at: &CaretAt,
+        byte: usize,
+        scope: &TokenScope<'_>,
+        color: Color,
+        font: &Font,
+        sig: &mut DefaultHasher,
+        ink: &mut Rect,
+    ) {
+        let s = self.scale.as_f64();
+        let (l, dx, dy) = at;
+        let (x, h) = match l {
+            Some(l) => (caret_x(l, byte), l.size.h),
+            None => (0.0, (font.size * 1.2).ceil()),
+        };
+        let accent = match scope.lookup("accent") {
+            Some(PropValue::Color(c)) => c,
+            _ => color,
+        };
+        let cw = crate::widgets::CARET_WIDTH as f64 * s;
+        let x = (f.x0 + (*dx + x) as f64 * s).clamp(f.x0, (f.x1 - cw).max(f.x0));
+        let r = kurbo::Rect::new(
+            x,
+            f.y0 + *dy as f64 * s,
+            x + cw,
+            (f.y0 + (*dy + h) as f64 * s).min(f.y1),
+        );
+        if r.height() > 0.0 {
+            self.push(
+                Item::Fill {
+                    shape: FillShape::Rect(r),
+                    paint: Paint::Solid(accent),
+                    frame: r,
+                },
+                cover(r),
+                sig,
+                ink,
+            );
+        }
+    }
+
+    /// A `segmented` control: its options in equal segments, the chosen
+    /// one on `$accent` (inset 2 px, its radius less 2) with its label in
+    /// `$on_accent`, the others in the label colour.
+    fn segmented<'v>(
+        &mut self,
+        w: &WidgetCtx<'_, '_>,
+        get: &impl Fn(Prop) -> Option<&'v PropValue>,
+        sig: &mut DefaultHasher,
+        ink: &mut Rect,
+    ) {
+        let s = self.scale.as_f64();
+        let opts = crate::widgets::options(get(Prop::Options));
+        if opts.is_empty() {
+            return;
+        }
+        let value = get(Prop::Value);
+        let f = w.frame;
+        let n = opts.len() as f64;
+        let seg = f.width() / n;
+        let accent = w.accent();
+        let on_accent = w.token_color("on_accent").unwrap_or(on(accent));
+        let shaped: &[Shaped] = self.layouts.get(&w.node.id).map_or(&[], Vec::as_slice);
+        for (i, opt) in opts.iter().enumerate() {
+            let x0 = f.x0 + seg * i as f64;
+            let cell = kurbo::Rect::new(x0, f.y0, x0 + seg, f.y1);
+            let chosen = value.is_some_and(|v| crate::widgets::same_option(v, opt));
+            if chosen {
+                let inset = 2.0 * s;
+                let r = cell.inflate(-inset, -inset);
+                let rr = (w.radii.top_left - inset).max(0.0);
+                self.push(
+                    Item::Fill {
+                        shape: FillShape::Path(shape_path(
+                            r,
+                            RoundedRectRadii::from_single_radius(rr),
+                            false,
+                        )),
+                        paint: Paint::Solid(accent),
+                        frame: r,
+                    },
+                    cover(r),
+                    sig,
+                    ink,
+                );
+            }
+            let part = i as u8 + 1;
+            let spec = TextSpec {
+                text: crate::widgets::option_label(opt),
+                style: TextStyle {
+                    font: w.font.clone(),
+                    ..TextStyle::default()
+                },
+                max_width: None,
+                scale: self.scale,
+                part,
+            };
+            self.out.text.push((w.node.id, spec));
+            let Some(l) = pick_part(shaped, part, self.scale, None).or_else(|| {
+                shaped
+                    .iter()
+                    .find(|c| c.part == part)
+                    .map(|c| c.layout.clone())
+            }) else {
+                continue;
+            };
+            let k = self.scale.as_f64() / l.scale.as_f64();
+            let tw = l.size.w as f64 * s;
+            let th = l.size.h as f64 * s;
+            let x = (cell.x0 + ((cell.width() - tw) / 2.0).max(0.0)).round() as i32;
+            let y = (cell.y0 + ((cell.height() - th) / 2.0).max(0.0)).round() as i32;
+            let bounds = if k == 1.0 {
+                l.ink.translate(x, y)
+            } else {
+                cover(kurbo::Rect::new(
+                    x as f64 + l.ink.left() as f64 * k,
+                    y as f64 + l.ink.top() as f64 * k,
+                    x as f64 + l.ink.right() as f64 * k,
+                    y as f64 + l.ink.bottom() as f64 * k,
+                ))
+                .inflate(1)
+            };
+            self.push(
+                Item::Glyphs {
+                    x,
+                    y,
+                    layout: l,
+                    color: if chosen { on_accent } else { w.color },
+                },
+                bounds,
+                sig,
+                ink,
+            );
+        }
+    }
+}
+
+/// The text requests of a `segmented`'s labels (parts 1..), shaped with
+/// `font` at `scale`.
+fn segment_specs(options: Option<&PropValue>, font: &Font, scale: Scale) -> Vec<TextSpec> {
+    crate::widgets::options(options)
+        .iter()
+        .enumerate()
+        .map(|(i, o)| TextSpec {
+            text: crate::widgets::option_label(o),
+            style: TextStyle {
+                font: font.clone(),
+                ..TextStyle::default()
+            },
+            max_width: None,
+            scale,
+            part: i as u8 + 1,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1563,6 +2124,7 @@ mod tests {
         let shaped = vec![Shaped {
             layout: l.clone(),
             max_width: None,
+            part: 0,
         }];
         let w = l.size.w;
         let rect = LogicalRect::new(0.0, 0.0, 100.0, l.size.h + 10.0);

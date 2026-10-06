@@ -4434,3 +4434,43 @@ a host says the compositor blurs (`Renderer::set_compositor_blur(true)`)
 render draws the tint fallback: the background's alpha rises by 0.15
 (`BLUR_TINT`), every gradient stop's too; `blur_fallback: none` keeps it
 as written.
+
+**2026-10-06 · wave3-pixels (p3): widget state lives on the render
+thread.** Hover, press and focus, an `input`'s caret and selection and a
+slider's value while dragged are kept by render (`strand_render::widgets::Widgets`),
+written by the input router through `InputScene` (`set_flag`,
+`set_caret`, `set_drag`), so a widget answers on the frame the input
+arrives, as design.md's render-never-waits rule asks; logic still hears
+every change as flags and two-way writes. A dragged slider draws the
+drag until the release; its `value` (and a meter's) springs otherwise.
+
+**2026-10-06 · wave3-pixels (p3): widget defaults.** design.md shows the
+widgets unstyled (`button "‹"`, `slider { value: <-> … }`, `segmented {
+options: Look }`), so each draws something sensible with no props: a
+`button` pads its label 4, 10 px, centres it, sits on `$surface.hi` with
+`$radius.md`, and lays a state layer of its label colour over its
+background (8 % hovered, 12 % pressed); a `meter` is a pill whose track is
+`track` (else the label colour at 15 %) filled to `value` in its own
+`color` (else `$accent`); a `slider` (120 px wide unless sized) is a 4 px
+track filled to `value` in `$accent` with a 14 px knob (16 px hovered or
+dragged), its rest in `track`; a `segmented` splits its box into equal
+segments, each label padded 10 px, on `$surface.hi`, the chosen one on
+`$accent` with `$on_accent` text. Options show their names with `_` as
+spaces. Missing tokens fall back to the label colour.
+
+**2026-10-06 · wave3-pixels (p3): editing an `input`.** Keys edit at the
+caret: typing replaces the selection, BackSpace/Delete remove it or a
+character (Ctrl: a word), Left/Right/Home/End move (Shift extends, Ctrl
+by words), Ctrl+A selects all; a press places the caret and dragging
+selects. The caret is `$accent`, 1.5 px, steady (a blinking caret would
+wake an idle shell twice a second); the selection is `$accent.container`.
+A one-line input wider than its box scrolls so the caret stays in view
+(its end without focus). `type: password` shows one bullet per character.
+Clipboard (Ctrl+C/V) needs `wl_data_device` and is left for M4 with drag
+and drop. Caret stops come from strand-text (`TextLayout::carets`, cluster
+boundaries per line), added for this.
+
+**2026-10-06 · wave3-pixels (p3): a node may shape several texts.** A
+`segmented` needs one layout per option label; text requests carry a
+`part` (0 a node's own text, 1 + i its i-th label), so labels are shaped,
+cached, pruned and measured like any text.

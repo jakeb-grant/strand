@@ -24,6 +24,7 @@ mod markup;
 mod raster;
 mod renderer;
 mod tree;
+pub mod widgets;
 
 pub use cache::{MAX_ENTRY_BYTES, PAINT_CACHE_BYTES};
 pub use flatten::BLUR_TINT;

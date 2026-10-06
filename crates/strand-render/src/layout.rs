@@ -67,6 +67,12 @@ pub(crate) trait TextSizes {
     /// The size of `node`'s text shaped for a line box `width` wide
     /// (wrapped or ellipsised).
     fn fitted(&self, node: NodeId, width: f32) -> Option<LogicalSize>;
+    /// The size of one of `node`'s other texts shaped without a width
+    /// bound (a `segmented` label: `TextSpec::part`).
+    fn part(&self, node: NodeId, part: u8) -> Option<LogicalSize> {
+        let _ = (node, part);
+        None
+    }
 }
 
 /// Scroll position and row heights of a `scroll` or `list`, kept across
@@ -153,6 +159,13 @@ enum Ctx {
     },
     /// A leaf with a size of its own when its props give none.
     Fixed(f32, f32),
+    /// A `segmented` of `n` options: as wide as its widest label (plus
+    /// padding) times `n`.
+    Segmented {
+        node: NodeId,
+        n: usize,
+        font: f32,
+    },
     List(NodeId),
 }
 
@@ -424,7 +437,10 @@ impl<'a> Build<'a> {
                 bottom: LengthPercentageAuto::length(m.bottom),
             };
         }
-        if let Some(mut p) = insets(get(Prop::Pad).as_deref()) {
+        // A button pads its label unless it says otherwise.
+        let pad = insets(get(Prop::Pad).as_deref())
+            .or((kind == NodeKind::Button).then_some(crate::widgets::BUTTON_PAD));
+        if let Some(mut p) = pad {
             // A forced size smaller than the padding: the padding gives
             // way (taffy never makes a box smaller than its padding), so
             // a collapsing toast reaches zero.
@@ -516,10 +532,17 @@ impl<'a> Build<'a> {
                     None
                 }
                 NodeKind::Icon => Some(Ctx::Fixed(16.0, 16.0)),
-                NodeKind::Slider => Some(Ctx::Fixed(0.0, 16.0)),
+                NodeKind::Slider => Some(Ctx::Fixed(
+                    crate::widgets::SLIDER_WIDTH,
+                    crate::widgets::SLIDER_KNOB + 4.0,
+                )),
                 NodeKind::Meter => Some(Ctx::Fixed(0.0, 4.0)),
                 NodeKind::Input => Some(Ctx::Fixed(0.0, (font * 1.25).ceil())),
-                NodeKind::Segmented => Some(Ctx::Fixed(0.0, (font * 1.8).ceil())),
+                NodeKind::Segmented => Some(Ctx::Segmented {
+                    node: node.id,
+                    n: crate::widgets::options(get(Prop::Options).as_deref()).len(),
+                    font,
+                }),
                 _ => None,
             };
             let t = match ctx {
@@ -1004,6 +1027,22 @@ fn measure_leaf(
                 width: known.width.unwrap_or(*w),
                 height: known.height.unwrap_or(*h),
             },
+            Some(Ctx::Segmented { node, n, font }) => {
+                let widest = (0..*n)
+                    .map(|i| {
+                        texts
+                            .part(*node, i as u8 + 1)
+                            .map_or(*font * 0.55 * 6.0, |s| s.w)
+                    })
+                    .fold(0.0f32, f32::max);
+                let pad = crate::widgets::SEGMENT_PAD;
+                taffy::Size {
+                    width: known
+                        .width
+                        .unwrap_or(((widest + 2.0 * pad) * *n as f32).ceil()),
+                    height: known.height.unwrap_or((*font * 2.0).ceil()),
+                }
+            }
             Some(Ctx::List(id)) => {
                 let h = lists.get(id).copied().unwrap_or_default();
                 // A scroll container: its rows past `height` or

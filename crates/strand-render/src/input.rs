@@ -16,12 +16,13 @@ use std::time::{Duration, Instant};
 
 use strand_scene::input::button;
 use strand_scene::{
-    ButtonState, InputEvent, KeyInput, LogicalPoint, Modifiers, NodeId, NodeKind, Prop, PropValue,
-    SceneDiff, SceneOp, SurfaceId,
+    ButtonState, InputEvent, KeyInput, LogicalPoint, LogicalRect, Modifiers, NodeId, NodeKind,
+    Prop, PropValue, SceneDiff, SceneOp, SurfaceId,
 };
 
 use crate::renderer::Renderer;
 use crate::tree::SceneTree;
+use crate::widgets::{Caret, Edit};
 
 /// A per-node input state logic reads (`hover`, `pressed`, `focused`,
 /// `selected`).
@@ -101,6 +102,35 @@ pub trait InputScene {
         let _ = root;
         false
     }
+    /// `node`'s `flag` turned on or off (widgets draw hover, press and
+    /// focus at once, before logic hears of it).
+    fn set_flag(&mut self, node: NodeId, flag: Flag, on: bool) {
+        let _ = (node, flag, on);
+    }
+    /// `node`'s laid-out box on `surface`, logical pixels (a slider's
+    /// track, a segmented control's options).
+    fn node_rect(&self, surface: SurfaceId, node: NodeId) -> Option<LogicalRect> {
+        let _ = (surface, node);
+        None
+    }
+    /// An `input`'s caret (`None`: at the end of its text).
+    fn caret(&self, node: NodeId) -> Option<Caret> {
+        let _ = node;
+        None
+    }
+    fn set_caret(&mut self, node: NodeId, caret: Option<Caret>) {
+        let _ = (node, caret);
+    }
+    /// The byte offset in `input`'s text nearest to `at` (a click placing
+    /// the caret).
+    fn caret_at(&self, surface: SurfaceId, input: NodeId, at: LogicalPoint) -> Option<usize> {
+        let _ = (surface, input, at);
+        None
+    }
+    /// A slider's value while dragged (`None`: the drag ended).
+    fn set_drag(&mut self, slider: NodeId, value: Option<f32>) {
+        let _ = (slider, value);
+    }
 }
 
 impl InputScene for Renderer {
@@ -120,6 +150,24 @@ impl InputScene for Renderer {
         self.surface_spec(root).is_some_and(|s| {
             s.open && s.open_two_way && s.keyboard == strand_scene::Keyboard::Exclusive
         })
+    }
+    fn set_flag(&mut self, node: NodeId, flag: Flag, on: bool) {
+        self.set_widget_flag(node, flag, on);
+    }
+    fn node_rect(&self, surface: SurfaceId, node: NodeId) -> Option<LogicalRect> {
+        Renderer::node_rect(self, surface, node)
+    }
+    fn caret(&self, node: NodeId) -> Option<Caret> {
+        self.widgets().carets.get(&node).copied()
+    }
+    fn set_caret(&mut self, node: NodeId, caret: Option<Caret>) {
+        Renderer::set_caret(self, node, caret);
+    }
+    fn caret_at(&self, surface: SurfaceId, input: NodeId, at: LogicalPoint) -> Option<usize> {
+        Renderer::caret_at(self, surface, input, at)
+    }
+    fn set_drag(&mut self, slider: NodeId, value: Option<f32>) {
+        Renderer::set_drag(self, slider, value);
     }
 }
 
@@ -148,7 +196,7 @@ pub const WHEEL_STEP: f64 = 15.0;
 
 /// An `input`'s writes logic has not answered yet.
 #[derive(Debug)]
-struct Edit {
+struct InFlight {
     /// The text last written.
     latest: String,
     /// What the scene can show while those writes are on their way: the
@@ -178,7 +226,12 @@ pub struct Router {
     /// The selected row of each list arrows or clicks have moved in.
     selected: HashMap<NodeId, NodeId>,
     /// Each `input`'s writes still on their way through logic.
-    edits: HashMap<NodeId, Edit>,
+    edits: HashMap<NodeId, InFlight>,
+    /// The slider being dragged on each surface (the left button went
+    /// down on it).
+    dragging: HashMap<SurfaceId, NodeId>,
+    /// The `input` whose text a held left button selects, per surface.
+    selecting: HashMap<SurfaceId, NodeId>,
     /// Intents of the event being handled.
     out: Vec<Intent>,
 }
@@ -282,6 +335,12 @@ impl Router {
     /// gets `dismiss`).
     pub fn handle(&mut self, event: &InputEvent, scene: &mut dyn InputScene) -> Vec<Intent> {
         self.route(event, scene);
+        // Widgets draw hover, press and focus at once.
+        for i in &self.out {
+            if let Intent::Flag { node, flag, on } = i {
+                scene.set_flag(*node, *flag, *on);
+            }
+        }
         std::mem::take(&mut self.out)
     }
 
@@ -311,12 +370,24 @@ impl Router {
             InputEvent::PointerEnter { position, .. }
             | InputEvent::PointerMotion { position, .. } => {
                 if self.pressed.contains_key(&surface) {
+                    // A drag: the slider follows the pointer, a held
+                    // button in an `input` extends the selection.
+                    if let Some(&slider) = self.dragging.get(&surface) {
+                        self.drag(scene, surface, slider, *position, false);
+                    }
+                    if let Some(&input) = self.selecting.get(&surface)
+                        && let Some(pos) = scene.caret_at(surface, input, *position)
+                    {
+                        let anchor = scene.caret(input).map_or(pos, |c| c.anchor);
+                        scene.set_caret(input, Some(Caret { pos, anchor }));
+                    }
                     return;
                 }
                 let now = chain(scene, *position);
                 self.hover(surface, now);
             }
             InputEvent::PointerLeave { .. } => {
+                self.end_drags(scene, surface);
                 self.release(surface);
                 self.hover(surface, Vec::new());
             }
@@ -330,7 +401,7 @@ impl Router {
                 if *b == button::LEFT && *state == ButtonState::Pressed {
                     self.click_away_from_others(surface, root, scene);
                 }
-                self.button(surface, *b, *state, under, scene);
+                self.button(surface, *b, *state, under, *position, scene);
             }
             InputEvent::PointerAxis {
                 horizontal,
@@ -386,12 +457,14 @@ impl Router {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn button(
         &mut self,
         surface: SurfaceId,
         b: u32,
         state: ButtonState,
         under: Vec<NodeId>,
+        at: LogicalPoint,
         scene: &mut dyn InputScene,
     ) {
         // The chain the matching press went down on: a release clicks the
@@ -441,8 +514,33 @@ impl Router {
                     {
                         self.set_focus(surface, Some(t));
                     }
+                    let kind_of = |scene: &dyn InputScene, n: NodeId| {
+                        scene.tree().and_then(|t| t.get(n)).map(|n| n.kind)
+                    };
+                    // A press on a slider moves it there and starts a drag.
+                    if let Some(&slider) = under
+                        .iter()
+                        .find(|n| kind_of(scene, **n) == Some(NodeKind::Slider))
+                    {
+                        self.dragging.insert(surface, slider);
+                        self.drag(scene, surface, slider, at, false);
+                    }
+                    // A press in an `input` puts the caret there and starts
+                    // selecting.
+                    if let Some(&input) = under
+                        .iter()
+                        .find(|n| kind_of(scene, **n) == Some(NodeKind::Input))
+                        && let Some(pos) = scene.caret_at(surface, input, at)
+                    {
+                        scene.set_caret(input, Some(Caret::at(pos)));
+                        self.selecting.insert(surface, input);
+                    }
                 }
                 ButtonState::Released => {
+                    if let Some(&slider) = self.dragging.get(&surface) {
+                        self.drag(scene, surface, slider, at, true);
+                    }
+                    self.end_drags(scene, surface);
                     self.release(surface);
                     self.hover(surface, under.clone());
                 }
@@ -468,6 +566,10 @@ impl Router {
         } else {
             None
         };
+        // A click on a `segmented` chooses the option under it.
+        if event == NodeEvent::Click {
+            self.choose(scene, surface, &under, at);
+        }
         self.event(node, event);
         if let Some((list, row)) = activate {
             self.select(scene, list, Some(row));
@@ -617,7 +719,6 @@ impl Router {
             }
         }
         if kind == Some(NodeKind::Input) {
-            let m = key.modifiers;
             // Keys typed faster than logic answers build on the last
             // write; once the scene shows it, or a text of logic's own,
             // they build on the scene.
@@ -626,32 +727,103 @@ impl Router {
             });
             // (`observe` already dropped what logic answered.)
             let mut pending = in_flight.map_or_else(|| vec![text.clone()], |e| e.pending.clone());
-            let mut now = in_flight.map_or(text, |e| e.latest.clone());
-            let edited = if key.name == "BackSpace" {
-                now.pop().is_some()
-            } else if !key.text.is_empty() && !m.ctrl && !m.alt && !m.logo {
-                now.push_str(&key.text);
-                true
-            } else {
-                false
-            };
-            if edited {
-                pending.push(now.clone());
-                self.edits.insert(
-                    focus,
-                    Edit {
-                        latest: now.clone(),
-                        pending,
-                        at: Instant::now(),
-                    },
-                );
-                self.emit(Intent::Write {
-                    node: focus,
-                    prop: Prop::Text,
-                    value: PropValue::Text(now),
-                });
+            let now = in_flight.map_or(text, |e| e.latest.clone());
+            let caret = scene
+                .caret(focus)
+                .unwrap_or(Caret::at(now.len()))
+                .clamped(&now);
+            match crate::widgets::edit(&now, caret, &key.name, &key.text, key.modifiers) {
+                Edit::None => {}
+                Edit::Moved(c) => scene.set_caret(focus, Some(c)),
+                Edit::Changed(now, c) => {
+                    scene.set_caret(focus, Some(c));
+                    pending.push(now.clone());
+                    self.edits.insert(
+                        focus,
+                        InFlight {
+                            latest: now.clone(),
+                            pending,
+                            at: Instant::now(),
+                        },
+                    );
+                    self.emit(Intent::Write {
+                        node: focus,
+                        prop: Prop::Text,
+                        value: PropValue::Text(now),
+                    });
+                }
             }
         }
+    }
+
+    /// Moves `slider` to the pointer at `at` (its value from where `at`
+    /// falls along its track, 0 to 1) and writes it; `last` ends the drag.
+    fn drag(
+        &mut self,
+        scene: &mut dyn InputScene,
+        surface: SurfaceId,
+        slider: NodeId,
+        at: LogicalPoint,
+        last: bool,
+    ) {
+        let Some(r) = scene.node_rect(surface, slider) else {
+            return;
+        };
+        let knob = crate::widgets::SLIDER_KNOB / 2.0;
+        let span = (r.w - 2.0 * knob).max(1.0);
+        let v = ((at.x - r.x - knob) / span).clamp(0.0, 1.0);
+        if !v.is_finite() {
+            return;
+        }
+        scene.set_drag(slider, (!last).then_some(v));
+        self.emit(Intent::Write {
+            node: slider,
+            prop: Prop::Value,
+            value: PropValue::Number(v),
+        });
+    }
+
+    /// Ends a slider drag and a selection by pointer on `surface`.
+    fn end_drags(&mut self, scene: &mut dyn InputScene, surface: SurfaceId) {
+        if let Some(slider) = self.dragging.remove(&surface) {
+            scene.set_drag(slider, None);
+        }
+        self.selecting.remove(&surface);
+    }
+
+    /// A click at `at` on a chain holding a `segmented`: writes the option
+    /// whose segment it falls in.
+    fn choose(
+        &mut self,
+        scene: &mut dyn InputScene,
+        surface: SurfaceId,
+        under: &[NodeId],
+        at: LogicalPoint,
+    ) {
+        let Some(tree) = scene.tree() else {
+            return;
+        };
+        let Some(seg) = under
+            .iter()
+            .copied()
+            .find(|n| tree.get(*n).is_some_and(|n| n.kind == NodeKind::Segmented))
+        else {
+            return;
+        };
+        let opts = crate::widgets::options(tree.get(seg).and_then(|n| n.get(Prop::Options)));
+        let Some(r) = scene.node_rect(surface, seg) else {
+            return;
+        };
+        if opts.is_empty() || r.w <= 0.0 {
+            return;
+        }
+        let i = (((at.x - r.x) / r.w * opts.len() as f32).floor().max(0.0) as usize)
+            .min(opts.len() - 1);
+        self.emit(Intent::Write {
+            node: seg,
+            prop: Prop::Value,
+            value: opts[i].clone(),
+        });
     }
 
     /// Selects `row` in `list` (`selected`), scrolled into view.

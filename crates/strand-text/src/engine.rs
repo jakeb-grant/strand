@@ -18,7 +18,9 @@ use swash::zeno::{Angle, Format, Transform, Vector};
 use swash::{CacheKey, FontRef};
 
 use crate::atlas::{AtlasConfig, AtlasUpload, CachedGlyph, GlyphAtlas, GlyphKey, PageId};
-use crate::{Ellipsis, GlyphRun, PlacedGlyph, TextAlign, TextLayout, TextRequest, TextSpan};
+use crate::{
+    CaretStop, Ellipsis, GlyphRun, PlacedGlyph, TextAlign, TextLayout, TextRequest, TextSpan,
+};
 
 /// Largest font size shaped, in physical pixels; larger requests are
 /// shaped at this size so one value from a bad expression cannot stall the
@@ -286,9 +288,40 @@ impl TextEngine {
         let mut incomplete = false;
         let mut ink = Rect::default();
         let mut baseline = None;
+        let mut carets = Vec::new();
 
-        for line in layout.lines() {
+        for (n, line) in layout.lines().enumerate() {
             baseline.get_or_insert(line.metrics().baseline / s);
+            // Caret stops: each cluster's start, then the line's end.
+            let mut end: Option<(u32, f32)> = None;
+            for item in line.items() {
+                let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
+                    continue;
+                };
+                let mut x = glyph_run.offset();
+                for c in glyph_run.run().visual_clusters() {
+                    let r = c.text_range();
+                    let (at, after) = if c.is_rtl() {
+                        (r.end, r.start)
+                    } else {
+                        (r.start, r.end)
+                    };
+                    carets.push(CaretStop {
+                        byte: at as u32,
+                        x: x / s,
+                        line: n as u32,
+                    });
+                    x += c.advance();
+                    end = Some((after as u32, x / s));
+                }
+            }
+            if let Some((byte, x)) = end {
+                carets.push(CaretStop {
+                    byte,
+                    x,
+                    line: n as u32,
+                });
+            }
             for item in line.items() {
                 let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
                     continue;
@@ -411,6 +444,7 @@ impl TextEngine {
             baseline: baseline.unwrap_or(0.0),
             ink,
             runs,
+            carets,
             uploads,
             leases,
             reset: false,

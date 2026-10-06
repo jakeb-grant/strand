@@ -6,9 +6,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use strand_scene::{
-    Anchor, Damage, Edge, Insets, LogicalPoint, LogicalSize, NodeId, NodeKind, PaintTarget,
-    Painter, Prop, PropValue, Scale, SceneDiff, SceneOp, Size, SurfaceChange, SurfaceId,
-    SurfaceSpec, TokenScope,
+    Anchor, Damage, Edge, Insets, LogicalPoint, LogicalRect, LogicalSize, NodeId, NodeKind,
+    PaintTarget, Painter, Prop, PropValue, Scale, SceneDiff, SceneOp, Size, SurfaceChange,
+    SurfaceId, SurfaceSpec, TokenScope,
 };
 use strand_text::{TextEngine, TextError, TextKey, TextLayout, TextRequest, TextWorker};
 
@@ -112,6 +112,8 @@ struct TextSlot {
     scale: Scale,
     /// `max_width` as bits (`None` when unbounded).
     width: Option<u32>,
+    /// See [`TextSpec::part`].
+    part: u8,
 }
 
 impl TextSlot {
@@ -120,6 +122,7 @@ impl TextSlot {
             node,
             scale: spec.scale,
             width: spec.max_width.map(f32::to_bits),
+            part: spec.part,
         }
     }
 }
@@ -389,6 +392,10 @@ impl TextSizes for TextInfo<'_> {
     fn fitted(&self, node: NodeId, width: f32) -> Option<strand_scene::LogicalSize> {
         pick(self.shaped.get(&node)?, self.scale, Some(width)).map(|l| l.size)
     }
+
+    fn part(&self, node: NodeId, part: u8) -> Option<strand_scene::LogicalSize> {
+        crate::flatten::pick_part(self.shaped.get(&node)?, part, self.scale, None).map(|l| l.size)
+    }
 }
 
 /// Layout lengths that snap to a new value while the boxes they move
@@ -498,6 +505,110 @@ impl Renderer {
                 s.mark_dirty();
             }
         }
+    }
+
+    /// Hover, press, focus, carets and slider drags as the input router
+    /// last set them.
+    pub fn widgets(&self) -> &crate::widgets::Widgets {
+        &self.extras.widgets
+    }
+
+    /// Repaints the surfaces showing `node`.
+    fn mark_node_dirty(&mut self, node: NodeId) {
+        let root = self.tree.root_of(node);
+        for s in self.surfaces.values_mut() {
+            if Some(s.root) == root {
+                s.mark_dirty();
+            }
+        }
+    }
+
+    /// `node`'s input `flag` (see [`crate::InputScene::set_flag`]).
+    pub fn set_widget_flag(&mut self, node: NodeId, flag: crate::Flag, on: bool) {
+        let w = &mut self.extras.widgets;
+        let set = match flag {
+            crate::Flag::Hover => &mut w.hovered,
+            crate::Flag::Pressed => &mut w.pressed,
+            crate::Flag::Focused => &mut w.focused,
+            crate::Flag::Selected => return,
+        };
+        let changed = if on {
+            set.insert(node)
+        } else {
+            set.remove(&node)
+        };
+        // Only widgets draw these states.
+        let draws = self.tree.get(node).is_some_and(|n| {
+            matches!(
+                n.kind,
+                NodeKind::Button | NodeKind::Slider | NodeKind::Input | NodeKind::Segmented
+            )
+        });
+        if changed && draws {
+            self.mark_node_dirty(node);
+        }
+    }
+
+    /// An `input`'s caret and selection (`None`: at the end of its text).
+    pub fn set_caret(&mut self, node: NodeId, caret: Option<crate::widgets::Caret>) {
+        let w = &mut self.extras.widgets;
+        let old = match caret {
+            Some(c) => w.carets.insert(node, c),
+            None => w.carets.remove(&node),
+        };
+        if old != caret {
+            self.mark_node_dirty(node);
+        }
+    }
+
+    /// A slider's value while dragged; `None` ends the drag (it draws its
+    /// `value` again).
+    pub fn set_drag(&mut self, slider: NodeId, value: Option<f32>) {
+        let w = &mut self.extras.widgets;
+        let old = match value {
+            Some(v) => w.drags.insert(slider, v),
+            None => w.drags.remove(&slider),
+        };
+        if old != value {
+            self.mark_node_dirty(slider);
+        }
+    }
+
+    /// `node`'s laid-out box on `surface`, in surface logical pixels
+    /// (before paint offsets).
+    pub fn node_rect(&self, surface: SurfaceId, node: NodeId) -> Option<LogicalRect> {
+        self.surfaces
+            .get(&surface)?
+            .boxes
+            .as_ref()?
+            .rects
+            .get(&node)
+            .copied()
+    }
+
+    /// The byte offset in `input`'s text nearest to the surface-logical
+    /// point `at`, as its last frame drew it.
+    pub fn caret_at(&self, surface: SurfaceId, input: NodeId, at: LogicalPoint) -> Option<usize> {
+        let s = self.surfaces.get(&surface)?;
+        let text = match self.tree.get(input)?.get(Prop::Text) {
+            Some(PropValue::Text(t)) => t.as_str(),
+            _ => "",
+        };
+        let Some((l, x0)) = s.cache.as_ref().and_then(|f| f.inputs.get(&input)) else {
+            // Nothing typed (or not drawn yet): the start.
+            return Some(0);
+        };
+        let shown = crate::flatten::caret_index(l, at.x - x0);
+        let password = matches!(
+            self.tree.get(input)?.get(Prop::InputType),
+            Some(PropValue::Keyword(k)) if k == "password"
+        );
+        if !password {
+            return Some(shown.min(text.len()));
+        }
+        // Bullets: one per character.
+        let i = shown / '•'.len_utf8();
+        Some(text.char_indices().nth(i).map_or(text.len(), |(b, _)| b))
     }
 
     /// Bytes of cached gradient and shadow pixmaps (at most
@@ -1505,6 +1616,14 @@ impl Renderer {
 
     /// Applies one tick's diff. Failed ops are returned; the rest apply.
     pub fn apply(&mut self, diff: SceneDiff) -> Vec<SceneError> {
+        let errors = self.apply_ops(diff);
+        // Widget state of nodes logic removed goes with them.
+        let tree = &self.tree;
+        self.extras.widgets.retain(|n| tree.contains_live(n));
+        errors
+    }
+
+    fn apply_ops(&mut self, diff: SceneDiff) -> Vec<SceneError> {
         let mut errors = Vec::new();
         // Surface roots whose subtree an op touches; `None` means all.
         // `relayout`: those whose layout it may change (anything but a
@@ -2039,13 +2158,17 @@ impl Renderer {
             out.entry(slot.node).or_default().push(Shaped {
                 layout: l.clone(),
                 max_width: slot.width.map(f32::from_bits),
+                part: slot.part,
             });
         }
         // Stand-in choice must not depend on hash order.
         for v in out.values_mut() {
             v.sort_by(|a, b| {
-                (a.layout.scale, a.max_width.map(f32::to_bits))
-                    .cmp(&(b.layout.scale, b.max_width.map(f32::to_bits)))
+                (a.part, a.layout.scale, a.max_width.map(f32::to_bits)).cmp(&(
+                    b.part,
+                    b.layout.scale,
+                    b.max_width.map(f32::to_bits),
+                ))
             });
         }
         out
