@@ -187,6 +187,27 @@ fn worker_round_trip_and_waker() {
     assert_eq!(woken.load(Ordering::SeqCst), 2);
 }
 
+/// `is_running` tells a worker that is still up from one whose thread
+/// died (here its waker panics, outside the shaping guard).
+#[test]
+fn a_dead_worker_is_not_running() {
+    let worker = TextWorker::spawn(config()).unwrap();
+    assert!(worker.is_running());
+    let dying = TextWorker::spawn_with_waker(config(), Some(Box::new(|| panic!("waker")))).unwrap();
+    dying
+        .request(request(1, "12:59", 13.0, Scale::ONE))
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while dying.is_running() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the worker never died"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(worker.is_running());
+}
+
 #[test]
 fn system_fonts_resolve_generic_families() {
     // Uses whatever the machine has; only checks that shaping produces

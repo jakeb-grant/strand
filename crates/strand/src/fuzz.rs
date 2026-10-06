@@ -37,7 +37,9 @@
 //!   overlay is shown.
 //! - The overlay never opens unless a reload left notices (a reset, a
 //!   kept value) or a load was held back for 250 ms with no save ending
-//!   the hold; once a commit lands clean it lists no errors.
+//!   the hold (once the next load came, judged on the logic thread's
+//!   timeline from the events' timing: a stall on that load lengthens
+//!   the hold there); once a commit lands clean it lists no errors.
 //! - A broken or partial save is held back (`held`, never `unreadable`)
 //!   and changes nothing; a single file's save is one load (never split,
 //!   delete-then-create included, with a 0–25 ms gap: 0–20 in CI's
@@ -55,9 +57,12 @@
 //! - The sway pipeline has one layer surface per scene surface (the
 //!   overlay's included) whenever it has applied what the logic thread
 //!   sent, never commits a buffer that shows only its background, and
-//!   after each step every surface is configured and has committed a
-//!   frame.
-//! - Every thread (logic, compiler worker, watcher) ends without a panic.
+//!   after each step every surface is configured and its last committed
+//!   buffer (the screen) equals a fresh offline renderer's painting of
+//!   the cold boot at that surface's configured size and scale (the
+//!   overlay aside): a surface that stops repainting fails here.
+//! - Every thread (logic, compiler worker, watcher) ends without a panic,
+//!   and the sway pipeline's text worker is still running at the end.
 //!
 //! `STRAND_FUZZ_EDITS` sets the number of edits (60), `STRAND_FUZZ_SEED`
 //! the seed (decimal or `0x` hex, as printed), `STRAND_FUZZ_MAX_GAP_MS`
@@ -1021,10 +1026,7 @@ impl Pixels {
                 f.frames += 1;
                 f.shown = next;
             }
-            let key = match self.r.surface_spec(*node) {
-                Some(s) => format!("{:?} {:?} {:?}", s.kind, s.screens, s.name),
-                None => format!("{node:?}"),
-            };
+            let key = spec_key(self.r.surface_spec(*node), *node);
             out.insert(key, (*node, f.size, f.buffers[f.shown].0.clone()));
         }
         out
@@ -1122,6 +1124,16 @@ fn after(disk: &BTreeMap<String, String>, op: &Op) -> BTreeMap<String, String> {
     d
 }
 
+/// A surface's last committed buffer on the sway pipeline.
+struct Committed {
+    size: Size,
+    scale: Scale,
+    /// Rows of `size.w * 4` bytes (the stride dropped).
+    pixels: Vec<u8>,
+    /// Frames it committed.
+    frames: u64,
+}
+
 /// What the sway pipeline's surfaces committed, seen from the painter.
 #[derive(Default)]
 struct Seen {
@@ -1129,6 +1141,8 @@ struct Seen {
     painted: RefCell<BTreeSet<SurfaceId>>,
     /// Committed frames that showed only their background.
     blank: RefCell<Vec<SurfaceId>>,
+    /// Each surface's last committed buffer.
+    last: RefCell<BTreeMap<SurfaceId, Committed>>,
 }
 
 impl Probe for Seen {
@@ -1150,7 +1164,73 @@ impl Probe for Seen {
         if !drawn {
             self.blank.borrow_mut().push(surface);
         }
+        let mut pixels = Vec::with_capacity(row * target.size.h as usize);
+        for r in target
+            .pixels
+            .chunks(target.stride as usize)
+            .take(target.size.h as usize)
+        {
+            pixels.extend_from_slice(&r[..row.min(r.len())]);
+        }
+        let mut last = self.last.borrow_mut();
+        let frames = last.get(&surface).map_or(0, |c| c.frames) + 1;
+        last.insert(
+            surface,
+            Committed {
+                size: target.size,
+                scale: target.scale,
+                pixels,
+                frames,
+            },
+        );
     }
+}
+
+/// The key two renderers' surfaces match on: kind, screens and name.
+fn spec_key(spec: Option<&SurfaceSpec>, node: NodeId) -> String {
+    match spec {
+        Some(s) => format!("{:?} {:?} {:?}", s.kind, s.screens, s.name),
+        None => format!("{node:?}"),
+    }
+}
+
+/// Surfaces by key: buffer size and scale.
+type Placement = BTreeMap<String, (Size, Scale)>;
+
+/// A cold boot (`boot`'s diffs) painted by a fresh offline renderer, one
+/// surface per entry of `at` (its key, buffer size and scale); the
+/// overlay is not part of a cold boot.
+fn paint_cold(
+    boot: &[SceneDiff],
+    at: &BTreeMap<String, (Size, Scale)>,
+) -> BTreeMap<String, Vec<u8>> {
+    let font = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = TextEngine::new(FontConfig::isolated(vec![Arc::new(font)]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    for d in boot {
+        let errors = r.apply(d.clone());
+        assert!(errors.is_empty(), "the renderer refused a diff: {errors:?}");
+    }
+    let mut out = BTreeMap::new();
+    let mut next = 1;
+    for (node, change) in r.take_surface_changes() {
+        let SurfaceChange::Created(spec) = change else {
+            continue;
+        };
+        let key = spec_key(Some(&spec), node);
+        let Some(&(size, scale)) = at.get(&key) else {
+            continue;
+        };
+        let surface = SurfaceId(next);
+        next += 1;
+        r.attach_surface(surface, node);
+        r.configure_surface(surface, size, scale);
+        let mut px = vec![0; (size.w * size.h * 4) as usize];
+        let mut target = PaintTarget::new(&mut px, size, size.w * 4, scale, 0).unwrap();
+        r.paint(surface, &mut target);
+        out.insert(key, px);
+    }
+    out
 }
 
 /// The pipeline on a compositor: `strand run`'s main thread (surface
@@ -1281,7 +1361,27 @@ struct Shell {
     /// hold began: the overlay opens only on a hold of 250 ms.
     hold: Option<Instant>,
     fix_at: Option<Instant>,
+    /// How long after its save the held load reached the logic thread
+    /// and was applied there (its event's timing: watch, compile,
+    /// commit), when its 250 ms timer starts.
+    held_lag: Duration,
+    /// The hold on the logic thread's timeline, once the load that ends
+    /// it came: from the held load's arrival to the next one's (each
+    /// save's start plus its event's timing).
+    gap: Option<Duration>,
     pixels: Option<Pixels>,
+}
+
+/// How long after its save a load reached the logic thread (`commit`:
+/// and was applied there), from its reload event's timing.
+fn lag(ev: &Json, commit: bool) -> Duration {
+    let t = &ev["timing"];
+    let mut keys = vec!["watch_ms", "compile_ms"];
+    if commit {
+        keys.push("commit_ms");
+    }
+    let ms: f64 = keys.iter().filter_map(|k| t[*k].as_f64()).sum();
+    Duration::from_secs_f64(ms.max(0.0) / 1000.0)
 }
 
 impl Shell {
@@ -1381,6 +1481,8 @@ impl Shell {
             save_at: Instant::now(),
             hold: None,
             fix_at: None,
+            held_lag: Duration::ZERO,
+            gap: None,
             pixels: pixels.then(Pixels::new),
         })
     }
@@ -1555,17 +1657,25 @@ impl Shell {
             // Errors open it after 250 ms of quiet: a hold that long, and
             // not ended by a save before then (or notices left by a
             // reload, which wait as long).
-            let held_long = self.hold.is_some_and(|h| {
-                self.fix_at
-                    .unwrap_or_else(Instant::now)
-                    .saturating_duration_since(h)
-                    >= HELD_LONG
+            // Judged on the logic thread's timeline once the hold ended
+            // (a watcher or compiler stall on the next load lengthens
+            // the hold there), else on the test's.
+            let held = self.gap.or_else(|| {
+                self.hold.map(|h| {
+                    self.fix_at
+                        .unwrap_or_else(Instant::now)
+                        .saturating_duration_since(h)
+                })
             });
             assert!(
-                self.had_overlay || self.overlay_ok || held_long,
-                "{what} ({label}): the overlay opened with no notice and nothing held back for 250 ms (held {:?}, ended {:?})\n{}",
-                self.hold.map(|h| h.elapsed()),
-                self.fix_at.map(|f| f.elapsed()),
+                self.had_overlay || self.overlay_ok || held.is_some_and(|h| h >= HELD_LONG),
+                "{what} ({label}): the overlay opened with no notice and nothing held back for 250 ms (held {held:?}{}, the held load {:?} after its save)\n{}",
+                if self.gap.is_some() {
+                    " on the logic thread"
+                } else {
+                    " on the test's clock"
+                },
+                self.held_lag,
                 scene.render()
             );
             let header = texts_under(scene, o)
@@ -1720,8 +1830,11 @@ impl Shell {
         self.settle_wl(what);
     }
 
-    /// Its pixels equal a fresh renderer's painting of `boot`.
+    /// Its pixels equal a fresh renderer's painting of `boot`: the offline
+    /// pipeline's painted buffers, and the sway pipeline's committed ones
+    /// (the screen), at each surface's configured size and scale.
     fn same_pixels(&mut self, what: &str, boot: &[SceneDiff]) {
+        self.same_screen(what, boot);
         let Some(p) = &mut self.pixels else {
             return;
         };
@@ -1747,6 +1860,73 @@ impl Shell {
                 bad == 0,
                 "{what}: surface {key}: {bad} pixels differ from a cold boot's painting"
             );
+        }
+    }
+
+    /// The sway pipeline's last committed buffer of every surface but the
+    /// overlay equals a cold boot's painting at its size and scale: a
+    /// surface that stopped repainting (or painted the wrong thing) fails
+    /// here. Its main loop runs until they match (text from the worker
+    /// may land a frame later), or the patience runs out.
+    fn same_screen(&mut self, what: &str, boot: &[SceneDiff]) {
+        let Some(wl) = &mut self.wl else {
+            return;
+        };
+        let deadline = Instant::now() + PATIENCE;
+        let mut cold: Option<(Placement, BTreeMap<String, Vec<u8>>)> = None;
+        loop {
+            // The live surfaces, keyed as a cold boot's.
+            let mut live: BTreeMap<String, SurfaceId> = BTreeMap::new();
+            let mut at: Placement = BTreeMap::new();
+            let renderer = &wl.mgr.state().host().renderer;
+            for info in wl.mgr.state().surfaces() {
+                let spec = renderer.surface_spec(info.node);
+                if spec.is_some_and(|s| s.name.as_deref() == Some(OVERLAY)) {
+                    continue;
+                }
+                let key = spec_key(spec, info.node);
+                at.insert(key.clone(), (info.buffer_size, info.scale));
+                live.insert(key, info.id);
+            }
+            if cold.as_ref().is_none_or(|(a, _)| *a != at) {
+                let want = paint_cold(boot, &at);
+                assert_eq!(
+                    want.keys().collect::<Vec<_>>(),
+                    at.keys().collect::<Vec<_>>(),
+                    "{what} (Sway): the layer surfaces differ from a cold boot's"
+                );
+                cold = Some((at, want));
+            }
+            let (at, want) = cold.as_ref().unwrap();
+            let last = wl.seen.last.borrow();
+            let bad: Vec<String> = live
+                .iter()
+                .filter_map(|(key, id)| {
+                    let (size, scale) = at[key];
+                    let why = match last.get(id) {
+                        None => "no frame committed".to_string(),
+                        Some(c) if c.size != size || c.scale != scale => format!(
+                            "committed {:?} at {:?}, configured {size:?} at {scale:?}",
+                            c.size, c.scale
+                        ),
+                        Some(c) => match mismatch(&c.pixels, &want[key], 2) {
+                            0 => return None,
+                            n => format!("{n} pixels differ (after {} frames)", c.frames),
+                        },
+                    };
+                    Some(format!("{key}: {why}"))
+                })
+                .collect();
+            drop(last);
+            if bad.is_empty() {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{what} (Sway): the screen differs from a cold boot's painting: {bad:?}\n{}",
+                self.scene.render()
+            );
+            wl.mgr.dispatch(Some(Duration::from_millis(5))).unwrap();
         }
     }
 
@@ -1829,8 +2009,17 @@ impl Shell {
             "{what} ({label}): {ev}"
         );
         // Its diagnostics may open the overlay once they stood 250 ms.
-        self.hold.get_or_insert(self.save_at);
+        self.start_hold(&ev);
         self.errors_ok = true;
+    }
+
+    /// A load is held back (`ev` its event): the hold starts, unless one
+    /// already runs.
+    fn start_hold(&mut self, ev: &Json) {
+        if self.hold.is_none() {
+            self.hold = Some(self.save_at);
+            self.held_lag = lag(ev, true);
+        }
     }
 
     /// The save landed in one load: the cells it reset, whether it was
@@ -1853,6 +2042,10 @@ impl Shell {
                 || ev["cancelled"].as_u64().is_some_and(|c| c > 0);
             let held = ev["held"].as_array().is_some_and(|h| !h.is_empty());
             if !held {
+                if let (Some(h), Some(f)) = (self.hold, self.fix_at) {
+                    self.gap =
+                        Some((f + lag(&ev, false)).saturating_duration_since(h + self.held_lag));
+                }
                 return (resets, split, notes);
             }
             // Several files saved one after another may land in two
@@ -1865,7 +2058,7 @@ impl Shell {
             split = true;
             // The rest of the save is already made: a hold this short
             // never opens the overlay.
-            self.hold.get_or_insert(self.save_at);
+            self.start_hold(&ev);
             self.fix_at.get_or_insert_with(Instant::now);
             self.errors_ok = true;
         }
@@ -1879,6 +2072,7 @@ impl Shell {
         self.errors_ok = false;
         self.hold = None;
         self.fix_at = None;
+        self.gap = None;
     }
 
     /// Dismiss the overlay if it is shown.
@@ -1910,7 +2104,8 @@ impl Shell {
     }
 
     /// Stop it: the logic thread, the compiler worker and the watcher
-    /// must end without a panic.
+    /// must end without a panic, and the sway pipeline's text worker must
+    /// still be running.
     fn stop(mut self) {
         self.to_logic.send(ToLogic::Shutdown).unwrap();
         let joined = self.thread.take().map(|t| t.join());
@@ -1928,6 +2123,13 @@ impl Shell {
         if let Some(wl) = &mut self.wl {
             // The main thread's last diffs (the logic thread is gone).
             wl.mgr.dispatch(Some(Duration::ZERO)).unwrap();
+            // The text worker runs until its handle goes: ended now, it
+            // panicked.
+            let running = match wl.mgr.state().host().renderer.text() {
+                TextBackend::Worker(w) => w.is_running(),
+                TextBackend::Inline(_) => true,
+            };
+            assert!(running, "{}: the text worker panicked", self.label);
         }
     }
 }
@@ -2216,10 +2418,15 @@ fn random_edits_through_five_save_styles() {
                     sh.saving();
                     sh.save(&f, &files[&f]);
                 }
+                let (_, want_boot) = cold_boot(&model, &files, &state);
                 for sh in &mut shells {
-                    let (_, _, notes) = sh.landed(&w, true);
+                    let (resets, _, notes) = sh.landed(&w, true);
+                    // The last good text again: nothing reset, and the
+                    // screen a cold boot's.
+                    assert_eq!(resets, 0, "{w} ({}): reset {resets} cells", sh.label);
                     sh.reach(&w, Some(&expect), &expect);
                     sh.committed(notes);
+                    sh.same_pixels(&w, &want_boot);
                     sh.drain(&w);
                 }
                 disk = files.clone();

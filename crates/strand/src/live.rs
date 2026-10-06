@@ -141,10 +141,17 @@ impl Worker {
     /// registered with the watcher before they land, so they never come
     /// back as changes (design.md, "The pipeline" step 2).
     pub fn register_own_writes(&self, storage: &strand_compiler::instantiate::Storage) {
-        let Some(w) = self.watcher.clone() else {
+        // A weak handle: the IO thread can outlive the worker (a drain that
+        // times out leaves it running), and the worker's handle must stay
+        // the last strong one so `join` can stop the watcher and see how
+        // it ended.
+        let Some(w) = self.watcher.as_ref().map(Arc::downgrade) else {
             return;
         };
         let observe = move |ow: &strand_core::OwnWrite<'_>| {
+            let Some(w) = w.upgrade() else {
+                return;
+            };
             if let Some(bytes) = ow.content {
                 let hash = strand_watch::hash_bytes(bytes);
                 w.register_own_write(ow.target, hash);
@@ -178,10 +185,19 @@ impl Worker {
             Some(t) => t.join(),
             None => Ok(()),
         };
-        // The worker thread held the other handle: it is the last one.
+        // The worker thread held the other strong handle, and the own-write
+        // observer holds a weak one: this is the last, unless an IO write
+        // is registering right now.
         let watcher = match self.watcher.take().map(Arc::try_unwrap) {
             Some(Ok(w)) => w.join(),
-            Some(Err(_)) | None => Ok(()),
+            Some(Err(w)) => {
+                log::warn!(
+                    "the watcher is still shared ({} handles): stopped when the last goes, not joined",
+                    Arc::strong_count(&w)
+                );
+                Ok(())
+            }
+            None => Ok(()),
         };
         worker.and(watcher)
     }
@@ -359,5 +375,32 @@ fn run(
         if out.send(FromWorker::Loaded(Box::new(loaded))).is_err() {
             return;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The own-write observer must not keep the watcher alive: `join`
+    /// stops and joins it even with storage configured, so a watcher
+    /// panic is reported.
+    #[test]
+    fn the_own_write_observer_leaves_the_watcher_joinable() {
+        let dir = std::env::temp_dir().join(format!("strand-live-join-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("config")).unwrap();
+        std::fs::write(dir.join("config/shell.strand"), "").unwrap();
+        let (out, _rx) = calloop::channel::channel::<FromWorker>();
+        let (worker, _boot) = Worker::spawn(&dir.join("config"), None, out).unwrap();
+        let storage =
+            strand_compiler::instantiate::Storage::in_dirs(dir.join("state"), dir.join("config"));
+        worker.register_own_writes(&storage);
+        // The worker's handle and the compiler thread's: nothing else.
+        let w = worker.watcher.as_ref().unwrap();
+        assert_eq!(Arc::strong_count(w), 2);
+        assert!(worker.join().is_ok());
+        drop(storage);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

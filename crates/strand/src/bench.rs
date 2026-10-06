@@ -12,8 +12,8 @@
 //! `CLOCK_MONOTONIC`. Headless sway presents a commit at once (the
 //! painted → presented gap is printed); a monitor waits for its vblank,
 //! so the gates apply to each sample plus a vblank wait drawn over one
-//! refresh ([`on_a_monitor`]): a model (the headless sample plus a
-//! uniform vblank phase), not a measurement on hardware. The worst phase
+//! refresh ([`on_a_monitor`]): a model (the exact p95 of the headless
+//! sample plus a uniform vblank phase), not a measurement on hardware. The worst phase
 //! (each sample plus a whole refresh) is printed beside it. The edits are
 //! made on an idle surface (no frame callback pending). A busy surface
 //! (an animation running) is not measured: M1's renderer animates
@@ -29,7 +29,10 @@
 //! (`wl_output.done`) to its bar's first painted frame, within one
 //! refresh: the logic thread's answer (the new bar's diff), the main
 //! thread applying it, the layer surface's creation and its configure
-//! round trip, and the paint (heard → configured is printed apart).
+//! round trip, and the paint (heard → configured is printed apart). The
+//! first plug, an output of a width never seen, also waits for the bar's
+//! text to be shaped for that width: it is timed and printed, and the
+//! five plugs after it are gated.
 //! Portal changes are not wired into `strand run` yet (the `system`
 //! service, M2).
 //!
@@ -205,6 +208,9 @@ struct Watch {
     /// A counted frame discarded: the surface to paint again (nothing
     /// else may dirty it while the bench idles).
     repaint: Option<SurfaceId>,
+    /// A plugged monitor's new surface whose counted frame was discarded:
+    /// its next frame counts, though it is no longer new.
+    recount: Option<SurfaceId>,
     /// Presentations of the counted surface timed before its counted
     /// frame was painted (an older frame's), not taken for it.
     stale: u32,
@@ -224,8 +230,10 @@ impl Probe for Shared {
             Some(s) => s == scale,
             None => !renderer.text_pending(),
         };
-        if w.armed && drew && shown && (!w.new_surface || new) {
+        let again = w.recount == Some(surface);
+        if w.armed && drew && shown && (!w.new_surface || new || again) {
             w.armed = false;
+            w.recount = None;
             w.painted = Some((surface, monotonic()));
         }
     }
@@ -291,6 +299,9 @@ impl FrameClock for Clock {
             w.armed = true;
             w.discarded += 1;
             w.repaint = Some(surface);
+            if w.new_surface {
+                w.recount = Some(surface);
+            }
         }
     }
 
@@ -344,15 +355,34 @@ fn ms(d: Duration) -> f64 {
 /// The p95 the same samples would have on a real output: headless sway
 /// presents a commit at once (the paint → presented gap is measured),
 /// where a monitor shows it at its next vblank, 0 to one refresh later
-/// with the save's phase uniform against the vblank. Each sample is
-/// taken at 20 evenly spaced phases.
+/// with the save's phase uniform against the vblank. The p95 of that
+/// mixture (each sample plus `U(0, refresh)`) is computed exactly: the
+/// `x` at which the mean of the samples' uniform CDFs reaches 0.95,
+/// found by bisection. It moves with the samples: `on_a_monitor(s + d)`
+/// is `on_a_monitor(s) + d`.
 fn on_a_monitor(samples: &[f64], refresh: f64) -> f64 {
-    const PHASES: usize = 20;
-    let all: Vec<f64> = samples
-        .iter()
-        .flat_map(|s| (0..PHASES).map(move |j| s + (j as f64 + 0.5) / PHASES as f64 * refresh))
-        .collect();
-    p95(&all)
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let below = |x: f64| {
+        samples
+            .iter()
+            .map(|s| ((x - s) / refresh).clamp(0.0, 1.0))
+            .sum::<f64>()
+            / samples.len() as f64
+    };
+    let lo = samples.iter().copied().fold(f64::INFINITY, f64::min);
+    let hi = samples.iter().copied().fold(f64::NEG_INFINITY, f64::max) + refresh;
+    let (mut lo, mut hi) = (lo, hi);
+    for _ in 0..100 {
+        let mid = (lo + hi) / 2.0;
+        if below(mid) >= 0.95 {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    hi
 }
 
 struct Measured {
@@ -365,6 +395,8 @@ struct Measured {
     /// round trip), then heard → its bar painted → presented.
     configured: Vec<f64>,
     plugs: Vec<Steps>,
+    /// The first plug, of a new output width (its text shaped anew).
+    first_plug: Option<Steps>,
     /// A scale change: heard → the bar painted at the new scale →
     /// presented.
     scales: Vec<Steps>,
@@ -417,6 +449,7 @@ fn measure(rounds: usize) -> Option<Measured> {
         presented: None,
         discarded: 0,
         repaint: None,
+        recount: None,
         stale: 0,
     })));
     let (to_logic, from_main) = calloop::channel::channel::<ToLogic>();
@@ -539,9 +572,14 @@ fn measure(rounds: usize) -> Option<Measured> {
         idle(&mut mgr, Duration::from_millis(200));
     }
     watch.0.borrow_mut().scale = None;
-    // Monitors plugged in: each gets its bar on its first frame.
+    // Monitors plugged in: each gets its bar on its first frame. The
+    // first output of a width never seen (sway's new outputs are 1920
+    // wide, the first 2560) also waits for its bar's text to be shaped
+    // for that width: timed and printed, not gated (`first_plug`); the
+    // five after it are.
     let (mut configured_after, mut plugs) = (Vec::new(), Vec::new());
-    for k in 0..5 {
+    let mut first_plug = None;
+    for k in 0..6 {
         {
             let mut w = watch.0.borrow_mut();
             w.on_monitor = true;
@@ -558,11 +596,16 @@ fn measure(rounds: usize) -> Option<Measured> {
                 w.configured_at.expect("the new surface configured"),
             )
         };
-        configured_after.push(ms(configured.saturating_sub(heard)));
-        plugs.push(Steps {
+        let step = Steps {
             to_paint: ms(painted.saturating_sub(heard)),
             to_present: since(&p, painted),
-        });
+        };
+        if k == 0 {
+            first_plug = Some(step);
+        } else {
+            configured_after.push(ms(configured.saturating_sub(heard)));
+            plugs.push(step);
+        }
         idle(&mut mgr, Duration::from_millis(200));
     }
     let (discarded, stale) = {
@@ -581,6 +624,7 @@ fn measure(rounds: usize) -> Option<Measured> {
         gaps,
         configured: configured_after,
         plugs,
+        first_plug,
         scales,
         refresh,
         discarded,
@@ -620,9 +664,9 @@ fn reload_latency_to_the_presented_frame() {
         on_a_monitor(&m.tokens, frame),
         on_a_monitor(&m.markup, frame),
     );
-    // The headless p95 the token gate breaks at: the vblank model adds
-    // about 0.95 of a refresh at p95.
-    let token_break = 35.0 - 0.95 * frame;
+    // The headless p95 the token gate breaks at: the model moves with
+    // the samples, so the gap to 35 ms is the headroom on either scale.
+    let token_break = pt + (35.0 - ht);
     let added: Vec<f64> = m.markup.iter().copied().step_by(2).collect();
     let removed: Vec<f64> = m.markup.iter().copied().skip(1).step_by(2).collect();
     let steps = |v: &[Steps]| {
@@ -637,7 +681,8 @@ fn reload_latency_to_the_presented_frame() {
          \x20 markup p95 {pm:.1} ms (max {:.1}; a node added p95 {:.1}, removed {:.1}); on a monitor p95 {hm:.1} ms, worst phase {:.1}\n\
          \x20 painted → presented p95 {:.2} ms (max {:.2}); {} frames discarded, {} stale presentations\n\
          \x20 scale change heard → painted at the new scale + → presented: {} ms\n\
-         \x20 monitor plugged: heard → new surface configured (logic answer + surface creation + round trip) {:?} ms; heard → painted + → presented: {} ms",
+         \x20 monitor plugged: heard → new surface configured (logic answer + surface creation + round trip) {:?} ms; heard → painted + → presented: {} ms\n\
+         \x20 first monitor of a new width (not gated: its text shaped for the width): heard → painted + → presented {} ms",
         max(&m.tokens),
         pt + frame,
         max(&m.markup),
@@ -651,6 +696,7 @@ fn reload_latency_to_the_presented_frame() {
         steps(&m.scales),
         round(&m.configured),
         steps(&m.plugs),
+        steps(m.first_plug.as_slice()),
     );
     assert!(
         ht <= 35.0,
@@ -685,4 +731,20 @@ fn reload_latency_to_the_presented_frame() {
             steps(v)
         );
     }
+}
+
+/// The vblank model is the exact p95 of each sample plus a uniform wait
+/// over one refresh, and moves with the samples.
+#[test]
+fn the_monitor_model_is_the_exact_p95() {
+    let close = |a: f64, b: f64| (a - b).abs() < 1e-6;
+    assert!(close(on_a_monitor(&[10.0], 16.0), 10.0 + 0.95 * 16.0));
+    // Half the mass done by 10, the rest uniform over 100..110.
+    assert!(close(on_a_monitor(&[0.0, 100.0], 10.0), 109.0));
+    let s = [17.1, 17.9, 18.4, 16.2, 19.0];
+    let shifted: Vec<f64> = s.iter().map(|x| x + 1.5).collect();
+    assert!(close(
+        on_a_monitor(&shifted, 16.667),
+        on_a_monitor(&s, 16.667) + 1.5
+    ));
 }

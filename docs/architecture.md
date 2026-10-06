@@ -241,7 +241,10 @@ be built and tested without the language, and the language without pixels.
      it for `Updated`, destroy it and `detach_surface` for `Removed`.
   1. Spawn the text worker with `TextWorker::spawn_with_waker(config,
      Some(waker))`, where the waker pings the main calloop loop, and
-     build `Renderer::new(TextBackend::Worker(worker))`.
+     build `Renderer::new(TextBackend::Worker(worker))`. `Renderer::text()`
+     returns the backend; `TextWorker::is_running()` is false once the
+     worker thread has ended, which with the handle still held means it
+     panicked (shaping panics are caught and the engine restarted).
   2. When the ping fires, call `Renderer::update()`: it collects
      delivered layouts and marks the surfaces they change dirty. Without
      this, changed text reaches the screen only with the next unrelated
@@ -267,8 +270,10 @@ be built and tested without the language, and the language without pixels.
      width (a node just added), up to `NEW_TEXT_WAIT` = 16 ms (set with
      `Renderer::set_new_text_wait`), so a new node and its glyphs reach
      the screen in one frame; only while the surface is idle (no frame
-     painted within `BUSY_WINDOW` = 34 ms): a surface in motion paints at
-     once and the glyphs follow a frame later (decisions.md, wave2-exit). A surface that has painted draws, while its
+     painted within `BUSY_WINDOW` = 34 ms, counted from when its last
+     raster finished; `Renderer::set_busy_window` changes it, for tests):
+     a surface in motion paints at once and the glyphs follow a frame
+     later (decisions.md, wave2-exit). A surface that has painted draws, while its
      layout is re-shaped, a stand-in from another scale or width,
      resampled and shifted so its alignment lands where the right one's
      will; layouts no surface wants are pruned.
@@ -1296,7 +1301,9 @@ It does not depend on `strand-compiler` or `strand-core`.
   is polled). Dropping the `Watcher` stops it; `Watcher::join(self) ->
   thread::Result<()>` stops it and says whether the thread panicked (the
   binary's `live::Worker::join` joins the compiler worker, then the
-  watcher, and `strand run` logs a panic of either).
+  watcher, and `strand run` logs a panic of either; the persist store's
+  own-write observer holds the watcher weakly, so the worker's handle is
+  the last strong one).
   `ConfigWatch { root, modules: ModuleSet { files, dirs, errors,
   too_deep }, rescan }` is `source::find_files`'s `Discovery` (`files`,
   `dirs`, `errors` with each error as text, `too_deep`) plus a

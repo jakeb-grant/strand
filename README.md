@@ -30,7 +30,7 @@ save held back behind an error overlay, and 10,000 random edits through
 five editor save styles on two screens, and into `strand run` on a
 headless sway, without a panic, an intermediate or blank frame (checked
 on the scene, in offline-rendered pixels and in the buffers committed to
-sway) or a leaked layer surface. `strand check` reports did-you-mean diagnostics, and
+sway, both compared with a cold boot's painting) or a leaked layer surface. `strand check` reports did-you-mean diagnostics, and
 `strand watch` / `strand reload` talk to a running shell. Still open in
 M1: the formatter, the tree-sitter grammar and the LSP (`strand-dev`),
 and the parts of `fn`/`keyframes`/`shader`/`canvas` that are render work;
@@ -72,13 +72,24 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-CI runs the same three on every push, with headless sway, grim and DejaVu
-fonts installed so the Wayland integration tests and the M0 demo run (set
-`STRAND_REQUIRE_SWAY=1` to make a missing sway fail instead of skip), plus
-`cargo test --release -p strand --test demo` for the 34 MB PSS budget and
-`cargo test --release -p strand --bin strand reload_latency --
---test-threads=1` for the save-to-pixels budget. Offline render tests and a
-short run of the reload fuzzer (60 edits through the five save styles, on
-tmpfs) are part of plain `cargo test`; a nightly job runs the fuzzer for
-10,000 edits (`STRAND_FUZZ_EDITS`, `STRAND_FUZZ_SEED`) and the latency bench
-for 200 edits per kind. The mocked D-Bus services tier comes with M3.
+CI runs these on every push, with headless sway, grim and DejaVu fonts
+installed so the Wayland integration tests and the M0 demo run (set
+`STRAND_REQUIRE_SWAY=1` to make a missing sway fail instead of skip):
+
+- fmt and clippy as above;
+- `cargo test --workspace -- --skip random_edits_through_five_save_styles`
+  (the workspace tests, offline render tests included, without the
+  reload fuzzer);
+- `cargo test --release -p strand --test demo` for the 34 MB PSS budget;
+- `cargo test --release -p strand --bin strand reload_latency --
+  --test-threads=1` with `STRAND_LATENCY_ROUNDS=50` for the save-to-pixels
+  budget;
+- the reload fuzzer's short run in a step of its own: `cargo test -p
+  strand --bin strand random_edits_through_five_save_styles --
+  --test-threads=1` (60 edits through the five save styles and the sway
+  pipeline, on tmpfs) with `STRAND_FUZZ_MAX_GAP_MS=20`, a delete-to-create
+  gap of at most 20 ms.
+
+A nightly job runs the fuzzer for 10,000 edits (`STRAND_FUZZ_EDITS`,
+`STRAND_FUZZ_SEED`), the instance-level fuzzers long, and the latency
+benches for 200 edits per kind. The mocked D-Bus services tier comes with M3.

@@ -3217,10 +3217,10 @@ style, each on its own copy of the config on tmpfs (`/dev/shm`) with two
 screens plugged in, and saves every random edit into all five: in place,
 write-and-rename, backup-then-rename, delete-and-create (0–25 ms apart,
 inside the watcher's 50 ms grace after a removal and past its 15 ms
-coalescing; a delete and create the test thread got further apart than the 50 ms grace, on a loaded machine, fails the run as such rather than as a reload fault) and a symlink swapped to a new target in a store directory.
+coalescing; a delete and create the test thread got further apart than the 50 ms grace, on a loaded machine, fails the run as such rather than as a reload fault (amended below, round 2)) and a symlink swapped to a new target in a store directory.
 Replaying one edit five times into one pipeline would make the second to
 fifth saves no-ops (same hashes), so it would test the no-op path, not
-the styles. The edits are drawn from a model of a three-file config and
+the styles. The edits are drawn from a model of a three-file config (amended below, round 2: a fourth file holds the `osd`) and
 cover the rows of design.md's "What each edit does":
 token values, props and bindings, nodes added, removed and moved, keyed
 list entries, `state` defaults, names and types, handler code, a timer's
@@ -3303,7 +3303,7 @@ The time starts just before the write, on `CLOCK_MONOTONIC`, the clock
 sway announces (asserted). Headless sway presents a commit at once (0.4
 ms after the paint, measured in the run), where a monitor waits for its
 next vblank, so the gates apply to each sample plus a vblank wait drawn
-evenly over one refresh (20 phases; the p95 of all of them): token 35
+evenly over one refresh (20 phases; the p95 of all of them; amended below, round 3: the exact p95): token 35
 ms, markup 50 ms. The bench drives `strand run`'s own main loop pieces
 (`Host`, `demo::apply`, the text worker and its waker, the logic thread
 and compiler worker) with a test-only probe on `Host` (paints with their
@@ -3318,7 +3318,8 @@ first frame the shell paints once it hears of the change shows it,
 within one refresh: a scale change from `wl_output.done` to the first
 frame painted at the new scale; a monitor plugged in from its new layer
 surface's first configure (the round trip a layer surface must wait for
-before it may commit; measured and printed) to its bar's first frame. A
+before it may commit; measured and printed) to its bar's first frame
+(amended below, round 2: from hearing of the monitor). A
 frame lost on the shell's side misses that by a refresh. That frame must
 then be the one presented, under two refreshes: headless sway presents
 the first frame after an output change, or on a new output, at its next
@@ -3344,7 +3345,7 @@ its old layout shows until the new one lands. A node added is now
 presented in 18 ms
 (`crates/strand-render/tests/damage.rs::a_new_text_node_holds_the_frame_for_its_glyphs`).
 
-**2026-10-05 · Round 2: a module's cells removed with it are reported.**
+**2026-10-06 · Round 2: a module's cells removed with it are reported.**
 `Instance::reload` reports a reset, `removed with its module`, for every
 cell of a module (a file's `state`) that the new program no longer has
 when the cell holds a value other than its default, so the overlay and
@@ -3355,7 +3356,7 @@ deleted from a module that stays is still just gone (design.md's table
 has no row for it). The fuzzer expects exactly those resets for a module
 renamed in two loads.
 
-**2026-10-05 · Round 2: the reload fuzzer also runs on a compositor.**
+**2026-10-06 · Round 2: the reload fuzzer also runs on a compositor.**
 A sixth pipeline saves in place into the whole of `strand run` on a
 headless sway with two outputs (`HEADLESS-1`, `HEADLESS-2`, which the
 fuzzer's screens are named after, so its bars land on them): the
@@ -3366,7 +3367,9 @@ everything the logic thread sent, its live layer surfaces must be
 exactly the scene's surface roots (the overlay's included: a leaked or
 missing `wl_surface`), no committed buffer may show only its background
 (a probe on `Host::paint` sees every committed frame), and after each
-step every surface must be configured and have committed a frame. CI
+step every surface must be configured and have committed a frame
+(amended below, round 3: its last committed buffer must equal a cold
+boot's painting). CI
 requires it (`STRAND_REQUIRE_SWAY`); without sway it is skipped and the
 test says so. Checked against a sabotaged `strand-surface` (a removed
 node's surfaces not destroyed): it fails at the first surface edit. The
@@ -3377,17 +3380,18 @@ an `osd` need a width and a height until M2 sizes surfaces from their
 content (`strand-surface` refuses an auto-sized layer surface), so the
 model gives them one.
 
-**2026-10-05 · Round 2: the overlay's 250 ms, as the fuzzer checks it.**
+**2026-10-06 · Round 2: the overlay's 250 ms, as the fuzzer checks it.**
 The overlay may open on errors only once a load has been held back for
 200 ms (250 ms of quiet, less the gap between the test's clock, which
 starts before the save, and the logic thread's, which starts at the
-held load) with no save ending the hold before then; reload notices may
+held load; amended below, round 3: judged on the logic thread's
+timeline once the next load came) with no save ending the hold before then; reload notices may
 open it as before. A partial save completed 50 ms later, a broken save
 fixed at once and a multi-file save split into two loads must therefore
 never show it. Checked by setting the overlay's quiet period to zero:
 the run fails on the first partial save.
 
-**2026-10-05 · Round 2: more of the fuzzer's draws are run.** A random
+**2026-10-06 · Round 2: more of the fuzzer's draws are run.** A random
 deletion or duplication of a word that still compiles is run as an edit
 when the word is part of an expression (a string, an argument, a path:
 the observed cases are a label or argument dropped or doubled) outside
@@ -3404,7 +3408,7 @@ About 3% of random mutations compile, so one draw in 25 searches up to
 back: the shell runs its last good config meanwhile (design.md's
 scenario 3), and the fix must land on the clicked state.
 
-**2026-10-05 · Round 2: a descheduled delete-and-create.** A delete and
+**2026-10-06 · Round 2: a descheduled delete-and-create.** A delete and
 its create further apart than the watcher's 50 ms grace are two saves,
 correctly (removing `bar.strand` alone even commits: the shell has no
 bar until the create), so the fuzzer cannot check such a step as one
@@ -3418,7 +3422,7 @@ fault. CI also makes it unlikely: the per-push run is its own step,
 `STRAND_FUZZ_MAX_GAP_MS=20` (still past the 15 ms coalescing, 30 ms to
 spare); the nightly run is alone in its job with the full 0–25 ms.
 
-**2026-10-05 · Round 2: a surface in motion never holds for new text.**
+**2026-10-06 · Round 2: a surface in motion never holds for new text.**
 The new-text hold (above) applies only to an idle surface: one that has
 not painted within `BUSY_WINDOW` = 34 ms (two refreshes at 60 Hz). A
 surface in motion (an animation, a spectrum, rows scrolling into view)
@@ -3429,7 +3433,7 @@ from its recent paints; the springs that land in M2 can replace it with
 their own in-flight state
 (`crates/strand-render/tests/damage.rs::a_busy_surface_does_not_hold_for_new_text`).
 
-**2026-10-05 · Round 2: the plug gate runs from hearing of the monitor.**
+**2026-10-06 · Round 2: the plug gate runs from hearing of the monitor.**
 A plugged monitor is gated from the main thread hearing of it
 (`wl_output.done`) to its bar's first painted frame, within one refresh:
 the logic thread's answer, the main thread applying it, the layer
@@ -3440,3 +3444,70 @@ added) is printed and recorded in `docs/m1-report.md`, not gated. A
 token edit on a busy surface is not measured: M1 animates nothing, and
 headless sway answers a frame callback at once, so the extra refresh a
 monitor would add there cannot be seen (m1-report, open).
+
+**2026-10-06 · Round 3: the sway pipeline's screen equals a cold boot.**
+Round 2 checked the sway pipeline's committed buffers only for showing
+more than their background, and its surfaces only for having committed
+some frame since they were created, so a surface that stopped
+repainting after its first frame passed (a reviewer's sabotaged
+`Host::paint` did). The probe now keeps every surface's last committed
+buffer, and after each committing step (clicks, edits, a mutation saved
+back, a broken save fixed) the fuzzer paints the cold boot with a fresh
+offline `Renderer` (inline shaping) at each live surface's configured
+buffer size and scale, keyed by kind, screens and name (the overlay is
+not part of a cold boot), and requires every committed buffer to equal
+it within 2 per channel. Text from the worker may land a frame after
+the scene, so the main loop runs until they match, for up to the
+fuzzer's 20 s patience. The same sabotage (no repaint after a surface's
+first frame) now fails at the first edit, `step 0 (state-default)
+(Sway): the screen differs from a cold boot's painting`. The fix of a
+broken save (its last good text again) must also reset nothing and land
+on the cold boot's pixels, like every other committing step.
+
+**2026-10-06 · Round 3: the overlay's hold on the logic thread's
+timeline.** The logic thread arms its 250 ms timer when the held load
+arrives and cancels it when the next one does; the test's clock (save
+to save) misses a watcher or compiler stall on the next load, which
+lengthens the real hold, so a loaded runner could fail the check and
+blame the overlay. Once the next load's event is in, the hold is now
+taken as (the fixing save's start + that event's watch and compile
+times) − (the held save's start + its watch, compile and commit
+times), and the overlay may open when that is at least 200 ms (the 50
+ms covers the writes and the channel hops the timing does not include,
+and a delete-and-create pause); before the next load, the test's clock
+still decides. The message says which timeline it used.
+
+**2026-10-06 · Round 3: the monitor model's p95 is exact.** The vblank
+model took 20 midpoint phases per sample, whose p95 lands on the phase
+at 0.925 of a refresh rather than 0.95, 0.4 ms low at 60 Hz. It is now
+the exact p95 of the mixture (each headless sample plus a uniform wait
+over one refresh), found by bisection on the mean of the samples'
+uniform CDFs (`bench.rs::the_monitor_model_is_the_exact_p95`). The
+printed break-even headless p95 is derived from the same function (the
+model moves with the samples, so it is the headless p95 plus the gap
+between the model's p95 and 35 ms), so the number printed and the
+assert agree.
+
+**2026-10-06 · Round 3: the first plug of a new width is printed, not
+gated.** sway's new outputs are 1920 wide and the bench's first is
+2560, so the first plug also waits for the bar's text to be shaped for
+the new line box width (10.5 ms in one reviewer's run, still inside the
+refresh). It is timed and printed; the five plugs after it, of a width
+already shaped, are gated as before. A counted frame of a plugged
+monitor's new surface that the compositor discards is now counted when
+that surface paints again (the surface is no longer new, which hung the
+bench before).
+
+**2026-10-06 · Round 3: thread ends, and clock-free busy tests.** The
+own-write observer that `strand run` registers with the persist store
+holds the watcher weakly, so the compiler worker's handle is the last
+strong one and `Worker::join` stops and joins the watcher (and logs when
+it still cannot: an IO write registering at that instant)
+(`live.rs::the_own_write_observer_leaves_the_watcher_joinable`). The
+sway pipeline's text worker cannot be joined while the surface manager
+owns it, so the fuzzer checks at the end that it is still running
+(`TextWorker::is_running`; a handle still held whose thread ended means
+it panicked: `text.rs::a_dead_worker_is_not_running`). The renderer
+stamps a surface's last paint after the raster, and `set_busy_window`
+lets the two new-text hold tests fix the window (zero, or 30 s) instead
+of depending on how long a debug paint takes.

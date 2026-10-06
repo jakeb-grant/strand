@@ -202,6 +202,7 @@ pub struct Renderer {
     surface_changes: Vec<(NodeId, SurfaceChange)>,
     first_frame_wait: Duration,
     new_text_wait: Duration,
+    busy_window: Duration,
 }
 
 impl Renderer {
@@ -221,6 +222,7 @@ impl Renderer {
             surface_changes: Vec::new(),
             first_frame_wait: FIRST_FRAME_TEXT_WAIT,
             new_text_wait: NEW_TEXT_WAIT,
+            busy_window: BUSY_WINDOW,
         }
     }
 
@@ -234,6 +236,18 @@ impl Renderer {
     /// glyphs to show yet ([`NEW_TEXT_WAIT`] by default; zero: never).
     pub fn set_new_text_wait(&mut self, wait: Duration) {
         self.new_text_wait = wait;
+    }
+
+    /// How recently a surface must have painted to count as in motion,
+    /// so that it holds no frame for new text ([`BUSY_WINDOW`] by
+    /// default; tests set it so they do not depend on the clock).
+    pub fn set_busy_window(&mut self, window: Duration) {
+        self.busy_window = window;
+    }
+
+    /// The text backend (the runtime's text worker, or inline shaping).
+    pub fn text(&self) -> &TextBackend {
+        &self.text
     }
 
     /// The resolved surface parameters of a surface-kind node (as of the
@@ -663,6 +677,7 @@ impl Renderer {
                 waiting.iter().any(|n| !shown.contains(n))
             };
             let wait = self.new_text_wait;
+            let window = self.busy_window;
             if let Some(s) = self.surfaces.get_mut(&id) {
                 if s.valid && s.records == f.records && s.opaque == f.opaque {
                     s.dirty = false;
@@ -672,7 +687,7 @@ impl Renderer {
                 let now = Instant::now();
                 let idle = s
                     .painted_at
-                    .is_none_or(|t| now.saturating_duration_since(t) >= BUSY_WINDOW);
+                    .is_none_or(|t| now.saturating_duration_since(t) >= window);
                 s.new_text_until = match (blank, s.new_text_until) {
                     (false, _) => None,
                     (true, Some(t)) => Some(t),
@@ -1045,13 +1060,15 @@ impl Painter for Renderer {
         s.history.truncate(DAMAGE_HISTORY);
         s.valid = true;
         s.painted = true;
-        s.painted_at = Some(Instant::now());
         let scale = s.scale;
         self.raster
             .paint(&f.items, &total, &self.atlas, scale, target);
         // Nothing changed since flattening: the next paint can reuse it.
+        // Stamped once the frame is drawn: a slow raster does not age the
+        // surface into looking idle.
         if let Some(s) = self.surfaces.get_mut(&surface) {
             s.cache = Some(f);
+            s.painted_at = Some(Instant::now());
         }
         self.last_damage.insert(surface, total);
         total

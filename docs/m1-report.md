@@ -1,6 +1,6 @@
 # M1 exit report
 
-Measured 2026-10-05 and 2026-10-06 (round 2) on the dev container (Intel Xeon @ 2.10 GHz, 4 vCPUs
+Measured 2026-10-05 and 2026-10-06 (rounds 2 and 3) on the dev container (Intel Xeon @ 2.10 GHz, 4 vCPUs
 shared with another agent's builds), rustc 1.97.0, headless sway 1.9 with
 the pixman renderer, release builds (thin LTO, one codegen unit,
 mimalloc). Every number below comes from a test in the tree that fails
@@ -11,10 +11,10 @@ it.
 
 | Gate (`docs/features.md`, M1 exit) | Budget | Measured | |
 | --- | --- | --- | --- |
-| Random edits with no panic or blank frame | 10,000 clean | **10,000 edits clean, each saved in all five editor styles (50,000 saves) into five live pipelines on two screens and in place into `strand run` on headless sway, in 918.7 s; one pipeline's frames painted offline and compared with a cold boot's, the sway pipeline's layer surfaces and committed buffers checked** | pass |
-| Token edit, save → presented frame | p95 ≤ 35 ms | **p95 33.4 ms in the model of a 60 Hz monitor** (headless sway 17.8 ms, max 18.5, plus a vblank wait at a uniform phase over one refresh; worst phase 34.4), 100 edits | pass (model) |
-| Markup edit, save → presented frame | p95 ≤ 50 ms | **p95 33.4 ms in the model** (headless 18.0 ms, max 18.3: a node added 18.0, removed 18.0; worst phase 34.7), 100 edits | pass (model) |
-| Monitor change on the next frame | next frame | the first frame painted after the shell hears of it shows it: a scale change 1.2–1.8 ms after `wl_output.done`, a plugged monitor's bar 1.7–2.1 ms after `wl_output.done` (its new surface configured 0.6–0.7 ms after it), and that frame is the one presented (sway's next frame timer, 6–18 ms later); the logic thread answers every plug, scale change, unplug and replug in its first diff | pass |
+| Random edits with no panic or blank frame | 10,000 clean | **10,000 edits clean, each saved in all five editor styles (50,000 saves) into five live pipelines on two screens and in place into `strand run` on headless sway, in 981.3 s; one pipeline's frames painted offline and the sway pipeline's committed buffers both compared with a cold boot's painting after every committing step, the sway pipeline's layer surfaces checked** | pass |
+| Token edit, save → presented frame | p95 ≤ 35 ms | **p95 33.3 ms in the model of a 60 Hz monitor** (headless sway 18.0 ms, max 18.2, plus a vblank wait at a uniform phase over one refresh, p95 computed exactly; worst phase 34.6; the gate breaks above a headless p95 of 19.6 ms), 100 edits | pass (model) |
+| Markup edit, save → presented frame | p95 ≤ 50 ms | **p95 33.4 ms in the model** (headless 18.1 ms, max 18.3: a node added 18.2, removed 18.0; worst phase 34.7), 100 edits | pass (model) |
+| Monitor change on the next frame | next frame | the first frame painted after the shell hears of it shows it: a scale change 1.7–2.7 ms after `wl_output.done`, a plugged monitor's bar 1.6–2.1 ms after `wl_output.done` (its new surface configured 0.5–0.9 ms after it; the first plug, of a width not yet shaped, is printed and not gated: 1.5 ms in this run, 10.5 ms in a reviewer's), and that frame is the one presented (sway's next frame timer, 4–17 ms later); the logic thread answers every plug, scale change, unplug and replug in its first diff | pass |
 | Portal change on the next frame | next frame | not measured: portal settings are not fed into `strand run` yet (M2) | open |
 
 The design's two M1 exit boxes ("10k random edits with no panic or blank
@@ -114,7 +114,10 @@ new handler code.
 
 - No panic: every logic thread answers every save and joins with `Ok`;
   every compiler worker and watcher thread joins without a panic
-  (`Worker::join`, `Watcher::join`).
+  (`Worker::join`, `Watcher::join`); the sway pipeline's text worker,
+  which its surface manager owns until the end, is still running
+  (`TextWorker::is_running`: its thread ends only with its handle, so
+  ended means panicked).
 - Atomic commits: after every diff the scene (overlay aside) and the
   token table are those before the step or those after it; a click's
   diff likewise. (A compiling mutation's own frame is not modelled; the
@@ -125,6 +128,14 @@ new handler code.
   only its background (a probe on `Host::paint` sees every committed
   frame), and after each step every layer surface is configured and has
   committed a frame.
+- The screen equals a cold boot: after each committing step (a click, an
+  edit, a mutation saved back, a broken save fixed) the sway pipeline's
+  last committed buffer of every surface but the overlay equals, within
+  2 per channel, a fresh offline renderer's painting of the cold boot at
+  that surface's configured buffer size and scale (surfaces matched by
+  kind, screens and name; the main loop runs until they match, up to
+  20 s, since worker text may land a frame later). A surface that stops
+  repainting fails here.
 - No leaked surface: on sway, whenever the main thread has applied what
   the logic thread sent, its live layer surfaces are exactly the scene's
   surface roots, the overlay's included. The surfaces keep their scene
@@ -134,8 +145,11 @@ new handler code.
   surface; at most one error overlay is shown.
 - The overlay opens only when a reload left notices (a reset, a value
   kept over a new default) that were not dismissed, or a load was held
-  back for 250 ms (checked as 200 ms on the test's clock, which starts
-  before the save) with no save ending the hold before then: a partial
+  back for 250 ms with no save ending the hold before then (checked as
+  200 ms; once the next load came, on the logic thread's timeline:
+  each save's start plus its reload event's watch, compile and commit
+  times, so a stall on the next load counts toward the hold as it does
+  for the logic thread's timer; before that, on the test's clock): a partial
   save completed 50 ms later, a broken save fixed at once or a save split
   into two loads never shows it. Once a commit lands clean it lists no
   errors.
@@ -160,13 +174,19 @@ new handler code.
 default adoption switched off; on the first click with the renderer's
 damage made to forget where a changed node was; at the first surface
 edit with `strand-surface` not destroying a removed node's surfaces (the
-sway pipeline); and at the first partial save with the overlay's quiet
-period set to zero.
+sway pipeline); at the first partial save with the overlay's quiet
+period set to zero; and at the first edit (`step 0 (state-default)
+(Sway): the screen differs from a cold boot's painting`) with
+`Host::paint` returning no damage, painting nothing, after each
+surface's first frame (a frozen screen, which round 2's checks let
+through).
 
 **Runs.** 10,000 edits (10,859 drawn; draws that changed nothing are drawn again)
-with seed `0x5eedf00dcafe0001`, release build, round 2 code, sway
-required: clean in 918.7 s, with 841 clicks made while a broken save was
-held back, no multi-file save taken in two loads and no late create.
+with seed `0x5eedf00dcafe0001`, release build, round 3 code (the sway
+screen compared with a cold boot after every committing step), sway
+required: clean in 981.3 s (918.7 s with round 2's checks), with 841
+clicks made while a broken save was held back, 343 compiling mutations
+run, no multi-file save taken in two loads and no late create.
 Seeds 777 (800 edits) and the default seed for 200 (debug): clean. The
 first round-2 10k attempt stopped at step 2,299 on a mutation that
 dropped a keyed list entry and put it back (its chips' state, rightly,
@@ -224,27 +244,28 @@ A test-only probe on `Host` and a `FrameClock` wrapping
 the shipped binary has neither.
 
 **Headless sway presents a commit at once**: the counted frames were
-presented 0.37 ms (p95; max 0.41) after they were painted. A monitor
+presented 0.38 ms (p95; max 0.53) after they were painted. A monitor
 shows a commit at its next vblank, 0 to one refresh later. So the gates
-apply to the samples in a model of a 60 Hz monitor: each sample taken
-at 20 evenly spaced vblank phases over one refresh, and the p95 of all
-of them (`on_a_monitor`). This is a model, not a measurement: it
+apply to the samples in a model of a 60 Hz monitor: each sample plus a
+vblank wait uniform over one refresh, and the exact p95 of that mixture
+(`on_a_monitor`, by bisection; round 2 took 20 midpoint phases, whose
+p95 sat 0.4 ms low). This is a model, not a measurement: it
 assumes the save's phase against the vblank is uniform and that the
 surface is idle (no frame callback pending; the bench idles 250 ms
 between edits). Adding a whole refresh to every sample (the worst
-phase) gives 34.4 ms (token) and 34.7 ms (markup); it is printed and
+phase) gives 34.6 ms (token) and 34.7 ms (markup); it is printed and
 recorded here, not gated.
 
-**Numbers** (100 edits of each kind, round 2 code):
+**Numbers** (100 edits of each kind, round 3 code):
 
 | | headless p95 | max | model p95 | worst phase |
 | --- | --- | --- | --- | --- |
-| token edit → presented | 17.8 ms | 18.5 ms | 33.4 ms | 34.4 ms |
-| markup edit → presented | 18.0 ms | 18.3 ms | 33.4 ms | 34.7 ms |
-| of which a node added | 18.0 ms | | | |
+| token edit → presented | 18.0 ms | 18.2 ms | 33.3 ms | 34.6 ms |
+| markup edit → presented | 18.1 ms | 18.3 ms | 33.4 ms | 34.7 ms |
+| of which a node added | 18.2 ms | | | |
 | of which a node removed | 18.0 ms | | | |
-| token edit → painted buffer (no compositor) | 18.0 ms | 18.4 ms | | |
-| markup edit → painted buffer (no compositor) | 17.3 ms | 17.6 ms | | |
+| token edit → painted buffer (no compositor) | 17.9 ms | 26.9 ms | | |
+| markup edit → painted buffer (no compositor) | 17.2 ms | 17.6 ms | | |
 
 The watcher's 15 ms coalescing (design.md, "The pipeline") is most of
 every number; compiling, committing and painting the 2560×40 bar take
@@ -257,15 +278,18 @@ text with nothing to draw yet (a node just added) for up to
 node and its glyphs arrive together
 (`crates/strand-render/tests/damage.rs::a_new_text_node_holds_the_frame_for_its_glyphs`).
 Only an idle surface holds: one that painted within `BUSY_WINDOW` = 34
-ms (an animation, rows scrolling into view) paints at once and its new
+ms (an animation, rows scrolling into view; the last paint is stamped
+once the raster is done) paints at once and its new
 glyphs follow a frame later, so nothing else on it waits
 (`a_busy_surface_does_not_hold_for_new_text`).
 
 **Headroom and flakes.** The token edit's 35 ms is the tight one: 15 ms
 of coalescing, 2–3 ms of work and up to a refresh of vblank wait leave
-about 1.5 ms at p95. The gate breaks once the headless p95 passes about
-19.2 ms (35 less 0.95 of a refresh); the failure message prints that
-break-even beside the headless p95. A slow or busy CI runner shows as
+about 1.6 ms at p95. The gate breaks once the headless p95 passes about
+19.6 ms in this run (the model moves with the samples, so the printed
+break-even is the headless p95 plus the model's gap to 35 ms, and the
+number and the assert agree); the failure message prints it beside the
+headless p95. A slow or busy CI runner shows as
 every sample a little high; a regression as a step (a refresh more, as
 the node-added bug was). CI runs 50 edits per kind per push so p95 is
 not the worst of 20 samples, and 200 nightly.
@@ -280,16 +304,21 @@ first thing to measure once M2's springs and a real output exist.
 
 **Monitors.** A scale change (`swaymsg output HEADLESS-1 scale 1.5`,
 then back to 1, four times) is timed from the main thread hearing of it
-(`wl_output.done`) to the first frame painted at the new scale (1.2–1.8
-ms) and on to that frame's presentation (16.6–18.1 ms: sway holds the
+(`wl_output.done`) to the first frame painted at the new scale (1.7–2.7
+ms) and on to that frame's presentation (16.3–16.8 ms: sway holds the
 first frame after an output change for its next frame timer). A
-monitor plugged in (`swaymsg create_output`, five times) is timed from
-`wl_output.done` to its bar's first painted frame (1.7–2.1 ms): the
+monitor plugged in (`swaymsg create_output`, six times) is timed from
+`wl_output.done` to its bar's first painted frame. The first plug is
+an output of a width not seen yet (sway's new outputs are 1920 wide,
+the bench's first 2560), so its bar's text is also shaped for the new
+line box width: it is printed, not gated (1.5 ms in this run; a
+reviewer's run had 10.5 ms, inside the refresh but with no margin on a
+slow runner). The five after it are gated (1.6–2.1 ms): the
 logic thread's answer (the new bar's diff), the main thread applying
 it, the layer surface's creation and its configure round trip (all of
-which take 0.6–0.7 ms to the configure; an earlier run had one sample
+which take 0.5–0.9 ms to the configure; an earlier run had one sample
 at 7.8 ms, most of it the logic and main thread's work), then the paint;
-and on to that frame's presentation (6.2–12.3 ms later: the new
+and on to that frame's presentation (4.3–11.2 ms later: the new
 output's first frame timer). The gate is design.md's "next frame",
 end to end from hearing of the change: the first frame the shell paints
 shows it, within one refresh (a frame lost on the shell's side misses by
@@ -298,7 +327,8 @@ a refresh), and it is the frame presented next, under two refreshes.
 the logic side exactly: a plug, a scale change, an unplug and a replug
 are each wholly in the first diff the logic thread sends after the main
 thread tells it. A counted frame the compositor discards is painted
-again (none were discarded).
+again and that frame counted, a plugged monitor's new surface included
+(none were discarded).
 
 Reproduce:
 
@@ -327,6 +357,14 @@ design.
   new seed, the instance-level fuzzers for 10,000 and 2,000, the latency
   benches for 200 edits per kind.
 
+These steps have not run on a GitHub runner yet: the branch is not
+pushed from this work (the M0 steps have a green run on record). The
+numbers here are the dev container's. The per-push latency step has
+about 1.6 ms of headroom in the model, so the first green run, or a
+miss, should be recorded here and in `docs/features.md` next to the
+gates; a miss on a slower runner is to be reported, not met by relaxing
+the budget.
+
 ## Open
 
 - Portal changes on the next frame: `strand-watch` reads and follows the
@@ -335,8 +373,10 @@ design.
   The benchmark line in `docs/features.md` stays open for this clause.
 - The latency gates are a model of a 60 Hz monitor (uniform vblank
   phase, idle surface) on headless sway; nothing is measured on
-  hardware. The token edit has about 1.5 ms of headroom in the model,
+  hardware. The token edit has about 1.6 ms of headroom in the model,
   and a busy surface is not measured (above).
+- No CI run of the new per-push fuzzer and latency steps is on record
+  yet (above).
 - The fuzzer does not exercise the edit table's custom-service and
   `lock` rows (their own tests are named above), and a compiling
   mutation's own frame is not modelled (only that it keeps every cell

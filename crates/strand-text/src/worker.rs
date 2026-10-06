@@ -180,6 +180,13 @@ impl TextWorker {
         }
     }
 
+    /// The worker thread is still running. It runs until the handle is
+    /// dropped (a shaping panic is caught and the engine started again),
+    /// so `false` with the handle held means the thread itself panicked.
+    pub fn is_running(&self) -> bool {
+        self.thread.as_ref().is_some_and(|t| !t.is_finished())
+    }
+
     /// Waits up to `timeout` for a layout (tests, offline rendering).
     pub fn recv_timeout(&self, timeout: Duration) -> Result<Option<TextLayout>, TextError> {
         match self.layouts.recv_timeout(timeout) {

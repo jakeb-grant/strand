@@ -1268,8 +1268,9 @@ fn a_new_text_node_holds_the_frame_for_its_glyphs() {
     let mut buf = Buffer::new(2560, 36, Scale::ONE);
     buf.paint(&mut r, BAR, 0);
 
-    // An idle surface (nothing painted for a while).
-    std::thread::sleep(strand_render::BUSY_WINDOW);
+    // An idle surface (nothing painted within the busy window, here none,
+    // so the test does not depend on the clock).
+    r.set_busy_window(Duration::ZERO);
     r.apply(added(root));
     assert!(
         !r.wants_frame(BAR),
@@ -1314,6 +1315,8 @@ fn a_busy_surface_does_not_hold_for_new_text() {
     use std::time::Duration;
     let mut r = worker_renderer();
     r.set_new_text_wait(Duration::from_secs(30));
+    // Busy however slow the machine paints (the default is 34 ms).
+    r.set_busy_window(Duration::from_secs(30));
     r.apply(bar("12:59").0);
     let root = r.tree().roots()[0];
     r.attach_surface(BAR, root);
