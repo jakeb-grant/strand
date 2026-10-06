@@ -24,3 +24,6 @@ check::unknown_event
    ·                      ╰── unknown event
    ╰────
   help: did you mean `received`?
+
+fix [check::unknown_event] unknown_event.strand: `clik` -> `click`
+fix [check::unknown_event] unknown_event.strand: `recieved` -> `received`

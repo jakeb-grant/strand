@@ -30,10 +30,14 @@ save held back behind an error overlay, and 10,000 random edits through
 five editor save styles on two screens, and into `strand run` on a
 headless sway, without a panic, an intermediate or blank frame (checked
 on the scene, in offline-rendered pixels and in the buffers committed to
-sway, both compared with a cold boot's painting) or a leaked layer surface. `strand check` reports did-you-mean diagnostics, and
-`strand watch` / `strand reload` talk to a running shell. Still open in
-M1: the formatter, the tree-sitter grammar and the LSP (`strand-dev`),
-and the parts of `fn`/`keyframes`/`shader`/`canvas` that are render work;
+sway, both compared with a cold boot's painting) or a leaked layer surface. `strand check` reports did-you-mean diagnostics,
+`strand fmt` formats `.strand` files, `strand watch` / `strand reload` talk
+to a running shell, and `strand-dev lsp` serves diagnostics, completion,
+hover, go-to-definition, rename, formatting and did-you-mean quick fixes.
+Still open in M1: the tree-sitter grammar, the loader's `.wgsl` and
+wallpaper paths, portal changes in the latency benchmark, a dedicated
+format-on-save overlay check, and the parts of
+`fn`/`keyframes`/`shader`/`canvas` that are render work;
 layout, services and theming come in M2 and M3. Progress is tracked in
 [`docs/features.md`](docs/features.md); [`docs/design.md`](docs/design.md)
 has the full design. (M0: `strand run --demo`, about 21 MB PSS on two

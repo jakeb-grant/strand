@@ -24,3 +24,6 @@ check::unknown_type
    ·               ╰── not a type
    ╰────
   help: did you mean `Pin`?
+
+fix [check::unknown_type] unknown_type.strand: `txt` -> `text`
+fix [check::unknown_type] unknown_type.strand: `Pn` -> `Pin`

@@ -69,6 +69,9 @@ pub(crate) struct CallCtx {
     pub def: DefId,
     pub name: String,
     pub filled: Vec<bool>,
+    /// The parameters the call sets anywhere (the positional argument,
+    /// the head's named one and the props in its block).
+    pub given: Vec<String>,
     pub has_slot: bool,
     pub reported_children: bool,
 }
@@ -1025,7 +1028,7 @@ impl<'a> Checker<'a> {
         );
         candidates.extend(TREE_KEYWORDS.iter().map(|s| s.to_string()));
         candidates.extend(TOP_KEYWORDS.iter().map(|s| s.to_string()));
-        let help = Self::did_you_mean(kind, &candidates);
+        let fix = Self::closest(kind, &candidates);
         let label = if TOP_KEYWORDS.contains(&kind) {
             "a declaration keyword, here inside a tree"
         } else {
@@ -1037,7 +1040,7 @@ impl<'a> Checker<'a> {
             el.kind.span,
             label,
         )
-        .help = help;
+        .suggest_opt(el.kind.span, fix);
         // Check what it holds anyway, so the names inside resolve.
         let node = self.new_node();
         if let Some(ast::HeadArg::Positional(e) | ast::HeadArg::Named(_, e)) = &el.arg {
@@ -1102,10 +1105,25 @@ impl<'a> Checker<'a> {
             Some(ast::HeadArg::Named(..)) => None,
         };
         self.ctx = saved;
+        let mut given: Vec<String> = Vec::new();
+        match &el.arg {
+            Some(ast::HeadArg::Positional(_)) => {
+                given.extend(sig.params.first().map(|p| p.name.clone()))
+            }
+            Some(ast::HeadArg::Named(n, _)) => given.push(n.name.clone()),
+            None => {}
+        }
+        if let Some(b) = &el.block {
+            given.extend(b.items.iter().filter_map(|i| match &i.kind {
+                ItemKind::Prop(p) => Some(p.name.name.clone()),
+                _ => None,
+            }));
+        }
         self.calls.push(CallCtx {
             def: d,
             name: kind.clone(),
             filled,
+            given,
             has_slot: sig.has_slot,
             reported_children: false,
         });
@@ -1326,27 +1344,18 @@ impl<'a> Checker<'a> {
             }
             None => {
                 let names: Vec<String> = sig.params.iter().map(|q| q.name.clone()).collect();
-                let help = Self::did_you_mean(name, &names).or_else(|| {
-                    Some(if names.is_empty() {
-                        format!("`{}` takes no parameters", call.name)
-                    } else {
-                        format!(
-                            "it takes {}",
-                            names
-                                .iter()
-                                .map(|n| format!("`{n}`"))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        )
-                    })
-                });
-                self.error(
+                // design.md "What you see" #2: `unknown prop "expanded"; did
+                // you mean "open"?`.
+                let d = self.error(
                     "check::unknown_param",
-                    format!("`{}` has no parameter `{name}`", call.name),
+                    format!("unknown prop `{name}`"),
                     p.name.span,
-                    "unknown parameter",
-                )
-                .help = help;
+                    format!("`{}` has no parameter `{name}`", call.name),
+                );
+                Self::unknown_param_fixes(d, p.name.span, name, &names, &call.given);
+                if names.is_empty() {
+                    d.help = Some(format!("`{}` takes no parameters", call.name));
+                }
                 self.expr(p.value, None);
                 None
             }
@@ -1374,23 +1383,27 @@ impl<'a> Checker<'a> {
                 }),
                 None => {
                     let kind = node.as_ref().map_or("", |n| n.kind.as_str()).to_string();
-                    let help = if name == kind && schema.arg.is_some() {
-                        // `text { text: s }`: the element's own value.
-                        Some(format!(
-                            "`{kind}` takes its value positionally: `{kind} value {{ … }}`"
-                        ))
+                    let positional = name == kind && schema.arg.is_some();
+                    let fix = if positional {
+                        None
                     } else {
                         let candidates: Vec<String> =
                             schema.props.iter().map(|q| q.name.clone()).collect();
-                        Self::did_you_mean(name, &candidates)
+                        Self::closest(name, &candidates)
                     };
-                    self.error(
+                    let d = self.error(
                         "check::unknown_prop",
                         format!("unknown prop `{name}` on `{kind}`"),
                         p.name.span,
                         "not a prop of this element",
-                    )
-                    .help = help;
+                    );
+                    if positional {
+                        // `text { text: s }`: the element's own value.
+                        d.help = Some(format!(
+                            "`{kind}` takes its value positionally: `{kind} value {{ … }}`"
+                        ));
+                    }
+                    d.suggest_opt(p.name.span, fix);
                     None
                 }
             },
@@ -1539,14 +1552,14 @@ impl<'a> Checker<'a> {
                             None => {
                                 let candidates: Vec<String> =
                                     ps.sub.iter().map(|s| s.name.clone()).collect();
-                                let help = Self::did_you_mean(&q.name.name, &candidates);
+                                let fix = Self::closest(&q.name.name, &candidates);
                                 self.error(
                                     "check::unknown_prop",
                                     format!("`{name}` has no `{}`", q.name.name),
                                     q.name.span,
                                     "unknown",
                                 )
-                                .help = help;
+                                .suggest_opt(q.name.span, fix);
                                 self.expr(&q.value, None);
                             }
                         },
@@ -1993,7 +2006,7 @@ impl<'a> Checker<'a> {
                     let rec = self.types.record(*r);
                     let candidates: Vec<String> =
                         rec.fields.iter().map(|f| f.name.clone()).collect();
-                    let help = Self::did_you_mean(&p.join("."), &candidates);
+                    let fix = Self::closest(&p.join("."), &candidates);
                     let rn = rec.name.clone();
                     self.error(
                         "check::unknown_field",
@@ -2001,7 +2014,7 @@ impl<'a> Checker<'a> {
                         k.span,
                         "not a field of the items",
                     )
-                    .help = help;
+                    .suggest_opt(k.span, fix);
                     None
                 }
             },
@@ -2177,14 +2190,15 @@ impl<'a> Checker<'a> {
                     None => {
                         let candidates: Vec<String> =
                             settings.iter().map(|s| s.name.clone()).collect();
-                        let help = Self::did_you_mean(&p.name.name, &candidates);
-                        self.error(
+                        let fix = Self::closest(&p.name.name, &candidates);
+                        let d = self.error(
                             "check::unknown_prop",
                             format!("keyframes have no setting `{}`", p.name.name),
                             p.name.span,
                             "unknown",
-                        )
-                        .help = help.or_else(|| Some("keyframes take `duration`, `delay`, `repeat` and `easing`; props go in stops: `50% { x: 4 }`".into()));
+                        );
+                        d.help = Some("keyframes take `duration`, `delay`, `repeat` and `easing`; props go in stops: `50% { x: 4 }`".into());
+                        d.suggest_opt(p.name.span, fix);
                     }
                 },
                 _ => {}

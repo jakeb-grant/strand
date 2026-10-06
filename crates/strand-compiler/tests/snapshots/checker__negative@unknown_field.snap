@@ -25,3 +25,6 @@ check::unknown_field
  7 │   }
    ╰────
   help: did you mean `name`?
+
+fix [check::unknown_field] unknown_field.strand: `precent` -> `percent`
+fix [check::unknown_field] unknown_field.strand: `nme` -> `name`

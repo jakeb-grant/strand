@@ -661,15 +661,24 @@ Public interfaces other crates and later stages build on:
   config broken at boot starts from them.
 - **Diagnostics** (`strand_compiler::diagnostic`): `Diagnostic { severity,
   code: &'static str, message, labels: Vec<Label { file: FileId, span,
-  message, primary }>, help: Option<String> }`, built with
+  message, primary }>, help: Option<String>, suggestions: Vec<Suggestion {
+  file, span, replacement }> }`, built with
   `Diagnostic::error/warning(code, msg).with_label(span, msg)`,
   `.with_secondary(..)`, `.with_label_in(file, ..)`,
   `.with_secondary_in(file, ..)`, `.with_help(..)`, and `.in_file(file)` for
-  single-file stages. `render(&[Diagnostic], &SourceMap, Style)` draws
+  single-file stages (it moves suggestions too). A suggestion is the
+  replacement a diagnostic proposes, as data: `.suggest(span, x)` /
+  `.suggest_opt(span, Option<x>)` / `.with_suggestion(span, x)` set the
+  help to "did you mean `x`?" and propose `x` for the text at `span` (the
+  misspelt word, which need not be the primary span: `on chnage a, b`);
+  `.add_suggestion(span, x)` adds one choice of several (the parameters a
+  call does not set yet). Editors and the overlay read `suggestions`,
+  never the help text. `render(&[Diagnostic], &SourceMap, Style)` draws
   miette reports (labels in other files as related reports, at most 50 per
   file); `render_short(&[Diagnostic], &SourceMap)` gives one
-  `file:line:col: severity[code]: message` line each, for the reload
-  overlay's list and editors. `suggest`/`did_you_mean` give the shared
+  `file:line:col: severity[code]: message; help` line each, names in
+  double quotes (design.md's `unknown prop "expanded"; did you mean
+  "open"?`), for the reload overlay's list and editors. `suggest`/`closest` give the shared
   near-miss logic: optimal-string-alignment distance within about one
   edit per three letters, one-letter words matched only by case, no
   one-letter candidate for a longer word, ties to a plausible typo
@@ -728,7 +737,9 @@ Public interfaces other crates and later stages build on:
   Member(type, member), Function(name), Value(name), Method(type, method),
   Element(kind), Prop(kind, name) (also `on event`, `stroke.dash` and
   scope names; group docs reach their elements), Token(path)}`;
-  `RecordDef::doc` mirrors `DocKey::Type`. A parameter's default keeps its
+  `RecordDef::doc` mirrors `DocKey::Type`; `Schema::token_doc(path)` falls
+  back to the nearest documented group (`space.2` reads `space`). Every
+  entry of the builtin schema is documented (a test enforces it). A parameter's default keeps its
   source text (`ParamSig::default: Option<String>`). `Schema::fingerprint()
   -> [u8; 32]` is BLAKE3 chained over every text `extend` was given, in
   order (the builtin first): the schema part of the compiled-output cache
@@ -1138,6 +1149,15 @@ Public interfaces other crates and later stages build on:
     instance's id allocator and diff, and survive reloads (hard ones
     too); input on them is the caller's.
 
+- **Formatting** (`strand_compiler::fmt`): `format(src) -> Result<String,
+  FormatError>` (and `format_parsed(src, &Parse)`), the one formatter
+  behind `strand fmt` and LSP formatting. It never changes a file's
+  meaning: a file with syntax errors is `FormatError::Syntax(errors)`, and
+  a result whose tree differs from the input's up to spans
+  (`fmt::shape(&ast::File) -> String`, the tree's `Debug` with spans
+  removed) is `FormatError::Unstable` rather than written. The output is
+  idempotent, keeps comments and line breaks, and ends with one `\n`.
+
 ### Config files
 
 `strand_compiler::source::find_files(dir) -> io::Result<Discovery { files,
@@ -1281,6 +1301,39 @@ and the connection):
   - M4: `raw_handles(surface)` (display + `wl_surface`) for GPU promotion
     on the same surface; `State::recreate_all()` for `strand reload
     --hard`.
+
+### `strand-dev`
+
+The language server, `strand-dev lsp` (stdio), built on `lsp-server` and
+`lsp-types`; the runtime binary never links it. `strand_dev::serve(&
+lsp_server::Connection)` runs the protocol on any connection (tests drive
+it in process over `Connection::memory()`) against the builtin schema;
+`serve_with(&Connection, Arc<Schema>)` takes the schema to check with,
+chosen once by the caller (the builtin schema extended with
+`Schema::extend` by the service crates it links); `run_stdio()` serves
+stdin and stdout, and `capabilities()` is what it advertises. It reads
+only `strand-compiler`'s public interfaces: `compile_with` for one config
+at a time against that schema, `hir::Program` (`refs`/`reference_at`,
+defs, locals, `tokens`, the typed tree) for hover, definition, rename and
+completion, `Schema::doc` (of the same schema) for completion and hover
+text, `Diagnostic::suggestions` for quick fixes,
+`schema::members_of` for what `x.` offers, `fmt::format` for
+formatting, and `source::find_files` for which files a document is
+checked with (the rule of `strand check <file>`: the default config
+directory if the file is in it, else a workspace folder that is itself a
+config, else the file's directory, else the file alone; see
+`docs/decisions.md`, wave2-lsp). Open documents replace their files' text
+on disk; files read from disk are re-read when their size or mtime (or a
+scanned directory's) changes, and clients that can are asked to watch
+`**/*.strand`. Positions are UTF-16 (the protocol default), sync is
+full-document, diagnostics are published per config after a 200 ms
+debounce (`initializationOptions.debounceMs`), at once on open and save,
+and workspace edits use versioned `documentChanges` when the client
+supports them. `initializationOptions.configDir` overrides the default
+config directory.
+
+The inspector joins it in M5; tree-sitter highlighting is not built yet
+(see `docs/decisions.md`, wave2-lsp).
 
 ### `strand-services`
 

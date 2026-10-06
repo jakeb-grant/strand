@@ -9,6 +9,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use super::{Checker, Ctx};
+use crate::diagnostic::Diagnostic;
 use crate::hir::{self, DefId, DefKind, Target};
 use crate::schema::Schema;
 use crate::syntax::Span;
@@ -33,10 +34,12 @@ pub(crate) struct Entry<'a> {
     pub owner: Owner,
     pub path: String,
     pub span: Span,
+    /// The key as written (`hi`, `surface.hi`), the tail of `path`.
+    pub key: &'a ast::TokenKey,
     pub override_: bool,
     /// The `override group { … }` this entry came from: its prefix and
-    /// key span, so a misspelt group is reported once.
-    pub group: Option<(String, Span)>,
+    /// key, so a misspelt group is reported once.
+    pub group: Option<(String, &'a ast::TokenKey)>,
     pub value: &'a ast::Expr,
     pub module: usize,
     pub state: EntryState,
@@ -71,6 +74,45 @@ fn key_path(k: &ast::TokenKey) -> String {
         .map(|s| s.name.as_str())
         .collect::<Vec<_>>()
         .join(".")
+}
+
+/// What to write in place of `key`, which spells the tail of token `path`,
+/// so that it names token `meant` instead: `meant`'s own tail, when the
+/// two share the part of the path written outside the key.
+fn key_fix(key: &ast::TokenKey, path: &str, meant: &str) -> Option<String> {
+    let segs: Vec<&str> = path.split('.').collect();
+    let keep = segs.len().saturating_sub(key.segments.len().max(1));
+    let tail = if keep == 0 {
+        meant
+    } else {
+        meant.strip_prefix(&format!("{}.", segs[..keep].join(".")))?
+    };
+    Some(if key.dollar {
+        format!("${tail}")
+    } else {
+        tail.to_string()
+    })
+}
+
+/// Proposes the key that names token `meant` in place of `key` (which
+/// spells the tail of `path`). When `meant` lies outside the group the key
+/// is written in, no edit of the key reaches it: the help names the token
+/// and its place instead of asking "did you mean …?", and there is no fix.
+fn suggest_key(d: &mut Diagnostic, key: &ast::TokenKey, path: &str, meant: Option<String>) {
+    let Some(m) = meant else { return };
+    match key_fix(key, path, &m) {
+        Some(f) => {
+            d.suggest(key.span, f);
+        }
+        None => {
+            let segs: Vec<&str> = path.split('.').collect();
+            let keep = segs.len().saturating_sub(key.segments.len().max(1));
+            let group = segs[..keep].join(".");
+            d.help = Some(format!(
+                "the closest token is `${m}`, which is outside group `{group}`"
+            ));
+        }
+    }
 }
 
 impl<'a> Tokens<'a> {
@@ -123,7 +165,7 @@ impl<'a> Tokens<'a> {
         module: usize,
         prefix: &str,
         items: &'a [ast::TokenEntry],
-        group: Option<(String, Span)>,
+        group: Option<(String, &'a ast::TokenKey)>,
         override_: bool,
         out: &mut Vec<usize>,
     ) {
@@ -142,6 +184,7 @@ impl<'a> Tokens<'a> {
                         owner,
                         path: path.clone(),
                         span: e.key.span,
+                        key: &e.key,
                         override_: ov,
                         group: group.clone(),
                         value: v,
@@ -154,7 +197,7 @@ impl<'a> Tokens<'a> {
                 }
                 ast::TokenBody::Group(b) => {
                     let g = if e.override_.is_some() && group.is_none() {
-                        Some((path.clone(), e.key.span))
+                        Some((path.clone(), &e.key))
                     } else {
                         group.clone()
                     };
@@ -313,14 +356,14 @@ impl<'a> Checker<'a> {
                         .iter()
                         .map(|t| self.defs[t.def.0 as usize].name.clone())
                         .collect();
-                    let help = Self::did_you_mean(&ext.name, &candidates);
+                    let fix = Self::closest(&ext.name, &candidates);
                     self.error(
                         "check::unknown_name",
                         format!("unknown token set `{}`", ext.name),
                         ext.span,
                         "not a `tokens` set",
                     )
-                    .help = help;
+                    .suggest_opt(ext.span, fix);
                 }
             }
         }
@@ -451,7 +494,7 @@ impl<'a> Checker<'a> {
                 }
             } else if inherited.is_none() && schema.is_none() {
                 // A misspelt override is an unknown name, never a new token.
-                if let Some((prefix, gspan)) = &entry.group {
+                if let Some((prefix, gkey)) = &entry.group {
                     let dotted = format!("{prefix}.");
                     let any = self.schema.tokens.keys().any(|p| p.starts_with(&dotted))
                         || self.tokens.by_path.keys().any(|p| {
@@ -463,34 +506,36 @@ impl<'a> Checker<'a> {
                         if !reported_groups.contains(prefix) {
                             reported_groups.push(prefix.clone());
                             let groups = self.token_groups(parent);
-                            let help = Self::did_you_mean(prefix, &groups);
-                            self.error(
+                            let meant = Self::closest(prefix, &groups);
+                            let d = self.error(
                                 "check::unknown_token",
                                 format!("`override {prefix}` overrides nothing"),
-                                *gspan,
+                                gkey.span,
                                 "no such token group",
-                            )
-                            .help = help.or_else(|| {
-                                Some("an override must name an existing token; drop `override` to add a new one".into())
-                            });
+                            );
+                            suggest_key(d, gkey, prefix, meant);
+                            if d.help.is_none() {
+                                d.help = Some("an override must name an existing token; drop `override` to add a new one".into());
+                            }
                         }
                         continue;
                     }
                 }
                 let candidates = self.override_candidates(parent);
-                let help = Self::did_you_mean(path, &candidates);
-                self.error(
+                let meant = Self::closest(path, &candidates);
+                let d = self.error(
                     "check::unknown_token",
                     format!("`override {path}` overrides nothing"),
                     entry.span,
                     "no such token",
-                )
-                .help = help.or_else(|| {
-                    Some(
+                );
+                suggest_key(d, entry.key, path, meant);
+                if d.help.is_none() {
+                    d.help = Some(
                         "an override must name an existing token; drop `override` to add a new one"
                             .into(),
-                    )
-                });
+                    );
+                }
             }
         }
     }
@@ -695,24 +740,28 @@ impl<'a> Checker<'a> {
             members.sort();
             members.dedup();
             let shown: Vec<String> = members.iter().take(4).map(|m| format!("`${m}`")).collect();
-            self.error(
+            let d = self.error(
                 "check::unknown_token",
                 format!("`${path}` is a group of tokens, not one token"),
                 span,
                 "a group",
-            )
-            .help = Some(format!("pick one: {}", shown.join(", ")));
+            );
+            d.help = Some(format!("pick one: {}", shown.join(", ")));
+            // Every member is a fix, none preferred.
+            for m in &members {
+                d.add_suggestion(span, format!("${m}"));
+            }
             return Ty::Error;
         }
         let candidates = self.tokens.all_paths(self.schema);
-        let help = suggest_path(path, &candidates);
+        let fix = suggest_path(path, &candidates).map(|m| format!("${m}"));
         self.error(
             "check::unknown_token",
             format!("unknown token `${path}`"),
             span,
             "not a token",
         )
-        .help = help;
+        .suggest_opt(span, fix);
         Ty::Error
     }
 
@@ -749,7 +798,7 @@ impl<'a> Checker<'a> {
             span,
             format!("read as `${path} - {}`", name.name),
         )
-        .help = Some(format!("did you mean `${meant}`?"));
+        .suggest(span, format!("${meant}"));
         Some(hir::Expr::error(span))
     }
 
@@ -787,14 +836,14 @@ impl<'a> Checker<'a> {
                         Some(self.token_ty(&path, e.key.span))
                     } else {
                         let candidates = self.tokens.all_paths(self.schema);
-                        let help = suggest_path(&path, &candidates);
-                        self.error(
+                        let meant = suggest_path(&path, &candidates);
+                        let d = self.error(
                             "check::unknown_token",
                             format!("`set` overrides `${path}`, which is not a token"),
                             e.key.span,
                             "not a token",
-                        )
-                        .help = help;
+                        );
+                        suggest_key(d, &e.key, &path, meant);
                         None
                     };
                     let value = self.token_value(v, want.as_ref(), &path);
@@ -837,11 +886,7 @@ impl<'a> Checker<'a> {
     }
 }
 
-/// Did-you-mean for token paths: compares the whole path, then its last
-/// segment within the same group.
+/// Did-you-mean for token paths: the closest whole path.
 fn suggest_path(path: &str, candidates: &[String]) -> Option<String> {
-    if let Some(s) = crate::diagnostic::suggest(path, candidates.iter().map(String::as_str)) {
-        return Some(format!("did you mean `${s}`?"));
-    }
-    None
+    crate::diagnostic::closest(path, candidates.iter().map(String::as_str))
 }

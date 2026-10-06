@@ -42,15 +42,16 @@ impl<'a> Checker<'a> {
                     );
                 }
             } else {
-                let help =
-                    suggest(&a.name.name, ["reset"]).map(|s| format!("did you mean `@{s}`?"));
+                // `@reet` → `@reset`, replacing the `@` and the name.
+                let at = Span::new(a.span.start, a.name.span.end);
+                let fix = suggest(&a.name.name, ["reset"]).map(|s| format!("@{s}"));
                 self.error(
                     "check::attribute",
                     format!("unknown attribute `@{}`", a.name.name),
                     a.span,
                     "not an attribute",
                 )
-                .help = help;
+                .suggest_opt(at, fix);
             }
         }
         reset

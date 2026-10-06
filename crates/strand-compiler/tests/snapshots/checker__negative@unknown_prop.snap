@@ -25,3 +25,6 @@ check::unknown_prop
  6 │ }
    ╰────
   help: did you mean `ellipsis`?
+
+fix [check::unknown_prop] unknown_prop.strand: `hieght` -> `height`
+fix [check::unknown_prop] unknown_prop.strand: `elipsis` -> `ellipsis`

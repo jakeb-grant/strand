@@ -256,6 +256,18 @@ impl Schema {
         self.docs.get(key).map(String::as_str)
     }
 
+    /// The doc of token `path`, or of the nearest group holding it
+    /// (`space.2` reads the doc of `space`).
+    pub fn token_doc(&self, path: &str) -> Option<&str> {
+        let mut p = path;
+        loop {
+            if let Some(d) = self.docs.get(&DocKey::Token(p.to_string())) {
+                return Some(d);
+            }
+            p = &p[..p.rfind('.')?];
+        }
+    }
+
     /// A service's record.
     pub fn service(&self, name: &str) -> Option<RecordId> {
         self.services.get(name).copied()
@@ -675,6 +687,67 @@ mod tests {
                 .is_some()
         );
         assert!(b.doc(&DocKey::Value("t".into())).is_some());
+    }
+
+    /// Hovers are generated from the schemas (design.md, "System
+    /// services"): every service, record member, function, method, value,
+    /// element, prop, event and token of the builtin schema has a doc.
+    #[test]
+    fn builtin_schema_is_documented() {
+        let s = Schema::builtin();
+        let mut missing = Vec::new();
+        let mut need = |k: DocKey| {
+            if s.doc(&k).is_none() {
+                missing.push(format!("{k:?}"));
+            }
+        };
+        for name in s.services.keys() {
+            need(DocKey::Type(name.clone()));
+        }
+        for r in &s.types.records {
+            need(DocKey::Type(r.name.clone()));
+            let member = |n: &str| DocKey::Member(r.name.clone(), n.to_string());
+            r.fields.iter().for_each(|f| need(member(&f.name)));
+            r.methods.iter().for_each(|m| need(member(&m.name)));
+            r.events.iter().for_each(|e| need(member(&e.name)));
+        }
+        for name in s.functions.keys() {
+            need(DocKey::Function(name.clone()));
+        }
+        for name in s.values.keys() {
+            need(DocKey::Value(name.clone()));
+        }
+        for (ty, ms) in &s.methods {
+            for m in ms {
+                need(DocKey::Method(ty.clone(), m.name.clone()));
+            }
+        }
+        for (name, e) in s.groups.iter().chain(&s.elements) {
+            need(DocKey::Element(name.clone()));
+            let prop = |n: String| DocKey::Prop(name.clone(), n);
+            for p in &e.props {
+                need(prop(p.name.clone()));
+                for q in &p.sub {
+                    need(prop(format!("{}.{}", p.name, q.name)));
+                }
+            }
+            e.events
+                .iter()
+                .for_each(|ev| need(prop(format!("on {}", ev.name))));
+            e.scope.iter().for_each(|(n, _)| need(prop(n.clone())));
+        }
+        for path in s.tokens.keys() {
+            if s.token_doc(path).is_none() {
+                missing.push(format!("token {path}"));
+            }
+        }
+        assert!(missing.is_empty(), "undocumented: {missing:#?}");
+        // A token reads its group's doc; its own comes first.
+        assert_eq!(
+            s.token_doc("space.2"),
+            s.doc(&DocKey::Token("space".into()))
+        );
+        assert_ne!(s.token_doc("surface.hi"), s.token_doc("surface"));
     }
 
     #[test]

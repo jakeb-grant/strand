@@ -535,20 +535,25 @@ impl<'a> Checker<'a> {
             _ if variant_help.is_some() => "no enum expected here".to_string(),
             _ => "not found".to_string(),
         };
-        let help = if variant_help.is_some() {
-            variant_help
-        } else if self.may_suggest() {
+        let hint = if variant_help.is_none() && self.may_suggest() {
             self.name_suggestion(&id.name, expected, field_base)
         } else {
             None
         };
-        self.error(
+        let d = self.error(
             "check::unknown_name",
             format!("unknown name `{}`", id.name),
             id.span,
             label,
-        )
-        .help = help;
+        );
+        d.help = variant_help;
+        match hint {
+            Some(NameHint::Fix(fix)) => {
+                d.suggest(id.span, fix);
+            }
+            Some(NameHint::Help(help)) => d.help = Some(help),
+            None => {}
+        }
     }
 
     /// `screen` outside a `bar`: the elements whose blocks bring `name`
@@ -598,7 +603,7 @@ impl<'a> Checker<'a> {
         })
     }
 
-    /// Did-you-mean for an unknown name: the variants of the enum the
+    /// The name an unknown name was meant to be: the variants of the enum the
     /// position expects come first (`edge: tp` → `top`), then every name
     /// in scope, then other files' exports (`dnd` → `toasts.dnd`).
     fn name_suggestion(
@@ -606,7 +611,7 @@ impl<'a> Checker<'a> {
         word: &str,
         expected: Option<&Ty>,
         field_base: bool,
-    ) -> Option<String> {
+    ) -> Option<NameHint> {
         let mut variants: Vec<&str> = Vec::new();
         let mut add = |t: &Ty| {
             if let Ty::Enum(e) = t.non_null() {
@@ -628,19 +633,20 @@ impl<'a> Checker<'a> {
             );
         }
         if let Some(v) = suggest(word, variants) {
-            return Some(format!("did you mean `{v}`?"));
+            return Some(NameHint::Fix(v.to_string()));
         }
-        // Another file's private declaration of exactly this name.
+        // Another file's private declaration of exactly this name: a help,
+        // not a fix, since the edit is `export` in the other file.
         if !field_base && let Some(help) = self.private_elsewhere(word) {
-            return Some(help);
+            return Some(NameHint::Help(help));
         }
         if let Some(v) = suggest(word, self.value_candidates(field_base)) {
-            return Some(format!("did you mean `{v}`?"));
+            return Some(NameHint::Fix(v.to_string()));
         }
         if field_base {
             return None;
         }
-        self.export_suggestion(word)
+        self.export_suggestion(word).map(NameHint::Fix)
     }
 
     /// `priv` read bare while another file declares it without `export`.
@@ -830,7 +836,7 @@ impl<'a> Checker<'a> {
             }
             None => {
                 let def = self.types.enum_(e);
-                let help = Self::did_you_mean(&name.name, &def.variants);
+                let fix = Self::closest(&name.name, &def.variants);
                 let en = def.name.clone();
                 self.error(
                     "check::unknown_field",
@@ -838,7 +844,7 @@ impl<'a> Checker<'a> {
                     name.span,
                     "not a variant",
                 )
-                .help = help;
+                .suggest_opt(name.span, fix);
                 hir::Expr::error(span)
             }
         }
@@ -884,14 +890,14 @@ impl<'a> Checker<'a> {
                     .filter(|(_, d)| self.defs[d.0 as usize].exported)
                     .map(|(n, _)| n.clone())
                     .collect();
-                let help = Self::did_you_mean(&name.name, &candidates);
+                let fix = Self::closest(&name.name, &candidates);
                 self.error(
                     "check::unknown_field",
                     format!("`{}` exports no `{}`", file.name, name.name),
                     name.span,
                     "not exported there",
                 )
-                .help = help;
+                .suggest_opt(name.span, fix);
                 hir::Expr::error(span)
             }
         }
@@ -1087,14 +1093,14 @@ impl<'a> Checker<'a> {
             .help = Some(format!("write `{}(…)`", name.name));
             return;
         }
-        let help = Self::did_you_mean(&name.name, candidates);
+        let fix = Self::closest(&name.name, candidates);
         self.error(
             "check::unknown_field",
             format!("{owner} has no field `{}`", name.name),
             name.span,
             "unknown field",
         )
-        .help = help;
+        .suggest_opt(name.span, fix);
     }
 
     /// Methods the schema gives a builtin type.
@@ -1285,14 +1291,14 @@ impl<'a> Checker<'a> {
                 })
                 .map(|(n, _)| n.clone()),
         );
-        let help = Self::did_you_mean(name, &candidates);
+        let fix = Self::closest(name, &candidates);
         self.error(
             "check::unknown_name",
             format!("unknown function `{name}`"),
             id.span,
             "not found",
         )
-        .help = help;
+        .suggest_opt(id.span, fix);
         for a in args {
             self.expr(&a.value, None);
         }
@@ -1507,19 +1513,17 @@ impl<'a> Checker<'a> {
                         let names: Vec<String> = sig
                             .params
                             .iter()
-                            .filter(|p| !p.name.is_empty())
+                            .filter(|p| !p.variadic && !p.name.is_empty())
                             .map(|p| p.name.clone())
                             .collect();
-                        let help = Self::did_you_mean(&n.name, &names).or_else(|| {
-                            (!names.is_empty()).then(|| format!("it takes {}", list_names(&names)))
-                        });
-                        self.error(
+                        let given = given_args(sig, args);
+                        let d = self.error(
                             "check::unknown_param",
                             format!("{what} has no parameter `{}`", n.name),
                             n.span,
                             "unknown parameter",
-                        )
-                        .help = help;
+                        );
+                        Self::unknown_param_fixes(d, n.span, &n.name, &names, &given);
                         None
                     }
                 },
@@ -1738,14 +1742,14 @@ impl<'a> Checker<'a> {
                 } else {
                     let candidates: Vec<String> = rec.member_names().map(String::from).collect();
                     let owner = path_text(recv_ast).unwrap_or_else(|| rec.name.clone());
-                    let help = Self::did_you_mean(n, &candidates);
+                    let fix = Self::closest(n, &candidates);
                     self.error(
                         "check::unknown_field",
                         format!("`{owner}` has no method `{n}`"),
                         name.span,
                         "unknown method",
                     )
-                    .help = help;
+                    .suggest_opt(name.span, fix);
                     None
                 }
             }
@@ -1757,14 +1761,14 @@ impl<'a> Checker<'a> {
                         let candidates: Vec<String> =
                             methods.iter().map(|m| m.name.clone()).collect();
                         let shown = self.show(t);
-                        let help = Self::did_you_mean(n, &candidates);
+                        let fix = Self::closest(n, &candidates);
                         self.error(
                             "check::unknown_field",
                             format!("`{shown}` has no method `{n}`"),
                             name.span,
                             "unknown method",
                         )
-                        .help = help;
+                        .suggest_opt(name.span, fix);
                         None
                     }
                 }
@@ -1834,14 +1838,14 @@ impl<'a> Checker<'a> {
                 .filter(|m| m.kind == crate::schema::MemberKind::Method)
                 .map(|m| m.name.clone())
                 .collect();
-            let help = Self::did_you_mean(n, &candidates);
+            let fix = Self::closest(n, &candidates);
             self.error(
                 "check::unknown_field",
                 format!("lists have no method `{n}`"),
                 name.span,
                 "unknown method",
             )
-            .help = help;
+            .suggest_opt(name.span, fix);
             for a in args {
                 self.expr(&a.value, None);
             }
@@ -2550,7 +2554,7 @@ impl<'a> Checker<'a> {
                     }
                     None => {
                         let def = self.types.enum_(e);
-                        let help = Self::did_you_mean(&vname.name, &def.variants);
+                        let fix = Self::closest(&vname.name, &def.variants);
                         let en = def.name.clone();
                         self.error(
                             "check::unknown_name",
@@ -2558,7 +2562,7 @@ impl<'a> Checker<'a> {
                             vname.span,
                             "not a variant",
                         )
-                        .help = help;
+                        .suggest_opt(vname.span, fix);
                         hir::Pattern::Error
                     }
                 }
@@ -2940,9 +2944,39 @@ fn accepts_int(t: &Ty) -> bool {
     }
 }
 
-fn list_names(names: &[String]) -> String {
-    let quoted: Vec<String> = names.iter().map(|n| format!("`{n}`")).collect();
-    join_labels(&quoted)
+/// What an unknown name's diagnostic offers: a replacement for the name
+/// (a quick fix), or only a help line.
+enum NameHint {
+    Fix(String),
+    Help(String),
+}
+
+/// The parameters of `sig` that `args` set: by name, by `from`, or by
+/// position (in order, past the named ones).
+fn given_args(sig: &FnSig, args: &[ast::Arg]) -> Vec<String> {
+    let mut given: Vec<String> = args
+        .iter()
+        .filter_map(|a| match &a.kind {
+            ArgKind::Named(n) => Some(n.name.clone()),
+            ArgKind::From(_) => Some("from".to_string()),
+            ArgKind::Positional => None,
+        })
+        .collect();
+    let mut next = 0;
+    for _ in args
+        .iter()
+        .filter(|a| matches!(a.kind, ArgKind::Positional))
+    {
+        while next < sig.params.len() && given.contains(&sig.params[next].name) {
+            next += 1;
+        }
+        let Some(p) = sig.params.get(next) else { break };
+        given.push(p.name.clone());
+        if !p.variadic {
+            next += 1;
+        }
+    }
+    given
 }
 
 /// `a, b or c` of labels already formatted.

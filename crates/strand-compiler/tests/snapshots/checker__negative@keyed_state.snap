@@ -12,3 +12,5 @@ check::unknown_field
    ·                        ╰── not a field of the items
    ╰────
   help: did you mean `app`?
+
+fix [check::unknown_field] keyed_state.strand: `ap` -> `app`

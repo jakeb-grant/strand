@@ -1,6 +1,6 @@
 //! Declarations, tree items and handler statements.
 
-use crate::diagnostic::{Diagnostic, did_you_mean, suggest};
+use crate::diagnostic::{Diagnostic, closest, suggest};
 
 use super::super::ast::*;
 use super::super::span::Span;
@@ -203,8 +203,9 @@ impl Parser<'_> {
             return kind;
         }
         if ctx == Ctx::Service {
-            let help = did_you_mean(word, ["permit"]);
-            self.expected_with("a field such as `name: text = Prop`", help);
+            let fix = closest(word, ["permit"]);
+            let at = self.cur().span;
+            self.expected_suggesting("a field such as `name: text = Prop`", at, fix);
             self.bump();
             return ItemKind::Error;
         }
@@ -220,7 +221,7 @@ impl Parser<'_> {
                         format!("expected a declaration, found `{word}`"),
                     )
                     .with_label(t.span, "unknown declaration")
-                    .with_help(format!("did you mean `{kw}`?")),
+                    .with_suggestion(t.span, kw),
                 );
                 if let Some(kind) = self.keyword_item(ctx, t, kw) {
                     return kind;
@@ -239,7 +240,7 @@ impl Parser<'_> {
                         format!("expected an element or handler, found `{word}`"),
                     )
                     .with_label(t.span, "its block holds statements, so this is a handler")
-                    .with_help(format!("did you mean `{kw}`?")),
+                    .with_suggestion(t.span, kw),
                 );
                 if let Some(kind) = self.keyword_item(ctx, t, kw) {
                     return kind;
@@ -555,9 +556,10 @@ impl Parser<'_> {
         if report_typo && !self.at_item_end() && !spaced_call && !cannot_follow_keyword(next) {
             // `stat x = 0` reads as element `stat`; say what was meant.
             if let Some(kw) = keyword_slip(&kind.name, TREE_KEYWORDS) {
-                self.expected_with(
+                self.expected_suggesting(
                     "`;` or a line break after this element",
-                    Some(format!("did you mean `{kw}`?")),
+                    kind.span,
+                    Some(kw.to_string()),
                 );
             }
         }
@@ -612,7 +614,8 @@ impl Parser<'_> {
             .map(|k| format!("`{k}`"))
             .collect::<Vec<_>>()
             .join(" or ");
-        self.expected_with(&list, Some(format!("did you mean `{kw}`?")));
+        let at = self.cur().span;
+        self.expected_suggesting(&list, at, Some(kw.to_string()));
         Some(kw)
     }
 
@@ -735,7 +738,7 @@ impl Parser<'_> {
                 format!("expected `else`, found `{word}`"),
             )
             .with_label(t.span, "after an `if` body")
-            .with_help("did you mean `else`?"),
+            .with_suggestion(t.span, "else"),
         );
         true
     }
@@ -790,11 +793,11 @@ impl Parser<'_> {
             }
             let params = self.at(K::LParen).then(|| self.params());
             if params.is_none() && !self.at(K::LBrace) && self.same_line() {
-                let help = (path.len() == 1)
-                    .then(|| did_you_mean(&path[0].name, ["change"]))
+                let fix = (path.len() == 1)
+                    .then(|| closest(&path[0].name, ["change"]))
                     .flatten();
-                if help.is_some() {
-                    self.expected_with("`{` to start the handler", help);
+                if fix.is_some() {
+                    self.expected_suggesting("`{` to start the handler", path[0].span, fix);
                 }
             }
             Event::Named { path, params }
@@ -814,9 +817,10 @@ impl Parser<'_> {
             self.bump();
             while_ = Some(self.expr());
         } else if self.same_line() && self.at(K::Ident) {
-            let help = did_you_mean(self.text(self.cur()), ["while"]);
-            if help.is_some() {
-                self.expected_with("`while` or `{`", help);
+            let fix = closest(self.text(self.cur()), ["while"]);
+            if fix.is_some() {
+                let at = self.cur().span;
+                self.expected_suggesting("`while` or `{`", at, fix);
                 self.bump();
                 while_ = Some(self.expr());
             }
@@ -1137,7 +1141,7 @@ impl Parser<'_> {
                         format!("expected a token name or `override`, found `{word}`"),
                     )
                     .with_label(t.span, "followed by another token name")
-                    .with_help("did you mean `override`?"),
+                    .with_suggestion(t.span, "override"),
                 );
                 override_ = Some(t.span);
             }
@@ -1222,10 +1226,11 @@ impl Parser<'_> {
         loop {
             let start = self.cur().span.start;
             if !(self.at_kw("tokens") || self.at_kw("palette")) {
-                let help = (self.at(K::Ident))
-                    .then(|| did_you_mean(self.text(self.cur()), ["tokens", "palette"]))
+                let fix = (self.at(K::Ident))
+                    .then(|| closest(self.text(self.cur()), ["tokens", "palette"]))
                     .flatten();
-                self.expected_with("`tokens` or `palette`", help);
+                let at = self.cur().span;
+                self.expected_suggesting("`tokens` or `palette`", at, fix);
                 if !(self.at(K::Ident) && self.same_line()) {
                     break;
                 }
@@ -1257,9 +1262,7 @@ impl Parser<'_> {
                 format!("unknown service source `{}`", kind.name),
             )
             .with_label(kind.span, "sources are dbus, file, listen and poll");
-            if let Some(h) = did_you_mean(&kind.name, SOURCES.iter().copied()) {
-                d = d.with_help(h);
-            }
+            d.suggest_opt(kind.span, closest(&kind.name, SOURCES.iter().copied()));
             self.push_error(d);
         }
         let mut args = Vec::new();
@@ -1304,9 +1307,7 @@ impl Parser<'_> {
                             format!("unknown bus `{}`", id.name),
                         )
                         .with_label(id.span, "the bus is `system` or `session`");
-                        if let Some(h) = did_you_mean(&id.name, ["system", "session"]) {
-                            d = d.with_help(h);
-                        }
+                        d.suggest_opt(id.span, closest(&id.name, ["system", "session"]));
                         self.push_error(d);
                         true
                     }
@@ -1447,8 +1448,9 @@ impl Parser<'_> {
             && let ExprKind::Name(id) = &target.kind
         {
             let kws = STMT_KEYWORDS.iter().copied().chain(["else"]);
-            if let Some(h) = did_you_mean(&id.name, kws) {
-                self.expected_with("`;` or a line break after this statement", Some(h));
+            if let Some(kw) = closest(&id.name, kws) {
+                let at = id.span;
+                self.expected_suggesting("`;` or a line break after this statement", at, Some(kw));
             }
         }
         StmtKind::Expr(target)

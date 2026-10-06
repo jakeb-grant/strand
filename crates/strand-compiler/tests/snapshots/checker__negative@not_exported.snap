@@ -54,3 +54,5 @@ Error:
    ·       ──┬──
    ·         ╰── declared here
    ╰────
+
+fix [check::unknown_field] bar.strand: `lok` -> `look`

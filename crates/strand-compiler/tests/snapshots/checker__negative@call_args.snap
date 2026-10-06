@@ -34,7 +34,7 @@ check::unknown_param
    ·                                 ╰── unknown parameter
  5 │ let c = pct("half")
    ╰────
-  help: it takes `curve` and `duration`
+  help: did you mean `duration`?
 
 check::type_mismatch
 
@@ -68,3 +68,5 @@ check::type_mismatch
     ·                                    ╰── cannot be called
     ╰────
   help: `pct` in scope hides the builtin `pct`; rename it to call the builtin
+
+fix [check::unknown_param] call_args.strand: `time` -> `duration`

@@ -37,3 +37,10 @@ check::unknown_token
  6 │ }
    ╰────
   help: pick one: `$space.1`, `$space.2`, `$space.3`, `$space.4`
+
+fix [check::unknown_token] unknown_token.strand: `$fg-muted` -> `$fg.muted`
+fix [check::unknown_token] unknown_token.strand: `$surfce` -> `$surface`
+fix [check::unknown_token] unknown_token.strand: `$space` -> `$space.1`
+fix [check::unknown_token] unknown_token.strand: `$space` -> `$space.2`
+fix [check::unknown_token] unknown_token.strand: `$space` -> `$space.3`
+fix [check::unknown_token] unknown_token.strand: `$space` -> `$space.4`

@@ -36,3 +36,7 @@ check::unknown_token
    ·                               ╰── no such token
    ╰────
   help: did you mean `Toast.radius`?
+
+fix [check::unknown_token] misspelt_override.strand: `spcae` -> `space`
+fix [check::unknown_token] misspelt_override.strand: `fg.mutde` -> `fg.muted`
+fix [check::unknown_token] misspelt_override.strand: `Toast.raduis` -> `Toast.radius`

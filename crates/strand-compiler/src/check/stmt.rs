@@ -532,23 +532,22 @@ impl<'a> Checker<'a> {
                     None => {
                         let candidates: Vec<String> =
                             schema.events.iter().map(|e| e.name.clone()).collect();
-                        let help = Self::did_you_mean(name, &candidates).or_else(|| {
-                            Some(format!(
-                                "`{kind}` has {}",
-                                candidates
-                                    .iter()
-                                    .map(|c| format!("`{c}`"))
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            ))
-                        });
-                        self.error(
+                        let fix = Self::closest(name, &candidates);
+                        let d = self.error(
                             "check::unknown_event",
                             format!("`{kind}` has no event `{name}`"),
                             one.span,
                             "unknown event",
-                        )
-                        .help = help;
+                        );
+                        d.help = Some(format!(
+                            "`{kind}` has {}",
+                            candidates
+                                .iter()
+                                .map(|c| format!("`{c}`"))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ));
+                        d.suggest_opt(one.span, fix);
                         None
                     }
                 }
@@ -564,14 +563,14 @@ impl<'a> Checker<'a> {
                 });
                 let Some(r) = rec else {
                     let candidates: Vec<String> = self.schema.services.keys().cloned().collect();
-                    let help = Self::did_you_mean(&svc.name, &candidates);
+                    let fix = Self::closest(&svc.name, &candidates);
                     self.error(
                         "check::unknown_name",
                         format!("unknown service `{}`", svc.name),
                         svc.span,
                         "not a service",
                     )
-                    .help = help;
+                    .suggest_opt(svc.span, fix);
                     return None;
                 };
                 self.add_ref(svc.span, Target::Service(svc.name.clone()));
@@ -587,14 +586,14 @@ impl<'a> Checker<'a> {
                     None => {
                         let candidates: Vec<String> =
                             record.events.iter().map(|e| e.name.clone()).collect();
-                        let help = Self::did_you_mean(&ev.name, &candidates);
+                        let fix = Self::closest(&ev.name, &candidates);
                         self.error(
                             "check::unknown_event",
                             format!("`{}` has no event `{}`", svc.name, ev.name),
                             ev.span,
                             "unknown event",
                         )
-                        .help = help;
+                        .suggest_opt(ev.span, fix);
                         None
                     }
                 }

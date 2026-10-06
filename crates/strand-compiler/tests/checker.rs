@@ -142,7 +142,8 @@ fn negative_corpus() {
             .map(|(n, t)| (n.as_str(), t.clone()))
             .collect();
         let (out, map) = compile_files(&borrowed);
-        let rendered = render(&out.diagnostics, &map, Style::Plain);
+        let mut rendered = render(&out.diagnostics, &map, Style::Plain);
+        rendered.push_str(&fixes(&out.diagnostics, &map));
         let mut got: Vec<String> = out.diagnostics.iter().map(|d| d.code.to_string()).collect();
         got.sort();
         got.dedup();
@@ -163,6 +164,36 @@ fn negative_corpus() {
     for (name, rendered) in snapshots {
         insta::assert_snapshot!(format!("negative@{name}"), rendered);
     }
+}
+
+/// The suggestions (quick fixes) of `diags`, one line each, checking that
+/// each lies in its diagnostic's file on whole characters and that a
+/// "did you mean `x`?" help comes with `x` as its one fix (the LSP reads
+/// the fixes, never the help).
+fn fixes(diags: &[strand_compiler::diagnostic::Diagnostic], map: &SourceMap) -> String {
+    let mut out = String::new();
+    for d in diags {
+        let meant = d
+            .help
+            .as_deref()
+            .and_then(|h| h.strip_prefix("did you mean `")?.strip_suffix("`?"));
+        if let Some(m) = meant {
+            assert_eq!(d.suggestions.len(), 1, "no single fix for {d:?}");
+            assert_eq!(d.suggestions[0].replacement, m, "{d:?}");
+        }
+        for f in &d.suggestions {
+            assert_eq!(f.file, d.file(), "{d:?}");
+            let file = map.get(f.file).unwrap();
+            let text = file.text.get(f.span.start as usize..f.span.end as usize);
+            let text = text.unwrap_or_else(|| panic!("fix span off the text: {d:?}"));
+            assert!(!text.is_empty() && !text.contains('\n'), "{d:?}");
+            out.push_str(&format!(
+                "fix [{}] {}: `{text}` -> `{}`\n",
+                d.code, file.name, f.replacement
+            ));
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -662,4 +693,73 @@ fn literals_take_the_type_their_position_expects() {
     let p = &out.program;
     assert_eq!(show(p, &find_let(p, "cols").value.ty), "int");
     assert_eq!(show(p, &find_let(p, "half").value.ty), "float");
+}
+
+/// An override whose closest token lies in another group cannot be fixed
+/// by editing its key: the help names that token and offers no fix, and
+/// never reads as a did-you-mean with nothing to apply.
+#[test]
+fn an_override_near_another_group_names_it() {
+    let src = "tokens base { fg.muted: $fg.alpha(0.65); ink { x: 1px } }\n\
+               tokens compact extends base { override ink { muted: 2px } }\n";
+    let (out, _) = compile_files(&[("t.strand", src.to_string())]);
+    let d = out
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "check::unknown_token")
+        .unwrap_or_else(|| panic!("{:?}", out.diagnostics));
+    assert_eq!(
+        d.help.as_deref(),
+        Some("the closest token is `$fg.muted`, which is outside group `ink`"),
+        "{d:?}"
+    );
+    assert!(d.suggestions.is_empty(), "{d:?}");
+}
+
+/// design.md "What you see" #2: a call still passing a parameter that was
+/// renamed reads `bar.strand:12: unknown prop "expanded"; did you mean
+/// "open"?`, and proposes `open` as the fix.
+#[test]
+fn renamed_parameter_reads_as_the_design_shows() {
+    let src = "component Calendar(open: bool = false, day: int = 1) { col { } }\n\
+               component Bar(d: int) {\n  Calendar {\n    day: d\n    expanded: true\n  }\n}\n";
+    let (out, map) = compile_files(&[("bar.strand", src.to_string())]);
+    let short = strand_compiler::diagnostic::render_short(&out.diagnostics, &map);
+    assert_eq!(
+        short,
+        "bar.strand:5:5: error[check::unknown_param]: unknown prop \"expanded\"; did you mean \"open\"?\n"
+    );
+    let fix = &out.diagnostics[0].suggestions;
+    assert_eq!(fix.len(), 1);
+    assert_eq!(fix[0].replacement, "open");
+    assert_eq!(fix[0].span.text(src), "expanded");
+}
+
+/// An unknown named argument of a function call: its fixes are the
+/// parameters that call does not set yet, read from the call itself.
+#[test]
+fn unknown_named_arguments_offer_the_parameters_left() {
+    let fixes = |src: &str| {
+        let (out, _) = compile_files(&[("a.strand", src.to_string())]);
+        let d = out
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "check::unknown_param")
+            .unwrap_or_else(|| panic!("{:?}", out.diagnostics));
+        let names: Vec<String> = d
+            .suggestions
+            .iter()
+            .map(|s| s.replacement.clone())
+            .collect();
+        (d.help.clone().unwrap_or_default(), names)
+    };
+    let (help, names) = fixes("fn f(a: int, b: int) -> int { a + b }\nlet x = f(a: 1, zzz: 2)\n");
+    assert_eq!(
+        (help.as_str(), names),
+        ("did you mean `b`?", vec!["b".to_string()])
+    );
+    let (help, names) =
+        fixes("fn f(a: int, b: int, c: int) -> int { a + b + c }\nlet x = f(1, zzz: 2)\n");
+    assert_eq!(help, "it takes `a`, `b` and `c`");
+    assert_eq!(names, vec!["b".to_string(), "c".to_string()]);
 }

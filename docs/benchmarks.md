@@ -253,7 +253,7 @@ The bench is not gated in CI; the scaling is. `crates/strand-core/tests/keyed_sc
 runs in `cargo test` and fails if lookups or diffs regress to scans:
 hash plus `eq` calls per row of `keyed_diff` and `keyed_memo` at 2,000 and
 16,000 rows (update, insert + remove, reversed, shuffled: 1.0-4.1 per row
-measured, gate 8), key work per `get`/`index_of`/`contains_key` (gate 10,
+measured, gate 8), key work per `get`/`index_of`/`contains_key` (mean gate 8, 8 and 2.5, each lookup at most 24,
 also with every index entry stale by one), and a shuffled `keyed_diff`'s
 time at 16,000 rows over 2,000 (best of 7: about 10x measured, gate 32x;
 O(n²) is 64x). A diff is O(n) in key work for every shape and O(n) in

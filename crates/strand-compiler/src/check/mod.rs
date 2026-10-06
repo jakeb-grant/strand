@@ -1052,11 +1052,55 @@ impl<'a> Checker<'a> {
                 *exports.iter().find(|(_, n)| *n == name)?
             }
         };
-        Some(format!("did you mean `{file}.{name}`?"))
+        Some(format!("{file}.{name}"))
     }
 
-    pub fn did_you_mean(word: &str, candidates: &[String]) -> Option<String> {
-        suggest(word, candidates.iter().map(String::as_str)).map(|s| format!("did you mean `{s}`?"))
+    /// The fixes for an unknown parameter `name` at `span` of a call taking
+    /// `params`, `given` the parameters the call already sets: "did you
+    /// mean `x`?" for the closest parameter left (then the closest of all),
+    /// or for the only one left (design.md "What you see" #2: `expanded`
+    /// left at a call after the parameter became `open`). Otherwise the
+    /// help lists the parameters and each one left is a choice.
+    pub fn unknown_param_fixes(
+        d: &mut Diagnostic,
+        span: Span,
+        name: &str,
+        params: &[String],
+        given: &[String],
+    ) {
+        let open: Vec<String> = params
+            .iter()
+            .filter(|p| !given.contains(p))
+            .cloned()
+            .collect();
+        let near = Self::closest(name, &open).or_else(|| Self::closest(name, params));
+        if let Some(s) = near {
+            d.suggest(span, s);
+            return;
+        }
+        if let [only] = open.as_slice() {
+            d.suggest(span, only.clone());
+            return;
+        }
+        if !params.is_empty() {
+            let quoted: Vec<String> = params.iter().map(|n| format!("`{n}`")).collect();
+            d.help = Some(match quoted.as_slice() {
+                [init @ .., last] if !init.is_empty() => {
+                    format!("it takes {} and {last}", init.join(", "))
+                }
+                _ => format!("it takes {}", quoted.join(", ")),
+            });
+        }
+        for p in open {
+            d.add_suggestion(span, p);
+        }
+    }
+
+    /// The closest of `candidates` to `word`, for
+    /// [`Diagnostic::suggest_opt`] ("did you mean `x`?" with `x` as the
+    /// quick fix).
+    pub fn closest(word: &str, candidates: &[String]) -> Option<String> {
+        suggest(word, candidates.iter().map(String::as_str)).map(str::to_string)
     }
 
     // -----------------------------------------------------------------------
@@ -1136,14 +1180,18 @@ impl<'a> Checker<'a> {
                 candidates.extend(self.schema.aliases.keys().cloned());
                 candidates.extend(self.schema.opaques.keys().cloned());
                 let written = name.join(".");
-                let help = Self::did_you_mean(&written, &candidates);
-                let d = self.error(
+                let fix = Self::closest(&written, &candidates);
+                let at = match (path.first(), path.last()) {
+                    (Some(a), Some(b)) => Span::new(a.span.start, b.span.end),
+                    _ => span,
+                };
+                self.error(
                     "check::unknown_type",
                     format!("unknown type `{written}`"),
                     span,
                     "not a type",
-                );
-                d.help = help;
+                )
+                .suggest_opt(at, fix);
                 Ty::Error
             }
         }

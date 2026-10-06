@@ -32,6 +32,16 @@ pub struct Label {
     pub primary: bool,
 }
 
+/// A replacement a diagnostic proposes: `replacement` for the text at
+/// `span` in `file`, such as `critical` for a misspelt `critcal`. Editors
+/// offer each one as a quick fix, so tools never parse the help text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Suggestion {
+    pub file: FileId,
+    pub span: Span,
+    pub replacement: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Diagnostic {
     pub severity: Severity,
@@ -41,6 +51,10 @@ pub struct Diagnostic {
     pub labels: Vec<Label>,
     /// A fix, usually "did you mean `x`?".
     pub help: Option<String>,
+    /// The replacements the diagnostic proposes, as data: one for a
+    /// "did you mean `x`?" help ([`Diagnostic::suggest`]), or several
+    /// choices (the parameters a call does not give yet).
+    pub suggestions: Vec<Suggestion>,
 }
 
 impl Diagnostic {
@@ -51,6 +65,7 @@ impl Diagnostic {
             message: message.into(),
             labels: Vec::new(),
             help: None,
+            suggestions: Vec::new(),
         }
     }
 
@@ -121,11 +136,49 @@ impl Diagnostic {
         for l in &mut self.labels {
             l.file = file;
         }
+        for s in &mut self.suggestions {
+            s.file = file;
+        }
         self
     }
 
     pub fn with_help(mut self, help: impl Into<String>) -> Self {
         self.help = Some(help.into());
+        self
+    }
+
+    /// Proposes `replacement` for the text at `span`, in the primary
+    /// label's file, and sets the help to "did you mean `replacement`?".
+    pub fn suggest(&mut self, span: Span, replacement: impl Into<String>) -> &mut Self {
+        let replacement = replacement.into();
+        self.help = Some(format!("did you mean `{replacement}`?"));
+        self.suggestions.clear();
+        self.add_suggestion(span, replacement)
+    }
+
+    /// [`Diagnostic::suggest`] when there is a suggestion.
+    pub fn suggest_opt(&mut self, span: Span, replacement: Option<String>) -> &mut Self {
+        if let Some(r) = replacement {
+            self.suggest(span, r);
+        }
+        self
+    }
+
+    /// [`Diagnostic::suggest`] for builders.
+    pub fn with_suggestion(mut self, span: Span, replacement: impl Into<String>) -> Self {
+        self.suggest(span, replacement);
+        self
+    }
+
+    /// Adds `replacement` for the text at `span` as one of several
+    /// choices, leaving the help alone.
+    pub fn add_suggestion(&mut self, span: Span, replacement: impl Into<String>) -> &mut Self {
+        let file = self.primary().map(|l| l.file).unwrap_or_default();
+        self.suggestions.push(Suggestion {
+            file,
+            span,
+            replacement: replacement.into(),
+        });
         self
     }
 
@@ -249,12 +302,10 @@ fn plausible_typo(a: &str, b: &str) -> bool {
     sub(a, b) || sub(b, a) || sorted(a) == sorted(b)
 }
 
-/// Formats "did you mean `x`?" if a candidate is close enough.
-pub fn did_you_mean<'a>(
-    word: &str,
-    candidates: impl IntoIterator<Item = &'a str>,
-) -> Option<String> {
-    suggest(word, candidates).map(|s| format!("did you mean `{s}`?"))
+/// The closest candidate to `word` as an owned name, for
+/// [`Diagnostic::suggest_opt`].
+pub fn closest<'a>(word: &str, candidates: impl IntoIterator<Item = &'a str>) -> Option<String> {
+    suggest(word, candidates).map(str::to_string)
 }
 
 /// How [`render`] draws.
@@ -494,8 +545,12 @@ pub fn render(diags: &[Diagnostic], map: &SourceMap, style: Style) -> String {
     out
 }
 
-/// One line per diagnostic: `file:line:col: error[code]: message`, at the
-/// primary label.
+/// One line per diagnostic: `file:line:col: error[code]: message; help`,
+/// at the primary label. This is the form design.md quotes for a held-back
+/// save (`bar.strand:12: unknown prop "expanded"; did you mean "open"?`),
+/// with the column added: the help follows a `; ` and names quoted in
+/// backticks for the caret render are double-quoted, as plain prose on one
+/// line reads.
 pub fn render_short(diags: &[Diagnostic], map: &SourceMap) -> String {
     let mut indexes: std::collections::HashMap<FileId, LineIndex> = Default::default();
     let mut out = String::new();
@@ -514,13 +569,44 @@ pub fn render_short(diags: &[Diagnostic], map: &SourceMap) -> String {
         };
         out.push_str(&format!(
             "{name}:{line}:{col}: {sev}[{}]: {}",
-            d.code, d.message
+            d.code,
+            plain_quotes(&d.message)
         ));
         if let Some(help) = &d.help {
-            out.push_str(&format!(" ({help})"));
+            out.push_str("; ");
+            out.push_str(&plain_quotes(help));
         }
         out.push('\n');
     }
+    out
+}
+
+/// `` `name` `` becomes `"name"` for the one-line form. A quoted span that
+/// already holds a `"` (a text literal) keeps its backticks, and an
+/// unpaired backtick is left as written.
+fn plain_quotes(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(open) = rest.find('`') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('`') else {
+            out.push_str(&rest[open..]);
+            return out;
+        };
+        let body = &after[..close];
+        if body.contains('"') {
+            out.push('`');
+            out.push_str(body);
+            out.push('`');
+        } else {
+            out.push('"');
+            out.push_str(body);
+            out.push('"');
+        }
+        rest = &after[close + 1..];
+    }
+    out.push_str(rest);
     out
 }
 
@@ -563,8 +649,15 @@ mod tests {
         let out = render_short(&[d], &map);
         assert_eq!(
             out,
-            "bar.strand:2:3: error[syntax::expected]: expected `}` (did you mean `x`?)\n"
+            "bar.strand:2:3: error[syntax::expected]: expected \"}\"; did you mean \"x\"?\n"
         );
+    }
+
+    #[test]
+    fn short_render_keeps_quoted_text_literals() {
+        assert_eq!(plain_quotes("`a` and `b`"), "\"a\" and \"b\"");
+        assert_eq!(plain_quotes("got `\"x\"`"), "got `\"x\"`");
+        assert_eq!(plain_quotes("one ` left"), "one ` left");
     }
 
     #[test]
@@ -582,7 +675,7 @@ mod tests {
         assert!(out.contains("first declared here"), "{out}");
         assert_eq!(
             render_short(&[d], &map),
-            "b.strand:2:7: error[check::redeclared]: `volume` is declared twice\n"
+            "b.strand:2:7: error[check::redeclared]: \"volume\" is declared twice\n"
         );
     }
 

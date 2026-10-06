@@ -56,3 +56,5 @@ check::type_mismatch
     ·               ─┬─
     ·                ╰── this is `text`
     ╰────
+
+fix [check::unknown_name] overload_lazy.strand: `batery` -> `battery`

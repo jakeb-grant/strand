@@ -24,11 +24,13 @@
 //!   the loader (largest consistent set, last good tree and its cache).
 //! - [`instantiate`]: mounts a program on a `strand-core` runtime and
 //!   emits one `strand_scene::SceneDiff` per tick.
+//! - [`fmt`]: the formatter behind `strand fmt` and LSP formatting.
 //!
 //! [`compile`] runs the front end over every file of a config.
 
 pub mod check;
 pub mod diagnostic;
+pub mod fmt;
 pub mod hir;
 pub mod instantiate;
 pub mod lower;

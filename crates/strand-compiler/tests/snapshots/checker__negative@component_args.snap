@@ -4,12 +4,12 @@ expression: rendered
 ---
 check::unknown_param
 
-  × `Toast` has no parameter `dens`
+  × unknown prop `dens`
    ╭─[component_args.strand:8:15]
  7 │     Toast n { dense: true }
  8 │     Toast n { dens: true }
    ·               ──┬─
-   ·                 ╰── unknown parameter
+   ·                 ╰── `Toast` has no parameter `dens`
  9 │     Toast
    ╰────
   help: did you mean `dense`?
@@ -26,3 +26,5 @@ check::missing_arg
     ╰────
   help: pass the first one after the name (`Toast value`), the others in the block (`{ name:
         value }`)
+
+fix [check::unknown_param] component_args.strand: `dens` -> `dense`

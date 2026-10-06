@@ -96,3 +96,9 @@ check::unknown_name
    ·                ╰── read as `my - bar`
    ╰────
   help: names are snake_case: `my_bar`
+
+fix [check::unknown_name] unknown_name.strand: `volum` -> `volume`
+fix [check::unknown_name] unknown_name.strand: `opn` -> `open`
+fix [check::unknown_name] unknown_name.strand: `tp` -> `top`
+fix [check::unknown_name] unknown_name.strand: `shak` -> `shake`
+fix [check::unknown_name] unknown_name.strand: `dnd` -> `toasts.dnd`

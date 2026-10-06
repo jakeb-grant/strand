@@ -172,25 +172,54 @@ fn a_shuffled_keyed_diff_scales_n_log_n() {
 /// constant amount of key work: fresh, after an insert at the front (every
 /// index entry stale by one) and after a removal. A scan would compare n/2
 /// keys per lookup on average.
+///
+/// The index is a hash map seeded per process, so a lookup also compares
+/// each other key that shares its 7-bit tag in the probed groups: a rare
+/// lookup does a few more operations than the usual handful. Each lookup is
+/// bounded loosely (`MAX_OPS`, far below a scan's thousands) and the mean
+/// tightly.
 #[test]
 fn key_lookups_do_constant_key_work() {
+    const MAX_OPS: u64 = 24;
     for n in [2_000u32, 16_000] {
         let mut v = KeyedVec::from_values(|x: &u32| Key(*x), 0..n).unwrap();
         let check = |v: &KeyedVec<Key, u32>, what: &str| {
             let keys: Vec<Key> = v.items().iter().map(|(k, _)| k.clone()).collect();
+            let (mut index_ops, mut get_ops, mut has_ops) = (0u64, 0u64, 0u64);
             for (i, k) in keys.iter().enumerate() {
                 let (at, ops) = key_ops(|| v.index_of(k));
                 assert_eq!(at, Some(i), "{what} at {n}");
-                assert!(ops <= 10, "{what} at {n}: index_of did {ops} key ops");
+                assert!(ops <= MAX_OPS, "{what} at {n}: index_of did {ops} key ops");
+                index_ops += ops;
                 let (got, ops) = key_ops(|| v.get(k).copied());
                 assert_eq!(got, Some(k.0), "{what} at {n}");
-                assert!(ops <= 10, "{what} at {n}: get did {ops} key ops");
+                assert!(ops <= MAX_OPS, "{what} at {n}: get did {ops} key ops");
+                get_ops += ops;
                 let (has, ops) = key_ops(|| v.contains_key(k));
-                assert!(has && ops <= 3, "{what} at {n}: contains_key did {ops}");
+                assert!(
+                    has && ops <= MAX_OPS,
+                    "{what} at {n}: contains_key did {ops}"
+                );
+                has_ops += ops;
             }
+            let len = keys.len() as f64;
+            let (index_mean, get_mean, has_mean) = (
+                index_ops as f64 / len,
+                get_ops as f64 / len,
+                has_ops as f64 / len,
+            );
+            assert!(
+                index_mean <= 8.0,
+                "{what} at {n}: index_of mean {index_mean:.2}"
+            );
+            assert!(get_mean <= 8.0, "{what} at {n}: get mean {get_mean:.2}");
+            assert!(
+                has_mean <= 2.5,
+                "{what} at {n}: contains_key mean {has_mean:.2}"
+            );
             let (missing, ops) = key_ops(|| v.index_of(&Key(u32::MAX)));
             assert!(
-                missing.is_none() && ops <= 3,
+                missing.is_none() && ops <= MAX_OPS,
                 "{what} at {n}: miss did {ops}"
             );
         };

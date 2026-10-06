@@ -9,7 +9,7 @@ mod items;
 
 use std::cell::Cell;
 
-use crate::diagnostic::{Diagnostic, did_you_mean};
+use crate::diagnostic::{Diagnostic, closest};
 use crate::source::FileId;
 
 use super::ast::*;
@@ -466,6 +466,22 @@ impl<'s> Parser<'s> {
         self.push_error(d);
     }
 
+    /// [`Parser::expected_with`] whose help is "did you mean `fix`?", with
+    /// `fix` proposed as the replacement for the text at `at` (the
+    /// misspelt word, which is not always where the error points).
+    pub(crate) fn expected_suggesting(&mut self, what: &str, at: Span, fix: Option<String>) {
+        if self.kind() == K::Unknown && self.same_line() {
+            return; // the lexer already reported it
+        }
+        let mut d = Diagnostic::error(
+            "syntax::expected",
+            format!("expected {what}, found {}", self.found()),
+        )
+        .with_label(self.error_span(), format!("expected {what}"));
+        d.suggest_opt(at, fix);
+        self.push_error(d);
+    }
+
     /// Reports "expected `what`, found …" on the current token itself, even
     /// at the start of a line. For the start of an item, where a line break
     /// is normal and the bad token is what to point at.
@@ -575,10 +591,11 @@ impl<'s> Parser<'s> {
             self.bump();
             return true;
         }
-        let help = (self.kind() == K::Ident)
-            .then(|| did_you_mean(self.text(self.cur()), [word]))
+        let fix = (self.kind() == K::Ident)
+            .then(|| closest(self.text(self.cur()), [word]))
             .flatten();
-        self.expected_with(&format!("`{word}`"), help);
+        let at = self.cur().span;
+        self.expected_suggesting(&format!("`{word}`"), at, fix);
         if help_was_typo(self, word) {
             self.bump();
         }
