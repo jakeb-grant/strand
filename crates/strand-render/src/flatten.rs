@@ -1251,8 +1251,11 @@ impl<'a> Flattener<'a> {
         let placeholder = input && own_text.is_empty();
         let password =
             input && matches!(get(Prop::InputType), Some(PropValue::Keyword(k)) if k == "password");
+        // Only a password input copies its text (into bullets); the map
+        // from text to shown offsets is the identity otherwise (a boxed
+        // zero-sized closure: no allocation).
         let (masked, mask_map) = crate::widgets::shown_text(own_text, password);
-        let masked = PropValue::Text(masked);
+        let masked = masked.map(PropValue::Text);
         let caret = (input && widgets.focused.contains(&node.id)).then(|| {
             widgets
                 .carets
@@ -1273,7 +1276,7 @@ impl<'a> Flattener<'a> {
         let centre = PropValue::Keyword("center".into());
         let text_get = |p: Prop| match p {
             Prop::Text if placeholder => get(Prop::Placeholder),
-            Prop::Text if password => Some(&masked),
+            Prop::Text if password => masked.as_ref(),
             Prop::Markup | Prop::Marks | Prop::Ellipsis | Prop::MaxLines if input => None,
             // A button's label is centred unless it says otherwise.
             Prop::Align if button && get(Prop::Align).is_none() => Some(&centre),
@@ -1939,13 +1942,11 @@ impl Flattener<'_> {
                     .or(number(get(Prop::Value)))
                     .unwrap_or(0.0)
                     .clamp(0.0, 1.0) as f64;
-                let knob = (crate::widgets::SLIDER_KNOB as f64
-                    + if hovered || pressed { 2.0 } else { 0.0 })
-                    * s
-                    / 2.0;
+                let active = hovered || pressed;
+                let knob = crate::widgets::slider_knob_radius(active) * s;
                 let track = (crate::widgets::SLIDER_TRACK as f64 * s).max(1.0);
                 let cy = f.center().y;
-                let (x0, x1) = (f.x0 + knob, (f.x1 - knob).max(f.x0 + knob));
+                let (x0, x1) = crate::widgets::slider_span(f.x0, f.x1, active, s);
                 let x = x0 + (x1 - x0) * v;
                 let bar =
                     |a: f64, b: f64| kurbo::Rect::new(a, cy - track / 2.0, b, cy + track / 2.0);
@@ -2205,7 +2206,15 @@ impl Flattener<'_> {
         };
         let decoded = match self.extras.images.get(&key) {
             Some(Ok(d)) => Some(d.clone()),
-            _ => None,
+            Some(Err(_)) => None,
+            // Not decoded at this size yet (a size springs, or the decode
+            // is on its way): the latest decode at another size is drawn
+            // scaled into the box meanwhile.
+            None => self.extras.images.stand_in(&key).map(|(k, d)| {
+                let d = d.clone();
+                self.out.images.push(k.clone());
+                d
+            }),
         };
         self.out.images.push(key);
         let Some(d) = decoded else {

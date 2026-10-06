@@ -109,10 +109,15 @@ fn controls(b: &mut Builder) -> Controls {
             ),
         ],
     );
+    // `value: <-> x`, as the compiler marks it.
     let slider = b.node(
         NodeKind::Slider,
         Some(col),
-        vec![(Prop::Width, num(200.0)), (Prop::Value, num(0.6))],
+        vec![
+            (Prop::Width, num(200.0)),
+            (Prop::Value, num(0.6)),
+            (Prop::TwoWay, PropValue::List(vec![kw("value")])),
+        ],
     );
     let dragged = b.node(
         NodeKind::Slider,
@@ -128,6 +133,7 @@ fn controls(b: &mut Builder) -> Controls {
                 PropValue::List(vec![kw("auto"), kw("light"), kw("dark")]),
             ),
             (Prop::Value, kw("dark")),
+            (Prop::TwoWay, PropValue::List(vec![kw("value")])),
         ],
     );
     Controls {
@@ -307,8 +313,15 @@ fn a_slider_follows_a_drag_and_writes_its_value() {
     router.attached(s, root);
     let sb = r.boxes(s).unwrap().rects[&c.slider];
     let y = sb.y + sb.h / 2.0;
-    let knob = strand_render::widgets::SLIDER_KNOB / 2.0;
-    let x_of = |v: f32| sb.x + knob + v * (sb.w - 2.0 * knob);
+    // Pressed, the knob is drawn larger: its centre runs over the span
+    // drawing uses, so it stays under the pointer.
+    let (x0, x1) =
+        strand_render::widgets::slider_span(sb.x as f64, (sb.x + sb.w) as f64, true, 1.0);
+    assert_eq!(
+        (x0 - sb.x as f64, sb.x as f64 + sb.w as f64 - x1),
+        (8.0, 8.0)
+    );
+    let x_of = |v: f32| (x0 + v as f64 * (x1 - x0)) as f32;
     let mut out = router.handle(&press(s, x_of(0.25), y, ButtonState::Pressed), &mut r);
     assert_eq!(r.widgets().drags.get(&c.slider), Some(&0.25));
     out.extend(router.handle(&motion(s, x_of(0.5), y), &mut r));
@@ -325,6 +338,14 @@ fn a_slider_follows_a_drag_and_writes_its_value() {
     }
     assert!(r.widgets().drags.is_empty(), "the release ends the drag");
     assert!(r.widgets().hovered.contains(&c.slider));
+    // A display-only slider (`value: level`, one-way) does not move.
+    let db = r.boxes(s).unwrap().rects[&c.dragged];
+    let (x, y) = (db.x + db.w * 0.2, db.y + db.h / 2.0);
+    let mut out = router.handle(&press(s, x, y, ButtonState::Pressed), &mut r);
+    assert!(r.widgets().drags.is_empty());
+    out.extend(router.handle(&motion(s, x + 40.0, y), &mut r));
+    out.extend(router.handle(&press(s, x + 40.0, y, ButtonState::Released), &mut r));
+    assert!(writes(&out, c.dragged).is_empty(), "{out:?}");
 }
 
 /// `segmented { options: Look; value: <-> theme.look }`: a click writes

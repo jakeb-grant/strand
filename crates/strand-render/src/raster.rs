@@ -22,7 +22,10 @@ use vello_cpu::{
     RenderMode, RenderSettings, Resources, TargetInit, Tint, TintMode,
 };
 
-use crate::cache::{PaintCache, ShadowShape, draw_shadow, gradient_key, image_paint, shadow_key};
+use crate::cache::{
+    PaintCache, ShadowShape, cacheable, draw_shadow, gradient_key, image_paint,
+    render_gradient_part, shadow_key,
+};
 use crate::flatten::{DisplayItem, FillShape, Item};
 
 /// The render thread's copy of the text worker's glyph atlases, as vello
@@ -437,14 +440,39 @@ fn frame_px(f: kurbo::Rect) -> Option<(u32, u32)> {
         .then_some((w as u32, h as u32))
 }
 
-/// The paint of `p` over `frame`: a cached dithered pixmap for a
-/// gradient, else vello's own paint.
-fn paint_for(p: &Paint, frame: kurbo::Rect, cache: &PaintCache) -> (PaintType, Affine) {
-    if !matches!(p, Paint::Solid(_))
-        && let Some((w, h)) = frame_px(frame)
-        && let Some(pm) = cache.peek(gradient_key(p, w, h))
-    {
-        return image_paint(pm, frame.x0.round(), frame.y0.round(), false);
+/// The paint of `p` over `frame`: a dithered pixmap for a gradient
+/// (cached, or for one too large to cache the part of it in `region`,
+/// the cell being drawn in item coordinates), else vello's own paint.
+/// `smooth` samples the pixmap smoothly (under a scale or rotation).
+fn paint_for(
+    p: &Paint,
+    frame: kurbo::Rect,
+    cache: &PaintCache,
+    region: kurbo::Rect,
+    smooth: bool,
+) -> (PaintType, Affine) {
+    if matches!(p, Paint::Solid(_)) {
+        return paint_type(p, frame);
+    }
+    let Some((w, h)) = frame_px(frame) else {
+        return paint_type(p, frame);
+    };
+    let (fx, fy) = (frame.x0.round(), frame.y0.round());
+    if let Some(pm) = cache.peek(gradient_key(p, w, h)) {
+        return image_paint(pm, fx, fy, smooth);
+    }
+    if !cacheable(w, h) {
+        // One pixel of margin for smooth sampling at the part's edge.
+        let x0 = ((region.x0 - fx).floor() - 1.0).clamp(0.0, w as f64) as u32;
+        let y0 = ((region.y0 - fy).floor() - 1.0).clamp(0.0, h as f64) as u32;
+        let x1 = ((region.x1 - fx).ceil() + 1.0).clamp(0.0, w as f64) as u32;
+        let y1 = ((region.y1 - fy).ceil() + 1.0).clamp(0.0, h as f64) as u32;
+        if x1 > x0
+            && y1 > y0
+            && let Some(pm) = render_gradient_part(p, w, h, (x0, y0, x1 - x0, y1 - y0))
+        {
+            return image_paint(&Arc::new(pm), fx + x0 as f64, fy + y0 as f64, smooth);
+        }
     }
     paint_type(p, frame)
 }
@@ -479,6 +507,16 @@ fn draw(
     base: Affine,
 ) {
     let touches = |b: &Rect| clip.intersects(*b);
+    // The cell in item coordinates under transform `cur`.
+    let region = |cur: Affine| {
+        let c = kurbo::Rect::new(
+            clip.x as f64,
+            clip.y as f64,
+            clip.x as f64 + clip.w as f64,
+            clip.y as f64 + clip.h as f64,
+        );
+        (cur.inverse() * base).transform_rect_bbox(c)
+    };
     // The transform in force (`scale`, `rotate` groups), and the ones
     // their pops return to.
     let mut cur = base;
@@ -528,7 +566,7 @@ fn draw(
                 match cache.peek(shadow_key(&shape)) {
                     Some(pm) => {
                         let (ox, oy) = (extent.x0.floor(), extent.y0.floor());
-                        let (p, t) = image_paint(pm, ox, oy, false);
+                        let (p, t) = image_paint(pm, ox, oy, cur != base);
                         ctx.set_paint(p);
                         ctx.set_paint_transform(t);
                         ctx.fill_rect(&kurbo::Rect::new(
@@ -548,7 +586,7 @@ fn draw(
                 paint,
                 frame,
             } => {
-                let (p, t) = paint_for(paint, *frame, cache);
+                let (p, t) = paint_for(paint, *frame, cache, region(cur), cur != base);
                 ctx.set_paint(p);
                 ctx.set_paint_transform(t);
                 match shape {
@@ -558,7 +596,7 @@ fn draw(
                 ctx.reset_paint_transform();
             }
             Item::Border { path, paint, frame } => {
-                let (p, t) = paint_for(paint, *frame, cache);
+                let (p, t) = paint_for(paint, *frame, cache, region(cur), cur != base);
                 ctx.set_paint(p);
                 ctx.set_paint_transform(t);
                 ctx.set_fill_rule(Fill::EvenOdd);
@@ -568,9 +606,20 @@ fn draw(
             }
             Item::Image { pixmap, rect, tint } => {
                 // Decoded at this size: drawn pixel for pixel unless a
-                // transform scales or turns it.
-                let smooth = cur != base;
+                // transform scales or turns it. A decode at another size
+                // standing in (a size spring) is scaled into the box.
+                let (kx, ky) = (
+                    rect.width() / pixmap.width().max(1) as f64,
+                    rect.height() / pixmap.height().max(1) as f64,
+                );
+                let resized = (kx - 1.0).abs() > 1e-9 || (ky - 1.0).abs() > 1e-9;
+                let smooth = cur != base || resized;
                 let (p, t) = image_paint(pixmap, rect.x0, rect.y0, smooth);
+                let t = if resized {
+                    t * kurbo::Affine::scale_non_uniform(kx, ky)
+                } else {
+                    t
+                };
                 if let Some(c) = tint {
                     ctx.set_tint(Some(Tint {
                         color: bgra(*c),

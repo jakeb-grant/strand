@@ -517,10 +517,13 @@ impl Router {
                     let kind_of = |scene: &dyn InputScene, n: NodeId| {
                         scene.tree().and_then(|t| t.get(n)).map(|n| n.kind)
                     };
-                    // A press on a slider moves it there and starts a drag.
+                    // A press on a slider whose `value` is bound two-way
+                    // moves it there and starts a drag (a display-only
+                    // one stays put).
                     if let Some(&slider) = under
                         .iter()
                         .find(|n| kind_of(scene, **n) == Some(NodeKind::Slider))
+                        && value_two_way(scene.tree(), slider)
                     {
                         self.dragging.insert(surface, slider);
                         self.drag(scene, surface, slider, at, false);
@@ -769,9 +772,9 @@ impl Router {
         let Some(r) = scene.node_rect(surface, slider) else {
             return;
         };
-        let knob = crate::widgets::SLIDER_KNOB / 2.0;
-        let span = (r.w - 2.0 * knob).max(1.0);
-        let v = ((at.x - r.x - knob) / span).clamp(0.0, 1.0);
+        // Pressed, so drawn with its larger knob: the same span.
+        let (x0, x1) = crate::widgets::slider_span(r.x as f64, (r.x + r.w) as f64, true, 1.0);
+        let v = (((at.x as f64 - x0) / (x1 - x0).max(1.0)).clamp(0.0, 1.0)) as f32;
         if !v.is_finite() {
             return;
         }
@@ -810,6 +813,9 @@ impl Router {
         else {
             return;
         };
+        if !value_two_way(Some(tree), seg) {
+            return;
+        }
         let opts = crate::widgets::options(tree.get(seg).and_then(|n| n.get(Prop::Options)));
         let Some(r) = scene.node_rect(surface, seg) else {
             return;
@@ -891,6 +897,13 @@ fn first_with_focus(tree: &SceneTree, root: NodeId) -> Option<NodeId> {
 fn open_two_way(tree: Option<&SceneTree>, root: NodeId) -> bool {
     tree.and_then(|t| t.get(root))
         .is_some_and(|n| strand_scene::is_two_way(n.get(Prop::TwoWay), Prop::Open))
+}
+
+/// True if `node`'s `value` is bound two-way (`value: <-> x`): only then
+/// does a slider drag or a segmented click write it.
+fn value_two_way(tree: Option<&SceneTree>, node: NodeId) -> bool {
+    tree.and_then(|t| t.get(node))
+        .is_some_and(|n| strand_scene::is_two_way(n.get(Prop::TwoWay), Prop::Value))
 }
 
 /// The `list` and its row on a hit chain (innermost first).

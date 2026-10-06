@@ -328,6 +328,71 @@ fn elevation_shadow_lists_are_drawn_and_cached() {
     assert_matches_ref("paint_shadows", &buf, TOLERANCE);
 }
 
+/// A shadowed node moved by whole pixels (a sliding toast, a FLIP glide)
+/// reuses its cached shadow: the key is relative to the pixmap's
+/// whole-pixel origin.
+#[test]
+fn moved_shadows_reuse_their_pixmap() {
+    let mut b = Builder::default();
+    b.diff.set_tokens(elevation_tokens(), Transition::Instant);
+    let root = panel(&mut b, 200.0, 120.0);
+    let card = at(
+        &mut b,
+        root,
+        20.0,
+        30.0,
+        80.0,
+        50.0,
+        vec![
+            (Prop::Bg, color("#ffffff")),
+            (Prop::Radius, num(10.0)),
+            (
+                Prop::Shadow,
+                PropValue::Token(TokenExpr::path("elevation.md")),
+            ),
+        ],
+    );
+    let mut r = renderer();
+    let mut buf = render_with(&mut r, b.diff, Scale::ONE);
+    assert_eq!(r.paint_cache().1, 1);
+    for i in 1..=10 {
+        let mut d = SceneDiff::new();
+        d.push(SceneOp::SetProp {
+            id: card,
+            prop: Prop::X,
+            value: num(20.0 + 3.0 * i as f32),
+            transition: Transition::Instant,
+        });
+        assert!(r.apply(d).is_empty());
+        buf.paint(&mut r, SurfaceId(1), 1);
+    }
+    assert_eq!(r.paint_cache().1, 1, "one shadow pixmap for every position");
+    // And the moved shadow is the same pixels, 30 px further right.
+    let fresh = {
+        let mut b = Builder::default();
+        b.diff.set_tokens(elevation_tokens(), Transition::Instant);
+        let root = panel(&mut b, 200.0, 120.0);
+        at(
+            &mut b,
+            root,
+            50.0,
+            30.0,
+            80.0,
+            50.0,
+            vec![
+                (Prop::Bg, color("#ffffff")),
+                (Prop::Radius, num(10.0)),
+                (
+                    Prop::Shadow,
+                    PropValue::Token(TokenExpr::path("elevation.md")),
+                ),
+            ],
+        );
+        render(b.diff, Scale::ONE)
+    };
+    assert_eq!(buf.pixels, fresh.pixels);
+}
+
 fn gradients_scene() -> SceneDiff {
     let mut b = Builder::default();
     let root = panel(&mut b, 330.0, 100.0);
@@ -405,6 +470,76 @@ fn wide_slow_gradients_are_dithered() {
         row[0],
         row[511]
     );
+}
+
+/// A gradient too large to cache (over `MAX_ENTRY_BYTES`: a launcher at
+/// 2×, a full-height panel) is dithered too, cell by cell, and a partial
+/// repaint draws the same pixels as a full one.
+#[test]
+fn large_gradients_are_dithered_too() {
+    let (w, h) = (1024u32, 600u32);
+    assert!((w * h * 4) as usize > strand_render::MAX_ENTRY_BYTES);
+    let scene = |dot: &str| {
+        let mut b = Builder::default();
+        let root = panel(&mut b, w as f32, h as f32);
+        at(
+            &mut b,
+            root,
+            0.0,
+            0.0,
+            w as f32,
+            h as f32,
+            vec![(
+                Prop::Bg,
+                PropValue::Paint(Paint::Linear {
+                    angle: 90.0,
+                    stops: stops(&["#202428", "#282c30"]),
+                }),
+            )],
+        );
+        let dot = at(
+            &mut b,
+            root,
+            500.0,
+            300.0,
+            20.0,
+            20.0,
+            vec![(Prop::Bg, color(dot)), (Prop::Radius, num(10.0))],
+        );
+        (b.diff, dot)
+    };
+    let (diff, dot) = scene("#ff0000");
+    let mut r = renderer();
+    let mut buf = render_with(&mut r, diff, Scale::ONE);
+    assert_eq!(r.paint_cache().1, 0, "too large to cache");
+    for y in [7, 300, 599] {
+        let row: Vec<u8> = (0..w).map(|x| buf.px(x, y)[1]).collect();
+        let longest = row
+            .chunk_by(|a, b| a == b)
+            .map(|run| run.len())
+            .max()
+            .unwrap();
+        // 1024 px over 8 levels would band at 128 px.
+        assert!(longest <= 64, "row {y}: longest band {longest} px");
+        assert!(row[0] <= 0x25 && row[1023] >= 0x2b);
+    }
+    // A repaint of part of it (the dot changes colour) matches a full
+    // paint of the same scene.
+    let mut d = SceneDiff::new();
+    d.push(SceneOp::SetProp {
+        id: dot,
+        prop: Prop::Bg,
+        value: color("#0000ff"),
+        transition: Transition::Instant,
+    });
+    assert!(r.apply(d).is_empty());
+    let damage = buf.paint(&mut r, SurfaceId(1), 1);
+    assert!(
+        damage.rects().iter().all(|d| d.w < 100 && d.h < 100),
+        "{damage:?}"
+    );
+    let fresh = render(scene("#0000ff").0, Scale::ONE);
+    assert_eq!(buf.pixels, fresh.pixels);
 }
 
 fn effects_scene() -> SceneDiff {

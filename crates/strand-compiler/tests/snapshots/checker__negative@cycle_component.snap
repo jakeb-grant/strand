@@ -32,6 +32,18 @@ check::cycle
   help: a component cannot always contain itself; render the inner one under an `if`, `for`,
         `match`, a `page`, a `tooltip` or a `popup`
 
+check::not_drawn_yet
+
+  ⚠ the `tooltip { … }` element is not drawn yet
+    ╭─[cycle_component.strand:12:27]
+ 11 │ component Menu { button { popup { Menu } } }
+ 12 │ component Hint { button { tooltip { Hint } } }
+    ·                           ───┬───
+    ·                              ╰── draws nothing for now
+ 13 │ enum Sub { root, nested }
+    ╰────
+  help: use the `tooltip: expr` prop for a text tooltip
+
 check::cycle
 
   × static cycle: `Framed` → `Framed`

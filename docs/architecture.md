@@ -528,7 +528,9 @@ be built and tested without the language, and the language without pixels.
   `input`). A node may shape several texts (`TextSpec::part`: a
   `segmented`'s labels). `icon`/`image` sources decode at the box's
   physical size into a 6 MB LRU (`strand_render::image`, freedesktop icon
-  theme, PNG/JPEG/SVG), on a worker with a text worker, inline offline.
+  theme, PNG/JPEG/SVG; JPEG IDCT-scaled and PNG reduced row by row so a
+  decode holds about the drawn size), on a worker with a text worker,
+  inline offline; while a size springs the latest decode draws scaled.
   Gradients draw from dithered pixmaps and shadows from cached ones (a
   4 MB paint cache). A `popup`'s spec gets `parent` and `anchor_rect` (its
   element's laid-out box in the parent surface); `tooltip: expr` makes a
@@ -1650,8 +1652,14 @@ and the connection):
   overhang, anchor rect in the parent's window geometry, side and gap)
   with slide and flip; its window geometry is its box, its buffer the
   box plus the overhang. Size or anchor changes reposition it
-  (`xdg_popup.reposition`). It grabs with the last press's serial unless
-  it is a tooltip (`SurfaceSpec::tooltip`: no grab, empty input region).
+  (`xdg_popup.reposition`). It grabs with the last button or key press's
+  serial when that press came within `GRAB_WINDOW` (500 ms), never for a
+  tooltip (`SurfaceSpec::tooltip`: no grab, empty input region);
+  `Stats::grabs` counts grabs. A grabbing popup outside the shown
+  grabbing chain dismisses that chain first. While a grabbing popup is
+  open its layer surface is `exclusive` (`State::holds_keyboard_for_popup`)
+  and keys on it go to the topmost grabbing popup, which gets a
+  `KeyboardEnter` of its own.
   `popup_done` is sent as `InputEvent::ClickAway { surface }` (before the
   surface goes), then the popup and the popups nested in it are destroyed
   (innermost first, as any surface's are), and it is not shown again until

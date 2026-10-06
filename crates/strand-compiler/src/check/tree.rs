@@ -787,6 +787,18 @@ impl<'a> Checker<'a> {
                 "declare it on its own: `{kind} Name {{ … }}`; inside a tree, `popup` anchors a surface"
             ));
         }
+        if kind == "tooltip" {
+            // Errors, not surprises: accepted (the schema has it) but not
+            // drawn until rich tooltips land; say so rather than draw
+            // nothing.
+            self.warning(
+                "check::not_drawn_yet",
+                "the `tooltip { … }` element is not drawn yet",
+                el.kind.span,
+                "draws nothing for now",
+            )
+            .help = Some("use the `tooltip: expr` prop for a text tooltip".into());
+        }
         if let Some(parent) = &schema.flags.only_in
             && self.nodes.last().is_none_or(|n| n.kind != *parent)
         {

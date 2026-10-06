@@ -5041,17 +5041,22 @@ per pixel from a 1,024-entry OKLab colour table and offset by an 8 × 8
 Bayer threshold before rounding (`strand-render/src/cache.rs`). Pixmaps
 live in a paint cache of `PAINT_CACHE_BYTES` (4 MB, design.md's "cached
 offscreen groups, about 4 MB"), least recently used first, never evicting
-what the current frame uses; a gradient larger than `MAX_ENTRY_BYTES`
-(2 MB, about 720 × 720 px) draws with vello's own undithered gradient.
-Whether a gradient is cached depends only on its size, so a partial
-repaint draws the same pixels as a full one.
+what the current frame uses. A gradient larger than `MAX_ENTRY_BYTES`
+(2 MB, about 720 × 720 px: a launcher at 2×, a full-height panel) is not
+cached but still dithered: each raster cell renders, per paint, only the
+part of the gradient it shows (`render_gradient_part`; every pixel is a
+pure function of its place in the frame, so cells and partial repaints
+match a full paint). Whether a gradient is cached depends only on its
+size. Cached gradient and shadow pixmaps are sampled smoothly under a
+`scale` or `rotate` group (pixel for pixel otherwise).
 
 **2026-10-06 · wave3-pixels (p3): shadows are cached pixmaps.** Each
 shadow of a list (`shadow: $elevation.lg` is two) is rendered once into a
 pixmap of its reach, keyed by its geometry relative to its whole-pixel
 origin, blur, radii and colour, and blitted from the paint cache after
-that, so a toast sliding by whole pixels, a launcher fading in and a
-repaint reuse it; the casting box is cut out at draw time. A shadow
+that, so a toast sliding by whole pixels, a FLIP glide, a launcher fading
+in and a repaint reuse it (the key subtracts that origin from the
+geometry: 10 moves by 3 px build one pixmap); the casting box is cut out at draw time. A shadow
 larger than `MAX_ENTRY_BYTES` draws directly (decided by size alone, as
 gradients).
 
@@ -5107,6 +5112,14 @@ Clipboard (Ctrl+C/V) needs `wl_data_device` and is left for M4 with drag
 and drop. Caret stops come from strand-text (`TextLayout::carets`, cluster
 boundaries per line), added for this.
 
+**2026-10-06 · wave3-pixels (p3): only two-way values move.** A slider
+drag and a `segmented` click write `value` only when it is bound two-way
+(`value: <-> x`, the `two_way` list the compiler emits); a display-only
+`slider { value: level }` neither drags nor writes. A slider's drag and
+its drawing share one span (`widgets::slider_span`: the knob centre runs
+between the knob radii, 8 px while pressed), so the knob stays under the
+pointer.
+
 **2026-10-06 · wave3-pixels (p3): a node may shape several texts.** A
 `segmented` needs one layout per option label; text requests carry a
 `part` (0 a node's own text, 1 + i its i-th label), so labels are shaped,
@@ -5123,14 +5136,46 @@ The theme is `$STRAND_ICON_THEME`, else `gtk-icon-theme-name` from
 the spec's fallback); freedesktop-icons' own `default_theme_gtk` runs
 `gsettings` as a subprocess and is not used. A symbolic icon (`-symbolic`
 in its name or file) is drawn as a mask in the node's `color`. PNG (png
-0.18), JPEG (zune-jpeg 0.5) and SVG (resvg 0.48, no text or embedded
-rasters) are decoded and fitted (`fit`, default `contain`) to the box's
-physical size, which is all the 6 MB LRU (`IMAGE_CACHE_BYTES`) keeps;
-images a frame draws are never evicted for another of that frame. An
-unsized `image` stays 0 × 0 until sized (its natural size would need a
-decode before layout). Failed loads are remembered (512 at most) so a
+0.18), JPEG (jpeg-decoder 0.3, see below) and SVG (resvg 0.48, no text or
+embedded rasters) are decoded and fitted (`fit`, default `contain`) to
+the box's physical size, which is all the 6 MB LRU (`IMAGE_CACHE_BYTES`)
+keeps; images a live surface's last frame draws are never evicted for
+another. An `image` with no size is 16 × 16 like an icon, and square to
+a single side given (its source's own size would need a decode before
+layout, and a layout that waited on decodes would jump). Failed loads are remembered (512 at most) so a
 missing icon is not looked up every frame; icon-theme changes are not
 watched yet (M3's cache invalidation).
+
+**2026-10-06 · wave3-pixels (p3): icon names fall back.** A theme
+lookup that misses tries the name's other variant (`-symbolic` added, or
+removed from a symbolic name), then generic names with a trailing
+`-segment` stripped, each with both variants (`network-wireless`,
+`network-wireless-symbolic`, `network`, `network-symbolic`), as the icon
+naming spec and GTK 4 do: current themes (Adwaita) ship mostly symbolic
+icons, so a tray item's `network-wireless` draws (recoloured, being
+symbolic).
+
+**2026-10-06 · wave3-pixels (p3): decodes hold little more than the
+drawn size.** design.md blames full-resolution image decodes for
+Quickshell's footprint. A JPEG is decoded with its IDCT scaled to the
+smallest of 1, 1/2, 1/4 and 1/8 still at or above the drawn size
+(jpeg-decoder 0.3 `Decoder::scale`, replacing zune-jpeg, which has no
+reduced decode), so a 24 Mpx photo drawn as 200 px album art decodes at
+1/8. A non-interlaced PNG is reduced as its rows arrive (blocks of f × f
+pixels averaged, premultiplied, f the whole reduction the drawn size
+allows), holding one source row at full size. What still decodes at full
+size (an interlaced PNG, a source drawn near its own size, a progressive
+JPEG's coefficients) is capped at `MAX_DECODE_BYTES` (64 MB: 16 Mpx of
+RGBA) and fails as too large past it; a streamed PNG may be larger.
+
+**2026-10-06 · wave3-pixels (p3): images through a size spring.** An
+image whose box springs (`size: hovered ? 40 : 32`, a toast collapsing)
+draws its latest decode at another size, scaled smoothly into the box,
+until the decode at its size arrives; while a size springs on a surface
+only images with no decode at all are asked for, so the sizes passed
+through are never decoded, and the size it rests at is. The worker drops
+requests no live frame wants any more. A decode that arrives repaints
+only the surfaces whose last frame draws it.
 
 **2026-10-06 · wave3-pixels (p3): images decode off the render
 thread.** With a text worker (`strand run`), images decode on a
@@ -5155,9 +5200,23 @@ edge across the bar's thickness (below a top bar, under the clock), any
 other below its anchor, `margin` on that side the gap (default 6 px),
 sliding and flipping to stay on screen; a size or anchor change
 repositions it (`xdg_popup.reposition`, version 3) rather than making it
-again. It grabs with the last button press's serial, so the compositor
-gives it the keyboard (Escape goes through the router as for panels) and
-ends the grab on a click away: `popup_done` becomes
+again. It grabs with the serial of the last button or key press only when
+that press came within `GRAB_WINDOW` (500 ms) of the popup opening:
+xdg-shell wants the serial of the user action that opened it, and
+compositors that check it (KWin, Mutter) end a popup grabbing with a
+stale one at once, so a popup opened by a timer, `on change` or IPC has
+no grab (a click away does not close it; Escape does when it has the
+keyboard). A grabbing popup opening outside the chain of the grabbing
+popup shown dismisses that one first (xdg-shell's topmost-grab rule), as
+a click away would. While a grabbing popup is open its layer surface is
+`keyboard: exclusive`, set before the grab starts (wlroots moves keyboard
+focus no more once a popup grab holds it), and keys arriving on the layer
+surface go to the topmost grabbing popup, which is told a `KeyboardEnter`
+of its own: compositors give a popup the keyboard only through its
+parent's focus, and a `keyboard: none` bar never has it, so without this
+Escape would never close the bar's calendar. Closing gives the layer
+surface its own interactivity back (headless sway with no window leaves
+focus where it was). The grab ends on a click away: `popup_done` becomes
 `InputEvent::ClickAway` on the popup, which the router turns into `open:
 false` and `dismiss`, and the surface is destroyed at once, nested
 popups first, and not made again while its spec still says open (logic
@@ -5175,10 +5234,14 @@ tree as overlay nodes (`SceneTree::add_overlay`, ids from
 indices never see them) and reports a `tooltip` popup spec (no grab, no
 input, below its node, 4 px away), styled by `$inverse_surface`,
 `$inverse_on_surface`, `$radius.sm` and `$font.caption` where the table
-has them. The delay is woken through the render loop's waker (a sleeping
-thread pings it), so hosts need no timer of their own;
-`Renderer::next_wake` reports it too. The `tooltip { … }` element (rich
-content) is not drawn yet.
+has them. The delay runs from when the pointer enters the node (the
+hovered tooltip target changing), not from the last motion. It is woken
+through the render loop's waker by one long-lived `strand-tooltip` timer
+thread, re-armed with the latest due time, so hosts need no timer of
+their own; `Renderer::next_wake` reports it too. A `tooltip` changed by
+logic while its tooltip waits or shows takes the new text at once. The
+`tooltip { … }` element (rich content) is not drawn yet: the checker
+warns (`check::not_drawn_yet`) rather than draw nothing silently.
 
 **2026-10-06 · wave3-pixels (p3): the M2 exit's shells.** The paragraph
 above that kept "the four example shells run unchanged" open on popups

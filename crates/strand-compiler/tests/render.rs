@@ -335,3 +335,110 @@ fn a_click_on_the_clock_opens_the_calendar_popup() {
         "{spec:?}"
     );
 }
+
+/// design.md's theme switcher end to end: `segmented { options: Look;
+/// value: <-> theme.look }` compiled, a click on a segment routed, its
+/// write applied to the instance (a keyword into the enum `state`), and
+/// the chosen segment redrawn.
+#[test]
+fn the_theme_switcher_writes_the_look() {
+    let mut map = SourceMap::new();
+    let (n, t) = fixture("theme.strand");
+    map.add(n, t);
+    map.add(
+        "switcher.strand",
+        "bar Switcher { edge: top; height: 40\n  segmented { options: Look; value: <-> theme.look }\n}\n",
+    );
+    let compiled = strand_compiler::compile(&map);
+    assert_eq!(compiled.errors(), 0, "{:?}", compiled.diagnostics);
+    let program = Arc::new(lower::lower(
+        &compiled.program,
+        strand_compiler::schema::Schema::builtin(),
+    ));
+    let rt = Runtime::new();
+    let host = Rc::new(SchemaHost::mock(&rt, &program.types));
+    let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+    host.set(&rt, "screens.all", Value::list(vec![screen]))
+        .unwrap();
+    let inst = Instance::new(
+        &rt,
+        program,
+        host.clone(),
+        strand_compiler::instantiate::Storage::none(),
+    );
+    let mut r = renderer();
+    assert!(r.apply(inst.flush().diff).is_empty());
+    let bar = r
+        .take_surface_changes()
+        .iter()
+        .find_map(|(id, c)| match c {
+            SurfaceChange::Created(s) if s.kind == strand_scene::NodeKind::Bar => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    let surface = SurfaceId(1);
+    r.attach_surface(surface, bar);
+    let size = Size::new(800, 40);
+    r.configure_surface(surface, size, Scale::ONE);
+    let paint = |r: &mut Renderer| {
+        let mut pixels = vec![0u8; (size.w * size.h * 4) as usize];
+        let mut t = PaintTarget::new(&mut pixels, size, size.w * 4, Scale::ONE, 0).unwrap();
+        r.paint(surface, &mut t);
+        pixels
+    };
+    let before = paint(&mut r);
+    let seg = *r
+        .boxes(surface)
+        .unwrap()
+        .rects
+        .keys()
+        .find(|n| r.tree().get(**n).unwrap().kind == strand_scene::NodeKind::Segmented)
+        .unwrap();
+    let b = r.boxes(surface).unwrap().rects[&seg];
+    // Five options (auto, light, dark, wallpaper, mocha): the second.
+    let at = strand_scene::LogicalPoint::new(b.x + b.w * 0.3, b.y + b.h / 2.0);
+    let mut router = strand_render::Router::new();
+    router.attached(surface, bar);
+    let mut intents = Vec::new();
+    for state in [
+        strand_scene::ButtonState::Pressed,
+        strand_scene::ButtonState::Released,
+    ] {
+        intents.extend(router.handle(
+            &strand_scene::InputEvent::PointerButton {
+                surface,
+                position: at,
+                button: strand_scene::input::button::LEFT,
+                state,
+                time: 0,
+            },
+            &mut r,
+        ));
+    }
+    let mut wrote = 0;
+    for i in intents {
+        if let strand_render::Intent::Write { node, prop, value } = i {
+            inst.write(node, prop, value).unwrap();
+            wrote += 1;
+        }
+    }
+    assert_eq!(wrote, 1);
+    // `light`, the second variant of `enum Look { auto, light, … }`.
+    let look = inst.get("theme.look").unwrap();
+    assert!(matches!(look, Value::Enum(_, 1)), "{look:?}");
+    assert!(r.apply(inst.flush().diff).is_empty());
+    let after = paint(&mut r);
+    // The second segment's pixels changed (it is the chosen one now), and
+    // so did the first's (no longer chosen).
+    let changed = |x0: f32, x1: f32| {
+        (b.y as u32 + 2..(b.y + b.h) as u32 - 2).any(|y| {
+            (x0 as u32..x1 as u32).any(|x| {
+                let i = ((y * size.w + x) * 4) as usize;
+                before[i..i + 4] != after[i..i + 4]
+            })
+        })
+    };
+    let w = b.w / 5.0;
+    assert!(changed(b.x + w, b.x + 2.0 * w), "the chosen segment");
+    assert!(changed(b.x, b.x + w), "the one chosen before");
+}

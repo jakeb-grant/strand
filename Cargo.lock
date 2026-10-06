@@ -2095,6 +2095,7 @@ version = "0.0.0"
 dependencies = [
  "criterion",
  "freedesktop-icons",
+ "jpeg-decoder",
  "png",
  "resvg",
  "strand-compiler",
@@ -2104,7 +2105,6 @@ dependencies = [
  "strand-theme",
  "taffy",
  "vello_cpu",
- "zune-jpeg",
 ]
 
 [[package]]
@@ -2135,6 +2135,7 @@ dependencies = [
  "strand-text",
  "wayland-client",
  "wayland-protocols",
+ "wayland-protocols-misc",
  "wayland-protocols-wlr",
 ]
 

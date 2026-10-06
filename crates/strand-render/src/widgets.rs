@@ -92,6 +92,20 @@ pub const SLIDER_TRACK: f32 = 4.0;
 /// dragged), logical pixels.
 pub const SLIDER_KNOB: f32 = 14.0;
 
+/// A slider knob's radius: [`SLIDER_KNOB`] across, 2 px more while the
+/// slider is hovered or pressed (always so during a drag).
+pub fn slider_knob_radius(active: bool) -> f64 {
+    (SLIDER_KNOB as f64 + if active { 2.0 } else { 0.0 }) / 2.0
+}
+
+/// Where a slider's knob centre runs from value 0 to value 1 across its
+/// box `x0..x1`, in units of `s` per logical pixel: drawing and dragging
+/// share it, so the knob stays under the pointer.
+pub fn slider_span(x0: f64, x1: f64, active: bool, s: f64) -> (f64, f64) {
+    let k = slider_knob_radius(active) * s;
+    (x0 + k, (x1 - k).max(x0 + k))
+}
+
 /// An `input` caret's width, logical pixels.
 pub const CARET_WIDTH: f32 = 1.5;
 
@@ -135,11 +149,12 @@ pub fn same_option(a: &PropValue, b: &PropValue) -> bool {
 }
 
 /// The text an `input` shows for `text`: itself, or one bullet per
-/// character for `type: password`. Returns the shown text and a map from
-/// a byte offset in `text` to one in the shown text.
-pub fn shown_text(text: &str, password: bool) -> (String, Box<dyn Fn(usize) -> usize>) {
+/// character for `type: password`. Returns the shown text when it is not
+/// `text` itself (a password's bullets), and a map from a byte offset in
+/// `text` to one in the shown text.
+pub fn shown_text(text: &str, password: bool) -> (Option<String>, Box<dyn Fn(usize) -> usize>) {
     if !password {
-        return (text.to_string(), Box::new(|i| i));
+        return (None, Box::new(|i| i));
     }
     const BULLET: char = '•';
     let n = text.chars().count();
@@ -147,7 +162,7 @@ pub fn shown_text(text: &str, password: bool) -> (String, Box<dyn Fn(usize) -> u
     let starts: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
     let w = BULLET.len_utf8();
     (
-        shown,
+        Some(shown),
         Box::new(move |i| starts.partition_point(|s| *s < i) * w),
     )
 }
@@ -297,7 +312,8 @@ mod tests {
     #[test]
     fn passwords_show_bullets() {
         let (s, map) = shown_text("hé!", true);
-        assert_eq!(s, "•••");
+        assert_eq!(s.as_deref(), Some("•••"));
+        assert!(shown_text("plain", false).0.is_none());
         assert_eq!(map(0), 0);
         assert_eq!(map(1), 3);
         assert_eq!(map(3), 6);

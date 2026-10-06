@@ -1560,3 +1560,40 @@ fn an_absolute_shadow_counts_from_its_coordinates() {
     // 170 + 40 + 7 = 217: 17 past it.
     assert_eq!(r.surface_spec(p).unwrap().overhang.right, 17.0);
 }
+
+/// An `image` with no size is 16 × 16 (like an icon) before and after its
+/// source decodes, and square to a single side given: it never lays out
+/// as 0 × 0 and silently draws nothing.
+#[test]
+fn unsized_images_are_square() {
+    let mut ids = Vec::new();
+    let (d, root) = panel(200, 60, |b, root| {
+        let row = b.node(NodeKind::Row, Some(root), vec![(Prop::Align, kw("start"))]);
+        ids.push(b.node(
+            NodeKind::Image,
+            Some(row),
+            vec![(Prop::Source, text("network-wireless"))],
+        ));
+        ids.push(b.node(
+            NodeKind::Image,
+            Some(row),
+            vec![
+                (Prop::Source, text("/nonexistent.png")),
+                (Prop::Width, num(40.0)),
+            ],
+        ));
+        ids.push(b.node(
+            NodeKind::Image,
+            Some(row),
+            vec![
+                (Prop::Source, text("/nonexistent.png")),
+                (Prop::Width, num(30.0)),
+                (Prop::Height, num(10.0)),
+            ],
+        ));
+    });
+    let (r, _buf) = show(d, root, 200, 60, Scale::ONE);
+    approx(rect(&r, ids[0]), (0.0, 0.0, 16.0, 16.0));
+    approx(rect(&r, ids[1]), (16.0, 0.0, 40.0, 40.0));
+    approx(rect(&r, ids[2]), (56.0, 0.0, 30.0, 10.0));
+}

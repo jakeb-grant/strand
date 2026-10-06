@@ -159,6 +159,10 @@ enum Ctx {
     },
     /// A leaf with a size of its own when its props give none.
     Fixed(f32, f32),
+    /// Square, `side` across when its props give no size, else as tall as
+    /// it is wide (or as wide as tall): an `image` before its source is
+    /// decoded has no size of its own.
+    Square(f32),
     /// A `segmented` of `n` options: as wide as its widest label (plus
     /// padding) times `n`.
     Segmented {
@@ -532,6 +536,16 @@ impl<'a> Build<'a> {
                     None
                 }
                 NodeKind::Icon => Some(Ctx::Fixed(16.0, 16.0)),
+                // Not sized by its source (unknown until decoded, and a
+                // layout that waited on decodes would jump): 16 × 16 like
+                // an icon, or square to the side given. A fully sized one
+                // keeps no content size (it may shrink as a box does).
+                NodeKind::Image
+                    if get(Prop::Size).is_none()
+                        && (get(Prop::Width).is_none() || get(Prop::Height).is_none()) =>
+                {
+                    Some(Ctx::Square(16.0))
+                }
                 NodeKind::Slider => Some(Ctx::Fixed(
                     crate::widgets::SLIDER_WIDTH,
                     crate::widgets::SLIDER_KNOB + 4.0,
@@ -1027,6 +1041,13 @@ fn measure_leaf(
                 width: known.width.unwrap_or(*w),
                 height: known.height.unwrap_or(*h),
             },
+            Some(Ctx::Square(side)) => {
+                let w = known.width.or(known.height).unwrap_or(*side);
+                taffy::Size {
+                    width: w,
+                    height: known.height.unwrap_or(w),
+                }
+            }
             Some(Ctx::Segmented { node, n, font }) => {
                 let widest = (0..*n)
                     .map(|i| {

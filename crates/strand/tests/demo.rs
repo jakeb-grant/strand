@@ -613,13 +613,13 @@ fn the_design_bar_is_laid_out_start_centre_end() {
         "clock ink {l}..{r} is not centred on {mid}"
     );
     // Start: the dots and title begin at margin + pad (8 + 12); end: the
-    // battery text ends before the tray icon (16 px, after a 12 px gap;
-    // icons are not drawn yet), margin and pad: 2560 - 8 - 12 - 28.
+    // tray icon (the mock's `network-wireless`, 16 px) ends at margin and
+    // pad: 2560 - 8 - 12.
     let first = cols[0];
     let last = *cols.last().unwrap();
     assert!((18..40).contains(&first), "start ink at {first}");
     assert!(
-        (shot.w - 60..=shot.w - 48).contains(&last),
+        (shot.w - 26..=shot.w - 18).contains(&last),
         "end ink at {last}"
     );
     // Nothing between the title and the clock, or the clock and the end.
@@ -901,6 +901,13 @@ fn the_design_shells_draw_their_widgets_and_the_calendar_popup() {
     assert!(
         (60..110).any(|yy| (toast_x - 10..toast_x + 10).any(|x| sum(shot.px(x, yy)) < 200)),
         "no close icon on the first toast"
+    );
+    // The tray's `image item.icon { size: 16 }` (the mock's
+    // `network-wireless`, found as `network-wireless-symbolic`): ink at
+    // the end of the bar, after the battery (margin 8, pad 12).
+    assert!(
+        (w - 40..w - 16).any(|x| (16..36).any(|y| sum(shot.px(x, y)) < 200)),
+        "no tray icon at the bar's end"
     );
     // No calendar yet below the clock.
     let below = (w / 2, 150);
