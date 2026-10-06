@@ -21,6 +21,8 @@ use crate::raster::{AtlasMirror, Raster};
 use crate::tree::{SceneError, SceneTree};
 use strand_scene::Curve;
 
+mod swap;
+
 /// How many past frames' damage is kept for buffer-age widening. A buffer
 /// older than this is repainted in full.
 pub const DAMAGE_HISTORY: usize = 4;
@@ -342,6 +344,8 @@ pub struct Renderer {
     /// Nodes laid out by the last layout step (tests: a size spring lays
     /// out only the subtree under its nearest size-stable ancestor).
     laid_out_nodes: usize,
+    /// Theme swaps: palette roots in flight, crossfades (`swap.rs`).
+    swap: swap::Swap,
 }
 
 /// The overhang a surface asks for: on an axis its anchor leaves centred
@@ -481,6 +485,7 @@ impl Renderer {
             born: Vec::new(),
             opening: BTreeSet::new(),
             laid_out_nodes: 0,
+            swap: swap::Swap::default(),
         }
     }
 
@@ -1302,6 +1307,7 @@ impl Renderer {
 
     pub fn detach_surface(&mut self, surface: SurfaceId) {
         self.surfaces.remove(&surface);
+        self.forget_fade(surface);
         self.reap_exits();
         self.bounds.remove(&surface);
         self.facts_sent.retain(|(s, _), _| *s != surface);
@@ -1495,6 +1501,8 @@ impl Renderer {
                 }
             }
         }
+        // A theme swap is planned against the table and frames on screen.
+        let swap = self.plan_swap(&diff);
         let mut watched = Vec::new();
         for op in diff.ops {
             if let SceneOp::SetProp {
@@ -1572,6 +1580,9 @@ impl Renderer {
                 }
                 Err(e) => errors.push(e),
             }
+        }
+        if let Some(plan) = swap {
+            self.install_swap(plan);
         }
         if relayout.is_none() {
             self.spec_dirty.extend(self.tree.surface_nodes());
@@ -1808,10 +1819,12 @@ impl Renderer {
         for id in ids {
             if let Some(s) = self.surfaces.get(&id) {
                 // A preview: nothing starts until a frame samples it.
-                self.anim.begin(s.time, s.painted_time, false);
+                let (time, prev) = (s.time, s.painted_time);
+                self.sample_tokens(time, false);
+                self.anim.begin(time, prev, false);
             }
             let f = self.flatten_surface(id);
-            let animating = self.anim.active();
+            let animating = self.anim.active() || self.swap_moving(id);
             // Text with a request in flight and no layout for this
             // surface's scale and width yet. A stand-in from another scale
             // or width does not count: a first frame drawn with one would
@@ -2505,6 +2518,7 @@ impl Renderer {
         }
         // Springs sample this frame's time; a scene flattened earlier
         // (by `update`) is stale while anything moves.
+        let swapping = self.swap_moving(surface);
         let Some(s) = self.surfaces.get_mut(&surface) else {
             return Damage::new();
         };
@@ -2513,20 +2527,27 @@ impl Renderer {
         // anything moves, nor while a motion waits to start (an `enter`
         // pose a time-zero preview could not play: a surface just
         // attached, a node just created).
-        let pending = self.anim.busy(&self.tree, root);
+        let pending = self.anim.busy(&self.tree, root) || swapping;
         let cached = if s.animating || pending {
             None
         } else {
             s.cache.take()
         };
-        self.anim.begin(target.time, s.painted_time, true);
+        let prev = s.painted_time;
         let fresh = cached.is_none();
+        if fresh {
+            // Palette roots in flight take this frame's values.
+            self.sample_tokens(target.time, true);
+        }
+        self.anim.begin(target.time, prev, true);
         let f = match cached {
             Some(f) => f,
             None => self.flatten_surface(surface),
         };
+        // A theme crossfade on this surface paints every frame in full.
+        let fade = self.fade_frame(surface, target.time, target.size);
         // A cached scene was drawn at rest.
-        let animating = fresh && self.anim.active();
+        let animating = fresh && (self.anim.active() || self.swap_moving(surface));
         if fresh {
             // Exits under this surface it did not draw (a row scrolled
             // out of view) end: nobody sees them, unless another surface
@@ -2565,7 +2586,7 @@ impl Renderer {
 
         // This frame's changes.
         let mut frame = Damage::new();
-        if s.valid {
+        if s.valid && !fade.full() {
             diff_records(&s.records, &f.records, &mut frame);
             frame.clip(bounds);
         } else {
@@ -2607,6 +2628,9 @@ impl Renderer {
         let scale = s.scale;
         self.raster
             .paint(&f.items, &total, &self.atlas, scale, target);
+        if let swap::FadeFrame::Blend(w) = fade {
+            self.blend_fade(surface, w, target);
+        }
         // Nothing changed since flattening: the next paint can reuse it.
         // Stamped once the frame is drawn: a slow raster does not age the
         // surface into looking idle.

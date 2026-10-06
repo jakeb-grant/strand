@@ -78,9 +78,11 @@ pub struct SceneTree {
     surfaces: BTreeSet<NodeId>,
     /// Live nodes.
     live: usize,
+    /// The global token table: logic's last `SetTokens`, with palette
+    /// roots still springing at the values of the last frame sampled.
     pub tokens: TokenTable,
-    /// How the last `SetTokens` asked palette roots to move (springs land
-    /// in M2; until then the table snaps).
+    /// How the last `SetTokens` asked palette roots to move (the
+    /// renderer springs them: `renderer/swap.rs`).
     pub tokens_transition: Transition,
     /// Subtrees logic removed that still play their `exit` pose, under
     /// their old ids: they stay in their parent's children (keeping their

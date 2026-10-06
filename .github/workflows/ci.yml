@@ -41,6 +41,10 @@ jobs:
       - run: cargo test --workspace -- --skip random_edits_through_five_save_styles
       # The 34 MB PSS gate is checked on a release build (design.md, "Testing": budgets).
       - run: cargo test --release -p strand --test demo
+      # A theme swap within design.md's 5 ms of work (logic's re-resolve,
+      # the render thread's springs and contrast check, the token graph
+      # of every frame) on an optimised build.
+      - run: cargo test --release -p strand-render --test theme_swap_bench -- --nocapture
       # Save → pixels p95 within design.md's 35 ms (token) and 50 ms
       # (markup) on an optimised build, to the painted buffer and to the
       # frame sway presents; ignored in debug builds.

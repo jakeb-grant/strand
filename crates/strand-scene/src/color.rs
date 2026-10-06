@@ -270,6 +270,9 @@ impl Color {
     }
 }
 
+/// The highest text luminance [`Color::contrast_reachable`] counts on.
+pub const REACH_MAX: f64 = 0.94;
+
 /// The smallest WCAG 2 contrast ratio Strand keeps between a declared
 /// text colour and its background (design.md, "Contrast guard").
 pub const MIN_CONTRAST: f64 = 3.0;
@@ -439,21 +442,7 @@ impl Color {
         // the reachable lightnesses are the complement of the merged
         // gaps: the nearest one above or below is a single search, and
         // gaps covering all of 0..=1 mean nothing reaches `min`.
-        let mut gaps: Vec<(f64, f64)> = bgs
-            .iter()
-            .map(|b| {
-                let k = b.relative_luminance() + 0.05;
-                (k / min - 0.05, k * min - 0.05)
-            })
-            .collect();
-        gaps.sort_by(|a, b| a.0.total_cmp(&b.0));
-        let mut merged: Vec<(f64, f64)> = Vec::with_capacity(gaps.len());
-        for g in gaps {
-            match merged.last_mut() {
-                Some(last) if g.0 <= last.1 => last.1 = last.1.max(g.1),
-                _ => merged.push(g),
-            }
-        }
+        let merged = luminance_gaps(bgs, min);
         let y0 = self.relative_luminance();
         let Some(&(lo, hi)) = merged.iter().find(|(lo, hi)| y0 > *lo && y0 < *hi) else {
             // Outside every gap, short of `min` only by rounding.
@@ -489,6 +478,24 @@ impl Color {
         self.with_contrast_scan(bgs, min)
     }
 
+    /// Whether some opaque text colour reaches `min` over every one of
+    /// the opaque `bgs` at once: the luminances that fall short over
+    /// each background (see [`Color::with_contrast`]) do not cover all of
+    /// black to white. With backgrounds both darker than luminance 0.1
+    /// and lighter than 0.3 (at 3:1) nothing does, whatever the text's
+    /// hue: the case where a theme swap crossfades instead of springing
+    /// (design.md, "How a swap animates").
+    ///
+    /// Conservative at the light end: a tinted text keeps its chroma, and
+    /// gamut mapping leaves its lightest colour a little short of white
+    /// (luminance about 0.986 for a saturated blue), so only luminances
+    /// up to [`REACH_MAX`] count as reachable. Whenever this says yes,
+    /// [`Color::with_contrast`] meets every background.
+    pub fn contrast_reachable(bgs: &[Color], min: f64) -> bool {
+        let lums: Vec<f64> = bgs.iter().map(|b| b.relative_luminance()).collect();
+        luminance_reachable(&lums, min)
+    }
+
     /// The reaching lightness nearest the original found by scanning
     /// 0..=1 (a fallback for colours the luminance model above misjudges;
     /// not reached by ordinary colours), else `self`.
@@ -514,6 +521,57 @@ impl Color {
 }
 
 const SCAN_STEPS: u32 = 400;
+
+/// [`Color::contrast_reachable`] for backgrounds given by their relative
+/// luminances (no allocation for up to 16).
+pub fn luminance_reachable(lums: &[f64], min: f64) -> bool {
+    let mut inline = [(0.0, 0.0); 16];
+    let mut heap = Vec::new();
+    let gaps: &mut [(f64, f64)] = if lums.len() <= inline.len() {
+        &mut inline[..lums.len()]
+    } else {
+        heap.resize(lums.len(), (0.0, 0.0));
+        &mut heap
+    };
+    for (g, b) in gaps.iter_mut().zip(lums) {
+        *g = gap(*b, min);
+    }
+    gaps.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+    // The lowest luminance no gap so far covers.
+    let mut y = 0.0;
+    for (lo, hi) in gaps.iter() {
+        if y <= *lo {
+            return true;
+        }
+        y = f64::max(y, *hi);
+    }
+    y <= REACH_MAX
+}
+
+fn gap(lum: f64, min: f64) -> (f64, f64) {
+    let k = lum + 0.05;
+    (k / min - 0.05, k * min - 0.05)
+}
+
+/// The open luminance intervals where opaque text falls short of `min`
+/// over one of `bgs` (over a background of luminance B: between
+/// `(B + 0.05) / min − 0.05` and `min (B + 0.05) − 0.05`), merged and
+/// sorted.
+fn luminance_gaps(bgs: &[Color], min: f64) -> Vec<(f64, f64)> {
+    let mut gaps: Vec<(f64, f64)> = bgs
+        .iter()
+        .map(|b| gap(b.relative_luminance(), min))
+        .collect();
+    gaps.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut merged: Vec<(f64, f64)> = Vec::with_capacity(gaps.len());
+    for g in gaps {
+        match merged.last_mut() {
+            Some(last) if g.0 <= last.1 => last.1 = last.1.max(g.1),
+            _ => merged.push(g),
+        }
+    }
+    merged
+}
 
 #[cfg(test)]
 thread_local! {
@@ -584,6 +642,20 @@ mod tests {
             && (a.g - b.g).abs() <= eps
             && (a.b - b.b).abs() <= eps
             && (a.a - b.a).abs() <= eps
+    }
+
+    /// Black and white backgrounds leave mid-grey text; a dark and a
+    /// mid-light one leave nothing.
+    #[test]
+    fn reachability_of_split_backgrounds() {
+        let bgs = [Color::BLACK, Color::WHITE];
+        assert!(Color::contrast_reachable(&bgs, MIN_CONTRAST));
+        let split = [
+            Color::from_hex("#202020").unwrap(),
+            Color::from_hex("#a0a0a0").unwrap(),
+        ];
+        assert!(!Color::contrast_reachable(&split, MIN_CONTRAST));
+        assert!(Color::contrast_reachable(&split[..1], MIN_CONTRAST));
     }
 
     #[test]
@@ -779,6 +851,33 @@ mod tests {
                 for bg in &bgs {
                     prop_assert!(solved.contrast(*bg) >= MIN_CONTRAST - 1e-6, "{text:?} over {bgs:?} -> {solved:?}");
                 }
+            }
+        }
+
+        /// `contrast_reachable` says exactly when the solver can meet
+        /// every background: reachable, the solved text does; not, a
+        /// fine scan of lightness finds nothing either.
+        #[test]
+        fn reachability_matches_the_solver(
+            t in (unit(), unit(), unit()),
+            b in proptest::collection::vec((unit(), unit(), unit()), 1..9),
+        ) {
+            let text = Color::rgb(t.0, t.1, t.2);
+            let bgs: Vec<Color> = b.iter().map(|b| Color::rgb(b.0, b.1, b.2)).collect();
+            let solved = text.with_contrast(&bgs, MIN_CONTRAST);
+            let all = bgs.iter().all(|b| solved.contrast(*b) >= MIN_CONTRAST - 1e-6);
+            if Color::contrast_reachable(&bgs, MIN_CONTRAST) {
+                prop_assert!(all, "{text:?} over {bgs:?} -> {solved:?}");
+            }
+            // Not reachable: no luminance up to REACH_MAX is, so a grey
+            // text that dark or darker misses some background.
+            if !Color::contrast_reachable(&bgs, MIN_CONTRAST) {
+                let any = (0..=400).any(|i| {
+                    let c = Color::from_oklch(Oklch { l: i as f64 / 400.0, c: 0.0, h: 0.0, alpha: 1.0 });
+                    c.relative_luminance() <= REACH_MAX
+                        && bgs.iter().all(|b| c.contrast(*b) >= MIN_CONTRAST + 1e-6)
+                });
+                prop_assert!(!any, "{bgs:?}: reachable after all");
             }
         }
 

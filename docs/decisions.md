@@ -4273,6 +4273,84 @@ palette writer and the last palette carry over, and nothing waits in a
 asserts the host is the same
 (`crates/strand-compiler/tests/reload.rs::a_hard_reload_drops_state_and_recreates_surfaces`).
 
+**2026-10-06 · wave3-theme (t2): what springs in a swap.** "Only the
+palette roots spring": every plain colour of the global table that
+differs from what is on screen (the palette roles, and a colour a
+token set writes as a plain value, which is a root of the colour graph
+too) springs in premultiplied OKLab (`motion::color_channels`), along
+the table's transition resolved for a colour (`Default` is
+`$motion.effects`). Every other plain token snaps (lengths, fonts,
+springs, `motion.reduced`), and derived tokens are never springed: the
+render thread writes each frame's root values into the tree's table
+before it flattens (`renderer/swap.rs`, `sample_tokens`; a preview in
+`update` only peeks), so every derived token, shadow template and
+guarded text token is evaluated from them exactly. A mid-flight value
+is gamut-mapped (OKLab paths between two sRGB colours can leave the
+gamut); a settled root is written as logic's exact colour, so a settled
+table equals logic's (`crates/strand-render/tests/theme_swap.rs::a_swap_springs_palette_roots_and_rederives_every_frame`,
+`::derived_tokens_stay_exact_mid_swap`). A newer table mid-flight
+retargets the roots in flight, keeping their velocity
+(`::a_swap_retargeted_mid_flight_does_not_jump`). `set { }` overrides
+are props: their own plain colours snap and what they derive from the
+global roots follows the spring. A swap snaps whole when the table
+comes `Instant` (the boot table), under `reduced_motion` (the host's,
+or `motion.reduced` in either table) and when no surface has been shown
+with a clock (`::reduced_motion_and_instant_tables_snap`,
+`::fonts_snap_while_colours_spring`).
+
+**2026-10-06 · wave3-theme (t2): when a swap crossfades.** The guard
+keeps a text token at 3:1 whenever some lightness can: over opaque
+backgrounds of luminances B, text fails only inside the gaps
+((B+0.05)/3 − 0.05, 3(B+0.05) − 0.05), so a moment is "impossible"
+exactly when the gaps of a pair's backgrounds cover every luminance a
+text can reach (`Color::contrast_reachable`, `strand_scene::luminance_reachable`;
+conservative at the light end, `REACH_MAX` 0.94, because a tinted
+text's lightest gamut-mapped colour stops short of white: a property
+test holds that whenever it says yes the solver meets every
+background). Before a swap starts, render plays the planned roots
+through at 240 Hz, and at 1 kHz between samples that only just reach
+3:1 (under 3.3:1), up to 3 s; if any moment leaves a declared pair of
+the global table with no reachable lightness (a pair that has one at
+both ends: a palette unreadable at rest is not the swap's doing), the
+swap does not spring. The table snaps and every surface shown with a
+clock snapshots its old frame once (its last display list, rasterised
+into an owned buffer; flattened at rest when it has none) and blends it
+under the new frames, premultiplied per channel, along the same curve,
+painting those frames in full and ending exactly on the new frame
+(`::an_unreadable_spring_crossfades_from_a_snapshot`). A surface
+resized meanwhile drops its snapshot; a second swap during a crossfade
+keeps the first snapshot. Material light↔dark swaps never need it: all
+roots share one curve, and the surface roles move together, so their
+luminances never straddle 0.1 and 0.3 at once; it fires for palettes
+whose surfaces part ways (one darkening while another lightens), so
+design.md's "a light↔dark swap" is read as "a swap", decided by the
+pairs, not by a light/dark flag. `set { }` subtrees are not played
+through (their guarded text keeps its own background, the first one).
+
+**2026-10-06 · wave3-theme (t2): the contrast gate.** "Contrast never
+below 3:1" is `crates/strand-render/tests/theme_swap.rs::contrast_never_drops_below_three_to_one_during_swaps`:
+light→dark and dark→light of random seeds, wallpaper→Catppuccin (a
+random Material scheme, variant and contrast level to a random flavour)
+and swaps to and from random partial imports, every frame at 60 or
+144 Hz, every declared pair readable at both ends at 3:1 or better as
+the guard leaves it, in each frame that sprang (12 rounds of five
+swaps in debug builds, 60 optimised). Disabling the crossfade fails
+the crossfade tests; the random swaps of this seed all spring.
+
+**2026-10-06 · wave3-theme (t2): the 5 ms of a swap.** design.md's "under
+5 ms of work" is read as the whole swap's work: logic's re-resolve (the
+write, the flush and the `SetTokens`), the render thread's swap work
+(planning with its play-through, a crossfade's snapshots and blends,
+every frame's roots: `Renderer::take_swap_work`) and the token graph
+evaluated once per frame until it settles (every path looked up, guard
+included). `crates/strand-render/tests/theme_swap_bench.rs` runs
+design.md's `theme.strand` with the hello bar through light↔dark,
+auto→mocha, mocha→wallpaper and wallpaper→auto: about 2 ms optimised
+here, 8 ms in a debug build. The budget is design.md's for an optimised
+build, so CI runs it with `--release` against 5 ms and a debug build
+holds it to four times that (catching a regression in the shape of the
+work, as a check per node would be).
+
 ## wave3-pixels
 
 **2026-10-06 · wave3-pixels: container defaults.** design.md names the

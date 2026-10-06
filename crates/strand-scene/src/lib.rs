@@ -14,7 +14,7 @@ pub mod protocol;
 pub mod surface;
 pub mod tokens;
 
-pub use color::{Color, LinearRgb, MIN_CONTRAST, Oklab, Oklch};
+pub use color::{Color, LinearRgb, MIN_CONTRAST, Oklab, Oklch, REACH_MAX, luminance_reachable};
 pub use damage::{Damage, MAX_RECTS};
 pub use geometry::{LogicalPoint, LogicalRect, LogicalSize, Point, Rect, Scale, Size};
 pub use id::{NodeId, NodeIdAllocator, SurfaceId};

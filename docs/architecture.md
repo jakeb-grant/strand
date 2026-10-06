@@ -257,7 +257,8 @@ be built and tested without the language, and the language without pixels.
   parent, index }`, `Remove { id }` (render plays `exit` before unmounting),
   `Move { id, parent, index }`, `SetProp { id, prop, value, transition }`,
   `SetTokens { table, transition }` (logic sends `Instant` for the table
-  it boots with; later swaps spring palette roots from M2). Node ids are generational; a removed id is dead
+  it boots with and `Default` for later ones, whose palette roots render
+  springs: Theme swaps, below). Node ids are generational; a removed id is dead
   at once (logic may reuse the slot with a new generation in the same
   diff). `Move`'s `index` counts the new parent's children after the node
   is detached. Prop values are typed (`Length`, `Color`, `Paint`, `Text`,
@@ -297,7 +298,9 @@ be built and tested without the language, and the language without pixels.
   backgrounds in that node's scope (`Color::with_contrast`, memoised
   per text/background colours on the render thread, so a frame solves
   each pair once), so a palette mid-spring and subtree overrides stay
-  readable. `TokenTable::origins` (path → `palette:<source>`, `base`,
+  readable; whether any lightness can is `Color::contrast_reachable`
+  (`strand_scene::luminance_reachable` over luminances, conservative
+  above `REACH_MAX`). `TokenTable::origins` (path → `palette:<source>`, `base`,
   `tokens <set>`, `component <Name>`) is provenance for the inspector;
   evaluation never reads it. Text that names no `color`/`font` draws in
   `$fg`/`$font.ui` looked up in its own scope, and a `bar` that names no
@@ -413,6 +416,27 @@ be built and tested without the language, and the language without pixels.
   strand-watch and `strand run` is an integrator item (features.md). `Painter::wants_frame` is true while anything
   moves (`Renderer::animating`), so frame callbacks stop once it
   settles.
+- **Theme swaps** (`renderer/swap.rs`, on the render thread): a
+  `SetTokens` with a non-`Instant` transition, while a surface is shown
+  with a clock and motion is not reduced, springs every plain colour of
+  the new table that differs from the one on screen (the palette
+  roots) in premultiplied OKLab along `TokenScope::transition(t,
+  Prop::Color)` (`$motion.effects` for `Default`); every other plain
+  token snaps. Each frame writes the roots' values at its presentation
+  time into `SceneTree::tokens` before flattening (gamut-mapped; a
+  settled root gets logic's exact colour), so derived tokens and the
+  contrast guard are evaluated from them exactly; a newer table
+  retargets roots in flight with their velocity. Before springing, the
+  planned roots are played through (240 Hz, 1 kHz next to moments
+  under 3.3:1, at most 3 s); if a declared pair of the global table
+  that is readable at both ends has a moment where no text lightness
+  reaches 3:1 (`Color::contrast_reachable`), the table snaps instead and
+  each shown surface crossfades from a snapshot of its old frame
+  (rasterised once) to the new frames along the same curve, those
+  frames painted in full. `Renderer::swapping()` is true while roots
+  spring or a crossfade runs, `swap_crossfades()` counts crossfades,
+  and `take_swap_work()` (hidden, for the bench) returns the render
+  thread's swap work since the last call.
 - **Hit testing**: `Renderer::hit(surface, LogicalPoint) -> Vec<NodeId>`
   is the node under a surface-local logical point in the last frame (the
   topmost in paint order: later siblings over earlier ones and their
