@@ -324,6 +324,35 @@ fn a_renamed_or_retyped_cell_resets() {
     assert!(report.reset[0].1.contains("type changed"), "{report:?}");
 }
 
+/// A module renamed in two loads (the new file first, then the use
+/// sites with the old file gone): the second load drops the old module's
+/// cells, and those holding a value the user set are reported reset.
+#[test]
+fn cells_removed_with_their_module_are_reported_when_set() {
+    let bar = |m: &str| format!("bar Top {{ text join(\" \", {m}.a, {m}.b) }}\n");
+    let cells = "export state a = 1\nexport state b = 2\n";
+    let mut shell = boot(&[("cells.strand", cells), ("bar.strand", &bar("cells"))]);
+    shell.inst.set_value("cells", "a", Value::int(7)).unwrap();
+    shell.flush();
+    // The new file alone: a module added beside the old one.
+    let (report, _) = shell.reload(&[
+        ("cells.strand", cells),
+        ("store.strand", cells),
+        ("bar.strand", &bar("cells")),
+    ]);
+    assert!(report.reset.is_empty(), "{report:?}");
+    // Then the old one gone with the use sites moved.
+    let files = [("store.strand", cells), ("bar.strand", &*bar("store"))];
+    let (report, _) = shell.reload(&files);
+    assert_eq!(
+        report.reset,
+        [("cells.a".to_string(), "removed with its module".to_string())],
+        "only the cell holding a set value: {report:?}"
+    );
+    assert!(report.classes.contains(&EditClass::StateReset));
+    shell.assert_cold_boot(&files);
+}
+
 /// `@reset` on a declaration resets that cell at the reload.
 #[test]
 fn at_reset_resets_one_cell() {

@@ -883,6 +883,16 @@ impl Instance {
             } else if let Some(why) = carry.surface_kind_change(&key) {
                 report.class(EditClass::StateReset);
                 report.reset.push((rec.path().to_string(), why.to_string()));
+            } else if module_gone(&rec, &carry.old_prog, &ctx.vm.prog) && !rec.at_default(&rt) {
+                // A file's cell whose module is gone: removed, or renamed
+                // in an earlier load (the new file saved first). A value
+                // the user set is lost, so say so (design.md: real
+                // ambiguity resets with a warning; decisions.md, wave2-exit).
+                report.class(EditClass::StateReset);
+                report.reset.push((
+                    rec.path().to_string(),
+                    "removed with its module".to_string(),
+                ));
             }
         }
         ctx.handover.borrow_mut().extend(carry.handover.drain(..));
@@ -1558,4 +1568,13 @@ impl Drop for Instance {
     fn drop(&mut self) {
         self.shutdown();
     }
+}
+
+/// `rec` is a file's (module's) cell, and the new program has no module
+/// of that name any more.
+fn module_gone(rec: &reload::CellRec, old: &Program, new: &Program) -> bool {
+    let Some((module, _)) = rec.path().split_once('.') else {
+        return false;
+    };
+    old.files.iter().any(|f| f.module == module) && !new.files.iter().any(|f| f.module == module)
 }

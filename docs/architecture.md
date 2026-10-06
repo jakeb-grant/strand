@@ -266,7 +266,9 @@ be built and tested without the language, and the language without pixels.
      the same way while some text on it has no layout at any scale or
      width (a node just added), up to `NEW_TEXT_WAIT` = 16 ms (set with
      `Renderer::set_new_text_wait`), so a new node and its glyphs reach
-     the screen in one frame. A surface that has painted draws, while its
+     the screen in one frame; only while the surface is idle (no frame
+     painted within `BUSY_WINDOW` = 34 ms): a surface in motion paints at
+     once and the glyphs follow a frame later (decisions.md, wave2-exit). A surface that has painted draws, while its
      layout is re-shaped, a stand-in from another scale or width,
      resampled and shifted so its alignment lands where the right one's
      will; layouts no surface wants are pruned.
@@ -1291,7 +1293,10 @@ It does not depend on `strand-compiler` or `strand-core`.
 - **Files.** `Watcher::spawn(Option<ConfigWatch>, Options, EventSink)`
   runs the `strand-watch` thread (one thread: a raw inotify fd and a
   control eventfd under `poll(2)`; with no inotify instance, everything
-  is polled).
+  is polled). Dropping the `Watcher` stops it; `Watcher::join(self) ->
+  thread::Result<()>` stops it and says whether the thread panicked (the
+  binary's `live::Worker::join` joins the compiler worker, then the
+  watcher, and `strand run` logs a panic of either).
   `ConfigWatch { root, modules: ModuleSet { files, dirs, errors,
   too_deep }, rescan }` is `source::find_files`'s `Discovery` (`files`,
   `dirs`, `errors` with each error as text, `too_deep`) plus a

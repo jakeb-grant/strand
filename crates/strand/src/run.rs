@@ -1127,7 +1127,9 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
     };
     let _ = to_logic.send(ToLogic::Shutdown);
     let joined = logic.join();
-    drop(compiler);
+    if compiler.join().is_err() {
+        log::error!("the compiler worker or the file watcher panicked");
+    }
     match (end, joined) {
         (_, Err(_)) => Err(DemoError::Logic("panicked".into())),
         (End::Failed(e), _) => Err(e),

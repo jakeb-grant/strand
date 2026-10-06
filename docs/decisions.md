@@ -3235,7 +3235,7 @@ parameter and the cells' module (its file renamed with `mv`); "moves"
 are nodes reordered and wrapped, a list entry moved, the component moved
 to the other file and the module's file renamed. Syntax errors come from
 templates and from a random word of a file deleted or duplicated
-(redrawn when it still compiles). Before each edit some state is changed
+(one that still compiles: round 2 below). Before each edit some state is changed
 by clicks, as a user would, and now and then the overlay is closed.
 
 **2026-10-05 · What the fuzzer asserts.** After every diff the shell
@@ -3261,8 +3261,9 @@ same files with the state the edit table keeps written into it
 chip the test means to set that the cold boot does not show fails at
 once), and the number of cells `strand watch` reports reset equals the
 table's. One pipeline also feeds an offline `Renderer` (vello_cpu,
-inline shaping), a surface per surface-kind node, each painted with
-buffer age 1 after every diff: no surface's frame may be only its
+inline shaping), a surface per surface-kind node, painted after every
+diff into two buffers in turn with their buffer age (round 2; age 1
+before it): no surface's frame may be only its
 background, the painted surfaces must be the scene's, and after each
 step the pixels must equal (within 2 per channel) a fresh renderer's
 painting of the cold boot, so a stale paint cache, a wrong damage rect
@@ -3283,10 +3284,13 @@ module renamed (its file) in one load resets its cells, reported
 `renamed` (the cells' scope gets fresh cells, the reload's rename rule).
 Renamed in two loads (the new file saved first, so the old one's
 removal is held while the new module commits beside it) it is a module
-added and then one removed: the old cells go with their declarations
-and nothing is reported, as for any deleted `state`. The values are the
-same either way; telling a file rename from a deletion would be
-guessing, which design.md rules out ("Strand never guesses").
+added and then one removed: the old cells go with their module. Telling
+a file rename from a deletion would be guessing, which design.md rules
+out ("Strand never guesses"), so the values are the same either way;
+but a value the user set must not vanish silently ("real ambiguity
+resets with a warning"), so a load that drops a module reports each of
+its cells that does not hold its default as reset, `removed with its
+module` (amended below, round 2).
 
 **2026-10-05 · Save → pixels ends at the presentation, as a monitor
 would show it.** The M1 gate "under 50 ms from save to pixels" is
@@ -3339,3 +3343,100 @@ the hold so `strand-surface` wakes for it. Changed text holds nothing:
 its old layout shows until the new one lands. A node added is now
 presented in 18 ms
 (`crates/strand-render/tests/damage.rs::a_new_text_node_holds_the_frame_for_its_glyphs`).
+
+**2026-10-05 · Round 2: a module's cells removed with it are reported.**
+`Instance::reload` reports a reset, `removed with its module`, for every
+cell of a module (a file's `state`) that the new program no longer has
+when the cell holds a value other than its default, so the overlay and
+`strand watch` warn as they do for a rename in one load
+(`crates/strand-compiler/tests/reload.rs::cells_removed_with_their_module_are_reported_when_set`).
+A cell at its default loses nothing and is not reported; a `state`
+deleted from a module that stays is still just gone (design.md's table
+has no row for it). The fuzzer expects exactly those resets for a module
+renamed in two loads.
+
+**2026-10-05 · Round 2: the reload fuzzer also runs on a compositor.**
+A sixth pipeline saves in place into the whole of `strand run` on a
+headless sway with two outputs (`HEADLESS-1`, `HEADLESS-2`, which the
+fuzzer's screens are named after, so its bars land on them): the
+`SurfaceManager`, `Host`, the renderer and the text worker, as
+`run::run` wires them, the monitors not forwarded so its logic thread
+hears the same screens as the other five. Whenever it has applied
+everything the logic thread sent, its live layer surfaces must be
+exactly the scene's surface roots (the overlay's included: a leaked or
+missing `wl_surface`), no committed buffer may show only its background
+(a probe on `Host::paint` sees every committed frame), and after each
+step every surface must be configured and have committed a frame. CI
+requires it (`STRAND_REQUIRE_SWAY`); without sway it is skipped and the
+test says so. Checked against a sabotaged `strand-surface` (a removed
+node's surfaces not destroyed): it fails at the first surface edit. The
+model has a second surface, an `osd` in a file of its own, which no edit
+touches: an edit of the main surface's layer, namespace or kind must
+replace only that one, and the `osd` must keep its scene id. A panel and
+an `osd` need a width and a height until M2 sizes surfaces from their
+content (`strand-surface` refuses an auto-sized layer surface), so the
+model gives them one.
+
+**2026-10-05 · Round 2: the overlay's 250 ms, as the fuzzer checks it.**
+The overlay may open on errors only once a load has been held back for
+200 ms (250 ms of quiet, less the gap between the test's clock, which
+starts before the save, and the logic thread's, which starts at the
+held load) with no save ending the hold before then; reload notices may
+open it as before. A partial save completed 50 ms later, a broken save
+fixed at once and a multi-file save split into two loads must therefore
+never show it. Checked by setting the overlay's quiet period to zero:
+the run fails on the first partial save.
+
+**2026-10-05 · Round 2: more of the fuzzer's draws are run.** A random
+deletion or duplication of a word that still compiles is run as an edit
+when the word is part of an expression (a string, an argument, a path:
+the observed cases are a label or argument dropped or doubled) outside
+the keyed list's literal (an entry dropped and put back starts fresh,
+its chips' state gone, which a 10k run found and the fuzzer does not
+model), then the file is saved back; the table keeps every cell for such an edit, so
+after the save back the shell must equal the cold boot with the state
+from before, with no reset reported either time (its own frame is not
+modelled, and the main surface's texts are not checked while it shows).
+A mutation of a declaration's keyword, or of the `osd`'s file (its one
+text may go, a blank surface that is not a fault), is drawn again.
+About 3% of random mutations compile, so one draw in 25 searches up to
+100 mutations for one. Clicks also happen while a broken save is held
+back: the shell runs its last good config meanwhile (design.md's
+scenario 3), and the fix must land on the clicked state.
+
+**2026-10-05 · Round 2: a descheduled delete-and-create.** A delete and
+its create further apart than the watcher's 50 ms grace are two saves,
+correctly (removing `bar.strand` alone even commits: the shell has no
+bar until the create), so the fuzzer cannot check such a step as one
+save. It no longer fails on the test thread's clock alone: the pause is
+spun (a sleeping thread's wake-up waits for a CPU on a busy machine),
+and a gap past the grace only marks the step; the run fails only if the
+watcher then really took two loads (or showed a frame in between), and
+the message says the test thread was descheduled, not that reload is at
+fault. CI also makes it unlikely: the per-push run is its own step,
+`--test-threads=1`, outside the parallel workspace run, with
+`STRAND_FUZZ_MAX_GAP_MS=20` (still past the 15 ms coalescing, 30 ms to
+spare); the nightly run is alone in its job with the full 0–25 ms.
+
+**2026-10-05 · Round 2: a surface in motion never holds for new text.**
+The new-text hold (above) applies only to an idle surface: one that has
+not painted within `BUSY_WINDOW` = 34 ms (two refreshes at 60 Hz). A
+surface in motion (an animation, a spectrum, rows scrolling into view)
+paints at once and the new glyphs follow a frame later, so nothing else
+on it waits (design.md: the renderer never waits; M4's smooth 2,000-row
+scrolling). M1's renderer animates nothing yet, so "in motion" is read
+from its recent paints; the springs that land in M2 can replace it with
+their own in-flight state
+(`crates/strand-render/tests/damage.rs::a_busy_surface_does_not_hold_for_new_text`).
+
+**2026-10-05 · Round 2: the plug gate runs from hearing of the monitor.**
+A plugged monitor is gated from the main thread hearing of it
+(`wl_output.done`) to its bar's first painted frame, within one refresh:
+the logic thread's answer, the main thread applying it, the layer
+surface's creation, its configure round trip and the paint. The latency
+gates stay a model for a monitor (the headless sample plus a uniform
+vblank phase on an idle surface); the worst phase (a whole refresh
+added) is printed and recorded in `docs/m1-report.md`, not gated. A
+token edit on a busy surface is not measured: M1 animates nothing, and
+headless sway answers a frame callback at once, so the extra refresh a
+monitor would add there cannot be seen (m1-report, open).

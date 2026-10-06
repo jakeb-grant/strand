@@ -83,6 +83,20 @@ impl CellRec {
         self.holder().dispose(rt);
     }
 
+    /// It still holds its default (a settings file counts as kept: its
+    /// values are on disk).
+    pub(crate) fn at_default(&self, rt: &Runtime) -> bool {
+        match self {
+            CellRec::Plain { sig, default, .. } => {
+                sig.get_untracked(rt).ok().is_none_or(|v| v == *default)
+            }
+            CellRec::Keyed { list, default, .. } => {
+                list.get_untracked(rt).ok().is_none_or(|v| v == *default)
+            }
+            CellRec::Settings { .. } => true,
+        }
+    }
+
     pub(crate) fn path(&self) -> &str {
         match self {
             CellRec::Plain { path, .. }

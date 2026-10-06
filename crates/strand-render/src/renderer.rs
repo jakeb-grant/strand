@@ -31,6 +31,14 @@ pub const FIRST_FRAME_TEXT_WAIT: Duration = Duration::from_millis(50);
 /// [`Renderer::frame_deadline`]).
 pub const NEW_TEXT_WAIT: Duration = Duration::from_millis(16);
 
+/// A surface that painted a frame this recently is in motion (an
+/// animation, a stream of changes: two refreshes at 60 Hz). It never
+/// holds a frame for new text: it paints at once and the glyphs follow a
+/// frame later, so nothing else on it stalls (design.md: the renderer
+/// never waits). The springs that land in M2 replace this with their own
+/// in-flight state (decisions.md, wave2-exit).
+pub const BUSY_WINDOW: Duration = Duration::from_millis(34);
+
 /// How often a layout that came back incomplete (no atlas room) is asked
 /// for again before waiting for other text to change or go.
 pub const MAX_TEXT_RETRIES: u8 = 2;
@@ -135,6 +143,8 @@ struct SurfaceState {
     /// at all (a new node): set when such text shows up, cleared when
     /// none is left.
     new_text_until: Option<Instant>,
+    /// When it last painted a frame (see [`BUSY_WINDOW`]).
+    painted_at: Option<Instant>,
     dirty: bool,
     /// Fully opaque part of the last painted frame.
     opaque: Damage,
@@ -302,6 +312,7 @@ impl Renderer {
                 wait_until: None,
                 awaiting_text: false,
                 new_text_until: None,
+                painted_at: None,
                 dirty: true,
                 opaque: Damage::new(),
                 time: Duration::ZERO,
@@ -410,7 +421,8 @@ impl Renderer {
     ///
     /// A first frame waits for all of its text (up to the first-frame
     /// wait); a later one only for text with nothing to show yet, a node
-    /// just added (up to [`NEW_TEXT_WAIT`]). Changed text keeps showing
+    /// just added (up to [`NEW_TEXT_WAIT`]), and only on a surface that
+    /// is idle (not painted within [`BUSY_WINDOW`]). Changed text keeps showing
     /// its old layout meanwhile, so it holds nothing.
     pub fn frame_deadline(&self, surface: SurfaceId) -> Option<Instant> {
         let s = self.surfaces.get(&surface)?;
@@ -656,10 +668,15 @@ impl Renderer {
                     s.dirty = false;
                 }
                 s.awaiting_text = !waiting.is_empty();
+                // A surface in motion holds nothing (see BUSY_WINDOW).
+                let now = Instant::now();
+                let idle = s
+                    .painted_at
+                    .is_none_or(|t| now.saturating_duration_since(t) >= BUSY_WINDOW);
                 s.new_text_until = match (blank, s.new_text_until) {
                     (false, _) => None,
                     (true, Some(t)) => Some(t),
-                    (true, None) if s.painted && !wait.is_zero() => Some(Instant::now() + wait),
+                    (true, None) if s.painted && idle && !wait.is_zero() => Some(now + wait),
                     (true, None) => None,
                 };
                 s.cache = Some(f);
@@ -1028,6 +1045,7 @@ impl Painter for Renderer {
         s.history.truncate(DAMAGE_HISTORY);
         s.valid = true;
         s.painted = true;
+        s.painted_at = Some(Instant::now());
         let scale = s.scale;
         self.raster
             .paint(&f.items, &total, &self.atlas, scale, target);

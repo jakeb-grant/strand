@@ -1,50 +1,71 @@
 //! The reload fuzzer (design.md, "How reload is tested"; the M1 exit
 //! gate "10k random edits with no panic or blank frame").
 //!
-//! Random edits of a three-file config are replayed through the five
+//! Random edits of a four-file config are replayed through the five
 //! editor save styles: one live `strand run` pipeline per style (the real
-//! watcher, compiler worker, logic thread and IPC socket, without
-//! Wayland), each on its own copy of the config on tmpfs, with two
-//! screens plugged in, every edit saved into all five. The edits cover
-//! each row of design.md's "What each edit does" that M1 runs: token
-//! values; props and bindings; nodes added, removed and moved; keyed list
-//! entries; `state` defaults; `state` names and types; handler code; a
-//! timer's duration; the surface's layer, namespace and kind (`bar` on
-//! every screen ↔ one `panel`). Renames go across files: a cell, a token
-//! path, the component's parameter and the module (its file renamed).
-//! A component moves between files. Syntax errors come from templates
-//! and from random token deletions and duplications. Multi-file edits
-//! are sometimes saved one file first (a partial save). Between edits,
-//! state is changed by clicks, as a user would.
+//! watcher, compiler worker, logic thread and IPC socket), each on its own
+//! copy of the config on tmpfs, with two screens plugged in, every edit
+//! saved into all five. A sixth pipeline saves in place into the whole
+//! of `strand run` on a headless sway with two outputs: the surface
+//! manager, the renderer and the text worker, so its layer surfaces and
+//! committed buffers are checked (skipped when sway is not installed,
+//! unless `STRAND_REQUIRE_SWAY` is set, as in CI).
+//!
+//! The edits cover each row of design.md's "What each edit does" that M1
+//! runs: token values; props and bindings; nodes added, removed and
+//! moved; keyed list entries; `state` defaults; `state` names and types;
+//! handler code; a timer's duration; the surface's layer, namespace and
+//! kind (`bar` on every screen ↔ one `panel`), with a second surface (an
+//! `osd` in a file of its own) that must be kept. Renames go across
+//! files: a cell, a token path, the component's parameter and the module
+//! (its file renamed). A component moves between files. Syntax errors
+//! come from templates and from random token deletions and duplications;
+//! a random mutation that still compiles and only touches an expression
+//! is run as an edit and saved back. Multi-file edits are sometimes
+//! saved one file first (a partial save). Between edits, state is
+//! changed by clicks, as a user would, also while a broken save is held
+//! back (the shell keeps running its last good config).
 //!
 //! What every pipeline must do:
 //!
 //! - After every diff the scene is the one before the step or the one
-//!   after it (a commit is atomic: no intermediate frame), every surface
-//!   of the shell is up with its fixed texts, the surfaces' scene ids are
-//!   the ones before unless the edit changed the surface's layer,
-//!   namespace or kind (then each is replaced in one diff), and at most
-//!   one error overlay is shown.
-//! - The overlay never opens unless a load held something back or a
-//!   reload left notices (a reset, a kept value); once a commit lands
-//!   clean it lists no errors.
+//!   after it (a commit is atomic: no intermediate frame; a mutation's
+//!   own frame is not modelled), every surface of the shell is up with
+//!   its fixed texts, the surfaces' scene ids are the ones before (an
+//!   edit of the main surface's layer, namespace or kind replaces that
+//!   surface, in one diff, and keeps the note), and at most one error
+//!   overlay is shown.
+//! - The overlay never opens unless a reload left notices (a reset, a
+//!   kept value) or a load was held back for 250 ms with no save ending
+//!   the hold; once a commit lands clean it lists no errors.
 //! - A broken or partial save is held back (`held`, never `unreadable`)
 //!   and changes nothing; a single file's save is one load (never split,
-//!   delete-then-create included, with a 0–25 ms gap).
+//!   delete-then-create included, with a 0–25 ms gap: 0–20 in CI's
+//!   per-push run; a split after the test thread itself was descheduled
+//!   past the watcher's 50 ms grace fails saying so).
 //! - After each step the scene and token table equal a cold boot of the
 //!   same files with the state the edit table keeps written into it, and
 //!   the resets `strand watch` reports are the table's.
 //! - One pipeline's diffs also go through an offline `Renderer` (vello_cpu,
-//!   damage and buffer age as on screen): after every diff each surface
-//!   paints something besides its background, one surface per scene
-//!   surface, and after each step its pixels equal a fresh renderer's
-//!   painting of the cold boot.
+//!   damage tracked over two buffers per surface with their buffer age,
+//!   text shaped inline): after every diff each surface paints something
+//!   besides its background, one surface per scene surface, and after
+//!   each step its pixels equal a fresh renderer's painting of the cold
+//!   boot.
+//! - The sway pipeline has one layer surface per scene surface (the
+//!   overlay's included) whenever it has applied what the logic thread
+//!   sent, never commits a buffer that shows only its background, and
+//!   after each step every surface is configured and has committed a
+//!   frame.
+//! - Every thread (logic, compiler worker, watcher) ends without a panic.
 //!
 //! `STRAND_FUZZ_EDITS` sets the number of edits (60), `STRAND_FUZZ_SEED`
-//! the seed (decimal or `0x` hex, as printed); the directory is
-//! `/dev/shm` when it is there (tmpfs), `STRAND_FUZZ_DIR` overrides it.
-//! The 10,000-edit run is the nightly CI job (`docs/m1-report.md`).
+//! the seed (decimal or `0x` hex, as printed), `STRAND_FUZZ_MAX_GAP_MS`
+//! the longest delete-to-create gap (25); the directory is `/dev/shm`
+//! when it is there (tmpfs), `STRAND_FUZZ_DIR` overrides it. The
+//! 10,000-edit run is the nightly CI job (`docs/m1-report.md`).
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader};
 use std::os::unix::net::UnixStream;
@@ -67,8 +88,11 @@ use strand_scene::{
     NodeId, NodeKind, PaintTarget, Painter, Prop, PropValue, Scale, SceneDiff, Size, SurfaceChange,
     SurfaceId, SurfaceSpec,
 };
-use strand_text::{FontConfig, TextEngine};
+use strand_surface::{Config, SurfaceManager};
+use strand_text::{FontConfig, TextEngine, TextWorker};
 
+use crate::bench::Sway;
+use crate::demo::host::{Host, Probe, ProbeHandle};
 use crate::ipc;
 use crate::live::Worker;
 use crate::run::tests::{inbox, screen};
@@ -81,15 +105,27 @@ const PATIENCE: Duration = Duration::from_secs(20);
 /// step, but the diff takes one more hop to the test.
 const QUIET: Duration = Duration::from_millis(50);
 /// The longest pause between a delete and its create: under the
-/// watcher's 50 ms grace after a removal, over its 15 ms coalescing.
+/// watcher's 50 ms grace after a removal, over its 15 ms coalescing
+/// (`STRAND_FUZZ_MAX_GAP_MS` overrides it: CI's per-push run takes 20).
+/// The pause is spun, not slept, so a busy machine's wake-up latency is
+/// not added to it.
 const MAX_GAP_MS: u64 = 25;
-/// A delete and its create further apart than this are two saves to the
-/// watcher (its grace after a removal), so the step cannot be checked
-/// as one: the test thread was descheduled, and says so.
+/// A delete and its create further apart than this may be two saves to
+/// the watcher (its grace after a removal). When the watcher did take
+/// them as two, the step cannot be checked as one save: the run fails
+/// naming a descheduled test thread, not a reload fault.
 const GRACE: Duration = Duration::from_millis(50);
 
-/// The screens plugged in (ids; a bar's `screens` prop is the id).
-const SCREENS: [&str; 2] = ["A", "B"];
+/// The screens plugged in (ids; a bar's `screens` prop is the id), named
+/// as the sway pipeline's outputs so its bars land on them.
+const SCREENS: [&str; 2] = ["HEADLESS-1", "HEADLESS-2"];
+/// A second surface in a file of its own that no edit touches: an edit
+/// of the main surface recreates only that one.
+const NOTE_FILE: &str = "note.strand";
+const NOTE_TEXT: &str = "note";
+/// A hold the overlay may open on: its 250 ms of quiet, less the
+/// difference between the test's clock and the logic thread's.
+const HELD_LONG: Duration = Duration::from_millis(200);
 const CELL_NAMES: [&str; 8] = ["a", "b", "c", "d", "e", "f", "g", "h"];
 const CHIP_LABELS: [&str; 4] = ["x", "y", "z", "w"];
 const LIST_LABELS: [&str; 4] = ["p", "q", "r", "s"];
@@ -105,7 +141,7 @@ const SURFACE_NAMES: [&str; 2] = ["Top", "Main"];
 const OVERLAY: &str = "StrandErrors";
 
 fn screens() -> Vec<ScreenInfo> {
-    vec![screen(SCREENS[0], "DP-1"), screen(SCREENS[1], "DP-2")]
+    SCREENS.iter().map(|s| screen(s, s)).collect()
 }
 
 /// A small deterministic generator (xorshift).
@@ -296,12 +332,13 @@ impl Model {
             })
             .collect();
         let mut bar = format!(
-            "state n = {}\n{} {} {{\n  {}: top; height: {}\n  layer: {}\n  bg: ${}\n  every {}000s {{ n += 1 }}\n  row {{\n    text join(\" \", \"n\", n) {{ on click {{ n += {} }} }}\n",
+            "state n = {}\n{} {} {{\n  {}: top; {}height: {}\n  layer: {}\n  bg: ${}\n  every {}000s {{ n += 1 }}\n  row {{\n    text join(\" \", \"n\", n) {{ on click {{ n += {} }} }}\n",
             self.n_default,
             if self.panel { "panel" } else { "bar" },
             self.name,
-            // A bar takes an edge, a panel an anchor.
+            // A bar takes an edge, a panel an anchor and a width.
             if self.panel { "anchor" } else { "edge" },
+            if self.panel { "width: 600; " } else { "" },
             self.height,
             if self.bottom { "bottom" } else { "top" },
             self.bg_token,
@@ -346,6 +383,12 @@ impl Model {
             ("theme.strand".to_string(), theme),
             (self.module_file(), cells),
             ("bar.strand".to_string(), bar),
+            (
+                NOTE_FILE.to_string(),
+                format!(
+                    "osd Note {{\n  anchor: bottom; width: 200; height: 24\n  text \"{NOTE_TEXT}\"\n}}\n"
+                ),
+            ),
         ])
     }
 }
@@ -471,8 +514,11 @@ fn table(old: &Model, new: &Model, s: &State) -> (State, usize) {
 enum Edit {
     /// A valid config.
     To(Model, &'static str),
-    /// One file saved with a syntax or name error.
-    Broken(String, String),
+    /// One file saved with a syntax or name error, or (`Some`: the word
+    /// deleted or duplicated) a random mutation, which may still compile.
+    Broken(String, String, Option<String>),
+    /// A random mutation that compiles, searched for.
+    Mutate,
 }
 
 /// The edits whose surfaces are replaced (design.md: "Only that surface
@@ -483,7 +529,8 @@ fn recreates(kind: &str) -> bool {
 
 fn edit(m: &Model, r: &mut Rng) -> Edit {
     let mut n = m.clone();
-    let kind = match r.below(24) {
+    let kind = match r.below(25) {
+        24 => return Edit::Mutate,
         0 => {
             n.bg = r.below(0x100_0000) as u32;
             "token"
@@ -662,22 +709,47 @@ fn edit(m: &Model, r: &mut Rng) -> Edit {
                     text = text.replacen("  row {\n", "  row {\n    txet \"oops\"\n", 1);
                 }
                 3 | 4 => {
-                    // A random token deleted, or duplicated.
-                    let words: Vec<(usize, usize)> = words(&text);
-                    let &(a, b) = r.pick(&words);
-                    if r.below(2) == 0 {
-                        text.replace_range(a..b, "");
-                    } else {
-                        let w = text[a..b].to_string();
-                        text.insert_str(b, &format!(" {w}"));
-                    }
+                    let (text, w) = mutate(&text, r);
+                    return Edit::Broken(f, text, Some(w));
                 }
                 _ => text.push_str(&format!("let broken = {}.nope + 1\n", m.module)),
             }
-            return Edit::Broken(f, text);
+            return Edit::Broken(f, text, None);
         }
     };
     Edit::To(n, kind)
+}
+
+/// A random word of `text` deleted, or duplicated: the text and the word.
+fn mutate(text: &str, r: &mut Rng) -> (String, String) {
+    let mut text = text.to_string();
+    let words: Vec<(usize, usize)> = words(&text);
+    let &(a, b) = r.pick(&words);
+    let w = text[a..b].to_string();
+    if r.below(2) == 0 {
+        text.replace_range(a..b, "");
+    } else {
+        text.insert_str(b, &format!(" {w}"));
+    }
+    (text, w)
+}
+
+/// A random mutation of `files` that compiles and that the fuzzer runs
+/// ([`runnable_mutation`]): the file, its text and the word (most
+/// mutations do not compile; up to 100 are drawn).
+fn compiling_mutation(
+    files: &BTreeMap<String, String>,
+    r: &mut Rng,
+) -> Option<(String, String, String)> {
+    let names: Vec<&String> = files.keys().collect();
+    (0..100).find_map(|_| {
+        let f = (*r.pick(&names)).clone();
+        let (text, w) = mutate(&files[&f], r);
+        let mut t = files.clone();
+        t.insert(f.clone(), text.clone());
+        (runnable_mutation(&f, &w, &files[&f], &text) && compile(&t).is_ok())
+            .then_some((f, text, w))
+    })
 }
 
 /// Byte ranges of the whitespace-separated words of `text`.
@@ -740,6 +812,12 @@ fn look(scene: &SceneMirror) -> Look {
         scene: blocks.concat(),
         tokens: scene.render_tokens(),
     }
+}
+
+/// The main surface (the bar on each screen, or the panel), not the
+/// note.
+fn is_main(scene: &SceneMirror, root: NodeId) -> bool {
+    matches!(scene.kind(root), Some(NodeKind::Bar | NodeKind::Panel))
 }
 
 /// The shell's surfaces (every root but the overlay).
@@ -834,18 +912,26 @@ fn cold_boot(m: &Model, files: &BTreeMap<String, String>, state: &State) -> (Loo
     (look(&scene), diffs)
 }
 
+/// Buffers per offline surface: a double-buffered compositor surface.
+const BUFFERS: usize = 2;
+
 /// One surface painted offline, as a compositor would show it.
 struct Frame {
     surface: SurfaceId,
     size: Size,
-    pixels: Vec<u8>,
-    painted: bool,
+    /// Its buffers and the frame each was last painted in.
+    buffers: Vec<(Vec<u8>, Option<u64>)>,
+    /// Frames painted; the shown buffer is the one painted last.
+    frames: u64,
+    shown: usize,
 }
 
 /// An offline renderer fed one pipeline's diffs, a surface per
-/// surface-kind node (as `strand-surface` would make them; the overlay
-/// aside), each painted into its own buffer with buffer age 1, so damage
-/// tracking decides what is repainted.
+/// surface-kind node (the scene-level stand-in for `strand-surface`'s;
+/// the overlay aside), painted into two buffers in turn with their
+/// buffer age (2 once both are painted), so damage tracking and its
+/// history decide what is repainted. Text is shaped inline (the text
+/// worker's hold is `damage.rs`'s and the sway pipeline's).
 struct Pixels {
     r: Renderer,
     next: u32,
@@ -884,8 +970,9 @@ impl Pixels {
             Frame {
                 surface,
                 size,
-                pixels: vec![0; (size.w * size.h * 4) as usize],
-                painted: false,
+                buffers: vec![(vec![0; (size.w * size.h * 4) as usize], None); BUFFERS],
+                frames: 0,
+                shown: 0,
             },
         );
     }
@@ -922,18 +1009,23 @@ impl Pixels {
     fn paint(&mut self) -> BTreeMap<String, (NodeId, Size, Vec<u8>)> {
         let mut out = BTreeMap::new();
         for (node, f) in &mut self.frames {
-            if self.r.wants_frame(f.surface) || !f.painted {
-                let age = if f.painted { 1 } else { 0 };
+            if self.r.wants_frame(f.surface) || f.frames == 0 {
+                let next = (f.shown + 1) % BUFFERS;
+                let (px, at) = &mut f.buffers[next];
+                // Frames since this buffer was painted (0: never).
+                let age = at.map_or(0, |k| (f.frames - k).min(u8::MAX as u64) as u8);
                 let mut target =
-                    PaintTarget::new(&mut f.pixels, f.size, f.size.w * 4, Scale::ONE, age).unwrap();
+                    PaintTarget::new(px, f.size, f.size.w * 4, Scale::ONE, age).unwrap();
                 self.r.paint(f.surface, &mut target);
-                f.painted = true;
+                *at = Some(f.frames);
+                f.frames += 1;
+                f.shown = next;
             }
             let key = match self.r.surface_spec(*node) {
                 Some(s) => format!("{:?} {:?} {:?}", s.kind, s.screens, s.name),
                 None => format!("{node:?}"),
             };
-            out.insert(key, (*node, f.size, f.pixels.clone()));
+            out.insert(key, (*node, f.size, f.buffers[f.shown].0.clone()));
         }
         out
     }
@@ -1030,9 +1122,120 @@ fn after(disk: &BTreeMap<String, String>, op: &Op) -> BTreeMap<String, String> {
     d
 }
 
+/// What the sway pipeline's surfaces committed, seen from the painter.
+#[derive(Default)]
+struct Seen {
+    /// Surfaces with a committed frame.
+    painted: RefCell<BTreeSet<SurfaceId>>,
+    /// Committed frames that showed only their background.
+    blank: RefCell<Vec<SurfaceId>>,
+}
+
+impl Probe for Seen {
+    fn painted(&self, _: SurfaceId, _: bool, _: Scale, _: &Renderer) {}
+
+    fn configured(&self, _: SurfaceId) {}
+
+    fn monitor(&self) {}
+
+    fn frame(&self, surface: SurfaceId, target: &PaintTarget<'_>) {
+        self.painted.borrow_mut().insert(surface);
+        let row = (target.size.w * 4) as usize;
+        let first = target.pixels.get(..4).unwrap_or(&[]).to_vec();
+        let drawn = target
+            .pixels
+            .chunks(target.stride as usize)
+            .take(target.size.h as usize)
+            .any(|r| r[..row.min(r.len())].chunks_exact(4).any(|c| c != first));
+        if !drawn {
+            self.blank.borrow_mut().push(surface);
+        }
+    }
+}
+
+/// The pipeline on a compositor: `strand run`'s main thread (surface
+/// manager, renderer, text worker) on a headless sway with two outputs
+/// named as the fuzzer's screens.
+struct Wl {
+    mgr: SurfaceManager<Host>,
+    seen: Rc<Seen>,
+    /// Dropped after the manager (field order).
+    _sway: Sway,
+}
+
+impl Wl {
+    /// `None` when sway is not installed (and not required).
+    fn start(diffs: calloop::channel::Channel<SceneDiff>) -> Option<(Wl, Receiver<SceneDiff>)> {
+        let sway = Sway::start("reload fuzzer")?;
+        sway.msg(&["create_output"]).expect("swaymsg create_output");
+        for o in SCREENS {
+            sway.msg(&["output", o, "resolution", "800x600"])
+                .unwrap_or_else(|| panic!("swaymsg output {o}"));
+        }
+        let (ping, ping_source) = calloop::ping::make_ping().unwrap();
+        let font = std::fs::read(strand_text::test_font_path()).unwrap();
+        let worker = TextWorker::spawn_with_waker(
+            FontConfig::isolated(vec![Arc::new(font)]),
+            Some(Box::new(move || ping.ping())),
+        )
+        .unwrap();
+        let mut renderer = Renderer::new(TextBackend::Worker(worker));
+        renderer.set_first_frame_wait(crate::demo::FIRST_FRAME_TEXT_WAIT);
+        // Not forwarding the monitors: the logic thread hears the same
+        // screens as the other pipelines (named as sway's outputs).
+        let mut host = Host::new(renderer, false);
+        let seen = Rc::new(Seen::default());
+        host.probe = Some(ProbeHandle(seen.clone()));
+        let conn =
+            wayland_client::Connection::from_socket(UnixStream::connect(&sway.socket).unwrap())
+                .unwrap();
+        let mut mgr = SurfaceManager::with_connection(conn, host, Config::default()).unwrap();
+        let handle = mgr.loop_handle();
+        handle
+            .insert_source(ping_source, |_, _, state| {
+                state.host_mut().renderer.update();
+                state.poll();
+            })
+            .unwrap();
+        let (fwd, inbox) = std::sync::mpsc::channel();
+        handle
+            .insert_source(diffs, move |event, _, state| {
+                if let calloop::channel::Event::Msg(diff) = event {
+                    let _ = fwd.send(diff.clone());
+                    crate::demo::apply(state, diff);
+                }
+            })
+            .unwrap();
+        let deadline = Instant::now() + PATIENCE;
+        loop {
+            let names: BTreeSet<String> = mgr
+                .state()
+                .monitors()
+                .into_iter()
+                .filter_map(|m| m.connector)
+                .collect();
+            if SCREENS.iter().all(|s| names.contains(*s)) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "sway's outputs: {names:?}");
+            mgr.dispatch(Some(Duration::from_millis(10))).unwrap();
+        }
+        Some((
+            Wl {
+                mgr,
+                seen,
+                _sway: sway,
+            },
+            inbox,
+        ))
+    }
+}
+
 /// One live pipeline, saving in one style.
 struct Shell {
     style: Style,
+    /// What it runs on (`Sway` for the compositor pipeline).
+    label: String,
     config: PathBuf,
     store: PathBuf,
     version: u64,
@@ -1040,38 +1243,71 @@ struct Shell {
     targets: BTreeMap<String, PathBuf>,
     /// Delete-to-create gaps.
     gaps: Rng,
+    max_gap: u64,
+    /// This step's delete and create came further apart than the
+    /// watcher's grace (the test thread was descheduled).
+    descheduled: Option<Duration>,
+    /// Creates that came past the grace and still landed as one load.
+    late_creates: u64,
     worker: Option<Worker>,
     to_logic: calloop::channel::Sender<ToLogic>,
     thread: Option<JoinHandle<Result<(), String>>>,
     inbox: Receiver<SceneDiff>,
+    wl: Option<Wl>,
     scene: SceneMirror,
     events: BufReader<UnixStream>,
     /// Every diff must leave the shell looking like one of these (empty:
-    /// not checked, during the boot).
+    /// not checked, during the boot and while a mutation is shown).
     allowed: Vec<Look>,
-    /// The surfaces' scene ids every diff must keep (`None` while an edit
-    /// may replace them).
-    fixed: Option<BTreeSet<NodeId>>,
-    /// The overlay may open: something was held back, or a reload left
-    /// notices that were not dismissed since.
+    /// The surfaces' scene ids every diff must keep, and (`closed`) the
+    /// only ones it may show: an edit of the main surface's layer,
+    /// namespace or kind replaces that surface, never the note.
+    fixed: BTreeSet<NodeId>,
+    closed: bool,
+    /// A random mutation is shown: the texts it may have changed are not
+    /// checked.
+    loose: bool,
+    /// The overlay may open: a reload left notices that were not
+    /// dismissed since.
     overlay_ok: bool,
     /// Reload notices not dismissed.
     notes: bool,
     /// The overlay may list errors (no clean commit since a held load).
     errors_ok: bool,
     had_overlay: bool,
+    /// When the step's saves began.
+    save_at: Instant,
+    /// Since when a load is held back, and when the save that ends the
+    /// hold began: the overlay opens only on a hold of 250 ms.
+    hold: Option<Instant>,
+    fix_at: Option<Instant>,
     pixels: Option<Pixels>,
 }
 
 impl Shell {
+    /// A pipeline saving in `style`; `wayland`: on a headless sway
+    /// (`None` when sway is not installed and not required).
     fn start(
         base: &Path,
         style: Style,
         files: &BTreeMap<String, String>,
         seed: u64,
         pixels: bool,
-    ) -> Shell {
-        let root = base.join(format!("{style:?}"));
+        wayland: bool,
+    ) -> Option<Shell> {
+        let label = if wayland {
+            "Sway".to_string()
+        } else {
+            format!("{style:?}")
+        };
+        let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+        let (wl, inbox) = if wayland {
+            let (wl, inbox) = Wl::start(rx)?;
+            (Some(wl), inbox)
+        } else {
+            (None, inbox(rx))
+        };
+        let root = base.join(&label);
         let (config, store) = (root.join("config"), root.join("store"));
         std::fs::create_dir_all(&config).unwrap();
         std::fs::create_dir_all(&store).unwrap();
@@ -1096,7 +1332,6 @@ impl Shell {
             socket: Some(socket.clone()),
         };
         let (to_logic, from_main) = calloop::channel::channel();
-        let (tx, rx) = calloop::channel::channel::<SceneDiff>();
         to_logic.send(ToLogic::Screens(screens())).unwrap();
         let thread = std::thread::spawn(move || logic(boot, Storage::none(), from_main, tx, live));
         let deadline = Instant::now() + PATIENCE;
@@ -1104,7 +1339,7 @@ impl Shell {
             match UnixStream::connect(&socket) {
                 Ok(s) => break s,
                 Err(e) => {
-                    assert!(Instant::now() < deadline, "{style:?}: no IPC socket: {e}");
+                    assert!(Instant::now() < deadline, "{label}: no IPC socket: {e}");
                     std::thread::sleep(Duration::from_millis(5));
                 }
             }
@@ -1112,26 +1347,63 @@ impl Shell {
         let mut events = BufReader::new(stream);
         let ok = ipc::request(&mut events, &ipc::Request::Watch, PATIENCE).unwrap();
         assert_eq!(ok["ok"], true, "{ok}");
-        Shell {
+        let max_gap = env_u64("STRAND_FUZZ_MAX_GAP_MS").unwrap_or(MAX_GAP_MS);
+        assert!(
+            Duration::from_millis(max_gap) < GRACE,
+            "STRAND_FUZZ_MAX_GAP_MS={max_gap} is not under the watcher's grace"
+        );
+        Some(Shell {
             style,
+            label,
             config,
             store,
             version: 0,
             targets,
             gaps: Rng(seed.max(1)),
+            max_gap,
+            descheduled: None,
+            late_creates: 0,
             worker: Some(worker),
             to_logic,
             thread: Some(thread),
-            inbox: inbox(rx),
+            inbox,
+            wl,
             scene: SceneMirror::new(),
             events,
             allowed: Vec::new(),
-            fixed: None,
+            fixed: BTreeSet::new(),
+            closed: false,
+            loose: false,
             overlay_ok: false,
             notes: false,
             errors_ok: false,
             had_overlay: false,
+            save_at: Instant::now(),
+            hold: None,
+            fix_at: None,
             pixels: pixels.then(Pixels::new),
+        })
+    }
+
+    /// Why a step may not have been one save: the test thread's own
+    /// delay, not a reload fault.
+    fn blame(&self) -> String {
+        match self.descheduled {
+            Some(t) => format!(
+                " (the test thread's delete and create were {} ms apart, past the watcher's 50 ms grace: it was descheduled on a loaded machine; not a reload fault)",
+                t.as_millis()
+            ),
+            None => String::new(),
+        }
+    }
+
+    /// A step's saves begin (one call per step, or per part of a partial
+    /// save): a held load's hold ends here.
+    fn saving(&mut self) {
+        self.save_at = Instant::now();
+        self.descheduled = None;
+        if self.hold.is_some() && self.fix_at.is_none() {
+            self.fix_at = Some(self.save_at);
         }
     }
 
@@ -1160,16 +1432,17 @@ impl Shell {
                 let removed = Instant::now();
                 if exists {
                     std::fs::remove_file(&path).unwrap();
-                    let gap = self.gaps.below(MAX_GAP_MS + 1);
-                    std::thread::sleep(Duration::from_millis(gap));
+                    let gap = Duration::from_millis(self.gaps.below(self.max_gap + 1));
+                    while removed.elapsed() < gap {
+                        std::hint::spin_loop();
+                    }
                 }
                 std::fs::write(&path, text).unwrap();
                 let took = removed.elapsed();
-                assert!(
-                    took < GRACE,
-                    "{name}: the delete and the create were {} ms apart, past the watcher's grace: the test thread was descheduled (a loaded machine), not a reload fault",
-                    took.as_millis()
-                );
+                if took >= GRACE {
+                    self.descheduled = Some(took);
+                    self.late_creates += 1;
+                }
             }
             Style::SymlinkSwap => {
                 self.version += 1;
@@ -1207,11 +1480,11 @@ impl Shell {
 
     /// Apply one diff and check it (see the module docs).
     fn apply(&mut self, what: &str, diff: &SceneDiff) {
-        let style = self.style;
+        let label = self.label.as_str();
         let booted = !self.scene.roots().is_empty();
         self.scene
             .apply(diff)
-            .unwrap_or_else(|e| panic!("{what} ({style:?}): {e}"));
+            .unwrap_or_else(|e| panic!("{what} ({label}): {e}"));
         if let Some(p) = &mut self.pixels {
             p.apply(diff.clone());
         }
@@ -1222,7 +1495,8 @@ impl Shell {
         let now = look(scene);
         assert!(
             self.allowed.is_empty() || self.allowed.contains(&now),
-            "{what} ({style:?}): a frame neither before nor after the step (not atomic)\n{}\nallowed:\n{}",
+            "{what} ({label}): a frame neither before nor after the step (not atomic){}\n{}\nallowed:\n{}",
+            self.blame(),
             scene.render(),
             self.allowed
                 .iter()
@@ -1232,42 +1506,66 @@ impl Shell {
         );
         let shell = surfaces(scene);
         assert!(
-            !shell.is_empty(),
-            "{what} ({style:?}): a blank frame: no surface\n{}",
+            shell.iter().any(|&r| is_main(scene, r)),
+            "{what} ({label}): a blank frame: no surface\n{}",
             scene.render()
         );
-        if let Some(f) = &self.fixed {
-            assert_eq!(
-                &shell,
-                f,
-                "{what} ({style:?}): a surface was recreated (or leaked) by an edit that keeps it\n{}",
-                scene.render()
-            );
-        }
+        assert!(
+            self.fixed.is_subset(&shell) && (!self.closed || self.fixed == shell),
+            "{what} ({label}): a surface was recreated (or leaked) by an edit that keeps it: {:?} for {:?}\n{}",
+            shell,
+            self.fixed,
+            scene.render()
+        );
+        let notes = shell
+            .iter()
+            .filter(|&&r| scene.kind(r) == Some(NodeKind::Osd))
+            .count();
+        assert_eq!(
+            notes,
+            1,
+            "{what} ({label}): {notes} note surfaces\n{}",
+            scene.render()
+        );
         for &r in &shell {
-            assert!(
-                matches!(scene.kind(r), Some(NodeKind::Bar | NodeKind::Panel)),
-                "{what} ({style:?}): a leaked surface\n{}",
-                scene.render()
-            );
             let texts = texts_under(scene, r);
-            assert!(
-                texts.len() >= 3 && texts.iter().any(|(_, t)| t.starts_with("n ")),
-                "{what} ({style:?}): a blank frame: the surface lost its texts\n{}",
-                scene.render()
-            );
+            match scene.kind(r) {
+                Some(NodeKind::Bar | NodeKind::Panel) => assert!(
+                    self.loose
+                        || (texts.len() >= 3 && texts.iter().any(|(_, t)| t.starts_with("n "))),
+                    "{what} ({label}): a blank frame: the surface lost its texts\n{}",
+                    scene.render()
+                ),
+                Some(NodeKind::Osd) => assert!(
+                    texts.iter().any(|(_, t)| t == NOTE_TEXT),
+                    "{what} ({label}): a blank frame: the note lost its text\n{}",
+                    scene.render()
+                ),
+                _ => panic!("{what} ({label}): a leaked surface\n{}", scene.render()),
+            }
         }
         let over = overlays(scene);
         assert!(
             over.len() <= 1,
-            "{what} ({style:?}): {} overlays (a leaked surface)\n{}",
+            "{what} ({label}): {} overlays (a leaked surface)\n{}",
             over.len(),
             scene.render()
         );
         if let Some(&o) = over.first() {
+            // Errors open it after 250 ms of quiet: a hold that long, and
+            // not ended by a save before then (or notices left by a
+            // reload, which wait as long).
+            let held_long = self.hold.is_some_and(|h| {
+                self.fix_at
+                    .unwrap_or_else(Instant::now)
+                    .saturating_duration_since(h)
+                    >= HELD_LONG
+            });
             assert!(
-                self.had_overlay || self.overlay_ok,
-                "{what} ({style:?}): the overlay opened with nothing held back and no notice\n{}",
+                self.had_overlay || self.overlay_ok || held_long,
+                "{what} ({label}): the overlay opened with no notice and nothing held back for 250 ms (held {:?}, ended {:?})\n{}",
+                self.hold.map(|h| h.elapsed()),
+                self.fix_at.map(|f| f.elapsed()),
                 scene.render()
             );
             let header = texts_under(scene, o)
@@ -1277,7 +1575,7 @@ impl Shell {
                 .unwrap_or_default();
             assert!(
                 self.errors_ok || !header.contains(" error"),
-                "{what} ({style:?}): the overlay lists errors after a clean commit\n{}",
+                "{what} ({label}): the overlay lists errors after a clean commit\n{}",
                 scene.render()
             );
         }
@@ -1287,7 +1585,7 @@ impl Shell {
             assert_eq!(
                 frames.len(),
                 shell.len(),
-                "{what} ({style:?}): {} painted surfaces for {} scene surfaces",
+                "{what} ({label}): {} painted surfaces for {} scene surfaces",
                 frames.len(),
                 shell.len()
             );
@@ -1295,42 +1593,131 @@ impl Shell {
                 let first = px.get(..4).unwrap_or(&[]);
                 assert!(
                     px.chunks_exact(4).any(|c| c != first),
-                    "{what} ({style:?}): a blank frame: surface {key} painted only its background"
+                    "{what} ({label}): a blank frame: surface {key} painted only its background"
                 );
             }
         }
     }
 
-    fn pump(&mut self, what: &str) {
-        while let Ok(d) = self.inbox.try_recv() {
-            self.apply(what, &d);
-        }
+    /// The sway pipeline, with every diff it has applied applied here
+    /// too: one layer surface per scene surface (the overlay's included),
+    /// and no committed frame that showed only its background.
+    fn check_wl(&self, what: &str) {
+        let Some(wl) = &self.wl else {
+            return;
+        };
+        let mut live: Vec<NodeId> = wl.mgr.state().surfaces().iter().map(|s| s.node).collect();
+        live.sort();
+        let mut want: Vec<NodeId> = self.scene.roots().to_vec();
+        want.sort();
+        assert_eq!(
+            live,
+            want,
+            "{what} (Sway): the layer surfaces are not the scene's surfaces (leaked or missing)\n{}",
+            self.scene.render()
+        );
+        let blank = wl.seen.blank.borrow();
+        assert!(
+            blank.is_empty(),
+            "{what} (Sway): committed a frame showing only its background: {blank:?}\n{}",
+            self.scene.render()
+        );
     }
 
-    /// Apply diffs until `done` holds.
-    fn until(&mut self, what: &str, done: impl Fn(&SceneMirror) -> bool) {
-        self.pump(what);
+    /// The sway pipeline settles: every layer surface is configured and
+    /// has committed a frame.
+    fn settle_wl(&mut self, what: &str) {
+        let Some(wl) = &mut self.wl else {
+            return;
+        };
         let deadline = Instant::now() + PATIENCE;
-        while !done(&self.scene) {
+        loop {
+            let waiting: Vec<SurfaceId> = wl
+                .mgr
+                .state()
+                .surfaces()
+                .iter()
+                .filter(|s| !s.configured || !wl.seen.painted.borrow().contains(&s.id))
+                .map(|s| s.id)
+                .collect();
+            if waiting.is_empty() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{what} (Sway): surfaces {waiting:?} never showed a frame"
+            );
+            wl.mgr.dispatch(Some(Duration::from_millis(5))).unwrap();
+        }
+        self.pump(what);
+    }
+
+    /// The next diff within `timeout` (the sway pipeline's main loop is
+    /// run meanwhile).
+    fn recv(&mut self, timeout: Duration) -> Option<SceneDiff> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Ok(d) = self.inbox.try_recv() {
+                return Some(d);
+            }
             let left = deadline.saturating_duration_since(Instant::now());
-            match self.inbox.recv_timeout(left) {
-                Ok(d) => self.apply(what, &d),
-                Err(_) => panic!(
-                    "{what} ({:?}): timed out on\n{}",
-                    self.style,
-                    self.scene.render()
-                ),
+            match &mut self.wl {
+                None => return self.inbox.recv_timeout(left).ok(),
+                Some(wl) => {
+                    wl.mgr
+                        .dispatch(Some(left.min(Duration::from_millis(5))))
+                        .unwrap();
+                    if left.is_zero() {
+                        return self.inbox.try_recv().ok();
+                    }
+                }
             }
         }
     }
 
+    fn pump(&mut self, what: &str) {
+        while let Some(d) = self.recv(Duration::ZERO) {
+            self.apply(what, &d);
+        }
+        self.check_wl(what);
+    }
+
+    /// Apply diffs until `done` holds.
+    fn until(&mut self, what: &str, done: impl Fn(&SceneMirror) -> bool) {
+        self.until_or(what, done, "");
+    }
+
+    /// [`Shell::until`], saying what was waited for when it times out.
+    fn until_or(&mut self, what: &str, done: impl Fn(&SceneMirror) -> bool, wanted: &str) {
+        self.pump(what);
+        let deadline = Instant::now() + PATIENCE;
+        while !done(&self.scene) {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.recv(left) {
+                Some(d) => self.apply(what, &d),
+                None => panic!(
+                    "{what} ({}): timed out on\n{}{wanted}",
+                    self.label,
+                    self.scene.render()
+                ),
+            }
+        }
+        self.check_wl(what);
+    }
+
     /// Apply diffs until the shell looks like `want`, every diff on the
-    /// way looking like `before` or `want`.
-    fn reach(&mut self, what: &str, before: &Look, want: &Look) {
-        self.allowed = vec![before.clone(), want.clone()];
+    /// way looking like `before` or `want` (`before` `None`: not
+    /// checked).
+    fn reach(&mut self, what: &str, before: Option<&Look>, want: &Look) {
+        self.allowed = match before {
+            Some(b) => vec![b.clone(), want.clone()],
+            None => Vec::new(),
+        };
         let w = want.clone();
-        self.until(what, |s| look(s) == w);
+        let wanted = format!("\nwaiting for:\n{}{}", want.scene, want.tokens);
+        self.until_or(what, |s| look(s) == w, &wanted);
         self.allowed = vec![want.clone()];
+        self.settle_wl(what);
     }
 
     /// Its pixels equal a fresh renderer's painting of `boot`.
@@ -1369,9 +1756,9 @@ impl Shell {
         loop {
             let mut line = String::new();
             match self.events.read_line(&mut line) {
-                Ok(0) => panic!("{what} ({:?}): the shell hung up", self.style),
+                Ok(0) => panic!("{what} ({}): the shell hung up", self.label),
                 Ok(_) => {}
-                Err(e) => panic!("{what} ({:?}): no reload event: {e}", self.style),
+                Err(e) => panic!("{what} ({}): no reload event: {e}", self.label),
             }
             let ev: Json = serde_json::from_str(&line).unwrap();
             if ev["event"] == "notices" {
@@ -1411,8 +1798,9 @@ impl Shell {
             let ev: Json = serde_json::from_str(&l).unwrap();
             assert!(
                 ev["event"] != "reload",
-                "{what} ({:?}): a load nobody saved for: {ev}",
-                self.style
+                "{what} ({}): a load nobody saved for{}: {ev}",
+                self.label,
+                self.blame()
             );
             if ev["event"] == "notices" {
                 self.notes = true;
@@ -1427,36 +1815,36 @@ impl Shell {
     /// one whose removal is held), which changes nothing shown.
     fn held_event(&mut self, what: &str, partial: bool) {
         let ev = self.event(what);
-        let style = self.style;
+        let label = self.label.as_str();
         assert!(
             ev["held"].as_array().is_some_and(|h| !h.is_empty()),
-            "{what} ({style:?}): not held back: {ev}"
+            "{what} ({label}): not held back: {ev}"
         );
         assert!(
             ev["unreadable"].as_array().is_some_and(|u| u.is_empty()),
-            "{what} ({style:?}): a save read as unreadable: {ev}"
+            "{what} ({label}): a save read as unreadable: {ev}"
         );
         assert!(
             partial || ev["committed"].as_array().is_some_and(|c| c.is_empty()),
-            "{what} ({style:?}): {ev}"
+            "{what} ({label}): {ev}"
         );
-        // Its diagnostics may open the overlay.
-        self.overlay_ok = true;
+        // Its diagnostics may open the overlay once they stood 250 ms.
+        self.hold.get_or_insert(self.save_at);
         self.errors_ok = true;
     }
 
-    /// The save landed in one load: the cells it reset, and whether it
-    /// left overlay notices.
+    /// The save landed in one load: the cells it reset, whether it was
+    /// split, and whether it left overlay notices.
     fn landed(&mut self, what: &str, single: bool) -> (usize, bool, bool) {
         let mut resets = 0;
         let mut split = false;
         let mut notes = false;
         loop {
             let ev = self.event(what);
-            let style = self.style;
+            let label = self.label.as_str();
             assert!(
                 ev["unreadable"].as_array().is_some_and(|u| u.is_empty()),
-                "{what} ({style:?}): a save read as unreadable: {ev}"
+                "{what} ({label}): a save read as unreadable: {ev}"
             );
             resets += ev["reset"].as_array().map_or(0, Vec::len);
             notes |= ["reset", "kept_over_default", "notices"]
@@ -1471,10 +1859,14 @@ impl Shell {
             // loads (the first held back); one file's save never does.
             assert!(
                 !single,
-                "{what} ({style:?}): one save split into two loads: {ev}"
+                "{what} ({label}): one save split into two loads{}: {ev}",
+                self.blame()
             );
             split = true;
-            self.overlay_ok = true;
+            // The rest of the save is already made: a hold this short
+            // never opens the overlay.
+            self.hold.get_or_insert(self.save_at);
+            self.fix_at.get_or_insert_with(Instant::now);
             self.errors_ok = true;
         }
     }
@@ -1485,6 +1877,8 @@ impl Shell {
         self.notes |= notes;
         self.overlay_ok = self.notes;
         self.errors_ok = false;
+        self.hold = None;
+        self.fix_at = None;
     }
 
     /// Dismiss the overlay if it is shown.
@@ -1515,15 +1909,26 @@ impl Shell {
             .unwrap();
     }
 
+    /// Stop it: the logic thread, the compiler worker and the watcher
+    /// must end without a panic.
     fn stop(mut self) {
         self.to_logic.send(ToLogic::Shutdown).unwrap();
         let joined = self.thread.take().map(|t| t.join());
         assert!(
             matches!(joined, Some(Ok(Ok(())))),
-            "{:?}: the logic thread: {joined:?}",
-            self.style
+            "{}: the logic thread: {joined:?}",
+            self.label
         );
-        drop(self.worker.take());
+        let worker = self.worker.take().map(Worker::join);
+        assert!(
+            matches!(worker, Some(Ok(()))),
+            "{}: the compiler worker or the watcher panicked",
+            self.label
+        );
+        if let Some(wl) = &mut self.wl {
+            // The main thread's last diffs (the logic thread is gone).
+            wl.mgr.dispatch(Some(Duration::ZERO)).unwrap();
+        }
     }
 }
 
@@ -1595,6 +2000,24 @@ fn shown_text(s: &State, t: &Target) -> String {
     }
 }
 
+/// A random mutation (`before` → `after`) that still compiles is run as
+/// an edit when it only touches an expression (a string, an argument, a
+/// path) outside the keyed list's literal: the table keeps every cell
+/// for it. One of a declaration's keywords is drawn again (what it would
+/// keep is not modelled), as is one of the list (an entry dropped and
+/// put back starts fresh: its chips' state goes) and one of the note's
+/// file (the note may then show nothing, which is not a fault).
+fn runnable_mutation(file: &str, word: &str, before: &str, after: &str) -> bool {
+    let list = |t: &str| {
+        t.lines()
+            .find(|l| l.starts_with("export let list"))
+            .map(str::to_string)
+    };
+    file != NOTE_FILE
+        && (word.contains('"') || word.contains(',') || word.contains('.'))
+        && list(before) == list(after)
+}
+
 /// design.md, "How reload is tested", through the whole live pipeline.
 #[test]
 fn random_edits_through_five_save_styles() {
@@ -1612,22 +2035,36 @@ fn random_edits_through_five_save_styles() {
     let mut shells: Vec<Shell> = STYLES
         .iter()
         .enumerate()
-        .map(|(k, &s)| {
+        .filter_map(|(k, &s)| {
             Shell::start(
                 &base.0,
                 s,
                 &files,
                 seed ^ ((k as u64 + 1) * 0x9e37_79b9),
                 s == Style::InPlace,
+                false,
             )
         })
         .collect();
+    // The compiler-to-pixels pipeline on a compositor, saving in place.
+    shells.extend(Shell::start(
+        &base.0,
+        Style::InPlace,
+        &files,
+        seed,
+        false,
+        true,
+    ));
+    let labels: Vec<String> = shells.iter().map(|s| s.label.clone()).collect();
+    eprintln!("reload fuzzer: pipelines {labels:?}");
     let (mut expect, boot) = cold_boot(&model, &files, &state);
     for sh in &mut shells {
         let e = expect.clone();
         sh.until("the boot", |s| look(s) == e);
         sh.allowed = vec![expect.clone()];
-        sh.fixed = Some(surfaces(&sh.scene));
+        sh.fixed = surfaces(&sh.scene);
+        sh.closed = true;
+        sh.settle_wl("the boot");
         sh.same_pixels("the boot", &boot);
     }
     let started = Instant::now();
@@ -1640,57 +2077,122 @@ fn random_edits_through_five_save_styles() {
     let mut split_saves = 0u64;
     while step < edits {
         drawn += 1;
-        if broken.is_none() {
-            // The user changes some state.
-            for _ in 0..r.below(3) {
-                let mut targets = vec![Target::N];
-                targets.extend(state.cells.keys().map(|k| Target::Cell(k)));
-                targets.extend(state.chips.keys().map(|k| Target::Chip(*k)));
-                let target = r.pick(&targets).clone();
-                let text = shown_text(&state, &target);
-                let next = clicked(&model, &state, &target);
-                let (want, want_boot) = cold_boot(&model, &files, &next);
-                let w = format!("step {step}: click `{text}` ({target:?})");
-                for sh in &mut shells {
-                    sh.pump(&w);
-                    let root = match target {
-                        Target::Chip((i, _)) => surface_of(&sh.scene, i),
-                        _ => surfaces(&sh.scene).into_iter().next(),
-                    };
-                    let node = root
-                        .and_then(|root| find_under(&sh.scene, root, &text))
-                        .unwrap_or_else(|| {
-                            panic!("{w} ({:?}): not shown\n{}", sh.style, sh.scene.render())
-                        });
-                    sh.click(node);
+        // The user changes some state, a broken save held back or not
+        // (the shell keeps running its last good config).
+        for _ in 0..r.below(3) {
+            let mut targets = vec![Target::N];
+            targets.extend(state.cells.keys().map(|k| Target::Cell(k)));
+            targets.extend(state.chips.keys().map(|k| Target::Chip(*k)));
+            let target = r.pick(&targets).clone();
+            let text = shown_text(&state, &target);
+            let next = clicked(&model, &state, &target);
+            let (want, want_boot) = cold_boot(&model, &files, &next);
+            let w = format!(
+                "step {step}: click `{text}` ({target:?}{})",
+                if broken.is_some() {
+                    ", a save held back"
+                } else {
+                    ""
                 }
-                for sh in &mut shells {
-                    sh.reach(&w, &expect, &want);
-                    sh.same_pixels(&w, &want_boot);
-                }
-                state = next;
-                expect = want;
+            );
+            if broken.is_some() {
+                *counts.entry("click-while-held").or_default() += 1;
             }
-            // Now and then the user closes the overlay.
-            if r.below(3) == 0 {
-                for sh in &mut shells {
-                    sh.dismiss(&format!("step {step}: dismiss"));
-                }
+            for sh in &mut shells {
+                sh.pump(&w);
+                let root = match target {
+                    Target::Chip((i, _)) => surface_of(&sh.scene, i),
+                    _ => surfaces(&sh.scene)
+                        .into_iter()
+                        .find(|&r| is_main(&sh.scene, r)),
+                };
+                let node = root
+                    .and_then(|root| find_under(&sh.scene, root, &text))
+                    .unwrap_or_else(|| {
+                        panic!("{w} ({}): not shown\n{}", sh.label, sh.scene.render())
+                    });
+                sh.click(node);
+            }
+            for sh in &mut shells {
+                sh.reach(&w, Some(&expect), &want);
+                sh.same_pixels(&w, &want_boot);
+            }
+            state = next;
+            expect = want;
+        }
+        // Now and then the user closes the overlay.
+        if r.below(3) == 0 {
+            for sh in &mut shells {
+                sh.dismiss(&format!("step {step}: dismiss"));
             }
         }
         let at = step;
         let what = |kind: &str| format!("step {at} ({kind})");
-        match edit(&model, &mut r) {
-            Edit::Broken(f, text) if broken.is_none() => {
+        let mut drew = edit(&model, &mut r);
+        if matches!(drew, Edit::Mutate) {
+            if broken.is_some() {
+                continue;
+            }
+            match compiling_mutation(&files, &mut r) {
+                Some((f, text, w)) => drew = Edit::Broken(f, text, Some(w)),
+                None => continue,
+            }
+        }
+        match drew {
+            Edit::Mutate => continue,
+            Edit::Broken(f, text, word) if broken.is_none() => {
                 let mut t = disk.clone();
                 t.insert(f.clone(), text.clone());
                 if compile(&t).is_ok() {
+                    // A random mutation that still compiles: run it,
+                    // then save the file back.
+                    let word = match word {
+                        Some(word) if runnable_mutation(&f, &word, &files[&f], &text) => word,
+                        _ => continue,
+                    };
+                    *counts.entry("mutation").or_default() += 1;
+                    step += 1;
+                    let w = format!("{} {f}: `{word}` {text:?}", what("mutation"));
+                    for sh in &mut shells {
+                        sh.saving();
+                        sh.save(&f, &text);
+                    }
+                    for sh in &mut shells {
+                        // What the mutation shows is not modelled.
+                        sh.allowed = Vec::new();
+                        sh.loose = true;
+                        let (resets, _, notes) = sh.landed(&w, true);
+                        assert_eq!(resets, 0, "{w} ({}): reset {resets} cells", sh.label);
+                        sh.committed(notes);
+                    }
+                    std::thread::sleep(QUIET);
+                    for sh in &mut shells {
+                        sh.pump(&w);
+                        sh.drain(&w);
+                    }
+                    let w = format!("{} {f}", what("mutation saved back"));
+                    let (_, want_boot) = cold_boot(&model, &files, &state);
+                    for sh in &mut shells {
+                        sh.saving();
+                        sh.save(&f, &files[&f]);
+                    }
+                    for sh in &mut shells {
+                        let (resets, _, notes) = sh.landed(&w, true);
+                        assert_eq!(resets, 0, "{w} ({}): reset {resets} cells", sh.label);
+                        // Every cell kept: the state from before.
+                        sh.reach(&w, None, &expect);
+                        sh.loose = false;
+                        sh.committed(notes);
+                        sh.same_pixels(&w, &want_boot);
+                        sh.drain(&w);
+                    }
                     continue;
                 }
                 *counts.entry("broken").or_default() += 1;
                 step += 1;
                 let w = what("broken");
                 for sh in &mut shells {
+                    sh.saving();
                     sh.save(&f, &text);
                 }
                 for sh in &mut shells {
@@ -1711,11 +2213,12 @@ fn random_edits_through_five_save_styles() {
                 step += 1;
                 let w = what("fix");
                 for sh in &mut shells {
+                    sh.saving();
                     sh.save(&f, &files[&f]);
                 }
                 for sh in &mut shells {
                     let (_, _, notes) = sh.landed(&w, true);
-                    sh.reach(&w, &expect, &expect);
+                    sh.reach(&w, Some(&expect), &expect);
                     sh.committed(notes);
                     sh.drain(&w);
                 }
@@ -1734,8 +2237,13 @@ fn random_edits_through_five_save_styles() {
                 let w = what(kind);
                 let surface_edit = recreates(kind);
                 if surface_edit {
+                    // The main surface may be replaced; the note is kept.
                     for sh in &mut shells {
-                        sh.fixed = None;
+                        sh.fixed = surfaces(&sh.scene)
+                            .into_iter()
+                            .filter(|&r| !is_main(&sh.scene, r))
+                            .collect();
+                        sh.closed = false;
                     }
                 }
                 // A partial multi-file save: one change alone (one that
@@ -1743,8 +2251,9 @@ fn random_edits_through_five_save_styles() {
                 // held back; then the rest lands with it.
                 // A module renamed in two loads (the new file first, its
                 // old one's removal held back) is a module added, then
-                // one removed: its cells go with their declarations,
-                // with no reset to report (decisions.md, wave2-exit).
+                // one removed: its cells go with their declarations, and
+                // those holding a value the user set are reported reset
+                // ("removed with its module"), the others silently.
                 let mut unreported = 0;
                 if ops.len() > 1 && r.below(2) == 0 {
                     // Held back on its own: inconsistent with what is on
@@ -1757,11 +2266,16 @@ fn random_edits_through_five_save_styles() {
                     if let Some(k) = first {
                         let op = ops.remove(k);
                         if matches!(op, Op::Rename(..)) {
-                            unreported = model.cells.len();
+                            unreported = model
+                                .cells
+                                .iter()
+                                .filter(|c| state.cells[c.name] == c.default_value())
+                                .count();
                         }
                         *counts.entry("partial").or_default() += 1;
                         let w = format!("{w}, partial {op:?}");
                         for sh in &mut shells {
+                            sh.saving();
                             sh.run(&op);
                         }
                         for sh in &mut shells {
@@ -1775,6 +2289,7 @@ fn random_edits_through_five_save_styles() {
                 }
                 let single = ops.len() == 1;
                 for sh in &mut shells {
+                    sh.saving();
                     for op in &ops {
                         sh.run(op);
                     }
@@ -1783,29 +2298,36 @@ fn random_edits_through_five_save_styles() {
                 let resets = resets - unreported;
                 let (want, want_boot) = cold_boot(&next, &next_files, &next_state);
                 for sh in &mut shells {
-                    let before: BTreeSet<NodeId> = surfaces(&sh.scene);
+                    let main = |sh: &Shell| -> BTreeSet<NodeId> {
+                        surfaces(&sh.scene)
+                            .into_iter()
+                            .filter(|&r| is_main(&sh.scene, r))
+                            .collect()
+                    };
+                    let before = main(sh);
                     let (reported, split, notes) = sh.landed(&w, single);
                     if split {
                         split_saves += 1;
                     } else {
                         assert_eq!(
                             reported, resets,
-                            "{w} ({:?}): `strand watch` reset {reported} cells, the table {resets}",
-                            sh.style
+                            "{w} ({}): `strand watch` reset {reported} cells, the table {resets}",
+                            sh.label
                         );
                     }
-                    sh.reach(&w, &expect, &want);
+                    sh.reach(&w, Some(&expect), &want);
                     sh.committed(notes);
-                    let now = surfaces(&sh.scene);
                     if surface_edit {
-                        // Each surface replaced, in the one diff.
+                        // The main surface replaced, in the one diff.
+                        let now = main(sh);
                         assert!(
                             before.is_disjoint(&now),
-                            "{w} ({:?}): a surface kept its scene node",
-                            sh.style
+                            "{w} ({}): a surface kept its scene node",
+                            sh.label
                         );
                     }
-                    sh.fixed = Some(now);
+                    sh.fixed = surfaces(&sh.scene);
+                    sh.closed = true;
                     sh.same_pixels(&w, &want_boot);
                     sh.drain(&w);
                 }
@@ -1818,11 +2340,13 @@ fn random_edits_through_five_save_styles() {
         }
     }
     let elapsed = started.elapsed();
+    let late: u64 = shells.iter().map(|s| s.late_creates).sum();
     for sh in shells {
         sh.stop();
     }
     eprintln!(
-        "reload fuzzer: {edits} edits ({drawn} drawn) through 5 save styles in {:.1} s: {counts:?}; multi-file saves the watcher took in two loads: {split_saves}",
+        "reload fuzzer: {edits} edits ({drawn} drawn) through {} pipelines {labels:?} in {:.1} s: {counts:?}; multi-file saves the watcher took in two loads: {split_saves}; delete-and-create saves the test thread was too slow for that still landed as one: {late}",
+        labels.len(),
         elapsed.as_secs_f64()
     );
 }

@@ -1268,6 +1268,8 @@ fn a_new_text_node_holds_the_frame_for_its_glyphs() {
     let mut buf = Buffer::new(2560, 36, Scale::ONE);
     buf.paint(&mut r, BAR, 0);
 
+    // An idle surface (nothing painted for a while).
+    std::thread::sleep(strand_render::BUSY_WINDOW);
     r.apply(added(root));
     assert!(
         !r.wants_frame(BAR),
@@ -1302,6 +1304,44 @@ fn a_new_text_node_holds_the_frame_for_its_glyphs() {
     buf.paint(&mut r, BAR, 0);
     r.apply(added(root));
     assert!(r.wants_frame(BAR));
+}
+
+/// A surface in motion (it painted within `BUSY_WINDOW`, as every frame
+/// of an animation does) never holds a frame for new text: the frame is
+/// painted at once, without the new glyphs, and they follow a frame later.
+#[test]
+fn a_busy_surface_does_not_hold_for_new_text() {
+    use std::time::Duration;
+    let mut r = worker_renderer();
+    r.set_new_text_wait(Duration::from_secs(30));
+    r.apply(bar("12:59").0);
+    let root = r.tree().roots()[0];
+    r.attach_surface(BAR, root);
+    r.configure_surface(BAR, Size::new(2560, 36), Scale::ONE);
+    assert!(r.wait_for_text(Duration::from_secs(10)));
+    let mut buf = Buffer::new(2560, 36, Scale::ONE);
+    buf.paint(&mut r, BAR, 0);
+    // A frame of motion (a colour on its way), then a node added right
+    // after.
+    let mut d = SceneDiff::new();
+    d.set(root, Prop::Bg, color("#303050"));
+    r.apply(d);
+    assert!(r.wants_frame(BAR));
+    buf.paint(&mut r, BAR, 1);
+    let mut d = SceneDiff::new();
+    let id = NodeId::new(100, 0);
+    d.create(id, NodeKind::Text, Some(root), u32::MAX);
+    d.set(id, Prop::X, num(2000.0));
+    d.set(id, Prop::Text, text("added"));
+    r.apply(d);
+    assert!(
+        r.frame_deadline(BAR).is_none(),
+        "a busy surface holds nothing"
+    );
+    assert!(
+        r.wants_frame(BAR),
+        "painted at once, without the new glyphs"
+    );
 }
 
 /// `ellipsis` and `max_lines` reach the text engine: a long title with

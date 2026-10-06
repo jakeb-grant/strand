@@ -12,17 +12,26 @@
 //! `CLOCK_MONOTONIC`. Headless sway presents a commit at once (the
 //! painted → presented gap is printed); a monitor waits for its vblank,
 //! so the gates apply to each sample plus a vblank wait drawn over one
-//! refresh ([`on_a_monitor`]).
+//! refresh ([`on_a_monitor`]): a model (the headless sample plus a
+//! uniform vblank phase), not a measurement on hardware. The worst phase
+//! (each sample plus a whole refresh) is printed beside it. The edits are
+//! made on an idle surface (no frame callback pending). A busy surface
+//! (an animation running) is not measured: M1's renderer animates
+//! nothing (springs land in M2), and headless sway answers a frame
+//! callback at once, so the wait a monitor adds there (the pending
+//! callback's vblank, then the next) cannot be seen here
+//! (`docs/m1-report.md`).
 //!
 //! Monitor changes: a scale change (`swaymsg output … scale`) is timed
 //! from the main thread hearing of it (`wl_output.done`) to the
 //! presentation of the bar's first frame at the new scale, within one
-//! refresh; a monitor plugged in, from its new surface's first configure
-//! (the layer surface's round trip, measured and printed) to its bar's
-//! first presented frame, within one refresh
-//! (`run.rs::a_monitor_change_is_in_the_next_diff` shows the logic
-//! thread answers in its first diff). Portal changes are not wired into
-//! `strand run` yet (the `system` service, M2).
+//! refresh; a monitor plugged in, from the main thread hearing of it
+//! (`wl_output.done`) to its bar's first painted frame, within one
+//! refresh: the logic thread's answer (the new bar's diff), the main
+//! thread applying it, the layer surface's creation and its configure
+//! round trip, and the paint (heard → configured is printed apart).
+//! Portal changes are not wired into `strand run` yet (the `system`
+//! service, M2).
 //!
 //! A budget test: ignored in debug builds, run optimised in CI
 //! (`cargo test --release -p strand --bin strand reload_latency --
@@ -51,11 +60,12 @@ use crate::live::Worker;
 use crate::run::tests::p95;
 use crate::run::{Live, ToLogic, logic};
 
-/// A headless sway of the test's own, killed on drop.
-struct Sway {
+/// A headless sway of the test's own, killed on drop (also the reload
+/// fuzzer's).
+pub(crate) struct Sway {
     child: Child,
     dir: PathBuf,
-    socket: PathBuf,
+    pub(crate) socket: PathBuf,
     ipc: PathBuf,
 }
 
@@ -68,7 +78,9 @@ impl Drop for Sway {
 }
 
 impl Sway {
-    fn start(tag: &str) -> Option<Sway> {
+    /// `None` (the test is skipped, and says so) when sway is not
+    /// installed, unless `STRAND_REQUIRE_SWAY` is set.
+    pub(crate) fn start(tag: &str) -> Option<Sway> {
         for tool in ["sway", "swaymsg"] {
             if Command::new(tool).arg("--version").output().is_err() {
                 assert!(
@@ -76,7 +88,7 @@ impl Sway {
                     "{tool} is not installed but STRAND_REQUIRE_SWAY is set"
                 );
                 eprintln!(
-                    "\n*** SKIPPED: {tool} is not installed; the latency gate did not run ***\n"
+                    "\n*** SKIPPED: {tool} is not installed; the {tag} test did not run ***\n"
                 );
                 return None;
             }
@@ -136,7 +148,7 @@ impl Sway {
         }
     }
 
-    fn msg(&self, args: &[&str]) -> Option<String> {
+    pub(crate) fn msg(&self, args: &[&str]) -> Option<String> {
         let out = Command::new("swaymsg")
             .args(args)
             .env("SWAYSOCK", &self.ipc)
@@ -190,6 +202,9 @@ struct Watch {
     /// Its presentation, and when it was painted.
     presented: Option<(Presentation, Duration)>,
     discarded: u32,
+    /// A counted frame discarded: the surface to paint again (nothing
+    /// else may dirty it while the bench idles).
+    repaint: Option<SurfaceId>,
     /// Presentations of the counted surface timed before its counted
     /// frame was painted (an older frame's), not taken for it.
     stale: u32,
@@ -275,6 +290,7 @@ impl FrameClock for Clock {
             w.painted = None;
             w.armed = true;
             w.discarded += 1;
+            w.repaint = Some(surface);
         }
     }
 
@@ -344,10 +360,10 @@ struct Measured {
     markup: Vec<f64>,
     /// Painted → presented, for each edit's counted frame.
     gaps: Vec<f64>,
-    /// A monitor plugged in: heard → its surface configured (the layer
-    /// surface's round trip), then configured → its bar painted →
-    /// presented.
-    round_trips: Vec<f64>,
+    /// A monitor plugged in: heard → its new surface configured (the
+    /// logic thread's answer, the surface's creation and its configure
+    /// round trip), then heard → its bar painted → presented.
+    configured: Vec<f64>,
     plugs: Vec<Steps>,
     /// A scale change: heard → the bar painted at the new scale →
     /// presented.
@@ -400,6 +416,7 @@ fn measure(rounds: usize) -> Option<Measured> {
         painted: None,
         presented: None,
         discarded: 0,
+        repaint: None,
         stale: 0,
     })));
     let (to_logic, from_main) = calloop::channel::channel::<ToLogic>();
@@ -458,6 +475,11 @@ fn measure(rounds: usize) -> Option<Measured> {
             if let Some(p) = watch.0.borrow_mut().presented.take() {
                 return p;
             }
+            // A counted frame the compositor discarded: paint it again.
+            let again = watch.0.borrow_mut().repaint.take();
+            if let Some(surface) = again {
+                mgr.state_mut().repaint(surface);
+            }
             assert!(Instant::now() < deadline, "{what}: no frame presented");
             mgr.dispatch(Some(Duration::from_millis(5))).unwrap();
         }
@@ -484,7 +506,7 @@ fn measure(rounds: usize) -> Option<Measured> {
         let (p, painted) = presented(&mut mgr, "a token edit");
         tokens.push(since(&p, saved));
         gaps.push(since(&p, painted));
-        // Let the colour's transition finish before the next save.
+        // Idle before the next save: no frame callback pending.
         idle(&mut mgr, Duration::from_millis(250));
         // A markup edit: a node added or removed.
         extra = !extra;
@@ -518,7 +540,7 @@ fn measure(rounds: usize) -> Option<Measured> {
     }
     watch.0.borrow_mut().scale = None;
     // Monitors plugged in: each gets its bar on its first frame.
-    let (mut round_trips, mut plugs) = (Vec::new(), Vec::new());
+    let (mut configured_after, mut plugs) = (Vec::new(), Vec::new());
     for k in 0..5 {
         {
             let mut w = watch.0.borrow_mut();
@@ -536,9 +558,9 @@ fn measure(rounds: usize) -> Option<Measured> {
                 w.configured_at.expect("the new surface configured"),
             )
         };
-        round_trips.push(ms(configured.saturating_sub(heard)));
+        configured_after.push(ms(configured.saturating_sub(heard)));
         plugs.push(Steps {
-            to_paint: ms(painted.saturating_sub(configured)),
+            to_paint: ms(painted.saturating_sub(heard)),
             to_present: since(&p, painted),
         });
         idle(&mut mgr, Duration::from_millis(200));
@@ -557,7 +579,7 @@ fn measure(rounds: usize) -> Option<Measured> {
         tokens,
         markup,
         gaps,
-        round_trips,
+        configured: configured_after,
         plugs,
         scales,
         refresh,
@@ -598,6 +620,9 @@ fn reload_latency_to_the_presented_frame() {
         on_a_monitor(&m.tokens, frame),
         on_a_monitor(&m.markup, frame),
     );
+    // The headless p95 the token gate breaks at: the vblank model adds
+    // about 0.95 of a refresh at p95.
+    let token_break = 35.0 - 0.95 * frame;
     let added: Vec<f64> = m.markup.iter().copied().step_by(2).collect();
     let removed: Vec<f64> = m.markup.iter().copied().skip(1).step_by(2).collect();
     let steps = |v: &[Steps]| {
@@ -608,11 +633,11 @@ fn reload_latency_to_the_presented_frame() {
     };
     eprintln!(
         "save → presented over {rounds} edits each at {frame:.2} ms refresh:\n\
-         \x20 token p95 {pt:.1} ms (max {:.1}); on a monitor p95 {ht:.1} ms, at worst {:.1}\n\
-         \x20 markup p95 {pm:.1} ms (max {:.1}; a node added p95 {:.1}, removed {:.1}); on a monitor p95 {hm:.1} ms, at worst {:.1}\n\
+         \x20 token p95 {pt:.1} ms (max {:.1}; the gate breaks above {token_break:.1}); on a monitor (model: uniform vblank phase) p95 {ht:.1} ms, worst phase {:.1}\n\
+         \x20 markup p95 {pm:.1} ms (max {:.1}; a node added p95 {:.1}, removed {:.1}); on a monitor p95 {hm:.1} ms, worst phase {:.1}\n\
          \x20 painted → presented p95 {:.2} ms (max {:.2}); {} frames discarded, {} stale presentations\n\
          \x20 scale change heard → painted at the new scale + → presented: {} ms\n\
-         \x20 monitor plugged: heard → configured {:?} ms, then → painted + → presented: {} ms",
+         \x20 monitor plugged: heard → new surface configured (logic answer + surface creation + round trip) {:?} ms; heard → painted + → presented: {} ms",
         max(&m.tokens),
         pt + frame,
         max(&m.markup),
@@ -624,12 +649,12 @@ fn reload_latency_to_the_presented_frame() {
         m.discarded,
         m.stale,
         steps(&m.scales),
-        round(&m.round_trips),
+        round(&m.configured),
         steps(&m.plugs),
     );
     assert!(
         ht <= 35.0,
-        "token edits: p95 on a monitor {ht:.1} ms (headless {pt:.1}): {:?}",
+        "token edits: p95 on a monitor {ht:.1} ms (headless {pt:.1}, the gate breaks above {token_break:.1}: a slow runner shows as every sample a little high, a regression as a step): {:?}",
         m.tokens
     );
     assert!(
@@ -638,15 +663,16 @@ fn reload_latency_to_the_presented_frame() {
         m.markup
     );
     // The next frame: the first frame the shell paints once it hears of
-    // a scale change (a plugged monitor: once its new layer surface is
-    // configured, the round trip it must wait for) shows the change,
-    // within one refresh; a frame lost on the shell's side (painted
-    // without the change, or superseded before it was shown) misses by a
-    // refresh. That frame is then the one presented: headless sway
-    // presents an edit's frame at once, but the first frame after an
-    // output change, or on a new output, at its next frame timer (17 ms
-    // after the paint for a scale change), so the presentation is held
-    // to the compositor's next frame, under two refreshes.
+    // a scale change or a plugged monitor (for the plug: the logic
+    // thread's new bar, its layer surface created and configured, then
+    // painted) shows the change, within one refresh; a frame lost on the
+    // shell's side (painted without the change, or superseded before it
+    // was shown) misses by a refresh. That frame is then the one
+    // presented: headless sway presents an edit's frame at once, but the
+    // first frame after an output change, or on a new output, at its
+    // next frame timer (17 ms after the paint for a scale change), so the
+    // presentation is held to the compositor's next frame, under two
+    // refreshes.
     for (what, v) in [
         ("a scale change", &m.scales),
         ("a plugged monitor", &m.plugs),
@@ -655,7 +681,7 @@ fn reload_latency_to_the_presented_frame() {
         let present = p95(&v.iter().map(|s| s.to_present).collect::<Vec<_>>());
         assert!(
             paint <= frame && present < 2.0 * frame,
-            "{what}: p95 {paint:.1} ms to the frame showing it (one frame is {frame:.1}), then {present:.1} ms to its presentation: {}",
+            "{what}: p95 {paint:.1} ms from hearing of it to the frame showing it (one frame is {frame:.1}), then {present:.1} ms to its presentation: {}",
             steps(v)
         );
     }

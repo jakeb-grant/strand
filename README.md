@@ -24,11 +24,13 @@ once a minute.
 `.strand` files (type checker, bytecode VM, reactive core), puts the
 surfaces on every monitor and reloads live on save: a token or markup
 edit is presented by headless sway about 18 ms after the save (p95; about
-34 ms with a 60 Hz monitor's vblank wait added), with state kept as the
-design's edit table says, a broken save held back behind an error
-overlay, and 10,000 random edits through five editor save styles on two
-screens without a panic, an intermediate or blank frame (checked on the
-scene and in offline-rendered pixels) or a leaked surface. `strand check` reports did-you-mean diagnostics, and
+33 ms once a 60 Hz monitor's vblank wait is modelled in, not yet measured
+on hardware), with state kept as the design's edit table says, a broken
+save held back behind an error overlay, and 10,000 random edits through
+five editor save styles on two screens, and into `strand run` on a
+headless sway, without a panic, an intermediate or blank frame (checked
+on the scene, in offline-rendered pixels and in the buffers committed to
+sway) or a leaked layer surface. `strand check` reports did-you-mean diagnostics, and
 `strand watch` / `strand reload` talk to a running shell. Still open in
 M1: the formatter, the tree-sitter grammar and the LSP (`strand-dev`),
 and the parts of `fn`/`keyframes`/`shader`/`canvas` that are render work;

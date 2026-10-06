@@ -20,5 +20,5 @@ mod raster;
 mod renderer;
 mod tree;
 
-pub use renderer::{DAMAGE_HISTORY, NEW_TEXT_WAIT, Renderer, TextBackend};
+pub use renderer::{BUSY_WINDOW, DAMAGE_HISTORY, NEW_TEXT_WAIT, Renderer, TextBackend};
 pub use tree::{Node, PropEntry, SceneError, SceneTree};

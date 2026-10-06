@@ -168,6 +168,25 @@ impl Worker {
     }
 }
 
+impl Worker {
+    /// Stop the compiler worker and its watcher and wait for both: `Err`
+    /// with the panic payload if either thread panicked (dropping a
+    /// `Worker` stops them too, and ignores how they ended).
+    pub fn join(mut self) -> std::thread::Result<()> {
+        let _ = self.jobs.send(Job::Stop);
+        let worker = match self.thread.take() {
+            Some(t) => t.join(),
+            None => Ok(()),
+        };
+        // The worker thread held the other handle: it is the last one.
+        let watcher = match self.watcher.take().map(Arc::try_unwrap) {
+            Some(Ok(w)) => w.join(),
+            Some(Err(_)) | None => Ok(()),
+        };
+        worker.and(watcher)
+    }
+}
+
 impl Drop for Worker {
     fn drop(&mut self) {
         let _ = self.jobs.send(Job::Stop);

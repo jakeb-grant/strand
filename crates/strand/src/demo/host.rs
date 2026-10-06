@@ -25,7 +25,8 @@ pub struct Host {
     log_damage: bool,
     /// `strand run`: what the logic thread hears about.
     logic: Option<Forward>,
-    /// Tests: told of every paint and monitor change (`bench.rs`).
+    /// Tests: told of every paint and monitor change (`bench.rs`,
+    /// `fuzz.rs`).
     #[cfg(test)]
     pub(crate) probe: Option<ProbeHandle>,
 }
@@ -41,6 +42,9 @@ pub(crate) trait Probe {
     fn configured(&self, surface: SurfaceId);
     /// A monitor was plugged in or changed.
     fn monitor(&self);
+    /// A frame of `surface` was painted with damage (it is committed):
+    /// the whole buffer, as the compositor gets it (`fuzz.rs`).
+    fn frame(&self, _surface: SurfaceId, _target: &PaintTarget<'_>) {}
 }
 
 #[cfg(test)]
@@ -338,6 +342,9 @@ impl Painter for Host {
         #[cfg(test)]
         if let Some(p) = &self.probe {
             p.0.painted(surface, !damage.is_empty(), target.scale, &self.renderer);
+            if !damage.is_empty() {
+                p.0.frame(surface, target);
+            }
         }
         if !damage.is_empty() && self.log_damage {
             let rects: Vec<String> = damage

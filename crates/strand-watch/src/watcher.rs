@@ -480,6 +480,17 @@ impl Watcher {
     pub fn rescan(&self) {
         let _ = self.send(Ctl::Rescan);
     }
+
+    /// Stop the watcher thread and wait for it: `Err` with the panic
+    /// payload if it panicked (dropping a `Watcher` stops it too, and
+    /// ignores how it ended).
+    pub fn join(mut self) -> std::thread::Result<()> {
+        let _ = self.send(Ctl::Stop);
+        match self.thread.take() {
+            Some(t) => t.join(),
+            None => Ok(()),
+        }
+    }
 }
 
 impl Drop for Watcher {

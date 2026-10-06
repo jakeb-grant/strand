@@ -34,15 +34,26 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets
-      - run: cargo test --workspace
+      # The reload fuzzer runs on its own below (timing-sensitive saves).
+      - run: cargo test --workspace -- --skip random_edits_through_five_save_styles
       # The 34 MB PSS gate is checked on a release build (design.md, "Testing": budgets).
       - run: cargo test --release -p strand --test demo
       # Save → pixels p95 within design.md's 35 ms (token) and 50 ms
       # (markup) on an optimised build, to the painted buffer and to the
       # frame sway presents; ignored in debug builds.
+      # 50 edits each so p95 is not the worst of 20 samples (the token
+      # gate's headroom is ~1.5 ms: see docs/m1-report.md).
       - run: cargo test --release -p strand --bin strand reload_latency -- --nocapture --test-threads=1
-      # The reload fuzzer's short run (60 edits through the five save
-      # styles) is part of `cargo test --workspace` above, on tmpfs.
+        env:
+          STRAND_LATENCY_ROUNDS: "50"
+      # The reload fuzzer's short run: 60 edits through the five save
+      # styles and the sway pipeline, on tmpfs, alone (a descheduled test
+      # thread splits a delete-and-create save; a gap of at most 20 ms,
+      # still past the 15 ms coalescing, leaves it 30 ms of the watcher's
+      # 50 ms grace).
+      - run: cargo test -p strand --bin strand random_edits_through_five_save_styles -- --nocapture --test-threads=1
+        env:
+          STRAND_FUZZ_MAX_GAP_MS: "20"
 
   nightly:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -59,7 +70,8 @@ jobs:
           toolchain: 1.97.0
       - uses: Swatinem/rust-cache@v2
       # The M1 exit gate: 10,000 random edits, each saved in all five
-      # editor styles into a live pipeline on tmpfs (/dev/shm).
+      # editor styles into a live pipeline on tmpfs (/dev/shm), and in
+      # place into the pipeline on headless sway.
       - run: cargo test --release -p strand --bin strand random_edits_through_five_save_styles -- --nocapture
         env:
           STRAND_FUZZ_EDITS: "10000"
