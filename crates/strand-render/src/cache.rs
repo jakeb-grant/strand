@@ -24,8 +24,9 @@ use vello_cpu::{
 /// Bytes of cached pixmaps kept, least recently used dropped first.
 pub const PAINT_CACHE_BYTES: usize = 4 << 20;
 
-/// Largest single cached pixmap; larger gradients draw undithered and
-/// larger shadows draw directly (decided by size alone).
+/// Largest single cached pixmap; larger gradients are dithered cell by
+/// cell, uncached, and larger shadows draw directly (decided by size
+/// alone).
 pub const MAX_ENTRY_BYTES: usize = 2 << 20;
 
 /// Entries in a gradient's colour table.
@@ -115,10 +116,24 @@ pub fn gradient_key(paint: &Paint, w: u32, h: u32) -> u64 {
 pub fn shadow_key(s: &ShadowShape) -> u64 {
     let mut h = DefaultHasher::new();
     2u8.hash(&mut h);
-    for v in [s.rect.x0, s.rect.y0, s.rect.x1, s.rect.y1] {
+    // Relative to the whole-pixel origin the pixmap is drawn from (see
+    // `render_shadow`): a shadow moved by whole pixels (a sliding toast,
+    // a FLIP glide) reuses its pixmap.
+    let (ox, oy) = (s.extent.x0.floor(), s.extent.y0.floor());
+    for v in [
+        s.rect.x0 - ox,
+        s.rect.y0 - oy,
+        s.rect.x1 - ox,
+        s.rect.y1 - oy,
+    ] {
         hash_f64(&mut h, v);
     }
-    for v in [s.extent.x0, s.extent.y0, s.extent.x1, s.extent.y1] {
+    for v in [
+        s.extent.x0 - ox,
+        s.extent.y0 - oy,
+        s.extent.x1 - ox,
+        s.extent.y1 - oy,
+    ] {
         hash_f64(&mut h, v);
     }
     for r in s.radii {
@@ -289,6 +304,22 @@ type Geometry = Box<dyn Fn(f64, f64) -> f64>;
 /// runs from the centre to the farthest corner; a conic one turns
 /// clockwise from `from` (0deg up).
 pub fn render_gradient(paint: &Paint, w: u32, h: u32) -> Option<Pixmap> {
+    render_gradient_part(paint, w, h, (0, 0, w, h))
+}
+
+/// The part `(x0, y0, pw, ph)` of [`render_gradient`]'s `w × h` frame:
+/// the same pixels, since each is a pure function of its position in the
+/// frame. A gradient too large to cache draws, dithered, only the part a
+/// cell shows.
+pub fn render_gradient_part(
+    paint: &Paint,
+    w: u32,
+    h: u32,
+    (x0, y0, pw, ph): (u32, u32, u32, u32),
+) -> Option<Pixmap> {
+    if pw == 0 || ph == 0 || pw > u16::MAX as u32 || ph > u16::MAX as u32 {
+        return None;
+    }
     let (stops, geo): (&[GradientStop], Geometry) = match paint {
         Paint::Solid(_) => return None,
         Paint::Linear { angle, stops } => {
@@ -336,10 +367,11 @@ pub fn render_gradient(paint: &Paint, w: u32, h: u32) -> Option<Pixmap> {
     };
     let table = lut(stops);
     let opaque = stops.iter().all(|s| s.color.clamped().a >= 1.0);
-    let mut pm = Pixmap::new(w as u16, h as u16);
+    let mut pm = Pixmap::new(pw as u16, ph as u16);
     let data = pm.data_mut();
-    for y in 0..h {
-        for x in 0..w {
+    for py in 0..ph {
+        for px in 0..pw {
+            let (x, y) = (x0 + px, y0 + py);
             let t = geo(x as f64 + 0.5, y as f64 + 0.5).clamp(0.0, 1.0);
             let f = t as f32 * (LUT - 1) as f32;
             let i = (f as usize).min(LUT - 2);
@@ -350,7 +382,7 @@ pub fn render_gradient(paint: &Paint, w: u32, h: u32) -> Option<Pixmap> {
             let q = |v: f32| (v + d).round().clamp(0.0, 255.0) as u8;
             let alpha = q(ch(3));
             let c = |n: usize| q(ch(n)).min(alpha);
-            data[(y * w + x) as usize] = PremulRgba8 {
+            data[(py * pw + px) as usize] = PremulRgba8 {
                 r: c(0),
                 g: c(1),
                 b: c(2),

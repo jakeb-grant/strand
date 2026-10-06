@@ -21,6 +21,7 @@ png = "0.18.1"
 strand-render.workspace = true
 strand-text.workspace = true
 wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
+wayland-protocols-misc = { version = "0.3.12", features = ["client"] }
 
 [lints]
 workspace = true

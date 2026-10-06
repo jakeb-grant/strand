@@ -273,6 +273,9 @@ pub struct Stats {
     /// Cursor images set on pointer enter (`wp_cursor_shape_v1` or the
     /// cursor theme).
     pub cursor_sets: u64,
+    /// Popups created with an `xdg_popup.grab` (opened within
+    /// [`GRAB_WINDOW`] of a press).
+    pub grabs: u64,
 }
 
 /// A snapshot of one surface.
@@ -615,6 +618,17 @@ pub struct State<H: SurfaceHost + 'static> {
     /// The surface the last pointer button press landed on (a popup
     /// opens from it when its parent shows on several).
     last_pressed: Option<SurfaceId>,
+    /// Layer surfaces whose keyboard interactivity is `exclusive` for now
+    /// because a grabbing popup of theirs is open (see
+    /// [`State::sync_popup_keyboard`]).
+    grab_keyboard: BTreeSet<SurfaceId>,
+    /// The grabbing popup keys go to while its layer surface has keyboard
+    /// focus (told a `KeyboardEnter` of its own).
+    grab_focus: Option<SurfaceId>,
+    /// The last user action (a button or key press) on one of our
+    /// surfaces: a popup opened within [`GRAB_WINDOW`] of it grabs with
+    /// its serial.
+    last_action: Option<UserAction>,
     /// Popups the compositor dismissed (Escape, a click away) whose spec
     /// still says open: not shown again until it says closed.
     dismissed: BTreeSet<NodeId>,
@@ -637,6 +651,20 @@ impl<H: SurfaceHost + 'static> std::fmt::Debug for State<H> {
             .field("stats", &self.stats)
             .finish_non_exhaustive()
     }
+}
+
+/// How long after a press a popup that opens still counts as opened by
+/// it, and grabs with its serial. xdg-shell wants the serial of the user
+/// action that opened the popup; compositors that check it (KWin, Mutter)
+/// end the popup at once when the serial is stale. A popup opened by a
+/// timer, `on change` or IPC later than this has no grab.
+pub const GRAB_WINDOW: Duration = Duration::from_millis(500);
+
+/// A button or key press: its seat, serial and when it arrived.
+struct UserAction {
+    seat: wl_seat::WlSeat,
+    serial: u32,
+    at: Instant,
 }
 
 /// A seat's pointer, with the cursor it shows over our surfaces.
@@ -760,6 +788,9 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             keyboards: Vec::new(),
             keyboard_focus: None,
             last_pressed: None,
+            last_action: None,
+            grab_keyboard: BTreeSet::new(),
+            grab_focus: None,
             dismissed: BTreeSet::new(),
             modifiers: Modifiers::default(),
             focused: None,
@@ -1245,7 +1276,8 @@ impl<H: SurfaceHost + 'static> State<H> {
     }
 
     /// Creates `node`'s popup in surface `parent`, grabbing with the last
-    /// button press unless it is a tooltip.
+    /// button or key press when it came within [`GRAB_WINDOW`] (never for
+    /// a tooltip).
     fn create_popup(
         &mut self,
         node: NodeId,
@@ -1253,14 +1285,26 @@ impl<H: SurfaceHost + 'static> State<H> {
         parent: SurfaceId,
         config: PopupConfig,
     ) {
-        let Some(shell) = self.xdg_shell.as_ref() else {
+        if self.xdg_shell.is_none() {
             log::debug!("{}: no xdg_wm_base, popups are not shown", spec.namespace());
             return;
-        };
+        }
         let Some(positioner) = self.positioner(&config) else {
             return;
         };
+        if config.grab {
+            self.dismiss_other_grabs(parent);
+            // The layer surface takes the keyboard before the grab starts:
+            // once it has, the compositor moves keyboard focus no more.
+            if let Some(layer) = self.root_layer(parent) {
+                self.set_grab_keyboard(layer, true);
+            }
+        }
+        let Some(shell) = self.xdg_shell.as_ref() else {
+            return;
+        };
         let Some(ps) = self.surfaces.get(&parent) else {
+            self.sync_popup_keyboard();
             return;
         };
         let wl = self.compositor.create_surface(&self.qh);
@@ -1278,6 +1322,7 @@ impl<H: SurfaceHost + 'static> State<H> {
             Ok(p) => p,
             Err(e) => {
                 log::warn!("{}: no popup: {e}", spec.namespace());
+                self.sync_popup_keyboard();
                 return;
             }
         };
@@ -1286,14 +1331,11 @@ impl<H: SurfaceHost + 'static> State<H> {
         }
         let (monitor, output, scale_src) = (ps.monitor.clone(), ps.output, ps.output);
         if config.grab
-            && let Some(p) = self
-                .pointers
-                .iter()
-                .filter(|p| p.button_serial.is_some())
-                .max_by_key(|p| p.button_serial)
-            && let Some(serial) = p.button_serial
+            && let Some(a) = &self.last_action
+            && a.at.elapsed() <= GRAB_WINDOW
         {
-            popup.xdg_popup().grab(&p.seat, serial);
+            popup.xdg_popup().grab(&a.seat, a.serial);
+            self.stats.grabs += 1;
         }
         let key = (node, Placement::Focused);
         let id = match self.ids.get(&key) {
@@ -1367,6 +1409,96 @@ impl<H: SurfaceHost + 'static> State<H> {
         self.surfaces.insert(id, surface);
         let monitor = monitor.and_then(|m| self.monitors.get(&m)).cloned();
         self.host.surface_attached(id, node, monitor.as_ref());
+        self.sync_popup_keyboard();
+    }
+
+    /// The layer surface popup `id` is nested in (itself for a layer
+    /// surface).
+    fn root_layer(&self, mut id: SurfaceId) -> Option<SurfaceId> {
+        for _ in 0..64 {
+            match &self.surfaces.get(&id)?.role {
+                Role::Layer(_) => return Some(id),
+                Role::Popup { parent, .. } => id = *parent,
+            }
+        }
+        None
+    }
+
+    /// Makes layer surface `id` `exclusive` for a popup grab (`on`), or
+    /// gives it back its own keyboard interactivity.
+    fn set_grab_keyboard(&mut self, id: SurfaceId, on: bool) {
+        if on == self.grab_keyboard.contains(&id) {
+            return;
+        }
+        let Some(s) = self.surfaces.get_mut(&id) else {
+            return;
+        };
+        let Role::Layer(layer) = &s.role else {
+            return;
+        };
+        let k = if on {
+            self.grab_keyboard.insert(id);
+            Keyboard::Exclusive
+        } else {
+            self.grab_keyboard.remove(&id);
+            s.config.keyboard
+        };
+        layer.set_keyboard_interactivity(match k {
+            Keyboard::None => KeyboardInteractivity::None,
+            Keyboard::OnDemand => KeyboardInteractivity::OnDemand,
+            Keyboard::Exclusive => KeyboardInteractivity::Exclusive,
+        });
+        layer.commit();
+        s.stats.bare_commits += 1;
+        self.stats.bare_commits += 1;
+    }
+
+    /// The topmost grabbing popup nested in layer surface `layer`.
+    fn topmost_grab(&self, layer: SurfaceId) -> Option<SurfaceId> {
+        let grabbing = |s: &Surface| matches!(&s.role, Role::Popup { config, .. } if config.grab);
+        self.surfaces
+            .values()
+            .filter(|s| grabbing(s) && self.root_layer(s.id) == Some(layer))
+            .find(|s| {
+                !self
+                    .surfaces
+                    .values()
+                    .any(|c| grabbing(c) && c.role.popup_parent() == Some(s.id))
+            })
+            .map(|s| s.id)
+    }
+
+    /// Keeps the keyboard with the grabbing popups. An `xdg_popup` grab
+    /// asks for the keyboard, but compositors give it to the popup only
+    /// through its parent's focus, and a layer surface with `keyboard:
+    /// none` (a bar) never has focus: so while a grabbing popup is open
+    /// its layer surface is `exclusive` (as an app's menu holds the
+    /// keyboard), and keys arriving on it go to the topmost grabbing
+    /// popup, which is told a `KeyboardEnter` of its own. Escape then
+    /// closes the calendar of a `keyboard: none` bar.
+    fn sync_popup_keyboard(&mut self) {
+        let layers: Vec<SurfaceId> = self
+            .surfaces
+            .values()
+            .filter(|s| matches!(s.role, Role::Layer(_)))
+            .map(|s| s.id)
+            .collect();
+        for id in layers {
+            let want = self.topmost_grab(id).is_some();
+            self.set_grab_keyboard(id, want);
+        }
+        self.grab_keyboard
+            .retain(|id| self.surfaces.contains_key(id));
+        let want = self
+            .keyboard_focus
+            .and_then(|f| self.root_layer(f))
+            .and_then(|l| self.topmost_grab(l));
+        if want != self.grab_focus {
+            self.grab_focus = want;
+            if let Some(p) = want {
+                self.send_input(InputEvent::KeyboardEnter { surface: p });
+            }
+        }
     }
 
     /// Pushes a changed spec to `node`'s live surfaces in place.
@@ -1419,6 +1551,9 @@ impl<H: SurfaceHost + 'static> State<H> {
                 continue;
             };
             apply_layer_config(layer, &config);
+            if self.grab_keyboard.contains(&id) {
+                layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
+            }
             s.config = config;
             layer.commit();
             s.stats.bare_commits += 1;
@@ -1848,6 +1983,10 @@ impl<H: SurfaceHost + 'static> State<H> {
         drop(s);
         self.clock.forget(id);
         self.host.surface_detached(id);
+        if self.grab_focus == Some(id) {
+            self.grab_focus = None;
+        }
+        self.sync_popup_keyboard();
     }
 
     fn destroy_node_surfaces(&mut self, node: NodeId) {
@@ -2265,7 +2404,8 @@ impl<H: SurfaceHost + 'static> State<H> {
 
     /// A key event on the surface with keyboard focus.
     fn key(&mut self, event: KeyEvent, state: ButtonState, repeat: bool) {
-        let Some(surface) = self.keyboard_focus else {
+        // During a popup grab, the topmost grabbing popup takes the keys.
+        let Some(surface) = self.grab_focus.or(self.keyboard_focus) else {
             return;
         };
         let name = key_name(event.keysym);
@@ -2289,6 +2429,12 @@ impl<H: SurfaceHost + 'static> State<H> {
     /// The surface with keyboard focus, if it is one of ours.
     pub fn keyboard_focus(&self) -> Option<SurfaceId> {
         self.keyboard_focus
+    }
+
+    /// True while layer surface `id` is `exclusive` because a grabbing
+    /// popup of its is open (see `sync_popup_keyboard`).
+    pub fn holds_keyboard_for_popup(&self, id: SurfaceId) -> bool {
+        self.grab_keyboard.contains(&id)
     }
 
     fn send_input(&mut self, event: InputEvent) {
@@ -2599,15 +2745,57 @@ impl<H: SurfaceHost + 'static> PopupHandler for State<H> {
         let Some(id) = self.surface_for(popup.wl_surface()) else {
             return;
         };
+        self.dismiss_popup(id);
+    }
+}
+
+impl<H: SurfaceHost + 'static> State<H> {
+    /// Ends popup `id` as a click away does: told to the host while the
+    /// surface is still known (it routes by surface), then destroyed with
+    /// the popups nested in it; not made again until its spec has closed.
+    fn dismiss_popup(&mut self, id: SurfaceId) {
         self.stats.closed += 1;
-        // Told while the surface is still known (the host routes it by
-        // surface), then destroyed; not made again until its spec has
-        // closed.
         self.send_input(InputEvent::ClickAway { surface: id });
         if let Some(node) = self.surfaces.get(&id).map(|s| s.node) {
             self.dismissed.insert(node);
         }
         self.destroy_surface(id);
+    }
+
+    /// Before a grabbing popup opens in `parent`: the grabbing popups
+    /// that are not `parent` or one of its ancestors are dismissed first.
+    /// xdg-shell wants a grabbing popup to be the topmost one, nested in
+    /// the topmost grabbing popup or in a toplevel/layer surface; opening
+    /// the volume menu while the calendar is shown closes the calendar,
+    /// as a click away would.
+    fn dismiss_other_grabs(&mut self, parent: SurfaceId) {
+        let mut chain = BTreeSet::new();
+        let mut at = Some(parent);
+        while let Some(id) = at {
+            if !chain.insert(id) {
+                break;
+            }
+            at = self.surfaces.get(&id).and_then(|s| s.role.popup_parent());
+        }
+        // Outermost first: dismissing one takes the popups nested in it.
+        let others: Vec<SurfaceId> = self
+            .surfaces
+            .values()
+            .filter(|s| !chain.contains(&s.id))
+            .filter(|s| matches!(&s.role, Role::Popup { config, .. } if config.grab))
+            .filter(|s| {
+                s.role
+                    .popup_parent()
+                    .and_then(|p| self.surfaces.get(&p))
+                    .is_none_or(|p| !matches!(&p.role, Role::Popup { config, .. } if config.grab))
+            })
+            .map(|s| s.id)
+            .collect();
+        for id in others {
+            if self.surfaces.contains_key(&id) {
+                self.dismiss_popup(id);
+            }
+        }
     }
 }
 
@@ -2767,6 +2955,11 @@ impl<H: SurfaceHost + 'static> PointerHandler for State<H> {
                     PointerEventKind::Press { serial, .. } => {
                         if let Some(p) = seat.and_then(|i| self.pointers.get_mut(i)) {
                             p.button_serial = Some(*serial);
+                            self.last_action = Some(UserAction {
+                                seat: p.seat.clone(),
+                                serial: *serial,
+                                at: Instant::now(),
+                            });
                         }
                         self.send_input(InputEvent::ClickAway { surface });
                     }
@@ -2807,6 +3000,11 @@ impl<H: SurfaceHost + 'static> PointerHandler for State<H> {
                 } => {
                     if let Some(p) = seat.and_then(|i| self.pointers.get_mut(i)) {
                         p.button_serial = Some(*serial);
+                        self.last_action = Some(UserAction {
+                            seat: p.seat.clone(),
+                            serial: *serial,
+                            at: Instant::now(),
+                        });
                     }
                     self.last_pressed = Some(surface);
                     InputEvent::PointerButton {
@@ -2862,6 +3060,7 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
         if let Some(id) = self.surface_for(surface) {
             self.keyboard_focus = Some(id);
             self.send_input(InputEvent::KeyboardEnter { surface: id });
+            self.sync_popup_keyboard();
         }
     }
 
@@ -2877,6 +3076,13 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
         if self.keyboard_focus == id {
             self.keyboard_focus = None;
         }
+        // The keyboard left the layer surface: its grabbing popup loses it
+        // too.
+        if let Some(p) = self.grab_focus.take()
+            && self.surfaces.contains_key(&p)
+        {
+            self.send_input(InputEvent::KeyboardLeave { surface: p });
+        }
         if let Some(id) = id {
             self.send_input(InputEvent::KeyboardLeave { surface: id });
         }
@@ -2886,10 +3092,17 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
-        _: u32,
+        keyboard: &wl_keyboard::WlKeyboard,
+        serial: u32,
         event: KeyEvent,
     ) {
+        if let Some((seat, _)) = self.keyboards.iter().find(|(_, k)| k == keyboard) {
+            self.last_action = Some(UserAction {
+                seat: seat.clone(),
+                serial,
+                at: Instant::now(),
+            });
+        }
         self.key(event, ButtonState::Pressed, false);
     }
 

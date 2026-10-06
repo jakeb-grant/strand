@@ -364,7 +364,122 @@ fn a_worker_decodes_off_the_render_thread() {
         "woke the loop"
     );
     use strand_scene::Painter;
-    assert!(r.wants_frame(SurfaceId(1)));
+    // A frame is wanted to draw it, unless the decode was so quick that
+    // the first frame's paint already took it in and drew it.
+    let drawn_first = buf.px(5, 20)[2] > 0xc0;
+    assert!(r.wants_frame(SurfaceId(1)) || drawn_first);
     buf.paint(&mut r, SurfaceId(1), 1);
     assert!(buf.px(5, 20)[2] > 0xc0, "drawn: {:?}", buf.px(5, 20));
+}
+
+/// With the worker, an image whose box springs to a new size keeps
+/// drawing its last decode, scaled into the box, on every frame of the
+/// spring; the sizes it passes through are never decoded, and the size
+/// it rests at is.
+#[test]
+fn a_springing_image_draws_its_last_decode_scaled() {
+    use std::time::Duration;
+    use strand_text::{FontConfig, TextWorker, test_font_path};
+    theme_dir();
+    let data = std::fs::read(test_font_path()).unwrap();
+    let worker =
+        TextWorker::spawn_with_waker(FontConfig::isolated(vec![std::sync::Arc::new(data)]), None)
+            .unwrap();
+    let mut r = Renderer::new(strand_render::TextBackend::Worker(worker));
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Width, num(100.0)),
+            (Prop::Height, num(40.0)),
+            (Prop::Bg, color("#000000")),
+        ],
+    );
+    let img = b.node(
+        NodeKind::Image,
+        Some(root),
+        vec![
+            (Prop::Source, text(&fixture("halves.jpg"))),
+            (Prop::Fit, PropValue::Keyword("fill".into())),
+            (Prop::Width, num(40.0)),
+            (Prop::Height, num(40.0)),
+        ],
+    );
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(SurfaceId(1), root);
+    r.configure_surface(SurfaceId(1), Size::new(100, 40), Scale::ONE);
+    let mut buf = Buffer::new(100, 40, Scale::ONE);
+    let mut t = Duration::from_secs(1);
+    let wait = |r: &mut Renderer, bytes: usize| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while r.image_bytes() < bytes && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+            r.update();
+        }
+    };
+    buf.paint_at(&mut r, SurfaceId(1), 0, t);
+    wait(&mut r, 40 * 40 * 4);
+    t += Duration::from_millis(16);
+    buf.paint_at(&mut r, SurfaceId(1), 1, t);
+    assert!(buf.px(5, 20)[2] > 0xc0, "drawn: {:?}", buf.px(5, 20));
+
+    let mut d = SceneDiff::new();
+    d.set(img, Prop::Width, num(80.0));
+    assert!(r.apply(d).is_empty());
+    let mut frames = 0;
+    use strand_scene::Painter;
+    while r.wants_frame(SurfaceId(1)) && frames < 200 {
+        t += Duration::from_millis(16);
+        buf.paint_at(&mut r, SurfaceId(1), 1, t);
+        r.update();
+        frames += 1;
+        // Red on the left, and blue reaching past the old 40 px once the
+        // box has grown: the 40 px decode, stretched.
+        let left = buf.px(3, 20);
+        assert!(
+            left[2] > 0xc0 && left[2] > left[0] + 0x40,
+            "frame {frames}: {left:?}"
+        );
+        let w = r.boxes(SurfaceId(1)).unwrap().rects[&img].w;
+        if w > 50.0 {
+            let right = buf.px((w - 3.0) as u32, 20);
+            assert!(right[0] > 0xc0, "frame {frames} at {w}: {right:?}");
+        }
+    }
+    assert!(frames > 5, "it sprang over {frames} frames");
+    // At rest: the 80 px decode arrives, and only it was decoded.
+    wait(&mut r, (40 * 40 + 80 * 40) * 4);
+    assert_eq!(r.image_bytes(), (40 * 40 + 80 * 40) * 4);
+    t += Duration::from_millis(16);
+    buf.paint_at(&mut r, SurfaceId(1), 1, t);
+    assert!(buf.px(77, 20)[0] > 0xc0, "{:?}", buf.px(77, 20));
+    assert!(buf.px(3, 20)[2] > 0xc0);
+}
+
+/// A name the theme lacks falls back to its symbolic variant, then to
+/// generic names (`window-close-tab` → `window-close` →
+/// `window-close-symbolic`), as GTK does.
+#[test]
+fn icon_lookup_falls_back_to_symbolic_and_generic_names() {
+    theme_dir();
+    let theme = IconTheme::named("StrandTest");
+    let key = |s: &str| ImageKey {
+        source: s.into(),
+        icon: true,
+        w: 16,
+        h: 16,
+        fit: Fit::Contain,
+        scale: 1,
+    };
+    for name in [
+        "window-close",
+        "window-close-tab",
+        "window-close-tab-symbolic",
+    ] {
+        let d = load(&key(name), &theme).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(d.symbolic, "{name} found the symbolic icon");
+    }
+    assert!(load(&key("battery-full-charging"), &theme).is_ok());
+    assert!(load(&key("nothing-like-this"), &theme).is_err());
 }

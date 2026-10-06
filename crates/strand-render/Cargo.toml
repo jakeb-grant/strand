@@ -16,9 +16,10 @@ vello_cpu = { version = "0.3", default-features = false, features = ["std", "f32
 taffy = { version = "0.14", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "content_size"] }
 # Images and icons (design.md: decoded at drawn size into a 6 MB LRU,
 # icons from the freedesktop icon theme). resvg without text, system
-# fonts or embedded raster images: icons need none of them.
+# fonts or embedded raster images: icons need none of them. JPEG through
+# jpeg-decoder for its reduced-size IDCT (1/2, 1/4, 1/8), without rayon.
 png = "0.18"
-zune-jpeg = "0.5"
+jpeg-decoder = { version = "0.3", default-features = false }
 resvg = { version = "0.48", default-features = false }
 freedesktop-icons = "0.4"
 

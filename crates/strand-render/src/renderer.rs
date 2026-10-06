@@ -357,6 +357,40 @@ pub struct Renderer {
     /// Wakes the render loop from another thread (the text worker's
     /// waker), so a tooltip shows when its delay ends.
     waker: Option<LoopWaker>,
+    /// One timer thread for tooltip delays, re-armed with the latest due
+    /// time (started on first use).
+    tooltip_timer: Option<std::sync::mpsc::Sender<Instant>>,
+}
+
+/// Starts the thread that wakes the render loop at the latest due time
+/// it was sent; a newer one replaces the one waited for. It ends when the
+/// renderer (the sender) goes.
+fn spawn_tooltip_timer(waker: LoopWaker) -> Option<std::sync::mpsc::Sender<Instant>> {
+    use std::sync::mpsc::RecvTimeoutError;
+    let (tx, rx) = std::sync::mpsc::channel::<Instant>();
+    std::thread::Builder::new()
+        .name("strand-tooltip".into())
+        .spawn(move || {
+            let mut due: Option<Instant> = None;
+            loop {
+                let next = match due {
+                    None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
+                    Some(d) => rx.recv_timeout(d.saturating_duration_since(Instant::now())),
+                };
+                match next {
+                    Ok(d) => due = Some(d),
+                    Err(RecvTimeoutError::Timeout) => {
+                        due = None;
+                        if let Ok(w) = waker.0.lock() {
+                            w();
+                        }
+                    }
+                    Err(RecvTimeoutError::Disconnected) => return,
+                }
+            }
+        })
+        .ok()?;
+    Some(tx)
 }
 
 /// The render loop's waker, callable from any thread.
@@ -553,6 +587,7 @@ impl Renderer {
             tooltip: None,
             tooltip_delay: TOOLTIP_DELAY,
             tooltip_seq: 0,
+            tooltip_timer: None,
             waker,
         }
     }
@@ -608,8 +643,9 @@ impl Renderer {
         {
             if t.text != *text {
                 t.text = text.clone();
-                if t.popup.is_some() {
-                    self.hide_tooltip();
+                // Shown: made again with the new text (its delay passed).
+                if let Some(p) = t.popup.take() {
+                    self.tree.remove_overlay(p);
                     self.show_tooltip();
                 }
             }
@@ -619,22 +655,20 @@ impl Renderer {
         let Some((target, text)) = want else {
             return;
         };
-        let delay = self.tooltip_delay;
+        let due = Instant::now() + self.tooltip_delay;
         self.tooltip = Some(Tooltip {
             target,
             text,
-            due: Instant::now() + delay,
+            due,
             popup: None,
         });
-        if let Some(w) = self.waker.clone() {
-            let _ = std::thread::Builder::new()
-                .name("strand-tooltip".into())
-                .spawn(move || {
-                    std::thread::sleep(delay);
-                    if let Ok(w) = w.0.lock() {
-                        w();
-                    }
-                });
+        if self.tooltip_timer.is_none() {
+            self.tooltip_timer = self.waker.clone().and_then(spawn_tooltip_timer);
+        }
+        if let Some(tx) = &self.tooltip_timer
+            && tx.send(due).is_err()
+        {
+            self.tooltip_timer = None;
         }
     }
 
@@ -1722,6 +1756,7 @@ impl Renderer {
 
     pub fn detach_surface(&mut self, surface: SurfaceId) {
         self.surfaces.remove(&surface);
+        self.extras.images.forget(surface);
         self.reap_exits();
         self.bounds.remove(&surface);
         self.facts_sent.retain(|(s, _), _| *s != surface);
@@ -1901,6 +1936,17 @@ impl Renderer {
 
     /// Applies one tick's diff. Failed ops are returned; the rest apply.
     pub fn apply(&mut self, diff: SceneDiff) -> Vec<SceneError> {
+        // A `tooltip` (or the tokens it reads) changing while one waits
+        // or shows: its text follows.
+        let tooltips = diff.ops.iter().any(|op| {
+            matches!(
+                op,
+                SceneOp::SetProp {
+                    prop: Prop::Tooltip,
+                    ..
+                } | SceneOp::SetTokens { .. }
+            )
+        });
         let errors = self.apply_ops(diff);
         // Widget state of nodes logic removed goes with them, and a
         // tooltip with its node.
@@ -1912,6 +1958,9 @@ impl Renderer {
             .is_some_and(|t| !self.tree.contains_live(t.target))
         {
             self.hide_tooltip();
+        }
+        if tooltips && !self.extras.widgets.hovered.is_empty() {
+            self.refresh_tooltip();
         }
         errors
     }
@@ -2331,10 +2380,14 @@ impl Renderer {
     }
 
     fn poll_text(&mut self) {
-        // Decoded images: surfaces drawing them repaint.
-        if self.extras.images.poll() {
-            for s in self.surfaces.values_mut() {
-                s.mark_dirty();
+        // Decoded images: the surfaces drawing them repaint.
+        let arrived = self.extras.images.poll();
+        if !arrived.is_empty() {
+            let images = &self.extras.images;
+            for (id, s) in self.surfaces.iter_mut() {
+                if arrived.iter().any(|k| images.drawn_by(*id, k)) {
+                    s.mark_dirty();
+                }
             }
         }
         loop {
@@ -2483,7 +2536,13 @@ impl Renderer {
             let flat = self.flatten_now(id);
             let text = self.request_text(&flat.text);
             // Decoded inline (offline): draw them at once too.
-            let images = self.extras.images.want(&flat.images);
+            // While a size springs here, images at a new size draw their
+            // last decode scaled and are decoded once it rests.
+            let defer = self
+                .surfaces
+                .get(&id)
+                .is_some_and(|s| self.anim.sizes_moving(&self.tree, s.root));
+            let images = self.extras.images.want(id, &flat.images, defer);
             if !text && !images {
                 stable = Some(flat);
                 break;
