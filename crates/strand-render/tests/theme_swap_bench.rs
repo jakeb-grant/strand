@@ -28,10 +28,10 @@
 //! `set { }` subtrees (0, 8 and 32 distinct scopes) and a slow
 //! `$motion.effects` (`spring(120, 1)`, about a second) hold the swap's
 //! once-per-swap work to the same 5 ms and each frame's to a twentieth
-//! of it, and along the design's `spring(1600, 1)` the whole swap
-//! (logic's re-resolve on design.md's theme, the apply and every
-//! frame's work) to the 5 ms (decisions.md, wave3-theme fixer rounds 2
-//! and 3).
+//! of it, and along the design's `spring(1600, 1)` with up to eight
+//! scopes the whole swap (logic's re-resolve on design.md's theme, the
+//! apply and every frame's work) to the 5 ms (decisions.md, wave3-theme
+//! fixer rounds 2 and 3).
 
 mod common;
 
@@ -507,10 +507,11 @@ fn spring_tables(stiffness: f32) -> (TokenTable, TokenTable) {
 /// play-through and any snapshots) is held to the 5 ms budget whatever
 /// the spring or the scopes; the work of each frame (the roots and the
 /// frame's token graph) is held to a twentieth of it per frame, and
-/// along the design's `spring(1600, 1)` the whole swap (logic's
-/// re-resolve, measured on design.md's theme as in the first bench,
-/// the apply and every frame's work) is held to the 5 ms; a slower
-/// spring costs the same per frame, over more frames (decisions.md).
+/// along the design's `spring(1600, 1)` with up to eight scopes the
+/// whole swap (logic's re-resolve, measured on design.md's theme as in
+/// the first bench, the apply and every frame's work) is held to the
+/// 5 ms; a slower spring costs the same per frame, over more frames
+/// (decisions.md).
 #[test]
 fn set_scopes_and_slow_springs_stay_within_the_budget() {
     let tok = |p: &str| PropValue::Token(TokenExpr::path(p));
@@ -625,8 +626,11 @@ fn set_scopes_and_slow_springs_stay_within_the_budget() {
         BUDGET
     };
     for (scopes, stiffness, apply, each, whole) in report {
-        // Along the design's spring, the whole swap.
-        if stiffness == 1600.0 {
+        // Along the design's spring, the whole swap, with up to eight
+        // distinct reaching scopes (design.md's shells have none; at the
+        // 32 the check plays at most, about 4.6 ms idle, only its parts
+        // are gated: decisions.md, wave3-theme fixer round 3).
+        if stiffness == 1600.0 && scopes <= 8 {
             assert!(
                 whole < gate,
                 "{scopes} scopes, spring({stiffness}, 1): {whole:?} of work in all, over {gate:?}"

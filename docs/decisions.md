@@ -4494,7 +4494,8 @@ some 3.5 ms of frame work spread over a second. So "under 5 ms of work"
 is held as: the once-per-swap part under 5 ms whatever the spring and
 the scopes, each frame's part under a twentieth of that (250 µs, a
 fraction of any frame's budget), and the whole under 5 ms along the
-design's springs. That a slower spring costs more in total is its
+design's springs (round 3: gated with up to eight reaching `set { }`
+scopes; at 32 only the parts are). That a slower spring costs more in total is its
 author's choice of more frames, not the swap's doing.
 
 **2026-10-06 · wave3-theme (t2) fixer round 2: crossfades are decided
@@ -4614,18 +4615,26 @@ the repro of the finding, `$fg` over the subtree's `$panel` at 1.59:1,
 now held; a readable scope keeps springing).
 
 **2026-10-06 · wave3-theme (t2) fixer round 3: the whole swap along the
-design's spring is gated.** Round 2 said the whole swap stays under
-5 ms along design.md's springs, but gated `apply` and each frame apart.
-`set_scopes_and_slow_springs_stay_within_the_budget` now also measures
-logic's re-resolve of a light↔dark swap on design.md's theme (as the
-first bench does) and, for `spring(1600, 1)`, holds logic + `apply` +
-the work of every frame to 5 ms per swap (median). Release, on this
-machine: 2.2 ms with no scopes, 3.2 ms with 8, 4.6 ms with 32
-distinct reaching scopes (0.5 ms logic, 3.0 ms apply, 17 frames of
-66 µs). 32 distinct scopes whose overrides each reach a declared
-background is far past design.md's shells (the bar has none), so the
-margin is thin only at the bench's extreme; a regression past 5 ms
-there now fails CI.
+design's spring is gated, up to eight scopes.** Round 2 said the whole
+swap stays under 5 ms along design.md's springs, but gated `apply` and
+each frame apart. `set_scopes_and_slow_springs_stay_within_the_budget`
+now also measures logic's re-resolve of a light↔dark swap on design.md's
+theme (as the first bench does) and, for `spring(1600, 1)` with 0 and 8
+distinct reaching `set { }` scopes, holds logic + `apply` + the work of
+every frame to 5 ms per swap (median; release, idle: about 2.2 and
+3.2 ms). At the 32 scopes the check plays at most (`CHECK_SCOPES`), the
+whole is about 4.6 ms idle (0.5 ms logic, 3.0 ms apply, 17 frames of
+66 µs), too close to the gate to hold it there without failing on a
+loaded runner (with another build on the machine it measured 5.7 to
+5.8 ms, and every other number rose alike), so there only the parts are
+gated: `apply` under 5 ms and each frame under 250 µs. 32 distinct
+scopes whose overrides each reach a declared background is far past
+design.md's shells (the bar has none, the others one or two), so the
+claim is narrowed to what is gated: the whole swap is under 5 ms along
+the design's springs with up to eight such scopes. The background
+lookups that decide which pairs are judged are now made once per scope
+and table (they were made per pair), which took about 0.15 ms off the
+32-scope plan.
 
 **2026-10-06 · wave3-theme (t2) fixer round 3: seen on sway.** `strand
 run` on headless sway with design.md's `theme.strand` (`$motion.effects`

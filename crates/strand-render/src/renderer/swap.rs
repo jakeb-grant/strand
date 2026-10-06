@@ -230,23 +230,32 @@ impl FadeFrame {
     }
 }
 
-/// The opaque backgrounds of pair `text` over `bgs`, as evaluated in
-/// `scope` (what the guard judges: translucent ones show what is under
-/// them).
-fn backgrounds(scope: &TokenScope<'_>, text: &str, bgs: &[String]) -> Vec<Color> {
-    bgs.iter()
-        .filter(|b| b.as_str() != text)
-        .filter_map(|b| match scope.lookup(b) {
-            Some(PropValue::Color(c)) if c.a >= 1.0 => Some(c),
-            _ => None,
-        })
-        .collect()
-}
-
-/// Whether `text` can reach `min` over `bgs` in the scope `levels`.
-fn reachable(levels: &[&TokenTable], text: &str, bgs: &[String], min: f64) -> bool {
-    let scope = TokenScope::new(levels);
-    Color::contrast_reachable(&backgrounds(&scope, text, bgs), min)
+/// Whether `text` can reach 3:1 over `bgs` both in `from` (the old
+/// table's scope) and in `to` (the new one's), each background's
+/// luminance looked up once per scope (`memo`).
+fn readable_in(
+    [from, to]: [&TokenScope<'_>; 2],
+    memo: &mut [HashMap<String, Option<f64>>; 2],
+    text: &str,
+    bgs: &[String],
+) -> bool {
+    let mut lums = Vec::with_capacity(bgs.len());
+    for (scope, memo) in [from, to].into_iter().zip(memo.iter_mut()) {
+        lums.clear();
+        for b in bgs.iter().filter(|b| b.as_str() != text) {
+            let l = *memo
+                .entry(b.clone())
+                .or_insert_with(|| match scope.lookup(b) {
+                    Some(PropValue::Color(c)) if c.a >= 1.0 => Some(c.relative_luminance()),
+                    _ => None,
+                });
+            lums.extend(l);
+        }
+        if !luminance_reachable(&lums, MIN_CONTRAST) {
+            return false;
+        }
+    }
+    true
 }
 
 /// The paths a prop value reads.
@@ -467,13 +476,11 @@ impl<'a> Play<'a> {
             };
             global_src.insert(b, src);
         }
-        let readable = |levels: &[&TokenTable], text: &str, bgs: &[String]| {
-            let mut from: Vec<&TokenTable> = vec![old];
-            from.extend_from_slice(&levels[1..]);
-            reachable(&from, text, bgs, MIN_CONTRAST) && reachable(levels, text, bgs, MIN_CONTRAST)
-        };
+        let olds = [old];
+        let old_scope = TokenScope::new(&olds);
+        let mut memo = [HashMap::new(), HashMap::new()];
         for (text, bgs) in &table.contrast {
-            if !readable(&[table], text, bgs) {
+            if !readable_in([&old_scope, &scope], &mut memo, text, bgs) {
                 continue;
             }
             let srcs: Vec<Src> = bgs
@@ -549,6 +556,10 @@ impl<'a> Play<'a> {
                 continue;
             }
             let lscope = TokenScope::new(&levels);
+            let mut from: Vec<&TokenTable> = vec![old];
+            from.extend_from_slice(&levels[1..]);
+            let from_scope = TokenScope::new(&from);
+            let mut memo = [HashMap::new(), HashMap::new()];
             let mut src_of: HashMap<&str, Src> = HashMap::new();
             for (b, r) in &scope_reads {
                 let src = if moving(r) {
@@ -564,7 +575,9 @@ impl<'a> Play<'a> {
                 src_of.insert(b, src);
             }
             for (text, bgs) in &table.contrast {
-                if !bgs.iter().any(|b| b != text && affected(b)) || !readable(&levels, text, bgs) {
+                if !bgs.iter().any(|b| b != text && affected(b))
+                    || !readable_in([&from_scope, &lscope], &mut memo, text, bgs)
+                {
                     continue;
                 }
                 let srcs: Vec<Src> = bgs
