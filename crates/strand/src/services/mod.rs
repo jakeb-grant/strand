@@ -344,4 +344,238 @@ mod tests {
         shell.until("sampling again", |s| s.real.builtin.cpu.reports() > hidden);
         assert_eq!((cpu.starts(), cpu.stops()), (1, 0));
     }
+
+    /// A store with a keyed list, an `rw` field, an event, item actions
+    /// and an async method, through `StoreHost` and `Composite` as the VM
+    /// drives them.
+    mod tally {
+        use std::future::Future;
+        use std::task::{Context, Poll, Wake, Waker};
+
+        use strand_compiler::vm::host::{ActionTarget, PathSeg};
+        use strand_core::Runtime;
+        use strand_services::{Call, Cx, Event, Msg, ServiceError, Store, service};
+
+        use super::*;
+
+        pub const SCHEMA: &str = "
+/// An item of the tally.
+record TallyItem key id {
+  /// Its key.
+  id: int
+  /// Its name.
+  name: text
+  /// Takes it off the tally.
+  action remove()
+}
+
+/// A tally of items.
+service tally {
+  /// A level, written by the shell.
+  level: float rw
+  /// The items, keyed by `id`.
+  items: [TallyItem]
+  /// Adds an item.
+  action add(name: text)
+  /// Its text, back.
+  fn echo(text: text) -> Async<text>
+  /// An item was taken off.
+  event removed(item: TallyItem)
+}
+";
+
+        #[derive(strand_services::Data, Clone, Debug, Default, PartialEq)]
+        #[data(name = "TallyItem", key = id)]
+        pub struct Item {
+            pub id: i64,
+            pub name: String,
+        }
+
+        #[derive(Call, Debug)]
+        pub enum TallyAction {
+            Add(String),
+            Remove { item: Item },
+        }
+
+        #[derive(Call, Debug)]
+        pub enum TallyCall {
+            Echo { text: String },
+        }
+
+        /// See the schema.
+        #[service(name = "tally", schema = SCHEMA, action = TallyAction, call = TallyCall)]
+        #[derive(Store, Clone, Debug, Default, PartialEq)]
+        pub struct Tally {
+            /// A level.
+            #[store(rw)]
+            pub level: f64,
+            /// The items.
+            #[store(keyed)]
+            pub items: Vec<Item>,
+            /// An item was taken off.
+            pub removed: Event<Item>,
+        }
+
+        impl Tally {
+            async fn run(mut cx: Cx<Self>) -> Result<(), ServiceError> {
+                cx.ready();
+                while let Some(m) = cx.recv().await {
+                    match m {
+                        // Settles on half what was written.
+                        Msg::Write(w) => {
+                            let v: f64 = w.value().unwrap_or(0.0);
+                            cx.report(&w, |s| s.level = v / 2.0);
+                        }
+                        Msg::Action(TallyAction::Add(name)) => {
+                            cx.update(|s| {
+                                let id = s.items.len() as i64 + 1;
+                                s.items.push(Item { id, name });
+                            });
+                        }
+                        Msg::Action(TallyAction::Remove { item }) => {
+                            cx.update(|s| s.items.retain(|i| i.id != item.id));
+                            cx.emit(TallyPatch::Removed(item));
+                        }
+                        Msg::Call(TallyCall::Echo { text }, reply) => {
+                            reply.send::<_, String>(Ok(text));
+                        }
+                        Msg::Visible(_) => {}
+                    }
+                }
+                Ok(())
+            }
+        }
+
+        struct Unpark(std::thread::Thread);
+
+        impl Wake for Unpark {
+            fn wake(self: Arc<Self>) {
+                self.0.unpark();
+            }
+        }
+
+        fn block_on<T>(fut: impl Future<Output = T>) -> T {
+            let mut fut = std::pin::pin!(fut);
+            let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
+            let mut cx = Context::from_waker(&waker);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if let Poll::Ready(v) = fut.as_mut().poll(&mut cx) {
+                    return v;
+                }
+                assert!(Instant::now() < deadline, "never resolved");
+                std::thread::park_timeout(Duration::from_millis(50));
+            }
+        }
+
+        /// Pump until `done`.
+        fn until(rt: &Runtime, services: &Services, what: &str, done: impl Fn() -> bool) {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !done() {
+                assert!(Instant::now() < deadline, "timed out: {what}");
+                std::thread::sleep(Duration::from_millis(5));
+                services.pump(rt);
+                rt.flush();
+            }
+        }
+
+        #[test]
+        fn keyed_lists_writes_events_item_actions_and_async_calls_cross() {
+            let mut schema = Schema::builtin().clone();
+            schema.extend(SCHEMA).unwrap();
+            assert!(
+                schema.undocumented().is_empty(),
+                "{:?}",
+                schema.undocumented()
+            );
+            let types = Rc::new(schema.types.clone());
+            let rt = Runtime::new();
+            let services = Services::new(&rt, Buses::none(), || {});
+            let client = services.register::<Tally>(&rt);
+            let store = Rc::new(StoreHost::new(&rt, client.dynamic(), types.clone()));
+            let fallback = Rc::new(SchemaHost::new(&rt, &types, None));
+            let mut host = Composite::new(fallback, types.clone());
+            let items = client.dynamic().item_records();
+            assert_eq!(items, ["TallyItem"]);
+            host.add(store.clone(), &["tally"], &items);
+            let host: Rc<dyn ServiceHost> = Rc::new(host);
+            host.acquire(&rt, "tally");
+            let keyed = host
+                .read_keyed(&rt, "tally", "items")
+                .expect("a keyed field");
+            assert!(host.read_keyed(&rt, "tally", "level").is_none());
+            let removed = host.event(&rt, "tally", "removed").expect("an event");
+            let heard = Rc::new(std::cell::RefCell::new(Vec::<Vec<Value>>::new()));
+            let h = heard.clone();
+            removed
+                .on(&rt, move |_, args| {
+                    h.borrow_mut().push(args.clone());
+                    Ok(())
+                })
+                .unwrap();
+            let len = |rt: &Runtime| keyed.with_untracked(rt, |v| v.len()).unwrap();
+            // Actions on the service: the items arrive as keyed diffs.
+            for name in ["a", "b", "c"] {
+                host.action(
+                    &rt,
+                    ActionTarget::Service("tally"),
+                    "add",
+                    &[Value::text(name)],
+                )
+                .unwrap();
+            }
+            until(&rt, &services, "three items", || len(&rt) == 3);
+            let list = rt.untrack(|rt| host.read(rt, "tally", "items")).unwrap();
+            let names: Vec<String> = list
+                .as_list()
+                .unwrap()
+                .iter()
+                .map(|v| {
+                    v.field(&types, "name")
+                        .unwrap()
+                        .as_text()
+                        .unwrap()
+                        .to_string()
+                })
+                .collect();
+            assert_eq!(names, ["a", "b", "c"]);
+            // An item's action goes to the member whose actions take it.
+            let b = list.as_list().unwrap()[1].clone();
+            host.action(&rt, ActionTarget::Item(&b), "remove", &[])
+                .unwrap();
+            until(&rt, &services, "b removed", || len(&rt) == 2);
+            until(&rt, &services, "the event", || !heard.borrow().is_empty());
+            assert_eq!(heard.borrow()[0], vec![b.clone()]);
+            // A write shows at once; the service's answer (half) replaces
+            // it, tagged so it is not taken for an echo.
+            host.write(
+                &rt,
+                "tally",
+                &[PathSeg::Field("level".into())],
+                Value::float(0.8),
+            )
+            .unwrap();
+            assert_eq!(
+                rt.untrack(|rt| host.read(rt, "tally", "level")).unwrap(),
+                Value::float(0.8)
+            );
+            until(&rt, &services, "the report", || {
+                rt.untrack(|rt| host.read(rt, "tally", "level")).unwrap() == Value::float(0.4)
+            });
+            // Read-only fields refuse writes.
+            assert!(
+                host.write(&rt, "tally", &[PathSeg::Field("items".into())], Value::Null)
+                    .is_err()
+            );
+            // An async method completes its fetch.
+            let got = block_on(host.fetch(&rt, "tally", "echo", vec![Value::text("hi")]));
+            assert_eq!(got.unwrap(), Value::text("hi"));
+            assert!(
+                host.call(&rt, "tally", "echo", &[Value::text("x")])
+                    .is_err()
+            );
+            host.release(&rt, "tally");
+            services.shutdown();
+        }
+    }
 }
