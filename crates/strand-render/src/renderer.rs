@@ -903,7 +903,11 @@ impl Renderer {
                     // Never smaller while something on it moves (a toast
                     // collapsing, its siblings sliding up): it shrinks
                     // once everything settles.
-                    if let Some(old) = old.filter(|_| self.anim.busy(&self.tree, id)) {
+                    let moving = self.anim.busy(&self.tree, id)
+                        || self.surfaces.values().any(|s| {
+                            s.root == id && (s.animating || s.flip_all || !s.flip.is_empty())
+                        });
+                    if let Some(old) = old.filter(|_| moving) {
                         b.size.w = b.size.w.max(old.width.unwrap_or(0.0));
                         b.size.h = b.size.h.max(old.height.unwrap_or(0.0));
                     }

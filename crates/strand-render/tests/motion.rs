@@ -704,3 +704,176 @@ fn token_swaps_glide_and_popin_scales() {
     st.settle(end + 5);
     assert_eq!(green(&st), st.rect(n).w as usize);
 }
+
+/// The toasts example: a content-sized panel whose first toast leaves
+/// with `exit { x: 420; opacity: 0; height: 0 }`: the one below slides up
+/// without a jump, and the surface asks for its smaller size only once
+/// everything settled.
+#[test]
+fn a_leaving_toast_lets_the_next_slide_up_in_a_content_sized_panel() {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Panel, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let col = b.node(
+        NodeKind::Col,
+        Some(root),
+        vec![(Prop::Width, num(100.0)), (Prop::Gap, num(8.0))],
+    );
+    let mut toasts = Vec::new();
+    for c in ["#00ff00", "#ff0000"] {
+        let t = b.node(
+            NodeKind::Col,
+            Some(col),
+            vec![
+                (Prop::Pad, num(6.0)),
+                (Prop::Bg, color(c)),
+                (
+                    Prop::Exit,
+                    pose(vec![
+                        (Prop::X, num(420.0)),
+                        (Prop::Opacity, num(0.0)),
+                        (Prop::Height, num(0.0)),
+                    ]),
+                ),
+            ],
+        );
+        b.node(NodeKind::Box, Some(t), vec![(Prop::Height, num(30.0))]);
+        toasts.push(t);
+    }
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    let spec = r.surface_spec(root).unwrap().clone();
+    let (w, h) = (spec.width.unwrap() as u32, spec.height.unwrap() as u32);
+    assert_eq!(h, 42 + 8 + 42);
+    r.attach_surface(S, root);
+    let mut buf = Buffer::new(w, h, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, T0);
+    let mut st = Stage { r, buf, root };
+    assert_eq!(st.red_top(50), Some(50));
+    let mut d = SceneDiff::new();
+    d.push(SceneOp::Remove { id: toasts[0] });
+    st.apply(d);
+    let mut tops = Vec::new();
+    let mut k = 1;
+    while st.r.wants_frame(S) {
+        st.paint(frame(k));
+        tops.push(st.red_top(50).unwrap() as i32);
+        assert!(st.r.surface_spec(root).unwrap().height.unwrap() as u32 == h || !st.r.animating(S));
+        k += 1;
+        assert!(k < 200);
+    }
+    assert_eq!(*tops.last().unwrap(), 0, "{tops:?}");
+    assert!(
+        tops.windows(2).all(|p| p[1] <= p[0] && p[0] - p[1] <= 12),
+        "{tops:?}"
+    );
+    st.r.update();
+    assert_eq!(
+        st.r.surface_spec(root).unwrap().height,
+        Some(42.0),
+        "shrinks once settled"
+    );
+}
+
+/// Poses apply wherever logic creates and removes nodes: an `if` branch
+/// (a node under any container), a `list` row and a `page` of `pages`
+/// all enter from their pose and play their exit before unmounting.
+#[test]
+fn if_branches_list_rows_and_pages_enter_and_exit() {
+    let mut parents = Vec::new();
+    let mut st = Stage::new(200, 120, |b, root| {
+        let row = b.node(NodeKind::Row, Some(root), vec![]);
+        parents.push(b.node(NodeKind::Row, Some(row), vec![(Prop::Width, num(60.0))]));
+        parents.push(b.node(
+            NodeKind::List,
+            Some(row),
+            vec![(Prop::Width, num(60.0)), (Prop::Height, num(100.0))],
+        ));
+        parents.push(b.node(NodeKind::Pages, Some(row), vec![(Prop::Width, num(60.0))]));
+    });
+    let kinds = [NodeKind::Box, NodeKind::Row, NodeKind::Page];
+    let fade = pose(vec![(Prop::Opacity, num(0.0)), (Prop::Y, num(30.0))]);
+    let mut made = Vec::new();
+    let mut d = SceneDiff::new();
+    for (i, (p, k)) in parents.iter().zip(kinds).enumerate() {
+        let id = NodeId::new(40 + i as u32, 0);
+        d.create(id, k, Some(*p), 0)
+            .set(id, Prop::Size, num(20.0))
+            .set(id, Prop::Bg, color("#ff0000"))
+            .set(id, Prop::Enter, fade.clone());
+        made.push(id);
+    }
+    st.apply(d);
+    st.paint(frame(1));
+    let alpha = |st: &Stage, id: NodeId| {
+        let r = st.rect(id);
+        st.buf.px((r.x + 10.0) as u32, (r.y + 10.0) as u32)[2]
+    };
+    for id in &made {
+        assert!(alpha(&st, *id) < 200, "{id:?} enters from its pose");
+    }
+    let end = st.settle(2);
+    for id in &made {
+        assert_eq!(alpha(&st, *id), 255, "{id:?} at rest");
+    }
+    let mut d = SceneDiff::new();
+    for id in &made {
+        d.push(SceneOp::Remove { id: *id });
+    }
+    st.apply(d);
+    for id in &made {
+        assert!(
+            st.r.tree().is_ghost(*id),
+            "{id:?} plays its exit (mirrored enter)"
+        );
+    }
+    st.paint(frame(end));
+    st.settle(end + 1);
+    assert_eq!(st.r.tree().ghost_count(), 0);
+}
+
+/// Per-prop `~` overrides: `~ instant` snaps, `~ 200ms` ends exactly
+/// 200 ms after it starts, `~ $motion.bouncy` overshoots.
+#[test]
+fn per_prop_transitions_override_the_default_spring() {
+    let mut id = None;
+    let mut st = Stage::new(200, 20, |b, root| id = Some(red_box(b, root, vec![])));
+    let id = id.unwrap();
+    let set = |x: f32, transition: Transition| {
+        let mut d = SceneDiff::new();
+        d.push(SceneOp::SetProp {
+            id,
+            prop: Prop::X,
+            value: num(x),
+            transition,
+        });
+        d
+    };
+    st.apply(set(50.0, Transition::Instant));
+    st.paint(frame(1));
+    assert_eq!(st.red_from(10), Some(50));
+    assert!(!st.r.wants_frame(S));
+    st.apply(set(
+        150.0,
+        Transition::Duration {
+            duration: Duration::from_millis(200),
+            easing: Easing::Linear,
+        },
+    ));
+    // Starts one frame before frame 2, at frame 1's time.
+    st.paint(frame(2));
+    let x = st.red_from(10).unwrap();
+    assert!((55..=60).contains(&x), "{x}");
+    st.paint(frame(1) + Duration::from_millis(200));
+    assert_eq!(st.red_from(10), Some(150));
+    st.paint(frame(14));
+    assert!(!st.r.wants_frame(S));
+    st.apply(set(10.0, Transition::Token("motion.bouncy".into())));
+    let mut min = 200;
+    for k in 15..80 {
+        st.paint(frame(k));
+        min = min.min(st.red_from(10).unwrap());
+    }
+    assert!(min <= 8, "bouncy overshoots: {min}");
+    st.settle(80);
+    assert_eq!(st.red_from(10), Some(10));
+}

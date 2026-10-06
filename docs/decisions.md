@@ -4186,3 +4186,67 @@ widgets.** "The four example shells run unchanged" needs the bar's
 sway the OSD shows only its percentage and the bar no volume, battery or
 tray icons. Layout, theming and routing for them are in place; the exit
 box stays open on those two items.
+
+**2026-10-06 · wave3-pixels (p2): springs start at the frame that shows
+them.** Diffs reach the render thread without a presentation time, so a
+change does not start its spring when it is applied: it starts at the
+first painted frame after it, one refresh (at most 16.7 ms, never before
+the previous frame of that surface) before that frame's presentation
+time, so the first frame already shows movement. A retarget evaluates the
+old spring at that start and keeps its position and velocity. Everything
+is a function of the timestamps painted, so frames are reproducible.
+
+**2026-10-06 · wave3-pixels (p2): what springs, and when.** Only a value
+logic sets (`SetProp`) on a node already on screen springs; a node's
+initial props, a node on a surface not yet shown and a frame painted at
+time zero (a host without a clock: offline tests, the fuzzer) show values
+at rest. A target that moves because a token or an inherited value
+changed snaps when at rest and steers a spring in flight, so a theme
+swap's palette springs (the theme track) are not springed twice.
+`$motion.spatial`/`$motion.effects`/`$motion.bouncy` fall back to the
+design's springs when the token table lacks them, so a shell without a
+theme still animates ("every visual prop is a spring" is a default).
+
+**2026-10-06 · wave3-pixels (p2): layout lengths snap, sizes spring.**
+"Layout lengths snap while paint offsets spring" is read for every
+layout length except the box size: `pad`, `margin`, `gap`, `min_*`,
+`max_*`, `grow`, `shrink`, `align`, `justify` and token swaps snap, and
+every box they move glides from where it was (FLIP, `$motion.spatial`);
+`width`, `height` and `size` spring the laid-out size ("size springs",
+the Dot's `width: 24`, the toast's `exit { height: 0 }`). Text changes
+move boxes without a glide, so a minute tick still paints one frame. A
+node whose size springs clips its content while it does (a collapsing
+toast hides what no longer fits).
+
+**2026-10-06 · wave3-pixels (p2): exits are ghosts.** A removed node with
+an `exit` pose (or an `enter` one, mirrored) that is laid out on a shown
+surface keeps its id in a ghost table outside the slots: logic cannot
+address it and may reuse the slot at once, render keeps it in its
+parent's children (logic's child indices skip ghosts), lays it out,
+draws it and never hits it. It unmounts when every prop of its pose has
+settled, or at once when its surface goes or a frame no longer draws it
+(a list row scrolled away). A surface whose `open` goes false keeps
+reporting `open: true` until its exit pose settles; opening again
+springs back from wherever it is. Removing a surface root itself still
+unmounts at once (no pose). Poses are repainted, not compositor
+animated: that is M4.
+
+**2026-10-06 · wave3-pixels (p2): pose presets.** `fade` is `opacity:
+0`; `slidefade` is `opacity: 0; y: 8` (the design gives no distance);
+`popin(s)` is `scale: s; opacity: 0`; `slide(edge)` moves by the node's
+own width or height towards that edge. `scale` and `rotate` are about
+the box's centre.
+
+**2026-10-06 · wave3-pixels (p2): `reduced_motion` reaches render as a
+setting or a token.** `Renderer::set_reduced_motion` (a host setting)
+and the global token `motion.reduced: true` (which logic can derive from
+`system.reduced_motion` or a settings field) both snap every spring,
+pose and glide. Wiring the portal's `reduced-motion` key (strand-watch
+drops it today) and the token into the compiler's table belongs to the
+watch and theme tracks.
+
+**2026-10-06 · wave3-pixels (p2): a content-sized surface waits to
+shrink.** While anything on it moves (an exit, a glide still to start),
+a content-sized surface keeps the larger of its old and new sizes, and
+asks for the smaller one once everything settled, so a leaving toast
+and the sibling sliding into its place are never cut off by the buffer.

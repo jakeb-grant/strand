@@ -433,6 +433,10 @@ impl Animator {
     pub fn enter(&mut self, id: NodeId) {
         self.enter.insert(id);
         self.enter_size.insert(id);
+        // A surface opened again: props held at its exit pose spring back.
+        if let Some(na) = self.nodes.get_mut(&id) {
+            na.respring = true;
+        }
     }
 
     /// `id` plays its exit pose.
@@ -668,7 +672,10 @@ impl Animator {
                 None => props.push((p, Cow::Owned(value))),
             }
             if settled {
-                if commit {
+                // A settled exit prop stays at its pose until the exit
+                // ends (dropped, it would start over from the node's own
+                // value).
+                if commit && exiting.is_none() {
                     if let PropMotion::Shadows { m, len } = &mut na.props[i].1 {
                         m.truncate(*len);
                     }

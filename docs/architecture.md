@@ -151,6 +151,25 @@ be built and tested without the language, and the language without pixels.
   fractional scale as numerator/120 (`wp_fractional_scale_v1`).
 - **Colour**: `Color` stored as straight-alpha sRGB `f32`, with exact
   conversions to OKLab/OKLCH; interpolation for springs happens in OKLab.
+- **Motion** (`strand_scene::motion`, shared by the renderer's prop
+  springs and the theme's palette springs): `Spring { stiffness, damping }`
+  is a unit-mass damped oscillator (`spring(700, 0.9)`: stiffness and
+  damping *ratio*), `Spring::step(x0, v0, t) -> (x, v)` its closed form;
+  `SPATIAL`, `EFFECTS`, `BOUNCY` are the design's `$motion.*` springs.
+  `Curve` (`Instant`, `Spring`, `Timed { duration, easing }`) is a
+  resolved transition (`Curve::of(&Transition)`), `ease(Easing, p)` a
+  CSS cubic bézier. `Motion<N>` is an `N`-channel value in flight:
+  `rest(value, eps)`, `retarget(target, curve)` and `shift(delta, curve)`
+  (a FLIP jump) take effect at the next `sample(at)`, which starts them
+  at `at` less one frame (at most `START_LEAD`, never before the previous
+  sample: `sampled_at(prev)` seeds it) from wherever the value is there,
+  *keeping its velocity*; `retarget_at` starts at a given time;
+  `peek(at)`, `velocity(at)`, `is_settled(at)` read without starting
+  anything. Everything is a pure function of the timestamps sampled, so
+  frames are testable as images. `color_channels`/`channels_color` map a
+  colour to premultiplied OKLab plus alpha. `TokenScope::transition`
+  falls back to `SPATIAL`/`EFFECTS`/`BOUNCY` when the table has no
+  `$motion.*` token of that name.
 - **Damage**: `Damage` is at most 8 `Rect`s; adding a ninth merges the pair
   whose union grows area least. `Damage::area()` is what the M0 exit
   criterion (≤2,000 px² per clock tick) is measured on.
@@ -271,6 +290,33 @@ be built and tested without the language, and the language without pixels.
   innermost `scroll`/`list` under a point and `scroll_into_view(list,
   row)` reveals a row; a `list` lays out only the rows in view. Text is
   measured from delivered layouts (estimated until the first arrives).
+- **Animation** (`anim.rs`, on the render thread): the render thread owns
+  every spring. A prop of `ANIMATED` (`x`, `y`, `opacity`, `scale`,
+  `rotate`, `bg`, `color`, `border`, `shadow`, `radius`) that logic sets
+  on a node of a surface shown with a clock springs from its old value
+  along `TokenScope::transition(prop's ~, prop)`; `width`/`height`/`size`
+  spring the laid-out size (laid out at rest to learn the target, then
+  with the in-flight size forced, and while only size springs move, only
+  the subtree under the nearest size-stable ancestor, a node of fixed px
+  width and height, is laid out: `Renderer::last_layout_nodes`). Other
+  layout lengths snap and the boxes they move glide (FLIP), as do the
+  siblings of created, removed and moved nodes and every box after a
+  `SetTokens`; text changes never glide. A target changed by tokens or
+  inheritance snaps at rest and steers a motion in flight. `scale` and
+  `rotate` draw the subtree under `Item::PushTransform`. `enter` plays
+  for a node created on a shown surface and for a surface whose `open`
+  becomes true; `Remove` of a laid-out node with an `exit` (or `enter`)
+  pose turns its subtree into a ghost (`SceneTree::ghost`: dead to
+  logic, its slot free at once, kept in its parent's children and laid
+  out and drawn, never hit) that unmounts when the pose settles, and a
+  surface whose `open` goes false stays open in its spec until its exit
+  pose settles. A content-sized surface never shrinks while something on
+  it moves. Presets: `fade`, `slidefade`, `popin(s)`, `slide(edge)`.
+  `PaintTarget::time` zero (no clock, offline) and `reduced_motion`
+  (`Renderer::set_reduced_motion`, or the global token `motion.reduced:
+  true`) snap everything. `Painter::wants_frame` is true while anything
+  moves (`Renderer::animating`), so frame callbacks stop once it
+  settles.
 - **Hit testing**: `Renderer::hit(surface, LogicalPoint) -> Vec<NodeId>`
   is the node under a surface-local logical point in the last frame (the
   topmost in paint order: later siblings over earlier ones and their
