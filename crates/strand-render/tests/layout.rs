@@ -646,6 +646,8 @@ fn a_query_size_change_holds_the_frame_for_logic() {
     });
     let mut r = renderer();
     r.set_query_wait(std::time::Duration::from_secs(30));
+    // Idle however recently it painted (the busy guard has its own test).
+    r.set_busy_window(std::time::Duration::ZERO);
     assert!(r.apply(d).is_empty());
     r.attach_surface(S, root);
     r.configure_surface(S, Size::new(100, 40), Scale::ONE);
@@ -724,9 +726,11 @@ fn content_sized_surfaces_report_their_size_and_overhang() {
     assert_eq!(spec.width, Some(200.0));
     let h = spec.height.unwrap();
     assert!(h > 8.0 + 15.0 + 4.0 + 15.0 + 8.0 - 3.0 && h < 60.0, "{h}");
-    // blur 24: reach 1.5 × 24 + 1 = 37, offset 8 down.
+    // blur 24: reach 1.5 × 24 + 1 = 37, offset 8 down (29 above, 45
+    // below); a centred panel asks for the larger side on both, so the
+    // compositor centres its box, not its buffer.
     let o = spec.overhang;
-    assert_eq!((o.top, o.bottom, o.left, o.right), (29.0, 45.0, 37.0, 37.0));
+    assert_eq!((o.top, o.bottom, o.left, o.right), (45.0, 45.0, 37.0, 37.0));
     let bar_spec = r.surface_spec(bar).unwrap();
     let t = bar_spec.height.unwrap();
     assert!(t > 20.0 && t < 32.0, "thickness from content: {t}");
@@ -734,10 +738,10 @@ fn content_sized_surfaces_report_their_size_and_overhang() {
 
     // Shown at its size plus the overhang, the column sits inside it.
     r.attach_surface(S, p);
-    let (w, hh) = (200 + 74, h as u32 + 29 + 45);
+    let (w, hh) = (200 + 74, h as u32 + 45 + 45);
     let mut buf = Buffer::new(w, hh, Scale::ONE);
     buf.paint(&mut r, S, 0);
-    approx(rect(&r, col), (37.0, 29.0, 200.0, h));
+    approx(rect(&r, col), (37.0, 45.0, 200.0, h));
     // Hits stop at the box: the shadow area is the root, not the column.
     assert_eq!(r.hit(S, LogicalPoint::new(20.0, 40.0)), [p]);
 }
@@ -947,4 +951,392 @@ fn percent_offsets_are_of_the_parent() {
     assert_eq!(buf.px(105, 30), [0xa8, 0x8b, 0xf3, 0xff]);
     assert_eq!(buf.px(15, 10), [0x2e, 0x1e, 0x1e, 0xff]);
     assert_eq!(r.hit(S, LogicalPoint::new(110.0, 35.0))[0], ids[0]);
+}
+
+const LONG: &str =
+    "A notification body long enough that it has to wrap over several lines in any of these boxes";
+
+/// Long plain text stays inside its surface and wraps: in a column
+/// aligned `start` on a fixed panel, and in a growing column in a fixed
+/// row (its smallest width is its longest word, as in CSS, so the column
+/// shrinks to the row instead of widening it).
+#[test]
+fn long_plain_text_wraps_inside_its_surface() {
+    let mut ids = Vec::new();
+    let (d, root) = panel(300, 200, |b, root| {
+        let outer = b.node(
+            NodeKind::Col,
+            Some(root),
+            vec![(Prop::Align, kw("start")), (Prop::Gap, num(6.0))],
+        );
+        ids.push(outer);
+        ids.push(b.node(NodeKind::Text, Some(outer), vec![(Prop::Text, text(LONG))]));
+        let row = b.node(
+            NodeKind::Row,
+            Some(outer),
+            vec![(Prop::Width, num(300.0)), (Prop::Bg, color("#313244"))],
+        );
+        ids.push(row);
+        let col = b.node(NodeKind::Col, Some(row), vec![(Prop::Grow, num(1.0))]);
+        ids.push(col);
+        ids.push(b.node(NodeKind::Text, Some(col), vec![(Prop::Text, text(LONG))]));
+        ids.push(swatch(
+            b,
+            row,
+            "#f38ba8",
+            vec![(Prop::Size, num(20.0)), (Prop::Shrink, num(0.0))],
+        ));
+    });
+    let (r, buf) = show(d, root, 300, 200, Scale::ONE);
+    for id in &ids {
+        let b = rect(&r, *id);
+        assert!(
+            b.x >= -0.5 && b.x + b.w <= 300.5,
+            "{id:?} past the surface: {b:?}"
+        );
+    }
+    let (t1, col, t2, end) = (
+        rect(&r, ids[1]),
+        rect(&r, ids[3]),
+        rect(&r, ids[4]),
+        rect(&r, ids[5]),
+    );
+    assert!(t1.h > 1.5 * 15.0, "wrapped: {t1:?}");
+    assert!(
+        t2.h > 1.5 * 15.0 && t2.w <= 280.5,
+        "wrapped in the growing column: {t2:?}"
+    );
+    assert!(
+        col.w <= 280.5,
+        "the column leaves room for its sibling: {col:?}"
+    );
+    approx(end, (280.0, end.y, 20.0, 20.0));
+    assert_matches_ref("layout_wrap", &buf, TOLERANCE);
+}
+
+/// `max_width` (px or %) on wrapping text gives a box as tall as its
+/// wrapped lines, so the next sibling sits below them.
+#[test]
+fn max_width_text_is_as_tall_as_its_lines() {
+    for max in [num(120.0), len_pct(40.0)] {
+        let mut ids = Vec::new();
+        let (d, root) = panel(300, 200, |b, root| {
+            let col = b.node(NodeKind::Col, Some(root), vec![]);
+            ids.push(b.node(
+                NodeKind::Text,
+                Some(col),
+                vec![(Prop::Text, text(LONG)), (Prop::MaxWidth, max.clone())],
+            ));
+            ids.push(swatch(b, col, "#f38ba8", vec![(Prop::Height, num(10.0))]));
+        });
+        let (r, _) = show(d, root, 300, 200, Scale::ONE);
+        let (t, next) = (rect(&r, ids[0]), rect(&r, ids[1]));
+        assert!(t.w <= 120.5, "{max:?}: {t:?}");
+        assert!(
+            next.y >= 3.0 * 15.0,
+            "{max:?}: next at {next:?}, text {t:?}"
+        );
+    }
+}
+
+/// A non-finite wheel delta moves nothing, and the list keeps its rows.
+#[test]
+fn a_nan_scroll_is_ignored() {
+    let (d, root, lst) = long_list(50);
+    let (mut r, mut buf) = show(d, root, 200, 420, Scale::ONE);
+    assert_eq!(r.scroll(S, LogicalPoint::new(10.0, 10.0), f32::NAN), None);
+    assert_eq!(
+        r.scroll(S, LogicalPoint::new(10.0, 10.0), f32::INFINITY),
+        None
+    );
+    buf.paint(&mut r, S, 1);
+    assert!(r.boxes(S).unwrap().rows_laid_out > 5);
+    let first = r.tree().get(lst).unwrap().children[0];
+    approx(rect(&r, first), (0.0, 0.0, 200.0, rect(&r, first).h));
+}
+
+/// A surface in motion (painted within the busy window: a size
+/// animating) never holds a frame for a container query: its size
+/// changes still go to logic, and the answer lands a frame later, so a
+/// busy logic thread never drops an animation frame.
+#[test]
+fn a_busy_surface_does_not_hold_for_queries() {
+    let mut ids = Vec::new();
+    let (d, root) = panel(100, 40, |b, root| {
+        ids.push(b.node(
+            NodeKind::Row,
+            Some(root),
+            vec![
+                (Prop::Watch, kw("query")),
+                (Prop::Width, num(80.0)),
+                (Prop::Bg, color("#f38ba8")),
+            ],
+        ));
+    });
+    let mut r = renderer();
+    r.set_query_wait(std::time::Duration::from_secs(30));
+    r.set_busy_window(std::time::Duration::from_secs(30));
+    assert!(r.apply(d).is_empty());
+    r.attach_surface(S, root);
+    r.configure_surface(S, Size::new(100, 40), Scale::ONE);
+    // Never painted: idle, so the first frame waits for the answer.
+    assert!(!r.wants_frame(S));
+    r.take_layout_facts();
+    let mut d = SceneDiff::new();
+    d.layout_seen = Some(r.layout_seq());
+    r.apply(d);
+    let mut buf = Buffer::new(100, 40, Scale::ONE);
+    buf.paint(&mut r, S, 0);
+    // Animating: every frame changes its width, none is held.
+    for w in [78.0, 76.0, 74.0, 72.0] {
+        let mut d = SceneDiff::new();
+        d.set(ids[0], Prop::Width, num(w));
+        r.apply(d);
+        assert!(r.wants_frame(S), "held at width {w}");
+        assert_eq!(r.take_layout_facts(), vec![(ids[0], w, 40.0)]);
+        buf.paint(&mut r, S, 1);
+    }
+}
+
+/// A content-sized surface whose size changes holds its frame for the
+/// compositor's configure at the new size, so no frame is painted at the
+/// old size first; the configure releases it, and past the wait it paints
+/// anyway. Offline (no wait set) nothing holds.
+#[test]
+fn a_resized_content_sized_surface_waits_for_its_configure() {
+    let mut b = Builder::default();
+    let p = b.node(
+        NodeKind::Panel,
+        None,
+        vec![(Prop::Font, PropValue::Font(font(13.0)))],
+    );
+    let t = b.node(NodeKind::Text, Some(p), vec![(Prop::Text, text("short"))]);
+    let mut r = renderer();
+    r.set_resize_wait(std::time::Duration::from_secs(30));
+    assert!(r.apply(b.diff).is_empty());
+    let size = |r: &strand_render::Renderer| {
+        let s = r.surface_spec(p).unwrap();
+        Size::new(s.width.unwrap() as u32, s.height.unwrap() as u32)
+    };
+    let first = size(&r);
+    r.attach_surface(S, p);
+    r.configure_surface(S, first, Scale::ONE);
+    assert!(r.wants_frame(S), "configured at its spec size: no hold");
+    let mut buf = Buffer::new(first.w, first.h, Scale::ONE);
+    buf.paint(&mut r, S, 0);
+    let mut d = SceneDiff::new();
+    d.set(t, Prop::Text, text("a much longer line of text"));
+    r.apply(d);
+    let second = size(&r);
+    assert!(second.w > first.w);
+    assert!(!r.wants_frame(S), "no frame at the old size");
+    assert!(r.frame_deadline(S).is_some());
+    r.configure_surface(S, second, Scale::ONE);
+    assert!(r.wants_frame(S), "the configure releases it");
+    assert!(r.frame_deadline(S).is_none());
+    // Bounded by the output: a size the compositor cannot give is not
+    // waited for.
+    r.set_surface_bounds(S, Some(LogicalSize::new(second.w as f32 - 20.0, 1080.0)));
+    let mut d = SceneDiff::new();
+    d.set(
+        t,
+        Prop::Text,
+        text("a much longer line of text, and longer still"),
+    );
+    r.apply(d);
+    r.configure_surface(S, Size::new(second.w - 20, second.h), Scale::ONE);
+    assert!(
+        r.wants_frame(S),
+        "clamped to its output: nothing to wait for"
+    );
+}
+
+/// Shadows on a centred surface: the buffer is grown evenly on its
+/// centred axes, so the box (and its input region) stays centred.
+#[test]
+fn a_centred_surface_gets_an_even_overhang() {
+    for (anchor, even_v, even_h) in [
+        ("center", true, true),
+        ("top", false, true),
+        ("left", true, false),
+        ("top_left", false, false),
+    ] {
+        let mut b = Builder::default();
+        let p = b.node(
+            NodeKind::Panel,
+            None,
+            vec![
+                (Prop::Anchor, kw(anchor)),
+                (Prop::Width, num(600.0)),
+                (Prop::Height, num(200.0)),
+                (
+                    Prop::Shadow,
+                    PropValue::Shadow(vec![Shadow {
+                        x: 4.0,
+                        y: 16.0,
+                        blur: 48.0,
+                        spread: 0.0,
+                        color: hex("#00000066"),
+                    }]),
+                ),
+            ],
+        );
+        let mut r = renderer();
+        assert!(r.apply(b.diff).is_empty());
+        let o = r.surface_spec(p).unwrap().overhang;
+        assert_eq!(o.top == o.bottom, even_v, "{anchor}: {o:?}");
+        assert_eq!(o.left == o.right, even_h, "{anchor}: {o:?}");
+        assert_eq!(o.bottom, 1.5 * 48.0 + 1.0 + 16.0, "{anchor}");
+    }
+}
+
+/// One watched node shown on two surfaces of different sizes (a bar on
+/// two monitors) reports a size when either surface's size of it
+/// changes, and never flip-flops between them as each lays out again.
+#[test]
+fn a_node_on_two_surfaces_reports_each_change_once() {
+    let mut ids = Vec::new();
+    let mut b = Builder::default();
+    let bar = b.node(
+        NodeKind::Bar,
+        None,
+        vec![
+            (Prop::Height, num(30.0)),
+            (Prop::Font, PropValue::Font(font(13.0))),
+        ],
+    );
+    let row = b.node(NodeKind::Row, Some(bar), vec![(Prop::Watch, kw("query"))]);
+    ids.push(row);
+    ids.push(b.node(NodeKind::Text, Some(row), vec![(Prop::Text, text("12:00"))]));
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    let (a, c) = (SurfaceId(1), SurfaceId(2));
+    r.attach_surface(a, bar);
+    r.attach_surface(c, bar);
+    let mut wide = Buffer::new(400, 30, Scale::ONE);
+    let mut narrow = Buffer::new(300, 30, Scale::ONE);
+    wide.paint(&mut r, a, 0);
+    narrow.paint(&mut r, c, 0);
+    let facts = r.take_layout_facts();
+    assert_eq!(facts.len(), 2, "{facts:?}");
+    for i in 0..5 {
+        let mut d = SceneDiff::new();
+        d.set(ids[1], Prop::Text, text(&format!("12:0{i}")));
+        r.apply(d);
+        wide.paint(&mut r, a, 1);
+        narrow.paint(&mut r, c, 1);
+        assert!(
+            r.take_layout_facts().is_empty(),
+            "tick {i}: sizes unchanged"
+        );
+    }
+}
+
+/// A closed content-sized surface (a launcher at boot) is neither laid
+/// out nor shaped; opening it sizes it.
+#[test]
+fn a_closed_surface_is_not_laid_out() {
+    let mut b = Builder::default();
+    let p = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Open, PropValue::Bool(false)),
+            (Prop::Font, PropValue::Font(font(13.0))),
+        ],
+    );
+    let t = b.node(NodeKind::Text, Some(p), vec![(Prop::Text, text("Firefox"))]);
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    assert_eq!(r.layout_passes(), 0);
+    assert_eq!(r.text_slots(), 0);
+    let mut d = SceneDiff::new();
+    d.set(t, Prop::Text, text("Firefox Web Browser"));
+    r.apply(d);
+    assert_eq!(r.layout_passes(), 0, "an update to a closed surface");
+    let mut d = SceneDiff::new();
+    d.set(p, Prop::Open, PropValue::Bool(true));
+    r.apply(d);
+    let spec = r.surface_spec(p).unwrap();
+    assert!(spec.open && spec.width.unwrap() > 100.0, "{spec:?}");
+    assert!(r.text_slots() > 0);
+}
+
+/// A shown surface of a fixed size runs one layout pass for a text
+/// change (its overhang comes from that pass, no content pass runs), and
+/// none for a paint-only change after it.
+#[test]
+fn a_fixed_surface_lays_out_once_per_change() {
+    let (d, root, lst) = long_list(2000);
+    let (mut r, mut buf) = show(d, root, 200, 420, Scale::ONE);
+    let first = r.tree().get(lst).unwrap().children[0];
+    let label = r.tree().get(first).unwrap().children[1];
+    let before = r.layout_passes();
+    let mut d = SceneDiff::new();
+    d.set(label, Prop::Text, text("Row zero"));
+    r.apply(d);
+    buf.paint(&mut r, S, 1);
+    let spent = r.layout_passes() - before;
+    // The change, then its delivered layout (inline shaping); no content
+    // pass for either.
+    assert!(spent <= 2, "{spent} passes");
+    let before = r.layout_passes();
+    let mut d = SceneDiff::new();
+    d.set(label, Prop::Color, color("#f38ba8"));
+    r.apply(d);
+    buf.paint(&mut r, S, 1);
+    assert_eq!(r.layout_passes(), before, "paint-only");
+}
+
+/// An `input` draws its `text`, or its `placeholder` in `$fg.muted`
+/// while the text is empty.
+#[test]
+fn an_input_shows_its_text_or_placeholder() {
+    let mut ids = Vec::new();
+    let (mut d, root) = panel(200, 60, |b, root| {
+        let col = b.node(
+            NodeKind::Col,
+            Some(root),
+            vec![(Prop::Pad, num(6.0)), (Prop::Gap, num(6.0))],
+        );
+        for t in ["", "fire"] {
+            ids.push(b.node(
+                NodeKind::Input,
+                Some(col),
+                vec![
+                    (Prop::Text, text(t)),
+                    (Prop::Placeholder, text("Search apps")),
+                ],
+            ));
+        }
+    });
+    let mut t = TokenTable::default();
+    t.insert("fg.muted", color("#6c7086"));
+    d.set_tokens(t, Transition::Instant);
+    let (r, buf) = show(d, root, 200, 60, Scale::ONE);
+    // Glyphs inside each input's box: the muted placeholder, the text.
+    let inked = |id: NodeId| {
+        let b = rect(&r, id);
+        let mut found = Vec::new();
+        for y in b.y as u32..(b.y + b.h) as u32 {
+            for x in b.x as u32..(b.x + b.w) as u32 {
+                let p = buf.px(x, y);
+                if p != [0x2e, 0x1e, 0x1e, 0xff] {
+                    found.push(p);
+                }
+            }
+        }
+        found
+    };
+    let (ph, tx) = (inked(ids[0]), inked(ids[1]));
+    assert!(ph.len() > 20 && tx.len() > 10, "{} {}", ph.len(), tx.len());
+    // The placeholder's brightest pixel is the muted colour, the text's
+    // the inherited one (#cdd6f4).
+    let max = |v: &[[u8; 4]]| {
+        v.iter()
+            .map(|p| p[0] as u32 + p[1] as u32 + p[2] as u32)
+            .max()
+    };
+    assert!(max(&ph) < max(&tx), "{:?} {:?}", max(&ph), max(&tx));
+    assert_matches_ref("layout_input", &buf, TOLERANCE);
 }

@@ -1429,7 +1429,7 @@ fn every_snippet_mounts() {
     insta::assert_snapshot!("every_snippet", shell.scene.render());
     let rendered = shell.scene.render();
     for expected in [
-        "segmented value=auto options=[auto, light, dark, wallpaper, mocha]",
+        "segmented two_way=[value] value=auto options=[auto, light, dark, wallpaper, mocha]",
         "glow=[12, $accent.alpha(0.6)]",
         "mask=radial(center, 40%)",
         "stagger=30ms",
@@ -2805,6 +2805,26 @@ fn container_queries_have_hysteresis() {
     assert_eq!(at(&mut shell, 299.5), 0.5);
 }
 
+/// The boot value of `self.width` (0, before any layout) seeds no
+/// hysteresis: a container whose first layout is 302 px wide shows the
+/// wide variant, as one that grew to 302 px does.
+#[test]
+fn a_query_first_laid_out_inside_the_band_takes_the_wide_variant() {
+    let src = "bar Top {\n  height: 30\n  row {\n    opacity: 1\n    when self.width < 300 { opacity: 0.5 }\n  }\n}\n";
+    let mut shell = boot(&[("q.strand", src)], |rt, host| {
+        let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+        host.set(rt, "screens.all", Value::list(vec![screen]))
+            .unwrap();
+    });
+    let row = shell.scene.of_kind(NodeKind::Row)[0];
+    shell.inst.set_size(row, 302.0, 30.0);
+    shell.flush();
+    assert_eq!(
+        shell.scene.prop(row, Prop::Opacity),
+        Some(&PropValue::Number(1.0))
+    );
+}
+
 /// Render is told which nodes' sizes logic reads (`watch`): `query` for a
 /// container query, `size` for any other binding; nodes nobody measures
 /// carry nothing, so their size changes never wake logic.
@@ -2842,6 +2862,26 @@ fn nav_names_the_list_node() {
         shell.scene.prop(input, Prop::Nav),
         Some(&PropValue::Node(list))
     );
+}
+
+/// Two-way props are marked for render and input (`two_way`): the
+/// launcher's `open: <-> open` (Escape and click-away close it) and its
+/// input's `text: <-> query`; its spec says `open` is two-way.
+#[test]
+fn two_way_props_are_marked() {
+    let files = [fixture("launcher.strand")];
+    let mut shell = boot(&refs(&files), desktop);
+    shell.inst.set("launcher.open", Value::Bool(true)).unwrap();
+    shell.flush();
+    let panel = shell.scene.of_kind(NodeKind::Panel)[0];
+    let input = shell.scene.of_kind(NodeKind::Input)[0];
+    let kw = |k: &str| PropValue::List(vec![PropValue::Keyword(k.into())]);
+    assert_eq!(shell.scene.prop(panel, Prop::TwoWay), Some(&kw("open")));
+    assert_eq!(shell.scene.prop(input, Prop::TwoWay), Some(&kw("text")));
+    let spec = strand_scene::SurfaceSpec::resolve(NodeKind::Panel, |p| {
+        shell.scene.prop(panel, p).cloned()
+    });
+    assert!(spec.open_two_way);
 }
 
 /// `nav:` names a list that mounts ticks later (inside an `if` that

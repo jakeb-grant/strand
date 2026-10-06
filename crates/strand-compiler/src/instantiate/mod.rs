@@ -1227,6 +1227,7 @@ impl Instance {
             .get(&node)
             .map(|e| e.state.clone());
         if let Some(s) = state {
+            s.laid_out.set(true);
             let _ = s.width.set(&self.rt, Value::float(width as f64));
             let _ = s.height.set(&self.rt, Value::float(height as f64));
         }

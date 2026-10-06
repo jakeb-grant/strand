@@ -41,13 +41,18 @@ sizes to the logic thread over a calloop channel (`run::ToLogic`).
 name, text, modifiers }` (a `Key` record made by the service host,
 `args_with`), `Dismiss`; `name()` and the args are what `Instance::event`
 takes); M4 adds `Drop { payload, at }` for `on drop(p: T, at: int)` as a
-new variant of the same message. Keyboard input is routed on the main
-thread (`demo/host.rs`, `Forward`): the focused node of the focused
-surface gets `key(k)`; an `input`'s typing and a surface's `open: false`
-(Escape, focus loss) are `ToLogic::Write { node, prop, value }`, which
-logic applies with `Instance::write` (a two-way write); `nav` and list
-selection become `Flag { Selected }` and `Activate` (decisions.md,
-wave3-pixels). Before the logic thread
+new variant of the same message. Input is routed on the main thread by
+`strand_render::input::Router` (`handle(&InputEvent, &mut dyn
+InputScene) -> Vec<Intent>`; the `Renderer` is the `InputScene`: hit
+chains, scrolling, the tree): hover and pressed chains, keyboard focus
+(the focused node of the focused surface gets `key(k)`), list selection,
+`nav`, `input` edits, and `open: false` on a surface whose `open` is
+two-way (`Prop::TwoWay`) on Escape, focus loss and click-away
+(`InputEvent::ClickAway`). An `Intent` is `Flag { node, flag, on }`,
+`Event { node, event }` or `Write { node, prop, value }`; the binary's
+host (`demo/host.rs`, `Forward`) only maps them to `ToLogic::Flag`,
+`Event` and `Write` (which logic applies with `Instance::write`, a
+two-way write) (decisions.md, wave3-pixels). Before the logic thread
 starts, `live::Worker::spawn` starts the `strand-watch` watcher (module
 set from `find_files`, rescan callback calling it again), boots the
 `Loader` (the boot `Outcome`: a build, or a cached last good one, or
@@ -185,8 +190,10 @@ be built and tested without the language, and the language without pixels.
 - **Input**: `InputEvent` (`PointerEnter`/`Leave`/`Motion`/`Button`/`Axis`
   with `ButtonState`, `AxisDelta`, `AxisSource`; `KeyboardEnter`/`Leave`
   and `Key { key: KeyInput }` with the xkb keysym name, the typed text,
-  `Modifiers` and repeat) in surface-local logical pixels, per
-  `SurfaceId`. `strand-surface` produces it; render hit-tests
+  `Modifiers` and repeat; `ClickAway { surface }`, a press on the
+  click-away catcher under an open `keyboard: exclusive` surface whose
+  `open` is two-way, `SurfaceSpec::open_two_way` from `Prop::TwoWay`) in
+  surface-local logical pixels, per `SurfaceId`. `strand-surface` produces it; render hit-tests
   it on the main thread and forwards node events to logic. Wayland
   serials stay in `strand-surface`.
 
@@ -1320,7 +1327,17 @@ and the connection):
 - A spec's `overhang` grows the layer size and moves the margins out
   (`placement::layer_config`), the exclusive zone grows by the overhang
   on its edge so margin + zone is unchanged, and the input region is the
-  box inside it (`SurfaceInfo::input_region`; an OSD's is empty).
+  box inside it (`SurfaceInfo::input_region`; an OSD's is empty). Render
+  makes the overhang even on the axes the anchor leaves centred, so the
+  compositor centres the box. `LayerConfig::fit` clamps a layer surface's
+  box to its output's logical size less its margins; the host passes the
+  output's size to render (`Renderer::set_surface_bounds`), and render
+  holds a content-sized surface's frame for the configure at a new size
+  (`Renderer::set_resize_wait`, `strand_render::RESIZE_WAIT`; zero
+  offline). A click-away catcher (`SurfaceInfo::click_away`) is a
+  transparent layer surface on the same layer and output with an input
+  region holed at the surface's box (`LayerConfig::box_in`), since
+  layer-shell leaves the order within a layer undefined.
 - The keyboard: one `wl_keyboard` per seat with xkbcommon keymaps and
   key repeat (`get_keyboard_with_repeat`), as `InputEvent::Key` on the
   surface with keyboard focus (`State::keyboard_focus`).

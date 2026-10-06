@@ -27,12 +27,13 @@ use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::{
     self, KeyboardInteractivity, LayerShell, LayerShellHandler, LayerSurface, LayerSurfaceConfigure,
 };
+use smithay_client_toolkit::shm::raw::RawPool;
 use smithay_client_toolkit::shm::{Shm, ShmHandler};
 use smithay_client_toolkit::{delegate_dispatch2, delegate_registry, registry_handlers};
 use wayland_client::backend::ObjectId;
 use wayland_client::globals::registry_queue_init;
 use wayland_client::protocol::{
-    wl_buffer, wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface,
+    wl_buffer, wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface,
 };
 use wayland_client::{Connection, Proxy, QueueHandle};
 use wayland_protocols::wp::fractional_scale::v1::client::{
@@ -301,6 +302,8 @@ pub struct SurfaceInfo {
     /// The input region: `None` the whole surface, `Some(None)` empty,
     /// else the box `(x, y, w, h)` inside the shadow overhang.
     pub input_region: Option<Option<(i32, i32, i32, i32)>>,
+    /// A click-away catcher is mapped under it.
+    pub click_away: bool,
     pub stats: Stats,
 }
 
@@ -431,9 +434,59 @@ impl Surface {
             opaque_region: self.opaque.clone(),
             click_through: self.click_through,
             input_region: self.input_region,
+            click_away: false,
             stats: self.stats,
         }
     }
+}
+
+/// A transparent layer surface over an output's usable area, mapped with
+/// an open `keyboard: exclusive` surface whose `open` is two-way (the
+/// design's launcher): a press on it is a click outside that surface,
+/// reported as [`InputEvent::ClickAway`] on it. The order of surfaces in
+/// one layer is undefined (wlr-layer-shell; sway 1.9 puts the older one
+/// on top for input), so it does not rely on being below: its input
+/// region has a hole where that surface's box is, computed as the
+/// compositor arranges both in the same area (exclusive zone 0, all four
+/// edges). It takes no keyboard; clicks on bars (outside the usable
+/// area) do not reach it.
+struct Catcher {
+    layer: LayerSurface,
+    viewport: Option<WpViewport>,
+    /// Its one transparent buffer: 1×1 scaled up by the viewport, or the
+    /// output's size without viewporter.
+    buffer: Option<(RawPool, wl_buffer::WlBuffer)>,
+    /// Its configured size: the output's usable area, where the surface
+    /// it serves is arranged too.
+    size: Option<(u32, u32)>,
+    /// The hole its input region leaves (that surface's box), as last
+    /// sent.
+    hole: Option<(i32, i32, i32, i32)>,
+}
+
+impl Catcher {
+    fn destroy(&mut self) {
+        if let Some((_, b)) = self.buffer.take() {
+            b.destroy();
+        }
+        if let Some(v) = self.viewport.take() {
+            v.destroy();
+        }
+    }
+}
+
+/// User data of a catcher's buffer (nothing to track: it is never
+/// written after it is created).
+#[derive(Debug)]
+pub struct CatcherBuffer;
+
+/// True if a surface of `spec` gets a click-away catcher under it.
+fn wants_catcher(spec: &SurfaceSpec) -> bool {
+    spec.layer.is_some()
+        && spec.kind != NodeKind::Bar
+        && spec.keyboard == Keyboard::Exclusive
+        && spec.open_two_way
+        && spec.open
 }
 
 /// User data for globals this crate binds itself.
@@ -479,6 +532,10 @@ pub struct State<H: SurfaceHost + 'static> {
     specs: BTreeMap<NodeId, SurfaceSpec>,
     surfaces: BTreeMap<SurfaceId, Surface>,
     by_wl: HashMap<ObjectId, SurfaceId>,
+    /// Click-away catchers, by the surface they serve, and the surface
+    /// each catcher's `wl_surface` serves.
+    catchers: HashMap<SurfaceId, Catcher>,
+    catcher_of: HashMap<ObjectId, SurfaceId>,
     /// Stable ids per (node, placement), kept while the monitor is
     /// remembered so a replugged monitor gets its surface id back.
     ids: HashMap<(NodeId, Placement), SurfaceId>,
@@ -618,6 +675,8 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             specs: BTreeMap::new(),
             surfaces: BTreeMap::new(),
             by_wl: HashMap::new(),
+            catchers: HashMap::new(),
+            catcher_of: HashMap::new(),
             ids: HashMap::new(),
             next_id: 1,
             next_generation: 1,
@@ -726,11 +785,16 @@ impl<H: SurfaceHost + 'static> State<H> {
     }
 
     pub fn surfaces(&self) -> Vec<SurfaceInfo> {
-        self.surfaces.values().map(Surface::info).collect()
+        self.surfaces
+            .keys()
+            .filter_map(|id| self.surface(*id))
+            .collect()
     }
 
     pub fn surface(&self, id: SurfaceId) -> Option<SurfaceInfo> {
-        self.surfaces.get(&id).map(Surface::info)
+        let mut info = self.surfaces.get(&id).map(Surface::info)?;
+        info.click_away = self.catchers.get(&id).is_some_and(|c| c.buffer.is_some());
+        Some(info)
     }
 
     /// Plugged-in monitors.
@@ -971,15 +1035,34 @@ impl<H: SurfaceHost + 'static> State<H> {
             return;
         };
         let new = layer_config(spec);
+        let catcher = wants_catcher(spec);
         let ids = self.surfaces_of(node);
         for id in ids {
-            let Ok(config) = new.clone() else {
+            match (catcher, self.catchers.contains_key(&id)) {
+                // A catcher goes under the surface: made again, catcher
+                // first (`reconcile` follows).
+                (true, false) => {
+                    self.destroy_surface(id);
+                    continue;
+                }
+                (false, true) => self.destroy_catcher(id),
+                _ => {}
+            }
+            let Ok(mut config) = new.clone() else {
                 self.destroy_surface(id);
                 continue;
             };
             let Some(s) = self.surfaces.get_mut(&id) else {
                 continue;
             };
+            if let Some(size) = s
+                .monitor
+                .as_ref()
+                .and_then(|m| self.monitors.get(m))
+                .and_then(|m| m.logical_size)
+            {
+                config.fit(size);
+            }
             if s.config == config {
                 continue;
             }
@@ -993,6 +1076,7 @@ impl<H: SurfaceHost + 'static> State<H> {
             s.layer.commit();
             s.stats.bare_commits += 1;
             self.stats.bare_commits += 1;
+            self.update_catcher(id);
         }
     }
 
@@ -1038,7 +1122,7 @@ impl<H: SurfaceHost + 'static> State<H> {
         placement: Placement,
         global: Option<u32>,
     ) {
-        let config = match layer_config(spec) {
+        let mut config = match layer_config(spec) {
             Ok(c) => c,
             Err(PlacementError::AutoSize(_) | PlacementError::NotLayerSurface(_)) => return,
         };
@@ -1053,6 +1137,9 @@ impl<H: SurfaceHost + 'static> State<H> {
             .and_then(|g| self.monitors.id_of(g))
             .and_then(|id| self.monitors.get(id))
             .cloned();
+        if let Some(size) = monitor.as_ref().and_then(|m| m.logical_size) {
+            config.fit(size);
+        }
         let key = (node, placement.clone());
         let id = match self.ids.get(&key) {
             Some(id) => *id,
@@ -1065,6 +1152,9 @@ impl<H: SurfaceHost + 'static> State<H> {
         };
         let generation = self.next_generation;
         self.next_generation += 1;
+        if wants_catcher(spec) {
+            self.create_catcher(id, &config, output.as_ref());
+        }
         let wl = self.compositor.create_surface(&self.qh);
         let layer = self.layer_shell.create_layer_surface(
             &self.qh,
@@ -1133,7 +1223,149 @@ impl<H: SurfaceHost + 'static> State<H> {
         self.host.surface_attached(id, node, monitor.as_ref());
     }
 
+    /// Maps a click-away catcher for surface `id` on `output`, on its
+    /// layer (see [`Catcher`]).
+    fn create_catcher(
+        &mut self,
+        id: SurfaceId,
+        config: &LayerConfig,
+        output: Option<&wl_output::WlOutput>,
+    ) {
+        self.destroy_catcher(id);
+        let wl = self.compositor.create_surface(&self.qh);
+        let layer = self.layer_shell.create_layer_surface(
+            &self.qh,
+            wl.clone(),
+            to_sctk_layer(config.layer),
+            Some(format!("{}-click-away", config.namespace)),
+            output,
+        );
+        layer.set_anchor(
+            wlr_layer::Anchor::TOP
+                | wlr_layer::Anchor::BOTTOM
+                | wlr_layer::Anchor::LEFT
+                | wlr_layer::Anchor::RIGHT,
+        );
+        layer.set_size(0, 0);
+        layer.set_exclusive_zone(0);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.commit();
+        let viewport = self
+            .viewporter
+            .as_ref()
+            .map(|vp| vp.get_viewport(&wl, &self.qh, SurfaceTag(id)));
+        self.catcher_of.insert(wl.id(), id);
+        self.catchers.insert(
+            id,
+            Catcher {
+                layer,
+                viewport,
+                buffer: None,
+                size: None,
+                hole: None,
+            },
+        );
+    }
+
+    fn destroy_catcher(&mut self, id: SurfaceId) {
+        if let Some(mut c) = self.catchers.remove(&id) {
+            self.catcher_of.remove(&c.layer.wl_surface().id());
+            c.destroy();
+        }
+    }
+
+    /// A catcher was configured at `(w, h)`: it maps with one transparent
+    /// buffer covering that.
+    fn configure_catcher(&mut self, id: SurfaceId, (w, h): (u32, u32)) {
+        let Some(c) = self.catchers.get_mut(&id) else {
+            return;
+        };
+        let (bw, bh) = if c.viewport.is_some() { (1, 1) } else { (w, h) };
+        let (Ok(bw), Ok(bh)) = (i32::try_from(bw.max(1)), i32::try_from(bh.max(1))) else {
+            return;
+        };
+        let Some(len) = (bw as usize)
+            .checked_mul(bh as usize)
+            .and_then(|n| n.checked_mul(4))
+        else {
+            return;
+        };
+        let pool = match RawPool::new(len, &self.shm) {
+            Ok(p) => p,
+            Err(e) => {
+                log::warn!("no buffer for a click-away catcher: {e}");
+                return;
+            }
+        };
+        let mut pool = pool;
+        // A fresh pool is zeroed: fully transparent.
+        let buffer = pool.create_buffer(
+            0,
+            bw,
+            bh,
+            bw * 4,
+            wl_shm::Format::Argb8888,
+            CatcherBuffer,
+            &self.qh,
+        );
+        let wl = c.layer.wl_surface();
+        if let Some(v) = &c.viewport {
+            v.set_destination(clamp_i32(w.max(1)), clamp_i32(h.max(1)));
+        }
+        wl.attach(Some(&buffer), 0, 0);
+        wl.damage_buffer(0, 0, bw, bh);
+        if let Some((_, old)) = c.buffer.replace((pool, buffer)) {
+            old.destroy();
+        }
+        c.size = Some((w, h));
+        c.hole = None;
+        // Committed with its input region.
+        self.update_catcher(id);
+    }
+
+    /// Sets catcher `id`'s input region: all of it but the box of the
+    /// surface it serves (one pixel wider each way, so the box's edge
+    /// never closes it), then commits.
+    fn update_catcher(&mut self, id: SurfaceId) {
+        let Some(s) = self.surfaces.get(&id) else {
+            return;
+        };
+        let size = if s.configured {
+            s.logical
+        } else {
+            (s.config.width, s.config.height)
+        };
+        let Some(c) = self.catchers.get_mut(&id) else {
+            return;
+        };
+        let Some(area) = c.size else {
+            return;
+        };
+        let hole = s.config.box_in(size, area);
+        if c.hole == Some(hole) {
+            return;
+        }
+        let wl = c.layer.wl_surface();
+        match Region::new(&self.compositor) {
+            Ok(r) => {
+                r.add(0, 0, clamp_i32(area.0), clamp_i32(area.1));
+                let (x, y, w, h) = hole;
+                r.subtract(x - 1, y - 1, w.saturating_add(2), h.saturating_add(2));
+                wl.set_input_region(Some(r.wl_region()));
+                c.hole = Some(hole);
+            }
+            Err(e) => log::warn!("no input region for a click-away catcher: {e}"),
+        }
+        wl.commit();
+    }
+
+    /// The surface the click-away catcher `wl` serves.
+    fn catcher_for(&self, wl: &wl_surface::WlSurface) -> Option<SurfaceId> {
+        self.catcher_of.get(&wl.id()).copied()
+    }
+
     fn destroy_surface(&mut self, id: SurfaceId) {
+        self.destroy_catcher(id);
         let Some(mut s) = self.surfaces.remove(&id) else {
             return;
         };
@@ -1791,6 +2023,10 @@ impl<H: SurfaceHost + 'static> OutputHandler for State<H> {
 
 impl<H: SurfaceHost + 'static> LayerShellHandler for State<H> {
     fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface) {
+        if let Some(id) = self.catcher_for(layer.wl_surface()) {
+            self.destroy_catcher(id);
+            return;
+        }
         // The compositor took it away (usually its output is going). It
         // comes back when its output does or its spec changes.
         if let Some(id) = self.surface_for(layer.wl_surface()) {
@@ -1807,6 +2043,10 @@ impl<H: SurfaceHost + 'static> LayerShellHandler for State<H> {
         configure: LayerSurfaceConfigure,
         _: u32,
     ) {
+        if let Some(id) = self.catcher_for(layer.wl_surface()) {
+            self.configure_catcher(id, configure.new_size);
+            return;
+        }
         let Some(id) = self.surface_for(layer.wl_surface()) else {
             return;
         };
@@ -1847,6 +2087,8 @@ impl<H: SurfaceHost + 'static> LayerShellHandler for State<H> {
         if first {
             s.repaint = true;
         }
+        // The size it got may not be the one it asked for.
+        self.update_catcher(id);
         // Size and scale are resolved once, right before the next paint.
         self.mark(id);
     }
@@ -1952,6 +2194,25 @@ impl<H: SurfaceHost + 'static> PointerHandler for State<H> {
             .iter()
             .position(|p| p.pointer.pointer() == pointer);
         for e in events {
+            if let Some(surface) = self.catcher_for(&e.surface) {
+                // Only a press means anything on a catcher: a click
+                // outside the surface it serves.
+                match &e.kind {
+                    PointerEventKind::Enter { .. } => {
+                        if let Some(p) = seat.and_then(|i| self.pointers.get_mut(i)) {
+                            let _ = p.pointer.set_cursor(conn, CursorIcon::Default);
+                        }
+                    }
+                    PointerEventKind::Press { serial, .. } => {
+                        if let Some(p) = seat.and_then(|i| self.pointers.get_mut(i)) {
+                            p.button_serial = Some(*serial);
+                        }
+                        self.send_input(InputEvent::ClickAway { surface });
+                    }
+                    _ => {}
+                }
+                continue;
+            }
             let Some(surface) = self.surface_for(&e.surface) else {
                 continue;
             };
@@ -2148,6 +2409,18 @@ impl<H: SurfaceHost + 'static> Dispatch2<wl_buffer::WlBuffer, State<H>> for Buff
                 state.mark(self.surface);
             }
         }
+    }
+}
+
+impl<H: SurfaceHost + 'static> Dispatch2<wl_buffer::WlBuffer, State<H>> for CatcherBuffer {
+    fn event(
+        &self,
+        _: &mut State<H>,
+        _: &wl_buffer::WlBuffer,
+        _: wl_buffer::Event,
+        _: &Connection,
+        _: &QueueHandle<State<H>>,
+    ) {
     }
 }
 

@@ -1107,13 +1107,25 @@ impl Ctx {
             }
             self.bind_prop(rt, id, prop, sources, env, kind, (e.file, e.span));
         }
+        let mut two_way = Vec::new();
         for p in e.props.iter().chain(e.arg.iter()) {
             if let (Some(sp), Some(tw)) = (p.prop, &p.two_way) {
                 let mut em = self.em.borrow_mut();
                 if let Some(entry) = em.nodes.get_mut(&id) {
                     entry.two_way.push((sp, tw.clone(), env.clone()));
+                    two_way.push(PropValue::Keyword(sp.name().into()));
                 }
             }
+        }
+        if !two_way.is_empty() {
+            // Render and input write only what is bound two-way (Escape
+            // and click-away close an `open: <-> x` surface).
+            self.em.borrow_mut().set(
+                id,
+                SceneProp::TwoWay,
+                PropValue::List(two_way),
+                Transition::Instant,
+            );
         }
         let ec = ElemCtx { scene: id, state };
         if kind.is_surface() {
@@ -1381,7 +1393,7 @@ impl Ctx {
                     let (v, query) = crate::vm::builtins::layout_query(0.0, || ctx.eval(rt, c, &e));
                     let mut on = v?.truthy();
                     let was = held.borrow().get(i).copied().unwrap_or(false);
-                    if !on && query && was {
+                    if !on && query.read && was {
                         for bias in [-QUERY_HYSTERESIS, QUERY_HYSTERESIS] {
                             let (v, _) =
                                 crate::vm::builtins::layout_query(bias, || ctx.eval(rt, c, &e));
@@ -1391,8 +1403,11 @@ impl Ctx {
                             }
                         }
                     }
+                    // A size not laid out yet (boot's 0) seeds nothing: a
+                    // container that first lays out at 301 px shows the
+                    // same variant as one that grew to it.
                     if let Some(h) = held.borrow_mut().get_mut(i) {
-                        *h = on;
+                        *h = on && !query.boot_value;
                     }
                     if !on {
                         continue;

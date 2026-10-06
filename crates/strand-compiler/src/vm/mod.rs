@@ -335,6 +335,7 @@ impl Env {
             width: rt.signal(Value::float(0.0)),
             height: rt.signal(Value::float(0.0)),
             watch: Cell::new(0),
+            laid_out: Cell::new(false),
         };
         // The flags live as long as the scope that owns the element, even
         // when a binding (a memo) is what first asks for them.

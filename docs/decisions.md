@@ -3855,9 +3855,16 @@ a box narrower than that layout asks for one shaped for the box width
 (wrapped, or cut by `ellipsis`), keyed by the whole-pixel width. `align:
 center` on a text also centres it vertically in a taller box (a 28×28
 calendar cell); other texts sit at the top. Text with `ellipsis` or
-`max_lines` may be narrower than its text (min-content 0); plain text
-keeps its width as its minimum and wraps only in a box given a smaller
-definite width. Natural widths round up to whole pixels so taffy's
+`max_lines` may be narrower than its text (min-content 0); plain text's
+minimum is its longest word, as in CSS (fixer round 2: it used to be the
+whole text, which let a long text widen a growing column, and the stack
+cell around it, past the surface). Without per-glyph clusters from
+strand-text, the longest word is taken as its share of the natural width
+(characters of the longest word over all characters). Stack cells and
+surface roots are `minmax(0, 1fr)`, as `split`'s sides: content never
+widens them. `min_width`/`max_width` on a text clamp the width its height
+is measured for, so a text capped by `max_width` is as tall as its
+wrapped lines. Natural widths round up to whole pixels so taffy's
 rounding never wraps a text that fits. Before a text's first layout
 arrives, layout estimates it from its length (0.55 em per character, 1.2
 em high); the delivery relays out (shaping never blocks). `1ch` is 0.6 em
@@ -3914,9 +3921,14 @@ move the selection of the `list` its `nav` names (or of a focused list),
 scrolled into view, and Return activates the selected row (the first when
 none is). A click on a list row also selects and `activate`s it ("clicked,
 or Enter while selected"). Escape on a surface with `open`, and losing the
-keyboard, write `open: false` (logic refuses the write when `open` is not
-bound two-way); a popup also gets `dismiss`. Click-away for an
-`exclusive` panel needs a catcher surface and waits for popups (M4).
+keyboard, write `open: false` when `open` is bound two-way (`two_way`,
+below); a popup also gets `dismiss`. Click-away for an `exclusive` panel
+uses a catcher surface (below). Fixer round 2: the routing state machine
+moved from the binary's `demo/host.rs` into strand-render
+(`strand_render::input::Router::handle(event, scene) -> Vec<Intent>`,
+`Intent` = flag, node event or two-way write), so popup grabs, drag and
+drop (M4) and the inspector (M5) reach the same state; the binary's host
+only turns intents into `ToLogic` messages.
 
 **2026-10-06 · wave3-pixels: `nav:` names a node mounted later.** A prop
 whose value is a node (`PropValue::Node`) that is not on the scene yet
@@ -3943,8 +3955,13 @@ walked, so the launcher over 2,000 apps shapes about a dozen rows, not
 wider than any common output's logical width) on either axis is laid out
 again at the cap, so what overflows scrolls or is clipped and a list lays
 out only the rows the capped box shows; the buffer never grows past it.
-Render does not know the target output's size when it sizes the spec,
-hence a constant rather than the output.
+Fixer round 2: the output caps it further where it is placed:
+`LayerConfig::fit` clamps a layer surface's box to its output's logical
+size less its margins, render lays out at the configured size (so the
+rest scrolls or clips), and the host tells render each surface's output
+size (`Renderer::set_surface_bounds`) so it waits for no configure the
+compositor cannot give (below). The constant stays as a backstop for a
+surface whose output is not known yet.
 
 **2026-10-06 · wave3-pixels: render reports only the sizes logic
 reads.** Logic marks an element whose `width`/`height` a binding reads
@@ -3969,6 +3986,20 @@ watched size again, that frame paints (the one extra pass) and its facts
 go to logic as usual. This also covers boot, where `self.width` starts at
 0: the first frame waits for the first layout's answer. Offline
 renderers (no logic) never hold (`set_query_wait`, default zero).
+Fixer round 2: a surface in motion (painted within `BUSY_WINDOW`, as for
+new text) never holds for a query: render cannot tell a threshold
+crossing from a size change inside a band (`when` conditions are
+bytecode, so logic cannot hand it band edges without an analysis of
+arbitrary expressions), and holding every animated frame would put the
+logic thread on the animation path. An animating query node's facts
+still go to logic, and its answer lands a frame later; an idle surface
+(a resize, a window title changing the bar's layout) still settles inside
+the frame. Facts are kept per surface and node, so a node shown on two
+surfaces of different sizes reports a change of either and never
+flip-flops between them. The hysteresis takes no seed from boot values:
+a `when` that read a size not laid out yet (0) records nothing, so a
+container first laid out at 302 px shows the wide variant, as one that
+grew to 302 px does.
 
 **2026-10-06 · wave3-pixels: list rows mount eagerly until M4.** "Only
 visible rows mounted/laid out" is met for layout, shaping and painting:
@@ -4009,15 +4040,70 @@ the next input event (a list refilled by its `for` starts from its first
 row again).
 
 **2026-10-06 · wave3-pixels: click-away from a `keyboard: exclusive`
-panel waits for M4.** With exclusive keyboard a click elsewhere moves no
-focus, so nothing tells the launcher to close. Closing it needs a
-transparent catcher layer surface under the panel on the same layer
-(layer-shell stacks by creation order, so the catcher must be mapped
-before the panel each time it opens), plus knowing that `open` is bound
-two-way (or the catcher swallows clicks to other windows while a modal
-panel is up). That is the same machinery as popups' click-away
-(xdg_popup grabs, M4), so it lands there; until then Escape and focus
-loss close it, and M2's exit does not claim click-away (features.md M4).
+panel (fixer round 2; replaces the M4 deferral).** With exclusive
+keyboard a click elsewhere moves no focus, so nothing tells the launcher
+to close. The compiler marks props bound two-way on each element
+(`Prop::TwoWay`, a list of prop names, never written in source); the
+spec says whether `open` is (`SurfaceSpec::open_two_way`). An open
+`keyboard: exclusive` layer surface with a two-way `open` gets a
+transparent catcher layer surface on its layer and output (anchored to
+all four edges, exclusive zone 0, keyboard none, one 1×1 buffer scaled by
+the viewport; namespace `strand-<Name>-click-away`), destroyed with it. A
+press on the catcher is `InputEvent::ClickAway { surface }`, which the
+router turns into the same `open: false` write as Escape. Layer-shell
+leaves the order of surfaces in one layer undefined (sway 1.9 gives the
+older one the pointer), so the catcher does not rely on being below:
+its input region has a hole where the panel's box is
+(`LayerConfig::box_in`, computed as wlroots arranges both in the usable
+area, one pixel wider each way). Clicks on bars (outside the usable
+area) do not reach it; `on_demand` panels close on focus loss already.
+A one-way `open` gets no catcher, so a modal panel bound one way never
+swallows clicks. Popups' click-away comes with xdg_popup grabs (M4).
+
+**2026-10-06 · wave3-pixels: centred surfaces get an even overhang.**
+The compositor centres a layer surface's whole buffer on an axis it is
+anchored to neither or both edges of, so an uneven shadow overhang (a
+shadow offset down: 57 px above, 89 below) would move the box off
+centre. Render makes the overhang even (the larger side on both) on the
+axes the anchor leaves centred: both for `center`, the horizontal one for
+`top`/`bottom`, the vertical one for `left`/`right`; bars and corners keep
+theirs. The box, the input region and the layout inside the overhang
+follow the spec, so they stay consistent.
+
+**2026-10-06 · wave3-pixels: a resized content-sized surface waits for
+its configure.** When a shown content-sized surface's spec asks for a new
+size (its content grew, its text arrived), render holds its frames until
+it is configured at that size or `RESIZE_WAIT` (50 ms) passes, as it
+holds a frame for new text, so no frame is painted at the old size first
+(a one-frame size pop). Only a size the spec changed to after the surface
+was attached is waited for, and a size larger than the output (less
+margins) is waited for at the output's size. Offline renderers never
+hold (`set_resize_wait`, default zero); the binary's host sets it.
+
+**2026-10-06 · wave3-pixels: fewer layout passes.** The content pass
+that sizes a surface runs only where it decides something: never for a
+closed surface (`open: false`: neither laid out nor shaped until it
+opens; opening it runs the pass), and for a surface of a fixed size only
+until it is first laid out for painting; after that its overhang comes
+from that pass (a change is reported as a spec update and it lays out
+again inside the new overhang). A shadow change relayouts its surface for
+that reason. A text change on a shown fixed surface costs one pass for
+the change and one for its delivered layout.
+
+**2026-10-06 · wave3-pixels: the input region stays a rectangle.**
+design.md's "hit testing on the rounded shape" holds inside the surface:
+a press on a rounded corner of a node is not that node. The Wayland input
+region of a surface is its box (inside the overhang), corners included:
+a click on the transparent corner of a radius-14 bar is taken by the bar
+and lands on its root, not on the window beneath. Cutting the corners
+would need the root's radius in the spec and stepped rectangles per
+corner; a few pixels at a surface's corners are not worth that in M2.
+
+**2026-10-06 · wave3-pixels: an `input` draws its text.** Ahead of the
+M2 widgets item (caret, selection, focus ring), an `input` draws its
+`text` through the text path, or its `placeholder` in `$fg.muted` (the
+inherited colour at 60 % when the token is missing) while the text is
+empty, so the launcher shows its prompt and what is typed.
 
 **2026-10-06 · wave3-pixels: `nav:` naming a node mounted ticks later.**
 A node-valued prop whose target is not on the scene stays pending across

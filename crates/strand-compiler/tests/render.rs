@@ -163,6 +163,9 @@ fn container_queries_settle_before_the_frame_paints() {
     );
     let mut r = renderer();
     r.set_query_wait(std::time::Duration::from_secs(30));
+    // Idle between the resizes however fast the test runs (a surface in
+    // motion holds nothing for queries: render's own test).
+    r.set_busy_window(std::time::Duration::ZERO);
     assert!(r.apply(inst.flush().diff).is_empty());
     let bar = r
         .take_surface_changes()

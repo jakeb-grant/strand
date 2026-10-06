@@ -11,7 +11,7 @@ bar height=36 margin=[$space.2, $space.2, 0] edge=top screens="Mock | DP-1 | Dis
       text max_width=40% color=$fg.muted text="strand — design.md" ellipsis=end
     center
       text text="Mon 05  09:41"
-        popup open=true
+        popup open=true two_way=[open]
           col pad=$space.3 gap=$space.2 bg=$surface radius=$radius.lg shadow=$elevation.lg
             row align=center
               button text="‹"
@@ -75,7 +75,7 @@ bar height=36 margin=[$space.2, $space.2, 0] edge=top screens="Mock | HDMI-A-1 |
       text max_width=40% color=$fg.muted text="strand — design.md" ellipsis=end
     center
       text text="Mon 05  09:41"
-        popup open=true
+        popup open=true two_way=[open]
           col pad=$space.3 gap=$space.2 bg=$surface radius=$radius.lg shadow=$elevation.lg
             row align=center
               button text="‹"
@@ -131,9 +131,9 @@ bar height=36 margin=[$space.2, $space.2, 0] edge=top screens="Mock | HDMI-A-1 |
         icon source="battery-good-symbolic"
         text text="42% · 2 h 5 min"
       image size=16 source="network-wireless"
-panel anchor=center layer=overlay keyboard=exclusive screens=focused open=true name="Launcher" enter={opacity: 0; scale: 0.96} exit={opacity: 0; scale: 0.96}
+panel anchor=center layer=overlay keyboard=exclusive screens=focused open=true name="Launcher" two_way=[open] enter={opacity: 0; scale: 0.96} exit={opacity: 0; scale: 0.96}
   col width=600 pad=$space.3 gap=$space.2 bg=$surface.alpha(0.82) radius=$radius.xl shadow=$elevation.xl blur=32 clip=true
-    input text="" font=$font.title placeholder="Search apps" focus=true nav=node 53
+    input two_way=[text] text="" font=$font.title placeholder="Search apps" focus=true nav=node 53
     list max_height=420
       row pad=$space.2 gap=$space.3 align=center radius=$radius.md
         image size=32 source="firefox"

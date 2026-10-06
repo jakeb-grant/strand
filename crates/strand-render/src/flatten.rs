@@ -924,11 +924,35 @@ impl<'a> Flattener<'a> {
             laid.h.max(0.0),
         );
 
+        // An `input` shows its `text`, or its `placeholder` in `$fg.muted`
+        // while that is empty (plain text: no markup or marks; caret and
+        // selection come with the M2 widgets item).
+        let input = node.kind == NodeKind::Input;
+        let placeholder =
+            input && !matches!(get(Prop::Text), Some(PropValue::Text(t)) if !t.is_empty());
+        let color = if placeholder {
+            match scope.lookup("fg.muted") {
+                Some(PropValue::Color(c)) => c,
+                _ => color.with_alpha(color.a * 0.6),
+            }
+        } else {
+            color
+        };
+        let text_get = |p: Prop| match p {
+            Prop::Text if placeholder => get(Prop::Placeholder),
+            Prop::Markup | Prop::Marks | Prop::Ellipsis | Prop::MaxLines if input => None,
+            _ => get(p),
+        };
         // Text: the unbounded layout (layout measures with it) and, for a
         // box narrower than it, one shaped for the box's width.
-        let is_text = matches!(node.kind, NodeKind::Text | NodeKind::Button);
+        let is_text = matches!(
+            node.kind,
+            NodeKind::Text | NodeKind::Button | NodeKind::Input
+        );
         let mut layout = None;
-        if is_text && let Some((natural, align)) = natural_spec(&get, &scope, &font, self.scale) {
+        if is_text
+            && let Some((natural, align)) = natural_spec(&text_get, &scope, &font, self.scale)
+        {
             let shaped: &[Shaped] = self.layouts.get(&node.id).map_or(&[], Vec::as_slice);
             let (fit, placed) = place_text(shaped, self.scale, rect, align);
             self.out.text.push((node.id, natural.clone()));

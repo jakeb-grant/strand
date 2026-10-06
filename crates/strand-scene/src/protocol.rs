@@ -184,6 +184,14 @@ props! {
     /// (`ToLogic::Layout`) only when it carries this, and holds a frame
     /// for logic's answer when a `query` node's size changes.
     Watch = "watch": Snap,
+    /// The props bound two-way on this node (`open: <-> launcher_open`,
+    /// `text: <-> query`), as a `PropValue::List` of `Keyword` prop
+    /// names. Set by the compiler, never written in source: input writes
+    /// such a prop (Escape, click-away and focus loss write `open:
+    /// false`), and a surface whose `open` is two-way gets a click-away
+    /// catcher (see [`crate::SurfaceSpec::open_two_way`],
+    /// [`crate::is_two_way`]).
+    TwoWay = "two_way": Snap,
     // Paint.
     Bg = "bg": Effects,
     Color = "color": Effects,

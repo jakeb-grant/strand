@@ -6,8 +6,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use strand_scene::{
-    Damage, Edge, Insets, LogicalPoint, LogicalSize, NodeId, NodeKind, PaintTarget, Painter, Prop,
-    PropValue, Scale, SceneDiff, SceneOp, Size, SurfaceChange, SurfaceId, SurfaceSpec, TokenScope,
+    Anchor, Damage, Edge, Insets, LogicalPoint, LogicalSize, NodeId, NodeKind, PaintTarget,
+    Painter, Prop, PropValue, Scale, SceneDiff, SceneOp, Size, SurfaceChange, SurfaceId,
+    SurfaceSpec, TokenScope,
 };
 use strand_text::{TextEngine, TextError, TextKey, TextLayout, TextRequest, TextWorker};
 
@@ -51,6 +52,12 @@ pub const MAX_TEXT_RETRIES: u8 = 2;
 /// well under a millisecond, so the frame shows the settled variant; a
 /// logic thread that is busy costs at most this.
 pub const QUERY_WAIT: Duration = Duration::from_millis(30);
+
+/// How long a content-sized surface holds a frame after its size changed
+/// (its content grew or its text arrived) for the compositor's configure
+/// at the new size: one round trip. Painting meanwhile would show a frame
+/// at the old size, then the new one (a one-frame size pop).
+pub const RESIZE_WAIT: Duration = Duration::from_millis(50);
 
 /// Where text layouts come from.
 #[derive(Debug)]
@@ -180,6 +187,14 @@ struct SurfaceState {
     query_held: bool,
     /// How far shadows reach past the root's box (from its spec).
     overhang: strand_scene::Insets,
+    /// A content-sized surface whose spec asks for another size than it
+    /// is configured at: the buffer size it waits for, and until when.
+    size_hold: Option<(LogicalSize, Instant)>,
+    /// The buffer size its spec asked for when last looked at (see
+    /// [`Renderer::wanted_size`]), and whether it changed since the
+    /// surface was attached: only then is a configure on its way.
+    spec_target: Option<(Option<f32>, Option<f32>)>,
+    retargeted: bool,
 }
 
 impl SurfaceState {
@@ -192,6 +207,22 @@ impl SurfaceState {
     fn mark_layout(&mut self) {
         self.mark_dirty();
         self.layout_dirty = true;
+    }
+
+    /// Holds the next frame for logic's answer to fact batch `seq` (a
+    /// container query's size changed), once per frame, and only on a
+    /// surface that is idle: one in motion (a size animating) paints on,
+    /// and the answer lands a frame later, so logic never sits on the
+    /// path of an animation (design.md: the renderer never waits).
+    fn hold_for_query(&mut self, seq: u64, wait: Duration, window: Duration) {
+        let now = Instant::now();
+        let idle = self
+            .painted_at
+            .is_none_or(|t| now.saturating_duration_since(t) >= window);
+        if !wait.is_zero() && !self.query_held && idle {
+            self.query_hold = Some((seq, now + wait));
+            self.query_held = true;
+        }
     }
 
     /// Takes a new size and scale; returns true if the scale changed.
@@ -238,9 +269,11 @@ pub struct Renderer {
     /// Layout passes run (tests: paint-only changes run none).
     layout_passes: u64,
     /// Laid-out sizes not yet handed to logic (`self.width`), and the
-    /// last size handed per node.
+    /// last size each surface laid a watched node out at (a node shown on
+    /// two surfaces of different sizes reports a change of either, never
+    /// flip-flops between them).
     facts: Vec<(NodeId, f32, f32)>,
-    facts_sent: HashMap<NodeId, (f32, f32)>,
+    facts_sent: HashMap<(SurfaceId, NodeId), (f32, f32)>,
     /// Fact batches handed out ([`Renderer::layout_seq`]).
     facts_seq: u64,
     /// How long a frame waits for logic's answer to a container query
@@ -250,6 +283,41 @@ pub struct Renderer {
     spec_wanted: HashMap<NodeId, Vec<TextSlot>>,
     /// Surface nodes whose content size or overhang may have changed.
     spec_dirty: BTreeSet<NodeId>,
+    /// Surface nodes sized by their content (as of the last refresh).
+    content_sized: BTreeSet<NodeId>,
+    /// How long a content-sized surface holds a frame for the configure
+    /// at its new size (zero: never; offline there is no compositor).
+    resize_wait: Duration,
+    /// The logical size of the output each surface is on, when known: a
+    /// content-sized surface is never larger (see [`Renderer::set_surface_bounds`]).
+    bounds: HashMap<SurfaceId, LogicalSize>,
+}
+
+/// The overhang a surface asks for: on an axis its anchor leaves centred
+/// (both axes for `center`, the cross axis for an edge, none for a bar
+/// or a corner), the larger side on both sides, since the compositor
+/// centres the whole buffer and an uneven overhang would move the box off
+/// centre.
+fn centred_overhang(spec: &SurfaceSpec, o: Insets) -> Insets {
+    if spec.kind == NodeKind::Bar {
+        return o;
+    }
+    let (h, v) = match spec.anchor {
+        Anchor::Center => (true, true),
+        Anchor::Top | Anchor::Bottom => (true, false),
+        Anchor::Left | Anchor::Right => (false, true),
+        _ => (false, false),
+    };
+    let mut o = o;
+    if h {
+        let m = o.left.max(o.right);
+        (o.left, o.right) = (m, m);
+    }
+    if v {
+        let m = o.top.max(o.bottom);
+        (o.top, o.bottom) = (m, m);
+    }
+    o
 }
 
 /// Delivered text layouts as layout measures them.
@@ -328,6 +396,94 @@ impl Renderer {
             query_wait: Duration::ZERO,
             spec_wanted: HashMap::new(),
             spec_dirty: BTreeSet::new(),
+            content_sized: BTreeSet::new(),
+            bounds: HashMap::new(),
+            resize_wait: Duration::ZERO,
+        }
+    }
+
+    /// How long a content-sized surface whose size changed holds its
+    /// frame for the compositor's configure at the new size (see
+    /// [`RESIZE_WAIT`]); zero, the default, never holds (offline
+    /// rendering has no compositor to wait for).
+    pub fn set_resize_wait(&mut self, wait: Duration) {
+        self.resize_wait = wait;
+        self.refresh_size_holds();
+    }
+
+    /// The logical size of the output `surface` is on: a content-sized
+    /// surface is laid out no larger than it, less its margins (the
+    /// surface manager clamps the layer size the same way), so it waits
+    /// for no configure the compositor would never send.
+    pub fn set_surface_bounds(&mut self, surface: SurfaceId, size: Option<LogicalSize>) {
+        match size {
+            Some(b) => self.bounds.insert(surface, b),
+            None => self.bounds.remove(&surface),
+        };
+        self.refresh_size_holds();
+    }
+
+    /// The buffer size, logical pixels, the spec of `root` asks a
+    /// surface of it for, on the content-sized axes (`None`: not sized by
+    /// its content on that axis).
+    fn wanted_size(&self, surface: SurfaceId, root: NodeId) -> Option<(Option<f32>, Option<f32>)> {
+        if !self.content_sized.contains(&root) {
+            return None;
+        }
+        let spec = self.specs.get(&root)?;
+        let (o, m) = (spec.overhang, spec.margin);
+        let b = self.bounds.get(&surface);
+        let fit = |v: Option<f32>, bound: Option<f32>, margins: f32| {
+            v.map(|v| match bound {
+                Some(b) => v.min((b - margins).max(1.0)),
+                None => v,
+            })
+        };
+        let w = fit(spec.width, b.map(|b| b.w), m.left + m.right).map(|w| w + o.left + o.right);
+        let h = fit(spec.height, b.map(|b| b.h), m.top + m.bottom).map(|h| h + o.top + o.bottom);
+        Some(match (spec.kind, spec.edge) {
+            (NodeKind::Bar, Some(Edge::Left | Edge::Right)) => (w, None),
+            (NodeKind::Bar, _) => (None, h),
+            _ => (w, h),
+        })
+    }
+
+    /// Holds the frames of content-sized surfaces configured at another
+    /// size than their spec asks for, until the configure (or
+    /// [`RESIZE_WAIT`]).
+    fn refresh_size_holds(&mut self) {
+        let ids: Vec<(SurfaceId, NodeId)> =
+            self.surfaces.iter().map(|(i, s)| (*i, s.root)).collect();
+        let now = Instant::now();
+        for (id, root) in ids {
+            let wanted = self.wanted_size(id, root);
+            let Some(s) = self.surfaces.get_mut(&id) else {
+                continue;
+            };
+            if wanted != s.spec_target {
+                // The surface manager reconfigures it: a configure at the
+                // new size is on its way.
+                s.retargeted |= s.spec_target.is_some();
+                s.spec_target = wanted;
+            }
+            let holds = !self.resize_wait.is_zero() && s.size != Size::default() && s.retargeted;
+            let Some((w, h)) = wanted.filter(|_| holds) else {
+                s.size_hold = None;
+                continue;
+            };
+            let have = s.scale.logical_size(s.size);
+            let off =
+                |want: Option<f32>, have: f32| want.is_some_and(|v| (v.round() - have).abs() > 1.0);
+            if !(off(w, have.w) || off(h, have.h)) {
+                // Configured at what it asked for.
+                s.size_hold = None;
+                s.retargeted = false;
+                continue;
+            }
+            let target = LogicalSize::new(w.unwrap_or(have.w), h.unwrap_or(have.h));
+            if s.size_hold.is_none_or(|(t, _)| t != target) {
+                s.size_hold = Some((target, now + self.resize_wait));
+            }
         }
     }
 
@@ -485,6 +641,11 @@ impl Renderer {
     /// `width`/`height`, a bar without a thickness) is sized by its
     /// content, laid out on its own; every surface reports how far its
     /// shadows reach past its box (`SurfaceSpec::overhang`).
+    ///
+    /// The content pass runs only where it decides something: never for
+    /// a closed surface (it is sized when it opens), and for a surface of
+    /// a fixed size only until it is shown (then the overhang comes from
+    /// the pass that lays it out for painting, see `flatten_now`).
     fn refresh_specs(&mut self) {
         let dirty = std::mem::take(&mut self.spec_dirty);
         let layouts = (!dirty.is_empty()).then(|| self.shaped());
@@ -511,13 +672,24 @@ impl Renderer {
             } else {
                 spec.width.is_none() || spec.height.is_none()
             };
+            if content_sized {
+                self.content_sized.insert(id);
+            } else {
+                self.content_sized.remove(&id);
+            }
             // A surface already showing this node: its scale, and for a bar
             // the length the compositor gave it.
             let shown = self.surfaces.values().find(|s| s.root == id);
             let scale = shown.map_or(Scale::ONE, |s| s.scale);
             let old = self.specs.get(&id);
+            let laid_out = shown.is_some_and(|s| s.boxes.is_some());
+            let pass = spec.open && (content_sized || !laid_out);
+            if !spec.open {
+                // Nothing to shape for a surface nobody sees.
+                self.spec_wanted.remove(&id);
+            }
             let (size, overhang) = match (&layouts, old) {
-                (Some(layouts), _) if dirty.contains(&id) => {
+                (Some(layouts), _) if dirty.contains(&id) && pass => {
                     let along = shown.map(|s| {
                         let l = s.scale.logical_size(s.size);
                         let o = s.overhang;
@@ -563,11 +735,12 @@ impl Renderer {
                 ),
                 _ => (LogicalSize::default(), Insets::default()),
             };
-            spec.overhang = overhang;
+            spec.overhang = centred_overhang(&spec, overhang);
             if content_sized {
                 // Capped: content taller than any output (a list with no
                 // `max_height`, a long body) never asks for a buffer of
-                // its full size.
+                // its full size; the output's own size caps it further
+                // where the surface is placed.
                 let cap = |v: f32| v.ceil().clamp(1.0, MAX_CONTENT_SIZE);
                 let (w, h) = (cap(size.w), cap(size.h));
                 match (bar, vertical) {
@@ -579,25 +752,7 @@ impl Renderer {
                     }
                 }
             }
-            let change = match self.specs.get(&id) {
-                None => Some(SurfaceChange::Created(spec.clone())),
-                Some(old) if *old != spec => Some(SurfaceChange::Updated {
-                    recreate: old.needs_recreate(&spec),
-                    spec: spec.clone(),
-                }),
-                Some(_) => None,
-            };
-            if let Some(c) = change {
-                // Shown surfaces lay out again inside the new overhang.
-                for s in self.surfaces.values_mut() {
-                    if s.root == id && s.overhang != spec.overhang {
-                        s.overhang = spec.overhang;
-                        s.mark_layout();
-                    }
-                }
-                self.surface_changes.push((id, c));
-                self.specs.insert(id, spec);
-            }
+            self.record_spec(id, spec);
         }
         let gone: Vec<NodeId> = self
             .specs
@@ -609,6 +764,7 @@ impl Renderer {
             self.specs.remove(&id);
             self.surface_changes.push((id, SurfaceChange::Removed));
         }
+        self.content_sized.retain(|id| live.contains(id));
         self.spec_wanted.retain(|id, _| live.contains(id));
         if !requests.is_empty() && self.request_text(&requests) {
             // Shaped inline: size the surfaces with it at once.
@@ -616,6 +772,28 @@ impl Renderer {
                 .extend(requests.iter().filter_map(|(n, _)| self.tree.root_of(*n)));
             self.refresh_specs();
         }
+        self.refresh_size_holds();
+    }
+
+    /// Records `spec` as the spec of surface node `id`, reporting a
+    /// change; shown surfaces lay out again inside a new overhang.
+    fn record_spec(&mut self, id: NodeId, spec: SurfaceSpec) {
+        let change = match self.specs.get(&id) {
+            None => SurfaceChange::Created(spec.clone()),
+            Some(old) if *old != spec => SurfaceChange::Updated {
+                recreate: old.needs_recreate(&spec),
+                spec: spec.clone(),
+            },
+            Some(_) => return,
+        };
+        for s in self.surfaces.values_mut() {
+            if s.root == id && s.overhang != spec.overhang {
+                s.overhang = spec.overhang;
+                s.mark_layout();
+            }
+        }
+        self.surface_changes.push((id, change));
+        self.specs.insert(id, spec);
     }
 
     /// The retained tree, read-only (inspector, tests).
@@ -650,6 +828,9 @@ impl Renderer {
                 hits: Vec::new(),
                 query_hold: None,
                 query_held: false,
+                size_hold: None,
+                spec_target: None,
+                retargeted: false,
                 overhang: self
                     .specs
                     .get(&root)
@@ -658,6 +839,7 @@ impl Renderer {
             },
         );
         self.raster.set_surfaces(self.surfaces.len());
+        self.refresh_size_holds();
     }
 
     /// Forces a full repaint of `surface` on its next paint (for example
@@ -690,6 +872,8 @@ impl Renderer {
 
     pub fn detach_surface(&mut self, surface: SurfaceId) {
         self.surfaces.remove(&surface);
+        self.bounds.remove(&surface);
+        self.facts_sent.retain(|(s, _), _| *s != surface);
         self.last_damage.remove(&surface);
         self.raster.set_surfaces(self.surfaces.len());
         self.prune_scales();
@@ -768,12 +952,15 @@ impl Renderer {
             true => s.new_text_until,
         };
         let now = Instant::now();
-        let text = until.filter(|t| now < *t);
-        let query = s.query_hold.map(|(_, t)| t).filter(|t| now < *t);
-        match (text, query) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        [
+            until,
+            s.query_hold.map(|(_, t)| t),
+            s.size_hold.map(|(_, t)| t),
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|t| now < *t)
+        .min()
     }
 
     /// Frees everything held for scales no surface uses any more: text
@@ -902,8 +1089,17 @@ impl Renderer {
                     (None, None, true)
                 }
             };
+            // `open` sizes a content-sized surface when it opens.
+            let open = matches!(
+                &op,
+                SceneOp::SetProp {
+                    prop: Prop::Open,
+                    ..
+                }
+            );
             // A shadow, or the offset of a node casting one, changes only
-            // the overhang a surface asks for.
+            // the overhang a surface asks for (from its layout pass, so
+            // it lays out again).
             let shadow = match &op {
                 SceneOp::SetProp {
                     prop: Prop::Shadow, ..
@@ -927,10 +1123,12 @@ impl Renderer {
                     if let Some(t) = &mut touched {
                         t.extend(roots.iter().copied());
                     }
-                    if shapes && let Some(t) = &mut relayout {
+                    if (shapes || shadow)
+                        && let Some(t) = &mut relayout
+                    {
                         t.extend(roots.iter().copied());
                     }
-                    if shapes || shadow {
+                    if shapes || shadow || open {
                         self.spec_dirty.extend(roots);
                     }
                 }
@@ -945,8 +1143,12 @@ impl Renderer {
         let text = &self.text;
         let before = self.texts.len();
         self.texts.retain(|slot, t| {
-            let keep = tree.get(slot.node).is_some_and(|n| {
-                matches!(n.kind, NodeKind::Text | NodeKind::Button) && n.get(Prop::Text).is_some()
+            let keep = tree.get(slot.node).is_some_and(|n| match n.kind {
+                NodeKind::Text | NodeKind::Button => n.get(Prop::Text).is_some(),
+                NodeKind::Input => {
+                    n.get(Prop::Text).is_some() || n.get(Prop::Placeholder).is_some()
+                }
+                _ => false,
             });
             if !keep && let Some((k, _)) = t.requested.take() {
                 text.cancel(k);
@@ -960,28 +1162,32 @@ impl Renderer {
         let texts = &self.texts;
         self.pending.retain(|_, slot| texts.contains_key(slot));
         let tree = &self.tree;
-        self.facts_sent.retain(|n, _| tree.contains(*n));
-        // Newly watched nodes: their size as laid out now, if it is.
-        // A query that starts reading one holds its surface's next frame
-        // for the answer, as a size change would.
-        let wait = self.query_wait;
+        self.facts_sent.retain(|(_, n), _| tree.contains(*n));
+        // Newly watched nodes: their size as laid out now, if it is (on
+        // the first surface showing it). A query that starts reading one
+        // holds that surface's next frame for the answer, as a size
+        // change would.
+        let (wait, window) = (self.query_wait, self.busy_window);
         for id in watched {
-            self.facts_sent.remove(&id);
+            self.facts_sent.retain(|(_, n), _| *n != id);
             let query = match self.tree.get(id).and_then(|n| n.get(Prop::Watch)) {
                 None => continue,
                 Some(w) => matches!(w, PropValue::Keyword(k) if k == "query"),
             };
             let seq = self.facts_seq + 1;
-            let shown = self.surfaces.values_mut().find_map(|s| {
-                let r = s.boxes.as_ref()?.rects.get(&id).copied()?;
-                Some((r, s))
-            });
-            if let Some((r, s)) = shown {
-                if query && !wait.is_zero() && !s.query_held {
-                    s.query_hold = Some((seq, Instant::now() + wait));
-                    s.query_held = true;
+            let mut first = true;
+            for (sid, s) in self.surfaces.iter_mut() {
+                let Some(r) = s.boxes.as_ref().and_then(|b| b.rects.get(&id)).copied() else {
+                    continue;
+                };
+                self.facts_sent.insert((*sid, id), (r.w, r.h));
+                if !first {
+                    continue;
                 }
-                self.facts_sent.insert(id, (r.w, r.h));
+                first = false;
+                if query {
+                    s.hold_for_query(seq, wait, window);
+                }
                 self.facts.push((id, r.w, r.h));
             }
         }
@@ -1338,6 +1544,33 @@ impl Renderer {
                 );
                 self.layout_passes += 1;
             }
+            // A surface of a fixed size takes its overhang from this
+            // pass (no content pass runs for it once shown): a change is
+            // reported, and it lays out again inside the new one.
+            if !self.content_sized.contains(&root)
+                && let Some(mut spec) = self.specs.get(&root).cloned()
+                && spec.open
+            {
+                let o = centred_overhang(&spec, boxes.overhang);
+                if o != spec.overhang {
+                    spec.overhang = o;
+                    self.record_spec(root, spec);
+                    let frame = strand_scene::LogicalRect::new(
+                        o.left,
+                        o.top,
+                        (logical.w - o.left - o.right).max(0.0),
+                        (logical.h - o.top - o.bottom).max(0.0),
+                    );
+                    boxes = layout(
+                        &self.tree,
+                        root,
+                        RootSize::Fixed(frame),
+                        &info,
+                        &mut self.scrolls,
+                    );
+                    self.layout_passes += 1;
+                }
+            }
             // Sizes logic reads go to it; one a query reads holds the
             // frame for its answer (once per frame).
             let mut query = false;
@@ -1346,20 +1579,19 @@ impl Renderer {
                     continue;
                 };
                 let size = (r.w, r.h);
-                if self.facts_sent.get(node) != Some(&size) {
-                    self.facts_sent.insert(*node, size);
+                if self.facts_sent.get(&(id, *node)) != Some(&size) {
+                    self.facts_sent.insert((id, *node), size);
                     self.facts.push((*node, r.w, r.h));
                     query |= matches!(watch, PropValue::Keyword(k) if k == "query");
                 }
             }
-            let wait = self.query_wait;
+            let (wait, window) = (self.query_wait, self.busy_window);
             let seq = self.facts_seq + 1;
             if let Some(s) = self.surfaces.get_mut(&id) {
                 s.boxes = Some(boxes);
                 s.layout_dirty = false;
-                if query && !wait.is_zero() && !s.query_held {
-                    s.query_hold = Some((seq, Instant::now() + wait));
-                    s.query_held = true;
+                if query {
+                    s.hold_for_query(seq, wait, window);
                 }
             }
         }

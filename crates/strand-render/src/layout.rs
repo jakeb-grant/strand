@@ -85,6 +85,9 @@ impl ScrollState {
     /// Scrolls by `dy` logical pixels, kept within the content. Returns
     /// true if the offset moved.
     pub fn scroll_by(&mut self, dy: f32) -> bool {
+        if !dy.is_finite() {
+            return false;
+        }
         let max = (self.content - self.viewport).max(0.0);
         let new = (self.offset + dy).clamp(0.0, max);
         let moved = new != self.offset;
@@ -139,6 +142,9 @@ enum Ctx {
         node: NodeId,
         font: f32,
         chars: usize,
+        /// Characters in its longest word: its min-content width, as a
+        /// share of its natural width.
+        word: usize,
         /// `ellipsis` or `max_lines`: it may be narrower than its text.
         shrinks: bool,
         wraps: bool,
@@ -398,9 +404,15 @@ impl<'a> Build<'a> {
         if is_leaf(kind) {
             let ctx = match kind {
                 NodeKind::Text | NodeKind::Button => {
-                    let text = match get(Prop::Text).as_deref() {
-                        Some(PropValue::Text(t)) => t.chars().count(),
-                        _ => 0,
+                    let (text, word) = match get(Prop::Text).as_deref() {
+                        Some(PropValue::Text(t)) => (
+                            t.chars().count(),
+                            t.split_whitespace()
+                                .map(|w| w.chars().count())
+                                .max()
+                                .unwrap_or(0),
+                        ),
+                        _ => (0, 0),
                     };
                     let ellipsis = !matches!(
                         get(Prop::Ellipsis).as_deref(),
@@ -416,6 +428,7 @@ impl<'a> Build<'a> {
                         node: node.id,
                         font,
                         chars: text,
+                        word,
                         shrinks: ellipsis || max_lines.is_some(),
                         wraps: !ellipsis || max_lines.is_some_and(|n| n > 1),
                         max_lines,
@@ -543,10 +556,14 @@ impl<'a> Build<'a> {
                 });
             }
             _ => {
-                // A stack: every child in one cell.
+                // A stack: every child in one cell. The cell's smallest
+                // size is none (`minmax(0, 1fr)`, as `split`'s sides), so
+                // content wider than the box wraps or overflows inside it
+                // instead of widening it.
                 style.display = Display::Grid;
-                style.grid_template_columns = vec![fr(1.0)];
-                style.grid_template_rows = vec![fr(1.0)];
+                let cell = || minmax(length(0.0), fr(1.0));
+                style.grid_template_columns = vec![cell()];
+                style.grid_template_rows = vec![cell()];
                 if let Some(a) = align {
                     style.align_items = Some(a);
                     style.justify_items = Some(a);
@@ -608,19 +625,40 @@ impl<'a> Build<'a> {
     }
 }
 
-/// The text size taffy is told for a text leaf.
-#[allow(clippy::too_many_arguments)]
-fn measure_text(
-    texts: &dyn TextSizes,
+/// A text leaf as measured: its node, font size, length and how it
+/// fits a narrower box.
+struct TextLeaf {
     node: NodeId,
     font: f32,
     chars: usize,
+    word: usize,
     shrinks: bool,
     wraps: bool,
     max_lines: Option<u32>,
+    /// `min_width`/`max_width` resolved against the parent: the width the
+    /// height is computed for is clamped first, so a text capped by
+    /// `max_width` is as tall as its wrapped lines.
+    min_w: Option<f32>,
+    max_w: Option<f32>,
+}
+
+/// The text size taffy is told for a text leaf.
+fn measure_text(
+    texts: &dyn TextSizes,
+    t: &TextLeaf,
     known: taffy::Size<Option<f32>>,
     avail: taffy::Size<AvailableSpace>,
 ) -> taffy::Size<f32> {
+    let TextLeaf {
+        node,
+        font,
+        chars,
+        word,
+        shrinks,
+        wraps,
+        max_lines,
+        ..
+    } = *t;
     let natural = texts.natural(node).unwrap_or_else(|| {
         // Not shaped yet: a guess from its length, replaced when the
         // layout arrives.
@@ -628,10 +666,26 @@ fn measure_text(
     });
     // Whole pixels up, so rounding the layout never cuts a text that fits.
     let natural = LogicalSize::new(natural.w.ceil(), natural.h.ceil());
-    let w = known.width.unwrap_or(match avail.width {
-        AvailableSpace::MinContent if shrinks => 0.0,
-        AvailableSpace::Definite(a) if shrinks => natural.w.min(a.max(0.0)),
-        _ => natural.w,
+    // Wrapping text's smallest width is its longest word (as in CSS),
+    // taken as its share of the natural width: a text in a growing column
+    // wraps instead of widening it.
+    let least = if chars > 0 {
+        (natural.w * word as f32 / chars as f32)
+            .ceil()
+            .min(natural.w)
+    } else {
+        natural.w
+    };
+    let w = known.width.unwrap_or_else(|| {
+        let w = match avail.width {
+            AvailableSpace::MinContent if shrinks => 0.0,
+            AvailableSpace::MinContent if wraps => least,
+            AvailableSpace::Definite(a) if shrinks => natural.w.min(a.max(0.0)),
+            AvailableSpace::Definite(a) if wraps => natural.w.min(a.max(least)),
+            _ => natural.w,
+        };
+        let w = t.max_w.map_or(w, |m| w.min(m));
+        t.min_w.map_or(w, |m| w.max(m))
     });
     let h = known.height.unwrap_or_else(|| {
         if w + 1.0 < natural.w && wraps {
@@ -801,6 +855,13 @@ fn measure_leaf(
     let cap = matches!(ctx, Some(Ctx::List(_)))
         .then(|| list_cap(&inputs, style))
         .flatten();
+    let width_of = |d: LengthPercentageAuto| -> Option<f32> {
+        use taffy::util::MaybeResolve;
+        let v: Option<f32> = d.maybe_resolve(inputs.parent_size.width, |_: *const (), _| 0.0);
+        v.filter(|v| v.is_finite())
+    };
+    let max_w = || width_of(style.max_size.width);
+    let min_w = || width_of(style.min_size.width);
     compute_leaf_layout(
         inputs,
         style,
@@ -810,12 +871,24 @@ fn measure_leaf(
                 node,
                 font,
                 chars,
+                word,
                 shrinks,
                 wraps,
                 max_lines,
-            }) => measure_text(
-                texts, *node, *font, *chars, *shrinks, *wraps, *max_lines, known, avail,
-            ),
+            }) => {
+                let leaf = TextLeaf {
+                    node: *node,
+                    font: *font,
+                    chars: *chars,
+                    word: *word,
+                    shrinks: *shrinks,
+                    wraps: *wraps,
+                    max_lines: *max_lines,
+                    min_w: min_w(),
+                    max_w: max_w(),
+                };
+                measure_text(texts, &leaf, known, avail)
+            }
             Some(Ctx::Fixed(w, h)) => taffy::Size {
                 width: known.width.unwrap_or(*w),
                 height: known.height.unwrap_or(*h),
@@ -928,6 +1001,9 @@ impl<'a> Build<'a> {
                     .map(|k| k.location.y + k.size.height)
                     .fold(0.0f32, f32::max);
                 st.content = (bottom + l.padding.bottom).max(l.size.height);
+                if !st.offset.is_finite() {
+                    st.offset = 0.0;
+                }
                 st.offset = st.offset.clamp(0.0, (st.content - st.viewport).max(0.0));
                 dy = st.offset;
             }
@@ -984,6 +1060,9 @@ fn place_list(
     let total = rows_height(tree, id, st, gap);
     st.viewport = content.h;
     st.content = total;
+    if !st.offset.is_finite() {
+        st.offset = 0.0;
+    }
     st.offset = st.offset.clamp(0.0, (total - content.h).max(0.0));
     let offset = st.offset;
     let mut y = 0.0;

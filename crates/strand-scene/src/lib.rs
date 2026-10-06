@@ -23,5 +23,5 @@ pub use protocol::{
     Border, Corners, Easing, Font, GradientStop, Insets, Length, NodeKind, Paint, Prop, PropClass,
     PropValue, SceneDiff, SceneOp, Shadow, Transition,
 };
-pub use surface::{Anchor, Edge, Keyboard, Layer, Screens, SurfaceChange, SurfaceSpec};
+pub use surface::{Anchor, Edge, Keyboard, Layer, Screens, SurfaceChange, SurfaceSpec, is_two_way};
 pub use tokens::{BinOp, Channel, MAX_TOKEN_STEPS, TokenExpr, TokenMethod, TokenScope, TokenTable};

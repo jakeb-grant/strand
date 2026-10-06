@@ -115,6 +115,10 @@ pub enum InputEvent {
     KeyboardLeave { surface: SurfaceId },
     /// A key on the focused surface.
     Key { surface: SurfaceId, key: KeyInput },
+    /// A button was pressed outside `surface`, on the transparent
+    /// click-away catcher mapped under it (an open `keyboard: exclusive`
+    /// surface whose `open` is two-way): it closes.
+    ClickAway { surface: SurfaceId },
 }
 
 impl InputEvent {
@@ -128,7 +132,8 @@ impl InputEvent {
             | Self::PointerAxis { surface, .. }
             | Self::KeyboardEnter { surface }
             | Self::KeyboardLeave { surface }
-            | Self::Key { surface, .. } => *surface,
+            | Self::Key { surface, .. }
+            | Self::ClickAway { surface } => *surface,
         }
     }
 }
