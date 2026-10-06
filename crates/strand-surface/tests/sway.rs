@@ -958,3 +958,347 @@ fn pointer_events_arrive_in_surface_coordinates() {
     assert!(mgr.state().last_button_serial().is_some());
     drop(pointer);
 }
+
+/// A shadowed panel: the overhang grows the layer surface and moves its
+/// margins (its box stays at margin 40 from the top-left corner), and the
+/// input region is the box: a click on the shadow goes past the surface,
+/// a click on the box arrives in surface coordinates (overhang included).
+#[test]
+fn shadow_overhang_grows_the_surface_but_not_its_input() {
+    use wayland_client::globals::{GlobalListContents, registry_queue_init};
+    use wayland_client::protocol::{wl_pointer, wl_registry};
+    use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
+    use wayland_protocols_wlr::virtual_pointer::v1::client::{
+        zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1,
+        zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
+    };
+
+    struct Client;
+    impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Client {
+        fn event(
+            _: &mut Self,
+            _: &wl_registry::WlRegistry,
+            _: wl_registry::Event,
+            _: &GlobalListContents,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+    delegate_noop!(Client: ignore ZwlrVirtualPointerManagerV1);
+    delegate_noop!(Client: ignore ZwlrVirtualPointerV1);
+
+    let Some(sway) = Sway::start("shadow_overhang_grows_the_surface_but_not_its_input") else {
+        return;
+    };
+    let mut mgr = strand_surface::SurfaceManager::with_connection(
+        sway.connect(),
+        TestHost::default(),
+        Config::default(),
+    )
+    .unwrap();
+    const PANEL: NodeId = NodeId::new(7, 0);
+    let mut spec = layer_spec(NodeKind::Panel, "Card", "top_left", 200.0, 100.0);
+    spec.margin = Insets::all(40.0);
+    spec.overhang = Insets::all(20.0);
+    mgr.state_mut()
+        .apply_surface_change(PANEL, SurfaceChange::Created(spec));
+    let input = mgr.take_input().unwrap();
+    wait_for_bars(&mut mgr, 1);
+    let id = mgr.state().surfaces_of(PANEL)[0];
+    let info = mgr.state().surface(id).unwrap();
+    assert_eq!(info.logical_size, (240, 140));
+    assert_eq!(info.input_region, Some(Some((20, 20, 200, 100))));
+
+    let conn = sway.connect();
+    let (globals, mut queue) = registry_queue_init::<Client>(&conn).unwrap();
+    let qh = queue.handle();
+    let manager: ZwlrVirtualPointerManagerV1 = globals.bind(&qh, 1..=2, ()).unwrap();
+    let pointer = manager.create_virtual_pointer(None, &qh, ());
+    queue.roundtrip(&mut Client).unwrap();
+    pump(&mut mgr, Duration::from_millis(200));
+    let click = |t: u32, x: u32, y: u32| {
+        pointer.motion_absolute(t, x, y, 1920, 1080);
+        pointer.frame();
+        pointer.button(t + 1, 0x110, wl_pointer::ButtonState::Pressed);
+        pointer.frame();
+        pointer.button(t + 2, 0x110, wl_pointer::ButtonState::Released);
+        pointer.frame();
+    };
+    // On the shadow (10 px left of the box), then on the box.
+    click(1, 30, 60);
+    click(10, 60, 60);
+    queue.roundtrip(&mut Client).unwrap();
+    let mut events = Vec::new();
+    let deadline = Instant::now() + WAIT;
+    while Instant::now() < deadline
+        && events
+            .iter()
+            .filter(|e| matches!(e, InputEvent::PointerButton { .. }))
+            .count()
+            < 2
+    {
+        mgr.dispatch(Some(Duration::from_millis(50))).unwrap();
+        events.extend(input.try_iter());
+    }
+    let buttons: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            InputEvent::PointerButton { position, .. } => Some(*position),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(buttons.len(), 2, "only the box takes the click: {events:?}");
+    // Box at 40 on screen = 20 into the surface past its 20 px overhang.
+    assert!(
+        buttons
+            .iter()
+            .all(|p| (p.x - 40.0).abs() < 1.0 && (p.y - 40.0).abs() < 1.0),
+        "{buttons:?}"
+    );
+    drop(pointer);
+}
+
+/// An open `keyboard: exclusive` panel whose `open` is two-way (the
+/// design's launcher) gets a transparent catcher under it: a click
+/// outside it is `ClickAway` on the panel, a click inside is the panel's
+/// own button event; closing the panel takes the catcher away, and a
+/// panel whose `open` is one-way gets none.
+#[test]
+fn a_click_outside_an_exclusive_panel_is_click_away() {
+    use wayland_client::globals::{GlobalListContents, registry_queue_init};
+    use wayland_client::protocol::{wl_pointer, wl_registry};
+    use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
+    use wayland_protocols_wlr::virtual_pointer::v1::client::{
+        zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1,
+        zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
+    };
+
+    struct Client;
+    impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Client {
+        fn event(
+            _: &mut Self,
+            _: &wl_registry::WlRegistry,
+            _: wl_registry::Event,
+            _: &GlobalListContents,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+    delegate_noop!(Client: ignore ZwlrVirtualPointerManagerV1);
+    delegate_noop!(Client: ignore ZwlrVirtualPointerV1);
+
+    let Some(sway) = Sway::start("a_click_outside_an_exclusive_panel_is_click_away") else {
+        return;
+    };
+    let mut mgr = strand_surface::SurfaceManager::with_connection(
+        sway.connect(),
+        TestHost::default(),
+        Config::default(),
+    )
+    .unwrap();
+    const PANEL: NodeId = NodeId::new(7, 0);
+    const PLAIN: NodeId = NodeId::new(8, 0);
+    let mut spec = layer_spec(NodeKind::Panel, "Launcher", "center", 200.0, 100.0);
+    spec.keyboard = strand_scene::Keyboard::Exclusive;
+    spec.open_two_way = true;
+    mgr.state_mut()
+        .apply_surface_change(PANEL, SurfaceChange::Created(spec.clone()));
+    let input = mgr.take_input().unwrap();
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surfaces()
+                .iter()
+                .any(|i| i.click_away && i.stats.commits > 0)
+        })
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surfaces());
+
+    let conn = sway.connect();
+    let (globals, mut queue) = registry_queue_init::<Client>(&conn).unwrap();
+    let qh = queue.handle();
+    let manager: ZwlrVirtualPointerManagerV1 = globals.bind(&qh, 1..=2, ()).unwrap();
+    let pointer = manager.create_virtual_pointer(None, &qh, ());
+    queue.roundtrip(&mut Client).unwrap();
+    pump(&mut mgr, Duration::from_millis(200));
+    let click = |t: u32, x: u32, y: u32| {
+        pointer.motion_absolute(t, x, y, 1920, 1080);
+        pointer.frame();
+        pointer.button(t + 1, 0x110, wl_pointer::ButtonState::Pressed);
+        pointer.frame();
+        pointer.button(t + 2, 0x110, wl_pointer::ButtonState::Released);
+        pointer.frame();
+    };
+    // Outside (top left of the output), then inside (its middle).
+    click(1, 100, 100);
+    click(10, 960, 540);
+    queue.roundtrip(&mut Client).unwrap();
+    let mut events = Vec::new();
+    let deadline = Instant::now() + WAIT;
+    let done = |events: &[InputEvent]| {
+        events
+            .iter()
+            .any(|e| matches!(e, InputEvent::ClickAway { .. }))
+            && events
+                .iter()
+                .filter(|e| matches!(e, InputEvent::PointerButton { .. }))
+                .count()
+                >= 2
+    };
+    while Instant::now() < deadline && !done(&events) {
+        mgr.dispatch(Some(Duration::from_millis(50))).unwrap();
+        events.extend(input.try_iter());
+    }
+    let id = mgr.state().surfaces_of(PANEL)[0];
+    let away: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, InputEvent::ClickAway { .. }))
+        .collect();
+    assert_eq!(away, [&InputEvent::ClickAway { surface: id }], "{events:?}");
+    let inside: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            InputEvent::PointerButton {
+                surface, position, ..
+            } => Some((*surface, *position)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(inside.len(), 2, "press and release inside: {events:?}");
+    assert!(
+        inside
+            .iter()
+            .all(|(s, p)| *s == id && (p.x - 100.0).abs() < 1.0 && (p.y - 50.0).abs() < 1.0),
+        "{inside:?}"
+    );
+
+    // Closed: the catcher goes with it; a one-way `open` gets none.
+    spec.open = false;
+    mgr.state_mut().apply_surface_change(
+        PANEL,
+        SurfaceChange::Updated {
+            spec: spec.clone(),
+            recreate: false,
+        },
+    );
+    let mut plain = spec.clone();
+    plain.name = Some("Plain".into());
+    plain.open = true;
+    plain.open_two_way = false;
+    mgr.state_mut()
+        .apply_surface_change(PLAIN, SurfaceChange::Created(plain));
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surfaces_of(PANEL).is_empty()
+                && s.surfaces()
+                    .iter()
+                    .any(|i| i.node == PLAIN && i.stats.commits > 0)
+        })
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surfaces());
+    assert!(mgr.state().surfaces().iter().all(|i| !i.click_away));
+    events.clear();
+    click(20, 100, 100);
+    queue.roundtrip(&mut Client).unwrap();
+    pump(&mut mgr, Duration::from_millis(300));
+    events.extend(input.try_iter());
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, InputEvent::ClickAway { .. })),
+        "{events:?}"
+    );
+    drop(pointer);
+}
+
+/// With two outputs, an open `keyboard: exclusive` panel on one gets a
+/// catcher over the other too (the whole output, bars included): a click
+/// there is a click away from it.
+#[test]
+fn a_click_on_another_output_is_click_away() {
+    use wayland_client::globals::{GlobalListContents, registry_queue_init};
+    use wayland_client::protocol::{wl_pointer, wl_registry};
+    use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
+    use wayland_protocols_wlr::virtual_pointer::v1::client::{
+        zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1,
+        zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
+    };
+
+    struct Client;
+    impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Client {
+        fn event(
+            _: &mut Self,
+            _: &wl_registry::WlRegistry,
+            _: wl_registry::Event,
+            _: &GlobalListContents,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+    delegate_noop!(Client: ignore ZwlrVirtualPointerManagerV1);
+    delegate_noop!(Client: ignore ZwlrVirtualPointerV1);
+
+    let Some(sway) = Sway::start("a_click_on_another_output_is_click_away") else {
+        return;
+    };
+    let second = sway.create_output();
+    sway.msg(&["output", "HEADLESS-1", "position", "0", "0"]);
+    sway.msg(&["output", &second, "position", "1920", "0"]);
+    sway.msg(&["focus", "output", "HEADLESS-1"]);
+    let mut mgr = strand_surface::SurfaceManager::with_connection(
+        sway.connect(),
+        TestHost::default(),
+        Config::default(),
+    )
+    .unwrap();
+    const PANEL: NodeId = NodeId::new(7, 0);
+    let mut spec = layer_spec(NodeKind::Panel, "Launcher", "center", 200.0, 100.0);
+    spec.keyboard = strand_scene::Keyboard::Exclusive;
+    spec.open_two_way = true;
+    mgr.state_mut()
+        .apply_surface_change(PANEL, SurfaceChange::Created(spec));
+    let input = mgr.take_input().unwrap();
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surfaces()
+                .iter()
+                .any(|i| i.click_away && i.stats.commits > 0)
+        })
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surfaces());
+    pump(&mut mgr, Duration::from_millis(300));
+    let id = mgr.state().surfaces_of(PANEL)[0];
+
+    let conn = sway.connect();
+    let (globals, mut queue) = registry_queue_init::<Client>(&conn).unwrap();
+    let qh = queue.handle();
+    let manager: ZwlrVirtualPointerManagerV1 = globals.bind(&qh, 1..=2, ()).unwrap();
+    let pointer = manager.create_virtual_pointer(None, &qh, ());
+    queue.roundtrip(&mut Client).unwrap();
+    pump(&mut mgr, Duration::from_millis(200));
+    // The middle of the second output, in a 3840 × 1080 layout.
+    pointer.motion_absolute(1, 1920 + 960, 540, 3840, 1080);
+    pointer.frame();
+    pointer.button(2, 0x110, wl_pointer::ButtonState::Pressed);
+    pointer.frame();
+    pointer.button(3, 0x110, wl_pointer::ButtonState::Released);
+    pointer.frame();
+    queue.roundtrip(&mut Client).unwrap();
+    let mut events = Vec::new();
+    let deadline = Instant::now() + WAIT;
+    while Instant::now() < deadline
+        && !events
+            .iter()
+            .any(|e| matches!(e, InputEvent::ClickAway { .. }))
+    {
+        mgr.dispatch(Some(Duration::from_millis(50))).unwrap();
+        events.extend(input.try_iter());
+    }
+    assert!(
+        events.contains(&InputEvent::ClickAway { surface: id }),
+        "{events:?}"
+    );
+    drop(pointer);
+}

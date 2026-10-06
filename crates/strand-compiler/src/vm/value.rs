@@ -177,6 +177,20 @@ pub struct NodeState {
     pub selected: Signal<bool>,
     pub width: Signal<Value>,
     pub height: Signal<Value>,
+    /// Which laid-out sizes bindings read: [`NodeState::WATCH_SIZE`],
+    /// [`NodeState::WATCH_QUERY`] (sticky bits).
+    pub watch: std::cell::Cell<u8>,
+    /// Render has reported its size at least once: until then `width`
+    /// and `height` are boot values (0), which a container query's
+    /// hysteresis must not latch onto.
+    pub laid_out: std::cell::Cell<bool>,
+}
+
+impl NodeState {
+    /// A binding read `width` or `height`.
+    pub const WATCH_SIZE: u8 = 1;
+    /// A container query (`when self.width < N`) read one.
+    pub const WATCH_QUERY: u8 = 2;
 }
 
 /// A value of the language.

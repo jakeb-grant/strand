@@ -11,7 +11,7 @@ bar height=36 margin=[$space.2, $space.2, 0] edge=top screens="Mock | DP-1 | Dis
       text max_width=40% color=$fg.muted text="strand — design.md" ellipsis=end
     center
       text text="Mon 05  09:41"
-        popup open=false
+        popup open=false two_way=[open]
     end gap=$space.3
       row gap=$space.1
         icon source="audio-volume-medium-symbolic"
@@ -27,7 +27,7 @@ bar height=36 margin=[$space.2, $space.2, 0] edge=top screens="Mock | HDMI-A-1 |
       text max_width=40% color=$fg.muted text="strand — design.md" ellipsis=end
     center
       text text="Mon 05  09:41"
-        popup open=false
+        popup open=false two_way=[open]
     end gap=$space.3
       row gap=$space.1
         icon source="audio-volume-medium-symbolic"
@@ -35,7 +35,7 @@ bar height=36 margin=[$space.2, $space.2, 0] edge=top screens="Mock | HDMI-A-1 |
         icon source="battery-good-symbolic"
         text text="42% · 2 h 5 min"
       image size=16 source="network-wireless"
-panel anchor=center layer=overlay keyboard=exclusive screens=focused open=false name="Launcher" enter={opacity: 0; scale: 0.96} exit={opacity: 0; scale: 0.96}
+panel anchor=center layer=overlay keyboard=exclusive screens=focused open=false name="Launcher" two_way=[open] enter={opacity: 0; scale: 0.96} exit={opacity: 0; scale: 0.96}
 panel margin=$space.3 anchor=top_right layer=overlay keyboard=none screens=focused open=true name="Toasts"
   col width=380 gap=$space.2
     col pad=$space.3 gap=$space.2 bg=$surface.alpha(0.88) radius=$radius.lg border=template(1, #000000 <- $border) shadow=$elevation.lg blur=24 enter={x: 420; opacity: 0} exit={x: 420; opacity: 0; height: 0}

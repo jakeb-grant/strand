@@ -1,6 +1,6 @@
 //! The retained scene tree the render thread owns, edited by `SceneDiff`s.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use strand_scene::{NodeId, NodeKind, Prop, PropValue, SceneDiff, SceneOp, TokenTable, Transition};
 
@@ -82,6 +82,10 @@ pub struct SceneTree {
     /// How the last `SetTokens` asked palette roots to move (springs land
     /// in M2; until then the table snaps).
     pub tokens_transition: Transition,
+    /// Subtrees logic removed that still play their `exit` pose, under
+    /// their old ids: they stay in their parent's children (keeping their
+    /// place) but are dead to logic, which may reuse their slots at once.
+    ghosts: HashMap<NodeId, Node>,
 }
 
 impl SceneTree {
@@ -89,7 +93,13 @@ impl SceneTree {
         Self::default()
     }
 
+    /// A live node or a ghost (see [`SceneTree::ghost`]).
     pub fn get(&self, id: NodeId) -> Option<&Node> {
+        self.get_live(id).or_else(|| self.ghosts.get(&id))
+    }
+
+    /// A node logic can still address.
+    fn get_live(&self, id: NodeId) -> Option<&Node> {
         self.slots
             .get(id.index as usize)?
             .as_ref()
@@ -97,14 +107,97 @@ impl SceneTree {
     }
 
     fn get_mut(&mut self, id: NodeId) -> Option<&mut Node> {
+        if self.ghosts.contains_key(&id) {
+            return self.ghosts.get_mut(&id);
+        }
+        self.live_mut(id)
+    }
+
+    fn live_mut(&mut self, id: NodeId) -> Option<&mut Node> {
         self.slots
             .get_mut(id.index as usize)?
             .as_mut()
             .filter(|n| n.id == id)
     }
 
+    /// A live node or a ghost.
     pub fn contains(&self, id: NodeId) -> bool {
         self.get(id).is_some()
+    }
+
+    /// A node logic can still address (not a ghost).
+    pub fn contains_live(&self, id: NodeId) -> bool {
+        self.get_live(id).is_some()
+    }
+
+    /// True if `id` is part of a subtree playing its exit pose.
+    pub fn is_ghost(&self, id: NodeId) -> bool {
+        self.ghosts.contains_key(&id)
+    }
+
+    /// Ghost nodes kept (tests).
+    pub fn ghost_count(&self) -> usize {
+        self.ghosts.len()
+    }
+
+    /// Turns the live subtree at `id` into a ghost: logic can no longer
+    /// address it (its ids are dead, their slots free for reuse), but it
+    /// keeps its place among its parent's children and is laid out and
+    /// drawn until [`SceneTree::drop_ghost`]. Nested surfaces in it go at
+    /// once.
+    pub fn ghost(&mut self, id: NodeId) -> Result<(), SceneError> {
+        if !self.contains_live(id) || self.get_live(id).is_some_and(|n| n.kind.is_surface()) {
+            return Err(SceneError::UnknownNode(id));
+        }
+        let mut stack = vec![id];
+        while let Some(n) = stack.pop() {
+            if let Some(node) = self.take(n) {
+                stack.extend(node.children.iter().copied());
+                self.surfaces.remove(&node.id);
+                self.ghosts.insert(node.id, node);
+            }
+        }
+        Ok(())
+    }
+
+    /// Unmounts a ghost subtree (its exit pose finished).
+    pub fn drop_ghost(&mut self, id: NodeId) {
+        let Some(ghost) = self.ghosts.get(&id) else {
+            return;
+        };
+        // Unlinked from the ghost's own parent: a live node may carry the
+        // same id (see `create`), and `get` would find that one.
+        let parent = ghost.parent;
+        let list = match parent {
+            Some(p) => match self.ghosts.get_mut(&p) {
+                Some(n) => Some(&mut n.children),
+                None => self.live_mut(p).map(|n| &mut n.children),
+            },
+            None => Some(&mut self.roots),
+        };
+        if let Some(list) = list {
+            list.retain(|c| *c != id);
+        }
+        let mut stack = vec![id];
+        while let Some(n) = stack.pop() {
+            if let Some(node) = self.take(n) {
+                stack.extend(node.children);
+            }
+        }
+    }
+
+    /// Takes a node (live or ghost) out of the tree, without detaching it
+    /// from its parent.
+    fn take(&mut self, id: NodeId) -> Option<Node> {
+        if let Some(n) = self.ghosts.remove(&id) {
+            return Some(n);
+        }
+        let slot = self.slots.get_mut(id.index as usize)?;
+        if slot.as_ref().is_none_or(|n| n.id != id) {
+            return None;
+        }
+        self.live -= 1;
+        slot.take()
     }
 
     /// The surface root `id` paints on: the nearest surface-kind node at
@@ -176,7 +269,7 @@ impl SceneTree {
                 value,
                 transition,
             } => {
-                let node = self.get_mut(id).ok_or(SceneError::UnknownNode(id))?;
+                let node = self.live_mut(id).ok_or(SceneError::UnknownNode(id))?;
                 let pos = node.props.iter().position(|e| e.prop == prop);
                 match (value, pos) {
                     (PropValue::Unset, Some(i)) => {
@@ -218,9 +311,15 @@ impl SceneTree {
             return Err(SceneError::DuplicateNode(id));
         }
         match parent {
-            Some(p) if !self.contains(p) => return Err(SceneError::UnknownNode(p)),
+            Some(p) if !self.contains_live(p) => return Err(SceneError::UnknownNode(p)),
             None if !kind.is_surface() => return Err(SceneError::MissingParent(id)),
             _ => {}
+        }
+        // A ghost under the same id (logic reused it while the exit
+        // played, e.g. a fresh allocator after a hard reset) is unmounted
+        // first: one id names one node.
+        if self.ghosts.contains_key(&id) {
+            self.drop_ghost(id);
         }
         if self.slots.len() <= i {
             self.slots.resize_with(i + 1, || None);
@@ -243,13 +342,32 @@ impl SceneTree {
 
     fn attach(&mut self, id: NodeId, parent: Option<NodeId>, index: u32) {
         let list = match parent {
-            Some(p) => match self.get_mut(p) {
+            Some(p) => match self
+                .slots
+                .get_mut(p.index as usize)
+                .and_then(Option::as_mut)
+                .filter(|n| n.id == p)
+            {
                 Some(n) => &mut n.children,
                 None => return,
             },
             None => &mut self.roots,
         };
-        let at = (index as usize).min(list.len());
+        // `index` counts the children logic knows: ghosts are skipped,
+        // so a node inserted where a ghost is goes after it.
+        let ghosts = &self.ghosts;
+        let mut live = 0usize;
+        let mut at = list.len();
+        for (i, c) in list.iter().enumerate() {
+            if ghosts.contains_key(c) {
+                continue;
+            }
+            if live == index as usize {
+                at = i;
+                break;
+            }
+            live += 1;
+        }
         list.insert(at, id);
     }
 
@@ -266,14 +384,13 @@ impl SceneTree {
     }
 
     fn remove(&mut self, id: NodeId) -> Result<(), SceneError> {
-        if !self.contains(id) {
+        if !self.contains_live(id) {
             return Err(SceneError::UnknownNode(id));
         }
         self.detach(id);
         let mut stack = vec![id];
         while let Some(n) = stack.pop() {
-            if let Some(node) = self.slots.get_mut(n.index as usize).and_then(Option::take) {
-                self.live -= 1;
+            if let Some(node) = self.take(n) {
                 self.surfaces.remove(&node.id);
                 stack.extend(node.children);
             }
@@ -287,10 +404,10 @@ impl SceneTree {
         parent: Option<NodeId>,
         index: u32,
     ) -> Result<(), SceneError> {
-        let kind = self.get(id).ok_or(SceneError::UnknownNode(id))?.kind;
+        let kind = self.get_live(id).ok_or(SceneError::UnknownNode(id))?.kind;
         match parent {
             Some(p) => {
-                if !self.contains(p) {
+                if !self.contains_live(p) {
                     return Err(SceneError::UnknownNode(p));
                 }
                 // Walk up from the new parent: finding `id` means a cycle.
@@ -333,6 +450,29 @@ mod tests {
             .create(id(3), NodeKind::Box, Some(id(1)), 0);
         assert!(t.apply(d).is_empty());
         t
+    }
+
+    /// A node created under the id of a ghost replaces it: one id names
+    /// one node, and the ghost leaves its parent's children.
+    #[test]
+    fn creating_over_a_ghost_id_unmounts_the_ghost() {
+        let mut t = base();
+        t.ghost(id(3)).unwrap();
+        assert!(t.is_ghost(id(3)));
+        assert_eq!(t.get(id(1)).unwrap().children, vec![id(3)]);
+        let mut d = SceneDiff::new();
+        d.create(id(3), NodeKind::Box, Some(id(0)), 0);
+        assert!(t.apply(d).is_empty());
+        assert!(!t.is_ghost(id(3)));
+        assert!(t.contains_live(id(3)));
+        assert_eq!(t.get(id(3)).unwrap().parent, Some(id(0)));
+        assert!(t.get(id(1)).unwrap().children.is_empty());
+        assert_eq!(t.get(id(0)).unwrap().children, vec![id(3), id(1), id(2)]);
+        // Unmounting a ghost unlinks it from its own parent only.
+        t.ghost(id(1)).unwrap();
+        t.drop_ghost(id(1));
+        assert_eq!(t.get(id(0)).unwrap().children, vec![id(3), id(2)]);
+        assert_eq!(t.ghost_count(), 0);
     }
 
     #[test]

@@ -517,6 +517,279 @@ fn strand_run_boots_the_hello_bar_on_every_output() {
     drop(strand);
 }
 
+/// The bar of design.md (theme + bar, unchanged) on the mock desktop,
+/// laid out by flex layout: workspace dots and the window title at the
+/// start, the clock truly centred on the output, the battery at the end;
+/// its shadow grows the layer surface past its box while the exclusive
+/// zone still reserves margin + height (8 + 36). Set `STRAND_SHOTS` to a
+/// directory to keep the screenshot.
+#[test]
+fn the_design_bar_is_laid_out_start_centre_end() {
+    let Some(sway) = Sway::start_as("design") else {
+        return;
+    };
+    let home = sway.dir.join("home");
+    let config = home.join(".config/strand");
+    std::fs::create_dir_all(&config).unwrap();
+    for (name, text) in [
+        (
+            "theme.strand",
+            include_str!("../../strand-compiler/tests/fixtures/theme.strand"),
+        ),
+        (
+            "bar.strand",
+            include_str!("../../strand-compiler/tests/fixtures/bar.strand"),
+        ),
+    ] {
+        std::fs::write(config.join(name), text).unwrap();
+    }
+    let log = sway.dir.join("strand.log");
+    let child = Command::new(env!("CARGO_BIN_EXE_strand"))
+        .arg("run")
+        .arg(&config)
+        .env("HOME", &home)
+        .env("XDG_RUNTIME_DIR", &sway.dir)
+        .env("XDG_CACHE_HOME", sway.dir.join("cache"))
+        .env("XDG_STATE_HOME", sway.dir.join("state"))
+        .env("WAYLAND_DISPLAY", &sway.display)
+        .env("STRAND_MOCK", "desktop")
+        .env("STRAND_MOCK_SCREEN", "HEADLESS-1")
+        .env("STRAND_LOG", "damage")
+        .stdin(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .spawn()
+        .unwrap();
+    let mut strand = Proc(child);
+    // `shadow: $elevation.md` (0 2px 8px) reaches 13 px: 11 above the
+    // box, 15 below, 13 each side; the margins move out by as much.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !damage_lines(&log)
+        .iter()
+        .any(|l| l.contains("buffer=2570x62 "))
+    {
+        assert!(
+            strand.0.try_wait().unwrap().is_none(),
+            "strand exited: {}",
+            std::fs::read_to_string(&log).unwrap_or_default()
+        );
+        assert!(
+            Instant::now() < deadline,
+            "no 2570x62 bar: {}",
+            std::fs::read_to_string(&log).unwrap_or_default()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    std::thread::sleep(Duration::from_millis(700));
+    // The exclusive zone: windows start below margin + height.
+    let ws = sway.msg(&["-t", "get_workspaces"]).unwrap();
+    let ws: serde_json::Value = serde_json::from_str(&ws).unwrap();
+    assert_eq!(ws[0]["rect"]["y"], 44, "{ws}");
+    let shot = Shot::take(&sway, "HEADLESS-1");
+    if let Some(dir) = std::env::var_os("STRAND_SHOTS") {
+        sway.grim(
+            &["-g", "0,0 2560x70"],
+            &PathBuf::from(dir).join("design_bar.png"),
+        );
+    }
+    // Text and dots are dark on the light bar (the mock has no portal:
+    // light scheme).
+    // Inside the bar's box (8..2552 × 8..44), clear of its rounded ends.
+    let dark =
+        |x: usize| (14..38).any(|y| shot.px(x, y).iter().map(|c| *c as u32).sum::<u32>() < 300);
+    let cols: Vec<usize> = (16..shot.w - 16).filter(|&x| dark(x)).collect();
+    assert!(!cols.is_empty(), "nothing drawn on the bar");
+    // The clock: the dark run nearest the output's centre.
+    let mid = shot.w / 2;
+    let (mut l, mut r) = (mid, mid);
+    while l > 0 && (l - 60..l).any(&dark) {
+        l -= 1;
+    }
+    while r < shot.w - 1 && (r..r + 60).any(&dark) {
+        r += 1;
+    }
+    let centre = (l + r) as f64 / 2.0;
+    assert!(
+        (centre - mid as f64).abs() <= 3.0 && r - l > 40,
+        "clock ink {l}..{r} is not centred on {mid}"
+    );
+    // Start: the dots and title begin at margin + pad (8 + 12); end: the
+    // battery text ends before the tray icon (16 px, after a 12 px gap;
+    // icons are not drawn yet), margin and pad: 2560 - 8 - 12 - 28.
+    let first = cols[0];
+    let last = *cols.last().unwrap();
+    assert!((18..40).contains(&first), "start ink at {first}");
+    assert!(
+        (shot.w - 60..=shot.w - 48).contains(&last),
+        "end ink at {last}"
+    );
+    // Nothing between the title and the clock, or the clock and the end.
+    assert!(!(700..l - 1).any(&dark), "ink between start and centre");
+    assert!(!(r + 1..1950).any(&dark), "ink between centre and end");
+    let errors: Vec<String> = std::fs::read_to_string(&log)
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.contains("ERROR") || l.contains("WARN"))
+        .map(String::from)
+        .collect();
+    assert!(errors.is_empty(), "{errors:?}");
+    drop(strand);
+}
+
+/// The four design shells booted together (theme, bar, launcher, toasts
+/// and OSD, unchanged but for the launcher starting open) on the mock
+/// desktop: every surface paints at one size (no frame at an estimated
+/// size first, however the surfaces' text and configures interleave),
+/// the launcher's box is centred in the usable area below the bar
+/// although its shadow reaches further down than up, a click inside it
+/// keeps it open and a click on the bar (outside the usable area its
+/// click-away catcher covers) closes it.
+#[test]
+fn the_design_launcher_is_centred_and_closes_on_click_away() {
+    let Some(sway) = Sway::start_as("launcher") else {
+        return;
+    };
+    let home = sway.dir.join("home");
+    let config = home.join(".config/strand");
+    std::fs::create_dir_all(&config).unwrap();
+    let launcher = include_str!("../../strand-compiler/tests/fixtures/launcher.strand")
+        .replace("export state open = false", "export state open = true");
+    for (name, text) in [
+        (
+            "theme.strand",
+            include_str!("../../strand-compiler/tests/fixtures/theme.strand").to_string(),
+        ),
+        (
+            "bar.strand",
+            include_str!("../../strand-compiler/tests/fixtures/bar.strand").to_string(),
+        ),
+        ("launcher.strand", launcher),
+        (
+            "toasts.strand",
+            include_str!("../../strand-compiler/tests/fixtures/toasts.strand").to_string(),
+        ),
+        (
+            "osd.strand",
+            include_str!("../../strand-compiler/tests/fixtures/osd.strand").to_string(),
+        ),
+    ] {
+        std::fs::write(config.join(name), text).unwrap();
+    }
+    let log = sway.dir.join("strand.log");
+    let child = Command::new(env!("CARGO_BIN_EXE_strand"))
+        .arg("run")
+        .arg(&config)
+        .env("HOME", &home)
+        .env("XDG_RUNTIME_DIR", &sway.dir)
+        .env("XDG_CACHE_HOME", sway.dir.join("cache"))
+        .env("XDG_STATE_HOME", sway.dir.join("state"))
+        .env("WAYLAND_DISPLAY", &sway.display)
+        .env("STRAND_MOCK", "desktop")
+        .env("STRAND_MOCK_SCREEN", "HEADLESS-1")
+        .env("STRAND_LOG", "damage")
+        .stdin(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .spawn()
+        .unwrap();
+    let mut strand = Proc(child);
+    // Two surfaces painted: the bar and the launcher.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let surfaces = |log: &Path| -> std::collections::BTreeMap<String, Vec<String>> {
+        let mut m: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+        for l in damage_lines(log) {
+            let mut it = l.split_whitespace();
+            let s = it
+                .find(|w| w.starts_with("surface="))
+                .unwrap_or("")
+                .to_string();
+            let b = l
+                .split_whitespace()
+                .find(|w| w.starts_with("buffer="))
+                .unwrap_or("")
+                .to_string();
+            m.entry(s).or_default().push(b);
+        }
+        m
+    };
+    while surfaces(&log).len() < 3 {
+        assert!(
+            strand.0.try_wait().unwrap().is_none(),
+            "strand exited: {}",
+            std::fs::read_to_string(&log).unwrap_or_default()
+        );
+        assert!(
+            Instant::now() < deadline,
+            "no launcher: {}",
+            std::fs::read_to_string(&log).unwrap_or_default()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    std::thread::sleep(Duration::from_millis(700));
+    // Every frame of each surface at one buffer size: no frame at an
+    // estimated size before its text arrived.
+    for (s, sizes) in surfaces(&log) {
+        assert!(
+            sizes.iter().all(|b| *b == sizes[0]),
+            "{s} changed size: {sizes:?}"
+        );
+    }
+    let shot = Shot::take(&sway, "HEADLESS-1");
+    let bright = |x: usize, y: usize| shot.px(x, y).iter().map(|c| *c as u32).sum::<u32>() > 450;
+    // The launcher's box on a column clear of its text: its light rows
+    // below the bar.
+    let x = shot.w / 2 + 250;
+    let rows: Vec<usize> = (60..shot.h).filter(|&y| bright(x, y)).collect();
+    assert!(!rows.is_empty(), "no launcher drawn");
+    let (top, bottom) = (rows[0], *rows.last().unwrap());
+    // The usable area: below the bar's margin + height (8 + 36).
+    let ws = sway.msg(&["-t", "get_workspaces"]).unwrap();
+    let ws: serde_json::Value = serde_json::from_str(&ws).unwrap();
+    let (uy, uh) = (
+        ws[0]["rect"]["y"].as_f64().unwrap(),
+        ws[0]["rect"]["height"].as_f64().unwrap(),
+    );
+    let centre = (top + bottom + 1) as f64 / 2.0;
+    assert!(
+        (centre - (uy + uh / 2.0)).abs() <= 2.0,
+        "box {top}..{bottom} centred at {centre}, usable area {uy} + {uh}"
+    );
+    // A click inside keeps it open; one outside closes it.
+    let mut pointer = pointer::Pointer::new(&sway.dir.join(&sway.display));
+    let (w, h) = (shot.w as u32, shot.h as u32);
+    pointer.click(x as u32, ((top + bottom) / 2) as u32, w, h);
+    std::thread::sleep(Duration::from_millis(500));
+    let again = Shot::take(&sway, "HEADLESS-1");
+    assert!(
+        again
+            .px(x, (top + bottom) / 2)
+            .iter()
+            .map(|c| *c as u32)
+            .sum::<u32>()
+            > 450,
+        "a click inside closed it"
+    );
+    // On the bar, clear of its text (between the clock and the end).
+    pointer.click(w * 3 / 4, 26, w, h);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let after = Shot::take(&sway, "HEADLESS-1");
+        if after
+            .px(x, (top + bottom) / 2)
+            .iter()
+            .map(|c| *c as u32)
+            .sum::<u32>()
+            < 450
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "a click on the bar did not close it"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    drop(strand);
+}
+
 /// A virtual pointer on the sway seat (`zwlr_virtual_pointer_v1`): the
 /// headless seat has no pointer of its own.
 mod pointer {
@@ -911,10 +1184,10 @@ fn strand_run_reloads_live_with_state_kept() {
     assert_eq!(bg(&sway), [0x80, 0x20, 0x20]);
 
     // 3. A node added, then removed: more ink on the bar, then exactly
-    // as before. Until flex layout (M2) every text is placed by its own
-    // x/y, so all of them, the clock included, draw (in the default dark
-    // colour) at the bar's top left: start on a fresh minute so the clock
-    // does not tick between the shots, and keep away from the pointer.
+    // as before. The added `end` section lays out in the split's end
+    // column, at the bar's right end: start on a fresh minute so the
+    // clock does not tick between the shots, and keep away from the
+    // pointer.
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -923,7 +1196,7 @@ fn strand_run_reloads_live_with_state_kept() {
     if secs > 50 {
         std::thread::sleep(Duration::from_secs(61 - secs));
     }
-    let end_ink = |sway: &Sway| Shot::take(sway, "HEADLESS-1").ink(0..1600, 40);
+    let end_ink = |sway: &Sway| Shot::take(sway, "HEADLESS-1").ink(1900..2560, 40);
     let before = end_ink(&sway);
     let added = "    end { text \"added\" }\n";
     save(&file, &hello("#208040", "#802020", added));

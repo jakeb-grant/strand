@@ -213,6 +213,10 @@ pub(crate) struct Ctx {
     pub handover: RefCell<Vec<String>>,
     /// Runtime faults outlined in red: the node and the border it had.
     pub outlined: RefCell<HashMap<NodeId, Option<PropValue>>>,
+    /// Props naming a node not on the scene yet when they were bound
+    /// (`nav: results` above the `list { id: results }`): set at the end
+    /// of the tick, once everything is mounted.
+    pub late_nodes: RefCell<Vec<(NodeId, SceneProp, Rc<NodeState>)>>,
 }
 
 impl VmHooks for Ctx {
@@ -497,6 +501,7 @@ impl Ctx {
             carry: RefCell::default(),
             pending: RefCell::default(),
             parked: RefCell::default(),
+            late_nodes: RefCell::default(),
             handover: RefCell::default(),
             outlined: RefCell::default(),
         });
@@ -1115,7 +1120,78 @@ impl Instance {
         self.collect(tick)
     }
 
+    /// Tells render which elements' laid-out sizes bindings read
+    /// (`Prop::Watch`): it reports only those, and holds a frame for a
+    /// container query's answer. An element not on the scene yet is
+    /// told once it is.
+    fn emit_watched(&self) {
+        let watched = self.ctx.vm.take_watched();
+        if watched.is_empty() {
+            return;
+        }
+        let mut later = Vec::new();
+        let mut em = self.ctx.em.borrow_mut();
+        let mut seen = std::collections::HashSet::new();
+        for state in watched {
+            if !seen.insert(Rc::as_ptr(&state)) {
+                continue;
+            }
+            let Some(id) = state.scene.get() else {
+                // Kept while something else still holds it.
+                if Rc::strong_count(&state) > 1 {
+                    later.push(state);
+                }
+                continue;
+            };
+            let ours = em
+                .nodes
+                .get(&id)
+                .is_some_and(|e| Rc::ptr_eq(&e.state, &state));
+            if !ours {
+                continue;
+            }
+            let kw = if state.watch.get() & NodeState::WATCH_QUERY != 0 {
+                "query"
+            } else {
+                "size"
+            };
+            em.set(
+                id,
+                SceneProp::Watch,
+                PropValue::Keyword(kw.into()),
+                Transition::Instant,
+            );
+        }
+        drop(em);
+        for s in later {
+            self.ctx.vm.watch(&s, 0);
+        }
+    }
+
     fn collect(&self, tick: strand_core::Tick) -> Update {
+        // Props naming a node not on the scene when bound (`nav:
+        // results`): set once it is, which may be ticks later (inside an
+        // `if` that turns true). Kept while the naming node lives and its
+        // prop is still unset.
+        let late: Vec<_> = self.ctx.late_nodes.borrow_mut().drain(..).collect();
+        let mut waiting = Vec::new();
+        for (id, prop, state) in late {
+            let mut em = self.ctx.em.borrow_mut();
+            let unset = em
+                .sent
+                .get(&id)
+                .and_then(|p| p.get(&prop))
+                .is_none_or(|v| *v == PropValue::Unset);
+            if !em.nodes.contains_key(&id) || !unset {
+                continue;
+            }
+            match state.scene.get() {
+                Some(target) => em.set(id, prop, PropValue::Node(target), Transition::Default),
+                None if Rc::strong_count(&state) > 1 => waiting.push((id, prop, state)),
+                None => {}
+            }
+        }
+        self.ctx.late_nodes.borrow_mut().extend(waiting);
         let mut new_tokens = None;
         for id in &tick.changed {
             if self.tokens.is_some_and(|t| t.id() == *id) {
@@ -1124,6 +1200,7 @@ impl Instance {
             }
             self.emit_binding(*id);
         }
+        self.emit_watched();
         let mut ops = std::mem::take(&mut self.ctx.em.borrow_mut().ops);
         if let Some(table) = new_tokens {
             ops.push(SceneOp::SetTokens {
@@ -1142,7 +1219,10 @@ impl Instance {
         }
         self.ctx.vm.clear_faults();
         Update {
-            diff: SceneDiff { ops },
+            diff: SceneDiff {
+                ops,
+                layout_seen: None,
+            },
             errors,
             diagnostics: tick.diagnostics,
             notices: self.ctx.notices.borrow_mut().drain(..).collect(),
@@ -1250,6 +1330,7 @@ impl Instance {
             .get(&node)
             .map(|e| e.state.clone());
         if let Some(s) = state {
+            s.laid_out.set(true);
             let _ = s.width.set(&self.rt, Value::float(width as f64));
             let _ = s.height.set(&self.rt, Value::float(height as f64));
         }

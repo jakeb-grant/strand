@@ -9,7 +9,7 @@ use strand_scene::{BinOp, Color, Oklch, TokenExpr, TokenMethod};
 
 use super::Vm;
 use super::exec::{Args, EventCtx};
-use super::value::{AsyncValue, CallValue, Num, PendingOp, Value};
+use super::value::{AsyncValue, CallValue, NodeState, Num, PendingOp, Value};
 use crate::hir::{BinaryOp, UnaryOp};
 use crate::ty::{Prim, Ty, TypeTable};
 
@@ -69,6 +69,86 @@ fn default_depth(types: &TypeTable, ty: &Ty, depth: u32) -> Value {
 }
 
 // ---------------------------------------------------------------------------
+// Layout queries
+
+/// What a `when` condition read while [`layout_query`] ran it.
+#[derive(Copy, Clone, Debug, Default)]
+struct QueryState {
+    /// The offset added to every laid-out size it reads.
+    bias: f64,
+    /// It read a laid-out size.
+    read: bool,
+    /// One of them was a boot value: its node not laid out yet.
+    boot_value: bool,
+    /// A condition is being evaluated at all.
+    active: bool,
+}
+
+thread_local! {
+    static QUERY: std::cell::Cell<QueryState> = const {
+        std::cell::Cell::new(QueryState {
+            bias: 0.0,
+            read: false,
+            boot_value: false,
+            active: false,
+        })
+    };
+}
+
+/// What a `when` condition read of laid-out sizes.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct QueryRead {
+    /// It read one: it is a container query.
+    pub read: bool,
+    /// One it read is still its boot value (no layout fact yet).
+    pub boot_value: bool,
+}
+
+/// Runs `f` with every `width`/`height` of a node it reads moved by
+/// `bias` logical pixels; returns its result and what it read. This is
+/// how container queries get their hysteresis.
+pub(crate) fn layout_query<R>(bias: f64, f: impl FnOnce() -> R) -> (R, QueryRead) {
+    let outer = QUERY.with(|q| {
+        q.replace(QueryState {
+            bias,
+            active: true,
+            ..QueryState::default()
+        })
+    });
+    let r = f();
+    let st = QUERY.with(|q| q.replace(outer));
+    (
+        r,
+        QueryRead {
+            read: st.read,
+            boot_value: st.boot_value,
+        },
+    )
+}
+
+fn laid_out(vm: &Vm, n: &Rc<NodeState>, v: Value) -> Value {
+    let (bias, in_query) = QUERY.with(|q| {
+        let mut st = q.get();
+        st.read = true;
+        st.boot_value |= !n.laid_out.get();
+        q.set(st);
+        (st.bias, st.active)
+    });
+    vm.watch(
+        n,
+        if in_query {
+            NodeState::WATCH_QUERY
+        } else {
+            NodeState::WATCH_SIZE
+        },
+    );
+    match v.as_f64() {
+        Some(x) if bias != 0.0 => Value::float(x + bias),
+        _ => v,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Fields
 
 pub(crate) fn field(vm: &Rc<Vm>, rt: &Runtime, base: &Value, name: &str) -> Result<Value, Error> {
@@ -87,8 +167,8 @@ pub(crate) fn field(vm: &Rc<Vm>, rt: &Runtime, base: &Value, name: &str) -> Resu
             "pressed" => Value::Bool(n.pressed.get(rt)?),
             "focused" => Value::Bool(n.focused.get(rt)?),
             "selected" => Value::Bool(n.selected.get(rt)?),
-            "width" => n.width.get(rt)?,
-            "height" => n.height.get(rt)?,
+            "width" => laid_out(vm, n, n.width.get(rt)?),
+            "height" => laid_out(vm, n, n.height.get(rt)?),
             _ => Value::Null,
         },
         Value::List(items) => list_field(items, name),

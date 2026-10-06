@@ -92,6 +92,28 @@ pub struct SurfaceSpec {
     pub open: bool,
     /// `attach: top`: concave fillets towards that edge (M4).
     pub attach: Option<Edge>,
+    /// How far painting reaches past the surface's own box on each side
+    /// (shadows), in logical pixels. Render fills it in from layout; the
+    /// surface manager grows the buffer by it and shifts the margins, so
+    /// the box stays where `margin` puts it, while the exclusive zone and
+    /// the input region stay the box's (design.md: shadows enlarge the
+    /// buffer but not the input region).
+    pub overhang: Insets,
+    /// `open` is bound two-way (`open: <-> x`, from [`Prop::TwoWay`]):
+    /// Escape, a click away and focus loss write it `false`. A
+    /// `keyboard: exclusive` layer surface with it gets a transparent
+    /// catcher under it while open, so a click outside closes it.
+    pub open_two_way: bool,
+}
+
+/// True if a [`Prop::TwoWay`] value names `prop`.
+pub fn is_two_way(two_way: Option<&PropValue>, prop: Prop) -> bool {
+    match two_way {
+        Some(PropValue::List(items)) => items
+            .iter()
+            .any(|v| matches!(v, PropValue::Keyword(k) if k == prop.name())),
+        _ => false,
+    }
 }
 
 impl SurfaceSpec {
@@ -170,6 +192,8 @@ impl SurfaceSpec {
                 Some(PropValue::Bool(false))
             ),
             attach: keyword(Prop::Attach).and_then(|k| Edge::from_name(&k)),
+            overhang: Insets::default(),
+            open_two_way: is_two_way(get(Prop::TwoWay).as_ref().map(AsRef::as_ref), Prop::Open),
         }
     }
 

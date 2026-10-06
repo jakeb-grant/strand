@@ -101,6 +101,18 @@ pub enum NodeEvent {
     /// A scroll in logical pixels, positive down and right
     /// (`on scroll(dy, dx)`).
     Scroll { dy: f64, dx: f64 },
+    /// A middle click (`on middle`).
+    Middle,
+    /// A list row chosen with Enter (`on activate`).
+    Activate,
+    /// A key pressed while the node has focus (`on key(k)`).
+    Key {
+        name: String,
+        text: String,
+        modifiers: strand_scene::Modifiers,
+    },
+    /// Escape or a click away closed a popup (`on dismiss`).
+    Dismiss,
 }
 
 impl NodeEvent {
@@ -110,14 +122,41 @@ impl NodeEvent {
             NodeEvent::Click => "click",
             NodeEvent::Secondary => "secondary",
             NodeEvent::Scroll { .. } => "scroll",
+            NodeEvent::Middle => "middle",
+            NodeEvent::Activate => "activate",
+            NodeEvent::Key { .. } => "key",
+            NodeEvent::Dismiss => "dismiss",
         }
     }
 
-    /// The handler's arguments.
+    /// The handler's arguments (`Key` records are made by the service
+    /// host: [`NodeEvent::args_with`]).
     pub fn args(&self) -> Vec<Value> {
         match self {
-            NodeEvent::Click | NodeEvent::Secondary => Vec::new(),
             NodeEvent::Scroll { dy, dx } => vec![Value::float(*dy), Value::float(*dx)],
+            _ => Vec::new(),
+        }
+    }
+
+    /// The handler's arguments, a `Key` record made by `host`.
+    pub fn args_with(&self, host: &SchemaHost) -> Vec<Value> {
+        match self {
+            NodeEvent::Key {
+                name,
+                text,
+                modifiers: m,
+            } => vec![host.record(
+                "Key",
+                &[
+                    ("name", Value::text(name.as_str())),
+                    ("text", Value::text(text.as_str())),
+                    ("ctrl", Value::Bool(m.ctrl)),
+                    ("shift", Value::Bool(m.shift)),
+                    ("alt", Value::Bool(m.alt)),
+                    ("logo", Value::Bool(m.logo)),
+                ],
+            )],
+            e => e.args(),
         }
     }
 }
@@ -144,6 +183,22 @@ pub enum ToLogic {
         node: NodeId,
         width: f32,
         height: f32,
+    },
+    /// Laid-out sizes that changed (`self.width`, container queries):
+    /// `(node, width, height)` in logical pixels, as fact batch `seq`
+    /// (`Renderer::layout_seq`); the next diff echoes it as
+    /// `SceneDiff::layout_seen`, even with no ops, which releases a frame
+    /// render held for a container query's answer.
+    Layout {
+        seq: u64,
+        sizes: Vec<(NodeId, f32, f32)>,
+    },
+    /// A widget or the surface wrote a two-way prop: an `input`'s
+    /// `text`, a surface's `open` (Escape, click-away, focus loss).
+    Write {
+        node: NodeId,
+        prop: strand_scene::Prop,
+        value: strand_scene::PropValue,
     },
     /// The run is over (a signal, the compositor gone): unmount, flush
     /// what is kept and end.
@@ -420,6 +475,8 @@ struct Shell {
     /// Settings files (and their runtime overlays) read again since the
     /// last step, as notices name them.
     settings_reread: Vec<String>,
+    /// The last layout fact batch taken in since the last diff went out.
+    layout_seen: Option<u64>,
 }
 
 impl Shell {
@@ -449,7 +506,18 @@ impl Shell {
                     }
                     return;
                 }
-                inst.event(node, event.name(), event.args());
+                inst.event(node, event.name(), event.args_with(&self.host));
+            }
+            ToLogic::Layout { seq, sizes } => {
+                for (node, w, h) in sizes {
+                    inst.set_size(node, w, h);
+                }
+                self.layout_seen = Some(seq);
+            }
+            ToLogic::Write { node, prop, value } => {
+                if let Err(e) = inst.write(node, prop, value) {
+                    log::debug!("write to {prop}: {e}");
+                }
             }
             ToLogic::Flag { node, flag, on } => inst.set_flag(node, flag, on),
             ToLogic::Size {
@@ -962,6 +1030,9 @@ pub fn logic(
     };
     let build = boot.build.clone().unwrap_or_else(Build::empty);
     let host = Rc::new(SchemaHost::real(&rt, &host_types));
+    if let Some(screen) = crate::mock::requested() {
+        crate::mock::desktop(&rt, &host, &screen);
+    }
     // Monitors the main thread already knows about.
     let mut inbox = Inbox::default();
     sleeper
@@ -1035,6 +1106,7 @@ pub fn logic(
         watched: Vec::new(),
         unheard: Vec::new(),
         settings_reread: Vec::new(),
+        layout_seen: None,
     };
     shell.overlay.set_running(boot.build.is_some());
     // The boot's diagnostics: a config broken at boot runs its last good
@@ -1055,7 +1127,8 @@ pub fn logic(
         }
         let wall = SystemTime::now();
         let (mut update, wake) = shell.inst.step(start.elapsed(), wall);
-        let diff = std::mem::take(&mut update.diff);
+        let mut diff = std::mem::take(&mut update.diff);
+        diff.layout_seen = shell.layout_seen.take();
         if !diff.is_empty() && out.send(diff).is_err() {
             break;
         }
@@ -1210,20 +1283,20 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
         portal: Some(strand_watch::Bus::Session),
     };
     let (ping, ping_source) = calloop::ping::make_ping()?;
+    let wake = ping.clone();
     let worker =
         TextWorker::spawn_with_waker(FontConfig::default(), Some(Box::new(move || ping.ping())))
             .map_err(DemoError::Text)?;
     let mut renderer = Renderer::new(TextBackend::Worker(worker));
     renderer.set_first_frame_wait(FIRST_FRAME_TEXT_WAIT);
     let (to_logic, from_main) = calloop::channel::channel::<ToLogic>();
-    let host = Host::new(renderer, log.damage).forwarding(to_logic.clone());
+    let host = Host::new(renderer, log.damage)
+        .forwarding(to_logic.clone())
+        .waking(wake);
     let mut mgr = SurfaceManager::connect(host, Config::default())?;
     let handle = mgr.loop_handle();
     handle
-        .insert_source(ping_source, |_, _, state| {
-            state.host_mut().renderer.update();
-            state.poll();
-        })
+        .insert_source(ping_source, |_, _, state| crate::demo::text_ready(state))
         .map_err(|e| DemoError::Io(io::Error::other(e.error)))?;
     let signalled = Rc::new(Cell::new(false));
     let flag = Rc::clone(&signalled);
@@ -1458,6 +1531,21 @@ pub(crate) mod tests {
             s.prop(a, Prop::Opacity) == Some(&PropValue::Number(0.5))
                 && s.prop(a, Prop::Height) == Some(&PropValue::Number(40.0))
         });
+        // Layout facts are answered with their batch number, even when
+        // they change nothing (render holds a query's frame for it).
+        send(ToLogic::Layout {
+            seq: 7,
+            sizes: vec![(a, 1920.0, 40.0)],
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let diff = m.inbox.recv_timeout(left).expect("an answer to the facts");
+            m.apply("facts", &diff);
+            if diff.layout_seen == Some(7) {
+                break;
+            }
+        }
         send(ToLogic::Flag {
             node: a,
             flag: NodeFlag::Pressed,

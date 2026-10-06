@@ -1429,7 +1429,7 @@ fn every_snippet_mounts() {
     insta::assert_snapshot!("every_snippet", shell.scene.render());
     let rendered = shell.scene.render();
     for expected in [
-        "segmented value=auto options=[auto, light, dark, wallpaper, mocha]",
+        "segmented two_way=[value] value=auto options=[auto, light, dark, wallpaper, mocha]",
         "glow=[12, $accent.alpha(0.6)]",
         "mask=radial(center, 40%)",
         "stagger=30ms",
@@ -2087,6 +2087,49 @@ fn one_item_change_reruns_one_item() {
     assert_eq!(u.diff.ops.len(), 1, "{:?}", u.diff);
     assert!(runs < 20, "{runs} computations for one changed item");
     assert!(shell.scene.find_text("changed").is_some());
+}
+
+/// A 2,000-row `list` mounts every row on the logic side: render lays
+/// out only the rows in view, and mounting stays eager until M4
+/// (decisions.md, wave3-pixels). The cost that keeps that viable: a
+/// mount of 2,000 rows with a `when hover` each, and one changed row
+/// re-running only its own bindings and sending one op.
+#[test]
+fn a_2000_row_list_mounts_eagerly_and_updates_one_row() {
+    let mut src = String::from("type Row { id: int; label: text }\nstate rows: [Row] key id = [");
+    for i in 0..2000 {
+        src.push_str(&format!("Row(id: {i}, label: \"r{i}\"), "));
+    }
+    src.push_str(
+        "]\nbar B { list { max_height: 420\n for r in rows { row { when hover { opacity: 0.5 }\n text r.label } } } }\n",
+    );
+    let t = std::time::Instant::now();
+    let mut shell = boot(&[("t.strand", &src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let mounted = t.elapsed();
+    assert_eq!(shell.scene.of_kind(NodeKind::Row).len(), 2000);
+    eprintln!("mounted 2,000 list rows in {mounted:?}");
+    let before = shell.rt.stats().computations;
+    let row = shell.inst.vm().types().find_record("Row").expect("Row");
+    let rows: Vec<Value> = (0..2000)
+        .map(|i| {
+            let label = if i == 1500 {
+                "changed".to_string()
+            } else {
+                format!("r{i}")
+            };
+            Value::record(row, vec![Value::int(i), Value::text(label)])
+        })
+        .collect();
+    shell
+        .inst
+        .set_value("t", "rows", Value::list(rows))
+        .unwrap();
+    let u = shell.flush();
+    let runs = shell.rt.stats().computations - before;
+    assert_eq!(u.diff.ops.len(), 1, "{:?}", u.diff);
+    assert!(runs < 20, "{runs} computations for one changed row");
 }
 
 /// A fault in a file's top-level handler is located but freezes
@@ -2790,4 +2833,169 @@ fn input_handlers_and_two_way_writes_at_60_hz_are_not_throttled() {
             assert!(seen_lagged, "the `on change` writer was not throttled");
         }
     }
+}
+
+/// A container query (`when self.width < 300`) follows the laid-out size
+/// render reports, with 4 px hysteresis: once it holds it keeps holding
+/// until the width is 4 px past the threshold, so it cannot flicker.
+#[test]
+fn container_queries_have_hysteresis() {
+    let src = "bar Top {\n  height: 30\n  row {\n    opacity: 1\n    when self.width < 300 { opacity: 0.5 }\n  }\n}\n";
+    let mut shell = boot(&[("q.strand", src)], |rt, host| {
+        let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+        host.set(rt, "screens.all", Value::list(vec![screen]))
+            .unwrap();
+    });
+    let row = shell.scene.of_kind(NodeKind::Row)[0];
+    let opacity = |shell: &Shell| match shell.scene.prop(row, Prop::Opacity) {
+        Some(PropValue::Number(n)) => *n,
+        p => panic!("{p:?}"),
+    };
+    let at = |shell: &mut Shell, w: f32| {
+        shell.inst.set_size(row, w, 30.0);
+        shell.flush();
+        opacity(shell)
+    };
+    assert_eq!(at(&mut shell, 400.0), 1.0);
+    assert_eq!(at(&mut shell, 299.0), 0.5, "below the threshold");
+    assert_eq!(at(&mut shell, 301.0), 0.5, "held within 4 px");
+    assert_eq!(at(&mut shell, 303.0), 0.5, "held within 4 px");
+    assert_eq!(at(&mut shell, 304.0), 1.0, "4 px past: released");
+    assert_eq!(
+        at(&mut shell, 301.0),
+        1.0,
+        "not on again above the threshold"
+    );
+    assert_eq!(at(&mut shell, 299.5), 0.5);
+}
+
+/// The boot value of `self.width` (0, before any layout) seeds no
+/// hysteresis: a container whose first layout is 302 px wide shows the
+/// wide variant, as one that grew to 302 px does.
+#[test]
+fn a_query_first_laid_out_inside_the_band_takes_the_wide_variant() {
+    let src = "bar Top {\n  height: 30\n  row {\n    opacity: 1\n    when self.width < 300 { opacity: 0.5 }\n  }\n}\n";
+    let mut shell = boot(&[("q.strand", src)], |rt, host| {
+        let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+        host.set(rt, "screens.all", Value::list(vec![screen]))
+            .unwrap();
+    });
+    let row = shell.scene.of_kind(NodeKind::Row)[0];
+    shell.inst.set_size(row, 302.0, 30.0);
+    shell.flush();
+    assert_eq!(
+        shell.scene.prop(row, Prop::Opacity),
+        Some(&PropValue::Number(1.0))
+    );
+}
+
+/// Render is told which nodes' sizes logic reads (`watch`): `query` for a
+/// container query, `size` for any other binding; nodes nobody measures
+/// carry nothing, so their size changes never wake logic.
+#[test]
+fn only_measured_nodes_are_watched() {
+    let src = "bar Top {\n  height: 30\n  row {\n    when self.width < 300 { opacity: 0.5 }\n    box { id: b }\n    text \"w\"\n  }\n  text b.width > 10 ? \"wide\" : \"narrow\"\n}\n";
+    let shell = boot(&[("w.strand", src)], |rt, host| {
+        let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+        host.set(rt, "screens.all", Value::list(vec![screen]))
+            .unwrap();
+    });
+    let row = shell.scene.of_kind(NodeKind::Row)[0];
+    let b = shell.scene.of_kind(NodeKind::Box)[0];
+    let bar = shell.scene.of_kind(NodeKind::Bar)[0];
+    let kw = |k: &str| Some(PropValue::Keyword(k.into()));
+    assert_eq!(shell.scene.prop(row, Prop::Watch).cloned(), kw("query"));
+    assert_eq!(shell.scene.prop(b, Prop::Watch).cloned(), kw("size"));
+    assert_eq!(shell.scene.prop(bar, Prop::Watch), None);
+    for t in shell.scene.of_kind(NodeKind::Text) {
+        assert_eq!(shell.scene.prop(t, Prop::Watch), None);
+    }
+}
+
+/// `nav: results` names a list mounted after the input: render gets the
+/// list's node once everything is mounted.
+#[test]
+fn nav_names_the_list_node() {
+    let files = [fixture("launcher.strand")];
+    let mut shell = boot(&refs(&files), desktop);
+    shell.inst.set("launcher.open", Value::Bool(true)).unwrap();
+    shell.flush();
+    let input = shell.scene.of_kind(NodeKind::Input)[0];
+    let list = shell.scene.of_kind(NodeKind::List)[0];
+    assert_eq!(
+        shell.scene.prop(input, Prop::Nav),
+        Some(&PropValue::Node(list))
+    );
+}
+
+/// Two-way props are marked for render and input (`two_way`): the
+/// launcher's `open: <-> open` (Escape and click-away close it) and its
+/// input's `text: <-> query`; its spec says `open` is two-way.
+#[test]
+fn two_way_props_are_marked() {
+    let files = [fixture("launcher.strand")];
+    let mut shell = boot(&refs(&files), desktop);
+    shell.inst.set("launcher.open", Value::Bool(true)).unwrap();
+    shell.flush();
+    let panel = shell.scene.of_kind(NodeKind::Panel)[0];
+    let input = shell.scene.of_kind(NodeKind::Input)[0];
+    let kw = |k: &str| PropValue::List(vec![PropValue::Keyword(k.into())]);
+    assert_eq!(shell.scene.prop(panel, Prop::TwoWay), Some(&kw("open")));
+    assert_eq!(shell.scene.prop(input, Prop::TwoWay), Some(&kw("text")));
+    let spec = strand_scene::SurfaceSpec::resolve(NodeKind::Panel, |p| {
+        shell.scene.prop(panel, p).cloned()
+    });
+    assert!(spec.open_two_way);
+}
+
+/// `nav:` names a list that mounts ticks later (inside an `if` that
+/// turns true): render gets it once it is on the scene.
+#[test]
+fn nav_names_a_list_mounted_later() {
+    let src = "state show = false\npanel P {\n  width: 200\n  height: 100\n  col {\n    input { nav: results }\n    if show {\n      list { id: results\n        text \"a\" }\n    }\n  }\n}\n";
+    let mut shell = boot(&[("n.strand", src)], |rt, host| {
+        let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+        host.set(rt, "screens.all", Value::list(vec![screen]))
+            .unwrap();
+    });
+    let input = shell.scene.of_kind(NodeKind::Input)[0];
+    assert_eq!(shell.scene.prop(input, Prop::Nav), None);
+    shell.flush();
+    shell
+        .inst
+        .set_value("n", "show", Value::Bool(true))
+        .unwrap();
+    shell.flush();
+    let list = shell.scene.of_kind(NodeKind::List)[0];
+    assert_eq!(
+        shell.scene.prop(input, Prop::Nav),
+        Some(&PropValue::Node(list))
+    );
+}
+
+/// Typing into the launcher's `input` is a two-way write of its `text`;
+/// `open: <-> open` takes the `false` Escape writes.
+#[test]
+fn input_and_open_take_widget_writes() {
+    let files = [fixture("launcher.strand")];
+    let mut shell = boot(&refs(&files), desktop);
+    shell.inst.set("launcher.open", Value::Bool(true)).unwrap();
+    shell.flush();
+    let input = shell.scene.of_kind(NodeKind::Input)[0];
+    shell
+        .inst
+        .write(input, Prop::Text, PropValue::Text("fi".into()))
+        .unwrap();
+    shell.flush();
+    assert_eq!(
+        shell.scene.prop(input, Prop::Text),
+        Some(&PropValue::Text("fi".into()))
+    );
+    let panel = shell.scene.of_kind(NodeKind::Panel)[0];
+    shell
+        .inst
+        .write(panel, Prop::Open, PropValue::Bool(false))
+        .unwrap();
+    shell.flush();
+    assert_eq!(shell.inst.get("launcher.open").unwrap(), Value::Bool(false));
 }

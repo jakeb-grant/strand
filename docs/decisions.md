@@ -4272,3 +4272,584 @@ palette writer and the last palette carry over, and nothing waits in a
 `DROP_WAIT` (1 s) so the last palette lands. The hard-reload test now
 asserts the host is the same
 (`crates/strand-compiler/tests/reload.rs::a_hard_reload_drops_state_and_recreates_surfaces`).
+
+## wave3-pixels
+
+**2026-10-06 · wave3-pixels: container defaults.** design.md names the
+containers but not their default alignment. `row`, `start`, `center` and
+`end` centre their children on the cross axis (the bar's dots, title and
+clock sit on the bar's midline without `align`; writing `align: center`,
+as the launcher and OSD rows do, changes nothing); `col` and `scroll`
+stretch them across (a toast's texts start at its left edge and wrap at
+its width); `stack`, `box`, surface roots and every other container put
+each child in one cell, stretched where its size is auto (CSS grid), so
+`bar Top { split {…} }` fills the bar. `grid { columns: n }` is n
+auto-sized columns packed at the start (the calendar's 28 px cells do not
+spread over a wider popup). `split` is a grid of `minmax(0, 1fr) auto
+minmax(0, 1fr)` with `start`, `center`, `end` in their own column, so the
+centre is truly centred whatever the sides hold; its sections pack to
+their own side. A `split` in a `left`/`right` bar runs down the bar.
+`spacer` grows (flex-basis 0). A `scroll`'s children do not shrink (they
+scroll instead). Rationale: the four example shells render as their
+authors evidently meant with no props added, which removes a concept.
+
+**2026-10-06 · wave3-pixels: `shrink` and `justify`.** The spec of this
+track lists them as flex props; design.md says "Flex props plus
+`min_*`/`max_*`" without listing them. They are added to the `node` group
+(`shrink: float`, default 1 as CSS; `justify: start | center | end |
+space_between | space_around | space_evenly`, the main-axis distribution)
+and to `Prop`, since without them a row cannot spread or pin its
+children, and `spacer` alone cannot express `space_between`.
+
+**2026-10-06 · wave3-pixels: `x`/`y` stay paint-only, also with `place:
+absolute`.** An absolute child is laid out at its parent's content
+corner and `x`/`y` offset it like any other node (the offset moves its
+subtree), so `enter { x: 420 }` and absolute placement share one meaning
+and moving an absolute node never relayouts. A percentage `x`/`y` is of
+the parent's box (as CSS insets), not the node's own.
+
+**2026-10-06 · wave3-pixels: text in its box.** Text is shaped once
+without a width bound (one layout per node and scale, as the M0
+architecture note planned) and placed in its laid-out box by `align`; only
+a box narrower than that layout asks for one shaped for the box width
+(wrapped, or cut by `ellipsis`), keyed by the whole-pixel width. `align:
+center` on a text also centres it vertically in a taller box (a 28×28
+calendar cell); other texts sit at the top. Text with `ellipsis` or
+`max_lines` may be narrower than its text (min-content 0); plain text's
+minimum is its longest word, as in CSS (fixer round 2: it used to be the
+whole text, which let a long text widen a growing column, and the stack
+cell around it, past the surface). Without per-glyph clusters from
+strand-text, the longest word is taken as its share of the natural width
+(characters of the longest word over all characters). Stack cells and
+surface roots are `minmax(0, 1fr)`, as `split`'s sides: content never
+widens them. `min_width`/`max_width` on a text clamp the width its height
+is measured for, so a text capped by `max_width` is as tall as its
+wrapped lines. Natural widths round up to whole pixels so taffy's
+rounding never wraps a text that fits. Before a text's first layout
+arrives, layout estimates it from its length (0.55 em per character, 1.2
+em high); the delivery relays out (shaping never blocks). `1ch` is 0.6 em
+(the `0` advance of common UI fonts is 0.55–0.62 em); measuring each
+font's own `0` needs strand-text to expose it and waits for that.
+
+**2026-10-06 · wave3-pixels: font fallback.** A family list without a
+generic family (`"Inter"`) gets `sans-serif` appended (`monospace` when
+its name says Mono): with an uninstalled family the font library chose a
+fallback per character and drew digits from a font it could not
+rasterise (an empty clock on sway). CSS appends the UA default the same
+way.
+
+**2026-10-06 · wave3-pixels: virtualised `list`.** taffy sees a `list` as
+one leaf whose height is the sum of its rows' heights (measured ones, else
+the mean of the measured, else 32 px) and gaps, capped by its `height`
+and `max_height` in the measure itself (taffy ignores max sizes when it
+asks a leaf for its content contribution, so without that a column
+around the launcher's `list { max_height: 420 }` grew to every row), with
+a min-content height of 0 (a scroll container's automatic minimum).
+After that pass only the rows the viewport shows are laid out, each as a
+taffy root of its own at the list's content width; their heights are
+remembered per row node. When measured heights differ from the estimate,
+one more pass places everything (a render pass never loops). Container
+queries settle inside the frame (below).
+
+**2026-10-06 · wave3-pixels: container-query hysteresis lives in logic.**
+Render reports laid-out sizes (`Renderer::take_layout_facts`, sent as
+`ToLogic::Layout`) of the nodes logic reads them of, whenever they
+change; logic's `when` evaluation keeps a
+condition that read a node's `width`/`height` true while it would hold
+with every size read moved 4 px either way, so `when self.width < 300`
+turns on below 300 and off at 304. This is exact for threshold queries
+and needs no knowledge of thresholds on the render side.
+
+**2026-10-06 · wave3-pixels: overhang and input region.** Shadows of the
+surface root and of any node reaching past the root's box give the spec
+an `overhang` (blur reach 1.5 × blur + 1 + spread, shadow offsets
+included; since fixer round 3 a flow node's own paint offset `x`/`y`
+is not: the overhang is the shadows' at rest, so an enter or exit
+animation sliding a shadowed toast never resizes its layer surface, and
+content moved past the overhang is clipped to the buffer; a `place:
+absolute` node's `x`/`y` are its coordinates and do count, and moving it
+refreshes the overhang);
+strand-surface grows the layer surface by it, moves each margin out by it
+(negative margins), keeps the bar's reserved space at margin + thickness
+by adding the overhang to the exclusive zone, and sets the input region to
+the box. Render lays the root out inside the overhang. Content-sized
+surfaces (no `width`/`height`, or a bar without a thickness) get their
+size from a content layout pass when anything layout reads changes or
+their text arrives; a bar's length stays the output's.
+
+**2026-10-06 · wave3-pixels: keyboard routing.** The node with keyboard
+focus on a surface is the first with `focus: true` when the surface gets
+the keyboard, or the `input`/`list` a click lands on. Every key press is
+`key(k)` there (bubbling like clicks); an `input` edits its own `text`
+(printable text appends, BackSpace removes, a two-way write; keys typed
+before logic answered build on what was last written for 500 ms); Up/Down
+move the selection of the `list` its `nav` names (or of a focused list),
+scrolled into view, and Return activates the selected row (the first when
+none is). A click on a list row also selects and `activate`s it ("clicked,
+or Enter while selected"). Escape on a surface with `open`, and losing the
+keyboard, write `open: false` when `open` is bound two-way (`two_way`,
+below); a popup also gets `dismiss`. Click-away for an `exclusive` panel
+uses a catcher surface (below). Fixer round 2: the routing state machine
+moved from the binary's `demo/host.rs` into strand-render
+(`strand_render::input::Router::handle(event, scene) -> Vec<Intent>`,
+`Intent` = flag, node event or two-way write), so popup grabs, drag and
+drop (M4) and the inspector (M5) reach the same state; the binary's host
+only turns intents into `ToLogic` messages.
+
+**2026-10-06 · wave3-pixels: `nav:` names a node mounted later.** A prop
+whose value is a node (`PropValue::Node`) that is not on the scene yet
+when bound (`nav: results` above `list { id: results }`) is set at the end
+of the tick, when everything is mounted (or later, below).
+
+**2026-10-06 · wave3-pixels: a mock desktop for `strand run`.**
+`STRAND_MOCK=desktop` fills the service host with the compiler tests'
+desktop (workspaces on `STRAND_MOCK_SCREEN`, a window, battery, sink,
+tray, notifications, apps) so the example shells can be screenshotted
+on sway before M3's services exist. It is a development aid only.
+
+**2026-10-06 · wave3-pixels: underline in strand-text.** `markup: basic`
+needs underlines (`<u>`, links), which `TextSpan` could not express:
+`TextSpan::underline` and `GlyphRun::underline` (a physical rect from the
+font's underline metrics) were added; render paints it in the run's
+colour. Links take `$accent`.
+
+**2026-10-06 · wave3-pixels: content sizing stays virtualised and
+capped.** The content pass of a content-sized surface asks the text
+worker only for the texts it laid out (a list's rows out of view are not
+walked, so the launcher over 2,000 apps shapes about a dozen rows, not
+2,000). A content size larger than `MAX_CONTENT_SIZE` (4096 logical px,
+wider than any common output's logical width) on either axis is laid out
+again at the cap, so what overflows scrolls or is clipped and a list lays
+out only the rows the capped box shows; the buffer never grows past it.
+Fixer round 2: the output caps it further where it is placed:
+`LayerConfig::fit` clamps a layer surface's box to its output's logical
+size less its margins, render lays out at the configured size (so the
+rest scrolls or clips), and the host tells render each surface's output
+size (`Renderer::set_surface_bounds`) so it waits for no configure the
+compositor cannot give (below). The constant stays as a backstop for a
+surface whose output is not known yet.
+
+**2026-10-06 · wave3-pixels: render reports only the sizes logic
+reads.** Logic marks an element whose `width`/`height` a binding reads
+with `Prop::Watch` (`size`, or `query` when a `when` condition read it;
+set by the compiler at the end of the tick, like `name`, never written in
+source). Render sends layout facts only for nodes carrying it (and a
+node's current size at once when it starts carrying it), so a size
+animation of anything else (a dot's width, a toast's height) never wakes
+the logic thread: the design keeps logic off the animation path and an
+idle shell at zero work.
+
+**2026-10-06 · wave3-pixels: container queries settle inside the
+frame.** design.md's "at most one extra pass per frame" is read as: the
+frame that crosses a threshold already shows the new variant. When a
+layout pass changes the size of a `query`-watched node, render holds that
+surface's frame (as it holds one for new text) until a diff arrives whose
+`SceneDiff::layout_seen` reaches the fact batch it sent
+(`ToLogic::Layout { seq, .. }`; logic echoes the last batch it took in,
+sending a diff even with no ops), or until `QUERY_WAIT` (30 ms) runs out.
+A frame is held at most once: when the answer's own layout changes a
+watched size again, that frame paints (the one extra pass) and its facts
+go to logic as usual. This also covers boot, where `self.width` starts at
+0: the first frame waits for the first layout's answer. Offline
+renderers (no logic) never hold (`set_query_wait`, default zero).
+Fixer round 2: a surface in motion (painted within `BUSY_WINDOW`, as for
+new text) never holds for a query: render cannot tell a threshold
+crossing from a size change inside a band (`when` conditions are
+bytecode, so logic cannot hand it band edges without an analysis of
+arbitrary expressions), and holding every animated frame would put the
+logic thread on the animation path. An animating query node's facts
+still go to logic, and its answer lands a frame later; an idle surface
+(a resize, a window title changing the bar's layout) still settles inside
+the frame. Facts are kept per surface and node, so a node shown on two
+surfaces of different sizes reports a change of either and never
+flip-flops between them. The hysteresis takes no seed from boot values:
+a `when` that read a size not laid out yet (0) records nothing, so a
+container first laid out at 302 px shows the wide variant, as one that
+grew to 302 px does.
+
+**2026-10-06 · wave3-pixels: list rows mount eagerly until M4.** "Only
+visible rows mounted/laid out" is met for layout, shaping and painting:
+render lays out, measures and shapes only the rows a list's viewport
+shows. Logic still mounts every row (its bindings, `when hover` memos and
+service reads exist for each), and the scene diff and render tree carry
+every row. Mounting rows on demand needs render to report each list's
+visible index range and logic to park the rest, which belongs with M4's
+virtualised lists (FLIP, smooth scrolling) rather than a layout track.
+Until then the logic cost is guarded by
+`crates/strand-compiler/tests/instantiate.rs::a_2000_row_list_mounts_eagerly_and_updates_one_row`
+(one changed row of 2,000 sends one op and re-runs under 20
+computations).
+
+**2026-10-06 · wave3-pixels: what `markup: basic` takes for a tag.** Only
+the freedesktop tags (`b`, `i`, `u`, `a`, `img`), written well-formed
+(attributes `key="v"`, `key='v'`, `key=v` or bare `key`), are tags;
+anything else that looks like one is text (`if a<b && c>d`, `Vec<T>`,
+`<span>`), since notification bodies carry code and the spec defines no
+other tags. Nested tags combine: the parse yields non-overlapping runs
+carrying every style in force, so `<u>a <b>b</b></u>` underlines both and
+a bold word in a link keeps the link's colour and underline (strand-text
+takes underline and colour from one span per run).
+
+**2026-10-06 · wave3-pixels: scrolling and keys are default actions that
+always run.** `scroll` is vertical only (`scroll { axis: x }` is not in
+design.md). A wheel scrolls the innermost `scroll`/`list` under the
+pointer that can still move that way (one at its end hands the wheel
+outward), and `on scroll` is sent as well; Escape (closing a surface
+bound `open: <->`), arrows routed by `nav`, Return and typing into an
+`input` run after `key(k)` is sent. Render cannot wait for logic to learn
+whether a handler took the event (input stays on the render thread, the
+design's latency rule), so these defaults always run; a handler that
+wants none binds the prop instead (`open` one-way, no `nav`). A click on
+the list an `input` steers with `nav` keeps the typing on the input.
+Selections and in-flight edits of nodes that are gone are forgotten on
+the next input event (a list refilled by its `for` starts from its first
+row again).
+
+**2026-10-06 · wave3-pixels: click-away from a `keyboard: exclusive`
+panel (fixer round 2; replaces the M4 deferral).** With exclusive
+keyboard a click elsewhere moves no focus, so nothing tells the launcher
+to close. The compiler marks props bound two-way on each element
+(`Prop::TwoWay`, a list of prop names, never written in source); the
+spec says whether `open` is (`SurfaceSpec::open_two_way`). An open
+`keyboard: exclusive` layer surface with a two-way `open` gets a
+transparent catcher layer surface on its layer and output (anchored to
+all four edges, exclusive zone 0, keyboard none, one 1×1 buffer scaled by
+the viewport; namespace `strand-<Name>-click-away`), destroyed with it. A
+press on the catcher is `InputEvent::ClickAway { surface }`, which the
+router turns into the same `open: false` write as Escape. Layer-shell
+leaves the order of surfaces in one layer undefined (sway 1.9 gives the
+older one the pointer), so the catcher does not rely on being below:
+its input region has a hole where the panel's box is
+(`LayerConfig::box_in`, computed as wlroots arranges both in the usable
+area, one pixel wider each way). Clicks on bars (outside the usable
+area) do not reach it; since fixer round 3 the router closes the panel on
+a left press on any other Strand surface instead (Strand's own bar
+included; the press still reaches the bar, so a workspace click both
+switches and closes, as focus moving would), and every other output that
+shows no surface of the same node gets a catcher of its own over the
+whole output (exclusive zone -1, bars included, no hole), made when the
+panel's output is known (at creation, or when it enters one). A foreign
+bar on the panel's own output (waybar) still takes its clicks: the hole's
+offset in the whole output would need the usable area's origin, which
+layer-shell does not tell a client. `on_demand` panels close on focus
+loss already.
+A one-way `open` gets no catcher, so a modal panel bound one way never
+swallows clicks. Popups' click-away comes with xdg_popup grabs (M4).
+
+**2026-10-06 · wave3-pixels: centred surfaces get an even overhang.**
+The compositor centres a layer surface's whole buffer on an axis it is
+anchored to neither or both edges of, so an uneven shadow overhang (a
+shadow offset down: 57 px above, 89 below) would move the box off
+centre. Render makes the overhang even (the larger side on both) on the
+axes the anchor leaves centred: both for `center`, the horizontal one for
+`top`/`bottom`, the vertical one for `left`/`right`; bars and corners keep
+theirs. The box, the input region and the layout inside the overhang
+follow the spec, so they stay consistent.
+
+**2026-10-06 · wave3-pixels: a resized content-sized surface waits for
+its configure.** When a shown content-sized surface's spec asks for a new
+size (its content grew, its text arrived), render holds its frames until
+it is configured at that size or `RESIZE_WAIT` (50 ms) passes, as it
+holds a frame for new text, so no frame is painted at the old size first
+(a one-frame size pop). A size larger than the output (less margins) is
+waited for at the output's size. Offline renderers never hold
+(`set_resize_wait`, default zero); the binary's host sets it. Fixer round
+3, after the four design shells booted together still showed a frame at
+the wrong size: (a) the content pass reruns once when a list measured
+rows it had only estimated (`Boxes::unsettled`), as the painted pass
+does, so a launcher asks for its measured size, not 3 × 32 px estimated
+rows; (b) any configure at another size than the spec asks for holds,
+whatever the order of the spec change and the configure (each size asked
+for holds at most once, so a compositor that configures another size
+costs one wait, not a stall); (c) text the paint itself collects from the
+worker refreshes the specs first, and a hold that appears then draws
+nothing (the surface manager arms its deadline); (d) the host wakes its
+loop when a call from the surface manager (a configure, a paint) leaves
+surface changes behind, so the manager reconfigures at once, not at the
+next logic tick; (e) a surface not painted yet waits up to its
+first-frame wait (500 ms in `strand run`) rather than `RESIZE_WAIT`, as
+nothing shows meanwhile and other surfaces painting at boot can delay
+the configure past one round trip.
+
+**2026-10-06 · wave3-pixels: fewer layout passes.** The content pass
+that sizes a surface runs only where it decides something: never for a
+closed surface (`open: false`: neither laid out nor shaped until it
+opens; opening it runs the pass), and for a surface of a fixed size only
+until it is first laid out for painting; after that its overhang comes
+from that pass (a change is reported as a spec update and it lays out
+again inside the new overhang). A shadow change relayouts its surface for
+that reason. A text change on a shown fixed surface costs one pass for
+the change and one for its delivered layout.
+
+**2026-10-06 · wave3-pixels: the input region stays a rectangle.**
+design.md's "hit testing on the rounded shape" holds inside the surface:
+a press on a rounded corner of a node is not that node. The Wayland input
+region of a surface is its box (inside the overhang), corners included:
+a click on the transparent corner of a radius-14 bar is taken by the bar
+and lands on its root, not on the window beneath. Cutting the corners
+would need the root's radius in the spec and stepped rectangles per
+corner; a few pixels at a surface's corners are not worth that in M2.
+
+**2026-10-06 · wave3-pixels: an `input` draws its text.** Ahead of the
+M2 widgets item (caret, selection, focus ring), an `input` draws its
+`text` through the text path, or its `placeholder` in `$fg.muted` (the
+inherited colour at 60 % when the token is missing) while the text is
+empty, so the launcher shows its prompt and what is typed.
+
+**2026-10-06 · wave3-pixels: `nav:` naming a node mounted ticks later.**
+A node-valued prop whose target is not on the scene stays pending across
+ticks (while the naming node lives and the prop is still unset), so `nav:
+results` resolves when `list { id: results }` mounts inside an `if` that
+turns true later.
+
+**2026-10-06 · wave3-pixels: values from a file are clamped before
+placement.** Sizes, margins and shadow reach are taken at no more than
+±2^20 logical px (`placement::MAX_LOGICAL`), and the arithmetic that
+places a surface and its click-away hole saturates, so `margin: -1e12`
+or `height: 1e12` with a shadow cannot overflow (a panic in debug builds,
+a wrapped margin in release builds).
+
+**2026-10-06 · wave3-pixels: an `input` is one line.** An `input`'s text
+is shaped unwrapped and never refitted to its box; wider than the box it
+is clipped to it and shifted so its end (where typing happens) is in
+view. Scrolling back to a caret elsewhere comes with the caret (M2
+widgets item).
+
+**2026-10-06 · wave3-pixels: logic's own `input` text wins over edits in
+flight.** Keys typed faster than logic answers build on the router's last
+write, not on the scene's older text. The router now watches logic's
+diffs (`Router::observe`, before they are applied): a text that is one of
+the writes in flight answers it and those before it (logic answers in
+order), and any other text is logic's own (`query = ""` in a handler,
+`on show { query = "" }`), which drops the writes in flight, so the next
+key builds on it. No sequence number is echoed through logic.
+
+**2026-10-06 · wave3-pixels: an empty axis frame is no scroll.** A
+pointer axis frame with no motion (`axis_stop` alone, a touchpad finger
+lifted) delivers no `scroll`; one with detents but no pixel value scrolls
+15 px per detent (`WHEEL_STEP`, libinput's legacy wheel step).
+
+**2026-10-06 · wave3-pixels: a container query is decided per node, not
+per surface.** Facts are kept per surface and node, but logic holds one
+`self.width` per node: a bar node shown on two monitors of different
+widths takes the variant of whichever surface last reported a change,
+and that variant shows on both bars. Evaluating a query per surface
+needs an instance per surface (M4 or later, with per-monitor state).
+Also, a surface painted within `BUSY_WINDOW` (in motion) never holds a
+frame for a query, so a threshold crossed during a size animation shows
+the old variant for one frame; the features.md box says so.
+
+**2026-10-06 · wave3-pixels: the M2 exit depends on popups and
+widgets.** "The four example shells run unchanged" needs the bar's
+`Clock` calendar `popup` (xdg_popup lands in M4) and `icon`, `image`,
+`meter`, `slider` drawing (the M2 widgets item, not this track's): on
+sway the OSD shows only its percentage and the bar no volume, battery or
+tray icons. Layout, theming and routing for them are in place; the exit
+box stays open on those two items.
+
+**2026-10-06 · wave3-pixels (p2): springs start at the frame that shows
+them.** Diffs reach the render thread without a presentation time, so a
+change does not start its spring when it is applied: it starts at the
+first painted frame after it, one refresh (at most 16.7 ms, never before
+the previous frame of that surface) before that frame's presentation
+time, so the first frame already shows movement. A retarget evaluates the
+old spring at that start and keeps its position and velocity. Everything
+is a function of the timestamps painted, so frames are reproducible.
+
+**2026-10-06 · wave3-pixels (p2): what springs, and when.** Only a value
+logic sets (`SetProp`) on a node already on screen springs; a node's
+initial props, a node on a surface not yet shown and a frame painted at
+time zero (a host without a clock: offline tests, the fuzzer) show values
+at rest. A target that moves because a token or an inherited value
+changed snaps when at rest and steers a spring in flight, so a theme
+swap's palette springs (the theme track) are not springed twice.
+`$motion.spatial`/`$motion.effects`/`$motion.bouncy` fall back to the
+design's springs when the token table lacks them, so a shell without a
+theme still animates ("every visual prop is a spring" is a default).
+
+**2026-10-06 · wave3-pixels (p2): layout lengths snap, sizes spring.**
+"Layout lengths snap while paint offsets spring" is read for every
+layout length except the box size: `pad`, `margin`, `gap`, `min_*`,
+`max_*`, `grow`, `shrink`, `align`, `justify` and token swaps snap, and
+every box they move glides from where it was (FLIP, `$motion.spatial`);
+`width`, `height` and `size` spring the laid-out size ("size springs",
+the Dot's `width: 24`, the toast's `exit { height: 0 }`). Text changes
+move boxes without a glide, so a minute tick still paints one frame. A
+node whose size springs clips its content while it does (a collapsing
+toast hides what no longer fits).
+
+**2026-10-06 · wave3-pixels (p2): exits are ghosts.** A removed node with
+an `exit` pose (or an `enter` one, mirrored) that is laid out on a shown
+surface keeps its id in a ghost table outside the slots: logic cannot
+address it and may reuse the slot at once, render keeps it in its
+parent's children (logic's child indices skip ghosts), lays it out,
+draws it and never hits it. It unmounts when every prop of its pose has
+settled, or at once when its surface goes or a frame no longer draws it
+(a list row scrolled away). A surface whose `open` goes false keeps
+reporting `open: true` until its exit pose settles; opening again
+springs back from wherever it is. Removing a surface root itself still
+unmounts at once (no pose). Poses are repainted, not compositor
+animated: that is M4.
+
+**2026-10-06 · wave3-pixels (p2): pose presets.** `fade` is `opacity:
+0`; `slidefade` is `opacity: 0; y: 8` (the design gives no distance);
+`popin(s)` is `scale: s; opacity: 0`; `slide(edge)` moves by the node's
+own width or height towards that edge. `scale` and `rotate` are about
+the box's centre.
+
+**2026-10-06 · wave3-pixels (p2): `reduced_motion` reaches render as a
+setting or a token.** `Renderer::set_reduced_motion` (a host setting)
+and the global token `motion.reduced: true` (which logic can derive from
+`system.reduced_motion` or a settings field) both snap every spring,
+pose and glide. Wiring the portal's `reduced-motion` key (strand-watch
+drops it today) and the token into the compiler's table belongs to the
+watch and theme tracks.
+
+**2026-10-06 · wave3-pixels (p2): a content-sized surface waits to
+shrink.** While anything on it moves (an exit, a glide still to start),
+a content-sized surface keeps the larger of its old and new sizes, and
+asks for the smaller one once everything settled, so a leaving toast
+and the sibling sliding into its place are never cut off by the buffer.
+
+**2026-10-06 · wave3-pixels (p2) fixer round 1: the paint that ends a
+motion reports its surface change.** A closing surface's exit, a ghost
+unmounting and a content-sized surface allowed to shrink all change a
+spec at the end of a frame. `Painter::paint` now refreshes the specs
+itself when that happens, so `has_surface_changes()` is true after it
+and the host (which wakes only on that) destroys or resizes the surface
+with no other event. A content-sized surface records when it was held
+at a larger size, and asks for its own size once nothing on it moves,
+also after changes that never animate (a row removed at the end, a size
+set `~ instant`), not only when a spring settles.
+
+**2026-10-06 · wave3-pixels (p2) fixer round 1: a surface's first frame
+is never the time-zero preview.** The manager attaches a surface only
+after its spec opens, and `configure_surface` previews it at time zero,
+where everything is at rest. The first painted frame therefore flattens
+afresh whenever a motion on its surface waits to start (an `enter` pose,
+a touched prop), so `enter` plays from the first frame on screen. A
+first frame (no previous frame of that surface) starts its springs at
+its own time: it shows the pose exactly. Enter poses of nodes a frame
+did not draw (rows out of view, under a transparent parent) are dropped:
+they show at rest when they come into view, and never keep frames
+coming or hold a content-sized surface.
+
+**2026-10-06 · wave3-pixels (p2) fixer round 1: exits are bounded.**
+An exit is sampled only by frames, and an output that is asleep or
+covered sends no frame callbacks. So a parent keeps at most 8 ghosts (a
+new one ends the oldest exit), an exit older than 1 s on a surface that
+painted nothing for 1 s ends at the next `apply` or `update`, and any
+exit ends after `MAX_MOTION` + 1 s. A closing surface on a sleeping
+output closes the same way. A node logic creates under the id of a live
+ghost replaces it (the ghost unmounts and its motions are dropped), and
+the input router drops focus, edits and selections of ghosts at once.
+
+**2026-10-06 · wave3-pixels (p2) fixer round 1: what does not spring
+yet.** `ANIMATED` stays `x`, `y`, `opacity`, `scale`, `rotate`, `bg`,
+`color`, `border`, `shadow`, `radius`. `mark_color` snaps: span colours
+are part of the text shaping request (`TextSpan::color`), so a spring
+would reshape the text every frame; it springs once glyph runs are
+recoloured at paint time. `value` (the OSD's meter and the volume
+slider), `stroke`, `fill`, `trim`, `track`, `glow` and `blur` join
+`ANIMATED` when their widgets and effects are drawn (the M2 widgets item
+and the effects items). `reduced_motion` is honoured by render
+(`Renderer::set_reduced_motion`, token `motion.reduced`) but nothing
+produces it yet: the portal key, `system.reduced_motion` and the call in
+`strand run` belong to the watch, theme and integrator tracks, and the
+"loops, time signals and effects turn off" half of design.md §7 is
+logic's; the features.md box stays open on them.
+
+**2026-10-06 · wave3-pixels (p2) fixer round 1: size springs lay out
+once per frame.** A size spring's target is learnt by a pass at rest
+when a change starts or retargets it (an op, which already marks the
+surface for layout); frames where only springs move reuse those targets
+and lay out once with the in-flight sizes, under the nearest
+size-stable ancestor or, failing one, the whole surface.
+
+**2026-10-06 · wave3-pixels (p2) fixer round 2: list poses play when
+their surface opens or closes with them.** The toasts change `open:
+shown.len > 0` in the same tick as the list, so with one toast at a time
+the first toast is created by the diff that opens the panel and the
+last is removed by the diff that closes it. A node created by the diff
+that opens its surface (reported closed before; a surface first seen in
+that diff, at boot, still shows at rest) now plays its `enter` from the
+surface's first frame, and a surface closed with no exit pose of its own
+stays open in its spec while ghosts under it play their exit, closing
+when the last one unmounts. This narrows "a node on a surface not yet
+shown shows values at rest" (the paragraph above) to nodes older than
+the opening: design.md applies `enter`/`exit` to list items, and "a
+removed subtree plays exit, then unmounts".
+
+**2026-10-06 · wave3-pixels (p2) fixer round 2: named curves and timed
+retargets.** `out_elastic` and `out_bounce`, which the checker's `enum
+Curve` accepts, are closed forms (easings.net), not béziers: they used
+to fall back to the standard curve. `Easing::NAMES` lists every name
+render knows; the schema must not accept one outside it (its extra
+render names `in_out_back`, `emphasized_decelerate`,
+`emphasized_accelerate` are the compiler owner's to add). A timed curve
+(`~ 200ms`, `~ ease(…)`) that interrupts a moving value keeps its
+velocity: the segment adds `v0·t·(1 − t/d)²`, which starts at the old
+velocity and is gone, with no velocity, at the end of the duration, so
+the curve still ends exactly on its target at its duration; from rest
+the curve is unchanged.
+
+**2026-10-06 · wave3-pixels (p2) fixer round 2: transforms, hit shapes,
+several outputs.** `rotate` is read as a `PropValue::Angle` in degrees
+(what the schema's `angle` and every rotate sample are; a bare number is
+degrees too). Under `scale`/`rotate` a node is hit on its untransformed
+rounded box through the inverse transform, not on the transformed
+bounding box. Motion state is per node, while one root may be shown on
+several outputs (`screens: all`); a frame ends an exit, or drops an
+enter it did not draw, only when no other surface of that root drew the
+node in its last frame. `reduced_motion` turning on snaps size springs
+already in flight at the next frame (each surface with motion lays out
+again).
+
+**2026-10-06 · wave3-pixels (p2) fixer round 2: known limits.** When a
+content-sized surface grows, its size springs snap: the first layout of
+the change runs in the old, smaller buffer, where `flex-shrink` caps the
+target, and the configure at the new size lays it out at rest.
+Shrinking springs (the surface is held at its larger size until
+everything settles). Learning targets in an unconstrained content pass
+first is the fix, left for M4 with the compositor-animated poses.
+Removing a surface root (an `if` around a surface, a reload dropping
+it), as opposed to closing it with `open: false`, still unmounts it at
+once without its exit pose.
+
+**2026-10-06 · wave3-pixels (p2) fixer round 3: a collapsing slot
+reaches zero.** A size that springs to or from zero (the toast's `exit
+{ …; height: 0 }`) takes along what taffy would otherwise keep: its
+padding gives way once the forced size is smaller than it (scaled to
+fit), and the parent's gap beside it folds, so the slot is `h + min(gap,
+h)` and reaches zero as the spring settles; unmounting the ghost moves
+nothing ("siblings slide up to fill the gap", with no plateau at the
+padding plus the gap). The gap is folded by a negative margin on the
+neighbour across it (the next sibling, or the previous one for the last
+child), not on the collapsing node: an outer size never goes below zero
+in taffy, so a negative margin on a zero-height node would leave its
+auto-sized parent, and the surface's overhang, a gap too large. A list
+row collapsing advances by `min(gap, h)` too. Border width is drawn
+inside the box and takes no layout space, so it needs no folding.
+
+**2026-10-06 · wave3-pixels (p2) fixer round 3: a surface is opening
+until its first clocked frame.** A surface reported closed and then
+open is "opening" until it paints a frame with a clock: nodes created
+under it meanwhile (a second toast arriving in the configure round
+trip) play their `enter` like the ones created by the diff that opened
+it. `radius: full`, a percentage radius and percentage `x`/`y` now
+spring: they are resolved against the laid-out box (half its shorter
+side; the parent's width or height, as flatten resolves them) before
+interpolating. Gradients still snap (no interpolation between paints of
+different shapes). A content-sized surface that grows under an anchor
+that moves its origin (centred: half the growth; anchored right or
+bottom: all of it) draws its content where it was on screen and glides
+it to its new place (a FLIP of the root's children), so the launcher's
+results and an OSD never jump as the compositor re-centres the buffer.
+A shrink still steps: it comes once everything settled, and keeping the
+content in place in the smaller buffer would cut it off at the edge;
+springing the root box inside the held buffer first is left with the
+compositor-animated poses (M4). Another output's last frame counts as
+"drawn there" for an exit only while that output still gets frames
+(painted within `EXIT_STALL`), and `Renderer::next_wake` tells the
+host's loop when a stalled exit is due to end, so a closing surface on
+an output that stopped sending frame callbacks still closes.

@@ -4,7 +4,7 @@
 //!
 //! Positions are surface-local logical pixels (what `wl_pointer` reports),
 //! so they are independent of the buffer scale. Wayland serials stay in
-//! `strand-surface`. Keyboard events join with `keyboard: on_demand |
+//! `strand-surface`. Keyboard events arrive on `keyboard: on_demand |
 //! exclusive` surfaces.
 
 use crate::{LogicalPoint, SurfaceId};
@@ -51,6 +51,31 @@ impl AxisDelta {
     }
 }
 
+/// Modifier keys held during a key event.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct Modifiers {
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+    pub logo: bool,
+}
+
+/// One key press, release or repeat, as xkbcommon resolved it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct KeyInput {
+    /// The keysym's name (`Escape`, `Return`, `Down`, `BackSpace`, `a`):
+    /// what `on key(k)` sees as `k.name`.
+    pub name: String,
+    /// The text the key types (empty for keys that type none).
+    pub text: String,
+    pub state: ButtonState,
+    /// A key-repeat of a held key (a press).
+    pub repeat: bool,
+    pub modifiers: Modifiers,
+    /// Milliseconds, from the compositor's clock.
+    pub time: u32,
+}
+
 /// An input event on one of our surfaces.
 #[derive(Clone, Debug, PartialEq)]
 pub enum InputEvent {
@@ -84,6 +109,16 @@ pub enum InputEvent {
         source: Option<AxisSource>,
         time: u32,
     },
+    /// `surface` got keyboard focus (`keyboard: on_demand | exclusive`).
+    KeyboardEnter { surface: SurfaceId },
+    /// `surface` lost keyboard focus.
+    KeyboardLeave { surface: SurfaceId },
+    /// A key on the focused surface.
+    Key { surface: SurfaceId, key: KeyInput },
+    /// A button was pressed outside `surface`, on the transparent
+    /// click-away catcher mapped under it (an open `keyboard: exclusive`
+    /// surface whose `open` is two-way): it closes.
+    ClickAway { surface: SurfaceId },
 }
 
 impl InputEvent {
@@ -94,7 +129,11 @@ impl InputEvent {
             | Self::PointerLeave { surface }
             | Self::PointerMotion { surface, .. }
             | Self::PointerButton { surface, .. }
-            | Self::PointerAxis { surface, .. } => *surface,
+            | Self::PointerAxis { surface, .. }
+            | Self::KeyboardEnter { surface }
+            | Self::KeyboardLeave { surface }
+            | Self::Key { surface, .. }
+            | Self::ClickAway { surface } => *surface,
         }
     }
 }

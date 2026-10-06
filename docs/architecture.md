@@ -17,8 +17,15 @@ file fixes boundaries; each crate is free inside its own boundary.
 
 Channels are the only coupling between threads. Logic → render is one
 `SceneDiff` per tick. Render → logic is `InputEvent`s (`strand-scene`) and layout facts
-(`self.width` for container queries). No locks are shared across threads on a
-hot path.
+(`self.width` for container queries: `Renderer::take_layout_facts`, the
+laid-out sizes that changed of nodes carrying `Prop::Watch`, sent as
+`run::ToLogic::Layout { seq, sizes }` with `Renderer::layout_seq`). The
+next diff logic sends echoes the last batch it took in as
+`SceneDiff::layout_seen` (sent even with no ops): render holds a frame
+whose layout changed a `watch: query` node's size until then, or for
+`strand_render::QUERY_WAIT` (`Renderer::set_query_wait`; zero offline),
+so container queries settle inside the frame. No locks are shared across
+threads on a hot path.
 
 `strand run [dir]` (`crates/strand/src/run.rs`) is this wiring: the main
 thread's surface host forwards the monitor hooks (`screens` as a list of
@@ -30,11 +37,26 @@ were over and `scroll` on the innermost node as `Event { node, event:
 NodeEvent }`, which logic bubbles to the nearest handler) and surface
 sizes to the logic thread over a calloop channel (`run::ToLogic`).
 `NodeEvent` is one variant per kind of input, each with its own payload
-(`Click`, `Secondary`, `Scroll { dy, dx }`; `name()` and `args()` are
-what `Instance::event` takes): M2 adds `Activate`, `Key { .. }` and
-`Text(String)` for keyboard focus and the launcher, M4 `Drop { payload,
-at }` for `on drop(p: T, at: int)`, as new variants of the same
-message. Before the logic thread
+(`Click`, `Secondary`, `Middle`, `Scroll { dy, dx }`, `Activate`, `Key {
+name, text, modifiers }` (a `Key` record made by the service host,
+`args_with`), `Dismiss`; `name()` and the args are what `Instance::event`
+takes); M4 adds `Drop { payload, at }` for `on drop(p: T, at: int)` as a
+new variant of the same message. Input is routed on the main thread by
+`strand_render::input::Router` (`handle(&InputEvent, &mut dyn
+InputScene) -> Vec<Intent>`; the `Renderer` is the `InputScene`: hit
+chains, scrolling, the tree): hover and pressed chains, keyboard focus
+(the focused node of the focused surface gets `key(k)`), list selection,
+`nav`, `input` edits, and `open: false` on a surface whose `open` is
+two-way (`Prop::TwoWay`) on Escape, focus loss and click-away
+(`InputEvent::ClickAway`, or a left press on another Strand surface while
+an open `keyboard: exclusive` one has a two-way `open`:
+`InputScene::exclusive_open`). The host passes each logic diff to
+`Router::observe` before applying it, so logic's own `input` text wins
+over edits in flight. An `Intent` is `Flag { node, flag, on }`,
+`Event { node, event }` or `Write { node, prop, value }`; the binary's
+host (`demo/host.rs`, `Forward`) only maps them to `ToLogic::Flag`,
+`Event` and `Write` (which logic applies with `Instance::write`, a
+two-way write) (decisions.md, wave3-pixels). Before the logic thread
 starts, `live::Worker::spawn` starts the `strand-watch` watcher (module
 set from `find_files`, rescan callback calling it again), boots the
 `Loader` (the boot `Outcome`: a build, or a cached last good one, or
@@ -86,8 +108,12 @@ until M3's services runtime; the boot read written as initial values,
 later batches as writes into `system.*`), keeping the last values in
 `$XDG_STATE_HOME/strand/palettes/system` and writing them before the
 first frame. Settings-file notices from core are overlay rows (a
-shadowed field's `[clear]`) and `strand watch` notices. Size facts
-address the surface's node until layout boxes land (M2).
+shadowed field's `[clear]`) and `strand watch` notices. Layout facts
+(`ToLogic::Layout`) address the laid-out nodes logic measures (the
+instance sets `Prop::Watch` on an element whose `width`/`height` a
+binding read: `size`, or `query` from a `when`); a surface's configured
+size still arrives as `Size` on its node. `STRAND_MOCK=desktop` fills the
+host with a mock desktop for screenshots before M3 (`mock.rs`).
 
 **IPC** (`crates/strand/src/ipc.rs`): a Unix socket at `$STRAND_SOCKET`
 or `$XDG_RUNTIME_DIR/strand-<WAYLAND_DISPLAY>.sock`, newline-delimited
@@ -144,6 +170,38 @@ be built and tested without the language, and the language without pixels.
   fractional scale as numerator/120 (`wp_fractional_scale_v1`).
 - **Colour**: `Color` stored as straight-alpha sRGB `f32`, with exact
   conversions to OKLab/OKLCH; interpolation for springs happens in OKLab.
+- **Motion** (`strand_scene::motion`, shared by the renderer's prop
+  springs and the theme's palette springs): `Spring { stiffness, damping }`
+  is a unit-mass damped oscillator (`spring(700, 0.9)`: stiffness and
+  damping *ratio*), `Spring::step(x0, v0, t) -> (x, v)` its closed form;
+  `SPATIAL`, `EFFECTS`, `BOUNCY` are the design's `$motion.*` springs.
+  `Curve` (`Instant`, `Spring`, `Timed { duration, easing }`) is a
+  resolved transition (`Curve::of(&Transition)`), `ease(Easing, p)`
+  evaluates an `Easing`: `Linear`, a CSS cubic `Bezier`, or the closed
+  forms `OutElastic` and `OutBounce` (easings.net), which no bézier can
+  draw. `Easing::named` knows exactly `Easing::NAMES`: `linear`,
+  `standard`, `ease`, `ease_in`/`in`, `ease_out`/`out`,
+  `ease_in_out`/`in_out`, `in_back`, `out_back`, `in_out_back`,
+  `out_elastic`, `out_bounce`, `emphasized`, `emphasized_decelerate`,
+  `emphasized_accelerate`. The checker's `enum Curve`
+  (`strand-compiler`'s `builtin.schema`) must stay a subset of that
+  list, so a name it accepts never runs as `STANDARD` (compiler
+  owner: add `in_out_back`, `emphasized_decelerate`,
+  `emphasized_accelerate` and the aliases there, or keep them out).
+  `Motion<N>` is an `N`-channel value in flight:
+  `rest(value, eps)`, `retarget(target, curve)` and `shift(delta, curve)`
+  (a FLIP jump) take effect at the next `sample(at)`, which starts them
+  at `at` less one frame (at most `START_LEAD`, never before the previous
+  sample: `sampled_at(prev)` seeds it) from wherever the value is there,
+  *keeping its velocity* (a spring starts with it; a timed curve adds
+  it as `v0·t·(1 − t/d)²`, which fades out by the end of the duration);
+  `retarget_at` starts at a given time;
+  `peek(at)`, `velocity(at)`, `is_settled(at)` read without starting
+  anything. Everything is a pure function of the timestamps sampled, so
+  frames are testable as images. `color_channels`/`channels_color` map a
+  colour to premultiplied OKLab plus alpha. `TokenScope::transition`
+  falls back to `SPATIAL`/`EFFECTS`/`BOUNCY` when the table has no
+  `$motion.*` token of that name.
 - **Damage**: `Damage` is at most 8 `Rect`s; adding a ninth merges the pair
   whose union grows area least. `Damage::area()` is what the M0 exit
   criterion (≤2,000 px² per clock tick) is measured on.
@@ -179,13 +237,18 @@ be built and tested without the language, and the language without pixels.
   springs sample deterministic timestamps. `opaque_region` is in buffer
   pixels; `wl_surface.set_opaque_region` takes surface-local logical
   coordinates, so convert with `Scale::inner_logical_region`, which rounds
-  inward and never claims a translucent pixel. The input region (shadows
-  grow the buffer but not the input region) joins this trait with M2
-  layout.
+  inward and never claims a translucent pixel. The input region is not a
+  painter question: render puts the shadow reach into the surface's spec
+  (`SurfaceSpec::overhang`) and the surface manager sets the region to
+  the box inside it.
 
 - **Input**: `InputEvent` (`PointerEnter`/`Leave`/`Motion`/`Button`/`Axis`
-  with `ButtonState`, `AxisDelta`, `AxisSource`) in surface-local logical
-  pixels, per `SurfaceId`. `strand-surface` produces it; render hit-tests
+  with `ButtonState`, `AxisDelta`, `AxisSource`; `KeyboardEnter`/`Leave`
+  and `Key { key: KeyInput }` with the xkb keysym name, the typed text,
+  `Modifiers` and repeat; `ClickAway { surface }`, a press on the
+  click-away catcher under an open `keyboard: exclusive` surface whose
+  `open` is two-way, `SurfaceSpec::open_two_way` from `Prop::TwoWay`) in
+  surface-local logical pixels, per `SurfaceId`. `strand-surface` produces it; render hit-tests
   it on the main thread and forwards node events to logic. Wayland
   serials stay in `strand-surface`.
 
@@ -202,7 +265,8 @@ be built and tested without the language, and the language without pixels.
   `radius: 14, 14, 0, 0`) may arrive as a `List` of 1–4 values, expanded
   like CSS, and call-shaped values (`hit: grow(6)`, `filter:
   grayscale(1)`, `backdrop: blur(16)`, `transition: wipe(left)`) are
-  `PropValue::Call { name, args }`. A surface's declared name (`bar Top`)
+  `PropValue::Call { name, args }`. A prop naming another node (`nav:
+  results`) is `PropValue::Node(id)`. A surface's declared name (`bar Top`)
   is `Prop::Name` (`Text`), set by the compiler. `transition` is `Default` (the token spring for that
   prop class), `Token(path)` (`~ $motion.bouncy`), `Spring { .. }`,
   `Duration { .. }` or `Instant`, matching `~` in the language;
@@ -253,18 +317,108 @@ be built and tested without the language, and the language without pixels.
   anchor, layer, keyboard, margin (`Insets`), requested logical width and
   height, `screens` (`All`, `Focused`, or `Named` monitor identities, which
   logic uses to pin each per-monitor `bar` instance), `open` and `attach`,
-  plus `exclusive_zone()` and `needs_recreate()` (kind, namespace or layer
-  changed). Render resolves specs through the node's token scope after
+  `overhang` (how far shadows reach past the box, filled in by render
+  from layout), plus `exclusive_zone()` and `needs_recreate()` (kind,
+  namespace or layer changed). A surface without a size of its own (a
+  panel, OSD or popup without `width`/`height`, a bar without a
+  thickness) gets it from a content layout pass in render before the spec
+  is reported. Render resolves specs through the node's token scope after
   every `apply`: `Renderer::surface_spec(node)` reads one, and
   `Renderer::take_surface_changes()` returns `(NodeId, SurfaceChange)`s,
   `Created(spec)`, `Updated { spec, recreate }` or `Removed`, in order;
   token changes that move a resolved value count as updates.
+- **Layout**: taffy 0.14 on the render thread (`layout.rs`): one pass
+  per surface whose layout inputs changed (paint-only props never
+  relayout; `Renderer::layout_passes` counts them), boxes in surface
+  logical pixels (`Renderer::boxes`), `x`/`y` applied at flatten time as
+  paint offsets. `Renderer::scroll(surface, point, dy)` scrolls the
+  innermost `scroll`/`list` under a point and `scroll_into_view(list,
+  row)` reveals a row; a `list` lays out only the rows in view. Text is
+  measured from delivered layouts (estimated until the first arrives).
+- **Animation** (`anim.rs`, on the render thread): the render thread owns
+  every spring. A prop of `ANIMATED` (`x`, `y`, `opacity`, `scale`,
+  `rotate`, `bg`, `color`, `border`, `shadow`, `radius`) that logic sets
+  on a node of a surface shown with a clock springs from its old value
+  along `TokenScope::transition(prop's ~, prop)`; `width`/`height`/`size`
+  spring the laid-out size (laid out at rest to learn the target when a
+  change starts them, then each frame once with the in-flight size
+  forced, and while only size springs move, only the subtree under the
+  nearest size-stable ancestor, a node of fixed px width and height, is
+  laid out: `Renderer::last_layout_nodes`). Other
+  layout lengths snap and the boxes they move glide (FLIP), as do the
+  siblings of created, removed and moved nodes and every box after a
+  `SetTokens`; text changes never glide. A target changed by tokens or
+  inheritance snaps at rest and steers a motion in flight. `scale` and
+  `rotate` (a `PropValue::Angle` in degrees, as the compiler sends it
+  and every rotate sample is; a bare number reads as degrees) draw the
+  subtree under `Item::PushTransform`, and its hit shape is the
+  untransformed rounded box tested through the inverse transform
+  (`HitBox::inverse`). `enter` plays
+  for a node created on a shown surface, for a node created by the diff
+  that opens its surface (a surface reported closed before, not one
+  first seen in that diff: the first toast and `open: shown.len > 0`),
+  and for a surface whose `open` becomes true; `Remove` of a laid-out node with an `exit` (or `enter`)
+  pose turns its subtree into a ghost (`SceneTree::ghost`: dead to
+  logic, its slot free at once, kept in its parent's children and laid
+  out and drawn, never hit; the input `Router` drops its focus and
+  selection at once) that unmounts when the pose settles, and a
+  surface whose `open` goes false stays open in its spec until its exit
+  pose settles, or, with no exit pose of its own, until the ghosts under
+  it have unmounted (the last toast leaving as the panel closes).
+  Motion state is per node: when one root is shown on several surfaces
+  (`screens: all`), a frame ends an exit or drops an enter only for a
+  node no other surface of that root drew (in its last frame's records
+  or motions). Exits are bounded: a parent keeps at most
+  `MAX_GHOSTS_PER_PARENT` (8) ghosts (a new one ends the oldest), and an
+  exit on a surface that painted nothing for `EXIT_STALL` (1 s; its
+  output asleep) or older than `MAX_MOTION` + 1 s ends at the next
+  `apply`/`update`; `Renderer::next_wake() -> Option<Instant>` is the
+  earliest such instant, and the host's loop arms a timer at it (after
+  every `apply`, `update` and paint) that runs `update` and hands the
+  surface changes on, so a closing surface whose output stopped sending
+  frame callbacks still closes (wiring it in `strand run` is an
+  integrator item). Another surface's last frame counts as having drawn
+  a node only while that surface still paints (within `EXIT_STALL`). A node created under a ghost's id replaces the
+  ghost. A surface reported closed and then open is opening until
+  its first clocked frame: nodes created under it meanwhile enter too.
+  A size springing to or from zero folds its padding and the parent's
+  gap beside it, so the slot reaches zero (decisions.md, wave3-pixels
+  (p2) fixer round 3). A content-sized surface that grows under an
+  anchor moving its origin glides its root's children from where they
+  were on screen. A content-sized surface never shrinks while something on it
+  moves, and asks for its own size once nothing does. The paint that
+  finishes an exit (a ghost unmounted, a surface closed) or lets a held
+  surface shrink refreshes the specs itself, so `has_surface_changes()`
+  is true after it: the host must check it after every `paint` (the
+  demo host pings its loop, which runs `update` and hands the changes
+  on). A surface just attached previews at time zero (no motion), so
+  its first painted frame flattens afresh while any motion on it waits
+  to start: `enter` plays from that frame. Lengths resolve against the laid-out boxes before
+  they spring (`radius: full` is half the shorter side, a percentage
+  `x`/`y` is of the parent's box). Not yet animated: gradients, `mark_color`
+  (span colours are part of the text shaping request, so a spring would
+  reshape every frame) and the props of widgets and effects still to be
+  drawn (`value`, `stroke`, `fill`, `trim`, `track`, `glow`, `blur`);
+  they join `ANIMATED` when they render. Presets: `fade`, `slidefade`, `popin(s)`, `slide(edge)`.
+  `PaintTarget::time` zero (no clock, offline) and `reduced_motion`
+  (`Renderer::set_reduced_motion`, or the global token `motion.reduced:
+  true`) snap everything, size springs already in flight included (at
+  the next frame). Where it comes from: the host maps the portal's
+  `org.freedesktop.appearance` `reduced-motion` key (a
+  `SystemSetting`, strand-watch) to `Renderer::set_reduced_motion` and
+  to the `system.reduced_motion` value logic reads; a theme writes
+  `motion { reduced: system.reduced_motion }` (or a settings field) to
+  reach render through the token table
+  (`crates/strand-render/tests/reduced_motion.rs`). Wiring the key in
+  strand-watch and `strand run` is an integrator item (features.md). `Painter::wants_frame` is true while anything
+  moves (`Renderer::animating`), so frame callbacks stop once it
+  settles.
 - **Hit testing**: `Renderer::hit(surface, LogicalPoint) -> Vec<NodeId>`
-  is the node painted under a surface-local logical point in the last
-  frame (the topmost in paint order: later siblings over earlier ones
-  and their children) and its ancestors up to the surface's root (the
-  root alone where nothing is drawn). Until taffy layout boxes (M2), a node is hit where
-  it painted ink; a container without paint is reached through the chain.
+  is the node under a surface-local logical point in the last frame (the
+  topmost in paint order: later siblings over earlier ones and their
+  children) and its ancestors up to the surface's root (the root alone
+  where nothing is). A node is hit inside its laid-out rounded box, grown
+  by `hit: grow(n)` and cut by its ancestors' clips; shadows never count.
 
 - **Render loop** (the binary wires this; surface calls `Painter`):
   0. After each `apply`, drain `take_surface_changes()` and hand them to
@@ -287,7 +441,9 @@ be built and tested without the language, and the language without pixels.
      shaped ahead of it) and `detach_surface`; these also free per-scale
      atlases and text no surface uses.
   5. Request a frame callback while `wants_frame(surface)`, and in it call
-     `paint`. Commit only a non-empty result, with exactly that damage
+     `paint`; afterwards, if `has_surface_changes()`, run step 2 (an
+     exit that finished closes a surface or shrinks it with no other
+     event). Commit only a non-empty result, with exactly that damage
      (`damage_buffer`) and the converted `opaque_region`; if the commit
      fails, call `invalidate(surface)`. Text still being shaped does not
      keep `wants_frame` true: the delivery does, through step 2. Text
@@ -310,15 +466,10 @@ be built and tested without the language, and the language without pixels.
      resampled and shifted so its alignment lands where the right one's
      will; layouts no surface wants are pruned.
 
-- Later (render, planned with taffy and size springs in M2):
-  - Single-line text that neither wraps nor truncates should be shaped
-    once without a width bound, with the start/center/end offset applied
-    at flatten time, and keyed by (node, scale) only. Keying it by the
-    exact `max_width` bits, as now, means a box whose width springs
-    re-shapes every frame. It also means a reconfigure paints a stand-in
-    frame and then a correction frame per text, even when the two are
-    pixel-identical (1.7–3.3k px² on sway, never on a tick). Only
-    wrapping or truncating text needs a layout per width.
+- Text is shaped once without a width bound per (node, scale) and
+  aligned in its box at flatten time; only a box narrower than it asks
+  for a layout of its (whole-pixel) width (decisions.md, wave3-pixels).
+- Later (render):
   - `flatten_surface` rebuilds the map of every delivered layout and
     prunes text across all surfaces on each call, which is O(surfaces ×
     texts) per surface. Before popups and launchers share the main
@@ -1297,8 +1448,9 @@ canonical file path). Paths referenced from code come from the compiler
 Request/response over a channel: `TextRequest { key, text, style, max_width,
 scale }` → `TextLayout { key, size, glyph runs }`. `TextStyle` holds the
 font, line height, alignment, `ellipsis` (start, middle, end), `max_lines`
-and `spans` (byte ranges with weight, italic or colour: marks, markup);
-a glyph run's `color` is its span's, else the node's. Glyph atlases are keyed by
+and `spans` (byte ranges with weight, italic, underline or colour: marks,
+markup); a glyph run's `color` is its span's, else the node's, and an
+underlined span's run carries its `underline` rect (physical pixels). Glyph atlases are keyed by
 scale and LRU-bounded. Render draws the last delivered layout.
 Each `TextLayout` also carries the `AtlasUpload`s (alpha pixels) for glyphs
 rasterised while producing it, which render applies to its mirror of the
@@ -1362,7 +1514,7 @@ and the connection):
 - `repaint_handle()` gives a `Send` `RepaintHandle` (a calloop channel:
   `Request::{Repaint(id), RepaintAll, Poll}`); `take_input()` creates the
   `mpsc::Receiver<InputEvent>` (events are not queued before; keyboard
-  later). The cursor is set on enter (`wp_cursor_shape_v1`, else the
+  events included). The cursor is set on enter (`wp_cursor_shape_v1`, else the
   cursor theme); `State::last_button_serial()` is for popup grabs.
 - Frames lock to the refresh rate: after a buffer commit a surface paints
   again only after that frame's callback (requested while `wants_frame`
@@ -1392,11 +1544,30 @@ and the connection):
   order); `Screens::Named` matches it or the connector name. `SurfaceId`s
   are stable per (node, monitor), or (node, focused), while the monitor is
   remembered.
+- A spec's `overhang` grows the layer size and moves the margins out
+  (`placement::layer_config`), the exclusive zone grows by the overhang
+  on its edge so margin + zone is unchanged, and the input region is the
+  box inside it (`SurfaceInfo::input_region`; an OSD's is empty). Render
+  makes the overhang even on the axes the anchor leaves centred, so the
+  compositor centres the box. `LayerConfig::fit` clamps a layer surface's
+  box to its output's logical size less its margins; the host passes the
+  output's size to render (`Renderer::set_surface_bounds`), and render
+  holds a content-sized surface's frame for the configure at a new size
+  (`Renderer::set_resize_wait`, `strand_render::RESIZE_WAIT`; zero
+  offline). Spec changes render makes while the manager calls in (a
+  configure, a paint) are reported by `Renderer::has_surface_changes`;
+  the binary's host then pings its loop (`Host::waking`) so they reach
+  the manager at once. A click-away catcher (`SurfaceInfo::click_away`) is a
+  transparent layer surface on the same layer and output with an input
+  region holed at the surface's box (`LayerConfig::box_in`), since
+  layer-shell leaves the order within a layer undefined; every other
+  output showing no surface of the same node gets one over the whole
+  output (exclusive zone -1, no hole). Placement clamps values to
+  ±`placement::MAX_LOGICAL` and saturates.
+- The keyboard: one `wl_keyboard` per seat with xkbcommon keymaps and
+  key repeat (`get_keyboard_with_repeat`), as `InputEvent::Key` on the
+  surface with keyboard focus (`State::keyboard_focus`).
 - Later (planned, so the current shape does not block them):
-  - M2: a shadowed surface needs `overhang: Insets` (painter-reported or
-    spec-resolved) that grows the layer size and shifts the margins while
-    `exclusive_zone` stays, plus `Painter::input_region`; `LayerConfig` is
-    built in one place (`placement::layer_config`) so this stays local.
   - M2/M4: surface `exit` poses need the unmap delayed until exit
     settles: render holds `Removed`/`open: false` until its exit is done
     (or a `SurfaceHost::exit_done` hook); spec changes (compositor-animated
