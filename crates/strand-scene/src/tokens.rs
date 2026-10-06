@@ -226,35 +226,56 @@ impl TokenTable {
 /// Most solved pairs [`guarded`] remembers before it starts over.
 const GUARD_MEMO: usize = 256;
 
+/// Backgrounds a memo key holds (the palette's widest pair, `$fg` over
+/// the eight surfaces); a pair with more is solved without the memo.
+const GUARD_BGS: usize = 8;
+
+/// A memo key: the text and up to [`GUARD_BGS`] backgrounds as f32 bits,
+/// inline (no allocation on the per-frame path), then how many
+/// backgrounds there are.
+type GuardKey = ([u32; 4 * (GUARD_BGS + 1)], u8);
+
 thread_local! {
-    /// Solved text colours by (text, backgrounds), as f32 bits: a frame's
-    /// text nodes share their scope's few pairs, so each pair is solved
-    /// once per frame (once per palette while nothing springs), not once
-    /// per lookup.
-    static GUARD: std::cell::RefCell<std::collections::HashMap<Vec<u32>, Color>> =
+    /// Solved text colours by (text, backgrounds): a frame's text nodes
+    /// share their scope's few pairs, so each pair is solved once per
+    /// frame (once per palette while nothing springs), not once per
+    /// lookup.
+    static GUARD: std::cell::RefCell<std::collections::HashMap<GuardKey, Color>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
     /// Solves done (memo misses), for cost tests.
     static GUARD_SOLVES: Cell<u64> = const { Cell::new(0) };
 }
 
+fn guard_key(text: Color, bgs: &[Color]) -> Option<GuardKey> {
+    if bgs.len() > GUARD_BGS {
+        return None;
+    }
+    let mut key = [0u32; 4 * (GUARD_BGS + 1)];
+    for (i, c) in std::iter::once(&text).chain(bgs).enumerate() {
+        key[i * 4..i * 4 + 4].copy_from_slice(&[c.r, c.g, c.b, c.a].map(f32::to_bits));
+    }
+    Some((key, bgs.len() as u8))
+}
+
 /// `text` solved over `bgs` ([`Color::with_contrast`]), memoised.
 fn guarded(text: Color, bgs: &[Color]) -> Color {
-    let key: Vec<u32> = std::iter::once(text)
-        .chain(bgs.iter().copied())
-        .flat_map(|c| [c.r, c.g, c.b, c.a].map(f32::to_bits))
-        .collect();
-    if let Some(c) = GUARD.with(|m| m.borrow().get(&key).copied()) {
+    let key = guard_key(text, bgs);
+    if let Some(k) = &key
+        && let Some(c) = GUARD.with(|m| m.borrow().get(k).copied())
+    {
         return c;
     }
     GUARD_SOLVES.with(|n| n.set(n.get() + 1));
     let solved = text.with_contrast(bgs, MIN_CONTRAST);
-    GUARD.with(|m| {
-        let mut m = m.borrow_mut();
-        if m.len() >= GUARD_MEMO {
-            m.clear();
-        }
-        m.insert(key, solved);
-    });
+    if let Some(k) = key {
+        GUARD.with(|m| {
+            let mut m = m.borrow_mut();
+            if m.len() >= GUARD_MEMO {
+                m.clear();
+            }
+            m.insert(k, solved);
+        });
+    }
     solved
 }
 
@@ -288,23 +309,48 @@ pub struct TokenScope<'a> {
 /// The design's whole token graph is about 100 operations.
 pub const MAX_TOKEN_STEPS: u32 = 10_000;
 
-/// Remaining work for one resolution.
-struct Budget(Cell<u32>);
+/// Remaining work for one resolution, and whether the contrast guard
+/// is on (it is off while it evaluates a pair's backgrounds: one level).
+struct Budget {
+    left: Cell<u32>,
+    guarding: Cell<bool>,
+}
 
 impl Budget {
     fn new() -> Self {
-        Self(Cell::new(MAX_TOKEN_STEPS))
+        Self {
+            left: Cell::new(MAX_TOKEN_STEPS),
+            guarding: Cell::new(true),
+        }
     }
 
     /// Takes one step; false once the budget is spent.
     fn step(&self) -> bool {
-        let left = self.0.get();
+        let left = self.left.get();
         if left == 0 {
             return false;
         }
-        self.0.set(left - 1);
+        self.left.set(left - 1);
         true
     }
+}
+
+thread_local! {
+    /// Steps the last public entry point took (tests).
+    static LAST_STEPS: Cell<u32> = const { Cell::new(0) };
+}
+
+impl Drop for Budget {
+    fn drop(&mut self) {
+        LAST_STEPS.with(|s| s.set(MAX_TOKEN_STEPS - self.left.get()));
+    }
+}
+
+/// How many steps the last finished `lookup`/`resolve`/`eval` on this
+/// thread took (cost tests).
+#[doc(hidden)]
+pub fn last_token_steps() -> u32 {
+    LAST_STEPS.with(Cell::get)
 }
 
 impl<'a> TokenScope<'a> {
@@ -428,20 +474,43 @@ impl<'a> TokenScope<'a> {
         let Some(PropValue::Color(text)) = v else {
             return v;
         };
+        if !budget.guarding.get() {
+            return v;
+        }
         let Some(bgs) = self.levels.first().and_then(|t| t.contrast.get(path)) else {
             return v;
         };
-        let bgs: Vec<Color> = bgs
-            .iter()
-            .filter(|b| b.as_str() != path)
-            .filter_map(|b| match self.eval_ref(b, depth + 1, budget) {
-                // A translucent background shows what is under it; only
-                // opaque ones can be judged.
-                Some(PropValue::Color(c)) if c.a >= 1.0 => Some(c),
-                _ => None,
-            })
-            .collect();
-        Some(PropValue::Color(guarded(text, &bgs)))
+        // The backgrounds as they are, unguarded: a background derived
+        // from a guarded text token (`$bg.mix($fg, 4%)`) reads it once,
+        // not through another guard per level.
+        budget.guarding.set(false);
+        let mut inline = [Color::BLACK; GUARD_BGS];
+        let mut n = 0;
+        let mut more: Vec<Color> = Vec::new();
+        for b in bgs.iter().filter(|b| b.as_str() != path) {
+            // A translucent background shows what is under it; only
+            // opaque ones can be judged.
+            if let Some(PropValue::Color(c)) = self.eval_ref(b, depth + 1, budget)
+                && c.a >= 1.0
+            {
+                if n < GUARD_BGS && more.is_empty() {
+                    inline[n] = c;
+                    n += 1;
+                } else {
+                    if more.is_empty() {
+                        more.extend_from_slice(&inline[..n]);
+                    }
+                    more.push(c);
+                }
+            }
+        }
+        budget.guarding.set(true);
+        let bgs = if more.is_empty() {
+            &inline[..n]
+        } else {
+            &more[..]
+        };
+        Some(PropValue::Color(guarded(text, bgs)))
     }
 
     fn eval_in(
@@ -994,6 +1063,62 @@ mod tests {
         // A pair that already passes is untouched.
         t.insert("fg", PropValue::Color(Color::WHITE));
         assert_eq!(t.lookup("fg"), Some(PropValue::Color(Color::WHITE)));
+    }
+
+    /// Backgrounds derived from the guarded text token itself
+    /// (`override surface: $bg.mix($fg, 4%)` on all eight surfaces) are
+    /// evaluated with the guard off: one level, a bounded step count, and
+    /// the answer still reaches the minimum over them.
+    #[test]
+    fn backgrounds_derived_from_guarded_text_are_one_level() {
+        let hex = |h| Color::from_hex(h).unwrap();
+        let surfaces = [
+            "surface",
+            "surface.dim",
+            "surface.bright",
+            "surface.lowest",
+            "surface.low",
+            "surface.container",
+            "surface.high",
+            "surface.highest",
+        ];
+        let mut t = TokenTable::default();
+        t.insert("bg", PropValue::Color(hex("#2a2a3a")));
+        // Too dark to read on the surfaces.
+        t.insert("fg", PropValue::Color(hex("#3a3a4a")));
+        for (i, s) in surfaces.iter().enumerate() {
+            t.insert_derived(
+                *s,
+                TokenExpr::path("bg").call(
+                    TokenMethod::Mix,
+                    vec![
+                        TokenExpr::path("fg"),
+                        TokenExpr::value(PropValue::Number(0.04 + i as f32 * 0.01)),
+                    ],
+                ),
+            );
+        }
+        t.insert_contrast("fg", surfaces.iter().map(|s| s.to_string()).collect());
+        let PropValue::Color(fg) = t.lookup("fg").unwrap() else {
+            panic!()
+        };
+        let steps = last_token_steps();
+        assert!(steps < 100, "{steps} steps");
+        // Each surface lookup reads `$fg` guarded (as a node would).
+        for s in surfaces {
+            let PropValue::Color(bg) = t.lookup(s).unwrap() else {
+                panic!()
+            };
+            assert!(last_token_steps() < 200, "{s}: {}", last_token_steps());
+            // Solved over the backgrounds as derived from the raw `$fg`;
+            // the surface as a node sees it moves by at most a few
+            // percent of the text's change, still far above the minimum.
+            assert!(
+                fg.contrast(bg) >= MIN_CONTRAST * 0.9,
+                "{s}: {}",
+                fg.contrast(bg)
+            );
+        }
     }
 
     /// A light↔dark swap, frame by frame: 50 text nodes evaluate `$fg`

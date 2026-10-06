@@ -86,6 +86,44 @@ pub fn resolve(path: &str, base: Option<&Path>) -> PathBuf {
     }
 }
 
+/// Palette files larger than this are refused (a theme file is a few
+/// kilobytes; this keeps `/dev/zero` from exhausting memory).
+pub const MAX_IMPORT_BYTES: u64 = 1024 * 1024;
+
+/// Reads a palette file: a regular file (following symlinks) of at most
+/// [`MAX_IMPORT_BYTES`]. A FIFO or device is refused before it is
+/// opened, so it cannot block the logic thread.
+fn read_palette_file(path: &Path) -> Result<String, ImportError> {
+    use std::io::Read;
+    let io = |error: String| ImportError::Io {
+        path: path.to_path_buf(),
+        error,
+    };
+    let meta = std::fs::metadata(path).map_err(|e| io(e.to_string()))?;
+    if !meta.is_file() {
+        return Err(io("not a regular file".into()));
+    }
+    if meta.len() > MAX_IMPORT_BYTES {
+        return Err(io(format!(
+            "{} bytes is larger than {MAX_IMPORT_BYTES}",
+            meta.len()
+        )));
+    }
+    let f = std::fs::File::open(path).map_err(|e| io(e.to_string()))?;
+    let mut bytes = Vec::new();
+    // Bounded again: the file may grow between the stat and the read.
+    f.take(MAX_IMPORT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| io(e.to_string()))?;
+    if bytes.len() as u64 > MAX_IMPORT_BYTES {
+        return Err(io(format!("larger than {MAX_IMPORT_BYTES} bytes")));
+    }
+    String::from_utf8(bytes).map_err(|e| ImportError::Parse {
+        path: path.to_path_buf(),
+        error: e.to_string(),
+    })
+}
+
 /// Imports the palette `source` names (see the module docs).
 pub fn import(source: &str, base: Option<&Path>) -> Result<Palette, ImportError> {
     let Some((kind, rest)) = source.split_once(':') else {
@@ -93,12 +131,7 @@ pub fn import(source: &str, base: Option<&Path>) -> Result<Palette, ImportError>
     };
     let read = |rest: &str| -> Result<(PathBuf, String), ImportError> {
         let path = resolve(rest, base);
-        std::fs::read_to_string(&path)
-            .map(|t| (path.clone(), t))
-            .map_err(|e| ImportError::Io {
-                path,
-                error: e.to_string(),
-            })
+        read_palette_file(&path).map(|t| (path, t))
     };
     let partial = match kind {
         "catppuccin" => catppuccin(rest)?,

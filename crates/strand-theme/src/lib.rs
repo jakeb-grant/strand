@@ -17,6 +17,7 @@ pub mod import;
 pub mod material;
 pub mod palette;
 pub mod role;
+pub mod writer;
 
 pub use contrast::MIN_CONTRAST;
 pub use image::{Lookup, Quantiser};
@@ -24,6 +25,7 @@ pub use import::{ImportError, import};
 pub use material::{Options, Variant, from_seed};
 pub use palette::{Palette, Partial};
 pub use role::Role;
+pub use writer::FileWriter;
 
 /// Gamut mapping and OKLab/OKLCH helpers, shared with the render thread.
 pub mod gamut {

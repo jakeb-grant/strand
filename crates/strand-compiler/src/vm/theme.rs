@@ -69,6 +69,11 @@ pub struct ThemeHost {
     /// evaluate falls back to, so a broken theme file never shows
     /// default colours.
     last_palette: RefCell<Option<Palette>>,
+    /// Writes the last palette off the logic thread (started on the
+    /// first write).
+    writer: std::cell::OnceCell<Option<strand_theme::FileWriter>>,
+    /// The runtime `generation` lives in (disposed with the host).
+    rt: strand_core::WeakRuntime,
 }
 
 /// The persisted last palette, in [`ThemeHost`]'s cache directory.
@@ -96,6 +101,8 @@ impl ThemeHost {
             imports: RefCell::default(),
             files_dirty: Cell::new(false),
             last_palette: RefCell::new(None),
+            writer: std::cell::OnceCell::new(),
+            rt: rt.downgrade(),
         });
         if let Some(text) = host
             .cache_dir
@@ -292,15 +299,25 @@ impl ThemeHost {
         }
         *self.last_palette.borrow_mut() = Some(palette.clone());
         if let Some(dir) = &self.cache_dir {
-            let write = || -> std::io::Result<()> {
-                std::fs::create_dir_all(dir)?;
-                let tmp = dir.join(format!("{LAST_PALETTE}.tmp.{}", std::process::id()));
-                std::fs::write(&tmp, palette.to_text())?;
-                std::fs::rename(&tmp, dir.join(LAST_PALETTE))
-            };
-            // Best effort: the palette in memory still holds this run.
-            let _ = write();
+            // Best effort, off the logic thread (a slow home directory
+            // must not stall a frame): the palette in memory still holds
+            // this run.
+            let writer = self
+                .writer
+                .get_or_init(|| strand_theme::FileWriter::new().ok());
+            if let Some(w) = writer {
+                w.write(dir.join(LAST_PALETTE), palette.to_text());
+            }
         }
+    }
+
+    /// Waits up to `timeout` for the last palette to reach the disk
+    /// (tests; dropping the host waits too).
+    pub fn sync(&self, timeout: std::time::Duration) -> bool {
+        self.writer
+            .get()
+            .and_then(Option::as_ref)
+            .is_none_or(|w| w.flush(timeout))
     }
 
     /// The last good palette ([`ThemeHost::remember_palette`]).
@@ -311,6 +328,23 @@ impl ThemeHost {
     /// The config directory relative paths are read against.
     pub fn config_dir(&self) -> Option<&Path> {
         self.config_dir.as_deref()
+    }
+}
+
+impl Drop for ThemeHost {
+    fn drop(&mut self) {
+        // Wake the task taking quantiser results: it finds the host gone
+        // and ends, instead of staying parked for the runtime's life.
+        let mut n = self.notify.lock().unwrap_or_else(PoisonError::into_inner);
+        n.fired = true;
+        if let Some(w) = n.waker.take() {
+            w.wake();
+        }
+        drop(n);
+        // Its generation signal belongs to no scope: it goes with it.
+        if let Some(rt) = self.rt.upgrade() {
+            self.generation.dispose(&rt);
+        }
     }
 }
 

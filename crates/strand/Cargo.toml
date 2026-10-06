@@ -15,6 +15,8 @@ strand-scene.workspace = true
 strand-services.workspace = true
 strand-surface.workspace = true
 strand-text.workspace = true
+# The last palette and the portal's values written off the logic thread.
+strand-theme.workspace = true
 strand-watch.workspace = true
 calloop = "0.14.5"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
@@ -29,7 +31,6 @@ serde_json = "1.0.151"
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 tokio = { version = "1.53", features = ["rt-multi-thread", "time"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
-strand-theme.workspace = true
 libmimalloc-sys = { version = "0.1.49", features = ["extended"] }
 wayland-client = "0.31.15"
 wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }

@@ -52,6 +52,10 @@ pub struct Line {
     /// `[clear]` drops (`accent: file changed but runtime overlay wins
     /// [clear]`).
     pub clear: Option<(String, String)>,
+    /// The settings file (or runtime overlay file) whose next read
+    /// decides this row (a bad value, a syntax error, an unreadable
+    /// file): a read that no longer reports it takes it away.
+    pub settings_read: Option<String>,
 }
 
 /// The row key of the notice that edits wait for the unlock (not a
@@ -83,11 +87,18 @@ pub fn settings_line(n: &strand_core::SettingsNotice) -> Line {
         }
         _ => None,
     };
+    let settings_read = match &n.issue {
+        strand_core::SettingsIssue::Syntax(_)
+        | strand_core::SettingsIssue::Unreadable(_)
+        | strand_core::SettingsIssue::BadValue(_) => Some(n.file.to_string()),
+        _ => None,
+    };
     Line {
         text: n.to_string(),
         notice: true,
         cell: Some(key),
         clear,
+        settings_read,
         ..Line::default()
     }
 }
@@ -309,6 +320,44 @@ impl Overlay {
         }
     }
 
+    /// Settings files were read again (`reread`: each file and runtime
+    /// overlay file as notices name them) and reported `rows`: the rows
+    /// a read decides (a bad value, a syntax error) for those files go
+    /// unless reported again, so a fixed file takes its notice away. A
+    /// notice that was already listed does not reopen a dismissed
+    /// overlay.
+    pub fn settings_read(
+        &mut self,
+        reread: &[String],
+        rows: Vec<Line>,
+        now: Instant,
+        inst: &Instance,
+    ) {
+        let before = self.notes.clone();
+        self.notes
+            .retain(|n| n.settings_read.as_ref().is_none_or(|f| !reread.contains(f)));
+        let mut fresh = false;
+        for n in rows {
+            if self.notes.contains(&n) {
+                continue;
+            }
+            if let Some(c) = &n.cell {
+                self.notes.retain(|o| o.cell.as_ref() != Some(c));
+            }
+            fresh |= !before.contains(&n);
+            self.notes.push(n);
+        }
+        if self.notes.len() > MAX_NOTES {
+            let extra = self.notes.len() - MAX_NOTES;
+            self.notes.drain(..extra);
+        }
+        if fresh {
+            self.changed(now, inst);
+        } else if self.notes != before {
+            self.refresh(inst);
+        }
+    }
+
     /// The cell at `path` was reset (IPC `reset`, a `[reset]` click):
     /// its rows no longer apply.
     pub fn forget_cell(&mut self, path: &str, inst: &Instance) {
@@ -465,8 +514,20 @@ impl Overlay {
                     "nothing is running yet"
                 },
             )
-        } else {
+        } else if all.iter().any(|l| l.reset.is_some()) {
             format!("strand: reloaded with notices — click [reset] to go back to a default{more}")
+        } else if all.iter().all(|l| {
+            l.cell
+                .as_deref()
+                .is_some_and(|c| c.starts_with("settings:"))
+        }) {
+            if all.iter().any(|l| l.clear.is_some()) {
+                format!("strand: settings files — click [clear] to use the file's value{more}")
+            } else {
+                format!("strand: settings files{more}")
+            }
+        } else {
+            format!("strand: reloaded with notices{more}")
         };
         for (p, v) in [
             (Prop::Text, PropValue::Text(title)),

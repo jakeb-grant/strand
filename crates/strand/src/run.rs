@@ -181,6 +181,27 @@ pub(crate) fn set_screens(rt: &Runtime, host: &SchemaHost, screens: &[ScreenInfo
     }
 }
 
+/// How long the first frame waits for the portal's boot read (it has
+/// up to 500 ms; a desktop portal answers in a few).
+const BOOT_PORTAL_HOLD: Duration = Duration::from_millis(100);
+
+/// A portal batch: written into the graph (`system.dark`, …) and the
+/// kept values queued for the disk (`saved`: the file and its writer).
+fn portal_batch(
+    rt: &Runtime,
+    host: &SchemaHost,
+    batch: &strand_watch::SystemBatch,
+    last: &mut system::Last,
+    saved: &(Option<PathBuf>, Option<strand_theme::FileWriter>),
+) {
+    system::apply(rt, host, &batch.settings, batch.at_boot);
+    if last.merge(batch)
+        && let (Some(f), Some(w)) = saved
+    {
+        w.write(f.clone(), last.to_text());
+    }
+}
+
 /// The persist and settings stores under `$XDG_STATE_HOME/strand`. With
 /// no state directory (neither `XDG_STATE_HOME` nor `HOME` absolute),
 /// persisted state is not kept, but settings files are still read from
@@ -396,6 +417,9 @@ struct Shell {
     /// Cells kept over a changed default outside a reload while nobody
     /// watched (at boot): the next reload event lists them.
     unheard: Vec<strand_compiler::reconcile::KeptCell>,
+    /// Settings files (and their runtime overlays) read again since the
+    /// last step, as notices name them.
+    settings_reread: Vec<String>,
 }
 
 impl Shell {
@@ -442,7 +466,14 @@ impl Shell {
         match msg {
             FromWorker::Settings(paths) => {
                 for p in paths {
-                    self.inst.reload_settings(&p);
+                    if self.inst.reload_settings(&p) {
+                        // The next step's notices say what is still wrong
+                        // in them; the rest of their rows go.
+                        self.settings_reread.push(p.to_string_lossy().into_owned());
+                        for o in self.inst.settings_overlay_paths(&p) {
+                            self.settings_reread.push(o.to_string_lossy().into_owned());
+                        }
+                    }
                 }
             }
             FromWorker::Theme(paths) => {
@@ -725,20 +756,25 @@ impl Shell {
                 d => log::warn!("{d:?}"),
             }
         }
-        if !settings.is_empty() {
+        let reread = std::mem::take(&mut self.settings_reread);
+        if !settings.is_empty() || !reread.is_empty() {
             // Settings files: a bad value kept, a syntax error, a
             // read-only file going to an overlay, a file change shadowed
-            // by the runtime overlay (with its `[clear]`).
+            // by the runtime overlay (with its `[clear]`). A file read
+            // again without its old problem loses its row.
             let rows: Vec<_> = settings.iter().map(|n| overlay::settings_line(n)).collect();
-            self.overlay.note(rows, Instant::now(), &self.inst);
-            if let Some(s) = &mut self.server {
-                let texts: Vec<String> = settings.iter().map(|n| n.to_string()).collect();
-                s.broadcast(&json!({
-                    "event": "notices",
-                    "kept_over_default": [],
-                    "notices": texts,
-                }));
-            }
+            self.overlay
+                .settings_read(&reread, rows, Instant::now(), &self.inst);
+        }
+        if !settings.is_empty()
+            && let Some(s) = &mut self.server
+        {
+            let texts: Vec<String> = settings.iter().map(|n| n.to_string()).collect();
+            s.broadcast(&json!({
+                "event": "notices",
+                "kept_over_default": [],
+                "notices": texts,
+            }));
         }
         for n in &update.notices {
             log::info!("{n}");
@@ -956,6 +992,30 @@ pub fn logic(
                     None
                 }
             });
+    // The portal's values are kept off the logic thread.
+    let saved = (
+        system_file.clone(),
+        strand_theme::FileWriter::new()
+            .inspect_err(|e| log::warn!("not keeping the portal's settings: {e}"))
+            .ok(),
+    );
+    // The first frame waits (at most BOOT_PORTAL_HOLD) for the portal's
+    // boot read, so a desktop whose scheme or accent changed while Strand
+    // was not running does not show the persisted values first and then
+    // switch. A slower portal keeps them until its read arrives.
+    if _portal.is_some() {
+        let deadline = Instant::now() + BOOT_PORTAL_HOLD;
+        while let Ok(ev) =
+            portal_rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        {
+            if let strand_watch::ChangeEvent::System(batch) = ev {
+                portal_batch(&rt, &host, &batch, &mut last, &saved);
+                if batch.at_boot {
+                    break;
+                }
+            }
+        }
+    }
     let inst = Instance::from_build(&rt, &build, host.clone(), storage);
     let mut shell = Shell {
         inst,
@@ -970,6 +1030,7 @@ pub fn logic(
         latest: Problems::of(&boot),
         watched: Vec::new(),
         unheard: Vec::new(),
+        settings_reread: Vec::new(),
     };
     shell.overlay.set_running(boot.build.is_some());
     // The boot's diagnostics: a config broken at boot runs its last good
@@ -1034,18 +1095,7 @@ pub fn logic(
         }
         while let Ok(ev) = portal_rx.try_recv() {
             if let strand_watch::ChangeEvent::System(batch) = ev {
-                system::apply(
-                    shell.inst.runtime(),
-                    &shell.host,
-                    &batch.settings,
-                    batch.at_boot,
-                );
-                if last.merge(&batch)
-                    && let Some(f) = &system_file
-                    && let Err(e) = last.save(f)
-                {
-                    log::warn!("keeping the portal's settings: {e}");
-                }
+                portal_batch(shell.inst.runtime(), &shell.host, &batch, &mut last, &saved);
             }
         }
         if shell.inst.take_theme_files_changed() {
@@ -2513,8 +2563,37 @@ pub(crate) mod tests {
                 .any(|t| t.contains("gap") && t.contains("keeping its last good value"))
         });
         assert!(m.scene.texts().contains(&"gap 6".to_string()), "kept");
+        // A settings-only overlay says so (no `[reset]` here).
+        m.until("the settings header", |s| {
+            s.texts()
+                .iter()
+                .any(|t| t.starts_with("strand: settings files"))
+        });
+        assert!(
+            !m.scene.texts().iter().any(|t| t.contains("[reset]")),
+            "{:?}",
+            m.scene.texts()
+        );
         std::fs::write(dir.join("prefs.toml"), "# mine\ngap = 8\n").unwrap();
         m.until("the fix", |s| s.texts().contains(&"gap 8".to_string()));
+        // Fixed: its notice goes, and the overlay with it.
+        m.until("the notice gone", |s| {
+            !s.texts()
+                .iter()
+                .any(|t| t.contains("keeping its last good value") || t.starts_with("strand:"))
+        });
+        // A syntax error, then the file parses again: same.
+        std::fs::write(dir.join("prefs.toml"), "# mine\ngap = = 8\n").unwrap();
+        m.until("the syntax notice", |s| {
+            s.texts()
+                .iter()
+                .any(|t| t.contains("keeping every last good value"))
+        });
+        std::fs::write(dir.join("prefs.toml"), "# mine\ngap = 9\n").unwrap();
+        m.until("parsed again", |s| {
+            s.texts().contains(&"gap 9".to_string())
+                && !s.texts().iter().any(|t| t.starts_with("strand:"))
+        });
         to_logic.send(ToLogic::Shutdown).unwrap();
         assert_eq!(t.join().unwrap(), Ok(()));
         drop(compiler);

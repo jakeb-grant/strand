@@ -115,8 +115,16 @@ impl Last {
         changed
     }
 
-    /// Writes the kept values (temp file plus rename).
+    /// Writes the kept values (temp file plus rename; tests). `strand
+    /// run` queues [`Last::to_text`] on a [`strand_theme::FileWriter`]
+    /// instead, off the logic thread.
+    #[cfg(test)]
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
+        strand_theme::writer::write_atomic(path, self.to_text().as_bytes())
+    }
+
+    /// The kept values as the file holds them.
+    pub fn to_text(&self) -> String {
         let mut out = String::new();
         for s in &self.settings {
             match s {
@@ -137,14 +145,7 @@ impl Last {
                 SystemSetting::Contrast(Contrast::Normal) => out.push_str("contrast=normal\n"),
             }
         }
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        // Per process: two `strand run`s sharing the state directory
-        // never write the same temp file.
-        let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
-        std::fs::write(&tmp, out)?;
-        std::fs::rename(&tmp, path)
+        out
     }
 }
 

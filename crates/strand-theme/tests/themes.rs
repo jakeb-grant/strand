@@ -426,6 +426,83 @@ fn replaced_and_briefly_missing_wallpapers() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// A lookup set off by something else (a portal change) while the
+/// wallpaper is being copied over in place reads a torn file: its seed
+/// holds through the grace instead of failing, the finished write is
+/// read, and a file that stays broken fails after one more read.
+#[test]
+fn a_torn_wallpaper_holds_its_seed() {
+    use strand_theme::image::MISSING_GRACE;
+    let dir = temp("torn");
+    let wall = dir.join("wall.png");
+    let blue = png([30, 90, 200], [240, 200, 40], 64, 64);
+    let red = png([200, 40, 40], [20, 20, 20], 64, 64);
+    std::fs::write(&wall, &blue).unwrap();
+    let mut q = Quantiser::new(Some(dir.join("cache"))).unwrap();
+    q.lookup(&wall);
+    let first = wait_ready(&mut q, &wall);
+    // Half of the new file written.
+    std::fs::write(&wall, &red[..red.len() / 2]).unwrap();
+    assert!(matches!(q.lookup(&wall), Lookup::Pending { .. }));
+    assert!(q.wait(Duration::from_secs(30)));
+    assert_eq!(q.lookup(&wall), Lookup::Pending { last: Some(first) });
+    // The write finishes; the watcher says so.
+    std::fs::write(&wall, &red).unwrap();
+    q.invalidate(&wall);
+    q.lookup(&wall);
+    let second = wait_ready(&mut q, &wall);
+    assert_ne!(first, second);
+    // Broken for good: held once, then failed.
+    std::fs::write(&wall, b"not an image").unwrap();
+    q.lookup(&wall);
+    assert!(q.wait(Duration::from_secs(30)));
+    let broke = std::time::Instant::now();
+    assert!(matches!(q.lookup(&wall), Lookup::Pending { .. }));
+    std::thread::sleep(MISSING_GRACE + Duration::from_millis(50));
+    q.poll();
+    q.lookup(&wall);
+    assert!(q.wait(Duration::from_secs(30)));
+    assert!(matches!(q.lookup(&wall), Lookup::Failed { .. }));
+    assert!(broke.elapsed() >= MISSING_GRACE);
+    drop(q);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Two runs sharing one cache directory keep each other's wallpapers in
+/// the index (and their seeds): a restart of either answers both at once.
+#[test]
+fn two_runs_share_the_wallpaper_cache() {
+    let dir = temp("shared-cache");
+    let cache = dir.join("cache");
+    let (a_wall, b_wall) = (dir.join("a.png"), dir.join("b.png"));
+    std::fs::write(&a_wall, png([30, 90, 200], [240, 200, 40], 32, 32)).unwrap();
+    std::fs::write(&b_wall, png([200, 40, 40], [20, 20, 20], 32, 32)).unwrap();
+    let mut a = Quantiser::new(Some(cache.clone())).unwrap();
+    let mut b = Quantiser::new(Some(cache.clone())).unwrap();
+    a.lookup(&a_wall);
+    let a_seed = wait_ready(&mut a, &a_wall);
+    b.lookup(&b_wall);
+    let b_seed = wait_ready(&mut b, &b_wall);
+    // `a` writes again after `b` (another wallpaper): `b`'s entry stays.
+    let c_wall = dir.join("c.png");
+    std::fs::write(&c_wall, png([40, 200, 40], [20, 20, 20], 32, 32)).unwrap();
+    a.lookup(&c_wall);
+    wait_ready(&mut a, &c_wall);
+    drop((a, b));
+    let seeds = std::fs::read_dir(&cache)
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".seed"))
+        .count();
+    assert_eq!(seeds, 3);
+    let mut q = Quantiser::new(Some(cache)).unwrap();
+    assert_eq!(q.lookup(&a_wall), Lookup::Ready(a_seed));
+    assert_eq!(q.lookup(&b_wall), Lookup::Ready(b_seed));
+    assert!(matches!(q.lookup(&c_wall), Lookup::Ready(_)));
+    drop(q);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// A slideshow through 300 wallpapers leaves a bounded index, seed cache
 /// and lookup table.
 #[test]
@@ -468,5 +545,31 @@ fn many_wallpapers_leave_a_bounded_cache() {
     let mut q = Quantiser::new(Some(cache)).unwrap();
     assert!(matches!(q.lookup(&dir.join("w299.png")), Lookup::Ready(_)));
     drop(q);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// An imported file must be a regular file of at most a megabyte: a FIFO
+/// (which would block the logic thread), a device and an oversized file
+/// are refused with an `Io` error, without reading them.
+#[test]
+fn imports_refuse_fifos_devices_and_huge_files() {
+    let dir = temp("import-kinds");
+    let fifo = dir.join("pipe.yaml");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .is_ok_and(|s| s.success());
+    if made {
+        let started = std::time::Instant::now();
+        let r = import(&format!("base16:{}", fifo.display()), None);
+        assert!(matches!(r, Err(ImportError::Io { .. })), "{r:?}");
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+    let r = import("base16:/dev/zero", None);
+    assert!(matches!(r, Err(ImportError::Io { .. })), "{r:?}");
+    let huge = dir.join("huge.json");
+    std::fs::write(&huge, vec![b' '; 2 * 1024 * 1024]).unwrap();
+    let r = import(&format!("w3c:{}", huge.display()), None);
+    assert!(matches!(r, Err(ImportError::Io { .. })), "{r:?}");
     let _ = std::fs::remove_dir_all(dir);
 }

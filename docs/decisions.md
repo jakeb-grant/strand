@@ -4061,3 +4061,109 @@ the colour scheme itself (`dark=<bool>,<prefer-dark|prefer-light|none>`;
 the older `dark=<bool>` still reads), and temp files carry the process
 id, so two `strand run`s sharing a state directory never collide.
 
+
+**2026-10-06 · wave3-theme (review 2): wallpapers are decoded at reduced
+size.** `material(image:)` never builds a full-resolution frame for the
+common formats (design.md names full-resolution decodes as what bloats
+other shells, and budgets Images at 1 MB). A baseline JPEG is decoded
+with DCT scaling (`jpeg-decoder`, 1/8, 1/4 or 1/2, the smallest at least
+128 px), a PNG row by row (`png`, Adam7 pass by pass), each straight
+into a box-filtered grid of at most 128 px that the quantiser reads: a
+4K wallpaper peaks under 2 MB, most of it the quantiser's own histogram
+(`crates/strand-theme/tests/decode.rs`, counted by a global allocator).
+No Rust decoder decodes WebP, progressive JPEG or lossless JPEG at
+reduced size, so those are decoded whole, but only up to
+`FULL_FRAME_BYTES` (64 MiB, checked from the header before anything is
+allocated: a 4K WebP fits, a decoding bomb does not). Any format past 64
+Mpx and any file past 128 MiB is refused. The file is read through one
+open descriptor (hash, then decode), and a file whose size or times move
+while it is read is reported as torn.
+
+**2026-10-06 · wave3-theme (review 2): a torn wallpaper holds its
+palette.** A lookup can be set off by something unrelated (a portal
+change, another quantiser job) while a wallpaper is copied over in
+place. A read of a path that gave a seed and now fails is treated like
+a missing wallpaper: the old seed holds for `MISSING_GRACE` (500 ms),
+the path is read again when the watcher reports the finished write or
+when the grace is over, and only a second failure is reported. So `??`
+does not flash the fallback palette during `cp new.jpg wall.jpg`
+(`crates/strand-theme/tests/themes.rs::a_torn_wallpaper_holds_its_seed`).
+
+**2026-10-06 · wave3-theme (review 2): runs sharing the wallpaper cache
+merge it.** Two `strand run`s with one `$XDG_STATE_HOME` (two configs,
+tests beside a real shell) share `palettes/`. A worker takes an advisory
+lock on `palettes/index.lock`, reads the index from disk, adds its own
+result as the most recent entry, keeps the 64 most recent and prunes
+only the `.seed` files no entry references, all under the lock. Neither
+run evicts the other's entries
+(`crates/strand-theme/tests/themes.rs::two_runs_share_the_wallpaper_cache`).
+
+**2026-10-06 · wave3-theme (review 2): state writes and imports off the
+frame path.** The last palette and the portal's last values are queued
+on a `strand_theme::FileWriter`, a small worker that writes each file
+atomically, the latest content per path winning. Dropping the writer
+waits up to 1 s for the queue, so shutdown still saves. An `import()`
+file must be a regular file (a FIFO is refused before it is opened, so
+it cannot block the logic thread) of at most 1 MiB
+(`imports_refuse_fifos_devices_and_huge_files`). The read itself stays
+on the logic thread: such a file is a few kilobytes and is read only
+when it changes.
+
+**2026-10-06 · wave3-theme (review 2): the first frame waits briefly
+for the portal.** A desktop whose colour scheme or accent changed while
+Strand was not running would otherwise show the persisted values for up
+to 500 ms (the portal's boot read) and then switch. `strand run` holds
+the first frame for at most 100 ms (`BOOT_PORTAL_HOLD`) for the portal's
+boot batch. A real portal answers in a few milliseconds, so the first
+frame is right. A slower portal keeps the persisted values until it
+answers, a bounded and rare switch that is accepted, and with no portal
+there is no wait.
+
+**2026-10-06 · wave3-theme (review 2): settings notices leave when
+fixed.** A settings file read again by the watcher removes its rows
+about a bad value, a syntax error or an unreadable file, and those of
+its runtime overlay file, unless the read reports them again. The
+overlay closes when nothing is left, as it does for a fixed config
+error. A row that is reported again unchanged does not reopen a
+dismissed overlay. Rows that a read does not decide (read-only redirect,
+"runtime overlay wins [clear]", a failed write) keep the earlier rule
+and stay until dismissed. An overlay listing only settings rows gets its
+own header: `strand: settings files`, plus `— click [clear] to use the
+file's value` when a row has a `[clear]`. It no longer says it reloaded
+or offers a `[reset]` it does not have
+(`crates/strand/src/run.rs::tests::a_bad_settings_value_is_kept_and_shown`).
+
+**2026-10-06 · wave3-theme (review 2): the guard is one level.** The
+contrast guard evaluates a pair's backgrounds with the guard off. A
+background derived from the guarded text token (`override surface:
+$bg.mix($fg, 4%)`) then reads the text as declared, instead of
+recursing through another guard at every level up to the depth limit.
+The memo key is an inline array (text and up to 8 backgrounds), so a
+frame's guarded lookups allocate nothing
+(`crates/strand-scene/src/tokens.rs::tests::backgrounds_derived_from_guarded_text_are_one_level`).
+
+**2026-10-06 · wave3-theme (review 2): edits outside the owned area,
+for the integrator.** This track changed three things outside its token
+evaluation area, each recorded above. In `crates/strand-render/src/flatten.rs`:
+`Inherited` keeps `Option` colour, font and weight, the text defaults
+are looked up per scope (`default_color`, `default_font`), and a root
+`bar` with no `bg` paints `$surface`. In `crates/strand-text/src/engine.rs`:
+`with_generic` appends a generic family. Rebase note for the layout
+track's `flatten.rs`: keep its layout code and re-apply these hunks. They
+touch `Inherited`, `inherit()`, the inherited-props block at the top of
+the per-node draw and the background paint; none of them touch
+geometry. Moving the bar default into the instantiator (`bg: $surface`
+emitted on bars) was considered. It would put a prop into the scene that
+the source does not have (the inspector, the reconciler's hashes and
+the fuzzer's cold-boot comparison would all see it), so it stays a
+render default. The strand-text fallback still needs the text owner's
+sign-off.
+
+**2026-10-06 · wave3-theme (review 2): the logic side of a swap is
+timed.** `crates/strand-compiler/tests/theme.rs::a_theme_swap_is_under_five_milliseconds_of_logic`
+times `theme.look` written to `SetTokens` out of the flush on design.md's
+theme.strand (light↔dark, auto→mocha, mocha→wallpaper with a cached
+seed, wallpaper→auto). Each swap re-runs `material()`, the guard and
+the whole token table. The median of 15 is about 1 ms in a debug build,
+and the test gates it at 5 ms in every build. The render side (springs,
+crossfade) is still pending, so M2's exit box stays unticked.

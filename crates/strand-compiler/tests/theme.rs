@@ -503,3 +503,105 @@ fn a_broken_palette_file_keeps_the_last_good_palette() {
     drop(shell);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// The logic side of a theme swap on design.md's theme.strand, timed
+/// from the write of `theme.look` to the `SetTokens` op leaving the
+/// flush: `material()` and the guard run again, the whole token table
+/// (palette, base tokens, component tokens, the chosen set) is rebuilt
+/// and sent. Gated at design.md's 5 ms by the median of 15 swaps, in
+/// every build (about 1 ms in a debug build, so the gate holds wherever
+/// the tests run).
+#[test]
+fn a_theme_swap_is_under_five_milliseconds_of_logic() {
+    let dir = temp_dir("swap-time");
+    let config = dir.join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    let wall = config.join("wall.png");
+    std::fs::write(&wall, png([30, 90, 200], [240, 200, 40])).unwrap();
+    std::fs::write(
+        config.join("prefs.toml"),
+        format!("wallpaper = \"{}\"\n", wall.display()),
+    )
+    .unwrap();
+    let storage = Storage::in_dirs(dir.join("state"), &config);
+    let mut shell = boot(
+        &[("theme.strand", theme()), ("hello_bar.strand", hello())],
+        storage.clone(),
+    );
+    // The wallpaper's seed is cached (quantised once, as at any later
+    // swap back to it).
+    shell.look("wallpaper");
+    shell.settle();
+    let mut worst = Vec::new();
+    for (from, to) in [
+        ("light", "dark"),
+        ("dark", "light"),
+        ("auto", "mocha"),
+        ("mocha", "wallpaper"),
+        ("wallpaper", "auto"),
+    ] {
+        let mut times = Vec::new();
+        for _ in 0..15 {
+            shell.look(from);
+            let look = shell.host.variant("Look", to);
+            let t = std::time::Instant::now();
+            shell.inst.set("theme.look", look).unwrap();
+            let u = shell.inst.flush();
+            let dt = t.elapsed();
+            assert!(u.errors.is_empty(), "{:?}", u.errors);
+            assert!(
+                u.diff
+                    .ops
+                    .iter()
+                    .any(|op| matches!(op, SceneOp::SetTokens { .. })),
+                "{from} → {to}: no SetTokens"
+            );
+            shell.scene.apply(&u.diff).unwrap();
+            times.push(dt);
+        }
+        times.sort();
+        let median = times[times.len() / 2];
+        eprintln!(
+            "theme swap {from} → {to}: median {median:?}, max {:?}",
+            times[times.len() - 1]
+        );
+        worst.push((median, from, to));
+    }
+    for (median, from, to) in worst {
+        assert!(
+            median < Duration::from_millis(5),
+            "{from} → {to}: {median:?} of logic"
+        );
+    }
+    drop(shell);
+    if let Some(p) = &storage.persist {
+        assert!(p.sync(Duration::from_secs(5)));
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A fresh instance on the same runtime (a hard reload) leaves no task
+/// behind: the dropped theme host wakes its quantiser task, which ends,
+/// and disposes its generation signal.
+#[test]
+fn a_dropped_theme_host_ends_its_task() {
+    let mut map = SourceMap::new();
+    map.add("hello_bar.strand", hello());
+    let compiled = strand_compiler::compile(&map);
+    assert_eq!(compiled.errors(), 0);
+    let program = Arc::new(lower::lower(
+        &compiled.program,
+        strand_compiler::schema::Schema::builtin(),
+    ));
+    let rt = Runtime::new();
+    let host = Rc::new(SchemaHost::mock(&rt, &program.types));
+    let mut counts = Vec::new();
+    for _ in 0..6 {
+        let inst = Instance::new(&rt, program.clone(), host.clone(), Storage::none());
+        inst.flush();
+        drop(inst);
+        rt.flush();
+        counts.push(rt.stats().nodes);
+    }
+    assert_eq!(counts[2], counts[5], "{counts:?}");
+}

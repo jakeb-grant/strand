@@ -340,16 +340,24 @@ table.
   `material-colors` 0.5, spec 2021 pinned (`material::SPEC`).
 - `image::Quantiser`: `lookup(path) -> Lookup::{Ready(seed), Pending {
   last }, Failed { error, last }}` from a `stat` on the calling thread;
-  a worker thread reads, BLAKE3-hashes, decodes a 128 px downscale and
-  quantises only unseen content; seeds by hash and the path index are
-  kept in a directory (`$XDG_STATE_HOME/strand/palettes`), the 64 most
+  a worker thread reads the file through one descriptor, BLAKE3-hashes
+  it and, for unseen content only, decodes it at reduced size (JPEG by
+  DCT scaling, PNG row by row, WebP whole up to `FULL_FRAME_BYTES`)
+  into a 128 px box-filtered grid and quantises it
+  (`seed_from_reader`, `seed_from_bytes`); seeds by hash and the path
+  index are kept in a directory (`$XDG_STATE_HOME/strand/palettes`,
+  merged under `index.lock` with other runs sharing it), the 64 most
   recently used (`MAX_REMEMBERED`); `set_waker` is called after each
-  finished job and when a missing wallpaper's grace (`MISSING_GRACE`)
-  runs out, `poll()` takes the results; `invalidate(path)` marks an
-  entry stale (the watcher saw it change).
+  finished job and when a missing or torn wallpaper's grace
+  (`MISSING_GRACE`) runs out, `poll()` takes the results;
+  `invalidate(path)` marks an entry stale (the watcher saw it change).
+- `writer::FileWriter`: `write(path, bytes)` queues an atomic write on
+  a worker thread (latest per path wins), `flush(timeout)`; dropping it
+  waits up to 1 s. Used for the last palette (`ThemeHost`) and the
+  portal's last values (`strand run`).
 - `import(source, base_dir)`: `catppuccin:<flavour>[:<accent>]`,
-  `base16:`, `base24:`, `matugen:`, `w3c:` + a file
-  (`docs/decisions.md`, wave3-theme).
+  `base16:`, `base24:`, `matugen:`, `w3c:` + a regular file of at most
+  1 MiB (`MAX_IMPORT_BYTES`) (`docs/decisions.md`, wave3-theme).
 - `contrast::{PAIRS, guard, ratio, solve}`, `defaults::base_tokens()`
   (design.md's `tokens base`), `gamut::map`.
 
@@ -1065,6 +1073,9 @@ Public interfaces other crates and later stages build on:
   `Instance::settings_files()` and calls `Instance::reload_settings(path)`
   when one changes (core's `Settings::reload` on every mounted handle;
   the off-thread `reload_with` path is the watch track's).
+  `Instance::settings_overlay_paths(path)` names the runtime overlay
+  files of those handles, so `strand run` can drop the overlay rows a
+  re-read no longer reports.
 - **Instantiation** (`strand_compiler::instantiate`): `Instance::new(rt,
   Arc<lower::Program>, Rc<dyn ServiceHost>, Storage)` mounts the
   program; `Instance::tick(now)` (or `flush()`) runs the core tick and

@@ -1672,6 +1672,25 @@ impl Instance {
         out
     }
 
+    /// The runtime overlay files of the mounted handles on the settings
+    /// file `path` (what their overlay notices name).
+    pub fn settings_overlay_paths(&self, path: &std::path::Path) -> Vec<PathBuf> {
+        let mut out: Vec<PathBuf> = self
+            .ctx
+            .settings
+            .borrow()
+            .iter()
+            .filter_map(std::rc::Weak::upgrade)
+            .filter_map(|s| {
+                let h = s.handle.as_ref()?;
+                (h.path() == path).then(|| h.overlay_path().to_path_buf())
+            })
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
     /// The watcher saw `path` change: every mounted handle on it re-reads
     /// it (core's `Settings::reload`: each field checked on its own, a
     /// syntax error keeps the last good values). Returns whether one
