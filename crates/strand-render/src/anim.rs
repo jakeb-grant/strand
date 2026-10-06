@@ -32,7 +32,7 @@ use strand_scene::{
 use crate::tree::{Node, SceneTree};
 
 /// Props that spring between values; the others snap.
-pub(crate) const ANIMATED: [Prop; 10] = [
+pub(crate) const ANIMATED: [Prop; 12] = [
     Prop::X,
     Prop::Y,
     Prop::Opacity,
@@ -43,6 +43,9 @@ pub(crate) const ANIMATED: [Prop; 10] = [
     Prop::Border,
     Prop::Shadow,
     Prop::Radius,
+    // Widgets: a meter's or slider's fill and its track's colour.
+    Prop::Value,
+    Prop::Track,
 ];
 
 /// Props whose change springs the laid-out size.
@@ -56,7 +59,8 @@ fn eps(p: Prop) -> f32 {
         Prop::Opacity => 0.002,
         Prop::Scale => 0.0005,
         Prop::Rotate => 0.05,
-        Prop::Bg | Prop::Color => 0.002,
+        Prop::Bg | Prop::Color | Prop::Track => 0.002,
+        Prop::Value => 0.0005,
         _ => 0.05,
     }
 }
@@ -154,7 +158,10 @@ fn encode(p: Prop, v: Option<&PropValue>, inh: Color, b: Extents) -> Option<Enc>
         v => number(v),
     };
     Some(match (p, v) {
-        (Prop::X | Prop::Y | Prop::Rotate, None) => Enc::One([0.0]),
+        (Prop::X | Prop::Y | Prop::Rotate | Prop::Value, None) => Enc::One([0.0]),
+        (Prop::Value, Some(v)) => Enc::One([number(v)?]),
+        (Prop::Track, None) => Enc::Four(color_channels(Color::TRANSPARENT)),
+        (Prop::Track, Some(v)) => Enc::Four(color_channels(solid(v)?)),
         (Prop::Opacity | Prop::Scale, None) => Enc::One([1.0]),
         (Prop::X, Some(PropValue::Length(Length::Percent(q)))) => {
             Enc::One([b.parent.0 * q / 100.0]).finite()?

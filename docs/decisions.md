@@ -4351,6 +4351,17 @@ build, so CI runs it with `--release` against 5 ms and a debug build
 holds it to four times that (catching a regression in the shape of the
 work, as a check per node would be).
 
+**2026-10-06 · wave3-theme (t2): seen on sway, and widget defaults.**
+`strand run` on headless sway with design.md's `theme.strand` (its
+`$motion.effects` slowed to `spring(30, 1)` so grim catches the middle)
+and a bar and panel in `$surface`, `$surface.hi`, `$accent`,
+`$accent.container`: `strand set theme.look dark` showed the frames
+150 and 300 ms in moving through greys with readable text, then the
+dark scheme; `mocha` after it sprang likewise. Merging the widgets of
+wave3-pixels, a `segmented`, `meter` and `slider` that name no `color`
+or `font` take the theme's `$fg` and `$font.ui` in their own scope, as
+text, buttons and inputs do.
+
 ## wave3-pixels
 
 **2026-10-06 · wave3-pixels: container defaults.** design.md names the
@@ -4931,3 +4942,84 @@ compositor-animated poses (M4). Another output's last frame counts as
 (painted within `EXIT_STALL`), and `Renderer::next_wake` tells the
 host's loop when a stalled exit is due to end, so a closing surface on
 an output that stopped sending frame callbacks still closes.
+
+## wave3-pixels (p3)
+
+**2026-10-06 · wave3-pixels (p3): gradients are dithered pixmaps.**
+vello_cpu quantises its gradients to 8 bits with no dithering, so a slow
+ramp over a wide box bands. Render draws every gradient fill and border
+(`linear`, `radial`, `conic`) from a pixmap of the frame's size, computed
+per pixel from a 1,024-entry OKLab colour table and offset by an 8 × 8
+Bayer threshold before rounding (`strand-render/src/cache.rs`). Pixmaps
+live in a paint cache of `PAINT_CACHE_BYTES` (4 MB, design.md's "cached
+offscreen groups, about 4 MB"), least recently used first, never evicting
+what the current frame uses; a gradient larger than `MAX_ENTRY_BYTES`
+(2 MB, about 720 × 720 px) draws with vello's own undithered gradient.
+Whether a gradient is cached depends only on its size, so a partial
+repaint draws the same pixels as a full one.
+
+**2026-10-06 · wave3-pixels (p3): shadows are cached pixmaps.** Each
+shadow of a list (`shadow: $elevation.lg` is two) is rendered once into a
+pixmap of its reach, keyed by its geometry relative to its whole-pixel
+origin, blur, radii and colour, and blitted from the paint cache after
+that, so a toast sliding by whole pixels, a launcher fading in and a
+repaint reuse it; the casting box is cut out at draw time. A shadow
+larger than `MAX_ENTRY_BYTES` draws directly (decided by size alone, as
+gradients).
+
+**2026-10-06 · wave3-pixels (p3): `corners: squircle`.** Each corner is
+a superellipse quadrant (n = 5) reaching 1.6 × the radius along both
+edges (capped at half the shorter side), so it eases into the edge
+instead of meeting it at a curvature kink, the "continuous corner" of
+iOS and Material 3 Expressive. Fill, border and `clip: true` use that
+path; the blurred shadow and the hit shape keep the circular corner of
+the same radius, which the squircle stays within about a pixel of.
+
+**2026-10-06 · wave3-pixels (p3): `blur: N` until the compositor
+blurs.** A node with `blur` reports its rounded box in buffer pixels
+(`Painter::blur_region`, a `BlurRegion` with the radius), the region the
+blur ladder's first rung (`ext-background-effect-v1`, M4) will send. Until
+a host says the compositor blurs (`Renderer::set_compositor_blur(true)`)
+render draws the tint fallback: the background's alpha rises by 0.15
+(`BLUR_TINT`), every gradient stop's too; `blur_fallback: none` keeps it
+as written.
+
+**2026-10-06 · wave3-pixels (p3): widget state lives on the render
+thread.** Hover, press and focus, an `input`'s caret and selection and a
+slider's value while dragged are kept by render (`strand_render::widgets::Widgets`),
+written by the input router through `InputScene` (`set_flag`,
+`set_caret`, `set_drag`), so a widget answers on the frame the input
+arrives, as design.md's render-never-waits rule asks; logic still hears
+every change as flags and two-way writes. A dragged slider draws the
+drag until the release; its `value` (and a meter's) springs otherwise.
+
+**2026-10-06 · wave3-pixels (p3): widget defaults.** design.md shows the
+widgets unstyled (`button "‹"`, `slider { value: <-> … }`, `segmented {
+options: Look }`), so each draws something sensible with no props: a
+`button` pads its label 4, 10 px, centres it, sits on `$surface.hi` with
+`$radius.md`, and lays a state layer of its label colour over its
+background (8 % hovered, 12 % pressed); a `meter` is a pill whose track is
+`track` (else the label colour at 15 %) filled to `value` in its own
+`color` (else `$accent`); a `slider` (120 px wide unless sized) is a 4 px
+track filled to `value` in `$accent` with a 14 px knob (16 px hovered or
+dragged), its rest in `track`; a `segmented` splits its box into equal
+segments, each label padded 10 px, on `$surface.hi`, the chosen one on
+`$accent` with `$on_accent` text. Options show their names with `_` as
+spaces. Missing tokens fall back to the label colour.
+
+**2026-10-06 · wave3-pixels (p3): editing an `input`.** Keys edit at the
+caret: typing replaces the selection, BackSpace/Delete remove it or a
+character (Ctrl: a word), Left/Right/Home/End move (Shift extends, Ctrl
+by words), Ctrl+A selects all; a press places the caret and dragging
+selects. The caret is `$accent`, 1.5 px, steady (a blinking caret would
+wake an idle shell twice a second); the selection is `$accent.container`.
+A one-line input wider than its box scrolls so the caret stays in view
+(its end without focus). `type: password` shows one bullet per character.
+Clipboard (Ctrl+C/V) needs `wl_data_device` and is left for M4 with drag
+and drop. Caret stops come from strand-text (`TextLayout::carets`, cluster
+boundaries per line), added for this.
+
+**2026-10-06 · wave3-pixels (p3): a node may shape several texts.** A
+`segmented` needs one layout per option label; text requests carry a
+`part` (0 a node's own text, 1 + i its i-th label), so labels are shaped,
+cached, pruned and measured like any text.

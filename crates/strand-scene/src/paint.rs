@@ -107,6 +107,19 @@ impl<'a> PaintTarget<'a> {
     }
 }
 
+/// A rounded box a node asks the compositor to blur behind (`blur: 24`),
+/// in buffer pixels: the first rung of the blur ladder
+/// (`ext-background-effect-v1`, M4), whose region follows the rounded
+/// shape. Without it render draws the tint fallback itself.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct BlurRegion {
+    pub rect: Rect,
+    /// Corner radii in buffer pixels, clockwise from top-left.
+    pub radii: [f32; 4],
+    /// The blur radius in logical pixels.
+    pub radius: f32,
+}
+
 /// Implemented by the render thread, called by the surface manager.
 pub trait Painter {
     /// Paint everything that changed for `surface` and return the damage,
@@ -130,6 +143,13 @@ pub trait Painter {
     fn opaque_region(&self, surface: SurfaceId) -> Damage {
         let _ = surface;
         Damage::new()
+    }
+    /// Where the last painted frame asks the compositor to blur behind
+    /// the surface (nodes with `blur`), in buffer pixels. Empty when
+    /// nothing asks.
+    fn blur_region(&self, surface: SurfaceId) -> Vec<BlurRegion> {
+        let _ = surface;
+        Vec::new()
     }
 }
 

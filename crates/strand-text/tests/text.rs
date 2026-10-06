@@ -493,3 +493,24 @@ fn dropping_the_worker_discards_its_queue() {
         t.elapsed()
     );
 }
+
+/// Every cluster boundary is a caret stop, in logical pixels, at any
+/// scale: an `input` draws its caret and selection from them.
+#[test]
+fn caret_stops_follow_the_advances() {
+    let mut e = TextEngine::new(config());
+    for scale in [Scale::ONE, Scale::new(180).unwrap()] {
+        let l = e.layout(&request(1, "12:59", 13.0, scale));
+        let bytes: Vec<u32> = l.carets.iter().map(|c| c.byte).collect();
+        assert_eq!(bytes, [0, 1, 2, 3, 4, 5]);
+        let digit = 1139.0 / 2048.0 * 13.0;
+        assert!(l.carets[0].x.abs() < 0.01);
+        assert!((l.carets[1].x - digit).abs() < 0.05, "{:?}", l.carets);
+        assert!((l.carets[5].x - l.size.w).abs() < 0.05);
+        assert!(l.carets.iter().all(|c| c.line == 0));
+    }
+    // Multi-byte characters: stops sit on character boundaries.
+    let l = e.layout(&request(2, "héllo", 13.0, Scale::ONE));
+    let bytes: Vec<u32> = l.carets.iter().map(|c| c.byte).collect();
+    assert_eq!(bytes, [0, 1, 3, 4, 5, 6]);
+}

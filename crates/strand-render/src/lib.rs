@@ -16,6 +16,7 @@
 //! it by the buffer's age and rasterises only inside it.
 
 mod anim;
+mod cache;
 mod flatten;
 pub mod input;
 mod layout;
@@ -23,7 +24,10 @@ mod markup;
 mod raster;
 mod renderer;
 mod tree;
+pub mod widgets;
 
+pub use cache::{MAX_ENTRY_BYTES, PAINT_CACHE_BYTES};
+pub use flatten::BLUR_TINT;
 pub use input::{Flag, HitOnly, InputScene, Intent, NodeEvent, Router, WHEEL_STEP};
 pub use layout::{Boxes, CH_EM, LIST_ROW_ESTIMATE, MAX_CONTENT_SIZE, RootSize, ScrollState};
 pub use renderer::{

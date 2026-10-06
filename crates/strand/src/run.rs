@@ -2636,8 +2636,15 @@ pub(crate) mod tests {
 
     /// A settings file edited by hand with a bad value: the field keeps
     /// its last good value and the overlay says so; the fix applies.
+    /// (Saved whole, as editors do: a truncate-then-write save can be
+    /// read empty in between, and an empty file is every default.)
     #[test]
     fn a_bad_settings_value_is_kept_and_shown() {
+        fn save(path: &Path, text: &str) {
+            let tmp = path.with_extension("tmp");
+            std::fs::write(&tmp, text).unwrap();
+            std::fs::rename(&tmp, path).unwrap();
+        }
         let dir = temp_dir("settings-notice");
         std::fs::write(dir.join("prefs.toml"), "# mine\ngap = 6\n").unwrap();
         std::fs::write(
@@ -2648,7 +2655,7 @@ pub(crate) mod tests {
         let storage = Storage::in_dirs(dir.join("state"), &dir);
         let (compiler, to_logic, t, mut m) = spawn_live_with(&dir, None, None, storage);
         m.until("the file's value", |s| s.texts() == ["gap 6"]);
-        std::fs::write(dir.join("prefs.toml"), "# mine\ngap = \"wide\"\n").unwrap();
+        save(&dir.join("prefs.toml"), "# mine\ngap = \"wide\"\n");
         m.until("the notice", |s| {
             s.texts()
                 .iter()
@@ -2666,7 +2673,7 @@ pub(crate) mod tests {
             "{:?}",
             m.scene.texts()
         );
-        std::fs::write(dir.join("prefs.toml"), "# mine\ngap = 8\n").unwrap();
+        save(&dir.join("prefs.toml"), "# mine\ngap = 8\n");
         m.until("the fix", |s| s.texts().contains(&"gap 8".to_string()));
         // Fixed: its notice goes, and the overlay with it.
         m.until("the notice gone", |s| {
@@ -2675,13 +2682,13 @@ pub(crate) mod tests {
                 .any(|t| t.contains("keeping its last good value") || t.starts_with("strand:"))
         });
         // A syntax error, then the file parses again: same.
-        std::fs::write(dir.join("prefs.toml"), "# mine\ngap = = 8\n").unwrap();
+        save(&dir.join("prefs.toml"), "# mine\ngap = = 8\n");
         m.until("the syntax notice", |s| {
             s.texts()
                 .iter()
                 .any(|t| t.contains("keeping every last good value"))
         });
-        std::fs::write(dir.join("prefs.toml"), "# mine\ngap = 9\n").unwrap();
+        save(&dir.join("prefs.toml"), "# mine\ngap = 9\n");
         m.until("parsed again", |s| {
             s.texts().contains(&"gap 9".to_string())
                 && !s.texts().iter().any(|t| t.starts_with("strand:"))

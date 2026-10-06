@@ -130,6 +130,19 @@ pub struct GlyphRun {
     pub underline: Option<Rect>,
 }
 
+/// A caret stop: a cluster boundary of the shaped text, where a text
+/// cursor can sit.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct CaretStop {
+    /// Byte offset into the shaped text (the request's text, unless an
+    /// ellipsis cut it).
+    pub byte: u32,
+    /// Logical pixels from the layout's left edge.
+    pub x: f32,
+    /// The line it is on, from 0.
+    pub line: u32,
+}
+
 /// A shaped, rasterised paragraph.
 #[derive(Clone, Debug)]
 pub struct TextLayout {
@@ -144,6 +157,9 @@ pub struct TextLayout {
     /// extend past `size` (overhangs).
     pub ink: Rect,
     pub runs: Vec<GlyphRun>,
+    /// Every cluster boundary, in visual order per line (an `input`'s
+    /// caret and selection, and a click placing the caret).
+    pub carets: Vec<CaretStop>,
     /// Atlas pixels this layout introduced; apply before drawing.
     pub uploads: Vec<AtlasUpload>,
     /// Keeps the pages this layout draws from alive.
@@ -166,6 +182,7 @@ impl TextLayout {
             baseline: 0.0,
             ink: Rect::default(),
             runs: Vec::new(),
+            carets: Vec::new(),
             uploads: Vec::new(),
             leases: Vec::new(),
             reset: false,
