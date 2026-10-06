@@ -5958,3 +5958,46 @@ seven on a private `dbus-daemon`, `STRAND_REQUIRE_DBUS=1`, and the sway
 tiers, `STRAND_REQUIRE_SWAY=1`), the optimised M0 budget and M2
 acceptance tests, the theme-swap bench, the reload latency bench and
 the reload fuzzer's short run.
+
+## wave3-pixels (carried issues, r2)
+
+**2026-10-06 · wave3-pixels (carried r2): a closed popup's content is
+unmounted, its state kept.** This supersedes the popup clause of r1's
+"on-demand elements mount on demand" (popups kept the 2026-10-05
+wave2-vm reading: content suspended while closed, its nodes left on the
+scene). The schema flags `popup` `on_demand` like `page` and `tooltip`,
+and design.md's principle for them is that what is not shown unmounts
+and stops its work; the reason for freezing instead was only that the
+calendar's `state month` lives in a component inside the popup. Both
+now hold: when `open` turns false the content's nodes leave the scene
+and its scopes are disposed (bindings, handlers, timers, the components
+and surfaces nested in it); before that, every `state` cell owned under
+the content (plain, keyed, persisted, settings file; found by its
+holder's ownership, `Ctx::keep_cells`) is moved to a scope the popup
+keeps beside it and noted in `Ctx::closed` by its reload key. Opening
+again mounts the content afresh, and each `state` declared under a
+noted key takes its cell back as it was (`Ctx::reopen_cell`: same
+signal, collection or settings handle, no default re-evaluated), so the
+month survives a close; with the popup gone for good (an `if` around it
+false, its bar removed) the kept cells go with its scope. `state`s and
+`let`s written directly in the popup body belong to the enclosing scope
+(`collect_decls`) and never left it. `bar`, `panel`, `osd` and `lock`
+are not `on_demand` and keep the frozen reading. Render: content
+removed with no pose of its own from a surface that closes with a pose
+(the same diff sets `open: false`, or its exit is playing) is kept as a
+ghost, drawn at rest, until the surface closes or opens again, so a
+popup with an `exit` pose does not fade out empty
+(`Renderer::closing_content`). Residual, unchanged by this: a reload
+while a popup is closed resets its components' state (the new instance
+does not mount the closed content, so nothing claims the old cells; a
+reload with it open keeps them). Proof: `crates/strand-compiler/tests/
+instantiate.rs::popup_content_unmounts_when_closed_and_keeps_its_state`
+(nodes leave the scene, live core nodes drop, plain and keyed state
+back on reopen, 20 cycles leak nothing, the cells go with the popup),
+`::a_closed_popup_keeps_settings_and_persisted_state`, `tests/reload.rs
+::a_reopened_popup_keeps_its_state_across_a_reload`; on sway, design.md's
+calendar moved on two months with `›`, closed by a click away and opened
+again is drawn whole on that month (`crates/strand/tests/demo.rs::
+the_design_shells_draw_their_widgets_and_the_calendar_popup`); `crates/
+strand-render/tests/motion.rs::
+content_removed_as_its_surface_closes_stays_through_the_pose`.

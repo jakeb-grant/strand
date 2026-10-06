@@ -392,6 +392,11 @@ be built and tested without the language, and the language without pixels.
   surface whose `open` goes false stays open in its spec until its exit
   pose settles, or, with no exit pose of its own, until the ghosts under
   it have unmounted (the last toast leaving as the panel closes).
+  `Remove` of a node with no pose of its own under a surface closing
+  with a pose (its `open: false` in the same diff, or its exit playing)
+  makes it a ghost too, drawn at rest and unmounted when the surface
+  closes or opens again: logic unmounts a `popup`'s content when it
+  closes, and the popup must not play its exit empty.
   Motion state is per node: when one root is shown on several surfaces
   (`screens: all`), a frame ends an exit or drops an enter only for a
   node no other surface of that root drew (in its last frame's records
@@ -1262,7 +1267,9 @@ Public interfaces other crates and later stages build on:
     (components in it, surfaces nested in it) lets go of everything it
     holds, a surface nested in another (`popup` in a `bar`) holds its
     own children's reads only while it is shown (they do not count for
-    the body around it: `lower::Element::services`), and a parked bar
+    the body around it: `lower::Element::services`; a closed popup's
+    content is unmounted, its components' `state` cells kept for its
+    next opening), and a parked bar
     (monitor unplugged) lets go of everything under it until it
     returns. The
     service starts on its first reader and stops 5 s after its last

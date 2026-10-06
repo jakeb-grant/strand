@@ -3065,9 +3065,163 @@ fn pages_and_tooltips_mount_on_demand() {
     assert!(!shell.scene.render().contains("PB"));
 }
 
+/// A `popup`'s content is mounted when it opens and unmounted when it
+/// closes (the schema's `on_demand`): its nodes leave the scene and the
+/// scopes under it go, while the `state`s of the components in it (a
+/// plain one, a keyed list) are kept and come back when it opens again,
+/// as design.md's calendar keeps its month. Closing and opening again
+/// leaks nothing, and the kept cells go with the popup.
+#[test]
+fn popup_content_unmounts_when_closed_and_keeps_its_state() {
+    let src = "type R { id: int }\n\
+               export state p = false\n\
+               export state q = true\n\
+               component Cal {\n\
+                 state month = 1\n\
+                 state rs: [R] key id = [R(id: 1)]\n\
+                 text join(\" \", \"M\", month, rs.len, pct(audio.sink.volume))\n\
+                 box { on click { month += 1; rs.push(R(id: month)) } }\n\
+               }\n\
+               bar B {\n\
+                 text \"x\"\n\
+                 if q { popup { open: <-> p; Cal } }\n\
+               }\n";
+    let mut shell = boot(&[("pop.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let content = |shell: &Shell| {
+        let popup = shell.scene.of_kind(NodeKind::Popup);
+        assert_eq!(popup.len(), 1, "{}", shell.scene.render());
+        shell.scene.render().contains("text=\"M ")
+    };
+    assert!(!content(&shell), "closed at boot: not mounted");
+    let closed_nodes = shell.rt.stats().nodes;
+
+    shell.inst.set("pop.p", Value::Bool(true)).unwrap();
+    shell.flush();
+    assert!(content(&shell));
+    let text = shell
+        .scene
+        .texts()
+        .into_iter()
+        .find(|t| t.starts_with("M "))
+        .unwrap();
+    assert!(text.starts_with("M 1 1 "), "{text}");
+    assert_eq!(shell.host.readers("audio"), 1);
+    let open_nodes = shell.rt.stats().nodes;
+    let inc = shell.scene.of_kind(NodeKind::Box)[0];
+    assert!(shell.inst.event(inc, "click", Vec::new()));
+    shell.flush();
+    let first = shell
+        .scene
+        .texts()
+        .into_iter()
+        .find(|t| t.starts_with("M 2 2 "))
+        .unwrap();
+    let first_id = shell.text_node(&first);
+
+    // Closed: the content's nodes leave the scene, its scopes go.
+    shell.inst.set("pop.p", Value::Bool(false)).unwrap();
+    shell.flush();
+    let scene = shell.scene.render();
+    assert!(
+        !content(&shell),
+        "the closed popup's content stayed:\n{scene}"
+    );
+    assert!(shell.scene.of_kind(NodeKind::Box).is_empty(), "{scene}");
+    assert_eq!(shell.host.readers("audio"), 0);
+    let kept_nodes = shell.rt.stats().nodes;
+    assert!(
+        kept_nodes < open_nodes,
+        "the content's scopes stayed: {kept_nodes} live nodes closed, {open_nodes} open"
+    );
+
+    // Open again: mounted afresh, its state as it was left.
+    shell.inst.set("pop.p", Value::Bool(true)).unwrap();
+    shell.flush();
+    let again = shell
+        .scene
+        .texts()
+        .into_iter()
+        .find(|t| t.starts_with("M "))
+        .unwrap();
+    assert!(again.starts_with("M 2 2 "), "state lost: {again}");
+    assert_ne!(shell.text_node(&again), first_id, "a new mount");
+    assert_eq!(shell.host.readers("audio"), 1);
+    let inc = shell.scene.of_kind(NodeKind::Box)[0];
+    assert!(shell.inst.event(inc, "click", Vec::new()));
+    shell.flush();
+    assert!(
+        shell.scene.texts().iter().any(|t| t.starts_with("M 3 3 ")),
+        "{:?}",
+        shell.scene.texts()
+    );
+
+    // Opening and closing again and again leaks nothing.
+    for _ in 0..20 {
+        shell.inst.set("pop.p", Value::Bool(false)).unwrap();
+        shell.flush();
+        shell.inst.set("pop.p", Value::Bool(true)).unwrap();
+        shell.flush();
+    }
+    shell.inst.set("pop.p", Value::Bool(false)).unwrap();
+    shell.flush();
+    assert_eq!(shell.rt.stats().nodes, kept_nodes, "a cycle leaks");
+    assert!(!content(&shell));
+
+    // The popup goes for good: its kept cells go with it.
+    shell.inst.set("pop.q", Value::Bool(false)).unwrap();
+    shell.flush();
+    assert!(shell.scene.of_kind(NodeKind::Popup).is_empty());
+    shell.inst.set("pop.q", Value::Bool(true)).unwrap();
+    shell.flush();
+    assert_eq!(shell.rt.stats().nodes, closed_nodes, "kept cells leaked");
+    shell.inst.set("pop.p", Value::Bool(true)).unwrap();
+    shell.flush();
+    assert!(
+        shell.scene.texts().iter().any(|t| t.starts_with("M 1 1 ")),
+        "a new popup starts afresh: {:?}",
+        shell.scene.texts()
+    );
+}
+
+/// A settings file and a persisted `state` in a closed popup's content
+/// are kept as a plain one is.
+#[test]
+fn a_closed_popup_keeps_settings_and_persisted_state() {
+    let src = "export state p = false\n\
+               component Cal {\n\
+                 state prefs from \"cal.toml\" { week: int = 1 }\n\
+                 state seen = 0 persist\n\
+                 text join(\" \", \"W\", prefs.week, seen)\n\
+                 box { on click { prefs.week += 1; seen += 2 } }\n\
+               }\n\
+               bar B { popup { open: <-> p; Cal } }\n";
+    let mut shell = boot(&[("cal.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    shell.inst.set("cal.p", Value::Bool(true)).unwrap();
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["W 1 0"]);
+    let inc = shell.scene.of_kind(NodeKind::Box)[0];
+    assert!(shell.inst.event(inc, "click", Vec::new()));
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["W 2 2"]);
+    shell.inst.set("cal.p", Value::Bool(false)).unwrap();
+    shell.flush();
+    assert!(shell.scene.texts().is_empty(), "{:?}", shell.scene.texts());
+    shell.inst.set("cal.p", Value::Bool(true)).unwrap();
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["W 2 2"]);
+    let inc = shell.scene.of_kind(NodeKind::Box)[0];
+    assert!(shell.inst.event(inc, "click", Vec::new()));
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["W 3 4"]);
+}
+
 /// The runtime mounts on demand exactly the elements the checker's cycle
-/// check reads as on demand: a `popup` (a surface, mounted when first
-/// opened), a `page` and a `tooltip`.
+/// check reads as on demand: a `popup` (a surface, its content mounted
+/// while it is open), a `page` and a `tooltip`.
 #[test]
 fn every_on_demand_element_has_a_runtime_rule() {
     let schema = strand_compiler::schema::Schema::builtin();

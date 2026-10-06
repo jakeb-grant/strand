@@ -233,6 +233,10 @@ pub(crate) struct Ctx {
     pub runaway: RefCell<std::collections::HashSet<DefId>>,
     /// Element mounts in progress on the stack (0 between mounts).
     pub mounting: Cell<u32>,
+    /// Reload keys of the cells a closed popup's content kept (the
+    /// `state`s of components in it) while the content is unmounted:
+    /// they are bound again, values and all, when it opens.
+    pub closed: RefCell<std::collections::HashSet<Rc<str>>>,
 }
 
 impl VmHooks for Ctx {
@@ -520,6 +524,7 @@ impl Ctx {
             late_nodes: RefCell::default(),
             runaway: RefCell::default(),
             mounting: Cell::new(0),
+            closed: RefCell::default(),
             handover: RefCell::default(),
             outlined: RefCell::default(),
         });

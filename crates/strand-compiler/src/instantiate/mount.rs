@@ -521,6 +521,10 @@ impl Ctx {
             true => format!("{scope_key}#.{}", info.name).into(),
             false => format!("{scope_key}#{owner}.{}", info.name).into(),
         };
+        // A closed popup's content opening again: its cell, as it was.
+        if self.closed.borrow_mut().remove(&key) && self.reopen_cell(rt, s, &key, env, &path) {
+            return;
+        }
         // The old cell and the program it was made by (a reload's old
         // program, or an older one for a bar parked across reloads).
         let carried = self
@@ -651,6 +655,7 @@ impl Ctx {
                 key,
                 CellRec::Keyed {
                     holder,
+                    keyed: k,
                     list,
                     default,
                     ty,
@@ -808,6 +813,71 @@ impl Ctx {
     /// declared default, decoded and written back as TOML by the field's
     /// type); without one, each field holds its default. Either way each
     /// field is its own signal and `prefs` reads as a record of them.
+    /// Bind the cell kept under `key` for a closed popup's content (see
+    /// [`Ctx::keep_cells`]) to `s` again, moved to the current scope:
+    /// the same signal, collection or settings file, value and all.
+    /// False if no such cell is left (it is then declared afresh).
+    fn reopen_cell(
+        self: &Rc<Self>,
+        rt: &Runtime,
+        s: &crate::lower::State,
+        key: &str,
+        env: &Rc<Env>,
+        path: &str,
+    ) -> bool {
+        use super::reload::CellRec;
+        let found = {
+            let reg = self.registry.borrow();
+            match reg.cells.get(key) {
+                Some(CellRec::Plain { holder, sig, .. }) => Some((*holder, Ok(Slot::Signal(*sig)))),
+                Some(CellRec::Keyed {
+                    holder,
+                    keyed,
+                    list,
+                    ..
+                }) => Some((*holder, Ok(Slot::Keyed(*keyed, *list)))),
+                Some(CellRec::Settings { holder, slot, .. }) => Some((*holder, Err(slot.clone()))),
+                None => None,
+            }
+        };
+        let Some((holder, slot)) = found else {
+            return false;
+        };
+        if rt.reparent(holder.id(), rt.current_owner()).is_err() {
+            return false;
+        }
+        match (slot, &s.init) {
+            (Ok(slot), _) => env.bind_def(s.def, slot),
+            (Err(settings), StateInit::Settings { record, .. }) => {
+                self.bind_settings(rt, s.def, *record, settings, env, path)
+            }
+            (Err(_), _) => return false,
+        }
+        true
+    }
+
+    /// A popup closes: the cells of what its content mounted (owned under
+    /// `content`, the content's scope) are moved to `keep` before the
+    /// content is unmounted, and noted in [`Ctx::closed`] so the content
+    /// mounted again takes them back ([`Ctx::reopen_cell`]).
+    fn keep_cells(&self, rt: &Runtime, content: strand_core::NodeId, keep: strand_core::NodeId) {
+        let reg = self.registry.borrow();
+        let mut closed = self.closed.borrow_mut();
+        for (key, rec) in reg.cells.iter() {
+            let holder = rec.holder().id();
+            let mut cur = rt.owner_of(holder).ok().flatten();
+            while let Some(c) = cur {
+                if c == content {
+                    break;
+                }
+                cur = rt.owner_of(c).ok().flatten();
+            }
+            if cur.is_some() && rt.reparent(holder, Some(keep)).is_ok() {
+                closed.insert(key.clone());
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn declare_settings(
         self: &Rc<Self>,
@@ -974,9 +1044,30 @@ impl Ctx {
                 path: path.to_string(),
             },
         );
+        self.bind_settings(rt, def, record, slot, env, path);
+    }
+
+    /// Bind a settings file's `slot` to `def` in `env`: its fields, and
+    /// the record a read of the whole state gives (a memo of the current
+    /// scope).
+    fn bind_settings(
+        self: &Rc<Self>,
+        rt: &Runtime,
+        def: DefId,
+        record: crate::ty::RecordId,
+        slot: Rc<crate::vm::SettingsSlot>,
+        env: &Rc<Env>,
+        path: &str,
+    ) {
+        let prog = self.vm.prog.clone();
         let (sl, names): (Rc<crate::vm::SettingsSlot>, Vec<String>) = (
             slot.clone(),
-            rec.fields.iter().map(|f| f.name.clone()).collect(),
+            prog.types
+                .record(record)
+                .fields
+                .iter()
+                .map(|f| f.name.clone())
+                .collect(),
         );
         let types = prog.clone();
         let memo = rt.memo(move |rt| {
@@ -1231,11 +1322,17 @@ impl Ctx {
 
     /// A surface's children. Its own `on show`, `on hide` (and other
     /// element events) stay live; the rest is mounted the first time the
-    /// surface is shown and frozen while it is hidden (state kept, nothing
-    /// evaluated), and the services its body reads are acquired only
-    /// while it is shown. The instance sends `show` when `open` turns true
-    /// (or at mount for a surface without `open`) and `hide` when it turns
-    /// false.
+    /// surface is shown, and the services its body reads are acquired
+    /// only while it is shown. The instance sends `show` when `open`
+    /// turns true (or at mount for a surface without `open`) and `hide`
+    /// when it turns false.
+    ///
+    /// Hidden, a `bar`'s, `panel`'s or `lock`'s content is frozen (state
+    /// kept, nothing evaluated, its nodes left on the scene). A `popup`'s
+    /// is unmounted, as the schema's `on_demand` says: its nodes leave
+    /// the scene and its scopes go, but the `state`s of the components
+    /// in it are kept ([`Ctx::keep_cells`]) and bound again when it opens
+    /// (a calendar's month survives closing it).
     fn mount_surface_body(
         self: &Rc<Self>,
         rt: &Runtime,
@@ -1261,10 +1358,17 @@ impl Ctx {
                 })
             })
         };
+        let on_demand = matches!(e.kind, ElementKind::Builtin(NodeKind::Popup));
         let services = services.unwrap_or_default();
         let content = Arc::new(content);
         let inner = self.em.borrow_mut().new_frag(Some(frag), None);
+        // The scope the content is mounted in (a new one each time a
+        // popup opens, made where this one is: `show` runs inside the
+        // `open` effect), and where a closed popup keeps its cells.
+        let outer = rt.current_owner();
         let (block, ()) = rt.scope(|_| ());
+        let block = Rc::new(Cell::new(block));
+        let keep = on_demand.then(|| rt.scope(|_| ()).0);
         let token = self.hold(rt, services);
         let mounted = Rc::new(Cell::new(false));
         let blocked = Rc::new(Cell::new(false));
@@ -1278,23 +1382,42 @@ impl Ctx {
             if is_open {
                 me.set_held(rt, token, true);
                 if blocked.replace(false) {
-                    me.block_services(rt, block.id(), false);
+                    me.block_services(rt, block.get().id(), false);
                 }
                 if !mounted.replace(true) {
-                    let _ = rt.with_owner(block.id(), |rt| {
+                    let _ = rt.with_owner(block.get().id(), |rt| {
                         me.mount_nodes(rt, &content, &env, inner, Some(&ec));
                     });
                 } else {
-                    rt.resume(block.id());
+                    rt.resume(block.get().id());
                 }
                 me.route(rt, ec.scene, "show", Vec::new());
             } else {
                 if mounted.get() {
-                    let _ = rt.suspend(block.id());
-                    // Components in the content let go of their services
-                    // too, and nested surfaces of theirs.
-                    if !blocked.replace(true) {
-                        me.block_services(rt, block.id(), true);
+                    match keep {
+                        Some(keep) => {
+                            // Unmounted, its components' cells kept.
+                            mounted.set(false);
+                            let old = block.get();
+                            me.keep_cells(rt, old.id(), keep.id());
+                            me.unmount(rt, inner, true);
+                            old.dispose(rt);
+                            let fresh = match outer {
+                                Some(o) => rt.with_owner(o, |rt| rt.scope(|_| ()).0),
+                                None => Ok(rt.scope(|_| ()).0),
+                            };
+                            if let Ok(fresh) = fresh {
+                                block.set(fresh);
+                            }
+                        }
+                        None => {
+                            let _ = rt.suspend(block.get().id());
+                            // Components in the content let go of their
+                            // services too, and nested surfaces of theirs.
+                            if !blocked.replace(true) {
+                                me.block_services(rt, block.get().id(), true);
+                            }
+                        }
                     }
                 }
                 me.set_held(rt, token, false);

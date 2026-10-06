@@ -533,6 +533,79 @@ fn surfaces_play_their_poses_when_they_open_and_close() {
     assert_eq!(st.buf.px(30, 15)[3], 255);
 }
 
+/// A surface that closes with a pose while logic removes its content in
+/// the same diff (a popup unmounts its content when it closes) keeps
+/// drawing that content, at rest, until the pose ends: it does not leave
+/// empty. Opened again mid-pose, the kept content goes and logic's new
+/// content shows.
+#[test]
+fn content_removed_as_its_surface_closes_stays_through_the_pose() {
+    let mut boxed = NodeId::new(0, 0);
+    let mut st = Stage::new(60, 30, |b, root| {
+        boxed = red_box(b, root, vec![]);
+    });
+    let root = st.root;
+    let mut d = SceneDiff::new();
+    d.set(root, Prop::Open, PropValue::Bool(true)).set(
+        root,
+        Prop::Exit,
+        pose(vec![(Prop::Opacity, num(0.0))]),
+    );
+    st.apply(d);
+    let end = st.settle(1);
+    st.r.take_surface_changes();
+    // Removed before the close in the same diff, as logic sends it.
+    let mut d = SceneDiff::new();
+    d.push(SceneOp::Remove { id: boxed });
+    d.set(root, Prop::Open, PropValue::Bool(false));
+    st.apply(d);
+    assert!(st.r.surface_spec(root).unwrap().open, "open while it plays");
+    let red = |st: &Stage| {
+        let p = st.buf.px(10, 10);
+        p[3] > 0 && p[2] as u32 > 3 * p[1] as u32
+    };
+    for k in 2..=4 {
+        st.paint(frame(end + k));
+        assert!(red(&st), "frame {k}: the content left before the pose");
+    }
+    assert!(st.r.tree().ghost_count() > 0);
+    let end = st.settle(end + 5);
+    assert!(
+        !st.r.surface_spec(root).unwrap().open,
+        "closed once settled"
+    );
+    assert_eq!(st.r.tree().ghost_count(), 0, "the kept content unmounted");
+
+    // Opened, then closed with its content removed, then opened again
+    // with new content before the pose ends: the old content goes.
+    let again = NodeId::new(100, 0);
+    let mut d = SceneDiff::new();
+    d.create(again, NodeKind::Box, Some(root), u32::MAX);
+    d.set(again, Prop::Bg, color("#ff0000"))
+        .set(again, Prop::Size, num(20.0));
+    d.set(root, Prop::Open, PropValue::Bool(true));
+    st.apply(d);
+    let end = st.settle(end + 1);
+    let mut d = SceneDiff::new();
+    d.push(SceneOp::Remove { id: again });
+    d.set(root, Prop::Open, PropValue::Bool(false));
+    st.apply(d);
+    st.paint(frame(end + 1));
+    assert!(st.r.tree().ghost_count() > 0);
+    let third = NodeId::new(101, 0);
+    let mut d = SceneDiff::new();
+    d.create(third, NodeKind::Box, Some(root), u32::MAX);
+    d.set(third, Prop::Bg, color("#00ff00"))
+        .set(third, Prop::Size, num(20.0));
+    d.set(root, Prop::Open, PropValue::Bool(true));
+    st.apply(d);
+    assert_eq!(st.r.tree().ghost_count(), 0, "the kept content went");
+    st.settle(end + 2);
+    assert_eq!(st.r.tree().get(root).unwrap().children, vec![third]);
+    let p = st.buf.px(10, 10);
+    assert!(p[1] > 128 && p[2] < 64, "the new content shows: {p:?}");
+}
+
 /// Colours spring in OKLab with premultiplied alpha, sampled exactly as
 /// `strand_scene::motion` says.
 #[test]

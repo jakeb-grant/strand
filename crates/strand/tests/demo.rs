@@ -1378,6 +1378,29 @@ fn the_design_shells_draw_their_widgets_and_the_calendar_popup() {
         .filter(|&(x, y)| blue(open.px(x, y)))
         .count();
     assert!(accent > 100, "no accent day in the calendar: {accent} px");
+    let accent_px = |shot: &Shot| {
+        (top..top + 250)
+            .flat_map(|y| (cols[0]..*cols.last().unwrap()).map(move |x| (x, y)))
+            .filter(|&(x, y)| blue(shot.px(x, y)))
+            .count()
+    };
+    // `›` (the top row's right end) moves `state month` on; twice, as
+    // the grid two months on never shows today (next month's may, among
+    // its leading days).
+    for _ in 0..2 {
+        pointer.click(
+            (*cols.last().unwrap() - 25) as u32,
+            (top + 23) as u32,
+            w as u32,
+            h as u32,
+        );
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while accent_px(&Shot::take(&sway, "HEADLESS-1")) > accent / 4 {
+        assert!(Instant::now() < deadline, "`›` did not turn the month");
+        std::thread::sleep(Duration::from_millis(100));
+    }
 
     // A click away closes it.
     pointer.click(600, 700, w as u32, h as u32);
@@ -1390,6 +1413,40 @@ fn the_design_shells_draw_their_widgets_and_the_calendar_popup() {
         assert!(
             Instant::now() < deadline,
             "a click away did not close the calendar"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // Closed, its content was unmounted (decisions.md, carried r2): a
+    // second click on the clock mounts it again, drawn whole, on the
+    // month it was left on (the `Calendar`'s state was kept).
+    std::thread::sleep(Duration::from_millis(300));
+    pointer.click((w / 2) as u32, 26, w as u32, h as u32);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while sum(Shot::take(&sway, "HEADLESS-1").px(below.0, top + 40)) <= 600 {
+        assert!(
+            Instant::now() < deadline,
+            "a second click did not open the calendar again"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    std::thread::sleep(Duration::from_millis(700));
+    let again = Shot::take(&sway, "HEADLESS-1");
+    if let Some(dir) = std::env::var_os("STRAND_SHOTS") {
+        sway.grim(&[], &PathBuf::from(&dir).join("design_calendar_again.png"));
+    }
+    let top_again = (44..400).find(|&y| sum(again.px(below.0, y)) > 600);
+    assert_eq!(top_again, Some(top), "the reopened calendar's card moved");
+    let accent_again = accent_px(&again);
+    assert!(
+        accent_again <= accent / 4,
+        "the reopened calendar is back on this month: {accent_again} accent px"
+    );
+    pointer.click(600, 700, w as u32, h as u32);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while sum(Shot::take(&sway, "HEADLESS-1").px(below.0, top + 40)) >= 450 {
+        assert!(
+            Instant::now() < deadline,
+            "a click away did not close the calendar again"
         );
         std::thread::sleep(Duration::from_millis(100));
     }

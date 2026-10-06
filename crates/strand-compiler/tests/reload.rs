@@ -1227,3 +1227,33 @@ fn random_state_edits_follow_the_table() {
     assert!(committed > iterations / 3 && held > 0 && resets > 0);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// A popup's content is unmounted when it closes, its components' cells
+/// kept and bound again when it opens (instantiate.rs,
+/// `popup_content_unmounts_when_closed_and_keeps_its_state`): a reload
+/// with it open again takes those cells over like any others.
+#[test]
+fn a_reopened_popup_keeps_its_state_across_a_reload() {
+    let src = "export state p = false\ncomponent Cal {\n  state month = 1\n  text join(\" \", \"M\", month)\n  box { on click { month += 1 } }\n}\nbar B { popup { open: <-> p; Cal } }\n";
+    let mut shell = boot(&[("cal.strand", src)]);
+    shell.inst.set("cal.p", Value::Bool(true)).unwrap();
+    shell.flush();
+    let inc = shell.scene.of_kind(NodeKind::Box)[0];
+    assert!(shell.inst.event(inc, "click", Vec::new()));
+    shell.flush();
+    shell.inst.set("cal.p", Value::Bool(false)).unwrap();
+    shell.flush();
+    assert!(shell.scene.texts().is_empty());
+    shell.inst.set("cal.p", Value::Bool(true)).unwrap();
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["M 2"]);
+    let edited = src.replace("\"M\"", "\"Month\"");
+    let (report, _) = shell.reload(&[("cal.strand", &edited)]);
+    assert_eq!(shell.scene.texts(), ["Month 2"], "{report:?}");
+    // Closed and opened again after the reload: still kept.
+    shell.inst.set("cal.p", Value::Bool(false)).unwrap();
+    shell.flush();
+    shell.inst.set("cal.p", Value::Bool(true)).unwrap();
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["Month 2"]);
+}

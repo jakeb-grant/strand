@@ -341,6 +341,12 @@ pub struct Renderer {
     held: BTreeSet<NodeId>,
     /// See [`EXIT_STALL`].
     exit_stall: Duration,
+    /// Content logic removed from a surface playing its closing pose (a
+    /// popup unmounts its content when it closes), by surface node: kept
+    /// as ghosts, drawn at rest, until the surface closes or opens again.
+    closing_content: BTreeMap<NodeId, Vec<NodeId>>,
+    /// Surface nodes the diff being applied closes (`open: false`).
+    closing_now: BTreeSet<NodeId>,
     /// Nodes the diff being applied creates on a surface not shown: if
     /// the same diff opens that surface (the first toast and `open:
     /// shown.len > 0`), they play their `enter` pose on its first frame.
@@ -592,6 +598,8 @@ impl Renderer {
             closed: HashSet::new(),
             held: BTreeSet::new(),
             exit_stall: EXIT_STALL,
+            closing_content: BTreeMap::new(),
+            closing_now: BTreeSet::new(),
             born: Vec::new(),
             opening: BTreeSet::new(),
             laid_out_nodes: 0,
@@ -1030,6 +1038,32 @@ impl Renderer {
             .any(|(id, k)| k == ExitKind::Ghost && self.tree.root_of(id) == Some(root))
     }
 
+    /// True if surface node `root` is shown and closes with a pose: its
+    /// closing pose plays now, or the diff being applied closes it and
+    /// it has one (decided in `update`, after the diff's removals).
+    fn closing_with_pose(&self, root: NodeId) -> bool {
+        let exiting = self.anim.exiting(root) == Some(ExitKind::Close);
+        let closes = self.closing_now.contains(&root)
+            && self.specs.get(&root).is_some_and(|s| s.open)
+            && !self.closed.contains(&root)
+            && self.tree.get(root).is_some_and(|n| is_pose(exit_pose(n)));
+        (exiting || closes) && self.shown(Some(root))
+    }
+
+    /// Unmounts the content kept for surface node `root`'s closing pose
+    /// (it closed, or opened again and logic sent its content anew).
+    fn drop_closing_content(&mut self, root: NodeId) {
+        let Some(ghosts) = self.closing_content.remove(&root) else {
+            return;
+        };
+        for g in ghosts {
+            let parent = self.tree.get(g).and_then(|n| n.parent);
+            self.tree.drop_ghost(g);
+            self.flip(parent);
+        }
+        self.mark_layout_of(root);
+    }
+
     /// The children of `parent` change place: the next layout of its
     /// surfaces glides them (FLIP).
     fn flip(&mut self, parent: Option<NodeId>) {
@@ -1062,6 +1096,7 @@ impl Renderer {
                 ExitKind::Close => {
                     self.closed.insert(id);
                     self.spec_dirty.insert(id);
+                    self.drop_closing_content(id);
                 }
             }
         }
@@ -1516,6 +1551,13 @@ impl Renderer {
             if !spec.open || self.shown(Some(id)) {
                 self.opening.remove(&id);
             }
+            // Content kept for a closing pose that is not playing (it
+            // opened again, or closes at once after all) goes now.
+            if self.closing_content.contains_key(&id)
+                && self.anim.exiting(id) != Some(ExitKind::Close)
+            {
+                self.drop_closing_content(id);
+            }
             let bar = spec.kind == NodeKind::Bar;
             let vertical = matches!(spec.edge, Some(Edge::Left | Edge::Right));
             let content_sized = if bar {
@@ -1641,6 +1683,7 @@ impl Renderer {
         self.content_sized.retain(|id| live.contains(id));
         self.held.retain(|id| live.contains(id));
         self.opening.retain(|id| live.contains(id));
+        self.closing_content.retain(|id, _| live.contains(id));
         self.spec_wanted.retain(|id, _| live.contains(id));
         if !requests.is_empty() && self.request_text(&requests) {
             // Shaped inline: size the surfaces with it at once.
@@ -2039,6 +2082,21 @@ impl Renderer {
                 }
             }
         }
+        // Surfaces this diff closes: content it removes from them may be
+        // kept for their closing pose (see `closing_with_pose`).
+        self.closing_now = diff
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                SceneOp::SetProp {
+                    id,
+                    prop: Prop::Open,
+                    value: PropValue::Bool(false),
+                    ..
+                } => Some(*id),
+                _ => None,
+            })
+            .collect();
         // A theme swap is planned against the table and frames on screen.
         let swap = self.plan_swap(&diff);
         let mut watched = Vec::new();
@@ -2217,6 +2275,7 @@ impl Renderer {
         // so nothing asked for here can already be answered).
         self.update();
         self.born.clear();
+        self.closing_now.clear();
         errors
     }
 
@@ -2255,6 +2314,7 @@ impl Renderer {
                     return false;
                 };
                 let parent = node.parent;
+                let surface = node.kind.is_surface();
                 let root = self.tree.root_of(*id);
                 let laid = self.surfaces.values().any(|s| {
                     Some(s.root) == root
@@ -2284,6 +2344,18 @@ impl Renderer {
                         }
                     }
                     self.anim.exit(*id, ExitKind::Ghost);
+                    return true;
+                }
+                // Content removed as its surface closes with a pose (a
+                // popup's, unmounted on close): drawn at rest until the
+                // pose ends, so the surface does not leave empty.
+                if let Some(r) = root
+                    && !surface
+                    && !reduced
+                    && self.closing_with_pose(r)
+                    && self.tree.ghost(*id).is_ok()
+                {
+                    self.closing_content.entry(r).or_default().push(*id);
                     return true;
                 }
                 self.flip(parent);
