@@ -5750,3 +5750,28 @@ come in layout order, so the common prefix and suffix are skipped and the
 changed middle compared cell by cell up to 64 cells, or damaged as one
 box per side above that (`renderer.rs::glyph_damage_is_linear_in_the_
 glyphs`; the frame is now about 5 ms, almost all shaping and flattening).
+
+**2026-10-06 · wave3-pixels (exit, fixer r2): key repeat guards.** Three
+cases the r1 repeat timer missed. (1) The rate is the compositor's (SCTK
+casts a negative `i32` to a huge `u32`): the interval is now at least
+1 ms (`manager.rs::repeat_interval`, unit test
+`the_repeat_interval_never_busy_loops`), so no rate turns the timer into
+a busy loop. (2) A compositor that skips `wl_keyboard.leave` for a
+destroyed surface would deliver the release to another client: the
+timer drops itself when nothing has keyboard focus, and destroying the
+focused surface stops it, so the zero-idle-wakeup budget cannot be lost
+this way. (3) The repeating key's text was computed at the press; SCTK
+recomputed it on each modifiers event. Rather than reach into the xkb
+state SCTK keeps private, a `wl_keyboard.modifiers` event whose
+depressed, latched or locked mask or layout changed stops the repeat,
+as releasing Shift mid-repeat would otherwise send "a" with the new
+modifiers. The user presses the key again to repeat under the new
+modifiers; most toolkits restart the repeat in this case anyway.
+
+**2026-10-06 · wave3-pixels (exit, fixer r2): CI runs on `ubuntu-24.04`.**
+The acceptance, `demo.rs` and M0 references are pixels of 24.04's sway
+1.9, fonts-dejavu-core 2.37 and adwaita-icon-theme 46. With
+`ubuntu-latest`, a runner image change would fail them with no code
+change, so both jobs pin `ubuntu-24.04` and print those versions. Moving
+to a newer image means regenerating the references with
+`STRAND_UPDATE_REFS=1` and reading every one.

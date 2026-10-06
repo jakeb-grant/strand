@@ -1268,16 +1268,26 @@ fn toasts_arrive_stack_slide_and_leave() {
 const OSD: Rect = rect(1280 - 160, 1440 - 96 - 44 - 30, 320, 110);
 
 /// The share of the OSD's meter filled with `$accent`: the meter is
-/// the longest run (at least 120 px) of pixels unlike the pill 8 rows
-/// above and with the pill on both sides, on the row where it is
-/// longest; its blue pixels are the fill.
+/// the longest run (at least 120 px) of pixels unlike the pill (its
+/// most common light colour) with the pill on both sides, on the row
+/// where it is longest; its blue pixels are the fill. (Sampling the
+/// pill a few rows above each row instead picked the meter's own track
+/// as "the pill" below it, and an antialiased edge of a frame caught
+/// near the end of the OSD's entrance then bounded a run across the
+/// whole pill with no fill in it.)
 fn meter_fill(img: &Img) -> Option<f64> {
-    let mut best: Option<(usize, (usize, usize))> = None;
-    for y in 8..img.h {
-        let pill = sum(img.px(img.w / 2, y - 8));
-        if pill < 450 {
-            continue;
+    let mut counts = std::collections::HashMap::new();
+    for y in 0..img.h {
+        for x in 0..img.w {
+            let p = img.px(x, y);
+            if sum(p) >= 450 {
+                *counts.entry(p).or_insert(0usize) += 1;
+            }
         }
+    }
+    let pill = sum(counts.into_iter().max_by_key(|(_, n)| *n)?.0);
+    let mut best: Option<(usize, (usize, usize))> = None;
+    for y in 0..img.h {
         let cols: Vec<usize> = (0..img.w)
             .filter(|&x| sum(img.px(x, y)).abs_diff(pill) > 9)
             .collect();

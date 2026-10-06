@@ -24,17 +24,20 @@ once a minute.
 the design (a bar with a calendar popup, a fuzzy launcher, a
 notification stack and a volume/brightness OSD) and its `theme.strand`
 run unchanged in `strand run`, laid out (taffy: flex, `split` with a
-truly centred middle, grids, virtualised lists, container queries),
+truly centred middle, grids, lists laid out and painted only where
+visible (logic still mounts every row until M4), container queries),
 themed (Material 3 palettes from a seed, a wallpaper or Catppuccin and
 base16 imports, derived tokens, `set { }` overrides, the portal's dark
 mode, accent, contrast and reduced motion) and animated (springs on
-every visual prop, `enter`/`exit` poses, FLIP, theme swaps springing in
-OKLab in about 2 ms of work with text kept above 3:1). They are tested
+colour, layout and transform props, while gradients and `mark_color`
+snap; `enter`/`exit` poses, FLIP; theme swaps springing in OKLab in
+about 2 ms of work with declared text/background pairs kept above 3:1,
+while muted and faint text is not guarded mid-swap). They are tested
 on a headless sway with two outputs, driven by clicks, the wheel and
 keys against mock services, with screenshots compared to references.
 design.md's bar on two 2560×1440 monitors uses about 26 MB, does no work
-between minute ticks and repaints about 240 px² per tick; the full shell
-with the launcher open about 31 MB.
+between minute ticks and repaints about 230–480 px² per tick; the full
+shell with the launcher open about 31 MB.
 
 `strand run [dir]` compiles your `.strand` files (type checker, bytecode
 VM, reactive core), puts the surfaces on every monitor and reloads live

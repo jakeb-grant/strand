@@ -6,8 +6,13 @@ sway 1.9 with the pixman renderer, fonts-dejavu-core 2.37,
 adwaita-icon-theme 46; release builds (thin LTO, one codegen unit,
 mimalloc). Every number comes from a test or script in the tree that
 fails when its gate is missed; each is given with the command that
-reproduces it. CI runs the same tests on Ubuntu 24.04 with the same
-packages (`.github/workflows/ci.yml`).
+reproduces it. The budget tables below come from one run, at commit
+`6730392` (fixer round 2) on 2026-10-06 between 16:02 and 16:09 UTC:
+`scripts/m0-exit.sh --no-build --no-bench`, `scripts/m2-exit.sh
+--no-build` and `cargo test --release -p strand --test demo`. CI runs the
+same tests on `ubuntu-24.04` (pinned, not `ubuntu-latest`: the reference
+screenshots depend on its sway, fonts and icons) with the same packages,
+and prints their versions (`.github/workflows/ci.yml`).
 
 ## Result
 
@@ -15,32 +20,44 @@ packages (`.github/workflows/ci.yml`).
 | --- | --- | --- | --- |
 | Theme swap | under 5 ms of work | **1.9–2.5 ms** median through light↔dark, auto→mocha, mocha→wallpaper, wallpaper→auto on design.md's `theme.strand` (logic's re-resolve 0.2–0.7 ms, render's apply 0.6–1.1 ms, every frame's roots and token graph about 1 ms); a crossfading swap 1.6 / 2.1 ms (buffers of age 1 / 2); 2.1 ms at the design's `spring(1600, 1)`, 3.2 ms with 8 `set { }` scopes | pass |
 | Contrast never below 3:1 | every frame that springs | random palettes at 60 and 144 Hz (`theme_swap.rs`); on sway, the design bar's clock in every frame grim caught of a dark → mocha swap: **10.8–13.6:1**; light → dark is the swap design.md crossfades (blended frames exempt): 3.3:1 at its lowest caught frame, 13.6:1 settled | pass |
-| The four example shells run unchanged | byte for byte | **bar with calendar, launcher, toasts, OSD and `theme.strand`**, the fixtures copied byte for byte (and the fixtures held to design.md's code blocks), driven on two outputs, 19 settled screenshots within tolerance of their references | pass |
+| The four example shells run unchanged | byte for byte | **bar with calendar, launcher, toasts, OSD and `theme.strand`**, the fixtures copied byte for byte (and the fixtures held to design.md's code blocks), driven on two outputs, 21 screenshots within tolerance of their references | pass |
 
 Re-checked M0 gates (design.md: "the build fails above 34 MB for the
 two-monitor bar"):
 
 | | Budget | M0 demo (`scripts/m0-exit.sh`) | design.md's bar (`scripts/m2-exit.sh`) |
 | --- | --- | --- | --- |
-| PSS, two 2560×1440 outputs (1.0, 1.25) | ≤ 34 MB | **11.3 MB** (21.6 MB at M0) | **25.8 MB** after boot, **27.3 MB** after two ticks |
+| PSS, two 2560×1440 outputs (1.0, 1.25) | ≤ 34 MB | **11.0 MB** after boot, **11.6 MB** after two ticks (21.6 MB at M0) | **26.0 MB** after boot, **26.8 MB** after two ticks (`demo.rs`: 26.5 MB) |
 | Context switches between ticks (:03 → :57) | 0 | **0, 0** | **0, 0** |
-| Damage per clock tick, both outputs | ≤ 2,000 px² | **239 px²** (largest frame 140) | **239 px²** (88–99 + 140 px²); the first tick 628 (the tray icon's late decode at 1.25, once) |
+| Damage per clock tick, both outputs | ≤ 2,000 px² | **239, 239 px²** (largest frame 140) | **484, 228 px²** (88 + 140 px² a tick; `demo.rs`: 484 px²) |
+
+The first tick after boot is the larger one, in `m2-exit.sh` and
+`demo.rs` alike: `HEADLESS-1` paints into a buffer of age 2, which was
+last drawn before the tray's icon arrived from the image worker, so that
+tick also repairs the icon's 16×16 (256 px²) there, once. The same
+buffer-age catch-up makes a tick at the hour larger: an earlier run of
+the same commit straddled 16:00, where `15:59` → `16:00` changes three
+digit cells, and measured 745 px² on that tick and on the next (whose
+age-2 buffer still held `15:59`). The builder's run measured 1,123 px²
+on a first tick, which likely held both; every one is under the gate.
+The midnight tick, where the date changes too, was not measured.
 
 Full shell with the launcher open (design.md's estimate 59–64 MB, not an
-M2 gate; M3 measures it with real services): **31.4 MB** PSS with the
-bar on two outputs, the mock's notifications up and the launcher open on
-`HEADLESS-1` at scale 1 (28.2 MB before it opened, 27.8 MB after it
-closed). design.md's estimate budgets the launcher's buffers at 2×: with
-`HEADLESS-1` at scale 2 (the launcher's buffer 1492×754), **37.4 MB**
-with it open, 32.1 MB before. Re-run after this round's fixes
-(`scripts/m2-exit.sh --no-build`): the design bar 26.2 MB after boot,
-27.0 MB after two ticks, 0 and 0 context switches from :03 to :57, ticks
-of 228 and 239 px². (A first re-run counted 8 and 1 switches: the script
-kept its homes under `/tmp`, where the config watcher's ancestor watches
-woke for other processes' directories; the homes now live under `$OUT`,
-as `demo.rs` already did.)
+M2 gate; M3 measures it with real services), same run: **31.2 MB** PSS
+with the bar on two outputs, the mock's notifications up and the
+launcher open on `HEADLESS-1` at scale 1 (28.0 MB before it opened,
+27.7 MB after it closed). design.md's estimate budgets the launcher's
+buffers at 2×: with `HEADLESS-1` at scale 2 (the launcher's buffer
+1492×754), **38.5 MB** with it open, 33.6 MB before. PSS moves between
+runs with what other processes share: the earlier run of the same commit
+gave 31.6 and 35.1 MB. (A run in fixer round 1 counted 8 and 1
+switches: the script kept its homes under `/tmp`, where the config
+watcher's ancestor watches woke for other processes' directories; the
+homes now live under `$OUT`, as `demo.rs` already did.)
 
-M2 is v0.1: every M2 box and exit gate in `docs/features.md` is ticked.
+M2 is v0.1: every M2 exit gate is met and every M2 box in
+`docs/features.md` is ticked, several of them with partial notes that
+are listed under "Open, not gates" below.
 
 ## Method
 
@@ -86,9 +103,9 @@ test asserts what design.md promises in pixels:
 
 | Test | Asserted |
 | --- | --- |
-| `the_bar_and_its_calendar_on_two_outputs` | the clock's ink centred within 3 px on both outputs; four dots on one output and two on the other, the focused one the `$accent` pill; a click on the third dot moves the pill there; the clock's click opens the calendar centred under it, today in `$accent`; ‹ pages to September; Escape closes it; `theme.look` dark and mocha darken the bar, keep the clock above 3:1 and draw the tray's symbolic icon light |
+| `the_bar_and_its_calendar_on_two_outputs` | the clock's ink centred within 3 px on both outputs; four dots on one output and two on the other, the focused one the `$accent` pill; a click on the third dot moves the pill there; the clock's click opens the calendar centred under it, today in `$accent`; ‹ pages to September; Escape closes it; hovering Volume's row reveals its slider (`bar_volume_hover`, the fill at the mock's 0.6) and leaving hides it; `theme.look` dark and mocha darken the bar, keep the clock above 3:1 and draw the tray's symbolic icon light |
 | `the_launcher_filters_selects_and_closes` | opened by `strand set launcher.open true`, 600 px wide and centred in the usable area of the focused output; three rows, the first selected, a caret in the input; "fi" leaves two rows with their matched letters in `$accent`; Down selects the second; Return closes it; opened again, `on show` cleared the query (three rows, the first selected); Escape closes it |
-| `toasts_arrive_stack_slide_and_leave` | no surface until a notification; the first slides in (release: at least two frames of the slide caught, overshoot at most 2 px) and rests 12 px from the edge; a critical toast's `$error` border; the first's close icon dismisses it and the next slides up into its place (release: at least two frames caught); a 1.5 s timeout expires by itself; a click activates one (it leaves); a right click dismisses the last; the panel closes |
+| `toasts_arrive_stack_slide_and_leave` | no surface until a notification; the first slides in (release: at least two frames of the slide caught, overshoot at most 2 px) and rests 12 px from the edge; a critical toast's `$error` border; the first's close icon dismisses it and the next slides up into its place (release: at least two frames caught); a 1.5 s timeout expires by itself; a toast under the pointer outlives its 4 s timeout in `$surface.hi` (`toasts_hover`) and expires once the pointer leaves; a click activates one (it leaves); a right click dismisses the last; the panel closes |
 | `the_osd_follows_volume_and_brightness` | no OSD at boot; volume 0.3 fills 30% of the meter (±4%), hidden 1.0–2.6 s after the change; two wheel notches on the bar's volume row give 20%; brightness 0.8 shows its icon and 80%; the bar's speaker icon mutes (0%); with `HEADLESS-2` focused the OSD shows there and not on `HEADLESS-1` |
 
 Run: `cargo test --release -p strand --test acceptance -- --nocapture
@@ -101,6 +118,8 @@ release only: its 1.2 s window is spent on the way in by a loaded debug
 build.
 
 Every reference was read and judged against design.md:
+
+![design.md's bar on HEADLESS-1 (2560 wide, light): dots with the focused pill, the window title, the clock centred on the output, volume, battery and tray](images/m2-bar.png)
 
 ![The bar on HEADLESS-2 at 1.25](images/m2-bar-125.png)
 
@@ -160,6 +179,8 @@ design bar is stable at about 11 MB.
 | the same | idle cache entries stayed until something else woke the shell (a launcher- or OSD-only config: forever) | entries the frames did not use go when the frame loop stops |
 | the same | late search results reselected the first row under the user's Down | a row the user moved to stays while the query stands |
 | the same | a one-glyph change to a 6,000-glyph text took 16 ms (the glyph diff was quadratic) | prefix and suffix skipped, the middle compared or boxed: about 5 ms, mostly shaping |
+| fixer round 2 | the OSD test's meter reading took the meter's own track as "the pill" for the rows below it; a frame caught near the end of the OSD's entrance, within tolerance of its reference, then read 0% (3 of 14 release runs) | the pill is the image's most common light colour (`acceptance.rs::meter_fill`; 12 of 12 runs since) |
+| fixer round 2 | key repeat could busy-loop on a compositor rate above 1,000,000/s, outlive a destroyed focused surface, and repeat stale text after a modifier change | a 1 ms floor, a stop with no focus, a stop on a modifiers change (decisions.md) |
 
 Each is recorded in `docs/decisions.md` (wave3-pixels (exit)), with the
 portal's `reduced-motion` key now wired to render, which closed the last
@@ -174,3 +195,31 @@ open M2 item.
   mock's own command (the M3 PipeWire service reports it).
 - The full shell's memory is measured on the mock desktop (three apps,
   two notifications, no real services); M3 measures it again.
+- Known partials behind ticked M2 boxes (each in `docs/features.md`):
+  - Springs: `mark_color`, gradients and other non-solid paints, and
+    the props of effects not drawn yet (`stroke`, `fill`, `trim`,
+    `glow`, `blur`) snap instead of springing (decisions.md
+    wave3-pixels (p2), fixer rounds 1 and 3; effects are M4).
+  - `enter`/`exit`: a `page` enters and exits like any node; the
+    directional transitions of `pages` are M4's.
+  - Lists are virtualised in layout, shaping and paint; logic still
+    mounts every row until M4 (decisions.md wave3-pixels).
+  - Contrast: the guard covers Material 3's declared text/background
+    pairs. Text in alpha-derived tokens (`$fg.muted`, `$fg.faint`) is
+    not guarded and dips to about 2:1 mid-swap; design.md's bar uses
+    `$fg.muted` for the window title and the calendar `$fg.faint` for
+    out-of-month days (decisions.md wave3-theme (t2), fixer round 3).
+- Interactions of the four shells covered only by offline or sway
+  tests outside `acceptance.rs`, not by its references: the dots' `when
+  hover` / `when pressed` state layers
+  (`crates/strand-render/tests/widgets.rs::button_meter_slider_and_segmented`
+  for the state layer); the launcher's click-away close
+  (`crates/strand/tests/demo.rs::the_design_launcher_is_centred_and_closes_on_click_away`);
+  the launcher's "No matches" row
+  (`crates/strand-compiler/tests/instantiate.rs::two_way_bindings_write_back`)
+  and the toasts' `dnd` filter
+  (`crates/strand-compiler/tests/instantiate.rs::a_let_chain_is_one_incremental_view`),
+  on the instance, not drawn on sway; the launcher's focus-loss close
+  and Battery's `$error` below 15% are not driven by any test (the
+  fixtures compile without diagnostics:
+  `crates/strand-compiler/tests/fixtures.rs`).
