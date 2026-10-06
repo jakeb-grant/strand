@@ -13,6 +13,8 @@ use smithay_client_toolkit::compositor::{
     CompositorHandler, CompositorState, FrameCallbackData, Region,
 };
 use smithay_client_toolkit::dispatch2::Dispatch2;
+use smithay_client_toolkit::error::GlobalError;
+use smithay_client_toolkit::globals::{GlobalData, ProvidesBoundGlobal};
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
@@ -27,6 +29,8 @@ use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::{
     self, KeyboardInteractivity, LayerShell, LayerShellHandler, LayerSurface, LayerSurfaceConfigure,
 };
+use smithay_client_toolkit::shell::xdg::XdgPositioner;
+use smithay_client_toolkit::shell::xdg::popup::{Popup, PopupConfigure, PopupHandler};
 use smithay_client_toolkit::shm::raw::RawPool;
 use smithay_client_toolkit::shm::{Shm, ShmHandler};
 use smithay_client_toolkit::{delegate_dispatch2, delegate_registry, registry_handlers};
@@ -48,6 +52,7 @@ use wayland_protocols::wp::viewporter::client::{
     wp_viewport::{self, WpViewport},
     wp_viewporter::{self, WpViewporter},
 };
+use wayland_protocols::xdg::shell::client::{xdg_positioner, xdg_wm_base::XdgWmBase};
 
 use strand_scene::{
     Keyboard, Layer, LogicalPoint, LogicalSize, NodeId, NodeKind, PaintTarget, Painter, Rect,
@@ -57,7 +62,9 @@ use strand_scene::{
 use crate::clock::{FrameClock, Presentation, PresentationClock};
 use crate::input::{AxisDelta, AxisSource, ButtonState, InputEvent};
 use crate::monitor::{Geometry, Monitor, MonitorId, Monitors};
-use crate::placement::{LayerConfig, PlacementError, layer_config};
+use crate::placement::{
+    LayerConfig, PlacementError, PopupConfig, PopupSide, layer_config, popup_config,
+};
 use crate::shm::{BufferData, MAX_BUFFERS, ShmBuffers};
 use strand_scene::{KeyInput, Modifiers};
 
@@ -330,7 +337,8 @@ struct Surface {
     output: Option<u32>,
     /// The output asked for at creation (`None`: the compositor picks).
     requested_output: Option<u32>,
-    layer: LayerSurface,
+    role: Role,
+    /// A layer surface's state; a popup's input region and size as one.
     config: LayerConfig,
     viewport: Option<WpViewport>,
     fractional: Option<WpFractionalScaleV1>,
@@ -366,9 +374,54 @@ struct Surface {
     stats: Stats,
 }
 
+/// The bound `xdg_wm_base` (sctk's `XdgShell` would also bind the
+/// toplevel decoration manager and need a window handler).
+#[derive(Debug)]
+struct WmBase(XdgWmBase);
+
+impl ProvidesBoundGlobal<XdgWmBase, 5> for WmBase {
+    fn bound_global(&self) -> Result<XdgWmBase, GlobalError> {
+        Ok(self.0.clone())
+    }
+}
+
+impl ProvidesBoundGlobal<XdgWmBase, 6> for WmBase {
+    fn bound_global(&self) -> Result<XdgWmBase, GlobalError> {
+        Ok(self.0.clone())
+    }
+}
+
+/// What a Wayland surface of ours is.
+enum Role {
+    Layer(LayerSurface),
+    /// An `xdg_popup` nested in the surface `parent` (a layer surface or
+    /// another popup).
+    Popup {
+        popup: Popup,
+        parent: SurfaceId,
+        config: PopupConfig,
+    },
+}
+
+impl Role {
+    fn wl(&self) -> &wl_surface::WlSurface {
+        match self {
+            Role::Layer(l) => l.wl_surface(),
+            Role::Popup { popup, .. } => popup.wl_surface(),
+        }
+    }
+
+    fn popup_parent(&self) -> Option<SurfaceId> {
+        match self {
+            Role::Popup { parent, .. } => Some(*parent),
+            Role::Layer(_) => None,
+        }
+    }
+}
+
 impl Surface {
     fn wl(&self) -> &wl_surface::WlSurface {
-        self.layer.wl_surface()
+        self.role.wl()
     }
 
     fn is_fractional(&self) -> bool {
@@ -528,6 +581,8 @@ pub struct State<H: SurfaceHost + 'static> {
     seat_state: SeatState,
     shm: Shm,
     layer_shell: LayerShell,
+    /// `xdg_wm_base`, for popups (none: popups are not shown).
+    xdg_shell: Option<WmBase>,
     viewporter: Option<WpViewporter>,
     fractional_manager: Option<WpFractionalScaleManagerV1>,
     presentation: Option<WpPresentation>,
@@ -557,6 +612,12 @@ pub struct State<H: SurfaceHost + 'static> {
     /// The surface with keyboard focus, and the modifiers held.
     keyboard_focus: Option<SurfaceId>,
     modifiers: Modifiers,
+    /// The surface the last pointer button press landed on (a popup
+    /// opens from it when its parent shows on several).
+    last_pressed: Option<SurfaceId>,
+    /// Popups the compositor dismissed (Escape, a click away) whose spec
+    /// still says open: not shown again until it says closed.
+    dismissed: BTreeSet<NodeId>,
     /// Set by [`State::set_focused_monitor`]; `None` lets the compositor
     /// place `screens: focused` surfaces.
     focused: Option<MonitorId>,
@@ -634,6 +695,10 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
         let layer_shell = LayerShell::bind(&globals, &qh)
             .map_err(|_| SurfaceError::MissingGlobal("zwlr_layer_shell_v1"))?;
         let shm = Shm::bind(&globals, &qh).map_err(|_| SurfaceError::MissingGlobal("wl_shm"))?;
+        let xdg_shell = globals
+            .bind::<XdgWmBase, _, _>(&qh, 1..=6, GlobalData)
+            .ok()
+            .map(WmBase);
         let viewporter = globals
             .bind::<WpViewporter, _, _>(&qh, 1..=1, StrandGlobal)
             .ok();
@@ -672,6 +737,7 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             compositor,
             shm,
             layer_shell,
+            xdg_shell,
             viewporter,
             fractional_manager,
             presentation,
@@ -693,6 +759,8 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             pointers: Vec::new(),
             keyboards: Vec::new(),
             keyboard_focus: None,
+            last_pressed: None,
+            dismissed: BTreeSet::new(),
             modifiers: Modifiers::default(),
             focused: None,
             input: None,
@@ -883,6 +951,7 @@ impl<H: SurfaceHost + 'static> State<H> {
             SurfaceChange::Removed => {
                 self.destroy_node_surfaces(node);
                 self.specs.remove(&node);
+                self.dismissed.remove(&node);
                 self.ids.retain(|(n, _), _| *n != node);
             }
         }
@@ -977,6 +1046,10 @@ impl<H: SurfaceHost + 'static> State<H> {
         let Some(spec) = self.specs.get(&node).cloned() else {
             return;
         };
+        if spec.kind == NodeKind::Popup {
+            self.reconcile_popup(node, &spec);
+            return;
+        }
         let mapped = match layer_config(&spec) {
             Ok(_) => spec.open,
             Err(e @ PlacementError::NotLayerSurface(_)) => {
@@ -1040,11 +1113,260 @@ impl<H: SurfaceHost + 'static> State<H> {
         }
     }
 
+    // ---- popups -------------------------------------------------------------
+
+    /// The surface a popup of `spec` nests in: one showing its parent
+    /// node, mapped (the last one a button was pressed on, when the parent
+    /// shows on several).
+    fn popup_parent(&self, spec: &SurfaceSpec) -> Option<SurfaceId> {
+        let parent = spec.parent?;
+        let mut candidates: Vec<&Surface> = self
+            .surfaces
+            .values()
+            .filter(|s| s.node == parent && s.mapped() && s.configured)
+            .collect();
+        candidates.sort_by_key(|s| std::cmp::Reverse(Some(s.id) == self.last_pressed));
+        candidates.first().map(|s| s.id)
+    }
+
+    /// Creates or destroys `node`'s popup so it shows exactly while open
+    /// and its parent is mapped.
+    fn reconcile_popup(&mut self, node: NodeId, spec: &SurfaceSpec) {
+        let existing = self.surfaces_of(node);
+        if !spec.open {
+            self.dismissed.remove(&node);
+        }
+        let parent = (spec.open && !self.dismissed.contains(&node))
+            .then(|| self.popup_parent(spec))
+            .flatten();
+        let parent_spec = spec.parent.and_then(|p| self.specs.get(&p)).cloned();
+        let config = match (&parent, &parent_spec) {
+            (Some(_), Some(ps)) => popup_config(spec, ps).ok(),
+            _ => None,
+        };
+        let Some((parent, config)) = parent.zip(config) else {
+            for id in existing {
+                self.destroy_surface(id);
+            }
+            return;
+        };
+        if existing.is_empty() {
+            self.create_popup(node, spec, parent, config);
+        }
+    }
+
+    /// The popups nested in surfaces of `node` (now mapped or gone) are
+    /// reconciled.
+    fn reconcile_children(&mut self, node: NodeId) {
+        let kids: Vec<NodeId> = self
+            .specs
+            .iter()
+            .filter(|(_, s)| s.kind == NodeKind::Popup && s.parent == Some(node))
+            .map(|(n, _)| *n)
+            .collect();
+        for k in kids {
+            self.reconcile(k);
+        }
+    }
+
+    /// A popup spec changed: a new size or anchor repositions it (or, on
+    /// an `xdg_wm_base` older than version 3, makes it again).
+    fn reconfigure_popups(&mut self, node: NodeId) {
+        let Some(spec) = self.specs.get(&node).cloned() else {
+            return;
+        };
+        let parent_spec = spec.parent.and_then(|p| self.specs.get(&p)).cloned();
+        let new = parent_spec.and_then(|ps| popup_config(&spec, &ps).ok());
+        for id in self.surfaces_of(node) {
+            let Some(new) = new.clone() else {
+                self.destroy_surface(id);
+                continue;
+            };
+            let Some(positioner) = self.positioner(&new) else {
+                continue;
+            };
+            let Some(s) = self.surfaces.get_mut(&id) else {
+                continue;
+            };
+            let Role::Popup { popup, config, .. } = &mut s.role else {
+                continue;
+            };
+            if *config == new {
+                continue;
+            }
+            if new.grab != config.grab || new.namespace != config.namespace {
+                self.destroy_surface(id);
+                continue;
+            }
+            if popup.xdg_popup().version() >= 3 {
+                popup.reposition(&positioner, 0);
+                *config = new.clone();
+                s.config = new.as_layer();
+                s.geometry_dirty = true;
+                popup.wl_surface().commit();
+                s.stats.bare_commits += 1;
+                self.stats.bare_commits += 1;
+            } else {
+                self.destroy_surface(id);
+            }
+        }
+        self.reconcile(node);
+    }
+
+    fn positioner(&self, c: &PopupConfig) -> Option<XdgPositioner> {
+        let shell = self.xdg_shell.as_ref()?;
+        let p = XdgPositioner::new(shell).ok()?;
+        p.set_size(c.width.max(1) as i32, c.height.max(1) as i32);
+        let (x, y, w, h) = c.anchor_rect;
+        p.set_anchor_rect(x, y, w.max(1), h.max(1));
+        use xdg_positioner::{Anchor, ConstraintAdjustment as Adj, Gravity};
+        let (anchor, gravity, offset, flip) = match c.side {
+            PopupSide::Below => (Anchor::Bottom, Gravity::Bottom, (0, c.gap), Adj::FlipY),
+            PopupSide::Above => (Anchor::Top, Gravity::Top, (0, -c.gap), Adj::FlipY),
+            PopupSide::Right => (Anchor::Right, Gravity::Right, (c.gap, 0), Adj::FlipX),
+            PopupSide::Left => (Anchor::Left, Gravity::Left, (-c.gap, 0), Adj::FlipX),
+        };
+        p.set_anchor(anchor);
+        p.set_gravity(gravity);
+        p.set_offset(offset.0, offset.1);
+        p.set_constraint_adjustment(Adj::SlideX | Adj::SlideY | flip);
+        Some(p)
+    }
+
+    /// Creates `node`'s popup in surface `parent`, grabbing with the last
+    /// button press unless it is a tooltip.
+    fn create_popup(
+        &mut self,
+        node: NodeId,
+        spec: &SurfaceSpec,
+        parent: SurfaceId,
+        config: PopupConfig,
+    ) {
+        let Some(shell) = self.xdg_shell.as_ref() else {
+            log::debug!("{}: no xdg_wm_base, popups are not shown", spec.namespace());
+            return;
+        };
+        let Some(positioner) = self.positioner(&config) else {
+            return;
+        };
+        let Some(ps) = self.surfaces.get(&parent) else {
+            return;
+        };
+        let wl = self.compositor.create_surface(&self.qh);
+        let parent_xdg = match &ps.role {
+            Role::Popup { popup, .. } => Some(popup.xdg_surface().clone()),
+            Role::Layer(_) => None,
+        };
+        let popup = match Popup::from_surface(
+            parent_xdg.as_ref(),
+            &positioner,
+            &self.qh,
+            wl.clone(),
+            shell,
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                log::warn!("{}: no popup: {e}", spec.namespace());
+                return;
+            }
+        };
+        if let Role::Layer(layer) = &ps.role {
+            layer.get_popup(popup.xdg_popup());
+        }
+        let (monitor, output, scale_src) = (ps.monitor.clone(), ps.output, ps.output);
+        if config.grab
+            && let Some(p) = self
+                .pointers
+                .iter()
+                .filter(|p| p.button_serial.is_some())
+                .max_by_key(|p| p.button_serial)
+            && let Some(serial) = p.button_serial
+        {
+            popup.xdg_popup().grab(&p.seat, serial);
+        }
+        let key = (node, Placement::Focused);
+        let id = match self.ids.get(&key) {
+            Some(id) => *id,
+            None => {
+                let id = SurfaceId(self.next_id);
+                self.next_id = self.next_id.wrapping_add(1).max(1);
+                self.ids.insert(key, id);
+                id
+            }
+        };
+        let generation = self.next_generation;
+        self.next_generation += 1;
+        let (viewport, fractional) = match (&self.viewporter, &self.fractional_manager) {
+            (Some(vp), Some(fm)) => (
+                Some(vp.get_viewport(&wl, &self.qh, SurfaceTag(id))),
+                Some(fm.get_fractional_scale(&wl, &self.qh, SurfaceTag(id))),
+            ),
+            _ => (None, None),
+        };
+        let (scale, integer_scale) = self.initial_scale(scale_src, fractional.is_some());
+        let layer_like = config.as_layer();
+        let click_through = layer_like.click_through;
+        if click_through {
+            match Region::new(&self.compositor) {
+                Ok(region) => wl.set_input_region(Some(region.wl_region())),
+                Err(e) => log::warn!("{}: no input region: {e}", config.namespace),
+            }
+        }
+        wl.commit();
+        self.by_wl.insert(wl.id(), id);
+        let surface = Surface {
+            id,
+            generation,
+            node,
+            kind: spec.kind,
+            placement: Placement::Focused,
+            monitor: monitor.clone(),
+            output,
+            requested_output: output,
+            role: Role::Popup {
+                popup,
+                parent,
+                config,
+            },
+            config: layer_like,
+            viewport,
+            fractional,
+            configured: false,
+            logical: (0, 0),
+            scale,
+            reported_scale: None,
+            integer_scale,
+            buffers: ShmBuffers::new(id, self.max_buffers),
+            geometry_dirty: true,
+            callback_pending: false,
+            commit_seq: 0,
+            in_flight: None,
+            ack_pending: false,
+            repaint: true,
+            opaque: Vec::new(),
+            last_damage: Vec::new(),
+            click_through,
+            input_region: click_through.then_some(None),
+            stats: Stats {
+                bare_commits: 1,
+                ..Stats::default()
+            },
+        };
+        self.stats.bare_commits += 1;
+        self.surfaces.insert(id, surface);
+        let monitor = monitor.and_then(|m| self.monitors.get(&m)).cloned();
+        self.host.surface_attached(id, node, monitor.as_ref());
+    }
+
     /// Pushes a changed spec to `node`'s live surfaces in place.
     fn reconfigure(&mut self, node: NodeId) {
         let Some(spec) = self.specs.get(&node) else {
             return;
         };
+        if spec.kind == NodeKind::Popup {
+            self.reconfigure_popups(node);
+            return;
+        }
         let new = layer_config(spec);
         let catcher = wants_catcher(spec);
         let ids = self.surfaces_of(node);
@@ -1082,9 +1404,12 @@ impl<H: SurfaceHost + 'static> State<H> {
                 self.destroy_surface(id);
                 continue;
             }
-            apply_layer_config(&s.layer, &config);
+            let Role::Layer(layer) = &s.role else {
+                continue;
+            };
+            apply_layer_config(layer, &config);
             s.config = config;
-            s.layer.commit();
+            layer.commit();
             s.stats.bare_commits += 1;
             self.stats.bare_commits += 1;
             self.update_catcher(id);
@@ -1204,7 +1529,7 @@ impl<H: SurfaceHost + 'static> State<H> {
             monitor: monitor.as_ref().map(|m| m.id.clone()),
             output: global,
             requested_output: global,
-            layer,
+            role: Role::Layer(layer),
             config,
             viewport,
             fractional,
@@ -1480,6 +1805,17 @@ impl<H: SurfaceHost + 'static> State<H> {
     }
 
     fn destroy_surface(&mut self, id: SurfaceId) {
+        // Popups nested in it go first, innermost first (a popup must be
+        // the topmost when it is destroyed).
+        let children: Vec<SurfaceId> = self
+            .surfaces
+            .values()
+            .filter(|c| c.role.popup_parent() == Some(id))
+            .map(|c| c.id)
+            .collect();
+        for c in children {
+            self.destroy_surface(c);
+        }
         self.destroy_catcher(id);
         let Some(mut s) = self.surfaces.remove(&id) else {
             return;
@@ -1772,6 +2108,18 @@ impl<H: SurfaceHost + 'static> State<H> {
                 }
                 _ => wl.set_buffer_scale(s.integer_scale.max(1)),
             }
+            // A popup's window geometry is its box: the compositor
+            // positions that, and its shadow reaches past it.
+            if let Role::Popup { popup, config, .. } = &s.role {
+                let [t, r, b, l] = config.overhang;
+                let (w, h) = s.logical;
+                popup.xdg_surface().set_window_geometry(
+                    l,
+                    t,
+                    (w as i32 - l - r).max(1),
+                    (h as i32 - t - b).max(1),
+                );
+            }
         }
         wl.attach(Some(&buffer), 0, 0);
         if wl.version() >= 4 {
@@ -1835,6 +2183,11 @@ impl<H: SurfaceHost + 'static> State<H> {
         s.buffers.slots.commit(acquired.index);
         s.stats.commits += 1;
         self.stats.commits += 1;
+        if s.commit_seq == 1 {
+            // Mapped: popups waiting for it as their parent come now.
+            let node = s.node;
+            self.reconcile_children(node);
+        }
     }
 
     /// Sends a bare commit if a configure was acked and nothing has
@@ -2181,15 +2534,81 @@ impl<H: SurfaceHost + 'static> LayerShellHandler for State<H> {
         let Some(id) = self.surface_for(layer.wl_surface()) else {
             return;
         };
+        let Some(s) = self.surfaces.get(&id) else {
+            return;
+        };
+        let (w, h) = configure.new_size;
+        // 0 means "your choice": what we asked for.
+        let w = if w == 0 { s.config.width.max(1) } else { w };
+        let h = if h == 0 { s.config.height.max(1) } else { h };
+        self.configured(id, (w, h));
+    }
+}
+
+impl<H: SurfaceHost + 'static> PopupHandler for State<H> {
+    fn configure(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        popup: &Popup,
+        config: PopupConfigure,
+    ) {
+        let Some(id) = self.surface_for(popup.wl_surface()) else {
+            return;
+        };
+        let Some(Role::Popup { config: c, .. }) = self.surfaces.get(&id).map(|s| &s.role) else {
+            return;
+        };
+        // The compositor sizes the box (the window geometry); the buffer
+        // adds the shadow overhang.
+        let [t, r, b, l] = c.overhang;
+        let w = if config.width > 0 {
+            config.width as u32
+        } else {
+            c.width
+        };
+        let h = if config.height > 0 {
+            config.height as u32
+        } else {
+            c.height
+        };
+        let w = w.saturating_add((l + r).max(0) as u32);
+        let h = h.saturating_add((t + b).max(0) as u32);
+        self.configured(id, (w, h));
+        // sctk acked it already; the next commit makes it take effect.
+        if let Some(s) = self.surfaces.get_mut(&id) {
+            s.geometry_dirty = true;
+        }
+    }
+
+    fn done(&mut self, _: &Connection, _: &QueueHandle<Self>, popup: &Popup) {
+        // Escape or a click away (the grab ended): its `open` goes false
+        // through the router, and the surface goes now (the compositor
+        // unmapped it already).
+        let Some(id) = self.surface_for(popup.wl_surface()) else {
+            return;
+        };
+        self.stats.closed += 1;
+        // Told while the surface is still known (the host routes it by
+        // surface), then destroyed; not made again until its spec has
+        // closed.
+        self.send_input(InputEvent::ClickAway { surface: id });
+        if let Some(node) = self.surfaces.get(&id).map(|s| s.node) {
+            self.dismissed.insert(node);
+        }
+        self.destroy_surface(id);
+    }
+}
+
+impl<H: SurfaceHost + 'static> State<H> {
+    /// A layer surface or popup was configured at `(w, h)` logical pixels
+    /// (its whole buffer).
+    fn configured(&mut self, id: SurfaceId, (w, h): (u32, u32)) {
         self.stats.configures += 1;
         let Some(s) = self.surfaces.get_mut(&id) else {
             return;
         };
         s.stats.configures += 1;
-        let (w, h) = configure.new_size;
-        // 0 means "your choice": what we asked for.
-        let w = if w == 0 { s.config.width.max(1) } else { w };
-        let h = if h == 0 { s.config.height.max(1) } else { h };
         if s.logical != (w, h) {
             s.geometry_dirty = true;
         }
@@ -2197,7 +2616,7 @@ impl<H: SurfaceHost + 'static> LayerShellHandler for State<H> {
         let region = s.config.input_region((w, h));
         if region != s.input_region {
             s.input_region = region;
-            let wl = s.layer.wl_surface().clone();
+            let wl = s.wl().clone();
             let ns = s.config.namespace.clone();
             match region {
                 None => wl.set_input_region(None),
@@ -2378,6 +2797,7 @@ impl<H: SurfaceHost + 'static> PointerHandler for State<H> {
                     if let Some(p) = seat.and_then(|i| self.pointers.get_mut(i)) {
                         p.button_serial = Some(*serial);
                     }
+                    self.last_pressed = Some(surface);
                     InputEvent::PointerButton {
                         surface,
                         position,

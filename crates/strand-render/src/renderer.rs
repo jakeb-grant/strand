@@ -349,6 +349,37 @@ pub struct Renderer {
     /// What flattening reads besides the tree (compositor blur, widget
     /// state, images).
     extras: Extras,
+    /// The tooltip waiting to show or shown (`tooltip: expr`).
+    tooltip: Option<Tooltip>,
+    tooltip_delay: Duration,
+    /// Tooltips shown so far (their overlay ids' generation).
+    tooltip_seq: u32,
+    /// Wakes the render loop from another thread (the text worker's
+    /// waker), so a tooltip shows when its delay ends.
+    waker: Option<LoopWaker>,
+}
+
+/// The render loop's waker, callable from any thread.
+#[derive(Clone)]
+struct LoopWaker(Arc<std::sync::Mutex<strand_text::Waker>>);
+
+impl std::fmt::Debug for LoopWaker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LoopWaker")
+    }
+}
+
+/// How long the pointer rests on a node before its `tooltip` shows.
+pub const TOOLTIP_DELAY: Duration = Duration::from_millis(600);
+
+/// A tooltip: the node it describes, its text, when it shows, and its
+/// render-owned popup once shown.
+#[derive(Clone, Debug)]
+struct Tooltip {
+    target: NodeId,
+    text: String,
+    due: Instant,
+    popup: Option<NodeId>,
 }
 
 /// The overhang a surface asks for: on an axis its anchor leaves centred
@@ -357,7 +388,9 @@ pub struct Renderer {
 /// centres the whole buffer and an uneven overhang would move the box off
 /// centre.
 fn centred_overhang(spec: &SurfaceSpec, o: Insets) -> Insets {
-    if spec.kind == NodeKind::Bar {
+    // A popup's box is its window geometry, which the compositor places:
+    // its overhang may be uneven.
+    if matches!(spec.kind, NodeKind::Bar | NodeKind::Popup) {
         return o;
     }
     let (h, v) = match spec.anchor {
@@ -475,6 +508,12 @@ impl Renderer {
             images: crate::image::ImageStore::new(images),
             ..Extras::default()
         };
+        let waker = match &text {
+            TextBackend::Worker(w) => w
+                .waker()
+                .map(|w| LoopWaker(Arc::new(std::sync::Mutex::new(w)))),
+            TextBackend::Inline(_) => None,
+        };
         Self {
             tree: SceneTree::new(),
             surfaces: BTreeMap::new(),
@@ -511,7 +550,188 @@ impl Renderer {
             opening: BTreeSet::new(),
             laid_out_nodes: 0,
             extras,
+            tooltip: None,
+            tooltip_delay: TOOLTIP_DELAY,
+            tooltip_seq: 0,
+            waker,
         }
+    }
+
+    /// How long the pointer rests before a tooltip shows (tests shorten
+    /// it).
+    pub fn set_tooltip_delay(&mut self, delay: Duration) {
+        self.tooltip_delay = delay;
+    }
+
+    /// The render-owned popup of the tooltip shown, if one is.
+    pub fn tooltip_popup(&self) -> Option<NodeId> {
+        self.tooltip.as_ref().and_then(|t| t.popup)
+    }
+
+    /// The deepest hovered node with a `tooltip`, and its text; none
+    /// while a button is held.
+    fn tooltip_wanted(&self) -> Option<(NodeId, String)> {
+        let w = &self.extras.widgets;
+        if !w.pressed.is_empty() {
+            return None;
+        }
+        let depth = |mut n: NodeId| {
+            let mut d = 0;
+            while let Some(p) = self.tree.get(n).and_then(|x| x.parent) {
+                d += 1;
+                n = p;
+            }
+            d
+        };
+        w.hovered
+            .iter()
+            .filter(|n| self.tree.contains_live(**n))
+            .filter_map(|n| {
+                let node = self.tree.get(*n)?;
+                let v = node.get(Prop::Tooltip)?;
+                let tables = scope_tables(&self.tree, *n);
+                let scope = TokenScope::new(&tables);
+                match scope.resolve(v).as_deref() {
+                    Some(PropValue::Text(t)) if !t.trim().is_empty() => Some((*n, t.clone())),
+                    _ => None,
+                }
+            })
+            .max_by_key(|(n, _)| (depth(*n), *n))
+    }
+
+    /// Hover or a press changed: the tooltip that should show changes
+    /// with it (shown after `tooltip_delay` of rest, hidden at once).
+    fn refresh_tooltip(&mut self) {
+        let want = self.tooltip_wanted();
+        if let (Some(t), Some((n, text))) = (&mut self.tooltip, &want)
+            && t.target == *n
+        {
+            if t.text != *text {
+                t.text = text.clone();
+                if t.popup.is_some() {
+                    self.hide_tooltip();
+                    self.show_tooltip();
+                }
+            }
+            return;
+        }
+        self.hide_tooltip();
+        let Some((target, text)) = want else {
+            return;
+        };
+        let delay = self.tooltip_delay;
+        self.tooltip = Some(Tooltip {
+            target,
+            text,
+            due: Instant::now() + delay,
+            popup: None,
+        });
+        if let Some(w) = self.waker.clone() {
+            let _ = std::thread::Builder::new()
+                .name("strand-tooltip".into())
+                .spawn(move || {
+                    std::thread::sleep(delay);
+                    if let Ok(w) = w.0.lock() {
+                        w();
+                    }
+                });
+        }
+    }
+
+    fn hide_tooltip(&mut self) {
+        if let Some(t) = self.tooltip.take()
+            && let Some(p) = t.popup
+        {
+            self.tree.remove_overlay(p);
+            self.refresh_specs();
+        }
+    }
+
+    /// Shows the waiting tooltip once its delay has passed: a popup under
+    /// its node holding its text, styled by the theme's inverse surface
+    /// (`$inverse_surface`, `$inverse_on_surface`, `$radius.sm`,
+    /// `$font.caption` when the table has them).
+    fn show_tooltip(&mut self) {
+        let Some(t) = &self.tooltip else {
+            return;
+        };
+        if t.popup.is_some() || Instant::now() < t.due {
+            return;
+        }
+        if !self.tree.contains_live(t.target) {
+            self.tooltip = None;
+            return;
+        }
+        let (target, text) = (t.target, t.text.clone());
+        self.tooltip_seq = self.tooltip_seq.wrapping_add(1);
+        let g = self.tooltip_seq;
+        let popup = NodeId::new(crate::tree::OVERLAY_INDEX, g);
+        let label = NodeId::new(crate::tree::OVERLAY_INDEX + 1, g);
+        let tables = scope_tables(&self.tree, target);
+        let scope = TokenScope::new(&tables);
+        let token = |path: &str, fallback: PropValue| {
+            if scope.lookup(path).is_some() {
+                PropValue::Token(strand_scene::TokenExpr::path(path))
+            } else {
+                fallback
+            }
+        };
+        let entry = |prop, value| crate::tree::PropEntry {
+            prop,
+            value,
+            transition: strand_scene::Transition::Instant,
+        };
+        let mut props = vec![
+            entry(Prop::Name, PropValue::Text("tooltip".into())),
+            entry(
+                Prop::Bg,
+                token(
+                    "inverse_surface",
+                    PropValue::Color(strand_scene::Color::from_rgba8(30, 30, 36, 240)),
+                ),
+            ),
+            entry(
+                Prop::Color,
+                token(
+                    "inverse_on_surface",
+                    PropValue::Color(strand_scene::Color::WHITE),
+                ),
+            ),
+            entry(Prop::Radius, token("radius.sm", PropValue::Number(6.0))),
+            entry(
+                Prop::Pad,
+                PropValue::List(vec![PropValue::Number(4.0), PropValue::Number(8.0)]),
+            ),
+        ];
+        if scope.lookup("font.caption").is_some() {
+            props.push(entry(
+                Prop::Font,
+                PropValue::Token(strand_scene::TokenExpr::path("font.caption")),
+            ));
+        }
+        self.tree.add_overlay(vec![
+            crate::tree::Node {
+                id: popup,
+                kind: NodeKind::Popup,
+                parent: Some(target),
+                children: vec![label],
+                props,
+                epoch: 0,
+            },
+            crate::tree::Node {
+                id: label,
+                kind: NodeKind::Text,
+                parent: Some(popup),
+                children: Vec::new(),
+                props: vec![entry(Prop::Text, PropValue::Text(text))],
+                epoch: 0,
+            },
+        ]);
+        if let Some(t) = &mut self.tooltip {
+            t.popup = Some(popup);
+        }
+        self.spec_dirty.insert(popup);
+        self.refresh_specs();
     }
 
     /// Decodes images and icons inline with icons from `theme` (offline
@@ -580,6 +800,9 @@ impl Renderer {
         });
         if changed && draws {
             self.mark_node_dirty(node);
+        }
+        if changed && matches!(flag, crate::Flag::Hover | crate::Flag::Pressed) {
+            self.refresh_tooltip();
         }
     }
 
@@ -794,7 +1017,13 @@ impl Renderer {
     /// it after every `apply`, `update` and paint.
     pub fn next_wake(&self) -> Option<Instant> {
         let stall = self.exit_stall;
-        self.anim
+        let tooltip = self
+            .tooltip
+            .as_ref()
+            .filter(|t| t.popup.is_none())
+            .map(|t| t.due);
+        let exits = self
+            .anim
             .exits()
             .filter_map(|(id, _)| {
                 let started = self.anim.exit_started(id)?;
@@ -808,7 +1037,11 @@ impl Renderer {
                 let asleep = last.map_or(started, |t| t.max(started)) + stall;
                 Some(asleep.min(started + strand_scene::motion::MAX_MOTION + stall))
             })
-            .min()
+            .min();
+        match (exits, tooltip) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     /// Something on surface node `id` moves or is about to (a spring, a
@@ -1131,6 +1364,24 @@ impl Renderer {
             let mut spec =
                 SurfaceSpec::resolve(node.kind, |p| node.get(p).and_then(|v| scope.resolve(v)));
             live.insert(id);
+            if node.kind == NodeKind::Popup {
+                // Nested in the surface of the element it is declared in,
+                // anchored to that element's laid-out box there; shown only
+                // while that surface is.
+                let anchor = node.parent;
+                let parent = anchor.and_then(|a| self.tree.root_of(a));
+                spec.parent = parent;
+                spec.tooltip = self.tree.is_overlay(id);
+                spec.anchor_rect = anchor.zip(parent).and_then(|(a, p)| {
+                    self.surfaces
+                        .values()
+                        .filter(|s| s.root == p)
+                        .find_map(|s| s.boxes.as_ref()?.rects.get(&a).copied())
+                });
+                if parent.is_some_and(|p| self.specs.get(&p).is_some_and(|ps| !ps.open)) {
+                    spec.open = false;
+                }
+            }
             // Surface poses: `enter` plays when it opens, `exit` before it
             // closes (it stays open until the pose settles).
             let reported = self.specs.get(&id).map(|s| s.open);
@@ -1651,9 +1902,17 @@ impl Renderer {
     /// Applies one tick's diff. Failed ops are returned; the rest apply.
     pub fn apply(&mut self, diff: SceneDiff) -> Vec<SceneError> {
         let errors = self.apply_ops(diff);
-        // Widget state of nodes logic removed goes with them.
+        // Widget state of nodes logic removed goes with them, and a
+        // tooltip with its node.
         let tree = &self.tree;
         self.extras.widgets.retain(|n| tree.contains_live(n));
+        if self
+            .tooltip
+            .as_ref()
+            .is_some_and(|t| !self.tree.contains_live(t.target))
+        {
+            self.hide_tooltip();
+        }
         errors
     }
 
@@ -1972,6 +2231,7 @@ impl Renderer {
     /// last painted frame (only text still being shaped changed) stops
     /// being dirty, so it asks for no frame until the layout arrives.
     pub fn update(&mut self) {
+        self.show_tooltip();
         self.poll_text();
         self.expire_exits();
         self.process_finished();
