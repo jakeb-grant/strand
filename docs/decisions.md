@@ -5922,3 +5922,15 @@ bar has been idle for a whole second (boot's icons and late text done,
 the steady state the M0 gate is about), and a failure prints the
 rollup, the process's and the system's THP state and the ten largest
 mappings, so a breach on a runner can be read from its log.
+
+**2026-10-06 · wave3-pixels (carried r1): strand turns THP off itself.**
+The exit decision "mimalloc without transparent huge pages" read
+mimalloc's `no_thp` as `PR_SET_THP_DISABLE` for the process; it only
+stops mimalloc from madvising its arenas (`MADV_HUGEPAGE`), and calls the
+prctl only when its `allow_thp` option is 0. That covers THP in
+`madvise` mode (the dev container) but not `always` (GitHub's runners):
+there the failing CI report showed `THP_enabled: 1` and 38.9 MB resident
+in one `[anon:mimalloc]` mapping, 55 MB PSS in all. `main` now calls
+`PR_SET_THP_DISABLE` first thing (rustix's `thread` feature), and both
+PSS tests in `demo.rs` assert `THP_enabled: 0` in `/proc/<pid>/status`
+before reading PSS.

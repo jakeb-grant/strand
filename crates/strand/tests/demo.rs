@@ -266,6 +266,17 @@ fn memory_report(pid: u32) -> String {
     out
 }
 
+/// strand turns transparent huge pages off for itself (`main`): THP in
+/// `always` mode otherwise fills mimalloc's arenas with 2 MiB pages.
+fn assert_thp_off(pid: u32) {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
+    let line = status.lines().find(|l| l.starts_with("THP_enabled:"));
+    // Kernels before 6.x have no such line; nothing to check there.
+    if let Some(l) = line {
+        assert_eq!(l.split_whitespace().nth(1), Some("0"), "THP is on: {l}");
+    }
+}
+
 fn pss_kb(pid: u32) -> u64 {
     let rollup = std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup")).unwrap();
     rollup
@@ -425,6 +436,7 @@ fn demo_bar_on_two_outputs_then_idle() {
     Shot::take(&sway, "HEADLESS-2").assert_aligned("HEADLESS-2", 1.25);
 
     // The memory gate, on the two-monitor bar.
+    assert_thp_off(pid);
     let pss = pss_kb(pid);
     let (limit, what) = pss_limit();
     eprintln!("strand PSS with two 2560x1440 bars: {pss} kB ({what} {limit} kB)");
@@ -580,6 +592,7 @@ fn the_design_bar_keeps_the_m0_budget() {
     // Measured once boot work is done and the bar is idle (the steady
     // state the M0 gate is about): a loaded runner can still be decoding
     // icons or shaping late text 1.5 s in.
+    assert_thp_off(pid);
     let pss = pss_kb(pid);
     // A debug build of the whole language path carries about 25 MB more
     // than release (49 against 14–27 MB here): its own ceiling.
