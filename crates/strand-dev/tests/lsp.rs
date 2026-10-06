@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use lsp_server::{Connection, Message, Notification, Request, RequestId, Response};
 use lsp_types::Position;
 use serde_json::{Value, json};
+use strand_compiler::schema::Schema;
 use strand_dev::text::{Lines, path_to_uri};
 
 /// design.md's shells, which check clean as one config.
@@ -83,6 +84,19 @@ impl Client {
     /// [`Client::start`] with the `initialize` params changed by `init`
     /// (`files` may name sub-directories).
     fn start_with(files: &[(&str, String)], init: impl FnOnce(&mut Value)) -> Self {
+        Client::start_full(files, init, None)
+    }
+
+    /// [`Client::start`] serving `schema` (`strand_dev::serve_with`).
+    fn start_schema(files: &[(&str, String)], schema: Schema) -> Self {
+        Client::start_full(files, |_| {}, Some(schema))
+    }
+
+    fn start_full(
+        files: &[(&str, String)],
+        init: impl FnOnce(&mut Value),
+        schema: Option<Schema>,
+    ) -> Self {
         let dir = TempDir::new();
         for (name, text) in files {
             let path = dir.0.join(name);
@@ -90,8 +104,9 @@ impl Client {
             std::fs::write(path, text).unwrap();
         }
         let (server_conn, conn) = Connection::memory();
-        let server = std::thread::spawn(move || {
-            strand_dev::serve(&server_conn).unwrap();
+        let server = std::thread::spawn(move || match schema {
+            Some(s) => strand_dev::serve_with(&server_conn, std::sync::Arc::new(s)).unwrap(),
+            None => strand_dev::serve(&server_conn).unwrap(),
         });
         let mut c = Client {
             conn,
@@ -1612,4 +1627,75 @@ fn the_binary_serves_stdio() {
     );
     drop(stdin);
     assert!(child.wait().unwrap().success());
+}
+
+/// `strand-dev lsp` serves the builtin schema as the linked service crates
+/// extend it: a real service's own docs replace its provisional stub's.
+#[test]
+fn service_crate_schemas_drive_hover() {
+    let text = "bar B { text pct(cpu.usage) }\n".to_string();
+    let mut c = Client::start(&[("b.strand", text.clone())]);
+    c.open("b.strand");
+    assert!(c.diagnostics("b.strand").is_empty());
+    let h = c.hover("b.strand", Client::pos(&text, "cpu.usage", 0, 1));
+    assert!(h.contains("service cpu"), "{h}");
+    assert!(
+        h.contains("sampled once a second while a reader is visible"),
+        "the provisional stub's doc, not the cpu service's: {h}"
+    );
+    let served = strand_dev::schema();
+    assert!(!served.provisional.contains("cpu"), "cpu is real");
+    assert!(!served.provisional.contains("system"), "system is real");
+    assert_ne!(
+        served.fingerprint(),
+        Schema::builtin().fingerprint(),
+        "the compile cache key changes with the services"
+    );
+}
+
+/// A schema a service crate contributes (`serve_with`) is what the server
+/// checks, hovers and completes with.
+#[test]
+fn an_extended_schema_checks_hovers_and_completes() {
+    const WEATHER: &str = "
+/// The weather outside.
+service weather {
+  /// Degrees Celsius outside.
+  temperature: float
+  /// It rains.
+  raining: bool
+}
+";
+    let mut schema = Schema::builtin().clone();
+    schema.extend(WEATHER).unwrap();
+    assert!(schema.undocumented().is_empty());
+    let good = "bar B { text pct(weather.temperature) }\n".to_string();
+    let bad = "bar C { text pct(weather.temprature) }\n".to_string();
+    let mut c = Client::start_schema(&[("b.strand", good.clone()), ("c.strand", bad)], schema);
+    c.open("b.strand");
+    assert!(c.diagnostics("b.strand").is_empty());
+    let h = c.hover("b.strand", Client::pos(&good, "temperature", 0, 2));
+    assert!(
+        h.contains("temperature: float") && h.contains("Degrees Celsius outside"),
+        "{h}"
+    );
+    let h = c.hover("b.strand", Client::pos(&good, "weather", 0, 2));
+    assert!(h.contains("The weather outside"), "{h}");
+    c.open("c.strand");
+    let d = c.diagnostics("c.strand");
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert!(
+        d[0]["message"].as_str().unwrap().contains("temprature"),
+        "{d:?}"
+    );
+    let typing = "bar B { text pct(weather.) }\n";
+    c.change("b.strand", 2, typing);
+    let labels = c.completion("b.strand", Client::pos(typing, "weather.", 0, 8));
+    for want in ["temperature", "raining"] {
+        assert!(labels.iter().any(|l| l == want), "{want}: {labels:?}");
+    }
+    // Without the extension the service does not exist.
+    let mut plain = Client::start(&[("b.strand", good)]);
+    plain.open("b.strand");
+    assert!(!plain.diagnostics("b.strand").is_empty());
 }

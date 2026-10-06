@@ -6021,3 +6021,87 @@ shell is never woken by it. Proof:
 ## wave3-cleanup
 
 2026-10-06. Build settings live in the repo: `[profile.dev]` and `[profile.test]` set `debug = 0` in `Cargo.toml`, and `.cargo/config.toml` turns incremental compilation off. Until now agents relied on exporting `CARGO_PROFILE_*_DEBUG=0 CARGO_INCREMENTAL=0` by hand; some did not, so cargo kept a second copy of every crate per setting (a wave 3 worktree reached 21 GB with 18 copies of `strand_compiler`). One checked-in setting stops the duplicates at the source. M1's four open boxes are given owners in `features.md`: keyframes/shader/canvas drawing and the `.wgsl` watch paths go to M4, the latency bench's portal clause to M3, the tree-sitter grammar to M5.
+
+## wave4-core
+
+**2026-10-06 · wave4-core: a service's schema is its own text, held to
+its store by a test.** `#[service(name = "cpu", schema = SCHEMA)]` takes
+the service's declarations in the schema language (the same text the
+provisional stub had, now beside the struct) rather than generating them
+from the Rust types: docs, `key`s, `fn`/`action`/`event` members and the
+records only a service hands out are already spelled there, and the
+derive's `FIELDS`/`EVENTS` (names, schema types, `rw`) are compared with
+the parsed record by `crates/strand/src/services/mod.rs::service_schemas_extend_the_builtin_one`,
+which also holds each real service to its stub's field names and `rw`
+marks, so configs checked before M3 still check. The text replaces the
+stub in place (`Schema::extend`), keeping its `RecordId`, so the
+`SchemaHost` fallback and every type naming it see the real record.
+
+**2026-10-06 · wave4-core: `Data` crosses the boundary, not `Value`.**
+architecture.md fixes that `strand-services` never sees the VM's `Value`;
+the small `strand_services::Data` (null, bool, int, float, text,
+duration, color, list, record by type and field names, enum by variant
+name) is what writes, actions, calls and keyed diffs carry, and the
+binary converts it by name against the program's type table
+(`services::convert`). A record or enum the table does not know becomes
+null instead of failing: the schema test above keeps them in step.
+
+**2026-10-06 · wave4-core: "goes invisible" is a release.** The VM's
+`ServiceHost` has only `acquire`/`release`, and it already releases a
+hidden surface's reads (architecture.md, `acquire`/`release`). So a
+service's visibility is "it has a reader": the last release tells it
+`Visible(false)` at once (a visible-only stream such as `cpu`'s sampling
+stops then, not 5 s later) and arms the 5 s stop on core's timers, on
+the logic clock (testable with a fake clock); an acquire inside the
+grace cancels the stop and sends `Visible(true)`, without a restart. A
+body that ended (an error) starts again with its next first reader.
+
+**2026-10-06 · wave4-core: a service's first report is a boot value.**
+Updates a service sends before `Cx::ready` are applied with
+`set_reloaded` (readers update, `on change` takes them as its baseline):
+"`on change` never fires at boot" holds for services that start late
+(a popup's) as for those at boot. `strand run`'s first frame waits up to
+100 ms (`Services::wait_ready`) for the services the mounted config
+started, replacing the portal-only boot hold.
+
+**2026-10-06 · wave4-core: `strand run` holds `system` itself.** Render
+needs `system.reduced_motion` whether or not the config reads `system`,
+and the portal's last values must be kept for the next boot, so the
+logic thread is a reader of `system` for the whole run (the service
+follows the portal on the shared runtime, as `strand_watch::follow`
+did on a thread of its own; an idle portal costs no wakeups). Its kept
+values (`palettes/system`) seed the service as boot values; the color
+scheme's "no preference" versus "prefer light" is no longer kept (the
+service exposes `dark` only).
+
+**2026-10-06 · wave4-core: the mock stays a mock.** With `STRAND_MOCK`
+the logic thread builds no services registry at all: the mock
+`SchemaHost` serves every name, and neither the portal nor the kept
+`system` values are read, so the acceptance screenshots do not depend on
+the machine. Without it, `Live::buses` names the buses the real
+services use (`strand run`: the environment's; in-process tests: none or
+a private `dbus-daemon`), the explicit override that keeps every test
+off the machine's real buses.
+
+**2026-10-06 · wave4-core: cpu and memory sample while visible.** The
+schema says once a second; they sample at start (cpu's first value is
+the load since boot, so a bar never shows 0 for a second) and then once
+a second only while a reader is visible. Back in view, memory reports at
+once and cpu takes a fresh baseline (the load over the pause is not what
+anyone asked for) and reports a second later. Hidden, neither wakes.
+
+**2026-10-06 · wave4-core: the composite routes item actions by record.**
+`ws.focus()` arrives as `ActionTarget::Item(record)`; the composite
+sends it to the member whose `#[derive(Call)]` actions take an `item` of
+that record type (`DynService::item_records`), else to the fallback.
+`declare`d custom services (`service … from dbus`) go to the fallback
+until their sources land. An async method called outside a `let`
+(`StoreHost::call`) is an error value rather than a value that never
+resolves.
+
+**2026-10-06 · wave4-core: `strand-dev` links `strand-services`.** The
+LSP must hover and complete with the same schema `strand run` checks
+against, so `strand-dev` depends on `strand-services` for
+`schemas()` (the crate graph already drew this edge) and `serve` uses
+`strand_dev::schema()`; `serve_with` takes any schema (tests extend it
+with a schema of their own).

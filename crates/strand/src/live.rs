@@ -24,7 +24,6 @@ use std::thread::JoinHandle;
 use std::time::Instant;
 
 use strand_compiler::reconcile::loader::{Cache, Loader, Outcome};
-use strand_compiler::schema::Schema;
 use strand_compiler::source::find_files;
 use strand_watch::{
     ChangeEvent, ChangeKind, ConfigWatch, FileBatch, ModuleSet, Notice, Options, Role, Watcher,
@@ -136,7 +135,7 @@ impl Worker {
                 None
             }
         };
-        let mut loader = Loader::new(dir, Schema::builtin().clone(), cache);
+        let mut loader = Loader::new(dir, crate::services::schema().clone(), cache);
         let boot = loader.boot();
         if let Some(e) = loader.cache_error() {
             log::warn!("last-good cache: {e}");

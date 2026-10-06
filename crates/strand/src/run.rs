@@ -20,9 +20,11 @@
 //!   (a lock edit, or a hard reload, waits while a lock is shown), puts
 //!   diagnostics and reload notices on the overlay and streams the event
 //!   to `strand watch`.
-//! - The logic thread owns the runtime, the real service host
-//!   (`SchemaHost::real`: the wall clock and calendar) and the
-//!   `Instance`, and loops on `Instance::step(now, wall)`, sending one
+//! - The logic thread owns the runtime, the real service host (the
+//!   services registry and its stores behind a composite host,
+//!   `services::Real`; `SchemaHost::real` answers the rest, the wall
+//!   clock and calendar among them; `STRAND_MOCK` selects the mock host
+//!   instead) and the `Instance`, and loops on `Instance::step(now, wall)`, sending one
 //!   `SceneDiff` per tick. Between steps it sleeps in a calloop loop of
 //!   its own on the main thread's messages, the runtime's wake hook (an
 //!   IO reply), the logic clock's next deadline and a `CLOCK_REALTIME`
@@ -57,6 +59,7 @@ use strand_compiler::vm::schema_host::SchemaHost;
 use strand_core::Runtime;
 use strand_render::{Renderer, TextBackend};
 use strand_scene::{NodeId, SceneDiff};
+use strand_services::Cells as _;
 use strand_surface::{Config, SurfaceManager};
 use strand_text::{FontConfig, TextWorker};
 
@@ -237,26 +240,10 @@ pub(crate) fn set_screens(rt: &Runtime, host: &SchemaHost, screens: &[ScreenInfo
     }
 }
 
-/// How long the first frame waits for the portal's boot read (it has
-/// up to 500 ms; a desktop portal answers in a few).
-const BOOT_PORTAL_HOLD: Duration = Duration::from_millis(100);
-
-/// A portal batch: written into the graph (`system.dark`, …) and the
-/// kept values queued for the disk (`saved`: the file and its writer).
-fn portal_batch(
-    rt: &Runtime,
-    host: &SchemaHost,
-    batch: &strand_watch::SystemBatch,
-    last: &mut system::Last,
-    saved: &(Option<PathBuf>, Option<strand_theme::FileWriter>),
-) {
-    system::apply(rt, host, &batch.settings, batch.at_boot);
-    if last.merge(batch)
-        && let (Some(f), Some(w)) = saved
-    {
-        w.write(f.clone(), last.to_text());
-    }
-}
+/// How long the first frame waits for the services it starts to send
+/// their first reads (the portal's boot read has up to 500 ms; a desktop
+/// portal answers in a few).
+const BOOT_SERVICES_HOLD: Duration = Duration::from_millis(100);
 
 /// The persist and settings stores under `$XDG_STATE_HOME/strand`. With
 /// no state directory (neither `XDG_STATE_HOME` nor `HOME` absolute),
@@ -413,9 +400,11 @@ pub struct Live {
     pub jobs: Option<std::sync::mpsc::Sender<Job>>,
     /// Where to serve `strand reload` and `strand watch`.
     pub socket: Option<PathBuf>,
-    /// Follow the portal's appearance settings (`system.dark`, `.accent`,
-    /// `.contrast`) on this bus; `None` keeps the last values.
-    pub portal: Option<strand_watch::Bus>,
+    /// The buses the real services use (`strand run`: the environment's;
+    /// tests: a private one). `None`: no bus at all, so services that
+    /// need one keep their seeded values (`system` its last values).
+    /// Unused under `STRAND_MOCK`, whose mock host serves everything.
+    pub buses: Option<strand_services::Buses>,
 }
 
 /// What a load attempt found wrong (held and unreadable files, its
@@ -450,7 +439,12 @@ impl Problems {
 /// The logic thread's state between steps (see [`logic`]).
 struct Shell {
     inst: Instance,
+    /// The schema host: the mock under `STRAND_MOCK`, else the fallback
+    /// of the composite host (the names no service serves yet: `screens`,
+    /// the clock).
     host: Rc<SchemaHost>,
+    /// The real services (not under `STRAND_MOCK`).
+    real: Option<crate::services::Real>,
     build: Build,
     overlay: Overlay,
     server: Option<ipc::Server>,
@@ -1033,14 +1027,14 @@ pub fn logic(
             }
         });
     let rt = Runtime::new();
-    let portal_ping = ping.clone();
+    let services_ping = ping.clone();
     rt.set_wake_hook(move || ping.ping());
     // With nothing to run yet (broken at boot, no last good version),
     // the host still serves the builtin services (`screens`, the clock):
     // the fixed config later mounts against this host.
     let host_types = match &boot.build {
         Some(b) => b.program.types.clone(),
-        None => strand_compiler::schema::Schema::builtin().types.clone(),
+        None => crate::services::schema().types.clone(),
     };
     let build = boot.build.clone().unwrap_or_else(Build::empty);
     let mock = crate::mock::requested();
@@ -1058,6 +1052,17 @@ pub fn logic(
     if let Some(m) = &mock {
         crate::mock::desktop(&rt, &host, m);
     }
+    // The real services (none under the mock): registered now, each
+    // started by its first reader.
+    let real = mock.is_none().then(|| {
+        let buses = live
+            .buses
+            .clone()
+            .unwrap_or_else(strand_services::Buses::none);
+        crate::services::Real::start(&rt, &host_types, buses, host.clone(), move || {
+            services_ping.ping()
+        })
+    });
     // Monitors the main thread already knows about.
     let mut inbox = Inbox::default();
     sleeper
@@ -1072,54 +1077,42 @@ pub fn logic(
             _ => {}
         }
     }
-    // The portal's last values before the first frame (the boot read
-    // may take up to 500 ms), then the portal itself.
+    // `system`'s last values before the first frame (the portal's boot
+    // read may take up to 500 ms), kept off the logic thread whenever
+    // the service reports new ones. The runtime itself reads
+    // `system.reduced_motion` (render snaps every spring while it is
+    // on), so it holds one reader of `system` for the whole run.
     let system_file = system::Last::file(storage.palette_dir());
-    let mut last = system_file
-        .as_deref()
-        .map(system::Last::load)
-        .unwrap_or_default();
-    system::apply(&rt, &host, &last.settings, true);
-    let (sink, portal_rx) = strand_watch::channel();
-    let sink = sink.with_waker(move || portal_ping.ping());
-    let _portal =
-        live.portal
-            .clone()
-            .and_then(|bus| match strand_watch::PortalSettings::spawn(bus, sink) {
-                Ok(p) => Some(p),
-                Err(e) => {
-                    log::warn!("not following the portal's appearance settings: {e}");
-                    None
-                }
-            });
-    // The portal's values are kept off the logic thread.
     let saved = (
         system_file.clone(),
         strand_theme::FileWriter::new()
             .inspect_err(|e| log::warn!("not keeping the portal's settings: {e}"))
             .ok(),
     );
-    // The first frame waits (at most BOOT_PORTAL_HOLD) for the portal's
-    // boot read, so a desktop whose scheme or accent changed while Strand
-    // was not running does not show the persisted values first and then
-    // switch. A slower portal keeps them until its read arrives.
-    if _portal.is_some() {
-        let deadline = Instant::now() + BOOT_PORTAL_HOLD;
-        while let Ok(ev) =
-            portal_rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
-        {
-            if let strand_watch::ChangeEvent::System(batch) = ev {
-                portal_batch(&rt, &host, &batch, &mut last, &saved);
-                if batch.at_boot {
-                    break;
-                }
-            }
+    let mut last = system_file
+        .as_deref()
+        .map(system::Last::load)
+        .unwrap_or_default();
+    if let Some(r) = &real {
+        if let Err(e) = r.builtin.system.seed(&rt, |s| last.seed(s)) {
+            log::warn!("system: {e}");
         }
+        r.builtin.system.acquire(&rt);
     }
-    let inst = Instance::from_build(&rt, &build, host.clone(), storage);
+    let inst = Instance::from_build(&rt, &build, live_host(&host, &real), storage);
+    // The first frame waits (at most BOOT_SERVICES_HOLD) for the first
+    // reads of the services the config started, so a desktop whose
+    // scheme or accent changed while Strand was not running does not show
+    // the kept values first and then switch. A slower service keeps its
+    // seeded or default values until its read arrives.
+    if let Some(r) = &real {
+        r.services.wait_ready(&rt, BOOT_SERVICES_HOLD);
+        keep_system(&rt, r, &mut last, &saved);
+    }
     let mut shell = Shell {
         inst,
         host,
+        real,
         build,
         overlay: Overlay::default(),
         server,
@@ -1158,12 +1151,14 @@ pub fn logic(
         diff.layout_seen = shell.layout_seen.take();
         // `system.reduced_motion` (the portal's, or its last value) goes
         // to render, which snaps every spring while it is on.
-        let reduced = shell
-            .host
-            .get(shell.inst.runtime(), "system.reduced_motion")
-            .ok()
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let reduced = {
+            let rt = shell.inst.runtime();
+            let host = live_host(&shell.host, &shell.real);
+            rt.untrack(|rt| host.read(rt, "system", "reduced_motion"))
+                .ok()
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        };
         if reduced != reduced_sent {
             diff.reduced_motion = Some(reduced);
             reduced_sent = reduced;
@@ -1214,10 +1209,12 @@ pub fn logic(
         for w in inbox.worker.drain(..) {
             shell.worker(w);
         }
-        while let Ok(ev) = portal_rx.try_recv() {
-            if let strand_watch::ChangeEvent::System(batch) = ev {
-                portal_batch(shell.inst.runtime(), &shell.host, &batch, &mut last, &saved);
-            }
+        // What the services sent while the loop slept, applied outside
+        // handlers (reports are not handler writes) before the next step.
+        if let Some(r) = &shell.real
+            && r.services.pump(shell.inst.runtime())
+        {
+            keep_system(shell.inst.runtime(), r, &mut last, &saved);
         }
         if shell.inst.take_theme_files_changed() {
             shell.watch_settings();
@@ -1243,12 +1240,53 @@ pub fn logic(
     // flushed as their cells go; the runtime's shutdown waits for the
     // persist queue (bounded), and the last store handle joins its IO
     // thread.
-    let Shell { mut inst, host, .. } = shell;
+    let Shell {
+        mut inst,
+        host,
+        real,
+        ..
+    } = shell;
     inst.shutdown();
     drop(inst);
+    if let Some(r) = &real {
+        r.shutdown(&rt);
+    }
     rt.shutdown();
+    drop(real);
     drop(host);
     Ok(())
+}
+
+/// The host the instance runs against: the real services' composite, or
+/// the schema host alone (the mock).
+fn live_host(
+    host: &Rc<SchemaHost>,
+    real: &Option<crate::services::Real>,
+) -> Rc<dyn strand_compiler::vm::ServiceHost> {
+    match real {
+        Some(r) => r.host.clone(),
+        None => host.clone(),
+    }
+}
+
+/// `system`'s values, written to the disk (off the logic thread) when
+/// they changed.
+fn keep_system(
+    rt: &Runtime,
+    real: &crate::services::Real,
+    last: &mut system::Last,
+    saved: &(Option<PathBuf>, Option<strand_theme::FileWriter>),
+) {
+    let Ok(now) = real.builtin.system.cells().snapshot(rt) else {
+        return;
+    };
+    let now = system::Last::of(&now);
+    if now != *last {
+        *last = now;
+        if let (Some(f), Some(w)) = saved {
+            w.write(f.clone(), last.to_text());
+        }
+    }
 }
 
 /// SIGINT and SIGTERM as a file descriptor: blocked in the calling thread
@@ -1324,7 +1362,7 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
         worker: Some(worker_rx),
         jobs: Some(compiler.jobs()),
         socket: ipc::socket_path(),
-        portal: Some(strand_watch::Bus::Session),
+        buses: Some(strand_services::Buses::default()),
     };
     let (ping, ping_source) = calloop::ping::make_ping()?;
     let wake = ping.clone();
@@ -1405,7 +1443,6 @@ pub(crate) mod tests {
     use super::*;
     use strand_compiler::instantiate::SceneMirror;
     use strand_compiler::reconcile::loader::Loader;
-    use strand_compiler::schema::Schema;
     use strand_scene::{Prop, PropValue};
 
     pub(crate) fn screen(id: &str, name: &str) -> ScreenInfo {
@@ -1423,7 +1460,7 @@ pub(crate) mod tests {
 
     /// The config in `dir` loaded once (no watcher, no cache).
     fn load(dir: &Path) -> Outcome {
-        let out = Loader::new(dir, Schema::builtin().clone(), None).boot();
+        let out = Loader::new(dir, crate::services::schema().clone(), None).boot();
         assert_eq!(out.errors(), 0, "{:?}", out.diagnostics);
         out
     }
@@ -1698,7 +1735,7 @@ pub(crate) mod tests {
             worker: Some(wrx),
             jobs: Some(compiler.jobs()),
             socket: Some(socket.clone()),
-            portal: None,
+            buses: None,
         };
         let (to_logic, from_main) = calloop::channel::channel();
         let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -1840,11 +1877,11 @@ pub(crate) mod tests {
         spawn_live_with(dir, socket, None, Storage::none())
     }
 
-    /// [`spawn_live`] following a portal, with storage.
+    /// [`spawn_live`] with the services on `buses`, with storage.
     fn spawn_live_with(
         dir: &Path,
         socket: Option<PathBuf>,
-        portal: Option<strand_watch::Bus>,
+        buses: Option<strand_services::Buses>,
         storage: Storage,
     ) -> (
         Worker,
@@ -1859,7 +1896,7 @@ pub(crate) mod tests {
             worker: Some(wrx),
             jobs: Some(compiler.jobs()),
             socket,
-            portal,
+            buses,
         };
         let (to_logic, from_main) = calloop::channel::channel();
         let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -2537,7 +2574,7 @@ pub(crate) mod tests {
             worker: Some(wrx),
             jobs: Some(compiler.jobs()),
             socket: None,
-            portal: None,
+            buses: None,
         };
         let (to_logic, from_main) = calloop::channel::channel();
         let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -2923,7 +2960,7 @@ pub(crate) mod tests {
         let (compiler, to_logic, t, mut m) = spawn_live_with(
             &config,
             Some(socket.clone()),
-            Some(strand_watch::Bus::Address(bus.address.clone())),
+            Some(strand_services::Buses::private(&bus.address)),
             storage,
         );
         let portal_accent = strand_scene::Color::rgb(0.88, 0.11, 0.14);

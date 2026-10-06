@@ -2088,6 +2088,7 @@ dependencies = [
  "lsp-types",
  "serde_json",
  "strand-compiler",
+ "strand-services",
 ]
 
 [[package]]

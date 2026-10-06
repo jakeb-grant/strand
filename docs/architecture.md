@@ -13,7 +13,7 @@ file fixes boundaries; each crate is free inside its own boundary.
 | Text worker | `strand-text` | parley shaping, swash rasterisation, per-scale glyph atlases | Block render: a painted surface keeps drawing its last layout (or a realigned stand-in from another scale or width) until the new one arrives |
 | Watcher | `strand-watch` | inotify directory watches and polling (one `strand-watch` thread); not the IPC socket (`docs/decisions.md`, wave2-watch) | Parse files (it sends paths and hashes) |
 | Persist IO (one per `PersistStore`) | `strand-core` | Atomic writes of persisted cells, settings-file edits, settings overlays and last-good snapshots; reports each file it is about to change to `PersistStore::on_written` | Run on the logic tick or block logic (failures come back as diagnostics in a later tick) |
-| Services | `strand-services` | tokio current-thread runtime (the portal Settings client `strand_watch::follow` and the compositor IPC adapters run here); PipeWire and toplevel get their own threads | Block logic: they send state diffs and events |
+| Services | `strand-services` | One tokio current-thread runtime thread (`strand-services`), started with the first service that runs on it: every async service body (the `system` service follows the portal Settings with `strand_watch::follow` here; the compositor IPC adapters run here); PipeWire and the Wayland toplevel protocols get a thread of their own per run (`Start::Thread`) | Block logic: they send patches and events over channels, applied by `Services::pump` on the logic thread |
 
 Channels are the only coupling between threads. Logic → render is one
 `SceneDiff` per tick. Render → logic is `InputEvent`s (`strand-scene`) and layout facts
@@ -107,13 +107,20 @@ a resume or a clock step wakes it at once). SIGINT, SIGTERM (a
 the compositor going away send `ToLogic::Shutdown`; the main thread
 joins the logic thread, which unmounts the instance, runs
 `Runtime::shutdown` and drops its stores, so debounced persist and
-settings writes reach the disk before the process exits. With
-`Live::portal` set, the logic thread also follows the portal's
-appearance settings (`strand_watch::PortalSettings` on its own thread
-until M3's services runtime; the boot read written as initial values,
-later batches as writes into `system.*`), keeping the last values in
-`$XDG_STATE_HOME/strand/palettes/system` and writing them before the
-first frame. Settings-file notices from core are overlay rows (a
+settings writes reach the disk before the process exits. Without
+`STRAND_MOCK` the logic thread runs the real services
+(`crates/strand/src/services`: `Real::start` registers every builtin
+service of `strand-services` on `Live::buses`, the environment's buses
+for `strand run`, behind a composite host whose fallback is the
+`SchemaHost`; see `strand-services`, "Language side"). It calls
+`Services::pump` after every sleep, before the step (the registry's waker
+is a ping on its loop), holds one reader of `system` itself (render needs
+`system.reduced_motion`), seeds `system` with the last values it kept
+in `$XDG_STATE_HOME/strand/palettes/system` (boot values) and writes
+them back off the logic thread whenever the service reports new ones;
+after mounting, the first frame waits up to 100 ms
+(`Services::wait_ready`) for the first reads of the services the
+config started (the portal's boot read among them). Settings-file notices from core are overlay rows (a
 shadowed field's `[clear]`) and `strand watch` notices. Layout facts
 (`ToLogic::Layout`) address the laid-out nodes logic measures (the
 instance sets `Prop::Watch` on an element whose `width`/`height` a
@@ -447,8 +454,8 @@ be built and tested without the language, and the language without pixels.
   `motion { reduced: system.reduced_motion }` (or a settings field) to
   reach render through the token table
   (`crates/strand-render/tests/reduced_motion.rs`). `strand run` reads
-  the key with the other appearance settings (`SystemSetting::
-  ReducedMotion`), writes `system.reduced_motion`, and sends render each
+  `system.reduced_motion` (the `system` service's, from the portal's
+  `SystemSetting::ReducedMotion`) after every step, and sends render each
   change of it with the next diff (`SceneDiff::reduced_motion`, applied
   as `Renderer::set_reduced_motion`). `Painter::wants_frame` is true while anything
   moves (`Renderer::animating`), so frame callbacks stop once it
@@ -1849,7 +1856,7 @@ the primitives, `Option`, `Vec` and derived types.
   `release` disposes nothing, so it is safe in scope cleanup), `seed(rt,
   |s| …)` (boot values before it first reports: a host's remembered
   values), `act`, `request` (async call → future of `Result<Data,
-  String>`), `readers`, `running`, `starts`, `stops`, `dynamic() -> Rc<dyn
+  String>`), `readers`, `running`, `starts`, `stops`, `reports` (updates applied), `dynamic() -> Rc<dyn
   DynService>`: the by-index view the language side drives (`fields`,
   `events`, `actions`, `methods`, `item_records`, `read`, `ids`,
   `keyed_items`, `write(field, path: &[Step], Data)`, `action(name,
@@ -1864,6 +1871,28 @@ the primitives, `Option`, `Vec` and derived types.
   extends its builtin schema with them); `Builtin::register(&services,
   rt)` registers them all. A new service crate module adds its store
   here and to both lists.
+- **Language side** (`crates/strand/src/services`, the binary: it
+  depends on both). `services::schema()` is
+  `Schema::builtin_with(&strand_services::schemas())`: `strand check`,
+  the live loader (whose cache key is the schema's fingerprint) and
+  `strand run` use it, and `strand-dev lsp` serves the same
+  (`strand_dev::schema()`, `serve`; `serve_with` takes any). `StoreHost`
+  is one store as a `ServiceHost`: a `Memo<Value>` per plain field over
+  `DynService::read` (converted by name, `services::convert`: records by
+  type and field name, enums by variant), so a binding depends on
+  exactly that field; a keyed field mirrored as a `KeyedSignal<ValueKey,
+  Value>` fed by the store's `Applied::Keyed` diffs (keyed by the item
+  record's schema `key`), events as `EventQueue<Vec<Value>>` fed by
+  `Applied::Event`; `write` refuses non-`rw` fields and passes the leaf
+  path as `Step`s; `call` is the store's `fn` methods (an async method
+  called outside a `let` is an error value); `fetch` its async methods.
+  `Composite` routes by service name (one member per name), an item's
+  action by the record's name to the member whose `item_records()` name
+  it, and everything else (the clock and calendar, services no crate
+  serves yet, `declare`d custom services) to the `SchemaHost` fallback;
+  `next_wake` is the earliest of all, `wake` reaches all. A service
+  module added to `strand-services` (`Builtin`, `schemas()`) is served
+  by `strand run` with no change here.
 - **Tests** (`strand_services::testing`): `PrivateBus::start()` (a
   `dbus-daemon` of the test's own; `buses()` for `Services::new`, `env()`
   for a child process, `wait_for_name`), `DbusMock::start(&bus,

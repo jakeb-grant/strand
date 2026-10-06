@@ -11,6 +11,7 @@ mod logging;
 mod mock;
 mod overlay;
 mod run;
+mod services;
 mod system;
 
 #[cfg(test)]

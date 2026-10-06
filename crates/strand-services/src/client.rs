@@ -182,6 +182,7 @@ impl Services {
             observers: RefCell::new(Vec::new()),
             starts: Cell::new(0),
             stops: Cell::new(0),
+            reports: Cell::new(0),
         });
         self.0
             .members
@@ -286,6 +287,7 @@ struct ClientInner<S: Service> {
     observers: RefCell<Vec<Observer>>,
     starts: Cell<u64>,
     stops: Cell<u64>,
+    reports: Cell<u64>,
 }
 
 impl<S: Service> ClientInner<S> {
@@ -435,6 +437,7 @@ impl<S: Service> Member for ClientInner<S> {
                     echo_of,
                     initial,
                 } => {
+                    self.reports.set(self.reports.get() + 1);
                     let how = if initial {
                         How::Initial
                     } else {
@@ -561,6 +564,12 @@ impl<S: Service> Client<S> {
     /// How many times it stopped.
     pub fn stops(&self) -> u64 {
         self.0.stops.get()
+    }
+
+    /// How many updates (envelopes of patches) it has sent that were
+    /// applied: a stream that stopped sends none.
+    pub fn reports(&self) -> u64 {
+        self.0.reports.get()
     }
 
     /// Set the cells as boot values (`on change` takes them as its
