@@ -911,9 +911,10 @@ impl<'a> Flattener<'a> {
                 None => return Rect::default(),
             }
         };
+        // A percentage is of the parent's box, as CSS insets are.
         let own = (
-            length(get(Prop::X), laid.w).unwrap_or(0.0),
-            length(get(Prop::Y), laid.h).unwrap_or(0.0),
+            length(get(Prop::X), parent.w).unwrap_or(0.0),
+            length(get(Prop::Y), parent.h).unwrap_or(0.0),
         );
         let offset = (inh.offset.0 + own.0, inh.offset.1 + own.1);
         let rect = LogicalRect::new(

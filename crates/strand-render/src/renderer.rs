@@ -369,19 +369,19 @@ impl Renderer {
     }
 
     /// Scrolls the innermost `scroll` or `list` under `point` of
-    /// `surface` (in its last frame) by `dy` logical pixels. Returns the
-    /// node scrolled, if it moved.
+    /// `surface` (in its last frame) that can move by `dy` logical
+    /// pixels: one already at its end passes the scroll outward. Returns
+    /// the node scrolled, if any moved.
     pub fn scroll(&mut self, surface: SurfaceId, point: LogicalPoint, dy: f32) -> Option<NodeId> {
         let chain = self.hit(surface, point);
+        // The innermost that can still move that way: one at its end
+        // hands the wheel to the one around it.
         let id = chain.into_iter().find(|n| {
             self.tree
                 .get(*n)
                 .is_some_and(|n| matches!(n.kind, NodeKind::Scroll | NodeKind::List))
+                && self.scrolls.entry(*n).or_default().scroll_by(dy)
         })?;
-        let moved = self.scrolls.entry(id).or_default().scroll_by(dy);
-        if !moved {
-            return None;
-        }
         let root = self.tree.root_of(id);
         for s in self.surfaces.values_mut() {
             if Some(s.root) == root {

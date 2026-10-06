@@ -889,3 +889,62 @@ fn a_list_in_a_list_row_lays_out_its_rows() {
     // 40 px of ~16 px rows: the last ones are not laid out.
     assert!(!r.boxes(S).unwrap().rects.contains_key(&kids[9]));
 }
+
+/// A wheel over a list at its end scrolls the `scroll` around it.
+#[test]
+fn a_scroll_at_its_end_passes_the_wheel_outward() {
+    let mut ids = Vec::new();
+    let (d, root) = panel(100, 100, |b, root| {
+        let outer = b.node(
+            NodeKind::Scroll,
+            Some(root),
+            vec![(Prop::MaxHeight, num(60.0))],
+        );
+        let inner = b.node(NodeKind::List, Some(outer), vec![(Prop::Height, num(40.0))]);
+        for i in 0..6 {
+            b.node(
+                NodeKind::Text,
+                Some(inner),
+                vec![(Prop::Text, text(&format!("Row {i}")))],
+            );
+        }
+        swatch(b, outer, "#89b4fa", vec![(Prop::Height, num(100.0))]);
+        ids.push(outer);
+        ids.push(inner);
+    });
+    let (mut r, mut buf) = show(d, root, 100, 100, Scale::ONE);
+    let (outer, inner) = (ids[0], ids[1]);
+    let at = LogicalPoint::new(50.0, 10.0);
+    assert_eq!(r.scroll(S, at, 1000.0), Some(inner));
+    buf.paint(&mut r, S, 1);
+    assert_eq!(r.scroll(S, at, 10.0), Some(outer), "the list is at its end");
+    buf.paint(&mut r, S, 1);
+    // Back up: the list under the pointer moves first again.
+    let at = LogicalPoint::new(50.0, 1.0);
+    assert_eq!(r.scroll(S, at, -5.0), Some(inner));
+}
+
+/// A percentage `x`/`y` is of the parent's box, as CSS insets are.
+#[test]
+fn percent_offsets_are_of_the_parent() {
+    let mut ids = Vec::new();
+    let (d, root) = panel(200, 100, |b, root| {
+        let st = b.node(NodeKind::Stack, Some(root), vec![]);
+        ids.push(swatch(
+            b,
+            st,
+            "#f38ba8",
+            vec![
+                (Prop::Place, kw("absolute")),
+                (Prop::Size, num(20.0)),
+                (Prop::X, len_pct(50.0)),
+                (Prop::Y, len_pct(25.0)),
+            ],
+        ));
+    });
+    let (r, buf) = show(d, root, 200, 100, Scale::ONE);
+    // Drawn at (100, 25), not at 50% of its own 20 px.
+    assert_eq!(buf.px(105, 30), [0xa8, 0x8b, 0xf3, 0xff]);
+    assert_eq!(buf.px(15, 10), [0x2e, 0x1e, 0x1e, 0xff]);
+    assert_eq!(r.hit(S, LogicalPoint::new(110.0, 35.0))[0], ids[0]);
+}

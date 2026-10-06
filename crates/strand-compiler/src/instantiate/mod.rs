@@ -1066,17 +1066,29 @@ impl Instance {
     }
 
     fn collect(&self, tick: strand_core::Tick) -> Update {
+        // Props naming a node not on the scene when bound (`nav:
+        // results`): set once it is, which may be ticks later (inside an
+        // `if` that turns true). Kept while the naming node lives and its
+        // prop is still unset.
         let late: Vec<_> = self.ctx.late_nodes.borrow_mut().drain(..).collect();
+        let mut waiting = Vec::new();
         for (id, prop, state) in late {
-            if let Some(target) = state.scene.get() {
-                self.ctx.em.borrow_mut().set(
-                    id,
-                    prop,
-                    PropValue::Node(target),
-                    Transition::Default,
-                );
+            let mut em = self.ctx.em.borrow_mut();
+            let unset = em
+                .sent
+                .get(&id)
+                .and_then(|p| p.get(&prop))
+                .is_none_or(|v| *v == PropValue::Unset);
+            if !em.nodes.contains_key(&id) || !unset {
+                continue;
+            }
+            match state.scene.get() {
+                Some(target) => em.set(id, prop, PropValue::Node(target), Transition::Default),
+                None if Rc::strong_count(&state) > 1 => waiting.push((id, prop, state)),
+                None => {}
             }
         }
+        self.ctx.late_nodes.borrow_mut().extend(waiting);
         let mut new_tokens = None;
         for id in &tick.changed {
             if self.tokens.is_some_and(|t| t.id() == *id) {

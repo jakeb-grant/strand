@@ -1026,7 +1026,9 @@ fn place_list(
         );
         let h = b.taffy.layout(t).map_or(0.0, |l| l.size.height);
         let st = scrolls.entry(id).or_default();
-        if st.heights.insert(rows[i], h) != Some(h) && (h - est).abs() > 0.5 {
+        // Off what this pass assumed for it: the rows below are misplaced.
+        let assumed = st.heights.insert(rows[i], h).unwrap_or(est);
+        if (h - assumed).abs() > 0.5 {
             changed = true;
         }
         b.read_back(t, (content.x, content.y + y - offset), scrolls, out);
@@ -1042,6 +1044,8 @@ fn place_list(
         let live: HashSet<NodeId> = rows.iter().copied().collect();
         st.heights.retain(|k, _| live.contains(k));
     }
+    // Scrolling goes by what was just measured.
+    st.content = rows_height(tree, id, st, gap);
     if changed {
         out.unsettled = true;
     }

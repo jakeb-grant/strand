@@ -3845,7 +3845,8 @@ children, and `spacer` alone cannot express `space_between`.
 absolute`.** An absolute child is laid out at its parent's content
 corner and `x`/`y` offset it like any other node (the offset moves its
 subtree), so `enter { x: 420 }` and absolute placement share one meaning
-and moving an absolute node never relayouts.
+and moving an absolute node never relayouts. A percentage `x`/`y` is of
+the parent's box (as CSS insets), not the node's own.
 
 **2026-10-06 · wave3-pixels: text in its box.** Text is shaped once
 without a width bound (one layout per node and scale, as the M0
@@ -3859,7 +3860,9 @@ keeps its width as its minimum and wraps only in a box given a smaller
 definite width. Natural widths round up to whole pixels so taffy's
 rounding never wraps a text that fits. Before a text's first layout
 arrives, layout estimates it from its length (0.55 em per character, 1.2
-em high); the delivery relays out (shaping never blocks). `1ch` is 0.6 em.
+em high); the delivery relays out (shaping never blocks). `1ch` is 0.6 em
+(the `0` advance of common UI fonts is 0.55–0.62 em); measuring each
+font's own `0` needs strand-text to expose it and waits for that.
 
 **2026-10-06 · wave3-pixels: font fallback.** A family list without a
 generic family (`"Inter"`) gets `sans-serif` appended (`monospace` when
@@ -3918,7 +3921,7 @@ bound two-way); a popup also gets `dismiss`. Click-away for an
 **2026-10-06 · wave3-pixels: `nav:` names a node mounted later.** A prop
 whose value is a node (`PropValue::Node`) that is not on the scene yet
 when bound (`nav: results` above `list { id: results }`) is set at the end
-of the tick, when everything is mounted.
+of the tick, when everything is mounted (or later, below).
 
 **2026-10-06 · wave3-pixels: a mock desktop for `strand run`.**
 `STRAND_MOCK=desktop` fills the service host with the compiler tests'
@@ -3979,3 +3982,45 @@ Until then the logic cost is guarded by
 `crates/strand-compiler/tests/instantiate.rs::a_2000_row_list_mounts_eagerly_and_updates_one_row`
 (one changed row of 2,000 sends one op and re-runs under 20
 computations).
+
+**2026-10-06 · wave3-pixels: what `markup: basic` takes for a tag.** Only
+the freedesktop tags (`b`, `i`, `u`, `a`, `img`), written well-formed
+(attributes `key="v"`, `key='v'`, `key=v` or bare `key`), are tags;
+anything else that looks like one is text (`if a<b && c>d`, `Vec<T>`,
+`<span>`), since notification bodies carry code and the spec defines no
+other tags. Nested tags combine: the parse yields non-overlapping runs
+carrying every style in force, so `<u>a <b>b</b></u>` underlines both and
+a bold word in a link keeps the link's colour and underline (strand-text
+takes underline and colour from one span per run).
+
+**2026-10-06 · wave3-pixels: scrolling and keys are default actions that
+always run.** `scroll` is vertical only (`scroll { axis: x }` is not in
+design.md). A wheel scrolls the innermost `scroll`/`list` under the
+pointer that can still move that way (one at its end hands the wheel
+outward), and `on scroll` is sent as well; Escape (closing a surface
+bound `open: <->`), arrows routed by `nav`, Return and typing into an
+`input` run after `key(k)` is sent. Render cannot wait for logic to learn
+whether a handler took the event (input stays on the render thread, the
+design's latency rule), so these defaults always run; a handler that
+wants none binds the prop instead (`open` one-way, no `nav`). A click on
+the list an `input` steers with `nav` keeps the typing on the input.
+Selections and in-flight edits of nodes that are gone are forgotten on
+the next input event (a list refilled by its `for` starts from its first
+row again).
+
+**2026-10-06 · wave3-pixels: click-away from a `keyboard: exclusive`
+panel waits for M4.** With exclusive keyboard a click elsewhere moves no
+focus, so nothing tells the launcher to close. Closing it needs a
+transparent catcher layer surface under the panel on the same layer
+(layer-shell stacks by creation order, so the catcher must be mapped
+before the panel each time it opens), plus knowing that `open` is bound
+two-way (or the catcher swallows clicks to other windows while a modal
+panel is up). That is the same machinery as popups' click-away
+(xdg_popup grabs, M4), so it lands there; until then Escape and focus
+loss close it, and M2's exit does not claim click-away (features.md M4).
+
+**2026-10-06 · wave3-pixels: `nav:` naming a node mounted ticks later.**
+A node-valued prop whose target is not on the scene stays pending across
+ticks (while the naming node lives and the prop is still unset), so `nav:
+results` resolves when `list { id: results }` mounts inside an `if` that
+turns true later.

@@ -1,7 +1,10 @@
 //! `markup: basic`: the freedesktop notification markup (`<b>`, `<i>`,
 //! `<u>`, `<a href="…">`, `<img>` and the XML entities) as plain text plus
-//! [`TextSpan`]s. Unknown tags are dropped and their text kept; a stray `<`
-//! that opens no tag is kept as text, so malformed bodies still show.
+//! [`TextSpan`]s. Only those tags, written well-formed, are tags: anything
+//! else that looks like one (`a<b && c>d`, `Vec<T>`, `<span>`) is kept as
+//! text, so code and malformed bodies still show. Nested tags combine
+//! (`<u>a <b>b</b></u>` underlines both): the spans are non-overlapping
+//! runs carrying every style in force.
 
 use strand_scene::Color;
 use strand_text::TextSpan;
@@ -9,13 +12,113 @@ use strand_text::TextSpan;
 /// Most nested tags followed; deeper ones count as text.
 const MAX_DEPTH: usize = 32;
 
+/// The tags `markup: basic` knows.
+const TAGS: [&str; 5] = ["b", "i", "u", "a", "img"];
+
+/// The styles the open tags put on text.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Style {
+    bold: bool,
+    italic: bool,
+    underline: bool,
+    link: bool,
+}
+
+fn style_of(open: &[&str]) -> Style {
+    let mut st = Style::default();
+    for t in open {
+        match *t {
+            "b" => st.bold = true,
+            "i" => st.italic = true,
+            "u" => st.underline = true,
+            "a" => st.link = true,
+            _ => {}
+        }
+    }
+    st
+}
+
+/// A well-formed tag of a known name: `(closing, name)`.
+fn tag_of(tag: &str) -> Option<(bool, &'static str)> {
+    let (closing, body) = match tag.strip_prefix('/') {
+        Some(b) => (true, b),
+        None => (false, tag),
+    };
+    let body = body.trim_end();
+    let body = if closing {
+        body
+    } else {
+        body.strip_suffix('/').unwrap_or(body)
+    };
+    let len = body
+        .find(|c: char| !c.is_ascii_alphabetic())
+        .unwrap_or(body.len());
+    let name = TAGS.iter().find(|t| t.eq_ignore_ascii_case(&body[..len]))?;
+    let mut rest = &body[len..];
+    if closing {
+        return rest.trim().is_empty().then_some((true, name));
+    }
+    // Attributes: `key="v"`, `key='v'`, `key=v` or a bare `key`, each
+    // after whitespace.
+    while !rest.is_empty() {
+        let trimmed = rest.trim_start();
+        if trimmed.len() == rest.len() {
+            return None;
+        }
+        rest = trimmed;
+        if rest.is_empty() {
+            break;
+        }
+        let k = rest
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ':'))
+            .unwrap_or(rest.len());
+        if k == 0 {
+            return None;
+        }
+        rest = &rest[k..];
+        if let Some(v) = rest.strip_prefix('=') {
+            match v.chars().next() {
+                Some(q @ ('"' | '\'')) => {
+                    let close = v[1..].find(q)?;
+                    rest = &v[close + 2..];
+                }
+                Some(c) if !c.is_whitespace() => {
+                    let e = v
+                        .find(|c: char| c.is_whitespace() || c == '"' || c == '\'')
+                        .unwrap_or(v.len());
+                    if v[e..].starts_with(['"', '\'']) {
+                        return None;
+                    }
+                    rest = &v[e..];
+                }
+                _ => return None,
+            }
+        }
+    }
+    Some((false, name))
+}
+
 /// The plain text of `src` and the spans its tags make. Links are
 /// underlined and painted `link` (when given).
 pub fn parse(src: &str, link: Option<Color>) -> (String, Vec<TextSpan>) {
     let mut out = String::with_capacity(src.len());
     let mut spans = Vec::new();
-    // Open tags: name and where their text starts.
-    let mut open: Vec<(String, usize)> = Vec::new();
+    // Open tags, outermost first, and where the run in their style began.
+    let mut open: Vec<&'static str> = Vec::new();
+    let mut run = 0;
+    let flush = |out: &String, open: &[&str], run: &mut usize, spans: &mut Vec<TextSpan>| {
+        let st = style_of(open);
+        if out.len() > *run && st != Style::default() {
+            spans.push(TextSpan {
+                range: *run..out.len(),
+                weight: st.bold.then_some(700),
+                italic: st.italic,
+                underline: st.underline || st.link,
+                color: if st.link { link } else { None },
+            });
+        }
+        *run = out.len();
+    };
     let mut rest = src;
     while let Some(i) = rest.find(['<', '&']) {
         out.push_str(&rest[..i]);
@@ -26,41 +129,24 @@ pub fn parse(src: &str, link: Option<Color>) -> (String, Vec<TextSpan>) {
             rest = &rest[used..];
             continue;
         }
-        let Some(end) = rest.find('>') else {
-            out.push_str(rest);
-            rest = "";
-            break;
+        // A tag ends at the first `>`, with no `<` before it.
+        let end = rest[1..].find(['<', '>']).map(|e| e + 1);
+        let parsed = end
+            .filter(|e| rest[*e..].starts_with('>'))
+            .and_then(|e| Some((e, tag_of(&rest[1..e])?)));
+        let Some((end, (closing, name))) = parsed else {
+            // Not a tag: the `<` is text, and scanning goes on after it.
+            out.push('<');
+            rest = &rest[1..];
+            continue;
         };
         let tag = &rest[1..end];
         rest = &rest[end + 1..];
-        let closing = tag.starts_with('/');
-        let name: String = tag
-            .trim_start_matches('/')
-            .trim()
-            .split(|c: char| c.is_whitespace() || c == '/')
-            .next()
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        let starts_ok = tag
-            .trim_start_matches('/')
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_alphabetic());
-        if !starts_ok || !name.chars().all(|c| c.is_ascii_alphanumeric()) {
-            // Not a tag: keep it as text.
-            out.push('<');
-            out.push_str(tag);
-            out.push('>');
-            continue;
-        }
         if closing {
-            if let Some(pos) = open.iter().rposition(|(n, _)| *n == name) {
+            if let Some(pos) = open.iter().rposition(|n| *n == name) {
                 // Close it and anything left open inside it.
-                for (n, start) in open.drain(pos..).rev() {
-                    if let Some(sp) = span_for(&n, start..out.len(), link) {
-                        spans.push(sp);
-                    }
-                }
+                flush(&out, &open, &mut run, &mut spans);
+                open.truncate(pos);
             }
         } else if name == "img" {
             // Notification images are not drawn inline; the alt text is.
@@ -68,39 +154,13 @@ pub fn parse(src: &str, link: Option<Color>) -> (String, Vec<TextSpan>) {
                 out.push_str(&alt);
             }
         } else if !tag.trim_end().ends_with('/') && open.len() < MAX_DEPTH {
-            open.push((name, out.len()));
+            flush(&out, &open, &mut run, &mut spans);
+            open.push(name);
         }
     }
     out.push_str(rest);
-    for (n, start) in open.into_iter().rev() {
-        if let Some(sp) = span_for(&n, start..out.len(), link) {
-            spans.push(sp);
-        }
-    }
-    // Spans in text order; nested ones after their parents, so they win.
-    spans.sort_by_key(|s| (s.range.start, std::cmp::Reverse(s.range.end)));
+    flush(&out, &open, &mut run, &mut spans);
     (out, spans)
-}
-
-fn span_for(name: &str, range: std::ops::Range<usize>, link: Option<Color>) -> Option<TextSpan> {
-    if range.is_empty() {
-        return None;
-    }
-    let mut sp = TextSpan {
-        range,
-        ..TextSpan::default()
-    };
-    match name {
-        "b" => sp.weight = Some(700),
-        "i" => sp.italic = true,
-        "u" => sp.underline = true,
-        "a" => {
-            sp.underline = true;
-            sp.color = link;
-        }
-        _ => return None,
-    }
-    Some(sp)
 }
 
 /// The value of attribute `key` in a tag's text.
@@ -178,8 +238,8 @@ mod tests {
             v,
             vec![
                 ("bold".into(), false, false, Some(700)),
-                ("ital".into(), true, false, None),
-                ("al".into(), false, true, None),
+                ("it".into(), true, false, None),
+                ("al".into(), true, true, None),
             ]
         );
         let accent = Color::WHITE;
@@ -192,13 +252,45 @@ mod tests {
         assert!(sp[0].underline && sp[0].color == Some(accent));
     }
 
+    /// Nested tags combine: every run under `<u>` is underlined, and a
+    /// bold word in a link keeps the link's colour and underline.
+    #[test]
+    fn nested_styles_combine() {
+        let (t, v) = ranges("<u>a<b>b</b></u>");
+        assert_eq!(t, "ab");
+        assert_eq!(
+            v,
+            vec![
+                ("a".into(), false, true, None),
+                ("b".into(), false, true, Some(700)),
+            ]
+        );
+        let accent = Color::WHITE;
+        let (t, sp) = parse("<a href=x>see <b>docs</b></a>", Some(accent));
+        assert_eq!(t, "see docs");
+        assert_eq!(sp.len(), 2);
+        assert!(sp.iter().all(|s| s.underline && s.color == Some(accent)));
+        assert_eq!(sp[1].weight, Some(700));
+        // Runs never overlap.
+        assert!(sp.windows(2).all(|w| w[0].range.end <= w[1].range.start));
+    }
+
     #[test]
     fn entities_unknown_tags_and_malformed_input() {
         assert_eq!(
             parse("a &lt;b&gt; &amp; c &nope;", None).0,
             "a <b> & c &nope;"
         );
-        assert_eq!(parse("<span>x</span><br/>y", None).0, "xy");
+        // Only the known tags, well-formed, are tags.
+        assert_eq!(
+            parse("<span>x</span><br/>y", None).0,
+            "<span>x</span><br/>y"
+        );
+        let (t, sp) = parse("if a<b && c>d", None);
+        assert_eq!(t, "if a<b && c>d");
+        assert!(sp.is_empty());
+        assert_eq!(parse("Vec<T> <b >x</b >", None).0, "Vec<T> x");
+        assert_eq!(parse("a <b<i>c</i>", None).0, "a <bc");
         assert_eq!(parse("1 < 2 and 3 > 2", None).0, "1 < 2 and 3 > 2");
         assert_eq!(parse("open <b>never closed", None).1.len(), 1);
         assert_eq!(

@@ -261,6 +261,7 @@ impl Forward {
         let Some(&root) = self.surfaces.get(&surface) else {
             return;
         };
+        self.prune(scene.tree());
         let chain = |scene: &dyn InputScene, at: LogicalPoint| {
             let c = scene.hit(surface, at);
             if c.is_empty() { vec![root] } else { c }
@@ -323,8 +324,19 @@ impl Forward {
                                     })
                                 })
                             });
-                            if target.is_some() {
-                                self.set_focus(surface, target);
+                            // A click on the list an `input` steers with
+                            // `nav` leaves the typing on the input.
+                            let steers = |list: NodeId| {
+                                let f = self.focus.get(&surface)?;
+                                let n = scene.tree()?.get(*f)?;
+                                (n.kind == NodeKind::Input
+                                    && n.get(Prop::Nav) == Some(&PropValue::Node(list)))
+                                .then_some(())
+                            };
+                            if let Some(t) = target
+                                && steers(t).is_none()
+                            {
+                                self.set_focus(surface, Some(t));
                             }
                         }
                         ButtonState::Released => {
@@ -400,6 +412,21 @@ impl Forward {
                 }
             }
         }
+    }
+
+    /// Forgets selections and edits of nodes that are gone (a list
+    /// refilled by its `for`, an `input` in an `if` that turned false,
+    /// a reload), and a selection whose row left its list.
+    fn prune(&mut self, tree: Option<&SceneTree>) {
+        let Some(tree) = tree else {
+            return;
+        };
+        self.selected.retain(|list, row| {
+            tree.get(*list)
+                .is_some_and(|l| tree.get(*row).is_some_and(|r| r.parent == Some(l.id)))
+        });
+        self.edits.retain(|n, _| tree.contains(*n));
+        self.focus.retain(|_, n| tree.contains(*n));
     }
 
     /// Moves keyboard focus on `surface` to `node` (`focused`).
@@ -1212,6 +1239,32 @@ mod tests {
             node: rows[2],
             event: NodeEvent::Activate
         }));
+        // The click on the list the input steers left the typing there.
+        assert!(!msgs.contains(&flag(list, NodeFlag::Focused, true)));
+        f.input(&key("b", "b"), &mut r);
+        assert!(
+            drain(&mut el).iter().any(
+                |m| matches!(m, ToLogic::Write { node, prop: Prop::Text, .. } if *node == input)
+            )
+        );
+        // Rows refilled (the selected one gone): the selection is
+        // forgotten, and Down starts again from the first row.
+        let mut d = SceneDiff::new();
+        d.push(strand_scene::SceneOp::Remove { id: rows[2] });
+        let fresh = id(7);
+        d.create(fresh, NodeKind::Row, Some(list), 2).set(
+            fresh,
+            Prop::Height,
+            PropValue::Number(20.0),
+        );
+        assert!(r.apply(d).is_empty());
+        f.input(&key("Down", ""), &mut r);
+        let msgs = drain(&mut el);
+        assert!(
+            msgs.contains(&flag(rows[0], NodeFlag::Selected, true)),
+            "{msgs:?}"
+        );
+        assert!(!f.selected.values().any(|r| *r == rows[2]));
     }
 
     /// Monitors are `screens` in plug order; one that comes back within

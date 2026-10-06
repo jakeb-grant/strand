@@ -2844,6 +2844,31 @@ fn nav_names_the_list_node() {
     );
 }
 
+/// `nav:` names a list that mounts ticks later (inside an `if` that
+/// turns true): render gets it once it is on the scene.
+#[test]
+fn nav_names_a_list_mounted_later() {
+    let src = "state show = false\npanel P {\n  width: 200\n  height: 100\n  col {\n    input { nav: results }\n    if show {\n      list { id: results\n        text \"a\" }\n    }\n  }\n}\n";
+    let mut shell = boot(&[("n.strand", src)], |rt, host| {
+        let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+        host.set(rt, "screens.all", Value::list(vec![screen]))
+            .unwrap();
+    });
+    let input = shell.scene.of_kind(NodeKind::Input)[0];
+    assert_eq!(shell.scene.prop(input, Prop::Nav), None);
+    shell.flush();
+    shell
+        .inst
+        .set_value("n", "show", Value::Bool(true))
+        .unwrap();
+    shell.flush();
+    let list = shell.scene.of_kind(NodeKind::List)[0];
+    assert_eq!(
+        shell.scene.prop(input, Prop::Nav),
+        Some(&PropValue::Node(list))
+    );
+}
+
 /// Typing into the launcher's `input` is a two-way write of its `text`;
 /// `open: <-> open` takes the `false` Escape writes.
 #[test]
