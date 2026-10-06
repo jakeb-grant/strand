@@ -3870,7 +3870,11 @@ way.
 
 **2026-10-06 · wave3-pixels: virtualised `list`.** taffy sees a `list` as
 one leaf whose height is the sum of its rows' heights (measured ones, else
-the mean of the measured, else 32 px) and gaps, capped by `max_height`.
+the mean of the measured, else 32 px) and gaps, capped by its `height`
+and `max_height` in the measure itself (taffy ignores max sizes when it
+asks a leaf for its content contribution, so without that a column
+around the launcher's `list { max_height: 420 }` grew to every row), with
+a min-content height of 0 (a scroll container's automatic minimum).
 After that pass only the rows the viewport shows are laid out, each as a
 taffy root of its own at the list's content width; their heights are
 remembered per row node. When measured heights differ from the estimate,
@@ -3927,3 +3931,14 @@ needs underlines (`<u>`, links), which `TextSpan` could not express:
 `TextSpan::underline` and `GlyphRun::underline` (a physical rect from the
 font's underline metrics) were added; render paints it in the run's
 colour. Links take `$accent`.
+
+**2026-10-06 · wave3-pixels: content sizing stays virtualised and
+capped.** The content pass of a content-sized surface asks the text
+worker only for the texts it laid out (a list's rows out of view are not
+walked, so the launcher over 2,000 apps shapes about a dozen rows, not
+2,000). A content size larger than `MAX_CONTENT_SIZE` (4096 logical px,
+wider than any common output's logical width) on either axis is laid out
+again at the cap, so what overflows scrolls or is clipped and a list lays
+out only the rows the capped box shows; the buffer never grows past it.
+Render does not know the target output's size when it sizes the spec,
+hence a constant rather than the output.

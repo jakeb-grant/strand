@@ -779,10 +779,17 @@ fn natural_spec<'v>(
     ))
 }
 
-/// The unbounded text requests of every text node under the surface node
-/// `root` (not in nested surfaces), at `scale`: what laying it out by its
-/// content measures, before any surface shows it.
-pub fn natural_texts(tree: &SceneTree, root: NodeId, scale: Scale) -> Vec<(NodeId, TextSpec)> {
+/// The unbounded text requests of the text nodes under the surface node
+/// `root` (not in nested surfaces) that its content pass laid out
+/// (`laid`), at `scale`: what laying it out by its content measures,
+/// before any surface shows it. Rows a virtualised list left out are not
+/// walked, so a 2,000-row list asks for its visible rows only.
+pub fn natural_texts(
+    tree: &SceneTree,
+    root: NodeId,
+    scale: Scale,
+    laid: &HashMap<NodeId, LogicalRect>,
+) -> Vec<(NodeId, TextSpec)> {
     let mut out = Vec::new();
     let Some(node) = tree.get(root) else {
         return out;
@@ -809,8 +816,12 @@ pub fn natural_texts(tree: &SceneTree, root: NodeId, scale: Scale) -> Vec<(NodeI
         node: &'a Node,
         inh: &Inherited<'a>,
         scale: Scale,
+        laid: &HashMap<NodeId, LogicalRect>,
         out: &mut Vec<(NodeId, TextSpec)>,
     ) {
+        if !laid.contains_key(&node.id) {
+            return;
+        }
         let mut inh = inh.clone();
         inherit(node, &mut inh);
         if matches!(node.kind, NodeKind::Text | NodeKind::Button) {
@@ -828,11 +839,11 @@ pub fn natural_texts(tree: &SceneTree, root: NodeId, scale: Scale) -> Vec<(NodeI
         }
         for c in &node.children {
             if let Some(child) = tree.get(*c).filter(|n| !n.kind.is_surface()) {
-                walk(tree, child, &inh, scale, out);
+                walk(tree, child, &inh, scale, laid, out);
             }
         }
     }
-    walk(tree, node, &inh, scale, &mut out);
+    walk(tree, node, &inh, scale, laid, &mut out);
     out
 }
 

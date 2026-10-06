@@ -14,7 +14,7 @@ use strand_text::{TextEngine, TextError, TextKey, TextLayout, TextRequest, TextW
 use crate::flatten::{
     Flattened, HitBox, NodeRecord, Shaped, TextSpec, flatten, natural_texts, pick, scope_tables,
 };
-use crate::layout::{Boxes, RootSize, ScrollState, TextSizes, layout};
+use crate::layout::{Boxes, MAX_CONTENT_SIZE, RootSize, ScrollState, TextSizes, layout};
 use crate::raster::{AtlasMirror, Raster};
 use crate::tree::{SceneError, SceneTree};
 
@@ -431,6 +431,12 @@ impl Renderer {
         std::mem::take(&mut self.surface_changes)
     }
 
+    /// Text layouts kept or asked for, over all nodes, scales and widths
+    /// (tests: a virtualised list shapes only the rows in view).
+    pub fn text_slots(&self) -> usize {
+        self.texts.len()
+    }
+
     /// Bytes of atlas pixels the render thread mirrors for `scale`.
     pub fn atlas_mirror_bytes(&self, scale: Scale) -> usize {
         self.atlas.bytes(scale)
@@ -504,7 +510,7 @@ impl Renderer {
                     );
                     self.layout_passes += 1;
                     if content_sized {
-                        let r = natural_texts(&self.tree, id, scale);
+                        let r = natural_texts(&self.tree, id, scale, &b.rects);
                         self.spec_wanted
                             .insert(id, r.iter().map(|(n, t)| TextSlot::of(*n, t)).collect());
                         requests.extend(r);
@@ -521,7 +527,11 @@ impl Renderer {
             };
             spec.overhang = overhang;
             if content_sized {
-                let (w, h) = (size.w.ceil().max(1.0), size.h.ceil().max(1.0));
+                // Capped: content taller than any output (a list with no
+                // `max_height`, a long body) never asks for a buffer of
+                // its full size.
+                let cap = |v: f32| v.ceil().clamp(1.0, MAX_CONTENT_SIZE);
+                let (w, h) = (cap(size.w), cap(size.h));
                 match (bar, vertical) {
                     (true, false) => spec.height = Some(h),
                     (true, true) => spec.width = Some(w),

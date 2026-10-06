@@ -695,3 +695,129 @@ fn markup_basic_paints_spans() {
     let (_r, buf) = show(d, root, 260, 40, Scale::ONE);
     assert_matches_ref("layout_markup", &buf, TOLERANCE);
 }
+
+/// The design's launcher: a content-sized panel holding `col { width }`
+/// over a `list { max_height: 420 }` of 2,000 rows. The list's cap is what
+/// its column sees (it does not grow to every row), the surface asks for a
+/// panel of its capped size, and only the rows in view are shaped.
+#[test]
+fn a_content_sized_launcher_caps_its_list_and_shapes_visible_rows() {
+    for fixed in [false, true] {
+        let mut b = Builder::default();
+        let mut props = vec![(Prop::Font, PropValue::Font(font(13.0)))];
+        if fixed {
+            props.push((Prop::Width, num(600.0)));
+            props.push((Prop::Height, num(1000.0)));
+        }
+        let p = b.node(NodeKind::Panel, None, props);
+        let col = b.node(
+            NodeKind::Col,
+            Some(p),
+            vec![(Prop::Width, num(600.0)), (Prop::Pad, num(8.0))],
+        );
+        let lst = b.node(
+            NodeKind::List,
+            Some(col),
+            vec![(Prop::MaxHeight, num(420.0))],
+        );
+        for i in 0..2000 {
+            let row = b.node(NodeKind::Row, Some(lst), vec![(Prop::Pad, num(8.0))]);
+            b.node(
+                NodeKind::Text,
+                Some(row),
+                vec![(Prop::Text, text(&format!("App {i}")))],
+            );
+        }
+        let mut r = renderer();
+        assert!(r.apply(b.diff).is_empty());
+        let spec = r.surface_spec(p).unwrap().clone();
+        let (w, h) = (spec.width.unwrap(), spec.height.unwrap());
+        assert_eq!(w, 600.0);
+        if fixed {
+            assert_eq!(h, 1000.0);
+        } else {
+            assert!((h - 436.0).abs() < 1.0, "content height {h}");
+        }
+        assert!(r.text_slots() < 50, "{} text slots", r.text_slots());
+        r.attach_surface(S, p);
+        let mut buf = Buffer::new(w as u32, h as u32, Scale::ONE);
+        buf.paint(&mut r, S, 0);
+        // In a sized panel the column stretches over its cell (a stack)
+        // and no further; by content it is the capped list plus its pad.
+        let c = rect(&r, col);
+        let want = if fixed { 1000.0 } else { 436.0 };
+        assert!((c.h - want).abs() < 1.0, "col {c:?} (fixed: {fixed})");
+        approx(rect(&r, lst), (8.0, 8.0, 584.0, 420.0));
+        let bx = r.boxes(S).unwrap();
+        assert!(bx.rows_laid_out <= 14, "{}", bx.rows_laid_out);
+        assert!(r.text_slots() < 50, "{} text slots", r.text_slots());
+    }
+}
+
+/// Content taller than any output is capped: a 2,000-row list with no
+/// `max_height` in a content-sized panel asks for `MAX_CONTENT_SIZE`, not
+/// 64,000 px.
+#[test]
+fn content_sized_surfaces_are_capped() {
+    let mut b = Builder::default();
+    let p = b.node(
+        NodeKind::Panel,
+        None,
+        vec![(Prop::Font, PropValue::Font(font(13.0)))],
+    );
+    let lst = b.node(NodeKind::List, Some(p), vec![(Prop::Width, num(300.0))]);
+    for i in 0..2000 {
+        b.node(
+            NodeKind::Text,
+            Some(lst),
+            vec![(Prop::Text, text(&format!("Line {i}")))],
+        );
+    }
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    let spec = r.surface_spec(p).unwrap();
+    assert_eq!(spec.width, Some(300.0));
+    assert_eq!(spec.height, Some(strand_render::MAX_CONTENT_SIZE));
+    r.attach_surface(S, p);
+    let mut buf = Buffer::new(300, 4096, Scale::ONE);
+    buf.paint(&mut r, S, 0);
+    let bx = r.boxes(S).unwrap();
+    approx(bx.rects[&lst], (0.0, 0.0, 300.0, 4096.0));
+    assert!(bx.rows_laid_out < 300, "{}", bx.rows_laid_out);
+    assert!(r.text_slots() < 300, "{} text slots", r.text_slots());
+}
+
+/// A list inside a list's row lays out its own rows in view.
+#[test]
+fn a_list_in_a_list_row_lays_out_its_rows() {
+    let mut inner = None;
+    let (d, root) = panel(200, 200, |b, root| {
+        let outer = b.node(NodeKind::List, Some(root), vec![]);
+        let row = b.node(NodeKind::Col, Some(outer), vec![]);
+        let l = b.node(NodeKind::List, Some(row), vec![(Prop::Height, num(40.0))]);
+        inner = Some(l);
+        for i in 0..10 {
+            b.node(
+                NodeKind::Text,
+                Some(l),
+                vec![(Prop::Text, text(&format!("Inner {i}")))],
+            );
+        }
+        b.node(
+            NodeKind::Text,
+            Some(outer),
+            vec![(Prop::Text, text("Next"))],
+        );
+    });
+    let (r, _buf) = show(d, root, 200, 200, Scale::ONE);
+    let inner = inner.unwrap();
+    approx(rect(&r, inner), (0.0, 0.0, 200.0, 40.0));
+    let kids = &r.tree().get(inner).unwrap().children;
+    let first = rect(&r, kids[0]);
+    assert!(
+        first.y >= 0.0 && first.y < 1.0 && first.h > 10.0,
+        "{first:?}"
+    );
+    // 40 px of ~16 px rows: the last ones are not laid out.
+    assert!(!r.boxes(S).unwrap().rects.contains_key(&kids[9]));
+}

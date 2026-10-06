@@ -51,6 +51,11 @@ pub const CH_EM: f32 = 0.6;
 /// row was measured.
 pub const LIST_ROW_ESTIMATE: f32 = 32.0;
 
+/// Largest size, logical pixels, a content-sized surface takes on either
+/// axis (decisions.md, wave3-pixels): past it, `scroll` and `list` take
+/// the rest, and a list lays out only the rows this much shows.
+pub const MAX_CONTENT_SIZE: f32 = 4096.0;
+
 /// Largest length read from props, logical pixels.
 const MAX_LEN: f32 = 1e6;
 
@@ -648,6 +653,27 @@ fn measure_text(
     }
 }
 
+/// The content height a list's `height` and `max_height` leave for its
+/// rows, resolved against its parent. Taffy ignores max sizes when it
+/// asks a leaf for its content contribution, so the cap is applied in the
+/// measure itself.
+fn list_cap(inputs: &LayoutInput, style: &Style) -> Option<f32> {
+    use taffy::util::{MaybeResolve, ResolveOrZero};
+    let calc = |_: *const (), _: f32| 0.0;
+    let parent = inputs.parent_size.height;
+    let size: Option<f32> = style.size.height.maybe_resolve(parent, calc);
+    let max: Option<f32> = style.max_size.height.maybe_resolve(parent, calc);
+    let cap = match (size, max) {
+        (Some(a), Some(b)) => a.min(b),
+        (a, b) => a.or(b)?,
+    };
+    let pad = style
+        .padding
+        .resolve_or_zero(inputs.parent_size.width, calc);
+    let border = style.border.resolve_or_zero(inputs.parent_size.width, calc);
+    Some((cap - pad.top - pad.bottom - border.top - border.bottom).max(0.0))
+}
+
 /// Lays out the subtree under the surface node `root`.
 pub(crate) fn layout(
     tree: &SceneTree,
@@ -665,15 +691,7 @@ pub(crate) fn layout(
         node.get(Prop::Edge),
         Some(PropValue::Keyword(k)) if k == "left" || k == "right"
     );
-    let mut b = Build {
-        tree,
-        taffy: TaffyTree::new(),
-        map: Vec::new(),
-        lists: Vec::new(),
-        scrolls: Vec::new(),
-        shadows: Vec::new(),
-        vertical_split,
-    };
+    let mut b = Build::new(tree, vertical_split);
     let Some(t) = b.node(node, &inh, true) else {
         return out;
     };
@@ -717,105 +735,29 @@ pub(crate) fn layout(
             )
         }
     };
-    // Lists' content heights for their leaf measure.
-    let mut list_content: HashMap<NodeId, (f32, f32)> = HashMap::new();
-    for (id, _, _) in &b.lists {
-        let st = scrolls.entry(*id).or_default();
-        let est = st.estimate();
-        let gap = tree
-            .get(*id)
-            .and_then(|n| num(n.get(Prop::Gap)))
-            .unwrap_or(0.0)
-            .max(0.0);
-        let rows: Vec<NodeId> = tree
-            .get(*id)
-            .map(|n| n.children.clone())
-            .unwrap_or_default();
-        let total: f32 = rows
-            .iter()
-            .map(|r| st.heights.get(r).copied().unwrap_or(est))
-            .sum::<f32>()
-            + gap * rows.len().saturating_sub(1) as f32;
-        list_content.insert(*id, (total, 0.0));
-    }
-    let lc = &list_content;
-    let _ = b
-        .taffy
-        .compute_layout_with_measure(t, avail, |inputs: LayoutInput, _, ctx, style| {
-            compute_leaf_layout(
-                inputs,
-                style,
-                |_, _| 0.0,
-                |known, avail| match ctx {
-                    Some(Ctx::Text {
-                        node,
-                        font,
-                        chars,
-                        shrinks,
-                        wraps,
-                        max_lines,
-                    }) => measure_text(
-                        texts, *node, *font, *chars, *shrinks, *wraps, *max_lines, known, avail,
-                    ),
-                    Some(Ctx::Fixed(w, h)) => taffy::Size {
-                        width: known.width.unwrap_or(*w),
-                        height: known.height.unwrap_or(*h),
-                    },
-                    Some(Ctx::List(id)) => {
-                        let (h, w) = lc.get(id).copied().unwrap_or_default();
-                        taffy::Size {
-                            width: known.width.unwrap_or(w),
-                            height: known.height.unwrap_or(h),
-                        }
-                    }
-                    None => taffy::Size {
-                        width: known.width.unwrap_or(0.0),
-                        height: known.height.unwrap_or(0.0),
-                    },
-                },
-            )
-        });
-    let ids: HashMap<taffy::NodeId, NodeId> = b.map.iter().copied().collect();
-    // Absolute positions, scroll offsets applied to scrolled content.
-    let scroll_ids: HashSet<NodeId> = b.scrolls.iter().copied().collect();
-    let mut stack = vec![(t, origin.0, origin.1)];
-    while let Some((tn, px, py)) = stack.pop() {
-        let Ok(l) = b.taffy.layout(tn) else { continue };
-        let (x, y) = (px + l.location.x, py + l.location.y);
-        let Some(&id) = ids.get(&tn) else { continue };
-        out.rects
-            .insert(id, LogicalRect::new(x, y, l.size.width, l.size.height));
-        let mut dy = 0.0;
-        if scroll_ids.contains(&id) {
-            let st = scrolls.entry(id).or_default();
-            st.viewport = l.size.height;
-            // The content's extent: its lowest child, plus the bottom pad.
-            let bottom = b
-                .taffy
-                .children(tn)
-                .unwrap_or_default()
-                .iter()
-                .filter_map(|k| b.taffy.layout(*k).ok())
-                .map(|k| k.location.y + k.size.height)
-                .fold(0.0f32, f32::max);
-            st.content = (bottom + l.padding.bottom).max(l.size.height);
-            st.offset = st.offset.clamp(0.0, (st.content - st.viewport).max(0.0));
-            dy = st.offset;
+    b.compute(t, avail, texts, scrolls);
+    if matches!(size, RootSize::Content { .. })
+        && let Ok(l) = b.taffy.layout(t).map(|l| l.size)
+        && (l.width > MAX_CONTENT_SIZE || l.height > MAX_CONTENT_SIZE)
+        && let Ok(mut s) = b.taffy.style(t).cloned()
+    {
+        // Taller (or wider) than any output: laid out again at the cap,
+        // so what overflows scrolls and a list lays out only what the
+        // capped box shows.
+        if l.width > MAX_CONTENT_SIZE {
+            s.size.width = length(MAX_CONTENT_SIZE);
         }
-        if let Ok(kids) = b.taffy.children(tn) {
-            for k in kids {
-                stack.push((k, x, y - dy));
-            }
+        if l.height > MAX_CONTENT_SIZE {
+            s.size.height = length(MAX_CONTENT_SIZE);
         }
+        let _ = b.taffy.set_style(t, s);
+        b.compute(t, avail, texts, scrolls);
     }
+    b.read_back(t, origin, scrolls, &mut out);
     if let Some(r) = out.rects.get(&root) {
         out.size = LogicalSize::new(r.w, r.h);
     }
-    // Lists: lay out the rows in view.
-    let lists = std::mem::take(&mut b.lists);
-    for (id, _, inh) in lists {
-        place_list(tree, id, &inh, texts, scrolls, &mut out);
-    }
+    b.place_lists(texts, scrolls, &mut out);
     // Shadow reach past the root's box.
     if let Some(rb) = out.rects.get(&root).copied() {
         let mut o = Insets::default();
@@ -847,6 +789,170 @@ pub(crate) fn layout(
     out
 }
 
+/// What taffy is told for a leaf: text from its layouts, fixed-size
+/// widgets, and a list's rows (capped by its `height`/`max_height`).
+fn measure_leaf(
+    texts: &dyn TextSizes,
+    lists: &HashMap<NodeId, f32>,
+    inputs: LayoutInput,
+    ctx: Option<&mut Ctx>,
+    style: &Style,
+) -> LayoutOutput {
+    let cap = matches!(ctx, Some(Ctx::List(_)))
+        .then(|| list_cap(&inputs, style))
+        .flatten();
+    compute_leaf_layout(
+        inputs,
+        style,
+        |_, _| 0.0,
+        |known, avail| match ctx {
+            Some(Ctx::Text {
+                node,
+                font,
+                chars,
+                shrinks,
+                wraps,
+                max_lines,
+            }) => measure_text(
+                texts, *node, *font, *chars, *shrinks, *wraps, *max_lines, known, avail,
+            ),
+            Some(Ctx::Fixed(w, h)) => taffy::Size {
+                width: known.width.unwrap_or(*w),
+                height: known.height.unwrap_or(*h),
+            },
+            Some(Ctx::List(id)) => {
+                let h = lists.get(id).copied().unwrap_or_default();
+                // A scroll container: its rows past `height` or
+                // `max_height` scroll, so that is all its parent sees of
+                // them, and its smallest size is none.
+                let h = match avail.height {
+                    AvailableSpace::MinContent => 0.0,
+                    _ => cap.map_or(h, |c| h.min(c)),
+                };
+                taffy::Size {
+                    width: known.width.unwrap_or(0.0),
+                    height: known.height.unwrap_or(h),
+                }
+            }
+            None => taffy::Size {
+                width: known.width.unwrap_or(0.0),
+                height: known.height.unwrap_or(0.0),
+            },
+        },
+    )
+}
+
+/// The rows' total height a list's measure starts from: measured row
+/// heights, else the list's estimate, plus gaps.
+fn rows_height(tree: &SceneTree, id: NodeId, st: &ScrollState, gap: f32) -> f32 {
+    let est = st.estimate();
+    let rows = tree.get(id).map_or(&[][..], |n| &n.children[..]);
+    rows.iter()
+        .map(|r| st.heights.get(r).copied().unwrap_or(est))
+        .sum::<f32>()
+        + gap * rows.len().saturating_sub(1) as f32
+}
+
+impl<'a> Build<'a> {
+    fn new(tree: &'a SceneTree, vertical_split: bool) -> Self {
+        Build {
+            tree,
+            taffy: TaffyTree::new(),
+            map: Vec::new(),
+            lists: Vec::new(),
+            scrolls: Vec::new(),
+            shadows: Vec::new(),
+            vertical_split,
+        }
+    }
+
+    /// Computes the tree under `t`, with its lists measured from their
+    /// rows.
+    fn compute(
+        &mut self,
+        t: taffy::NodeId,
+        avail: taffy::Size<AvailableSpace>,
+        texts: &dyn TextSizes,
+        scrolls: &mut HashMap<NodeId, ScrollState>,
+    ) {
+        let mut lists: HashMap<NodeId, f32> = HashMap::new();
+        for (id, _, _) in &self.lists {
+            let st = scrolls.entry(*id).or_default();
+            let gap = self
+                .tree
+                .get(*id)
+                .and_then(|n| num(n.get(Prop::Gap)))
+                .unwrap_or(0.0)
+                .max(0.0);
+            lists.insert(*id, rows_height(self.tree, *id, st, gap));
+        }
+        let _ = self.taffy.compute_layout_with_measure(
+            t,
+            avail,
+            |inputs: LayoutInput, _, ctx, style| measure_leaf(texts, &lists, inputs, ctx, style),
+        );
+    }
+
+    /// Reads back the boxes under `t` in surface coordinates, from
+    /// `origin`, with scroll offsets applied to scrolled content.
+    fn read_back(
+        &self,
+        t: taffy::NodeId,
+        origin: (f32, f32),
+        scrolls: &mut HashMap<NodeId, ScrollState>,
+        out: &mut Boxes,
+    ) {
+        let ids: HashMap<taffy::NodeId, NodeId> = self.map.iter().copied().collect();
+        let scroll_ids: HashSet<NodeId> = self.scrolls.iter().copied().collect();
+        let mut stack = vec![(t, origin.0, origin.1)];
+        while let Some((tn, px, py)) = stack.pop() {
+            let Ok(l) = self.taffy.layout(tn) else {
+                continue;
+            };
+            let (x, y) = (px + l.location.x, py + l.location.y);
+            let Some(&id) = ids.get(&tn) else { continue };
+            out.rects
+                .insert(id, LogicalRect::new(x, y, l.size.width, l.size.height));
+            let mut dy = 0.0;
+            if scroll_ids.contains(&id) {
+                let st = scrolls.entry(id).or_default();
+                st.viewport = l.size.height;
+                // The content's extent: its lowest child, plus the bottom
+                // pad.
+                let bottom = self
+                    .taffy
+                    .children(tn)
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|k| self.taffy.layout(*k).ok())
+                    .map(|k| k.location.y + k.size.height)
+                    .fold(0.0f32, f32::max);
+                st.content = (bottom + l.padding.bottom).max(l.size.height);
+                st.offset = st.offset.clamp(0.0, (st.content - st.viewport).max(0.0));
+                dy = st.offset;
+            }
+            if let Ok(kids) = self.taffy.children(tn) {
+                for k in kids {
+                    stack.push((k, x, y - dy));
+                }
+            }
+        }
+    }
+
+    /// Lays out the rows in view of every list this pass met, nested
+    /// lists in those rows included.
+    fn place_lists(
+        &mut self,
+        texts: &dyn TextSizes,
+        scrolls: &mut HashMap<NodeId, ScrollState>,
+        out: &mut Boxes,
+    ) {
+        for (id, _, inh) in std::mem::take(&mut self.lists) {
+            place_list(self.tree, id, &inh, texts, scrolls, out);
+        }
+    }
+}
+
 /// Lays out the rows of list `id` that its viewport shows.
 fn place_list(
     tree: &SceneTree,
@@ -875,11 +981,7 @@ fn place_list(
     let est = st.estimate();
     let rows = &node.children;
     out.rows_total += rows.len();
-    let total: f32 = rows
-        .iter()
-        .map(|r| st.heights.get(r).copied().unwrap_or(est))
-        .sum::<f32>()
-        + gap * rows.len().saturating_sub(1) as f32;
+    let total = rows_height(tree, id, st, gap);
     st.viewport = content.h;
     st.content = total;
     st.offset = st.offset.clamp(0.0, (total - content.h).max(0.0));
@@ -901,15 +1003,7 @@ fn place_list(
             i += 1;
             continue;
         };
-        let mut b = Build {
-            tree,
-            taffy: TaffyTree::new(),
-            map: Vec::new(),
-            lists: Vec::new(),
-            scrolls: Vec::new(),
-            shadows: Vec::new(),
-            vertical_split: false,
-        };
+        let mut b = Build::new(tree, false);
         let Some(t) = b.node(row, &inh, false) else {
             i += 1;
             continue;
@@ -921,60 +1015,23 @@ fn place_list(
             s.size.width = length(content.w);
             let _ = b.taffy.set_style(t, s);
         }
-        let _ = b.taffy.compute_layout_with_measure(
+        b.compute(
             t,
             taffy::Size {
                 width: AvailableSpace::Definite(content.w),
                 height: AvailableSpace::MaxContent,
             },
-            |inputs: LayoutInput, _, ctx, style| -> LayoutOutput {
-                compute_leaf_layout(
-                    inputs,
-                    style,
-                    |_, _| 0.0,
-                    |known, avail| match ctx {
-                        Some(Ctx::Text {
-                            node,
-                            font,
-                            chars,
-                            shrinks,
-                            wraps,
-                            max_lines,
-                        }) => measure_text(
-                            texts, *node, *font, *chars, *shrinks, *wraps, *max_lines, known, avail,
-                        ),
-                        Some(Ctx::Fixed(w, h)) => taffy::Size {
-                            width: known.width.unwrap_or(*w),
-                            height: known.height.unwrap_or(*h),
-                        },
-                        _ => taffy::Size {
-                            width: known.width.unwrap_or(0.0),
-                            height: known.height.unwrap_or(0.0),
-                        },
-                    },
-                )
-            },
+            texts,
+            scrolls,
         );
-        let ids: HashMap<taffy::NodeId, NodeId> = b.map.iter().copied().collect();
         let h = b.taffy.layout(t).map_or(0.0, |l| l.size.height);
         let st = scrolls.entry(id).or_default();
         if st.heights.insert(rows[i], h) != Some(h) && (h - est).abs() > 0.5 {
             changed = true;
         }
-        let mut stack = vec![(t, content.x, content.y + y - offset)];
-        while let Some((tn, px, py)) = stack.pop() {
-            let Ok(l) = b.taffy.layout(tn) else { continue };
-            let (x, yy) = (px + l.location.x, py + l.location.y);
-            if let Some(&nid) = ids.get(&tn) {
-                out.rects
-                    .insert(nid, LogicalRect::new(x, yy, l.size.width, l.size.height));
-            }
-            if let Ok(kids) = b.taffy.children(tn) {
-                for k in kids {
-                    stack.push((k, x, yy));
-                }
-            }
-        }
+        b.read_back(t, (content.x, content.y + y - offset), scrolls, out);
+        // A list or scroll inside the row: its own rows in view.
+        b.place_lists(texts, scrolls, out);
         out.rows_laid_out += 1;
         y += h + gap;
         i += 1;
