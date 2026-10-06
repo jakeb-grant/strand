@@ -1429,7 +1429,7 @@ fn every_snippet_mounts() {
     insta::assert_snapshot!("every_snippet", shell.scene.render());
     let rendered = shell.scene.render();
     for expected in [
-        "segmented value=auto options=[auto, light, dark, wallpaper, mocha]",
+        "segmented two_way=[value] value=auto options=[auto, light, dark, wallpaper, mocha]",
         "glow=[12, $accent.alpha(0.6)]",
         "mask=radial(center, 40%)",
         "stagger=30ms",
@@ -1881,6 +1881,45 @@ fn surfaces_show_hide_and_hold_services_while_shown() {
 /// Settings files are read through core (overlay > file > default) and
 /// written back field by field.
 #[test]
+fn strand_set_reaches_settings_that_are_not_exported() {
+    let dir = temp_dir("settings-set");
+    let config = dir.join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("prefs.toml"),
+        "# mine\ncompact = true # dense\n",
+    )
+    .unwrap();
+    let storage = Storage::in_dirs(dir.join("state"), &config);
+    // design.md's theme.strand: `state prefs from …`, not exported.
+    let src = "state prefs from \"prefs.toml\" { compact: bool = false; gap: int = 4 }\nbar B { text prefs.compact ? \"compact\" : \"roomy\" }\n";
+    let mut shell = boot_with(
+        &[("theme.strand", src)],
+        |rt, host| screens(rt, host, &["DP-1"]),
+        storage.clone(),
+    );
+    assert_eq!(shell.scene.texts(), ["compact"]);
+    // `strand set prefs.compact false`, as design.md writes it.
+    shell.inst.set_text("prefs.compact", "false").unwrap();
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["roomy"]);
+    // With the file named too.
+    shell.inst.set_text("theme.prefs.gap", "7").unwrap();
+    assert_eq!(shell.inst.get("prefs.gap").unwrap(), Value::int(7));
+    assert!(shell.inst.set_text("prefs.gap", "wide").is_err());
+    assert!(shell.inst.set_text("prefs.nope", "1").is_err());
+    shell.at(1.0);
+    if let Some(s) = &storage.settings {
+        assert!(s.sync(Duration::from_secs(5)));
+    }
+    let text = std::fs::read_to_string(config.join("prefs.toml")).unwrap();
+    assert!(text.contains("# mine"), "{text}");
+    assert!(text.contains("compact = false # dense"), "{text}");
+    assert!(text.contains("gap = 7"), "{text}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn settings_files_are_read_and_written_back() {
     let dir = temp_dir("settings");
     let config = dir.join("config");
@@ -1937,6 +1976,31 @@ fn settings_files_are_read_and_written_back() {
     assert_eq!(
         shell.inst.get("prefs_test.prefs.gap").unwrap(),
         Value::int(6)
+    );
+    // `strand run` reads on the watcher's thread: the logic thread only
+    // decodes what it read.
+    let sources = shell.inst.settings_sources();
+    assert_eq!(sources.len(), 1);
+    std::fs::write(
+        config.join("prefs.toml"),
+        "compact = false
+gap = 8
+",
+    )
+    .unwrap();
+    let read = std::thread::spawn(move || sources[0].read())
+        .join()
+        .unwrap();
+    assert!(
+        shell
+            .inst
+            .reload_settings_with(&config.join("prefs.toml"), Some(read))
+    );
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["roomy"]);
+    assert_eq!(
+        shell.inst.get("prefs_test.prefs.gap").unwrap(),
+        Value::int(8)
     );
     drop(shell);
     let _ = std::fs::remove_dir_all(dir);
@@ -2023,6 +2087,49 @@ fn one_item_change_reruns_one_item() {
     assert_eq!(u.diff.ops.len(), 1, "{:?}", u.diff);
     assert!(runs < 20, "{runs} computations for one changed item");
     assert!(shell.scene.find_text("changed").is_some());
+}
+
+/// A 2,000-row `list` mounts every row on the logic side: render lays
+/// out only the rows in view, and mounting stays eager until M4
+/// (decisions.md, wave3-pixels). The cost that keeps that viable: a
+/// mount of 2,000 rows with a `when hover` each, and one changed row
+/// re-running only its own bindings and sending one op.
+#[test]
+fn a_2000_row_list_mounts_eagerly_and_updates_one_row() {
+    let mut src = String::from("type Row { id: int; label: text }\nstate rows: [Row] key id = [");
+    for i in 0..2000 {
+        src.push_str(&format!("Row(id: {i}, label: \"r{i}\"), "));
+    }
+    src.push_str(
+        "]\nbar B { list { max_height: 420\n for r in rows { row { when hover { opacity: 0.5 }\n text r.label } } } }\n",
+    );
+    let t = std::time::Instant::now();
+    let mut shell = boot(&[("t.strand", &src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let mounted = t.elapsed();
+    assert_eq!(shell.scene.of_kind(NodeKind::Row).len(), 2000);
+    eprintln!("mounted 2,000 list rows in {mounted:?}");
+    let before = shell.rt.stats().computations;
+    let row = shell.inst.vm().types().find_record("Row").expect("Row");
+    let rows: Vec<Value> = (0..2000)
+        .map(|i| {
+            let label = if i == 1500 {
+                "changed".to_string()
+            } else {
+                format!("r{i}")
+            };
+            Value::record(row, vec![Value::int(i), Value::text(label)])
+        })
+        .collect();
+    shell
+        .inst
+        .set_value("t", "rows", Value::list(rows))
+        .unwrap();
+    let u = shell.flush();
+    let runs = shell.rt.stats().computations - before;
+    assert_eq!(u.diff.ops.len(), 1, "{:?}", u.diff);
+    assert!(runs < 20, "{runs} computations for one changed row");
 }
 
 /// A fault in a file's top-level handler is located but freezes
@@ -2726,4 +2833,505 @@ fn input_handlers_and_two_way_writes_at_60_hz_are_not_throttled() {
             assert!(seen_lagged, "the `on change` writer was not throttled");
         }
     }
+}
+
+/// A container query (`when self.width < 300`) follows the laid-out size
+/// render reports, with 4 px hysteresis: once it holds it keeps holding
+/// until the width is 4 px past the threshold, so it cannot flicker.
+#[test]
+fn container_queries_have_hysteresis() {
+    let src = "bar Top {\n  height: 30\n  row {\n    opacity: 1\n    when self.width < 300 { opacity: 0.5 }\n  }\n}\n";
+    let mut shell = boot(&[("q.strand", src)], |rt, host| {
+        let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+        host.set(rt, "screens.all", Value::list(vec![screen]))
+            .unwrap();
+    });
+    let row = shell.scene.of_kind(NodeKind::Row)[0];
+    let opacity = |shell: &Shell| match shell.scene.prop(row, Prop::Opacity) {
+        Some(PropValue::Number(n)) => *n,
+        p => panic!("{p:?}"),
+    };
+    let at = |shell: &mut Shell, w: f32| {
+        shell.inst.set_size(row, w, 30.0);
+        shell.flush();
+        opacity(shell)
+    };
+    assert_eq!(at(&mut shell, 400.0), 1.0);
+    assert_eq!(at(&mut shell, 299.0), 0.5, "below the threshold");
+    assert_eq!(at(&mut shell, 301.0), 0.5, "held within 4 px");
+    assert_eq!(at(&mut shell, 303.0), 0.5, "held within 4 px");
+    assert_eq!(at(&mut shell, 304.0), 1.0, "4 px past: released");
+    assert_eq!(
+        at(&mut shell, 301.0),
+        1.0,
+        "not on again above the threshold"
+    );
+    assert_eq!(at(&mut shell, 299.5), 0.5);
+}
+
+/// The boot value of `self.width` (0, before any layout) seeds no
+/// hysteresis: a container whose first layout is 302 px wide shows the
+/// wide variant, as one that grew to 302 px does.
+#[test]
+fn a_query_first_laid_out_inside_the_band_takes_the_wide_variant() {
+    let src = "bar Top {\n  height: 30\n  row {\n    opacity: 1\n    when self.width < 300 { opacity: 0.5 }\n  }\n}\n";
+    let mut shell = boot(&[("q.strand", src)], |rt, host| {
+        let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+        host.set(rt, "screens.all", Value::list(vec![screen]))
+            .unwrap();
+    });
+    let row = shell.scene.of_kind(NodeKind::Row)[0];
+    shell.inst.set_size(row, 302.0, 30.0);
+    shell.flush();
+    assert_eq!(
+        shell.scene.prop(row, Prop::Opacity),
+        Some(&PropValue::Number(1.0))
+    );
+}
+
+/// Render is told which nodes' sizes logic reads (`watch`): `query` for a
+/// container query, `size` for any other binding; nodes nobody measures
+/// carry nothing, so their size changes never wake logic.
+#[test]
+fn only_measured_nodes_are_watched() {
+    let src = "bar Top {\n  height: 30\n  row {\n    when self.width < 300 { opacity: 0.5 }\n    box { id: b }\n    text \"w\"\n  }\n  text b.width > 10 ? \"wide\" : \"narrow\"\n}\n";
+    let shell = boot(&[("w.strand", src)], |rt, host| {
+        let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+        host.set(rt, "screens.all", Value::list(vec![screen]))
+            .unwrap();
+    });
+    let row = shell.scene.of_kind(NodeKind::Row)[0];
+    let b = shell.scene.of_kind(NodeKind::Box)[0];
+    let bar = shell.scene.of_kind(NodeKind::Bar)[0];
+    let kw = |k: &str| Some(PropValue::Keyword(k.into()));
+    assert_eq!(shell.scene.prop(row, Prop::Watch).cloned(), kw("query"));
+    assert_eq!(shell.scene.prop(b, Prop::Watch).cloned(), kw("size"));
+    assert_eq!(shell.scene.prop(bar, Prop::Watch), None);
+    for t in shell.scene.of_kind(NodeKind::Text) {
+        assert_eq!(shell.scene.prop(t, Prop::Watch), None);
+    }
+}
+
+/// `nav: results` names a list mounted after the input: render gets the
+/// list's node once everything is mounted.
+#[test]
+fn nav_names_the_list_node() {
+    let files = [fixture("launcher.strand")];
+    let mut shell = boot(&refs(&files), desktop);
+    shell.inst.set("launcher.open", Value::Bool(true)).unwrap();
+    shell.flush();
+    let input = shell.scene.of_kind(NodeKind::Input)[0];
+    let list = shell.scene.of_kind(NodeKind::List)[0];
+    assert_eq!(
+        shell.scene.prop(input, Prop::Nav),
+        Some(&PropValue::Node(list))
+    );
+}
+
+/// Two-way props are marked for render and input (`two_way`): the
+/// launcher's `open: <-> open` (Escape and click-away close it) and its
+/// input's `text: <-> query`; its spec says `open` is two-way.
+#[test]
+fn two_way_props_are_marked() {
+    let files = [fixture("launcher.strand")];
+    let mut shell = boot(&refs(&files), desktop);
+    shell.inst.set("launcher.open", Value::Bool(true)).unwrap();
+    shell.flush();
+    let panel = shell.scene.of_kind(NodeKind::Panel)[0];
+    let input = shell.scene.of_kind(NodeKind::Input)[0];
+    let kw = |k: &str| PropValue::List(vec![PropValue::Keyword(k.into())]);
+    assert_eq!(shell.scene.prop(panel, Prop::TwoWay), Some(&kw("open")));
+    assert_eq!(shell.scene.prop(input, Prop::TwoWay), Some(&kw("text")));
+    let spec = strand_scene::SurfaceSpec::resolve(NodeKind::Panel, |p| {
+        shell.scene.prop(panel, p).cloned()
+    });
+    assert!(spec.open_two_way);
+}
+
+/// `nav:` names a list that mounts ticks later (inside an `if` that
+/// turns true): render gets it once it is on the scene.
+#[test]
+fn nav_names_a_list_mounted_later() {
+    let src = "state show = false\npanel P {\n  width: 200\n  height: 100\n  col {\n    input { nav: results }\n    if show {\n      list { id: results\n        text \"a\" }\n    }\n  }\n}\n";
+    let mut shell = boot(&[("n.strand", src)], |rt, host| {
+        let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+        host.set(rt, "screens.all", Value::list(vec![screen]))
+            .unwrap();
+    });
+    let input = shell.scene.of_kind(NodeKind::Input)[0];
+    assert_eq!(shell.scene.prop(input, Prop::Nav), None);
+    shell.flush();
+    shell
+        .inst
+        .set_value("n", "show", Value::Bool(true))
+        .unwrap();
+    shell.flush();
+    let list = shell.scene.of_kind(NodeKind::List)[0];
+    assert_eq!(
+        shell.scene.prop(input, Prop::Nav),
+        Some(&PropValue::Node(list))
+    );
+}
+
+/// Typing into the launcher's `input` is a two-way write of its `text`;
+/// `open: <-> open` takes the `false` Escape writes.
+#[test]
+fn input_and_open_take_widget_writes() {
+    let files = [fixture("launcher.strand")];
+    let mut shell = boot(&refs(&files), desktop);
+    shell.inst.set("launcher.open", Value::Bool(true)).unwrap();
+    shell.flush();
+    let input = shell.scene.of_kind(NodeKind::Input)[0];
+    shell
+        .inst
+        .write(input, Prop::Text, PropValue::Text("fi".into()))
+        .unwrap();
+    shell.flush();
+    assert_eq!(
+        shell.scene.prop(input, Prop::Text),
+        Some(&PropValue::Text("fi".into()))
+    );
+    let panel = shell.scene.of_kind(NodeKind::Panel)[0];
+    shell
+        .inst
+        .write(panel, Prop::Open, PropValue::Bool(false))
+        .unwrap();
+    shell.flush();
+    assert_eq!(shell.inst.get("launcher.open").unwrap(), Value::Bool(false));
+}
+
+/// `page` and `tooltip { … }` mount on demand (the schema's `on_demand`,
+/// as the cycle check reads it): only the current page is on the scene,
+/// a hidden one unmounts (design.md: "Hidden pages unmount"), and a
+/// tooltip's content is there only while the element it sits in is
+/// hovered. State lives on the component or surface around a page (the
+/// checker keeps it off pages), so it is kept across a page change.
+#[test]
+fn pages_and_tooltips_mount_on_demand() {
+    let src = "enum Pg { a, b }\n\
+               state cur: Pg = a\n\
+               bar B {\n\
+                 state n = 0\n\
+                 box { text \"x\"; tooltip { text \"TIP\" } }\n\
+                 box { on click { cur = cur == a ? b : a } }\n\
+                 pages current: cur {\n\
+                   page a { text join(\" \", \"PA\", n); box { on click { n += 1 } } }\n\
+                   page b { if true { text \"PB\" } }\n\
+                 }\n\
+               }\n";
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let scene = shell.scene.render();
+    assert!(scene.contains("text=\"PA 0\""), "{scene}");
+    assert!(!scene.contains("PB"), "a hidden page is mounted:\n{scene}");
+    assert!(
+        !scene.contains("TIP"),
+        "an unhovered tooltip is mounted:\n{scene}"
+    );
+    assert_eq!(shell.scene.of_kind(NodeKind::Page).len(), 1, "{scene}");
+    assert!(shell.scene.of_kind(NodeKind::Tooltip).is_empty(), "{scene}");
+
+    // Hovering the box mounts its tooltip; leaving unmounts it.
+    let host = shell.scene.of_kind(NodeKind::Box)[0];
+    shell.inst.set_flag(host, NodeFlag::Hover, true);
+    shell.flush();
+    let scene = shell.scene.render();
+    assert!(
+        scene.contains("tooltip\n") && scene.contains("TIP"),
+        "{scene}"
+    );
+    shell.inst.set_flag(host, NodeFlag::Hover, false);
+    shell.flush();
+    let scene = shell.scene.render();
+    assert!(!scene.contains("TIP"), "{scene}");
+    assert!(shell.scene.of_kind(NodeKind::Tooltip).is_empty(), "{scene}");
+
+    // Page a's state moves on, the page is switched away and back.
+    let toggle = shell.scene.of_kind(NodeKind::Box)[1];
+    let inc = shell.scene.of_kind(NodeKind::Box)[2];
+    assert!(shell.inst.event(inc, "click", Vec::new()));
+    shell.flush();
+    shell.text_node("PA 1");
+    assert!(shell.inst.event(toggle, "click", Vec::new()));
+    shell.flush();
+    let scene = shell.scene.render();
+    assert!(scene.contains("PB"), "{scene}");
+    assert!(!scene.contains("PA"), "the hidden page stayed:\n{scene}");
+    assert_eq!(shell.scene.of_kind(NodeKind::Page).len(), 1, "{scene}");
+    assert!(shell.inst.event(toggle, "click", Vec::new()));
+    shell.flush();
+    shell.text_node("PA 1");
+    assert!(!shell.scene.render().contains("PB"));
+}
+
+/// A `popup`'s content is mounted when it opens and unmounted when it
+/// closes (the schema's `on_demand`): its nodes leave the scene and the
+/// scopes under it go, while the `state`s of the components in it (a
+/// plain one, a keyed list) are kept and come back when it opens again,
+/// as design.md's calendar keeps its month. Closing and opening again
+/// leaks nothing, and the kept cells go with the popup.
+#[test]
+fn popup_content_unmounts_when_closed_and_keeps_its_state() {
+    let src = "type R { id: int }\n\
+               export state p = false\n\
+               export state q = true\n\
+               component Cal {\n\
+                 state month = 1\n\
+                 state rs: [R] key id = [R(id: 1)]\n\
+                 text join(\" \", \"M\", month, rs.len, pct(audio.sink.volume))\n\
+                 box { on click { month += 1; rs.push(R(id: month)) } }\n\
+               }\n\
+               bar B {\n\
+                 text \"x\"\n\
+                 if q { popup { open: <-> p; Cal } }\n\
+               }\n";
+    let mut shell = boot(&[("pop.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let content = |shell: &Shell| {
+        let popup = shell.scene.of_kind(NodeKind::Popup);
+        assert_eq!(popup.len(), 1, "{}", shell.scene.render());
+        shell.scene.render().contains("text=\"M ")
+    };
+    assert!(!content(&shell), "closed at boot: not mounted");
+    let closed_nodes = shell.rt.stats().nodes;
+
+    shell.inst.set("pop.p", Value::Bool(true)).unwrap();
+    shell.flush();
+    assert!(content(&shell));
+    let text = shell
+        .scene
+        .texts()
+        .into_iter()
+        .find(|t| t.starts_with("M "))
+        .unwrap();
+    assert!(text.starts_with("M 1 1 "), "{text}");
+    assert_eq!(shell.host.readers("audio"), 1);
+    let open_nodes = shell.rt.stats().nodes;
+    let inc = shell.scene.of_kind(NodeKind::Box)[0];
+    assert!(shell.inst.event(inc, "click", Vec::new()));
+    shell.flush();
+    let first = shell
+        .scene
+        .texts()
+        .into_iter()
+        .find(|t| t.starts_with("M 2 2 "))
+        .unwrap();
+    let first_id = shell.text_node(&first);
+
+    // Closed: the content's nodes leave the scene, its scopes go.
+    shell.inst.set("pop.p", Value::Bool(false)).unwrap();
+    shell.flush();
+    let scene = shell.scene.render();
+    assert!(
+        !content(&shell),
+        "the closed popup's content stayed:\n{scene}"
+    );
+    assert!(shell.scene.of_kind(NodeKind::Box).is_empty(), "{scene}");
+    assert_eq!(shell.host.readers("audio"), 0);
+    let kept_nodes = shell.rt.stats().nodes;
+    assert!(
+        kept_nodes < open_nodes,
+        "the content's scopes stayed: {kept_nodes} live nodes closed, {open_nodes} open"
+    );
+
+    // Open again: mounted afresh, its state as it was left.
+    shell.inst.set("pop.p", Value::Bool(true)).unwrap();
+    shell.flush();
+    let again = shell
+        .scene
+        .texts()
+        .into_iter()
+        .find(|t| t.starts_with("M "))
+        .unwrap();
+    assert!(again.starts_with("M 2 2 "), "state lost: {again}");
+    assert_ne!(shell.text_node(&again), first_id, "a new mount");
+    assert_eq!(shell.host.readers("audio"), 1);
+    let inc = shell.scene.of_kind(NodeKind::Box)[0];
+    assert!(shell.inst.event(inc, "click", Vec::new()));
+    shell.flush();
+    assert!(
+        shell.scene.texts().iter().any(|t| t.starts_with("M 3 3 ")),
+        "{:?}",
+        shell.scene.texts()
+    );
+
+    // Opening and closing again and again leaks nothing.
+    for _ in 0..20 {
+        shell.inst.set("pop.p", Value::Bool(false)).unwrap();
+        shell.flush();
+        shell.inst.set("pop.p", Value::Bool(true)).unwrap();
+        shell.flush();
+    }
+    shell.inst.set("pop.p", Value::Bool(false)).unwrap();
+    shell.flush();
+    assert_eq!(shell.rt.stats().nodes, kept_nodes, "a cycle leaks");
+    assert!(!content(&shell));
+
+    // The popup goes for good: its kept cells go with it.
+    shell.inst.set("pop.q", Value::Bool(false)).unwrap();
+    shell.flush();
+    assert!(shell.scene.of_kind(NodeKind::Popup).is_empty());
+    shell.inst.set("pop.q", Value::Bool(true)).unwrap();
+    shell.flush();
+    assert_eq!(shell.rt.stats().nodes, closed_nodes, "kept cells leaked");
+    shell.inst.set("pop.p", Value::Bool(true)).unwrap();
+    shell.flush();
+    assert!(
+        shell.scene.texts().iter().any(|t| t.starts_with("M 1 1 ")),
+        "a new popup starts afresh: {:?}",
+        shell.scene.texts()
+    );
+}
+
+/// A settings file and a persisted `state` in a closed popup's content
+/// are kept as a plain one is.
+#[test]
+fn a_closed_popup_keeps_settings_and_persisted_state() {
+    let src = "export state p = false\n\
+               component Cal {\n\
+                 state prefs from \"cal.toml\" { week: int = 1 }\n\
+                 state seen = 0 persist\n\
+                 text join(\" \", \"W\", prefs.week, seen)\n\
+                 box { on click { prefs.week += 1; seen += 2 } }\n\
+               }\n\
+               bar B { popup { open: <-> p; Cal } }\n";
+    let mut shell = boot(&[("cal.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    shell.inst.set("cal.p", Value::Bool(true)).unwrap();
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["W 1 0"]);
+    let inc = shell.scene.of_kind(NodeKind::Box)[0];
+    assert!(shell.inst.event(inc, "click", Vec::new()));
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["W 2 2"]);
+    shell.inst.set("cal.p", Value::Bool(false)).unwrap();
+    shell.flush();
+    assert!(shell.scene.texts().is_empty(), "{:?}", shell.scene.texts());
+    shell.inst.set("cal.p", Value::Bool(true)).unwrap();
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["W 2 2"]);
+    let inc = shell.scene.of_kind(NodeKind::Box)[0];
+    assert!(shell.inst.event(inc, "click", Vec::new()));
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["W 3 4"]);
+}
+
+/// The runtime mounts on demand exactly the elements the checker's cycle
+/// check reads as on demand: a `popup` (a surface, its content mounted
+/// while it is open), a `page` and a `tooltip`.
+#[test]
+fn every_on_demand_element_has_a_runtime_rule() {
+    let schema = strand_compiler::schema::Schema::builtin();
+    let on_demand: Vec<&str> = schema
+        .elements
+        .iter()
+        .filter(|(_, e)| e.flags.on_demand)
+        .map(|(n, _)| n.as_str())
+        .collect();
+    assert_eq!(on_demand, ["page", "popup", "tooltip"]);
+}
+
+/// Boots `src` on a 2 MiB thread (the logic thread's stack) with a
+/// deadline, so a mount that never ends fails the test instead of
+/// hanging it. Returns the boot's runtime errors (as text) and the
+/// shell's scene, then runs `more` on the shell.
+fn boot_bounded(
+    src: &'static str,
+    more: impl FnOnce(&mut Shell) -> Vec<String> + Send + 'static,
+) -> (Vec<String>, Vec<String>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .stack_size(2 << 20)
+        .spawn(move || {
+            let mut map = SourceMap::new();
+            map.add("t.strand", src.to_string());
+            let compiled = strand_compiler::compile(&map);
+            assert_eq!(compiled.errors(), 0, "{:#?}", compiled.diagnostics);
+            let program = Arc::new(lower::lower(
+                &compiled.program,
+                strand_compiler::schema::Schema::builtin(),
+            ));
+            let rt = Runtime::new();
+            let host = Rc::new(SchemaHost::mock(&rt, &program.types));
+            screens(&rt, &host, &["DP-1"]);
+            let inst = Instance::new(&rt, program, host.clone(), Storage::none());
+            let mut shell = Shell {
+                rt,
+                host,
+                inst,
+                scene: SceneMirror::new(),
+                boot: Vec::new(),
+            };
+            let u = shell.flush();
+            let boot: Vec<String> = u.errors.iter().map(|e| e.to_string()).collect();
+            let later = more(&mut shell);
+            let _ = tx.send((boot, later));
+        })
+        .unwrap();
+    rx.recv_timeout(Duration::from_secs(60))
+        .expect("mounting never ended")
+}
+
+/// A component that keeps mounting itself where the static cycle check
+/// cannot see it (under an `if`, in a tooltip, on a page that becomes
+/// current) stops at 256 nested elements and components with a located
+/// error naming it; the flush returns.
+#[test]
+fn runaway_recursion_stops_at_the_depth_limit() {
+    fn one_error(errors: &[String], what: &str) {
+        assert_eq!(errors.len(), 1, "{errors:#?}");
+        assert!(
+            errors[0].contains(what) && errors[0].contains("256"),
+            "{errors:#?}"
+        );
+    }
+    // Under an `if`, even fanning out two ways at every level.
+    let (errors, _) = boot_bounded(
+        "component C(n: int) { box { if n >= 0 { C n: n + 1; C n: n + 1 } } }\nbar B { C n: 0 }\n",
+        |_| Vec::new(),
+    );
+    one_error(&errors, "component `C`");
+    // Through an element that is no component.
+    let (errors, _) = boot_bounded(
+        "component C(n: int) { if n >= 0 { box { C n: n + 1 } } }\nbar B { C n: 0 }\n",
+        |_| Vec::new(),
+    );
+    one_error(&errors, "`box` in component `C`");
+    // In a tooltip: nothing until hovered, then one level per hover.
+    let (errors, later) = boot_bounded(
+        "component C { box { tooltip { C } } }\nbar B { C }\n",
+        |shell| {
+            for _ in 0..300 {
+                let Some(&b) = shell.scene.of_kind(NodeKind::Box).last() else {
+                    break;
+                };
+                shell.inst.set_flag(b, NodeFlag::Hover, true);
+                let u = shell.flush();
+                if !u.errors.is_empty() {
+                    return u.errors.iter().map(|e| e.to_string()).collect();
+                }
+            }
+            Vec::new()
+        },
+    );
+    assert!(errors.is_empty(), "{errors:#?}");
+    one_error(&later, "component `C`");
+    // On a hidden page: nothing; once its page is current, the limit.
+    let (errors, later) = boot_bounded(
+        "enum Pg { a, b }\n\
+         state cur: Pg = b\n\
+         component C { pages current: cur { page a { C }; page b { text \"B\" } } }\n\
+         bar B { box { on click { cur = a } }; C }\n",
+        |shell| {
+            let b = shell.scene.of_kind(NodeKind::Box)[0];
+            shell.inst.event(b, "click", Vec::new());
+            let u = shell.flush();
+            u.errors.iter().map(|e| e.to_string()).collect()
+        },
+    );
+    assert!(errors.is_empty(), "{errors:#?}");
+    one_error(&later, "component `C`");
 }

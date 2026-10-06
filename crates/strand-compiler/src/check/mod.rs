@@ -171,6 +171,36 @@ pub(crate) fn is_whole_literal(e: &ast::Expr) -> bool {
     }
 }
 
+/// The type a whole-number value takes where nothing else fixes it: `int`
+/// for a whole-number literal, `[int]` for a list literal of them (`[1,
+/// 2]`), `[[int]]` for a list of those, and so on. `None` for anything
+/// else, an empty list included.
+pub(crate) fn whole_shape(e: &ast::Expr) -> Option<Ty> {
+    if is_whole_literal(e) {
+        return Some(Ty::INT);
+    }
+    match &e.kind {
+        ast::ExprKind::Paren(inner) => whole_shape(inner),
+        ast::ExprKind::Array(items) => {
+            let mut items = items.iter().map(whole_shape);
+            let first = items.next()??;
+            items
+                .all(|t| t.as_ref() == Some(&first))
+                .then(|| Ty::list(first))
+        }
+        _ => None,
+    }
+}
+
+/// `shape` with its `int`s made `float`s: what a whole-number declaration
+/// becomes once a fraction is written to it.
+fn fractional(shape: &Ty) -> Ty {
+    match shape {
+        Ty::List(t, keyed) => Ty::List(Box::new(fractional(t)), *keyed),
+        _ => Ty::FLOAT,
+    }
+}
+
 /// Tree keywords, offered when an unknown element looks like one
 /// (`whn hover { … }` → `when`).
 pub(crate) const TREE_KEYWORDS: &[&str] = &[
@@ -366,9 +396,10 @@ pub(crate) struct Checker<'a> {
     pub field_base: bool,
     /// `let`s whose value reads nothing that changes (`let c = 1`).
     pub constant_lets: HashSet<DefId>,
-    /// Untyped `state`s and `let`s initialised with a whole number, typed
-    /// `int` this pass (see [`check`]).
-    pub whole: HashSet<DefId>,
+    /// Untyped `state`s and `let`s initialised with a whole number (or a
+    /// list of them), with the type they hold this pass: `int`, `[int]`
+    /// (see [`check`] and [`whole_shape`]).
+    pub whole: HashMap<DefId, Ty>,
     /// Of those, the ones a fraction was written to this pass.
     pub widened: HashSet<(FileId, Span)>,
     /// Whole-number declarations earlier passes found fractions written
@@ -453,7 +484,7 @@ impl<'a> Checker<'a> {
             deep_flows: false,
             field_base: false,
             constant_lets: HashSet::new(),
-            whole: HashSet::new(),
+            whole: HashMap::new(),
             widened: HashSet::new(),
             float_pins: HashSet::new(),
             infer_arg: None,
@@ -777,23 +808,58 @@ impl<'a> Checker<'a> {
     /// pinned it to `float`.
     pub fn whole_hint(&mut self, id: DefId, value: &ast::Expr) -> Option<Ty> {
         let def = &self.defs[id.0 as usize];
-        if !is_whole_literal(value) || self.float_pins.contains(&(def.file, def.span)) {
+        let shape = whole_shape(value)?;
+        if self.float_pins.contains(&(def.file, def.span)) {
             return None;
         }
-        self.whole.insert(id);
-        Some(Ty::INT)
+        self.whole.insert(id, shape.clone());
+        Some(shape)
+    }
+
+    /// The whole-number declaration `target` writes, with the type of
+    /// the part it writes: `i` (`int`), `xs` (`[int]`), `xs[0]` (`int`).
+    fn whole_target(&self, target: &hir::Expr) -> Option<(DefId, Ty)> {
+        match &target.kind {
+            hir::ExprKind::Def(d) => Some((*d, self.whole.get(d)?.clone())),
+            hir::ExprKind::Index { base, .. } => match self.whole_target(base)? {
+                (d, Ty::List(item, _)) => Some((d, *item)),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// The type `value` has before a target's type shaped it: a list
+    /// literal checked against `[int]` has that type even with a fraction
+    /// among its items (each such item is reported), so its items are
+    /// joined again here (`[0.5]` is a `[float]`), for [`Checker::widen`].
+    pub fn written_ty(&self, value: &hir::Expr) -> Ty {
+        let hir::ExprKind::List(items) = &value.kind else {
+            return value.ty.clone();
+        };
+        let mut joined: Option<Ty> = None;
+        for i in items {
+            let t = self.written_ty(i);
+            joined = match joined {
+                None => Some(t),
+                Some(prev) => match self.types.join(&prev, &t) {
+                    Some(j) => Some(j),
+                    None => return value.ty.clone(),
+                },
+            };
+        }
+        joined.map_or_else(|| value.ty.clone(), Ty::list)
     }
 
     /// Writes a value of type `from` into `target`: if `target` is a
-    /// whole-number declaration and `from` is fractional, records it for
-    /// the next pass and returns true (the write is not an error).
+    /// whole-number declaration (or an item of one) and `from` is
+    /// fractional, records it for the next pass and returns true (the
+    /// write is not an error).
     pub fn widen(&mut self, target: &hir::Expr, from: &Ty) -> bool {
-        let hir::ExprKind::Def(d) = target.kind else {
+        let Some((d, shape)) = self.whole_target(target) else {
             return false;
         };
-        if !self.whole.contains(&d)
-            || self.types.assignable(from, &Ty::INT)
-            || !self.types.assignable(from, &Ty::FLOAT)
+        if self.types.assignable(from, &shape) || !self.types.assignable(from, &fractional(&shape))
         {
             return false;
         }
@@ -969,7 +1035,13 @@ impl<'a> Checker<'a> {
     pub fn whole_sources(&self, e: &hir::Expr) -> Vec<DefId> {
         let mut found = Vec::new();
         self.flow_sources(e, &mut found);
-        found.retain(|d| self.whole.contains(d));
+        // Pinned declarations are sources too: `xs = [a]` with `a` pinned
+        // to `float` hands the fraction on through the flow, where the
+        // list item's `int` would only be an error.
+        found.retain(|d| {
+            let def = &self.defs[d.0 as usize];
+            self.whole.contains_key(d) || self.float_pins.contains(&(def.file, def.span))
+        });
         found.sort_unstable_by_key(|d| d.0);
         found.dedup_by_key(|d| d.0);
         found
@@ -988,12 +1060,9 @@ impl<'a> Checker<'a> {
     /// whole-number declarations, a fraction in the source makes the
     /// target fractional too (see [`check`]).
     pub fn record_flow(&mut self, target: &hir::Expr, value: &hir::Expr) {
-        let hir::ExprKind::Def(t) = target.kind else {
+        let Some((t, _)) = self.whole_target(target) else {
             return;
         };
-        if !self.whole.contains(&t) {
-            return;
-        }
         let td = &self.defs[t.0 as usize];
         let tk = (td.file, td.span);
         for s in self.whole_sources(value) {

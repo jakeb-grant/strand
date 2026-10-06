@@ -15,19 +15,32 @@ strand-scene.workspace = true
 strand-services.workspace = true
 strand-surface.workspace = true
 strand-text.workspace = true
+# The last palette and the portal's values written off the logic thread.
+strand-theme.workspace = true
 strand-watch.workspace = true
 calloop = "0.14.5"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 log = { version = "0.4.34", features = ["std"] }
-mimalloc = { version = "0.1.52", default-features = false }
+# `no_thp`: mimalloc v3 madvises its arenas for transparent huge pages,
+# which (THP in `madvise` mode) made 2 MiB pages resident for a few KiB
+# of heap: 55 MB PSS for the design bar instead of about 22 (docs/m2-report.md).
+# With THP in `always` mode the kernel does so unasked: `main` turns THP
+# off for the process (rustix `thread`: `PR_SET_THP_DISABLE`).
+mimalloc = { version = "0.1.52", default-features = false, features = ["no_thp"] }
 libc = "0.2.190"
-rustix = { version = "1.1.5", features = ["event", "time"] }
+rustix = { version = "1.1.5", features = ["event", "thread", "time"] }
 serde_json = "1.0.151"
 
 [dev-dependencies]
+# A mock portal on a private bus (the theme's end-to-end test).
+zbus = { version = "5.19", default-features = false, features = ["tokio"] }
+tokio = { version = "1.53", features = ["rt-multi-thread", "time"] }
+image = { version = "0.25.10", default-features = false, features = ["png"] }
 libmimalloc-sys = { version = "0.1.49", features = ["extended"] }
 wayland-client = "0.31.15"
+wayland-protocols-misc = { version = "0.3.12", features = ["client"] }
 wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
+rustix = { version = "1.1.5", features = ["process"] }
 
 [lints]
 workspace = true

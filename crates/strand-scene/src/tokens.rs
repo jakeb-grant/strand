@@ -11,9 +11,9 @@
 
 use std::borrow::Cow;
 use std::cell::Cell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
-use crate::color::{Color, Oklch};
+use crate::color::{Color, MIN_CONTRAST, Oklch};
 use crate::protocol::{Length, Paint, Prop, PropClass, PropValue, Transition};
 
 /// Deepest chain of token references followed before giving up (a cycle
@@ -150,29 +150,131 @@ pub struct TokenTable {
     pub tokens: BTreeMap<String, PropValue>,
     /// Derived tokens: `fg.muted: $fg.alpha(0.65)`.
     pub derived: BTreeMap<String, TokenExpr>,
+    /// Declared text/background pairs (the contrast guard): a text token
+    /// by path, and the background tokens it is drawn on. Wherever the
+    /// text token is evaluated (the global table's pairs apply in every
+    /// scope, so a palette mid-spring or a `set { }` override is guarded
+    /// too), its OKLCH lightness is solved to keep at least
+    /// [`MIN_CONTRAST`] over each background
+    /// ([`Color::with_contrast`]).
+    pub contrast: BTreeMap<String, Vec<String>>,
+    /// Where each path was defined, for the inspector's provenance
+    /// (`bg ← surface.hi ← base ← palette:wallpaper`): a tier and its
+    /// name (`palette:catppuccin:mocha`, `base`, `tokens compact`,
+    /// `component Toast`). Informational: evaluation never reads it.
+    pub origins: BTreeMap<String, String>,
+    /// Every token evaluated once, as the global scope sees it
+    /// ([`TokenTable::freeze`]).
+    frozen: Frozen,
+}
+
+/// A table's tokens evaluated once in its own scope: what the render
+/// thread works out once per frame (design.md, "each frame the render
+/// thread re-evaluates the small token graph"), so the nodes of the
+/// frame read their tokens instead of evaluating derived chains and
+/// solving contrast per use. A clone of the table does not carry it,
+/// and it never makes two tables differ.
+#[derive(Default)]
+struct Frozen(Option<HashMap<String, PropValue>>);
+
+impl Clone for Frozen {
+    fn clone(&self) -> Self {
+        Frozen(None)
+    }
+}
+
+impl PartialEq for Frozen {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl std::fmt::Debug for Frozen {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.0 {
+            Some(m) => write!(f, "Frozen({} tokens)", m.len()),
+            None => f.write_str("Frozen(none)"),
+        }
+    }
 }
 
 impl TokenTable {
+    /// Records that `path` was defined by `origin` (see
+    /// [`TokenTable::origins`]).
+    pub fn set_origin(&mut self, path: impl Into<String>, origin: impl Into<String>) {
+        self.origins.insert(path.into(), origin.into());
+    }
+
+    /// Where `path` was defined, if recorded.
+    pub fn origin(&self, path: &str) -> Option<&str> {
+        self.origins.get(path).map(String::as_str)
+    }
+
     /// The plain value stored at `path` (not evaluating derived tokens).
     pub fn get(&self, path: &str) -> Option<&PropValue> {
         self.tokens.get(path)
     }
 
+    /// Sets a plain value at `path`, replacing a derived one there.
     pub fn insert(&mut self, path: impl Into<String>, value: PropValue) {
-        self.tokens.insert(path.into(), value);
+        let path = path.into();
+        self.thaw();
+        self.derived.remove(&path);
+        self.tokens.insert(path, value);
     }
 
+    /// Sets a derived token at `path`, replacing a plain one there.
     pub fn insert_derived(&mut self, path: impl Into<String>, expr: TokenExpr) {
-        self.derived.insert(path.into(), expr);
+        let path = path.into();
+        self.thaw();
+        self.tokens.remove(&path);
+        self.derived.insert(path, expr);
     }
 
     pub fn is_empty(&self) -> bool {
         self.tokens.is_empty() && self.derived.is_empty()
     }
 
+    /// Declare that `text` is drawn on `bgs` (see [`TokenTable::contrast`]).
+    pub fn insert_contrast(&mut self, text: impl Into<String>, bgs: Vec<String>) {
+        self.thaw();
+        self.contrast.insert(text.into(), bgs);
+    }
+
     /// Evaluates the token at `path`, plain or derived.
     pub fn lookup(&self, path: &str) -> Option<PropValue> {
         TokenScope::new(&[self]).lookup(path)
+    }
+
+    /// Evaluates every token of the table once, in its own scope, and
+    /// keeps the values: from then on a lookup in a scope whose global
+    /// table this is (and an override's right-hand side that reads it)
+    /// takes the kept value instead of evaluating the token again. The
+    /// render thread freezes the tree's table once per frame while a
+    /// palette springs, and once per `SetTokens` otherwise.
+    ///
+    /// Writing to [`TokenTable::tokens`], [`TokenTable::derived`] or
+    /// [`TokenTable::contrast`] directly afterwards leaves stale values:
+    /// freeze again (or [`TokenTable::thaw`]). The `insert` methods thaw.
+    pub fn freeze(&mut self) {
+        self.frozen = Frozen(None);
+        let mut out = HashMap::with_capacity(self.tokens.len() + self.derived.len());
+        for path in self.tokens.keys().chain(self.derived.keys()) {
+            if let Some(v) = self.lookup(path) {
+                out.insert(path.clone(), v);
+            }
+        }
+        self.frozen = Frozen(Some(out));
+    }
+
+    /// Drops what [`TokenTable::freeze`] kept: lookups evaluate again.
+    pub fn thaw(&mut self) {
+        self.frozen = Frozen(None);
+    }
+
+    /// True while [`TokenTable::freeze`]'s values are kept.
+    pub fn is_frozen(&self) -> bool {
+        self.frozen.0.is_some()
     }
 
     /// Resolves a prop value: token references are evaluated, everything
@@ -186,6 +288,68 @@ impl TokenTable {
     pub fn eval(&self, e: &TokenExpr) -> Option<PropValue> {
         TokenScope::new(&[self]).eval(e)
     }
+}
+
+/// Most solved pairs [`guarded`] remembers before it starts over.
+const GUARD_MEMO: usize = 256;
+
+/// Backgrounds a memo key holds (the palette's widest pair, `$fg` over
+/// the eight surfaces); a pair with more is solved without the memo.
+const GUARD_BGS: usize = 8;
+
+/// A memo key: the text and up to [`GUARD_BGS`] backgrounds as f32 bits,
+/// inline (no allocation on the per-frame path), then how many
+/// backgrounds there are.
+type GuardKey = ([u32; 4 * (GUARD_BGS + 1)], u8);
+
+thread_local! {
+    /// Solved text colours by (text, backgrounds): a frame's text nodes
+    /// share their scope's few pairs, so each pair is solved once per
+    /// frame (once per palette while nothing springs), not once per
+    /// lookup.
+    static GUARD: std::cell::RefCell<std::collections::HashMap<GuardKey, Color>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    /// Solves done (memo misses), for cost tests.
+    static GUARD_SOLVES: Cell<u64> = const { Cell::new(0) };
+}
+
+fn guard_key(text: Color, bgs: &[Color]) -> Option<GuardKey> {
+    if bgs.len() > GUARD_BGS {
+        return None;
+    }
+    let mut key = [0u32; 4 * (GUARD_BGS + 1)];
+    for (i, c) in std::iter::once(&text).chain(bgs).enumerate() {
+        key[i * 4..i * 4 + 4].copy_from_slice(&[c.r, c.g, c.b, c.a].map(f32::to_bits));
+    }
+    Some((key, bgs.len() as u8))
+}
+
+/// `text` solved over `bgs` ([`Color::with_contrast`]), memoised.
+fn guarded(text: Color, bgs: &[Color]) -> Color {
+    let key = guard_key(text, bgs);
+    if let Some(k) = &key
+        && let Some(c) = GUARD.with(|m| m.borrow().get(k).copied())
+    {
+        return c;
+    }
+    GUARD_SOLVES.with(|n| n.set(n.get() + 1));
+    let solved = text.with_contrast(bgs, MIN_CONTRAST);
+    if let Some(k) = key {
+        GUARD.with(|m| {
+            let mut m = m.borrow_mut();
+            if m.len() >= GUARD_MEMO {
+                m.clear();
+            }
+            m.insert(k, solved);
+        });
+    }
+    solved
+}
+
+/// How many contrast solves this thread has done (the memo's misses).
+#[doc(hidden)]
+pub fn guard_solves() -> u64 {
+    GUARD_SOLVES.with(Cell::get)
 }
 
 /// A chain of token tables: the global table sent by
@@ -212,23 +376,48 @@ pub struct TokenScope<'a> {
 /// The design's whole token graph is about 100 operations.
 pub const MAX_TOKEN_STEPS: u32 = 10_000;
 
-/// Remaining work for one resolution.
-struct Budget(Cell<u32>);
+/// Remaining work for one resolution, and whether the contrast guard
+/// is on (it is off while it evaluates a pair's backgrounds: one level).
+struct Budget {
+    left: Cell<u32>,
+    guarding: Cell<bool>,
+}
 
 impl Budget {
     fn new() -> Self {
-        Self(Cell::new(MAX_TOKEN_STEPS))
+        Self {
+            left: Cell::new(MAX_TOKEN_STEPS),
+            guarding: Cell::new(true),
+        }
     }
 
     /// Takes one step; false once the budget is spent.
     fn step(&self) -> bool {
-        let left = self.0.get();
+        let left = self.left.get();
         if left == 0 {
             return false;
         }
-        self.0.set(left - 1);
+        self.left.set(left - 1);
         true
     }
+}
+
+thread_local! {
+    /// Steps the last public entry point took (tests).
+    static LAST_STEPS: Cell<u32> = const { Cell::new(0) };
+}
+
+impl Drop for Budget {
+    fn drop(&mut self) {
+        LAST_STEPS.with(|s| s.set(MAX_TOKEN_STEPS - self.left.get()));
+    }
+}
+
+/// How many steps the last finished `lookup`/`resolve`/`eval` on this
+/// thread took (cost tests).
+#[doc(hidden)]
+pub fn last_token_steps() -> u32 {
+    LAST_STEPS.with(Cell::get)
 }
 
 impl<'a> TokenScope<'a> {
@@ -277,6 +466,14 @@ impl<'a> TokenScope<'a> {
             {
                 t
             }
+            // A shell with no `motion` tokens still animates with the
+            // design's springs (decisions.md, wave3-pixels).
+            None => match path {
+                "motion.spatial" => Transition::of_spring(crate::motion::SPATIAL),
+                "motion.effects" => Transition::of_spring(crate::motion::EFFECTS),
+                "motion.bouncy" => Transition::of_spring(crate::motion::BOUNCY),
+                _ => Transition::Instant,
+            },
             _ => Transition::Instant,
         }
     }
@@ -320,6 +517,15 @@ impl<'a> TokenScope<'a> {
         if depth > MAX_TOKEN_DEPTH || !budget.step() {
             return None;
         }
+        // The global scope of a frozen table reads the kept values (not
+        // while the guard evaluates a pair's backgrounds: those are read
+        // unguarded, one level).
+        if let [only] = self.levels
+            && budget.guarding.get()
+            && let Some(kept) = &only.frozen.0
+        {
+            return kept.get(path).cloned();
+        }
         for (i, table) in self.levels.iter().enumerate().rev() {
             // Overrides see their parent scope; global derived tokens see
             // the scope of whoever asks.
@@ -328,14 +534,67 @@ impl<'a> TokenScope<'a> {
             } else {
                 TokenScope::new(&self.levels[..i])
             };
-            if let Some(v) = table.tokens.get(path) {
-                return scope.resolve_in(v, depth + 1, budget).map(Cow::into_owned);
-            }
-            if let Some(e) = table.derived.get(path) {
-                return scope.eval_in(e, depth + 1, None, budget);
-            }
+            let v = if let Some(v) = table.tokens.get(path) {
+                scope.resolve_in(v, depth + 1, budget).map(Cow::into_owned)
+            } else if let Some(e) = table.derived.get(path) {
+                scope.eval_in(e, depth + 1, None, budget)
+            } else {
+                continue;
+            };
+            return self.guard(path, v, depth, budget);
         }
         None
+    }
+
+    /// The contrast guard: a declared text token keeps [`MIN_CONTRAST`]
+    /// over its backgrounds, as evaluated in this scope.
+    fn guard(
+        &self,
+        path: &str,
+        v: Option<PropValue>,
+        depth: u32,
+        budget: &Budget,
+    ) -> Option<PropValue> {
+        let Some(PropValue::Color(text)) = v else {
+            return v;
+        };
+        if !budget.guarding.get() {
+            return v;
+        }
+        let Some(bgs) = self.levels.first().and_then(|t| t.contrast.get(path)) else {
+            return v;
+        };
+        // The backgrounds as they are, unguarded: a background derived
+        // from a guarded text token (`$bg.mix($fg, 4%)`) reads it once,
+        // not through another guard per level.
+        budget.guarding.set(false);
+        let mut inline = [Color::BLACK; GUARD_BGS];
+        let mut n = 0;
+        let mut more: Vec<Color> = Vec::new();
+        for b in bgs.iter().filter(|b| b.as_str() != path) {
+            // A translucent background shows what is under it; only
+            // opaque ones can be judged.
+            if let Some(PropValue::Color(c)) = self.eval_ref(b, depth + 1, budget)
+                && c.a >= 1.0
+            {
+                if n < GUARD_BGS && more.is_empty() {
+                    inline[n] = c;
+                    n += 1;
+                } else {
+                    if more.is_empty() {
+                        more.extend_from_slice(&inline[..n]);
+                    }
+                    more.push(c);
+                }
+            }
+        }
+        budget.guarding.set(true);
+        let bgs = if more.is_empty() {
+            &inline[..n]
+        } else {
+            &more[..]
+        };
+        Some(PropValue::Color(guarded(text, bgs)))
     }
 
     fn eval_in(
@@ -455,11 +714,10 @@ fn shift_l(c: Color, d: f32) -> Color {
     Color::from_oklch(lch)
 }
 
-/// Brings a derived colour back into sRGB. M0 clips per channel; the
-/// chroma-reducing gamut mapping design asks for lands with the M2 token
-/// evaluator.
+/// Brings a derived colour back into sRGB by lowering OKLCH chroma
+/// (CSS Color 4 gamut mapping, [`Color::gamut_mapped`]).
 fn gamut_map(c: Color) -> Color {
-    c.clamped()
+    c.gamut_mapped()
 }
 
 #[cfg(test)]
@@ -658,10 +916,11 @@ mod tests {
             s.transition(&Transition::Token("motion.bouncy".into()), Prop::Width),
             bouncy
         );
-        // No $motion.effects token, fonts snap, unknown tokens snap.
+        // No $motion.effects token: the design's spring; fonts snap,
+        // unknown tokens snap.
         assert_eq!(
             s.transition(&Transition::Default, Prop::Bg),
-            Transition::Instant
+            Transition::of_spring(crate::motion::EFFECTS)
         );
         assert_eq!(
             s.transition(&Transition::Default, Prop::Font),
@@ -790,6 +1049,227 @@ mod tests {
         assert_eq!(t.lookup("n1"), Some(PropValue::Number(64.0)));
     }
 
+    /// Every method, exactly: `alpha` sets alpha, `mix` interpolates in
+    /// premultiplied OKLab (a percentage is a fraction), `lighten` and
+    /// `darken` move OKLCH lightness, `oklch(from …)` does channel
+    /// arithmetic; results are gamut-mapped into sRGB.
+    #[test]
+    fn methods_evaluate_exactly() {
+        let mut t = TokenTable::default();
+        let accent = Color::from_hex("#7aa2f7").unwrap();
+        t.insert("accent", PropValue::Color(accent));
+        t.insert("fg", PropValue::Color(Color::WHITE));
+        let call = |m, args| TokenExpr::path("accent").call(m, args);
+        let n = |v: f32| TokenExpr::value(PropValue::Number(v));
+        let eval = |e: TokenExpr| match t.eval(&e) {
+            Some(PropValue::Color(c)) => c,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            eval(call(TokenMethod::Alpha, vec![n(0.22)])),
+            accent.with_alpha(0.22)
+        );
+        let pct = TokenExpr::value(PropValue::Length(Length::Percent(8.0)));
+        assert_eq!(
+            eval(call(TokenMethod::Mix, vec![TokenExpr::path("fg"), pct])),
+            accent.lerp_oklab(Color::WHITE, 0.08).gamut_mapped()
+        );
+        // Lightness lands within the gamut mapper's just-noticeable
+        // difference (ΔEOK 0.02) of the asked value.
+        let l = accent.to_oklch().l;
+        let lighter = eval(call(TokenMethod::Lighten, vec![n(0.1)]));
+        assert!(
+            (lighter.to_oklch().l - (l + 0.1)).abs() < 0.02,
+            "{lighter:?}"
+        );
+        let darker = eval(call(TokenMethod::Darken, vec![n(0.1)]));
+        assert!((darker.to_oklch().l - (l - 0.1)).abs() < 0.02, "{darker:?}");
+        assert!(lighter.in_gamut(1e-6) && darker.in_gamut(1e-6));
+        // Lightening past white is white, not a clipped tint.
+        assert_eq!(eval(call(TokenMethod::Lighten, vec![n(2.0)])), Color::WHITE);
+        // oklch(from $accent, c: c * 4): far out of gamut, mapped back
+        // keeping lightness and hue.
+        let vivid = eval(TokenExpr::OklchFrom {
+            base: Box::new(TokenExpr::path("accent")),
+            l: None,
+            c: Some(Box::new(TokenExpr::Binary {
+                op: BinOp::Mul,
+                lhs: Box::new(TokenExpr::Channel(Channel::C)),
+                rhs: Box::new(n(4.0)),
+            })),
+            h: None,
+            alpha: None,
+        });
+        assert!(vivid.in_gamut(1e-6));
+        let (a, v) = (accent.to_oklch(), vivid.to_oklch());
+        assert!((v.l - a.l).abs() < 0.02 && (v.h - a.h).abs() < 3.0, "{v:?}");
+        assert!(v.c > a.c);
+    }
+
+    #[test]
+    fn declared_pairs_keep_their_contrast_in_every_scope() {
+        let mut t = TokenTable::default();
+        let surface = Color::from_hex("#1e1e2e").unwrap();
+        t.insert("surface", PropValue::Color(surface));
+        // Too dark to read on the surface.
+        t.insert("fg", PropValue::Color(Color::from_hex("#303040").unwrap()));
+        t.insert_contrast("fg", vec!["surface".into()]);
+        let PropValue::Color(fg) = t.lookup("fg").unwrap() else {
+            panic!()
+        };
+        assert!(
+            fg.contrast(surface) >= MIN_CONTRAST,
+            "{}",
+            fg.contrast(surface)
+        );
+        // Derived tokens see the guarded value.
+        t.insert_derived(
+            "fg.muted",
+            TokenExpr::path("fg").call(
+                TokenMethod::Alpha,
+                vec![TokenExpr::value(PropValue::Number(0.65))],
+            ),
+        );
+        assert_eq!(
+            t.lookup("fg.muted"),
+            Some(PropValue::Color(fg.with_alpha(0.65)))
+        );
+        // A subtree that lightens the surface gets darker text.
+        let mut set = TokenTable::default();
+        set.insert(
+            "surface",
+            PropValue::Color(Color::from_hex("#c0c0d0").unwrap()),
+        );
+        let levels = [&t, &set];
+        let PropValue::Color(inner) = TokenScope::new(&levels).lookup("fg").unwrap() else {
+            panic!()
+        };
+        assert!(inner.contrast(Color::from_hex("#c0c0d0").unwrap()) >= MIN_CONTRAST);
+        // A pair that already passes is untouched.
+        t.insert("fg", PropValue::Color(Color::WHITE));
+        assert_eq!(t.lookup("fg"), Some(PropValue::Color(Color::WHITE)));
+    }
+
+    /// Backgrounds derived from the guarded text token itself
+    /// (`override surface: $bg.mix($fg, 4%)` on all eight surfaces) are
+    /// evaluated with the guard off: one level, a bounded step count, and
+    /// the answer still reaches the minimum over them.
+    #[test]
+    fn backgrounds_derived_from_guarded_text_are_one_level() {
+        let hex = |h| Color::from_hex(h).unwrap();
+        let surfaces = [
+            "surface",
+            "surface.dim",
+            "surface.bright",
+            "surface.lowest",
+            "surface.low",
+            "surface.container",
+            "surface.high",
+            "surface.highest",
+        ];
+        let mut t = TokenTable::default();
+        t.insert("bg", PropValue::Color(hex("#2a2a3a")));
+        // Too dark to read on the surfaces.
+        t.insert("fg", PropValue::Color(hex("#3a3a4a")));
+        for (i, s) in surfaces.iter().enumerate() {
+            t.insert_derived(
+                *s,
+                TokenExpr::path("bg").call(
+                    TokenMethod::Mix,
+                    vec![
+                        TokenExpr::path("fg"),
+                        TokenExpr::value(PropValue::Number(0.04 + i as f32 * 0.01)),
+                    ],
+                ),
+            );
+        }
+        t.insert_contrast("fg", surfaces.iter().map(|s| s.to_string()).collect());
+        let PropValue::Color(fg) = t.lookup("fg").unwrap() else {
+            panic!()
+        };
+        let steps = last_token_steps();
+        assert!(steps < 100, "{steps} steps");
+        // Each surface lookup reads `$fg` guarded (as a node would).
+        for s in surfaces {
+            let PropValue::Color(bg) = t.lookup(s).unwrap() else {
+                panic!()
+            };
+            assert!(last_token_steps() < 200, "{s}: {}", last_token_steps());
+            // Solved over the backgrounds as derived from the raw `$fg`;
+            // the surface as a node sees it moves by at most a few
+            // percent of the text's change, still far above the minimum.
+            assert!(
+                fg.contrast(bg) >= MIN_CONTRAST * 0.9,
+                "{s}: {}",
+                fg.contrast(bg)
+            );
+        }
+    }
+
+    /// A light↔dark swap, frame by frame: 50 text nodes evaluate `$fg`
+    /// and `$fg.muted` against eight surfaces each frame. Each frame
+    /// solves the pair once (the memo), whatever the node count, and a
+    /// frame stays far inside design.md's 5 ms swap budget.
+    #[test]
+    fn a_swap_frame_solves_each_pair_once() {
+        let hex = |h| Color::from_hex(h).unwrap();
+        let (light_s, dark_s) = (hex("#fbf8ff"), hex("#121318"));
+        let (light_f, dark_f) = (hex("#1a1b20"), hex("#e3e1e9"));
+        let surfaces = [
+            "surface",
+            "surface.dim",
+            "surface.bright",
+            "surface.lowest",
+            "surface.low",
+            "surface.container",
+            "surface.high",
+            "surface.highest",
+        ];
+        let frames = 60;
+        let mut worst = std::time::Duration::ZERO;
+        for f in 0..=frames {
+            let t = f as f32 / frames as f32;
+            let mut table = TokenTable::default();
+            for (i, s) in surfaces.iter().enumerate() {
+                let c = light_s.lerp_oklab(dark_s, t);
+                table.insert(*s, PropValue::Color(shift_l(c, i as f32 * 0.01)));
+            }
+            table.insert("fg", PropValue::Color(light_f.lerp_oklab(dark_f, t)));
+            table.insert_derived(
+                "fg.muted",
+                TokenExpr::path("fg").call(
+                    TokenMethod::Alpha,
+                    vec![TokenExpr::value(PropValue::Number(0.65))],
+                ),
+            );
+            table.insert_contrast("fg", surfaces.iter().map(|s| s.to_string()).collect());
+            let before = guard_solves();
+            let start = std::time::Instant::now();
+            let levels = [&table];
+            for _ in 0..50 {
+                let scope = TokenScope::new(&levels);
+                let Some(PropValue::Color(fg)) = scope.lookup("fg") else {
+                    panic!()
+                };
+                assert!(
+                    fg.contrast(table.get("surface").and_then(color).unwrap())
+                        >= MIN_CONTRAST - 1e-6
+                );
+                assert!(scope.lookup("fg.muted").is_some());
+            }
+            worst = worst.max(start.elapsed());
+            assert!(
+                guard_solves() - before <= 1,
+                "frame {f}: {} solves",
+                guard_solves() - before
+            );
+        }
+        eprintln!("worst swap frame: {worst:?}");
+        if !cfg!(debug_assertions) {
+            assert!(worst < std::time::Duration::from_millis(5), "{worst:?}");
+        }
+    }
+
     #[test]
     fn snap_props_never_animate() {
         let t = table();
@@ -805,5 +1285,52 @@ mod tests {
             Transition::Instant
         );
         assert_eq!(s.transition(&spring, Prop::Width), spring);
+    }
+
+    /// A frozen table answers every lookup of its global scope with the
+    /// values it evaluated once (one step each, the same values), an
+    /// override's right-hand side reads them too while derived tokens
+    /// inside the override's scope still follow it, a clone is not
+    /// frozen, and an `insert` thaws.
+    #[test]
+    fn a_frozen_table_is_read_not_evaluated() {
+        let mut t = table();
+        t.insert_contrast("fg", vec!["surface".into(), "surface.hi".into()]);
+        let plain: Vec<(String, Option<PropValue>)> = t
+            .tokens
+            .keys()
+            .chain(t.derived.keys())
+            .map(|p| (p.clone(), t.lookup(p)))
+            .collect();
+        t.freeze();
+        assert!(t.is_frozen());
+        for (p, v) in &plain {
+            assert_eq!(&t.lookup(p), v, "{p}");
+            assert_eq!(last_token_steps(), 1, "{p}: read, not evaluated");
+        }
+        assert_eq!(t.lookup("nope"), None);
+        // An override: its own expression reads the frozen global value;
+        // the global derived `surface.hi` is evaluated in its scope.
+        let mut over = TokenTable::default();
+        over.insert(
+            "surface",
+            PropValue::Token(TokenExpr::path("surface").call(
+                TokenMethod::Mix,
+                vec![
+                    TokenExpr::path("fg"),
+                    TokenExpr::value(PropValue::Number(0.5)),
+                ],
+            )),
+        );
+        let thawed = t.clone();
+        assert!(!thawed.is_frozen());
+        for path in ["surface", "surface.hi", "fg", "border"] {
+            let frozen = TokenScope::new(&[&t, &over]).lookup(path);
+            let fresh = TokenScope::new(&[&thawed, &over]).lookup(path);
+            assert_eq!(frozen, fresh, "{path} under the override");
+        }
+        t.insert("surface", PropValue::Color(Color::WHITE));
+        assert!(!t.is_frozen());
+        assert_eq!(t.lookup("surface"), Some(PropValue::Color(Color::WHITE)));
     }
 }

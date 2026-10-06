@@ -156,6 +156,9 @@ pub enum SystemSetting {
     Accent(Option<[f64; 3]>),
     /// `system.contrast`: `contrast` (0 normal, 1 high).
     Contrast(Contrast),
+    /// `system.reduced_motion`: `reduced-motion` (0 no preference, 1
+    /// reduce).
+    ReducedMotion(bool),
 }
 
 impl SystemSetting {
@@ -165,6 +168,7 @@ impl SystemSetting {
             SystemSetting::Dark { .. } => "system.dark",
             SystemSetting::Accent(_) => "system.accent",
             SystemSetting::Contrast(_) => "system.contrast",
+            SystemSetting::ReducedMotion(_) => "system.reduced_motion",
         }
     }
 }

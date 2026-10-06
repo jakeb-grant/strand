@@ -26,12 +26,22 @@ fn stops(a: &str, b: &str) -> Vec<GradientStop> {
 
 fn shapes_scene() -> SceneDiff {
     let mut b = Builder::default();
-    let root = b.node(NodeKind::Panel, None, vec![(Prop::Bg, color("#1e1e2e"))]);
-    // Rounded card with a soft shadow.
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Bg, color("#1e1e2e")),
+            (Prop::Width, num(240.0)),
+            (Prop::Height, num(140.0)),
+        ],
+    );
+    // Rounded card with a soft shadow, placed by coordinates (its
+    // shadow's reach counts from there).
     b.node(
         NodeKind::Box,
         Some(root),
         vec![
+            (Prop::Place, PropValue::Keyword("absolute".into())),
             (Prop::X, num(16.0)),
             (Prop::Y, num(16.0)),
             (Prop::Width, num(64.0)),
@@ -250,7 +260,6 @@ fn bar_scene() -> SceneDiff {
         Some(root),
         vec![
             (Prop::X, num(150.0)),
-            (Prop::Y, num(10.0)),
             (Prop::Width, num(100.0)),
             (Prop::Align, PropValue::Keyword("center".into())),
             (Prop::Text, text("Sat 04  12:59")),

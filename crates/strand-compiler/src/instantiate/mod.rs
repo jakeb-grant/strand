@@ -63,7 +63,17 @@ pub(crate) struct Frag {
     pub parked: Vec<FragId>,
     pub scene: Option<NodeId>,
     pub scope: Option<Scope>,
+    /// Element and component levels above and including this fragment
+    /// (see [`MAX_MOUNT_DEPTH`]).
+    pub depth: u32,
 }
+
+/// How many elements and components may nest at run time: the parser's
+/// tree-depth bound. A component that keeps mounting itself (through an
+/// `if`, a `match`, a `for` or an on-demand element, which the static
+/// cycle check lets through) stops here with a located error instead of
+/// hanging or exhausting memory.
+pub const MAX_MOUNT_DEPTH: u32 = 256;
 
 /// Which node flag render reports.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -213,6 +223,20 @@ pub(crate) struct Ctx {
     pub handover: RefCell<Vec<String>>,
     /// Runtime faults outlined in red: the node and the border it had.
     pub outlined: RefCell<HashMap<NodeId, Option<PropValue>>>,
+    /// Props naming a node not on the scene yet when they were bound
+    /// (`nav: results` above the `list { id: results }`): set at the end
+    /// of the tick, once everything is mounted.
+    pub late_nodes: RefCell<Vec<(NodeId, SceneProp, Rc<NodeState>)>>,
+    /// Components that hit [`MAX_MOUNT_DEPTH`] in the mount in progress:
+    /// not mounted again until it returns, so a recursion that fans out
+    /// (`C` mounting two `C`s) costs one path to the cap, not 2^256.
+    pub runaway: RefCell<std::collections::HashSet<DefId>>,
+    /// Element mounts in progress on the stack (0 between mounts).
+    pub mounting: Cell<u32>,
+    /// Reload keys of the cells a closed popup's content kept (the
+    /// `state`s of components in it) while the content is unmounted:
+    /// they are bound again, values and all, when it opens.
+    pub closed: RefCell<std::collections::HashSet<Rc<str>>>,
 }
 
 impl VmHooks for Ctx {
@@ -351,34 +375,76 @@ impl Ctx {
         false
     }
 
+    /// The built-in palette: `material(seed: system.accent ?? #7aa2f7,
+    /// dark: system.dark, contrast: system.contrast)`.
+    fn default_palette(&self, rt: &Runtime) -> Result<strand_theme::Palette, Error> {
+        let host = &self.vm.host;
+        let dark = host.read(rt, "system", "dark")?.truthy();
+        let seed = match host.read(rt, "system", "accent")? {
+            Value::Color(c) => c,
+            _ => Color::from_hex(DEFAULT_SEED).unwrap_or(Color::BLACK),
+        };
+        let contrast = match host.read(rt, "system", "contrast")? {
+            Value::Num(n, _) => n,
+            _ => 0.0,
+        };
+        Ok(strand_theme::from_seed(
+            seed,
+            strand_theme::Options {
+                dark,
+                contrast,
+                ..Default::default()
+            },
+        )
+        .with_source("built-in"))
+    }
+
     fn token_table(self: &Rc<Self>, rt: &Runtime) -> Result<TokenTable, Error> {
         let prog = self.vm.prog.clone();
         let types = &prog.types;
         let root = self.vm.root.clone();
-        let mut t = TokenTable::default();
+        // The built-in theme's base tokens under everything: a config
+        // with no theme file (the hello bar) is themed, and a theme that
+        // defines only some base tokens keeps the rest.
+        let mut t = strand_theme::defaults::base_tokens();
         let palette = match prog.use_palette {
-            Some(c) => self.vm.eval(rt, c, &root)?,
-            None => {
-                let dark = self.vm.host.read(rt, "system", "dark")?.truthy();
-                let seed = Color::from_hex(DEFAULT_SEED).unwrap_or(Color::BLACK);
-                Value::Palette(Rc::new(crate::vm::palette_material(seed, dark)))
-            }
+            // A palette that fails (an imported file with a syntax error)
+            // is reported, and the last good one holds.
+            Some(c) => self.vm.eval(rt, c, &root).unwrap_or_else(|err| {
+                self.error("use palette", err);
+                Value::Null
+            }),
+            None => Value::Palette(Rc::new(self.default_palette(rt)?)),
         };
         let palette = match palette {
             Value::Async(a) => a.usable().cloned().unwrap_or(Value::Null),
             v => v,
         };
-        if let Value::Palette(p) = &palette {
-            for (role, c) in &p.roles {
-                t.insert(role.as_str(), PropValue::Color(*c));
+        let theme = self.vm.theme();
+        match &palette {
+            Value::Palette(p) => {
+                p.insert_into(&mut t);
+                if let Some(theme) = &theme {
+                    theme.remember_palette(p);
+                }
             }
+            // Failed, or still loading with no fallback: the last good
+            // palette (this run's, or persisted by the last), else the
+            // built-in one, rather than no colours at all.
+            _ => match theme.and_then(|t| t.last_palette()) {
+                Some(p) => p.insert_into(&mut t),
+                None => self.default_palette(rt)?.insert_into(&mut t),
+            },
         }
         // Component token defaults (`$Toast.radius`) before the sets, so
         // a set's `override Toast.radius` replaces them.
         for c in prog.components.values() {
             for e in &c.tokens {
                 match self.vm.eval(rt, e.value, &root) {
-                    Ok(v) => convert::token_entry(types, &mut t, &e.path, &e.ty, &v),
+                    Ok(v) => {
+                        convert::token_entry(types, &mut t, &e.path, &e.ty, &v);
+                        t.set_origin(e.path.clone(), format!("component {}", c.name));
+                    }
                     Err(err) => self.error(format!("token `${}`", e.path), err),
                 }
             }
@@ -405,7 +471,10 @@ impl Ctx {
             };
             for e in &s.entries {
                 match self.vm.eval(rt, e.value, &root) {
-                    Ok(v) => convert::token_entry(types, &mut t, &e.path, &e.ty, &v),
+                    Ok(v) => {
+                        convert::token_entry(types, &mut t, &e.path, &e.ty, &v);
+                        t.set_origin(e.path.clone(), format!("tokens {}", s.name));
+                    }
                     Err(err) => self.error(format!("token `${}`", e.path), err),
                 }
             }
@@ -452,6 +521,10 @@ impl Ctx {
             carry: RefCell::default(),
             pending: RefCell::default(),
             parked: RefCell::default(),
+            late_nodes: RefCell::default(),
+            runaway: RefCell::default(),
+            mounting: Cell::new(0),
+            closed: RefCell::default(),
             handover: RefCell::default(),
             outlined: RefCell::default(),
         });
@@ -526,6 +599,13 @@ impl Storage {
         }
     }
 
+    /// Where wallpaper seeds are cached: `palettes` beside the persist
+    /// store (`$XDG_STATE_HOME/strand/palettes`); `None` without one.
+    pub fn palette_dir(&self) -> Option<PathBuf> {
+        let p = self.persist.as_ref()?;
+        Some(p.dir().parent()?.join("palettes"))
+    }
+
     /// A settings file's path: `~/…` from `$HOME`, absolute as is, else
     /// relative to the config directory.
     pub fn resolve(&self, file: &str) -> Option<PathBuf> {
@@ -537,6 +617,46 @@ impl Storage {
             return Some(p);
         }
         self.config_dir.as_ref().map(|d| d.join(p))
+    }
+}
+
+/// A value of type `ty` written as text (`strand set`).
+fn parse_text(types: &crate::ty::TypeTable, ty: &crate::ty::Ty, text: &str) -> Option<Value> {
+    use crate::ty::{Prim, Ty};
+    use crate::vm::Num;
+    if let Ty::Optional(inner) = ty {
+        return if text == "null" {
+            Some(Value::Null)
+        } else {
+            parse_text(types, inner, text)
+        };
+    }
+    let number = |t: &str, suffix: &str| t.strip_suffix(suffix)?.trim().parse::<f64>().ok();
+    match ty {
+        Ty::Enum(e) => types.enum_(*e).variant(text).map(|v| Value::Enum(*e, v)),
+        Ty::Prim(p) => Some(match p {
+            Prim::Bool => match text {
+                "true" => Value::Bool(true),
+                "false" => Value::Bool(false),
+                _ => return None,
+            },
+            Prim::Int => Value::int(text.parse::<i64>().ok()?),
+            Prim::Float => Value::float(text.parse::<f64>().ok()?),
+            Prim::Length => match number(text, "px") {
+                Some(n) => Value::Num(n, Num::Px),
+                None => Value::Num(text.parse::<f64>().ok()?, Num::Px),
+            },
+            Prim::Percent => Value::Num(number(text, "%")?, Num::Percent),
+            Prim::Angle => Value::Num(number(text, "deg")?, Num::Deg),
+            Prim::Duration => match number(text, "ms") {
+                Some(n) => Value::Num(n, Num::Ms),
+                None => Value::Num(number(text, "s")? * 1000.0, Num::Ms),
+            },
+            Prim::Color => Value::Color(strand_scene::Color::from_hex(text)?),
+            Prim::Text | Prim::Path => Value::text(text),
+            _ => return None,
+        }),
+        _ => None,
     }
 }
 
@@ -553,7 +673,7 @@ pub(crate) const SETTINGS_PRUNE_MIN: usize = 16;
 
 /// The seed of the palette a config without `use palette` gets: the
 /// design's default accent.
-pub const DEFAULT_SEED: &str = "#7aa2f7";
+pub const DEFAULT_SEED: &str = strand_theme::defaults::DEFAULT_SEED;
 
 /// A program running on a runtime. See the module docs.
 pub struct Instance {
@@ -614,13 +734,13 @@ impl Instance {
             host.declare(rt, name, *record);
         }
         let warnings = program.warnings.clone();
-        let ctx = Ctx::create(
-            Vm::new(program, host),
-            Emitter::default(),
-            storage,
-            identity,
-            hashes,
-        );
+        let vm = Vm::new(program, host);
+        vm.set_theme(crate::vm::theme::ThemeHost::new(
+            rt,
+            storage.palette_dir(),
+            storage.config_dir.clone(),
+        ));
+        let ctx = Ctx::create(vm, Emitter::default(), storage, identity, hashes);
         // Lowering's warnings (a frozen time signal), once, in the boot
         // tick.
         ctx.notices
@@ -700,7 +820,10 @@ impl Instance {
                     .flat_map(|c| c.tokens.iter().map(|e| e.value)),
             )
             .collect();
-        let system = ctx.vm.host.sources(&rt, "system", Some("dark"));
+        let system: Vec<_> = ["dark", "accent", "contrast"]
+            .into_iter()
+            .flat_map(|f| ctx.vm.host.sources(&rt, "system", Some(f)))
+            .collect();
         ctx.declare_reads(&rt, memo.id(), &chunks, &root_env, &system);
         if fresh {
             match memo.get_untracked(&rt) {
@@ -766,8 +889,12 @@ impl Instance {
             host.stop(&rt, name);
         }
         let em = Emitter::continuing(&old.em.borrow());
+        let vm = Vm::new(build.program.clone(), host);
+        if let Some(t) = old.vm.theme() {
+            vm.set_theme(t);
+        }
         let ctx = Ctx::create(
-            Vm::new(build.program.clone(), host),
+            vm,
             em,
             old.storage.clone(),
             Some(build.identity.clone()),
@@ -963,8 +1090,12 @@ impl Instance {
                 host.stop(&self.rt, &name);
             }
         }
+        let vm = Vm::new(build.program.clone(), host);
+        if let Some(t) = self.ctx.vm.theme() {
+            vm.set_theme(t);
+        }
         let ctx = Ctx::create(
-            Vm::new(build.program.clone(), host),
+            vm,
             em,
             storage,
             Some(build.identity.clone()),
@@ -1012,7 +1143,78 @@ impl Instance {
         self.collect(tick)
     }
 
+    /// Tells render which elements' laid-out sizes bindings read
+    /// (`Prop::Watch`): it reports only those, and holds a frame for a
+    /// container query's answer. An element not on the scene yet is
+    /// told once it is.
+    fn emit_watched(&self) {
+        let watched = self.ctx.vm.take_watched();
+        if watched.is_empty() {
+            return;
+        }
+        let mut later = Vec::new();
+        let mut em = self.ctx.em.borrow_mut();
+        let mut seen = std::collections::HashSet::new();
+        for state in watched {
+            if !seen.insert(Rc::as_ptr(&state)) {
+                continue;
+            }
+            let Some(id) = state.scene.get() else {
+                // Kept while something else still holds it.
+                if Rc::strong_count(&state) > 1 {
+                    later.push(state);
+                }
+                continue;
+            };
+            let ours = em
+                .nodes
+                .get(&id)
+                .is_some_and(|e| Rc::ptr_eq(&e.state, &state));
+            if !ours {
+                continue;
+            }
+            let kw = if state.watch.get() & NodeState::WATCH_QUERY != 0 {
+                "query"
+            } else {
+                "size"
+            };
+            em.set(
+                id,
+                SceneProp::Watch,
+                PropValue::Keyword(kw.into()),
+                Transition::Instant,
+            );
+        }
+        drop(em);
+        for s in later {
+            self.ctx.vm.watch(&s, 0);
+        }
+    }
+
     fn collect(&self, tick: strand_core::Tick) -> Update {
+        // Props naming a node not on the scene when bound (`nav:
+        // results`): set once it is, which may be ticks later (inside an
+        // `if` that turns true). Kept while the naming node lives and its
+        // prop is still unset.
+        let late: Vec<_> = self.ctx.late_nodes.borrow_mut().drain(..).collect();
+        let mut waiting = Vec::new();
+        for (id, prop, state) in late {
+            let mut em = self.ctx.em.borrow_mut();
+            let unset = em
+                .sent
+                .get(&id)
+                .and_then(|p| p.get(&prop))
+                .is_none_or(|v| *v == PropValue::Unset);
+            if !em.nodes.contains_key(&id) || !unset {
+                continue;
+            }
+            match state.scene.get() {
+                Some(target) => em.set(id, prop, PropValue::Node(target), Transition::Default),
+                None if Rc::strong_count(&state) > 1 => waiting.push((id, prop, state)),
+                None => {}
+            }
+        }
+        self.ctx.late_nodes.borrow_mut().extend(waiting);
         let mut new_tokens = None;
         for id in &tick.changed {
             if self.tokens.is_some_and(|t| t.id() == *id) {
@@ -1021,6 +1223,7 @@ impl Instance {
             }
             self.emit_binding(*id);
         }
+        self.emit_watched();
         let mut ops = std::mem::take(&mut self.ctx.em.borrow_mut().ops);
         if let Some(table) = new_tokens {
             ops.push(SceneOp::SetTokens {
@@ -1039,7 +1242,10 @@ impl Instance {
         }
         self.ctx.vm.clear_faults();
         Update {
-            diff: SceneDiff { ops },
+            diff: SceneDiff {
+                ops,
+                ..SceneDiff::default()
+            },
             errors,
             diagnostics: tick.diagnostics,
             notices: self.ctx.notices.borrow_mut().drain(..).collect(),
@@ -1147,6 +1353,7 @@ impl Instance {
             .get(&node)
             .map(|e| e.state.clone());
         if let Some(s) = state {
+            s.laid_out.set(true);
             let _ = s.width.set(&self.rt, Value::float(width as f64));
             let _ = s.height.set(&self.rt, Value::float(height as f64));
         }
@@ -1236,6 +1443,33 @@ impl Instance {
             .write_place(&self.rt, &place, Vec::new(), &root, value)
     }
 
+    /// `strand set theme.look mocha`: [`Instance::set`] with the value
+    /// written as text and read by the target's type: an enum variant by
+    /// name, `true`/`false`, a number (`int`, `float`, `px`, `%`, `deg`,
+    /// `ms`/`s`), a `#rrggbb` colour, text and paths as given, `null` for
+    /// an optional value.
+    pub fn set_text(&self, path: &str, text: &str) -> Result<(), Error> {
+        let (d, rest) = self.export(path)?;
+        let prog = self.ctx.vm.prog.clone();
+        let mut ty = prog.def(d).ty.clone();
+        for f in &rest {
+            let field = match ty.non_null() {
+                crate::ty::Ty::Record(r) => prog
+                    .types
+                    .record(*r)
+                    .fields
+                    .iter()
+                    .find(|x| x.name == *f)
+                    .map(|x| x.ty.clone()),
+                _ => None,
+            };
+            ty = field.ok_or_else(|| Error::failed(format!("`{path}` has no field `{f}`")))?;
+        }
+        let value = parse_text(&prog.types, &ty, text.trim())
+            .ok_or_else(|| Error::failed(format!("`{text}` is not a {}", prog.types.show(&ty))))?;
+        self.set(path, value)
+    }
+
     /// The exported declaration a `file.name[.field…]` path starts with,
     /// and the fields after it.
     fn export(&self, path: &str) -> Result<(DefId, Vec<String>), Error> {
@@ -1252,7 +1486,36 @@ impl Instance {
                 return Ok((d, parts[n..].iter().map(|s| s.to_string()).collect()));
             }
         }
-        Err(Error::failed(format!("nothing is exported as `{path}`")))
+        // Settings files are user-facing whether exported or not:
+        // `theme.prefs.compact`, or `prefs.compact` when one file has a
+        // settings `prefs` (design.md: `strand set prefs.compact true`).
+        let settings = |module: Option<&str>, name: &str| -> Vec<DefId> {
+            prog.defs
+                .iter()
+                .enumerate()
+                .filter(|(_, d)| {
+                    d.kind == DefKind::Settings
+                        && d.owner.is_none()
+                        && d.name == name
+                        && module.is_none_or(|m| d.module == m)
+                })
+                .map(|(i, _)| DefId(i as u32))
+                .collect()
+        };
+        let rest = |from: usize| parts[from..].iter().map(|s| s.to_string()).collect();
+        if parts.len() >= 2
+            && let [d] = settings(Some(parts[0]), parts[1])[..]
+        {
+            return Ok((d, rest(2)));
+        }
+        match settings(None, parts[0])[..] {
+            [d] => Ok((d, rest(1))),
+            [] => Err(Error::failed(format!("nothing is exported as `{path}`"))),
+            _ => Err(Error::failed(format!(
+                "more than one file has settings `{}`: name it as `<file>.{path}`",
+                parts[0]
+            ))),
+        }
     }
 
     /// Function values the VM called so far ([`crate::vm::Vm::calls`]).
@@ -1446,6 +1709,58 @@ impl Instance {
         any
     }
 
+    /// The files the theme reads, for the watcher: wallpapers given to
+    /// `material(image:)` (their link targets are watched too) and files
+    /// given to `import(…)`.
+    pub fn theme_files(&self) -> (Vec<PathBuf>, Vec<PathBuf>) {
+        self.ctx.vm.theme().map(|t| t.files()).unwrap_or_default()
+    }
+
+    /// Whether [`Instance::theme_files`] grew since the last call (a
+    /// wallpaper path changed at run time).
+    pub fn take_theme_files_changed(&self) -> bool {
+        self.ctx.vm.theme().is_some_and(|t| t.take_files_changed())
+    }
+
+    /// The watcher saw these files change: palettes read from them are
+    /// made again (a wallpaper re-quantised only if its content changed;
+    /// the old palette holds meanwhile). Returns whether any was read.
+    pub fn theme_files_changed(&self, paths: &[PathBuf]) -> bool {
+        self.ctx
+            .vm
+            .theme()
+            .is_some_and(|t| t.files_changed(&self.rt, paths))
+    }
+
+    /// The instance's theme host (tests: wait for wallpaper jobs).
+    pub fn theme(&self) -> Option<Rc<crate::vm::theme::ThemeHost>> {
+        self.ctx.vm.theme()
+    }
+
+    /// `[clear]` on "file changed but runtime overlay wins": drop the
+    /// runtime overlay of `field` in the settings file `file` (as its
+    /// notice names it), so the file's value applies. Returns whether a
+    /// mounted file had that field.
+    pub fn clear_settings_overlay(&self, file: &str, field: &str) -> bool {
+        let slots: Vec<_> = self
+            .ctx
+            .settings
+            .borrow()
+            .iter()
+            .filter_map(std::rc::Weak::upgrade)
+            .collect();
+        let mut done = false;
+        for s in slots {
+            if let Some(h) = &s.handle
+                && (h.path().to_string_lossy() == file
+                    || h.overlay_path().to_string_lossy() == file)
+            {
+                done |= h.clear_overlay(&self.rt, field).is_ok();
+            }
+        }
+        done
+    }
+
     /// The settings files the mounted program reads (for the watcher).
     pub fn settings_files(&self) -> Vec<PathBuf> {
         let mut out: Vec<PathBuf> = self
@@ -1461,11 +1776,64 @@ impl Instance {
         out
     }
 
+    /// The runtime overlay files of the mounted handles on the settings
+    /// file `path` (what their overlay notices name).
+    pub fn settings_overlay_paths(&self, path: &std::path::Path) -> Vec<PathBuf> {
+        let mut out: Vec<PathBuf> = self
+            .ctx
+            .settings
+            .borrow()
+            .iter()
+            .filter_map(std::rc::Weak::upgrade)
+            .filter_map(|s| {
+                let h = s.handle.as_ref()?;
+                (h.path() == path).then(|| h.overlay_path().to_path_buf())
+            })
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// What reading each settings file the mounted program reads takes
+    /// (one per file), for the watcher's thread: it reads a changed file
+    /// there and hands the read to [`Instance::reload_settings_with`],
+    /// so a slow or hung home directory never stalls a frame.
+    pub fn settings_sources(&self) -> Vec<strand_core::SettingsSources> {
+        let mut out: Vec<strand_core::SettingsSources> = Vec::new();
+        for s in self
+            .ctx
+            .settings
+            .borrow()
+            .iter()
+            .filter_map(std::rc::Weak::upgrade)
+        {
+            if let Some(h) = &s.handle
+                && !out.iter().any(|o| o.path() == h.path())
+            {
+                out.push(h.sources());
+            }
+        }
+        out.sort_by(|a, b| a.path().cmp(b.path()));
+        out
+    }
+
     /// The watcher saw `path` change: every mounted handle on it re-reads
     /// it (core's `Settings::reload`: each field checked on its own, a
     /// syntax error keeps the last good values). Returns whether one
-    /// was mounted.
+    /// was mounted. Reads on this thread; `strand run` reads on the
+    /// watcher's ([`Instance::reload_settings_with`]).
     pub fn reload_settings(&self, path: &std::path::Path) -> bool {
+        self.reload_settings_with(path, None)
+    }
+
+    /// [`Instance::reload_settings`] with the file already read
+    /// elsewhere (`SettingsSources::read`); `None` reads it here.
+    pub fn reload_settings_with(
+        &self,
+        path: &std::path::Path,
+        read: Option<strand_core::SettingsRead>,
+    ) -> bool {
         let slots: Vec<_> = self
             .ctx
             .settings
@@ -1478,7 +1846,10 @@ impl Instance {
             if let Some(h) = &s.handle
                 && h.path() == path
             {
-                h.reload(&self.rt);
+                match &read {
+                    Some(r) => h.reload_with(&self.rt, r.clone()),
+                    None => h.reload(&self.rt),
+                }
                 any = true;
             }
         }

@@ -1272,10 +1272,7 @@ impl Wl {
         let mut mgr = SurfaceManager::with_connection(conn, host, Config::default()).unwrap();
         let handle = mgr.loop_handle();
         handle
-            .insert_source(ping_source, |_, _, state| {
-                state.host_mut().renderer.update();
-                state.poll();
-            })
+            .insert_source(ping_source, |_, _, state| crate::demo::text_ready(state))
             .unwrap();
         let (fwd, inbox) = std::sync::mpsc::channel();
         handle
@@ -1430,6 +1427,7 @@ impl Shell {
             worker: Some(wrx),
             jobs: Some(worker.jobs()),
             socket: Some(socket.clone()),
+            portal: None,
         };
         let (to_logic, from_main) = calloop::channel::channel();
         to_logic.send(ToLogic::Screens(screens())).unwrap();

@@ -19,9 +19,9 @@ pub(crate) mod builtins;
 pub mod clock;
 mod exec;
 pub mod host;
-mod palette;
 pub mod persist;
 pub mod schema_host;
+pub mod theme;
 pub mod value;
 
 use std::cell::{Cell, RefCell};
@@ -334,6 +334,8 @@ impl Env {
             selected: rt.signal(false),
             width: rt.signal(Value::float(0.0)),
             height: rt.signal(Value::float(0.0)),
+            watch: Cell::new(0),
+            laid_out: Cell::new(false),
         };
         // The flags live as long as the scope that owns the element, even
         // when a binding (a memo) is what first asks for them.
@@ -358,9 +360,15 @@ pub struct Vm {
     /// The longest frame or closure capture seen ([`Vm::peak_frame`]).
     peak: Cell<usize>,
     hooks: RefCell<Option<std::rc::Weak<dyn VmHooks>>>,
+    /// `material(image:)` and file imports (the instance's, kept across
+    /// reloads); without one those read nothing.
+    theme: RefCell<Option<Rc<theme::ThemeHost>>>,
     /// Where errors raised since the last [`Vm::clear_faults`] came from:
     /// the failing op's file and span.
     faults: RefCell<std::collections::VecDeque<(Error, FileId, Span)>>,
+    /// Elements whose laid-out size a binding read since the last
+    /// [`Vm::take_watched`]: the instance tells render to report them.
+    watched: RefCell<Vec<Rc<NodeState>>>,
 }
 
 /// Faults remembered between two [`Vm::clear_faults`] (a tick's worth).
@@ -391,7 +399,9 @@ impl Vm {
             calls: Cell::new(0),
             peak: Cell::new(0),
             hooks: RefCell::new(None),
+            theme: RefCell::new(None),
             faults: RefCell::default(),
+            watched: RefCell::default(),
         })
     }
 
@@ -418,6 +428,21 @@ impl Vm {
             .map(|(_, f, s)| (*f, *s))
     }
 
+    /// Notes that a binding read `node`'s laid-out size (`bits`:
+    /// [`NodeState::WATCH_SIZE`] or [`NodeState::WATCH_QUERY`]).
+    pub(crate) fn watch(&self, node: &Rc<NodeState>, bits: u8) {
+        let had = node.watch.get();
+        node.watch.set(had | bits);
+        // Every read is noted, not only the first: a remount or reload
+        // may have dropped what render was told.
+        self.watched.borrow_mut().push(node.clone());
+    }
+
+    /// Elements whose laid-out size was read since the last call.
+    pub fn take_watched(&self) -> Vec<Rc<NodeState>> {
+        std::mem::take(&mut *self.watched.borrow_mut())
+    }
+
     /// Forget noted faults (the instance does after reporting a tick).
     pub fn clear_faults(&self) {
         self.faults.borrow_mut().clear();
@@ -427,6 +452,16 @@ impl Vm {
     /// VM).
     pub fn set_hooks(&self, hooks: std::rc::Weak<dyn VmHooks>) {
         *self.hooks.borrow_mut() = Some(hooks);
+    }
+
+    /// Give the VM its theme host (`material(image:)`, file imports).
+    pub fn set_theme(&self, theme: Rc<theme::ThemeHost>) {
+        *self.theme.borrow_mut() = Some(theme);
+    }
+
+    /// The theme host, if the VM has one.
+    pub fn theme(&self) -> Option<Rc<theme::ThemeHost>> {
+        self.theme.borrow().clone()
     }
 
     pub(crate) fn hooks(&self) -> Option<Rc<dyn VmHooks>> {
@@ -641,10 +676,4 @@ impl Vm {
             .map(|(i, l)| (l.name.clone(), LocalId(i as u32)))
             .collect()
     }
-}
-
-/// `material(seed:, dark:)` with the default variant: the palette a
-/// config without `use palette` gets.
-pub fn palette_material(seed: strand_scene::Color, dark: bool) -> value::Palette {
-    palette::material(seed, "tonal_spot", dark, 0.0)
 }

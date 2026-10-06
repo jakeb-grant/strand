@@ -55,6 +55,7 @@ pub(crate) enum CellRec {
     /// collection, keyed again by the new program).
     Keyed {
         holder: Scope,
+        keyed: strand_core::KeyedSignal<crate::vm::value::ValueKey, Value>,
         list: strand_core::Memo<Value>,
         default: Value,
         ty: String,
@@ -70,7 +71,7 @@ pub(crate) enum CellRec {
 }
 
 impl CellRec {
-    fn holder(&self) -> Scope {
+    pub(crate) fn holder(&self) -> Scope {
         match self {
             CellRec::Plain { holder, .. }
             | CellRec::Keyed { holder, .. }
@@ -333,6 +334,8 @@ impl Ctx {
                         .is_some_and(|c| c.holder().id() == holder)
                     {
                         reg.cells.remove(&key);
+                        // Kept for a closed popup that went for good.
+                        ctx.closed.borrow_mut().remove(&key);
                     }
                 }
             });

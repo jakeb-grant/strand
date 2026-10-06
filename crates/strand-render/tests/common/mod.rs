@@ -97,6 +97,26 @@ impl Buffer {
         r.paint(surface, &mut t)
     }
 
+    /// Paints the frame presented at `time` (springs sample it).
+    pub fn paint_at(
+        &mut self,
+        r: &mut Renderer,
+        surface: SurfaceId,
+        age: u8,
+        time: std::time::Duration,
+    ) -> Damage {
+        let t = PaintTarget::new(
+            &mut self.pixels,
+            self.size,
+            self.size.w * 4,
+            self.scale,
+            age,
+        )
+        .unwrap();
+        let mut t = t.at(time);
+        r.paint(surface, &mut t)
+    }
+
     /// Premultiplied BGRA of pixel (x, y).
     pub fn px(&self, x: u32, y: u32) -> [u8; 4] {
         let i = ((y * self.size.w + x) * 4) as usize;

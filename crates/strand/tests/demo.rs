@@ -13,6 +13,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+mod support;
+use support::{keyboard, pointer};
+
 struct Proc(Child);
 
 impl Drop for Proc {
@@ -153,6 +156,29 @@ fn switches(pid: u32) -> u64 {
     total
 }
 
+/// Context switches per thread of `pid`, by `tid comm`.
+fn per_thread(pid: u32) -> std::collections::BTreeMap<String, u64> {
+    let mut out = std::collections::BTreeMap::new();
+    for task in std::fs::read_dir(format!("/proc/{pid}/task")).unwrap() {
+        let path = task.unwrap().path();
+        let name = format!(
+            "{} {}",
+            path.file_name().unwrap().to_string_lossy(),
+            std::fs::read_to_string(path.join("comm"))
+                .unwrap_or_default()
+                .trim()
+        );
+        let status = std::fs::read_to_string(path.join("status")).unwrap_or_default();
+        let n = status
+            .lines()
+            .filter(|l| l.contains("ctxt_switches:"))
+            .filter_map(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
+            .sum();
+        out.insert(name, n);
+    }
+    out
+}
+
 fn seconds_into_minute() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -185,6 +211,69 @@ fn pss_limit() -> (u64, &'static str) {
         (DEBUG_PSS_CEILING_KB, "debug ceiling")
     } else {
         (PSS_GATE_KB, "M0 gate")
+    }
+}
+
+/// What a PSS failure needs to be read on a machine we cannot log into:
+/// the rollup, the process's THP state, the system's THP modes and the
+/// largest mappings.
+fn memory_report(pid: u32) -> String {
+    let read = |p: &str| std::fs::read_to_string(p).unwrap_or_else(|e| format!("{p}: {e}\n"));
+    let mut out = read(&format!("/proc/{pid}/smaps_rollup"));
+    out.extend(
+        read(&format!("/proc/{pid}/status"))
+            .lines()
+            .filter(|l| l.starts_with("THP") || l.starts_with("Vm") || l.starts_with("Rss"))
+            .map(|l| format!("{l}\n")),
+    );
+    let thp = "/sys/kernel/mm/transparent_hugepage";
+    out.push_str(&format!(
+        "{thp}/enabled: {}",
+        read(&format!("{thp}/enabled"))
+    ));
+    if let Ok(dir) = std::fs::read_dir(thp) {
+        for e in dir.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with("hugepages-") {
+                let mode = read(&format!("{thp}/{name}/enabled"));
+                out.push_str(&format!("{name}: {mode}"));
+            }
+        }
+    }
+    // The ten mappings with the most PSS.
+    let smaps = read(&format!("/proc/{pid}/smaps"));
+    let mut maps: Vec<(u64, String)> = Vec::new();
+    let mut head = String::new();
+    for l in smaps.lines() {
+        if l.split_whitespace()
+            .next()
+            .is_some_and(|w| w.contains('-') && !w.ends_with(':'))
+        {
+            head = l.to_string();
+        } else if let Some(v) = l.strip_prefix("Pss:") {
+            let kb = v
+                .split_whitespace()
+                .next()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            maps.push((kb, head.clone()));
+        }
+    }
+    maps.sort_by_key(|m| std::cmp::Reverse(m.0));
+    for (kb, m) in maps.iter().take(10) {
+        out.push_str(&format!("{kb:>7} kB  {m}\n"));
+    }
+    out
+}
+
+/// strand turns transparent huge pages off for itself (`main`): THP in
+/// `always` mode otherwise fills mimalloc's arenas with 2 MiB pages.
+fn assert_thp_off(pid: u32) {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
+    let line = status.lines().find(|l| l.starts_with("THP_enabled:"));
+    // Kernels before 6.x have no such line; nothing to check there.
+    if let Some(l) = line {
+        assert_eq!(l.split_whitespace().nth(1), Some("0"), "THP is on: {l}");
     }
 }
 
@@ -347,10 +436,15 @@ fn demo_bar_on_two_outputs_then_idle() {
     Shot::take(&sway, "HEADLESS-2").assert_aligned("HEADLESS-2", 1.25);
 
     // The memory gate, on the two-monitor bar.
+    assert_thp_off(pid);
     let pss = pss_kb(pid);
     let (limit, what) = pss_limit();
     eprintln!("strand PSS with two 2560x1440 bars: {pss} kB ({what} {limit} kB)");
-    assert!(pss <= limit, "PSS {pss} kB over the {limit} kB {what}");
+    assert!(
+        pss <= limit,
+        "PSS {pss} kB over the {limit} kB {what}\n{}",
+        memory_report(pid)
+    );
 
     // Idle: no thread of the process wakes. Skip a window that would
     // contain a minute boundary (the clock tick is the one wakeup).
@@ -403,6 +497,172 @@ fn demo_bar_on_two_outputs_then_idle() {
     Shot::take(&sway, "HEADLESS-1").assert_aligned("HEADLESS-1", 1.0);
     Shot::take(&sway, "HEADLESS-2").assert_aligned("HEADLESS-2", 1.25);
     drop(strand);
+}
+
+/// The M0 budget on design.md's own bar (theme.strand and bar.strand,
+/// unchanged, on the mock desktop with the real clock), not the M0 demo:
+/// two 2560x1440 outputs at 1.0 and 1.25 within the 34 MB PSS gate (in a
+/// release run; the debug ceiling otherwise); once boot work is done, no
+/// thread waking from then (by :45) to :57 of the minute (no idle-cache
+/// or other timer of its own: the next wake is the minute tick); and the
+/// tick itself repainting at most 2,000 px² over both outputs. Several
+/// whole minutes are measured by `scripts/m2-exit.sh`.
+#[test]
+fn the_design_bar_keeps_the_m0_budget() {
+    let Some(sway) = Sway::start_as("budget") else {
+        return;
+    };
+    sway.msg(&["create_output"]).unwrap();
+    sway.msg(&[
+        "output",
+        "HEADLESS-2",
+        "resolution",
+        "2560x1440",
+        "position",
+        "2560",
+        "0",
+        "scale",
+        "1.25",
+    ])
+    .unwrap();
+    // The config outside /tmp: the watcher's light watches on its
+    // ancestors would wake for other tests' directories coming and going
+    // there (a desktop's ~/.config has no such neighbours).
+    let home =
+        Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("budget-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let config = home.join(".config/strand");
+    std::fs::create_dir_all(&config).unwrap();
+    for (name, text) in [
+        (
+            "theme.strand",
+            include_str!("../../strand-compiler/tests/fixtures/theme.strand"),
+        ),
+        (
+            "bar.strand",
+            include_str!("../../strand-compiler/tests/fixtures/bar.strand"),
+        ),
+    ] {
+        std::fs::write(config.join(name), text).unwrap();
+    }
+    let log = sway.dir.join("strand.log");
+    let child = Command::new(env!("CARGO_BIN_EXE_strand"))
+        .arg("run")
+        .arg(&config)
+        .env("HOME", &home)
+        .env("XDG_RUNTIME_DIR", &sway.dir)
+        .env("XDG_CACHE_HOME", sway.dir.join("cache"))
+        .env("XDG_STATE_HOME", sway.dir.join("state"))
+        .env("WAYLAND_DISPLAY", &sway.display)
+        .env("STRAND_MOCK", "desktop")
+        .env("STRAND_LOG", "damage")
+        .env_remove("DBUS_SESSION_BUS_ADDRESS")
+        .stdin(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    let mut strand = Proc(child);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while damage_lines(&log).len() < 2 {
+        assert!(
+            strand.0.try_wait().unwrap().is_none(),
+            "strand exited: {}",
+            std::fs::read_to_string(&log).unwrap_or_default()
+        );
+        assert!(Instant::now() < deadline, "bars did not paint");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // Boot work done (late icons and glyphs, a loaded machine): a whole
+    // second with no wakeup and no frame, early enough in the minute
+    // that the window below ends before the next tick.
+    let deadline = Instant::now() + Duration::from_secs(90);
+    loop {
+        let (f, w) = (damage_lines(&log).len(), switches(pid));
+        std::thread::sleep(Duration::from_secs(1));
+        if damage_lines(&log).len() == f && switches(pid) == w {
+            if seconds_into_minute() <= 45 {
+                break;
+            }
+            // Past the tick, then settle again.
+            std::thread::sleep(Duration::from_secs(63 - seconds_into_minute()));
+        }
+        assert!(Instant::now() < deadline, "boot never settled");
+    }
+    // Measured once boot work is done and the bar is idle (the steady
+    // state the M0 gate is about): a loaded runner can still be decoding
+    // icons or shaping late text 1.5 s in.
+    assert_thp_off(pid);
+    let pss = pss_kb(pid);
+    // A debug build of the whole language path carries about 25 MB more
+    // than release (49 against 14–27 MB here): its own ceiling.
+    let (limit, what) = if cfg!(debug_assertions) {
+        (64 * 1024, "debug ceiling")
+    } else {
+        pss_limit()
+    };
+    eprintln!("design bar PSS on two 2560x1440 outputs: {pss} kB ({what} {limit} kB)");
+    assert!(
+        pss <= limit,
+        "PSS {pss} kB over the {limit} kB {what}\n{}",
+        memory_report(pid)
+    );
+    // Then nothing until :57 (at least 12 s).
+    let frames = damage_lines(&log).len();
+    let before = switches(pid);
+    let threads = per_thread(pid);
+    std::thread::sleep(Duration::from_secs(57 - seconds_into_minute()));
+    let after = switches(pid);
+    let woke: Vec<String> = per_thread(pid)
+        .into_iter()
+        .filter(|(t, n)| threads.get(t) != Some(n))
+        .map(|(t, n)| format!("{t}: {} -> {n}", threads.get(&t).copied().unwrap_or(0)))
+        .collect();
+    assert_eq!(after - before, 0, "woke while idle: {woke:?}");
+    assert_eq!(damage_lines(&log).len(), frames, "painted while idle");
+    // The minute tick: both clocks repaint, at most 2,000 px² in all.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while damage_lines(&log).len() < frames + 2 {
+        assert!(Instant::now() < deadline, "the clocks did not tick");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    std::thread::sleep(Duration::from_secs(2));
+    let tick = &damage_lines(&log)[frames..];
+    let area: u64 = tick
+        .iter()
+        .filter_map(|l| {
+            l.split(" area=")
+                .nth(1)?
+                .split_whitespace()
+                .next()?
+                .parse::<u64>()
+                .ok()
+        })
+        .sum();
+    eprintln!(
+        "the minute tick: {} frames, {area} px²: {tick:?}",
+        tick.len()
+    );
+    // The day change (local 00:00, and 00:01 whose age-2 buffer still
+    // holds the old day) moves the centred clock: it repaints whole, the
+    // documented midnight exception (decisions.md, wave3-pixels exit fixer
+    // r3; `damage.rs::the_midnight_tick_damages_only_the_centred_clock`).
+    let now = std::process::Command::new("date")
+        .arg("+%H%M")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    let gate = if now == "0000" || now == "0001" {
+        4000
+    } else {
+        2000
+    };
+    assert!(
+        area <= gate,
+        "a tick at {now} repainted {area} px²: {tick:?}"
+    );
+    drop(strand);
+    let _ = std::fs::remove_dir_all(&home);
 }
 
 /// `strand run <dir>` on the hello bar of the design: the compiled config,
@@ -517,75 +777,710 @@ fn strand_run_boots_the_hello_bar_on_every_output() {
     drop(strand);
 }
 
-/// A virtual pointer on the sway seat (`zwlr_virtual_pointer_v1`): the
-/// headless seat has no pointer of its own.
-mod pointer {
-    use std::os::unix::net::UnixStream;
-    use std::path::Path;
-
-    use wayland_client::globals::{GlobalListContents, registry_queue_init};
-    use wayland_client::protocol::{wl_pointer, wl_registry};
-    use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
-    use wayland_protocols_wlr::virtual_pointer::v1::client::{
-        zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1,
-        zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
+/// The bar of design.md (theme + bar, unchanged) on the mock desktop,
+/// laid out by flex layout: workspace dots and the window title at the
+/// start, the clock truly centred on the output, the battery at the end;
+/// its shadow grows the layer surface past its box while the exclusive
+/// zone still reserves margin + height (8 + 36). Set `STRAND_SHOTS` to a
+/// directory to keep the screenshot.
+#[test]
+fn the_design_bar_is_laid_out_start_centre_end() {
+    let Some(sway) = Sway::start_as("design") else {
+        return;
     };
+    let home = sway.dir.join("home");
+    let config = home.join(".config/strand");
+    std::fs::create_dir_all(&config).unwrap();
+    for (name, text) in [
+        (
+            "theme.strand",
+            include_str!("../../strand-compiler/tests/fixtures/theme.strand"),
+        ),
+        (
+            "bar.strand",
+            include_str!("../../strand-compiler/tests/fixtures/bar.strand"),
+        ),
+    ] {
+        std::fs::write(config.join(name), text).unwrap();
+    }
+    let log = sway.dir.join("strand.log");
+    let child = Command::new(env!("CARGO_BIN_EXE_strand"))
+        .arg("run")
+        .arg(&config)
+        .env("HOME", &home)
+        .env("XDG_RUNTIME_DIR", &sway.dir)
+        .env("XDG_CACHE_HOME", sway.dir.join("cache"))
+        .env("XDG_STATE_HOME", sway.dir.join("state"))
+        .env("WAYLAND_DISPLAY", &sway.display)
+        .env("STRAND_MOCK", "desktop")
+        .env("STRAND_MOCK_SCREEN", "HEADLESS-1")
+        .env("STRAND_LOG", "damage")
+        .stdin(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .spawn()
+        .unwrap();
+    let mut strand = Proc(child);
+    // `shadow: $elevation.md` (0 2px 8px) reaches 13 px: 11 above the
+    // box, 15 below, 13 each side; the margins move out by as much.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !damage_lines(&log)
+        .iter()
+        .any(|l| l.contains("buffer=2570x62 "))
+    {
+        assert!(
+            strand.0.try_wait().unwrap().is_none(),
+            "strand exited: {}",
+            std::fs::read_to_string(&log).unwrap_or_default()
+        );
+        assert!(
+            Instant::now() < deadline,
+            "no 2570x62 bar: {}",
+            std::fs::read_to_string(&log).unwrap_or_default()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    std::thread::sleep(Duration::from_millis(700));
+    // The exclusive zone: windows start below margin + height.
+    let ws = sway.msg(&["-t", "get_workspaces"]).unwrap();
+    let ws: serde_json::Value = serde_json::from_str(&ws).unwrap();
+    assert_eq!(ws[0]["rect"]["y"], 44, "{ws}");
+    let shot = Shot::take(&sway, "HEADLESS-1");
+    if let Some(dir) = std::env::var_os("STRAND_SHOTS") {
+        sway.grim(
+            &["-g", "0,0 2560x70"],
+            &PathBuf::from(dir).join("design_bar.png"),
+        );
+    }
+    // Text and dots are dark on the light bar (the mock has no portal:
+    // light scheme).
+    // Inside the bar's box (8..2552 × 8..44), clear of its rounded ends.
+    let dark =
+        |x: usize| (14..38).any(|y| shot.px(x, y).iter().map(|c| *c as u32).sum::<u32>() < 300);
+    let cols: Vec<usize> = (16..shot.w - 16).filter(|&x| dark(x)).collect();
+    assert!(!cols.is_empty(), "nothing drawn on the bar");
+    // The clock: the dark run nearest the output's centre.
+    let mid = shot.w / 2;
+    let (mut l, mut r) = (mid, mid);
+    while l > 0 && (l - 60..l).any(&dark) {
+        l -= 1;
+    }
+    while r < shot.w - 1 && (r..r + 60).any(&dark) {
+        r += 1;
+    }
+    let centre = (l + r) as f64 / 2.0;
+    assert!(
+        (centre - mid as f64).abs() <= 3.0 && r - l > 40,
+        "clock ink {l}..{r} is not centred on {mid}"
+    );
+    // Start: the dots and title begin at margin + pad (8 + 12); end: the
+    // tray icon (the mock's `network-wireless`, 16 px) ends at margin and
+    // pad: 2560 - 8 - 12.
+    let first = cols[0];
+    let last = *cols.last().unwrap();
+    assert!((18..40).contains(&first), "start ink at {first}");
+    assert!(
+        (shot.w - 26..=shot.w - 18).contains(&last),
+        "end ink at {last}"
+    );
+    // Nothing between the title and the clock, or the clock and the end.
+    assert!(!(700..l - 1).any(&dark), "ink between start and centre");
+    assert!(!(r + 1..1950).any(&dark), "ink between centre and end");
+    let errors: Vec<String> = std::fs::read_to_string(&log)
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.contains("ERROR") || l.contains("WARN"))
+        .map(String::from)
+        .collect();
+    assert!(errors.is_empty(), "{errors:?}");
+    drop(strand);
+}
 
-    pub struct Client;
-    impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Client {
-        fn event(
-            _: &mut Self,
-            _: &wl_registry::WlRegistry,
-            _: wl_registry::Event,
-            _: &GlobalListContents,
-            _: &Connection,
-            _: &QueueHandle<Self>,
-        ) {
+/// The four design shells booted together (theme, bar, launcher, toasts
+/// and OSD, unchanged but for the launcher starting open) on the mock
+/// desktop: every surface paints at one size (no frame at an estimated
+/// size first, however the surfaces' text and configures interleave),
+/// the launcher's box is centred in the usable area below the bar
+/// although its shadow reaches further down than up, a click inside it
+/// keeps it open and a click on the bar (outside the usable area its
+/// click-away catcher covers) closes it.
+#[test]
+fn the_design_launcher_is_centred_and_closes_on_click_away() {
+    let Some(sway) = Sway::start_as("launcher") else {
+        return;
+    };
+    let home = sway.dir.join("home");
+    let config = home.join(".config/strand");
+    std::fs::create_dir_all(&config).unwrap();
+    let launcher = include_str!("../../strand-compiler/tests/fixtures/launcher.strand")
+        .replace("export state open = false", "export state open = true");
+    for (name, text) in [
+        (
+            "theme.strand",
+            include_str!("../../strand-compiler/tests/fixtures/theme.strand").to_string(),
+        ),
+        (
+            "bar.strand",
+            include_str!("../../strand-compiler/tests/fixtures/bar.strand").to_string(),
+        ),
+        ("launcher.strand", launcher),
+        (
+            "toasts.strand",
+            include_str!("../../strand-compiler/tests/fixtures/toasts.strand").to_string(),
+        ),
+        (
+            "osd.strand",
+            include_str!("../../strand-compiler/tests/fixtures/osd.strand").to_string(),
+        ),
+    ] {
+        std::fs::write(config.join(name), text).unwrap();
+    }
+    let log = sway.dir.join("strand.log");
+    let child = Command::new(env!("CARGO_BIN_EXE_strand"))
+        .arg("run")
+        .arg(&config)
+        .env("HOME", &home)
+        .env("XDG_RUNTIME_DIR", &sway.dir)
+        .env("XDG_CACHE_HOME", sway.dir.join("cache"))
+        .env("XDG_STATE_HOME", sway.dir.join("state"))
+        .env("WAYLAND_DISPLAY", &sway.display)
+        .env("STRAND_MOCK", "desktop")
+        .env("STRAND_MOCK_SCREEN", "HEADLESS-1")
+        .env("STRAND_LOG", "damage")
+        .stdin(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .spawn()
+        .unwrap();
+    let mut strand = Proc(child);
+    // Two surfaces painted: the bar and the launcher.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let surfaces = |log: &Path| -> std::collections::BTreeMap<String, Vec<String>> {
+        let mut m: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+        for l in damage_lines(log) {
+            let mut it = l.split_whitespace();
+            let s = it
+                .find(|w| w.starts_with("surface="))
+                .unwrap_or("")
+                .to_string();
+            let b = l
+                .split_whitespace()
+                .find(|w| w.starts_with("buffer="))
+                .unwrap_or("")
+                .to_string();
+            m.entry(s).or_default().push(b);
         }
+        m
+    };
+    while surfaces(&log).len() < 3 {
+        assert!(
+            strand.0.try_wait().unwrap().is_none(),
+            "strand exited: {}",
+            std::fs::read_to_string(&log).unwrap_or_default()
+        );
+        assert!(
+            Instant::now() < deadline,
+            "no launcher: {}",
+            std::fs::read_to_string(&log).unwrap_or_default()
+        );
+        std::thread::sleep(Duration::from_millis(50));
     }
-    delegate_noop!(Client: ignore ZwlrVirtualPointerManagerV1);
-    delegate_noop!(Client: ignore ZwlrVirtualPointerV1);
-
-    pub struct Pointer {
-        _conn: Connection,
-        queue: EventQueue<Client>,
-        pointer: ZwlrVirtualPointerV1,
-        time: u32,
+    std::thread::sleep(Duration::from_millis(700));
+    // Every frame of each surface at one buffer size: no frame at an
+    // estimated size before its text arrived.
+    for (s, sizes) in surfaces(&log) {
+        // (On failure, the whole log: which frame painted early, and
+        // what arrived after it.)
+        assert!(
+            sizes.iter().all(|b| *b == sizes[0]),
+            "{s} changed size: {sizes:?}\n{}",
+            std::fs::read_to_string(&log).unwrap_or_default()
+        );
     }
+    let bright_in =
+        |s: &Shot, x: usize, y: usize| s.px(x, y).iter().map(|c| *c as u32).sum::<u32>() > 450;
+    // Its `enter { opacity: 0; scale: 0.96 }` settled: two shots alike
+    // (its box's rows and its colour at their middle) a moment apart.
+    let settled = |x: usize| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut last = None;
+        loop {
+            let s = Shot::take(&sway, "HEADLESS-1");
+            let rows: Vec<usize> = (60..s.h).filter(|&y| bright_in(&s, x, y)).collect();
+            let key = rows
+                .first()
+                .zip(rows.last())
+                .map(|(&t, &b)| (t, b, s.px(x, (t + b) / 2)));
+            if key.is_some() && key == last {
+                return s;
+            }
+            assert!(Instant::now() < deadline, "the launcher never settled");
+            last = key;
+            std::thread::sleep(Duration::from_millis(150));
+        }
+    };
+    let shot = settled(Shot::take(&sway, "HEADLESS-1").w / 2 + 250);
+    let bright = |x: usize, y: usize| bright_in(&shot, x, y);
+    // The launcher's box on a column clear of its text: its light rows
+    // below the bar.
+    let x = shot.w / 2 + 250;
+    let rows: Vec<usize> = (60..shot.h).filter(|&y| bright(x, y)).collect();
+    assert!(!rows.is_empty(), "no launcher drawn");
+    let (top, bottom) = (rows[0], *rows.last().unwrap());
+    // The usable area: below the bar's margin + height (8 + 36).
+    let ws = sway.msg(&["-t", "get_workspaces"]).unwrap();
+    let ws: serde_json::Value = serde_json::from_str(&ws).unwrap();
+    let (uy, uh) = (
+        ws[0]["rect"]["y"].as_f64().unwrap(),
+        ws[0]["rect"]["height"].as_f64().unwrap(),
+    );
+    let centre = (top + bottom + 1) as f64 / 2.0;
+    assert!(
+        (centre - (uy + uh / 2.0)).abs() <= 2.0,
+        "box {top}..{bottom} centred at {centre}, usable area {uy} + {uh}"
+    );
+    if let Some(dir) = std::env::var_os("STRAND_SHOTS") {
+        sway.grim(&[], &PathBuf::from(&dir).join("design_launcher.png"));
+    }
+    // The box's left edge, and the rows of ink in its `image h.app.icon
+    // { size: 32 }` column (pad 12 + row pad 8, 32 wide), below the
+    // input: the mock apps' three icons (Adwaita's `-symbolic` ones).
+    let mid = (top + bottom) / 2;
+    let left = (0..shot.w).find(|&x| bright(x, mid)).unwrap();
+    let dark =
+        |s: &Shot, x: usize, y: usize| s.px(x, y).iter().map(|c| *c as u32).sum::<u32>() < 200;
+    let icon_bands = |s: &Shot, top: usize, bottom: usize| {
+        let inked: Vec<usize> = (top + 48..bottom)
+            .filter(|&y| (left + 20..left + 52).any(|x| dark(s, x, y)))
+            .collect();
+        inked.windows(2).filter(|p| p[1] > p[0] + 1).count() + usize::from(!inked.is_empty())
+    };
+    assert_eq!(icon_bands(&shot, top, bottom), 3, "three app icons");
 
-    impl Pointer {
-        pub fn new(socket: &Path) -> Self {
-            let conn = Connection::from_socket(UnixStream::connect(socket).unwrap()).unwrap();
-            let (globals, mut queue) = registry_queue_init::<Client>(&conn).unwrap();
-            let qh = queue.handle();
-            let manager: ZwlrVirtualPointerManagerV1 = globals.bind(&qh, 1..=2, ()).unwrap();
-            let pointer = manager.create_virtual_pointer(None, &qh, ());
-            queue.roundtrip(&mut Client).unwrap();
-            Self {
-                _conn: conn,
-                queue,
-                pointer,
-                time: 0,
+    let mut pointer = pointer::Pointer::new(&sway.dir.join(&sway.display));
+    let (w, h) = (shot.w as u32, shot.h as u32);
+    // A new virtual pointer's first buttons reach no surface: its first
+    // click goes to the launcher's padding (clear of its rows, so it
+    // would not launch anything if it did arrive).
+    let pad = (left as u32 + 5, mid as u32);
+    pointer.click(pad.0, pad.1, w, h);
+    std::thread::sleep(Duration::from_millis(200));
+    // Hovering the first row (`when hover { bg: $surface.hi }`) repaints
+    // it: events reach the launcher now.
+    let first_icon = (top + 48..bottom)
+        .find(|&y| (left + 20..left + 52).any(|xx| dark(&shot, xx, y)))
+        .unwrap();
+    let row = (x, first_icon + 12);
+    let calm = shot.px(row.0, row.1);
+    // (Not exact: the bg is dithered.)
+    let near = |p: [u8; 3], q: [u8; 3]| (0..3).all(|i| p[i].abs_diff(q[i]) <= 3);
+    pointer.motion(row.0 as u32, row.1 as u32, w, h);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while near(Shot::take(&sway, "HEADLESS-1").px(row.0, row.1), calm) {
+        assert!(Instant::now() < deadline, "hovering a row changed nothing");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // A click inside (its padding) keeps it open: the pointer leaves the
+    // row on the way (its hover goes), and the launcher stays.
+    pointer.click(pad.0, pad.1, w, h);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !near(Shot::take(&sway, "HEADLESS-1").px(row.0, row.1), calm) {
+        assert!(
+            Instant::now() < deadline,
+            "the click never reached the launcher"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        bright_in(&Shot::take(&sway, "HEADLESS-1"), x, mid),
+        "a click inside closed it"
+    );
+
+    // Typing: a keyboard appears, the `focus: true` input takes it and
+    // draws its caret (`$accent`, a saturated blue on the light theme);
+    // typed text filters the list to Foot and the caret follows it.
+    let blue = |p: [u8; 3]| p[2] as i32 - p[0] as i32 > 60;
+    let input_band = |s: &Shot, top: usize| -> (Vec<usize>, Vec<usize>) {
+        let (mut carets, mut ink) = (Vec::new(), Vec::new());
+        // (Clear of the rounded corners.)
+        for xx in left + 4..left + 576 {
+            if (top + 8..top + 38).any(|y| blue(s.px(xx, y))) {
+                carets.push(xx);
+            }
+            if (top + 8..top + 38).any(|y| dark(s, xx, y)) {
+                ink.push(xx);
             }
         }
-
-        /// A left click at layout position (`x`, `y`) of a layout
-        /// `w`×`h` logical pixels.
-        pub fn click(&mut self, x: u32, y: u32, w: u32, h: u32) {
-            self.time += 10;
-            self.pointer.motion_absolute(self.time, x, y, w, h);
-            self.pointer.frame();
-            for state in [
-                wl_pointer::ButtonState::Pressed,
-                wl_pointer::ButtonState::Released,
-            ] {
-                self.time += 10;
-                self.pointer.button(self.time, 0x110, state);
-                self.pointer.frame();
-            }
-            self.queue.roundtrip(&mut Client).unwrap();
-        }
+        (carets, ink)
+    };
+    let mut keyboard = keyboard::Keyboard::new(&sway.dir.join(&sway.display), &sway.dir);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while input_band(&Shot::take(&sway, "HEADLESS-1"), top)
+        .0
+        .is_empty()
+    {
+        assert!(Instant::now() < deadline, "no caret once a keyboard exists");
+        std::thread::sleep(Duration::from_millis(50));
     }
+    keyboard.type_text("foo");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let s = Shot::take(&sway, "HEADLESS-1");
+        let rows: Vec<usize> = (60..s.h).filter(|&y| bright_in(&s, x, y)).collect();
+        if let (Some(&t), Some(&b)) = (rows.first(), rows.last())
+            && icon_bands(&s, t, b) == 1
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "typing did not filter the list");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // Once its height spring has settled.
+    let shot = settled(x);
+    let rows: Vec<usize> = (60..shot.h).filter(|&y| bright_in(&shot, x, y)).collect();
+    let (top, bottom) = (rows[0], *rows.last().unwrap());
+    assert_eq!(icon_bands(&shot, top, bottom), 1, "one hit for `foo`");
+    if let Some(dir) = std::env::var_os("STRAND_SHOTS") {
+        sway.grim(&[], &PathBuf::from(&dir).join("design_launcher_typed.png"));
+    }
+    let (carets, ink) = input_band(&shot, top);
+    assert!(
+        !ink.is_empty() && !carets.is_empty(),
+        "no text or caret: {ink:?} {carets:?}"
+    );
+    let text_end = *ink.last().unwrap();
+    assert!(
+        carets
+            .iter()
+            .all(|&c| c + 3 >= text_end && c <= text_end + 8),
+        "the caret ({carets:?}) is not after the typed text (ink to {text_end})"
+    );
+    // The one hit is selected (a focused input's list selects its first
+    // row): `when selected { bg: $accent.container }`, the accent at
+    // 0.22 over the launcher's surface, so bluer than the padding above
+    // the input.
+    let hit_icon = (top + 48..bottom)
+        .find(|&y| (left + 20..left + 52).any(|xx| dark(&shot, xx, y)))
+        .unwrap();
+    let tint = |p: [u8; 3]| p[2] as i32 - p[0] as i32;
+    let (sel, plain) = (shot.px(x, hit_icon + 16), shot.px(x, top + 4));
+    assert!(
+        tint(sel) >= tint(plain) + 10,
+        "the hit is not drawn selected: {sel:?} vs the panel's {plain:?}"
+    );
+    // The hit's matched letters (`marks: h.ranges; mark_color:
+    // $accent`) in blue in its name.
+    let marked = (top + 44..bottom)
+        .flat_map(|y| (left + 56..left + 200).map(move |x| (x, y)))
+        .filter(|&(x, y)| blue(shot.px(x, y)))
+        .count();
+    assert!(marked > 20, "no marked letters in the hit: {marked} px");
+    drop(keyboard);
+
+    // On the bar, clear of its text (between the clock and the end).
+    pointer.click(w * 3 / 4, 26, w, h);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let after = Shot::take(&sway, "HEADLESS-1");
+        if after
+            .px(x, (top + bottom) / 2)
+            .iter()
+            .map(|c| *c as u32)
+            .sum::<u32>()
+            < 450
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "a click on the bar did not close it"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    drop(strand);
+}
+
+/// The four design shells with their widgets (M2): the bar's icons, the
+/// OSD's icon and meter (shown at boot here, as a volume change would),
+/// the toasts' close icons, and the bar's `Clock` calendar `popup`: a
+/// click on the clock opens it as an xdg_popup under the bar, centred on
+/// the clock, with the month's grid and today in `$accent`; a click away
+/// closes it (the grab ends, `open` is written false). Set
+/// `STRAND_SHOTS` to a directory to keep the screenshots.
+#[test]
+fn the_design_shells_draw_their_widgets_and_the_calendar_popup() {
+    let Some(sway) = Sway::start_as("widgets") else {
+        return;
+    };
+    let home = sway.dir.join("home");
+    let config = home.join(".config/strand");
+    std::fs::create_dir_all(&config).unwrap();
+    let osd = include_str!("../../strand-compiler/tests/fixtures/osd.strand")
+        .replace("state shown = false", "state shown = true");
+    for (name, text) in [
+        (
+            "theme.strand",
+            include_str!("../../strand-compiler/tests/fixtures/theme.strand").to_string(),
+        ),
+        (
+            "bar.strand",
+            include_str!("../../strand-compiler/tests/fixtures/bar.strand").to_string(),
+        ),
+        (
+            "launcher.strand",
+            include_str!("../../strand-compiler/tests/fixtures/launcher.strand").to_string(),
+        ),
+        (
+            "toasts.strand",
+            include_str!("../../strand-compiler/tests/fixtures/toasts.strand").to_string(),
+        ),
+        ("osd.strand", osd),
+    ] {
+        std::fs::write(config.join(name), text).unwrap();
+    }
+    let log = sway.dir.join("strand.log");
+    let child = Command::new(env!("CARGO_BIN_EXE_strand"))
+        .arg("run")
+        .arg(&config)
+        .env("HOME", &home)
+        .env("XDG_RUNTIME_DIR", &sway.dir)
+        .env("XDG_CACHE_HOME", sway.dir.join("cache"))
+        .env("XDG_STATE_HOME", sway.dir.join("state"))
+        .env("WAYLAND_DISPLAY", &sway.display)
+        .env("STRAND_MOCK", "desktop")
+        .env("STRAND_MOCK_SCREEN", "HEADLESS-1")
+        .env("STRAND_LOG", "damage")
+        .stdin(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .spawn()
+        .unwrap();
+    let mut strand = Proc(child);
+    let surfaces = |log: &Path| -> std::collections::BTreeSet<String> {
+        damage_lines(log)
+            .iter()
+            .filter_map(|l| {
+                l.split_whitespace()
+                    .find(|w| w.starts_with("surface="))
+                    .map(String::from)
+            })
+            .collect()
+    };
+    let wait_for = |what: &str, strand: &mut Proc, done: &dyn Fn() -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !done() {
+            assert!(
+                strand.0.try_wait().unwrap().is_none(),
+                "strand exited: {}",
+                std::fs::read_to_string(&log).unwrap_or_default()
+            );
+            assert!(
+                Instant::now() < deadline,
+                "{what}: {}",
+                std::fs::read_to_string(&log).unwrap_or_default()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    // The bar, the toasts and the OSD.
+    wait_for("three surfaces", &mut strand, &|| surfaces(&log).len() >= 3);
+    std::thread::sleep(Duration::from_millis(700));
+    let shot = Shot::take(&sway, "HEADLESS-1");
+    let sum = |p: [u8; 3]| p.iter().map(|c| *c as u32).sum::<u32>();
+    let (w, h) = (shot.w, shot.h);
+    if let Some(dir) = std::env::var_os("STRAND_SHOTS") {
+        sway.grim(&[], &PathBuf::from(&dir).join("design_shells.png"));
+    }
+    // The OSD's meter: a run of `$accent` (a saturated blue on the light
+    // theme) along the middle of its pill, 96 px above the bottom.
+    let blue = |p: [u8; 3]| p[2] as i32 - p[0] as i32 > 60;
+    let osd_row = (h - 140..h - 96).find(|&y| {
+        (w / 2 - 80..w / 2 + 80)
+            .filter(|&x| blue(shot.px(x, y)))
+            .count()
+            > 40
+    });
+    assert!(osd_row.is_some(), "no meter fill in the OSD");
+    // The OSD's volume icon: dark ink left of the meter, in its pill.
+    let y = osd_row.unwrap();
+    assert!(
+        (w / 2 - 125..w / 2 - 95).any(|x| (y - 10..y + 10).any(|yy| sum(shot.px(x, yy)) < 200)),
+        "no icon in the OSD"
+    );
+    // The toasts' close icons: dark ink near the right edge of the first.
+    let toast_x = w - 12 - 30;
+    assert!(
+        (60..110).any(|yy| (toast_x - 10..toast_x + 10).any(|x| sum(shot.px(x, yy)) < 200)),
+        "no close icon on the first toast"
+    );
+    // The toasts' `image n.image ?? n.app.icon { size: 36; radius:
+    // $radius.sm }` (the mock apps' `mail-unread` and `battery-caution`,
+    // found as Adwaita's `-symbolic` ones): ink in the 36 px slot at
+    // the start of each toast (margin 12, width 380, pad 12).
+    let slot = w - 12 - 380 + 12;
+    for (which, ys) in [("first", 60..118), ("second", 122..185)] {
+        let ink = ys
+            .flat_map(|y| (slot..slot + 36).map(move |x| (x, y)))
+            .filter(|&(x, y)| sum(shot.px(x, y)) < 200)
+            .count();
+        assert!(ink > 40, "no image on the {which} toast: {ink} px");
+    }
+    // The tray's `image item.icon { size: 16 }` (the mock's
+    // `network-wireless`, found as `network-wireless-symbolic`): ink at
+    // the end of the bar, after the battery (margin 8, pad 12).
+    assert!(
+        (w - 40..w - 16).any(|x| (16..36).any(|y| sum(shot.px(x, y)) < 200)),
+        "no tray icon at the bar's end"
+    );
+    // No calendar yet below the clock.
+    let below = (w / 2, 150);
+    assert!(
+        sum(shot.px(below.0, below.1)) < 450,
+        "calendar open at boot"
+    );
+
+    // A click on the clock opens the calendar popup below the bar.
+    let mut pointer = pointer::Pointer::new(&sway.dir.join(&sway.display));
+    let before = surfaces(&log).len();
+    // (A new virtual pointer's first buttons do not reach a surface:
+    // the first click goes to the empty desktop.)
+    pointer.click(600, 700, w as u32, h as u32);
+    std::thread::sleep(Duration::from_millis(200));
+    pointer.click((w / 2) as u32, 26, w as u32, h as u32);
+    wait_for("the calendar's surface", &mut strand, &|| {
+        surfaces(&log).len() > before
+    });
+    std::thread::sleep(Duration::from_millis(700));
+    let open = Shot::take(&sway, "HEADLESS-1");
+    if let Some(dir) = std::env::var_os("STRAND_SHOTS") {
+        sway.grim(&[], &PathBuf::from(&dir).join("design_calendar.png"));
+    }
+    // Its light card spans the clock's centre below the bar.
+    let rows: Vec<usize> = (44..400)
+        .filter(|&y| sum(open.px(below.0, y)) > 600)
+        .collect();
+    assert!(
+        rows.len() > 150,
+        "no calendar below the clock: {} light rows",
+        rows.len()
+    );
+    let top = rows[0];
+    assert!((50..70).contains(&top), "calendar top at {top}");
+    let cols: Vec<usize> = (w / 2 - 200..w / 2 + 200)
+        .filter(|&x| sum(open.px(x, top + 20)) > 600)
+        .collect();
+    let centre = (cols[0] + cols.last().unwrap()) as f64 / 2.0;
+    assert!(
+        (centre - (w / 2) as f64).abs() <= 3.0,
+        "calendar centred at {centre}"
+    );
+    // Today, in `$accent`, somewhere in the grid.
+    let accent = (top..top + 250)
+        .flat_map(|y| (cols[0]..*cols.last().unwrap()).map(move |x| (x, y)))
+        .filter(|&(x, y)| blue(open.px(x, y)))
+        .count();
+    assert!(accent > 100, "no accent day in the calendar: {accent} px");
+    let accent_px = |shot: &Shot| {
+        (top..top + 250)
+            .flat_map(|y| (cols[0]..*cols.last().unwrap()).map(move |x| (x, y)))
+            .filter(|&(x, y)| blue(shot.px(x, y)))
+            .count()
+    };
+    // `›` (the top row's right end) moves `state month` on; twice, as
+    // the grid two months on never shows today (next month's may, among
+    // its leading days).
+    for _ in 0..2 {
+        pointer.click(
+            (*cols.last().unwrap() - 25) as u32,
+            (top + 23) as u32,
+            w as u32,
+            h as u32,
+        );
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while accent_px(&Shot::take(&sway, "HEADLESS-1")) > accent / 4 {
+        assert!(Instant::now() < deadline, "`›` did not turn the month");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    // A click away closes it.
+    pointer.click(600, 700, w as u32, h as u32);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let after = Shot::take(&sway, "HEADLESS-1");
+        if sum(after.px(below.0, top + 40)) < 450 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "a click away did not close the calendar"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // Closed, its content was unmounted (decisions.md, carried r2): a
+    // second click on the clock mounts it again, drawn whole, on the
+    // month it was left on (the `Calendar`'s state was kept).
+    std::thread::sleep(Duration::from_millis(300));
+    pointer.click((w / 2) as u32, 26, w as u32, h as u32);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while sum(Shot::take(&sway, "HEADLESS-1").px(below.0, top + 40)) <= 600 {
+        assert!(
+            Instant::now() < deadline,
+            "a second click did not open the calendar again"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    std::thread::sleep(Duration::from_millis(700));
+    let again = Shot::take(&sway, "HEADLESS-1");
+    if let Some(dir) = std::env::var_os("STRAND_SHOTS") {
+        sway.grim(&[], &PathBuf::from(&dir).join("design_calendar_again.png"));
+    }
+    let top_again = (44..400).find(|&y| sum(again.px(below.0, y)) > 600);
+    assert_eq!(top_again, Some(top), "the reopened calendar's card moved");
+    let accent_again = accent_px(&again);
+    assert!(
+        accent_again <= accent / 4,
+        "the reopened calendar is back on this month: {accent_again} accent px"
+    );
+    pointer.click(600, 700, w as u32, h as u32);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while sum(Shot::take(&sway, "HEADLESS-1").px(below.0, top + 40)) >= 450 {
+        assert!(
+            Instant::now() < deadline,
+            "a click away did not close the calendar again"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // The pointer on the volume icon (a click: it mutes) hovers its row:
+    // `if hover { slider … }` slides a slider in, drawn in `$accent`
+    // in the row (it grows leftwards, the end packs to the end).
+    let speaker = (w * 3 / 4..w - 20)
+        .find(|&x| (14..38).any(|y| sum(shot.px(x, y)) < 200))
+        .expect("ink at the bar's end");
+    pointer.click(speaker as u32 + 6, 26, w as u32, h as u32);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let after = Shot::take(&sway, "HEADLESS-1");
+        // (The row grows to the left as the slider slides in.)
+        let fill = (w * 3 / 4..w - 20)
+            .filter(|&x| (14..38).any(|y| blue(after.px(x, y))))
+            .count();
+        if fill > 20 {
+            if let Some(dir) = std::env::var_os("STRAND_SHOTS") {
+                sway.grim(&[], &PathBuf::from(&dir).join("design_volume.png"));
+            }
+            break;
+        }
+        assert!(Instant::now() < deadline, "no slider on hover: {fill}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let errors: Vec<String> = std::fs::read_to_string(&log)
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.contains("ERROR"))
+        .map(String::from)
+        .collect();
+    assert!(errors.is_empty(), "{errors:?}");
+    drop(strand);
 }
 
 /// A monitor unplugged and back within 30 s is the same monitor
@@ -911,10 +1806,10 @@ fn strand_run_reloads_live_with_state_kept() {
     assert_eq!(bg(&sway), [0x80, 0x20, 0x20]);
 
     // 3. A node added, then removed: more ink on the bar, then exactly
-    // as before. Until flex layout (M2) every text is placed by its own
-    // x/y, so all of them, the clock included, draw (in the default dark
-    // colour) at the bar's top left: start on a fresh minute so the clock
-    // does not tick between the shots, and keep away from the pointer.
+    // as before. The added `end` section lays out in the split's end
+    // column, at the bar's right end: start on a fresh minute so the
+    // clock does not tick between the shots, and keep away from the
+    // pointer.
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -923,7 +1818,7 @@ fn strand_run_reloads_live_with_state_kept() {
     if secs > 50 {
         std::thread::sleep(Duration::from_secs(61 - secs));
     }
-    let end_ink = |sway: &Sway| Shot::take(sway, "HEADLESS-1").ink(0..1600, 40);
+    let end_ink = |sway: &Sway| Shot::take(sway, "HEADLESS-1").ink(1900..2560, 40);
     let before = end_ink(&sway);
     let added = "    end { text \"added\" }\n";
     save(&file, &hello("#208040", "#802020", added));

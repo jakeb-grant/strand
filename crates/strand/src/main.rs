@@ -8,8 +8,10 @@ mod fmt;
 mod ipc;
 mod live;
 mod logging;
+mod mock;
 mod overlay;
 mod run;
+mod system;
 
 #[cfg(test)]
 mod bench;
@@ -45,7 +47,11 @@ const COMMANDS: &[(&str, &str, &str)] = &[
         "M1",
     ),
     ("get", "read an exported value", "M5"),
-    ("set", "write an exported value, token or setting", "M5"),
+    (
+        "set",
+        "write an exported value (strand set theme.look mocha)",
+        "M2",
+    ),
     ("toggle", "flip an exported boolean", "M5"),
     ("call", "invoke a service action", "M5"),
     ("new", "scaffold a working shell", "M5"),
@@ -113,6 +119,12 @@ fn dispatch(args: &[String]) -> Result<Action, String> {
 type Tool = fn(&[String], Style) -> (String, bool);
 
 fn main() -> ExitCode {
+    // No transparent huge pages: on a system with THP `always` (GitHub's
+    // runners), mimalloc's arenas fill 2 MiB pages for a few KiB of heap
+    // (55 MB PSS for design.md's bar instead of about 25). mimalloc's
+    // `no_thp` only stops it asking for them. Before anything allocates
+    // much; a failure (an old kernel) leaves the default.
+    let _ = rustix::thread::disable_transparent_huge_pages(true);
     let args: Vec<String> = std::env::args().skip(1).collect();
     let tool: Option<Tool> = match args.first().map(String::as_str) {
         Some("check") => Some(check::run),
@@ -139,6 +151,18 @@ fn main() -> ExitCode {
                 }
                 Err(e) => {
                     eprintln!("strand reload: {e}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        Some("set") => {
+            return match ipc::set_cli(&args[1..]) {
+                Ok(text) => {
+                    print!("{text}");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("strand set: {e}");
                     ExitCode::FAILURE
                 }
             };

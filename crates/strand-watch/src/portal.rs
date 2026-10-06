@@ -1,5 +1,6 @@
 //! `org.freedesktop.portal.Settings` client: `ReadOne` at boot, then
-//! `SettingChanged`, for `color-scheme`, `accent-color` and `contrast`.
+//! `SettingChanged`, for `color-scheme`, `accent-color`, `contrast` and
+//! `reduced-motion`.
 
 use std::future::Future;
 use std::io;
@@ -15,7 +16,7 @@ use crate::event::{ChangeEvent, ColorScheme, Contrast, EventSink, SystemBatch, S
 /// The namespace the three settings live in.
 pub const APPEARANCE: &str = "org.freedesktop.appearance";
 /// The keys read and followed.
-pub const KEYS: [&str; 3] = ["color-scheme", "accent-color", "contrast"];
+pub const KEYS: [&str; 4] = ["color-scheme", "accent-color", "contrast", "reduced-motion"];
 
 #[zbus::proxy(
     interface = "org.freedesktop.portal.Settings",
@@ -59,6 +60,7 @@ pub fn parse_setting(key: &str, value: &Value<'_>) -> Option<SystemSetting> {
                 scheme,
             })
         }
+        ("reduced-motion", Value::U32(n)) => Some(SystemSetting::ReducedMotion(*n == 1)),
         ("contrast", Value::U32(n)) => Some(SystemSetting::Contrast(if *n == 1 {
             Contrast::High
         } else {
@@ -130,10 +132,10 @@ async fn read_keys(
             Read::Done(None)
         }
     };
-    let (a, b, c) = tokio::join!(one(KEYS[0]), one(KEYS[1]), one(KEYS[2]));
+    let (a, b, c, d) = tokio::join!(one(KEYS[0]), one(KEYS[1]), one(KEYS[2]), one(KEYS[3]));
     let mut settings = Vec::new();
     let mut late = Vec::new();
-    for (key, read) in KEYS.into_iter().zip([a, b, c]) {
+    for (key, read) in KEYS.into_iter().zip([a, b, c, d]) {
         match read {
             Read::Done(Some(s)) => settings.push(s),
             Read::Done(None) => {}
@@ -388,6 +390,15 @@ mod tests {
         let uint = Value::Structure(Structure::from((0.2f64, 0.4f64, 1u32)));
         assert_eq!(parse_setting("accent-color", &uint), None);
         assert_eq!(parse_setting("contrast", &Value::Str("x".into())), None);
-        assert_eq!(parse_setting("reduced-motion", &Value::U32(1)), None);
+        assert_eq!(
+            parse_setting("reduced-motion", &Value::U32(1)),
+            Some(SystemSetting::ReducedMotion(true))
+        );
+        assert_eq!(
+            parse_setting("reduced-motion", &Value::U32(0)),
+            Some(SystemSetting::ReducedMotion(false))
+        );
+        // A key that is not ours.
+        assert_eq!(parse_setting("cursor-size", &Value::U32(1)), None);
     }
 }

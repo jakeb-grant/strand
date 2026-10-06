@@ -19,29 +19,46 @@ bar Top {
 That file is already on every monitor, reactive, themed and animated. It wakes
 once a minute.
 
-**Status:** M0 spike done; M1's exit gates are met (see
-[`docs/m1-report.md`](docs/m1-report.md)). `strand run [dir]` compiles your
-`.strand` files (type checker, bytecode VM, reactive core), puts the
-surfaces on every monitor and reloads live on save: a token or markup
-edit is presented by headless sway about 18 ms after the save (p95; about
-33 ms once a 60 Hz monitor's vblank wait is modelled in, not yet measured
-on hardware), with state kept as the design's edit table says, a broken
-save held back behind an error overlay, and 10,000 random edits through
-five editor save styles on two screens, and into `strand run` on a
-headless sway, without a panic, an intermediate or blank frame (checked
-on the scene, in offline-rendered pixels and in the buffers committed to
-sway, both compared with a cold boot's painting) or a leaked layer surface. `strand check` reports did-you-mean diagnostics,
-`strand fmt` formats `.strand` files, `strand watch` / `strand reload` talk
-to a running shell, and `strand-dev lsp` serves diagnostics, completion,
-hover, go-to-definition, rename, formatting and did-you-mean quick fixes.
-Still open in M1: the tree-sitter grammar, the loader's `.wgsl` and
-wallpaper paths, portal changes in the latency benchmark, a dedicated
-format-on-save overlay check, and the parts of
-`fn`/`keyframes`/`shader`/`canvas` that are render work;
-layout, services and theming come in M2 and M3. Progress is tracked in
-[`docs/features.md`](docs/features.md); [`docs/design.md`](docs/design.md)
-has the full design. (M0: `strand run --demo`, about 21 MB PSS on two
-monitors; [`docs/m0-report.md`](docs/m0-report.md).)
+**Status: v0.1.** M2's exit gates are met (see
+[`docs/m2-report.md`](docs/m2-report.md)): the four example shells of
+the design (a bar with a calendar popup, a fuzzy launcher, a
+notification stack and a volume/brightness OSD) and its `theme.strand`
+run unchanged in `strand run`, laid out (taffy: flex, `split` with a
+truly centred middle, grids, lists laid out and painted only where
+visible (logic still mounts every row until M4), container queries),
+themed (Material 3 palettes from a seed, a wallpaper or Catppuccin and
+base16 imports, derived tokens, `set { }` overrides, the portal's dark
+mode, accent, contrast and reduced motion) and animated (springs on
+colour, layout and transform props, while gradients and `mark_color`
+snap; `enter`/`exit` poses, FLIP; theme swaps springing in OKLab in
+about 2 ms of work with declared text/background pairs kept above 3:1,
+while muted and faint text is not guarded mid-swap). They are tested
+on a headless sway with two outputs, driven by clicks, the wheel and
+keys against mock services, with screenshots compared to references.
+design.md's bar on two 2560×1440 monitors uses about 26 MB, does no work
+between minute ticks and repaints about 230–750 px² per tick (about
+2,700 px² on the two ticks after midnight, when the centred clock moves:
+a documented exception, within design.md's 60×20 px per output); the full
+shell with the launcher open about 31 MB.
+
+`strand run [dir]` compiles your `.strand` files (type checker, bytecode
+VM, reactive core), puts the surfaces on every monitor and reloads live
+on save (M1, [`docs/m1-report.md`](docs/m1-report.md): a token or markup
+edit presented about 18 ms after the save on headless sway, 10,000
+random edits through five editor save styles without a panic or a blank
+frame). `strand check` reports did-you-mean diagnostics, `strand fmt`
+formats, `strand set` writes an exported state or a settings field,
+`strand watch` / `strand reload` talk to a running shell, and
+`strand-dev lsp` serves diagnostics, completion, hover,
+go-to-definition, rename and quick fixes. Real system services (audio,
+battery, notifications, apps, tray, workspaces) come in M3; until then
+`STRAND_MOCK=desktop` fills them with a mock desktop. Still open from
+M1: the tree-sitter grammar, the render side of `keyframes`, `shader`
+and `canvas`, a dedicated format-on-save overlay check, the loader's
+`.wgsl` and wallpaper module paths and the portal clause of the latency
+benchmark. Progress is
+tracked in [`docs/features.md`](docs/features.md);
+[`docs/design.md`](docs/design.md) has the full design.
 
 ## Layout
 
@@ -83,8 +100,17 @@ installed so the Wayland integration tests and the M0 demo run (set
 - fmt and clippy as above;
 - `cargo test --workspace -- --skip random_edits_through_five_save_styles`
   (the workspace tests, offline render tests included, without the
-  reload fuzzer);
-- `cargo test --release -p strand --test demo` for the 34 MB PSS budget;
+  reload fuzzer; the acceptance tests run here in debug too, but for the
+  OSD's, whose 1.2 s window is release-only);
+- `cargo test --release -p strand --test demo` for the 34 MB PSS budget
+  (the M0 demo and design.md's bar);
+- `cargo test --release -p strand --test acceptance -- --test-threads=1`:
+  the four design shells, unchanged, on sway with two outputs against
+  the mock services, screenshots compared with
+  `crates/strand/tests/refs/acceptance` (`STRAND_UPDATE_REFS=1` rewrites
+  them; a mismatch is uploaded from `target/acceptance`);
+- `cargo test --release -p strand-render --test theme_swap_bench` for
+  the 5 ms theme swap;
 - `cargo test --release -p strand --bin strand reload_latency --
   --test-threads=1` with `STRAND_LATENCY_ROUNDS=50` for the save-to-pixels
   budget;
@@ -97,3 +123,7 @@ installed so the Wayland integration tests and the M0 demo run (set
 A nightly job runs the fuzzer for 10,000 edits (`STRAND_FUZZ_EDITS`,
 `STRAND_FUZZ_SEED`), the instance-level fuzzers long, and the latency
 benches for 200 edits per kind. The mocked D-Bus services tier comes with M3.
+
+`scripts/m0-exit.sh` and `scripts/m2-exit.sh` measure the memory, idle
+and damage gates over whole minutes on a release build (the M0 demo and
+design.md's bar, and the full shell with the launcher open).

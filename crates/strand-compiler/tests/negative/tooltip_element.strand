@@ -1,0 +1,7 @@
+// expect: check::not_drawn_yet
+// The `tooltip { … }` element (rich tooltip content) is accepted but not
+// drawn yet: a warning says so, rather than drawing nothing silently.
+// The `tooltip: expr` prop draws a text tooltip.
+component Tip { button "?" { tooltip { text "Help" } } }
+component Plain { button "?" { tooltip: "Help" } }
+bar B { edge: top; height: 32; Tip; Plain }

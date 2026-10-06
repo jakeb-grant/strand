@@ -14,17 +14,56 @@ env:
   RUSTFLAGS: -D warnings
   # The Wayland and budget tiers fail instead of skipping when sway is missing.
   STRAND_REQUIRE_SWAY: "1"
+  # The theme's end-to-end test (mock portal on a private bus) fails
+  # instead of skipping when dbus-daemon is missing.
+  STRAND_REQUIRE_DBUS: "1"
+  # No debug info: a full debug test build of the workspace with it does
+  # not fit the runner's disk (as in the dev container, CLAUDE.md).
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
 
 jobs:
   check:
     if: github.event_name != 'schedule'
-    runs-on: ubuntu-latest
+    # Pinned: the pixel references (crates/strand/tests/refs) come from
+    # 24.04's sway 1.9, fonts-dejavu-core 2.37 and adwaita-icon-theme 46;
+    # a newer image would change glyph and icon pixels.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Install headless sway, grim, fonts and fontconfig headers
+      # Room for the debug and release builds: the image's SDKs we never
+      # use take most of the disk.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+      # smithay-client-toolkit's build script finds xkbcommon through
+      # pkg-config; wayland-sys and fontconfig link their system libraries.
+      - name: Install headless sway, grim, dbus, fonts, icons and build headers
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends sway grim fonts-dejavu-core pkg-config libfontconfig1-dev
+          sudo apt-get install -y --no-install-recommends sway grim dbus fonts-dejavu-core adwaita-icon-theme pkg-config libfontconfig1-dev libxkbcommon-dev libwayland-dev
+      # The references are drawn with fonts-dejavu-core alone, whose DejaVu
+      # Sans has no oblique face (italic text is slanted from the upright
+      # one). The image also ships fonts-dejavu-extra, whose real
+      # DejaVuSans-Oblique would change every italic glyph; take it out
+      # without touching what depends on it.
+      - name: Fonts as the references were drawn
+        run: sudo dpkg --remove --force-depends fonts-dejavu fonts-dejavu-extra || true
+      # The versions the references depend on, to trace a mismatch.
+      - name: Reference package versions
+        run: |
+          sway --version
+          dpkg -s fonts-dejavu-core adwaita-icon-theme | grep -E '^(Package|Version)'
+          # Every font fontconfig sees (text references depend on which
+          # family a style or a missing glyph falls back to).
+          dpkg -l 'fonts-*' | grep '^ii' || true
+          fc-list : family style file | sort
+          fc-match -s 'sans-serif:italic' | head -5
+          # The acceptance tests pin XCURSOR_THEME=Adwaita (size 24); the
+          # default theme only matters to processes outside them.
+          readlink -f /usr/share/icons/default/index.theme || true
+          ls /usr/share/icons/Adwaita/cursors/default
       # Pinned to the dev container's toolchain so a new stable release's
       # lints and deprecations cannot fail -D warnings on unchanged code.
       - uses: dtolnay/rust-toolchain@master
@@ -38,6 +77,25 @@ jobs:
       - run: cargo test --workspace -- --skip random_edits_through_five_save_styles
       # The 34 MB PSS gate is checked on a release build (design.md, "Testing": budgets).
       - run: cargo test --release -p strand --test demo
+      # M2 exit: design.md's four example shells and theme.strand, byte
+      # for byte, in `strand run` on headless sway with two outputs
+      # against the deterministic mock services, driven by clicks, the
+      # wheel, keys, `strand set` and mock service changes; settled
+      # screenshots compared with crates/strand/tests/refs/acceptance.
+      # Release, so frames of the slides and swaps are caught (the
+      # workspace step above runs them in debug without those).
+      - run: cargo test --release -p strand --test acceptance -- --nocapture --test-threads=1
+      # A screenshot that missed its reference, with its diff.
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: acceptance-shots
+          path: target/acceptance/
+          if-no-files-found: ignore
+      # A theme swap within design.md's 5 ms of work (logic's re-resolve,
+      # the render thread's springs and contrast check, the token graph
+      # of every frame) on an optimised build.
+      - run: cargo test --release -p strand-render --test theme_swap_bench -- --nocapture
       # Save → pixels p95 within design.md's 35 ms (token) and 50 ms
       # (markup) on an optimised build, to the painted buffer and to the
       # frame sway presents; ignored in debug builds.
@@ -57,14 +115,21 @@ jobs:
 
   nightly:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-      - name: Install headless sway, grim, fonts and fontconfig headers
+      # Room for the debug and release builds: the image's SDKs we never
+      # use take most of the disk.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Install headless sway, grim, dbus, fonts, icons and build headers
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends sway grim fonts-dejavu-core pkg-config libfontconfig1-dev
+          sudo apt-get install -y --no-install-recommends sway grim dbus fonts-dejavu-core adwaita-icon-theme pkg-config libfontconfig1-dev libxkbcommon-dev libwayland-dev
+          sudo dpkg --remove --force-depends fonts-dejavu fonts-dejavu-extra || true
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.97.0

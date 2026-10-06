@@ -156,9 +156,11 @@ fn writes_to_services_and_settings() {
     );
 }
 
-/// `??` gives the fallback while an `Async` is pending, then the value
-/// once it is ready; the `let` keeps one load per change of its
-/// arguments (`apps.search(q)` is an async memo).
+/// `??` gives the fallback while an `Async` is loading the first time,
+/// then the value once it is ready, and keeps that value while a newer
+/// one loads (strand-core's `Async::or`, decisions.md wave3-theme); the
+/// `let` keeps one load per change of its arguments (`apps.search(q)` is
+/// an async memo).
 #[test]
 fn coalesce_covers_a_pending_async() {
     let src = "state q = \"f\"\nlet hits = apps.search(q)\nlet first = hits ?? []\nlet n = first.len\nlet waiting = hits.pending\nbar B { text join(\" \", n, waiting) }\n";
@@ -203,7 +205,7 @@ fn coalesce_covers_a_pending_async() {
     host.hold("apps.search");
     inst.set_value("t", "q", Value::text("fi")).unwrap();
     inst.flush();
-    assert_eq!(get(&inst, "first"), Value::list(Vec::new()));
+    assert_eq!(get(&inst, "n"), Value::int(3), "the last results stay");
     assert_eq!(get(&inst, "waiting"), Value::Bool(true));
     host.release_fetch("apps.search");
     inst.flush();

@@ -36,8 +36,21 @@ pub enum FromWorker {
     /// A load attempt: a build to commit (or none), what was held back,
     /// the diagnostics of the attempt.
     Loaded(Box<Loaded>),
-    /// Settings files that changed (`Instance::reload_settings`).
-    Settings(Vec<PathBuf>),
+    /// Settings files that changed, read on the worker
+    /// (`Instance::reload_settings_with`).
+    Settings(Vec<SettingsChange>),
+    /// Wallpapers and imported palette files that changed
+    /// (`Instance::theme_files_changed`).
+    Theme(Vec<PathBuf>),
+}
+
+/// A settings file that changed, as the worker read it (with its
+/// overlay): `None` when the worker had no sources for it (the logic
+/// thread reads it then).
+#[derive(Debug)]
+pub struct SettingsChange {
+    pub path: PathBuf,
+    pub read: Option<strand_core::SettingsRead>,
 }
 
 /// One load attempt and how it came about.
@@ -73,8 +86,13 @@ pub enum Job {
         hard: bool,
         client: Option<u64>,
     },
-    /// Watch these referenced files (settings files the program mounts).
-    Referenced(Vec<(PathBuf, Role)>),
+    /// Watch these referenced files (settings files the program mounts,
+    /// wallpapers and imported palette files the theme reads); `settings`
+    /// reads the settings files when they change.
+    Referenced {
+        files: Vec<(PathBuf, Role)>,
+        settings: Vec<strand_core::SettingsSources>,
+    },
     Stop,
 }
 
@@ -264,6 +282,12 @@ fn run(
     events: mpsc::Receiver<ChangeEvent>,
     out: calloop::channel::Sender<FromWorker>,
 ) {
+    // The referenced files the watcher has, so a newly registered one is
+    // read once more after its registration (below).
+    let mut registered: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    // How to read each settings file, off the logic thread.
+    let mut sources: std::collections::HashMap<PathBuf, strand_core::SettingsSources> =
+        std::collections::HashMap::new();
     while let Ok(job) = jobs.recv() {
         // Everything queued now is one batch of work.
         let mut queue = vec![job];
@@ -281,7 +305,13 @@ fn run(
                     reload = Some(reload.unwrap_or(false) || hard);
                     clients.extend(client);
                 }
-                Job::Referenced(r) => referenced = Some(r),
+                Job::Referenced { files, settings } => {
+                    sources = settings
+                        .into_iter()
+                        .map(|s| (s.path().to_path_buf(), s))
+                        .collect();
+                    referenced = Some(files);
+                }
                 Job::Stop => return,
             }
         }
@@ -293,14 +323,33 @@ fn run(
                 ChangeEvent::System(_) | ChangeEvent::Compositor(_) => {}
             }
         }
-        if let (Some(r), Some(w)) = (referenced, &watcher)
-            && let Err(e) = w.set_referenced(r)
-        {
-            log::warn!("watching settings files: {e}");
+        let mut settings: Vec<PathBuf> = Vec::new();
+        let mut theme: Vec<PathBuf> = Vec::new();
+        if let (Some(r), Some(w)) = (referenced, &watcher) {
+            match w.set_referenced(r.clone()) {
+                // A file edited after the program read it and before the
+                // watcher had it (a save right after boot or a reload)
+                // was not seen: each newly registered file is read again
+                // now that later edits are (unchanged content changes
+                // nothing; a wallpaper's stamp tells it).
+                Ok(()) => {
+                    for (path, role) in &r {
+                        if registered.contains(path) {
+                            continue;
+                        }
+                        match role {
+                            Role::Settings => settings.push(path.clone()),
+                            Role::Wallpaper | Role::Other => theme.push(path.clone()),
+                            _ => {}
+                        }
+                    }
+                    registered = r.into_iter().map(|(p, _)| p).collect();
+                }
+                Err(e) => log::warn!("watching settings files: {e}"),
+            }
         }
         let started = Instant::now();
         let mut modules: Vec<(PathBuf, bool)> = Vec::new();
-        let mut settings: Vec<PathBuf> = Vec::new();
         let mut rescan = false;
         let mut saved: Option<Instant> = None;
         let mut notices = Vec::new();
@@ -317,6 +366,9 @@ fn run(
                     Role::Settings if !settings.contains(&c.path) => {
                         settings.push(c.path.clone());
                     }
+                    Role::Wallpaper | Role::Other if !theme.contains(&c.path) => {
+                        theme.push(c.path.clone());
+                    }
                     _ => {}
                 }
             }
@@ -324,7 +376,21 @@ fn run(
         for n in &notices {
             log::warn!("{n}");
         }
-        if !settings.is_empty() && out.send(FromWorker::Settings(settings)).is_err() {
+        if !settings.is_empty() {
+            // Read here: a slow or hung home directory stalls this
+            // thread, never a frame.
+            let changes = settings
+                .into_iter()
+                .map(|path| SettingsChange {
+                    read: sources.get(&path).map(|s| s.read()),
+                    path,
+                })
+                .collect();
+            if out.send(FromWorker::Settings(changes)).is_err() {
+                return;
+            }
+        }
+        if !theme.is_empty() && out.send(FromWorker::Theme(theme)).is_err() {
             return;
         }
         if let (Some(_), Some(w)) = (reload, &watcher) {
@@ -381,6 +447,60 @@ fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A referenced file is read once more as soon as the watcher has
+    /// it: an edit made between the program's read and the registration
+    /// (a save right after boot) is not lost. Registering the same list
+    /// again sends nothing.
+    #[test]
+    fn newly_referenced_files_are_read_again_once_registered() {
+        let dir = std::env::temp_dir().join(format!("strand-live-ref-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("config")).unwrap();
+        std::fs::write(dir.join("config/shell.strand"), "").unwrap();
+        let prefs = dir.join("config/prefs.toml");
+        let wall = dir.join("wall.png");
+        std::fs::write(&prefs, "gap = 6\n").unwrap();
+        std::fs::write(&wall, b"png").unwrap();
+        let (out, rx) = calloop::channel::channel::<FromWorker>();
+        let (worker, _boot) = Worker::spawn(&dir.join("config"), None, out).unwrap();
+        let refs = vec![
+            (prefs.clone(), Role::Settings),
+            (wall.clone(), Role::Wallpaper),
+        ];
+        let job = |files: &Vec<(PathBuf, Role)>| Job::Referenced {
+            files: files.clone(),
+            settings: Vec::new(),
+        };
+        worker.jobs().send(job(&refs)).unwrap();
+        let mut got = Vec::new();
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        while got.len() < 2 && Instant::now() < deadline {
+            match rx.try_recv() {
+                Ok(m) => got.push(m),
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(10)),
+            }
+        }
+        assert!(
+            got.iter().any(
+                |m| matches!(m, FromWorker::Settings(c) if c.len() == 1 && c[0].path == prefs)
+            ),
+            "{got:?}"
+        );
+        assert!(
+            got.iter()
+                .any(|m| matches!(m, FromWorker::Theme(p) if p == std::slice::from_ref(&wall))),
+            "{got:?}"
+        );
+        worker.jobs().send(job(&refs)).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(
+            rx.try_recv().is_err(),
+            "nothing new registered, nothing re-read"
+        );
+        assert!(worker.join().is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// The own-write observer must not keep the watcher alive: `join`
     /// stops and joins it even with storage configured, so a watcher

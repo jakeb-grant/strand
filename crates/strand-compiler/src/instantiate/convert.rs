@@ -190,6 +190,14 @@ fn convert(types: &TypeTable, ty: &Ty, v: &Value, border_pair: bool) -> Option<P
                 .map(|v| PropValue::Keyword(v.clone()))
                 .collect(),
         ),
+        // `marks: h.ranges`: a `Range` is the `[start, end]` pair the
+        // renderer paints.
+        Value::Record(r) if types.record(r.ty).name == "Range" => PropValue::List(
+            r.fields
+                .iter()
+                .map(|f| prop_value(types, &Ty::Any, f))
+                .collect(),
+        ),
         Value::Record(_) => PropValue::Text(v.identity(types).show(types)),
         Value::List(items) => {
             let elem = match ty {
@@ -229,11 +237,8 @@ fn convert(types: &TypeTable, ty: &Ty, v: &Value, border_pair: bool) -> Option<P
                 })
                 .collect(),
         ),
-        Value::Fn(_)
-        | Value::Node(_)
-        | Value::Palette(_)
-        | Value::TokenSet(_)
-        | Value::Service(_) => return None,
+        Value::Node(n) => PropValue::Node(n.scene.get()?),
+        Value::Fn(_) | Value::Palette(_) | Value::TokenSet(_) | Value::Service(_) => return None,
     })
 }
 

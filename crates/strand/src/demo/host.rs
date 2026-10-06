@@ -8,14 +8,11 @@ use std::time::Instant;
 
 use calloop::channel::Sender;
 use strand_compiler::instantiate::NodeFlag;
-use strand_render::Renderer;
+use strand_render::{Flag, InputScene, Intent, NodeEvent as RouteEvent, Renderer, Router};
 use strand_scene::{
-    ButtonState, Damage, InputEvent, LogicalPoint, NodeId, PaintTarget, Painter, Scale, Size,
-    SurfaceId,
+    Damage, InputEvent, NodeId, PaintTarget, Painter, Scale, SceneDiff, Size, SurfaceId,
 };
 use strand_surface::{Monitor, SurfaceHost};
-
-use strand_scene::input::button;
 
 use crate::run::{NodeEvent, ScreenInfo, ToLogic};
 
@@ -25,6 +22,10 @@ pub struct Host {
     log_damage: bool,
     /// `strand run`: what the logic thread hears about.
     logic: Option<Forward>,
+    /// Wakes the main loop to hand surface changes the renderer made
+    /// while the surface manager called in (a configure, a paint, text
+    /// collected meanwhile) to the manager at once.
+    wake: Option<calloop::ping::Ping>,
     /// Tests: told of every paint and monitor change (`bench.rs`,
     /// `fuzz.rs`).
     #[cfg(test)]
@@ -59,7 +60,8 @@ impl std::fmt::Debug for ProbeHandle {
 }
 
 /// The surface layer's facts for a logic thread (`strand run`): monitors
-/// as the `screens` service, surface sizes, and surface-level input.
+/// as the `screens` service, surface sizes, and what input routing
+/// (`strand_render::Router`, on this thread) asks of logic.
 #[derive(Debug)]
 pub(crate) struct Forward {
     tx: Sender<ToLogic>,
@@ -69,12 +71,8 @@ pub(crate) struct Forward {
     monitors: Vec<(Monitor, bool)>,
     /// The node each surface shows.
     surfaces: HashMap<SurfaceId, NodeId>,
-    /// The hovered chain per surface (innermost first).
-    hovered: HashMap<SurfaceId, Vec<NodeId>>,
-    /// The chain the left button went down on, per surface.
-    pressed: HashMap<SurfaceId, Vec<NodeId>>,
-    /// The chain a right button press went down on, per surface.
-    right_down: HashMap<SurfaceId, Vec<NodeId>>,
+    /// Hover, press, focus, selection and edits.
+    router: Router,
 }
 
 impl Forward {
@@ -83,9 +81,7 @@ impl Forward {
             tx,
             monitors: Vec::new(),
             surfaces: HashMap::new(),
-            hovered: HashMap::new(),
-            pressed: HashMap::new(),
-            right_down: HashMap::new(),
+            router: Router::new(),
         }
     }
 
@@ -118,6 +114,7 @@ impl Forward {
 
     pub(crate) fn attached(&mut self, surface: SurfaceId, node: NodeId) {
         self.surfaces.insert(surface, node);
+        self.router.attached(surface, node);
     }
 
     /// A surface's logical size: its buffer size over its scale.
@@ -134,9 +131,7 @@ impl Forward {
 
     pub(crate) fn detached(&mut self, surface: SurfaceId) {
         self.surfaces.remove(&surface);
-        self.hovered.remove(&surface);
-        self.pressed.remove(&surface);
-        self.right_down.remove(&surface);
+        self.router.detached(surface);
     }
 
     /// Plugged in, or back within 30 s (`reconnected`) at its old place.
@@ -169,160 +164,70 @@ impl Forward {
         self.send(ToLogic::Forget(monitor.id.as_str().to_string()));
     }
 
-    /// Pointer input on the node under the pointer (`hit`: render's hit
-    /// chain, innermost first, ending at the surface's node): every node
-    /// on the chain is `hover`ed (a row is hovered while a child is), a
-    /// left button held marks the chain under it `pressed` (and latches
-    /// `hover` there until it is released, as a drag does), a left or
-    /// right release is `click`/`secondary` on the innermost node that
-    /// both the press and the release were over (logic bubbles it to the
-    /// nearest handler; a release with no press on this surface clicks
-    /// nothing), a scroll is `scroll(dy, dx)` on the innermost node. Other buttons have no design event and are dropped.
-    pub(crate) fn input(
-        &mut self,
-        event: &InputEvent,
-        hit: &dyn Fn(SurfaceId, LogicalPoint) -> Vec<NodeId>,
-    ) {
-        let surface = event.surface();
-        let Some(&root) = self.surfaces.get(&surface) else {
-            return;
-        };
-        let chain = |at: LogicalPoint| {
-            let c = hit(surface, at);
-            if c.is_empty() { vec![root] } else { c }
-        };
-        match event {
-            InputEvent::PointerEnter { position, .. }
-            | InputEvent::PointerMotion { position, .. } => {
-                if self.pressed.contains_key(&surface) {
-                    return;
-                }
-                let now = chain(*position);
-                self.hover(surface, now);
-            }
-            InputEvent::PointerLeave { .. } => {
-                self.release(surface);
-                self.hover(surface, Vec::new());
-            }
-            InputEvent::PointerButton {
-                button: b,
-                state,
-                position,
-                ..
-            } => {
-                let under = chain(*position);
-                // The chain the matching press went down on: a release
-                // clicks the innermost node on both chains (pressed on
-                // one button, released on its sibling: their row), and
-                // nothing without a press on this surface.
-                let down = match (*b, *state) {
-                    (button::LEFT, ButtonState::Released) => self.pressed.get(&surface).cloned(),
-                    (button::RIGHT, ButtonState::Pressed) => {
-                        self.right_down.insert(surface, under.clone());
-                        None
-                    }
-                    (button::RIGHT, ButtonState::Released) => self.right_down.remove(&surface),
-                    _ => None,
-                };
-                if *b == button::LEFT {
-                    match state {
-                        ButtonState::Pressed => {
-                            self.hover(surface, under.clone());
-                            for &n in under.iter().rev() {
-                                self.send(ToLogic::Flag {
-                                    node: n,
-                                    flag: NodeFlag::Pressed,
-                                    on: true,
-                                });
-                            }
-                            self.pressed.insert(surface, under.clone());
-                        }
-                        ButtonState::Released => {
-                            self.release(surface);
-                            self.hover(surface, under.clone());
-                        }
-                    }
-                }
-                if *state != ButtonState::Released {
-                    return;
-                }
-                let event = match *b {
-                    button::LEFT => NodeEvent::Click,
-                    button::RIGHT => NodeEvent::Secondary,
-                    _ => return,
-                };
-                let Some(down) = down else {
-                    return;
-                };
-                let Some(&node) = under.iter().find(|n| down.contains(n)) else {
-                    return;
-                };
-                self.send(ToLogic::Event { node, event });
-            }
-            InputEvent::PointerAxis {
-                horizontal,
-                vertical,
-                position,
-                ..
-            } => {
-                let under = chain(*position);
-                self.send(ToLogic::Event {
-                    node: under[0],
-                    event: NodeEvent::Scroll {
-                        dy: vertical.pixels,
-                        dx: horizontal.pixels,
-                    },
-                });
-            }
-        }
-    }
-
-    /// The hovered chain of `surface` becomes `now`: nodes it left lose
-    /// `hover` (innermost first), nodes it reached get it (outermost
-    /// first).
-    fn hover(&mut self, surface: SurfaceId, now: Vec<NodeId>) {
-        let was = self.hovered.remove(&surface).unwrap_or_default();
-        for &n in &was {
-            if !now.contains(&n) {
-                self.send(ToLogic::Flag {
-                    node: n,
-                    flag: NodeFlag::Hover,
-                    on: false,
-                });
-            }
-        }
-        for &n in now.iter().rev() {
-            if !was.contains(&n) {
-                self.send(ToLogic::Flag {
-                    node: n,
-                    flag: NodeFlag::Hover,
-                    on: true,
-                });
-            }
-        }
-        if !now.is_empty() {
-            self.hovered.insert(surface, now);
-        }
-    }
-
-    /// The left button is up (or the pointer left): nothing is pressed.
-    fn release(&mut self, surface: SurfaceId) {
-        for n in self.pressed.remove(&surface).unwrap_or_default() {
-            self.send(ToLogic::Flag {
-                node: n,
-                flag: NodeFlag::Pressed,
-                on: false,
-            });
+    /// Routes `event` (`strand_render::Router::handle`) and sends logic
+    /// what it asks for: flags, node events (bubbled by logic to the
+    /// nearest handler) and two-way writes.
+    pub(crate) fn input(&mut self, event: &InputEvent, scene: &mut dyn InputScene) {
+        for intent in self.router.handle(event, scene) {
+            self.send(to_logic(intent));
         }
     }
 }
 
+/// What routing asks of logic, as the logic thread's message.
+fn to_logic(intent: Intent) -> ToLogic {
+    match intent {
+        Intent::Flag { node, flag, on } => ToLogic::Flag {
+            node,
+            flag: match flag {
+                Flag::Hover => NodeFlag::Hover,
+                Flag::Pressed => NodeFlag::Pressed,
+                Flag::Focused => NodeFlag::Focused,
+                Flag::Selected => NodeFlag::Selected,
+            },
+            on,
+        },
+        Intent::Event { node, event } => ToLogic::Event {
+            node,
+            event: match event {
+                RouteEvent::Click => NodeEvent::Click,
+                RouteEvent::Secondary => NodeEvent::Secondary,
+                RouteEvent::Middle => NodeEvent::Middle,
+                RouteEvent::Scroll { dy, dx } => NodeEvent::Scroll { dy, dx },
+                RouteEvent::Activate => NodeEvent::Activate,
+                RouteEvent::Key {
+                    name,
+                    text,
+                    modifiers,
+                } => NodeEvent::Key {
+                    name,
+                    text,
+                    modifiers,
+                },
+                RouteEvent::Dismiss => NodeEvent::Dismiss,
+            },
+        },
+        Intent::Write { node, prop, value } => ToLogic::Write { node, prop, value },
+    }
+}
+
+/// A monitor's logical size: no content-sized surface on it is larger.
+fn monitor_bounds(m: &Monitor) -> Option<strand_scene::LogicalSize> {
+    m.logical_size
+        .filter(|(w, h)| *w > 0 && *h > 0)
+        .map(|(w, h)| strand_scene::LogicalSize::new(w as f32, h as f32))
+}
+
 impl Host {
-    pub fn new(renderer: Renderer, log_damage: bool) -> Self {
+    pub fn new(mut renderer: Renderer, log_damage: bool) -> Self {
+        // A compositor answers a resize: a content-sized surface waits for
+        // it rather than painting one frame at its old size.
+        renderer.set_resize_wait(strand_render::RESIZE_WAIT);
         Self {
             renderer,
             log_damage,
             logic: None,
+            wake: None,
             #[cfg(test)]
             probe: None,
         }
@@ -332,13 +237,64 @@ impl Host {
     /// thread (`strand run`).
     pub fn forwarding(mut self, tx: Sender<ToLogic>) -> Self {
         self.logic = Some(Forward::new(tx));
+        self.renderer.set_query_wait(strand_render::QUERY_WAIT);
         self
+    }
+
+    /// Wake the main loop with `ping` (its handler syncs surface
+    /// changes, see `demo::text_ready`) whenever a call from the surface
+    /// manager leaves surface changes behind.
+    pub fn waking(mut self, ping: calloop::ping::Ping) -> Self {
+        self.wake = Some(ping);
+        self
+    }
+
+    fn wake_if_changed(&self) {
+        if self.renderer.has_surface_changes()
+            && let Some(p) = &self.wake
+        {
+            p.ping();
+        }
+    }
+
+    /// Logic's next diff, before the renderer applies it: `input` texts
+    /// it sets answer (or override) the router's edits in flight.
+    pub(crate) fn observe(&mut self, diff: &SceneDiff) {
+        if let Some(f) = &mut self.logic {
+            f.router.observe(diff);
+        }
+    }
+
+    /// After logic's diff is applied: what routing settles on the new
+    /// scene (`Router::settle`: a focused input's list selects its first
+    /// row) goes to logic.
+    pub(crate) fn settle_input(&mut self) {
+        if let Some(f) = &mut self.logic {
+            for intent in f.router.settle(&mut self.renderer) {
+                f.send(to_logic(intent));
+            }
+        }
+    }
+
+    //// Hands laid-out sizes that changed to logic (`self.width`).
+    pub(crate) fn forward_facts(&mut self) {
+        let facts = self.renderer.take_layout_facts();
+        if !facts.is_empty()
+            && let Some(f) = &self.logic
+        {
+            f.send(ToLogic::Layout {
+                seq: self.renderer.layout_seq(),
+                sizes: facts,
+            });
+        }
     }
 }
 
 impl Painter for Host {
     fn paint(&mut self, surface: SurfaceId, target: &mut PaintTarget<'_>) -> Damage {
         let damage = self.renderer.paint(surface, target);
+        self.forward_facts();
+        self.wake_if_changed();
         #[cfg(test)]
         if let Some(p) = &self.probe {
             p.0.painted(surface, !damage.is_empty(), target.scale, &self.renderer);
@@ -387,9 +343,18 @@ impl SurfaceHost for Host {
             );
         }
         self.renderer.attach_surface(surface, node);
+        self.renderer
+            .set_surface_bounds(surface, monitor.and_then(monitor_bounds));
         if let Some(f) = &mut self.logic {
             f.attached(surface, node);
         }
+        self.wake_if_changed();
+    }
+
+    fn surface_entered(&mut self, surface: SurfaceId, monitor: &Monitor) {
+        self.renderer
+            .set_surface_bounds(surface, monitor_bounds(monitor));
+        self.wake_if_changed();
     }
 
     fn surface_configured(&mut self, surface: SurfaceId, size: Size, scale: Scale) {
@@ -401,6 +366,10 @@ impl SurfaceHost for Host {
         if let Some(f) = &self.logic {
             f.configured(surface, size, scale);
         }
+        // Its first layout's sizes: a container query answers before the
+        // first frame (the renderer holds it for that).
+        self.forward_facts();
+        self.wake_if_changed();
     }
 
     fn surface_detached(&mut self, surface: SurfaceId) {
@@ -444,10 +413,12 @@ impl SurfaceHost for Host {
     }
 
     fn input(&mut self, event: &InputEvent) {
-        let renderer = &self.renderer;
         if let Some(f) = &mut self.logic {
-            f.input(event, &|surface, at| renderer.hit(surface, at));
+            f.input(event, &mut self.renderer);
         }
+        // A scroll lays out again: its sizes go with it.
+        self.forward_facts();
+        self.wake_if_changed();
     }
 
     fn frame_deadline(&self, surface: SurfaceId) -> Option<Instant> {
@@ -465,7 +436,9 @@ impl SurfaceHost for Host {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use strand_scene::AxisDelta;
+    use strand_render::HitOnly;
+    use strand_scene::input::button;
+    use strand_scene::{AxisDelta, ButtonState, LogicalPoint};
     use strand_surface::MonitorId;
 
     fn monitor(model: &str, connector: &str) -> Monitor {
@@ -556,7 +529,7 @@ mod tests {
                 position: at,
             },
         ] {
-            f.input(&e, &root_only);
+            f.input(&e, &mut HitOnly(root_only));
         }
         let flag = |flag, on| ToLogic::Flag { node, flag, on };
         let event = |event: NodeEvent| ToLogic::Event { node, event };
@@ -573,162 +546,16 @@ mod tests {
                 flag(NodeFlag::Pressed, false),
                 event(NodeEvent::Click),
                 event(NodeEvent::Secondary),
-                event(NodeEvent::Scroll { dy: 15.0, dx: 0.0 }),
+                event(NodeEvent::Scroll { dy: 1.0, dx: 0.0 }),
                 flag(NodeFlag::Hover, false),
             ]
         );
         f.detached(s);
-        f.input(&button(button::LEFT, ButtonState::Released), &root_only);
-        assert!(drain(&mut el).is_empty());
-    }
-
-    /// Inside a surface the node under the pointer gets the input: its
-    /// whole chain is hovered (left nodes lose it), the chain under a
-    /// press is pressed and keeps `hover` until the release, and clicks
-    /// and scrolls go to the innermost node.
-    #[test]
-    fn input_goes_to_the_hit_node() {
-        let (mut f, mut el) = setup();
-        let s = SurfaceId(1);
-        let (root, row, a, b) = (
-            NodeId::new(1, 0),
-            NodeId::new(2, 0),
-            NodeId::new(3, 0),
-            NodeId::new(4, 0),
-        );
-        f.attached(s, root);
-        // x < 10: over `a` in `row`; x < 20: over `b` in `row`; else bare.
-        let hit = move |_: SurfaceId, p: LogicalPoint| {
-            if p.x < 10.0 {
-                vec![a, row, root]
-            } else if p.x < 20.0 {
-                vec![b, row, root]
-            } else {
-                vec![root]
-            }
-        };
-        let at = |x| LogicalPoint::new(x, 1.0);
-        let motion = |x| InputEvent::PointerMotion {
-            surface: s,
-            position: at(x),
-            time: 0,
-        };
-        let button = |x, state| InputEvent::PointerButton {
-            surface: s,
-            position: at(x),
-            button: button::LEFT,
-            state,
-            time: 0,
-        };
         f.input(
-            &InputEvent::PointerEnter {
-                surface: s,
-                position: at(5.0),
-            },
-            &hit,
+            &button(button::LEFT, ButtonState::Released),
+            &mut HitOnly(root_only),
         );
-        f.input(&motion(15.0), &hit);
-        f.input(&button(15.0, ButtonState::Pressed), &hit);
-        // Dragging out keeps hover latched on the pressed chain.
-        f.input(&motion(30.0), &hit);
-        f.input(&button(30.0, ButtonState::Released), &hit);
-        let flag = |node, flag, on| ToLogic::Flag { node, flag, on };
-        use NodeFlag::{Hover, Pressed};
-        assert_eq!(
-            drain(&mut el),
-            vec![
-                flag(root, Hover, true),
-                flag(row, Hover, true),
-                flag(a, Hover, true),
-                flag(a, Hover, false),
-                flag(b, Hover, true),
-                flag(root, Pressed, true),
-                flag(row, Pressed, true),
-                flag(b, Pressed, true),
-                flag(b, Pressed, false),
-                flag(row, Pressed, false),
-                flag(root, Pressed, false),
-                flag(b, Hover, false),
-                flag(row, Hover, false),
-                ToLogic::Event {
-                    node: root,
-                    event: NodeEvent::Click
-                },
-            ]
-        );
-        // Pressed on `a`, released on `b`: their row is clicked, not `b`.
-        f.input(&button(5.0, ButtonState::Pressed), &hit);
-        f.input(&button(15.0, ButtonState::Released), &hit);
-        let clicks: Vec<ToLogic> = drain(&mut el)
-            .into_iter()
-            .filter(|m| matches!(m, ToLogic::Event { .. }))
-            .collect();
-        assert_eq!(
-            clicks,
-            [ToLogic::Event {
-                node: row,
-                event: NodeEvent::Click
-            }]
-        );
-        // A release with no press (the press was on another surface):
-        // no click.
-        f.input(&button(5.0, ButtonState::Released), &hit);
-        assert!(
-            !drain(&mut el)
-                .iter()
-                .any(|m| matches!(m, ToLogic::Event { .. }))
-        );
-        // Scrolls go to the innermost node under the pointer, `dy` from
-        // the vertical axis and `dx` from the horizontal one.
-        let scroll = |x, dy, dx| InputEvent::PointerAxis {
-            surface: s,
-            position: at(x),
-            horizontal: AxisDelta {
-                pixels: dx,
-                value120: 0,
-                stop: false,
-            },
-            vertical: AxisDelta {
-                pixels: dy,
-                value120: 0,
-                stop: false,
-            },
-            source: None,
-            time: 0,
-        };
-        f.input(&scroll(15.0, 3.0, -2.0), &hit);
-        f.input(&scroll(5.0, -1.0, 0.0), &hit);
-        f.input(&scroll(30.0, 0.0, 4.0), &hit);
-        // Right clicks are `secondary` on the innermost node under both
-        // the press and the release, like left clicks.
-        let right = |x, state| InputEvent::PointerButton {
-            surface: s,
-            position: at(x),
-            button: button::RIGHT,
-            state,
-            time: 0,
-        };
-        f.input(&right(15.0, ButtonState::Pressed), &hit);
-        f.input(&right(15.0, ButtonState::Released), &hit);
-        f.input(&right(5.0, ButtonState::Pressed), &hit);
-        f.input(&right(15.0, ButtonState::Released), &hit);
-        // A right release with no right press: nothing.
-        f.input(&right(15.0, ButtonState::Released), &hit);
-        let events: Vec<ToLogic> = drain(&mut el)
-            .into_iter()
-            .filter(|m| matches!(m, ToLogic::Event { .. }))
-            .collect();
-        let event = |node, event| ToLogic::Event { node, event };
-        assert_eq!(
-            events,
-            [
-                event(b, NodeEvent::Scroll { dy: 3.0, dx: -2.0 }),
-                event(a, NodeEvent::Scroll { dy: -1.0, dx: 0.0 }),
-                event(root, NodeEvent::Scroll { dy: 0.0, dx: 4.0 }),
-                event(b, NodeEvent::Secondary),
-                event(row, NodeEvent::Secondary),
-            ]
-        );
+        assert!(drain(&mut el).is_empty());
     }
 
     /// Monitors are `screens` in plug order; one that comes back within

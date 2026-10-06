@@ -12,4 +12,5 @@ check::unknown_name
    ·                              ╰── no enum expected here
    ╰────
   help: `center` is a builtin variant, and the parameter it fills has no type to resolve it by:
-        write `Anchor.center` or `Align.center`, or give the parameter a type (`e: Anchor`)
+        write `Anchor.center` or `Align.center` or `Justify.center`, or give the parameter a type
+        (`e: Anchor`)

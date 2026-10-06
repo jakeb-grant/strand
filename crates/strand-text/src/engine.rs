@@ -18,7 +18,9 @@ use swash::zeno::{Angle, Format, Transform, Vector};
 use swash::{CacheKey, FontRef};
 
 use crate::atlas::{AtlasConfig, AtlasUpload, CachedGlyph, GlyphAtlas, GlyphKey, PageId};
-use crate::{Ellipsis, GlyphRun, PlacedGlyph, TextAlign, TextLayout, TextRequest, TextSpan};
+use crate::{
+    CaretStop, Ellipsis, GlyphRun, PlacedGlyph, TextAlign, TextLayout, TextRequest, TextSpan,
+};
 
 /// Largest font size shaped, in physical pixels; larger requests are
 /// shaped at this size so one value from a bad expression cannot stall the
@@ -286,9 +288,40 @@ impl TextEngine {
         let mut incomplete = false;
         let mut ink = Rect::default();
         let mut baseline = None;
+        let mut carets = Vec::new();
 
-        for line in layout.lines() {
+        for (n, line) in layout.lines().enumerate() {
             baseline.get_or_insert(line.metrics().baseline / s);
+            // Caret stops: each cluster's start, then the line's end.
+            let mut end: Option<(u32, f32)> = None;
+            for item in line.items() {
+                let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
+                    continue;
+                };
+                let mut x = glyph_run.offset();
+                for c in glyph_run.run().visual_clusters() {
+                    let r = c.text_range();
+                    let (at, after) = if c.is_rtl() {
+                        (r.end, r.start)
+                    } else {
+                        (r.start, r.end)
+                    };
+                    carets.push(CaretStop {
+                        byte: at as u32,
+                        x: x / s,
+                        line: n as u32,
+                    });
+                    x += c.advance();
+                    end = Some((after as u32, x / s));
+                }
+            }
+            if let Some((byte, x)) = end {
+                carets.push(CaretStop {
+                    byte,
+                    x,
+                    line: n as u32,
+                });
+            }
             for item in line.items() {
                 let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
                     continue;
@@ -305,10 +338,20 @@ impl TextEngine {
                 };
                 let skew = synthesis.skew().unwrap_or(0.0);
                 let brush = glyph_run.style().brush as usize;
-                let color = brush
-                    .checked_sub(1)
-                    .and_then(|i| spans.get(i))
-                    .and_then(|sp| sp.color);
+                let span = brush.checked_sub(1).and_then(|i| spans.get(i));
+                let color = span.and_then(|sp| sp.color);
+                let underline = span.is_some_and(|sp| sp.underline).then(|| {
+                    let m = run.metrics();
+                    let top = (glyph_run.baseline() - m.underline_offset).round();
+                    let x0 = glyph_run.offset().floor();
+                    let x1 = (glyph_run.offset() + glyph_run.advance()).ceil();
+                    Rect::new(
+                        x0 as i32,
+                        top as i32,
+                        (x1 - x0).max(0.0) as u32,
+                        m.underline_size.round().max(1.0) as u32,
+                    )
+                });
                 let font_id = font.data.id();
                 let cache_key = *self.font_keys.entry((font_id, font.index)).or_default();
                 let Some(mut font_ref) = FontRef::from_index(font.data.data(), font.index as usize)
@@ -316,6 +359,20 @@ impl TextEngine {
                     continue;
                 };
                 font_ref.key = cache_key;
+                // CSS `font-synthesis-weight`: a face is emboldened only
+                // for a bold request (600 and up) it is not bold enough
+                // for. fontique asks for it whenever the request is
+                // heavier than the face, so a theme's 500 on a machine
+                // with only a 400 and a 700 face (DejaVu Sans) would
+                // draw faux bold where medium is meant.
+                let requested = brush
+                    .checked_sub(1)
+                    .and_then(|i| spans.get(i))
+                    .and_then(|sp| sp.weight)
+                    .map_or(weight, |w| w.clamp(1, 1000) as f32);
+                let embolden = synthesis.embolden()
+                    && requested >= 600.0
+                    && font_ref.attributes().weight().0 < 600;
                 let mut scaler = self
                     .scale_cx
                     .builder(font_ref)
@@ -339,7 +396,7 @@ impl TextEngine {
                         glyph: g.id,
                         size_bits: font_size.to_bits(),
                         subpixel: bucket,
-                        embolden: synthesis.embolden(),
+                        embolden,
                         skew: skew as i8,
                         coords: coords_hash,
                     };
@@ -353,7 +410,7 @@ impl TextEngine {
                                 &mut uploads,
                                 g.id,
                                 bucket,
-                                synthesis.embolden(),
+                                embolden,
                                 skew,
                                 now,
                             );
@@ -380,11 +437,15 @@ impl TextEngine {
                     ink = ink.union(Rect::new(placed.x, placed.y, slot.w as u32, slot.h as u32));
                     glyphs.push(placed);
                 }
-                if !glyphs.is_empty() {
+                if let Some(u) = underline {
+                    ink = ink.union(u);
+                }
+                if !glyphs.is_empty() || underline.is_some() {
                     runs.push(GlyphRun {
                         font_size,
                         color,
                         glyphs,
+                        underline,
                     });
                 }
             }
@@ -397,6 +458,7 @@ impl TextEngine {
             baseline: baseline.unwrap_or(0.0),
             ink,
             runs,
+            carets,
             uploads,
             leases,
             reset: false,
@@ -404,6 +466,45 @@ impl TextEngine {
             atlas_pages: Some(atlas.page_ids()),
         }
     }
+}
+
+/// CSS generic family names.
+const GENERICS: [&str; 9] = [
+    "serif",
+    "sans-serif",
+    "monospace",
+    "cursive",
+    "fantasy",
+    "system-ui",
+    "emoji",
+    "math",
+    "fangsong",
+];
+
+/// Words in a family name that mark a monospace face.
+const MONO_WORDS: [&str; 5] = ["mono", "code", "courier", "consol", "terminal"];
+
+/// `family` with a generic family appended when it names none, so a
+/// theme's `"Inter"` on a machine without Inter falls back to the system
+/// sans (whole words, not a per-glyph mix of fallback fonts): `monospace`
+/// for a family whose name says it is one (`"JetBrains Mono"`, `"Fira
+/// Code"`), so columns stay aligned, else `sans-serif` (decisions.md,
+/// wave3-theme).
+fn with_generic(family: &str) -> std::borrow::Cow<'_, str> {
+    let has_generic = family.split(',').any(|f| {
+        let f = f.trim().trim_matches(|c| c == '"' || c == '\'');
+        GENERICS.iter().any(|g| g.eq_ignore_ascii_case(f))
+    });
+    if has_generic {
+        return family.into();
+    }
+    let lower = family.to_ascii_lowercase();
+    let generic = if MONO_WORDS.iter().any(|w| lower.contains(w)) {
+        "monospace"
+    } else {
+        "sans-serif"
+    };
+    format!("{family}, {generic}").into()
 }
 
 /// Shaping parameters shared by every attempt at one request.
@@ -428,9 +529,9 @@ impl Shape<'_> {
         spans: &[TextSpan],
     ) -> parley::Layout<u32> {
         let mut builder = layout_cx.ranged_builder(font_cx, text, self.scale, true);
-        builder.push_default(StyleProperty::FontFamily(FontFamily::Source(
-            self.family.into(),
-        )));
+        builder.push_default(StyleProperty::FontFamily(FontFamily::Source(with_generic(
+            self.family,
+        ))));
         builder.push_default(StyleProperty::FontSize(self.size));
         builder.push_default(StyleProperty::FontWeight(FontWeight::new(self.weight)));
         if let Some(lh) = self.line_height {
@@ -446,7 +547,10 @@ impl Shape<'_> {
                 );
             }
             if sp.italic {
-                builder.push(StyleProperty::FontStyle(FontStyle::Italic), r);
+                builder.push(StyleProperty::FontStyle(FontStyle::Italic), r.clone());
+            }
+            if sp.underline {
+                builder.push(StyleProperty::Underline(true), r);
             }
         }
         let mut layout: parley::Layout<u32> = builder.build(text);
@@ -578,4 +682,21 @@ fn rasterise(
         left: p.left,
         top: p.top,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_families_fall_back_to_their_generic() {
+        assert_eq!(with_generic("Inter"), "Inter, sans-serif");
+        assert_eq!(
+            with_generic("\"JetBrains Mono\""),
+            "\"JetBrains Mono\", monospace"
+        );
+        assert_eq!(with_generic("Fira Code"), "Fira Code, monospace");
+        assert_eq!(with_generic("Inter, serif"), "Inter, serif");
+        assert_eq!(with_generic("monospace"), "monospace");
+    }
 }

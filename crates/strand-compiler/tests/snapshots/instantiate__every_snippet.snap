@@ -11,8 +11,8 @@ bar screens="Mock | DP-1 | Display" name="Everything"
   col
     box bg=$accent
     text text="09:41"
-    slider value=0.5
-    popup open=false
+    slider two_way=[value] value=0.5
+    popup open=false two_way=[open]
     col color=$fg font=$font.ui
     box
     text text="0%"
@@ -21,22 +21,20 @@ bar screens="Mock | DP-1 | Display" name="Everything"
       text text="Firefox"
       text text="Foot"
       text text="Files"
-    segmented value=auto options=[auto, light, dark, wallpaper, mocha]
+    segmented two_way=[value] value=auto options=[auto, light, dark, wallpaper, mocha]
     col tokens={$surface: $surface.alpha(0.5)}
     box place=absolute
-    box gap=0
+    box gap=0 watch=query
     box hit=grow(6)
     box width=24
     box width=24
     box width=24
-    input
+    input nav=node 25
     list
     box drag="Pin { app: firefox, label: Firefox }"
     pages current=wifi
       page name=wifi
         text text="Wi-Fi"
-      page name=bluetooth
-        text text="Bluetooth"
     box tooltip="A tooltip"
     shader source="aurora.wgsl"
     canvas

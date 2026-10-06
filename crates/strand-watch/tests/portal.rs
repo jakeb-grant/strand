@@ -227,7 +227,7 @@ fn boot_read_then_changes() {
         &rt,
         &conn,
         "org.freedesktop.appearance",
-        "reduced-motion",
+        "cursor-size",
         Value::from(1u32),
     );
     emit(
@@ -240,6 +240,18 @@ fn boot_read_then_changes() {
     let b = next_system(&rx);
     assert_eq!(b.settings, vec![SystemSetting::Contrast(Contrast::High)]);
     assert_eq!(b.settings[0].path(), "system.contrast");
+
+    // `reduced-motion` is ours.
+    emit(
+        &rt,
+        &conn,
+        "org.freedesktop.appearance",
+        "reduced-motion",
+        Value::from(1u32),
+    );
+    let b = next_system(&rx);
+    assert_eq!(b.settings, vec![SystemSetting::ReducedMotion(true)]);
+    assert_eq!(b.settings[0].path(), "system.reduced_motion");
 
     emit(
         &rt,

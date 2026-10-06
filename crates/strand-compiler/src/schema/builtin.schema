@@ -12,6 +12,7 @@
 enum Edge { top, bottom, left, right }
 enum Anchor { center, top, bottom, left, right, top_left, top_right, bottom_left, bottom_right }
 enum Align { start, center, end, stretch, baseline }
+enum Justify { start, center, end, space_between, space_around, space_evenly }
 enum Layer { background, bottom, top, overlay }
 enum Keyboard { none, on_demand, exclusive }
 enum Screens { all, focused }
@@ -754,6 +755,11 @@ group node {
   size: length
   /// Its share of the space left in its row or column: `grow: 1`.
   grow: float
+  /// How much it gives up when its row or column is too small: `shrink: 0`
+  /// keeps its size (default 1).
+  shrink: float
+  /// How its children share the main axis: `justify: space_between`.
+  justify: Justify
   /// Space inside its edge: one to four values (`pad: 0, $space.3`).
   pad: insets
   /// Space outside its edge: one to four values.
@@ -1197,6 +1203,30 @@ palette {
   scrim
   /// The surface tint (`surface_tint`).
   surface_tint
+  /// A fill that keeps its tone in light and dark (`primary_fixed`).
+  accent_fixed
+  /// A dimmer `accent_fixed` (`primary_fixed_dim`).
+  accent_fixed_dim
+  /// Text and icons on `accent_fixed` (`on_primary_fixed`).
+  on_accent_fixed
+  /// Lower-emphasis text on `accent_fixed` (`on_primary_fixed_variant`).
+  on_accent_fixed_variant
+  /// A fill that keeps its tone in light and dark (`secondary_fixed`).
+  secondary_fixed
+  /// A dimmer `secondary_fixed` (`secondary_fixed_dim`).
+  secondary_fixed_dim
+  /// Text and icons on `secondary_fixed` (`on_secondary_fixed`).
+  on_secondary_fixed
+  /// Lower-emphasis text on `secondary_fixed` (`on_secondary_fixed_variant`).
+  on_secondary_fixed_variant
+  /// A fill that keeps its tone in light and dark (`tertiary_fixed`).
+  tertiary_fixed
+  /// A dimmer `tertiary_fixed` (`tertiary_fixed_dim`).
+  tertiary_fixed_dim
+  /// Text and icons on `tertiary_fixed` (`on_tertiary_fixed`).
+  on_tertiary_fixed
+  /// Lower-emphasis text on `tertiary_fixed` (`on_tertiary_fixed_variant`).
+  on_tertiary_fixed_variant
 }
 
 tokens {

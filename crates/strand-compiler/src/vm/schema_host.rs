@@ -262,6 +262,21 @@ impl SchemaHost {
         }
     }
 
+    /// [`SchemaHost::set`] for a value the service reports at boot (the
+    /// portal's boot read): readers update, but `on change` handlers
+    /// take it as their baseline instead of firing ("never at boot").
+    /// Only plain fields; a path inside a record is set as by `set`.
+    pub fn set_initial(&self, rt: &Runtime, path: &str, value: Value) -> Result<(), Error> {
+        let mut parts = path.split('.');
+        let (Some(service), Some(field), None) = (parts.next(), parts.next(), parts.next()) else {
+            return self.set(rt, path, value);
+        };
+        match self.field(service, field)? {
+            Field::Plain(sig) => sig.set_reloaded(rt, value).map(|_| ()),
+            Field::Keyed(..) => self.set(rt, path, value),
+        }
+    }
+
     /// The `rw` writes the program made, oldest first; clears the log
     /// (only the mock records them).
     pub fn take_writes(&self) -> Vec<WriteCall> {
@@ -480,6 +495,40 @@ impl SchemaHost {
                 }
             }
         }
+        if self.types.record(r.ty).name == "Workspace" && name == "focus" {
+            self.focus_workspace(rt, item)?;
+        }
+        Ok(())
+    }
+
+    /// The mock's `ws.focus()`: that workspace becomes the focused one
+    /// (`workspaces.all` and `workspaces.focused`), the others lose focus.
+    fn focus_workspace(&self, rt: &Runtime, ws: &Value) -> Result<(), Error> {
+        let types = &self.types;
+        let key = ValueKey(ws.identity(types));
+        let all = rt.untrack(|rt| self.read(rt, "workspaces", "all"))?;
+        let Some(list) = all.as_list() else {
+            return Ok(());
+        };
+        let path = [PathSeg::Field("focused".into())];
+        let mut focused = Value::Null;
+        let items: Vec<Value> = list
+            .iter()
+            .map(|w| {
+                let on = ValueKey(w.identity(types)) == key;
+                let new = self
+                    .set_path(w, &path, Value::Bool(on))
+                    .unwrap_or_else(|_| w.clone());
+                if on {
+                    focused = new.clone();
+                }
+                new
+            })
+            .collect();
+        if items != list {
+            self.set(rt, "workspaces.all", Value::list(items))?;
+            self.set(rt, "workspaces.focused", focused)?;
+        }
         Ok(())
     }
 }
@@ -661,7 +710,7 @@ impl ServiceHost for SchemaHost {
                 ))
             }
             ("apps", "search") => {
-                let q = arg(0).as_text().unwrap_or("").to_lowercase();
+                let q: Vec<char> = arg(0).as_text().unwrap_or("").chars().collect();
                 let all = self.read(rt, "apps", "all")?;
                 let (Some(hit), Some(range)) = (
                     self.types.find_record("Hit"),
@@ -676,13 +725,15 @@ impl ServiceHost for SchemaHost {
                         .and_then(Value::as_text)
                         .unwrap_or("")
                         .to_string();
-                    let Some(at) = name.to_lowercase().find(&q) else {
+                    // `Range` counts characters of the name as shown.
+                    let chars: Vec<char> = name.chars().collect();
+                    let Some(at) = find_folded(&chars, &q) else {
                         continue;
                     };
                     let score = if q.is_empty() {
                         0.0
                     } else {
-                        q.len() as f64 / name.len().max(1) as f64
+                        q.len() as f64 / chars.len().max(1) as f64
                     };
                     let ranges = if q.is_empty() {
                         Vec::new()
@@ -764,4 +815,11 @@ impl ServiceHost for SchemaHost {
 /// this one).
 pub fn default_value(types: &TypeTable, ty: &Ty) -> Value {
     default_of(types, ty)
+}
+
+/// Where `q` first occurs in `name`, ignoring case, in characters.
+fn find_folded(name: &[char], q: &[char]) -> Option<usize> {
+    let same = |a: char, b: char| a == b || a.to_lowercase().eq(b.to_lowercase());
+    (0..=name.len().checked_sub(q.len())?)
+        .find(|&i| q.iter().zip(&name[i..]).all(|(&c, &n)| same(n, c)))
 }

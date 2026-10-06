@@ -426,6 +426,7 @@ fn measure(rounds: usize) -> Option<Measured> {
         worker: Some(wrx),
         jobs: Some(compiler.jobs()),
         socket: None,
+        portal: None,
     };
     let (ping, ping_source) = calloop::ping::make_ping().unwrap();
     let font = std::fs::read(strand_text::test_font_path()).unwrap();
@@ -467,10 +468,7 @@ fn measure(rounds: usize) -> Option<Measured> {
     let mut mgr = SurfaceManager::with_connection(conn, host, config).unwrap();
     let handle = mgr.loop_handle();
     handle
-        .insert_source(ping_source, |_, _, state| {
-            state.host_mut().renderer.update();
-            state.poll();
-        })
+        .insert_source(ping_source, |_, _, state| crate::demo::text_ready(state))
         .unwrap();
     let (tx, rx) = calloop::channel::channel::<SceneDiff>();
     let logic = std::thread::spawn(move || logic(boot, Storage::none(), from_main, tx, live));

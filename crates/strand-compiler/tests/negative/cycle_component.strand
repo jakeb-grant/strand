@@ -1,4 +1,4 @@
-// expect: check::cycle
+// expect: check::cycle, check::not_drawn_yet
 // A component that always contains itself would mount forever: a static
 // cycle, named by its path and reported once however many calls close it.
 // Under `if`, `for`, `match`, a `page`, a `tooltip` or a `popup` the inner

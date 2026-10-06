@@ -13,10 +13,24 @@ strand-text.workspace = true
 # Single-threaded f32 pipeline only: no worker threads (vello's filters
 # panic multi-threaded), and none of the default png/text extras.
 vello_cpu = { version = "0.3", default-features = false, features = ["std", "f32_pipeline"] }
+taffy = { version = "0.14", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "content_size"] }
+# Images and icons (design.md: decoded at drawn size into a 6 MB LRU,
+# icons from the freedesktop icon theme). resvg without text, system
+# fonts or embedded raster images: icons need none of them. JPEG through
+# jpeg-decoder for its reduced-size IDCT (1/2, 1/4, 1/8), without rayon.
+png = "0.18"
+jpeg-decoder = { version = "0.3", default-features = false }
+resvg = { version = "0.48", default-features = false }
+freedesktop-icons = "0.4"
 
 [dev-dependencies]
-png = "0.18"
+# Theme renders: real palettes and the built-in base tokens.
+strand-theme.workspace = true
 criterion = "0.8"
+# End-to-end tests only: `.strand` sources compiled to the diffs render
+# takes (strand-compiler does not depend on strand-render).
+strand-compiler.workspace = true
+strand-core.workspace = true
 
 [lints]
 workspace = true

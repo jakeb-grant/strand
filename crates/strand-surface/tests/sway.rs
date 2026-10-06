@@ -958,3 +958,1063 @@ fn pointer_events_arrive_in_surface_coordinates() {
     assert!(mgr.state().last_button_serial().is_some());
     drop(pointer);
 }
+
+/// A shadowed panel: the overhang grows the layer surface and moves its
+/// margins (its box stays at margin 40 from the top-left corner), and the
+/// input region is the box: a click on the shadow goes past the surface,
+/// a click on the box arrives in surface coordinates (overhang included).
+#[test]
+fn shadow_overhang_grows_the_surface_but_not_its_input() {
+    use wayland_client::globals::{GlobalListContents, registry_queue_init};
+    use wayland_client::protocol::{wl_pointer, wl_registry};
+    use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
+    use wayland_protocols_wlr::virtual_pointer::v1::client::{
+        zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1,
+        zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
+    };
+
+    struct Client;
+    impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Client {
+        fn event(
+            _: &mut Self,
+            _: &wl_registry::WlRegistry,
+            _: wl_registry::Event,
+            _: &GlobalListContents,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+    delegate_noop!(Client: ignore ZwlrVirtualPointerManagerV1);
+    delegate_noop!(Client: ignore ZwlrVirtualPointerV1);
+
+    let Some(sway) = Sway::start("shadow_overhang_grows_the_surface_but_not_its_input") else {
+        return;
+    };
+    let mut mgr = strand_surface::SurfaceManager::with_connection(
+        sway.connect(),
+        TestHost::default(),
+        Config::default(),
+    )
+    .unwrap();
+    const PANEL: NodeId = NodeId::new(7, 0);
+    let mut spec = layer_spec(NodeKind::Panel, "Card", "top_left", 200.0, 100.0);
+    spec.margin = Insets::all(40.0);
+    spec.overhang = Insets::all(20.0);
+    mgr.state_mut()
+        .apply_surface_change(PANEL, SurfaceChange::Created(spec));
+    let input = mgr.take_input().unwrap();
+    wait_for_bars(&mut mgr, 1);
+    let id = mgr.state().surfaces_of(PANEL)[0];
+    let info = mgr.state().surface(id).unwrap();
+    assert_eq!(info.logical_size, (240, 140));
+    assert_eq!(info.input_region, Some(Some((20, 20, 200, 100))));
+
+    let conn = sway.connect();
+    let (globals, mut queue) = registry_queue_init::<Client>(&conn).unwrap();
+    let qh = queue.handle();
+    let manager: ZwlrVirtualPointerManagerV1 = globals.bind(&qh, 1..=2, ()).unwrap();
+    let pointer = manager.create_virtual_pointer(None, &qh, ());
+    queue.roundtrip(&mut Client).unwrap();
+    pump(&mut mgr, Duration::from_millis(200));
+    let click = |t: u32, x: u32, y: u32| {
+        pointer.motion_absolute(t, x, y, 1920, 1080);
+        pointer.frame();
+        pointer.button(t + 1, 0x110, wl_pointer::ButtonState::Pressed);
+        pointer.frame();
+        pointer.button(t + 2, 0x110, wl_pointer::ButtonState::Released);
+        pointer.frame();
+    };
+    // On the shadow (10 px left of the box), then on the box.
+    click(1, 30, 60);
+    click(10, 60, 60);
+    queue.roundtrip(&mut Client).unwrap();
+    let mut events = Vec::new();
+    let deadline = Instant::now() + WAIT;
+    while Instant::now() < deadline
+        && events
+            .iter()
+            .filter(|e| matches!(e, InputEvent::PointerButton { .. }))
+            .count()
+            < 2
+    {
+        mgr.dispatch(Some(Duration::from_millis(50))).unwrap();
+        events.extend(input.try_iter());
+    }
+    let buttons: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            InputEvent::PointerButton { position, .. } => Some(*position),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(buttons.len(), 2, "only the box takes the click: {events:?}");
+    // Box at 40 on screen = 20 into the surface past its 20 px overhang.
+    assert!(
+        buttons
+            .iter()
+            .all(|p| (p.x - 40.0).abs() < 1.0 && (p.y - 40.0).abs() < 1.0),
+        "{buttons:?}"
+    );
+    drop(pointer);
+}
+
+/// An open `keyboard: exclusive` panel whose `open` is two-way (the
+/// design's launcher) gets a transparent catcher under it: a click
+/// outside it is `ClickAway` on the panel, a click inside is the panel's
+/// own button event; closing the panel takes the catcher away, and a
+/// panel whose `open` is one-way gets none.
+#[test]
+fn a_click_outside_an_exclusive_panel_is_click_away() {
+    use wayland_client::globals::{GlobalListContents, registry_queue_init};
+    use wayland_client::protocol::{wl_pointer, wl_registry};
+    use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
+    use wayland_protocols_wlr::virtual_pointer::v1::client::{
+        zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1,
+        zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
+    };
+
+    struct Client;
+    impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Client {
+        fn event(
+            _: &mut Self,
+            _: &wl_registry::WlRegistry,
+            _: wl_registry::Event,
+            _: &GlobalListContents,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+    delegate_noop!(Client: ignore ZwlrVirtualPointerManagerV1);
+    delegate_noop!(Client: ignore ZwlrVirtualPointerV1);
+
+    let Some(sway) = Sway::start("a_click_outside_an_exclusive_panel_is_click_away") else {
+        return;
+    };
+    let mut mgr = strand_surface::SurfaceManager::with_connection(
+        sway.connect(),
+        TestHost::default(),
+        Config::default(),
+    )
+    .unwrap();
+    const PANEL: NodeId = NodeId::new(7, 0);
+    const PLAIN: NodeId = NodeId::new(8, 0);
+    let mut spec = layer_spec(NodeKind::Panel, "Launcher", "center", 200.0, 100.0);
+    spec.keyboard = strand_scene::Keyboard::Exclusive;
+    spec.open_two_way = true;
+    mgr.state_mut()
+        .apply_surface_change(PANEL, SurfaceChange::Created(spec.clone()));
+    let input = mgr.take_input().unwrap();
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surfaces()
+                .iter()
+                .any(|i| i.click_away && i.stats.commits > 0)
+        })
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surfaces());
+
+    let conn = sway.connect();
+    let (globals, mut queue) = registry_queue_init::<Client>(&conn).unwrap();
+    let qh = queue.handle();
+    let manager: ZwlrVirtualPointerManagerV1 = globals.bind(&qh, 1..=2, ()).unwrap();
+    let pointer = manager.create_virtual_pointer(None, &qh, ());
+    queue.roundtrip(&mut Client).unwrap();
+    pump(&mut mgr, Duration::from_millis(200));
+    let click = |t: u32, x: u32, y: u32| {
+        pointer.motion_absolute(t, x, y, 1920, 1080);
+        pointer.frame();
+        pointer.button(t + 1, 0x110, wl_pointer::ButtonState::Pressed);
+        pointer.frame();
+        pointer.button(t + 2, 0x110, wl_pointer::ButtonState::Released);
+        pointer.frame();
+    };
+    // Outside (top left of the output), then inside (its middle).
+    click(1, 100, 100);
+    click(10, 960, 540);
+    queue.roundtrip(&mut Client).unwrap();
+    let mut events = Vec::new();
+    let deadline = Instant::now() + WAIT;
+    let done = |events: &[InputEvent]| {
+        events
+            .iter()
+            .any(|e| matches!(e, InputEvent::ClickAway { .. }))
+            && events
+                .iter()
+                .filter(|e| matches!(e, InputEvent::PointerButton { .. }))
+                .count()
+                >= 2
+    };
+    while Instant::now() < deadline && !done(&events) {
+        mgr.dispatch(Some(Duration::from_millis(50))).unwrap();
+        events.extend(input.try_iter());
+    }
+    let id = mgr.state().surfaces_of(PANEL)[0];
+    let away: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, InputEvent::ClickAway { .. }))
+        .collect();
+    assert_eq!(away, [&InputEvent::ClickAway { surface: id }], "{events:?}");
+    let inside: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            InputEvent::PointerButton {
+                surface, position, ..
+            } => Some((*surface, *position)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(inside.len(), 2, "press and release inside: {events:?}");
+    assert!(
+        inside
+            .iter()
+            .all(|(s, p)| *s == id && (p.x - 100.0).abs() < 1.0 && (p.y - 50.0).abs() < 1.0),
+        "{inside:?}"
+    );
+
+    // Closed: the catcher goes with it; a one-way `open` gets none.
+    spec.open = false;
+    mgr.state_mut().apply_surface_change(
+        PANEL,
+        SurfaceChange::Updated {
+            spec: spec.clone(),
+            recreate: false,
+        },
+    );
+    let mut plain = spec.clone();
+    plain.name = Some("Plain".into());
+    plain.open = true;
+    plain.open_two_way = false;
+    mgr.state_mut()
+        .apply_surface_change(PLAIN, SurfaceChange::Created(plain));
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surfaces_of(PANEL).is_empty()
+                && s.surfaces()
+                    .iter()
+                    .any(|i| i.node == PLAIN && i.stats.commits > 0)
+        })
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surfaces());
+    assert!(mgr.state().surfaces().iter().all(|i| !i.click_away));
+    events.clear();
+    click(20, 100, 100);
+    queue.roundtrip(&mut Client).unwrap();
+    pump(&mut mgr, Duration::from_millis(300));
+    events.extend(input.try_iter());
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, InputEvent::ClickAway { .. })),
+        "{events:?}"
+    );
+    drop(pointer);
+}
+
+/// With two outputs, an open `keyboard: exclusive` panel on one gets a
+/// catcher over the other too (the whole output, bars included): a click
+/// there is a click away from it.
+#[test]
+fn a_click_on_another_output_is_click_away() {
+    use wayland_client::globals::{GlobalListContents, registry_queue_init};
+    use wayland_client::protocol::{wl_pointer, wl_registry};
+    use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
+    use wayland_protocols_wlr::virtual_pointer::v1::client::{
+        zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1,
+        zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
+    };
+
+    struct Client;
+    impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Client {
+        fn event(
+            _: &mut Self,
+            _: &wl_registry::WlRegistry,
+            _: wl_registry::Event,
+            _: &GlobalListContents,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+    delegate_noop!(Client: ignore ZwlrVirtualPointerManagerV1);
+    delegate_noop!(Client: ignore ZwlrVirtualPointerV1);
+
+    let Some(sway) = Sway::start("a_click_on_another_output_is_click_away") else {
+        return;
+    };
+    let second = sway.create_output();
+    sway.msg(&["output", "HEADLESS-1", "position", "0", "0"]);
+    sway.msg(&["output", &second, "position", "1920", "0"]);
+    sway.msg(&["focus", "output", "HEADLESS-1"]);
+    let mut mgr = strand_surface::SurfaceManager::with_connection(
+        sway.connect(),
+        TestHost::default(),
+        Config::default(),
+    )
+    .unwrap();
+    const PANEL: NodeId = NodeId::new(7, 0);
+    let mut spec = layer_spec(NodeKind::Panel, "Launcher", "center", 200.0, 100.0);
+    spec.keyboard = strand_scene::Keyboard::Exclusive;
+    spec.open_two_way = true;
+    mgr.state_mut()
+        .apply_surface_change(PANEL, SurfaceChange::Created(spec));
+    let input = mgr.take_input().unwrap();
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surfaces()
+                .iter()
+                .any(|i| i.click_away && i.stats.commits > 0)
+        })
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surfaces());
+    pump(&mut mgr, Duration::from_millis(300));
+    let id = mgr.state().surfaces_of(PANEL)[0];
+
+    let conn = sway.connect();
+    let (globals, mut queue) = registry_queue_init::<Client>(&conn).unwrap();
+    let qh = queue.handle();
+    let manager: ZwlrVirtualPointerManagerV1 = globals.bind(&qh, 1..=2, ()).unwrap();
+    let pointer = manager.create_virtual_pointer(None, &qh, ());
+    queue.roundtrip(&mut Client).unwrap();
+    pump(&mut mgr, Duration::from_millis(200));
+    // The middle of the second output, in a 3840 × 1080 layout.
+    pointer.motion_absolute(1, 1920 + 960, 540, 3840, 1080);
+    pointer.frame();
+    pointer.button(2, 0x110, wl_pointer::ButtonState::Pressed);
+    pointer.frame();
+    pointer.button(3, 0x110, wl_pointer::ButtonState::Released);
+    pointer.frame();
+    queue.roundtrip(&mut Client).unwrap();
+    let mut events = Vec::new();
+    let deadline = Instant::now() + WAIT;
+    while Instant::now() < deadline
+        && !events
+            .iter()
+            .any(|e| matches!(e, InputEvent::ClickAway { .. }))
+    {
+        mgr.dispatch(Some(Duration::from_millis(50))).unwrap();
+        events.extend(input.try_iter());
+    }
+    assert!(
+        events.contains(&InputEvent::ClickAway { surface: id }),
+        "{events:?}"
+    );
+    drop(pointer);
+}
+
+/// `popup`s are anchored `xdg_popup`s that nest (design.md, "Input and
+/// structure"): one in a top bar opens below the bar under its anchor,
+/// its box (the window geometry) placed and its shadow overhang around
+/// it; one nested in it opens below its own anchor; a click away ends
+/// the grab and both are dismissed (`ClickAway` on each, then gone),
+/// and they are not shown again until their specs close and reopen.
+#[test]
+fn popups_nest_under_their_anchors_and_close_on_click_away() {
+    use wayland_client::globals::{GlobalListContents, registry_queue_init};
+    use wayland_client::protocol::{wl_pointer, wl_registry};
+    use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
+    use wayland_protocols_wlr::virtual_pointer::v1::client::{
+        zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1,
+        zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
+    };
+
+    struct Client;
+    impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Client {
+        fn event(
+            _: &mut Self,
+            _: &wl_registry::WlRegistry,
+            _: wl_registry::Event,
+            _: &GlobalListContents,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+    delegate_noop!(Client: ignore ZwlrVirtualPointerManagerV1);
+    delegate_noop!(Client: ignore ZwlrVirtualPointerV1);
+
+    let Some(sway) = Sway::start("popups_nest_under_their_anchors_and_close_on_click_away") else {
+        return;
+    };
+    let mut mgr = strand_surface::SurfaceManager::with_connection(
+        sway.connect(),
+        TestHost::default(),
+        Config::default(),
+    )
+    .unwrap();
+    const BAR: NodeId = NodeId::new(1, 0);
+    const POPUP: NodeId = NodeId::new(2, 0);
+    const MENU: NodeId = NodeId::new(3, 0);
+    mgr.state_mut()
+        .apply_surface_change(BAR, SurfaceChange::Created(bar_spec("Top", 36.0)));
+    let input = mgr.take_input().unwrap();
+    wait_for_bars(&mut mgr, 1);
+
+    // A press on the bar: the serial the popup's grab uses.
+    let conn = sway.connect();
+    let (globals, mut queue) = registry_queue_init::<Client>(&conn).unwrap();
+    let qh = queue.handle();
+    let manager: ZwlrVirtualPointerManagerV1 = globals.bind(&qh, 1..=2, ()).unwrap();
+    let pointer = manager.create_virtual_pointer(None, &qh, ());
+    queue.roundtrip(&mut Client).unwrap();
+    pump(&mut mgr, Duration::from_millis(200));
+    let click = |t: u32, x: u32, y: u32| {
+        pointer.motion_absolute(t, x, y, 1920, 1080);
+        pointer.frame();
+        pointer.button(t + 1, 0x110, wl_pointer::ButtonState::Pressed);
+        pointer.frame();
+        pointer.button(t + 2, 0x110, wl_pointer::ButtonState::Released);
+        pointer.frame();
+    };
+    click(1, 130, 18);
+    queue.roundtrip(&mut Client).unwrap();
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.host()
+                .input
+                .iter()
+                .any(|e| matches!(e, InputEvent::PointerButton { .. }))
+        })
+        .unwrap();
+    assert!(ok, "the press reached the bar");
+
+    // The calendar: 200 × 120 with a 10 px shadow, anchored to a 60 × 20
+    // clock at (100, 8) in the bar.
+    let mut spec =
+        strand_scene::SurfaceSpec::resolve(NodeKind::Popup, |_| None::<&strand_scene::PropValue>);
+    spec.name = Some("Calendar".into());
+    spec.parent = Some(BAR);
+    spec.anchor_rect = Some(LogicalRect::new(100.0, 8.0, 60.0, 20.0));
+    spec.width = Some(200.0);
+    spec.height = Some(120.0);
+    spec.overhang = Insets::all(10.0);
+    spec.open_two_way = true;
+    mgr.state_mut()
+        .apply_surface_change(POPUP, SurfaceChange::Created(spec.clone()));
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surfaces_of(POPUP)
+                .first()
+                .and_then(|id| s.surface(*id))
+                .is_some_and(|i| i.stats.commits > 0)
+        })
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surfaces());
+    let popup = mgr.state().surfaces_of(POPUP)[0];
+    let info = mgr.state().surface(popup).unwrap();
+    assert_eq!(info.kind, NodeKind::Popup);
+    assert_eq!(info.logical_size, (220, 140), "box plus overhang");
+    assert_eq!(info.input_region, Some(Some((10, 10, 200, 120))));
+    pump(&mut mgr, Duration::from_millis(100));
+    let shot = sway.grim("HEADLESS-1");
+    // Below the bar (36) and a 6 px gap, centred under the clock (130):
+    // the box spans x 30..230, y 42..162, its shadow 10 px around it.
+    assert_eq!(shot.rgb(130, 100), BLUE, "the popup's box");
+    assert_eq!(shot.rgb(25, 100), BLUE, "its overhang");
+    assert_ne!(shot.rgb(130, 175), BLUE, "nothing past the overhang");
+    assert_ne!(shot.rgb(10, 100), BLUE);
+
+    // A menu nested in it, anchored to (20, 30, 40, 20) in its buffer.
+    let mut menu = spec.clone();
+    menu.name = Some("Menu".into());
+    menu.parent = Some(POPUP);
+    menu.anchor_rect = Some(LogicalRect::new(20.0, 30.0, 40.0, 20.0));
+    menu.width = Some(80.0);
+    menu.height = Some(60.0);
+    menu.overhang = Insets::default();
+    mgr.state_mut()
+        .apply_surface_change(MENU, SurfaceChange::Created(menu.clone()));
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surfaces_of(MENU)
+                .first()
+                .and_then(|id| s.surface(*id))
+                .is_some_and(|i| i.stats.commits > 0)
+        })
+        .unwrap();
+    assert!(ok, "the nested popup maps: {:?}", mgr.state().surfaces());
+
+    // A click on the desktop ends the grab: both are dismissed.
+    let before = mgr.state().host().input.len();
+    click(10, 1500, 800);
+    queue.roundtrip(&mut Client).unwrap();
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surfaces_of(POPUP).is_empty() && s.surfaces_of(MENU).is_empty()
+        })
+        .unwrap();
+    assert!(ok, "dismissed: {:?}", mgr.state().surfaces());
+    let away: Vec<_> = mgr.state().host().input[before..]
+        .iter()
+        .filter_map(|e| match e {
+            InputEvent::ClickAway { surface } => Some(*surface),
+            _ => None,
+        })
+        .collect();
+    assert!(away.contains(&popup), "{away:?}");
+    assert!(!mgr.state().surfaces_of(BAR).is_empty(), "the bar stays");
+    // Still open in its spec (logic has not answered): not shown again.
+    mgr.state_mut().apply_surface_change(
+        POPUP,
+        SurfaceChange::Updated {
+            spec: spec.clone(),
+            recreate: false,
+        },
+    );
+    pump(&mut mgr, Duration::from_millis(200));
+    assert!(mgr.state().surfaces_of(POPUP).is_empty());
+    // Closed and opened again: it comes back.
+    let mut closed = spec.clone();
+    closed.open = false;
+    for s in [closed, spec] {
+        mgr.state_mut().apply_surface_change(
+            POPUP,
+            SurfaceChange::Updated {
+                spec: s,
+                recreate: false,
+            },
+        );
+    }
+    let ok = mgr
+        .dispatch_until(WAIT, |s| !s.surfaces_of(POPUP).is_empty())
+        .unwrap();
+    assert!(ok);
+    drop(input);
+    drop(pointer);
+}
+
+/// A popup grabs only with the serial of a recent press (within
+/// `GRAB_WINDOW`): one opened by a timer or IPC seconds after the last
+/// click has no grab (compositors that check the serial would end it at
+/// once), and stays shown. A second grabbing popup outside the first's
+/// chain dismisses the first (xdg-shell's topmost grab rule).
+#[test]
+fn popups_grab_only_right_after_a_press() {
+    use wayland_client::globals::{GlobalListContents, registry_queue_init};
+    use wayland_client::protocol::{wl_pointer, wl_registry};
+    use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
+    use wayland_protocols_wlr::virtual_pointer::v1::client::{
+        zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1,
+        zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
+    };
+
+    struct Client;
+    impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Client {
+        fn event(
+            _: &mut Self,
+            _: &wl_registry::WlRegistry,
+            _: wl_registry::Event,
+            _: &GlobalListContents,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+    delegate_noop!(Client: ignore ZwlrVirtualPointerManagerV1);
+    delegate_noop!(Client: ignore ZwlrVirtualPointerV1);
+
+    let Some(sway) = Sway::start("popups_grab_only_right_after_a_press") else {
+        return;
+    };
+    let mut mgr = strand_surface::SurfaceManager::with_connection(
+        sway.connect(),
+        TestHost::default(),
+        Config::default(),
+    )
+    .unwrap();
+    const BAR: NodeId = NodeId::new(1, 0);
+    const CALENDAR: NodeId = NodeId::new(2, 0);
+    const VOLUME: NodeId = NodeId::new(3, 0);
+    const LATE: NodeId = NodeId::new(4, 0);
+    mgr.state_mut()
+        .apply_surface_change(BAR, SurfaceChange::Created(bar_spec("Top", 36.0)));
+    let input = mgr.take_input().unwrap();
+    wait_for_bars(&mut mgr, 1);
+
+    let conn = sway.connect();
+    let (globals, mut queue) = registry_queue_init::<Client>(&conn).unwrap();
+    let qh = queue.handle();
+    let manager: ZwlrVirtualPointerManagerV1 = globals.bind(&qh, 1..=2, ()).unwrap();
+    let pointer = manager.create_virtual_pointer(None, &qh, ());
+    queue.roundtrip(&mut Client).unwrap();
+    pump(&mut mgr, Duration::from_millis(200));
+    // A first click on the desktop wakes the new virtual pointer up.
+    let click = |t: u32, x: u32, y: u32| {
+        pointer.motion_absolute(t, x, y, 1920, 1080);
+        pointer.frame();
+        pointer.button(t + 1, 0x110, wl_pointer::ButtonState::Pressed);
+        pointer.frame();
+        pointer.button(t + 2, 0x110, wl_pointer::ButtonState::Released);
+        pointer.frame();
+    };
+    click(1, 1500, 800);
+    queue.roundtrip(&mut Client).unwrap();
+    pump(&mut mgr, Duration::from_millis(100));
+    click(10, 130, 18);
+    queue.roundtrip(&mut Client).unwrap();
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.host()
+                .input
+                .iter()
+                .any(|e| matches!(e, InputEvent::PointerButton { .. }))
+        })
+        .unwrap();
+    assert!(ok, "the press reached the bar");
+
+    let popup =
+        |name: &str, x: f32| {
+            let mut spec = strand_scene::SurfaceSpec::resolve(NodeKind::Popup, |_| {
+                None::<&strand_scene::PropValue>
+            });
+            spec.name = Some(name.into());
+            spec.parent = Some(BAR);
+            spec.anchor_rect = Some(LogicalRect::new(x, 8.0, 60.0, 20.0));
+            spec.width = Some(200.0);
+            spec.height = Some(120.0);
+            spec.open_two_way = true;
+            spec
+        };
+    let mapped = |mgr: &mut strand_surface::SurfaceManager<TestHost>, node: NodeId| {
+        mgr.dispatch_until(WAIT, |s| {
+            s.surfaces_of(node)
+                .first()
+                .and_then(|id| s.surface(*id))
+                .is_some_and(|i| i.stats.commits > 0)
+        })
+        .unwrap()
+    };
+
+    // Opened by the click: it grabs.
+    mgr.state_mut()
+        .apply_surface_change(CALENDAR, SurfaceChange::Created(popup("Calendar", 100.0)));
+    assert!(mapped(&mut mgr, CALENDAR));
+    assert_eq!(mgr.state().stats().grabs, 1);
+    let calendar = mgr.state().surfaces_of(CALENDAR)[0];
+
+    // A sibling grabbing popup, still within the window: the calendar
+    // goes first, told as a click away.
+    let before = mgr.state().host().input.len();
+    mgr.state_mut()
+        .apply_surface_change(VOLUME, SurfaceChange::Created(popup("Volume", 600.0)));
+    assert!(mapped(&mut mgr, VOLUME));
+    assert_eq!(mgr.state().stats().grabs, 2);
+    assert!(mgr.state().surfaces_of(CALENDAR).is_empty());
+    assert!(
+        mgr.state().host().input[before..].contains(&InputEvent::ClickAway { surface: calendar }),
+        "{:?}",
+        &mgr.state().host().input[before..]
+    );
+    let bar = mgr.state().surfaces_of(BAR)[0];
+    assert!(mgr.state().holds_keyboard_for_popup(bar));
+    let volume = mgr.state().surfaces_of(VOLUME)[0];
+
+    // Long after the click (a timer, IPC): no grab, and it stays shown,
+    // as does the grabbing volume menu (a popup with no grab is not
+    // bound by the topmost-grab rule).
+    pump(
+        &mut mgr,
+        strand_surface::GRAB_WINDOW + Duration::from_millis(700),
+    );
+    let before = mgr.state().host().input.len();
+    mgr.state_mut()
+        .apply_surface_change(LATE, SurfaceChange::Created(popup("Late", 300.0)));
+    assert!(mapped(&mut mgr, LATE));
+    assert_eq!(mgr.state().stats().grabs, 2, "no grab with a stale serial");
+    pump(&mut mgr, Duration::from_millis(600));
+    assert_eq!(mgr.state().surfaces_of(LATE).len(), 1, "still shown");
+    assert_eq!(
+        mgr.state().surfaces_of(VOLUME),
+        vec![volume],
+        "the grabbing sibling stays open"
+    );
+    assert!(
+        !mgr.state().host().input[before..]
+            .iter()
+            .any(|e| matches!(e, InputEvent::ClickAway { .. })),
+        "{:?}",
+        &mgr.state().host().input[before..]
+    );
+
+    // The volume menu closes: the late popup alone does not hold the
+    // keyboard.
+    let mut closed = popup("Volume", 600.0);
+    closed.open = false;
+    mgr.state_mut().apply_surface_change(
+        VOLUME,
+        SurfaceChange::Updated {
+            spec: closed,
+            recreate: false,
+        },
+    );
+    pump(&mut mgr, Duration::from_millis(100));
+    assert!(mgr.state().surfaces_of(VOLUME).is_empty());
+    assert_eq!(mgr.state().surfaces_of(LATE).len(), 1);
+    assert!(
+        !mgr.state().holds_keyboard_for_popup(bar),
+        "a popup with no grab takes no keyboard"
+    );
+    let shot = sway.grim("HEADLESS-1");
+    // Centred under its anchor (330), below the bar.
+    assert_eq!(shot.rgb(330, 100), BLUE, "the late popup is drawn");
+    drop(input);
+    drop(pointer);
+}
+
+/// Escape reaches a grabbing popup over a `keyboard: none` bar on a real
+/// compositor (a virtual keyboard, `zwp_virtual_keyboard_v1`): the popup
+/// gets keyboard focus from its grab, and the key arrives on it (the
+/// router turns it into `open: false`, tested offline in
+/// strand-render's `popups.rs::escape_closes_a_popup`).
+#[test]
+fn escape_reaches_a_grabbing_popup() {
+    use std::io::Write as _;
+    use std::os::fd::AsFd;
+    use wayland_client::globals::{GlobalListContents, registry_queue_init};
+    use wayland_client::protocol::{wl_pointer, wl_registry, wl_seat};
+    use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
+    use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
+        zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1,
+        zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
+    };
+    use wayland_protocols_wlr::virtual_pointer::v1::client::{
+        zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1,
+        zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
+    };
+
+    struct Client;
+    impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Client {
+        fn event(
+            _: &mut Self,
+            _: &wl_registry::WlRegistry,
+            _: wl_registry::Event,
+            _: &GlobalListContents,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+    delegate_noop!(Client: ignore ZwlrVirtualPointerManagerV1);
+    delegate_noop!(Client: ignore ZwlrVirtualPointerV1);
+    delegate_noop!(Client: ignore ZwpVirtualKeyboardManagerV1);
+    delegate_noop!(Client: ignore ZwpVirtualKeyboardV1);
+    delegate_noop!(Client: ignore wl_seat::WlSeat);
+
+    let Some(sway) = Sway::start("escape_reaches_a_grabbing_popup") else {
+        return;
+    };
+    let mut mgr = strand_surface::SurfaceManager::with_connection(
+        sway.connect(),
+        TestHost::default(),
+        Config::default(),
+    )
+    .unwrap();
+    const BAR: NodeId = NodeId::new(1, 0);
+    const POPUP: NodeId = NodeId::new(2, 0);
+    mgr.state_mut()
+        .apply_surface_change(BAR, SurfaceChange::Created(bar_spec("Top", 36.0)));
+    let input = mgr.take_input().unwrap();
+    wait_for_bars(&mut mgr, 1);
+
+    let conn = sway.connect();
+    let (globals, mut queue) = registry_queue_init::<Client>(&conn).unwrap();
+    let qh = queue.handle();
+    let seat: wl_seat::WlSeat = globals.bind(&qh, 1..=7, ()).unwrap();
+    // A keyboard with one key, Escape (keycode 9 = evdev 1 + 8), its
+    // keymap self-contained (no xkeyboard-config includes).
+    let kbd_manager: ZwpVirtualKeyboardManagerV1 = globals.bind(&qh, 1..=1, ()).unwrap();
+    let keyboard = kbd_manager.create_virtual_keyboard(&seat, &qh, ());
+    let keymap = "xkb_keymap {\n\
+        xkb_keycodes \"strand\" { minimum = 8; maximum = 255; <ESC> = 9; };\n\
+        xkb_types \"strand\" { type \"ONE_LEVEL\" { modifiers = none; level_name[Level1] = \"Any\"; }; };\n\
+        xkb_compatibility \"strand\" { };\n\
+        xkb_symbols \"strand\" { key <ESC> { [ Escape ] }; };\n\
+        };\n";
+    let path = std::env::temp_dir().join(format!("strand-keymap-{}", std::process::id()));
+    let mut file = std::fs::File::create(&path).unwrap();
+    file.write_all(keymap.as_bytes()).unwrap();
+    file.write_all(&[0]).unwrap();
+    file.flush().unwrap();
+    let file = std::fs::File::open(&path).unwrap();
+    keyboard.keymap(1, file.as_fd(), keymap.len() as u32 + 1);
+    let ptr_manager: ZwlrVirtualPointerManagerV1 = globals.bind(&qh, 1..=2, ()).unwrap();
+    let pointer = ptr_manager.create_virtual_pointer(None, &qh, ());
+    queue.roundtrip(&mut Client).unwrap();
+    pump(&mut mgr, Duration::from_millis(300));
+    let _ = std::fs::remove_file(&path);
+
+    let click = |t: u32, x: u32, y: u32| {
+        pointer.motion_absolute(t, x, y, 1920, 1080);
+        pointer.frame();
+        pointer.button(t + 1, 0x110, wl_pointer::ButtonState::Pressed);
+        pointer.frame();
+        pointer.button(t + 2, 0x110, wl_pointer::ButtonState::Released);
+        pointer.frame();
+    };
+    // Wake the new pointer on the desktop, then click the bar.
+    click(1, 1500, 800);
+    queue.roundtrip(&mut Client).unwrap();
+    pump(&mut mgr, Duration::from_millis(100));
+    click(10, 130, 18);
+    queue.roundtrip(&mut Client).unwrap();
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.host()
+                .input
+                .iter()
+                .any(|e| matches!(e, InputEvent::PointerButton { .. }))
+        })
+        .unwrap();
+    assert!(ok, "the press reached the bar");
+
+    let mut spec =
+        strand_scene::SurfaceSpec::resolve(NodeKind::Popup, |_| None::<&strand_scene::PropValue>);
+    spec.name = Some("Calendar".into());
+    spec.parent = Some(BAR);
+    spec.anchor_rect = Some(LogicalRect::new(100.0, 8.0, 60.0, 20.0));
+    spec.width = Some(200.0);
+    spec.height = Some(120.0);
+    spec.open_two_way = true;
+    mgr.state_mut()
+        .apply_surface_change(POPUP, SurfaceChange::Created(spec));
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surfaces_of(POPUP)
+                .first()
+                .and_then(|id| s.surface(*id))
+                .is_some_and(|i| i.stats.commits > 0)
+        })
+        .unwrap();
+    assert!(ok, "the popup maps");
+    assert_eq!(mgr.state().stats().grabs, 1);
+    let popup = mgr.state().surfaces_of(POPUP)[0];
+    // The bar holds the keyboard while its grabbing popup is open, and
+    // the popup is told it has it.
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.host()
+                .input
+                .contains(&InputEvent::KeyboardEnter { surface: popup })
+        })
+        .unwrap();
+    assert!(
+        ok,
+        "the grabbing popup has the keyboard: {:?} {:?}",
+        mgr.state().keyboard_focus(),
+        mgr.state().host().input
+    );
+
+    // Escape, pressed and released (evdev KEY_ESC = 1).
+    keyboard.key(100, 1, 1);
+    keyboard.key(101, 1, 0);
+    queue.roundtrip(&mut Client).unwrap();
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.host().input.iter().any(|e| {
+                matches!(e, InputEvent::Key { surface, key }
+                    if *surface == popup && key.name == "Escape"
+                        && key.state == ButtonState::Pressed)
+            })
+        })
+        .unwrap();
+    assert!(
+        ok,
+        "Escape reached the popup: {:?}",
+        mgr.state().host().input
+    );
+    let bar = mgr.state().surfaces_of(BAR)[0];
+    assert!(mgr.state().holds_keyboard_for_popup(bar));
+    // Logic answers `open: false`: the popup goes, and the bar gives the
+    // keyboard back (`keyboard: none` again; with no window to focus,
+    // headless sway leaves the focus where it was).
+    let mut closed =
+        strand_scene::SurfaceSpec::resolve(NodeKind::Popup, |_| None::<&strand_scene::PropValue>);
+    closed.name = Some("Calendar".into());
+    closed.parent = Some(BAR);
+    closed.open = false;
+    let before = mgr.state().host().input.len();
+    mgr.state_mut().apply_surface_change(
+        POPUP,
+        SurfaceChange::Updated {
+            spec: closed,
+            recreate: false,
+        },
+    );
+    let ok = mgr
+        .dispatch_until(WAIT, |s| s.surfaces_of(POPUP).is_empty())
+        .unwrap();
+    assert!(ok, "closed");
+    assert!(!mgr.state().holds_keyboard_for_popup(bar));
+    // Keys go back to the surface with focus, which is told so (a
+    // launcher's input takes its caret back after its menu closes).
+    assert_eq!(mgr.state().keyboard_focus(), Some(bar));
+    assert!(
+        mgr.state().host().input[before..].contains(&InputEvent::KeyboardEnter { surface: bar }),
+        "{:?}",
+        &mgr.state().host().input[before..]
+    );
+    drop(input);
+    drop(pointer);
+    drop(keyboard);
+}
+
+/// A keyboard that goes away after a key press (a USB keyboard unplugged,
+/// a KVM switch) leaves the shell running: key repeat is strand's own
+/// calloop timer, stopped from the seat's events, so nothing removes a
+/// source while calloop's sources are borrowed (SCTK's repeat did, from
+/// a `Drop`, and aborted the process). A held key repeats at the seat's
+/// rate first; the surface still paints after the keyboard is gone.
+#[test]
+fn a_keyboard_going_away_after_a_press_leaves_the_shell_running() {
+    use std::io::Write as _;
+    use std::os::fd::AsFd;
+    use wayland_client::globals::{GlobalListContents, registry_queue_init};
+    use wayland_client::protocol::{wl_registry, wl_seat};
+    use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
+    use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
+        zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1,
+        zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
+    };
+
+    struct Client;
+    impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Client {
+        fn event(
+            _: &mut Self,
+            _: &wl_registry::WlRegistry,
+            _: wl_registry::Event,
+            _: &GlobalListContents,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+    delegate_noop!(Client: ignore ZwpVirtualKeyboardManagerV1);
+    delegate_noop!(Client: ignore ZwpVirtualKeyboardV1);
+    delegate_noop!(Client: ignore wl_seat::WlSeat);
+
+    let Some(sway) = Sway::start("a_keyboard_going_away_after_a_press_leaves_the_shell_running")
+    else {
+        return;
+    };
+    let mut mgr = strand_surface::SurfaceManager::with_connection(
+        sway.connect(),
+        TestHost::default(),
+        Config::default(),
+    )
+    .unwrap();
+    // A `keyboard: exclusive` panel: it has the keyboard once one exists.
+    const PANEL: NodeId = NodeId::new(7, 0);
+    let mut spec = layer_spec(NodeKind::Panel, "Launcher", "center", 200.0, 100.0);
+    spec.keyboard = strand_scene::Keyboard::Exclusive;
+    mgr.state_mut()
+        .apply_surface_change(PANEL, SurfaceChange::Created(spec.clone()));
+    let input = mgr.take_input().unwrap();
+    let ok = mgr
+        .dispatch_until(WAIT, |s| s.surfaces().iter().any(|i| i.stats.commits > 0))
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surfaces());
+    let id = mgr.state().surfaces_of(PANEL)[0];
+
+    let conn = sway.connect();
+    let (globals, mut queue) = registry_queue_init::<Client>(&conn).unwrap();
+    let qh = queue.handle();
+    let seat: wl_seat::WlSeat = globals.bind(&qh, 1..=7, ()).unwrap();
+    let kbd_manager: ZwpVirtualKeyboardManagerV1 = globals.bind(&qh, 1..=1, ()).unwrap();
+    let keyboard = kbd_manager.create_virtual_keyboard(&seat, &qh, ());
+    let keymap = "xkb_keymap {\n\
+        xkb_keycodes \"strand\" { minimum = 8; maximum = 255; <AC01> = 38; };\n\
+        xkb_types \"strand\" { type \"ONE_LEVEL\" { modifiers = none; level_name[Level1] = \"Any\"; }; };\n\
+        xkb_compatibility \"strand\" { };\n\
+        xkb_symbols \"strand\" { key <AC01> { [ a ] }; };\n\
+        };\n";
+    let path = std::env::temp_dir().join(format!("strand-keymap-unplug-{}", std::process::id()));
+    let mut file = std::fs::File::create(&path).unwrap();
+    file.write_all(keymap.as_bytes()).unwrap();
+    file.write_all(&[0]).unwrap();
+    file.flush().unwrap();
+    let file = std::fs::File::open(&path).unwrap();
+    keyboard.keymap(1, file.as_fd(), keymap.len() as u32 + 1);
+    queue.roundtrip(&mut Client).unwrap();
+    let _ = std::fs::remove_file(&path);
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.host()
+                .input
+                .contains(&InputEvent::KeyboardEnter { surface: id })
+        })
+        .unwrap();
+    assert!(
+        ok,
+        "the panel has the keyboard: {:?}",
+        mgr.state().host().input
+    );
+
+    // `a` held (evdev KEY_A = 30): it repeats.
+    keyboard.key(100, 30, 1);
+    queue.roundtrip(&mut Client).unwrap();
+    let mut events = Vec::new();
+    let deadline = Instant::now() + WAIT;
+    let repeats = |events: &[InputEvent]| {
+        events
+            .iter()
+            .filter(|e| matches!(e, InputEvent::Key { key, .. } if key.repeat && key.text == "a"))
+            .count()
+    };
+    while Instant::now() < deadline && repeats(&events) < 2 {
+        mgr.dispatch(Some(Duration::from_millis(50))).unwrap();
+        events.extend(input.try_iter());
+    }
+    assert!(repeats(&events) >= 2, "a held key repeats: {events:?}");
+    assert!(mgr.state().key_repeating());
+
+    // Released: the repeat stops.
+    keyboard.key(200, 30, 0);
+    queue.roundtrip(&mut Client).unwrap();
+    pump(&mut mgr, Duration::from_millis(200));
+    assert!(!mgr.state().key_repeating());
+    events.clear();
+    events.extend(input.try_iter());
+    pump(&mut mgr, Duration::from_millis(300));
+    events.extend(input.try_iter());
+    assert_eq!(
+        repeats(&events[events
+            .iter()
+            .position(|e| matches!(e, InputEvent::Key { key, .. } if key.state == ButtonState::Released))
+            .map_or(0, |i| i + 1)..]),
+        0,
+        "repeats after the release: {events:?}"
+    );
+
+    // Pressed again, and the keyboard goes away while it is held.
+    keyboard.key(300, 30, 1);
+    queue.roundtrip(&mut Client).unwrap();
+    pump(&mut mgr, Duration::from_millis(100));
+    keyboard.destroy();
+    queue.roundtrip(&mut Client).unwrap();
+    // (Before the fix this dispatch panicked inside calloop and aborted.)
+    pump(&mut mgr, Duration::from_millis(800));
+    assert!(
+        !mgr.state().key_repeating(),
+        "the repeat outlived its keyboard"
+    );
+
+    // The panel still paints: a new size is configured and committed.
+    let commits = mgr.state().surface(id).unwrap().stats.commits;
+    spec.height = Some(120.0);
+    mgr.state_mut().apply_surface_change(
+        PANEL,
+        SurfaceChange::Updated {
+            spec,
+            recreate: false,
+        },
+    );
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surface(id)
+                .is_some_and(|i| i.logical_size == (200, 120) && i.stats.commits > commits)
+        })
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surfaces());
+    drop(input);
+}

@@ -1,0 +1,15 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::not_drawn_yet
+
+  ⚠ the `tooltip { … }` element is not drawn yet
+   ╭─[tooltip_element.strand:5:30]
+ 4 │ // The `tooltip: expr` prop draws a text tooltip.
+ 5 │ component Tip { button "?" { tooltip { text "Help" } } }
+   ·                              ───┬───
+   ·                                 ╰── draws nothing for now
+ 6 │ component Plain { button "?" { tooltip: "Help" } }
+   ╰────
+  help: use the `tooltip: expr` prop for a text tooltip

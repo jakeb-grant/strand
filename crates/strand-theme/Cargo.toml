@@ -1,0 +1,36 @@
+[package]
+name = "strand-theme"
+description = "Palettes: the Material 3 role schema, material(seed:/image:), importers, gamut mapping and the contrast guard"
+version.workspace = true
+edition.workspace = true
+# material-colors 0.5 needs Rust 1.97.
+rust-version = "1.97"
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+strand-scene.workspace = true
+blake3 = "1.8.7"
+# The Material 3 algorithm (HCT, dynamic schemes, Celebi quantiser).
+material-colors = { version = "0.5.0", features = ["quantize"] }
+# Wallpaper decoding for `material(image:)`.
+# WebP wallpapers (no reduced-size decoder exists; capped, see image.rs).
+image = { version = "0.25.10", default-features = false, features = ["webp"] }
+# JPEG decoded at 1/8 scale (DCT scaling) and PNG decoded row by row,
+# so a wallpaper never costs a full-resolution frame.
+jpeg-decoder = { version = "0.3.2", default-features = false }
+png = "0.18.1"
+serde_json = "1.0.151"
+log = "0.4"
+# `malloc_trim` after a whole-image decode (image.rs).
+libc = "0.2.190"
+
+[dev-dependencies]
+proptest = "1.11.0"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
+# Hand-built interlaced PNGs for the row-by-row decoder's test.
+fdeflate = "0.3.7"
+crc32fast = "1.5.2"
+
+[lints]
+workspace = true
