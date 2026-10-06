@@ -5826,3 +5826,86 @@ The signal follows the spawning thread; every harness drops its sway on
 the thread that started it. The acceptance desk pins the pointer's
 cursor (`XCURSOR_THEME=Adwaita`, `XCURSOR_SIZE=24`, and sway's `seat *
 xcursor_theme`), since two hover references show it.
+
+## wave3-pixels (carried issues, r1)
+
+**2026-10-06 · wave3-pixels (carried r1): on-demand elements mount on
+demand.** The checker has read `page` and `tooltip { … }` as on demand
+since wave 2 (schema flag `on_demand`, the cycle check); the runtime now
+does too. A `page` is mounted while its name equals its `pages`'
+`current` (both converted as `current` is for the scene) and unmounted
+otherwise, so only the current page is on the scene and what a hidden
+page's nodes read stops being read (design.md: "Hidden pages unmount").
+A `tooltip { … }` is mounted while the element it sits in is hovered
+(the `hover` render reports). Both are mounted through the same
+one-branch switch as an `if`, so a page enters and exits like an `if`
+branch. Their `state`s and `let`s belong to the scope around them (the
+checker keeps `state` off pages), so page-local state such as a
+selection is kept across a page change, as a closed popup keeps its
+own. Popups keep the 2026-10-05 wave2-vm reading (content mounted on
+first open, suspended with its services released while closed): a
+popup is a surface whose state the shells expect back. Which elements
+have a runtime rule is pinned to the schema's flag by
+`tests/instantiate.rs::every_on_demand_element_has_a_runtime_rule`
+(`pages_and_tooltips_mount_on_demand`).
+
+**2026-10-06 · wave3-pixels (carried r1): a `tooltip { … }` element is
+out of flow.** Its content is not drawn yet (`check::not_drawn_yet`
+says "draws nothing for now"), but render laid it out and painted it
+inline like a `box`, so its text sat in the bar. Render now treats it as
+it treats a nested surface: its parent neither lays it out nor paints
+it (`layout::out_of_flow`; `strand-render/tests/layout.rs::
+a_tooltip_element_takes_no_room_and_draws_nothing`), so hovering an
+element with one moves nothing.
+
+**2026-10-06 · wave3-pixels (carried r1): runaway mounts stop at 256
+levels.** The static cycle check lets a component call itself under an
+`if`, a `match`, a `for` or an on-demand element; with a condition that
+never ends it (`if n >= 0 { C n: n + 1 }`) mounting recursed until the
+process hung or ran out of memory. Each mounted element and component
+now counts one level (`Frag::depth`), and one that would sit deeper than
+`MAX_MOUNT_DEPTH` (256, the parser's tree depth) is not mounted: a
+located runtime error names it (`` component `C`: not mounted: it would
+nest more than 256 elements and components deep ``, or `` `box` in
+component `C` ``), with the component's fault scope. So that a
+recursion fanning out (`C` mounting two `C`s) costs one path to the
+limit rather than 2^128 of them, the component that hit it is not
+mounted again until the mount in progress returns (`Ctx::runaway`,
+cleared when the outermost element mount returns). Depth is counted
+from the root, not the call stack, so a later mount (a hover, a page
+change) continues from where its fragment sits
+(`tests/instantiate.rs::runaway_recursion_stops_at_the_depth_limit`:
+fan-out under `if`, through a plain element, one tooltip level per
+hover, a page made current, each on a 2 MiB thread with a deadline).
+
+**2026-10-06 · wave3-pixels (carried r1): whole-number lists are int
+lists.** wave2-check's "whole-number literals" rule now covers list
+literals of them: an untyped `state xs = [1, 2]` or `let xs = [1, 2]`
+(and handler locals, inferred component arguments) is `[int]`
+(`[[1], [2, 3]]` is `[[int]]`), so `xs[0]` fills `columns:`. A fraction
+written to the list (`xs = [0.5]`, `xs = [a]` with `a` a `float`) or to
+an item (`xs[0] = 0.5`) makes it `[float]` on the next pass, as for a
+scalar; a list literal checked against `[int]` keeps that type even with
+a fraction among its items, so the write is judged by its items' own
+join (`Checker::written_ty`), and flows from declarations already
+pinned to `float` are followed too (`checker.rs::
+whole_number_lists_are_int_lists_until_a_fraction_arrives`).
+
+**2026-10-06 · wave3-pixels (carried r1): CI's build packages.**
+smithay-client-toolkit's build script finds `xkbcommon` through
+pkg-config, and the check job never got past `cargo clippy` without it:
+both jobs install `libxkbcommon-dev` and `libwayland-dev`, and the
+nightly job `dbus` too (its tests read `STRAND_REQUIRE_DBUS`). The job
+also lists every font fontconfig sees, since text references depend on
+which family a style falls back to.
+
+**2026-10-06 · wave3-pixels (carried r1): the hello bar alone on sway.**
+The acceptance desk (`Desk::start_with`) takes any file set; design.md's
+hello bar alone, with no theme file, on the acceptance mock (frozen
+clock) is compared with `refs/acceptance/hello_bar_headless{1,2}.png`
+and measured: `$surface` (the built-in theme, default seed, light, as
+`strand_theme::from_seed` computes it) at the corners and between the
+texts, the title's ink starting at the bar's left edge and the battery's
+ending at its right (the hello bar has no padding), the clock centred
+within 2 px (2.5 at 1.25), and the darkest ink `$fg`
+(`acceptance.rs::the_hello_bar_alone_is_laid_out_and_themed`).

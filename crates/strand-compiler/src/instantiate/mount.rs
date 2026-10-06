@@ -51,6 +51,27 @@ enum SourceValue {
     Tokens(Vec<TokenDef>),
 }
 
+/// Which branch of a [`Switch`] to show (`None`: none).
+type Pick = Rc<dyn Fn(&Runtime) -> Result<Option<usize>, Error>>;
+
+/// Branches mounted one at a time ([`Ctx::mount_branches`]): an `if`, a
+/// `match`, an on-demand element.
+struct Switch {
+    pick: Pick,
+    branches: Vec<Arc<Vec<Node>>>,
+    /// Declare the branch's own `let`s and `state`s in its scope and
+    /// mount its nodes; else the branch is one on-demand element, mounted
+    /// as it is (its `let`s and `state`s belong to the scope around it).
+    declare: bool,
+    /// Its place in the instance tree.
+    tag: String,
+    /// What it is, for its errors.
+    what: String,
+    /// What `pick` reads: chunks in the scope, and nodes directly.
+    reads: (Vec<ChunkId>, Vec<strand_core::NodeId>),
+    at: (crate::source::FileId, crate::syntax::Span),
+}
+
 type ListFn = Box<dyn Fn(&Runtime) -> Result<Vec<(ValueKey, Value)>, Error>>;
 type ItemMount = Rc<dyn Fn(&Rc<Ctx>, &Runtime, &Rc<Env>, FragId, &Value)>;
 /// A keyed list's diffs since a version (`None` when unchanged).
@@ -181,7 +202,13 @@ impl Ctx {
         el: Option<&ElemCtx>,
     ) {
         match n {
-            Node::Element(e) => self.mount_element(rt, e, env, frag, Vec::new()),
+            Node::Element(e) => match e.kind {
+                // Mounted only while shown (the schema's `on_demand`).
+                ElementKind::Builtin(NodeKind::Page | NodeKind::Tooltip) => {
+                    self.mount_on_demand(rt, e, env, frag)
+                }
+                _ => self.mount_element(rt, e, env, frag, Vec::new()),
+            },
             Node::Surface(s) => self.mount_surface(rt, s, env, frag),
             Node::If {
                 cond,
@@ -1020,8 +1047,70 @@ impl Ctx {
     }
 
     /// [`Ctx::mount_element`] for a surface whose body reads `services`:
-    /// they are acquired while it is shown.
+    /// they are acquired while it is shown. An element or component that
+    /// would sit deeper than [`super::MAX_MOUNT_DEPTH`] is not mounted:
+    /// a located error says so.
     pub(crate) fn mount_element_with(
+        self: &Rc<Self>,
+        rt: &Runtime,
+        e: &Element,
+        env: &Rc<Env>,
+        parent: FragId,
+        extra: Vec<(SceneProp, PropValue)>,
+        services: Option<&Arc<std::collections::BTreeSet<String>>>,
+    ) {
+        if let ElementKind::Component(d) = &e.kind
+            && self.runaway.borrow().contains(d)
+        {
+            return;
+        }
+        if self.em.borrow().depth(parent) >= super::MAX_MOUNT_DEPTH {
+            self.too_deep(e, env);
+            return;
+        }
+        self.mounting.set(self.mounting.get() + 1);
+        self.mount_element_inner(rt, e, env, parent, extra, services);
+        let left = self.mounting.get().saturating_sub(1);
+        self.mounting.set(left);
+        if left == 0 {
+            self.runaway.borrow_mut().clear();
+        }
+    }
+
+    /// Reports an element or component past [`super::MAX_MOUNT_DEPTH`]
+    /// and stops the component that got there from mounting again until
+    /// the mount in progress returns.
+    fn too_deep(&self, e: &Element, env: &Rc<Env>) {
+        let (what, runaway) = match &e.kind {
+            ElementKind::Component(d) => (
+                format!("component `{}`", self.vm.prog.def(*d).name),
+                Some(*d),
+            ),
+            ElementKind::Builtin(k) => (format!("`{}`", k.name()), env.component),
+            ElementKind::Unknown(_) => ("an element".to_string(), env.component),
+        };
+        let what = match (&e.kind, env.component) {
+            (ElementKind::Component(_), _) | (_, None) => what,
+            (_, Some(c)) => format!("{what} in component `{}`", self.vm.prog.def(c).name),
+        };
+        if let Some(d) = runaway {
+            self.runaway.borrow_mut().insert(d);
+        }
+        self.errors.borrow_mut().push(super::RuntimeError {
+            what,
+            error: Error::failed(format!(
+                "not mounted: it would nest more than {} elements and components deep (a component that keeps mounting itself?)",
+                super::MAX_MOUNT_DEPTH
+            )),
+            file: Some(e.file),
+            span: Some(e.span),
+            node: None,
+            component: env.component,
+            scope: env.fault_scope(),
+        });
+    }
+
+    fn mount_element_inner(
         self: &Rc<Self>,
         rt: &Runtime,
         e: &Element,
@@ -1038,7 +1127,12 @@ impl Ctx {
             ElementKind::Component(d) => return self.mount_component(rt, *d, e, env, parent),
             ElementKind::Unknown(_) => return,
         };
-        let frag = self.em.borrow_mut().new_frag(Some(parent), None);
+        let frag = {
+            let mut em = self.em.borrow_mut();
+            let frag = em.new_frag(Some(parent), None);
+            em.deepen(frag);
+            frag
+        };
         // A reload keeps the node this element was (same place in the
         // instance tree, same identity, same kind).
         let key: Rc<str> = format!("{}/e{}", env.ident(), self.sid(e.file, e.span)).into();
@@ -1502,10 +1596,8 @@ impl Ctx {
     ) {
         // Its place in the instance tree (`i12`: an `if`, `m3`: a `match`).
         let tag = format!("{}{}", if two { "i" } else { "m" }, self.sid(at.0, at.1));
-        let frag = self.em.borrow_mut().new_frag(Some(parent), None);
-        let (block, ()) = rt.scope(|_| ());
         let (ctx, e) = (self.clone(), env.clone());
-        let pick = Rc::new(move |rt: &Runtime| -> Result<Option<usize>, Error> {
+        let pick: Pick = Rc::new(move |rt: &Runtime| -> Result<Option<usize>, Error> {
             let v = ctx.eval(rt, selector, &e)?;
             Ok(if two {
                 Some(if v.truthy() { 0 } else { 1 })
@@ -1513,6 +1605,113 @@ impl Ctx {
                 v.as_f64().map(|i| i as usize)
             })
         });
+        let what = format!(
+            "{} in {}",
+            if two { "if" } else { "match" },
+            self.module_of(at.0)
+        );
+        let branches = Switch {
+            pick,
+            branches,
+            declare: true,
+            tag,
+            what,
+            reads: (vec![selector], Vec::new()),
+            at,
+        };
+        self.mount_branches(rt, branches, env, parent);
+    }
+
+    /// A `page` or a `tooltip`, mounted only while it is shown (the
+    /// schema's `on_demand`): a page while its name is its `pages`'
+    /// `current`, a tooltip while the element it sits in is hovered.
+    /// Hidden, it is unmounted: its nodes leave the scene and what they
+    /// read stops being read. Its `state`s belong to the enclosing scope,
+    /// so they are kept, as a closed popup keeps its own.
+    fn mount_on_demand(self: &Rc<Self>, rt: &Runtime, e: &Element, env: &Rc<Env>, parent: FragId) {
+        let ElementKind::Builtin(kind) = e.kind else {
+            return;
+        };
+        // The element it sits in (through any `if`, `match` or `for`).
+        let host = {
+            let em = self.em.borrow();
+            em.scene_at(parent).and_then(|h| {
+                let n = em.nodes.get(&h)?;
+                let current = n.bindings.iter().find_map(|b| {
+                    em.bindings
+                        .get(b)
+                        .filter(|b| b.prop == SceneProp::Current)
+                        .map(|b| b.memo)
+                });
+                Some((n.kind, n.state.clone(), current))
+            })
+        };
+        let Some((host_kind, host_state, current)) = host else {
+            return;
+        };
+        let (pick, reads): (Pick, (Vec<ChunkId>, Vec<strand_core::NodeId>)) = match kind {
+            NodeKind::Tooltip => {
+                let hover = host_state.hover;
+                (
+                    Rc::new(move |rt: &Runtime| Ok(hover.get(rt)?.then_some(0))),
+                    (Vec::new(), vec![hover.id()]),
+                )
+            }
+            NodeKind::Page => {
+                // A page outside `pages`, or `pages` with no `current`,
+                // shows nothing.
+                let (Some(current), NodeKind::Pages, Some(name)) =
+                    (current, host_kind, e.arg.as_ref())
+                else {
+                    return;
+                };
+                let (ctx, env2, chunk, ty) =
+                    (self.clone(), env.clone(), name.value, name.ty.clone());
+                (
+                    Rc::new(move |rt: &Runtime| {
+                        let shown = current.get(rt)?.value;
+                        let v = ctx.eval(rt, chunk, &env2)?;
+                        let name = convert::prop_value_for(
+                            &ctx.vm.prog.types,
+                            SceneProp::Current,
+                            &ty,
+                            &v,
+                        );
+                        Ok((shown == name).then_some(0))
+                    }),
+                    (vec![chunk], vec![current.id()]),
+                )
+            }
+            _ => return,
+        };
+        let sid = self.sid(e.file, e.span);
+        let branches = Switch {
+            pick,
+            branches: vec![Arc::new(vec![Node::Element(e.clone())])],
+            declare: false,
+            tag: format!("d{sid}"),
+            what: format!("{} in {}", kind.name(), self.module_of(e.file)),
+            reads,
+            at: (e.file, e.span),
+        };
+        self.mount_branches(rt, branches, env, parent);
+    }
+
+    /// Mounts the branch `pick` chooses now, and swaps branches when it
+    /// changes. A swapped-out branch is removed (render plays its
+    /// `exit`) and its scope disposed.
+    fn mount_branches(self: &Rc<Self>, rt: &Runtime, s: Switch, env: &Rc<Env>, parent: FragId) {
+        let Switch {
+            pick,
+            branches,
+            declare,
+            tag,
+            what,
+            reads,
+            at,
+        } = s;
+        let frag = self.em.borrow_mut().new_frag(Some(parent), None);
+        let (block, ()) = rt.scope(|_| ());
         let current: Rc<Cell<Option<Option<usize>>>> = Rc::new(Cell::new(None));
         let branches = Rc::new(branches);
         let show = {
@@ -1528,8 +1727,17 @@ impl Ctx {
                         ctx.mount_block(rt, frag, None, |ctx, rt, f| {
                             benv.set_owner(rt.current_owner());
                             ctx.note_env(&benv);
-                            ctx.declare(rt, &nodes, &benv);
-                            ctx.mount_nodes(rt, &nodes, &benv, f, None);
+                            if declare {
+                                ctx.declare(rt, &nodes, &benv);
+                                ctx.mount_nodes(rt, &nodes, &benv, f, None);
+                            } else {
+                                // The on-demand element itself.
+                                for n in nodes.iter() {
+                                    if let Node::Element(e) = n {
+                                        ctx.mount_element(rt, e, &benv, f, Vec::new());
+                                    }
+                                }
+                            }
                         });
                     });
                 }
@@ -1541,11 +1749,6 @@ impl Ctx {
             show(rt, which);
             current.set(Some(which));
         }
-        let what = format!(
-            "{} in {}",
-            if two { "if" } else { "match" },
-            self.module_of(at.0)
-        );
         let env2 = env.clone();
         let _ = rt.with_owner(block.id(), |rt| {
             let effect = rt.effect(move |rt| {
@@ -1557,7 +1760,7 @@ impl Ctx {
                 Ok(())
             });
             rt.set_name(effect.id(), what.as_str());
-            self.declare_reads(rt, effect.id(), &[selector], &env2, &[]);
+            self.declare_reads(rt, effect.id(), &reads.0, &env2, &reads.1);
             self.site(rt, effect.id(), what, at.0, at.1, &env2, None);
         });
     }
@@ -2062,6 +2265,7 @@ impl Ctx {
             self.sid(call.file, call.span)
         ));
         self.mount_block(rt, parent, None, |ctx, rt, frag| {
+            ctx.em.borrow_mut().deepen(frag);
             env.set_owner(rt.current_owner());
             ctx.note_env(&env);
             let mut defaults = Vec::new();

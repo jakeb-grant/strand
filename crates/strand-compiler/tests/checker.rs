@@ -476,6 +476,67 @@ fn def_ty(p: &hir::Program, name: &str) -> String {
     show(p, &d.ty)
 }
 
+/// A list literal of whole numbers is an `[int]` (design.md: `state xs =
+/// [1, 2]`), so its items index, count and fill `int` props; a fraction
+/// written to the list or to one of its items makes it a `[float]`.
+#[test]
+fn whole_number_lists_are_int_lists_until_a_fraction_arrives() {
+    let out = one("state xs = [1, 2]\n\
+                   let ys = [3, -4]\n\
+                   state grid_of = [[1], [2, 3]]\n\
+                   state mixed = [1, 2.5]\n\
+                   state whole_list = [0.5]\n\
+                   state set_whole = [1, 2]\n\
+                   state set_item = [1, 2]\n\
+                   state set_int = [1, 2]\n\
+                   state from_a = [0]\n\
+                   state a = 0\n\
+                   component C {\n\
+                     col {\n\
+                       grid { columns: xs[0] }\n\
+                       text \"x\" { max_lines: ys[1] + grid_of[1][0] }\n\
+                       box { on click {\n\
+                         set_whole = [0.5]\n\
+                         set_item[1] = 0.5\n\
+                         set_int[0] = 3\n\
+                         a = 0.5\n\
+                         from_a = [a]\n\
+                         let local = [1, 2]\n\
+                         xs = local\n\
+                       } }\n\
+                     }\n\
+                   }\n");
+    let p = &out.program;
+    for (name, ty) in [
+        ("xs", "[int]"),
+        ("ys", "[int]"),
+        ("grid_of", "[[int]]"),
+        ("mixed", "[float]"),
+        ("whole_list", "[float]"),
+        ("set_whole", "[float]"),
+        ("set_item", "[float]"),
+        ("set_int", "[int]"),
+        ("from_a", "[float]"),
+    ] {
+        assert_eq!(def_ty(p, name), ty, "{name}");
+    }
+    // A fraction reaching a list read as an `int` is reported there.
+    let (out, map) = compile_files(&[(
+        "a.strand",
+        "state xs = [1, 2]\n\
+         component C { box { on click { xs[0] = 0.5 } }\n  grid { columns: xs[0] } }\n"
+            .to_string(),
+    )]);
+    let codes: Vec<&str> = out.diagnostics.iter().map(|d| d.code).collect();
+    assert_eq!(
+        codes,
+        ["check::type_mismatch"],
+        "{}",
+        render(&out.diagnostics, &map, Style::Plain)
+    );
+    assert_eq!(def_ty(&out.program, "xs"), "[float]");
+}
+
 /// An untyped `state` or `let` holding a whole number is an `int`, so it
 /// can index, count and fill `int` props; once a fraction is written to
 /// it (directly, through a `float` it is set from, or a slider's `<->`)

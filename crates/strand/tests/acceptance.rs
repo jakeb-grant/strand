@@ -90,6 +90,17 @@ impl Drop for Desk {
 
 impl Desk {
     fn start(tag: &'static str) -> Option<Desk> {
+        Self::start_with(tag, &SHELLS, |b| b.contains("buffer=2570x62 "))
+    }
+
+    /// [`Desk::start`] on `files` instead of the five, ready once a
+    /// surface `bar` says it is the bar on `HEADLESS-1` and one is drawn
+    /// at 1.25.
+    fn start_with(
+        tag: &'static str,
+        files: &[(&str, &str)],
+        bar: fn(&str) -> bool,
+    ) -> Option<Desk> {
         for tool in ["sway", "swaymsg", "grim"] {
             if Command::new(tool).arg("--version").output().is_err() {
                 assert!(
@@ -193,11 +204,11 @@ impl Desk {
         ])
         .unwrap();
         desk.msg(&["focus", "output", "HEADLESS-1"]).unwrap();
-        // The five files, byte for byte.
+        // The files, byte for byte.
         let home = dir.join("home");
         let config = home.join(".config/strand");
         std::fs::create_dir_all(&config).unwrap();
-        for (name, text) in SHELLS {
+        for &(name, text) in files {
             std::fs::write(config.join(name), text).unwrap();
             assert_eq!(std::fs::read(config.join(name)).unwrap(), text.as_bytes());
         }
@@ -218,10 +229,9 @@ impl Desk {
             .unwrap();
         desk.strand = Some(Proc(child));
         // A bar painted on each output.
-        desk.wait("a bar on each output", 30, |d| {
+        desk.wait("a bar on each output", 30, move |d| {
             let s = d.surfaces();
-            s.iter().any(|b| b.contains("buffer=2570x62 "))
-                && s.iter().any(|b| b.contains("scale=1.25"))
+            s.iter().any(|b| bar(b)) && s.iter().any(|b| b.contains("scale=1.25"))
         });
         Some(desk)
     }
@@ -1478,4 +1488,94 @@ fn the_comparison_catches_one_glyph_but_not_noise() {
         }
     }
     assert!(sparse.compare("bar_headless1").is_ok());
+}
+
+/// design.md's hello bar alone (no theme file), on the acceptance mock
+/// (clock frozen): laid out by `split` (the window title at the start,
+/// the clock truly centred, the battery at the end) and themed by the
+/// built-in theme with the default seed's light palette (`$surface`
+/// under it, its text in `$fg`), on both outputs, against references.
+#[test]
+fn the_hello_bar_alone_is_laid_out_and_themed() {
+    const HELLO: [(&str, &str); 1] = [(
+        "hello_bar.strand",
+        include_str!("../../strand-compiler/tests/fixtures/hello_bar.strand"),
+    )];
+    let Some(desk) = Desk::start_with("hello", &HELLO, |b| b.contains("buffer=2560x32 ")) else {
+        return;
+    };
+    let one = desk.settled_ref("HEADLESS-1", rect(0, 0, 2560, 32), "hello_bar_headless1");
+    let two = desk.settled_ref("HEADLESS-2", rect(0, 0, 1920, 40), "hello_bar_headless2");
+    // The built-in theme's palette: the default seed, light (no portal).
+    let mut tokens = strand_theme::defaults::base_tokens();
+    strand_theme::from_seed(
+        strand_scene::Color::from_hex(strand_theme::defaults::DEFAULT_SEED).unwrap(),
+        strand_theme::Options::default(),
+    )
+    .insert_into(&mut tokens);
+    let (Some(strand_scene::PropValue::Color(surface)), Some(strand_scene::PropValue::Color(fg))) =
+        (tokens.lookup("surface"), tokens.lookup("fg"))
+    else {
+        panic!("no $surface or $fg in the built-in theme");
+    };
+    let rgb = |c: strand_scene::Color| {
+        let [r, g, b, _] = c.to_rgba8();
+        [r, g, b]
+    };
+    let close = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 2);
+    for (name, img, scale) in [("HEADLESS-1", &one, 1.0), ("HEADLESS-2", &two, 1.25)] {
+        let (w, h) = (img.w, img.h);
+        // `$surface` behind it all: the corners and the empty stretches
+        // between the three texts.
+        for (x, y) in [(0, 0), (w - 1, h - 1), (w / 4, h / 2), (3 * w / 4, h / 2)] {
+            assert!(
+                close(img.px(x, y), rgb(surface)),
+                "{name}: {:?} at {x},{y} is not $surface {:?}",
+                img.px(x, y),
+                rgb(surface)
+            );
+        }
+        let runs = runs(&ink_cols(img, 0..w, 0..h, rgb(surface)));
+        let start: Vec<_> = runs.iter().filter(|r| r.1 < w / 4).collect();
+        let centre: Vec<_> = runs
+            .iter()
+            .filter(|r| r.0 > w / 4 && r.1 < 3 * w / 4)
+            .collect();
+        let end: Vec<_> = runs.iter().filter(|r| r.0 > 3 * w / 4).collect();
+        assert_eq!(
+            start.len() + centre.len() + end.len(),
+            runs.len(),
+            "{name}: ink outside start, centre and end: {runs:?}"
+        );
+        let (Some(s), Some(c0), Some(c1), Some(e)) =
+            (start.first(), centre.first(), centre.last(), end.last())
+        else {
+            panic!("{name}: start, centre or end is empty: {runs:?}");
+        };
+        // Start at the bar's left edge, end at its right one (the bar has
+        // no padding: a glyph's side bearing away), the clock centred.
+        let edge = (4.0 * scale) as usize;
+        assert!(s.0 <= edge, "{name}: start ink at {}", s.0);
+        assert!(e.1 >= w - 1 - edge, "{name}: end ink at {}", e.1);
+        let mid = (c0.0 + c1.1) as f64 / 2.0;
+        assert!(
+            (mid - w as f64 / 2.0).abs() <= 2.0 * scale,
+            "{name}: clock {}..{} not centred on {}",
+            c0.0,
+            c1.1,
+            w / 2
+        );
+        // The text is `$fg`: its darkest pixels (glyph stems) are fg.
+        let darkest = (0..w)
+            .flat_map(|x| (0..h).map(move |y| (x, y)))
+            .map(|(x, y)| img.px(x, y))
+            .min_by_key(|p| sum(*p))
+            .unwrap();
+        assert!(
+            darkest.iter().zip(rgb(fg)).all(|(x, y)| x.abs_diff(y) <= 6),
+            "{name}: darkest ink {darkest:?} is not $fg {:?}",
+            rgb(fg)
+        );
+    }
+    assert!(desk.errors().is_empty(), "{:?}", desk.errors());
 }

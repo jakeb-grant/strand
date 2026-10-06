@@ -1144,7 +1144,7 @@ pub fn natural_texts(
             }
         }
         for c in &node.children {
-            if let Some(child) = tree.get(*c).filter(|n| !n.kind.is_surface()) {
+            if let Some(child) = tree.get(*c).filter(|n| !crate::layout::out_of_flow(n.kind)) {
                 walk(tree, child, &inh, scale, laid, out);
             }
         }
@@ -1794,7 +1794,11 @@ impl<'a> Flattener<'a> {
         if !(clips && child_clip.is_empty()) {
             for c in &node.children {
                 // A nested surface (a popup) paints on its own surface.
-                if let Some(child) = self.tree.get(*c).filter(|n| !n.kind.is_surface()) {
+                if let Some(child) = self
+                    .tree
+                    .get(*c)
+                    .filter(|n| !crate::layout::out_of_flow(n.kind))
+                {
                     children = children.union(self.node(child, rect, &child_inh, false));
                 }
             }

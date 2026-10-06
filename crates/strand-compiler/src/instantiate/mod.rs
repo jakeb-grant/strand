@@ -63,7 +63,17 @@ pub(crate) struct Frag {
     pub parked: Vec<FragId>,
     pub scene: Option<NodeId>,
     pub scope: Option<Scope>,
+    /// Element and component levels above and including this fragment
+    /// (see [`MAX_MOUNT_DEPTH`]).
+    pub depth: u32,
 }
+
+/// How many elements and components may nest at run time: the parser's
+/// tree-depth bound. A component that keeps mounting itself (through an
+/// `if`, a `match`, a `for` or an on-demand element, which the static
+/// cycle check lets through) stops here with a located error instead of
+/// hanging or exhausting memory.
+pub const MAX_MOUNT_DEPTH: u32 = 256;
 
 /// Which node flag render reports.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -217,6 +227,12 @@ pub(crate) struct Ctx {
     /// (`nav: results` above the `list { id: results }`): set at the end
     /// of the tick, once everything is mounted.
     pub late_nodes: RefCell<Vec<(NodeId, SceneProp, Rc<NodeState>)>>,
+    /// Components that hit [`MAX_MOUNT_DEPTH`] in the mount in progress:
+    /// not mounted again until it returns, so a recursion that fans out
+    /// (`C` mounting two `C`s) costs one path to the cap, not 2^256.
+    pub runaway: RefCell<std::collections::HashSet<DefId>>,
+    /// Element mounts in progress on the stack (0 between mounts).
+    pub mounting: Cell<u32>,
 }
 
 impl VmHooks for Ctx {
@@ -502,6 +518,8 @@ impl Ctx {
             pending: RefCell::default(),
             parked: RefCell::default(),
             late_nodes: RefCell::default(),
+            runaway: RefCell::default(),
+            mounting: Cell::new(0),
             handover: RefCell::default(),
             outlined: RefCell::default(),
         });

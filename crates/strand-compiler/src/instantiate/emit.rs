@@ -109,12 +109,14 @@ pub struct Reduced {
 
 impl Emitter {
     pub fn new_frag(&mut self, parent: Option<FragId>, at: Option<usize>) -> FragId {
+        let depth = parent.and_then(|p| self.frag(p)).map_or(0, |f| f.depth);
         let frag = Frag {
             parent,
             children: Vec::new(),
             parked: Vec::new(),
             scene: None,
             scope: None,
+            depth,
         };
         let id = match self.free_frags.pop() {
             Some(id) => {
@@ -135,6 +137,20 @@ impl Emitter {
         id
     }
 
+    /// Element and component levels down to `frag` (see
+    /// [`super::MAX_MOUNT_DEPTH`]).
+    pub fn depth(&self, frag: FragId) -> u32 {
+        self.frag(frag).map_or(0, |f| f.depth)
+    }
+
+    /// `frag` holds an element or a component: one level deeper than its
+    /// parent.
+    pub fn deepen(&mut self, frag: FragId) {
+        if let Some(f) = self.frag_mut(frag) {
+            f.depth += 1;
+        }
+    }
+
     pub fn frag(&self, id: FragId) -> Option<&Frag> {
         self.frags.get(id).and_then(Option::as_ref)
     }
@@ -150,6 +166,15 @@ impl Emitter {
     }
 
     /// The nearest scene node at or above `frag`'s parent.
+    /// The scene node of `frag`, or else of its nearest ancestor: the
+    /// node what is mounted into `frag` sits in.
+    pub fn scene_at(&self, frag: FragId) -> Option<NodeId> {
+        match self.frag(frag)?.scene {
+            Some(s) => Some(s),
+            None => self.scene_parent(frag),
+        }
+    }
+
     pub fn scene_parent(&self, frag: FragId) -> Option<NodeId> {
         let mut cur = self.frag(frag)?.parent;
         while let Some(p) = cur {

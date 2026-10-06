@@ -81,10 +81,10 @@ impl<'a> Checker<'a> {
                     // A whole-number literal is an `int`, as for a
                     // top-level `let` (a local is never written, so no
                     // fraction can widen it later).
-                    None if super::is_whole_literal(&l.value) => {
-                        self.let_value(&l.value, Some(&Ty::INT))
+                    None => {
+                        let hint = super::whole_shape(&l.value);
+                        self.let_value(&l.value, hint.as_ref())
                     }
-                    None => self.let_value(&l.value, None),
                 };
                 if l.export.is_some() {
                     self.error(
@@ -221,7 +221,9 @@ impl<'a> Checker<'a> {
             AssignOp::Set => {
                 let v = self.expr(value, Some(&t.ty));
                 self.record_flow(&t, &v);
-                if !self.widen(&t, &v.ty) {
+                // `xs = [0.5]`: the items' own type, not the target's.
+                let written = self.written_ty(&v);
+                if !self.widen(&t, &written) {
                     self.require(&v, &t.ty, "this assignment");
                 }
                 v

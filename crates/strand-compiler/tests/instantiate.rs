@@ -2999,3 +2999,185 @@ fn input_and_open_take_widget_writes() {
     shell.flush();
     assert_eq!(shell.inst.get("launcher.open").unwrap(), Value::Bool(false));
 }
+
+/// `page` and `tooltip { … }` mount on demand (the schema's `on_demand`,
+/// as the cycle check reads it): only the current page is on the scene,
+/// a hidden one unmounts (design.md: "Hidden pages unmount"), and a
+/// tooltip's content is there only while the element it sits in is
+/// hovered. State lives on the component or surface around a page (the
+/// checker keeps it off pages), so it is kept across a page change.
+#[test]
+fn pages_and_tooltips_mount_on_demand() {
+    let src = "enum Pg { a, b }\n\
+               state cur: Pg = a\n\
+               bar B {\n\
+                 state n = 0\n\
+                 box { text \"x\"; tooltip { text \"TIP\" } }\n\
+                 box { on click { cur = cur == a ? b : a } }\n\
+                 pages current: cur {\n\
+                   page a { text join(\" \", \"PA\", n); box { on click { n += 1 } } }\n\
+                   page b { if true { text \"PB\" } }\n\
+                 }\n\
+               }\n";
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let scene = shell.scene.render();
+    assert!(scene.contains("text=\"PA 0\""), "{scene}");
+    assert!(!scene.contains("PB"), "a hidden page is mounted:\n{scene}");
+    assert!(
+        !scene.contains("TIP"),
+        "an unhovered tooltip is mounted:\n{scene}"
+    );
+    assert_eq!(shell.scene.of_kind(NodeKind::Page).len(), 1, "{scene}");
+    assert!(shell.scene.of_kind(NodeKind::Tooltip).is_empty(), "{scene}");
+
+    // Hovering the box mounts its tooltip; leaving unmounts it.
+    let host = shell.scene.of_kind(NodeKind::Box)[0];
+    shell.inst.set_flag(host, NodeFlag::Hover, true);
+    shell.flush();
+    let scene = shell.scene.render();
+    assert!(
+        scene.contains("tooltip\n") && scene.contains("TIP"),
+        "{scene}"
+    );
+    shell.inst.set_flag(host, NodeFlag::Hover, false);
+    shell.flush();
+    let scene = shell.scene.render();
+    assert!(!scene.contains("TIP"), "{scene}");
+    assert!(shell.scene.of_kind(NodeKind::Tooltip).is_empty(), "{scene}");
+
+    // Page a's state moves on, the page is switched away and back.
+    let toggle = shell.scene.of_kind(NodeKind::Box)[1];
+    let inc = shell.scene.of_kind(NodeKind::Box)[2];
+    assert!(shell.inst.event(inc, "click", Vec::new()));
+    shell.flush();
+    shell.text_node("PA 1");
+    assert!(shell.inst.event(toggle, "click", Vec::new()));
+    shell.flush();
+    let scene = shell.scene.render();
+    assert!(scene.contains("PB"), "{scene}");
+    assert!(!scene.contains("PA"), "the hidden page stayed:\n{scene}");
+    assert_eq!(shell.scene.of_kind(NodeKind::Page).len(), 1, "{scene}");
+    assert!(shell.inst.event(toggle, "click", Vec::new()));
+    shell.flush();
+    shell.text_node("PA 1");
+    assert!(!shell.scene.render().contains("PB"));
+}
+
+/// The runtime mounts on demand exactly the elements the checker's cycle
+/// check reads as on demand: a `popup` (a surface, mounted when first
+/// opened), a `page` and a `tooltip`.
+#[test]
+fn every_on_demand_element_has_a_runtime_rule() {
+    let schema = strand_compiler::schema::Schema::builtin();
+    let on_demand: Vec<&str> = schema
+        .elements
+        .iter()
+        .filter(|(_, e)| e.flags.on_demand)
+        .map(|(n, _)| n.as_str())
+        .collect();
+    assert_eq!(on_demand, ["page", "popup", "tooltip"]);
+}
+
+/// Boots `src` on a 2 MiB thread (the logic thread's stack) with a
+/// deadline, so a mount that never ends fails the test instead of
+/// hanging it. Returns the boot's runtime errors (as text) and the
+/// shell's scene, then runs `more` on the shell.
+fn boot_bounded(
+    src: &'static str,
+    more: impl FnOnce(&mut Shell) -> Vec<String> + Send + 'static,
+) -> (Vec<String>, Vec<String>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .stack_size(2 << 20)
+        .spawn(move || {
+            let mut map = SourceMap::new();
+            map.add("t.strand", src.to_string());
+            let compiled = strand_compiler::compile(&map);
+            assert_eq!(compiled.errors(), 0, "{:#?}", compiled.diagnostics);
+            let program = Arc::new(lower::lower(
+                &compiled.program,
+                strand_compiler::schema::Schema::builtin(),
+            ));
+            let rt = Runtime::new();
+            let host = Rc::new(SchemaHost::mock(&rt, &program.types));
+            screens(&rt, &host, &["DP-1"]);
+            let inst = Instance::new(&rt, program, host.clone(), Storage::none());
+            let mut shell = Shell {
+                rt,
+                host,
+                inst,
+                scene: SceneMirror::new(),
+                boot: Vec::new(),
+            };
+            let u = shell.flush();
+            let boot: Vec<String> = u.errors.iter().map(|e| e.to_string()).collect();
+            let later = more(&mut shell);
+            let _ = tx.send((boot, later));
+        })
+        .unwrap();
+    rx.recv_timeout(Duration::from_secs(60))
+        .expect("mounting never ended")
+}
+
+/// A component that keeps mounting itself where the static cycle check
+/// cannot see it (under an `if`, in a tooltip, on a page that becomes
+/// current) stops at 256 nested elements and components with a located
+/// error naming it; the flush returns.
+#[test]
+fn runaway_recursion_stops_at_the_depth_limit() {
+    fn one_error(errors: &[String], what: &str) {
+        assert_eq!(errors.len(), 1, "{errors:#?}");
+        assert!(
+            errors[0].contains(what) && errors[0].contains("256"),
+            "{errors:#?}"
+        );
+    }
+    // Under an `if`, even fanning out two ways at every level.
+    let (errors, _) = boot_bounded(
+        "component C(n: int) { box { if n >= 0 { C n: n + 1; C n: n + 1 } } }\nbar B { C n: 0 }\n",
+        |_| Vec::new(),
+    );
+    one_error(&errors, "component `C`");
+    // Through an element that is no component.
+    let (errors, _) = boot_bounded(
+        "component C(n: int) { if n >= 0 { box { C n: n + 1 } } }\nbar B { C n: 0 }\n",
+        |_| Vec::new(),
+    );
+    one_error(&errors, "`box` in component `C`");
+    // In a tooltip: nothing until hovered, then one level per hover.
+    let (errors, later) = boot_bounded(
+        "component C { box { tooltip { C } } }\nbar B { C }\n",
+        |shell| {
+            for _ in 0..300 {
+                let Some(&b) = shell.scene.of_kind(NodeKind::Box).last() else {
+                    break;
+                };
+                shell.inst.set_flag(b, NodeFlag::Hover, true);
+                let u = shell.flush();
+                if !u.errors.is_empty() {
+                    return u.errors.iter().map(|e| e.to_string()).collect();
+                }
+            }
+            Vec::new()
+        },
+    );
+    assert!(errors.is_empty(), "{errors:#?}");
+    one_error(&later, "component `C`");
+    // On a hidden page: nothing; once its page is current, the limit.
+    let (errors, later) = boot_bounded(
+        "enum Pg { a, b }\n\
+         state cur: Pg = b\n\
+         component C { pages current: cur { page a { C }; page b { text \"B\" } } }\n\
+         bar B { box { on click { cur = a } }; C }\n",
+        |shell| {
+            let b = shell.scene.of_kind(NodeKind::Box)[0];
+            shell.inst.event(b, "click", Vec::new());
+            let u = shell.flush();
+            u.errors.iter().map(|e| e.to_string()).collect()
+        },
+    );
+    assert!(errors.is_empty(), "{errors:#?}");
+    one_error(&later, "component `C`");
+}

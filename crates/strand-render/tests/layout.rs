@@ -1670,3 +1670,44 @@ fn unsized_images_are_square() {
     approx(rect(&r, ids[1]), (16.0, 0.0, 40.0, 40.0));
     approx(rect(&r, ids[2]), (56.0, 0.0, 30.0, 10.0));
 }
+
+/// A `tooltip { … }` element's content is not drawn yet (the checker's
+/// `check::not_drawn_yet`): logic mounts it while its element is hovered,
+/// and render neither lays it out nor paints it, so hovering moves
+/// nothing.
+#[test]
+fn a_tooltip_element_takes_no_room_and_draws_nothing() {
+    let build = |tip: bool| {
+        panel(200, 40, |b, root| {
+            let row = b.node(NodeKind::Row, Some(root), vec![(Prop::Gap, num(4.0))]);
+            let host = b.node(NodeKind::Box, Some(row), vec![]);
+            b.node(NodeKind::Text, Some(host), vec![(Prop::Text, text("x"))]);
+            if tip {
+                let t = b.node(NodeKind::Tooltip, Some(host), vec![]);
+                b.node(NodeKind::Text, Some(t), vec![(Prop::Text, text("TIP"))]);
+            }
+            swatch(
+                b,
+                row,
+                "#f38ba8",
+                vec![(Prop::Width, num(20.0)), (Prop::Height, num(20.0))],
+            );
+        })
+    };
+    let (diff, root) = build(false);
+    let (_, plain) = show(diff, root, 200, 40, Scale::ONE);
+    let (diff, root) = build(true);
+    let (r, tipped) = show(diff, root, 200, 40, Scale::ONE);
+    assert!(
+        plain.pixels == tipped.pixels,
+        "the tooltip element was drawn"
+    );
+    let laid = &r.boxes(S).unwrap().rects;
+    assert!(
+        laid.keys().all(|id| r
+            .tree()
+            .get(*id)
+            .is_none_or(|n| n.kind != NodeKind::Tooltip)),
+        "the tooltip element was laid out"
+    );
+}

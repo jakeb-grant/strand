@@ -297,6 +297,15 @@ fn justify(k: &str) -> Option<AlignContent> {
     })
 }
 
+/// True for nodes their parent neither lays out nor paints: a nested
+/// surface (a popup paints on its own surface) and a `tooltip { … }`
+/// element, whose rich content is not drawn yet (the checker says so with
+/// `check::not_drawn_yet`; logic mounts it only while its element is
+/// hovered).
+pub fn out_of_flow(kind: NodeKind) -> bool {
+    kind.is_surface() || kind == NodeKind::Tooltip
+}
+
 /// True for kinds whose children are not laid out in flow (they draw
 /// their own content).
 pub fn is_leaf(kind: NodeKind) -> bool {
@@ -380,7 +389,7 @@ fn inherited_at<'a>(tree: &'a SceneTree, id: NodeId) -> Inh<'a> {
 
 impl<'a> Build<'a> {
     fn node(&mut self, node: &'a Node, inh: &Inh<'a>, root: bool) -> Option<taffy::NodeId> {
-        if !root && node.kind.is_surface() {
+        if !root && out_of_flow(node.kind) {
             return None;
         }
         let fold = self.fold.take();
@@ -582,7 +591,7 @@ impl<'a> Build<'a> {
             .children
             .iter()
             .filter_map(|c| self.tree.get(*c))
-            .filter(|c| !c.kind.is_surface())
+            .filter(|c| !out_of_flow(c.kind))
             .map(|c| (c.kind, c))
             .collect();
         let row_like = |style: &mut Style, j: AlignContent| {

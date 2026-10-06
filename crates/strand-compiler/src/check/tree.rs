@@ -1207,7 +1207,7 @@ impl<'a> Checker<'a> {
             ast::ExprKind::Commas(_) | ast::ExprKind::Spaced(_) => self.prop_value(e, &p.ty, what),
             _ if joined => self.expr(e, Some(&p.ty)),
             _ => {
-                let hint = super::is_whole_literal(e).then_some(Ty::INT);
+                let hint = super::whole_shape(e);
                 self.expr(e, hint.as_ref())
             }
         };

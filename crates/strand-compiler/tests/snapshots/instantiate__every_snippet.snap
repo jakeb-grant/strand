@@ -35,8 +35,6 @@ bar screens="Mock | DP-1 | Display" name="Everything"
     pages current=wifi
       page name=wifi
         text text="Wi-Fi"
-      page name=bluetooth
-        text text="Bluetooth"
     box tooltip="A tooltip"
     shader source="aurora.wgsl"
     canvas
