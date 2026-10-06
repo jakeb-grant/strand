@@ -334,6 +334,7 @@ impl Env {
             selected: rt.signal(false),
             width: rt.signal(Value::float(0.0)),
             height: rt.signal(Value::float(0.0)),
+            watch: Cell::new(0),
         };
         // The flags live as long as the scope that owns the element, even
         // when a binding (a memo) is what first asks for them.
@@ -361,6 +362,9 @@ pub struct Vm {
     /// Where errors raised since the last [`Vm::clear_faults`] came from:
     /// the failing op's file and span.
     faults: RefCell<std::collections::VecDeque<(Error, FileId, Span)>>,
+    /// Elements whose laid-out size a binding read since the last
+    /// [`Vm::take_watched`]: the instance tells render to report them.
+    watched: RefCell<Vec<Rc<NodeState>>>,
 }
 
 /// Faults remembered between two [`Vm::clear_faults`] (a tick's worth).
@@ -392,6 +396,7 @@ impl Vm {
             peak: Cell::new(0),
             hooks: RefCell::new(None),
             faults: RefCell::default(),
+            watched: RefCell::default(),
         })
     }
 
@@ -416,6 +421,21 @@ impl Vm {
             .iter()
             .find(|(x, _, _)| same_error(x, e))
             .map(|(_, f, s)| (*f, *s))
+    }
+
+    /// Notes that a binding read `node`'s laid-out size (`bits`:
+    /// [`NodeState::WATCH_SIZE`] or [`NodeState::WATCH_QUERY`]).
+    pub(crate) fn watch(&self, node: &Rc<NodeState>, bits: u8) {
+        let had = node.watch.get();
+        node.watch.set(had | bits);
+        // Every read is noted, not only the first: a remount or reload
+        // may have dropped what render was told.
+        self.watched.borrow_mut().push(node.clone());
+    }
+
+    /// Elements whose laid-out size was read since the last call.
+    pub fn take_watched(&self) -> Vec<Rc<NodeState>> {
+        std::mem::take(&mut *self.watched.borrow_mut())
     }
 
     /// Forget noted faults (the instance does after reporting a tick).

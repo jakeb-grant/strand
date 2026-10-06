@@ -177,6 +177,13 @@ props! {
     /// source; the surface's layer-shell namespace is `strand-<name>`
     /// (see [`crate::SurfaceSpec`]).
     Name = "name": Snap,
+    /// Which of the node's laid-out sizes logic reads, as
+    /// `PropValue::Keyword`: `size` (`self.width` read by a binding) or
+    /// `query` (read by a container query's `when`). Set by the
+    /// compiler, never written in source; render reports a node's size
+    /// (`ToLogic::Layout`) only when it carries this, and holds a frame
+    /// for logic's answer when a `query` node's size changes.
+    Watch = "watch": Snap,
     // Paint.
     Bg = "bg": Effects,
     Color = "color": Effects,
@@ -689,6 +696,10 @@ pub enum SceneOp {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SceneDiff {
     pub ops: Vec<SceneOp>,
+    /// The last batch of layout facts (by sequence number) logic had
+    /// taken in when it produced this diff: render releases a frame it
+    /// held for a container query's answer once this reaches the batch.
+    pub layout_seen: Option<u64>,
 }
 
 impl SceneDiff {
@@ -702,7 +713,7 @@ impl SceneDiff {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.ops.is_empty()
+        self.ops.is_empty() && self.layout_seen.is_none()
     }
 
     /// Convenience for [`SceneOp::Create`].

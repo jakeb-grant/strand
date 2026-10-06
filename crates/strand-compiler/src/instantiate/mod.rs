@@ -1017,6 +1017,54 @@ impl Instance {
         self.collect(tick)
     }
 
+    /// Tells render which elements' laid-out sizes bindings read
+    /// (`Prop::Watch`): it reports only those, and holds a frame for a
+    /// container query's answer. An element not on the scene yet is
+    /// told once it is.
+    fn emit_watched(&self) {
+        let watched = self.ctx.vm.take_watched();
+        if watched.is_empty() {
+            return;
+        }
+        let mut later = Vec::new();
+        let mut em = self.ctx.em.borrow_mut();
+        let mut seen = std::collections::HashSet::new();
+        for state in watched {
+            if !seen.insert(Rc::as_ptr(&state)) {
+                continue;
+            }
+            let Some(id) = state.scene.get() else {
+                // Kept while something else still holds it.
+                if Rc::strong_count(&state) > 1 {
+                    later.push(state);
+                }
+                continue;
+            };
+            let ours = em
+                .nodes
+                .get(&id)
+                .is_some_and(|e| Rc::ptr_eq(&e.state, &state));
+            if !ours {
+                continue;
+            }
+            let kw = if state.watch.get() & NodeState::WATCH_QUERY != 0 {
+                "query"
+            } else {
+                "size"
+            };
+            em.set(
+                id,
+                SceneProp::Watch,
+                PropValue::Keyword(kw.into()),
+                Transition::Instant,
+            );
+        }
+        drop(em);
+        for s in later {
+            self.ctx.vm.watch(&s, 0);
+        }
+    }
+
     fn collect(&self, tick: strand_core::Tick) -> Update {
         let late: Vec<_> = self.ctx.late_nodes.borrow_mut().drain(..).collect();
         for (id, prop, state) in late {
@@ -1037,6 +1085,7 @@ impl Instance {
             }
             self.emit_binding(*id);
         }
+        self.emit_watched();
         let mut ops = std::mem::take(&mut self.ctx.em.borrow_mut().ops);
         if let Some(table) = new_tokens {
             ops.push(SceneOp::SetTokens {
@@ -1055,7 +1104,10 @@ impl Instance {
         }
         self.ctx.vm.clear_faults();
         Update {
-            diff: SceneDiff { ops },
+            diff: SceneDiff {
+                ops,
+                layout_seen: None,
+            },
             errors,
             diagnostics: tick.diagnostics,
             notices: self.ctx.notices.borrow_mut().drain(..).collect(),

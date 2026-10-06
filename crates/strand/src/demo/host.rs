@@ -654,6 +654,7 @@ impl Host {
     /// thread (`strand run`).
     pub fn forwarding(mut self, tx: Sender<ToLogic>) -> Self {
         self.logic = Some(Forward::new(tx));
+        self.renderer.set_query_wait(strand_render::QUERY_WAIT);
         self
     }
 
@@ -663,7 +664,10 @@ impl Host {
         if !facts.is_empty()
             && let Some(f) = &self.logic
         {
-            f.send(ToLogic::Layout(facts));
+            f.send(ToLogic::Layout {
+                seq: self.renderer.layout_seq(),
+                sizes: facts,
+            });
         }
     }
 }
@@ -734,6 +738,9 @@ impl SurfaceHost for Host {
         if let Some(f) = &self.logic {
             f.configured(surface, size, scale);
         }
+        // Its first layout's sizes: a container query answers before the
+        // first frame (the renderer holds it for that).
+        self.forward_facts();
     }
 
     fn surface_detached(&mut self, surface: SurfaceId) {

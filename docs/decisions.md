@@ -3878,13 +3878,13 @@ a min-content height of 0 (a scroll container's automatic minimum).
 After that pass only the rows the viewport shows are laid out, each as a
 taffy root of its own at the list's content width; their heights are
 remembered per row node. When measured heights differ from the estimate,
-one more pass places everything (the design's "at most one extra pass per
-frame": a render pass never loops; a container query's flip arrives with
-logic's next diff and is laid out in the next frame).
+one more pass places everything (a render pass never loops). Container
+queries settle inside the frame (below).
 
 **2026-10-06 · wave3-pixels: container-query hysteresis lives in logic.**
 Render reports laid-out sizes (`Renderer::take_layout_facts`, sent as
-`ToLogic::Layout`) whenever they change; logic's `when` evaluation keeps a
+`ToLogic::Layout`) of the nodes logic reads them of, whenever they
+change; logic's `when` evaluation keeps a
 condition that read a node's `width`/`height` true while it would hold
 with every size read moved 4 px either way, so `when self.width < 300`
 turns on below 300 and off at 304. This is exact for threshold queries
@@ -3942,3 +3942,40 @@ again at the cap, so what overflows scrolls or is clipped and a list lays
 out only the rows the capped box shows; the buffer never grows past it.
 Render does not know the target output's size when it sizes the spec,
 hence a constant rather than the output.
+
+**2026-10-06 · wave3-pixels: render reports only the sizes logic
+reads.** Logic marks an element whose `width`/`height` a binding reads
+with `Prop::Watch` (`size`, or `query` when a `when` condition read it;
+set by the compiler at the end of the tick, like `name`, never written in
+source). Render sends layout facts only for nodes carrying it (and a
+node's current size at once when it starts carrying it), so a size
+animation of anything else (a dot's width, a toast's height) never wakes
+the logic thread: the design keeps logic off the animation path and an
+idle shell at zero work.
+
+**2026-10-06 · wave3-pixels: container queries settle inside the
+frame.** design.md's "at most one extra pass per frame" is read as: the
+frame that crosses a threshold already shows the new variant. When a
+layout pass changes the size of a `query`-watched node, render holds that
+surface's frame (as it holds one for new text) until a diff arrives whose
+`SceneDiff::layout_seen` reaches the fact batch it sent
+(`ToLogic::Layout { seq, .. }`; logic echoes the last batch it took in,
+sending a diff even with no ops), or until `QUERY_WAIT` (30 ms) runs out.
+A frame is held at most once: when the answer's own layout changes a
+watched size again, that frame paints (the one extra pass) and its facts
+go to logic as usual. This also covers boot, where `self.width` starts at
+0: the first frame waits for the first layout's answer. Offline
+renderers (no logic) never hold (`set_query_wait`, default zero).
+
+**2026-10-06 · wave3-pixels: list rows mount eagerly until M4.** "Only
+visible rows mounted/laid out" is met for layout, shaping and painting:
+render lays out, measures and shapes only the rows a list's viewport
+shows. Logic still mounts every row (its bindings, `when hover` memos and
+service reads exist for each), and the scene diff and render tree carry
+every row. Mounting rows on demand needs render to report each list's
+visible index range and logic to park the rest, which belongs with M4's
+virtualised lists (FLIP, smooth scrolling) rather than a layout track.
+Until then the logic cost is guarded by
+`crates/strand-compiler/tests/instantiate.rs::a_2000_row_list_mounts_eagerly_and_updates_one_row`
+(one changed row of 2,000 sends one op and re-runs under 20
+computations).

@@ -184,8 +184,14 @@ pub enum ToLogic {
         height: f32,
     },
     /// Laid-out sizes that changed (`self.width`, container queries):
-    /// `(node, width, height)` in logical pixels.
-    Layout(Vec<(NodeId, f32, f32)>),
+    /// `(node, width, height)` in logical pixels, as fact batch `seq`
+    /// (`Renderer::layout_seq`); the next diff echoes it as
+    /// `SceneDiff::layout_seen`, even with no ops, which releases a frame
+    /// render held for a container query's answer.
+    Layout {
+        seq: u64,
+        sizes: Vec<(NodeId, f32, f32)>,
+    },
     /// A widget or the surface wrote a two-way prop: an `input`'s
     /// `text`, a surface's `open` (Escape, click-away, focus loss).
     Write {
@@ -441,6 +447,8 @@ struct Shell {
     /// Cells kept over a changed default outside a reload while nobody
     /// watched (at boot): the next reload event lists them.
     unheard: Vec<strand_compiler::reconcile::KeptCell>,
+    /// The last layout fact batch taken in since the last diff went out.
+    layout_seen: Option<u64>,
 }
 
 impl Shell {
@@ -469,10 +477,11 @@ impl Shell {
                 }
                 inst.event(node, event.name(), event.args_with(&self.host));
             }
-            ToLogic::Layout(facts) => {
-                for (node, w, h) in facts {
+            ToLogic::Layout { seq, sizes } => {
+                for (node, w, h) in sizes {
                     inst.set_size(node, w, h);
                 }
+                self.layout_seen = Some(seq);
             }
             ToLogic::Write { node, prop, value } => {
                 if let Err(e) = inst.write(node, prop, value) {
@@ -962,6 +971,7 @@ pub fn logic(
         latest: Problems::of(&boot),
         watched: Vec::new(),
         unheard: Vec::new(),
+        layout_seen: None,
     };
     shell.overlay.set_running(boot.build.is_some());
     // The boot's diagnostics: a config broken at boot runs its last good
@@ -982,7 +992,8 @@ pub fn logic(
         }
         let wall = SystemTime::now();
         let (mut update, wake) = shell.inst.step(start.elapsed(), wall);
-        let diff = std::mem::take(&mut update.diff);
+        let mut diff = std::mem::take(&mut update.diff);
+        diff.layout_seen = shell.layout_seen.take();
         if !diff.is_empty() && out.send(diff).is_err() {
             break;
         }
@@ -1373,6 +1384,21 @@ pub(crate) mod tests {
             s.prop(a, Prop::Opacity) == Some(&PropValue::Number(0.5))
                 && s.prop(a, Prop::Height) == Some(&PropValue::Number(40.0))
         });
+        // Layout facts are answered with their batch number, even when
+        // they change nothing (render holds a query's frame for it).
+        send(ToLogic::Layout {
+            seq: 7,
+            sizes: vec![(a, 1920.0, 40.0)],
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let diff = m.inbox.recv_timeout(left).expect("an answer to the facts");
+            m.apply("facts", &diff);
+            if diff.layout_seen == Some(7) {
+                break;
+            }
+        }
         send(ToLogic::Flag {
             node: a,
             flag: NodeFlag::Pressed,

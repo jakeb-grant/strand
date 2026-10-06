@@ -23,5 +23,5 @@ mod renderer;
 mod tree;
 
 pub use layout::{Boxes, CH_EM, LIST_ROW_ESTIMATE, MAX_CONTENT_SIZE, RootSize, ScrollState};
-pub use renderer::{BUSY_WINDOW, DAMAGE_HISTORY, NEW_TEXT_WAIT, Renderer, TextBackend};
+pub use renderer::{BUSY_WINDOW, DAMAGE_HISTORY, NEW_TEXT_WAIT, QUERY_WAIT, Renderer, TextBackend};
 pub use tree::{Node, PropEntry, SceneError, SceneTree};

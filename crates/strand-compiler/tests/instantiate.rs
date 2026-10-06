@@ -2025,6 +2025,49 @@ fn one_item_change_reruns_one_item() {
     assert!(shell.scene.find_text("changed").is_some());
 }
 
+/// A 2,000-row `list` mounts every row on the logic side: render lays
+/// out only the rows in view, and mounting stays eager until M4
+/// (decisions.md, wave3-pixels). The cost that keeps that viable: a
+/// mount of 2,000 rows with a `when hover` each, and one changed row
+/// re-running only its own bindings and sending one op.
+#[test]
+fn a_2000_row_list_mounts_eagerly_and_updates_one_row() {
+    let mut src = String::from("type Row { id: int; label: text }\nstate rows: [Row] key id = [");
+    for i in 0..2000 {
+        src.push_str(&format!("Row(id: {i}, label: \"r{i}\"), "));
+    }
+    src.push_str(
+        "]\nbar B { list { max_height: 420\n for r in rows { row { when hover { opacity: 0.5 }\n text r.label } } } }\n",
+    );
+    let t = std::time::Instant::now();
+    let mut shell = boot(&[("t.strand", &src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let mounted = t.elapsed();
+    assert_eq!(shell.scene.of_kind(NodeKind::Row).len(), 2000);
+    eprintln!("mounted 2,000 list rows in {mounted:?}");
+    let before = shell.rt.stats().computations;
+    let row = shell.inst.vm().types().find_record("Row").expect("Row");
+    let rows: Vec<Value> = (0..2000)
+        .map(|i| {
+            let label = if i == 1500 {
+                "changed".to_string()
+            } else {
+                format!("r{i}")
+            };
+            Value::record(row, vec![Value::int(i), Value::text(label)])
+        })
+        .collect();
+    shell
+        .inst
+        .set_value("t", "rows", Value::list(rows))
+        .unwrap();
+    let u = shell.flush();
+    let runs = shell.rt.stats().computations - before;
+    assert_eq!(u.diff.ops.len(), 1, "{:?}", u.diff);
+    assert!(runs < 20, "{runs} computations for one changed row");
+}
+
 /// A fault in a file's top-level handler is located but freezes
 /// nothing: freezing the config's root would stop every bar (design.md:
 /// a fault freezes only its own component).
@@ -2760,6 +2803,29 @@ fn container_queries_have_hysteresis() {
         "not on again above the threshold"
     );
     assert_eq!(at(&mut shell, 299.5), 0.5);
+}
+
+/// Render is told which nodes' sizes logic reads (`watch`): `query` for a
+/// container query, `size` for any other binding; nodes nobody measures
+/// carry nothing, so their size changes never wake logic.
+#[test]
+fn only_measured_nodes_are_watched() {
+    let src = "bar Top {\n  height: 30\n  row {\n    when self.width < 300 { opacity: 0.5 }\n    box { id: b }\n    text \"w\"\n  }\n  text b.width > 10 ? \"wide\" : \"narrow\"\n}\n";
+    let shell = boot(&[("w.strand", src)], |rt, host| {
+        let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+        host.set(rt, "screens.all", Value::list(vec![screen]))
+            .unwrap();
+    });
+    let row = shell.scene.of_kind(NodeKind::Row)[0];
+    let b = shell.scene.of_kind(NodeKind::Box)[0];
+    let bar = shell.scene.of_kind(NodeKind::Bar)[0];
+    let kw = |k: &str| Some(PropValue::Keyword(k.into()));
+    assert_eq!(shell.scene.prop(row, Prop::Watch).cloned(), kw("query"));
+    assert_eq!(shell.scene.prop(b, Prop::Watch).cloned(), kw("size"));
+    assert_eq!(shell.scene.prop(bar, Prop::Watch), None);
+    for t in shell.scene.of_kind(NodeKind::Text) {
+        assert_eq!(shell.scene.prop(t, Prop::Watch), None);
+    }
 }
 
 /// `nav: results` names a list mounted after the input: render gets the

@@ -18,8 +18,14 @@ file fixes boundaries; each crate is free inside its own boundary.
 Channels are the only coupling between threads. Logic → render is one
 `SceneDiff` per tick. Render → logic is `InputEvent`s (`strand-scene`) and layout facts
 (`self.width` for container queries: `Renderer::take_layout_facts`, the
-laid-out sizes that changed, sent as `run::ToLogic::Layout`). No locks are shared across threads on a
-hot path.
+laid-out sizes that changed of nodes carrying `Prop::Watch`, sent as
+`run::ToLogic::Layout { seq, sizes }` with `Renderer::layout_seq`). The
+next diff logic sends echoes the last batch it took in as
+`SceneDiff::layout_seen` (sent even with no ops): render holds a frame
+whose layout changed a `watch: query` node's size until then, or for
+`strand_render::QUERY_WAIT` (`Renderer::set_query_wait`; zero offline),
+so container queries settle inside the frame. No locks are shared across
+threads on a hot path.
 
 `strand run [dir]` (`crates/strand/src/run.rs`) is this wiring: the main
 thread's surface host forwards the monitor hooks (`screens` as a list of
@@ -79,7 +85,9 @@ the compositor going away send `ToLogic::Shutdown`; the main thread
 joins the logic thread, which unmounts the instance, runs
 `Runtime::shutdown` and drops its stores, so debounced persist and
 settings writes reach the disk before the process exits. Layout facts
-(`ToLogic::Layout`) address every laid-out node; a surface's configured
+(`ToLogic::Layout`) address the laid-out nodes logic measures (the
+instance sets `Prop::Watch` on an element whose `width`/`height` a
+binding read: `size`, or `query` from a `when`); a surface's configured
 size still arrives as `Size` on its node. `STRAND_MOCK=desktop` fills the
 host with a mock desktop for screenshots before M3 (`mock.rs`).
 

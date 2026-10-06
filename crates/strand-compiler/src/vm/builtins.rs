@@ -10,7 +10,7 @@ use strand_scene::{BinOp, Color, Oklch, TokenExpr, TokenMethod};
 use super::Vm;
 use super::exec::{Args, EventCtx};
 use super::palette;
-use super::value::{AsyncValue, CallValue, Num, PendingOp, Value};
+use super::value::{AsyncValue, CallValue, NodeState, Num, PendingOp, Value};
 use crate::hir::{BinaryOp, UnaryOp};
 use crate::ty::{Prim, Ty, TypeTable};
 
@@ -74,26 +74,36 @@ fn default_depth(types: &TypeTable, ty: &Ty, depth: u32) -> Value {
 
 thread_local! {
     /// While a `when` condition is evaluated: the offset added to every
-    /// laid-out size it reads, and whether it read one.
-    static QUERY: std::cell::Cell<(f64, bool)> = const { std::cell::Cell::new((0.0, false)) };
+    /// laid-out size it reads, whether it read one, and whether one is
+    /// being evaluated at all.
+    static QUERY: std::cell::Cell<(f64, bool, bool)> =
+        const { std::cell::Cell::new((0.0, false, false)) };
 }
 
 /// Runs `f` with every `width`/`height` of a node it reads moved by
 /// `bias` logical pixels; returns its result and whether it read one.
 /// This is how container queries get their hysteresis.
 pub(crate) fn layout_query<R>(bias: f64, f: impl FnOnce() -> R) -> (R, bool) {
-    let outer = QUERY.with(|q| q.replace((bias, false)));
+    let outer = QUERY.with(|q| q.replace((bias, false, true)));
     let r = f();
-    let (_, read) = QUERY.with(|q| q.replace(outer));
+    let (_, read, _) = QUERY.with(|q| q.replace(outer));
     (r, read)
 }
 
-fn laid_out(v: Value) -> Value {
-    let bias = QUERY.with(|q| {
-        let (b, _) = q.get();
-        q.set((b, true));
-        b
+fn laid_out(vm: &Vm, n: &Rc<NodeState>, v: Value) -> Value {
+    let (bias, in_query) = QUERY.with(|q| {
+        let (b, _, active) = q.get();
+        q.set((b, true, active));
+        (b, active)
     });
+    vm.watch(
+        n,
+        if in_query {
+            NodeState::WATCH_QUERY
+        } else {
+            NodeState::WATCH_SIZE
+        },
+    );
     match v.as_f64() {
         Some(x) if bias != 0.0 => Value::float(x + bias),
         _ => v,
@@ -119,8 +129,8 @@ pub(crate) fn field(vm: &Rc<Vm>, rt: &Runtime, base: &Value, name: &str) -> Resu
             "pressed" => Value::Bool(n.pressed.get(rt)?),
             "focused" => Value::Bool(n.focused.get(rt)?),
             "selected" => Value::Bool(n.selected.get(rt)?),
-            "width" => laid_out(n.width.get(rt)?),
-            "height" => laid_out(n.height.get(rt)?),
+            "width" => laid_out(vm, n, n.width.get(rt)?),
+            "height" => laid_out(vm, n, n.height.get(rt)?),
             _ => Value::Null,
         },
         Value::List(items) => list_field(items, name),

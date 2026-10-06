@@ -46,6 +46,12 @@ pub const BUSY_WINDOW: Duration = Duration::from_millis(34);
 /// for again before waiting for other text to change or go.
 pub const MAX_TEXT_RETRIES: u8 = 2;
 
+/// How long `strand run` holds a frame for logic's answer to a container
+/// query whose size changed (`when self.width < 300`): logic answers in
+/// well under a millisecond, so the frame shows the settled variant; a
+/// logic thread that is busy costs at most this.
+pub const QUERY_WAIT: Duration = Duration::from_millis(30);
+
 /// Where text layouts come from.
 #[derive(Debug)]
 pub enum TextBackend {
@@ -165,6 +171,13 @@ struct SurfaceState {
     layout_dirty: bool,
     /// Hit shapes of the last painted frame, in paint order.
     hits: Vec<HitBox>,
+    /// A layout pass changed the size of a node a container query reads:
+    /// the frame waits for logic to have seen fact batch `.0` (its
+    /// answer, see [`SceneDiff::layout_seen`]) or until `.1`.
+    query_hold: Option<(u64, Instant)>,
+    /// A frame was held for a query since the last paint: at most one
+    /// hold (one extra pass) per frame.
+    query_held: bool,
     /// How far shadows reach past the root's box (from its spec).
     overhang: strand_scene::Insets,
 }
@@ -228,6 +241,11 @@ pub struct Renderer {
     /// last size handed per node.
     facts: Vec<(NodeId, f32, f32)>,
     facts_sent: HashMap<NodeId, (f32, f32)>,
+    /// Fact batches handed out ([`Renderer::layout_seq`]).
+    facts_seq: u64,
+    /// How long a frame waits for logic's answer to a container query
+    /// (zero: never; no logic thread offline).
+    query_wait: Duration,
     /// Text slots content sizing of surfaces asks for (kept by pruning).
     spec_wanted: HashMap<NodeId, Vec<TextSlot>>,
     /// Surface nodes whose content size or overhang may have changed.
@@ -306,6 +324,8 @@ impl Renderer {
             layout_passes: 0,
             facts: Vec::new(),
             facts_sent: HashMap::new(),
+            facts_seq: 0,
+            query_wait: Duration::ZERO,
             spec_wanted: HashMap::new(),
             spec_dirty: BTreeSet::new(),
         }
@@ -323,11 +343,29 @@ impl Renderer {
     }
 
     /// Laid-out sizes that changed since the last call, `(node, width,
-    /// height)` in logical pixels: what logic's `self.width` and
-    /// container queries read. A node shown on several surfaces reports
-    /// the size of the last one laid out.
+    /// height)` in logical pixels, of the nodes logic reads them of
+    /// (`Prop::Watch`): what `self.width` and container queries read. A
+    /// node shown on several surfaces reports the size of the last one
+    /// laid out. A non-empty batch gets the next [`Renderer::layout_seq`].
     pub fn take_layout_facts(&mut self) -> Vec<(NodeId, f32, f32)> {
-        std::mem::take(&mut self.facts)
+        let facts = std::mem::take(&mut self.facts);
+        if !facts.is_empty() {
+            self.facts_seq += 1;
+        }
+        facts
+    }
+
+    /// The sequence number of the last fact batch taken: logic echoes it
+    /// as [`SceneDiff::layout_seen`].
+    pub fn layout_seq(&self) -> u64 {
+        self.facts_seq
+    }
+
+    /// How long a frame whose layout changed a size a container query
+    /// reads waits for logic's answer (see [`QUERY_WAIT`]); zero, the
+    /// default, never waits.
+    pub fn set_query_wait(&mut self, wait: Duration) {
+        self.query_wait = wait;
     }
 
     /// Scrolls the innermost `scroll` or `list` under `point` of
@@ -610,6 +648,8 @@ impl Renderer {
                 boxes: None,
                 layout_dirty: true,
                 hits: Vec::new(),
+                query_hold: None,
+                query_held: false,
                 overhang: self
                     .specs
                     .get(&root)
@@ -727,7 +767,13 @@ impl Renderer {
             false => s.awaiting_text.then_some(s.wait_until).flatten(),
             true => s.new_text_until,
         };
-        until.filter(|t| Instant::now() < *t)
+        let now = Instant::now();
+        let text = until.filter(|t| now < *t);
+        let query = s.query_hold.map(|(_, t)| t).filter(|t| now < *t);
+        match (text, query) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     /// Frees everything held for scales no surface uses any more: text
@@ -823,7 +869,24 @@ impl Renderer {
         // paint-only prop).
         let mut touched: Option<Vec<NodeId>> = Some(Vec::new());
         let mut relayout: Option<Vec<NodeId>> = Some(Vec::new());
+        // Logic took in the facts a held frame waits for: it answered.
+        if let Some(seen) = diff.layout_seen {
+            for s in self.surfaces.values_mut() {
+                if s.query_hold.is_some_and(|(seq, _)| seq <= seen) {
+                    s.query_hold = None;
+                }
+            }
+        }
+        let mut watched = Vec::new();
         for op in diff.ops {
+            if let SceneOp::SetProp {
+                id,
+                prop: Prop::Watch,
+                ..
+            } = &op
+            {
+                watched.push(*id);
+            }
             // Where the node painted before the op, and the node whose
             // root to look up after it.
             let (before, after, shapes) = match &op {
@@ -898,6 +961,30 @@ impl Renderer {
         self.pending.retain(|_, slot| texts.contains_key(slot));
         let tree = &self.tree;
         self.facts_sent.retain(|n, _| tree.contains(*n));
+        // Newly watched nodes: their size as laid out now, if it is.
+        // A query that starts reading one holds its surface's next frame
+        // for the answer, as a size change would.
+        let wait = self.query_wait;
+        for id in watched {
+            self.facts_sent.remove(&id);
+            let query = match self.tree.get(id).and_then(|n| n.get(Prop::Watch)) {
+                None => continue,
+                Some(w) => matches!(w, PropValue::Keyword(k) if k == "query"),
+            };
+            let seq = self.facts_seq + 1;
+            let shown = self.surfaces.values_mut().find_map(|s| {
+                let r = s.boxes.as_ref()?.rects.get(&id).copied()?;
+                Some((r, s))
+            });
+            if let Some((r, s)) = shown {
+                if query && !wait.is_zero() && !s.query_held {
+                    s.query_hold = Some((seq, Instant::now() + wait));
+                    s.query_held = true;
+                }
+                self.facts_sent.insert(id, (r.w, r.h));
+                self.facts.push((id, r.w, r.h));
+            }
+        }
         self.scrolls.retain(|n, _| tree.contains(*n));
         // A surface nested in a touched one (a popup in a bar) inherits
         // from it, so it is touched too; `update` clears it again if
@@ -1251,16 +1338,29 @@ impl Renderer {
                 );
                 self.layout_passes += 1;
             }
+            // Sizes logic reads go to it; one a query reads holds the
+            // frame for its answer (once per frame).
+            let mut query = false;
             for (node, r) in &boxes.rects {
+                let Some(watch) = self.tree.get(*node).and_then(|n| n.get(Prop::Watch)) else {
+                    continue;
+                };
                 let size = (r.w, r.h);
                 if self.facts_sent.get(node) != Some(&size) {
                     self.facts_sent.insert(*node, size);
                     self.facts.push((*node, r.w, r.h));
+                    query |= matches!(watch, PropValue::Keyword(k) if k == "query");
                 }
             }
+            let wait = self.query_wait;
+            let seq = self.facts_seq + 1;
             if let Some(s) = self.surfaces.get_mut(&id) {
                 s.boxes = Some(boxes);
                 s.layout_dirty = false;
+                if query && !wait.is_zero() && !s.query_held {
+                    s.query_hold = Some((seq, Instant::now() + wait));
+                    s.query_held = true;
+                }
             }
         }
         let Some(s) = self.surfaces.get(&id) else {
@@ -1416,6 +1516,8 @@ impl Painter for Renderer {
         s.history.truncate(DAMAGE_HISTORY);
         s.valid = true;
         s.painted = true;
+        s.query_hold = None;
+        s.query_held = false;
         let scale = s.scale;
         self.raster
             .paint(&f.items, &total, &self.atlas, scale, target);

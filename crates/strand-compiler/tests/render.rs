@@ -131,3 +131,98 @@ fn design_shells_reach_the_renderer() {
     let errors = r.apply(inst.flush().diff);
     assert!(errors.is_empty(), "{errors:?}");
 }
+
+/// A container query settles inside the frame: render holds a frame
+/// whose layout changed a size a query reads until logic has seen the
+/// facts (`layout_seen`), so no painted frame shows the variant for the
+/// stale size, at boot (where `self.width` starts at 0) or on a resize.
+#[test]
+fn container_queries_settle_before_the_frame_paints() {
+    let mut map = SourceMap::new();
+    map.add(
+        "q.strand".to_string(),
+        "bar Top {\n  height: 30\n  row {\n    opacity: 1\n    when self.width < 300 { opacity: 0.5 }\n    text \"x\"\n  }\n}\n"
+            .to_string(),
+    );
+    let compiled = strand_compiler::compile(&map);
+    assert_eq!(compiled.errors(), 0);
+    let program = Arc::new(lower::lower(
+        &compiled.program,
+        strand_compiler::schema::Schema::builtin(),
+    ));
+    let rt = Runtime::new();
+    let host = Rc::new(SchemaHost::mock(&rt, &program.types));
+    let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+    host.set(&rt, "screens.all", Value::list(vec![screen]))
+        .unwrap();
+    let inst = Instance::new(
+        &rt,
+        program,
+        host.clone(),
+        strand_compiler::instantiate::Storage::none(),
+    );
+    let mut r = renderer();
+    r.set_query_wait(std::time::Duration::from_secs(30));
+    assert!(r.apply(inst.flush().diff).is_empty());
+    let bar = r
+        .take_surface_changes()
+        .into_iter()
+        .find_map(|(id, c)| matches!(c, SurfaceChange::Created(_)).then_some(id))
+        .unwrap();
+    let row = r.tree().get(bar).unwrap().children[0];
+    assert_eq!(
+        r.tree().get(row).unwrap().get(strand_scene::Prop::Watch),
+        Some(&strand_scene::PropValue::Keyword("query".into()))
+    );
+    let opacity = |r: &Renderer| match r.tree().get(row).unwrap().get(strand_scene::Prop::Opacity) {
+        Some(strand_scene::PropValue::Number(n)) => *n,
+        p => panic!("{p:?}"),
+    };
+    // What logic would do: take the facts in and answer with its diff.
+    let answer = |r: &mut Renderer| {
+        let facts = r.take_layout_facts();
+        assert!(facts.iter().any(|(n, _, _)| *n == row), "{facts:?}");
+        for (n, w, h) in facts {
+            inst.set_size(n, w, h);
+        }
+        let mut diff = inst.flush().diff;
+        diff.layout_seen = Some(r.layout_seq());
+        assert!(r.apply(diff).is_empty());
+    };
+    let surface = SurfaceId(1);
+    r.attach_surface(surface, bar);
+    let mut painted = Vec::new();
+    for width in [400u32, 250, 400] {
+        r.configure_surface(surface, Size::new(width, 30), Scale::ONE);
+        assert!(!r.wants_frame(surface), "{width}: held for the query");
+        answer(&mut r);
+        assert!(r.wants_frame(surface), "{width}: released by the answer");
+        let mut pixels = vec![0u8; width as usize * 30 * 4];
+        let mut t =
+            PaintTarget::new(&mut pixels, Size::new(width, 30), width * 4, Scale::ONE, 0).unwrap();
+        r.paint(surface, &mut t);
+        painted.push(opacity(&r));
+        // Settled: the answer's own layout asks for nothing more.
+        answer_if_any(&mut r, &inst);
+        assert!(!r.wants_frame(surface), "{width}: settled");
+    }
+    assert_eq!(
+        painted,
+        [1.0, 0.5, 1.0],
+        "each frame shows its width's variant"
+    );
+}
+
+/// Hands logic any facts left (sizes the answer's own layout changed).
+fn answer_if_any(r: &mut Renderer, inst: &Instance) {
+    let facts = r.take_layout_facts();
+    if facts.is_empty() {
+        return;
+    }
+    for (n, w, h) in facts {
+        inst.set_size(n, w, h);
+    }
+    let mut diff = inst.flush().diff;
+    diff.layout_seen = Some(r.layout_seq());
+    r.apply(diff);
+}
