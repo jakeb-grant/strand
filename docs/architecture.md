@@ -41,10 +41,13 @@ set from `find_files`, rescan callback calling it again), boots the
 none, with diagnostics) and starts the `strand-compile` thread, which
 compiles each watcher batch and `strand reload` off the logic thread and
 sends `live::FromWorker::{Loaded, Settings}` on a calloop channel; logic
-sends it `Job::{Reload { hard, client }, Referenced(files)}` (settings
-files, and the theme's wallpapers and imported files, re-sent whenever
-the theme reads a new one; their changes come back as
-`FromWorker::{Settings, Theme}(paths)`, and so does each newly
+sends it `Job::{Reload { hard, client }, Referenced { files, settings }}`
+(settings files, and the theme's wallpapers and imported files, re-sent
+whenever the theme reads a new one, with `Instance::settings_sources()`
+so the worker reads a changed settings file itself; their changes come
+back as `FromWorker::Settings(Vec<SettingsChange { path, read }>)`,
+applied with `Instance::reload_settings_with(path, read)`, and
+`FromWorker::Theme(paths)`, and so does each newly
 registered file once, right after its registration, so an edit made
 before the watcher had it is read)
 (the `Loaded` a reload causes carries the IPC clients it answers). A
@@ -342,15 +345,19 @@ table.
   last }, Failed { error, last }}` from a `stat` on the calling thread;
   a worker thread reads the file through one descriptor, BLAKE3-hashes
   it and, for unseen content only, decodes it at reduced size (JPEG by
-  DCT scaling, PNG row by row, WebP whole up to `FULL_FRAME_BYTES`)
-  into a 128 px box-filtered grid and quantises it
-  (`seed_from_reader`, `seed_from_bytes`); seeds by hash and the path
-  index are kept in a directory (`$XDG_STATE_HOME/strand/palettes`,
-  merged under `index.lock` with other runs sharing it), the 64 most
-  recently used (`MAX_REMEMBERED`); `set_waker` is called after each
+  DCT scaling, PNG row by row; WebP and progressive JPEG whole, up to a
+  peak of `FULL_FRAME_BYTES`, then `malloc_trim`) into a 128 px
+  box-filtered grid and quantises it (`seed_from_reader`,
+  `seed_from_bytes`); seeds by hash and the path index, each the 64
+  most recently used (`MAX_REMEMBERED`), are kept in one versioned
+  index file (`CACHE_VERSION`) in a directory
+  (`$XDG_STATE_HOME/strand/palettes`, merged under `index.lock` with
+  other runs sharing it); pending and failed lookups hold the path's own
+  last seed (else the last produced); `set_waker` is called after each
   finished job and when a missing or torn wallpaper's grace
-  (`MISSING_GRACE`) runs out, `poll()` takes the results;
-  `invalidate(path)` marks an entry stale (the watcher saw it change).
+  (`MISSING_GRACE`) runs out, `poll()` takes the results and reports
+  those a `lookup` took since the last `poll`; `invalidate(path)` marks
+  an entry stale (the watcher saw it change).
 - `writer::FileWriter`: `write(path, bytes)` queues an atomic write on
   a worker thread (latest per path wins), `flush(timeout)`; dropping it
   waits up to 1 s. Used for the last palette (`ThemeHost`) and the
@@ -1070,9 +1077,12 @@ Public interfaces other crates and later stages build on:
   true`, `<->`, `strand set theme.prefs.compact true` write) that field
   only; `prefs` alone reads as a record. Without a settings store the
   fields hold their defaults. The watcher gets the files from
-  `Instance::settings_files()` and calls `Instance::reload_settings(path)`
-  when one changes (core's `Settings::reload` on every mounted handle;
-  the off-thread `reload_with` path is the watch track's).
+  `Instance::settings_files()` and how to read them from
+  `Instance::settings_sources()` (one `SettingsSources` per file); it
+  reads a changed file on its own thread and the logic thread calls
+  `Instance::reload_settings_with(path, Some(read))` (core's
+  `Settings::reload_with` on every mounted handle, a clone of the read
+  each); `Instance::reload_settings(path)` reads in place.
   `Instance::settings_overlay_paths(path)` names the runtime overlay
   files of those handles, so `strand run` can drop the overlay rows a
   re-read no longer reports.

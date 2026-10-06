@@ -36,11 +36,21 @@ pub enum FromWorker {
     /// A load attempt: a build to commit (or none), what was held back,
     /// the diagnostics of the attempt.
     Loaded(Box<Loaded>),
-    /// Settings files that changed (`Instance::reload_settings`).
-    Settings(Vec<PathBuf>),
+    /// Settings files that changed, read on the worker
+    /// (`Instance::reload_settings_with`).
+    Settings(Vec<SettingsChange>),
     /// Wallpapers and imported palette files that changed
     /// (`Instance::theme_files_changed`).
     Theme(Vec<PathBuf>),
+}
+
+/// A settings file that changed, as the worker read it (with its
+/// overlay): `None` when the worker had no sources for it (the logic
+/// thread reads it then).
+#[derive(Debug)]
+pub struct SettingsChange {
+    pub path: PathBuf,
+    pub read: Option<strand_core::SettingsRead>,
 }
 
 /// One load attempt and how it came about.
@@ -77,8 +87,12 @@ pub enum Job {
         client: Option<u64>,
     },
     /// Watch these referenced files (settings files the program mounts,
-    /// wallpapers and imported palette files the theme reads).
-    Referenced(Vec<(PathBuf, Role)>),
+    /// wallpapers and imported palette files the theme reads); `settings`
+    /// reads the settings files when they change.
+    Referenced {
+        files: Vec<(PathBuf, Role)>,
+        settings: Vec<strand_core::SettingsSources>,
+    },
     Stop,
 }
 
@@ -271,6 +285,9 @@ fn run(
     // The referenced files the watcher has, so a newly registered one is
     // read once more after its registration (below).
     let mut registered: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    // How to read each settings file, off the logic thread.
+    let mut sources: std::collections::HashMap<PathBuf, strand_core::SettingsSources> =
+        std::collections::HashMap::new();
     while let Ok(job) = jobs.recv() {
         // Everything queued now is one batch of work.
         let mut queue = vec![job];
@@ -288,7 +305,13 @@ fn run(
                     reload = Some(reload.unwrap_or(false) || hard);
                     clients.extend(client);
                 }
-                Job::Referenced(r) => referenced = Some(r),
+                Job::Referenced { files, settings } => {
+                    sources = settings
+                        .into_iter()
+                        .map(|s| (s.path().to_path_buf(), s))
+                        .collect();
+                    referenced = Some(files);
+                }
                 Job::Stop => return,
             }
         }
@@ -353,8 +376,19 @@ fn run(
         for n in &notices {
             log::warn!("{n}");
         }
-        if !settings.is_empty() && out.send(FromWorker::Settings(settings)).is_err() {
-            return;
+        if !settings.is_empty() {
+            // Read here: a slow or hung home directory stalls this
+            // thread, never a frame.
+            let changes = settings
+                .into_iter()
+                .map(|path| SettingsChange {
+                    read: sources.get(&path).map(|s| s.read()),
+                    path,
+                })
+                .collect();
+            if out.send(FromWorker::Settings(changes)).is_err() {
+                return;
+            }
         }
         if !theme.is_empty() && out.send(FromWorker::Theme(theme)).is_err() {
             return;
@@ -434,7 +468,11 @@ mod tests {
             (prefs.clone(), Role::Settings),
             (wall.clone(), Role::Wallpaper),
         ];
-        worker.jobs().send(Job::Referenced(refs.clone())).unwrap();
+        let job = |files: &Vec<(PathBuf, Role)>| Job::Referenced {
+            files: files.clone(),
+            settings: Vec::new(),
+        };
+        worker.jobs().send(job(&refs)).unwrap();
         let mut got = Vec::new();
         let deadline = Instant::now() + std::time::Duration::from_secs(10);
         while got.len() < 2 && Instant::now() < deadline {
@@ -444,8 +482,9 @@ mod tests {
             }
         }
         assert!(
-            got.iter()
-                .any(|m| matches!(m, FromWorker::Settings(p) if p == std::slice::from_ref(&prefs))),
+            got.iter().any(
+                |m| matches!(m, FromWorker::Settings(c) if c.len() == 1 && c[0].path == prefs)
+            ),
             "{got:?}"
         );
         assert!(
@@ -453,7 +492,7 @@ mod tests {
                 .any(|m| matches!(m, FromWorker::Theme(p) if p == std::slice::from_ref(&wall))),
             "{got:?}"
         );
-        worker.jobs().send(Job::Referenced(refs)).unwrap();
+        worker.jobs().send(job(&refs)).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(300));
         assert!(
             rx.try_recv().is_err(),

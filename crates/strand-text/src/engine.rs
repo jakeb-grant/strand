@@ -316,6 +316,20 @@ impl TextEngine {
                     continue;
                 };
                 font_ref.key = cache_key;
+                // CSS `font-synthesis-weight`: a face is emboldened only
+                // for a bold request (600 and up) it is not bold enough
+                // for. fontique asks for it whenever the request is
+                // heavier than the face, so a theme's 500 on a machine
+                // with only a 400 and a 700 face (DejaVu Sans) would
+                // draw faux bold where medium is meant.
+                let requested = brush
+                    .checked_sub(1)
+                    .and_then(|i| spans.get(i))
+                    .and_then(|sp| sp.weight)
+                    .map_or(weight, |w| w.clamp(1, 1000) as f32);
+                let embolden = synthesis.embolden()
+                    && requested >= 600.0
+                    && font_ref.attributes().weight().0 < 600;
                 let mut scaler = self
                     .scale_cx
                     .builder(font_ref)
@@ -339,7 +353,7 @@ impl TextEngine {
                         glyph: g.id,
                         size_bits: font_size.to_bits(),
                         subpixel: bucket,
-                        embolden: synthesis.embolden(),
+                        embolden,
                         skew: skew as i8,
                         coords: coords_hash,
                     };
@@ -353,7 +367,7 @@ impl TextEngine {
                                 &mut uploads,
                                 g.id,
                                 bucket,
-                                synthesis.embolden(),
+                                embolden,
                                 skew,
                                 now,
                             );

@@ -646,7 +646,9 @@ impl fmt::Debug for ReadMark {
 }
 
 /// A settings file and its overlay as read (and parsed) by
-/// [`SettingsSources::read`]: hand it to [`Settings::reload_with`].
+/// [`SettingsSources::read`]: hand it to [`Settings::reload_with`]
+/// (cloned for each handle on one file).
+#[derive(Clone)]
 pub struct SettingsRead {
     file: Result<DocumentMut, SettingsIssue>,
     overlay: Result<DocumentMut, SettingsIssue>,

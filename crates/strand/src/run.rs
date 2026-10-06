@@ -464,9 +464,10 @@ impl Shell {
     /// A result from the compiler worker.
     fn worker(&mut self, msg: FromWorker) {
         match msg {
-            FromWorker::Settings(paths) => {
-                for p in paths {
-                    if self.inst.reload_settings(&p) {
+            FromWorker::Settings(changes) => {
+                for c in changes {
+                    let p = c.path;
+                    if self.inst.reload_settings_with(&p, c.read) {
                         // The next step's notices say what is still wrong
                         // in them; the rest of their rows go.
                         self.settings_reread.push(p.to_string_lossy().into_owned());
@@ -673,7 +674,10 @@ impl Shell {
         if files != self.watched {
             self.watched = files.clone();
             if let Some(j) = &self.jobs {
-                let _ = j.send(Job::Referenced(files));
+                let _ = j.send(Job::Referenced {
+                    files,
+                    settings: self.inst.settings_sources(),
+                });
             }
         }
     }

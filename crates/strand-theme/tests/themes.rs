@@ -286,6 +286,15 @@ fn png(major: [u8; 3], minor: [u8; 3], w: u32, h: u32) -> Vec<u8> {
     out
 }
 
+/// How many lines of the wallpaper cache's index start with `prefix`.
+fn index_lines(cache: &Path, prefix: &str) -> usize {
+    std::fs::read_to_string(cache.join("index"))
+        .unwrap()
+        .lines()
+        .filter(|l| l.starts_with(prefix))
+        .count()
+}
+
 fn wait_ready(q: &mut Quantiser, path: &Path) -> Color {
     assert!(q.wait(Duration::from_secs(30)));
     match q.lookup(path) {
@@ -489,12 +498,8 @@ fn two_runs_share_the_wallpaper_cache() {
     a.lookup(&c_wall);
     wait_ready(&mut a, &c_wall);
     drop((a, b));
-    let seeds = std::fs::read_dir(&cache)
-        .unwrap()
-        .flatten()
-        .filter(|e| e.file_name().to_string_lossy().ends_with(".seed"))
-        .count();
-    assert_eq!(seeds, 3);
+    assert_eq!(index_lines(&cache, "seed "), 3);
+    assert_eq!(index_lines(&cache, "entry "), 3);
     let mut q = Quantiser::new(Some(cache)).unwrap();
     assert_eq!(q.lookup(&a_wall), Lookup::Ready(a_seed));
     assert_eq!(q.lookup(&b_wall), Lookup::Ready(b_seed));
@@ -533,17 +538,211 @@ fn many_wallpapers_leave_a_bounded_cache() {
     let index = std::fs::read_to_string(cache.join("index")).unwrap();
     let entries = index.lines().filter(|l| l.starts_with("entry ")).count();
     assert!(entries <= MAX_REMEMBERED, "{entries}");
-    let seeds = std::fs::read_dir(&cache)
-        .unwrap()
-        .flatten()
-        .filter(|e| e.file_name().to_string_lossy().ends_with(".seed"))
-        .count();
+    let seeds = index_lines(&cache, "seed ");
     assert!(seeds <= MAX_REMEMBERED, "{seeds}");
     // The most recent ones are the ones kept: a reboot answers the last
     // wallpaper at once.
     drop(q);
     let mut q = Quantiser::new(Some(cache)).unwrap();
     assert!(matches!(q.lookup(&dir.join("w299.png")), Lookup::Ready(_)));
+    drop(q);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A link path cycling through wallpapers (`ln -sf a.png wall.png`, then
+/// `b`, then `a` again) finds `a`'s seed by its content hash on the way
+/// back: nothing is decoded again, in this run or the next.
+#[test]
+fn a_wallpaper_cycled_back_is_not_decoded_again() {
+    let dir = temp("cycle");
+    let cache = dir.join("cache");
+    let (a, b) = (dir.join("a.png"), dir.join("b.png"));
+    std::fs::write(&a, png([30, 90, 200], [240, 200, 40], 32, 32)).unwrap();
+    std::fs::write(&b, png([200, 40, 40], [20, 20, 20], 32, 32)).unwrap();
+    let wall = dir.join("wall.png");
+    let link = |to: &Path| {
+        let tmp = dir.join("wall.tmp");
+        let _ = std::fs::remove_file(&tmp);
+        std::os::unix::fs::symlink(to, &tmp).unwrap();
+        std::fs::rename(&tmp, &wall).unwrap();
+    };
+    let mut q = Quantiser::new(Some(cache.clone())).unwrap();
+    link(&a);
+    q.lookup(&wall);
+    let a_seed = wait_ready(&mut q, &wall);
+    link(&b);
+    q.invalidate(&wall);
+    q.lookup(&wall);
+    let b_seed = wait_ready(&mut q, &wall);
+    assert_ne!(a_seed, b_seed);
+    assert_eq!(q.quantised(), 2);
+    link(&a);
+    q.invalidate(&wall);
+    q.lookup(&wall);
+    assert_eq!(wait_ready(&mut q, &wall), a_seed);
+    assert_eq!(q.quantised(), 2, "a's seed is found by its hash");
+    drop(q);
+    // A new run: the index forgot a's path entry (wall.png points at it
+    // again), its seed by hash is still there.
+    link(&b);
+    let mut q = Quantiser::new(Some(cache)).unwrap();
+    q.lookup(&wall);
+    assert_eq!(wait_ready(&mut q, &wall), b_seed);
+    link(&a);
+    q.lookup(&wall);
+    assert_eq!(wait_ready(&mut q, &wall), a_seed);
+    assert_eq!(q.quantised(), 0);
+    drop(q);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Seeds cached by another version of the algorithm (an index without
+/// this version's line) are not reused: the wallpaper is decoded again.
+/// The last seed shown still holds meanwhile.
+#[test]
+fn a_cache_of_another_version_is_not_trusted() {
+    use strand_theme::image::CACHE_VERSION;
+    let dir = temp("version");
+    let cache = dir.join("cache");
+    let wall = dir.join("wall.png");
+    std::fs::write(&wall, png([30, 90, 200], [240, 200, 40], 32, 32)).unwrap();
+    let mut q = Quantiser::new(Some(cache.clone())).unwrap();
+    q.lookup(&wall);
+    let seed = wait_ready(&mut q, &wall);
+    drop(q);
+    let index = std::fs::read_to_string(cache.join("index")).unwrap();
+    assert!(
+        index.contains(&format!("version {CACHE_VERSION}\n")),
+        "{index}"
+    );
+    // The same index from an older version: no version line, and
+    // another seed for this file.
+    let [r, g, b, _] = seed.to_rgba8();
+    let seed_hex = format!("#{r:02x}{g:02x}{b:02x}");
+    let old: String = index
+        .lines()
+        .filter(|l| !l.starts_with("version "))
+        .map(|l| format!("{}\n", l.replace(&seed_hex, "#123456")))
+        .collect();
+    std::fs::write(cache.join("index"), &old).unwrap();
+    let mut q = Quantiser::new(Some(cache.clone())).unwrap();
+    assert_eq!(
+        q.last(),
+        Some(hex("#123456")),
+        "the last seed shown is kept"
+    );
+    assert!(matches!(q.lookup(&wall), Lookup::Pending { last: Some(_) }));
+    assert_eq!(wait_ready(&mut q, &wall), seed);
+    assert_eq!(q.quantised(), 1, "decoded again");
+    drop(q);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Two `material(image:)` call sites: when one re-runs and its lookup
+/// takes both finished jobs, the owner's next `poll` still reports them,
+/// so the other call site runs again too instead of staying pending.
+#[test]
+fn results_a_lookup_took_are_still_reported() {
+    let dir = temp("two-sites");
+    let (a, b) = (dir.join("a.png"), dir.join("b.png"));
+    std::fs::write(&a, png([30, 90, 200], [240, 200, 40], 32, 32)).unwrap();
+    std::fs::write(&b, png([200, 40, 40], [20, 20, 20], 32, 32)).unwrap();
+    let mut q = Quantiser::new(None).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    q.set_waker(move || {
+        let _ = tx.send(());
+    });
+    assert!(matches!(q.lookup(&a), Lookup::Pending { .. }));
+    assert!(matches!(q.lookup(&b), Lookup::Pending { .. }));
+    for _ in 0..2 {
+        rx.recv_timeout(Duration::from_secs(30)).unwrap();
+    }
+    // `a`'s evaluation re-runs first and takes both results.
+    assert!(matches!(q.lookup(&a), Lookup::Ready(_)));
+    assert!(q.poll(), "b's arrival is reported");
+    assert!(matches!(q.lookup(&b), Lookup::Ready(_)));
+    assert!(!q.poll(), "and only once");
+    drop(q);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// With two wallpapers (per output), one being re-read holds its own
+/// last seed, not the other's (the last seed produced).
+#[test]
+fn a_pending_wallpaper_holds_its_own_seed() {
+    let dir = temp("own-seed");
+    let (a, b) = (dir.join("a.png"), dir.join("b.png"));
+    std::fs::write(&a, png([30, 90, 200], [240, 200, 40], 32, 32)).unwrap();
+    std::fs::write(&b, png([200, 40, 40], [20, 20, 20], 32, 32)).unwrap();
+    let mut q = Quantiser::new(None).unwrap();
+    q.lookup(&b);
+    let b_seed = wait_ready(&mut q, &b);
+    q.lookup(&a);
+    let a_seed = wait_ready(&mut q, &a);
+    assert_eq!(q.last(), Some(a_seed));
+    // `b` is replaced: while it is read, it holds b's seed.
+    std::fs::write(
+        dir.join("next.png"),
+        png([40, 200, 40], [20, 20, 20], 32, 32),
+    )
+    .unwrap();
+    std::fs::rename(dir.join("next.png"), &b).unwrap();
+    assert_eq!(q.lookup(&b), Lookup::Pending { last: Some(b_seed) });
+    // A path never seen holds the last seed produced.
+    let c = dir.join("c.png");
+    std::fs::write(&c, png([40, 40, 200], [20, 20, 20], 32, 32)).unwrap();
+    assert!(matches!(q.lookup(&c), Lookup::Pending { last: Some(_) }));
+    assert!(q.wait(Duration::from_secs(30)));
+    drop(q);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A PNG of noise, slow to decode (it keeps the worker busy).
+fn noise_png(w: u32, h: u32) -> Vec<u8> {
+    let mut x: u32 = 0x1234_5678;
+    let img = image::RgbImage::from_fn(w, h, |_, _| {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        let [r, g, b, _] = x.to_le_bytes();
+        image::Rgb([r, g, b])
+    });
+    let mut out = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+        .unwrap();
+    out
+}
+
+/// Two reads queued during one long in-place write (two unrelated
+/// re-evaluations) both fail: neither is reported, the old seed holds
+/// until the write is done.
+#[test]
+fn two_torn_reads_of_one_write_hold_the_seed() {
+    let dir = temp("torn-twice");
+    let wall = dir.join("wall.png");
+    let blue = png([30, 90, 200], [240, 200, 40], 64, 64);
+    let red = png([200, 40, 40], [20, 20, 20], 64, 64);
+    std::fs::write(&wall, &blue).unwrap();
+    let busy = dir.join("busy.png");
+    std::fs::write(&busy, noise_png(1500, 1500)).unwrap();
+    let mut q = Quantiser::new(None).unwrap();
+    q.lookup(&wall);
+    let first = wait_ready(&mut q, &wall);
+    // The worker is busy with another wallpaper while the copy runs:
+    // both reads of `wall` queue behind it.
+    q.lookup(&busy);
+    std::fs::write(&wall, &red[..red.len() / 3]).unwrap();
+    assert_eq!(q.lookup(&wall), Lookup::Pending { last: Some(first) });
+    std::fs::write(&wall, &red[..red.len() / 2]).unwrap();
+    assert_eq!(q.lookup(&wall), Lookup::Pending { last: Some(first) });
+    assert!(q.wait(Duration::from_secs(60)));
+    assert_eq!(q.lookup(&wall), Lookup::Pending { last: Some(first) });
+    // The write finishes; the watcher says so.
+    std::fs::write(&wall, &red).unwrap();
+    q.invalidate(&wall);
+    q.lookup(&wall);
+    let second = wait_ready(&mut q, &wall);
+    assert_ne!(first, second);
     drop(q);
     let _ = std::fs::remove_dir_all(dir);
 }

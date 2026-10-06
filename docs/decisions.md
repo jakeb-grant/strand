@@ -3841,7 +3841,7 @@ spot, light: primary `#555992`) is a test
 **2026-10-06 · wave3-theme: wallpapers.** `material(image:)` decodes
 (PNG, JPEG, WebP), takes `thumbnail(128, 128)`, quantises the opaque
 pixels with the Celebi quantiser (128 colours) and scores them as
-material-color-utilities does; images over 64 Mpx are refused. The
+material-color-utilities does; images over 40 Mpx are refused (review 3). The
 quantiser (`strand_theme::image::Quantiser`) answers on the logic thread
 from a `stat` of the file the path resolves to (device, inode, size,
 mtime after every link) and works on its own thread: it reads, hashes
@@ -4074,8 +4074,9 @@ into a box-filtered grid of at most 128 px that the quantiser reads: a
 No Rust decoder decodes WebP, progressive JPEG or lossless JPEG at
 reduced size, so those are decoded whole, but only up to
 `FULL_FRAME_BYTES` (64 MiB, checked from the header before anything is
-allocated: a 4K WebP fits, a decoding bomb does not). Any format past 64
-Mpx and any file past 128 MiB is refused. The file is read through one
+allocated: a 4K WebP fits, a decoding bomb does not; review 3 made the
+check count the decoders' real peak). Any format past 40 Mpx (review 3)
+and any file past 128 MiB is refused. The file is read through one
 open descriptor (hash, then decode), and a file whose size or times move
 while it is read is reported as torn.
 
@@ -4085,7 +4086,8 @@ change, another quantiser job) while a wallpaper is copied over in
 place. A read of a path that gave a seed and now fails is treated like
 a missing wallpaper: the old seed holds for `MISSING_GRACE` (500 ms),
 the path is read again when the watcher reports the finished write or
-when the grace is over, and only a second failure is reported. So `??`
+when the grace is over, and only a second failure is reported (review 3:
+only failures of a settled file count). So `??`
 does not flash the fallback palette during `cp new.jpg wall.jpg`
 (`crates/strand-theme/tests/themes.rs::a_torn_wallpaper_holds_its_seed`).
 
@@ -4094,7 +4096,8 @@ merge it.** Two `strand run`s with one `$XDG_STATE_HOME` (two configs,
 tests beside a real shell) share `palettes/`. A worker takes an advisory
 lock on `palettes/index.lock`, reads the index from disk, adds its own
 result as the most recent entry, keeps the 64 most recent and prunes
-only the `.seed` files no entry references, all under the lock. Neither
+only the `.seed` files no entry references, all under the lock (review
+3: seeds by hash moved into the index itself). Neither
 run evicts the other's entries
 (`crates/strand-theme/tests/themes.rs::two_runs_share_the_wallpaper_cache`).
 
@@ -4167,3 +4170,105 @@ seed, wallpaper→auto). Each swap re-runs `material()`, the guard and
 the whole token table. The median of 15 is about 1 ms in a debug build,
 and the test gates it at 5 ms in every build. The render side (springs,
 crossfade) is still pending, so M2's exit box stays unticked.
+
+**2026-10-06 · wave3-theme (review 3): seeds by hash are kept apart from
+the path index.** design.md caches the downscale "by content hash", so a
+wallpaper path that cycles (`ln -sf a.jpg wall.jpg`, then `b`, then `a`)
+must not decode `a` again. The index now holds two lists, each the 64
+most recently used: `seed <hash> #rrggbb` lines (every hash a read
+produced or hit, touched on each hit) and the `entry` lines of the path
+index. A read looks the hash up in the seed list before decoding. The
+per-hash `.seed` files are gone (the index carries the seeds; old ones
+are removed on the next write), and two runs merge both lists under the
+lock as before
+(`crates/strand-theme/tests/themes.rs::a_wallpaper_cycled_back_is_not_decoded_again`).
+
+**2026-10-06 · wave3-theme (review 3): the wallpaper cache is
+versioned.** The index starts with `version <CACHE_VERSION>`
+(`3 material-colors-0.5 spec-2021 box128 celebi128`: the format and
+everything a seed depends on). An index without that exact line keeps
+only its `last` colour (a colour shown, which holds the palette until
+the first seed is ready); its entries and seeds are dropped, so a seed
+is always what decoding the file now gives, also after the decode path
+changes. Bump the version with any change to the downscale, the
+quantiser, the scoring or the Material spec
+(`crates/strand-theme/tests/themes.rs::a_cache_of_another_version_is_not_trusted`).
+
+**2026-10-06 · wave3-theme (review 3): a wallpaper being written holds
+its palette for the whole write.** The torn-read hold was one-shot per
+entry, so a write longer than 500 ms, or two reads queued during one
+write, reported a failure and `??` flashed the fallback palette. Now a
+failed read of a path that gave a seed holds that seed and is read again
+(at the end of `MISSING_GRACE`, or at once on the watcher's
+`CLOSE_WRITE`) while the file is still changing: when it moved while it
+was read (`ImageError::Changed`) or its stamp is no longer the one the
+job was for. Only a settled file is held once and reported on its
+second failure; once reported it fails at once until it changes
+(`crates/strand-theme/tests/themes.rs::two_torn_reads_of_one_write_hold_the_seed`).
+A pending, torn or missing lookup holds that path's own last seed, and
+the last seed produced only for a path that never gave one, so per-output
+wallpapers never show each other's palette
+(`a_pending_wallpaper_holds_its_own_seed`). The grace wake sleeps until
+the deadline stored with the missing path, so it can no longer fire
+early and leave a deleted wallpaper pending forever.
+
+**2026-10-06 · wave3-theme (review 3): results a lookup takes are still
+reported.** `Quantiser::lookup` takes finished jobs before answering;
+the results (and a grace running out) it takes are now remembered and
+reported by the owner's next `poll()`, so with two `material(image:)`
+call sites the one that did not re-run is bumped too instead of staying
+pending (`crates/strand-theme/tests/themes.rs::results_a_lookup_took_are_still_reported`).
+
+**2026-10-06 · wave3-theme (review 3): whole-image decodes, honestly
+bounded.** The header checks now count each decoder's peak, not the
+output frame: progressive JPEG at 2 bytes per sample (`jpeg-decoder`
+keeps an `i16` coefficient for every sample; 4:4:4 assumed, sides padded
+to 32 px MCUs), lossless JPEG at 3, WebP at `WEBP_BYTES_PER_PIXEL` (8:
+image-webp decodes a lossless RGB image as RGBA and copies it, 7 bytes
+per pixel, measured at 58 MB for 4K in
+`crates/strand-theme/tests/decode.rs::a_4k_webp_peaks_within_its_bound`).
+All stay under `FULL_FRAME_BYTES` (64 MiB) for a 4K wallpaper; 5K WebP
+or progressive 4:4:4 JPEG is refused with a message to save it as a
+baseline JPEG or PNG. The peak is transient: after a whole-image decode
+the quantiser calls glibc's `malloc_trim(0)`, as glibc's adaptive mmap
+threshold otherwise keeps the second 25 MB frame in the arena for good
+(`crates/strand-theme/tests/webp_memory.rs`: PSS after three 4K WebP
+quantises stays within 4 MB of the idle baseline; without the trim it
+grew by 58 MB). The pixel cap is now 40 Mpx (8K is 33): a PNG bomb of
+that size still costs seconds of CPU in a debug build (about a second
+in release) on the quantiser thread, never the logic thread; later
+wallpaper changes queue behind it. Row skipping was not done because
+inflating the rows is the cost, not boxing them.
+
+**2026-10-06 · wave3-theme (review 3): settings files are read on the
+watcher's thread.** `strand run` hands the compile worker
+`Instance::settings_sources()` with the watch list (`Job::Referenced {
+files, settings }`); a changed settings file is read there
+(`SettingsSources::read`, with its overlay and the read-only probe) and
+sent as `FromWorker::Settings(Vec<SettingsChange { path, read }>)`, and
+the logic thread only decodes it (`Instance::reload_settings_with`,
+core's `Settings::reload_with`; `SettingsRead` is now `Clone`, one copy
+per handle on the file). `reload_settings(path)` still reads in place
+for tests and tools
+(`crates/strand-compiler/tests/instantiate.rs::settings_files_are_read_and_written_back`).
+
+**2026-10-06 · wave3-theme (review 3): medium text is not faux bold.**
+design.md's `$font.ui` is Inter 500; where Inter is missing the
+fallback sans usually has only 400 and 700 faces (DejaVu Sans), and
+fontique asks for synthetic emboldening whenever the request is heavier
+than the face, so every themed label was drawn faux bold. strand-text
+now follows CSS `font-synthesis-weight`: a face is emboldened only for a
+request of 600 or more on a face lighter than 600, so 500 draws the
+regular face (`crates/strand-text/tests/fallback.rs::medium_is_not_synthesised_bold`).
+Like `with_generic`, this is an edit in strand-text for its owner's
+sign-off.
+
+**2026-10-06 · wave3-theme (review 3): a hard reload keeps the theme
+host.** A review read `Instance::mount` as running on hard reloads; it
+does not: `Instance::reload_hard` builds a new VM and hands it the old
+`ThemeHost` (`vm.set_theme`), so the quantiser, its running job, the
+palette writer and the last palette carry over, and nothing waits in a
+`Drop` on the logic thread. Only shutdown drops the writer, waiting up to
+`DROP_WAIT` (1 s) so the last palette lands. The hard-reload test now
+asserts the host is the same
+(`crates/strand-compiler/tests/reload.rs::a_hard_reload_drops_state_and_recreates_surfaces`).

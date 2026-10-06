@@ -1691,11 +1691,45 @@ impl Instance {
         out
     }
 
+    /// What reading each settings file the mounted program reads takes
+    /// (one per file), for the watcher's thread: it reads a changed file
+    /// there and hands the read to [`Instance::reload_settings_with`],
+    /// so a slow or hung home directory never stalls a frame.
+    pub fn settings_sources(&self) -> Vec<strand_core::SettingsSources> {
+        let mut out: Vec<strand_core::SettingsSources> = Vec::new();
+        for s in self
+            .ctx
+            .settings
+            .borrow()
+            .iter()
+            .filter_map(std::rc::Weak::upgrade)
+        {
+            if let Some(h) = &s.handle
+                && !out.iter().any(|o| o.path() == h.path())
+            {
+                out.push(h.sources());
+            }
+        }
+        out.sort_by(|a, b| a.path().cmp(b.path()));
+        out
+    }
+
     /// The watcher saw `path` change: every mounted handle on it re-reads
     /// it (core's `Settings::reload`: each field checked on its own, a
     /// syntax error keeps the last good values). Returns whether one
-    /// was mounted.
+    /// was mounted. Reads on this thread; `strand run` reads on the
+    /// watcher's ([`Instance::reload_settings_with`]).
     pub fn reload_settings(&self, path: &std::path::Path) -> bool {
+        self.reload_settings_with(path, None)
+    }
+
+    /// [`Instance::reload_settings`] with the file already read
+    /// elsewhere (`SettingsSources::read`); `None` reads it here.
+    pub fn reload_settings_with(
+        &self,
+        path: &std::path::Path,
+        read: Option<strand_core::SettingsRead>,
+    ) -> bool {
         let slots: Vec<_> = self
             .ctx
             .settings
@@ -1708,7 +1742,10 @@ impl Instance {
             if let Some(h) = &s.handle
                 && h.path() == path
             {
-                h.reload(&self.rt);
+                match &read {
+                    Some(r) => h.reload_with(&self.rt, r.clone()),
+                    None => h.reload(&self.rt),
+                }
                 any = true;
             }
         }

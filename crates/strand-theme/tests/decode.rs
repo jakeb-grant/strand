@@ -7,7 +7,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use strand_theme::image::{FULL_FRAME_BYTES, seed_from_bytes};
+use strand_theme::image::{FULL_FRAME_BYTES, WEBP_BYTES_PER_PIXEL, seed_from_bytes};
 
 struct Counting;
 
@@ -82,6 +82,28 @@ fn a_4k_jpeg_and_png_decode_in_a_few_megabytes() {
         eprintln!("{f:?}: peak {peak} bytes");
         assert!(peak < 4 * MB, "{f:?}: peak {peak} bytes (frame {full})");
     }
+}
+
+/// A 4K WebP is decoded whole: its peak stays within the bound the
+/// header check uses (`WEBP_BYTES_PER_PIXEL`), under `FULL_FRAME_BYTES`,
+/// and everything is freed once the seed is found.
+#[test]
+fn a_4k_webp_peaks_within_its_bound() {
+    let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let (w, h) = (3840usize, 2160usize);
+    let bytes = encode(&wallpaper(w as u32, h as u32), image::ImageFormat::WebP);
+    let live = NOW.load(Ordering::SeqCst);
+    let (seed, peak) = peak_of(|| seed_from_bytes(&bytes));
+    let lch = seed.unwrap().to_oklch();
+    assert!((lch.h - 260.0).abs() < 25.0, "{lch:?}");
+    let bound = w * h * WEBP_BYTES_PER_PIXEL as usize;
+    eprintln!("WebP: peak {peak} bytes, bound {bound}");
+    assert!(peak <= bound, "peak {peak} bytes, bound {bound}");
+    assert!(bound as u64 <= FULL_FRAME_BYTES);
+    // The frame is freed (what stays is at most the test harness's own
+    // and lazily made tables).
+    let kept = NOW.load(Ordering::SeqCst).saturating_sub(live);
+    assert!(kept < MB, "{kept} bytes stay allocated");
 }
 
 /// A PNG written by hand with Adam7 interlacing: decoded pass by pass

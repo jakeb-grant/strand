@@ -672,9 +672,14 @@ fn a_hard_reload_drops_state_and_recreates_surfaces() {
     let bar = shell.scene.of_kind(NodeKind::Bar)[0];
     shell.inst.set_value("bar", "n", Value::int(4)).unwrap();
     shell.flush();
+    let theme = shell.inst.theme().unwrap();
     let build = compile(Some(&shell.build), &[("bar.strand", CLOCK)]);
     let report = shell.inst.reload_hard(&build);
     assert_eq!(report.classes, [EditClass::Hard]);
+    // The theme host (its quantiser, its palette writer) is kept: a
+    // wallpaper being quantised is not started again.
+    assert!(std::rc::Rc::ptr_eq(&theme, &shell.inst.theme().unwrap()));
+    drop(theme);
     shell.flush();
     assert_eq!(shell.value("bar", "n"), Value::int(0));
     assert_ne!(shell.scene.of_kind(NodeKind::Bar), [bar]);

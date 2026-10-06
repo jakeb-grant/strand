@@ -2,8 +2,9 @@
 //! `import(…)` through `strand-theme`, and the files they read.
 //!
 //! One [`ThemeHost`] lives as long as the [`crate::instantiate::Instance`]
-//! (a reload keeps it, so a wallpaper being quantised is not started
-//! again). `material(image:)` asks its [`Quantiser`], which answers from
+//! (a reload keeps it, a hard one too: `Instance::reload_hard` hands it
+//! to the new VM, so a wallpaper being quantised is not started again
+//! and the palette writer is not dropped). `material(image:)` asks its [`Quantiser`], which answers from
 //! a `stat` and quantises off-thread; when a job finishes, the worker
 //! wakes a core task that bumps [`ThemeHost`]'s generation signal, which
 //! every `material(image:)` and file `import` reads, so the palette

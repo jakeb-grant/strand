@@ -9,7 +9,8 @@
 //! ready. The worker reads and hashes the file (BLAKE3) and decodes it at
 //! reduced size (see [`seed_from_reader`]); a hash it has
 //! seen (a wallpaper copied, touched or swapped back) costs no decode.
-//! Seeds by hash and the path index are kept on disk, so a boot with an
+//! Seeds by hash and the path index are kept on disk (each the 64 most
+//! recently used, under a [`CACHE_VERSION`]), so a boot with an
 //! unchanged wallpaper is answered at once and never flashes default
 //! colours.
 
@@ -33,21 +34,34 @@ use crate::writer::write_atomic;
 /// The longest side images are downscaled to before quantising.
 pub const DOWNSCALE: u32 = 128;
 /// Images with more pixels than this are refused from their header,
-/// before anything is decoded (a decoding bomb, or hours of work).
-pub const MAX_PIXELS: u64 = 64 * 1024 * 1024;
+/// before anything is decoded (a decoding bomb, or seconds of work):
+/// 8K (33 Mpx) fits. Decoding is still work in proportion to the pixels
+/// (an 8K PNG costs about a second in a release build, on the quantiser
+/// thread, never the logic thread).
+pub const MAX_PIXELS: u64 = 40_000_000;
 /// Wallpaper files larger than this are not read.
 pub const MAX_FILE_BYTES: u64 = 128 * 1024 * 1024;
-/// What a decode that needs the whole frame may allocate: WebP (no Rust
-/// decoder decodes it at reduced size) and progressive or lossless JPEG
-/// (their coefficients are kept for the whole image). Baseline JPEG is
-/// decoded at 1/8 scale and PNG row by row, in well under 1 MB.
+/// The most a decode that needs the whole image may allocate at its
+/// peak, checked from the header before anything is allocated: WebP (no
+/// Rust decoder decodes it at reduced size; [`WEBP_BYTES_PER_PIXEL`]),
+/// progressive JPEG (`jpeg-decoder` keeps an `i16` coefficient per
+/// sample: 2 bytes per sample, 6 per pixel for 4:4:4 RGB, 8 for CMYK)
+/// and lossless JPEG (16-bit planes plus the frame: 3 bytes per sample).
+/// A 4K wallpaper fits in every format. The memory goes back to the
+/// system after the decode (`malloc_trim`), so it is a transient, not a
+/// resident cost. Baseline JPEG is decoded at 1/8 scale and PNG row by
+/// row, in well under 1 MB.
 pub const FULL_FRAME_BYTES: u64 = 64 * 1024 * 1024;
+/// What image-webp holds per pixel at its peak: the output frame plus
+/// its working frame (a lossless RGB image is decoded as RGBA and
+/// copied: 3 + 4; a lossy one keeps its YUV planes: 4 + 1.5 + alpha 1).
+pub const WEBP_BYTES_PER_PIXEL: u64 = 8;
 /// What a reduced-size decode may allocate (a row, the scaled frame).
 const STREAM_BYTES: usize = 16 * 1024 * 1024;
 /// Colours the quantiser starts from (material-color-utilities' 128).
 const QUANTISE_COLORS: usize = 128;
-/// Wallpapers remembered (path index, seeds by hash, `.seed` files),
-/// most recently used first; older ones are forgotten (a slideshow
+/// Wallpapers remembered (path index) and seeds remembered (by content
+/// hash), each list bounded on its own, most recently used first; older ones are forgotten (a slideshow
 /// cannot grow the cache without bound).
 pub const MAX_REMEMBERED: usize = 64;
 /// How long a wallpaper that gave a seed may be missing, or unreadable
@@ -62,6 +76,8 @@ pub enum ImageError {
     Io(String),
     Decode(String),
     Empty,
+    /// The file changed while it was read (being written).
+    Changed,
 }
 
 impl std::fmt::Display for ImageError {
@@ -70,6 +86,7 @@ impl std::fmt::Display for ImageError {
             ImageError::Io(e) => write!(f, "cannot read the image: {e}"),
             ImageError::Decode(e) => write!(f, "cannot decode the image: {e}"),
             ImageError::Empty => f.write_str("the image has no pixels"),
+            ImageError::Changed => f.write_str("the image changed while it was read"),
         }
     }
 }
@@ -271,7 +288,7 @@ fn png_boxes(r: impl BufRead + Seek) -> Result<Boxes, ImageError> {
 /// A JPEG decoded at reduced size: the DCT is scaled to 1/8, 1/4 or 1/2
 /// so that the result is just at least [`DOWNSCALE`] px, never the full
 /// frame. Progressive and lossless files keep coefficients for the whole
-/// image, so they are refused past [`FULL_FRAME_BYTES`].
+/// image, so they are refused when that would pass [`FULL_FRAME_BYTES`].
 fn jpeg_boxes(r: impl BufRead) -> Result<Boxes, ImageError> {
     let mut d = jpeg_decoder::Decoder::new(r);
     d.read_info().map_err(decode_err)?;
@@ -280,13 +297,36 @@ fn jpeg_boxes(r: impl BufRead) -> Result<Boxes, ImageError> {
     if w * h > MAX_PIXELS {
         return Err(too_large(w, h));
     }
-    if info.coding_process != jpeg_decoder::CodingProcess::DctSequential
-        && w * h * 3 > FULL_FRAME_BYTES
-    {
+    let whole = info.coding_process != jpeg_decoder::CodingProcess::DctSequential;
+    if whole && jpeg_whole_bytes(&info) > FULL_FRAME_BYTES {
         return Err(ImageError::Decode(format!(
             "{w}×{h} is too large for a progressive or lossless JPEG; save it as a baseline JPEG or PNG"
         )));
     }
+    let boxes = jpeg_decode(d, info);
+    if whole {
+        give_back_memory();
+    }
+    boxes
+}
+
+/// What decoding a progressive or lossless JPEG holds at its peak, at
+/// most: per sample, an `i16` coefficient (progressive) or a 16-bit
+/// plane sample plus the output byte (lossless), each component at full
+/// resolution (4:4:4, the worst case) and padded to whole 32 px MCUs.
+fn jpeg_whole_bytes(info: &jpeg_decoder::ImageInfo) -> u64 {
+    let pad = |n: u16| (n as u64).div_ceil(32) * 32;
+    let per_sample = match info.coding_process {
+        jpeg_decoder::CodingProcess::Lossless => 3,
+        _ => 2,
+    };
+    pad(info.width) * pad(info.height) * info.pixel_format.pixel_bytes() as u64 * per_sample
+}
+
+fn jpeg_decode(
+    mut d: jpeg_decoder::Decoder<impl BufRead>,
+    info: jpeg_decoder::ImageInfo,
+) -> Result<Boxes, ImageError> {
     let (sw, sh) = if info.coding_process == jpeg_decoder::CodingProcess::Lossless {
         (info.width, info.height)
     } else {
@@ -295,7 +335,7 @@ fn jpeg_boxes(r: impl BufRead) -> Result<Boxes, ImageError> {
     };
     let out = sw as usize * sh as usize * info.pixel_format.pixel_bytes();
     if out > STREAM_BYTES.max(FULL_FRAME_BYTES as usize) {
-        return Err(too_large(w, h));
+        return Err(too_large(info.width as u64, info.height as u64));
     }
     d.set_max_decoding_buffer_size(out.max(1));
     let data = d.decode().map_err(decode_err)?;
@@ -322,29 +362,58 @@ fn jpeg_boxes(r: impl BufRead) -> Result<Boxes, ImageError> {
     Ok(boxes)
 }
 
-/// A WebP decoded whole (no decoder can do less), refused past
-/// [`FULL_FRAME_BYTES`] before it allocates.
+/// A WebP decoded whole (no decoder can do less), refused from its
+/// header when that would pass [`FULL_FRAME_BYTES`].
 fn webp_boxes(r: impl BufRead + Seek) -> Result<Boxes, ImageError> {
-    let mut reader = image::ImageReader::with_format(r, image::ImageFormat::WebP);
+    use image::ImageDecoder;
+    let mut dec = image::codecs::webp::WebPDecoder::new(r).map_err(decode_err)?;
+    let (w, h) = dec.dimensions();
+    let (w64, h64) = (w as u64, h as u64);
+    if w64 * h64 > MAX_PIXELS {
+        return Err(too_large(w64, h64));
+    }
+    if w64 * h64 * WEBP_BYTES_PER_PIXEL > FULL_FRAME_BYTES {
+        return Err(ImageError::Decode(format!(
+            "{w}×{h} is too large for a WebP; save it as a JPEG or PNG"
+        )));
+    }
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(FULL_FRAME_BYTES);
-    reader.limits(limits);
-    let img = reader.decode().map_err(decode_err)?;
-    let mut boxes = Boxes::new(img.width(), img.height())?;
-    match img {
-        image::DynamicImage::ImageRgb8(i) => {
-            for (x, y, p) in i.enumerate_pixels() {
-                boxes.add(x, y, [p.0[0], p.0[1], p.0[2], 255]);
+    dec.set_limits(limits).map_err(decode_err)?;
+    let boxes = image::DynamicImage::from_decoder(dec)
+        .map_err(decode_err)
+        .and_then(|img| {
+            let mut boxes = Boxes::new(img.width(), img.height())?;
+            match img {
+                image::DynamicImage::ImageRgb8(i) => {
+                    for (x, y, p) in i.enumerate_pixels() {
+                        boxes.add(x, y, [p.0[0], p.0[1], p.0[2], 255]);
+                    }
+                }
+                image::DynamicImage::ImageRgba8(i) => {
+                    for (x, y, p) in i.enumerate_pixels() {
+                        boxes.add(x, y, p.0);
+                    }
+                }
+                _ => return Err(decode_err("an unexpected WebP pixel format")),
             }
-        }
-        image::DynamicImage::ImageRgba8(i) => {
-            for (x, y, p) in i.enumerate_pixels() {
-                boxes.add(x, y, p.0);
-            }
-        }
-        _ => return Err(decode_err("an unexpected WebP pixel format")),
+            Ok(boxes)
+        });
+    give_back_memory();
+    boxes
+}
+
+/// Hands the memory a whole-image decode freed back to the system. glibc
+/// keeps freed blocks below its (adaptive) mmap threshold in the arena,
+/// so after one 25 MB frame the next one would stay resident; the
+/// quantiser runs rarely, so trimming after each whole decode is cheap.
+fn give_back_memory() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: `malloc_trim` only releases free memory; it has no
+    // preconditions.
+    unsafe {
+        libc::malloc_trim(0);
     }
-    Ok(boxes)
 }
 
 /// The Material seed colour of an encoded image (PNG, JPEG or WebP) read
@@ -419,8 +488,9 @@ impl Stamp {
 pub enum Lookup {
     /// The seed of the file as it is now.
     Ready(Color),
-    /// Being quantised; `last` is the last seed produced (this run or,
-    /// persisted, an earlier one), to hold until the new one is ready.
+    /// Being quantised; `last` is the seed to hold until the new one is
+    /// ready: this path's last seed, or (a path that never gave one) the
+    /// last seed produced, this run or, persisted, an earlier one.
     Pending { last: Option<Color> },
     /// The file is missing or not an image.
     Failed { error: String, last: Option<Color> },
@@ -430,26 +500,32 @@ pub enum Lookup {
 struct Entry {
     stamp: Stamp,
     seed: Result<Color, String>,
+    /// The last seed this path gave (kept through failures), what its
+    /// lookups hold while it is read again.
+    good: Option<Color>,
     /// When the entry was last used (a logical clock), for eviction.
     used: u64,
     /// The watcher saw the file change: read it again whatever its stamp.
     stale: bool,
-    /// A read of a file that gave a seed failed (torn by a copy in
-    /// place, say): its seed holds until then, and it is read again.
+    /// A read of a file that gave a seed failed while it was being
+    /// written: its seed holds until then, and it is read again (or when
+    /// the watcher sees the write finish).
     hold_until: Option<Instant>,
-    /// That hold was used: a second failure is reported.
-    held: bool,
+    /// The settled file (stamp) whose failure was held once: a second
+    /// failure of that same file is reported.
+    held: Option<Stamp>,
 }
 
 impl Entry {
-    fn new(stamp: Stamp, seed: Result<Color, String>, used: u64) -> Entry {
+    fn new(stamp: Stamp, seed: Result<Color, String>, good: Option<Color>, used: u64) -> Entry {
         Entry {
             stamp,
+            good: seed.as_ref().ok().copied().or(good),
             seed,
             used,
             stale: false,
             hold_until: None,
-            held: false,
+            held: None,
         }
     }
 }
@@ -463,6 +539,63 @@ struct Known {
     seed: Color,
 }
 
+/// What the cache knows: the path index and seeds by content hash, each
+/// least recently used first and at most [`MAX_REMEMBERED`] long. The
+/// two are bounded apart, so a path whose content cycles (`ln -sf a.jpg
+/// wall.jpg`, then `b`, then `a` again) finds `a`'s seed by its hash.
+#[derive(Clone, Debug, Default)]
+struct Cache {
+    known: VecDeque<Known>,
+    seeds: VecDeque<(blake3::Hash, Color)>,
+}
+
+impl Cache {
+    fn seed_of(&self, hash: &blake3::Hash) -> Option<Color> {
+        self.seeds.iter().find(|(h, _)| h == hash).map(|(_, c)| *c)
+    }
+
+    /// `hash` gave `seed`, just now: the most recently used.
+    fn touch(&mut self, hash: blake3::Hash, seed: Color) {
+        self.seeds.retain(|(h, _)| *h != hash);
+        self.seeds.push_back((hash, seed));
+        while self.seeds.len() > MAX_REMEMBERED {
+            self.seeds.pop_front();
+        }
+    }
+
+    /// The path `k` names now resolves to its file: the most recent entry.
+    fn record(&mut self, k: Known) {
+        self.touch(k.hash, k.seed);
+        self.known.retain(|o| o.path != k.path);
+        self.known.push_back(k);
+        while self.known.len() > MAX_REMEMBERED {
+            self.known.pop_front();
+        }
+    }
+
+    /// `disk` with what only `mine` has added at the old end (most
+    /// recently used last), each list at most [`MAX_REMEMBERED`].
+    fn merge(mut disk: Cache, mine: &Cache) -> Cache {
+        for (i, k) in mine.known.iter().enumerate() {
+            if !disk.known.iter().any(|d| d.path == k.path) {
+                disk.known.insert(i.min(disk.known.len()), k.clone());
+            }
+        }
+        for (i, s) in mine.seeds.iter().enumerate() {
+            if !disk.seeds.iter().any(|d| d.0 == s.0) {
+                disk.seeds.insert(i.min(disk.seeds.len()), *s);
+            }
+        }
+        while disk.known.len() > MAX_REMEMBERED {
+            disk.known.pop_front();
+        }
+        while disk.seeds.len() > MAX_REMEMBERED {
+            disk.seeds.pop_front();
+        }
+        disk
+    }
+}
+
 struct Job {
     path: PathBuf,
     stamp: Stamp,
@@ -472,6 +605,8 @@ struct Done {
     path: PathBuf,
     stamp: Stamp,
     seed: Result<Color, String>,
+    /// The file changed while it was read.
+    changed: bool,
 }
 
 type Waker = Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>;
@@ -483,8 +618,11 @@ pub struct Quantiser {
     in_flight: HashMap<PathBuf, Stamp>,
     /// Wallpapers that gave a seed and are now missing, since when.
     missing: HashMap<PathBuf, Instant>,
-    /// Set when a missing wallpaper's grace ran out (see `poll`).
+    /// Set when a missing or torn wallpaper's grace ran out (see `poll`).
     grace_over: Arc<AtomicBool>,
+    /// A lookup took finished jobs (or a grace running out) that the
+    /// owner's `poll` has not reported yet.
+    unreported: bool,
     last: Option<Color>,
     jobs: Option<Sender<Job>>,
     done: Receiver<Done>,
@@ -504,25 +642,45 @@ impl std::fmt::Debug for Quantiser {
 
 const INDEX: &str = "index";
 
+/// The cache's format and everything a seed depends on: an index written
+/// by another version (another downscale, quantiser or Material spec) is
+/// not trusted, so a seed is always what decoding the file now gives.
+pub const CACHE_VERSION: &str = "3 material-colors-0.5 spec-2021 box128 celebi128";
+
 fn color_hex(c: Color) -> String {
     let [r, g, b, _] = c.to_rgba8();
     format!("#{r:02x}{g:02x}{b:02x}")
 }
 
-/// Parses the persisted index: `last #rrggbb` and `entry dev ino len
-/// mtime_ns ctime_ns #rrggbb hash path` lines, least recently used
-/// first; anything else (an older format) is skipped.
-fn read_index(dir: &Path) -> (VecDeque<Known>, Option<Color>) {
-    let mut known = VecDeque::new();
+/// Parses the persisted index: a `version` line, `last #rrggbb`, `seed
+/// hash #rrggbb` and `entry dev ino len mtime_ns ctime_ns #rrggbb hash
+/// path` lines, least recently used first. An index of another
+/// [`CACHE_VERSION`] keeps only its last seed (a colour shown, not a
+/// file's seed).
+fn read_index(dir: &Path) -> (Cache, Option<Color>) {
+    let mut cache = Cache::default();
     let mut last = None;
     let Ok(text) = std::fs::read_to_string(dir.join(INDEX)) else {
-        return (known, last);
+        return (cache, last);
     };
+    let current = text
+        .lines()
+        .find_map(|l| l.strip_prefix("version "))
+        .is_some_and(|v| v == CACHE_VERSION);
     for line in text.lines() {
         let mut parts = line.splitn(9, ' ');
         match parts.next() {
             Some("last") => last = parts.next().and_then(Color::from_hex),
-            Some("entry") => {
+            Some("seed") if current => {
+                let (Some(hash), Some(seed)) = (
+                    parts.next().and_then(|h| blake3::Hash::from_hex(h).ok()),
+                    parts.next().and_then(Color::from_hex),
+                ) else {
+                    continue;
+                };
+                cache.touch(hash, seed);
+            }
+            Some("entry") if current => {
                 let mut num = || parts.next().and_then(|p| p.parse::<i128>().ok());
                 let (Some(dev), Some(ino), Some(len), Some(mtime_ns), Some(ctime_ns)) =
                     (num(), num(), num(), num(), num())
@@ -537,8 +695,8 @@ fn read_index(dir: &Path) -> (VecDeque<Known>, Option<Color>) {
                     continue;
                 };
                 let path = PathBuf::from(path);
-                known.retain(|k: &Known| k.path != path);
-                known.push_back(Known {
+                cache.known.retain(|k: &Known| k.path != path);
+                cache.known.push_back(Known {
                     path,
                     stamp: Stamp {
                         dev: dev as u64,
@@ -554,18 +712,21 @@ fn read_index(dir: &Path) -> (VecDeque<Known>, Option<Color>) {
             _ => {}
         }
     }
-    while known.len() > MAX_REMEMBERED {
-        known.pop_front();
+    while cache.known.len() > MAX_REMEMBERED {
+        cache.known.pop_front();
     }
-    (known, last)
+    (cache, last)
 }
 
-fn write_index(dir: &Path, known: &VecDeque<Known>, last: Option<Color>) -> io::Result<()> {
-    let mut out = String::from("# strand wallpaper seeds (material-colors 0.5, spec 2021)\n");
+fn write_index(dir: &Path, cache: &Cache, last: Option<Color>) -> io::Result<()> {
+    let mut out = format!("# strand wallpaper seeds\nversion {CACHE_VERSION}\n");
     if let Some(l) = last {
         out.push_str(&format!("last {}\n", color_hex(l)));
     }
-    for k in known {
+    for (hash, seed) in &cache.seeds {
+        out.push_str(&format!("seed {} {}\n", hash.to_hex(), color_hex(*seed)));
+    }
+    for k in &cache.known {
         let Some(p) = k.path.to_str() else { continue };
         if p.contains('\n') {
             continue;
@@ -583,14 +744,10 @@ fn write_index(dir: &Path, known: &VecDeque<Known>, last: Option<Color>) -> io::
         ));
     }
     write_atomic(&dir.join(INDEX), out.as_bytes())?;
-    // Seeds no remembered wallpaper has are forgotten with it.
-    let keep: std::collections::HashSet<String> = known
-        .iter()
-        .map(|k| format!("{}.seed", k.hash.to_hex()))
-        .collect();
+    // Earlier versions kept a `<hash>.seed` file per seed: the index
+    // holds them now.
     for e in std::fs::read_dir(dir)?.flatten() {
-        let name = e.file_name().to_string_lossy().into_owned();
-        if name.ends_with(".seed") && !keep.contains(&name) {
+        if e.file_name().to_string_lossy().ends_with(".seed") {
             let _ = std::fs::remove_file(e.path());
         }
     }
@@ -600,8 +757,8 @@ fn write_index(dir: &Path, known: &VecDeque<Known>, last: Option<Color>) -> io::
 /// Holds an advisory lock on the cache directory's index while it is
 /// read, merged and rewritten, so two `strand run`s sharing
 /// `$XDG_STATE_HOME/strand/palettes` keep each other's entries (each
-/// adds its own result to what is on disk) and never prune a seed the
-/// other just wrote. Best effort: without a lock, the merge still runs.
+/// adds its own result to what is on disk). Best effort: without a
+/// lock, the merge still runs.
 fn lock_index(dir: &Path) -> Option<std::fs::File> {
     std::fs::create_dir_all(dir).ok()?;
     let f = std::fs::File::options()
@@ -616,13 +773,13 @@ fn lock_index(dir: &Path) -> Option<std::fs::File> {
 
 /// Reads the wallpaper through `f` (opened once: what is hashed is what
 /// is decoded) and finds its seed: by content hash when known, else by
-/// decoding it. A file written while it was read is reported as torn.
+/// decoding it. A file written while it was read is
+/// [`ImageError::Changed`].
 fn read_seed(
     f: &mut std::fs::File,
-    known: &VecDeque<Known>,
-    dir: Option<&Path>,
+    cache: &Cache,
     quantised: &AtomicUsize,
-) -> Result<(blake3::Hash, Color, bool), ImageError> {
+) -> Result<(blake3::Hash, Color), ImageError> {
     let io_err = |e: io::Error| ImageError::Io(e.to_string());
     let before = f.metadata().map_err(io_err)?;
     if !before.is_file() {
@@ -640,28 +797,19 @@ fn read_seed(
         .finalize();
     // A content seen before (copied, touched, swapped back) costs no
     // decode.
-    let cached = known
-        .iter()
-        .find(|k| k.hash == hash)
-        .map(|k| k.seed)
-        .or_else(|| {
-            let text =
-                std::fs::read_to_string(dir?.join(format!("{}.seed", hash.to_hex()))).ok()?;
-            Color::from_hex(text.trim())
-        });
-    let (seed, fresh) = match cached {
-        Some(c) => (c, false),
+    let seed = match cache.seed_of(&hash) {
+        Some(c) => Ok(c),
         None => {
             quantised.fetch_add(1, Ordering::SeqCst);
             f.seek(io::SeekFrom::Start(0)).map_err(io_err)?;
-            (seed_from_reader(io::BufReader::new(&mut *f))?, true)
+            seed_from_reader(io::BufReader::new(&mut *f))
         }
     };
     let after = f.metadata().map_err(io_err)?;
     if Stamp::of_metadata(&before) != Stamp::of_metadata(&after) {
-        return Err(ImageError::Io("the file changed while it was read".into()));
+        return Err(ImageError::Changed);
     }
-    Ok((hash, seed, fresh))
+    Ok((hash, seed?))
 }
 
 fn worker(
@@ -670,19 +818,19 @@ fn worker(
     done: Sender<Done>,
     waker: Waker,
     quantised: Arc<AtomicUsize>,
-    mut known: VecDeque<Known>,
+    mut cache: Cache,
 ) {
     while let Ok(job) = jobs.recv() {
         if let Some(d) = &dir {
             // What other runs sharing the cache learned meanwhile.
-            known = merge(read_index(d).0, &known);
+            cache = Cache::merge(read_index(d).0, &cache);
         }
         let read = std::fs::File::open(&job.path)
             .map_err(|e| ImageError::Io(e.to_string()))
-            .and_then(|mut f| read_seed(&mut f, &known, dir.as_deref(), &quantised));
-        let seed = match read {
-            Err(e) => Err(e.to_string()),
-            Ok((hash, c, fresh)) => {
+            .and_then(|mut f| read_seed(&mut f, &cache, &quantised));
+        let (seed, changed) = match read {
+            Err(e) => (Err(e.to_string()), e == ImageError::Changed),
+            Ok((hash, c)) => {
                 let entry = Known {
                     path: job.path.clone(),
                     stamp: job.stamp,
@@ -690,60 +838,31 @@ fn worker(
                     seed: c,
                 };
                 match &dir {
-                    None => {
-                        known.retain(|k| k.path != job.path);
-                        known.push_back(entry);
-                        while known.len() > MAX_REMEMBERED {
-                            known.pop_front();
-                        }
-                    }
+                    None => cache.record(entry),
                     Some(d) => {
                         let _lock = lock_index(d);
-                        if fresh {
-                            let path = d.join(format!("{}.seed", hash.to_hex()));
-                            if let Err(e) = write_atomic(&path, color_hex(c).as_bytes()) {
-                                log::warn!("caching a wallpaper seed: {e}");
-                            }
-                        }
-                        let mut merged = read_index(d).0;
-                        merged.retain(|k| k.path != job.path);
-                        merged.push_back(entry);
-                        while merged.len() > MAX_REMEMBERED {
-                            merged.pop_front();
-                        }
+                        let mut merged = Cache::merge(read_index(d).0, &cache);
+                        merged.record(entry);
                         if let Err(e) = write_index(d, &merged, Some(c)) {
                             log::warn!("saving the wallpaper index: {e}");
                         }
-                        known = merged;
+                        cache = merged;
                     }
                 }
-                Ok(c)
+                (Ok(c), false)
             }
         };
         let sent = done.send(Done {
             path: job.path,
             stamp: job.stamp,
             seed,
+            changed,
         });
         if sent.is_err() {
             return;
         }
         wake(&waker);
     }
-}
-
-/// `disk` with the entries only `mine` has added at the old end (most
-/// recently used last), at most [`MAX_REMEMBERED`].
-fn merge(mut disk: VecDeque<Known>, mine: &VecDeque<Known>) -> VecDeque<Known> {
-    for (i, k) in mine.iter().enumerate() {
-        if !disk.iter().any(|d| d.path == k.path) {
-            disk.insert(i.min(disk.len()), k.clone());
-        }
-    }
-    while disk.len() > MAX_REMEMBERED {
-        disk.pop_front();
-    }
-    disk
 }
 
 fn wake(waker: &Waker) {
@@ -757,11 +876,17 @@ impl Quantiser {
     /// A quantiser whose caches live in `dir` (`None`: memory only). The
     /// index is read now; the worker thread starts now and idles.
     pub fn new(dir: Option<PathBuf>) -> io::Result<Quantiser> {
-        let (known, last) = dir.as_deref().map(read_index).unwrap_or_default();
-        let index: HashMap<PathBuf, Entry> = known
+        let (cache, last) = dir.as_deref().map(read_index).unwrap_or_default();
+        let index: HashMap<PathBuf, Entry> = cache
+            .known
             .iter()
             .enumerate()
-            .map(|(i, k)| (k.path.clone(), Entry::new(k.stamp, Ok(k.seed), i as u64)))
+            .map(|(i, k)| {
+                (
+                    k.path.clone(),
+                    Entry::new(k.stamp, Ok(k.seed), None, i as u64),
+                )
+            })
             .collect();
         let (job_tx, job_rx) = mpsc::channel();
         let (done_tx, done_rx) = mpsc::channel();
@@ -771,7 +896,7 @@ impl Quantiser {
             let (dir, waker, quantised) = (dir.clone(), waker.clone(), quantised.clone());
             std::thread::Builder::new()
                 .name("strand-quantise".into())
-                .spawn(move || worker(dir, job_rx, done_tx, waker, quantised, known))?
+                .spawn(move || worker(dir, job_rx, done_tx, waker, quantised, cache))?
         };
         Ok(Quantiser {
             clock: index.len() as u64,
@@ -779,6 +904,7 @@ impl Quantiser {
             in_flight: HashMap::new(),
             missing: HashMap::new(),
             grace_over: Arc::default(),
+            unreported: false,
             last,
             jobs: Some(job_tx),
             done: done_rx,
@@ -804,10 +930,20 @@ impl Quantiser {
         self.last
     }
 
+    /// What a lookup of `path` holds while it has no answer: its own
+    /// last seed, else the last seed produced.
+    fn held(&self, path: &Path) -> Option<Color> {
+        self.index.get(path).and_then(|e| e.good).or(self.last)
+    }
+
     /// The seed of the image at `path` (see [`Lookup`]). Never blocks on
     /// the image: only a `stat`.
     pub fn lookup(&mut self, path: &Path) -> Lookup {
-        self.poll();
+        // Results taken here are reported by the owner's next `poll`, so
+        // other lookups that are waiting for them run again.
+        if self.take_done() {
+            self.unreported = true;
+        }
         self.clock += 1;
         let stamp = match Stamp::of(path) {
             Ok(s) => {
@@ -817,38 +953,43 @@ impl Quantiser {
             Err(e) => {
                 // A wallpaper that gave a seed and just went missing is
                 // likely being replaced: hold its palette for a moment.
-                let had = self.index.get(path).is_some_and(|e| e.seed.is_ok());
+                let had = self.index.get(path).is_some_and(|e| e.good.is_some());
                 if e.kind() == io::ErrorKind::NotFound && had {
                     let since = match self.missing.get(path) {
                         Some(t) => *t,
                         None => {
-                            // Wakes the owner when the grace runs out, so a
-                            // file that stays missing is reported.
-                            self.wake_after_grace();
                             let now = Instant::now();
                             self.missing.insert(path.to_path_buf(), now);
+                            // Wakes the owner when the grace runs out, so a
+                            // file that stays missing is reported.
+                            self.wake_at(now + MISSING_GRACE);
                             now
                         }
                     };
                     if since.elapsed() < MISSING_GRACE {
-                        return Lookup::Pending { last: self.last };
+                        return Lookup::Pending {
+                            last: self.held(path),
+                        };
                     }
                 }
+                let last = self.held(path);
                 self.index.remove(path);
                 return Lookup::Failed {
                     error: ImageError::Io(e.to_string()).to_string(),
-                    last: self.last,
+                    last,
                 };
             }
         };
         let clock = self.clock;
+        let held = self.held(path);
         if let Some(e) = self.index.get_mut(path)
             && let Some(until) = e.hold_until
         {
             if Instant::now() < until {
-                // A torn read: the last seed holds, and it is read again
-                // when the grace is over (or the watcher saw it finish).
-                return Lookup::Pending { last: self.last };
+                // Being written: the last seed holds, and it is read
+                // again when the grace is over (or the watcher saw the
+                // write finish).
+                return Lookup::Pending { last: held };
             }
             e.hold_until = None;
         }
@@ -861,7 +1002,7 @@ impl Quantiser {
                 Ok(c) => Lookup::Ready(*c),
                 Err(error) => Lookup::Failed {
                     error: error.clone(),
-                    last: self.last,
+                    last: held,
                 },
             };
         }
@@ -876,17 +1017,23 @@ impl Quantiser {
             if !sent {
                 return Lookup::Failed {
                     error: "the quantiser thread has stopped".into(),
-                    last: self.last,
+                    last: held,
                 };
             }
             self.in_flight.insert(path.to_path_buf(), stamp);
         }
-        Lookup::Pending { last: self.last }
+        Lookup::Pending { last: held }
     }
 
-    /// Takes finished jobs. Returns whether any arrived (or a missing
-    /// wallpaper's grace ran out: look it up again).
+    /// Takes finished jobs. Returns whether any arrived since the last
+    /// `poll` (also when a lookup took them meanwhile), or a missing or
+    /// torn wallpaper's grace ran out: look them up again.
     pub fn poll(&mut self) -> bool {
+        let any = self.take_done();
+        any | std::mem::take(&mut self.unreported)
+    }
+
+    fn take_done(&mut self) -> bool {
         let mut any = self.grace_over.swap(false, Ordering::SeqCst);
         while let Ok(d) = self.done.try_recv() {
             self.take(d);
@@ -895,14 +1042,13 @@ impl Quantiser {
         any
     }
 
-    /// Wakes the owner (with `poll` answering true) once
-    /// [`MISSING_GRACE`] is over.
-    fn wake_after_grace(&self) {
+    /// Wakes the owner (with `poll` answering true) at `deadline`.
+    fn wake_at(&self, deadline: Instant) {
         let (flag, waker) = (self.grace_over.clone(), self.waker.clone());
         let _ = std::thread::Builder::new()
             .name("strand-quantise-grace".into())
             .spawn(move || {
-                std::thread::sleep(MISSING_GRACE);
+                std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
                 flag.store(true, Ordering::SeqCst);
                 wake(&waker);
             });
@@ -913,25 +1059,41 @@ impl Quantiser {
             self.in_flight.remove(&d.path);
         }
         if d.seed.is_err()
-            && let Some(e) = self.index.get_mut(&d.path)
-            && e.seed.is_ok()
-            && !e.held
+            && let Some(e) = self.index.get(&d.path)
+            && e.good.is_some()
         {
             // A wallpaper that gave a seed and now fails to read is most
-            // likely being written (`cp new.jpg wall.jpg`): its palette
-            // holds for the grace, then it is read again once.
-            e.hold_until = Some(Instant::now() + MISSING_GRACE);
-            e.held = true;
-            e.stale = true;
-            self.wake_after_grace();
-            return;
+            // likely being written (`cp new.jpg wall.jpg`). While it
+            // still changes (it moved while it was read, or it is not the
+            // file the job was for any more), its palette holds and it is
+            // read again; a settled file is held once, and only a second
+            // failure of that same file is reported.
+            let settled = !d.changed && Stamp::of(&d.path).ok() == Some(d.stamp);
+            if !settled || e.held != Some(d.stamp) {
+                let deadline = Instant::now() + MISSING_GRACE;
+                if let Some(e) = self.index.get_mut(&d.path) {
+                    if settled {
+                        e.held = Some(d.stamp);
+                    }
+                    e.hold_until = Some(deadline);
+                    e.stale = true;
+                }
+                self.wake_at(deadline);
+                return;
+            }
         }
         if let Ok(c) = d.seed {
             self.last = Some(c);
         }
         self.clock += 1;
-        self.index
-            .insert(d.path, Entry::new(d.stamp, d.seed, self.clock));
+        let good = self.index.get(&d.path).and_then(|e| e.good);
+        let failed = d.seed.is_err();
+        let mut entry = Entry::new(d.stamp, d.seed, good, self.clock);
+        if failed {
+            // Reported: that same file fails at once from now on.
+            entry.held = Some(d.stamp);
+        }
+        self.index.insert(d.path, entry);
         while self.index.len() > MAX_REMEMBERED {
             let Some(oldest) = self
                 .index

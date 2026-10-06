@@ -73,3 +73,38 @@ fn a_missing_monospace_family_stays_monospace() {
     }
     assert!((narrow - wide).abs() < 0.5, "iiii {narrow} vs MMMM {wide}");
 }
+
+/// A medium request (500) on a family with only a regular face draws
+/// the regular face, not faux bold (CSS `font-synthesis-weight`: only a
+/// bold request, 600 and up, emboldens a face lighter than 600). A
+/// theme's `$font.ui` is Inter 500, which falls back to a sans with
+/// only 400 and 700 faces on most machines.
+#[test]
+fn medium_is_not_synthesised_bold() {
+    let data = std::fs::read(test_font_path()).unwrap();
+    let mut e = TextEngine::new(FontConfig::isolated(vec![Arc::new(data)]));
+    let ink = |e: &mut TextEngine, weight: u16| {
+        e.layout(&TextRequest {
+            key: TextKey(3),
+            text: "Hello 12:00".into(),
+            style: TextStyle {
+                font: Font {
+                    family: "sans-serif".into(),
+                    size: 13.0,
+                    weight,
+                },
+                line_height: None,
+                align: TextAlign::default(),
+                ellipsis: None,
+                max_lines: None,
+                spans: vec![],
+            },
+            max_width: None,
+            scale: Scale::ONE,
+        })
+        .ink
+    };
+    let regular = ink(&mut e, 400);
+    assert_eq!(ink(&mut e, 500), regular, "500 draws the 400 face as is");
+    assert_ne!(ink(&mut e, 700), regular, "700 is emboldened");
+}

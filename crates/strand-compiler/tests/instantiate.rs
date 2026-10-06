@@ -1977,6 +1977,31 @@ fn settings_files_are_read_and_written_back() {
         shell.inst.get("prefs_test.prefs.gap").unwrap(),
         Value::int(6)
     );
+    // `strand run` reads on the watcher's thread: the logic thread only
+    // decodes what it read.
+    let sources = shell.inst.settings_sources();
+    assert_eq!(sources.len(), 1);
+    std::fs::write(
+        config.join("prefs.toml"),
+        "compact = false
+gap = 8
+",
+    )
+    .unwrap();
+    let read = std::thread::spawn(move || sources[0].read())
+        .join()
+        .unwrap();
+    assert!(
+        shell
+            .inst
+            .reload_settings_with(&config.join("prefs.toml"), Some(read))
+    );
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["roomy"]);
+    assert_eq!(
+        shell.inst.get("prefs_test.prefs.gap").unwrap(),
+        Value::int(8)
+    );
     drop(shell);
     let _ = std::fs::remove_dir_all(dir);
 }
