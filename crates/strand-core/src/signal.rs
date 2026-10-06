@@ -245,6 +245,7 @@ impl Runtime {
                     owner: rt.owner_of(writer).ok().flatten(),
                     site: rt.site_of(writer),
                     input: false,
+                    rate: None,
                 };
                 rt.run_handler(ctx, |rt| handler(rt, &value))
             } else {

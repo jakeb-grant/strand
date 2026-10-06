@@ -213,6 +213,7 @@ impl<T: 'static> ListenerData<T> {
             owner: rt.owner_of(l).ok().flatten(),
             site: Some(l),
             input: self.input,
+            rate: None,
         };
         let r = rt.run_handler_tracked(ctx, l, |rt| f(rt, ev));
         if let Err(e) = r {

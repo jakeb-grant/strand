@@ -160,9 +160,16 @@ struct TaskData {
     creation_owner: Option<NodeId>,
     /// Started by external input and not yet suspended: its writes are not
     /// rate-counted. Cleared at its first `await` that suspends, so the
-    /// synchronous response to the event is exempt but a loop it then runs
-    /// (`loop { x += 1; await sleep(10ms) }`) is counted like any handler.
+    /// synchronous response to the event is exempt; after that its writes
+    /// count against `run`, so a loop it then runs
+    /// (`loop { x += 1; await sleep(10ms) }`) is still throttled.
     input: Cell<bool>,
+    /// The input-started run its writes count against once `input` is
+    /// cleared: the task itself when it was started by input, or the run
+    /// that spawned it. `None` counts against `writer`. One run that
+    /// writes once per event is the user, not a loop; a loop inside one
+    /// run still trips the guard.
+    run: Option<NodeId>,
     /// Superseded on purpose (an `async_memo` re-request): no diagnostic.
     quiet: Cell<bool>,
 }
@@ -176,6 +183,17 @@ impl NodeData for TaskData {
             rt.diagnose(Diagnostic::Cancelled { task: id });
         }
     }
+}
+
+/// Which input-started run a new task's writes count against.
+#[derive(Copy, Clone)]
+enum Run {
+    /// Its own: it was started by input.
+    Own,
+    /// The run that spawned it.
+    Of(NodeId),
+    /// None: its writer's.
+    None,
 }
 
 /// A running handler coroutine.
@@ -216,7 +234,13 @@ impl Runtime {
     where
         F: Future<Output = Result<(), Error>> + 'static,
     {
-        self.spawn_inner(self.current_writer(), None, self.inner.input.get(), fut)
+        let input = self.inner.input.get();
+        let run = match self.current_input_run() {
+            Some(run) => Run::Of(run),
+            None if input => Run::Own,
+            None => Run::None,
+        };
+        self.spawn_inner(self.current_writer(), None, input, run, fut)
     }
 
     /// [`Runtime::spawn`] on behalf of a handler site (from
@@ -229,23 +253,25 @@ impl Runtime {
     where
         F: Future<Output = Result<(), Error>> + 'static,
     {
-        self.spawn_inner(Some(site), Some(site), false, fut)
+        self.spawn_inner(Some(site), Some(site), false, Run::None, fut)
     }
 
     /// [`Runtime::spawn`] for a handler run by external input (`on click`,
     /// `on scroll(dy)`, a `<->` write from a widget). Its writes are not
     /// counted by the write-rate guard: input at 60 Hz is the user, not a
     /// feedback loop. The exemption covers the body up to its first `await`
-    /// that suspends; after that its writes count against its handler
-    /// identity (`site`, or the task) like a graph-triggered handler's, so
-    /// a runaway loop started by a click is still throttled.
+    /// that suspends; after that its writes are counted against this run of
+    /// the task (tasks it spawns share the run), so one write per event
+    /// after an `await` is never throttled but a runaway loop inside the run
+    /// (`on click { loop { x += 1; await sleep(10ms) } }`) still is. A
+    /// warning names `site`.
     /// `site` (from [`Runtime::handler_site`]) owns the task
     /// so a reload can cancel it; `None` means the current owner.
     pub fn spawn_input<F>(&self, site: Option<NodeId>, fut: F) -> Task
     where
         F: Future<Output = Result<(), Error>> + 'static,
     {
-        self.spawn_inner(site, site, true, fut)
+        self.spawn_inner(site, site, true, Run::Own, fut)
     }
 
     fn spawn_inner<F>(
@@ -253,6 +279,7 @@ impl Runtime {
         writer: Option<NodeId>,
         site: Option<NodeId>,
         input: bool,
+        run: Run,
         fut: F,
     ) -> Task
     where
@@ -272,6 +299,11 @@ impl Runtime {
             writer: writer.unwrap_or(id),
             creation_owner,
             input: Cell::new(input),
+            run: match run {
+                Run::Own => Some(id),
+                Run::Of(r) => Some(r),
+                Run::None => None,
+            },
             quiet: Cell::new(false),
         });
         if let Some(n) = self.inner.nodes.borrow_mut().get_mut(id) {
@@ -371,6 +403,7 @@ impl Runtime {
             // Tasks it spawns share its site.
             site: self.owner_of(id).ok().flatten(),
             input: task.input.get(),
+            rate: task.run,
         };
         let mut cx = Context::from_waker(&waker);
         let prev = self.inner.polling.replace(Some(id));

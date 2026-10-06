@@ -354,7 +354,9 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   graph-triggered events (service events, `on change`: the 30 writes/s guard
   sees one handler) or `rt.spawn_input(Some(site), fut)` for external input
   (`on click`, `on scroll`, `on activate`: not rate-counted up to the
-  task's first suspending `await`; a loop it then runs is counted). Input event
+  task's first suspending `await`; after it, writes count against that one
+  run of the task, not the site, so one write per event after an `await`
+  is never throttled but a loop inside the run is). Input event
   queues are `rt.input_events()`; `<->` writes from widgets are made
   outside any handler and are not counted either. Timers are
   `rt.after/every(_dyn)`, `on change` is `rt.on_change(_after)` or, for

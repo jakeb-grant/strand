@@ -520,6 +520,7 @@ impl Runtime {
                 owner: self.owner_of(id).ok().flatten(),
                 site: self.site_of(id),
                 input: false,
+                rate: None,
             };
             let r = self.run_handler(ctx, |rt| body(rt));
             if let Err(e) = r {

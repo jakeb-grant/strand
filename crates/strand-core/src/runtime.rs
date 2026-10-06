@@ -158,6 +158,10 @@ pub(crate) struct HandlerCtx {
     pub(crate) site: Option<NodeId>,
     /// Started by external input: writes are not rate-counted.
     pub(crate) input: bool,
+    /// The identity its writes count against for the write-rate guard when
+    /// that is not `writer`: one run of an input-started task (see
+    /// [`Runtime::spawn_input`]). `writer` still names it and ranks it.
+    pub(crate) rate: Option<NodeId>,
 }
 
 /// Flush work classes, in the order they run at one rank.
@@ -358,6 +362,11 @@ pub(crate) struct Inner {
     /// The running handler was started by external input (`on click`,
     /// `on scroll`): its writes are not counted by the write-rate guard.
     pub(crate) input: Cell<bool>,
+    /// `(writer, key)`: while `writer` is the running handler, the
+    /// write-rate guard counts its writes against `key` (one run of an
+    /// input-started task) instead. Keyed by the writer so a nested handler
+    /// that replaces `writer` never inherits it.
+    pub(crate) rate_key: Cell<Option<(NodeId, NodeId)>>,
     /// Handler → its site: disposing the handler disposes the site and so
     /// cancels the handler's in-flight tasks.
     sites: RefCell<SecondaryMap<NodeId, NodeId>>,
@@ -535,6 +544,7 @@ impl Runtime {
                 writer: Cell::new(None),
                 site: Cell::new(None),
                 input: Cell::new(false),
+                rate_key: Cell::new(None),
                 sites: RefCell::new(SecondaryMap::new()),
                 suspended: RefCell::new(HashSet::new()),
                 held: RefCell::new(Vec::new()),
@@ -813,6 +823,25 @@ impl Runtime {
         self.inner.writer.get()
     }
 
+    /// The identity the running handler's writes count against for the
+    /// write-rate guard: its writer, or the run of an input-started task.
+    pub(crate) fn rate_writer(&self) -> Option<NodeId> {
+        let writer = self.inner.writer.get()?;
+        match self.inner.rate_key.get() {
+            Some((w, key)) if w == writer => Some(key),
+            _ => Some(writer),
+        }
+    }
+
+    /// The input-task run the running handler belongs to, if any.
+    pub(crate) fn current_input_run(&self) -> Option<NodeId> {
+        let writer = self.inner.writer.get()?;
+        match self.inner.rate_key.get() {
+            Some((w, key)) if w == writer => Some(key),
+            _ => None,
+        }
+    }
+
     /// The owner new nodes are attached to.
     pub fn current_owner(&self) -> Option<NodeId> {
         self.inner.owner.get()
@@ -892,7 +921,9 @@ impl Runtime {
         let prev_owner = self.inner.owner.replace(owner);
         let prev_site = self.inner.site.replace(h.site);
         let prev_input = self.inner.input.replace(h.input);
+        let prev_rate = self.inner.rate_key.replace(h.rate.map(|k| (h.writer, k)));
         let r = f(self);
+        self.inner.rate_key.set(prev_rate);
         self.inner.input.set(prev_input);
         self.inner.site.set(prev_site);
         self.inner.owner.set(prev_owner);

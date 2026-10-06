@@ -90,7 +90,8 @@ the identity of the handler that spawned it; `spawn_for(site, fut)` counts
 against `site`. Keyed collections are not gated: their diffs can't be
 coalesced to a latest value; revisit if a collection loop shows up.
 (Superseded in wave 2: wave2-core, "Keyed writes under the 30 writes/s
-guard".)
+guard"; the identity of an input task after its first `await`:
+wave2-lang, "An input task's run is its own writer".)
 
 **2026-10-05 · Echo suppression.** `write_tagged(value, send)` applies a
 local write, remembers it as pending and calls `send(value, generation)`;
@@ -3511,3 +3512,51 @@ it panicked: `text.rs::a_dead_worker_is_not_running`). The renderer
 stamps a surface's last paint after the raster, and `set_busy_window`
 lets the two new-text hold tests fix the window (zero, or 30 s) instead
 of depending on how long a debug paint takes.
+
+## wave2-lang
+
+**2026-10-06 · wave2-lang: an input task's run is its own writer.** The
+exemption for input handlers ended at a task's first suspending `await`,
+after which its writes counted against the shared handler site, so
+`on scroll(dy) { await x; v = .. }` at 60 Hz (one fresh run per event,
+each writing once) added up to 60 writes/s from "one handler" and was
+throttled as a loop. The guard is for loops; one write per input event is
+the user. A task started by input (`rt.spawn_input`, or `rt.spawn` from an
+input listener) now counts its post-`await` writes against its own run;
+tasks it spawns share the run, and a warning still names the handler
+site. A loop inside one run (`on click { loop { x += 1; await sleep(10ms)
+} }`) is more than 30 writes/s from that run and is throttled as before;
+graph-triggered events (`spawn_for`) keep one identity per site, so a
+fresh task per service event is still one writer. Considered and
+rejected: exempting the first write after each input-caused resume (needs
+per-resume causality the executor does not have, and a run awaiting a
+graph value would be exempt for a graph write). Several runs each below
+the limit (five clicks each starting a 20 Hz loop) are not added up: none
+of them is a loop on its own. Tests:
+`crates/strand-core/tests/feedback.rs::input_tasks_writing_after_an_await_at_60_hz_are_not_throttled`,
+`a_loop_inside_one_input_run_is_throttled`, and through the VM
+`crates/strand-compiler/tests/instantiate.rs::input_handlers_and_two_way_writes_at_60_hz_are_not_throttled`.
+
+**2026-10-06 · wave2-lang: keyed scaling is guarded by counting key work.**
+"`keyed_memo` diff O(n)" reads as O(n) key work: each row is hashed and
+compared a constant number of times (hash index, no pairwise match), which
+holds for every shape. The index work of a reordering diff (longest
+increasing subsequence, Fenwick tree) is O(n log n); O(n) only when no
+survivor changes order, as `keyed_diff`'s docs say. The guard counts hash
+and `eq` calls on a counting key at 2,000 and 16,000 rows (at most 8 per
+row for `keyed_diff` and `keyed_memo`, measured 1-4; at most 10 per
+`get`/`index_of`, also after an insert at the front made every index entry
+stale) and times a shuffled diff at both sizes (best of 7; under 32x for
+8x the rows, measured about 10x; quadratic would be 64x). It runs in
+`cargo test`, not as a bench, so CI fails on a regression:
+`crates/strand-core/tests/keyed_scaling.rs`.
+
+**2026-10-06 · wave2-lang: atomic persist writes are proven at the
+rename.** The store's own-write observer runs once the new bytes are
+complete and synced under a temp name and before the rename, which is the
+moment an in-place write would show a torn or new file. The test reads
+the file there through a second store on the same directory (another
+process's view) and requires the whole old value, unchanged bytes and one
+temp file with the new content; after the write the file is a new inode
+with the new value and no temp file is left
+(`crates/strand-core/tests/persist.rs::a_write_replaces_the_file_whole_by_rename`).

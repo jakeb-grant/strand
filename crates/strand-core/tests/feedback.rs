@@ -570,6 +570,94 @@ fn a_runaway_loop_started_by_a_click_is_throttled() {
     assert!(landed < 110, "{landed} writes landed");
 }
 
+/// `on scroll(dy) { await x; volume += dy }` at 60 Hz for 2 s: every
+/// event's run awaits once, then writes once. That is one write per input
+/// event, not a loop: no warning, and no step is held (each lands in the
+/// tick its sleep comes due). Three ways the VM can start the run: a task
+/// per event with `spawn_input` on one handler site, the same without a
+/// site, and a task spawned by an input listener.
+#[test]
+fn input_tasks_writing_after_an_await_at_60_hz_are_not_throttled() {
+    for how in 0..3 {
+        let rt = Runtime::new();
+        let volume = rt.signal(0i32);
+        let site = rt.handler_site();
+        let scroll = rt.input_events::<i32>();
+        let body = move |rt: &Runtime, dy: i32| {
+            let weak = rt.downgrade();
+            async move {
+                let rt = weak.upgrade().ok_or(strand_core::Error::Cancelled)?;
+                rt.sleep(Duration::from_millis(1)).await;
+                volume.update(&rt, |v| *v += dy)
+            }
+        };
+        if how == 2 {
+            scroll
+                .on(&rt, move |rt, dy| {
+                    rt.spawn(body(rt, *dy));
+                    Ok(())
+                })
+                .unwrap();
+        }
+        let mut diags = Vec::new();
+        let mut t = Duration::ZERO;
+        for i in 1..=120 {
+            match how {
+                0 => drop(rt.spawn_input(Some(site), body(&rt, 1))),
+                1 => drop(rt.spawn_input(None, body(&rt, 1))),
+                _ => scroll.emit(&rt, 1).unwrap(),
+            }
+            t += Duration::from_nanos(16_666_667);
+            let tick = rt.tick(t);
+            diags.extend(tick.diagnostics);
+            // The previous event's run woke from its 1 ms sleep and wrote.
+            assert_eq!(volume.get(&rt), Ok(i - 1), "case {how}: step {i} held");
+        }
+        t += Duration::from_nanos(16_666_667);
+        diags.extend(rt.tick(t).diagnostics);
+        assert_eq!(volume.get(&rt), Ok(120), "case {how}");
+        assert_eq!(rate_warnings(&diags), 0, "case {how}: {diags:?}");
+        assert_eq!(rt.next_deadline(), None, "case {how}: nothing held");
+    }
+}
+
+/// A loop inside one input-started run is still a loop: counted against
+/// the run, it warns once (named by its handler site) and is throttled.
+#[test]
+fn a_loop_inside_one_input_run_is_throttled() {
+    let rt = Runtime::new();
+    let x = rt.signal(0i32);
+    let site = rt.handler_site();
+    let weak = rt.downgrade();
+    rt.spawn_input(Some(site), async move {
+        let rt = weak.upgrade().ok_or(strand_core::Error::Cancelled)?;
+        loop {
+            x.update(&rt, |v| *v += 1)?;
+            rt.sleep(Duration::from_millis(10)).await;
+        }
+    });
+    let mut diags = Vec::new();
+    let mut landed = 0;
+    for i in 0..=200u32 {
+        let tick = rt.tick(i * Duration::from_millis(10));
+        landed += usize::from(tick.written.contains(&x.id()));
+        diags.extend(tick.diagnostics);
+    }
+    let warned: Vec<_> = diags
+        .iter()
+        .filter_map(|d| match d {
+            Diagnostic::WriteRate { writer, .. } => Some(*writer),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(warned, vec![site], "{diags:?}");
+    assert!(landed < 110, "{landed} writes landed");
+    // `update` reads the held value: no step is lost, at most the latest
+    // ones are still held.
+    let v = x.get(&rt).unwrap();
+    assert!((195..=201).contains(&v), "{v}");
+}
+
 /// The input exemption covers a spawned task's synchronous part: a task
 /// per click that writes once before any await is never counted.
 #[test]

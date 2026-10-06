@@ -8,8 +8,11 @@
 //! and [`Runtime::spawn_input`]) are like CLI and service writes and are not
 //! counted: smooth scrolling at 60 Hz is the user, not a loop. For a task
 //! the exemption covers its synchronous response, up to its first `await`
-//! that suspends; after that it is counted like any handler, so
-//! `on click { loop { x += 1; await sleep(10ms) } }` is still throttled.
+//! that suspends; after that its writes are counted against that one run
+//! of the task (not the shared handler site), so
+//! `on scroll(dy) { await x; v = .. }` at 60 Hz writes once per run and is
+//! never throttled, while `on click { loop { x += 1; await sleep(10ms) } }`
+//! is a loop inside one run and still is.
 //!
 //! Writes are counted per logic step, not per call: a handler that writes a
 //! cell many times inside one flush (or one batch of timer bodies in
@@ -28,7 +31,10 @@
 //!
 //! "One handler" is a stable identity: the effect, listener or timer node,
 //! inherited by tasks they spawn, or the handler site given to
-//! [`Runtime::spawn_for`]. A fresh task per event is still one writer.
+//! [`Runtime::spawn_for`]. A fresh task per graph-triggered event is still
+//! one writer. The one exception is an input-started task after its first
+//! suspending `await`: each run is its own writer (tasks it spawns share
+//! its run), reported under its handler's name.
 
 use std::any::Any;
 use std::collections::VecDeque;
@@ -187,7 +193,7 @@ impl Runtime {
         if self.inner.input.get() {
             return true;
         }
-        let Some(writer) = self.inner.writer.get() else {
+        let Some(writer) = self.rate_writer() else {
             return true;
         };
         let now = self.now();
@@ -230,10 +236,13 @@ impl Runtime {
         }
         drop(map);
         if warn {
-            let names = self.path(vec![writer, cell]);
+            // Named by its handler (an input run counts as its own writer
+            // but is reported as the handler it runs for).
+            let handler = self.inner.writer.get().unwrap_or(writer);
+            let names = self.path(vec![handler, cell]);
             self.diagnose(Diagnostic::WriteRate {
                 cell,
-                writer,
+                writer: handler,
                 names,
             });
         }
@@ -268,7 +277,7 @@ impl Runtime {
 
     /// The value the running handler's held write to `cell` holds.
     pub(crate) fn deferred_value<T: Clone + 'static>(&self, cell: NodeId) -> Option<T> {
-        let writer = self.inner.writer.get()?;
+        let writer = self.rate_writer()?;
         self.inner
             .throttled
             .borrow()
@@ -281,7 +290,7 @@ impl Runtime {
     /// (a keyed write applies the next operation to it in place, then holds
     /// it again or lets it through).
     pub(crate) fn take_deferred<T: 'static>(&self, cell: NodeId) -> Option<T> {
-        let writer = self.inner.writer.get()?;
+        let writer = self.rate_writer()?;
         let mut throttled = self.inner.throttled.borrow_mut();
         if !throttled
             .by
@@ -302,7 +311,7 @@ impl Runtime {
         apply: DeferredApply,
         rebase: Option<Rebase>,
     ) {
-        let Some(writer) = self.inner.writer.get() else {
+        let Some(writer) = self.rate_writer() else {
             apply(self, value);
             return;
         };

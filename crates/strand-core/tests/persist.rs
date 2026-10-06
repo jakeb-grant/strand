@@ -625,6 +625,76 @@ fn a_pending_write_survives_dropping_the_runtime() {
     assert_eq!(store.load("osd.level").unwrap().unwrap().value, b"3");
 }
 
+/// Writes are atomic: while a write is under way (its new bytes complete
+/// and synced under a temp name, the moment the store's observer runs) a
+/// second reader of the directory still decodes the whole old value and the
+/// file still holds the old bytes; afterwards the file is a new inode with
+/// the whole new value. A write in place (truncate, then write) fails here:
+/// the reader would see new or partial bytes and the inode would be kept.
+#[test]
+fn a_write_replaces_the_file_whole_by_rename() {
+    use std::os::unix::fs::MetadataExt;
+    use std::sync::{Arc, Mutex};
+    let tmp = TempDir::new("atomic");
+    let store = tmp.store();
+    let default = b"0".to_vec();
+    let old = vec![b'a'; 64 * 1024];
+    let new = vec![b'b'; 96 * 1024];
+    store.save("osd.level", &default, &old).unwrap();
+    let file = store.file_of("osd.level").unwrap();
+    let old_bytes = fs::read(&file).unwrap();
+    let old_ino = fs::metadata(&file).unwrap().ino();
+    // Another process's view: a store on the same directory with nothing
+    // queued reads the disk.
+    let reader = tmp.store();
+    let problems: Arc<Mutex<Vec<String>>> = Arc::default();
+    let seen = Arc::new(Mutex::new(0usize));
+    {
+        let (problems, seen, file, old, old_bytes) = (
+            problems.clone(),
+            seen.clone(),
+            file.clone(),
+            old.clone(),
+            old_bytes.clone(),
+        );
+        let dir = tmp.0.join("persist");
+        store.on_written(move |w| {
+            *seen.lock().unwrap() += 1;
+            let mut p = problems.lock().unwrap();
+            match reader.load("osd.level") {
+                Ok(Some(s)) if s.value == old => {}
+                other => p.push(format!(
+                    "mid-write reader saw {:?}",
+                    other.map(|o| o.map(|s| s.value.len()))
+                )),
+            }
+            if fs::read(&file).ok().as_deref() != Some(&old_bytes[..]) {
+                p.push("the file changed before the rename".into());
+            }
+            // The new bytes are complete under a temp name.
+            let temps: Vec<Vec<u8>> = fs::read_dir(&dir)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+                .filter_map(|e| fs::read(e.path()).ok())
+                .collect();
+            if temps.len() != 1 || Some(&temps[0][..]) != w.content {
+                p.push(format!("{} temp files, not the new content", temps.len()));
+            }
+        });
+    }
+    store.save("osd.level", &default, &new).unwrap();
+    assert_eq!(*seen.lock().unwrap(), 1);
+    assert_eq!(problems.lock().unwrap().clone(), Vec::<String>::new());
+    let after = fs::metadata(&file).unwrap();
+    assert_ne!(after.ino(), old_ino, "the file was rewritten in place");
+    let back = tmp.store().load("osd.level").unwrap().unwrap();
+    assert_eq!(back.value, new);
+    assert_eq!(back.default_hash, value_hash(&default));
+    // No temp file is left behind.
+    assert_eq!(files(&tmp.0.join("persist")), vec!["osd.level".to_string()]);
+}
+
 #[test]
 fn temp_files_left_by_a_crash_are_swept() {
     let tmp = TempDir::new("sweep");

@@ -2652,3 +2652,78 @@ fn unmounted_persisted_cells_are_removed() {
     }
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// The input path, end to end through the VM: `on scroll(dy)` and
+/// `on click` bodies (one of them awaiting before it writes) and a `<->`
+/// widget write, each driven at 60 Hz for 2 s through `Instance::event`,
+/// `Instance::write` and the tick, are the user, not a feedback loop: no
+/// `WriteRate` warning and every write lands in its own tick. The same
+/// writes followed by an `on change` handler (triggered by the graph)
+/// are a loop: that handler warns and is throttled.
+#[test]
+fn input_handlers_and_two_way_writes_at_60_hz_are_not_throttled() {
+    let input = "state v = 0.0\nstate c = 0\nstate a = 0.0\nstate level = 0.0\nstate seen = 0\nbar B {\n  row {\n    box { on scroll(dy) { v += dy } }\n    box { on click { c += 1 } }\n    box { on scroll(dy) { await sleep(1ms); a += dy } }\n    slider { value: <-> level }\n  }\n}\n";
+    let graph = format!("{input}on change v, level {{ seen += 1 }}\n");
+    for (name, src) in [("input", input.to_string()), ("graph", graph)] {
+        let mut shell = boot(&[("t.strand", &src)], |rt, host| {
+            screens(rt, host, &["DP-1"])
+        });
+        let boxes = shell.scene.of_kind(NodeKind::Box);
+        assert_eq!(boxes.len(), 3, "{name}");
+        let slider = shell.scene.of_kind(NodeKind::Slider)[0];
+        let num = |shell: &Shell, cell: &str| {
+            shell
+                .inst
+                .value_of("t", cell)
+                .unwrap()
+                .as_f64()
+                .unwrap_or_else(|| panic!("{cell} is not a number"))
+        };
+        let mut diags = Vec::new();
+        let mut seen_lagged = false;
+        let frame = 1.0 / 60.0;
+        for i in 1..=120u32 {
+            let step = f64::from(i);
+            let scroll = || vec![Value::float(1.0), Value::float(0.0)];
+            assert!(shell.inst.event(boxes[0], "scroll", scroll()), "{name}");
+            assert!(shell.inst.event(boxes[1], "click", Vec::new()), "{name}");
+            assert!(shell.inst.event(boxes[2], "scroll", scroll()), "{name}");
+            shell
+                .inst
+                .write(slider, Prop::Value, PropValue::Number(i as f32 / 128.0))
+                .unwrap();
+            let u = shell.at(step * frame);
+            assert!(u.errors.is_empty(), "{name}: {:?}", u.errors);
+            diags.extend(u.diagnostics);
+            // Every input write lands in the tick it was made in; the run
+            // that awaits lands one tick later (its 1 ms sleep).
+            assert_eq!(num(&shell, "v"), step, "{name}: scroll {i} held");
+            assert_eq!(num(&shell, "c"), step, "{name}: click {i} held");
+            assert_eq!(
+                num(&shell, "a"),
+                step - 1.0,
+                "{name}: awaited scroll {i} held"
+            );
+            assert_eq!(num(&shell, "level"), step / 128.0, "{name}: write {i} held");
+            seen_lagged |= num(&shell, "seen") < step;
+        }
+        let u = shell.at(121.0 * frame);
+        diags.extend(u.diagnostics);
+        assert_eq!(num(&shell, "a"), 120.0, "{name}");
+        let warned: Vec<String> = diags
+            .iter()
+            .filter_map(|d| match d {
+                strand_core::Diagnostic::WriteRate { names, .. } => Some(names.to_string()),
+                _ => None,
+            })
+            .collect();
+        if name == "input" {
+            assert!(warned.is_empty(), "input warned: {warned:?}");
+            assert_eq!(num(&shell, "seen"), 0.0);
+        } else {
+            assert_eq!(warned.len(), 1, "the `on change` writer: {warned:?}");
+            assert!(warned[0].contains("seen"), "{warned:?}");
+            assert!(seen_lagged, "the `on change` writer was not throttled");
+        }
+    }
+}
