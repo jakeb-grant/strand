@@ -452,9 +452,15 @@ be built and tested without the language, and the language without pixels.
   has a moment with no text lightness at 3:1
   (`Color::contrast_reachable`): in the global scope (or when the check
   cannot finish) the table snaps and every shown surface crossfades;
-  under a `set { }` scope only the surfaces drawing it crossfade, shown
+  under a `set { }` scope (or when the scopes' check cannot finish,
+  the global scope having been played through first) only the surfaces
+  drawing it crossfade, shown
   the new table at once (held for them, swapped into the tree while they
-  lay out and flatten) while the roots spring for the rest. A crossfade
+  lay out and flatten) while the roots spring for the rest. A scope
+  that appears while the roots spring (a node given `tokens` or moved by
+  a later diff, a surface attached) is played through then, from the
+  roots' motions as they are, and held the same way (a surface attached
+  mid-swap has no old frame: it just shows the new table). A crossfade
   goes from a snapshot of the surface's old frame to the new frames
   along the colour curve from that surface's first frame, those frames
   painted in full and reporting no opaque region. The snapshot is taken

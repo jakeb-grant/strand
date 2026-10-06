@@ -4472,9 +4472,11 @@ names it; a `set { }` scope is checked only if its overrides reach a
 declared background (directly or through derived tokens, or the
 guard), and scopes whose reaching overrides are the same are checked
 once; and the play-through has a work budget (`CHECK_WORK`, 9000 units
-of about a third of a microsecond: one per root per sample and per pair
-judged, two per background evaluated), past which the swap crossfades,
-as it does past 10 s of motion. `crates/strand-render/tests/theme_swap_bench.rs::set_scopes_and_slow_springs_stay_within_the_budget`
+of about 0.44 µs optimised, from the release bench's 3.4 ms over about
+7,800 units: one per root per sample and per pair judged, two per
+background evaluated), past which the swap crossfades, as it does past
+10 s of motion (round 3: only the surfaces of the scopes left unchecked
+when the global scope was played through in full). `crates/strand-render/tests/theme_swap_bench.rs::set_scopes_and_slow_springs_stay_within_the_budget`
 holds `apply` under 5 ms optimised with 0, 8 and 32 distinct scopes and
 with `spring(1600, 1)` and `spring(120, 1)`: about 0.6 ms at 0 scopes and
 3.5 ms at 32 with the slow spring.
@@ -4550,6 +4552,90 @@ $surface.mix($accent, 60%) }` subtree: `strand set theme.look dark`
 showed the grim frames 150 and 300 ms in moving through greys with
 every text readable, the subtree springing with the rest (its scope
 checked and springable), then the dark scheme.
+
+**2026-10-06 · wave3-theme (t2) fixer round 3: text in alpha-derived
+tokens is not guarded.** design.md promises 3:1 for *declared* pairs,
+and Material 3's pairs (which the palette declares) are role on role:
+`$fg` over the surfaces, `$on_accent` over `$accent`, and so on.
+`$fg.muted` (`$fg.alpha(0.65)`) and `$fg.faint` are not declared text
+tokens: they are derived from the guarded `$fg` and composited over
+whatever is under them, and nothing solves them. At rest they are
+readable (the swap reference's "muted" label is 4.86:1 on the light
+scheme and 6.1:1 on the dark), but mid-swap, while `$fg` sits at the
+3:1 the guard allows over a mid-grey `$surface`, 65% of it composited
+over that surface falls to about 2:1: rows 2 and 3 of
+`crates/strand-render/tests/refs/theme_swap.png` show the label at
+2.16:1 and 2.58:1, and on headless sway design.md's bar window title
+(`color: $fg.muted`) measured 2.1 to 2.3:1 mid light→dark and mid
+light→mocha. design.md's shells use `$fg.muted` for the bar title, the
+launcher's comments and toast bodies, so this is visible, for the
+spring's middle 100 ms or so. We keep it, and say so here rather than
+let "contrast never below 3:1" read as covering them: the gate and the
+guard cover the declared pairs only. Guarding them would mean solving
+`$fg` against its backgrounds for the contrast its translucent
+derivatives keep once composited (a second solve per derived alpha,
+per frame and in the play-through, which then decides more swaps as
+crossfades), or declaring `$fg.muted` itself as a text token, which
+changes its value at rest too (design.md defines it as an alpha of
+`$fg`, not as a solved colour). Either is a design change; a theme
+that wants muted text guarded can declare its own pair.
+
+**2026-10-06 · wave3-theme (t2) fixer round 3: the check runs out per
+scope.** The play-through now plays the global scope first, with the
+whole work budget (`CHECK_WORK`, 9000 units of about 0.44 µs
+optimised), and the `set { }` scopes after it with what is left. If the
+global scope runs out (or is still moving after 10 s), every surface
+crossfades, as before; if the scopes run out, only the surfaces drawing
+a scope not yet found unreadable crossfade (held on the new table), and
+the global roots spring everywhere else, as design.md's "crossfades
+only where that is impossible" asks. 32 distinct readable scopes on a
+bouncy `spring(60, 0.5)` use the budget up: the bar springs, the panel
+drawing them crossfades
+(`crates/strand-render/tests/theme_swap.rs::set_scopes_that_use_up_the_check_crossfade_only_their_surfaces`;
+with an unlimited budget the same swap springs everywhere, so it is the
+budget's doing; with four scopes it springs everywhere). Playing the
+two in turn samples the roots twice: with 32 scopes and `spring(120,
+1)` the release `apply` went from about 3.5 to 4.0 ms, still inside
+the 5 ms.
+
+**2026-10-06 · wave3-theme (t2) fixer round 3: scopes that appear
+mid-swap are checked.** The plan sees only the scopes shown when the
+table arrives. While the roots spring, a diff that gives a node
+`tokens` (a list row, a toast, a changed `set { }`) or moves a subtree,
+and a surface attached (a popup opened), now has its scopes played
+through then, from the roots' motions as they are (the same code, the
+scopes pass only, the new table being the tree's with the roots'
+targets). A scope no spring keeps readable holds its surfaces on the
+new table: a surface already shown crossfades from its snapshot (taken
+from the frame it shows, which its cache still holds when the diff
+applies), a surface just attached showed nothing old and simply shows
+the new table (`::a_scope_that_appears_mid_swap_is_played_through_too`:
+the repro of the finding, `$fg` over the subtree's `$panel` at 1.59:1,
+now held; a readable scope keeps springing).
+
+**2026-10-06 · wave3-theme (t2) fixer round 3: the whole swap along the
+design's spring is gated.** Round 2 said the whole swap stays under
+5 ms along design.md's springs, but gated `apply` and each frame apart.
+`set_scopes_and_slow_springs_stay_within_the_budget` now also measures
+logic's re-resolve of a light↔dark swap on design.md's theme (as the
+first bench does) and, for `spring(1600, 1)`, holds logic + `apply` +
+the work of every frame to 5 ms per swap (median). Release, on this
+machine: 2.2 ms with no scopes, 3.2 ms with 8, 4.6 ms with 32
+distinct reaching scopes (0.5 ms logic, 3.0 ms apply, 17 frames of
+66 µs). 32 distinct scopes whose overrides each reach a declared
+background is far past design.md's shells (the bar has none), so the
+margin is thin only at the bench's extreme; a regression past 5 ms
+there now fails CI.
+
+**2026-10-06 · wave3-theme (t2) fixer round 3: seen on sway.** `strand
+run` on headless sway with design.md's `theme.strand` (`$motion.effects`
+slowed to `spring(30, 1)`), the hello bar and a centred panel with a
+`set { $surface: $surface.mix($accent, 60%) }` subtree and a second
+one (`30%`) behind `if late`: `strand set theme.look dark`, then
+`strand set card.late true` 120 ms in. The grim frames at 170, 320 and
+520 ms show the late subtree appearing mid-swap and springing with the
+rest (its scope played through then, readable), every text readable,
+then the dark scheme.
 
 ## wave3-pixels
 

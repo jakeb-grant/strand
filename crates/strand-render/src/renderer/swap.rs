@@ -14,8 +14,11 @@
 //! the roots move fast, at up to [`CHECK_STEP_MAX`] while they move
 //! slowly, and [`CHECK_FINE`] times as finely, for the pairs concerned,
 //! around moments that only just make it),
-//! in the global scope and under each `set { }` scope of the nodes shown
-//! whose overrides reach a declared background: if at some moment the
+//! in the global scope first and then under each `set { }` scope of the
+//! nodes shown whose overrides reach a declared background (a scope that
+//! appears while the roots spring, on a node given `tokens`, a subtree
+//! moved or a surface attached, is played through then, from the roots'
+//! motions as they are): if at some moment the
 //! backgrounds of a declared pair leave no text lightness at 3:1 (one
 //! background too dark for dark text while another is too light for
 //! light text, [`Color::contrast_reachable`]), that scope cannot spring.
@@ -23,7 +26,11 @@
 //! crossfades from a snapshot of its old frame to the new frames. Under
 //! a `set { }` scope, only the surfaces drawing it crossfade: they show
 //! the new table at once (held for them while the roots spring
-//! elsewhere), from their snapshots. A snapshot is taken once, at the
+//! elsewhere), from their snapshots (a surface attached mid-swap showed
+//! nothing old: it just shows the new table). The play-through's work is
+//! bounded ([`CHECK_WORK`]): the global scope runs out of it only with
+//! every surface crossfading, the `set { }` scopes left unchecked when it
+//! runs out only with their own surfaces. A snapshot is taken once, at the
 //! fade's first frame on its surface, and each surface fades along the
 //! colour curve from its own first frame, at its own presentation times.
 //!
@@ -88,12 +95,15 @@ pub const CHECK_SPAN: Duration = Duration::from_secs(10);
 /// surfaces drawing more crossfade.
 pub const CHECK_SCOPES: usize = 32;
 
-/// The play-through's work at most, in units of about half a
-/// microsecond optimised: per sample, one per root sampled and per pair
-/// judged, and two per background evaluated from the roots (a derived
-/// or overridden one). A swap that would need more crossfades, so
-/// planning stays within a fixed share of the 5 ms budget however slow
-/// or bouncy the spring and however many scopes are shown.
+/// The play-through's work at most, in units of about 0.44 µs
+/// optimised (`theme_swap_bench`: some 3.4 ms over about 7,800 units):
+/// per sample, one per root sampled and per pair judged, and two per
+/// background evaluated from the roots (a derived or overridden one).
+/// The global scope is played through first, with all of it; the `set {
+/// }` scopes get what it leaves. Where it runs out, the scopes not yet
+/// cleared crossfade (all surfaces if the global scope is one of them),
+/// so planning stays within a fixed share of the 5 ms budget however
+/// slow or bouncy the spring and however many scopes are shown.
 pub const CHECK_WORK: u32 = 9_000;
 
 /// Largest snapshot a crossfade keeps for one surface (a 1920×1080
@@ -176,6 +186,9 @@ pub(super) struct Swap {
     blend: Duration,
     /// Swaps that crossfaded on some surface (tests).
     crossfades: u64,
+    /// The colour curve of the swap in flight (crossfades that start
+    /// while it springs fade along it).
+    curve: Option<Curve>,
 }
 
 /// What a `SetTokens` will do, worked out before the diff applies (the
@@ -195,6 +208,8 @@ pub(super) struct Plan {
     hold: HashSet<SurfaceId>,
     /// The snapshots of the surfaces that crossfade.
     snaps: HashMap<SurfaceId, Snapshot>,
+    /// The colour curve.
+    curve: Curve,
 }
 
 /// How a frame of a surface shows a crossfade.
@@ -381,6 +396,11 @@ struct Play<'a> {
     near: Vec<bool>,
     /// Scopes found unreadable.
     failed: Vec<bool>,
+    /// Scopes with a pair to judge.
+    judged: Vec<bool>,
+    /// The pass: the global scope's pairs (true) or the `set { }`
+    /// scopes'.
+    global: bool,
     /// Work left (see [`CHECK_WORK`]).
     work: u32,
     /// The channels of the last sample (how fast the roots move).
@@ -414,6 +434,8 @@ impl<'a> Play<'a> {
             near_last: Vec::new(),
             near: Vec::new(),
             failed: vec![false],
+            judged: Vec::new(),
+            global: true,
             work: CHECK_WORK,
             last: Vec::new(),
         };
@@ -586,6 +608,10 @@ impl<'a> Play<'a> {
         play.slot_at = vec![0; play.slots.len()];
         play.near_last = vec![false; play.pairs.len()];
         play.near = vec![false; play.pairs.len()];
+        play.judged = vec![false; play.chains.len()];
+        for (si, _) in &play.pairs {
+            play.judged[*si] = true;
+        }
         let failed = play.failed.iter().any(|f| *f);
         (!play.pairs.is_empty() || failed).then_some(play)
     }
@@ -645,7 +671,10 @@ impl<'a> Play<'a> {
         let mut lums: Vec<f64> = Vec::new();
         for p in 0..self.pairs.len() {
             let si = self.pairs[p].0;
-            if self.failed[si] || (fine && !(self.near_last[p] || self.near[p])) {
+            if self.failed[si]
+                || (si == 0) != self.global
+                || (fine && !(self.near_last[p] || self.near[p]))
+            {
                 continue;
             }
             self.work = self.work.checked_sub(1)?;
@@ -690,6 +719,67 @@ impl<'a> Play<'a> {
         };
         self.slot_at[k] = self.moments;
         Some(self.slot_lum[k])
+    }
+
+    /// Whether this pass has nothing left to find: the global scope
+    /// failed, or every `set { }` scope judged has.
+    fn decided(&self) -> bool {
+        if self.global {
+            self.failed[0]
+        } else {
+            (1..self.failed.len()).all(|s| self.failed[s] || !self.judged[s])
+        }
+    }
+
+    /// Plays the global scope's pairs (`global`) or the `set { }`
+    /// scopes' through from `base` until the roots settle or the pass is
+    /// decided; false if the work budget or [`CHECK_SPAN`] ran out first.
+    fn pass(&mut self, base: Duration, global: bool) -> bool {
+        self.global = global;
+        self.near_last.fill(false);
+        self.near.fill(false);
+        self.last.clear();
+        let end = base + CHECK_SPAN;
+        let mut at = base;
+        let mut step = CHECK_STEP;
+        let mut first = true;
+        while at < end {
+            at += step;
+            let Some(near) = self.moment(at, false) else {
+                return false;
+            };
+            if self.decided() {
+                return true;
+            }
+            // Either end of the step only just made it: the moments
+            // between are looked at too, for the pairs concerned.
+            let was_near = self.near_last.iter().any(|n| *n);
+            if !first && (near || was_near) {
+                for j in 1..CHECK_FINE {
+                    if self.moment(at - step * j / CHECK_FINE, true).is_none() {
+                        return false;
+                    }
+                    if self.decided() {
+                        return true;
+                    }
+                }
+            }
+            first = false;
+            if self.settled(at) {
+                return true;
+            }
+            // The next step: no root moves more than `CHECK_MOVE` over it
+            // (and it is at most twice as long as this one).
+            let speed = self.speed(at, step);
+            let bound = if speed > 0.0 {
+                Duration::from_secs_f32((CHECK_MOVE / speed).min(1.0))
+            } else {
+                CHECK_STEP_MAX
+            };
+            step = bound.clamp(CHECK_STEP, (step * 2).min(CHECK_STEP_MAX));
+        }
+        // Still moving after the longest span checked.
+        false
     }
 
     /// Whether every root read has settled at `at`.
@@ -746,17 +836,20 @@ impl<'a> Play<'a> {
 
 /// Plays `roots` through from `base` (the last frame shown) and says
 /// where some moment leaves a declared pair of `table` with no text
-/// lightness at 3:1: in the global scope (every surface), or under one
-/// of the `set { }` scopes shown (the surfaces drawing it). Only pairs
-/// with one in `old` and in `table` there count (a palette that is
-/// unreadable at rest is not the swap's doing). Past [`CHECK_SPAN`] or
-/// [`CHECK_WORK`], every surface.
+/// lightness at 3:1: in the global scope (every surface; judged only
+/// with `global`), or under one of the `set { }` scopes shown (the
+/// surfaces drawing it). Only pairs with one in `old` and in `table`
+/// there count (a palette that is unreadable at rest is not the swap's
+/// doing). The global scope is played through first: past
+/// [`CHECK_SPAN`] or [`CHECK_WORK`] there, every surface; past them
+/// under the `set { }` scopes, the surfaces drawing every scope judged.
 fn check_swap<'a>(
     old: &TokenTable,
     table: &'a TokenTable,
     scopes: &[ShownScope<'a>],
     roots: &'a BTreeMap<String, Root>,
     base: Duration,
+    global: bool,
 ) -> Verdict {
     if roots.is_empty() {
         return Verdict::default();
@@ -769,47 +862,22 @@ fn check_swap<'a>(
     for (_, m) in &mut play.sims {
         m.sample(base + CHECK_STEP);
     }
-    let end = base + CHECK_SPAN;
-    let mut at = base;
-    let mut step = CHECK_STEP;
-    let mut first = true;
-    while at < end {
-        at += step;
-        let Some(near) = play.moment(at, false) else {
-            return play.verdict(true);
-        };
-        if play.failed[0] || play.failed.iter().all(|f| *f) {
-            return play.verdict(false);
-        }
-        // Either end of the step only just made it: the moments between
-        // are looked at too, for the pairs concerned.
-        let was_near = play.near_last.iter().any(|n| *n);
-        if !first && (near || was_near) {
-            for j in 1..CHECK_FINE {
-                if play.moment(at - step * j / CHECK_FINE, true).is_none() {
-                    return play.verdict(true);
-                }
-                if play.failed[0] {
-                    return play.verdict(false);
-                }
-            }
-        }
-        first = false;
-        if play.settled(at) {
-            return play.verdict(false);
-        }
-        // The next step: no root moves more than `CHECK_MOVE` over it
-        // (and it is at most twice as long as this one).
-        let speed = play.speed(at, step);
-        let bound = if speed > 0.0 {
-            Duration::from_secs_f32((CHECK_MOVE / speed).min(1.0))
-        } else {
-            CHECK_STEP_MAX
-        };
-        step = bound.clamp(CHECK_STEP, (step * 2).min(CHECK_STEP_MAX));
+    if global && play.judged[0] && !play.pass(base, true) {
+        // Not sprung unchecked.
+        return play.verdict(true);
     }
-    // Still moving after the longest span checked: not sprung unchecked.
-    play.verdict(true)
+    if play.failed[0] {
+        return play.verdict(false);
+    }
+    let open = (1..play.failed.len()).any(|s| play.judged[s] && !play.failed[s]);
+    if open && !play.pass(base, false) {
+        // Out of work or still moving: the scopes not cleared do not
+        // spring unchecked, on their own surfaces.
+        for s in 1..play.failed.len() {
+            play.failed[s] |= play.judged[s];
+        }
+    }
+    play.verdict(false)
 }
 
 /// `new` (the new frame, in `target`) over the snapshot pixels `old` of
@@ -870,6 +938,7 @@ impl Renderer {
             all: false,
             hold: HashSet::new(),
             snaps: HashMap::new(),
+            curve,
         };
         let Some(base) = shown_at.filter(|_| curve != Curve::Instant) else {
             plan.snap = true;
@@ -917,7 +986,7 @@ impl Renderer {
             return Some(plan);
         }
         let (scopes, crowded) = self.shown_scopes();
-        let verdict = check_swap(&self.tree.tokens, table, &scopes, &plan.roots, base);
+        let verdict = check_swap(&self.tree.tokens, table, &scopes, &plan.roots, base, true);
         drop(scopes);
         let fading: HashSet<SurfaceId> = if verdict.all {
             plan.all = true;
@@ -1155,6 +1224,7 @@ impl Renderer {
     /// table snapped, or those shown the held new table).
     pub(super) fn install_swap(&mut self, plan: Plan) {
         let started = Instant::now();
+        self.swap.curve = Some(plan.curve);
         if plan.snap {
             // Snapped: crossfades in flight end too.
             self.swap.fade.clear();
@@ -1187,6 +1257,110 @@ impl Renderer {
                 self.swap.held = None;
                 self.swap.held_for.clear();
             }
+        }
+        self.swap.work += started.elapsed();
+    }
+
+    /// While roots spring, the `set { }` scopes under `nodes` (a node
+    /// given `tokens`, a subtree moved, a surface's root attached: scopes
+    /// the swap's plan never saw) are played through from the roots'
+    /// motions as they are. The surfaces drawing one no spring keeps
+    /// readable (`only`, if given, else any surface drawing `nodes`) are
+    /// shown the new table at once, crossfading from a snapshot if they
+    /// show a frame. Called before the diff's surfaces are marked dirty
+    /// (their caches still hold the frames shown).
+    pub(super) fn check_new_scopes(&mut self, nodes: &[NodeId], only: Option<SurfaceId>) {
+        if self.swap.roots.is_empty() || nodes.is_empty() {
+            return;
+        }
+        let started = Instant::now();
+        // The scopes under `nodes`, with the surfaces drawing them.
+        let mut found: Vec<(NodeId, Vec<SurfaceId>)> = Vec::new();
+        let mut crowded: HashSet<SurfaceId> = HashSet::new();
+        let mut seen: HashSet<NodeId> = HashSet::new();
+        for &n in nodes {
+            let drawing: Vec<SurfaceId> = self
+                .surfaces
+                .iter()
+                .filter(|(id, s)| {
+                    only.is_none_or(|o| o == **id)
+                        && !self.swap.held_for.contains(id)
+                        && self.tree.is_ancestor(s.root, n)
+                })
+                .map(|(id, _)| *id)
+                .collect();
+            if drawing.is_empty() {
+                continue;
+            }
+            let mut stack = vec![n];
+            let mut scoped = 0usize;
+            while let Some(id) = stack.pop() {
+                if !seen.insert(id) {
+                    continue;
+                }
+                let Some(node) = self.tree.get(id) else {
+                    continue;
+                };
+                if node.get(Prop::Tokens).is_some() {
+                    scoped += 1;
+                    if scoped > RAW_SCOPES {
+                        crowded.extend(drawing.iter().copied());
+                        break;
+                    }
+                    found.push((id, drawing.clone()));
+                }
+                stack.extend(node.children.iter().copied());
+            }
+        }
+        if found.is_empty() && crowded.is_empty() {
+            self.swap.work += started.elapsed();
+            return;
+        }
+        // The new table: the tree's, with the roots' targets.
+        let mut table = self.tree.tokens.clone();
+        for (path, r) in &self.swap.roots {
+            if let Some(slot) = table.tokens.get_mut(path) {
+                *slot = PropValue::Color(r.target);
+            }
+        }
+        table.freeze();
+        let base = self.shown_at().unwrap_or_default();
+        let mut hold = crowded;
+        {
+            let mut scopes: Vec<ShownScope<'_>> = Vec::new();
+            for (id, drawing) in &found {
+                let chain: Vec<&TokenTable> = crate::flatten::scope_tables(&self.tree, *id)
+                    .into_iter()
+                    .skip(1)
+                    .collect();
+                match scopes.iter_mut().find(|s| s.chain == chain) {
+                    Some(s) => s.surfaces.extend(drawing.iter().copied()),
+                    None => scopes.push(ShownScope {
+                        chain,
+                        surfaces: drawing.clone(),
+                    }),
+                }
+            }
+            let verdict = check_swap(&table, &table, &scopes, &self.swap.roots, base, false);
+            hold.extend(verdict.surfaces);
+        }
+        hold.retain(|id| !self.swap.held_for.contains(id));
+        if !hold.is_empty() {
+            if self.swap.held.is_none() {
+                self.swap.held = Some(table);
+            }
+            let curve = self.swap.curve.unwrap_or(Curve::Instant);
+            let snaps = self.snapshots(&hold, curve);
+            if !snaps.is_empty() {
+                self.swap.crossfades += 1;
+            }
+            self.swap.fade.extend(snaps);
+            for id in &hold {
+                if let Some(s) = self.surfaces.get_mut(id) {
+                    s.cache = None;
+                }
+            }
+            self.swap.held_for.extend(hold);
         }
         self.swap.work += started.elapsed();
     }

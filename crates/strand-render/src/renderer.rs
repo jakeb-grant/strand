@@ -1683,6 +1683,9 @@ impl Renderer {
         );
         self.raster.set_surfaces(self.surfaces.len());
         self.refresh_size_holds();
+        // A surface attached while a swap springs: its `set { }` scopes
+        // were not played through.
+        self.check_new_scopes(&[root], Some(surface));
     }
 
     /// Forces a full repaint of `surface` on its next paint (for example
@@ -1999,14 +2002,22 @@ impl Renderer {
         // A theme swap is planned against the table and frames on screen.
         let swap = self.plan_swap(&diff);
         let mut watched = Vec::new();
+        // Nodes whose `set { }` scopes may be new to a swap in flight.
+        let mut scoped = Vec::new();
         for op in diff.ops {
-            if let SceneOp::SetProp {
-                id,
-                prop: Prop::Watch,
-                ..
-            } = &op
-            {
-                watched.push(*id);
+            match &op {
+                SceneOp::SetProp {
+                    id,
+                    prop: Prop::Watch,
+                    ..
+                } => watched.push(*id),
+                SceneOp::SetProp {
+                    id,
+                    prop: Prop::Tokens,
+                    ..
+                }
+                | SceneOp::Move { id, .. } => scoped.push(*id),
+                _ => {}
             }
             // Where the node painted before the op, and the node whose
             // root to look up after it.
@@ -2079,6 +2090,9 @@ impl Renderer {
         if let Some(plan) = swap {
             self.install_swap(plan);
         }
+        // Scopes the swap's plan never saw (created or changed by this
+        // diff), while its roots spring.
+        self.check_new_scopes(&scoped, None);
         if relayout.is_none() {
             self.spec_dirty.extend(self.tree.surface_nodes());
             self.refresh_reduced();

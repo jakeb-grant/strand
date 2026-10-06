@@ -1526,3 +1526,264 @@ fn only_the_surfaces_drawing_an_unreadable_subtree_crossfade() {
     assert_eq!(r.tree().tokens, b);
     assert!(r.swap_held().is_empty());
 }
+
+/// The tables of `a_subtree_that_a_spring_leaves_unreadable_crossfades`:
+/// `$fg` over `$base` and `$panel` (grey to black), and a `set { $panel:
+/// $ink }` whose `$ink` goes grey to white.
+fn ink_tables() -> (TokenTable, TokenTable, TokenTable) {
+    let grey = Color::from_oklch(Oklch {
+        l: 0.6,
+        c: 0.0,
+        h: 0.0,
+        alpha: 1.0,
+    });
+    let mut a = table(&material(seed(), false));
+    let mut b = a.clone();
+    for t in [&mut a, &mut b] {
+        t.insert_contrast("fg", vec!["base".into(), "panel".into()]);
+    }
+    for (path, ca, cb) in [
+        ("base", grey, Color::BLACK),
+        ("panel", grey, Color::BLACK),
+        ("ink", grey, Color::WHITE),
+    ] {
+        a.insert(path, PropValue::Color(ca));
+        b.insert(path, PropValue::Color(cb));
+    }
+    let mut set = TokenTable::default();
+    set.insert("panel", tok("ink"));
+    (a, b, set)
+}
+
+/// A `$base` panel with text, and an empty fixed slot 30 px down.
+fn ink_panel(bl: &mut Builder) -> (NodeId, NodeId) {
+    let root = bl.node(NodeKind::Panel, None, vec![(Prop::Bg, tok("base"))]);
+    bl.node(
+        NodeKind::Text,
+        Some(root),
+        vec![(Prop::Text, text("global"))],
+    );
+    let slot = bl.node(
+        NodeKind::Box,
+        Some(root),
+        vec![
+            (Prop::Place, PropValue::Keyword("absolute".into())),
+            (Prop::Y, num(30.0)),
+            (Prop::Width, num(100.0)),
+            (Prop::Height, num(30.0)),
+        ],
+    );
+    (root, slot)
+}
+
+/// A `$panel` box `y` down in `parent` with `set` as its `set { }`
+/// scope, and text in it.
+fn ink_subtree(bl: &mut Builder, parent: NodeId, set: &TokenTable, y: f32) {
+    let sub = bl.node(
+        NodeKind::Box,
+        Some(parent),
+        vec![
+            (Prop::Y, num(y)),
+            (Prop::Width, num(100.0)),
+            (Prop::Height, num(30.0)),
+            (Prop::Tokens, PropValue::Tokens(Box::new(set.clone()))),
+            (Prop::Bg, tok("panel")),
+        ],
+    );
+    bl.node(NodeKind::Text, Some(sub), vec![(Prop::Text, text("sub"))]);
+}
+
+/// A `set { }` scope that appears while the roots spring (a subtree
+/// created by a later diff, a surface attached mid-swap) was not played
+/// through when the swap was planned: it is then, from the roots'
+/// motions as they are. One that no spring keeps readable is shown the
+/// new table at once, crossfading from what its surface shows (a surface
+/// attached mid-swap showed nothing: it just shows the new table); one
+/// that stays readable springs with the rest.
+#[test]
+fn a_scope_that_appears_mid_swap_is_played_through_too() {
+    const SUB: SurfaceId = SurfaceId(2);
+    let (a, b, unreadable) = ink_tables();
+    let mut readable = TokenTable::default();
+    readable.insert("panel", tok("base"));
+    for (set, held) in [(readable, false), (unreadable, true)] {
+        let mut bl = Builder::default();
+        bl.diff.set_tokens(a.clone(), Transition::Instant);
+        let (root, slot) = ink_panel(&mut bl);
+        let mut r = renderer();
+        assert!(r.apply(std::mem::take(&mut bl.diff)).is_empty());
+        r.attach_surface(S, root);
+        let mut buf = Buffer::new(160, 72, Scale::ONE);
+        buf.paint_at(&mut r, S, 0, T0);
+        let mut d = SceneDiff::new();
+        d.set_tokens(b.clone(), Transition::Default);
+        assert!(r.apply(d).is_empty());
+        assert_eq!(r.swap_crossfades(), 0, "the global scope springs");
+        buf.paint_at(&mut r, S, 1, frame(1));
+        let old = buf.pixels.clone();
+        // A subtree created mid-swap (in a fixed slot: nothing else
+        // moves).
+        ink_subtree(&mut bl, slot, &set, 0.0);
+        assert!(r.apply(std::mem::take(&mut bl.diff)).is_empty());
+        // A second surface, drawing one too, attached mid-swap.
+        let other = bl.node(NodeKind::Panel, None, vec![(Prop::Bg, tok("base"))]);
+        ink_subtree(&mut bl, other, &set, 30.0);
+        assert!(r.apply(std::mem::take(&mut bl.diff)).is_empty());
+        r.attach_surface(SUB, other);
+        assert!(r.swapping());
+        if held {
+            assert_eq!(
+                r.swap_held(),
+                vec![S, SUB],
+                "the unreadable scope's surfaces"
+            );
+            assert_eq!(r.swap_crossfades(), 1, "only S showed a frame to fade from");
+        } else {
+            assert!(r.swap_held().is_empty(), "a readable scope springs");
+            assert_eq!(r.swap_crossfades(), 0);
+        }
+        // The end: the same scene under the new table.
+        let mut end_b = Builder::default();
+        end_b.diff.set_tokens(b.clone(), Transition::Instant);
+        let (end_root, end_slot) = ink_panel(&mut end_b);
+        ink_subtree(&mut end_b, end_slot, &set, 0.0);
+        let mut end = renderer();
+        assert!(end.apply(end_b.diff).is_empty());
+        end.attach_surface(S, end_root);
+        let mut end_buf = Buffer::new(160, 72, Scale::ONE);
+        end_buf.paint_at(&mut end, S, 0, frame(2));
+        let mut panel = Buffer::new(160, 72, Scale::ONE);
+        let mut k = 2;
+        while r.wants_frame(S) || r.wants_frame(SUB) {
+            buf.paint_at(&mut r, S, 1, frame(k));
+            panel.paint_at(&mut r, SUB, 1, frame(k));
+            if held {
+                // A crossfade: each pixel lies between the frame shown
+                // when the scope appeared and the new table's (but in
+                // the slot, where the new subtree's text appears a frame
+                // or two later).
+                for (i, ((p, o), n)) in buf.pixels.iter().zip(&old).zip(&end_buf.pixels).enumerate()
+                {
+                    let (x, y) = ((i / 4) % 160, (i / 4) / 160);
+                    if x < 100 && (30..60).contains(&y) {
+                        continue;
+                    }
+                    assert!(
+                        *p >= (*o).min(*n).saturating_sub(1)
+                            && *p <= (*o).max(*n).saturating_add(1),
+                        "frame {k}: a springing colour on a held surface"
+                    );
+                }
+                // The attached surface shows the new table from its
+                // first frame.
+                assert_eq!(panel.px(50, 45), end_buf.px(50, 45), "frame {k}");
+            }
+            k += 1;
+            assert!(k < 120, "never settled");
+        }
+        assert_eq!(buf.pixels, end_buf.pixels);
+        assert_eq!(r.tree().tokens, b);
+        assert!(r.swap_held().is_empty());
+    }
+}
+
+/// The contrast play-through's work is bounded (`CHECK_WORK`), and the
+/// global scope is played through first: where many `set { }` scopes
+/// and a slow, bouncy spring use the rest up, only the surfaces drawing
+/// those scopes crossfade (shown the new table at once), and the global
+/// roots still spring everywhere else. With a few scopes the same swap
+/// springs everywhere.
+#[test]
+fn set_scopes_that_use_up_the_check_crossfade_only_their_surfaces() {
+    const SUB: SurfaceId = SurfaceId(2);
+    let spring = |dark: bool| {
+        let mut t = table(&material(seed(), dark));
+        t.insert(
+            "motion.effects",
+            PropValue::Transition(Transition::of_spring(Spring::new(60.0, 0.5).unwrap())),
+        );
+        t
+    };
+    let (light, dark) = (spring(false), spring(true));
+    for scopes in [4usize, 32] {
+        let mut bl = Builder::default();
+        bl.diff.set_tokens(light.clone(), Transition::Instant);
+        let bar = bl.node(NodeKind::Bar, None, vec![(Prop::Bg, tok("surface"))]);
+        bl.node(NodeKind::Text, Some(bar), vec![(Prop::Text, text("bar"))]);
+        let panel = bl.node(NodeKind::Panel, None, vec![(Prop::Bg, tok("surface"))]);
+        for i in 0..scopes {
+            let mut set = TokenTable::default();
+            let k = 0.04 + 0.5 * i as f32 / 32.0;
+            set.insert(
+                "surface",
+                PropValue::Token(TokenExpr::path("surface").call(
+                    TokenMethod::Mix,
+                    vec![TokenExpr::path("accent"), TokenExpr::value(num(k))],
+                )),
+            );
+            let sub = bl.node(
+                NodeKind::Box,
+                Some(panel),
+                vec![
+                    (Prop::X, num(4.0 + 20.0 * (i % 8) as f32)),
+                    (Prop::Y, num(4.0 + 20.0 * (i / 8) as f32)),
+                    (Prop::Width, num(18.0)),
+                    (Prop::Height, num(18.0)),
+                    (Prop::Tokens, PropValue::Tokens(Box::new(set))),
+                    (Prop::Bg, tok("surface")),
+                ],
+            );
+            bl.node(
+                NodeKind::Text,
+                Some(sub),
+                vec![(Prop::Text, text("1")), (Prop::Color, tok("fg"))],
+            );
+        }
+        let mut r = renderer();
+        assert!(r.apply(bl.diff).is_empty());
+        r.attach_surface(S, bar);
+        r.attach_surface(SUB, panel);
+        let mut a = Buffer::new(160, 24, Scale::ONE);
+        let mut p = Buffer::new(170, 90, Scale::ONE);
+        a.paint_at(&mut r, S, 0, T0);
+        p.paint_at(&mut r, SUB, 0, T0);
+        let mut d = SceneDiff::new();
+        d.set_tokens(dark.clone(), Transition::Default);
+        assert!(r.apply(d).is_empty());
+        assert!(r.swapping(), "{scopes} scopes: the global roots spring");
+        if scopes == 4 {
+            assert_eq!(r.swap_crossfades(), 0, "a few scopes are checked in full");
+            assert!(r.swap_held().is_empty());
+        } else {
+            assert_eq!(r.swap_crossfades(), 1, "{scopes} scopes");
+            assert_eq!(r.swap_held(), vec![SUB], "only the scopes' surface");
+        }
+        // The bar springs: some frame shows its background between the
+        // ends.
+        let (from, to) = (bgra(light_surface(&light)), bgra(light_surface(&dark)));
+        let mut k = 1;
+        let mut between = 0;
+        while r.wants_frame(S) || r.wants_frame(SUB) {
+            a.paint_at(&mut r, S, 1, frame(k));
+            p.paint_at(&mut r, SUB, 1, frame(k));
+            let px = a.px(150, 20);
+            if !close(px, from, 1) && !close(px, to, 1) {
+                between += 1;
+            }
+            k += 1;
+            assert!(k < 600, "never settled");
+        }
+        assert!(
+            between > 4,
+            "{scopes} scopes: {between} springing bar frames"
+        );
+        assert_eq!(r.tree().tokens, dark);
+    }
+}
+
+fn light_surface(t: &TokenTable) -> Color {
+    match t.lookup("surface") {
+        Some(PropValue::Color(c)) => c,
+        other => panic!("surface: {other:?}"),
+    }
+}

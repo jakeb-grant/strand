@@ -28,7 +28,10 @@
 //! `set { }` subtrees (0, 8 and 32 distinct scopes) and a slow
 //! `$motion.effects` (`spring(120, 1)`, about a second) hold the swap's
 //! once-per-swap work to the same 5 ms and each frame's to a twentieth
-//! of it (decisions.md, wave3-theme fixer round 2).
+//! of it, and along the design's `spring(1600, 1)` the whole swap
+//! (logic's re-resolve on design.md's theme, the apply and every
+//! frame's work) to the 5 ms (decisions.md, wave3-theme fixer rounds 2
+//! and 3).
 
 mod common;
 
@@ -196,9 +199,10 @@ impl Shell {
     }
 }
 
-#[test]
-fn a_theme_swap_is_under_five_milliseconds_of_work() {
-    let dir = temp_dir("bench");
+/// A shell on design.md's theme and the hello bar, its wallpaper's seed
+/// cached and every frame painted: (shell, its temp dir, storage).
+fn bench_shell(name: &str) -> (Shell, std::path::PathBuf, Storage) {
+    let dir = temp_dir(name);
     let config = dir.join("config");
     std::fs::create_dir_all(&config).unwrap();
     let wall = config.join("wall.png");
@@ -217,7 +221,21 @@ fn a_theme_swap_is_under_five_milliseconds_of_work() {
     let u = shell.inst.flush();
     assert!(shell.r.apply(u.diff).is_empty());
     shell.settle();
+    (shell, dir, storage)
+}
 
+/// Drops `shell` and its temp dir once its state is written.
+fn finish(shell: Shell, dir: std::path::PathBuf, storage: Storage) {
+    drop(shell);
+    if let Some(p) = &storage.persist {
+        assert!(p.sync(Duration::from_secs(5)));
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_theme_swap_is_under_five_milliseconds_of_work() {
+    let (mut shell, dir, storage) = bench_shell("bench");
     let mut report = Vec::new();
     for (from, to) in [
         ("light", "dark"),
@@ -254,11 +272,7 @@ fn a_theme_swap_is_under_five_milliseconds_of_work() {
             "{from} → {to}: {median:?} of work, over {gate:?} (design.md: {BUDGET:?} optimised)"
         );
     }
-    drop(shell);
-    if let Some(p) = &storage.persist {
-        assert!(p.sync(Duration::from_secs(5)));
-    }
-    let _ = std::fs::remove_dir_all(dir);
+    finish(shell, dir, storage);
 }
 
 /// A table for the crossfade: the built-in base tokens over a Material
@@ -492,12 +506,28 @@ fn spring_tables(stiffness: f32) -> (TokenTable, TokenTable) {
 /// (logic's table aside: the render thread's apply, with its contrast
 /// play-through and any snapshots) is held to the 5 ms budget whatever
 /// the spring or the scopes; the work of each frame (the roots and the
-/// frame's token graph) is held to a twentieth of it per frame, so a
-/// swap along the design's springs stays under 5 ms in all and a slower
+/// frame's token graph) is held to a twentieth of it per frame, and
+/// along the design's `spring(1600, 1)` the whole swap (logic's
+/// re-resolve, measured on design.md's theme as in the first bench,
+/// the apply and every frame's work) is held to the 5 ms; a slower
 /// spring costs the same per frame, over more frames (decisions.md).
 #[test]
 fn set_scopes_and_slow_springs_stay_within_the_budget() {
     let tok = |p: &str| PropValue::Token(TokenExpr::path(p));
+    // Logic's re-resolve of a light↔dark swap on design.md's theme.
+    let logic = {
+        let (mut shell, dir, storage) = bench_shell("logic");
+        let mut logic = Vec::new();
+        for i in 0..16 {
+            let (l, _) = shell.look(if i % 2 == 0 { "dark" } else { "light" }, true);
+            shell.settle();
+            if i > 0 {
+                logic.push(l);
+            }
+        }
+        finish(shell, dir, storage);
+        median(&logic)
+    };
     let per_frame = BUDGET / 20;
     let gate_frame = if cfg!(debug_assertions) {
         per_frame * 4
@@ -549,6 +579,7 @@ fn set_scopes_and_slow_springs_stay_within_the_budget() {
             let mut applies = Vec::new();
             let mut frame_work = Vec::new();
             let mut frame_counts = Vec::new();
+            let mut wholes = Vec::new();
             for round in 0..8 {
                 let to = if round % 2 == 0 { &dark } else { &light };
                 let mut d = SceneDiff::new();
@@ -565,19 +596,24 @@ fn set_scopes_and_slow_springs_stay_within_the_budget() {
                     frames += 1;
                     assert!(frames < 1200, "never settled");
                 }
-                frame_work.push(r.take_swap_work() / frames.max(1));
+                let work = r.take_swap_work();
+                frame_work.push(work / frames.max(1));
                 frame_counts.push(frames);
+                wholes.push(logic + applies[round] + work);
             }
             let apply = median(&applies);
             let each = median(&frame_work);
+            let whole = median(&wholes);
             let frames = frame_counts[frame_counts.len() / 2];
             eprintln!(
                 "{scopes} scopes, spring({stiffness}, 1): apply {apply:?} (worst {:?}), \
-                 {each:?} per frame over {frames} frames ({} crossfades)",
+                 {each:?} per frame over {frames} frames, whole swap with logic's \
+                 {logic:?}: {whole:?} (worst {:?}) ({} crossfades)",
                 applies.iter().max().unwrap(),
+                wholes.iter().max().unwrap(),
                 r.swap_crossfades()
             );
-            report.push((scopes, stiffness, apply, each));
+            report.push((scopes, stiffness, apply, each, whole));
         }
     }
     // Unoptimised, evaluating tokens in `set { }` scopes is some six
@@ -588,7 +624,14 @@ fn set_scopes_and_slow_springs_stay_within_the_budget() {
     } else {
         BUDGET
     };
-    for (scopes, stiffness, apply, each) in report {
+    for (scopes, stiffness, apply, each, whole) in report {
+        // Along the design's spring, the whole swap.
+        if stiffness == 1600.0 {
+            assert!(
+                whole < gate,
+                "{scopes} scopes, spring({stiffness}, 1): {whole:?} of work in all, over {gate:?}"
+            );
+        }
         assert!(
             apply < gate,
             "{scopes} scopes, spring({stiffness}, 1): apply {apply:?}, over {gate:?}"
