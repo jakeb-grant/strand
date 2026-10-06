@@ -2,6 +2,8 @@
 //! loading, and a private headless sway.
 #![allow(dead_code)]
 
+pub mod window;
+
 use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
