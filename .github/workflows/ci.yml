@@ -76,6 +76,7 @@ jobs:
       # niri's IPC sits behind a default-on feature (design.md, "Risks");
       # the build without it must stay clean too.
       - run: cargo clippy -p strand-services --no-default-features --all-targets
+      - run: cargo test -p strand-services --no-default-features --lib
       # The reload fuzzer runs on its own below (timing-sensitive saves).
       - run: cargo test --workspace -- --skip random_edits_through_five_save_styles
       # The 34 MB PSS gate is checked on a release build (design.md, "Testing": budgets).

@@ -6054,9 +6054,10 @@ is the toplevel identifier, which sway 1.10+ reports in IPC
 windows come from IPC alone (the same values the compositor would send
 in the protocol). Without an adapter the protocols are the whole state:
 workspaces not `hidden`, numbered by a per-handle key the client assigns
-(the protocol has no integer id), `focused` where `active`; windows by
-identifier, with no workspace, focus or actions (the list protocol has
-none); `ws.focus()` is `activate` + `commit`. Proof: `src/wm/mod.rs`
+(the protocol has no integer id), `focused` only when it is the one
+shown (`active`) workspace (see "focus with the protocols alone" below);
+windows by identifier, with no workspace, focus or actions (the list
+protocol has none); `ws.focus()` is `activate` + `commit`. Proof: `src/wm/mod.rs`
 (tests `the_protocol_wins_where_it_covers_a_field`,
 `protocols_alone_make_the_whole_state`), `tests/protocol.rs::
 the_protocols_alone_serve_workspaces_and_windows`.
@@ -6064,8 +6065,9 @@ the_protocols_alone_serve_workspaces_and_windows`.
 **2026-10-06 · wave4-wm: which compositor.** `HYPRLAND_INSTANCE_SIGNATURE`
 (sockets under `$XDG_RUNTIME_DIR/hypr/<sig>/`, falling back to
 `/tmp/hypr/<sig>/` before Hyprland 0.40), `NIRI_SOCKET` (with the `niri`
-feature) and `SWAYSOCK`; a variable whose socket does not exist is
-skipped. A nested compositor inherits its parent's variables, so when
+feature; a `Backend::Niri` built by hand without it is treated as no
+adapter, not an adapter that never connects) and `SWAYSOCK`; a variable
+whose socket does not exist is skipped. A nested compositor inherits its parent's variables, so when
 several remain the one `XDG_CURRENT_DESKTOP` names wins, then Hyprland,
 niri, sway. Proof: `src/wm/detect.rs` (test).
 
@@ -6086,9 +6088,15 @@ as minimised, as does a window a taskbar minimised (`minimized>>…,1`);
 Urgency comes only from `urgent>>` and clears when the window takes
 the focus. Named workspaces (negative ids) are focused with `dispatch
 workspace name:<name>`, ordered after numbered ones. `fullscreen` is a
-bool before 0.42 and a mode number since; both are read. The fixtures
-are Hyprland 0.56.2's format (`HyprCtl.cpp` at that tag, the wiki's IPC
-page). Known gap: 0.56's optional Lua config turns `dispatch` into
+bool before 0.42 and a mode number since; both are read. Hyprland
+copies titles as raw bytes into events and JSON replies alike (an
+XWayland `WM_NAME` of type `STRING` is Latin-1), so socket2 lines are
+read as bytes and both are decoded lossily (U+FFFD for bad bytes); one
+such title used to cost the connection and, through `j/clients`, every
+reconnect while that window lived. The fixtures are reconstructed from
+Hyprland 0.56.2's source (`HyprCtl.cpp` at that tag, the wiki's IPC
+page), not captured from a running Hyprland; real captures replace or
+validate them under M3's "runs on Hyprland, niri and sway" exit box. Known gap: 0.56's optional Lua config turns `dispatch` into
 `hl.dispatch(…)`; the old syntax then fails and the action reports
 `Rejected` with Hyprland's message. Proof: `tests/hyprland.rs`.
 
@@ -6102,8 +6110,15 @@ state, ending with `ConfigLoaded` for the last load: that first one is
 not a reload, so a reconnect never fires `wm.config_reloaded`; later
 ones give `Some(failed)`. An unnamed workspace is named by its index;
 workspaces are ordered per output by index. niri's IPC reports no
-fullscreen and has no minimise (`Unsupported`). Proof: `tests/niri.rs`
-(fixtures: niri 26.04's `niri-ipc`).
+fullscreen and has no minimise (`Unsupported`). Every request
+(`Workspaces`, `Windows`, `FocusedOutput`, actions) gets a connection of
+its own: niri before 25.05 reads one request per connection and closes
+it (`src/ipc/server.rs`, `handle_client`), where several requests on one
+connection get EOF after the first; requests are rare, so one per
+connection costs nothing and works on every version. The fake niri in
+the tests closes after each reply, as those versions do. Proof:
+`tests/niri.rs` (fixtures reconstructed from niri 26.04's `niri-ipc`
+types and `src/ipc/server.rs`, not captured).
 
 **2026-10-06 · wave4-wm: sway.** swayipc-async 3.0, as design.md names;
 it runs on async-io, whose reactor thread blocks in `epoll` with
@@ -6121,8 +6136,9 @@ compositor that implements both, and the sway tests assert what 1.9
 lacks. Proof: `tests/sway.rs`, `tests/protocol.rs`.
 
 **2026-10-06 · wave4-wm: lost sockets.** Every adapter reconnects with
-backoff (100 ms doubling to 10 s, reset once connected); actions while
-away answer `NotConnected`. The last state stays while away (no flicker
+backoff (100 ms doubling to 10 s, back to 100 ms only after a connection
+that lasted 10 s: one that fails right after connecting keeps backing
+off); actions while away answer `NotConnected`. The last state stays while away (no flicker
 to empty), `Sources::connected` says it is stale, and the fresh read on
 reconnecting goes out as a diff. Idle costs nothing: the runtime has no
 timer, the protocol thread sleeps in `poll(2)` on its socket and an
@@ -6142,3 +6158,88 @@ protocols are dispatched directly with wayland-client 0.31 and
 wayland-protocols 0.32's `staging` bindings (the same crates SCTK sits
 on), which removes a layer rather than adding one. Proof:
 `crates/strand-services/tests/protocol.rs`.
+
+**2026-10-06 · wave4-wm: focus with the protocols alone.**
+`ext-workspace-v1` says which workspace each output shows (`active`), not
+which output has the keyboard. With the protocols alone (labwc, COSMIC,
+any compositor without an adapter), a workspace is `focused` only when
+it is the one non-hidden active workspace; with several outputs each
+showing one, none is `focused` (each stays `active`), `workspaces.
+focused` is unset and so is the focused screen. Marking every active
+workspace focused would break "at most one is" and let list order pick
+`workspaces.focused` and `screens.focused`. Proof: `src/wm/mod.rs::tests::
+protocols_alone_make_the_whole_state`, `tests/protocol.rs::
+two_outputs_alone_mark_active_workspaces_not_focus`.
+
+**2026-10-06 · wave4-wm: a broken adapter does not hide the protocols.**
+design.md puts the standard protocols first and IPC as the fallback, so
+an adapter that cannot connect (a stale `HYPRLAND_INSTANCE_SIGNATURE`
+whose socket refuses, an IPC whose format changed) must not keep the
+protocols' state from the shell. The first batch always carries
+`Sources` (which adapter is meant to run, `connected: false`), so
+`strand report` can say "adapter down". The state goes out at the
+adapter's first state, or, once the adapter has reported a failed
+attempt, from the protocols alone (`wm.name` is still the adapter's
+compositor); not before that failure, so a healthy start does not first
+show protocol ids and then IPC ids. When the adapter comes up, its state
+replaces the protocols' as an ordinary keyed diff. Until then actions run
+where the protocol can (`ws.focus()` by `activate`) and answer
+`NotConnected` otherwise. Proof: `tests/protocol.rs::
+a_broken_adapter_does_not_hide_the_protocols`, `tests/hyprland.rs::
+a_broken_hyprland_is_retried_with_backoff_not_a_busy_loop` (it also
+counts connection attempts: 2 to 5 in a second).
+
+**2026-10-06 · wave4-wm: `wm.name` without an adapter.** The first entry
+of `XDG_CURRENT_DESKTOP` (`WmConfig::desktop`, filled by
+`WmConfig::from_env`), so a shell on labwc or COSMIC shows `labwc` or
+`COSMIC`, not an empty name. Proof: `tests/protocol.rs::
+two_outputs_alone_mark_active_workspaces_not_focus`, `src/wm/mod.rs::
+tests::every_source_gone_leaves_it_waiting`.
+
+**2026-10-06 · wave4-wm: who fires `wm.config_reloaded`.** A reload is
+sent twice by design, for two consumers: `WmChange::ConfigReloaded` in
+the batch, which the `wm` store turns into the language event, and
+`ChangeEvent::Compositor(ConfigReloaded)` on the `EventSink`, which is
+only the live-reload change source (design.md's table). The binary must
+not turn the second into another `wm.config_reloaded`, so a reload fires
+the event once (docs/architecture.md, `strand-services` and
+`strand-watch`).
+
+**2026-10-06 · wave4-wm: one service, three stores.** `workspaces`,
+`windows` and `wm` are three services to the language, each with its own
+reader count and 5 s stop, and `screens.focused` reads the focused
+screen from the same compositor. They share one `wm::run` (one adapter
+connection, one protocol thread) through `wm::WmHub`: the first
+subscription starts it, a later one gets the current state as one
+batch (never a past reload), the last one dropped stops it at once (each
+store's grace already passed by then). Proof: `tests/hyprland.rs::
+the_hub_shares_one_adapter_between_stores` (one connection and one read
+for two subscribers, identical mirrors, restart from clean).
+
+**2026-10-06 · wave4-wm: the schema the real services serve.**
+`wm::SCHEMA` is the text the three stores give `Service::schema()` to
+replace the provisional stubs: the same names, fields, actions and
+methods, plus `Workspace.active: bool`, `Window.urgent: bool` and `event
+config_reloaded(failed: bool?)` (niri's `ConfigLoaded { failed }`, which
+design.md's change-source table names; unset from Hyprland and sway).
+Written now so the wiring step adopts it through `Schema::extend`
+without re-deciding. Proof: `src/wm/schema.rs` (test: every provisional
+declaration is served alike).
+
+**2026-10-06 · wave4-wm: nested windows are copies.** `Workspace.windows`
+holds copies of its windows, so a title change is also an `Update` of
+its workspace in the stream. Accepted: a workspace holds a handful of
+windows and a title change is one small record either way. If it shows
+in a profile, the store can derive the nested list on the logic side from
+`windows.all` by `workspace` (a keyed view) and drop the copies here.
+
+**2026-10-06 · wave4-wm: smaller fixes.** The protocol thread resolves
+`WAYLAND_DISPLAY` against `XDG_RUNTIME_DIR` itself and never takes
+`WAYLAND_SOCKET` (that fd is the shell's main connection; wayland-client
+would also `remove_var` from a non-main thread). It destroys the toplevel
+handles and the list after `finished`, as the protocol asks, and treats a
+full socket buffer on flush as "wait for POLLOUT", not an error; it lives
+and dies with the display. The coordinator drains everything already
+queued before it merges, so a busy runtime merges and diffs only the
+newest adapter and protocol states (reloads and connection changes keep
+their order).

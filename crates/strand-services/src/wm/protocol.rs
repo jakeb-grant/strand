@@ -7,6 +7,10 @@
 //! sleeps in `poll(2)` on the Wayland socket and an eventfd, so an idle
 //! compositor costs no wakeup, and sends a [`ProtocolState`] after every
 //! atomic update (a toplevel's `done`, the workspace manager's `done`).
+//!
+//! The thread lives and dies with its connection: when the display goes
+//! away it sends a disconnected [`ProtocolState`] and ends (the shell's
+//! own Wayland connection is gone then too).
 
 use std::collections::HashMap;
 use std::io;
@@ -35,7 +39,9 @@ use wayland_protocols::ext::workspace::v1::client::{
 /// Which Wayland display the protocol client connects to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WaylandTarget {
-    /// `$WAYLAND_DISPLAY` (or `$WAYLAND_SOCKET`).
+    /// `$WAYLAND_DISPLAY` (under `$XDG_RUNTIME_DIR` unless absolute;
+    /// `wayland-0` when unset). Never `$WAYLAND_SOCKET`: that fd belongs to
+    /// the shell's main connection.
     Env,
     /// A socket path.
     Socket(PathBuf),
@@ -122,10 +128,20 @@ impl ProtocolClient {
         )?);
         let (ctx, crx) = mpsc::channel();
         let thread_wake = wake.clone();
+        // Resolved here, on the caller's thread: the client thread never
+        // touches the environment.
+        let socket = match target {
+            WaylandTarget::Env => display_socket(
+                std::env::var_os("WAYLAND_DISPLAY"),
+                std::env::var_os("XDG_RUNTIME_DIR"),
+            ),
+            WaylandTarget::Socket(path) => Ok(path),
+        };
         std::thread::Builder::new()
             .name("strand-toplevel".into())
             .spawn(move || {
-                if let Err(e) = thread_main(target, &tx, &crx, &thread_wake) {
+                let run = socket.and_then(|s| thread_main(s, &tx, &crx, &thread_wake));
+                if let Err(e) = run {
                     log::warn!("Wayland toplevel and workspace protocols: {e}");
                 }
                 let _ = tx.send(ProtocolState::default());
@@ -146,8 +162,29 @@ impl Drop for ProtocolClient {
     }
 }
 
-#[derive(Debug, Default)]
+/// The socket `WAYLAND_DISPLAY` names: a path, or a name under the
+/// runtime directory.
+fn display_socket(
+    display: Option<std::ffi::OsString>,
+    runtime_dir: Option<std::ffi::OsString>,
+) -> io::Result<PathBuf> {
+    let display = PathBuf::from(
+        display
+            .filter(|d| !d.is_empty())
+            .unwrap_or_else(|| "wayland-0".into()),
+    );
+    if display.is_absolute() {
+        return Ok(display);
+    }
+    let runtime = runtime_dir
+        .filter(|d| !d.is_empty())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "XDG_RUNTIME_DIR is not set"))?;
+    Ok(PathBuf::from(runtime).join(display))
+}
+
+#[derive(Debug)]
 struct ToplevelEntry {
+    handle: ExtForeignToplevelHandleV1,
     pending: Toplevel,
     current: Option<Toplevel>,
 }
@@ -222,17 +259,12 @@ impl Client {
 }
 
 fn thread_main(
-    target: WaylandTarget,
+    socket: PathBuf,
     tx: &UnboundedSender<ProtocolState>,
     cmds: &mpsc::Receiver<ProtoCmd>,
     wake: &OwnedFd,
 ) -> io::Result<()> {
-    let conn = match target {
-        WaylandTarget::Env => Connection::connect_to_env().map_err(io::Error::other)?,
-        WaylandTarget::Socket(path) => {
-            Connection::from_socket(UnixStream::connect(path)?).map_err(io::Error::other)?
-        }
-    };
+    let conn = Connection::from_socket(UnixStream::connect(socket)?).map_err(io::Error::other)?;
     let (globals, mut queue): (_, EventQueue<Client>) =
         registry_queue_init(&conn).map_err(io::Error::other)?;
     let qh = queue.handle();
@@ -265,18 +297,37 @@ fn thread_main(
         if std::mem::take(&mut client.dirty) && tx.send(client.snapshot()).is_err() {
             return Ok(());
         }
-        queue.flush().map_err(io::Error::other)?;
+        // A full socket buffer is not an error: wait until it drains.
+        let unflushed = match queue.flush() {
+            Ok(()) => false,
+            Err(wayland_client::backend::WaylandError::Io(e))
+                if e.kind() == io::ErrorKind::WouldBlock =>
+            {
+                true
+            }
+            Err(e) => return Err(io::Error::other(e)),
+        };
         let Some(guard) = queue.prepare_read() else {
             continue;
         };
         let (wayland_ready, wake_ready) = {
             let conn_fd = guard.connection_fd();
+            let wayland_flags = if unflushed {
+                PollFlags::IN | PollFlags::OUT
+            } else {
+                PollFlags::IN
+            };
             let mut fds = [
-                PollFd::new(&conn_fd, PollFlags::IN),
+                PollFd::new(&conn_fd, wayland_flags),
                 PollFd::new(wake, PollFlags::IN),
             ];
             match rustix::event::poll(&mut fds, None) {
-                Ok(_) => (!fds[0].revents().is_empty(), !fds[1].revents().is_empty()),
+                Ok(_) => (
+                    fds[0]
+                        .revents()
+                        .intersects(PollFlags::IN | PollFlags::ERR | PollFlags::HUP),
+                    !fds[1].revents().is_empty(),
+                ),
                 Err(rustix::io::Errno::INTR) => (false, false),
                 Err(e) => return Err(e.into()),
             }
@@ -388,7 +439,7 @@ impl Dispatch<wl_output::WlOutput, ()> for Client {
 impl Dispatch<ExtForeignToplevelListV1, ()> for Client {
     fn event(
         state: &mut Self,
-        _: &ExtForeignToplevelListV1,
+        list: &ExtForeignToplevelListV1,
         event: ext_foreign_toplevel_list_v1::Event,
         _: &(),
         _: &Connection,
@@ -396,13 +447,23 @@ impl Dispatch<ExtForeignToplevelListV1, ()> for Client {
     ) {
         match event {
             ext_foreign_toplevel_list_v1::Event::Toplevel { toplevel } => {
-                state
-                    .toplevels
-                    .push((toplevel.id(), ToplevelEntry::default()));
+                state.toplevels.push((
+                    toplevel.id(),
+                    ToplevelEntry {
+                        handle: toplevel,
+                        pending: Toplevel::default(),
+                        current: None,
+                    },
+                ));
             }
             ext_foreign_toplevel_list_v1::Event::Finished => {
+                // The protocol asks the client to destroy the handles,
+                // then the list.
+                for (_, t) in state.toplevels.drain(..) {
+                    t.handle.destroy();
+                }
+                list.destroy();
                 state.toplevel_list = None;
-                state.toplevels.clear();
                 state.dirty = true;
             }
             _ => {}
@@ -445,7 +506,7 @@ impl Dispatch<ExtForeignToplevelHandleV1, ()> for Client {
             ext_foreign_toplevel_handle_v1::Event::Closed => {
                 let (_, e) = state.toplevels.remove(pos);
                 state.dirty |= e.current.is_some();
-                handle.destroy();
+                e.handle.destroy();
             }
             _ => {}
         }
@@ -587,5 +648,30 @@ impl Dispatch<ExtWorkspaceHandleV1, ()> for Client {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_display_socket_comes_from_wayland_display_only() {
+        let p = |d: Option<&str>, r: Option<&str>| {
+            display_socket(d.map(Into::into), r.map(Into::into)).ok()
+        };
+        assert_eq!(
+            p(Some("wayland-1"), Some("/run/user/1000")),
+            Some(PathBuf::from("/run/user/1000/wayland-1"))
+        );
+        assert_eq!(
+            p(Some("/tmp/w/wayland-9"), None),
+            Some(PathBuf::from("/tmp/w/wayland-9"))
+        );
+        assert_eq!(
+            p(None, Some("/run/user/1000")),
+            Some(PathBuf::from("/run/user/1000/wayland-0"))
+        );
+        assert_eq!(p(Some("wayland-1"), None), None);
     }
 }

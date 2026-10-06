@@ -237,7 +237,7 @@ async fn session(
     let mut conn = connect(socket).await?;
     let mut state = State::default();
     query(&mut conn, &mut state).await?;
-    backoff.reset();
+    backoff.connected();
     if tx.send(AdapterMsg::Connected(true)).is_err()
         || tx.send(AdapterMsg::State(state.snapshot())).is_err()
     {

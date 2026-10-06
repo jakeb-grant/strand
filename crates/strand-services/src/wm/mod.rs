@@ -15,9 +15,11 @@
 //! [`WmChange`]s: keyed diffs of `workspaces.all` and `windows.all`, the
 //! focused workspace, window and screen, and `wm.config_reloaded` (also
 //! sent to `strand-watch`'s [`EventSink`] as
-//! [`CompositorEvent::ConfigReloaded`]). Dropping the future stops
-//! everything. Actions (`ws.focus()`, `win.close()`, …) go in through
-//! [`WmRequest`]s.
+//! [`CompositorEvent::ConfigReloaded`] as a live-reload change source;
+//! the batch is the one that becomes the language event). Dropping the
+//! future stops everything. Actions (`ws.focus()`, `win.close()`, …) go
+//! in through [`WmRequest`]s. [`WmHub`] shares one `run` between the
+//! `workspaces`, `windows` and `wm` stores (and `screens.focused`).
 //!
 //! Lost sockets reconnect with backoff (100 ms doubling to 10 s); while an
 //! adapter is away the last state stays. Nothing polls: an idle compositor
@@ -25,11 +27,13 @@
 
 mod backoff;
 pub mod detect;
+mod hub;
 mod hyprland;
 pub mod model;
 #[cfg(feature = "niri")]
 mod niri;
 pub mod protocol;
+mod schema;
 mod sway;
 
 use std::future::Future;
@@ -40,8 +44,10 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
 
 pub use detect::{Backend, detect, detect_with};
+pub use hub::{WmHub, WmSubscription};
 pub use model::{CompositorKind, Mirror, Publisher, Sources, Window, WmChange, WmState, Workspace};
 pub use protocol::{ProtoWorkspace, ProtocolClient, ProtocolState, Toplevel, WaylandTarget};
+pub use schema::SCHEMA;
 
 /// An action on a workspace or window.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -118,8 +124,14 @@ pub struct WmConfig {
     pub backend: Option<Backend>,
     /// The display for the protocol client; `None` to not start it.
     pub wayland: Option<WaylandTarget>,
-    /// Where `wm.config_reloaded` also goes as a [`ChangeEvent`].
+    /// Where a compositor reload also goes as a [`ChangeEvent`]: the
+    /// live-reload change source. `wm.config_reloaded` itself is the
+    /// batch's [`WmChange::ConfigReloaded`]; this copy must not become a
+    /// second one (docs/architecture.md, `strand-services`).
     pub events: Option<EventSink>,
+    /// `wm.name` when no adapter runs (the protocols alone): the first
+    /// entry of `XDG_CURRENT_DESKTOP`, such as `labwc` or `COSMIC`.
+    pub desktop: Option<String>,
 }
 
 impl WmConfig {
@@ -130,8 +142,20 @@ impl WmConfig {
             backend: detect(),
             wayland: Some(WaylandTarget::Env),
             events,
+            desktop: std::env::var_os("XDG_CURRENT_DESKTOP")
+                .and_then(|d| first_desktop(&d.to_string_lossy())),
         }
     }
+}
+
+/// The first entry of an `XDG_CURRENT_DESKTOP` value (`sway:wlroots` is
+/// `sway`).
+pub fn first_desktop(value: &str) -> Option<String> {
+    value
+        .split(':')
+        .map(str::trim)
+        .find(|d| !d.is_empty())
+        .map(str::to_string)
 }
 
 /// An adapter's typed state, plus the `ext-foreign-toplevel-list`
@@ -162,8 +186,11 @@ pub(crate) type Cmd = (WmAction, Option<oneshot::Sender<Result<(), WmError>>>);
 /// `ext-workspace-v1`, and a window joined by its toplevel identifier
 /// takes `title` and `app_id` from `ext-foreign-toplevel-list-v1`. Without
 /// an adapter the protocols are the whole state: workspaces not `hidden`,
-/// numbered by [`ProtoWorkspace::key`], `focused` where `active`; windows
-/// by identifier, with no workspace or focus.
+/// numbered by [`ProtoWorkspace::key`]; windows by identifier, with no
+/// workspace or focus. `ext-workspace-v1` says which workspace each output
+/// shows (`active`), not which output has the keyboard, so a workspace is
+/// `focused` only when it is the one active workspace; with several
+/// outputs none is (and no screen is focused).
 pub fn merge(ipc: Option<&WmState>, ids: &[(String, String)], proto: &ProtocolState) -> WmState {
     let mut s = match ipc {
         Some(ipc) => {
@@ -203,34 +230,39 @@ pub fn merge(ipc: Option<&WmState>, ids: &[(String, String)], proto: &ProtocolSt
             }
             s
         }
-        None => WmState {
-            name: String::new(),
-            workspaces: proto
-                .workspaces
-                .iter()
-                .filter(|p| !p.hidden)
-                .map(|p| Workspace {
-                    id: p.key as i64,
-                    name: p.name.clone(),
-                    focused: p.active,
-                    active: p.active,
-                    urgent: p.urgent,
-                    screen: p.screens.first().cloned().unwrap_or_default(),
-                    ..Default::default()
-                })
-                .collect(),
-            windows: proto
-                .toplevels
-                .iter()
-                .map(|t| Window {
-                    id: t.identifier.clone(),
-                    title: t.title.clone(),
-                    app_id: t.app_id.clone(),
-                    ..Default::default()
-                })
-                .collect(),
-            focused_screen: None,
-        },
+        None => {
+            let shown = || proto.workspaces.iter().filter(|p| !p.hidden);
+            let mut active = shown().filter(|p| p.active);
+            let sole_active = match (active.next(), active.next()) {
+                (Some(p), None) => Some(p.key),
+                _ => None,
+            };
+            WmState {
+                name: String::new(),
+                workspaces: shown()
+                    .map(|p| Workspace {
+                        id: p.key as i64,
+                        name: p.name.clone(),
+                        focused: sole_active == Some(p.key),
+                        active: p.active,
+                        urgent: p.urgent,
+                        screen: p.screens.first().cloned().unwrap_or_default(),
+                        ..Default::default()
+                    })
+                    .collect(),
+                windows: proto
+                    .toplevels
+                    .iter()
+                    .map(|t| Window {
+                        id: t.identifier.clone(),
+                        title: t.title.clone(),
+                        app_id: t.app_id.clone(),
+                        ..Default::default()
+                    })
+                    .collect(),
+                focused_screen: None,
+            }
+        }
     };
     for w in &mut s.windows {
         w.icon.clear();
@@ -252,6 +284,7 @@ fn adapter(
         }
         #[cfg(feature = "niri")]
         Some(Backend::Niri { socket }) => Box::pin(niri::run(socket, tx, cmds)),
+        // `run` turns niri into no adapter without the feature.
         #[cfg(not(feature = "niri"))]
         Some(Backend::Niri { .. }) => Box::pin(std::future::pending()),
         Some(Backend::Sway { socket }) => Box::pin(sway::run(socket, tx, cmds)),
@@ -261,11 +294,26 @@ fn adapter(
 
 /// The service: runs until dropped, sending every batch of changes to
 /// `sink` (never an empty one) and running `requests`.
+///
+/// The first batch is [`WmChange::Sources`] at least, so a consumer can
+/// always tell which adapter is meant to run and whether it is connected.
+/// The state goes out once a source has spoken: the adapter's first state;
+/// or, without an adapter or once the adapter has failed to connect, the
+/// protocols' (standard protocols first, IPC as the fallback: a broken
+/// adapter does not hide them). When the adapter's state arrives later,
+/// its ids replace the protocols' as an ordinary keyed diff.
 pub async fn run<S>(config: WmConfig, mut sink: S, mut requests: UnboundedReceiver<WmRequest>)
 where
     S: FnMut(Vec<WmChange>) + Send,
 {
-    let kind = config.backend.as_ref().map(Backend::kind);
+    #[allow(unused_mut)]
+    let mut backend = config.backend.clone();
+    #[cfg(not(feature = "niri"))]
+    if matches!(backend, Some(Backend::Niri { .. })) {
+        log::warn!("built without the `niri` feature: niri is served by the standard protocols");
+        backend = None;
+    }
+    let kind = backend.as_ref().map(Backend::kind);
     let (atx, mut arx) = mpsc::unbounded_channel();
     let (ctx, crx) = mpsc::unbounded_channel::<Cmd>();
     let (ptx, mut prx) = mpsc::unbounded_channel();
@@ -279,30 +327,46 @@ where
                 None
             }
         });
-    let adapter = adapter(config.backend.clone(), atx, crx);
+    let adapter = adapter(backend, atx, crx);
     let events = config.events;
+    let desktop = config.desktop;
 
     let coordinator = async move {
         let mut publisher = Publisher::new();
         let mut ipc: Option<IpcSnapshot> = None;
         let mut connected = false;
+        // The adapter has reported a failed attempt: the protocols may be
+        // published on their own until it comes up.
+        let mut adapter_failed = false;
         let mut proto = ProtocolState::default();
-        // Publish once the sources that will speak have spoken: the
-        // adapter's first state, else the protocol's.
         let mut proto_ready = protocol.is_none();
         let mut requests_open = true;
         let mut first = true;
         loop {
             let mut changes = Vec::new();
-            let mut reloaded = None;
+            let mut reloads = Vec::new();
             if !std::mem::take(&mut first) {
                 tokio::select! {
-                    Some(msg) = arx.recv() => match msg {
-                        AdapterMsg::State(s) => ipc = Some(s),
-                        AdapterMsg::Connected(c) => connected = c,
-                        AdapterMsg::Reloaded { failed } => reloaded = Some(failed),
-                    },
-                    Some(p) = prx.recv() => {
+                    Some(msg) = arx.recv() => {
+                        // Everything already queued, in order, then one
+                        // merge: a busy runtime never diffs stale states.
+                        let mut next = Some(msg);
+                        while let Some(msg) = next.take() {
+                            match msg {
+                                AdapterMsg::State(s) => ipc = Some(s),
+                                AdapterMsg::Connected(c) => {
+                                    connected = c;
+                                    adapter_failed |= !c;
+                                }
+                                AdapterMsg::Reloaded { failed } => reloads.push(failed),
+                            }
+                            next = arx.try_recv().ok();
+                        }
+                    }
+                    Some(mut p) = prx.recv() => {
+                        while let Ok(newer) = prx.try_recv() {
+                            p = newer;
+                        }
                         proto = p;
                         proto_ready = true;
                     }
@@ -315,10 +379,9 @@ where
                     else => std::future::pending::<()>().await,
                 }
             }
-            let ready = if kind.is_some() {
-                ipc.is_some()
-            } else {
-                proto_ready
+            let ready = match kind {
+                None => proto_ready,
+                Some(_) => ipc.is_some() || (proto_ready && adapter_failed),
             };
             if ready {
                 let mut state = merge(
@@ -326,19 +389,20 @@ where
                     ipc.as_ref().map_or(&[][..], |i| &i.toplevel_ids[..]),
                     &proto,
                 );
-                if let Some(k) = kind {
-                    state.name = k.name().to_string();
-                }
-                changes.extend(publisher.publish(state));
-                let sources = Sources {
-                    ipc: kind,
-                    connected,
-                    toplevel_list: proto.toplevel_list,
-                    workspace_protocol: proto.workspace_manager,
+                state.name = match kind {
+                    Some(k) => k.name().to_string(),
+                    None => desktop.clone().unwrap_or_default(),
                 };
-                changes.extend(publisher.sources(sources));
+                changes.extend(publisher.publish(state));
             }
-            if let Some(failed) = reloaded {
+            let sources = Sources {
+                ipc: kind,
+                connected,
+                toplevel_list: proto.toplevel_list,
+                workspace_protocol: proto.workspace_manager,
+            };
+            changes.extend(publisher.sources(sources));
+            for failed in reloads {
                 changes.push(WmChange::ConfigReloaded { failed });
                 if let Some(ev) = &events {
                     ev.send(ChangeEvent::Compositor(CompositorEvent::ConfigReloaded {
@@ -357,8 +421,10 @@ where
     }
 }
 
-/// Sends an action where it can run: the adapter when there is one, else
-/// `ext-workspace-v1` for workspaces.
+/// Sends an action where it can run: the adapter once its state is out
+/// (the ids shown are its own), else `ext-workspace-v1` for workspaces
+/// (the ids shown are the protocol's). While an adapter has not come up,
+/// what the protocol cannot do answers `NotConnected`.
 fn route(
     req: WmRequest,
     has_adapter: bool,
@@ -372,10 +438,15 @@ fn route(
             let _ = r.send(Err(e));
         }
     };
-    if has_adapter {
-        if ipc.is_none() {
-            fail(req.reply, WmError::NotConnected);
-        } else if let Err(mpsc::error::SendError((_, r))) = adapter.send((req.action, req.reply)) {
+    let unsupported = |why: &'static str| {
+        if has_adapter {
+            WmError::NotConnected
+        } else {
+            WmError::Unsupported(why)
+        }
+    };
+    if ipc.is_some() {
+        if let Err(mpsc::error::SendError((_, r))) = adapter.send((req.action, req.reply)) {
             fail(r, WmError::NotConnected);
         }
         return;
@@ -383,7 +454,7 @@ fn route(
     match req.action {
         WmAction::FocusWorkspace(id) => {
             let Some(client) = protocol.filter(|_| proto.workspace_manager) else {
-                return fail(req.reply, WmError::Unsupported("no workspace source"));
+                return fail(req.reply, unsupported("no workspace source"));
             };
             let Some(p) = proto.workspaces.iter().find(|p| p.key as i64 == id) else {
                 return fail(req.reply, WmError::UnknownWorkspace(id));
@@ -392,7 +463,7 @@ fn route(
         }
         _ => fail(
             req.reply,
-            WmError::Unsupported("ext-foreign-toplevel-list-v1 has no window actions"),
+            unsupported("ext-foreign-toplevel-list-v1 has no window actions"),
         ),
     }
 }
@@ -439,6 +510,46 @@ mod tests {
         assert_eq!(s.windows[0].id, "abc");
         assert_eq!(s.windows[0].icon, "foot");
         assert_eq!(s.focused_screen.as_deref(), Some("DP-1"));
+
+        // Two outputs, each showing one workspace: both are active, but
+        // the protocol does not say which output has the keyboard, so
+        // neither is focused and no screen is.
+        let two = ProtocolState {
+            workspaces: vec![
+                proto_ws(1, "1", "DP-1", true),
+                proto_ws(2, "2", "DP-1", false),
+                proto_ws(3, "3", "HDMI-A-1", true),
+            ],
+            ..proto.clone()
+        };
+        let s = merge(None, &[], &two);
+        assert!(s.workspaces[0].active && s.workspaces[2].active);
+        assert!(s.workspaces.iter().all(|w| !w.focused), "{s:?}");
+        assert_eq!(s.focused_workspace(), None);
+        assert_eq!(s.focused_screen, None);
+        // A hidden active workspace does not count against the shown one.
+        let hidden = ProtocolState {
+            workspaces: vec![
+                proto_ws(1, "1", "DP-1", true),
+                ProtoWorkspace {
+                    hidden: true,
+                    ..proto_ws(2, "scratch", "DP-1", true)
+                },
+            ],
+            ..proto
+        };
+        assert_eq!(
+            merge(None, &[], &hidden).focused_workspace().map(|w| w.id),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn desktop_names_take_the_first_entry() {
+        assert_eq!(first_desktop("sway:wlroots").as_deref(), Some("sway"));
+        assert_eq!(first_desktop("COSMIC").as_deref(), Some("COSMIC"));
+        assert_eq!(first_desktop(":labwc").as_deref(), Some("labwc"));
+        assert_eq!(first_desktop(""), None);
     }
 
     #[test]
@@ -500,8 +611,9 @@ mod tests {
     }
 
     /// With no adapter, no display and no requester left, the service
-    /// publishes its empty state once and then waits quietly (it does not
-    /// spin or panic once every source has ended).
+    /// says where its state comes from, publishes its empty state once the
+    /// protocol thread gives up, and then waits quietly (it does not spin
+    /// or panic once every source has ended).
     #[tokio::test]
     async fn every_source_gone_leaves_it_waiting() {
         let (tx, rx) = mpsc::unbounded_channel::<WmRequest>();
@@ -510,6 +622,7 @@ mod tests {
         let seen = batches.clone();
         let config = WmConfig {
             wayland: Some(WaylandTarget::Socket("/nonexistent/wayland-0".into())),
+            desktop: Some("labwc".into()),
             ..Default::default()
         };
         let fut = run(config, move |b| seen.lock().unwrap().push(b), rx);
@@ -520,11 +633,46 @@ mod tests {
             "it keeps running until dropped"
         );
         let batches = batches.lock().unwrap();
-        assert_eq!(batches.len(), 1, "{batches:?}");
+        assert_eq!(batches.len(), 2, "{batches:?}");
         assert!(
             batches[0]
                 .iter()
                 .any(|c| matches!(c, WmChange::Sources(s) if !s.toplevel_list))
+        );
+        assert!(
+            batches[1].contains(&WmChange::Name("labwc".into())),
+            "no adapter: wm.name is the desktop's"
+        );
+    }
+
+    /// Built without the `niri` feature, a niri backend is no adapter:
+    /// the protocols serve it, instead of waiting forever for an adapter
+    /// that cannot run.
+    #[cfg(not(feature = "niri"))]
+    #[tokio::test]
+    async fn niri_without_the_feature_is_the_protocols_alone() {
+        let (_tx, rx) = mpsc::unbounded_channel::<WmRequest>();
+        let batches = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = batches.clone();
+        let config = WmConfig {
+            backend: Some(Backend::Niri {
+                socket: "/nonexistent/niri.sock".into(),
+            }),
+            ..Default::default()
+        };
+        let fut = run(config, move |b| seen.lock().unwrap().push(b), rx);
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(100), fut).await;
+        let batches = batches.lock().unwrap();
+        assert!(
+            batches[0]
+                .iter()
+                .any(|c| matches!(c, WmChange::Sources(s) if s.ipc.is_none())),
+            "{batches:?}"
+        );
+        assert!(
+            batches[0]
+                .iter()
+                .any(|c| matches!(c, WmChange::Workspaces(_)))
         );
     }
 

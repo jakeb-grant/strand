@@ -87,6 +87,7 @@ async fn sway_adapter_follows_a_real_sway() {
         }),
         wayland: Some(WaylandTarget::Socket(sway.socket())),
         events: Some(events),
+        ..Default::default()
     };
     let service = tokio::spawn(wm::run(config, sink, req_rx));
 

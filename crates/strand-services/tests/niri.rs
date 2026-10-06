@@ -1,5 +1,9 @@
 //! The niri adapter against a fake niri: one Unix socket that replays
-//! niri 26.04's traffic (`tests/fixtures/niri-26.04`).
+//! niri 26.04's traffic as reconstructed from its source
+//! (`tests/fixtures/niri-26.04`). Like niri before
+//! 25.05 (`src/ipc/server.rs`, `handle_client`), the fake answers one
+//! request per connection and then closes it, so a client that sends two
+//! on one connection fails here.
 #![cfg(feature = "niri")]
 
 mod common;
@@ -50,7 +54,7 @@ impl FakeNiri {
                     tokio::spawn(async move {
                         let (r, mut w) = conn.into_split();
                         let mut lines = BufReader::new(r).lines();
-                        while let Ok(Some(req)) = lines.next_line().await {
+                        if let Ok(Some(req)) = lines.next_line().await {
                             requests.lock().unwrap().push(req.clone());
                             let file = |n: &str| {
                                 std::fs::read_to_string(fixture("niri-26.04").join(n)).unwrap()
@@ -81,9 +85,9 @@ impl FakeNiri {
                                 }
                                 _ => "{\"Err\":\"error parsing request\"}\n".into(),
                             };
-                            if w.write_all(reply.as_bytes()).await.is_err() {
-                                return;
-                            }
+                            // One request per connection: reply, then
+                            // close (dropping the halves).
+                            let _ = w.write_all(reply.as_bytes()).await;
                         }
                     });
                 }
@@ -119,6 +123,7 @@ async fn niri_adapter_follows_replayed_traffic() {
         }),
         wayland: None,
         events: Some(events),
+        ..Default::default()
     };
     let service = tokio::spawn(wm::run(config, sink, req_rx));
 
@@ -266,6 +271,7 @@ async fn niri_adapter_reconnects_without_a_spurious_reload() {
         }),
         wayland: None,
         events: None,
+        ..Default::default()
     };
     let service = tokio::spawn(wm::run(config, sink, req_rx));
     c.until("boot", |m| m.sources.connected && !m.workspaces.is_empty())

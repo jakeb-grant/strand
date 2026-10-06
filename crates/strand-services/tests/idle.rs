@@ -45,6 +45,7 @@ fn an_idle_compositor_wakes_no_service_thread() {
         }),
         wayland: Some(WaylandTarget::Socket(sway.socket())),
         events: None,
+        ..Default::default()
     };
     // The service on its own current-thread runtime, as in Strand.
     let (_req_tx, req_rx) = tokio::sync::mpsc::unbounded_channel();

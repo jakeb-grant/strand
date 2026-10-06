@@ -11,6 +11,11 @@
 //! in place; the rest (`openwindow`, `closewindow`, `movewindowv2`,
 //! workspace and monitor changes, `fullscreen`, `configreloaded`) re-read
 //! it once per burst.
+//!
+//! Hyprland copies window titles as raw bytes (an XWayland `WM_NAME` of
+//! type `STRING` is Latin-1), into events and into JSON replies alike, so
+//! both are decoded lossily: a title that is not UTF-8 shows U+FFFD where
+//! its bad bytes were, instead of costing the connection.
 
 use std::collections::HashSet;
 use std::io;
@@ -18,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Deserialize;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -365,7 +370,7 @@ pub(crate) async fn request(path: &Path, command: &str) -> io::Result<String> {
         s.write_all(command.as_bytes()).await?;
         let mut out = Vec::new();
         s.read_to_end(&mut out).await?;
-        String::from_utf8(out).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        Ok(String::from_utf8_lossy(&out).into_owned())
     };
     tokio::time::timeout(REQUEST_TIMEOUT, run)
         .await
@@ -383,6 +388,23 @@ async fn request_json<T: for<'de> Deserialize<'de>>(path: &Path, command: &str) 
             ),
         )
     })
+}
+
+/// The next socket2 line, decoded lossily; `None` at the end. Cancel
+/// safe: a partial line stays in `buf` for the next call.
+pub(crate) async fn next_line<R: AsyncRead + Unpin>(
+    reader: &mut BufReader<R>,
+    buf: &mut Vec<u8>,
+) -> io::Result<Option<String>> {
+    let n = reader.read_until(b'\n', buf).await?;
+    if n == 0 && buf.is_empty() {
+        return Ok(None);
+    }
+    let mut line = std::mem::take(buf);
+    if line.last() == Some(&b'\n') {
+        line.pop();
+    }
+    Ok(Some(String::from_utf8_lossy(&line).into_owned()))
 }
 
 /// Reads the whole state.
@@ -428,9 +450,10 @@ async fn session(
 ) -> io::Result<()> {
     // Subscribe first, so nothing between the read and the stream is lost.
     let stream = UnixStream::connect(events).await?;
-    let mut lines = BufReader::new(stream).lines();
+    let mut reader = BufReader::new(stream);
+    let mut buf = Vec::new();
     query(requests, state).await?;
-    backoff.reset();
+    backoff.connected();
     if tx.send(AdapterMsg::Connected(true)).is_err()
         || tx.send(AdapterMsg::State(state.snapshot())).is_err()
     {
@@ -439,7 +462,7 @@ async fn session(
     let mut cmds_open = true;
     loop {
         tokio::select! {
-            line = lines.next_line() => {
+            line = next_line(&mut reader, &mut buf) => {
                 let Some(line) = line? else {
                     return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "event socket closed"));
                 };
@@ -460,7 +483,9 @@ async fn session(
                 };
                 handle(&line);
                 // The rest of a burst that is already here.
-                while let Some(next) = futures_lite::future::poll_once(lines.next_line()).await {
+                while let Some(next) =
+                    futures_lite::future::poll_once(next_line(&mut reader, &mut buf)).await
+                {
                     match next? {
                         Some(l) => handle(&l),
                         None => break,
@@ -613,6 +638,26 @@ mod tests {
         assert_eq!(s.apply("configreloaded", ""), Effect::Reloaded);
         assert_eq!(s.apply("activelayout", "kb,us"), Effect::None);
         assert_eq!(s.apply("workspacev2", "77,77"), Effect::Requery);
+    }
+
+    #[tokio::test]
+    async fn lines_that_are_not_utf8_are_decoded_lossily() {
+        let raw: &[u8] = b"windowtitlev2>>a1,caf\xe9\nurgent>>a1\npartial";
+        let mut reader = BufReader::new(raw);
+        let mut buf = Vec::new();
+        assert_eq!(
+            next_line(&mut reader, &mut buf).await.unwrap().as_deref(),
+            Some("windowtitlev2>>a1,caf\u{fffd}")
+        );
+        assert_eq!(
+            next_line(&mut reader, &mut buf).await.unwrap().as_deref(),
+            Some("urgent>>a1")
+        );
+        assert_eq!(
+            next_line(&mut reader, &mut buf).await.unwrap().as_deref(),
+            Some("partial")
+        );
+        assert_eq!(next_line(&mut reader, &mut buf).await.unwrap(), None);
     }
 
     #[test]

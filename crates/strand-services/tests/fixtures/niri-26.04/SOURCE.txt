@@ -1,4 +1,7 @@
-niri 26.04 IPC traffic, in the exact shape that version writes it.
+niri 26.04 IPC traffic, reconstructed from niri's source at tag v26.04
+(the files cited below), not captured from a running niri. M3's exit box
+"runs on Hyprland, niri and sway" is where real captures replace or
+validate these files.
 
 niri writes each reply and event as one line of compact JSON
 (serde_json::to_writer plus "\n", src/ipc/server.rs at tag v26.04). The

@@ -7,6 +7,11 @@
 //! `{"Err":"…"}`); after `"EventStream"` the socket only carries events
 //! (`{"WorkspacesChanged":{…}}`, …). Formats are niri 26.04's
 //! (`niri-ipc/src/lib.rs`). Unknown events and fields are ignored.
+//!
+//! Every request gets a connection of its own: niri before 25.05 reads
+//! one request per connection and closes it (`src/ipc/server.rs`,
+//! `handle_client`); later versions take more, but requests are rare
+//! (boot, reconnects, actions), so one per connection works everywhere.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -275,13 +280,14 @@ impl State {
     }
 }
 
-/// A connection that answers one request per line.
-struct Requests {
+/// A connection: one request, then its reply (or, after `EventStream`,
+/// the events).
+struct Conn {
     lines: Lines<BufReader<OwnedReadHalf>>,
     write: tokio::net::unix::OwnedWriteHalf,
 }
 
-impl Requests {
+impl Conn {
     async fn connect(path: &Path) -> io::Result<Self> {
         let (r, w) = UnixStream::connect(path).await?.into_split();
         Ok(Self {
@@ -318,12 +324,23 @@ impl Requests {
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "niri did not answer"))?
     }
+}
 
-    async fn get(&mut self, name: &str) -> io::Result<Value> {
-        match self.send(&json!(name)).await? {
-            Ok(v) => Ok(v.get(name).cloned().unwrap_or(Value::Null)),
-            Err(e) => Err(io::Error::other(format!("{name}: {e}"))),
-        }
+/// One request on a connection of its own; the reply's `Ok` value or its
+/// `Err` text.
+async fn request(socket: &Path, request: &Value) -> io::Result<Result<Value, String>> {
+    let connect = tokio::time::timeout(REQUEST_TIMEOUT, Conn::connect(socket));
+    let mut conn = connect
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "niri did not accept"))??;
+    conn.send(request).await
+}
+
+/// A query (`"Workspaces"`, …): the value under its name in the reply.
+async fn get(socket: &Path, name: &str) -> io::Result<Value> {
+    match request(socket, &json!(name)).await? {
+        Ok(v) => Ok(v.get(name).cloned().unwrap_or(Value::Null)),
+        Err(e) => Err(io::Error::other(format!("{name}: {e}"))),
     }
 }
 
@@ -353,22 +370,21 @@ async fn session(
 ) -> io::Result<()> {
     // The event stream first, so nothing between the reads and it is lost;
     // its first events restate everything anyway.
-    let mut events = Requests::connect(socket).await?;
+    let mut events = Conn::connect(socket).await?;
     if let Err(e) = events.send(&json!("EventStream")).await? {
         return Err(io::Error::other(format!("EventStream: {e}")));
     }
-    let mut requests = Requests::connect(socket).await?;
     let mut state = State::default();
-    if let Some(w) = parse(&requests.get("Workspaces").await?) {
+    if let Some(w) = parse(&get(socket, "Workspaces").await?) {
         state.workspaces = w;
     }
-    if let Some(w) = parse(&requests.get("Windows").await?) {
+    if let Some(w) = parse(&get(socket, "Windows").await?) {
         state.windows = w;
     }
-    state.focused_output = parse::<Option<NOutput>>(&requests.get("FocusedOutput").await?)
+    state.focused_output = parse::<Option<NOutput>>(&get(socket, "FocusedOutput").await?)
         .flatten()
         .map(|o| o.name);
-    backoff.reset();
+    backoff.connected();
     if tx.send(AdapterMsg::Connected(true)).is_err()
         || tx.send(AdapterMsg::State(state.snapshot())).is_err()
     {
@@ -410,17 +426,13 @@ async fn session(
             cmd = cmds.recv(), if cmds_open => match cmd {
                 Some((action, reply)) => {
                     let result = match state.action_for(&action) {
-                        Ok(req) => match requests.send(&req).await {
+                        Ok(req) => match request(socket, &req).await {
                             Ok(Ok(_)) => Ok(()),
                             Ok(Err(e)) => Err(WmError::Rejected(e)),
                             Err(e) => Err(WmError::Io(e.to_string())),
                         },
                         Err(e) => Err(e),
                     };
-                    // A broken request socket is reopened for the next one.
-                    if matches!(result, Err(WmError::Io(_))) {
-                        requests = Requests::connect(socket).await?;
-                    }
                     if let Some(r) = reply {
                         let _ = r.send(result);
                     }

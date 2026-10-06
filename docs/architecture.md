@@ -13,7 +13,7 @@ file fixes boundaries; each crate is free inside its own boundary.
 | Text worker | `strand-text` | parley shaping, swash rasterisation, per-scale glyph atlases | Block render: a painted surface keeps drawing its last layout (or a realigned stand-in from another scale or width) until the new one arrives |
 | Watcher | `strand-watch` | inotify directory watches and polling (one `strand-watch` thread); not the IPC socket (`docs/decisions.md`, wave2-watch) | Parse files (it sends paths and hashes) |
 | Persist IO (one per `PersistStore`) | `strand-core` | Atomic writes of persisted cells, settings-file edits, settings overlays and last-good snapshots; reports each file it is about to change to `PersistStore::on_written` | Run on the logic tick or block logic (failures come back as diagnostics in a later tick) |
-| Services | `strand-services` | tokio current-thread runtime (the portal Settings client `strand_watch::follow` and the compositor IPC adapters run here); PipeWire and toplevel get their own threads | Block logic: they send state diffs and events |
+| Services | `strand-services` | tokio current-thread runtime (the portal Settings client `strand_watch::follow` and the compositor IPC adapters run here); PipeWire and toplevel (`strand-toplevel`) get their own threads; the sway adapter's swayipc-async also brings async-io's global reactor thread (`async-io`: idle, it blocks in `epoll` with zero wakeups, `crates/strand-services/tests/idle.rs`) | Block logic: they send state diffs and events |
 
 Channels are the only coupling between threads. Logic → render is one
 `SceneDiff` per tick. Render → logic is `InputEvent`s (`strand-scene`) and layout facts
@@ -1773,15 +1773,34 @@ Specified when M3 starts. It only produces writes and events into
 - **Compositor (`strand_services::wm`, the `workspaces`, `windows` and
   `wm` services).** Typed records (`Workspace`, `Window`: the schema's
   fields plus `Workspace::active` and `Window::urgent`) in a `WmState`,
-  and `wm::run(WmConfig { backend, wayland, events }, sink,
+  and `wm::run(WmConfig { backend, wayland, events, desktop }, sink,
   requests) -> impl Future + Send`: the service on the shared runtime,
   stopped by dropping it. `sink: FnMut(Vec<WmChange>)` gets one
   non-empty batch per change: `Workspaces`/`Windows`
   (`Vec<strand_core::keyed::VecDiff<i64 | String, _>>`, a `Reset` on the
   first publish), `FocusedWorkspace`, `FocusedWindow`, `FocusedScreen`
-  (for `screens.focused`), `Name`, `ConfigReloaded { failed }` (also
-  sent to `events` as `ChangeEvent::Compositor(ConfigReloaded)`) and
-  `Sources` (adapter, connected, which protocols exist). `requests` takes
+  (for `screens.focused`), `Name` (the adapter's compositor, else
+  `desktop`: the first entry of `XDG_CURRENT_DESKTOP`), `ConfigReloaded {
+  failed }` and `Sources` (adapter, connected, which protocols exist;
+  always in the first batch). The state goes out once the adapter's
+  first state arrives, or once the protocols have spoken when there is
+  no adapter or it has failed to connect.
+  `wm.config_reloaded` has one owner: the `wm` store emits it from the
+  batch's `WmChange::ConfigReloaded`. The copy sent to `events` as
+  `ChangeEvent::Compositor(ConfigReloaded)` is only the live-reload
+  change source (design.md's change-source table); the binary must not
+  turn it into a second `wm.config_reloaded`.
+  The three stores (and the owner of `screens.focused`) share one `run`
+  through `wm::WmHub::new(config, runtime_handle)`: `subscribe() ->
+  WmSubscription` (`recv`, `try_recv`, `request(WmAction)`) starts it on
+  the first subscriber, gives a later one the current state as one batch
+  (never a past reload), and stops it when the last subscription drops.
+  Each store subscribes from its body, so a store's 5 s stop grace is its
+  own and the hub stops at once once all have stopped; `screens.focused`
+  subscribes only while it is read and takes `FocusedScreen` from the
+  same stream. `wm::SCHEMA` is the schema text the three stores serve
+  (`Service::schema()`), replacing the provisional stubs (`Workspace.
+  active`, `Window.urgent`, `event config_reloaded(failed: bool?)`). `requests` takes
   `WmRequest { action: WmAction::{FocusWorkspace, FocusWindow,
   CloseWindow, MinimizeWindow}, reply: Option<oneshot> }`, answered
   `Ok` or a `WmError` (`NotConnected`, `Unsupported`, `Unknown…`,
@@ -1918,8 +1937,11 @@ It does not depend on `strand-compiler` or `strand-core`.
   `Accent(Option<[f64; 3]>)`, `Contrast(Normal | High)`, each with
   `.path()` = `system.dark` / `system.accent` / `system.contrast`.
 - **Compositor.** `CompositorEvent::ConfigReloaded { failed:
-  Option<bool> }` is `wm.config_reloaded` (`None` from Hyprland, which
-  does not say). The M3 Hyprland and niri adapters live in
+  Option<bool> }` is the compositor-reload change source (`None` from
+  Hyprland and sway, which do not say). The language event
+  `wm.config_reloaded` comes from the `wm` store's own stream
+  (`WmChange::ConfigReloaded`, see `strand-services`), not from this
+  copy, so it fires once per reload. The M3 Hyprland and niri adapters live in
   `strand-services` (design.md's services table lists them) and send it
   through a clone of the same `EventSink`, so `strand-services` depends
   on `strand-watch` for `EventSink` and `CompositorEvent`; `strand-watch`

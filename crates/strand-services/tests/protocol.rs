@@ -38,6 +38,8 @@ enum Cmd {
     SetTitle(&'static str, &'static str),
     CloseToplevel(&'static str),
     AddWorkspace(&'static str, bool),
+    /// A workspace in the group of output `n` (by the order of `outputs`).
+    AddWorkspaceOn(&'static str, bool, usize),
     SetUrgent(&'static str, bool),
     RemoveWorkspace(&'static str),
 }
@@ -51,6 +53,7 @@ struct Toplevel {
 
 struct Ws {
     name: String,
+    group: usize,
     active: bool,
     urgent: bool,
     handles: Vec<ExtWorkspaceHandleV1>,
@@ -61,8 +64,11 @@ struct Server {
     lists: Vec<ExtForeignToplevelListV1>,
     toplevels: Vec<Toplevel>,
     managers: Vec<ExtWorkspaceManagerV1>,
-    groups: Vec<ExtWorkspaceGroupHandleV1>,
-    outputs: Vec<wl_output::WlOutput>,
+    /// Per manager, one group per output name.
+    groups: Vec<Vec<ExtWorkspaceGroupHandleV1>>,
+    output_names: Vec<String>,
+    /// Bound outputs with the index of their name.
+    outputs: Vec<(usize, wl_output::WlOutput)>,
     workspaces: Vec<Ws>,
     pending: Vec<String>,
     activated: Arc<Mutex<Vec<String>>>,
@@ -161,16 +167,18 @@ impl Server {
                     self.toplevels.remove(i);
                 }
             }
-            Cmd::AddWorkspace(name, active) => {
+            Cmd::AddWorkspace(name, active) => self.apply(dh, Cmd::AddWorkspaceOn(name, active, 0)),
+            Cmd::AddWorkspaceOn(name, active, group) => {
                 let mut ws = Ws {
                     name: name.into(),
+                    group,
                     active,
                     urgent: false,
                     handles: Vec::new(),
                 };
                 let index = self.workspaces.len();
-                for (m, g) in self.managers.iter().zip(&self.groups) {
-                    Self::send_workspace(dh, m, g, &mut ws, index);
+                for (m, gs) in self.managers.iter().zip(&self.groups) {
+                    Self::send_workspace(dh, m, &gs[group], &mut ws, index);
                 }
                 self.workspaces.push(ws);
                 self.done();
@@ -187,7 +195,7 @@ impl Server {
             Cmd::RemoveWorkspace(name) => {
                 if let Some(i) = self.workspaces.iter().position(|w| w.name == name) {
                     for h in &self.workspaces[i].handles {
-                        for g in &self.groups {
+                        for g in self.groups.iter().flatten() {
                             g.workspace_leave(h);
                         }
                         h.removed();
@@ -263,26 +271,30 @@ impl GlobalDispatch<ExtWorkspaceManagerV1, ()> for Server {
         init: &mut DataInit<'_, Self>,
     ) {
         let manager = init.init(resource, ());
-        let Ok(group) = client.create_resource::<ExtWorkspaceGroupHandleV1, (), Server>(
-            dh,
-            manager.version(),
-            (),
-        ) else {
-            return;
-        };
-        manager.workspace_group(&group);
-        group.capabilities(ext_workspace_group_handle_v1::GroupCapabilities::empty());
-        for o in &state.outputs {
-            if o.client().as_ref() == Some(client) {
-                group.output_enter(o);
+        let mut groups = Vec::new();
+        for n in 0..state.output_names.len() {
+            let Ok(group) = client.create_resource::<ExtWorkspaceGroupHandleV1, (), Server>(
+                dh,
+                manager.version(),
+                (),
+            ) else {
+                return;
+            };
+            manager.workspace_group(&group);
+            group.capabilities(ext_workspace_group_handle_v1::GroupCapabilities::empty());
+            for (i, o) in &state.outputs {
+                if *i == n && o.client().as_ref() == Some(client) {
+                    group.output_enter(o);
+                }
             }
+            groups.push(group);
         }
         for (i, ws) in state.workspaces.iter_mut().enumerate() {
-            Self::send_workspace(dh, &manager, &group, ws, i);
+            Self::send_workspace(dh, &manager, &groups[ws.group], ws, i);
         }
         manager.done();
         state.managers.push(manager);
-        state.groups.push(group);
+        state.groups.push(groups);
     }
 }
 
@@ -300,7 +312,16 @@ impl Dispatch<ExtWorkspaceManagerV1, ()> for Server {
             ext_workspace_manager_v1::Request::Commit => {
                 for name in std::mem::take(&mut state.pending) {
                     state.activated.lock().unwrap().push(name.clone());
-                    for ws in &mut state.workspaces {
+                    let Some(group) = state
+                        .workspaces
+                        .iter()
+                        .find(|w| w.name == name)
+                        .map(|w| w.group)
+                    else {
+                        continue;
+                    };
+                    // Activation is per group (output).
+                    for ws in state.workspaces.iter_mut().filter(|w| w.group == group) {
                         ws.active = ws.name == name;
                         for h in &ws.handles {
                             h.state(Server::ws_state(ws));
@@ -344,39 +365,39 @@ impl Dispatch<ExtWorkspaceHandleV1, String> for Server {
     }
 }
 
-impl GlobalDispatch<wl_output::WlOutput, ()> for Server {
+impl GlobalDispatch<wl_output::WlOutput, usize> for Server {
     fn bind(
         state: &mut Self,
         _: &DisplayHandle,
         client: &Client,
         resource: New<wl_output::WlOutput>,
-        _: &(),
+        index: &usize,
         init: &mut DataInit<'_, Self>,
     ) {
-        let o = init.init(resource, ());
+        let o = init.init(resource, *index);
         if o.version() >= 4 {
-            o.name("FAKE-1".into());
+            o.name(state.output_names[*index].clone());
         }
         if o.version() >= 2 {
             o.done();
         }
-        for (m, g) in state.managers.iter().zip(&state.groups) {
-            if g.client().as_ref() == Some(client) {
-                g.output_enter(&o);
+        for (m, gs) in state.managers.iter().zip(&state.groups) {
+            if m.client().as_ref() == Some(client) {
+                gs[*index].output_enter(&o);
                 m.done();
             }
         }
-        state.outputs.push(o);
+        state.outputs.push((*index, o));
     }
 }
 
-impl Dispatch<wl_output::WlOutput, ()> for Server {
+impl Dispatch<wl_output::WlOutput, usize> for Server {
     fn request(
         _: &mut Self,
         _: &Client,
         _: &wl_output::WlOutput,
         _: wl_output::Request,
-        _: &(),
+        _: &usize,
         _: &DisplayHandle,
         _: &mut DataInit<'_, Self>,
     ) {
@@ -395,6 +416,11 @@ struct Fake {
 
 impl Fake {
     fn start(with_workspaces: bool) -> Fake {
+        Self::start_with(with_workspaces, &["FAKE-1"])
+    }
+
+    /// A fake with one `wl_output` (and one workspace group) per name.
+    fn start_with(with_workspaces: bool, outputs: &'static [&'static str]) -> Fake {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("wayland-fake");
         let listener = ListeningSocket::bind_absolute(socket.clone()).unwrap();
@@ -410,9 +436,12 @@ impl Fake {
             if with_workspaces {
                 dh.create_global::<Server, ExtWorkspaceManagerV1, ()>(1, ());
             }
-            dh.create_global::<Server, wl_output::WlOutput, ()>(4, ());
+            for i in 0..outputs.len() {
+                dh.create_global::<Server, wl_output::WlOutput, usize>(4, i);
+            }
             let mut state = Server {
                 activated: thread_activated,
+                output_names: outputs.iter().map(|o| o.to_string()).collect(),
                 ..Default::default()
             };
             while !thread_stop.load(Ordering::SeqCst) {
@@ -561,6 +590,7 @@ async fn the_protocols_alone_serve_workspaces_and_windows() {
         backend: None,
         wayland: Some(WaylandTarget::Socket(fake.socket.clone())),
         events: None,
+        ..Default::default()
     };
     let service = tokio::spawn(wm::run(config, sink, req_rx));
     c.until("boot", |m| {
@@ -590,6 +620,98 @@ async fn the_protocols_alone_serve_workspaces_and_windows() {
     let (r, done) = WmRequest::new(WmAction::CloseWindow("tl-1".into()));
     req_tx.send(r).unwrap();
     assert!(matches!(done.await.unwrap(), Err(WmError::Unsupported(_))));
+    service.abort();
+}
+
+/// Two outputs, each showing a workspace: `ext-workspace-v1` says what
+/// each output shows, not which has the keyboard, so with the protocols
+/// alone no workspace is `focused` (each shown one is `active`).
+#[tokio::test]
+async fn two_outputs_alone_mark_active_workspaces_not_focus() {
+    let fake = Fake::start_with(true, &["FAKE-1", "FAKE-2"]);
+    fake.cmd(Cmd::AddWorkspaceOn("1", true, 0));
+    fake.cmd(Cmd::AddWorkspaceOn("2", false, 0));
+    fake.cmd(Cmd::AddWorkspaceOn("3", true, 1));
+    std::thread::sleep(Duration::from_millis(50));
+    let (sink, mut c) = Collector::new();
+    let (req_tx, req_rx) = unbounded_channel();
+    let config = WmConfig {
+        wayland: Some(WaylandTarget::Socket(fake.socket.clone())),
+        desktop: Some("labwc".into()),
+        ..Default::default()
+    };
+    let service = tokio::spawn(wm::run(config, sink, req_rx));
+    c.until("boot", |m| {
+        m.workspaces.len() == 3 && m.workspaces.iter().all(|(_, w)| !w.screen.is_empty())
+    })
+    .await;
+    let m = &c.mirror;
+    assert_eq!(m.name, "labwc", "wm.name falls back to XDG_CURRENT_DESKTOP");
+    assert_eq!(m.workspace("1").unwrap().screen, "FAKE-1");
+    assert_eq!(m.workspace("3").unwrap().screen, "FAKE-2");
+    assert!(m.workspace("1").unwrap().active && m.workspace("3").unwrap().active);
+    assert!(m.workspaces.iter().all(|(_, w)| !w.focused), "{m:#?}");
+    assert_eq!(m.focused_workspace, None);
+    assert_eq!(m.focused_screen, None);
+
+    // Activating 2 changes what FAKE-1 shows, not FAKE-2.
+    let ws2 = m.workspace("2").unwrap().id;
+    let (r, done) = WmRequest::new(WmAction::FocusWorkspace(ws2));
+    req_tx.send(r).unwrap();
+    assert_eq!(done.await.unwrap(), Ok(()));
+    c.until("activated", |m| m.workspace("2").is_some_and(|w| w.active))
+        .await;
+    assert!(!c.mirror.workspace("1").unwrap().active);
+    assert!(c.mirror.workspace("3").unwrap().active);
+    assert_eq!(c.mirror.focused_workspace, None);
+    service.abort();
+}
+
+/// An adapter that cannot connect (here: Hyprland's sockets are gone)
+/// does not hide the standard protocols: their state is published, the
+/// sources say the adapter is down, and what the protocol can do works.
+#[tokio::test]
+async fn a_broken_adapter_does_not_hide_the_protocols() {
+    let fake = Fake::start(true);
+    fake.cmd(Cmd::AddToplevel("tl-1", "~", "foot"));
+    fake.cmd(Cmd::AddWorkspace("1", true));
+    fake.cmd(Cmd::AddWorkspace("2", false));
+    std::thread::sleep(Duration::from_millis(50));
+    let gone = tempfile::tempdir().unwrap();
+    let (sink, mut c) = Collector::new();
+    let (req_tx, req_rx) = unbounded_channel();
+    let config = WmConfig {
+        backend: Some(wm::Backend::hyprland_in(gone.path(), "stale")),
+        wayland: Some(WaylandTarget::Socket(fake.socket.clone())),
+        ..Default::default()
+    };
+    let service = tokio::spawn(wm::run(config, sink, req_rx));
+    c.until("protocol state", |m| m.workspaces.len() == 2).await;
+    let m = &c.mirror;
+    assert_eq!(m.sources.ipc, Some(wm::CompositorKind::Hyprland));
+    assert!(!m.sources.connected && m.sources.workspace_protocol);
+    assert_eq!(m.name, "Hyprland");
+    assert_eq!(m.windows[0].1.id, "tl-1");
+    assert!(
+        matches!(
+            &c.log[0],
+            wm::WmChange::Sources(s) if s.ipc == Some(wm::CompositorKind::Hyprland) && !s.connected
+        ),
+        "the first batch says which adapter is meant to run: {:?}",
+        c.log[0]
+    );
+    let ws2 = c.mirror.workspace("2").unwrap().id;
+    let (r, done) = WmRequest::new(WmAction::FocusWorkspace(ws2));
+    req_tx.send(r).unwrap();
+    assert_eq!(done.await.unwrap(), Ok(()));
+    c.until("activated", |m| {
+        m.focused_workspace.as_ref().is_some_and(|w| w.name == "2")
+    })
+    .await;
+    // Window actions need the adapter.
+    let (r, done) = WmRequest::new(WmAction::CloseWindow("tl-1".into()));
+    req_tx.send(r).unwrap();
+    assert_eq!(done.await.unwrap(), Err(WmError::NotConnected));
     service.abort();
 }
 

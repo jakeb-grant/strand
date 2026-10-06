@@ -2,8 +2,9 @@
 //! publishes it.
 //!
 //! The records mirror the `Workspace` and `Window` records of the builtin
-//! schema (`strand-compiler`'s `builtin.schema`) field for field, plus a
-//! few the schema does not show yet (`Workspace::active`, `Window::urgent`).
+//! schema (`strand-compiler`'s `builtin.schema`) field for field, plus
+//! `Workspace::active` and `Window::urgent`, which [`super::SCHEMA`] (the
+//! text that replaces the provisional stubs) declares.
 
 use strand_core::keyed::{VecDiff, keyed_diff};
 
@@ -51,7 +52,11 @@ pub struct Workspace {
     pub urgent: bool,
     /// The name of the screen (connector) it is on; empty when unknown.
     pub screen: String,
-    /// Its windows, in the order of [`WmState::windows`].
+    /// Its windows, in the order of [`WmState::windows`]. Copies: a
+    /// window's change (a title) is also an `Update` of its workspace in
+    /// the stream. Accepted for now (a handful of windows per workspace);
+    /// a store may instead derive this list from `windows.all` by
+    /// `workspace` (docs/decisions.md, wave4-wm).
     pub windows: Vec<Window>,
 }
 
