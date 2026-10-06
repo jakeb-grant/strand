@@ -1961,6 +1961,7 @@ dependencies = [
  "strand-text",
  "strand-watch",
  "wayland-client",
+ "wayland-protocols-misc",
  "wayland-protocols-wlr",
 ]
 

@@ -727,13 +727,38 @@ fn the_design_launcher_is_centred_and_closes_on_click_away() {
     // Every frame of each surface at one buffer size: no frame at an
     // estimated size before its text arrived.
     for (s, sizes) in surfaces(&log) {
+        // (On failure, the whole log: which frame painted early, and
+        // what arrived after it.)
         assert!(
             sizes.iter().all(|b| *b == sizes[0]),
-            "{s} changed size: {sizes:?}"
+            "{s} changed size: {sizes:?}\n{}",
+            std::fs::read_to_string(&log).unwrap_or_default()
         );
     }
-    let shot = Shot::take(&sway, "HEADLESS-1");
-    let bright = |x: usize, y: usize| shot.px(x, y).iter().map(|c| *c as u32).sum::<u32>() > 450;
+    let bright_in =
+        |s: &Shot, x: usize, y: usize| s.px(x, y).iter().map(|c| *c as u32).sum::<u32>() > 450;
+    // Its `enter { opacity: 0; scale: 0.96 }` settled: two shots alike
+    // (its box's rows and its colour at their middle) a moment apart.
+    let settled = |x: usize| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut last = None;
+        loop {
+            let s = Shot::take(&sway, "HEADLESS-1");
+            let rows: Vec<usize> = (60..s.h).filter(|&y| bright_in(&s, x, y)).collect();
+            let key = rows
+                .first()
+                .zip(rows.last())
+                .map(|(&t, &b)| (t, b, s.px(x, (t + b) / 2)));
+            if key.is_some() && key == last {
+                return s;
+            }
+            assert!(Instant::now() < deadline, "the launcher never settled");
+            last = key;
+            std::thread::sleep(Duration::from_millis(150));
+        }
+    };
+    let shot = settled(Shot::take(&sway, "HEADLESS-1").w / 2 + 250);
+    let bright = |x: usize, y: usize| bright_in(&shot, x, y);
     // The launcher's box on a column clear of its text: its light rows
     // below the bar.
     let x = shot.w / 2 + 250;
@@ -752,21 +777,132 @@ fn the_design_launcher_is_centred_and_closes_on_click_away() {
         (centre - (uy + uh / 2.0)).abs() <= 2.0,
         "box {top}..{bottom} centred at {centre}, usable area {uy} + {uh}"
     );
-    // A click inside keeps it open; one outside closes it.
+    if let Some(dir) = std::env::var_os("STRAND_SHOTS") {
+        sway.grim(&[], &PathBuf::from(&dir).join("design_launcher.png"));
+    }
+    // The box's left edge, and the rows of ink in its `image h.app.icon
+    // { size: 32 }` column (pad 12 + row pad 8, 32 wide), below the
+    // input: the mock apps' three icons (Adwaita's `-symbolic` ones).
+    let mid = (top + bottom) / 2;
+    let left = (0..shot.w).find(|&x| bright(x, mid)).unwrap();
+    let dark =
+        |s: &Shot, x: usize, y: usize| s.px(x, y).iter().map(|c| *c as u32).sum::<u32>() < 200;
+    let icon_bands = |s: &Shot, top: usize, bottom: usize| {
+        let inked: Vec<usize> = (top + 48..bottom)
+            .filter(|&y| (left + 20..left + 52).any(|x| dark(s, x, y)))
+            .collect();
+        inked.windows(2).filter(|p| p[1] > p[0] + 1).count() + usize::from(!inked.is_empty())
+    };
+    assert_eq!(icon_bands(&shot, top, bottom), 3, "three app icons");
+
     let mut pointer = pointer::Pointer::new(&sway.dir.join(&sway.display));
     let (w, h) = (shot.w as u32, shot.h as u32);
-    pointer.click(x as u32, ((top + bottom) / 2) as u32, w, h);
+    // A new virtual pointer's first buttons reach no surface: its first
+    // click goes to the launcher's padding (clear of its rows, so it
+    // would not launch anything if it did arrive).
+    let pad = (left as u32 + 5, mid as u32);
+    pointer.click(pad.0, pad.1, w, h);
+    std::thread::sleep(Duration::from_millis(200));
+    // Hovering the first row (`when hover { bg: $surface.hi }`) repaints
+    // it: events reach the launcher now.
+    let first_icon = (top + 48..bottom)
+        .find(|&y| (left + 20..left + 52).any(|xx| dark(&shot, xx, y)))
+        .unwrap();
+    let row = (x, first_icon + 12);
+    let calm = shot.px(row.0, row.1);
+    // (Not exact: the bg is dithered.)
+    let near = |p: [u8; 3], q: [u8; 3]| (0..3).all(|i| p[i].abs_diff(q[i]) <= 3);
+    pointer.motion(row.0 as u32, row.1 as u32, w, h);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while near(Shot::take(&sway, "HEADLESS-1").px(row.0, row.1), calm) {
+        assert!(Instant::now() < deadline, "hovering a row changed nothing");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // A click inside (its padding) keeps it open: the pointer leaves the
+    // row on the way (its hover goes), and the launcher stays.
+    pointer.click(pad.0, pad.1, w, h);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !near(Shot::take(&sway, "HEADLESS-1").px(row.0, row.1), calm) {
+        assert!(
+            Instant::now() < deadline,
+            "the click never reached the launcher"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
     std::thread::sleep(Duration::from_millis(500));
-    let again = Shot::take(&sway, "HEADLESS-1");
     assert!(
-        again
-            .px(x, (top + bottom) / 2)
-            .iter()
-            .map(|c| *c as u32)
-            .sum::<u32>()
-            > 450,
+        bright_in(&Shot::take(&sway, "HEADLESS-1"), x, mid),
         "a click inside closed it"
     );
+
+    // Typing: a keyboard appears, the `focus: true` input takes it and
+    // draws its caret (`$accent`, a saturated blue on the light theme);
+    // typed text filters the list to Foot and the caret follows it.
+    let blue = |p: [u8; 3]| p[2] as i32 - p[0] as i32 > 60;
+    let input_band = |s: &Shot, top: usize| -> (Vec<usize>, Vec<usize>) {
+        let (mut carets, mut ink) = (Vec::new(), Vec::new());
+        // (Clear of the rounded corners.)
+        for xx in left + 4..left + 576 {
+            if (top + 8..top + 38).any(|y| blue(s.px(xx, y))) {
+                carets.push(xx);
+            }
+            if (top + 8..top + 38).any(|y| dark(s, xx, y)) {
+                ink.push(xx);
+            }
+        }
+        (carets, ink)
+    };
+    let mut keyboard = keyboard::Keyboard::new(&sway.dir.join(&sway.display), &sway.dir);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while input_band(&Shot::take(&sway, "HEADLESS-1"), top)
+        .0
+        .is_empty()
+    {
+        assert!(Instant::now() < deadline, "no caret once a keyboard exists");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    keyboard.type_text("foo");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let s = Shot::take(&sway, "HEADLESS-1");
+        let rows: Vec<usize> = (60..s.h).filter(|&y| bright_in(&s, x, y)).collect();
+        if let (Some(&t), Some(&b)) = (rows.first(), rows.last())
+            && icon_bands(&s, t, b) == 1
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "typing did not filter the list");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // Once its height spring has settled.
+    let shot = settled(x);
+    let rows: Vec<usize> = (60..shot.h).filter(|&y| bright_in(&shot, x, y)).collect();
+    let (top, bottom) = (rows[0], *rows.last().unwrap());
+    assert_eq!(icon_bands(&shot, top, bottom), 1, "one hit for `foo`");
+    if let Some(dir) = std::env::var_os("STRAND_SHOTS") {
+        sway.grim(&[], &PathBuf::from(&dir).join("design_launcher_typed.png"));
+    }
+    let (carets, ink) = input_band(&shot, top);
+    assert!(
+        !ink.is_empty() && !carets.is_empty(),
+        "no text or caret: {ink:?} {carets:?}"
+    );
+    let text_end = *ink.last().unwrap();
+    assert!(
+        carets
+            .iter()
+            .all(|&c| c + 3 >= text_end && c <= text_end + 8),
+        "the caret ({carets:?}) is not after the typed text (ink to {text_end})"
+    );
+    // The hit's matched letters (`marks: h.ranges; mark_color:
+    // $accent`) in blue in its name.
+    let marked = (top + 44..bottom)
+        .flat_map(|y| (left + 56..left + 200).map(move |x| (x, y)))
+        .filter(|&(x, y)| blue(shot.px(x, y)))
+        .count();
+    assert!(marked > 20, "no marked letters in the hit: {marked} px");
+    drop(keyboard);
+
     // On the bar, clear of its text (between the clock and the end).
     pointer.click(w * 3 / 4, 26, w, h);
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -902,6 +1038,18 @@ fn the_design_shells_draw_their_widgets_and_the_calendar_popup() {
         (60..110).any(|yy| (toast_x - 10..toast_x + 10).any(|x| sum(shot.px(x, yy)) < 200)),
         "no close icon on the first toast"
     );
+    // The toasts' `image n.image ?? n.app.icon { size: 36; radius:
+    // $radius.sm }` (the mock apps' `mail-unread` and `battery-caution`,
+    // found as Adwaita's `-symbolic` ones): ink in the 36 px slot at
+    // the start of each toast (margin 12, width 380, pad 12).
+    let slot = w - 12 - 380 + 12;
+    for (which, ys) in [("first", 60..118), ("second", 122..185)] {
+        let ink = ys
+            .flat_map(|y| (slot..slot + 36).map(move |x| (x, y)))
+            .filter(|&(x, y)| sum(shot.px(x, y)) < 200)
+            .count();
+        assert!(ink > 40, "no image on the {which} toast: {ink} px");
+    }
     // The tray's `image item.icon { size: 16 }` (the mock's
     // `network-wireless`, found as `network-wireless-symbolic`): ink at
     // the end of the bar, after the battery (margin 8, pad 12).
@@ -1057,6 +1205,15 @@ mod pointer {
             }
         }
 
+        /// The pointer moved to layout position (`x`, `y`) of a layout
+        /// `w`×`h` logical pixels (no button).
+        pub fn motion(&mut self, x: u32, y: u32, w: u32, h: u32) {
+            self.time += 10;
+            self.pointer.motion_absolute(self.time, x, y, w, h);
+            self.pointer.frame();
+            self.queue.roundtrip(&mut Client).unwrap();
+        }
+
         /// A left click at layout position (`x`, `y`) of a layout
         /// `w`×`h` logical pixels.
         pub fn click(&mut self, x: u32, y: u32, w: u32, h: u32) {
@@ -1072,6 +1229,109 @@ mod pointer {
                 self.pointer.frame();
             }
             self.queue.roundtrip(&mut Client).unwrap();
+        }
+    }
+}
+
+/// A virtual keyboard (`zwp_virtual_keyboard_v1`) that types the
+/// lowercase letters of a self-contained keymap (no xkeyboard-config
+/// includes).
+mod keyboard {
+    use std::io::Write as _;
+    use std::os::fd::AsFd;
+    use std::os::unix::net::UnixStream;
+    use std::path::Path;
+
+    use wayland_client::globals::{GlobalListContents, registry_queue_init};
+    use wayland_client::protocol::{wl_registry, wl_seat};
+    use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
+    use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
+        zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1,
+        zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
+    };
+
+    pub struct Client;
+    impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Client {
+        fn event(
+            _: &mut Self,
+            _: &wl_registry::WlRegistry,
+            _: wl_registry::Event,
+            _: &GlobalListContents,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+    delegate_noop!(Client: ignore ZwpVirtualKeyboardManagerV1);
+    delegate_noop!(Client: ignore ZwpVirtualKeyboardV1);
+    delegate_noop!(Client: ignore wl_seat::WlSeat);
+
+    /// Letter `c`'s xkb keycode: evdev's QWERTY code + 8.
+    fn code(c: char) -> Option<u32> {
+        let row = |s: &str, first: u32| s.find(c).map(|i| first + i as u32);
+        row("qwertyuiop", 16)
+            .or_else(|| row("asdfghjkl", 30))
+            .or_else(|| row("zxcvbnm", 44))
+    }
+
+    pub struct Keyboard {
+        _conn: Connection,
+        queue: EventQueue<Client>,
+        keyboard: ZwpVirtualKeyboardV1,
+        time: u32,
+    }
+
+    impl Keyboard {
+        pub fn new(socket: &Path, dir: &Path) -> Self {
+            let conn = Connection::from_socket(UnixStream::connect(socket).unwrap()).unwrap();
+            let (globals, mut queue) = registry_queue_init::<Client>(&conn).unwrap();
+            let qh = queue.handle();
+            let seat: wl_seat::WlSeat = globals.bind(&qh, 1..=7, ()).unwrap();
+            let manager: ZwpVirtualKeyboardManagerV1 = globals.bind(&qh, 1..=1, ()).unwrap();
+            let keyboard = manager.create_virtual_keyboard(&seat, &qh, ());
+            let mut codes = String::new();
+            let mut symbols = String::new();
+            for c in 'a'..='z' {
+                let k = code(c).unwrap() + 8;
+                codes.push_str(&format!("<K{k}> = {k}; "));
+                symbols.push_str(&format!("key <K{k}> {{ [ {c} ] }}; "));
+            }
+            let keymap = format!(
+                "xkb_keymap {{\n\
+                 xkb_keycodes \"strand\" {{ minimum = 8; maximum = 255; {codes}}};\n\
+                 xkb_types \"strand\" {{ type \"ONE_LEVEL\" {{ modifiers = none; level_name[Level1] = \"Any\"; }}; }};\n\
+                 xkb_compatibility \"strand\" {{ }};\n\
+                 xkb_symbols \"strand\" {{ {symbols}}};\n\
+                 }};\n"
+            );
+            let path = dir.join("keymap");
+            let mut file = std::fs::File::create(&path).unwrap();
+            file.write_all(keymap.as_bytes()).unwrap();
+            file.write_all(&[0]).unwrap();
+            file.flush().unwrap();
+            let file = std::fs::File::open(&path).unwrap();
+            keyboard.keymap(1, file.as_fd(), keymap.len() as u32 + 1);
+            queue.roundtrip(&mut Client).unwrap();
+            Self {
+                _conn: conn,
+                queue,
+                keyboard,
+                time: 0,
+            }
+        }
+
+        /// Types `text` (lowercase letters), each key pressed and
+        /// released.
+        pub fn type_text(&mut self, text: &str) {
+            for c in text.chars() {
+                let k = code(c).expect("a lowercase letter");
+                for state in [1, 0] {
+                    self.time += 10;
+                    self.keyboard.key(self.time, k, state);
+                }
+                self.queue.roundtrip(&mut Client).unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(30));
+            }
         }
     }
 }

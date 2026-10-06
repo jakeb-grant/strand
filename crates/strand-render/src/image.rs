@@ -99,6 +99,31 @@ pub struct Decoded {
     pub pixmap: Arc<Pixmap>,
     /// A symbolic icon: drawn as a mask in the node's colour.
     pub symbolic: bool,
+    /// The source's size (as decoded) and the fit it was placed by, so
+    /// a decode standing in for another box size is placed again by the
+    /// fit rather than stretched (see [`Decoded::placed_in`]).
+    pub source: (f64, f64),
+    pub fit: Fit,
+}
+
+impl Decoded {
+    /// Where the whole pixmap goes so that its content lands where the
+    /// fit places the source in a `w × h` box at `(x, y)`: the same rect
+    /// when the box is the decode's own size.
+    pub fn placed_in(&self, x: f64, y: f64, w: f64, h: f64) -> (f64, f64, f64, f64) {
+        let (pw, ph) = (self.pixmap.width() as f64, self.pixmap.height() as f64);
+        let (sw, sh) = self.source;
+        if !(sw > 0.0 && sh > 0.0 && pw > 0.0 && ph > 0.0) {
+            return (x, y, w, h);
+        }
+        let (oxo, oyo, dwo, dho) = placement(sw, sh, pw, ph, self.fit);
+        let (oxn, oyn, dwn, dhn) = placement(sw, sh, w, h, self.fit);
+        if !(dwo > 0.0 && dho > 0.0) {
+            return (x, y, w, h);
+        }
+        let (kx, ky) = (dwn / dwo, dhn / dho);
+        (x + oxn - oxo * kx, y + oyn - oyo * ky, pw * kx, ph * ky)
+    }
 }
 
 /// Why an image could not be shown.
@@ -316,7 +341,7 @@ pub fn load(key: &ImageKey, theme: &IconTheme) -> Result<Decoded, ImageError> {
         .and_then(|e| e.to_str())
         .is_some_and(|e| e.eq_ignore_ascii_case("svg"))
         || (data.starts_with(b"<") && !data.starts_with(b"\x89PNG"));
-    let out = if svg {
+    let (out, source) = if svg {
         render_svg(&data, w, h, key.fit)?
     } else {
         let src = if data.starts_with(b"\x89PNG") {
@@ -326,11 +351,16 @@ pub fn load(key: &ImageKey, theme: &IconTheme) -> Result<Decoded, ImageError> {
         } else {
             return Err(ImageError::Decode("not a PNG, JPEG or SVG".into()));
         };
-        fit_raster(&src, w, h, key.fit)
+        (
+            fit_raster(&src, w, h, key.fit),
+            (src.w as f64, src.h as f64),
+        )
     };
     Ok(Decoded {
         pixmap: Arc::new(to_pixmap(&out)),
         symbolic,
+        source,
+        fit: key.fit,
     })
 }
 
@@ -401,7 +431,9 @@ fn decode_png(data: &[u8], want: (u32, u32), fit: Fit) -> Result<Raster, ImageEr
     }
     let (rw, rh) = (sw.div_ceil(f), sh.div_ceil(f));
     let mut out = Vec::with_capacity(rw as usize * rh as usize * 4);
-    let mut sums = vec![0u32; rw as usize * 4];
+    // A block holds at most every source pixel (`MAX_STREAMED_PIXELS`),
+    // so its sums fit `u64` where `u32` overflows past `f` ≈ 4100.
+    let mut sums = vec![0u64; rw as usize * 4];
     let mut row_px = Vec::with_capacity(sw as usize * 4);
     let mut rows_in_band = 0u32;
     let mut y = 0u32;
@@ -420,7 +452,7 @@ fn decode_png(data: &[u8], want: (u32, u32), fit: Fit) -> Result<Raster, ImageEr
         for (x, p) in row_px.chunks_exact(4).enumerate() {
             let b = (x / f as usize) * 4;
             for k in 0..4 {
-                sums[b + k] += p[k] as u32;
+                sums[b + k] += p[k] as u64;
             }
         }
         rows_in_band += 1;
@@ -428,7 +460,7 @@ fn decode_png(data: &[u8], want: (u32, u32), fit: Fit) -> Result<Raster, ImageEr
         if rows_in_band == f || y == sh {
             for bx in 0..rw {
                 let cols = f.min(sw - bx * f);
-                let n = cols * rows_in_band;
+                let n = cols as u64 * rows_in_band as u64;
                 let b = bx as usize * 4;
                 for k in 0..4 {
                     out.push(((sums[b + k] + n / 2) / n) as u8);
@@ -603,7 +635,8 @@ fn fit_raster(src: &Raster, w: u32, h: u32, fit: Fit) -> Raster {
 }
 
 /// Renders an SVG into a `w × h` box by `fit`.
-fn render_svg(data: &[u8], w: u32, h: u32, fit: Fit) -> Result<Raster, ImageError> {
+/// Renders an SVG into a `w × h` box by `fit`, with its own size.
+fn render_svg(data: &[u8], w: u32, h: u32, fit: Fit) -> Result<(Raster, (f64, f64)), ImageError> {
     use resvg::{tiny_skia, usvg};
     let tree = usvg::Tree::from_data(data, &usvg::Options::default())
         .map_err(|e| ImageError::Decode(e.to_string()))?;
@@ -624,11 +657,14 @@ fn render_svg(data: &[u8], w: u32, h: u32, fit: Fit) -> Result<Raster, ImageErro
         oy as f32,
     );
     resvg::render(&tree, t, &mut pm.as_mut());
-    Ok(Raster {
-        w,
-        h,
-        rgba: pm.take(),
-    })
+    Ok((
+        Raster {
+            w,
+            h,
+            rgba: pm.take(),
+        },
+        (sw, sh),
+    ))
 }
 
 /// A vello pixmap of premultiplied RGBA, red and blue swapped.
@@ -769,6 +805,7 @@ impl ImageStore {
     pub fn set_backend(&mut self, backend: ImageBackend) {
         self.backend = backend;
         self.pending.clear();
+        self.publish_wanted();
     }
 
     /// The decoded image of `key`, if it is ready (`Some(Err)` when it
@@ -805,8 +842,19 @@ impl ImageStore {
     /// size it passes through. Returns true if anything was decoded
     /// inline.
     pub fn want(&mut self, surface: SurfaceId, keys: &[ImageKey], defer: bool) -> bool {
-        self.frames.insert(surface, keys.iter().cloned().collect());
-        self.publish_wanted();
+        // Published to the worker only when the surface's set changed (an
+        // animation frame drawing the same images allocates nothing).
+        // (Without repeated keys the lengths match and the check is
+        // linear; with them, every held key is looked for.)
+        let same = self.frames.get(&surface).is_some_and(|f| {
+            f.len() <= keys.len()
+                && keys.iter().all(|k| f.contains(k))
+                && (f.len() == keys.len() || f.iter().all(|k| keys.contains(k)))
+        });
+        if !same {
+            self.frames.insert(surface, keys.iter().cloned().collect());
+            self.publish_wanted();
+        }
         let mut decoded = false;
         for k in keys {
             self.tick += 1;
@@ -993,6 +1041,8 @@ mod tests {
                 Ok(Decoded {
                     pixmap: Arc::new(Pixmap::new(side as u16, side as u16)),
                     symbolic: false,
+                    source: (side as f64, side as f64),
+                    fit: Fit::Contain,
                 }),
             );
         }
@@ -1081,6 +1131,59 @@ mod tests {
         // Drawn at its own size: decoded whole.
         let r = decode_png(&png_bytes, (3000, 2000), Fit::Contain).unwrap();
         assert_eq!((r.w, r.h), (3000, 2000));
+    }
+
+    #[test]
+    fn huge_reductions_average_without_overflow() {
+        // A 4400 × 4400 PNG drawn at 1 × 1 averages blocks of 4400²
+        // pixels: 4400² × 255 is past `u32`.
+        let side = 4400u32;
+        let mut png_bytes = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut png_bytes, side, side);
+            enc.set_color(png::ColorType::Rgb);
+            enc.set_depth(png::BitDepth::Eight);
+            let mut w = enc.write_header().unwrap();
+            let mut s = w.stream_writer().unwrap();
+            let row: Vec<u8> = [200u8, 120, 40].repeat(side as usize);
+            for _ in 0..side {
+                std::io::Write::write_all(&mut s, &row).unwrap();
+            }
+            s.finish().unwrap();
+        }
+        let r = decode_png(&png_bytes, (1, 1), Fit::Contain).unwrap();
+        assert_eq!((r.w, r.h), (1, 1));
+        assert_eq!(r.rgba, [200, 120, 40, 255]);
+    }
+
+    /// A decode standing in for another box size is placed by its fit,
+    /// not stretched: a 2:1 source contained in a square (letterboxed)
+    /// stands in for a 2:1 box by filling it, its bands outside.
+    #[test]
+    fn stand_ins_are_placed_by_their_fit() {
+        let d = |fit| Decoded {
+            pixmap: Arc::new(Pixmap::new(100, 100)),
+            symbolic: false,
+            source: (400.0, 200.0),
+            fit,
+        };
+        // Contain: content rows 25..75 of the pixmap fill 0..100.
+        let (x, y, w, h) = d(Fit::Contain).placed_in(10.0, 20.0, 200.0, 100.0);
+        assert_eq!((x, y, w, h), (10.0, -30.0, 200.0, 200.0));
+        // Its own size: unchanged.
+        assert_eq!(
+            d(Fit::Contain).placed_in(10.0, 20.0, 100.0, 100.0),
+            (10.0, 20.0, 100.0, 100.0)
+        );
+        // Cover: the 100 × 100 crop of the middle (source x 100..300 at
+        // half scale) lands centred in a 200 × 100 box, uniformly.
+        let (x, y, w, h) = d(Fit::Cover).placed_in(0.0, 0.0, 200.0, 100.0);
+        assert_eq!((x, y, w, h), (50.0, 0.0, 100.0, 100.0));
+        // Fill stretches, as it always does.
+        assert_eq!(
+            d(Fit::Fill).placed_in(0.0, 0.0, 200.0, 50.0),
+            (0.0, 0.0, 200.0, 50.0)
+        );
     }
 
     #[test]

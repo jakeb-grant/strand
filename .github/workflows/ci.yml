@@ -21,10 +21,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install headless sway, grim, fonts and fontconfig headers
+      - name: Install headless sway, grim, fonts, icons and fontconfig headers
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends sway grim fonts-dejavu-core pkg-config libfontconfig1-dev
+          sudo apt-get install -y --no-install-recommends sway grim fonts-dejavu-core adwaita-icon-theme pkg-config libfontconfig1-dev
       # Pinned to the dev container's toolchain so a new stable release's
       # lints and deprecations cannot fail -D warnings on unchanged code.
       - uses: dtolnay/rust-toolchain@master
@@ -61,10 +61,10 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-      - name: Install headless sway, grim, fonts and fontconfig headers
+      - name: Install headless sway, grim, fonts, icons and fontconfig headers
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends sway grim fonts-dejavu-core pkg-config libfontconfig1-dev
+          sudo apt-get install -y --no-install-recommends sway grim fonts-dejavu-core adwaita-icon-theme pkg-config libfontconfig1-dev
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.97.0

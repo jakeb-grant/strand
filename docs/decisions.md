@@ -4618,3 +4618,80 @@ pointer's first buttons reach no surface, so the test's first click goes
 to the desktop; the older launcher test's "a click inside keeps it open"
 may pass for that reason without the click arriving (integrator: worth a
 look).
+
+**2026-10-06 · wave3-pixels (p3): grabbing is what was sent.** A popup
+whose spec asks for a grab (every `popup` but a tooltip) grabs only with
+the serial of a press made within `GRAB_WINDOW`; whether it did is now
+recorded on the surface (`Role::Popup::grabbed`) and is what the grab
+code reads. Only a popup made with `xdg_popup.grab` dismisses a grabbing
+chain outside its own (xdg-shell's topmost-grab rule binds grabbing
+popups only), makes its layer surface `exclusive` while open, and takes
+the keys arriving there. A late popup (a timer, `on change`, IPC, an
+`on click` that awaited) therefore never holds the keyboard from the
+user's apps and never closes the calendar. When the keys move between
+targets the old one is told `KeyboardLeave` (unless the new one is nested
+in it: a leave closes an `open: <->` popup, and its nested popup with it)
+and the new one `KeyboardEnter`; when a grab ends, the surface with
+keyboard focus is told `KeyboardEnter` again, so a launcher's
+`focus: true` input takes its caret back after its menu closes.
+
+**2026-10-06 · wave3-pixels (p3): popups opened late.** design.md says
+Esc or a click away closes a popup. A grabless popup gets neither from
+the compositor on a click away. Reusing the panels' click-away catchers
+for it would need the popup's absolute position (the compositor places
+it, with slide and flip, relative to a layer surface whose position
+depends on other clients' exclusive zones) to cut the catcher's hole,
+and a catcher on the parent's layer competes with the parent for input
+in an order wlr-layer-shell leaves undefined. Recorded as an accepted
+deviation in features.md instead: a late popup closes on Escape when its
+surface has focus, on a press on any Strand surface (the router), or by
+logic; a click on another client leaves it open. M5's `strand toggle`
+opens popups from a key binding, whose key press serial is fresh, so the
+common late case grabs.
+
+**2026-10-06 · wave3-pixels (p3): the launcher in the exit test.** The
+launcher's source starts `export state open = false` and design.md opens
+it with `strand toggle launcher.open`, which lands in M5 (`strand toggle`
+and `strand set` say "not implemented yet (M5)"). The M2 exit test
+substitutes `open = true` and changes nothing else; the features.md exit
+note says so. The test also warms the virtual pointer up with a click on
+the launcher's padding (harmless whether or not it arrives), proves
+events arrive by a row's hover repaint, and then clicks the padding
+again (clear of the rows, which launch on a click); it types with a
+virtual keyboard (the input's caret, the filtered list, the hit's
+matched letters).
+
+**2026-10-06 · wave3-pixels (p3): `Range` reaches `marks:` as a pair.**
+The renderer reads `marks:` as `[start, end]` pairs, but `apps.search`
+gives `Range` records, which the scene conversion turned into their
+identity text: the launcher's matched letters were never coloured. The
+conversion now makes a `Range` record its `[start, end]` pair; other
+records keep converting to their identity.
+
+**2026-10-06 · wave3-pixels (p3): the paint cache is freed when idle,
+and animated gradients bypass it.** design.md: the cached offscreen
+groups are "about 4 MB, freed when idle". Entries no frame has used for
+`IDLE_FREE` (10 s) are freed at the next paint; an idle bar's minute tick
+paints only its clock, so its bar-wide shadow pixmap goes then and the
+cache does not count against the bar-only budget at rest. A gradient
+built again within 250 ms of another of the same frame size and kind, in
+another frame, is animated (the rice's `conic(from: t * 40deg, …)`
+ring): it is dithered cell by cell like a gradient too large to cache,
+uncached, so it neither rebuilds a pixmap per frame nor evicts the
+shadows. The pixels are the same either way (each is a function of its
+position in the frame), so a partial repaint still matches a full one.
+
+**2026-10-06 · wave3-pixels (p3): stand-in decodes keep their aspect.**
+A decode standing in while an image's box springs is placed by its
+fit's mapping from source to box (`Decoded::placed_in`: the source size
+and fit are kept with the decode) and clipped to the box, not stretched:
+a `contain` or `cover` image whose box changes aspect stays undistorted
+until its own decode arrives. The worker's wanted set is republished only
+when a surface's set of images changes, not on every frame.
+
+**2026-10-06 · wave3-pixels (p3): mock icons.** The mock desktop's apps
+and notification apps carry icon names the Adwaita theme ships (as
+`-symbolic`, which the lookup falls back to): `web-browser`,
+`utilities-terminal`, `system-file-manager`, `mail-unread`,
+`battery-caution`, so the sway screenshots show the launcher's and the
+toasts' images, their radius clip and the theme lookup.

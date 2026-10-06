@@ -1606,19 +1606,13 @@ fn popups_grab_only_right_after_a_press() {
         "{:?}",
         &mgr.state().host().input[before..]
     );
-    let mut closed = popup("Volume", 600.0);
-    closed.open = false;
-    mgr.state_mut().apply_surface_change(
-        VOLUME,
-        SurfaceChange::Updated {
-            spec: closed,
-            recreate: false,
-        },
-    );
-    pump(&mut mgr, Duration::from_millis(100));
-    assert!(mgr.state().surfaces_of(VOLUME).is_empty());
+    let bar = mgr.state().surfaces_of(BAR)[0];
+    assert!(mgr.state().holds_keyboard_for_popup(bar));
+    let volume = mgr.state().surfaces_of(VOLUME)[0];
 
-    // Long after the click (a timer, IPC): no grab, and it stays shown.
+    // Long after the click (a timer, IPC): no grab, and it stays shown,
+    // as does the grabbing volume menu (a popup with no grab is not
+    // bound by the topmost-grab rule).
     pump(
         &mut mgr,
         strand_surface::GRAB_WINDOW + Duration::from_millis(700),
@@ -1630,12 +1624,36 @@ fn popups_grab_only_right_after_a_press() {
     assert_eq!(mgr.state().stats().grabs, 2, "no grab with a stale serial");
     pump(&mut mgr, Duration::from_millis(600));
     assert_eq!(mgr.state().surfaces_of(LATE).len(), 1, "still shown");
+    assert_eq!(
+        mgr.state().surfaces_of(VOLUME),
+        vec![volume],
+        "the grabbing sibling stays open"
+    );
     assert!(
         !mgr.state().host().input[before..]
             .iter()
             .any(|e| matches!(e, InputEvent::ClickAway { .. })),
         "{:?}",
         &mgr.state().host().input[before..]
+    );
+
+    // The volume menu closes: the late popup alone does not hold the
+    // keyboard.
+    let mut closed = popup("Volume", 600.0);
+    closed.open = false;
+    mgr.state_mut().apply_surface_change(
+        VOLUME,
+        SurfaceChange::Updated {
+            spec: closed,
+            recreate: false,
+        },
+    );
+    pump(&mut mgr, Duration::from_millis(100));
+    assert!(mgr.state().surfaces_of(VOLUME).is_empty());
+    assert_eq!(mgr.state().surfaces_of(LATE).len(), 1);
+    assert!(
+        !mgr.state().holds_keyboard_for_popup(bar),
+        "a popup with no grab takes no keyboard"
     );
     let shot = sway.grim("HEADLESS-1");
     // Centred under its anchor (330), below the bar.
@@ -1815,6 +1833,7 @@ fn escape_reaches_a_grabbing_popup() {
     closed.name = Some("Calendar".into());
     closed.parent = Some(BAR);
     closed.open = false;
+    let before = mgr.state().host().input.len();
     mgr.state_mut().apply_surface_change(
         POPUP,
         SurfaceChange::Updated {
@@ -1827,6 +1846,14 @@ fn escape_reaches_a_grabbing_popup() {
         .unwrap();
     assert!(ok, "closed");
     assert!(!mgr.state().holds_keyboard_for_popup(bar));
+    // Keys go back to the surface with focus, which is told so (a
+    // launcher's input takes its caret back after its menu closes).
+    assert_eq!(mgr.state().keyboard_focus(), Some(bar));
+    assert!(
+        mgr.state().host().input[before..].contains(&InputEvent::KeyboardEnter { surface: bar }),
+        "{:?}",
+        &mgr.state().host().input[before..]
+    );
     drop(input);
     drop(pointer);
     drop(keyboard);

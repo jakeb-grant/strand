@@ -253,17 +253,35 @@ fn a_tooltip_shows_after_a_rest_and_hides_on_leave() {
     let lit = (0..size.w).any(|x| buf.px(x, size.h / 2)[1] > 0xc0);
     assert!(lit, "the label is drawn");
     assert_matches_ref("popup_tooltip", &buf, TOLERANCE);
-    // Logic changing the text while it shows: the tooltip follows.
+    // Logic changing the text while it shows: the tooltip follows in
+    // place (the same popup and surface, resized; no flicker).
+    r.take_surface_changes();
     let mut d = SceneDiff::new();
     d.set(n.clock, Prop::Tooltip, text("Calendar and events"));
     r.apply(d);
+    r.update();
     let again = r.tooltip_popup().expect("still shown");
-    assert_ne!(again, tip, "made again with the new text");
+    assert_eq!(again, tip, "the same popup");
     let label = r.tree().get(again).unwrap().children[0];
     assert_eq!(
         r.tree().get(label).unwrap().get(Prop::Text),
         Some(&text("Calendar and events"))
     );
+    let changes = r.take_surface_changes();
+    assert!(
+        !changes
+            .iter()
+            .any(|(_, c)| matches!(c, SurfaceChange::Removed | SurfaceChange::Created(_))),
+        "{changes:?}"
+    );
+    let wider = changes
+        .iter()
+        .find_map(|(node, c)| match c {
+            SurfaceChange::Updated { spec, .. } if *node == tip => spec.width,
+            _ => None,
+        })
+        .expect("its spec follows the text");
+    assert!(wider > size.w as f32, "{wider} after {}", size.w);
     // Leaving hides it.
     r.set_widget_flag(n.clock, Flag::Hover, false);
     assert!(r.tooltip_popup().is_none());

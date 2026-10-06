@@ -442,3 +442,67 @@ fn the_theme_switcher_writes_the_look() {
     assert!(changed(b.x + w, b.x + 2.0 * w), "the chosen segment");
     assert!(changed(b.x, b.x + w), "the one chosen before");
 }
+
+/// `marks: h.ranges` from `apps.search` (a list of `Range` records)
+/// reaches the renderer as `[start, end]` pairs, which it paints in
+/// `mark_color` (the launcher's matched letters in `$accent`).
+#[test]
+fn search_ranges_reach_text_marks() {
+    let mut map = SourceMap::new();
+    map.add(
+        "marks.strand",
+        "let hits = apps.search(\"oo\")\nbar B { edge: top; height: 40\n  row { for h in hits { text h.app.name { marks: h.ranges } } }\n}\n",
+    );
+    let compiled = strand_compiler::compile(&map);
+    assert_eq!(compiled.errors(), 0, "{:?}", compiled.diagnostics);
+    let program = Arc::new(lower::lower(
+        &compiled.program,
+        strand_compiler::schema::Schema::builtin(),
+    ));
+    let rt = Runtime::new();
+    let host = Rc::new(SchemaHost::mock(&rt, &program.types));
+    let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+    host.set(&rt, "screens.all", Value::list(vec![screen]))
+        .unwrap();
+    let app = host.record(
+        "App",
+        &[
+            ("id", Value::text("foot")),
+            ("name", Value::text("Foot")),
+            ("icon", Value::text("utilities-terminal")),
+        ],
+    );
+    host.set(&rt, "apps.all", Value::list(vec![app])).unwrap();
+    let inst = Instance::new(
+        &rt,
+        program,
+        host.clone(),
+        strand_compiler::instantiate::Storage::none(),
+    );
+    let mut r = renderer();
+    assert!(r.apply(inst.flush().diff).is_empty());
+    let bar = r
+        .take_surface_changes()
+        .iter()
+        .find_map(|(id, c)| match c {
+            SurfaceChange::Created(s) if s.kind == strand_scene::NodeKind::Bar => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    let surface = SurfaceId(1);
+    r.attach_surface(surface, bar);
+    r.configure_surface(surface, Size::new(400, 40), Scale::ONE);
+    let marks: Vec<_> = r
+        .boxes(surface)
+        .unwrap()
+        .rects
+        .keys()
+        .filter_map(|n| r.tree().get(*n)?.get(strand_scene::Prop::Marks).cloned())
+        .collect();
+    use strand_scene::PropValue::{List, Number};
+    assert_eq!(
+        marks,
+        vec![List(vec![List(vec![Number(1.0), Number(3.0)])])],
+        "\"Foot\" marked at 1..3"
+    );
+}

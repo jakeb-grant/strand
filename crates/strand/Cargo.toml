@@ -27,6 +27,7 @@ serde_json = "1.0.151"
 [dev-dependencies]
 libmimalloc-sys = { version = "0.1.49", features = ["extended"] }
 wayland-client = "0.31.15"
+wayland-protocols-misc = { version = "0.3.12", features = ["client"] }
 wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
 
 [lints]

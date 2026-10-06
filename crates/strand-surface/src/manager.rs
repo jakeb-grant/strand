@@ -403,6 +403,10 @@ enum Role {
         popup: Popup,
         parent: SurfaceId,
         config: PopupConfig,
+        /// It was made with an `xdg_popup.grab` (asked for, and a press
+        /// came within [`GRAB_WINDOW`]); only these take the keyboard
+        /// and obey xdg-shell's topmost-grab rule.
+        grabbed: bool,
     },
 }
 
@@ -419,6 +423,11 @@ impl Role {
             Role::Popup { parent, .. } => Some(*parent),
             Role::Layer(_) => None,
         }
+    }
+
+    /// A popup made with an `xdg_popup.grab`.
+    fn grabbed(&self) -> bool {
+        matches!(self, Role::Popup { grabbed: true, .. })
     }
 }
 
@@ -1292,7 +1301,16 @@ impl<H: SurfaceHost + 'static> State<H> {
         let Some(positioner) = self.positioner(&config) else {
             return;
         };
-        if config.grab {
+        // It grabs only with the serial of a press just made: a popup
+        // opened later (a timer, `on change`, IPC) has no grab, so it
+        // neither takes the keyboard nor closes other grabbing popups.
+        let grab = match &self.last_action {
+            Some(a) if config.grab && a.at.elapsed() <= GRAB_WINDOW => {
+                Some((a.seat.clone(), a.serial))
+            }
+            _ => None,
+        };
+        if grab.is_some() {
             self.dismiss_other_grabs(parent);
             // The layer surface takes the keyboard before the grab starts:
             // once it has, the compositor moves keyboard focus no more.
@@ -1330,11 +1348,8 @@ impl<H: SurfaceHost + 'static> State<H> {
             layer.get_popup(popup.xdg_popup());
         }
         let (monitor, output, scale_src) = (ps.monitor.clone(), ps.output, ps.output);
-        if config.grab
-            && let Some(a) = &self.last_action
-            && a.at.elapsed() <= GRAB_WINDOW
-        {
-            popup.xdg_popup().grab(&a.seat, a.serial);
+        if let Some((seat, serial)) = &grab {
+            popup.xdg_popup().grab(seat, *serial);
             self.stats.grabs += 1;
         }
         let key = (node, Placement::Focused);
@@ -1380,6 +1395,7 @@ impl<H: SurfaceHost + 'static> State<H> {
                 popup,
                 parent,
                 config,
+                grabbed: grab.is_some(),
             },
             config: layer_like,
             viewport,
@@ -1424,6 +1440,18 @@ impl<H: SurfaceHost + 'static> State<H> {
         None
     }
 
+    /// True if popup `id` is nested, at any depth, in surface `ancestor`.
+    fn is_nested_in(&self, mut id: SurfaceId, ancestor: SurfaceId) -> bool {
+        for _ in 0..64 {
+            match self.surfaces.get(&id).and_then(|s| s.role.popup_parent()) {
+                Some(p) if p == ancestor => return true,
+                Some(p) => id = p,
+                None => return false,
+            }
+        }
+        false
+    }
+
     /// Makes layer surface `id` `exclusive` for a popup grab (`on`), or
     /// gives it back its own keyboard interactivity.
     fn set_grab_keyboard(&mut self, id: SurfaceId, on: bool) {
@@ -1455,7 +1483,7 @@ impl<H: SurfaceHost + 'static> State<H> {
 
     /// The topmost grabbing popup nested in layer surface `layer`.
     fn topmost_grab(&self, layer: SurfaceId) -> Option<SurfaceId> {
-        let grabbing = |s: &Surface| matches!(&s.role, Role::Popup { config, .. } if config.grab);
+        let grabbing = |s: &Surface| s.role.grabbed();
         self.surfaces
             .values()
             .filter(|s| grabbing(s) && self.root_layer(s.id) == Some(layer))
@@ -1493,10 +1521,37 @@ impl<H: SurfaceHost + 'static> State<H> {
             .keyboard_focus
             .and_then(|f| self.root_layer(f))
             .and_then(|l| self.topmost_grab(l));
-        if want != self.grab_focus {
-            self.grab_focus = want;
-            if let Some(p) = want {
-                self.send_input(InputEvent::KeyboardEnter { surface: p });
+        if want == self.grab_focus {
+            return;
+        }
+        // Keys move from the old target to the new one: each is told,
+        // as the compositor would tell surfaces of their own focus (the
+        // surface that has it already was told by the compositor). A
+        // popup whose nested popup takes the keys is not told it lost
+        // them: a leave closes an `open: <->` popup, and the nested one
+        // with it.
+        let old = std::mem::replace(&mut self.grab_focus, want);
+        if let Some(o) = old
+            && self.surfaces.contains_key(&o)
+            && Some(o) != self.keyboard_focus
+            && !want.is_some_and(|w| self.is_nested_in(w, o))
+        {
+            self.send_input(InputEvent::KeyboardLeave { surface: o });
+        }
+        match want {
+            Some(p) => {
+                if Some(p) != self.keyboard_focus {
+                    self.send_input(InputEvent::KeyboardEnter { surface: p });
+                }
+            }
+            // The grab ended: keys go back to the surface with focus.
+            None => {
+                if let Some(f) = self.keyboard_focus
+                    && old != Some(f)
+                    && self.surfaces.contains_key(&f)
+                {
+                    self.send_input(InputEvent::KeyboardEnter { surface: f });
+                }
             }
         }
     }
@@ -1983,9 +2038,8 @@ impl<H: SurfaceHost + 'static> State<H> {
         drop(s);
         self.clock.forget(id);
         self.host.surface_detached(id);
-        if self.grab_focus == Some(id) {
-            self.grab_focus = None;
-        }
+        // `grab_focus` may name it still: the sync moves it on and tells
+        // the new target (not the gone one).
         self.sync_popup_keyboard();
     }
 
@@ -2782,12 +2836,12 @@ impl<H: SurfaceHost + 'static> State<H> {
             .surfaces
             .values()
             .filter(|s| !chain.contains(&s.id))
-            .filter(|s| matches!(&s.role, Role::Popup { config, .. } if config.grab))
+            .filter(|s| s.role.grabbed())
             .filter(|s| {
                 s.role
                     .popup_parent()
                     .and_then(|p| self.surfaces.get(&p))
-                    .is_none_or(|p| !matches!(&p.role, Role::Popup { config, .. } if config.grab))
+                    .is_none_or(|p| !p.role.grabbed())
             })
             .map(|s| s.id)
             .collect();
