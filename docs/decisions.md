@@ -5949,3 +5949,12 @@ now held to twice the budget (10 ms), a check of its shape; with 0 and
 8 scopes `apply`, each frame and (along `spring(1600, 1)`) the whole
 swap stay held to 5 ms, and the claim in features.md is narrowed to
 match.
+
+**2026-10-06 · wave3-pixels (carried r1): CI is green.** With the build
+packages, the fonts as the references were drawn, room on the disk, THP
+off and the gates above, GitHub Actions run 37516246142 on `e4604dd`
+passed every step of the check job: the workspace tests (the portal's
+seven on a private `dbus-daemon`, `STRAND_REQUIRE_DBUS=1`, and the sway
+tiers, `STRAND_REQUIRE_SWAY=1`), the optimised M0 budget and M2
+acceptance tests, the theme-swap bench, the reload latency bench and
+the reload fuzzer's short run.

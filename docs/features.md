@@ -149,7 +149,7 @@ Exit: [ ] runs on Hyprland, niri and sway · [ ] 100 reloads with no reconnects 
 - [ ] Service schemas drive type checking and LSP hover (LSP side: `strand_dev::serve_with` takes the extended schema and checks, hovers and completes with it; hover reads `Schema::doc`, and every builtin entry is documented — `crates/strand-dev/tests/lsp.rs::hover_shows_types_and_schema_docs`, `crates/strand-compiler/src/schema/mod.rs` (test `builtin_schema_is_documented`); service crates extending it is M3)
 - [ ] The compiler collects the service paths a shell uses; only those services start (lazy start input)
 - [ ] Notification name conflict with dunst/mako fails clearly
-- [ ] python-dbusmock CI tier (UPower, NetworkManager, BlueZ, logind, notifications under `dbus-run-session`; PipeWire with a null sink; zbus mocks for the portal and tray) (portal mock on a private `dbus-daemon` done: `crates/strand-watch/tests/portal.rs`, which may skip in CI until CI installs `dbus` and sets `STRAND_REQUIRE_DBUS`)
+- [ ] python-dbusmock CI tier (UPower, NetworkManager, BlueZ, logind, notifications under `dbus-run-session`; PipeWire with a null sink; zbus mocks for the portal and tray) (portal mock on a private `dbus-daemon` done: `crates/strand-watch/tests/portal.rs`, run in CI with `dbus` installed and `STRAND_REQUIRE_DBUS=1` (they fail rather than skip there); first green GitHub run of the whole check job: CI run 37516246142 on `e4604dd`, the 7 portal tests passing)
 
 ## M4 Power features (weeks 35–44)
 
