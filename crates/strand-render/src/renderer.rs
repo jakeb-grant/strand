@@ -328,6 +328,10 @@ pub struct Renderer {
     anim: Animator,
     /// `reduced_motion` as the host set it ([`Renderer::set_reduced_motion`]).
     reduced_motion: bool,
+    /// When the frame loop's current run of paints began (none while
+    /// nothing paints): what the paint cache holds unused since then is
+    /// freed when the run ends.
+    burst: Option<Instant>,
     /// Surfaces whose closing pose finished: their spec reports them
     /// closed until they open again.
     closed: HashSet<NodeId>,
@@ -584,6 +588,7 @@ impl Renderer {
             resize_wait: Duration::ZERO,
             anim: Animator::default(),
             reduced_motion: false,
+            burst: None,
             closed: HashSet::new(),
             held: BTreeSet::new(),
             exit_stall: EXIT_STALL,
@@ -3023,6 +3028,51 @@ fn glide_moved(
     }
 }
 
+/// Above this many changed glyph cells (old or new), the change is
+/// damaged as the box around them, not cell by cell.
+const GLYPH_CELLS_COMPARED: usize = 64;
+
+/// Damage for a text whose glyphs changed from `a` to `b` (cells in
+/// layout order): the cells that differ, where they were and where they
+/// are. The common prefix and suffix are skipped (a clock tick, an edit
+/// at the end of a long body), so the cost is linear in the glyphs; a
+/// middle longer than [`GLYPH_CELLS_COMPARED`] is damaged as one box per
+/// side.
+fn glyph_damage(a: &[(strand_scene::Rect, u64)], b: &[(strand_scene::Rect, u64)], d: &mut Damage) {
+    let prefix = a.iter().zip(b).take_while(|(x, y)| x == y).count();
+    let (a, b) = (&a[prefix..], &b[prefix..]);
+    let suffix = a
+        .iter()
+        .rev()
+        .zip(b.iter().rev())
+        .take_while(|(x, y)| x == y)
+        .count();
+    let (a, b) = (&a[..a.len() - suffix], &b[..b.len() - suffix]);
+    if a.len().max(b.len()) > GLYPH_CELLS_COMPARED {
+        for side in [a, b] {
+            if let Some(u) = side
+                .iter()
+                .map(|c| c.0)
+                .filter(|r| !r.is_empty())
+                .reduce(|u, r| u.union(r))
+            {
+                d.add(u);
+            }
+        }
+        return;
+    }
+    for c in a {
+        if !b.contains(c) {
+            d.add(c.0);
+        }
+    }
+    for c in b {
+        if !a.contains(c) {
+            d.add(c.0);
+        }
+    }
+}
+
 fn diff_records(
     old: &BTreeMap<NodeId, NodeRecord>,
     new: &BTreeMap<NodeId, NodeRecord>,
@@ -3034,18 +3084,7 @@ fn diff_records(
             // Only its glyphs changed: the glyphs that differ, where
             // they were and where they are.
             Some(o) => match (&o.glyphs, &n.glyphs) {
-                (Some(a), Some(b)) if a.rest == b.rest => {
-                    for c in &a.cells {
-                        if !b.cells.contains(c) {
-                            d.add(c.0);
-                        }
-                    }
-                    for c in &b.cells {
-                        if !a.cells.contains(c) {
-                            d.add(c.0);
-                        }
-                    }
-                }
+                (Some(a), Some(b)) if a.rest == b.rest => glyph_damage(&a.cells, &b.cells, d),
                 _ => {
                     d.add(o.bounds);
                     d.add(n.bounds);
@@ -3063,6 +3102,7 @@ fn diff_records(
 
 impl Painter for Renderer {
     fn paint(&mut self, surface: SurfaceId, target: &mut PaintTarget<'_>) -> Damage {
+        let burst = *self.burst.get_or_insert_with(Instant::now);
         let damage = self.paint_frame(surface, target);
         // Exits the frame finished: ghosts unmount (their siblings glide
         // into the gap from the next frame), closing surfaces close, and
@@ -3071,6 +3111,14 @@ impl Painter for Renderer {
         self.process_finished();
         self.release_holds();
         self.arm_timer();
+        // The frame loop stops (no surface wants another frame): the
+        // paint cache's entries none of its frames used are idle, and go
+        // now rather than at a wake of their own (design.md: "freed when
+        // idle"; the M0 gate: no wakeup between ticks).
+        if !self.surfaces.keys().any(|s| self.wants(*s)) {
+            self.raster.trim_unused_since(burst);
+            self.burst = None;
+        }
         damage
     }
 
@@ -3276,6 +3324,46 @@ impl Renderer {
 
 #[cfg(test)]
 mod tests {
+
+    /// The glyph diff is linear: 50,000 cells (a quadratic diff is
+    /// 2.5 × 10^9 comparisons) with one changed at the end, in the
+    /// middle, and all changed, each in well under a frame even in a
+    /// debug build; the damage is the changed cells, or their box.
+    #[test]
+    fn glyph_damage_is_linear_in_the_glyphs() {
+        use strand_scene::Rect;
+        let cells: Vec<(Rect, u64)> = (0..50_000)
+            .map(|i| (Rect::new((i % 200) * 10, (i / 200) * 16, 10, 16), i as u64))
+            .collect();
+        let start = Instant::now();
+        // The last glyph.
+        let mut b = cells.clone();
+        b[49_999].1 = 7;
+        let mut d = Damage::default();
+        glyph_damage(&cells, &b, &mut d);
+        assert_eq!(d.area(), 160, "{d:?}");
+        // One in the middle.
+        let mut b = cells.clone();
+        b[25_000].1 = 7;
+        let mut d = Damage::default();
+        glyph_damage(&cells, &b, &mut d);
+        assert_eq!(d.bounds(), Some(cells[25_000].0));
+        // A glyph inserted near the start: everything after it moved.
+        let mut b = cells.clone();
+        b.insert(10, (Rect::new(1, 1, 10, 16), 9));
+        for c in &mut b[11..] {
+            c.0.x += 10;
+        }
+        let mut d = Damage::default();
+        glyph_damage(&cells, &b, &mut d);
+        assert!(d.bounds().is_some_and(|r| r.contains_rect(cells[30_000].0)));
+        // Nothing changed.
+        let mut d = Damage::default();
+        glyph_damage(&cells, &cells, &mut d);
+        assert!(d.is_empty());
+        let took = start.elapsed();
+        assert!(took < Duration::from_millis(250), "{took:?}");
+    }
     use super::*;
     use std::time::Duration;
     use strand_scene::{Color, PropValue};

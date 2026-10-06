@@ -273,8 +273,29 @@ impl Desk {
         }
     }
 
+    /// Fails with the log when strand has exited (a crash is reported as
+    /// one, not as whatever the desktop shows without it).
+    fn assert_alive(&self) {
+        let Some(p) = &self.strand else {
+            return;
+        };
+        let stat = std::fs::read_to_string(format!("/proc/{}/stat", p.0.id())).unwrap_or_default();
+        // The state follows the parenthesised command name.
+        let state = stat
+            .rsplit_once(')')
+            .and_then(|(_, rest)| rest.split_whitespace().next())
+            .unwrap_or("X");
+        assert!(
+            !matches!(state, "Z" | "X" | "x"),
+            "{}: strand exited: {}",
+            self.tag,
+            self.log_text()
+        );
+    }
+
     /// A screenshot of one output, in its buffer pixels.
     fn shot(&self, output: &str) -> Img {
+        self.assert_alive();
         let path = self.dir.join(format!("{output}.ppm"));
         let ok = Command::new("grim")
             .args(["-t", "ppm", "-o", output])
@@ -289,6 +310,7 @@ impl Desk {
     /// The region `r` of `output` (grim reads only that region of
     /// `HEADLESS-1`, whose scale is 1).
     fn region(&self, output: &str, r: Rect) -> Img {
+        self.assert_alive();
         if output != "HEADLESS-1" {
             return self.shot(output).crop(r);
         }
@@ -304,18 +326,32 @@ impl Desk {
         Img::ppm(&std::fs::read(&path).unwrap())
     }
 
-    /// The region `r` of `output` once it has not changed for 500 ms
-    /// (every spring at rest, and a content-sized surface's deferred
-    /// shrink done).
+    /// Painted frames so far (`STRAND_LOG=damage` lines).
+    fn frames(&self) -> usize {
+        self.log_text()
+            .lines()
+            .filter(|l| l.starts_with("strand: damage"))
+            .count()
+    }
+
+    /// The region `r` of `output` once neither it nor anything strand
+    /// paints has changed for 500 ms (every spring at rest, and a
+    /// content-sized surface's deferred shrink done). It cannot tell a
+    /// round trip that has not started yet from one that is over: after
+    /// an action, wait for the state it leads to first ([`Desk::wait`],
+    /// or [`Desk::settled_ref`]).
     fn settled(&self, output: &str, r: Rect) -> Img {
         let deadline = Instant::now() + Duration::from_secs(15);
         let mut last = self.region(output, r);
+        let mut frames = self.frames();
         let mut since = Instant::now();
         loop {
             std::thread::sleep(Duration::from_millis(60));
             let next = self.region(output, r);
-            if next != last {
+            let painted = self.frames();
+            if next != last || painted != frames {
                 last = next;
+                frames = painted;
                 since = Instant::now();
             } else if since.elapsed() >= Duration::from_millis(500) {
                 // Every settled frame under `STRAND_SHOTS`, numbered.
@@ -331,6 +367,44 @@ impl Desk {
                 "{}: {output} {r:?} never settled",
                 self.tag
             );
+        }
+    }
+
+    /// The region `r` of `output` once it has reached the committed
+    /// reference `name` (up to 15 s: a slow logic → render → configure
+    /// round trip is waited for, not read as settled), settled, and
+    /// matched against it ([`Img::matches_ref`]).
+    fn settled_ref(&self, output: &str, r: Rect, name: &str) -> Img {
+        if std::env::var_os("STRAND_UPDATE_REFS").is_none() {
+            let deadline = Instant::now() + Duration::from_secs(15);
+            while Instant::now() < deadline && self.region(output, r).compare(name).is_err() {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+        let img = self.settled(output, r);
+        img.matches_ref(name);
+        img
+    }
+
+    /// The region `r` of `output` as soon as it matches the committed
+    /// reference `name` (up to 15 s), for a surface that does not stay
+    /// long enough to settle under load: the OSD hides 1.2 s after the
+    /// change that showed it, which a slow debug build can spend mostly
+    /// on its way in. `STRAND_UPDATE_REFS=1` takes the settled region.
+    fn reaches_ref(&self, output: &str, r: Rect, name: &str) -> Img {
+        if std::env::var_os("STRAND_UPDATE_REFS").is_some() {
+            let img = self.settled(output, r);
+            img.matches_ref(name);
+            return img;
+        }
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let img = self.region(output, r);
+            if img.compare(name).is_ok() || Instant::now() >= deadline {
+                img.matches_ref(name);
+                return img;
+            }
+            std::thread::sleep(Duration::from_millis(30));
         }
     }
 
@@ -402,6 +476,12 @@ const CHANNEL_TOLERANCE: u8 = 24;
 /// At most this share of a reference's pixels may differ.
 const PIXEL_TOLERANCE: f64 = 0.005;
 
+/// No 4x4 block may hold more than this many differing pixels: a missing
+/// or changed glyph (the clock's digits, the OSD's "30%", a toast's
+/// summary) fails however small it is against the whole region, while
+/// antialiasing noise, scattered, passes.
+const BLOCK_TOLERANCE: usize = 4;
+
 impl Img {
     fn ppm(ppm: &[u8]) -> Img {
         // Binary PPM: "P6\n<w> <h>\n255\n" then RGB.
@@ -450,35 +530,36 @@ impl Img {
             .unwrap();
     }
 
-    /// The same image as the committed reference `name`, within the
-    /// tolerance: at most 0.5% of the pixels further apart than 24 in a
-    /// channel. `STRAND_UPDATE_REFS=1` writes the reference instead. A
-    /// mismatch leaves the shot and a diff (differing pixels in red)
-    /// under `target/acceptance/`.
-    fn matches_ref(&self, name: &str) {
-        let refs = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/refs/acceptance");
-        let path = refs.join(format!("{name}.png"));
-        if let Some(dir) = std::env::var_os("STRAND_SHOTS") {
-            self.save(&PathBuf::from(dir).join(format!("{name}.png")));
-        }
-        if std::env::var_os("STRAND_UPDATE_REFS").is_some() {
-            self.save(&path);
-            return;
-        }
-        let reference = image::open(&path)
+    /// The committed reference `name`.
+    fn reference(name: &str) -> image::RgbImage {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/refs/acceptance")
+            .join(format!("{name}.png"));
+        image::open(&path)
             .unwrap_or_else(|e| panic!("reference {}: {e}", path.display()))
-            .to_rgb8();
-        let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/acceptance");
+            .to_rgb8()
+    }
+
+    /// Compares with the reference `name`: the differing pixels (further
+    /// apart than 24 in a channel, marked red in the returned diff) may
+    /// be at most 0.5% of the image, and at most [`BLOCK_TOLERANCE`] in
+    /// any 4x4 block.
+    fn compare(&self, name: &str) -> Result<(), (String, Img)> {
+        let reference = Img::reference(name);
         let (rw, rh) = (reference.width() as usize, reference.height() as usize);
         if (rw, rh) != (self.w, self.h) {
-            self.save(&out.join(format!("{name}.png")));
-            panic!(
-                "{name}: {}x{} against the reference's {rw}x{rh}",
-                self.w, self.h
-            );
+            return Err((
+                format!(
+                    "{name}: {}x{} against the reference's {rw}x{rh}",
+                    self.w, self.h
+                ),
+                self.clone(),
+            ));
         }
         let mut diff = self.clone();
         let mut differ = 0usize;
+        let mut blocks = vec![0usize; self.w.div_ceil(4) * self.h.div_ceil(4)];
+        let bw = self.w.div_ceil(4);
         for (i, (p, q)) in self
             .rgb
             .chunks(3)
@@ -491,19 +572,53 @@ impl Img {
                 .any(|(a, b)| a.abs_diff(*b) > CHANNEL_TOLERANCE);
             if far {
                 differ += 1;
+                let (x, y) = (i % self.w, i / self.w);
+                blocks[(y / 4) * bw + x / 4] += 1;
                 diff.rgb[i * 3..i * 3 + 3].copy_from_slice(&[255, 0, 0]);
             }
         }
         let share = differ as f64 / (self.w * self.h) as f64;
-        if share > PIXEL_TOLERANCE {
+        let (worst, at) = blocks
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (*n, i))
+            .max()
+            .unwrap_or((0, 0));
+        if share > PIXEL_TOLERANCE || worst > BLOCK_TOLERANCE {
+            return Err((
+                format!(
+                    "{name}: {differ} pixels ({:.2}%) differ from the reference (tolerance {:.1}%), \
+                     {worst} of the 4x4 block at {},{} (tolerance {BLOCK_TOLERANCE}); \
+                     see target/acceptance/",
+                    share * 100.0,
+                    PIXEL_TOLERANCE * 100.0,
+                    (at % bw) * 4,
+                    (at / bw) * 4,
+                ),
+                diff,
+            ));
+        }
+        Ok(())
+    }
+
+    /// The same image as the committed reference `name`, within the
+    /// tolerance ([`Img::compare`]). `STRAND_UPDATE_REFS=1` writes the
+    /// reference instead. A mismatch leaves the shot and a diff
+    /// (differing pixels in red) under `target/acceptance/`.
+    fn matches_ref(&self, name: &str) {
+        if let Some(dir) = std::env::var_os("STRAND_SHOTS") {
+            self.save(&PathBuf::from(dir).join(format!("{name}.png")));
+        }
+        if std::env::var_os("STRAND_UPDATE_REFS").is_some() {
+            let refs = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/refs/acceptance");
+            self.save(&refs.join(format!("{name}.png")));
+            return;
+        }
+        if let Err((why, diff)) = self.compare(name) {
+            let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/acceptance");
             self.save(&out.join(format!("{name}.png")));
             diff.save(&out.join(format!("{name}.diff.png")));
-            panic!(
-                "{name}: {differ} pixels ({:.2}%) differ from the reference (tolerance {:.1}%); \
-                 see target/acceptance/",
-                share * 100.0,
-                PIXEL_TOLERANCE * 100.0
-            );
+            panic!("{why}");
         }
     }
 }
@@ -579,10 +694,8 @@ fn the_bar_and_its_calendar_on_two_outputs() {
     let Some(mut desk) = Desk::start("bar") else {
         return;
     };
-    let one = desk.settled("HEADLESS-1", BAR_1);
-    let two = desk.settled("HEADLESS-2", BAR_2);
-    one.matches_ref("bar_headless1");
-    two.matches_ref("bar_headless2");
+    let one = desk.settled_ref("HEADLESS-1", BAR_1, "bar_headless1");
+    let two = desk.settled_ref("HEADLESS-2", BAR_2, "bar_headless2");
     // The clock: the ink run nearest each output's centre, centred.
     for (name, img, bar) in [("HEADLESS-1", &one, 14..38), ("HEADLESS-2", &two, 18..48)] {
         let bg = img.px(img.w / 2, bar.start - 3);
@@ -623,7 +736,11 @@ fn the_bar_and_its_calendar_on_two_outputs() {
     let third = (d1[2].0 + d1[2].1) / 2;
     pointer.click(third as u32, 26, LAYOUT.0, LAYOUT.1);
     pointer.motion(1200, 700, LAYOUT.0, LAYOUT.1);
-    let after = desk.settled("HEADLESS-1", rect(0, 0, 200, 64));
+    desk.wait("the pill on the third dot", 10, |d| {
+        let d = dots(&d.region("HEADLESS-1", rect(0, 0, 200, 64)), 26, 14..88);
+        d.len() == 4 && d[2].1 - d[2].0 > 20 && d[1].1 - d[1].0 < 12
+    });
+    let after = desk.settled_ref("HEADLESS-1", rect(0, 0, 200, 64), "bar_third_workspace");
     let d = dots(&after, 26, 14..88);
     assert_eq!(d.len(), 4, "{d:?}");
     assert!(
@@ -631,7 +748,6 @@ fn the_bar_and_its_calendar_on_two_outputs() {
         "the click did not focus the third workspace: {d:?}"
     );
     assert!(d[1].1 - d[1].0 < 12, "the second is still wide: {d:?}");
-    after.matches_ref("bar_third_workspace");
 
     // The clock's click opens the calendar below it, centred on it.
     let surfaces = desk.surface_count();
@@ -639,8 +755,7 @@ fn the_bar_and_its_calendar_on_two_outputs() {
     desk.wait("the calendar popup", 10, |d| d.surface_count() > surfaces);
     pointer.motion(1800, 900, LAYOUT.0, LAYOUT.1);
     let card = rect(1280 - 200, 44, 400, 320);
-    let cal = desk.settled("HEADLESS-1", card);
-    cal.matches_ref("calendar_october");
+    let cal = desk.settled_ref("HEADLESS-1", card, "calendar_october");
     let light: Vec<usize> = (0..cal.w).filter(|&x| sum(cal.px(x, 40)) > 600).collect();
     let (l, r) = (light[0], *light.last().unwrap());
     assert!(
@@ -669,8 +784,7 @@ fn the_bar_and_its_calendar_on_two_outputs() {
         assert!(Instant::now() < deadline, "‹ did not page the month");
         std::thread::sleep(Duration::from_millis(50));
     }
-    desk.settled("HEADLESS-1", card)
-        .matches_ref("calendar_september");
+    desk.settled_ref("HEADLESS-1", card, "calendar_september");
     // Escape closes it (the popup has the keyboard grab).
     let mut keys = keyboard::Keyboard::new(&desk.dir.join(&desk.display), &desk.dir);
     std::thread::sleep(Duration::from_millis(200));
@@ -703,7 +817,7 @@ fn the_bar_and_its_calendar_on_two_outputs() {
         while start.elapsed() < Duration::from_millis(600) {
             seen.push(clock_contrast(&desk.region("HEADLESS-1", BAR_1)));
         }
-        let bar = desk.settled("HEADLESS-1", BAR_1);
+        let bar = desk.settled_ref("HEADLESS-1", BAR_1, &format!("bar_{look}"));
         seen.push(clock_contrast(&bar));
         eprintln!("clock contrast through the swap to {look}: {seen:.2?}");
         // Light → dark is the swap no spring keeps readable: design.md's
@@ -727,9 +841,7 @@ fn the_bar_and_its_calendar_on_two_outputs() {
             .filter(|&(x, y)| sum(bar.px(x, y)) > 450)
             .count();
         assert!(tray > 30, "{look}: the tray icon is not light: {tray} px");
-        bar.matches_ref(&format!("bar_{look}"));
-        desk.settled("HEADLESS-2", BAR_2)
-            .matches_ref(&format!("bar_{look}_headless2"));
+        desk.settled_ref("HEADLESS-2", BAR_2, &format!("bar_{look}_headless2"));
     }
     assert!(desk.errors().is_empty(), "{:?}", desk.errors());
 }
@@ -758,7 +870,7 @@ fn the_launcher_filters_selects_and_closes() {
         let s = d.region("HEADLESS-1", area);
         (0..s.h).any(|y| sum(s.px(col, y)) > 600)
     });
-    let opened = desk.settled("HEADLESS-1", area);
+    let opened = desk.settled_ref("HEADLESS-1", area, "launcher_open");
     let ws = desk.msg(&["-t", "get_workspaces"]).unwrap();
     let ws: serde_json::Value = serde_json::from_str(&ws).unwrap();
     let ws = ws
@@ -805,7 +917,6 @@ fn the_launcher_filters_selects_and_closes() {
     // The caret (`$accent`) in the input.
     let caret = (top + 8..top + 40).any(|y| (left + 4..left + 40).any(|x| blue(opened.px(x, y))));
     assert!(caret, "no caret in the focused input");
-    opened.matches_ref("launcher_open");
 
     // "fi": Firefox and Files, their "Fi" marked in the accent; Down
     // selects Files.
@@ -823,7 +934,17 @@ fn the_launcher_filters_selects_and_closes() {
         std::thread::sleep(Duration::from_millis(50));
     }
     keys.press("Down");
-    let typed = desk.settled("HEADLESS-1", area);
+    // Two rows, the second selected.
+    desk.wait("Down to select the second hit", 10, |d| {
+        let s = d.region("HEADLESS-1", area);
+        let rows: Vec<usize> = (0..s.h).filter(|&y| sum(s.px(col, y)) > 600).collect();
+        let (Some(&t), Some(&b)) = (rows.first(), rows.last()) else {
+            return false;
+        };
+        let two = icons(&s, t, b);
+        two.len() == 2 && tint(s.px(col, two[1].0 + 4)) >= tint(s.px(col, two[0].0 + 4)) + 10
+    });
+    let typed = desk.settled_ref("HEADLESS-1", area, "launcher_typed");
     let rows: Vec<usize> = (0..typed.h)
         .filter(|&y| sum(typed.px(col, y)) > 600)
         .collect();
@@ -839,7 +960,6 @@ fn the_launcher_filters_selects_and_closes() {
         .filter(|&(x, y)| blue(typed.px(x, y)))
         .count();
     assert!(marked > 20, "no marked letters: {marked} px");
-    typed.matches_ref("launcher_typed");
 
     // Return launches the selected hit and closes the launcher.
     keys.press("Return");
@@ -869,8 +989,7 @@ fn the_launcher_filters_selects_and_closes() {
         assert!(Instant::now() < deadline, "reopened without its three rows");
         std::thread::sleep(Duration::from_millis(50));
     }
-    desk.settled("HEADLESS-1", area)
-        .matches_ref("launcher_open");
+    desk.settled_ref("HEADLESS-1", area, "launcher_open");
     // Escape closes it.
     keys.press("Escape");
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -932,7 +1051,7 @@ fn toasts_arrive_stack_slide_and_leave() {
             lefts.push(x);
         }
     }
-    let one = desk.settled("HEADLESS-1", TOASTS);
+    let one = desk.settled_ref("HEADLESS-1", TOASTS, "toasts_one");
     let rest = toast_left(&one, 62..110).expect("no toast");
     eprintln!("first toast's left edge while entering: {lefts:?}, at rest {rest}");
     assert_eq!(rest, 40, "the toast is not at margin 12");
@@ -950,7 +1069,6 @@ fn toasts_arrive_stack_slide_and_leave() {
         lefts.windows(2).all(|p| p[1] <= p[0] + 2),
         "the slide went backwards: {lefts:?}"
     );
-    one.matches_ref("toasts_one");
 
     let mut critical = note(
         2,
@@ -969,8 +1087,16 @@ fn toasts_arrive_stack_slide_and_leave() {
         "Grace",
         "Lunch at noon? I booked the place by the river.",
     ));
-    let three = desk.settled("HEADLESS-1", TOASTS);
-    three.matches_ref("toasts_three");
+    // The toasts' rows on a column of their left padding, below the
+    // bar and its shadow.
+    let lit = |img: &Img, x: usize| -> Vec<usize> {
+        (50..img.h).filter(|&y| sum(img.px(x, y)) > 600).collect()
+    };
+    let col = 40 + 6;
+    desk.wait("three toasts", 10, |d| {
+        runs(&lit(&d.region("HEADLESS-1", TOASTS), col)).len() == 3
+    });
+    let three = desk.settled_ref("HEADLESS-1", TOASTS, "toasts_three");
     // The critical one's border is `$error` (red).
     let red = (0..three.h)
         .flat_map(|y| (0..three.w).map(move |x| (x, y)))
@@ -980,12 +1106,6 @@ fn toasts_arrive_stack_slide_and_leave() {
         })
         .count();
     assert!(red > 300, "no `$error` border: {red} px");
-    // The toasts' rows on a column of their left padding, below the
-    // bar and its shadow.
-    let lit = |img: &Img, x: usize| -> Vec<usize> {
-        (50..img.h).filter(|&y| sum(img.px(x, y)) > 600).collect()
-    };
-    let col = 40 + 6;
     let bands = runs(&lit(&three, col));
     assert_eq!(bands.len(), 3, "three toasts: {bands:?}");
 
@@ -1007,7 +1127,10 @@ fn toasts_arrive_stack_slide_and_leave() {
             tops.push(t);
         }
     }
-    let two = desk.settled("HEADLESS-1", TOASTS);
+    desk.wait("the first toast to leave", 10, |d| {
+        runs(&lit(&d.region("HEADLESS-1", TOASTS), col)).len() == 2
+    });
+    let two = desk.settled_ref("HEADLESS-1", TOASTS, "toasts_after_dismiss");
     let bands2 = runs(&lit(&two, col));
     eprintln!("toast tops while the one above leaves: {tops:?}, at rest {bands2:?}");
     assert_eq!(bands2.len(), 2, "{bands2:?}");
@@ -1026,7 +1149,6 @@ fn toasts_arrive_stack_slide_and_leave() {
                 >= 2,
         "no frames of the slide up caught: {tops:?}"
     );
-    two.matches_ref("toasts_after_dismiss");
 
     // A short timeout: it comes and goes by itself (the pointer is away,
     // so `while !hover` lets it run).
@@ -1112,6 +1234,11 @@ fn meter_fill(img: &Img) -> Option<f64> {
 /// brightness change shows the brightness icon and level; the bar's
 /// speaker icon mutes (level 0); on the focused output only.
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "the OSD hides 1.2 s after the change that showed it, which a loaded debug build \
+              can spend before its first frame; CI runs it in the release step"
+)]
 fn the_osd_follows_volume_and_brightness() {
     let Some(mut desk) = Desk::start("osd") else {
         return;
@@ -1128,10 +1255,9 @@ fn the_osd_follows_volume_and_brightness() {
     desk.mock(serde_json::json!({"volume": 0.3}));
     let at = Instant::now();
     desk.wait("the OSD on a volume change", 10, shown);
-    let vol = desk.settled("HEADLESS-1", OSD);
+    let vol = desk.reaches_ref("HEADLESS-1", OSD, "osd_volume_30");
     let fill = meter_fill(&vol).expect("no meter");
     assert!((fill - 0.3).abs() < 0.04, "meter at {fill:.2}, volume 0.3");
-    vol.matches_ref("osd_volume_30");
     // Hidden 1.2 s after the change (and not before 1 s).
     desk.wait("the OSD to hide", 10, |d| !shown(d));
     let gone = at.elapsed();
@@ -1151,35 +1277,32 @@ fn the_osd_follows_volume_and_brightness() {
     pointer.wheel(2, x as u32, 26, LAYOUT.0, LAYOUT.1);
     pointer.motion(1200, 700, LAYOUT.0, LAYOUT.1);
     desk.wait("the OSD on a wheel", 10, shown);
-    let wheel = desk.settled("HEADLESS-1", OSD);
+    let wheel = desk.reaches_ref("HEADLESS-1", OSD, "osd_volume_20");
     let fill = meter_fill(&wheel).expect("no meter");
     assert!(
         (fill - 0.2).abs() < 0.04,
         "meter at {fill:.2} after two notches"
     );
-    wheel.matches_ref("osd_volume_20");
     desk.wait("the OSD to hide", 10, |d| !shown(d));
 
     // Brightness: its own icon and level.
     desk.mock(serde_json::json!({"brightness": 0.8}));
     desk.wait("the OSD on a brightness change", 10, shown);
-    let bright = desk.settled("HEADLESS-1", OSD);
+    let bright = desk.reaches_ref("HEADLESS-1", OSD, "osd_brightness_80");
     let fill = meter_fill(&bright).expect("no meter");
     assert!(
         (fill - 0.8).abs() < 0.04,
         "meter at {fill:.2}, brightness 0.8"
     );
-    bright.matches_ref("osd_brightness_80");
     desk.wait("the OSD to hide", 10, |d| !shown(d));
 
     // The speaker icon on the bar mutes: the OSD shows level 0.
     pointer.click(x as u32, 26, LAYOUT.0, LAYOUT.1);
     pointer.motion(1200, 700, LAYOUT.0, LAYOUT.1);
     desk.wait("the OSD on mute", 10, shown);
-    let muted = desk.settled("HEADLESS-1", OSD);
+    let muted = desk.reaches_ref("HEADLESS-1", OSD, "osd_muted");
     let fill = meter_fill(&muted).expect("no meter");
     assert!(fill < 0.02, "the meter is at {fill:.2} when muted");
-    muted.matches_ref("osd_muted");
     desk.wait("the OSD to hide", 10, |d| !shown(d));
 
     // On the focused output: focus HEADLESS-2, change the volume.
@@ -1193,7 +1316,53 @@ fn the_osd_follows_volume_and_brightness() {
             || (0..s.h).any(|y| (0..s.w).filter(|&x| blue(s.px(x, y))).count() > 20)
     });
     assert!(!shown(&desk), "the OSD also showed on HEADLESS-1");
-    desk.settled("HEADLESS-2", osd2)
-        .matches_ref("osd_headless2");
+    desk.reaches_ref("HEADLESS-2", osd2, "osd_headless2");
     assert!(desk.errors().is_empty(), "{:?}", desk.errors());
+}
+
+/// The comparison fails on one glyph's worth of change in the clock
+/// (well under 0.5% of the bar) and passes antialiasing-sized noise
+/// spread over the whole bar.
+#[test]
+fn the_comparison_catches_one_glyph_but_not_noise() {
+    let reference = Img::reference("bar_headless1");
+    let img = Img {
+        w: reference.width() as usize,
+        h: reference.height() as usize,
+        rgb: reference.into_raw(),
+    };
+    assert!(img.compare("bar_headless1").is_ok());
+    // The clock's first glyph run nearest the centre, painted over with
+    // the bar's background.
+    let bg = img.px(img.w / 2, 11);
+    let cols = ink_cols(&img, img.w / 2 - 120..img.w / 2 + 120, 14..38, bg);
+    let glyph = runs(&cols)[0];
+    let mut erased = img.clone();
+    let mut changed = 0;
+    for y in 14..38 {
+        for x in glyph.0..=glyph.1 {
+            if erased.px(x, y) != bg {
+                changed += 1;
+            }
+            let i = (y * erased.w + x) * 3;
+            erased.rgb[i..i + 3].copy_from_slice(&bg);
+        }
+    }
+    let share = changed as f64 / (img.w * img.h) as f64;
+    assert!(
+        share < PIXEL_TOLERANCE,
+        "one glyph is {share:.4} of the bar"
+    );
+    assert!(
+        erased.compare("bar_headless1").is_err(),
+        "a missing glyph ({changed} px) passed"
+    );
+    // Noise: one pixel in 401 off by 60 in a channel.
+    let mut sparse = img.clone();
+    for (i, p) in sparse.rgb.chunks_mut(3).enumerate() {
+        if i % 401 == 0 {
+            p[0] = p[0].wrapping_add(60);
+        }
+    }
+    assert!(sparse.compare("bar_headless1").is_ok());
 }

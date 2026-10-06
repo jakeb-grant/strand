@@ -308,6 +308,62 @@ fn shadows_scene() -> SceneDiff {
     b.diff
 }
 
+/// design.md: cached offscreen groups are "freed when idle". When the
+/// frame loop stops, the entries none of its frames used go at once,
+/// without a wake of their own (a shell with no clock, after its last
+/// animation, keeps none it does not draw): a small change far from the
+/// shadows paints, and their pixmaps are freed; a later repaint over
+/// them rebuilds them, pixel for pixel.
+#[test]
+fn shadows_no_frame_used_go_when_the_frame_loop_stops() {
+    let mut r = renderer();
+    let mut diff = shadows_scene();
+    // A dot in the far corner, away from every shadow.
+    let dot = NodeId::new(100, 0);
+    let root = diff
+        .ops
+        .iter()
+        .find_map(|op| match op {
+            strand_scene::SceneOp::Create {
+                id, parent: None, ..
+            } => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    diff.create(dot, NodeKind::Box, Some(root), 99)
+        .set(dot, Prop::Place, kw("absolute"))
+        .set(dot, Prop::X, num(320.0))
+        .set(dot, Prop::Y, num(122.0))
+        .set(dot, Prop::Width, num(4.0))
+        .set(dot, Prop::Height, num(4.0))
+        .set(dot, Prop::Bg, color("#000000"));
+    let mut buf = render_with(&mut r, diff, Scale::ONE);
+    let first = buf.pixels.clone();
+    let (bytes, builds) = r.paint_cache();
+    assert!(bytes > 0 && builds == 4, "{bytes} {builds}");
+    let mut d = SceneDiff::new();
+    d.set(dot, Prop::Bg, color("#ff0000"));
+    assert!(r.apply(d).is_empty());
+    buf.paint(&mut r, SurfaceId(1), 1);
+    assert!(!r.wants_frame(SurfaceId(1)));
+    // (The `xl` shadow reaches under the dot: that frame used it.)
+    let kept = r.paint_cache().0;
+    eprintln!("cache {bytes} B before, {kept} B after the loop stopped");
+    assert!(
+        kept > 0 && kept < bytes,
+        "unused shadows kept: {kept} of {bytes} B"
+    );
+    // Back: the full repaint rebuilds the freed shadows, and matches.
+    let mut d = SceneDiff::new();
+    d.set(dot, Prop::Bg, color("#000000"));
+    assert!(r.apply(d).is_empty());
+    r.invalidate(SurfaceId(1));
+    buf.paint(&mut r, SurfaceId(1), 0);
+    assert!(r.paint_cache().1 > 4, "{:?}", r.paint_cache());
+    assert_eq!(r.paint_cache().0, bytes);
+    assert!(buf.pixels == first, "the rebuilt shadows differ");
+}
+
 #[test]
 fn elevation_shadow_lists_are_drawn_and_cached() {
     let mut r = renderer();

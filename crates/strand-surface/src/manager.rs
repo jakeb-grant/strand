@@ -19,7 +19,7 @@ use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::seat::keyboard::{
-    KeyEvent, KeyboardHandler, Keysym, Modifiers as XkbModifiers, RawModifiers,
+    KeyEvent, KeyboardHandler, Keysym, Modifiers as XkbModifiers, RawModifiers, RepeatInfo,
 };
 use smithay_client_toolkit::seat::pointer::{
     CursorIcon, PointerEvent, PointerEventKind, PointerHandler, ThemeSpec, ThemedPointer,
@@ -619,8 +619,15 @@ pub struct State<H: SurfaceHost + 'static> {
     dirty: BTreeSet<SurfaceId>,
     flush_scheduled: bool,
     pointers: Vec<SeatPointer>,
-    /// Each seat's keyboard (xkbcommon keymaps, with key repeat).
+    /// Each seat's keyboard (xkbcommon keymaps). Key repeat is ours
+    /// ([`State::start_repeat`]), not SCTK's: SCTK's repeat timer is
+    /// removed from a `Drop` that runs while calloop's sources are
+    /// borrowed when a keyboard goes away, and panics.
     keyboards: Vec<(wl_seat::WlSeat, wl_keyboard::WlKeyboard)>,
+    /// Each keyboard's repeat rate and delay (`wl_keyboard.repeat_info`).
+    repeat_info: HashMap<ObjectId, RepeatInfo>,
+    /// The key repeating now: its keyboard, its key and its timer.
+    key_repeat: Option<(ObjectId, u32, RegistrationToken)>,
     /// The surface with keyboard focus, and the modifiers held.
     keyboard_focus: Option<SurfaceId>,
     modifiers: Modifiers,
@@ -795,6 +802,8 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             flush_scheduled: false,
             pointers: Vec::new(),
             keyboards: Vec::new(),
+            repeat_info: HashMap::new(),
+            key_repeat: None,
             keyboard_focus: None,
             last_pressed: None,
             last_action: None,
@@ -2480,6 +2489,45 @@ impl<H: SurfaceHost + 'static> State<H> {
         });
     }
 
+    /// Repeats `event` (just pressed on `keyboard`) at the keyboard's
+    /// rate after its delay, from a calloop timer of ours; modifiers do
+    /// not repeat. Replaces any key repeating before.
+    fn start_repeat(&mut self, keyboard: &wl_keyboard::WlKeyboard, event: KeyEvent) {
+        self.stop_repeat();
+        let Some(RepeatInfo::Repeat { rate, delay }) = self.repeat_info.get(&keyboard.id()) else {
+            return;
+        };
+        if event.keysym.is_modifier_key() {
+            return;
+        }
+        let interval = Duration::from_micros(1_000_000 / u64::from(rate.get()));
+        let raw = event.raw_code;
+        let token = self.handle.insert_source(
+            Timer::from_duration(Duration::from_millis(u64::from(*delay))),
+            move |_, _, state: &mut State<H>| {
+                state.key(event.clone(), ButtonState::Pressed, true);
+                TimeoutAction::ToDuration(interval)
+            },
+        );
+        match token {
+            Ok(t) => self.key_repeat = Some((keyboard.id(), raw, t)),
+            Err(e) => log::warn!("cannot repeat a key: {}", e.error),
+        }
+    }
+
+    /// Stops the key repeating, if any (from event handlers only, never a
+    /// `Drop`).
+    fn stop_repeat(&mut self) {
+        if let Some((_, _, token)) = self.key_repeat.take() {
+            self.handle.remove(token);
+        }
+    }
+
+    /// True while a key repeats (tests).
+    pub fn key_repeating(&self) -> bool {
+        self.key_repeat.is_some()
+    }
+
     /// The surface with keyboard focus, if it is one of ours.
     pub fn keyboard_focus(&self) -> Option<SurfaceId> {
         self.keyboard_focus
@@ -2932,15 +2980,7 @@ impl<H: SurfaceHost + 'static> SeatHandler for State<H> {
             }
         }
         if capability == Capability::Keyboard && !self.keyboards.iter().any(|(s, _)| *s == seat) {
-            match self.seat_state.get_keyboard_with_repeat(
-                qh,
-                &seat,
-                None,
-                self.handle.clone(),
-                Box::new(|state: &mut Self, _, event| {
-                    state.key(event, ButtonState::Pressed, true);
-                }),
-            ) {
+            match self.seat_state.get_keyboard(qh, &seat, None) {
                 Ok(k) => self.keyboards.push((seat, k)),
                 Err(e) => log::warn!("cannot get the keyboard: {e}"),
             }
@@ -2959,6 +2999,22 @@ impl<H: SurfaceHost + 'static> SeatHandler for State<H> {
             self.pointers.retain(|p| p.seat != seat);
         }
         if capability == Capability::Keyboard {
+            let gone: Vec<ObjectId> = self
+                .keyboards
+                .iter()
+                .filter(|(s, _)| *s == seat)
+                .map(|(_, k)| k.id())
+                .collect();
+            if self
+                .key_repeat
+                .as_ref()
+                .is_some_and(|(k, _, _)| gone.contains(k))
+            {
+                self.stop_repeat();
+            }
+            for k in &gone {
+                self.repeat_info.remove(k);
+            }
             self.keyboards.retain(|(s, k)| {
                 let keep = *s != seat;
                 if !keep && k.version() >= 3 {
@@ -3126,6 +3182,7 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
         surface: &wl_surface::WlSurface,
         _: u32,
     ) {
+        self.stop_repeat();
         let id = self.surface_for(surface).or(self.keyboard_focus);
         if self.keyboard_focus == id {
             self.keyboard_focus = None;
@@ -3157,7 +3214,8 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
                 at: Instant::now(),
             });
         }
-        self.key(event, ButtonState::Pressed, false);
+        self.key(event.clone(), ButtonState::Pressed, false);
+        self.start_repeat(keyboard, event);
     }
 
     fn repeat_key(
@@ -3175,11 +3233,28 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
+        keyboard: &wl_keyboard::WlKeyboard,
         _: u32,
         event: KeyEvent,
     ) {
+        if self
+            .key_repeat
+            .as_ref()
+            .is_some_and(|(k, raw, _)| *k == keyboard.id() && *raw == event.raw_code)
+        {
+            self.stop_repeat();
+        }
         self.key(event, ButtonState::Released, false);
+    }
+
+    fn update_repeat_info(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        keyboard: &wl_keyboard::WlKeyboard,
+        info: RepeatInfo,
+    ) {
+        self.repeat_info.insert(keyboard.id(), info);
     }
 
     fn update_modifiers(

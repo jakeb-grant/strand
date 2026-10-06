@@ -11,7 +11,7 @@
 //! it is tested on its own, and the inspector (M5), popup grabs and drag
 //! and drop (M4) reach the same state.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use strand_scene::input::button;
@@ -227,10 +227,14 @@ pub struct Router {
     focus: HashMap<SurfaceId, NodeId>,
     /// The selected row of each list arrows or clicks have moved in.
     selected: HashMap<NodeId, NodeId>,
-    /// The rows a focused input's `nav` list had when its selection was
-    /// last settled: rows that change (new results for a new query)
-    /// select the first again.
-    nav_rows: HashMap<NodeId, Vec<NodeId>>,
+    /// The text of a focused input and the rows of its `nav` list when
+    /// its selection was last settled: a new query selects the first row
+    /// again; rows that change under the same query (late or re-ranked
+    /// results) keep a row the user moved to, while it is still there.
+    nav_rows: HashMap<NodeId, (String, Vec<NodeId>)>,
+    /// `nav` lists whose selection the user moved (an arrow, a click)
+    /// since their input's text last changed or the input took focus.
+    moved: HashSet<NodeId>,
     /// Each `input`'s writes still on their way through logic.
     edits: HashMap<NodeId, InFlight>,
     /// The slider being dragged on each surface (the left button went
@@ -347,10 +351,13 @@ impl Router {
 
     /// After logic's diff is applied: a focused `input`'s `nav` list that
     /// has rows and no selected row (its rows just arrived, or the one
-    /// selected left), or whose rows changed since (new results: the
-    /// query changed, or `on show` cleared it), selects its first, so
-    /// `selected` shows which row Return will `activate`. Returns what
-    /// logic hears of it.
+    /// selected left), or whose input's text changed since (a new query,
+    /// or `on show` cleared it), selects its first, so `selected` shows
+    /// which row Return will `activate`. Rows that change under the same
+    /// text (an `Async` search's late or re-ranked results) select the
+    /// first too, unless the user moved the selection (an arrow, a
+    /// click) to a row that is still there. Returns what logic hears of
+    /// it.
     pub fn settle(&mut self, scene: &mut dyn InputScene) -> Vec<Intent> {
         self.prune(scene.tree());
         self.select_first_rows(scene);
@@ -387,13 +394,28 @@ impl Router {
                     .filter(|r| tree.contains_live(*r))
                     .collect()
             });
-            if self.selected.contains_key(list) {
+            let text = match n.get(Prop::Text) {
+                Some(PropValue::Text(t)) => t.clone(),
+                _ => String::new(),
+            };
+            if let Some(sel) = self.selected.get(list) {
                 match self.nav_rows.get(list) {
-                    Some(seen) if *seen != rows => {}
-                    Some(_) => continue,
+                    // A new query: its results start at the top.
+                    Some((t, _)) if *t != text => {
+                        self.moved.remove(list);
+                    }
+                    Some((_, seen)) if *seen == rows => continue,
+                    // The same query's rows changed (results arriving
+                    // late, re-ranked): the row the user moved to stays
+                    // selected while it is there.
+                    Some(_) if self.moved.contains(list) && rows.contains(sel) => {
+                        self.nav_rows.insert(*list, (text, rows));
+                        continue;
+                    }
+                    Some(_) => {}
                     // Selected by a click or an arrow before any settle.
                     None => {
-                        self.nav_rows.insert(*list, rows);
+                        self.nav_rows.insert(*list, (text, rows));
                         continue;
                     }
                 }
@@ -401,7 +423,7 @@ impl Router {
             if let Some(&row) = rows.first() {
                 want.push((*list, row));
             }
-            self.nav_rows.insert(*list, rows);
+            self.nav_rows.insert(*list, (text, rows));
         }
         for (list, row) in want {
             self.select(scene, list, Some(row));
@@ -527,6 +549,7 @@ impl Router {
                     _ => None,
                 });
                 if let Some(list) = nav {
+                    self.moved.remove(&list);
                     self.select(scene, list, None);
                 }
             }
@@ -668,6 +691,7 @@ impl Router {
         }
         self.event(node, event);
         if let Some((list, row)) = activate {
+            self.moved.insert(list);
             self.select(scene, list, Some(row));
             self.event(row, NodeEvent::Activate);
         }
@@ -684,6 +708,7 @@ impl Router {
         // exit pose (a ghost): it keeps no focus, edit or selection.
         let live = |n: NodeId| tree.contains_live(n);
         self.nav_rows.retain(|list, _| live(*list));
+        self.moved.retain(|list| live(*list));
         self.selected.retain(|list, row| {
             live(*list) && live(*row) && tree.get(*row).is_some_and(|r| r.parent == Some(*list))
         });
@@ -801,6 +826,7 @@ impl Router {
                         (Some(i), false) => rows.get(i.saturating_sub(1)),
                     };
                     if let Some(&row) = next {
+                        self.moved.insert(list);
                         self.select(scene, list, Some(row));
                     }
                     return;

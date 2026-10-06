@@ -5684,3 +5684,69 @@ render with the next scene diff (`SceneDiff::reduced_motion`, a new
 field of the cross-crate protocol, architecture.md), where
 `Renderer::set_reduced_motion` snaps every spring. design.md §7's
 "turns off loops, time signals and effects" stays logic's (M4 effects).
+
+**2026-10-06 · wave3-pixels (exit, fixer r1): key repeat is strand's own
+timer.** SCTK's `get_keyboard_with_repeat` keeps its calloop timer's token
+after the first press and removes the timer from `RepeatData`'s `Drop`.
+When the seat loses its keyboard (a USB or Bluetooth keyboard unplugged,
+a KVM switch), the released `wl_keyboard`'s data is dropped while
+`WaylandSource` reads the socket, with calloop's sources borrowed: the
+removal panics inside a destructor and the shell aborts (CLAUDE.md: no
+panic on external input). The surface manager now takes a plain
+`get_keyboard` and repeats keys itself: the seat's `repeat_info` (or
+SCTK's synthetic 200/200 for old seats) is kept per keyboard, a press of
+a non-modifier key arms a calloop `Timer` (delay, then 1/rate), and the
+release of that key, a keyboard `leave` and the keyboard's removal stop
+it, always from an event handler. `crates/strand-surface/tests/sway.rs::
+a_keyboard_going_away_after_a_press_leaves_the_shell_running` (aborted
+before the change).
+
+**2026-10-06 · wave3-pixels (exit, fixer r1): what the acceptance tests
+wait for.** A region unchanged for 500 ms cannot tell a logic → render →
+configure round trip that has not started from one that is over: under
+load (a debug build, four sways at once) the tests read the frame before
+the action as settled. After every action a test now waits for the state
+the action leads to (`Desk::wait` on the pixels: three toasts, the pill
+on the third dot, two rows with the second selected) and then for the
+reference itself (`Desk::settled_ref`: up to 15 s for the region to match
+its reference, then settled, then compared); settling also needs
+strand's damage log quiet. The OSD, which hides 1.2 s after the change
+that showed it, is compared as soon as it matches (`Desk::reaches_ref`):
+a slow build can spend most of those 1.2 s on its way in. Every region,
+shot and settle first asserts that strand is alive, so a crash is not
+reported as a contrast or pixel failure. The comparison also fails when
+any 4×4 block has more than 4 differing pixels: a share of the whole
+region (0.5%, 819 px on the 2560×64 bar) is larger than the clock's
+whole ink (375 px), so a wrong digit passed
+(`the_comparison_catches_one_glyph_but_not_noise`).
+
+**2026-10-06 · wave3-pixels (exit, fixer r1): idle cache entries go when
+the frame loop stops.** This narrows the exit entry above. When a paint
+leaves no surface wanting another frame (an animation or interaction is
+over), the paint cache frees every entry no frame of that run of paints
+used: design.md's "freed when idle" now holds for a shell with no clock
+(a launcher, toasts, an OSD) and after the last animation, still with no
+wake of its own (the clocked bar's tick repaints over its shadow, so the
+tick's run uses and keeps it: zero wakeups between ticks). Entries used
+by the last run stay until the next run ends without them or the next
+paint or wake after `IDLE_FREE`. `crates/strand-render/tests/paint.rs::
+shadows_no_frame_used_go_when_the_frame_loop_stops`.
+
+**2026-10-06 · wave3-pixels (exit, fixer r1): a nav list keeps the row the
+user moved to while its query stands.** The exit entry reselected the
+first row whenever the list's rows changed. design.md's launcher searches
+with an `Async` (`apps.search`), whose late or re-ranked results can
+arrive after the user pressed Down; Return then launched another app. The
+router now remembers the input's text with the rows: a new text (a new
+query, or `on show` clearing it) or fresh focus selects the first row;
+rows changing under the same text keep a row the user moved to with an
+arrow or a click while it is still there, and otherwise follow the first.
+`crates/strand-render/tests/input.rs::keys_go_to_the_focused_input_and_its_list`.
+
+**2026-10-06 · wave3-pixels (exit, fixer r1): the glyph diff is linear.**
+The per-glyph damage compared every old cell with every new one: a
+one-character change to a 6,000-glyph text cost 16 ms a frame. Cells
+come in layout order, so the common prefix and suffix are skipped and the
+changed middle compared cell by cell up to 64 cells, or damaged as one
+box per side above that (`renderer.rs::glyph_damage_is_linear_in_the_
+glyphs`; the frame is now about 5 ms, almost all shaping and flattening).

@@ -434,11 +434,11 @@ fn demo_bar_on_two_outputs_then_idle() {
 /// The M0 budget on design.md's own bar (theme.strand and bar.strand,
 /// unchanged, on the mock desktop with the real clock), not the M0 demo:
 /// two 2560x1440 outputs at 1.0 and 1.25 within the 34 MB PSS gate (in a
-/// release run; the debug ceiling otherwise), and, once boot work is
-/// done, no thread waking for 12 s (no idle-cache or other timer of its
-/// own: the next wake is the minute tick). The per-tick damage is gated offline
-/// (`strand-render/tests/damage.rs::a_tick_repaints_only_the_glyphs_
-/// that_changed`) and over whole minutes by `scripts/m2-exit.sh`.
+/// release run; the debug ceiling otherwise); once boot work is done, no
+/// thread waking from then (by :45) to :57 of the minute (no idle-cache
+/// or other timer of its own: the next wake is the minute tick); and the
+/// tick itself repainting at most 2,000 px² over both outputs. Several
+/// whole minutes are measured by `scripts/m2-exit.sh`.
 #[test]
 fn the_design_bar_keeps_the_m0_budget() {
     let Some(sway) = Sway::start_as("budget") else {
@@ -533,11 +533,11 @@ fn the_design_bar_keeps_the_m0_budget() {
         }
         assert!(Instant::now() < deadline, "boot never settled");
     }
-    // Then 12 s with nothing (past the paint cache's 10 s idle time).
+    // Then nothing until :57 (at least 12 s).
     let frames = damage_lines(&log).len();
     let before = switches(pid);
     let threads = per_thread(pid);
-    std::thread::sleep(Duration::from_secs(12));
+    std::thread::sleep(Duration::from_secs(57 - seconds_into_minute()));
     let after = switches(pid);
     let woke: Vec<String> = per_thread(pid)
         .into_iter()
@@ -546,6 +546,30 @@ fn the_design_bar_keeps_the_m0_budget() {
         .collect();
     assert_eq!(after - before, 0, "woke while idle: {woke:?}");
     assert_eq!(damage_lines(&log).len(), frames, "painted while idle");
+    // The minute tick: both clocks repaint, at most 2,000 px² in all.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while damage_lines(&log).len() < frames + 2 {
+        assert!(Instant::now() < deadline, "the clocks did not tick");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    std::thread::sleep(Duration::from_secs(2));
+    let tick = &damage_lines(&log)[frames..];
+    let area: u64 = tick
+        .iter()
+        .filter_map(|l| {
+            l.split(" area=")
+                .nth(1)?
+                .split_whitespace()
+                .next()?
+                .parse::<u64>()
+                .ok()
+        })
+        .sum();
+    eprintln!(
+        "the minute tick: {} frames, {area} px²: {tick:?}",
+        tick.len()
+    );
+    assert!(area <= 2000, "a tick repainted {area} px²: {tick:?}");
     drop(strand);
     let _ = std::fs::remove_dir_all(&home);
 }

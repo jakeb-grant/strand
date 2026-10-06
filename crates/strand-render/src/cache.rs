@@ -31,8 +31,9 @@ pub const PAINT_CACHE_BYTES: usize = 4 << 20;
 pub const MAX_ENTRY_BYTES: usize = 2 << 20;
 
 /// Entries no frame has used for this long are freed (design.md: the
-/// cached offscreen groups are "freed when idle"), at the next paint or
-/// by the render loop's timer when nothing paints.
+/// cached offscreen groups are "freed when idle") at the next paint or
+/// wake of the render loop; when the frame loop stops, what its frames
+/// did not use goes at once ([`PaintCache::trim_unused_since`]).
 pub const IDLE_FREE: Duration = Duration::from_secs(10);
 
 /// Most gradient keys remembered as drawn once, uncached (see
@@ -213,6 +214,18 @@ impl PaintCache {
         }
         self.seen
             .retain(|_, (_, at)| now.saturating_duration_since(*at) < idle);
+    }
+
+    /// Frees the entries no frame has used since `since`: the frame loop
+    /// stopped (nothing animates, nothing waits for a frame), and what
+    /// its frames did not draw is idle until something wakes the shell.
+    pub fn trim_unused_since(&mut self, since: Instant) {
+        let before = self.entries.len();
+        self.entries.retain(|_, e| e.at >= since);
+        if self.entries.len() != before {
+            self.bytes = self.entries.values().map(|e| e.bytes).sum();
+        }
+        self.seen.retain(|_, (_, at)| *at >= since);
     }
 
     /// How long an unused entry lives.

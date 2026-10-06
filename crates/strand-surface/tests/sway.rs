@@ -1858,3 +1858,163 @@ fn escape_reaches_a_grabbing_popup() {
     drop(pointer);
     drop(keyboard);
 }
+
+/// A keyboard that goes away after a key press (a USB keyboard unplugged,
+/// a KVM switch) leaves the shell running: key repeat is strand's own
+/// calloop timer, stopped from the seat's events, so nothing removes a
+/// source while calloop's sources are borrowed (SCTK's repeat did, from
+/// a `Drop`, and aborted the process). A held key repeats at the seat's
+/// rate first; the surface still paints after the keyboard is gone.
+#[test]
+fn a_keyboard_going_away_after_a_press_leaves_the_shell_running() {
+    use std::io::Write as _;
+    use std::os::fd::AsFd;
+    use wayland_client::globals::{GlobalListContents, registry_queue_init};
+    use wayland_client::protocol::{wl_registry, wl_seat};
+    use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
+    use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
+        zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1,
+        zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
+    };
+
+    struct Client;
+    impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Client {
+        fn event(
+            _: &mut Self,
+            _: &wl_registry::WlRegistry,
+            _: wl_registry::Event,
+            _: &GlobalListContents,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+    delegate_noop!(Client: ignore ZwpVirtualKeyboardManagerV1);
+    delegate_noop!(Client: ignore ZwpVirtualKeyboardV1);
+    delegate_noop!(Client: ignore wl_seat::WlSeat);
+
+    let Some(sway) = Sway::start("a_keyboard_going_away_after_a_press_leaves_the_shell_running")
+    else {
+        return;
+    };
+    let mut mgr = strand_surface::SurfaceManager::with_connection(
+        sway.connect(),
+        TestHost::default(),
+        Config::default(),
+    )
+    .unwrap();
+    // A `keyboard: exclusive` panel: it has the keyboard once one exists.
+    const PANEL: NodeId = NodeId::new(7, 0);
+    let mut spec = layer_spec(NodeKind::Panel, "Launcher", "center", 200.0, 100.0);
+    spec.keyboard = strand_scene::Keyboard::Exclusive;
+    mgr.state_mut()
+        .apply_surface_change(PANEL, SurfaceChange::Created(spec.clone()));
+    let input = mgr.take_input().unwrap();
+    let ok = mgr
+        .dispatch_until(WAIT, |s| s.surfaces().iter().any(|i| i.stats.commits > 0))
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surfaces());
+    let id = mgr.state().surfaces_of(PANEL)[0];
+
+    let conn = sway.connect();
+    let (globals, mut queue) = registry_queue_init::<Client>(&conn).unwrap();
+    let qh = queue.handle();
+    let seat: wl_seat::WlSeat = globals.bind(&qh, 1..=7, ()).unwrap();
+    let kbd_manager: ZwpVirtualKeyboardManagerV1 = globals.bind(&qh, 1..=1, ()).unwrap();
+    let keyboard = kbd_manager.create_virtual_keyboard(&seat, &qh, ());
+    let keymap = "xkb_keymap {\n\
+        xkb_keycodes \"strand\" { minimum = 8; maximum = 255; <AC01> = 38; };\n\
+        xkb_types \"strand\" { type \"ONE_LEVEL\" { modifiers = none; level_name[Level1] = \"Any\"; }; };\n\
+        xkb_compatibility \"strand\" { };\n\
+        xkb_symbols \"strand\" { key <AC01> { [ a ] }; };\n\
+        };\n";
+    let path = std::env::temp_dir().join(format!("strand-keymap-unplug-{}", std::process::id()));
+    let mut file = std::fs::File::create(&path).unwrap();
+    file.write_all(keymap.as_bytes()).unwrap();
+    file.write_all(&[0]).unwrap();
+    file.flush().unwrap();
+    let file = std::fs::File::open(&path).unwrap();
+    keyboard.keymap(1, file.as_fd(), keymap.len() as u32 + 1);
+    queue.roundtrip(&mut Client).unwrap();
+    let _ = std::fs::remove_file(&path);
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.host()
+                .input
+                .contains(&InputEvent::KeyboardEnter { surface: id })
+        })
+        .unwrap();
+    assert!(
+        ok,
+        "the panel has the keyboard: {:?}",
+        mgr.state().host().input
+    );
+
+    // `a` held (evdev KEY_A = 30): it repeats.
+    keyboard.key(100, 30, 1);
+    queue.roundtrip(&mut Client).unwrap();
+    let mut events = Vec::new();
+    let deadline = Instant::now() + WAIT;
+    let repeats = |events: &[InputEvent]| {
+        events
+            .iter()
+            .filter(|e| matches!(e, InputEvent::Key { key, .. } if key.repeat && key.text == "a"))
+            .count()
+    };
+    while Instant::now() < deadline && repeats(&events) < 2 {
+        mgr.dispatch(Some(Duration::from_millis(50))).unwrap();
+        events.extend(input.try_iter());
+    }
+    assert!(repeats(&events) >= 2, "a held key repeats: {events:?}");
+    assert!(mgr.state().key_repeating());
+
+    // Released: the repeat stops.
+    keyboard.key(200, 30, 0);
+    queue.roundtrip(&mut Client).unwrap();
+    pump(&mut mgr, Duration::from_millis(200));
+    assert!(!mgr.state().key_repeating());
+    events.clear();
+    events.extend(input.try_iter());
+    pump(&mut mgr, Duration::from_millis(300));
+    events.extend(input.try_iter());
+    assert_eq!(
+        repeats(&events[events
+            .iter()
+            .position(|e| matches!(e, InputEvent::Key { key, .. } if key.state == ButtonState::Released))
+            .map_or(0, |i| i + 1)..]),
+        0,
+        "repeats after the release: {events:?}"
+    );
+
+    // Pressed again, and the keyboard goes away while it is held.
+    keyboard.key(300, 30, 1);
+    queue.roundtrip(&mut Client).unwrap();
+    pump(&mut mgr, Duration::from_millis(100));
+    keyboard.destroy();
+    queue.roundtrip(&mut Client).unwrap();
+    // (Before the fix this dispatch panicked inside calloop and aborted.)
+    pump(&mut mgr, Duration::from_millis(800));
+    assert!(
+        !mgr.state().key_repeating(),
+        "the repeat outlived its keyboard"
+    );
+
+    // The panel still paints: a new size is configured and committed.
+    let commits = mgr.state().surface(id).unwrap().stats.commits;
+    spec.height = Some(120.0);
+    mgr.state_mut().apply_surface_change(
+        PANEL,
+        SurfaceChange::Updated {
+            spec,
+            recreate: false,
+        },
+    );
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surface(id)
+                .is_some_and(|i| i.logical_size == (200, 120) && i.stats.commits > commits)
+        })
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surfaces());
+    drop(input);
+}

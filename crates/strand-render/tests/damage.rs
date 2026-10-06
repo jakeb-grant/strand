@@ -1626,3 +1626,70 @@ fn hit_follows_paint_order() {
     // where nothing covers it.
     assert!(!r.hit(BAR, LogicalPoint::new(25.0, 8.0)).contains(&inner));
 }
+
+/// A long wrapped text (6,000 glyphs: a notification body, a log, a
+/// clipboard entry) whose last character changes repaints only that
+/// glyph and matches a full repaint. Its glyphs are diffed in linear
+/// time (`renderer.rs::glyph_damage_is_linear_in_the_glyphs`): the
+/// quadratic diff made this frame 16 ms on an optimised build, the
+/// linear one about 5 ms, nearly all of it shaping and flattening the
+/// new text.
+#[test]
+fn a_long_text_repaints_only_its_changed_glyph() {
+    let body = |last: char| -> String {
+        let mut s: String = (0..5999)
+            .map(|i| {
+                if i % 9 == 8 {
+                    ' '
+                } else {
+                    (b'a' + (i % 26) as u8) as char
+                }
+            })
+            .collect();
+        s.push(last);
+        s
+    };
+    let scene = |t: &str| {
+        let mut b = Builder::default();
+        let root = b.node(
+            NodeKind::Panel,
+            None,
+            vec![
+                (Prop::Bg, color("#1e1e2e")),
+                (Prop::Color, color("#cdd6f4")),
+                (Prop::Font, PropValue::Font(font(13.0))),
+            ],
+        );
+        let id = b.node(
+            NodeKind::Text,
+            Some(root),
+            vec![
+                (Prop::X, num(10.0)),
+                (Prop::Y, num(10.0)),
+                (Prop::Width, num(1900.0)),
+                (Prop::Text, text(t)),
+            ],
+        );
+        (b.diff, id)
+    };
+    let (diff, id) = scene(&body('x'));
+    let (mut r, mut buf) = fresh(diff, 1920, 1080, Scale::ONE);
+    let mut best = std::time::Duration::MAX;
+    let mut last = 'x';
+    for (i, c) in ['y', 'z', 'x', 'y', 'z', 'x'].into_iter().enumerate() {
+        let t = body(c);
+        let start = std::time::Instant::now();
+        r.apply(set_text(id, &t));
+        let d = buf.paint(&mut r, BAR, 1);
+        best = best.min(start.elapsed());
+        assert!(
+            d.area() > 0 && d.area() <= 400,
+            "frame {i}: damage {d:?} area {}",
+            d.area()
+        );
+        last = c;
+    }
+    let (_, full) = fresh(scene(&body(last)).0, 1920, 1080, Scale::ONE);
+    assert!(buf.pixels == full.pixels, "partial differs from full");
+    eprintln!("6,000 glyphs, last one changed: {best:?} (best of 6)");
+}

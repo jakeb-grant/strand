@@ -95,7 +95,8 @@ installed so the Wayland integration tests and the M0 demo run (set
 - fmt and clippy as above;
 - `cargo test --workspace -- --skip random_edits_through_five_save_styles`
   (the workspace tests, offline render tests included, without the
-  reload fuzzer);
+  reload fuzzer; the acceptance tests run here in debug too, but for the
+  OSD's, whose 1.2 s window is release-only);
 - `cargo test --release -p strand --test demo` for the 34 MB PSS budget
   (the M0 demo and design.md's bar);
 - `cargo test --release -p strand --test acceptance -- --test-threads=1`:

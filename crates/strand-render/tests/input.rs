@@ -351,20 +351,40 @@ fn keys_go_to_the_focused_input_and_its_list() {
         msgs.contains(&flag(rows[1], Flag::Selected, true)),
         "{msgs:?}"
     );
-    // New results while a row is selected (a new query, or `on show`
-    // clearing it): the first row is selected again.
+    // Results that arrive late for the same query (an `Async` search
+    // re-ranking): the row Down moved to stays selected.
+    let mut d = SceneDiff::new();
+    let late = id(9);
+    d.create(late, NodeKind::Row, Some(list), 0)
+        .set(late, Prop::Height, PropValue::Number(20.0));
+    assert!(r.apply(d).is_empty());
+    f.router.settle(&mut r);
+    assert_eq!(f.router.selected(list), Some(rows[1]));
+    // New results for a new query (or `on show` clearing it): the first
+    // row is selected again.
     let mut d = SceneDiff::new();
     let top = id(8);
+    d.push(strand_scene::SceneOp::Remove { id: late });
     d.create(top, NodeKind::Row, Some(list), 0)
-        .set(top, Prop::Height, PropValue::Number(20.0));
+        .set(top, Prop::Height, PropValue::Number(20.0))
+        .set(input, Prop::Text, PropValue::Text("fb".into()));
     assert!(r.apply(d).is_empty());
     f.router.settle(&mut r);
     assert_eq!(f.router.selected(list), Some(top));
+    // Rows changing under the same query with nothing moved by the user
+    // follow the top.
+    let mut d = SceneDiff::new();
+    let first = id(10);
+    d.create(first, NodeKind::Row, Some(list), 0)
+        .set(first, Prop::Height, PropValue::Number(20.0));
+    assert!(r.apply(d).is_empty());
+    f.router.settle(&mut r);
+    assert_eq!(f.router.selected(list), Some(first));
     // Arrows then move from it, and keep their row while rows stay.
     f.input(&key("Down", ""), &mut r);
-    assert_eq!(f.router.selected(list), Some(rows[0]));
+    assert_eq!(f.router.selected(list), Some(top));
     f.router.settle(&mut r);
-    assert_eq!(f.router.selected(list), Some(rows[0]));
+    assert_eq!(f.router.selected(list), Some(top));
 }
 
 /// The keyboard back on a surface without a leave first (a popup that
