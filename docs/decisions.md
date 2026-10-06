@@ -6017,3 +6017,7 @@ exit playing on a painting surface costs at most one wake per
 `EXIT_STALL`), and nothing left to wake for cancels the timer, so an idle
 shell is never woken by it. Proof:
 `crates/strand-render/tests/motion.rs::a_stalled_exit_wakes_the_loop_by_itself`.
+
+## wave3-cleanup
+
+2026-10-06. Build settings live in the repo: `[profile.dev]` and `[profile.test]` set `debug = 0` in `Cargo.toml`, and `.cargo/config.toml` turns incremental compilation off. Until now agents relied on exporting `CARGO_PROFILE_*_DEBUG=0 CARGO_INCREMENTAL=0` by hand; some did not, so cargo kept a second copy of every crate per setting (a wave 3 worktree reached 21 GB with 18 copies of `strand_compiler`). One checked-in setting stops the duplicates at the source. M1's four open boxes are given owners in `features.md`: keyframes/shader/canvas drawing and the `.wgsl` watch paths go to M4, the latency bench's portal clause to M3, the tree-sitter grammar to M5.

@@ -1,0 +1,3 @@
+[build]
+# One build setting for every agent and CI (docs/decisions.md, wave3-cleanup).
+incremental = false

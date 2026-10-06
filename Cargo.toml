@@ -28,6 +28,15 @@ missing_debug_implementations = "warn"
 dbg_macro = "warn"
 todo = "warn"
 
+# Builds without debug info: the dev container's disk is small and every
+# agent and CI must build with the same settings, or cargo keeps a second
+# copy of each crate per setting (docs/decisions.md, wave3-cleanup).
+[profile.dev]
+debug = 0
+
+[profile.test]
+debug = 0
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
