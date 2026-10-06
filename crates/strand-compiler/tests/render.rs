@@ -229,3 +229,109 @@ fn answer_if_any(r: &mut Renderer, inst: &Instance) {
     diff.layout_seen = Some(r.layout_seq());
     r.apply(diff);
 }
+
+/// The bar's `Clock`: a click on its text toggles `open`, and the
+/// calendar `popup`'s spec opens nested in the bar, anchored to the
+/// clock's box, sized by the calendar.
+#[test]
+fn a_click_on_the_clock_opens_the_calendar_popup() {
+    let mut map = SourceMap::new();
+    for f in ["theme.strand", "bar.strand"] {
+        let (n, t) = fixture(f);
+        map.add(n, t);
+    }
+    let compiled = strand_compiler::compile(&map);
+    assert_eq!(compiled.errors(), 0);
+    let program = Arc::new(lower::lower(
+        &compiled.program,
+        strand_compiler::schema::Schema::builtin(),
+    ));
+    let rt = Runtime::new();
+    let host = Rc::new(SchemaHost::mock(&rt, &program.types));
+    let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+    host.set(&rt, "screens.all", Value::list(vec![screen]))
+        .unwrap();
+    let inst = Instance::new(
+        &rt,
+        program,
+        host.clone(),
+        strand_compiler::instantiate::Storage::none(),
+    );
+    let mut r = renderer();
+    assert!(r.apply(inst.flush().diff).is_empty());
+    let changes = r.take_surface_changes();
+    let bar = changes
+        .iter()
+        .find_map(|(id, c)| match c {
+            SurfaceChange::Created(s) if s.kind == strand_scene::NodeKind::Bar => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    let popup = changes
+        .iter()
+        .find_map(|(id, c)| match c {
+            SurfaceChange::Created(s) if s.kind == strand_scene::NodeKind::Popup => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    let clock = r.tree().get(popup).unwrap().parent.unwrap();
+    let surface = SurfaceId(1);
+    r.attach_surface(surface, bar);
+    let size = Size::new(1920, 64);
+    r.configure_surface(surface, size, Scale::ONE);
+    let mut pixels = vec![0u8; (size.w * size.h * 4) as usize];
+    {
+        let mut t = PaintTarget::new(&mut pixels, size, size.w * 4, Scale::ONE, 0).unwrap();
+        r.paint(surface, &mut t);
+    }
+    r.take_surface_changes();
+    // The router's click on the clock's box.
+    let b = r.boxes(surface).unwrap().rects[&clock];
+    let at = strand_scene::LogicalPoint::new(b.x + b.w / 2.0, b.y + b.h / 2.0);
+    assert!(
+        r.hit(surface, at).contains(&clock),
+        "{:?}",
+        r.hit(surface, at)
+    );
+    let mut router = strand_render::Router::new();
+    router.attached(surface, bar);
+    let mut intents = Vec::new();
+    for state in [
+        strand_scene::ButtonState::Pressed,
+        strand_scene::ButtonState::Released,
+    ] {
+        intents.extend(router.handle(
+            &strand_scene::InputEvent::PointerButton {
+                surface,
+                position: at,
+                button: strand_scene::input::button::LEFT,
+                state,
+                time: 0,
+            },
+            &mut r,
+        ));
+    }
+    for i in intents {
+        if let strand_render::Intent::Event { node, event } = i
+            && event == strand_render::NodeEvent::Click
+        {
+            inst.event(node, "click", Vec::new());
+        }
+    }
+    assert!(r.apply(inst.flush().diff).is_empty());
+    let spec = r
+        .take_surface_changes()
+        .into_iter()
+        .find_map(|(id, c)| match c {
+            SurfaceChange::Updated { spec, .. } if id == popup => Some(spec),
+            _ => None,
+        })
+        .expect("the popup's spec changed");
+    assert!(spec.open);
+    assert_eq!(spec.parent, Some(bar));
+    assert_eq!(spec.anchor_rect, Some(b));
+    assert!(
+        spec.width.unwrap() > 150.0 && spec.height.unwrap() > 150.0,
+        "{spec:?}"
+    );
+}

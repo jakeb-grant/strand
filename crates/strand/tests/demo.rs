@@ -790,6 +790,214 @@ fn the_design_launcher_is_centred_and_closes_on_click_away() {
     drop(strand);
 }
 
+/// The four design shells with their widgets (M2): the bar's icons, the
+/// OSD's icon and meter (shown at boot here, as a volume change would),
+/// the toasts' close icons, and the bar's `Clock` calendar `popup`: a
+/// click on the clock opens it as an xdg_popup under the bar, centred on
+/// the clock, with the month's grid and today in `$accent`; a click away
+/// closes it (the grab ends, `open` is written false). Set
+/// `STRAND_SHOTS` to a directory to keep the screenshots.
+#[test]
+fn the_design_shells_draw_their_widgets_and_the_calendar_popup() {
+    let Some(sway) = Sway::start_as("widgets") else {
+        return;
+    };
+    let home = sway.dir.join("home");
+    let config = home.join(".config/strand");
+    std::fs::create_dir_all(&config).unwrap();
+    let osd = include_str!("../../strand-compiler/tests/fixtures/osd.strand")
+        .replace("state shown = false", "state shown = true");
+    for (name, text) in [
+        (
+            "theme.strand",
+            include_str!("../../strand-compiler/tests/fixtures/theme.strand").to_string(),
+        ),
+        (
+            "bar.strand",
+            include_str!("../../strand-compiler/tests/fixtures/bar.strand").to_string(),
+        ),
+        (
+            "launcher.strand",
+            include_str!("../../strand-compiler/tests/fixtures/launcher.strand").to_string(),
+        ),
+        (
+            "toasts.strand",
+            include_str!("../../strand-compiler/tests/fixtures/toasts.strand").to_string(),
+        ),
+        ("osd.strand", osd),
+    ] {
+        std::fs::write(config.join(name), text).unwrap();
+    }
+    let log = sway.dir.join("strand.log");
+    let child = Command::new(env!("CARGO_BIN_EXE_strand"))
+        .arg("run")
+        .arg(&config)
+        .env("HOME", &home)
+        .env("XDG_RUNTIME_DIR", &sway.dir)
+        .env("XDG_CACHE_HOME", sway.dir.join("cache"))
+        .env("XDG_STATE_HOME", sway.dir.join("state"))
+        .env("WAYLAND_DISPLAY", &sway.display)
+        .env("STRAND_MOCK", "desktop")
+        .env("STRAND_MOCK_SCREEN", "HEADLESS-1")
+        .env("STRAND_LOG", "damage")
+        .stdin(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .spawn()
+        .unwrap();
+    let mut strand = Proc(child);
+    let surfaces = |log: &Path| -> std::collections::BTreeSet<String> {
+        damage_lines(log)
+            .iter()
+            .filter_map(|l| {
+                l.split_whitespace()
+                    .find(|w| w.starts_with("surface="))
+                    .map(String::from)
+            })
+            .collect()
+    };
+    let wait_for = |what: &str, strand: &mut Proc, done: &dyn Fn() -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !done() {
+            assert!(
+                strand.0.try_wait().unwrap().is_none(),
+                "strand exited: {}",
+                std::fs::read_to_string(&log).unwrap_or_default()
+            );
+            assert!(
+                Instant::now() < deadline,
+                "{what}: {}",
+                std::fs::read_to_string(&log).unwrap_or_default()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    // The bar, the toasts and the OSD.
+    wait_for("three surfaces", &mut strand, &|| surfaces(&log).len() >= 3);
+    std::thread::sleep(Duration::from_millis(700));
+    let shot = Shot::take(&sway, "HEADLESS-1");
+    let sum = |p: [u8; 3]| p.iter().map(|c| *c as u32).sum::<u32>();
+    let (w, h) = (shot.w, shot.h);
+    if let Some(dir) = std::env::var_os("STRAND_SHOTS") {
+        sway.grim(&[], &PathBuf::from(&dir).join("design_shells.png"));
+    }
+    // The OSD's meter: a run of `$accent` (a saturated blue on the light
+    // theme) along the middle of its pill, 96 px above the bottom.
+    let blue = |p: [u8; 3]| p[2] as i32 - p[0] as i32 > 60;
+    let osd_row = (h - 140..h - 96).find(|&y| {
+        (w / 2 - 80..w / 2 + 80)
+            .filter(|&x| blue(shot.px(x, y)))
+            .count()
+            > 40
+    });
+    assert!(osd_row.is_some(), "no meter fill in the OSD");
+    // The OSD's volume icon: dark ink left of the meter, in its pill.
+    let y = osd_row.unwrap();
+    assert!(
+        (w / 2 - 125..w / 2 - 95).any(|x| (y - 10..y + 10).any(|yy| sum(shot.px(x, yy)) < 200)),
+        "no icon in the OSD"
+    );
+    // The toasts' close icons: dark ink near the right edge of the first.
+    let toast_x = w - 12 - 30;
+    assert!(
+        (60..110).any(|yy| (toast_x - 10..toast_x + 10).any(|x| sum(shot.px(x, yy)) < 200)),
+        "no close icon on the first toast"
+    );
+    // No calendar yet below the clock.
+    let below = (w / 2, 150);
+    assert!(
+        sum(shot.px(below.0, below.1)) < 450,
+        "calendar open at boot"
+    );
+
+    // A click on the clock opens the calendar popup below the bar.
+    let mut pointer = pointer::Pointer::new(&sway.dir.join(&sway.display));
+    let before = surfaces(&log).len();
+    // (A new virtual pointer's first buttons do not reach a surface:
+    // the first click goes to the empty desktop.)
+    pointer.click(600, 700, w as u32, h as u32);
+    std::thread::sleep(Duration::from_millis(200));
+    pointer.click((w / 2) as u32, 26, w as u32, h as u32);
+    wait_for("the calendar's surface", &mut strand, &|| {
+        surfaces(&log).len() > before
+    });
+    std::thread::sleep(Duration::from_millis(700));
+    let open = Shot::take(&sway, "HEADLESS-1");
+    if let Some(dir) = std::env::var_os("STRAND_SHOTS") {
+        sway.grim(&[], &PathBuf::from(&dir).join("design_calendar.png"));
+    }
+    // Its light card spans the clock's centre below the bar.
+    let rows: Vec<usize> = (44..400)
+        .filter(|&y| sum(open.px(below.0, y)) > 600)
+        .collect();
+    assert!(
+        rows.len() > 150,
+        "no calendar below the clock: {} light rows",
+        rows.len()
+    );
+    let top = rows[0];
+    assert!((50..70).contains(&top), "calendar top at {top}");
+    let cols: Vec<usize> = (w / 2 - 200..w / 2 + 200)
+        .filter(|&x| sum(open.px(x, top + 20)) > 600)
+        .collect();
+    let centre = (cols[0] + cols.last().unwrap()) as f64 / 2.0;
+    assert!(
+        (centre - (w / 2) as f64).abs() <= 3.0,
+        "calendar centred at {centre}"
+    );
+    // Today, in `$accent`, somewhere in the grid.
+    let accent = (top..top + 250)
+        .flat_map(|y| (cols[0]..*cols.last().unwrap()).map(move |x| (x, y)))
+        .filter(|&(x, y)| blue(open.px(x, y)))
+        .count();
+    assert!(accent > 100, "no accent day in the calendar: {accent} px");
+
+    // A click away closes it.
+    pointer.click(600, 700, w as u32, h as u32);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let after = Shot::take(&sway, "HEADLESS-1");
+        if sum(after.px(below.0, top + 40)) < 450 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "a click away did not close the calendar"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // The pointer on the volume icon (a click: it mutes) hovers its row:
+    // `if hover { slider … }` slides a slider in, drawn in `$accent`
+    // in the row (it grows leftwards, the end packs to the end).
+    let speaker = (w * 3 / 4..w - 20)
+        .find(|&x| (14..38).any(|y| sum(shot.px(x, y)) < 200))
+        .expect("ink at the bar's end");
+    pointer.click(speaker as u32 + 6, 26, w as u32, h as u32);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let after = Shot::take(&sway, "HEADLESS-1");
+        // (The row grows to the left as the slider slides in.)
+        let fill = (w * 3 / 4..w - 20)
+            .filter(|&x| (14..38).any(|y| blue(after.px(x, y))))
+            .count();
+        if fill > 20 {
+            if let Some(dir) = std::env::var_os("STRAND_SHOTS") {
+                sway.grim(&[], &PathBuf::from(&dir).join("design_volume.png"));
+            }
+            break;
+        }
+        assert!(Instant::now() < deadline, "no slider on hover: {fill}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let errors: Vec<String> = std::fs::read_to_string(&log)
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.contains("ERROR"))
+        .map(String::from)
+        .collect();
+    assert!(errors.is_empty(), "{errors:?}");
+    drop(strand);
+}
+
 /// A virtual pointer on the sway seat (`zwlr_virtual_pointer_v1`): the
 /// headless seat has no pointer of its own.
 mod pointer {

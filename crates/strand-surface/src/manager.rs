@@ -1144,6 +1144,17 @@ impl<H: SurfaceHost + 'static> State<H> {
             (Some(_), Some(ps)) => popup_config(spec, ps).ok(),
             _ => None,
         };
+        log::trace!(
+            "{}: popup open {} parent {:?} config {:?} (spec parent {:?}, anchor {:?}, size {:?}×{:?})",
+            spec.namespace(),
+            spec.open,
+            parent,
+            config,
+            spec.parent,
+            spec.anchor_rect,
+            spec.width,
+            spec.height
+        );
         let Some((parent, config)) = parent.zip(config) else {
             for id in existing {
                 self.destroy_surface(id);
