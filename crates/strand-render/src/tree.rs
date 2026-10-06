@@ -136,6 +136,28 @@ impl SceneTree {
         }
     }
 
+    /// Sets `prop` of overlay node `id` in place (a shown tooltip's new
+    /// text). False if there is no such overlay node.
+    pub fn set_overlay_prop(&mut self, id: NodeId, prop: Prop, value: PropValue) -> bool {
+        let Some(node) = self.overlays.get_mut(&id) else {
+            return false;
+        };
+        match node.props.iter_mut().find(|e| e.prop == prop) {
+            Some(e) => e.value = value,
+            None => node.props.push(PropEntry {
+                prop,
+                value,
+                transition: strand_scene::Transition::Instant,
+            }),
+        }
+        true
+    }
+
+    /// The children of overlay node `id`.
+    pub fn overlay_children(&self, id: NodeId) -> &[NodeId] {
+        self.overlays.get(&id).map_or(&[], |n| &n.children)
+    }
+
     /// True if `id` is a render-owned overlay node.
     pub fn is_overlay(&self, id: NodeId) -> bool {
         self.overlays.contains_key(&id)

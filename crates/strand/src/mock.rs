@@ -77,8 +77,13 @@ pub(crate) fn desktop(rt: &Runtime, host: &SchemaHost, screen: &str) {
         ],
     );
     set("tray.items", Value::list(vec![tray]));
-    let note = |id: i64, app: &str, summary: &str, body: &str, urgency: &str| {
-        let napp = host.record("NotificationApp", &[("name", Value::text(app))]);
+    // Icon names the Adwaita theme ships (as `-symbolic`; the lookup
+    // falls back to that variant), so screenshots show them.
+    let note = |id: i64, app: (&str, &str), summary: &str, body: &str, urgency: &str| {
+        let napp = host.record(
+            "NotificationApp",
+            &[("name", Value::text(app.0)), ("icon", Value::text(app.1))],
+        );
         host.record(
             "Notification",
             &[
@@ -95,30 +100,36 @@ pub(crate) fn desktop(rt: &Runtime, host: &SchemaHost, screen: &str) {
         Value::list(vec![
             note(
                 1,
-                "Mail",
+                ("Mail", "mail-unread"),
                 "New message",
                 "<b>Ada</b>: the <i>layout</i> pass is in — see <a href=\"https://x\">the PR</a>",
                 "normal",
             ),
-            note(2, "Battery", "Battery low", "Plug in soon", "critical"),
+            note(
+                2,
+                ("Battery", "battery-caution"),
+                "Battery low",
+                "Plug in soon",
+                "critical",
+            ),
         ]),
     );
-    let app = |id: &str, name: &str| {
+    let app = |id: &str, name: &str, icon: &str| {
         host.record(
             "App",
             &[
                 ("id", Value::text(id)),
                 ("name", Value::text(name)),
-                ("icon", Value::text(id)),
+                ("icon", Value::text(icon)),
             ],
         )
     };
     set(
         "apps.all",
         Value::list(vec![
-            app("firefox", "Firefox"),
-            app("foot", "Foot"),
-            app("files", "Files"),
+            app("firefox", "Firefox", "web-browser"),
+            app("foot", "Foot", "utilities-terminal"),
+            app("files", "Files", "system-file-manager"),
         ]),
     );
 }

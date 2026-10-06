@@ -541,9 +541,13 @@ be built and tested without the language, and the language without pixels.
   physical size into a 6 MB LRU (`strand_render::image`, freedesktop icon
   theme, PNG/JPEG/SVG; JPEG IDCT-scaled and PNG reduced row by row so a
   decode holds about the drawn size), on a worker with a text worker,
-  inline offline; while a size springs the latest decode draws scaled.
-  Gradients draw from dithered pixmaps and shadows from cached ones (a
-  4 MB paint cache). A `popup`'s spec gets `parent` and `anchor_rect` (its
+  inline offline; while a size springs the latest decode draws placed
+  by its fit (`Decoded::placed_in`, `Item::Image::dest`). Gradients draw
+  from dithered pixmaps and shadows from cached ones (a 4 MB paint
+  cache, entries unused for `IDLE_FREE` (10 s) freed at the next paint);
+  a gradient whose paint changes every frame is dithered cell by cell,
+  uncached. `marks:` arrives as a list of `[start, end]` pairs: the
+  compiler's scene conversion turns a `Range` record into that pair. A `popup`'s spec gets `parent` and `anchor_rect` (its
   element's laid-out box in the parent surface); `tooltip: expr` makes a
   render-owned popup (`SceneTree::add_overlay`, ids from `OVERLAY_INDEX`)
   after `TOOLTIP_DELAY` of rest, reported as a spec with `tooltip: true`;
@@ -1666,11 +1670,16 @@ and the connection):
   (`xdg_popup.reposition`). It grabs with the last button or key press's
   serial when that press came within `GRAB_WINDOW` (500 ms), never for a
   tooltip (`SurfaceSpec::tooltip`: no grab, empty input region);
-  `Stats::grabs` counts grabs. A grabbing popup outside the shown
-  grabbing chain dismisses that chain first. While a grabbing popup is
-  open its layer surface is `exclusive` (`State::holds_keyboard_for_popup`)
-  and keys on it go to the topmost grabbing popup, which gets a
-  `KeyboardEnter` of its own.
+  `Stats::grabs` counts grabs. "Grabbing" is what was sent, not what
+  the spec asked for: only a popup made with `xdg_popup.grab` dismisses
+  a grabbing chain outside its own first, makes its layer surface
+  `exclusive` while open (`State::holds_keyboard_for_popup`) and takes
+  the keys on it (the topmost grabbing popup gets a `KeyboardEnter` of
+  its own; when the keys move on, the old target gets `KeyboardLeave`
+  unless the new one is nested in it, and when the grab ends the surface
+  with focus gets `KeyboardEnter` again). A popup opened with no grab
+  (later than `GRAB_WINDOW` after a press) takes no keyboard and leaves
+  other popups open.
   `popup_done` is sent as `InputEvent::ClickAway { surface }` (before the
   surface goes), then the popup and the popups nested in it are destroyed
   (innermost first, as any surface's are), and it is not shown again until

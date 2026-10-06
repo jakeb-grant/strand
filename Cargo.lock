@@ -2042,6 +2042,7 @@ dependencies = [
  "strand-watch",
  "tokio",
  "wayland-client",
+ "wayland-protocols-misc",
  "wayland-protocols-wlr",
  "zbus",
 ]

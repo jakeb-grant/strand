@@ -23,8 +23,8 @@ use vello_cpu::{
 };
 
 use crate::cache::{
-    PaintCache, ShadowShape, cacheable, draw_shadow, gradient_key, image_paint,
-    render_gradient_part, shadow_key,
+    PaintCache, ShadowShape, draw_shadow, gradient_key, image_paint, render_gradient_part,
+    shadow_key,
 };
 use crate::flatten::{DisplayItem, FillShape, Item};
 
@@ -330,6 +330,7 @@ impl Raster {
             return;
         };
         self.prepare(items, &damage);
+        self.cache.trim_idle(std::time::Instant::now());
         // Pixel-aligned rect clips leave coverage inside them untouched; a
         // multi-rect clip path would round differently where layers
         // composite through it.
@@ -461,7 +462,9 @@ fn paint_for(
     if let Some(pm) = cache.peek(gradient_key(p, w, h)) {
         return image_paint(pm, fx, fy, smooth);
     }
-    if !cacheable(w, h) {
+    // Too large to cache, or animated (see `PaintCache::gradient`): the
+    // part this cell shows, dithered the same.
+    {
         // One pixel of margin for smooth sampling at the part's edge.
         let x0 = ((region.x0 - fx).floor() - 1.0).clamp(0.0, w as f64) as u32;
         let y0 = ((region.y0 - fy).floor() - 1.0).clamp(0.0, h as f64) as u32;
@@ -604,17 +607,23 @@ fn draw(
                 ctx.set_fill_rule(Fill::NonZero);
                 ctx.reset_paint_transform();
             }
-            Item::Image { pixmap, rect, tint } => {
+            Item::Image {
+                pixmap,
+                rect,
+                dest,
+                tint,
+            } => {
                 // Decoded at this size: drawn pixel for pixel unless a
                 // transform scales or turns it. A decode at another size
-                // standing in (a size spring) is scaled into the box.
+                // standing in (a size spring) is scaled onto where the
+                // fit places it, clipped to the box.
                 let (kx, ky) = (
-                    rect.width() / pixmap.width().max(1) as f64,
-                    rect.height() / pixmap.height().max(1) as f64,
+                    dest.width() / pixmap.width().max(1) as f64,
+                    dest.height() / pixmap.height().max(1) as f64,
                 );
                 let resized = (kx - 1.0).abs() > 1e-9 || (ky - 1.0).abs() > 1e-9;
                 let smooth = cur != base || resized;
-                let (p, t) = image_paint(pixmap, rect.x0, rect.y0, smooth);
+                let (p, t) = image_paint(pixmap, dest.x0, dest.y0, smooth);
                 let t = if resized {
                     t * kurbo::Affine::scale_non_uniform(kx, ky)
                 } else {

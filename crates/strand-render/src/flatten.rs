@@ -177,10 +177,14 @@ pub enum Item {
         spans: Vec<Color>,
     },
     /// A decoded `image` or `icon` filling `rect` (it was decoded at that
-    /// size); a symbolic icon is a mask painted in `tint`.
+    /// size); a symbolic icon is a mask painted in `tint`. The pixmap
+    /// maps onto `dest`: `rect` itself, or for a decode at another size
+    /// standing in (a size spring), where the fit places it, clipped to
+    /// `rect`.
     Image {
         pixmap: Arc<vello_cpu::Pixmap>,
         rect: kurbo::Rect,
+        dest: kurbo::Rect,
         tint: Option<Color>,
     },
 }
@@ -930,10 +934,16 @@ fn hash_item(h: &mut impl Hasher, item: &Item) {
                 hash_color(h, c);
             }
         }
-        Item::Image { pixmap, rect, tint } => {
+        Item::Image {
+            pixmap,
+            rect,
+            dest,
+            tint,
+        } => {
             10u8.hash(h);
             (Arc::as_ptr(pixmap) as usize).hash(h);
             hash_rect(h, *rect);
+            hash_rect(h, *dest);
             if let Some(c) = tint {
                 hash_color(h, c);
             }
@@ -2224,15 +2234,18 @@ impl Flattener<'_> {
         if let Some(i) = clip {
             self.out.items[i].bounds = phys;
         }
+        let rect = kurbo::Rect::new(
+            frame.x0,
+            frame.y0,
+            frame.x0 + phys.w as f64,
+            frame.y0 + phys.h as f64,
+        );
+        let (dx, dy, dw, dh) = d.placed_in(rect.x0, rect.y0, rect.width(), rect.height());
         self.push(
             Item::Image {
                 pixmap: d.pixmap,
-                rect: kurbo::Rect::new(
-                    frame.x0,
-                    frame.y0,
-                    frame.x0 + phys.w as f64,
-                    frame.y0 + phys.h as f64,
-                ),
+                rect,
+                dest: kurbo::Rect::new(dx, dy, dx + dw, dy + dh),
                 tint: d.symbolic.then_some(color),
             },
             phys,

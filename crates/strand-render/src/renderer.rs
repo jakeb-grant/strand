@@ -648,10 +648,20 @@ impl Renderer {
         {
             if t.text != *text {
                 t.text = text.clone();
-                // Shown: made again with the new text (its delay passed).
-                if let Some(p) = t.popup.take() {
-                    self.tree.remove_overlay(p);
-                    self.show_tooltip();
+                // Shown: its label takes the new text in place, and its
+                // popup lays out and resizes (no new surface: a value
+                // changing while hovered does not flicker).
+                if let Some(p) = t.popup {
+                    let label = self.tree.overlay_children(p).first().copied();
+                    if let Some(l) = label {
+                        self.tree
+                            .set_overlay_prop(l, Prop::Text, PropValue::Text(text.clone()));
+                    }
+                    for s in self.surfaces.values_mut().filter(|s| s.root == p) {
+                        s.mark_layout();
+                    }
+                    self.spec_dirty.insert(p);
+                    self.refresh_specs();
                 }
             }
             return;

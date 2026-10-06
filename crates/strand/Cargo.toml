@@ -33,6 +33,7 @@ tokio = { version = "1.53", features = ["rt-multi-thread", "time"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 libmimalloc-sys = { version = "0.1.49", features = ["extended"] }
 wayland-client = "0.31.15"
+wayland-protocols-misc = { version = "0.3.12", features = ["client"] }
 wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
 
 [lints]
