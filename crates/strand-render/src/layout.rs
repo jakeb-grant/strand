@@ -621,13 +621,15 @@ fn measure_text(
         // layout arrives.
         LogicalSize::new(chars as f32 * font * 0.55, (font * 1.2).ceil())
     });
+    // Whole pixels up, so rounding the layout never cuts a text that fits.
+    let natural = LogicalSize::new(natural.w.ceil(), natural.h.ceil());
     let w = known.width.unwrap_or(match avail.width {
         AvailableSpace::MinContent if shrinks => 0.0,
         AvailableSpace::Definite(a) if shrinks => natural.w.min(a.max(0.0)),
         _ => natural.w,
     });
     let h = known.height.unwrap_or_else(|| {
-        if w + 0.5 < natural.w && wraps {
+        if w + 1.0 < natural.w && wraps {
             texts.fitted(node, w.round()).map_or_else(
                 || {
                     let lines = (natural.w / w.max(1.0)).ceil().max(1.0);

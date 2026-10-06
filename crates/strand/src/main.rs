@@ -8,6 +8,7 @@ mod fmt;
 mod ipc;
 mod live;
 mod logging;
+mod mock;
 mod overlay;
 mod run;
 

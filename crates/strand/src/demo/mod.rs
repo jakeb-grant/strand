@@ -59,10 +59,24 @@ pub(crate) fn apply(state: &mut State<Host>, diff: SceneDiff) {
     for error in state.host_mut().renderer.apply(diff) {
         log::error!("scene: {error:?}");
     }
+    sync(state);
+}
+
+/// The text worker delivered layouts: collect them, and hand on what they
+/// changed (a content-sized surface's size, laid-out sizes).
+pub(crate) fn text_ready(state: &mut State<Host>) {
+    state.host_mut().renderer.update();
+    sync(state);
+}
+
+/// Hands the renderer's surface changes to the surface manager and its
+/// layout facts to logic, then asks every surface for a frame.
+fn sync(state: &mut State<Host>) {
     let changes = state.host_mut().renderer.take_surface_changes();
     for (node, change) in changes {
         state.apply_surface_change(node, change);
     }
+    state.host_mut().forward_facts();
     state.poll();
 }
 
@@ -109,10 +123,7 @@ pub fn run(log: &LogConfig) -> Result<(), DemoError> {
     let mut mgr = SurfaceManager::connect(Host::new(renderer, log.damage), Config::default())?;
     let handle = mgr.loop_handle();
     handle
-        .insert_source(ping_source, |_, _, state| {
-            state.host_mut().renderer.update();
-            state.poll();
-        })
+        .insert_source(ping_source, |_, _, state| text_ready(state))
         .map_err(|e| DemoError::Io(std::io::Error::other(e.error)))?;
 
     // Logic thread → main thread, one diff per tick.

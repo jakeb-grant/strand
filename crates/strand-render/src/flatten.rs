@@ -82,7 +82,7 @@ pub(crate) fn place_text(
     let natural = pick(shaped, scale, None);
     let fit = natural
         .as_ref()
-        .is_some_and(|n| rect.w + 0.5 < n.size.w)
+        .is_some_and(|n| rect.w + 1.0 < n.size.w)
         .then(|| rect.w.round().max(0.0));
     let chosen = match fit {
         Some(w) => pick(shaped, scale, Some(w))
@@ -369,7 +369,41 @@ fn sane_font(mut f: Font) -> Font {
     }
     f.size = f.size.min(MAX_LOGICAL);
     f.weight = f.weight.clamp(1, 1000);
+    f.family = with_generic(&f.family);
     f
+}
+
+/// Generic CSS families: a list that names one already falls back.
+const GENERIC_FAMILIES: [&str; 8] = [
+    "serif",
+    "sans-serif",
+    "monospace",
+    "cursive",
+    "fantasy",
+    "system-ui",
+    "ui-sans-serif",
+    "ui-monospace",
+];
+
+/// `family` ending in a generic family, as CSS falls back: a font that
+/// is not installed (`"Inter"`) must not leave the choice of fallback per
+/// character to the font library, which can pick a font that cannot draw
+/// it (digits from a bitmap emoji font). A family whose name says `Mono`
+/// falls back to `monospace`, any other to `sans-serif`.
+fn with_generic(family: &str) -> String {
+    let has_generic = family
+        .split(',')
+        .map(|f| f.trim().trim_matches(['"', '\'']).to_ascii_lowercase())
+        .any(|f| GENERIC_FAMILIES.contains(&f.as_str()));
+    if has_generic || family.trim().is_empty() {
+        return family.to_string();
+    }
+    let generic = if family.to_ascii_lowercase().contains("mono") {
+        "monospace"
+    } else {
+        "sans-serif"
+    };
+    format!("{family}, {generic}")
 }
 
 /// `marks: h.ranges` (a list of `[start, end]` character ranges, end

@@ -9,7 +9,7 @@ publish.workspace = true
 
 [dependencies]
 strand-scene.workspace = true
-smithay-client-toolkit = { version = "0.21.1", default-features = false, features = ["calloop"] }
+smithay-client-toolkit = { version = "0.21.1", default-features = false, features = ["calloop", "xkbcommon"] }
 wayland-client = "0.31.15"
 wayland-protocols = { version = "0.32.13", features = ["client", "staging"] }
 calloop = "0.14.5"

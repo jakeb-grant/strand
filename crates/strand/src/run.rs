@@ -100,6 +100,18 @@ pub enum NodeEvent {
     /// A scroll in logical pixels, positive down and right
     /// (`on scroll(dy, dx)`).
     Scroll { dy: f64, dx: f64 },
+    /// A middle click (`on middle`).
+    Middle,
+    /// A list row chosen with Enter (`on activate`).
+    Activate,
+    /// A key pressed while the node has focus (`on key(k)`).
+    Key {
+        name: String,
+        text: String,
+        modifiers: strand_scene::Modifiers,
+    },
+    /// Escape or a click away closed a popup (`on dismiss`).
+    Dismiss,
 }
 
 impl NodeEvent {
@@ -109,14 +121,41 @@ impl NodeEvent {
             NodeEvent::Click => "click",
             NodeEvent::Secondary => "secondary",
             NodeEvent::Scroll { .. } => "scroll",
+            NodeEvent::Middle => "middle",
+            NodeEvent::Activate => "activate",
+            NodeEvent::Key { .. } => "key",
+            NodeEvent::Dismiss => "dismiss",
         }
     }
 
-    /// The handler's arguments.
+    /// The handler's arguments (`Key` records are made by the service
+    /// host: [`NodeEvent::args_with`]).
     pub fn args(&self) -> Vec<Value> {
         match self {
-            NodeEvent::Click | NodeEvent::Secondary => Vec::new(),
             NodeEvent::Scroll { dy, dx } => vec![Value::float(*dy), Value::float(*dx)],
+            _ => Vec::new(),
+        }
+    }
+
+    /// The handler's arguments, a `Key` record made by `host`.
+    pub fn args_with(&self, host: &SchemaHost) -> Vec<Value> {
+        match self {
+            NodeEvent::Key {
+                name,
+                text,
+                modifiers: m,
+            } => vec![host.record(
+                "Key",
+                &[
+                    ("name", Value::text(name.as_str())),
+                    ("text", Value::text(text.as_str())),
+                    ("ctrl", Value::Bool(m.ctrl)),
+                    ("shift", Value::Bool(m.shift)),
+                    ("alt", Value::Bool(m.alt)),
+                    ("logo", Value::Bool(m.logo)),
+                ],
+            )],
+            e => e.args(),
         }
     }
 }
@@ -143,6 +182,16 @@ pub enum ToLogic {
         node: NodeId,
         width: f32,
         height: f32,
+    },
+    /// Laid-out sizes that changed (`self.width`, container queries):
+    /// `(node, width, height)` in logical pixels.
+    Layout(Vec<(NodeId, f32, f32)>),
+    /// A widget or the surface wrote a two-way prop: an `input`'s
+    /// `text`, a surface's `open` (Escape, click-away, focus loss).
+    Write {
+        node: NodeId,
+        prop: strand_scene::Prop,
+        value: strand_scene::PropValue,
     },
     /// The run is over (a signal, the compositor gone): unmount, flush
     /// what is kept and end.
@@ -418,7 +467,17 @@ impl Shell {
                     }
                     return;
                 }
-                inst.event(node, event.name(), event.args());
+                inst.event(node, event.name(), event.args_with(&self.host));
+            }
+            ToLogic::Layout(facts) => {
+                for (node, w, h) in facts {
+                    inst.set_size(node, w, h);
+                }
+            }
+            ToLogic::Write { node, prop, value } => {
+                if let Err(e) = inst.write(node, prop, value) {
+                    log::debug!("write to {prop}: {e}");
+                }
             }
             ToLogic::Flag { node, flag, on } => inst.set_flag(node, flag, on),
             ToLogic::Size {
@@ -872,6 +931,9 @@ pub fn logic(
     };
     let build = boot.build.clone().unwrap_or_else(Build::empty);
     let host = Rc::new(SchemaHost::real(&rt, &host_types));
+    if let Some(screen) = crate::mock::requested() {
+        crate::mock::desktop(&rt, &host, &screen);
+    }
     // Monitors the main thread already knows about.
     let mut inbox = Inbox::default();
     sleeper
@@ -1076,10 +1138,7 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
     let mut mgr = SurfaceManager::connect(host, Config::default())?;
     let handle = mgr.loop_handle();
     handle
-        .insert_source(ping_source, |_, _, state| {
-            state.host_mut().renderer.update();
-            state.poll();
-        })
+        .insert_source(ping_source, |_, _, state| crate::demo::text_ready(state))
         .map_err(|e| DemoError::Io(io::Error::other(e.error)))?;
     let signalled = Rc::new(Cell::new(false));
     let flag = Rc::clone(&signalled);

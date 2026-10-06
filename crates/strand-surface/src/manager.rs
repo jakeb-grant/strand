@@ -16,6 +16,9 @@ use smithay_client_toolkit::dispatch2::Dispatch2;
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
+use smithay_client_toolkit::seat::keyboard::{
+    KeyEvent, KeyboardHandler, Keysym, Modifiers as XkbModifiers, RawModifiers,
+};
 use smithay_client_toolkit::seat::pointer::{
     CursorIcon, PointerEvent, PointerEventKind, PointerHandler, ThemeSpec, ThemedPointer,
 };
@@ -28,7 +31,9 @@ use smithay_client_toolkit::shm::{Shm, ShmHandler};
 use smithay_client_toolkit::{delegate_dispatch2, delegate_registry, registry_handlers};
 use wayland_client::backend::ObjectId;
 use wayland_client::globals::registry_queue_init;
-use wayland_client::protocol::{wl_buffer, wl_output, wl_pointer, wl_seat, wl_surface};
+use wayland_client::protocol::{
+    wl_buffer, wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface,
+};
 use wayland_client::{Connection, Proxy, QueueHandle};
 use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
@@ -53,6 +58,7 @@ use crate::input::{AxisDelta, AxisSource, ButtonState, InputEvent};
 use crate::monitor::{Geometry, Monitor, MonitorId, Monitors};
 use crate::placement::{LayerConfig, PlacementError, layer_config};
 use crate::shm::{BufferData, MAX_BUFFERS, ShmBuffers};
+use strand_scene::{KeyInput, Modifiers};
 
 /// How long an unmapped surface whose paint drew nothing, while its
 /// painter still wants a frame, waits before it is painted again (no frame
@@ -292,6 +298,9 @@ pub struct SurfaceInfo {
     pub opaque_region: Vec<Rect>,
     /// Input passes through (an `osd`: empty input region).
     pub click_through: bool,
+    /// The input region: `None` the whole surface, `Some(None)` empty,
+    /// else the box `(x, y, w, h)` inside the shadow overhang.
+    pub input_region: Option<Option<(i32, i32, i32, i32)>>,
     pub stats: Stats,
 }
 
@@ -348,6 +357,9 @@ struct Surface {
     opaque: Vec<Rect>,
     last_damage: Vec<Rect>,
     click_through: bool,
+    /// The input region last sent: `None` the whole surface, `Some(None)`
+    /// empty, else the box inside the overhang (logical pixels).
+    input_region: Option<Option<(i32, i32, i32, i32)>>,
     stats: Stats,
 }
 
@@ -418,6 +430,7 @@ impl Surface {
             last_damage: self.last_damage.clone(),
             opaque_region: self.opaque.clone(),
             click_through: self.click_through,
+            input_region: self.input_region,
             stats: self.stats,
         }
     }
@@ -474,6 +487,11 @@ pub struct State<H: SurfaceHost + 'static> {
     dirty: BTreeSet<SurfaceId>,
     flush_scheduled: bool,
     pointers: Vec<SeatPointer>,
+    /// Each seat's keyboard (xkbcommon keymaps, with key repeat).
+    keyboards: Vec<(wl_seat::WlSeat, wl_keyboard::WlKeyboard)>,
+    /// The surface with keyboard focus, and the modifiers held.
+    keyboard_focus: Option<SurfaceId>,
+    modifiers: Modifiers,
     /// Set by [`State::set_focused_monitor`]; `None` lets the compositor
     /// place `screens: focused` surfaces.
     focused: Option<MonitorId>,
@@ -606,6 +624,9 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             dirty: BTreeSet::new(),
             flush_scheduled: false,
             pointers: Vec::new(),
+            keyboards: Vec::new(),
+            keyboard_focus: None,
+            modifiers: Modifiers::default(),
             focused: None,
             input: None,
             stats: Stats::default(),
@@ -883,6 +904,10 @@ impl<H: SurfaceHost + 'static> State<H> {
         };
         let mapped = match layer_config(&spec) {
             Ok(_) => spec.open,
+            Err(e @ PlacementError::NotLayerSurface(_)) => {
+                log::debug!("{}: {e}", spec.namespace());
+                false
+            }
             Err(e) => {
                 log::warn!("{}: {e}", spec.namespace());
                 false
@@ -1058,8 +1083,9 @@ impl<H: SurfaceHost + 'static> State<H> {
         };
         let (scale, integer_scale) = self.initial_scale(global, fractional.is_some());
         // An OSD is click-through (design example d): an empty input region
-        // lets clicks reach the windows beneath it.
-        let click_through = spec.kind == NodeKind::Osd;
+        // lets clicks reach the windows beneath it. A shadowed surface
+        // takes input on its box only (set once its size is known).
+        let click_through = config.click_through;
         if click_through {
             match Region::new(&self.compositor) {
                 Ok(region) => wl.set_input_region(Some(region.wl_region())),
@@ -1096,6 +1122,7 @@ impl<H: SurfaceHost + 'static> State<H> {
             opaque: Vec::new(),
             last_damage: Vec::new(),
             click_through,
+            input_region: click_through.then_some(None),
             stats: Stats {
                 bare_commits: 1,
                 ..Stats::default()
@@ -1112,6 +1139,9 @@ impl<H: SurfaceHost + 'static> State<H> {
         };
         self.by_wl.remove(&s.wl().id());
         self.dirty.remove(&id);
+        if self.keyboard_focus == Some(id) {
+            self.keyboard_focus = None;
+        }
         self.cancel_deadline(id);
         s.buffers.destroy();
         if let Some(f) = s.fractional.take() {
@@ -1516,6 +1546,34 @@ impl<H: SurfaceHost + 'static> State<H> {
         self.by_wl.get(&wl.id()).copied()
     }
 
+    /// A key event on the surface with keyboard focus.
+    fn key(&mut self, event: KeyEvent, state: ButtonState, repeat: bool) {
+        let Some(surface) = self.keyboard_focus else {
+            return;
+        };
+        let name = key_name(event.keysym);
+        let text = event
+            .utf8
+            .filter(|t| t.chars().all(|c| !c.is_control()))
+            .unwrap_or_default();
+        self.send_input(InputEvent::Key {
+            surface,
+            key: KeyInput {
+                name,
+                text,
+                state,
+                repeat,
+                modifiers: self.modifiers,
+                time: event.time,
+            },
+        });
+    }
+
+    /// The surface with keyboard focus, if it is one of ours.
+    pub fn keyboard_focus(&self) -> Option<SurfaceId> {
+        self.keyboard_focus
+    }
+
     fn send_input(&mut self, event: InputEvent) {
         self.host.input(&event);
         if let Some(tx) = &self.input
@@ -1524,6 +1582,15 @@ impl<H: SurfaceHost + 'static> State<H> {
             // Nobody listens any more: stop queueing.
             self.input = None;
         }
+    }
+}
+
+/// A keysym's xkb name without its `XK_` prefix (`Escape`, `Return`,
+/// `Down`, `a`), or its code in hex for one without a name.
+fn key_name(sym: Keysym) -> String {
+    match sym.name() {
+        Some(n) => n.strip_prefix("XK_").unwrap_or(n).to_string(),
+        None => format!("0x{:x}", sym.raw()),
     }
 }
 
@@ -1756,6 +1823,24 @@ impl<H: SurfaceHost + 'static> LayerShellHandler for State<H> {
             s.geometry_dirty = true;
         }
         s.logical = (w, h);
+        let region = s.config.input_region((w, h));
+        if region != s.input_region {
+            s.input_region = region;
+            let wl = s.layer.wl_surface().clone();
+            let ns = s.config.namespace.clone();
+            match region {
+                None => wl.set_input_region(None),
+                Some(rect) => match Region::new(&self.compositor) {
+                    Ok(r) => {
+                        if let Some((x, y, w, h)) = rect {
+                            r.add(x, y, w, h);
+                        }
+                        wl.set_input_region(Some(r.wl_region()));
+                    }
+                    Err(e) => log::warn!("{ns}: no input region: {e}"),
+                },
+            }
+        }
         let first = !s.configured;
         s.configured = true;
         s.ack_pending = true;
@@ -1793,12 +1878,26 @@ impl<H: SurfaceHost + 'static> SeatHandler for State<H> {
                 ThemeSpec::default(),
             ) {
                 Ok(pointer) => self.pointers.push(SeatPointer {
-                    seat,
+                    seat: seat.clone(),
                     pointer,
                     button_serial: None,
                     enter_serial: None,
                 }),
                 Err(e) => log::warn!("cannot get the pointer: {e}"),
+            }
+        }
+        if capability == Capability::Keyboard && !self.keyboards.iter().any(|(s, _)| *s == seat) {
+            match self.seat_state.get_keyboard_with_repeat(
+                qh,
+                &seat,
+                None,
+                self.handle.clone(),
+                Box::new(|state: &mut Self, _, event| {
+                    state.key(event, ButtonState::Pressed, true);
+                }),
+            ) {
+                Ok(k) => self.keyboards.push((seat, k)),
+                Err(e) => log::warn!("cannot get the keyboard: {e}"),
             }
         }
     }
@@ -1813,6 +1912,15 @@ impl<H: SurfaceHost + 'static> SeatHandler for State<H> {
         if capability == Capability::Pointer {
             // Dropping a themed pointer releases it.
             self.pointers.retain(|p| p.seat != seat);
+        }
+        if capability == Capability::Keyboard {
+            self.keyboards.retain(|(s, k)| {
+                let keep = *s != seat;
+                if !keep && k.version() >= 3 {
+                    k.release();
+                }
+                keep
+            });
         }
     }
 
@@ -1914,6 +2022,92 @@ impl<H: SurfaceHost + 'static> PointerHandler for State<H> {
             };
             self.send_input(event);
         }
+    }
+}
+
+impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
+    fn enter(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        surface: &wl_surface::WlSurface,
+        _: u32,
+        _: &[u32],
+        _: &[Keysym],
+    ) {
+        if let Some(id) = self.surface_for(surface) {
+            self.keyboard_focus = Some(id);
+            self.send_input(InputEvent::KeyboardEnter { surface: id });
+        }
+    }
+
+    fn leave(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        surface: &wl_surface::WlSurface,
+        _: u32,
+    ) {
+        let id = self.surface_for(surface).or(self.keyboard_focus);
+        if self.keyboard_focus == id {
+            self.keyboard_focus = None;
+        }
+        if let Some(id) = id {
+            self.send_input(InputEvent::KeyboardLeave { surface: id });
+        }
+    }
+
+    fn press_key(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        _: u32,
+        event: KeyEvent,
+    ) {
+        self.key(event, ButtonState::Pressed, false);
+    }
+
+    fn repeat_key(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        _: u32,
+        event: KeyEvent,
+    ) {
+        self.key(event, ButtonState::Pressed, true);
+    }
+
+    fn release_key(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        _: u32,
+        event: KeyEvent,
+    ) {
+        self.key(event, ButtonState::Released, false);
+    }
+
+    fn update_modifiers(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        _: u32,
+        m: XkbModifiers,
+        _: RawModifiers,
+        _: u32,
+    ) {
+        self.modifiers = Modifiers {
+            ctrl: m.ctrl,
+            alt: m.alt,
+            shift: m.shift,
+            logo: m.logo,
+        };
     }
 }
 

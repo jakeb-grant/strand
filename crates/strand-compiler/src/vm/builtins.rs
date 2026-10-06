@@ -70,6 +70,37 @@ fn default_depth(types: &TypeTable, ty: &Ty, depth: u32) -> Value {
 }
 
 // ---------------------------------------------------------------------------
+// Layout queries
+
+thread_local! {
+    /// While a `when` condition is evaluated: the offset added to every
+    /// laid-out size it reads, and whether it read one.
+    static QUERY: std::cell::Cell<(f64, bool)> = const { std::cell::Cell::new((0.0, false)) };
+}
+
+/// Runs `f` with every `width`/`height` of a node it reads moved by
+/// `bias` logical pixels; returns its result and whether it read one.
+/// This is how container queries get their hysteresis.
+pub(crate) fn layout_query<R>(bias: f64, f: impl FnOnce() -> R) -> (R, bool) {
+    let outer = QUERY.with(|q| q.replace((bias, false)));
+    let r = f();
+    let (_, read) = QUERY.with(|q| q.replace(outer));
+    (r, read)
+}
+
+fn laid_out(v: Value) -> Value {
+    let bias = QUERY.with(|q| {
+        let (b, _) = q.get();
+        q.set((b, true));
+        b
+    });
+    match v.as_f64() {
+        Some(x) if bias != 0.0 => Value::float(x + bias),
+        _ => v,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Fields
 
 pub(crate) fn field(vm: &Rc<Vm>, rt: &Runtime, base: &Value, name: &str) -> Result<Value, Error> {
@@ -88,8 +119,8 @@ pub(crate) fn field(vm: &Rc<Vm>, rt: &Runtime, base: &Value, name: &str) -> Resu
             "pressed" => Value::Bool(n.pressed.get(rt)?),
             "focused" => Value::Bool(n.focused.get(rt)?),
             "selected" => Value::Bool(n.selected.get(rt)?),
-            "width" => n.width.get(rt)?,
-            "height" => n.height.get(rt)?,
+            "width" => laid_out(n.width.get(rt)?),
+            "height" => laid_out(n.height.get(rt)?),
             _ => Value::Null,
         },
         Value::List(items) => list_field(items, name),

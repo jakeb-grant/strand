@@ -301,7 +301,7 @@ fn split_centre_is_truly_centred() {
         );
         assert_eq!(rect(&r, start).x, 12.0);
         let e = rect(&r, end);
-        assert!((e.x + e.w - 788.0).abs() < 0.51, "end packs right: {e:?}");
+        assert!((e.x + e.w - 788.0).abs() <= 1.0, "end packs right: {e:?}");
         if sw == 300.0 {
             assert_matches_ref("layout_split", &buf, TOLERANCE);
         }

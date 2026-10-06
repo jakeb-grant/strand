@@ -38,6 +38,35 @@ pub struct LayerConfig {
     /// Top, right, bottom, left, in logical pixels.
     pub margin: [i32; 4],
     pub keyboard: Keyboard,
+    /// How far the buffer reaches past the surface's box (shadows), top,
+    /// right, bottom, left, in logical pixels: the size above includes
+    /// it and the margins are shifted by it, so the box stays where its
+    /// margin puts it; the exclusive zone reserves only the box.
+    pub overhang: [i32; 4],
+    /// The input region: the box inside the overhang, or nothing at all
+    /// for a click-through `osd`.
+    pub click_through: bool,
+}
+
+impl LayerConfig {
+    /// The input region for a surface of logical size `(w, h)`: `None` is
+    /// the whole surface; `Some(None)` is empty (click-through); otherwise
+    /// the box `(x, y, w, h)` inside the overhang.
+    pub fn input_region(&self, (w, h): (u32, u32)) -> Option<Option<(i32, i32, i32, i32)>> {
+        if self.click_through {
+            return Some(None);
+        }
+        let [t, r, b, l] = self.overhang;
+        if [t, r, b, l] == [0; 4] {
+            return None;
+        }
+        Some(Some((
+            l,
+            t,
+            (w as i32 - l - r).max(0),
+            (h as i32 - t - b).max(0),
+        )))
+    }
 }
 
 /// Why a surface spec has no layer surface (yet).
@@ -47,7 +76,8 @@ pub enum PlacementError {
     /// `ext-session-lock` with the lock screen).
     NotLayerSurface(NodeKind),
     /// A bar without a thickness, or a panel or OSD without a width and
-    /// height: content-sized surfaces need layout (M2).
+    /// height (render fills them in from layout; a spec from elsewhere
+    /// may lack them).
     AutoSize(NodeKind),
 }
 
@@ -59,7 +89,7 @@ impl std::fmt::Display for PlacementError {
             }
             Self::AutoSize(kind) => write!(
                 f,
-                "a `{}` sized by its content needs layout, which lands in M2; give it a size",
+                "a `{}` has no size yet (its content is not laid out)",
                 kind.name()
             ),
         }
@@ -88,18 +118,51 @@ pub fn layer_config(spec: &SurfaceSpec) -> Result<LayerConfig, PlacementError> {
         .layer
         .ok_or(PlacementError::NotLayerSurface(spec.kind))?;
     let m = spec.margin;
-    let margin = [px(m.top), px(m.right), px(m.bottom), px(m.left)];
+    let o = spec.overhang;
+    let overhang = [o.top, o.right, o.bottom, o.left].map(|v| px(v).max(0));
+    let [ot, or, ob, ol] = overhang;
+    // The box keeps its place: each margin moves out by the overhang.
+    let margin = [
+        px(m.top) - ot,
+        px(m.right) - or,
+        px(m.bottom) - ob,
+        px(m.left) - ol,
+    ];
     let (anchors, width, height, exclusive_zone) = if spec.kind == NodeKind::Bar {
         let edge = spec.edge.unwrap_or(Edge::Top);
         let thickness = spec
             .exclusive_zone()
             .ok_or(PlacementError::AutoSize(spec.kind))?;
         let t = size(thickness);
+        let (tv, th) = (t + (ot + ob) as u32, t + (ol + or) as u32);
+        // The zone counts from the (moved) margin: it reserves the box
+        // plus the overhang towards the edge, so the reserved space stays
+        // margin + thickness.
         match edge {
-            Edge::Top => (Anchors::new(true, false, true, true), 0, t, px(thickness)),
-            Edge::Bottom => (Anchors::new(false, true, true, true), 0, t, px(thickness)),
-            Edge::Left => (Anchors::new(true, true, true, false), t, 0, px(thickness)),
-            Edge::Right => (Anchors::new(true, true, false, true), t, 0, px(thickness)),
+            Edge::Top => (
+                Anchors::new(true, false, true, true),
+                0,
+                tv,
+                px(thickness) + ot,
+            ),
+            Edge::Bottom => (
+                Anchors::new(false, true, true, true),
+                0,
+                tv,
+                px(thickness) + ob,
+            ),
+            Edge::Left => (
+                Anchors::new(true, true, true, false),
+                th,
+                0,
+                px(thickness) + ol,
+            ),
+            Edge::Right => (
+                Anchors::new(true, true, false, true),
+                th,
+                0,
+                px(thickness) + or,
+            ),
         }
     } else {
         let (Some(w), Some(h)) = (spec.width, spec.height) else {
@@ -116,7 +179,12 @@ pub fn layer_config(spec: &SurfaceSpec) -> Result<LayerConfig, PlacementError> {
             Anchor::BottomLeft => Anchors::new(false, true, true, false),
             Anchor::BottomRight => Anchors::new(false, true, false, true),
         };
-        (anchors, size(w), size(h), 0)
+        (
+            anchors,
+            size(w) + (ol + or) as u32,
+            size(h) + (ot + ob) as u32,
+            0,
+        )
     };
     Ok(LayerConfig {
         namespace: spec.namespace(),
@@ -127,6 +195,9 @@ pub fn layer_config(spec: &SurfaceSpec) -> Result<LayerConfig, PlacementError> {
         exclusive_zone,
         margin,
         keyboard: spec.keyboard,
+        overhang,
+        // An OSD is click-through (design example d).
+        click_through: spec.kind == NodeKind::Osd,
     })
 }
 
@@ -213,6 +284,55 @@ mod tests {
         assert_eq!((c.width, c.height, c.exclusive_zone), (400, 300, 0));
         assert_eq!(c.layer, Layer::Overlay);
         assert_eq!(c.keyboard, Keyboard::Exclusive);
+    }
+
+    /// Shadows grow the buffer and move the margins out, so the box stays
+    /// put; the bar's reserved space (margin + zone) is unchanged and the
+    /// input region is the box alone; an OSD's is empty.
+    #[test]
+    fn overhang_grows_the_buffer_not_the_box() {
+        let mut s = spec(
+            NodeKind::Bar,
+            &[
+                (Prop::Height, PropValue::Number(36.0)),
+                (
+                    Prop::Margin,
+                    PropValue::Insets(Insets::from_values(&[8.0, 8.0, 0.0]).unwrap()),
+                ),
+            ],
+        );
+        s.overhang = Insets {
+            top: 11.0,
+            right: 13.0,
+            bottom: 15.0,
+            left: 13.0,
+        };
+        let c = layer_config(&s).unwrap();
+        assert_eq!((c.width, c.height), (0, 36 + 11 + 15));
+        assert_eq!(c.margin, [8 - 11, 8 - 13, -15, 8 - 13]);
+        assert_eq!(c.margin[0] + c.exclusive_zone, 8 + 36, "reserved space");
+        assert_eq!(
+            c.input_region((2560 - 16 + 26, 62)),
+            Some(Some((13, 11, 2544, 36)))
+        );
+        let mut p = spec(
+            NodeKind::Panel,
+            &[
+                (Prop::Anchor, kw("top_right")),
+                (Prop::Width, PropValue::Number(380.0)),
+                (Prop::Height, PropValue::Number(200.0)),
+            ],
+        );
+        p.overhang = Insets::all(10.0);
+        let c = layer_config(&p).unwrap();
+        assert_eq!((c.width, c.height), (400, 220));
+        assert_eq!(c.input_region((400, 220)), Some(Some((10, 10, 380, 200))));
+        p.overhang = Insets::default();
+        assert_eq!(layer_config(&p).unwrap().input_region((380, 200)), None);
+        let o = spec(NodeKind::Osd, &[(Prop::Size, PropValue::Number(100.0))]);
+        let c = layer_config(&o).unwrap();
+        assert_eq!(c.layer, Layer::Overlay);
+        assert_eq!(c.input_region((100, 100)), Some(None), "click-through");
     }
 
     #[test]

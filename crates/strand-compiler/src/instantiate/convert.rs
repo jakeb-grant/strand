@@ -229,11 +229,8 @@ fn convert(types: &TypeTable, ty: &Ty, v: &Value, border_pair: bool) -> Option<P
                 })
                 .collect(),
         ),
-        Value::Fn(_)
-        | Value::Node(_)
-        | Value::Palette(_)
-        | Value::TokenSet(_)
-        | Value::Service(_) => return None,
+        Value::Node(n) => PropValue::Node(n.scene.get()?),
+        Value::Fn(_) | Value::Palette(_) | Value::TokenSet(_) | Value::Service(_) => return None,
     })
 }
 

@@ -32,6 +32,10 @@ pub(crate) struct ElemCtx {
     pub state: Rc<NodeState>,
 }
 
+/// How far past its threshold a container query that holds must move
+/// before it stops holding, logical pixels (design.md: 4 px hysteresis).
+pub const QUERY_HYSTERESIS: f64 = 4.0;
+
 /// One source of a prop's value: the base binding or a `when` block.
 #[derive(Clone)]
 struct Source {
@@ -1367,12 +1371,32 @@ impl Ctx {
             Rc::new(sources.iter().map(|s| s.transition.clone()).collect());
         let sources = Rc::new(sources);
         let (ctx, e, srcs) = (self.clone(), env.clone(), sources.clone());
+        // Which `when` held last time: a container query (a condition on
+        // a laid-out size, `self.width < 300`) that held keeps holding
+        // while it would hold 4 px either way, so it cannot flicker.
+        let held: Rc<RefCell<Vec<bool>>> = Rc::new(RefCell::new(vec![false; sources.len()]));
         let memo = rt.memo(move |rt| {
             for (i, s) in srcs.iter().enumerate().rev() {
-                if let Some(c) = s.cond
-                    && !ctx.eval(rt, c, &e)?.truthy()
-                {
-                    continue;
+                if let Some(c) = s.cond {
+                    let (v, query) = crate::vm::builtins::layout_query(0.0, || ctx.eval(rt, c, &e));
+                    let mut on = v?.truthy();
+                    let was = held.borrow().get(i).copied().unwrap_or(false);
+                    if !on && query && was {
+                        for bias in [-QUERY_HYSTERESIS, QUERY_HYSTERESIS] {
+                            let (v, _) =
+                                crate::vm::builtins::layout_query(bias, || ctx.eval(rt, c, &e));
+                            if v?.truthy() {
+                                on = true;
+                                break;
+                            }
+                        }
+                    }
+                    if let Some(h) = held.borrow_mut().get_mut(i) {
+                        *h = on;
+                    }
+                    if !on {
+                        continue;
+                    }
                 }
                 return Ok(PropOut {
                     value: ctx.source_value(rt, prop, &s.value, &e)?,
@@ -1406,6 +1430,17 @@ impl Ctx {
         });
         match memo.get_untracked(rt) {
             Ok(out) => {
+                // A node named before it is mounted: set at the end of the
+                // tick.
+                if out.value == PropValue::Unset
+                    && let Some(Source {
+                        value: SourceValue::Chunk(c, _),
+                        ..
+                    }) = sources.get(out.source)
+                    && let Ok(Value::Node(n)) = rt.untrack(|rt| self.eval(rt, *c, env))
+                {
+                    self.late_nodes.borrow_mut().push((id, prop, n));
+                }
                 let t = transitions.get(out.source).cloned().unwrap_or_default();
                 self.em.borrow_mut().set(id, prop, out.value, t);
             }

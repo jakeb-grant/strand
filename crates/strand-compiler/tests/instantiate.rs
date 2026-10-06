@@ -2727,3 +2727,80 @@ fn input_handlers_and_two_way_writes_at_60_hz_are_not_throttled() {
         }
     }
 }
+
+/// A container query (`when self.width < 300`) follows the laid-out size
+/// render reports, with 4 px hysteresis: once it holds it keeps holding
+/// until the width is 4 px past the threshold, so it cannot flicker.
+#[test]
+fn container_queries_have_hysteresis() {
+    let src = "bar Top {\n  height: 30\n  row {\n    opacity: 1\n    when self.width < 300 { opacity: 0.5 }\n  }\n}\n";
+    let mut shell = boot(&[("q.strand", src)], |rt, host| {
+        let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+        host.set(rt, "screens.all", Value::list(vec![screen]))
+            .unwrap();
+    });
+    let row = shell.scene.of_kind(NodeKind::Row)[0];
+    let opacity = |shell: &Shell| match shell.scene.prop(row, Prop::Opacity) {
+        Some(PropValue::Number(n)) => *n,
+        p => panic!("{p:?}"),
+    };
+    let at = |shell: &mut Shell, w: f32| {
+        shell.inst.set_size(row, w, 30.0);
+        shell.flush();
+        opacity(shell)
+    };
+    assert_eq!(at(&mut shell, 400.0), 1.0);
+    assert_eq!(at(&mut shell, 299.0), 0.5, "below the threshold");
+    assert_eq!(at(&mut shell, 301.0), 0.5, "held within 4 px");
+    assert_eq!(at(&mut shell, 303.0), 0.5, "held within 4 px");
+    assert_eq!(at(&mut shell, 304.0), 1.0, "4 px past: released");
+    assert_eq!(
+        at(&mut shell, 301.0),
+        1.0,
+        "not on again above the threshold"
+    );
+    assert_eq!(at(&mut shell, 299.5), 0.5);
+}
+
+/// `nav: results` names a list mounted after the input: render gets the
+/// list's node once everything is mounted.
+#[test]
+fn nav_names_the_list_node() {
+    let files = [fixture("launcher.strand")];
+    let mut shell = boot(&refs(&files), desktop);
+    shell.inst.set("launcher.open", Value::Bool(true)).unwrap();
+    shell.flush();
+    let input = shell.scene.of_kind(NodeKind::Input)[0];
+    let list = shell.scene.of_kind(NodeKind::List)[0];
+    assert_eq!(
+        shell.scene.prop(input, Prop::Nav),
+        Some(&PropValue::Node(list))
+    );
+}
+
+/// Typing into the launcher's `input` is a two-way write of its `text`;
+/// `open: <-> open` takes the `false` Escape writes.
+#[test]
+fn input_and_open_take_widget_writes() {
+    let files = [fixture("launcher.strand")];
+    let mut shell = boot(&refs(&files), desktop);
+    shell.inst.set("launcher.open", Value::Bool(true)).unwrap();
+    shell.flush();
+    let input = shell.scene.of_kind(NodeKind::Input)[0];
+    shell
+        .inst
+        .write(input, Prop::Text, PropValue::Text("fi".into()))
+        .unwrap();
+    shell.flush();
+    assert_eq!(
+        shell.scene.prop(input, Prop::Text),
+        Some(&PropValue::Text("fi".into()))
+    );
+    let panel = shell.scene.of_kind(NodeKind::Panel)[0];
+    shell
+        .inst
+        .write(panel, Prop::Open, PropValue::Bool(false))
+        .unwrap();
+    shell.flush();
+    assert_eq!(shell.inst.get("launcher.open").unwrap(), Value::Bool(false));
+}

@@ -213,6 +213,10 @@ pub(crate) struct Ctx {
     pub handover: RefCell<Vec<String>>,
     /// Runtime faults outlined in red: the node and the border it had.
     pub outlined: RefCell<HashMap<NodeId, Option<PropValue>>>,
+    /// Props naming a node not on the scene yet when they were bound
+    /// (`nav: results` above the `list { id: results }`): set at the end
+    /// of the tick, once everything is mounted.
+    pub late_nodes: RefCell<Vec<(NodeId, SceneProp, Rc<NodeState>)>>,
 }
 
 impl VmHooks for Ctx {
@@ -452,6 +456,7 @@ impl Ctx {
             carry: RefCell::default(),
             pending: RefCell::default(),
             parked: RefCell::default(),
+            late_nodes: RefCell::default(),
             handover: RefCell::default(),
             outlined: RefCell::default(),
         });
@@ -1013,6 +1018,17 @@ impl Instance {
     }
 
     fn collect(&self, tick: strand_core::Tick) -> Update {
+        let late: Vec<_> = self.ctx.late_nodes.borrow_mut().drain(..).collect();
+        for (id, prop, state) in late {
+            if let Some(target) = state.scene.get() {
+                self.ctx.em.borrow_mut().set(
+                    id,
+                    prop,
+                    PropValue::Node(target),
+                    Transition::Default,
+                );
+            }
+        }
         let mut new_tokens = None;
         for id in &tick.changed {
             if self.tokens.is_some_and(|t| t.id() == *id) {
