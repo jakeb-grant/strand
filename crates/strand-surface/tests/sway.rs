@@ -958,3 +958,103 @@ fn pointer_events_arrive_in_surface_coordinates() {
     assert!(mgr.state().last_button_serial().is_some());
     drop(pointer);
 }
+
+/// A shadowed panel: the overhang grows the layer surface and moves its
+/// margins (its box stays at margin 40 from the top-left corner), and the
+/// input region is the box: a click on the shadow goes past the surface,
+/// a click on the box arrives in surface coordinates (overhang included).
+#[test]
+fn shadow_overhang_grows_the_surface_but_not_its_input() {
+    use wayland_client::globals::{GlobalListContents, registry_queue_init};
+    use wayland_client::protocol::{wl_pointer, wl_registry};
+    use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
+    use wayland_protocols_wlr::virtual_pointer::v1::client::{
+        zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1,
+        zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
+    };
+
+    struct Client;
+    impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Client {
+        fn event(
+            _: &mut Self,
+            _: &wl_registry::WlRegistry,
+            _: wl_registry::Event,
+            _: &GlobalListContents,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+    delegate_noop!(Client: ignore ZwlrVirtualPointerManagerV1);
+    delegate_noop!(Client: ignore ZwlrVirtualPointerV1);
+
+    let Some(sway) = Sway::start("shadow_overhang_grows_the_surface_but_not_its_input") else {
+        return;
+    };
+    let mut mgr = strand_surface::SurfaceManager::with_connection(
+        sway.connect(),
+        TestHost::default(),
+        Config::default(),
+    )
+    .unwrap();
+    const PANEL: NodeId = NodeId::new(7, 0);
+    let mut spec = layer_spec(NodeKind::Panel, "Card", "top_left", 200.0, 100.0);
+    spec.margin = Insets::all(40.0);
+    spec.overhang = Insets::all(20.0);
+    mgr.state_mut()
+        .apply_surface_change(PANEL, SurfaceChange::Created(spec));
+    let input = mgr.take_input().unwrap();
+    wait_for_bars(&mut mgr, 1);
+    let id = mgr.state().surfaces_of(PANEL)[0];
+    let info = mgr.state().surface(id).unwrap();
+    assert_eq!(info.logical_size, (240, 140));
+    assert_eq!(info.input_region, Some(Some((20, 20, 200, 100))));
+
+    let conn = sway.connect();
+    let (globals, mut queue) = registry_queue_init::<Client>(&conn).unwrap();
+    let qh = queue.handle();
+    let manager: ZwlrVirtualPointerManagerV1 = globals.bind(&qh, 1..=2, ()).unwrap();
+    let pointer = manager.create_virtual_pointer(None, &qh, ());
+    queue.roundtrip(&mut Client).unwrap();
+    pump(&mut mgr, Duration::from_millis(200));
+    let click = |t: u32, x: u32, y: u32| {
+        pointer.motion_absolute(t, x, y, 1920, 1080);
+        pointer.frame();
+        pointer.button(t + 1, 0x110, wl_pointer::ButtonState::Pressed);
+        pointer.frame();
+        pointer.button(t + 2, 0x110, wl_pointer::ButtonState::Released);
+        pointer.frame();
+    };
+    // On the shadow (10 px left of the box), then on the box.
+    click(1, 30, 60);
+    click(10, 60, 60);
+    queue.roundtrip(&mut Client).unwrap();
+    let mut events = Vec::new();
+    let deadline = Instant::now() + WAIT;
+    while Instant::now() < deadline
+        && events
+            .iter()
+            .filter(|e| matches!(e, InputEvent::PointerButton { .. }))
+            .count()
+            < 2
+    {
+        mgr.dispatch(Some(Duration::from_millis(50))).unwrap();
+        events.extend(input.try_iter());
+    }
+    let buttons: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            InputEvent::PointerButton { position, .. } => Some(*position),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(buttons.len(), 2, "only the box takes the click: {events:?}");
+    // Box at 40 on screen = 20 into the surface past its 20 px overhang.
+    assert!(
+        buttons
+            .iter()
+            .all(|p| (p.x - 40.0).abs() < 1.0 && (p.y - 40.0).abs() < 1.0),
+        "{buttons:?}"
+    );
+    drop(pointer);
+}

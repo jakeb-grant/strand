@@ -3812,3 +3812,118 @@ replaced by a mean per lookup (at most 8 for `get`/`index_of`, 2.5 for
 `contains_key`) and a loose per-lookup cap of 24 for all three and for a
 miss. A scan would cost n/2, thousands of compares, so both still fail on
 the regression the guard is for.
+
+## wave3-pixels
+
+**2026-10-06 · wave3-pixels: container defaults.** design.md names the
+containers but not their default alignment. `row`, `start`, `center` and
+`end` centre their children on the cross axis (the bar's dots, title and
+clock sit on the bar's midline without `align`; writing `align: center`,
+as the launcher and OSD rows do, changes nothing); `col` and `scroll`
+stretch them across (a toast's texts start at its left edge and wrap at
+its width); `stack`, `box`, surface roots and every other container put
+each child in one cell, stretched where its size is auto (CSS grid), so
+`bar Top { split {…} }` fills the bar. `grid { columns: n }` is n
+auto-sized columns packed at the start (the calendar's 28 px cells do not
+spread over a wider popup). `split` is a grid of `minmax(0, 1fr) auto
+minmax(0, 1fr)` with `start`, `center`, `end` in their own column, so the
+centre is truly centred whatever the sides hold; its sections pack to
+their own side. A `split` in a `left`/`right` bar runs down the bar.
+`spacer` grows (flex-basis 0). A `scroll`'s children do not shrink (they
+scroll instead). Rationale: the four example shells render as their
+authors evidently meant with no props added, which removes a concept.
+
+**2026-10-06 · wave3-pixels: `shrink` and `justify`.** The spec of this
+track lists them as flex props; design.md says "Flex props plus
+`min_*`/`max_*`" without listing them. They are added to the `node` group
+(`shrink: float`, default 1 as CSS; `justify: start | center | end |
+space_between | space_around | space_evenly`, the main-axis distribution)
+and to `Prop`, since without them a row cannot spread or pin its
+children, and `spacer` alone cannot express `space_between`.
+
+**2026-10-06 · wave3-pixels: `x`/`y` stay paint-only, also with `place:
+absolute`.** An absolute child is laid out at its parent's content
+corner and `x`/`y` offset it like any other node (the offset moves its
+subtree), so `enter { x: 420 }` and absolute placement share one meaning
+and moving an absolute node never relayouts.
+
+**2026-10-06 · wave3-pixels: text in its box.** Text is shaped once
+without a width bound (one layout per node and scale, as the M0
+architecture note planned) and placed in its laid-out box by `align`; only
+a box narrower than that layout asks for one shaped for the box width
+(wrapped, or cut by `ellipsis`), keyed by the whole-pixel width. `align:
+center` on a text also centres it vertically in a taller box (a 28×28
+calendar cell); other texts sit at the top. Text with `ellipsis` or
+`max_lines` may be narrower than its text (min-content 0); plain text
+keeps its width as its minimum and wraps only in a box given a smaller
+definite width. Natural widths round up to whole pixels so taffy's
+rounding never wraps a text that fits. Before a text's first layout
+arrives, layout estimates it from its length (0.55 em per character, 1.2
+em high); the delivery relays out (shaping never blocks). `1ch` is 0.6 em.
+
+**2026-10-06 · wave3-pixels: font fallback.** A family list without a
+generic family (`"Inter"`) gets `sans-serif` appended (`monospace` when
+its name says Mono): with an uninstalled family the font library chose a
+fallback per character and drew digits from a font it could not
+rasterise (an empty clock on sway). CSS appends the UA default the same
+way.
+
+**2026-10-06 · wave3-pixels: virtualised `list`.** taffy sees a `list` as
+one leaf whose height is the sum of its rows' heights (measured ones, else
+the mean of the measured, else 32 px) and gaps, capped by `max_height`.
+After that pass only the rows the viewport shows are laid out, each as a
+taffy root of its own at the list's content width; their heights are
+remembered per row node. When measured heights differ from the estimate,
+one more pass places everything (the design's "at most one extra pass per
+frame": a render pass never loops; a container query's flip arrives with
+logic's next diff and is laid out in the next frame).
+
+**2026-10-06 · wave3-pixels: container-query hysteresis lives in logic.**
+Render reports laid-out sizes (`Renderer::take_layout_facts`, sent as
+`ToLogic::Layout`) whenever they change; logic's `when` evaluation keeps a
+condition that read a node's `width`/`height` true while it would hold
+with every size read moved 4 px either way, so `when self.width < 300`
+turns on below 300 and off at 304. This is exact for threshold queries
+and needs no knowledge of thresholds on the render side.
+
+**2026-10-06 · wave3-pixels: overhang and input region.** Shadows of the
+surface root and of any node reaching past the root's box give the spec
+an `overhang` (blur reach 1.5 × blur + 1 + spread, offsets included);
+strand-surface grows the layer surface by it, moves each margin out by it
+(negative margins), keeps the bar's reserved space at margin + thickness
+by adding the overhang to the exclusive zone, and sets the input region to
+the box. Render lays the root out inside the overhang. Content-sized
+surfaces (no `width`/`height`, or a bar without a thickness) get their
+size from a content layout pass when anything layout reads changes or
+their text arrives; a bar's length stays the output's.
+
+**2026-10-06 · wave3-pixels: keyboard routing.** The node with keyboard
+focus on a surface is the first with `focus: true` when the surface gets
+the keyboard, or the `input`/`list` a click lands on. Every key press is
+`key(k)` there (bubbling like clicks); an `input` edits its own `text`
+(printable text appends, BackSpace removes, a two-way write; keys typed
+before logic answered build on what was last written for 500 ms); Up/Down
+move the selection of the `list` its `nav` names (or of a focused list),
+scrolled into view, and Return activates the selected row (the first when
+none is). A click on a list row also selects and `activate`s it ("clicked,
+or Enter while selected"). Escape on a surface with `open`, and losing the
+keyboard, write `open: false` (logic refuses the write when `open` is not
+bound two-way); a popup also gets `dismiss`. Click-away for an
+`exclusive` panel needs a catcher surface and waits for popups (M4).
+
+**2026-10-06 · wave3-pixels: `nav:` names a node mounted later.** A prop
+whose value is a node (`PropValue::Node`) that is not on the scene yet
+when bound (`nav: results` above `list { id: results }`) is set at the end
+of the tick, when everything is mounted.
+
+**2026-10-06 · wave3-pixels: a mock desktop for `strand run`.**
+`STRAND_MOCK=desktop` fills the service host with the compiler tests'
+desktop (workspaces on `STRAND_MOCK_SCREEN`, a window, battery, sink,
+tray, notifications, apps) so the example shells can be screenshotted
+on sway before M3's services exist. It is a development aid only.
+
+**2026-10-06 · wave3-pixels: underline in strand-text.** `markup: basic`
+needs underlines (`<u>`, links), which `TextSpan` could not express:
+`TextSpan::underline` and `GlyphRun::underline` (a physical rect from the
+font's underline metrics) were added; render paints it in the run's
+colour. Links take `$accent`.

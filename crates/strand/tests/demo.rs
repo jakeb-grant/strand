@@ -517,6 +517,130 @@ fn strand_run_boots_the_hello_bar_on_every_output() {
     drop(strand);
 }
 
+/// The bar of design.md (theme + bar, unchanged) on the mock desktop,
+/// laid out by flex layout: workspace dots and the window title at the
+/// start, the clock truly centred on the output, the battery at the end;
+/// its shadow grows the layer surface past its box while the exclusive
+/// zone still reserves margin + height (8 + 36). Set `STRAND_SHOTS` to a
+/// directory to keep the screenshot.
+#[test]
+fn the_design_bar_is_laid_out_start_centre_end() {
+    let Some(sway) = Sway::start_as("design") else {
+        return;
+    };
+    let home = sway.dir.join("home");
+    let config = home.join(".config/strand");
+    std::fs::create_dir_all(&config).unwrap();
+    for (name, text) in [
+        (
+            "theme.strand",
+            include_str!("../../strand-compiler/tests/fixtures/theme.strand"),
+        ),
+        (
+            "bar.strand",
+            include_str!("../../strand-compiler/tests/fixtures/bar.strand"),
+        ),
+    ] {
+        std::fs::write(config.join(name), text).unwrap();
+    }
+    let log = sway.dir.join("strand.log");
+    let child = Command::new(env!("CARGO_BIN_EXE_strand"))
+        .arg("run")
+        .arg(&config)
+        .env("HOME", &home)
+        .env("XDG_RUNTIME_DIR", &sway.dir)
+        .env("XDG_CACHE_HOME", sway.dir.join("cache"))
+        .env("XDG_STATE_HOME", sway.dir.join("state"))
+        .env("WAYLAND_DISPLAY", &sway.display)
+        .env("STRAND_MOCK", "desktop")
+        .env("STRAND_MOCK_SCREEN", "HEADLESS-1")
+        .env("STRAND_LOG", "damage")
+        .stdin(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .spawn()
+        .unwrap();
+    let mut strand = Proc(child);
+    // `shadow: $elevation.md` (0 2px 8px) reaches 13 px: 11 above the
+    // box, 15 below, 13 each side; the margins move out by as much.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !damage_lines(&log)
+        .iter()
+        .any(|l| l.contains("buffer=2570x62 "))
+    {
+        assert!(
+            strand.0.try_wait().unwrap().is_none(),
+            "strand exited: {}",
+            std::fs::read_to_string(&log).unwrap_or_default()
+        );
+        assert!(
+            Instant::now() < deadline,
+            "no 2570x62 bar: {}",
+            std::fs::read_to_string(&log).unwrap_or_default()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    std::thread::sleep(Duration::from_millis(700));
+    // The exclusive zone: windows start below margin + height.
+    let ws = sway.msg(&["-t", "get_workspaces"]).unwrap();
+    let ws: serde_json::Value = serde_json::from_str(&ws).unwrap();
+    assert_eq!(ws[0]["rect"]["y"], 44, "{ws}");
+    let shot = Shot::take(&sway, "HEADLESS-1");
+    if let Some(dir) = std::env::var_os("STRAND_SHOTS") {
+        sway.grim(
+            &["-g", "0,0 2560x70"],
+            &PathBuf::from(dir).join("design_bar.png"),
+        );
+    }
+    // Text and dots are dark on the light bar (the mock has no portal:
+    // light scheme).
+    // Inside the bar's box (8..2552 × 8..44), clear of its rounded ends.
+    let dark =
+        |x: usize| (14..38).any(|y| shot.px(x, y).iter().map(|c| *c as u32).sum::<u32>() < 300);
+    let cols: Vec<usize> = (16..shot.w - 16).filter(|&x| dark(x)).collect();
+    assert!(!cols.is_empty(), "nothing drawn on the bar");
+    // The clock: the dark run nearest the output's centre.
+    let mid = shot.w / 2;
+    let (mut l, mut r) = (mid, mid);
+    while l > 0 && (l - 60..l).any(&dark) {
+        l -= 1;
+    }
+    while r < shot.w - 1 && (r..r + 60).any(&dark) {
+        r += 1;
+    }
+    let centre = (l + r) as f64 / 2.0;
+    assert!(
+        (centre - mid as f64).abs() <= 3.0 && r - l > 40,
+        "clock ink {l}..{r} is not centred on {mid}"
+    );
+    // Start: the dots and title begin at margin + pad (8 + 12); end: the
+    // battery text ends before the tray icon (16 px, after a 12 px gap;
+    // icons are not drawn yet), margin and pad: 2560 - 8 - 12 - 28.
+    let first = cols[0];
+    let last = *cols.last().unwrap();
+    assert!((18..40).contains(&first), "start ink at {first}");
+    assert!(
+        (shot.w - 60..=shot.w - 48).contains(&last),
+        "end ink at {last}"
+    );
+    // Nothing between the title and the clock, or the clock and the end.
+    assert!(
+        !(700..l - 1).any(&dark),
+        "ink between start and centre"
+    );
+    assert!(
+        !(r + 1..1950).any(&dark),
+        "ink between centre and end"
+    );
+    let errors: Vec<String> = std::fs::read_to_string(&log)
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.contains("ERROR") || l.contains("WARN"))
+        .map(String::from)
+        .collect();
+    assert!(errors.is_empty(), "{errors:?}");
+    drop(strand);
+}
+
 /// A virtual pointer on the sway seat (`zwlr_virtual_pointer_v1`): the
 /// headless seat has no pointer of its own.
 mod pointer {

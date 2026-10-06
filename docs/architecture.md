@@ -17,7 +17,8 @@ file fixes boundaries; each crate is free inside its own boundary.
 
 Channels are the only coupling between threads. Logic → render is one
 `SceneDiff` per tick. Render → logic is `InputEvent`s (`strand-scene`) and layout facts
-(`self.width` for container queries). No locks are shared across threads on a
+(`self.width` for container queries: `Renderer::take_layout_facts`, the
+laid-out sizes that changed, sent as `run::ToLogic::Layout`). No locks are shared across threads on a
 hot path.
 
 `strand run [dir]` (`crates/strand/src/run.rs`) is this wiring: the main
@@ -30,11 +31,17 @@ were over and `scroll` on the innermost node as `Event { node, event:
 NodeEvent }`, which logic bubbles to the nearest handler) and surface
 sizes to the logic thread over a calloop channel (`run::ToLogic`).
 `NodeEvent` is one variant per kind of input, each with its own payload
-(`Click`, `Secondary`, `Scroll { dy, dx }`; `name()` and `args()` are
-what `Instance::event` takes): M2 adds `Activate`, `Key { .. }` and
-`Text(String)` for keyboard focus and the launcher, M4 `Drop { payload,
-at }` for `on drop(p: T, at: int)`, as new variants of the same
-message. Before the logic thread
+(`Click`, `Secondary`, `Middle`, `Scroll { dy, dx }`, `Activate`, `Key {
+name, text, modifiers }` (a `Key` record made by the service host,
+`args_with`), `Dismiss`; `name()` and the args are what `Instance::event`
+takes); M4 adds `Drop { payload, at }` for `on drop(p: T, at: int)` as a
+new variant of the same message. Keyboard input is routed on the main
+thread (`demo/host.rs`, `Forward`): the focused node of the focused
+surface gets `key(k)`; an `input`'s typing and a surface's `open: false`
+(Escape, focus loss) are `ToLogic::Write { node, prop, value }`, which
+logic applies with `Instance::write` (a two-way write); `nav` and list
+selection become `Flag { Selected }` and `Activate` (decisions.md,
+wave3-pixels). Before the logic thread
 starts, `live::Worker::spawn` starts the `strand-watch` watcher (module
 set from `find_files`, rescan callback calling it again), boots the
 `Loader` (the boot `Outcome`: a build, or a cached last good one, or
@@ -71,8 +78,10 @@ a resume or a clock step wakes it at once). SIGINT, SIGTERM (a
 the compositor going away send `ToLogic::Shutdown`; the main thread
 joins the logic thread, which unmounts the instance, runs
 `Runtime::shutdown` and drops its stores, so debounced persist and
-settings writes reach the disk before the process exits. Size facts
-address the surface's node until layout boxes land (M2).
+settings writes reach the disk before the process exits. Layout facts
+(`ToLogic::Layout`) address every laid-out node; a surface's configured
+size still arrives as `Size` on its node. `STRAND_MOCK=desktop` fills the
+host with a mock desktop for screenshots before M3 (`mock.rs`).
 
 **IPC** (`crates/strand/src/ipc.rs`): a Unix socket at `$STRAND_SOCKET`
 or `$XDG_RUNTIME_DIR/strand-<WAYLAND_DISPLAY>.sock`, newline-delimited
@@ -160,13 +169,16 @@ be built and tested without the language, and the language without pixels.
   springs sample deterministic timestamps. `opaque_region` is in buffer
   pixels; `wl_surface.set_opaque_region` takes surface-local logical
   coordinates, so convert with `Scale::inner_logical_region`, which rounds
-  inward and never claims a translucent pixel. The input region (shadows
-  grow the buffer but not the input region) joins this trait with M2
-  layout.
+  inward and never claims a translucent pixel. The input region is not a
+  painter question: render puts the shadow reach into the surface's spec
+  (`SurfaceSpec::overhang`) and the surface manager sets the region to
+  the box inside it.
 
 - **Input**: `InputEvent` (`PointerEnter`/`Leave`/`Motion`/`Button`/`Axis`
-  with `ButtonState`, `AxisDelta`, `AxisSource`) in surface-local logical
-  pixels, per `SurfaceId`. `strand-surface` produces it; render hit-tests
+  with `ButtonState`, `AxisDelta`, `AxisSource`; `KeyboardEnter`/`Leave`
+  and `Key { key: KeyInput }` with the xkb keysym name, the typed text,
+  `Modifiers` and repeat) in surface-local logical pixels, per
+  `SurfaceId`. `strand-surface` produces it; render hit-tests
   it on the main thread and forwards node events to logic. Wayland
   serials stay in `strand-surface`.
 
@@ -183,7 +195,8 @@ be built and tested without the language, and the language without pixels.
   `radius: 14, 14, 0, 0`) may arrive as a `List` of 1–4 values, expanded
   like CSS, and call-shaped values (`hit: grow(6)`, `filter:
   grayscale(1)`, `backdrop: blur(16)`, `transition: wipe(left)`) are
-  `PropValue::Call { name, args }`. A surface's declared name (`bar Top`)
+  `PropValue::Call { name, args }`. A prop naming another node (`nav:
+  results`) is `PropValue::Node(id)`. A surface's declared name (`bar Top`)
   is `Prop::Name` (`Text`), set by the compiler. `transition` is `Default` (the token spring for that
   prop class), `Token(path)` (`~ $motion.bouncy`), `Spring { .. }`,
   `Duration { .. }` or `Instant`, matching `~` in the language;
@@ -221,18 +234,30 @@ be built and tested without the language, and the language without pixels.
   anchor, layer, keyboard, margin (`Insets`), requested logical width and
   height, `screens` (`All`, `Focused`, or `Named` monitor identities, which
   logic uses to pin each per-monitor `bar` instance), `open` and `attach`,
-  plus `exclusive_zone()` and `needs_recreate()` (kind, namespace or layer
-  changed). Render resolves specs through the node's token scope after
+  `overhang` (how far shadows reach past the box, filled in by render
+  from layout), plus `exclusive_zone()` and `needs_recreate()` (kind,
+  namespace or layer changed). A surface without a size of its own (a
+  panel, OSD or popup without `width`/`height`, a bar without a
+  thickness) gets it from a content layout pass in render before the spec
+  is reported. Render resolves specs through the node's token scope after
   every `apply`: `Renderer::surface_spec(node)` reads one, and
   `Renderer::take_surface_changes()` returns `(NodeId, SurfaceChange)`s,
   `Created(spec)`, `Updated { spec, recreate }` or `Removed`, in order;
   token changes that move a resolved value count as updates.
+- **Layout**: taffy 0.14 on the render thread (`layout.rs`): one pass
+  per surface whose layout inputs changed (paint-only props never
+  relayout; `Renderer::layout_passes` counts them), boxes in surface
+  logical pixels (`Renderer::boxes`), `x`/`y` applied at flatten time as
+  paint offsets. `Renderer::scroll(surface, point, dy)` scrolls the
+  innermost `scroll`/`list` under a point and `scroll_into_view(list,
+  row)` reveals a row; a `list` lays out only the rows in view. Text is
+  measured from delivered layouts (estimated until the first arrives).
 - **Hit testing**: `Renderer::hit(surface, LogicalPoint) -> Vec<NodeId>`
-  is the node painted under a surface-local logical point in the last
-  frame (the topmost in paint order: later siblings over earlier ones
-  and their children) and its ancestors up to the surface's root (the
-  root alone where nothing is drawn). Until taffy layout boxes (M2), a node is hit where
-  it painted ink; a container without paint is reached through the chain.
+  is the node under a surface-local logical point in the last frame (the
+  topmost in paint order: later siblings over earlier ones and their
+  children) and its ancestors up to the surface's root (the root alone
+  where nothing is). A node is hit inside its laid-out rounded box, grown
+  by `hit: grow(n)` and cut by its ancestors' clips; shadows never count.
 
 - **Render loop** (the binary wires this; surface calls `Painter`):
   0. After each `apply`, drain `take_surface_changes()` and hand them to
@@ -278,15 +303,10 @@ be built and tested without the language, and the language without pixels.
      resampled and shifted so its alignment lands where the right one's
      will; layouts no surface wants are pruned.
 
-- Later (render, planned with taffy and size springs in M2):
-  - Single-line text that neither wraps nor truncates should be shaped
-    once without a width bound, with the start/center/end offset applied
-    at flatten time, and keyed by (node, scale) only. Keying it by the
-    exact `max_width` bits, as now, means a box whose width springs
-    re-shapes every frame. It also means a reconfigure paints a stand-in
-    frame and then a correction frame per text, even when the two are
-    pixel-identical (1.7–3.3k px² on sway, never on a tick). Only
-    wrapping or truncating text needs a layout per width.
+- Text is shaped once without a width bound per (node, scale) and
+  aligned in its box at flatten time; only a box narrower than it asks
+  for a layout of its (whole-pixel) width (decisions.md, wave3-pixels).
+- Later (render):
   - `flatten_surface` rebuilds the map of every delivered layout and
     prunes text across all surfaces on each call, which is O(surfaces ×
     texts) per surface. Before popups and launchers share the main
@@ -1193,8 +1213,9 @@ canonical file path). Paths referenced from code come from the compiler
 Request/response over a channel: `TextRequest { key, text, style, max_width,
 scale }` → `TextLayout { key, size, glyph runs }`. `TextStyle` holds the
 font, line height, alignment, `ellipsis` (start, middle, end), `max_lines`
-and `spans` (byte ranges with weight, italic or colour: marks, markup);
-a glyph run's `color` is its span's, else the node's. Glyph atlases are keyed by
+and `spans` (byte ranges with weight, italic, underline or colour: marks,
+markup); a glyph run's `color` is its span's, else the node's, and an
+underlined span's run carries its `underline` rect (physical pixels). Glyph atlases are keyed by
 scale and LRU-bounded. Render draws the last delivered layout.
 Each `TextLayout` also carries the `AtlasUpload`s (alpha pixels) for glyphs
 rasterised while producing it, which render applies to its mirror of the
@@ -1258,7 +1279,7 @@ and the connection):
 - `repaint_handle()` gives a `Send` `RepaintHandle` (a calloop channel:
   `Request::{Repaint(id), RepaintAll, Poll}`); `take_input()` creates the
   `mpsc::Receiver<InputEvent>` (events are not queued before; keyboard
-  later). The cursor is set on enter (`wp_cursor_shape_v1`, else the
+  events included). The cursor is set on enter (`wp_cursor_shape_v1`, else the
   cursor theme); `State::last_button_serial()` is for popup grabs.
 - Frames lock to the refresh rate: after a buffer commit a surface paints
   again only after that frame's callback (requested while `wants_frame`
@@ -1288,11 +1309,14 @@ and the connection):
   order); `Screens::Named` matches it or the connector name. `SurfaceId`s
   are stable per (node, monitor), or (node, focused), while the monitor is
   remembered.
+- A spec's `overhang` grows the layer size and moves the margins out
+  (`placement::layer_config`), the exclusive zone grows by the overhang
+  on its edge so margin + zone is unchanged, and the input region is the
+  box inside it (`SurfaceInfo::input_region`; an OSD's is empty).
+- The keyboard: one `wl_keyboard` per seat with xkbcommon keymaps and
+  key repeat (`get_keyboard_with_repeat`), as `InputEvent::Key` on the
+  surface with keyboard focus (`State::keyboard_focus`).
 - Later (planned, so the current shape does not block them):
-  - M2: a shadowed surface needs `overhang: Insets` (painter-reported or
-    spec-resolved) that grows the layer size and shifts the margins while
-    `exclusive_zone` stays, plus `Painter::input_region`; `LayerConfig` is
-    built in one place (`placement::layer_config`) so this stays local.
   - M2/M4: surface `exit` poses need the unmap delayed until exit
     settles: render holds `Removed`/`open: false` until its exit is done
     (or a `SurfaceHost::exit_done` hook); spec changes (compositor-animated
