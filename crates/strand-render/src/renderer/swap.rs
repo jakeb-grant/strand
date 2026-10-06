@@ -10,16 +10,22 @@
 //! exactly, and the contrast guard solves every declared text token
 //! against its backgrounds as they are in that frame.
 //!
-//! Before it starts, a swap is played through at [`CHECK_STEP`] (and
-//! [`CHECK_FINE`] around moments that only just make it), in the global
-//! scope and under each `set { }` chain of the nodes shown: if at some
-//! moment the backgrounds of a declared pair leave no text lightness at
-//! 3:1 (one background too dark for dark text while another is too
-//! light for light text, [`Color::contrast_reachable`]), the swap does
-//! not spring. The table snaps, and each shown surface crossfades from a
-//! snapshot of its old frame (taken once, at the fade's first frame on
-//! it) to the new frames along the same curve, read at each surface's
-//! own presentation time.
+//! Before it starts, a swap is played through (at [`CHECK_STEP`] while
+//! the roots move fast, at up to [`CHECK_STEP_MAX`] while they move
+//! slowly, and [`CHECK_FINE`] times as finely, for the pairs concerned,
+//! around moments that only just make it),
+//! in the global scope and under each `set { }` scope of the nodes shown
+//! whose overrides reach a declared background: if at some moment the
+//! backgrounds of a declared pair leave no text lightness at 3:1 (one
+//! background too dark for dark text while another is too light for
+//! light text, [`Color::contrast_reachable`]), that scope cannot spring.
+//! In the global scope, the table snaps and every shown surface
+//! crossfades from a snapshot of its old frame to the new frames. Under
+//! a `set { }` scope, only the surfaces drawing it crossfade: they show
+//! the new table at once (held for them while the roots spring
+//! elsewhere), from their snapshots. A snapshot is taken once, at the
+//! fade's first frame on its surface, and each surface fades along the
+//! colour curve from its own first frame, at its own presentation times.
 //!
 //! What cannot interpolate snaps: every other plain token (lengths,
 //! fonts, springs) takes its new value at once. A swap on no surface
@@ -31,8 +37,9 @@ use std::time::{Duration, Instant};
 
 use strand_scene::motion::{channels_color, color_channels};
 use strand_scene::{
-    Color, Curve, Damage, MIN_CONTRAST, Motion, PaintTarget, Prop, PropValue, Scale, SceneDiff,
-    SceneOp, Size, SurfaceId, TokenScope, TokenTable, Transition, luminance_reachable,
+    Color, Curve, Damage, MIN_CONTRAST, Motion, NodeId, PaintTarget, Prop, PropValue, Scale,
+    SceneDiff, SceneOp, Size, SurfaceId, TokenExpr, TokenScope, TokenTable, Transition,
+    luminance_reachable,
 };
 
 use super::{Flattened, Renderer};
@@ -44,13 +51,31 @@ const ROOT_EPS: f32 = 0.0005;
 const FADE_EPS: f32 = 0.002;
 
 /// How finely a planned swap is played through for its contrast check
-/// (240 Hz: a quarter of a 60 Hz frame).
+/// while its roots move fast (240 Hz: a quarter of a 60 Hz frame).
 pub const CHECK_STEP: Duration = Duration::from_micros(4_167);
 
+/// The longest step of the play-through, while the roots move slowly
+/// (a slow `$motion.effects`, a spring's tail): the step grows (at most
+/// doubling) while no root moves more than [`CHECK_MOVE`] over it.
+pub const CHECK_STEP_MAX: Duration = Duration::from_millis(100);
+
+/// Most a root may move (in OKLab channels) over one step of the
+/// play-through, as its speed at a sample and over the last step say.
+/// A background moving 0.02 in OKLab lightness changes the contrast it
+/// allows by at most about 9%, within the 10% between [`MIN_CONTRAST`]
+/// and [`CHECK_NEAR`]: a moment between two samples that both clear
+/// [`CHECK_NEAR`] still clears 3:1, and steps with an end below it are
+/// looked at [`CHECK_FINE`] times as finely. (The design's
+/// `$motion.effects` moves up to about 0.04 per [`CHECK_STEP`] at its
+/// fastest, so it is sampled at [`CHECK_STEP`] throughout but its
+/// tail.)
+pub const CHECK_MOVE: f32 = 0.02;
+
 /// Next to a moment that only just reaches 3:1, the check looks again
-/// this finely (1 kHz), so a frame landing between two samples finds no
+/// at the pairs concerned this many times as finely (1 kHz while the
+/// roots move fast), so a frame landing between two samples finds no
 /// dip they missed.
-pub const CHECK_FINE: Duration = Duration::from_micros(1_000);
+pub const CHECK_FINE: u32 = 4;
 
 /// How much of a swap the contrast check plays through at most: a swap
 /// whose roots have not settled by then (a `~ 20s` palette) is not
@@ -58,9 +83,18 @@ pub const CHECK_FINE: Duration = Duration::from_micros(1_000);
 pub const CHECK_SPAN: Duration = Duration::from_secs(10);
 
 /// Most distinct `set { }` scopes a swap's contrast check plays through
-/// besides the global one; past it the swap crossfades (a check bounded
-/// in work).
+/// besides the global one (counting only scopes whose overrides reach a
+/// declared background, merged when those overrides are the same);
+/// surfaces drawing more crossfade.
 pub const CHECK_SCOPES: usize = 32;
+
+/// The play-through's work at most, in units of about half a
+/// microsecond optimised: per sample, one per root sampled and per pair
+/// judged, and two per background evaluated from the roots (a derived
+/// or overridden one). A swap that would need more crossfades, so
+/// planning stays within a fixed share of the 5 ms budget however slow
+/// or bouncy the spring and however many scopes are shown.
+pub const CHECK_WORK: u32 = 9_000;
 
 /// Largest snapshot a crossfade keeps for one surface (a 1920×1080
 /// buffer); a larger surface (a 4K scrim or overlay) snaps to the new
@@ -75,6 +109,10 @@ pub const SNAPSHOTS_MAX: usize = SNAPSHOT_MAX;
 /// the moments around it are checked finely.
 pub const CHECK_NEAR: f64 = 3.3;
 
+/// Most distinct `set { }` chains looked at under one surface root;
+/// a root showing more crossfades.
+const RAW_SCOPES: usize = 256;
+
 #[derive(Clone, Debug)]
 struct Root {
     motion: Motion<4>,
@@ -83,17 +121,31 @@ struct Root {
 }
 
 /// A surface's old frame: tightly packed premultiplied ARGB8888 at the
-/// buffer size it was painted at. Taken at the fade's first frame on the
-/// surface: copied from the buffer it paints into when that still holds
-/// the old frame (age 1), else rasterised once from the old frame's
-/// flattened scene, kept from when the swap was planned.
+/// buffer size it was painted at, and its own fade. Taken at the fade's
+/// first frame on the surface: copied from the buffer it paints into,
+/// with what the buffer missed since (its age) drawn again from the old
+/// frame's flattened scene, kept from when the swap was planned; drawn
+/// in full when the buffer is new.
 #[derive(Debug)]
 pub(super) struct Snapshot {
     size: Size,
     scale: Scale,
-    /// Empty until taken.
+    /// Empty until taken; while `under` is set, the snapshot of the fade
+    /// this one replaces.
     pixels: Vec<u8>,
     old: Option<Flattened>,
+    /// A crossfade landing mid-crossfade: the surface shows `old`'s frame
+    /// weighted this much over `pixels`, and that blend is the snapshot.
+    under: Option<f32>,
+    /// 0 (the old frame) to 1 (the new one); started by the surface's
+    /// first fade frame.
+    progress: Motion<1>,
+    /// The new frame's weight in the last frame blended.
+    last_w: f32,
+    /// When the surface last painted a frame of the fade (or the fade was
+    /// planned): a surface that paints nothing for the exit stall
+    /// (asleep, occluded) loses its snapshot.
+    since: Instant,
 }
 
 impl Snapshot {
@@ -102,18 +154,16 @@ impl Snapshot {
     }
 }
 
-#[derive(Debug)]
-struct Fade {
-    /// 0 (the old frame) to 1 (the new one).
-    progress: Motion<1>,
-    snaps: HashMap<SurfaceId, Snapshot>,
-}
-
-/// The palette roots in flight and the crossfade, if any.
+/// The palette roots in flight and the crossfades, if any.
 #[derive(Debug, Default)]
 pub(super) struct Swap {
     roots: BTreeMap<String, Root>,
-    fade: Option<Fade>,
+    /// Surfaces crossfading, and from what.
+    fade: HashMap<SurfaceId, Snapshot>,
+    /// While roots spring: the newest table, for the surfaces in
+    /// `held_for` (a `set { }` scope there no spring keeps readable).
+    held: Option<TokenTable>,
+    held_for: HashSet<SurfaceId>,
     /// Surfaces whose last frame was blended with a snapshot: their next
     /// frame is painted in full.
     blended: HashSet<SurfaceId>,
@@ -124,7 +174,7 @@ pub(super) struct Swap {
     /// Time spent blending crossfade frames since
     /// [`Renderer::take_fade_blend_work`] (frame cost, kept apart).
     blend: Duration,
-    /// Swaps that crossfaded (tests).
+    /// Swaps that crossfaded on some surface (tests).
     crossfades: u64,
 }
 
@@ -133,11 +183,18 @@ pub(super) struct Swap {
 #[derive(Debug)]
 pub(super) struct Plan {
     roots: BTreeMap<String, Root>,
-    fade: Option<(Motion<1>, HashMap<SurfaceId, Snapshot>)>,
     /// The table snaps (sent `Instant`, `reduced_motion`, nothing shown
-    /// yet): a crossfade in flight ends with it. A plan with no roots
-    /// because no colour changed (a font, a length) leaves it running.
+    /// yet): crossfades in flight end with it. A plan with no roots
+    /// because no colour changed (a font, a length) leaves them running.
     snap: bool,
+    /// No spring keeps the global scope readable: the table snaps and
+    /// every shown surface crossfades.
+    all: bool,
+    /// Otherwise, the surfaces shown the new table at once while the
+    /// roots spring (empty: none).
+    hold: HashSet<SurfaceId>,
+    /// The snapshots of the surfaces that crossfade.
+    snaps: HashMap<SurfaceId, Snapshot>,
 }
 
 /// How a frame of a surface shows a crossfade.
@@ -171,205 +228,603 @@ fn backgrounds(scope: &TokenScope<'_>, text: &str, bgs: &[String]) -> Vec<Color>
         .collect()
 }
 
-/// Whether `text` can reach `min` over `bgs` with `table` as the global
-/// table under the `set { }` overrides `over`.
-fn reachable(
-    table: &TokenTable,
-    over: &[TokenTable],
-    text: &str,
-    bgs: &[String],
-    min: f64,
-) -> bool {
-    let tables: Vec<&TokenTable> = std::iter::once(table).chain(over).collect();
-    let scope = TokenScope::new(&tables);
+/// Whether `text` can reach `min` over `bgs` in the scope `levels`.
+fn reachable(levels: &[&TokenTable], text: &str, bgs: &[String], min: f64) -> bool {
+    let scope = TokenScope::new(levels);
     Color::contrast_reachable(&backgrounds(&scope, text, bgs), min)
+}
+
+/// The paths a prop value reads.
+fn value_refs(v: &PropValue, out: &mut Vec<String>) {
+    match v {
+        PropValue::Token(e) => expr_refs(e, out),
+        PropValue::List(items) | PropValue::Call { args: items, .. } => {
+            for i in items {
+                value_refs(i, out);
+            }
+        }
+        PropValue::Pose(props) => {
+            for (_, v) in props {
+                value_refs(v, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The paths an expression reads.
+fn expr_refs(e: &TokenExpr, out: &mut Vec<String>) {
+    match e {
+        TokenExpr::Ref(p) => out.push(p.clone()),
+        TokenExpr::Value(v) => value_refs(v, out),
+        TokenExpr::Method { receiver, args, .. } => {
+            expr_refs(receiver, out);
+            for a in args {
+                expr_refs(a, out);
+            }
+        }
+        TokenExpr::OklchFrom {
+            base,
+            l,
+            c,
+            h,
+            alpha,
+        } => {
+            expr_refs(base, out);
+            for e in [l, c, h, alpha].into_iter().flatten() {
+                expr_refs(e, out);
+            }
+        }
+        TokenExpr::Channel(_) => {}
+        TokenExpr::Binary { lhs, rhs, .. } => {
+            expr_refs(lhs, out);
+            expr_refs(rhs, out);
+        }
+        TokenExpr::Template { value, colors } => {
+            value_refs(value, out);
+            for e in colors.iter().flatten() {
+                expr_refs(e, out);
+            }
+        }
+    }
+}
+
+/// Every path evaluating `path` in the scope `levels` may read, itself
+/// included: definitions at every level are followed, and a declared
+/// text token reads its backgrounds (the guard).
+fn reads(levels: &[&TokenTable], path: &str) -> HashSet<String> {
+    let mut seen = HashSet::new();
+    let mut stack = vec![path.to_string()];
+    let mut refs = Vec::new();
+    while let Some(p) = stack.pop() {
+        if seen.contains(&p) {
+            continue;
+        }
+        for t in levels {
+            if let Some(v) = t.tokens.get(&p) {
+                value_refs(v, &mut refs);
+            }
+            if let Some(e) = t.derived.get(&p) {
+                expr_refs(e, &mut refs);
+            }
+        }
+        if let Some(bgs) = levels.first().and_then(|t| t.contrast.get(&p)) {
+            refs.extend(bgs.iter().cloned());
+        }
+        seen.insert(p);
+        stack.append(&mut refs);
+    }
+    seen
+}
+
+/// A definition of a path at one level (scope keys).
+#[derive(Clone, Debug, PartialEq)]
+enum Def {
+    Plain(PropValue),
+    Derived(TokenExpr),
+}
+
+/// A `set { }` scope of the nodes shown: its override chain (outermost
+/// first) and the surfaces drawing it.
+pub(super) struct ShownScope<'a> {
+    chain: Vec<&'a TokenTable>,
+    surfaces: Vec<SurfaceId>,
+}
+
+/// Which surfaces a swap cannot spring on.
+#[derive(Debug, Default)]
+struct Verdict {
+    /// The global scope: all of them (the table snaps).
+    all: bool,
+    /// Surfaces drawing a `set { }` scope no spring keeps readable.
+    surfaces: HashSet<SurfaceId>,
 }
 
 /// Where a pair's background comes from while a swap is played
 /// through.
-enum Bg {
-    /// A root in flight (an index into the simulated motions).
+#[derive(Clone, Debug, PartialEq)]
+enum Src {
+    /// A root in flight (an index into the roots).
     Root(usize),
     /// The luminance of an opaque colour that does not move.
     Fixed(f64),
-    /// A derived token, or one a `set { }` override defines: evaluated
-    /// in its scope from the roots of the moment.
-    Derived(String),
+    /// A background that reads a root in flight through a derived token
+    /// or a `set { }` override: evaluated once per sample.
+    Slot(usize),
+    /// Translucent or unset: not judged.
+    Skip,
 }
 
-/// Plays `roots` through from `base` (the last frame shown) and says
-/// whether some moment leaves a declared pair of `table` with no text
-/// lightness at 3:1, in the global scope or under one of the `set { }`
-/// override chains `scopes` of the nodes shown: a pair that has one in
-/// `old` and in `table` there (a palette that is unreadable at rest is
-/// not the swap's doing).
-fn needs_crossfade(
-    old: &TokenTable,
-    table: &TokenTable,
-    scopes: &[Vec<TokenTable>],
-    roots: &BTreeMap<String, Root>,
-    base: Duration,
-) -> bool {
-    if roots.is_empty() {
-        return false;
-    }
-    if scopes.len() > CHECK_SCOPES {
-        return true;
-    }
-    let paths: Vec<&str> = roots.keys().map(String::as_str).collect();
-    let global: [Vec<TokenTable>; 1] = [Vec::new()];
-    // (the scope's overrides, its pairs' backgrounds)
-    let mut pairs: Vec<(&[TokenTable], Vec<Bg>)> = Vec::new();
-    for over in global.iter().chain(scopes) {
-        let tables: Vec<&TokenTable> = std::iter::once(table).chain(over).collect();
-        let scope = TokenScope::new(&tables);
-        let scoped = |b: &str| {
-            over.iter()
-                .any(|t| t.get(b).is_some() || t.derived.contains_key(b))
+/// The play-through of one swap.
+struct Play<'a> {
+    paths: Vec<&'a str>,
+    /// The roots the pairs read: (index into `paths`, motion).
+    sims: Vec<(usize, Motion<4>)>,
+    /// The new table with the roots of the moment written in.
+    scratch: TokenTable,
+    /// Override chains of the scopes checked (index 0: global, empty).
+    chains: Vec<Vec<&'a TokenTable>>,
+    /// The scopes' surfaces.
+    owners: Vec<Vec<SurfaceId>>,
+    /// Backgrounds evaluated once per sample: (scope, path).
+    slots: Vec<(usize, String)>,
+    /// Pairs to judge: (scope, backgrounds).
+    pairs: Vec<(usize, Vec<Src>)>,
+    /// Per moment: luminance of each root (NaN: translucent) and slot,
+    /// and the moment each slot was last evaluated at.
+    lum: Vec<f64>,
+    slot_lum: Vec<f64>,
+    slot_at: Vec<u32>,
+    moments: u32,
+    /// Pairs only just readable at the last sample, and at this one.
+    near_last: Vec<bool>,
+    near: Vec<bool>,
+    /// Scopes found unreadable.
+    failed: Vec<bool>,
+    /// Work left (see [`CHECK_WORK`]).
+    work: u32,
+    /// The channels of the last sample (how fast the roots move).
+    last: Vec<[f32; 4]>,
+}
+
+impl<'a> Play<'a> {
+    /// Sets up the play-through of `roots` into `table` from `old`, in
+    /// the global scope and the `scopes` shown. `None` when nothing
+    /// declared moves. Scopes past [`CHECK_SCOPES`] fail at once.
+    fn new(
+        old: &TokenTable,
+        table: &'a TokenTable,
+        scopes: &[ShownScope<'a>],
+        roots: &'a BTreeMap<String, Root>,
+    ) -> Option<Play<'a>> {
+        let paths: Vec<&str> = roots.keys().map(String::as_str).collect();
+        let moving = |reads: &HashSet<String>| paths.iter().any(|p| reads.contains(*p));
+        let mut play = Play {
+            paths: paths.clone(),
+            sims: Vec::new(),
+            scratch: table.clone(),
+            chains: vec![Vec::new()],
+            owners: vec![Vec::new()],
+            slots: Vec::new(),
+            pairs: Vec::new(),
+            lum: vec![f64::NAN; paths.len()],
+            slot_lum: Vec::new(),
+            slot_at: Vec::new(),
+            moments: 0,
+            near_last: Vec::new(),
+            near: Vec::new(),
+            failed: vec![false],
+            work: CHECK_WORK,
+            last: Vec::new(),
+        };
+        // Each background's reads in the global scope.
+        let mut global_reads: HashMap<&str, HashSet<String>> = HashMap::new();
+        for (text, bgs) in &table.contrast {
+            for b in bgs.iter().filter(|b| *b != text) {
+                global_reads
+                    .entry(b.as_str())
+                    .or_insert_with(|| reads(&[table], b));
+            }
+        }
+        // Global sources.
+        let global_scope = [table];
+        let scope = TokenScope::new(&global_scope);
+        let mut global_src: HashMap<&str, Src> = HashMap::new();
+        for (b, r) in &global_reads {
+            let src = if let (Some(PropValue::Color(_)), Ok(i)) =
+                (table.get(b), paths.binary_search(b))
+            {
+                Src::Root(i)
+            } else if moving(r) {
+                play.slot(0, b)
+            } else {
+                match scope.lookup(b) {
+                    Some(PropValue::Color(c)) if c.a >= 1.0 => Src::Fixed(c.relative_luminance()),
+                    _ => Src::Skip,
+                }
+            };
+            global_src.insert(b, src);
+        }
+        let readable = |levels: &[&TokenTable], text: &str, bgs: &[String]| {
+            let mut from: Vec<&TokenTable> = vec![old];
+            from.extend_from_slice(&levels[1..]);
+            reachable(&from, text, bgs, MIN_CONTRAST) && reachable(levels, text, bgs, MIN_CONTRAST)
         };
         for (text, bgs) in &table.contrast {
-            if !(reachable(old, over, text, bgs, MIN_CONTRAST)
-                && reachable(table, over, text, bgs, MIN_CONTRAST))
+            if !readable(&[table], text, bgs) {
+                continue;
+            }
+            let srcs: Vec<Src> = bgs
+                .iter()
+                .filter(|b| *b != text)
+                .map(|b| global_src.get(b.as_str()).cloned().unwrap_or(Src::Skip))
+                .collect();
+            play.add_pair(0, srcs);
+        }
+        // `set { }` scopes: only those whose overrides reach a background,
+        // merged by the overrides that do.
+        let mut keys: Vec<Vec<(String, Vec<Def>)>> = Vec::new();
+        for s in scopes {
+            let overridden: HashSet<&str> = s
+                .chain
+                .iter()
+                .flat_map(|t| t.tokens.keys().chain(t.derived.keys()))
+                .map(String::as_str)
+                .collect();
+            let affected = |b: &str| {
+                global_reads
+                    .get(b)
+                    .is_some_and(|r| r.iter().any(|p| overridden.contains(p.as_str())))
+            };
+            if !table
+                .contrast
+                .iter()
+                .any(|(text, bgs)| bgs.iter().any(|b| b != text && affected(b)))
             {
                 continue;
             }
-            let bgs = bgs
-                .iter()
-                .filter(|b| *b != text)
-                .filter_map(|b| {
-                    if scoped(b) || table.derived.contains_key(b) {
-                        Some(Bg::Derived(b.clone()))
-                    } else if let Ok(i) = paths.binary_search(&b.as_str()) {
-                        Some(Bg::Root(i))
-                    } else {
-                        match scope.lookup(b) {
-                            Some(PropValue::Color(c)) if c.a >= 1.0 => {
-                                Some(Bg::Fixed(c.relative_luminance()))
-                            }
-                            _ => None,
-                        }
-                    }
-                })
-                .collect();
-            pairs.push((over.as_slice(), bgs));
-        }
-    }
-    if pairs.is_empty() {
-        return false;
-    }
-    // The roots the pairs read: directly, or all of them when a
-    // background is derived (it may read any).
-    let derived = pairs
-        .iter()
-        .flat_map(|(_, p)| p)
-        .any(|b| matches!(b, Bg::Derived(_)));
-    let mut read = vec![derived; paths.len()];
-    for b in pairs.iter().flat_map(|(_, p)| p) {
-        if let Bg::Root(i) = b {
-            read[*i] = true;
-        }
-    }
-    let mut sims: Vec<(usize, &str, Motion<4>)> = roots
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| read[*i])
-        .map(|(i, (p, r))| (i, p.as_str(), r.motion.clone()))
-        .collect();
-    let mut scratch = derived.then(|| table.clone());
-    // The first sample starts every retarget (as the first frame will);
-    // after it the motions are pure functions of time.
-    for (_, _, m) in &mut sims {
-        m.sample(base + CHECK_STEP);
-    }
-    #[derive(Copy, Clone, PartialEq)]
-    enum Moment {
-        Readable,
-        Near,
-        Unreadable,
-    }
-    // Opaque roots' luminances this moment (NaN: translucent).
-    let mut lum = vec![f64::NAN; paths.len()];
-    let mut lums: Vec<f64> = Vec::new();
-    let mut check = |at: Duration, settle: bool| -> (Moment, bool) {
-        let mut settled = settle;
-        for (i, path, m) in &sims {
-            let c = channels_color(m.peek(at)).gamut_mapped();
-            if settle {
-                settled &= m.is_settled(at);
+            let mut levels: Vec<&TokenTable> = vec![table];
+            levels.extend(s.chain.iter().copied());
+            // What the scope's backgrounds read, through its overrides
+            // too, and the overrides of those paths: the scope's key.
+            let mut scope_reads: BTreeMap<String, HashSet<String>> = BTreeMap::new();
+            for (text, bgs) in &table.contrast {
+                for b in bgs.iter().filter(|b| *b != text && affected(b)) {
+                    scope_reads
+                        .entry(b.clone())
+                        .or_insert_with(|| reads(&levels, b));
+                }
             }
-            lum[*i] = if c.a >= 1.0 {
+            let all: HashSet<&String> = scope_reads.values().flatten().collect();
+            let mut key: Vec<(String, Vec<Def>)> = Vec::new();
+            for p in &all {
+                let defs: Vec<Def> = s
+                    .chain
+                    .iter()
+                    .filter_map(|t| {
+                        t.tokens
+                            .get(p.as_str())
+                            .map(|v| Def::Plain(v.clone()))
+                            .or_else(|| t.derived.get(p.as_str()).map(|e| Def::Derived(e.clone())))
+                    })
+                    .collect();
+                if !defs.is_empty() {
+                    key.push(((*p).clone(), defs));
+                }
+            }
+            key.sort_by(|a, b| a.0.cmp(&b.0));
+            if let Some(i) = keys.iter().position(|k| *k == key) {
+                // The same overrides as a scope already checked.
+                play.owners[i + 1].extend(s.surfaces.iter().copied());
+                continue;
+            }
+            keys.push(key);
+            let si = play.chains.len();
+            play.chains.push(s.chain.clone());
+            play.owners.push(s.surfaces.clone());
+            play.failed.push(si > CHECK_SCOPES);
+            if si > CHECK_SCOPES {
+                continue;
+            }
+            let lscope = TokenScope::new(&levels);
+            let mut src_of: HashMap<&str, Src> = HashMap::new();
+            for (b, r) in &scope_reads {
+                let src = if moving(r) {
+                    play.slot(si, b)
+                } else {
+                    match lscope.lookup(b) {
+                        Some(PropValue::Color(c)) if c.a >= 1.0 => {
+                            Src::Fixed(c.relative_luminance())
+                        }
+                        _ => Src::Skip,
+                    }
+                };
+                src_of.insert(b, src);
+            }
+            for (text, bgs) in &table.contrast {
+                if !bgs.iter().any(|b| b != text && affected(b)) || !readable(&levels, text, bgs) {
+                    continue;
+                }
+                let srcs: Vec<Src> = bgs
+                    .iter()
+                    .filter(|b| *b != text)
+                    .map(|b| {
+                        src_of
+                            .get(b.as_str())
+                            .or_else(|| global_src.get(b.as_str()))
+                            .cloned()
+                            .unwrap_or(Src::Skip)
+                    })
+                    .collect();
+                play.add_pair(si, srcs);
+            }
+        }
+        // The roots the pairs read, directly or through a slot.
+        let mut read = vec![false; paths.len()];
+        for (_, srcs) in &play.pairs {
+            for s in srcs {
+                if let Src::Root(i) = s {
+                    read[*i] = true;
+                }
+            }
+        }
+        for (si, b) in &play.slots {
+            let mut levels: Vec<&TokenTable> = vec![table];
+            levels.extend(play.chains[*si].iter().copied());
+            let r = reads(&levels, b);
+            for (i, p) in paths.iter().enumerate() {
+                read[i] |= r.contains(*p);
+            }
+        }
+        play.sims = roots
+            .values()
+            .enumerate()
+            .filter(|(i, _)| read[*i])
+            .map(|(i, r)| (i, r.motion.clone()))
+            .collect();
+        play.slot_lum = vec![f64::NAN; play.slots.len()];
+        play.slot_at = vec![0; play.slots.len()];
+        play.near_last = vec![false; play.pairs.len()];
+        play.near = vec![false; play.pairs.len()];
+        let failed = play.failed.iter().any(|f| *f);
+        (!play.pairs.is_empty() || failed).then_some(play)
+    }
+
+    fn slot(&mut self, scope: usize, path: &str) -> Src {
+        let i = match self
+            .slots
+            .iter()
+            .position(|(s, p)| *s == scope && p == path)
+        {
+            Some(i) => i,
+            None => {
+                self.slots.push((scope, path.to_string()));
+                self.slots.len() - 1
+            }
+        };
+        Src::Slot(i)
+    }
+
+    /// Adds a pair whose backgrounds move (one that cannot change needs
+    /// no play-through), once.
+    fn add_pair(&mut self, scope: usize, srcs: Vec<Src>) {
+        if !srcs
+            .iter()
+            .any(|s| matches!(s, Src::Root(_) | Src::Slot(_)))
+        {
+            return;
+        }
+        let pair = (scope, srcs);
+        if !self.pairs.contains(&pair) {
+            self.pairs.push(pair);
+        }
+    }
+
+    /// Judges the moment `at`, marking the scopes it leaves unreadable
+    /// in `failed` (the global scope at 0): every pair, or (`fine`) only
+    /// those only just readable at either end of the step. Returns
+    /// whether some pair judged is only just readable; `None` once the
+    /// work budget is spent.
+    fn moment(&mut self, at: Duration, fine: bool) -> Option<bool> {
+        self.moments += 1;
+        let cost = self.sims.len() as u32;
+        self.work = self.work.checked_sub(cost)?;
+        let slots = !self.slots.is_empty();
+        for (i, m) in &self.sims {
+            let c = channels_color(m.peek(at)).gamut_mapped();
+            self.lum[*i] = if c.a >= 1.0 {
                 c.relative_luminance()
             } else {
                 f64::NAN
             };
-            if let Some(slot) = scratch.as_mut().and_then(|t| t.tokens.get_mut(*path)) {
+            if slots && let Some(slot) = self.scratch.tokens.get_mut(self.paths[*i]) {
                 *slot = PropValue::Color(c);
             }
         }
-        let mut moment = Moment::Readable;
-        for (over, pair) in &pairs {
-            let tables: Option<Vec<&TokenTable>> = scratch
-                .as_ref()
-                .map(|t| std::iter::once(t).chain(over.iter()).collect());
-            let scope = tables.as_deref().map(TokenScope::new);
-            lums.clear();
-            lums.extend(pair.iter().filter_map(|b| match b {
-                Bg::Root(i) => Some(lum[*i]).filter(|l| !l.is_nan()),
-                Bg::Fixed(l) => Some(*l),
-                Bg::Derived(path) => match scope.as_ref()?.lookup(path) {
-                    Some(PropValue::Color(c)) if c.a >= 1.0 => Some(c.relative_luminance()),
-                    _ => None,
-                },
-            }));
-            if !luminance_reachable(&lums, MIN_CONTRAST) {
-                return (Moment::Unreadable, settled);
+        let mut any_near = false;
+        let mut lums: Vec<f64> = Vec::new();
+        for p in 0..self.pairs.len() {
+            let si = self.pairs[p].0;
+            if self.failed[si] || (fine && !(self.near_last[p] || self.near[p])) {
+                continue;
             }
-            if !luminance_reachable(&lums, CHECK_NEAR) {
-                moment = Moment::Near;
+            self.work = self.work.checked_sub(1)?;
+            lums.clear();
+            for k in 0..self.pairs[p].1.len() {
+                let l = match self.pairs[p].1[k] {
+                    Src::Root(i) => self.lum[i],
+                    Src::Fixed(l) => l,
+                    Src::Slot(k) => self.slot_lum(k)?,
+                    Src::Skip => continue,
+                };
+                if !l.is_nan() {
+                    lums.push(l);
+                }
+            }
+            let near = if !luminance_reachable(&lums, MIN_CONTRAST) {
+                self.failed[si] = true;
+                false
+            } else {
+                !luminance_reachable(&lums, CHECK_NEAR)
+            };
+            any_near |= near;
+            if !fine {
+                self.near_last[p] = std::mem::replace(&mut self.near[p], near);
             }
         }
-        (moment, settled)
+        Some(any_near)
+    }
+
+    /// Slot `k`'s luminance at this moment, evaluated once per moment.
+    fn slot_lum(&mut self, k: usize) -> Option<f64> {
+        if self.slot_at[k] == self.moments {
+            return Some(self.slot_lum[k]);
+        }
+        self.work = self.work.checked_sub(2)?;
+        let (si, path) = &self.slots[k];
+        let mut levels: Vec<&TokenTable> = vec![&self.scratch];
+        levels.extend(self.chains[*si].iter().copied());
+        self.slot_lum[k] = match TokenScope::new(&levels).lookup(path) {
+            Some(PropValue::Color(c)) if c.a >= 1.0 => c.relative_luminance(),
+            _ => f64::NAN,
+        };
+        self.slot_at[k] = self.moments;
+        Some(self.slot_lum[k])
+    }
+
+    /// Whether every root read has settled at `at`.
+    fn settled(&self, at: Duration) -> bool {
+        self.sims.iter().all(|(_, m)| m.is_settled(at))
+    }
+
+    /// How fast the roots move at `at`, in OKLab channels per second:
+    /// the faster of their velocity there and their mean speed over the
+    /// last `step`.
+    fn speed(&mut self, at: Duration, step: Duration) -> f32 {
+        let mut fastest = 0.0f32;
+        let first = self.last.is_empty();
+        if first {
+            self.last = vec![[0.0; 4]; self.sims.len()];
+        }
+        for ((_, m), last) in self.sims.iter().zip(self.last.iter_mut()) {
+            let now = m.peek(at);
+            let v = m.velocity(at);
+            for c in 0..4 {
+                let moved = if first {
+                    0.0
+                } else {
+                    (now[c] - last[c]).abs() / step.as_secs_f32()
+                };
+                fastest = fastest.max(moved).max(v[c].abs());
+            }
+            *last = now;
+        }
+        fastest
+    }
+
+    /// The surfaces that cannot spring: every one (`all`, or the global
+    /// scope failed), or those drawing a failed scope.
+    fn verdict(&self, all: bool) -> Verdict {
+        if all || self.failed[0] {
+            return Verdict {
+                all: true,
+                surfaces: HashSet::new(),
+            };
+        }
+        Verdict {
+            all: false,
+            surfaces: self
+                .failed
+                .iter()
+                .zip(&self.owners)
+                .filter(|(f, _)| **f)
+                .flat_map(|(_, o)| o.iter().copied())
+                .collect(),
+        }
+    }
+}
+
+/// Plays `roots` through from `base` (the last frame shown) and says
+/// where some moment leaves a declared pair of `table` with no text
+/// lightness at 3:1: in the global scope (every surface), or under one
+/// of the `set { }` scopes shown (the surfaces drawing it). Only pairs
+/// with one in `old` and in `table` there count (a palette that is
+/// unreadable at rest is not the swap's doing). Past [`CHECK_SPAN`] or
+/// [`CHECK_WORK`], every surface.
+fn check_swap<'a>(
+    old: &TokenTable,
+    table: &'a TokenTable,
+    scopes: &[ShownScope<'a>],
+    roots: &'a BTreeMap<String, Root>,
+    base: Duration,
+) -> Verdict {
+    if roots.is_empty() {
+        return Verdict::default();
+    }
+    let Some(mut play) = Play::new(old, table, scopes, roots) else {
+        return Verdict::default();
     };
-    let steps = (CHECK_SPAN.as_nanos() / CHECK_STEP.as_nanos()) as u32;
-    let fine = (CHECK_STEP.as_nanos() / CHECK_FINE.as_nanos()) as u32;
-    let mut last = Moment::Readable;
-    for k in 1..=steps {
-        let at = base + CHECK_STEP * k;
-        let (moment, settled) = check(at, true);
-        if moment == Moment::Unreadable {
-            return true;
+    // The first sample starts every retarget (as the first frame will);
+    // after it the motions are pure functions of time.
+    for (_, m) in &mut play.sims {
+        m.sample(base + CHECK_STEP);
+    }
+    let end = base + CHECK_SPAN;
+    let mut at = base;
+    let mut step = CHECK_STEP;
+    let mut first = true;
+    while at < end {
+        at += step;
+        let Some(near) = play.moment(at, false) else {
+            return play.verdict(true);
+        };
+        if play.failed[0] || play.failed.iter().all(|f| *f) {
+            return play.verdict(false);
         }
         // Either end of the step only just made it: the moments between
-        // are looked at too.
-        if k > 1 && (moment == Moment::Near || last == Moment::Near) {
-            for j in 1..fine {
-                if check(at - CHECK_FINE * j, false).0 == Moment::Unreadable {
-                    return true;
+        // are looked at too, for the pairs concerned.
+        let was_near = play.near_last.iter().any(|n| *n);
+        if !first && (near || was_near) {
+            for j in 1..CHECK_FINE {
+                if play.moment(at - step * j / CHECK_FINE, true).is_none() {
+                    return play.verdict(true);
+                }
+                if play.failed[0] {
+                    return play.verdict(false);
                 }
             }
         }
-        last = moment;
-        if settled {
-            return false;
+        first = false;
+        if play.settled(at) {
+            return play.verdict(false);
         }
+        // The next step: no root moves more than `CHECK_MOVE` over it
+        // (and it is at most twice as long as this one).
+        let speed = play.speed(at, step);
+        let bound = if speed > 0.0 {
+            Duration::from_secs_f32((CHECK_MOVE / speed).min(1.0))
+        } else {
+            CHECK_STEP_MAX
+        };
+        step = bound.clamp(CHECK_STEP, (step * 2).min(CHECK_STEP_MAX));
     }
     // Still moving after the longest span checked: not sprung unchecked.
-    true
+    play.verdict(true)
 }
 
-/// `new` (the new frame, in `target`) over the snapshot `old`, the new
-/// frame weighted `w` (premultiplied channels, so translucent surfaces
-/// fade too).
-fn blend(target: &mut PaintTarget<'_>, old: &Snapshot, w: f32) {
+/// `new` (the new frame, in `target`) over the snapshot pixels `old` of
+/// `size`, the new frame weighted `w` (premultiplied channels, so
+/// translucent surfaces fade too).
+fn blend(target: &mut PaintTarget<'_>, old: &[u8], size: Size, w: f32) {
     let a = (w.clamp(0.0, 1.0) * 256.0).round() as u32;
-    if a >= 256 || old.pixels.len() != old.bytes() {
+    if a >= 256 || old.len() != size.w as usize * size.h as usize * 4 {
         return;
     }
-    let row = old.size.w as usize * 4;
+    let row = size.w as usize * 4;
     let stride = target.stride as usize;
-    for y in 0..old.size.h as usize {
+    for y in 0..size.h as usize {
         let dst = &mut target.pixels[y * stride..y * stride + row];
-        let src = &old.pixels[y * row..(y + 1) * row];
+        let src = &old[y * row..(y + 1) * row];
         for (d, s) in dst.iter_mut().zip(src) {
             *d = ((*d as u32 * a + *s as u32 * (256 - a) + 128) >> 8) as u8;
         }
@@ -389,7 +844,7 @@ impl Renderer {
     }
 
     /// Works out what the last `SetTokens` of `diff` does, before the
-    /// diff applies: which roots spring from where, or, when no spring
+    /// diff applies: which roots spring from where, or, where no spring
     /// keeps the declared pairs readable, the snapshots to crossfade
     /// from. `None` if the diff sends no table.
     pub(super) fn plan_swap(&mut self, diff: &SceneDiff) -> Option<Plan> {
@@ -398,6 +853,7 @@ impl Renderer {
             _ => None,
         })?;
         let started = Instant::now();
+        self.prune_fades(None);
         let reduced = self.anim.reduced()
             || matches!(table.get("motion.reduced"), Some(PropValue::Bool(true)));
         let shown_at = self.shown_at();
@@ -410,8 +866,10 @@ impl Renderer {
         };
         let mut plan = Plan {
             roots: BTreeMap::new(),
-            fade: None,
             snap: false,
+            all: false,
+            hold: HashSet::new(),
+            snaps: HashMap::new(),
         };
         let Some(base) = shown_at.filter(|_| curve != Curve::Instant) else {
             plan.snap = true;
@@ -454,18 +912,32 @@ impl Renderer {
                 },
             );
         }
-        let scopes = if plan.roots.is_empty() {
-            Vec::new()
-        } else {
-            self.shown_scopes()
-        };
-        let old = &self.tree.tokens;
-        if needs_crossfade(old, table, &scopes, &plan.roots, base) {
-            let mut progress = Motion::rest([0.0], FADE_EPS).sampled_at(Some(base));
-            progress.retarget([1.0], curve);
-            let snaps = self.snapshots();
+        if plan.roots.is_empty() {
+            self.swap.work += started.elapsed();
+            return Some(plan);
+        }
+        let (scopes, crowded) = self.shown_scopes();
+        let verdict = check_swap(&self.tree.tokens, table, &scopes, &plan.roots, base);
+        drop(scopes);
+        let fading: HashSet<SurfaceId> = if verdict.all {
+            plan.all = true;
             plan.roots.clear();
-            plan.fade = Some((progress, snaps));
+            self.shown_with_clock().map(|(id, _)| id).collect()
+        } else {
+            // Surfaces already shown a held table keep one (now the
+            // newest), fading to it again.
+            plan.hold = self
+                .swap
+                .held_for
+                .iter()
+                .copied()
+                .chain(verdict.surfaces)
+                .chain(crowded)
+                .collect();
+            plan.hold.clone()
+        };
+        if !fading.is_empty() {
+            plan.snaps = self.snapshots(&fading, curve);
         }
         self.swap.work += started.elapsed();
         Some(plan)
@@ -485,58 +957,85 @@ impl Renderer {
     }
 
     /// The distinct `set { }` override chains (outermost first) of the
-    /// nodes the shown surfaces draw, at most one past [`CHECK_SCOPES`]
-    /// (enough to know there are too many).
-    fn shown_scopes(&self) -> Vec<Vec<TokenTable>> {
-        let mut out: Vec<Vec<TokenTable>> = Vec::new();
-        let mut seen: HashSet<strand_scene::NodeId> = HashSet::new();
-        let mut stack: Vec<strand_scene::NodeId> =
-            self.shown_with_clock().map(|(_, s)| s.root).collect();
-        while let Some(id) = stack.pop() {
-            if out.len() > CHECK_SCOPES || !seen.insert(id) {
+    /// nodes the shown surfaces draw, each with the surfaces drawing it,
+    /// and the surfaces under a root with more than [`RAW_SCOPES`].
+    fn shown_scopes(&self) -> (Vec<ShownScope<'_>>, Vec<SurfaceId>) {
+        let mut by_root: BTreeMap<NodeId, Vec<SurfaceId>> = BTreeMap::new();
+        for (id, s) in self.shown_with_clock() {
+            by_root.entry(s.root).or_default().push(id);
+        }
+        let mut out: Vec<ShownScope<'_>> = Vec::new();
+        let mut crowded = Vec::new();
+        for (root, surfaces) in by_root {
+            let mut chains: Vec<Vec<&TokenTable>> = Vec::new();
+            let mut stack = vec![root];
+            let mut seen: HashSet<NodeId> = HashSet::new();
+            while let Some(id) = stack.pop() {
+                if !seen.insert(id) {
+                    continue;
+                }
+                let Some(n) = self.tree.get(id) else {
+                    continue;
+                };
+                if n.get(Prop::Tokens).is_some() {
+                    let chain: Vec<&TokenTable> = crate::flatten::scope_tables(&self.tree, id)
+                        .into_iter()
+                        .skip(1)
+                        .collect();
+                    if !chains.contains(&chain) {
+                        chains.push(chain);
+                    }
+                    if chains.len() > RAW_SCOPES {
+                        break;
+                    }
+                }
+                stack.extend(n.children.iter().copied());
+            }
+            if chains.len() > RAW_SCOPES {
+                crowded.extend(surfaces);
                 continue;
             }
-            let Some(n) = self.tree.get(id) else {
-                continue;
-            };
-            if n.get(Prop::Tokens).is_some() {
-                let chain: Vec<TokenTable> = crate::flatten::scope_tables(&self.tree, id)
-                    .into_iter()
-                    .skip(1)
-                    .cloned()
-                    .collect();
-                if !out.contains(&chain) {
-                    out.push(chain);
+            for chain in chains {
+                match out.iter_mut().find(|s| s.chain == chain) {
+                    Some(s) => s.surfaces.extend(surfaces.iter().copied()),
+                    None => out.push(ShownScope {
+                        chain,
+                        surfaces: surfaces.clone(),
+                    }),
                 }
             }
-            stack.extend(n.children.iter().copied());
         }
-        out
+        (out, crowded)
     }
 
-    /// The frame each surface shows now, rasterised once (surfaces shown
-    /// with a clock that a crossfade does not already cover, smallest
-    /// first, within [`SNAPSHOT_MAX`] and [`SNAPSHOTS_MAX`]: the others
-    /// snap to the new frame).
-    fn snapshots(&mut self) -> HashMap<SurfaceId, Snapshot> {
-        let mut ids: Vec<(usize, SurfaceId)> = self
+    /// Snapshots of the frames `ids` show now (those shown with a
+    /// clock, smallest first, within [`SNAPSHOT_MAX`] and
+    /// [`SNAPSHOTS_MAX`]: the others snap to the new frame), each fading
+    /// along `curve` from its first frame. A surface already crossfading
+    /// takes the blend it shows as its snapshot and fades on from there.
+    fn snapshots(
+        &mut self,
+        ids: &HashSet<SurfaceId>,
+        curve: Curve,
+    ) -> HashMap<SurfaceId, Snapshot> {
+        let mut order: Vec<(usize, SurfaceId)> = self
             .shown_with_clock()
+            .filter(|(id, _)| ids.contains(id))
             .map(|(id, s)| (s.size.w as usize * s.size.h as usize * 4, id))
-            .filter(|(_, id)| {
-                self.swap
-                    .fade
-                    .as_ref()
-                    .is_none_or(|f| !f.snaps.contains_key(id))
-            })
             .collect();
-        ids.sort();
-        let mut kept = self
+        order.sort();
+        // What the fades left alone keep.
+        let mut kept: usize = self
             .swap
             .fade
-            .as_ref()
-            .map_or(0, |f| f.snaps.values().map(Snapshot::bytes).sum::<usize>());
+            .iter()
+            .filter(|(id, _)| !ids.contains(id))
+            .map(|(_, s)| s.bytes())
+            .sum();
         let mut out = HashMap::new();
-        for (bytes, id) in ids {
+        let now = Instant::now();
+        for (bytes, id) in order {
+            let prev = self.swap.fade.remove(&id);
             if bytes > SNAPSHOT_MAX || kept + bytes > SNAPSHOTS_MAX {
                 continue;
             }
@@ -544,15 +1043,33 @@ impl Renderer {
             let Some(s) = self.surfaces.get_mut(&id) else {
                 continue;
             };
-            let (size, scale, time, prev) = (s.size, s.scale, s.time, s.painted_time);
-            // The old frame's scene, for when its buffer no longer holds
-            // it (a moving surface paints a fresh scene anyway).
+            let (size, scale, time, painted) = (s.size, s.scale, s.time, s.painted_time);
+            let mut progress = Motion::rest([0.0], FADE_EPS).sampled_at(painted);
+            progress.retarget([1.0], curve);
+            let (pixels, under) = match prev {
+                // Not taken yet: the surface still shows the frame it is
+                // for.
+                Some(p) if p.old.is_some() => {
+                    out.insert(
+                        id,
+                        Snapshot {
+                            progress,
+                            since: now,
+                            ..p
+                        },
+                    );
+                    continue;
+                }
+                Some(p) if p.size == size && p.scale == scale => (p.pixels, Some(p.last_w)),
+                _ => (Vec::new(), None),
+            };
+            // The old frame's scene, for what its buffer no longer holds.
             let f = match s.cache.take() {
                 Some(f) => f,
                 None => {
                     // Flattened at rest as of the last frame (a preview:
                     // nothing starts).
-                    self.anim.begin(time, prev, false);
+                    self.anim.begin(time, painted, false);
                     self.flatten_now(id)
                 }
             };
@@ -561,8 +1078,12 @@ impl Renderer {
                 Snapshot {
                     size,
                     scale,
-                    pixels: Vec::new(),
+                    pixels,
                     old: Some(f),
+                    under,
+                    progress,
+                    last_w: 0.0,
+                    since: now,
                 },
             );
         }
@@ -572,36 +1093,56 @@ impl Renderer {
     /// Takes `surface`'s snapshot if its fade has not yet, before the
     /// frame in `target` is painted (see [`Snapshot`]).
     pub(super) fn take_snapshot(&mut self, surface: SurfaceId, target: &PaintTarget<'_>) {
-        let Some(snap) = self
-            .swap
-            .fade
-            .as_mut()
-            .and_then(|f| f.snaps.get_mut(&surface))
-            .filter(|s| s.old.is_some())
-        else {
+        let Some(snap) = self.swap.fade.get_mut(&surface).filter(|s| s.old.is_some()) else {
+            return;
+        };
+        let Some(s) = self.surfaces.get(&surface) else {
             return;
         };
         let started = Instant::now();
-        let valid = self.surfaces.get(&surface).is_some_and(|s| s.valid);
+        let age = target.age as usize;
         let row = snap.size.w as usize * 4;
         let mut pixels = vec![0u8; snap.bytes()];
-        if valid && target.age == 1 && target.size == snap.size && target.scale == snap.scale {
-            // The buffer still shows the old frame.
+        // The buffer holds the frame shown but for the last `age - 1`
+        // frames' damage. (Under a replaced crossfade every frame was
+        // painted in full: only age 1 holds it.)
+        let same = s.valid
+            && age >= 1
+            && age <= s.history.len() + 1
+            && (age == 1 || snap.under.is_none())
+            && target.size == snap.size
+            && target.scale == snap.scale;
+        let missed = same.then(|| {
             let stride = target.stride as usize;
             for (y, dst) in pixels.chunks_exact_mut(row).enumerate() {
                 dst.copy_from_slice(&target.pixels[y * stride..y * stride + row]);
             }
-        } else if let Some(old) = &snap.old
+            let mut missed = Damage::new();
+            for d in s.history.iter().take(age - 1) {
+                missed.union(d);
+            }
+            missed.clip(target.bounds());
+            missed
+        });
+        let under = snap.under.take();
+        let prev = std::mem::take(&mut snap.pixels);
+        let draw = match &missed {
+            Some(m) => (!m.is_empty()).then_some(*m),
+            None => Some(Damage::full(snap.size)),
+        };
+        if let (Some(region), Some(old)) = (draw, &snap.old)
             && let Ok(mut t) =
                 PaintTarget::new(&mut pixels, snap.size, snap.size.w * 4, snap.scale, 0)
         {
-            self.raster.paint(
-                &old.items,
-                &Damage::full(snap.size),
-                &self.atlas,
-                snap.scale,
-                &mut t,
-            );
+            self.raster
+                .paint(&old.items, &region, &self.atlas, snap.scale, &mut t);
+            // A crossfade replaced mid-crossfade: what showed was the
+            // old frame over the fade's snapshot.
+            if missed.is_none()
+                && let Some(w) = under
+            {
+                blend(&mut t, &prev, snap.size, w);
+            }
         }
         snap.pixels = pixels;
         snap.old = None;
@@ -610,29 +1151,66 @@ impl Renderer {
 
     /// Puts a plan in place once its table is the tree's: the roots
     /// spring from the next frame on (every frame writes their values),
-    /// or the table stays snapped and the surfaces crossfade.
+    /// and the surfaces that cannot spring crossfade (all of them, the
+    /// table snapped, or those shown the held new table).
     pub(super) fn install_swap(&mut self, plan: Plan) {
         let started = Instant::now();
-        match plan.fade {
-            Some((progress, snaps)) => {
-                self.swap.roots.clear();
-                self.swap.crossfades += 1;
-                match &mut self.swap.fade {
-                    // Already fading from an older frame: it carries on
-                    // from there, to the newest table.
-                    Some(f) => f.snaps.extend(snaps),
-                    None => self.swap.fade = Some(Fade { progress, snaps }),
+        if plan.snap {
+            // Snapped: crossfades in flight end too.
+            self.swap.fade.clear();
+            self.swap.roots.clear();
+            self.swap.held = None;
+            self.swap.held_for.clear();
+        } else if plan.all {
+            self.swap.roots.clear();
+            self.swap.held = None;
+            self.swap.held_for.clear();
+            self.swap.crossfades += 1;
+            self.swap.fade.extend(plan.snaps);
+        } else {
+            self.swap.roots = plan.roots;
+            if !plan.hold.is_empty() && !self.swap.roots.is_empty() {
+                let mut held = self.tree.tokens.clone();
+                held.freeze();
+                self.swap.held = Some(held);
+                if !plan.snaps.is_empty() {
+                    self.swap.crossfades += 1;
                 }
-            }
-            None => {
-                if plan.snap {
-                    // Snapped: a crossfade in flight ends too.
-                    self.swap.fade = None;
+                self.swap.held_for = plan.hold;
+                for id in &self.swap.held_for {
+                    if let Some(s) = self.surfaces.get_mut(id) {
+                        s.cache = None;
+                    }
                 }
-                self.swap.roots = plan.roots;
+                self.swap.fade.extend(plan.snaps);
+            } else {
+                self.swap.held = None;
+                self.swap.held_for.clear();
             }
         }
         self.swap.work += started.elapsed();
+    }
+
+    /// Swaps the held new table into the tree while `id` is flattened,
+    /// if `id` is shown it (see [`Swap::held`]); true if it did.
+    pub(super) fn hold_tokens(&mut self, id: SurfaceId) -> bool {
+        if !self.swap.held_for.contains(&id) {
+            return false;
+        }
+        match &mut self.swap.held {
+            Some(h) => {
+                std::mem::swap(&mut self.tree.tokens, h);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Puts the springing table back after [`Renderer::hold_tokens`].
+    pub(super) fn release_tokens(&mut self, held: bool) {
+        if held && let Some(h) = &mut self.swap.held {
+            std::mem::swap(&mut self.tree.tokens, h);
+        }
     }
 
     /// Writes the palette roots' values at `at` into the tree's table: a
@@ -666,6 +1244,11 @@ impl Renderer {
         } else if commit {
             self.swap.roots.retain(|_, r| !r.motion.is_settled(at));
         }
+        if self.swap.roots.is_empty() {
+            // Landed: the tree's table is the held one now.
+            self.swap.held = None;
+            self.swap.held_for.clear();
+        }
         // The frame's token graph, evaluated once from these roots: the
         // nodes read it (derived tokens and guarded text exact).
         self.tree.tokens.freeze();
@@ -677,38 +1260,41 @@ impl Renderer {
     pub(super) fn swap_moving(&self, surface: SurfaceId) -> bool {
         !self.swap.roots.is_empty()
             || self.swap.blended.contains(&surface)
-            || self
-                .swap
-                .fade
-                .as_ref()
-                .is_some_and(|f| f.snaps.contains_key(&surface))
+            || self.swap.fade.contains_key(&surface)
+    }
+
+    /// Drops the snapshots of surfaces (but `keep`) that painted nothing
+    /// for the exit stall: an output asleep or occluded never ends its
+    /// fade, and its snapshot is not held for ever.
+    fn prune_fades(&mut self, keep: Option<SurfaceId>) {
+        let (now, stall) = (Instant::now(), self.exit_stall);
+        self.swap
+            .fade
+            .retain(|id, s| Some(*id) == keep || now.saturating_duration_since(s.since) < stall);
     }
 
     /// How the frame of `surface` at `at`, `size` shows the crossfade.
     pub(super) fn fade_frame(&mut self, surface: SurfaceId, at: Duration, size: Size) -> FadeFrame {
         if self.anim.reduced() {
-            self.swap.fade = None;
+            self.swap.fade.clear();
         }
-        if let Some(f) = &mut self.swap.fade {
-            if let Some(snap) = f.snaps.get(&surface) {
-                // The first frame starts it; after that the progress is
-                // a function of each surface's own clock (one on another
-                // output fades on at its own times).
-                if f.progress.is_pending() {
-                    f.progress.sample(at);
-                }
-                let p = f.progress.peek(at)[0];
-                if !f.progress.is_settled(at) && snap.size == size {
-                    self.swap.blended.insert(surface);
-                    return FadeFrame::Blend(p.clamp(0.0, 1.0));
-                }
-                // Done here, or resized since: it shows the new frames
-                // as they are.
-                f.snaps.remove(&surface);
+        self.prune_fades(Some(surface));
+        if let Some(snap) = self.swap.fade.get_mut(&surface) {
+            // The surface's first frame starts its fade; after that the
+            // progress is a function of its own clock.
+            if snap.progress.is_pending() {
+                snap.progress.sample(at);
             }
-            if f.snaps.is_empty() {
-                self.swap.fade = None;
+            let p = snap.progress.peek(at)[0];
+            if !snap.progress.is_settled(at) && snap.size == size {
+                snap.last_w = p.clamp(0.0, 1.0);
+                snap.since = Instant::now();
+                self.swap.blended.insert(surface);
+                return FadeFrame::Blend(snap.last_w);
             }
+            // Done here, or resized since: it shows the new frames as
+            // they are.
+            self.swap.fade.remove(&surface);
         }
         if self.swap.blended.remove(&surface) {
             FadeFrame::Clean
@@ -723,11 +1309,10 @@ impl Renderer {
         if let Some(snap) = self
             .swap
             .fade
-            .as_ref()
-            .and_then(|f| f.snaps.get(&surface))
+            .get(&surface)
             .filter(|s| s.size == target.size)
         {
-            blend(target, snap, w);
+            blend(target, &snap.pixels, snap.size, w);
         }
         self.swap.blend += started.elapsed();
     }
@@ -735,9 +1320,8 @@ impl Renderer {
     /// Forgets a detached surface's crossfade.
     pub(super) fn forget_fade(&mut self, surface: SurfaceId) {
         self.swap.blended.remove(&surface);
-        if let Some(f) = &mut self.swap.fade {
-            f.snaps.remove(&surface);
-        }
+        self.swap.fade.remove(&surface);
+        self.swap.held_for.remove(&surface);
     }
 
     /// Render-thread work spent on theme swaps since the last call:
@@ -757,13 +1341,31 @@ impl Renderer {
         std::mem::take(&mut self.swap.blend)
     }
 
-    /// Theme swaps that crossfaded instead of springing.
+    /// Theme swaps that crossfaded (on every surface, or on those whose
+    /// `set { }` scopes no spring keeps readable) instead of springing.
     pub fn swap_crossfades(&self) -> u64 {
         self.swap.crossfades
     }
 
-    /// True while palette roots spring or a crossfade runs.
+    /// True while palette roots spring or a crossfade runs on a surface
+    /// still painting (one that painted nothing for the exit stall does
+    /// not count).
     pub fn swapping(&self) -> bool {
-        !self.swap.roots.is_empty() || self.swap.fade.is_some()
+        let (now, stall) = (Instant::now(), self.exit_stall);
+        !self.swap.roots.is_empty()
+            || self
+                .swap
+                .fade
+                .values()
+                .any(|s| now.saturating_duration_since(s.since) < stall)
+    }
+
+    /// Surfaces shown the held new table while the roots spring
+    /// elsewhere (tests).
+    #[doc(hidden)]
+    pub fn swap_held(&self) -> Vec<SurfaceId> {
+        let mut v: Vec<SurfaceId> = self.swap.held_for.iter().copied().collect();
+        v.sort();
+        v
     }
 }

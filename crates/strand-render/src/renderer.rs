@@ -2594,6 +2594,15 @@ impl Renderer {
     /// pass, when a list measured rows it had only estimated), then
     /// flattens it.
     fn flatten_now(&mut self, id: SurfaceId) -> Flattened {
+        // A surface a theme swap crossfades while the roots spring
+        // elsewhere is drawn from the new table.
+        let held = self.hold_tokens(id);
+        let f = self.flatten_tokens(id);
+        self.release_tokens(held);
+        f
+    }
+
+    fn flatten_tokens(&mut self, id: SurfaceId) -> Flattened {
         let layouts = self.shaped();
         self.lay_out(id, &layouts);
         let Some(s) = self.surfaces.get(&id) else {

@@ -443,24 +443,35 @@ be built and tested without the language, and the language without pixels.
   colours (marks, markup links) are not part of a text's shaping
   request: it carries slot stand-ins and the glyph item the colours, so
   a springing `$accent` never reshapes. Before springing, the planned
-  roots are played through (240 Hz, 1 kHz next to moments under 3.3:1,
-  until they settle, at most 10 s) in the global scope and under each
-  distinct `set { }` chain of the shown nodes (at most 32); if a declared
-  pair readable at both ends there has a moment where no text lightness
-  reaches 3:1 (`Color::contrast_reachable`), or the check cannot finish,
-  the table snaps instead and each shown surface crossfades from a
-  snapshot of its old frame to the new frames along the same curve,
-  those frames painted in full and reporting no opaque region. The
-  snapshot is taken at the fade's first frame on the surface: copied
-  from the `PaintTarget` when its age is 1, else rasterised from the
-  old display list kept from planning; at most 1920×1080×4 bytes per
-  surface and in all (a larger surface snaps). The fade's curve is read
-  at each surface's own presentation time and ends per surface; a
-  table that changes no colour leaves it running, a snapping one ends
-  it. The blend works on the CPU `PaintTarget`; the GPU path (M4) needs
-  its own (keep the old frame's texture, blend in the shader).
+  roots are played through (240 Hz while they move fast, up to 100 ms
+  steps while they move slowly, four times as finely next to moments
+  under 3.3:1, until they settle, at most 10 s and a fixed work budget)
+  in the global scope and under each `set { }` scope of the shown nodes
+  whose overrides reach a declared background (merged by those
+  overrides, at most 32). Where a declared pair readable at both ends
+  has a moment with no text lightness at 3:1
+  (`Color::contrast_reachable`): in the global scope (or when the check
+  cannot finish) the table snaps and every shown surface crossfades;
+  under a `set { }` scope only the surfaces drawing it crossfade, shown
+  the new table at once (held for them, swapped into the tree while they
+  lay out and flatten) while the roots spring for the rest. A crossfade
+  goes from a snapshot of the surface's old frame to the new frames
+  along the colour curve from that surface's first frame, those frames
+  painted in full and reporting no opaque region. The snapshot is taken
+  at that first frame: the `PaintTarget`'s copy with the damage of the
+  frames its age missed drawn again from the old display list kept from
+  planning (in full for a new or invalid buffer); at most 1920×1080×4
+  bytes per surface and in all (a larger surface snaps). A crossfade
+  landing mid-crossfade takes the blend on screen as its snapshot; a
+  surface that paints nothing for the exit stall loses its snapshot; a
+  table that changes no colour leaves fades running, a snapping one
+  ends them. The blend works on the CPU `PaintTarget`; the GPU path
+  (M4) needs its own (keep the old frame's texture, blend in the
+  shader).
   `Renderer::swapping()` is true while roots spring or a crossfade
-  runs, `swap_crossfades()` counts crossfades, and `take_swap_work()`
+  runs on a surface still painting, `swap_crossfades()` counts swaps
+  that crossfaded somewhere, `swap_held()` (hidden) lists the surfaces
+  shown the held table, and `take_swap_work()`
   and `take_fade_blend_work()` (hidden, for the bench) return the
   render thread's swap work, and the time spent blending, since the
   last call.

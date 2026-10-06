@@ -4326,7 +4326,8 @@ along the same curve, those frames painted in full and ending exactly
 on the new frame (`::an_unreadable_spring_crossfades_from_a_snapshot`,
 `::a_subtree_that_a_spring_leaves_unreadable_crossfades`). A surface
 resized meanwhile drops its snapshot; a second swap during a crossfade
-keeps the first snapshot. Material light↔dark swaps never need it: all
+fades on from the blend on screen (fixer round 2; it first kept the
+first snapshot under the new frame, which jumped). Material light↔dark swaps never need it: all
 roots share one curve, and the surface roles move together, so their
 luminances never straddle 0.1 and 0.3 at once; it fires for palettes
 whose surfaces part ways (one darkening while another lightens), so
@@ -4340,7 +4341,9 @@ random Material scheme, variant and contrast level to a random flavour)
 and swaps to and from random partial imports, every frame at 60 or
 144 Hz, every declared pair readable at both ends at 3:1 or better as
 the guard leaves it, in each frame that sprang (12 rounds of five
-swaps in debug builds, 60 optimised). Disabling the crossfade fails
+swaps in debug builds, 60 optimised; crossfaded frames are exempt and
+`set { }` subtrees and image wallpapers are sampled too since fixer
+round 2, below). Disabling the crossfade fails
 the crossfade tests; the random swaps of this seed all spring.
 
 **2026-10-06 · wave3-theme (t2): the 5 ms of a swap.** design.md's "under
@@ -4449,6 +4452,104 @@ at both ends (a variant that preferred the text's side over meeting
 every background failed the contrast gate), and a per-frame memory
 would make a frame depend on the frames before it, so this is kept as
 it is.
+
+**2026-10-06 · wave3-theme (t2) fixer round 2: the play-through's cost is
+bounded.** Planning played the whole spring through at 240 Hz (1 kHz
+near 3.3:1) over every pair and every distinct `set { }` chain shown,
+evaluating derived backgrounds afresh per pair and scope, so a slow
+`$motion.effects` or many subtrees cost tens of ms in one `apply`. Now:
+the step grows (at most doubling, up to 100 ms, `CHECK_STEP_MAX`) while
+no root moves more than 0.02 in OKLab over it (`CHECK_MOVE`, judged by
+the roots' velocity and their mean speed over the last step; 0.02 of
+lightness moves a background's allowed contrast by at most about 9%,
+inside the 10% between 3:1 and the 3.3:1 that triggers fine samples),
+so the design's spring is still sampled at 240 Hz while it moves fast
+and a slow one or a tail far less often; moments that only just make
+it are sampled four times as finely, for the pairs concerned only; a
+background that reads a moving root through a derived token or an
+override is evaluated once per sample and shared by every pair that
+names it; a `set { }` scope is checked only if its overrides reach a
+declared background (directly or through derived tokens, or the
+guard), and scopes whose reaching overrides are the same are checked
+once; and the play-through has a work budget (`CHECK_WORK`, 9000 units
+of about a third of a microsecond: one per root per sample and per pair
+judged, two per background evaluated), past which the swap crossfades,
+as it does past 10 s of motion. `crates/strand-render/tests/theme_swap_bench.rs::set_scopes_and_slow_springs_stay_within_the_budget`
+holds `apply` under 5 ms optimised with 0, 8 and 32 distinct scopes and
+with `spring(1600, 1)` and `spring(120, 1)`: about 0.6 ms at 0 scopes and
+3.5 ms at 32 with the slow spring.
+
+**2026-10-06 · wave3-theme (t2) fixer round 2: how the 5 ms scales with
+a slower colour spring.** The swap's work has two parts: once per swap
+(logic's re-resolve and the render thread's `apply`, with its
+play-through and any snapshots) and once per frame while the roots
+move (sampling them and evaluating the frame's token graph, about
+65 µs optimised for design.md's theme). Along design.md's springs the
+two together stay under 5 ms (the bench's light↔dark: about 2 ms,
+17 frames). A user's slower `$motion.effects` cannot make the frames
+cheaper, only more numerous: `spring(120, 1)` takes about 54 frames,
+some 3.5 ms of frame work spread over a second. So "under 5 ms of work"
+is held as: the once-per-swap part under 5 ms whatever the spring and
+the scopes, each frame's part under a twentieth of that (250 µs, a
+fraction of any frame's budget), and the whole under 5 ms along the
+design's springs. That a slower spring costs more in total is its
+author's choice of more frames, not the swap's doing.
+
+**2026-10-06 · wave3-theme (t2) fixer round 2: crossfades are decided
+per surface.** design.md: "the surface snapshots its old frame once and
+crossfades". A pair the global scope cannot keep readable still
+crossfades every surface shown (the global table is every surface's,
+and the table snaps). A `set { }` scope that cannot spring now
+crossfades only the surfaces drawing it: the renderer keeps the new
+table (`held`) and swaps it into the tree while it lays out and
+flattens those surfaces, so they show the new palette at once over
+their snapshots while every other surface springs from the shared
+roots; the held surfaces keep the held table until the roots land, and
+a later swap meanwhile keeps them held (fading again to the newest
+table) (`crates/strand-render/tests/theme_swap.rs::only_the_surfaces_drawing_an_unreadable_subtree_crossfade`).
+`Renderer::swap_held()` lists them for tests. Surfaces sharing a root
+draw the same scopes, so they always decide alike.
+
+**2026-10-06 · wave3-theme (t2) fixer round 2: each snapshot fades on its
+own.** A crossfade's progress is now per snapshot, started by its
+surface's first fade frame (from that surface's last frame, so the lead
+before it is its own), instead of one curve for all. A crossfade landing
+while another runs on a surface takes the blend on screen as its new
+snapshot (its buffer when that is the last frame, else the old frame
+drawn and blended over the old snapshot at the last weight) and fades
+from 0 from there, so no frame jumps
+(`::a_crossfade_landing_mid_crossfade_fades_on_from_what_shows`). A
+surface that paints nothing for the exit stall (asleep, occluded, DPMS
+off) loses its snapshot, `swapping()` no longer counts it, and later
+crossfades start fresh on the surfaces that paint
+(`::a_surface_that_stops_painting_does_not_hold_up_later_crossfades`).
+A snapshot taken into a buffer of age N is the buffer's copy with only
+the damage of the last N − 1 frames drawn again from the old display
+list (usually a clock tick), and is drawn in full only into a new or
+invalid buffer (`::a_snapshot_from_an_older_buffer_matches_one_from_the_last`;
+the crossfade bench runs at age 1 and age 2: about 1.5 and 2 ms).
+
+**2026-10-06 · wave3-theme (t2) fixer round 2: what the contrast gate
+covers.** The 3:1 gate holds in every frame that springs, globally and
+in a `set { }` subtree (the gate now judges the subtree's pairs under
+its overrides every frame too, unless that subtree's surface is the one
+crossfading). A crossfade's frames are exempt: they blend the old frame
+over the new one pixel by pixel, so mid-fade text over its background
+can sit near 1:1 (rows 3–5 of `refs/theme_crossfade.png`, the old
+dark-on-light frame under the new light-on-dark one). That is design.md's
+prescribed fallback, used only where no spring keeps 3:1, and both ends
+of it are readable. The gate's swaps now also include palettes made
+the way `material(image:)` makes them: synthetic wallpapers quantised
+by strand-theme's quantiser, light and dark, to and from Catppuccin.
+
+**2026-10-06 · wave3-theme (t2) fixer round 2: seen on sway.** `strand
+run` on headless sway with design.md's `theme.strand` (`$motion.effects`
+slowed to `spring(30, 1)`), the hello bar and a centred panel with a
+`$surface.hi` card, an `$accent` pill and a `set { $surface:
+$surface.mix($accent, 60%) }` subtree: `strand set theme.look dark`
+showed the grim frames 150 and 300 ms in moving through greys with
+every text readable, the subtree springing with the rest (its scope
+checked and springable), then the dark scheme.
 
 ## wave3-pixels
 

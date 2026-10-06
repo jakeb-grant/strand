@@ -16,12 +16,19 @@
 //! per node, a palette played through without end).
 //!
 //! A swap no spring keeps readable crossfades instead; its work (the
-//! same, plus rasterising a snapshot of each surface once) is held to
-//! the same 5 ms, on two 2560×36 bars and a launcher-sized 1280×960
-//! panel. Blending each crossfade frame with its snapshot is a cost of
-//! painting that frame, held to [`BLEND_BUDGET`] per frame for all three
-//! surfaces in optimised builds (a per-byte loop unoptimised is some
-//! twenty times slower, so a debug build only reports it).
+//! same, plus taking a snapshot of each surface once) is held to the
+//! same 5 ms, on two 2560×36 bars and a launcher-sized 1280×960 panel,
+//! painting into one buffer (age 1: the snapshot is the buffer's copy)
+//! and into two in turn (age 2: the copy, with the clock tick it missed
+//! drawn again). Blending each crossfade frame with its snapshot is a
+//! cost of painting that frame, held to [`BLEND_BUDGET`] per frame for
+//! all three surfaces in optimised builds (a per-byte loop unoptimised
+//! is some twenty times slower, so a debug build only reports it).
+//!
+//! `set { }` subtrees (0, 8 and 32 distinct scopes) and a slow
+//! `$motion.effects` (`spring(120, 1)`, about a second) hold the swap's
+//! once-per-swap work to the same 5 ms and each frame's to a twentieth
+//! of it (decisions.md, wave3-theme fixer round 2).
 
 mod common;
 
@@ -282,13 +289,26 @@ fn split_table(grey: bool) -> TokenTable {
     t
 }
 
-#[test]
-fn a_crossfading_swap_is_under_five_milliseconds_of_work() {
+/// Each swap's work, its parts (apply, frames' work, frames), and each
+/// frame's blending time.
+type Rounds = (Vec<Duration>, Vec<(Duration, Duration, u32)>, Vec<Duration>);
+
+/// One crossfade bench run: `rounds` crossfading swaps on two 2560×36
+/// bars and a 1280×960 panel, with a clock tick painted between swaps.
+/// `double`: each surface paints into two buffers in turn (age 2, as
+/// under a compositor that holds the last buffer: a snapshot is then the
+/// buffer's copy with the last frame's damage drawn again), else into
+/// one (age 1). Returns each swap's work (apply with its planning, and
+/// the swap's work in every frame, snapshots included), its parts, and
+/// each frame's blending time.
+fn crossfade_rounds(double: bool, rounds: u32) -> Rounds {
     let tok = |p: &str| PropValue::Token(TokenExpr::path(p));
     let mut b = Builder::default();
     b.diff.set_tokens(split_table(true), Transition::Instant);
-    // Two bars and a launcher-sized panel, each with a card and text.
+    // Two bars and a launcher-sized panel, each with a card, text and a
+    // clock.
     let mut roots = Vec::new();
+    let mut clocks = Vec::new();
     for kind in [NodeKind::Bar, NodeKind::Bar, NodeKind::Panel] {
         let root = b.node(kind, None, vec![(Prop::Bg, tok("surface"))]);
         b.node(
@@ -314,26 +334,72 @@ fn a_crossfading_swap_is_under_five_milliseconds_of_work() {
                 ],
             );
         }
+        clocks.push(b.node(
+            NodeKind::Text,
+            Some(root),
+            vec![
+                (Prop::X, num(1000.0)),
+                (Prop::Y, num(8.0)),
+                (Prop::Text, text("12:00")),
+            ],
+        ));
         roots.push(root);
     }
     let mut r = renderer();
     assert!(r.apply(b.diff).is_empty());
     let sizes = [(2560, 36), (2560, 36), (1280, 960)];
-    let mut bufs: Vec<(SurfaceId, Buffer)> = Vec::new();
+    // Per surface: its buffers, the one it paints next, and which hold
+    // a frame.
+    let mut bufs: Vec<(SurfaceId, [Buffer; 2], usize, [bool; 2])> = Vec::new();
     for (i, (root, (w, h))) in roots.iter().zip(sizes).enumerate() {
         let id = SurfaceId(10 + i as u32);
         r.attach_surface(id, *root);
-        bufs.push((id, Buffer::new(w, h, Scale::ONE)));
+        bufs.push((
+            id,
+            [Buffer::new(w, h, Scale::ONE), Buffer::new(w, h, Scale::ONE)],
+            0,
+            [false, false],
+        ));
     }
-    let mut k = 0u32;
+    let ids: Vec<SurfaceId> = bufs.iter().map(|b| b.0).collect();
     let time = |k: u32| Duration::from_secs(1) + Duration::from_micros(16_667 * k as u64);
-    for (id, buf) in &mut bufs {
-        buf.paint_at(&mut r, *id, 0, time(0));
-    }
+    let mut k = 0u32;
+    // Paints every surface that wants a frame (`all`: every surface).
+    let mut paint = |r: &mut Renderer, k: u32, all: bool| {
+        for (id, b, next, held) in &mut bufs {
+            if !all && !r.wants_frame(*id) {
+                continue;
+            }
+            let i = *next;
+            // Alternating, a buffer holds the frame before last.
+            let age = match (held[i], double) {
+                (false, _) => 0,
+                (true, true) => 2,
+                (true, false) => 1,
+            };
+            b[i].paint_at(r, *id, age, time(k));
+            held[i] = true;
+            if double {
+                *next = 1 - i;
+            }
+        }
+    };
+    paint(&mut r, k, true);
+    k += 1;
+    paint(&mut r, k, true);
     let mut totals = Vec::new();
     let mut parts = Vec::new();
     let mut blends = Vec::new();
-    for round in 0..12 {
+    for round in 0..rounds {
+        // A clock tick on every surface before the swap: the buffer a
+        // swap's first frame lands in misses it when two alternate.
+        let mut d = SceneDiff::new();
+        for c in &clocks {
+            d.set(*c, Prop::Text, text(&format!("12:{:02}", round % 60)));
+        }
+        assert!(r.apply(d).is_empty());
+        k += 1;
+        paint(&mut r, k, true);
         let to = split_table(round % 2 == 1);
         let before = r.swap_crossfades();
         r.take_swap_work();
@@ -350,11 +416,9 @@ fn a_crossfading_swap_is_under_five_milliseconds_of_work() {
         );
         r.take_fade_blend_work();
         let mut frames = 0;
-        while bufs.iter().any(|(id, _)| r.wants_frame(*id)) {
+        while ids.iter().any(|id| r.wants_frame(*id)) {
             k += 1;
-            for (id, buf) in &mut bufs {
-                buf.paint_at(&mut r, *id, 1, time(k));
-            }
+            paint(&mut r, k, false);
             blends.push(r.take_fade_blend_work());
             frames += 1;
             assert!(frames < 600, "never settled");
@@ -363,25 +427,175 @@ fn a_crossfading_swap_is_under_five_milliseconds_of_work() {
         totals.push(apply + work);
         parts.push((apply, work, frames));
     }
-    let m = median(&totals);
-    let i = totals.iter().position(|t| *t == m).unwrap();
-    let (apply, work, frames) = parts[i];
-    let blend = median(&blends);
-    eprintln!(
-        "crossfading swap: median {m:?} (apply with snapshots {apply:?}, frames {work:?} over \
-         {frames} frames); blend per frame {blend:?}"
-    );
+    (totals, parts, blends)
+}
+
+#[test]
+fn a_crossfading_swap_is_under_five_milliseconds_of_work() {
     let gate = gate();
-    assert!(
-        m < gate,
-        "{m:?} of work, over {gate:?} (design.md: {BUDGET:?} optimised)"
-    );
-    // A per-byte loop runs some twenty times slower unoptimised: the
-    // blend is held to its budget in optimised builds only (CI).
-    if !cfg!(debug_assertions) {
+    for double in [false, true] {
+        let (totals, parts, blends) = crossfade_rounds(double, 12);
+        let m = median(&totals);
+        let i = totals.iter().position(|t| *t == m).unwrap();
+        let (apply, work, frames) = parts[i];
+        let blend = median(&blends);
+        let age = if double { 2 } else { 1 };
+        eprintln!(
+            "crossfading swap, buffers of age {age}: median {m:?}, worst {:?} (apply with \
+             snapshots {apply:?}, frames {work:?} over {frames} frames); blend per frame {blend:?}",
+            totals.iter().max().unwrap()
+        );
         assert!(
-            blend < BLEND_BUDGET,
-            "{blend:?} blending a frame, over {BLEND_BUDGET:?}"
+            m < gate,
+            "age {age}: {m:?} of work, over {gate:?} (design.md: {BUDGET:?} optimised)"
+        );
+        // A per-byte loop runs some twenty times slower unoptimised: the
+        // blend is held to its budget in optimised builds only (CI).
+        if !cfg!(debug_assertions) {
+            assert!(
+                blend < BLEND_BUDGET,
+                "{blend:?} blending a frame, over {BLEND_BUDGET:?}"
+            );
+        }
+    }
+}
+
+/// Light and dark tables of the default seed, both with
+/// `$motion.effects` at `spring(stiffness, 1)`.
+fn spring_tables(stiffness: f32) -> (TokenTable, TokenTable) {
+    let t = |dark: bool| {
+        let mut t = strand_theme::defaults::base_tokens();
+        strand_theme::from_seed(
+            hex(strand_theme::defaults::DEFAULT_SEED),
+            strand_theme::Options {
+                dark,
+                ..strand_theme::Options::default()
+            },
+        )
+        .insert_into(&mut t);
+        t.insert("font.ui", PropValue::Font(font(14.0)));
+        t.insert(
+            "motion.effects",
+            PropValue::Transition(Transition::of_spring(Spring::new(stiffness, 1.0).unwrap())),
+        );
+        t
+    };
+    (t(false), t(true))
+}
+
+/// The swap's work with `set { }` subtrees and slow colour springs: a
+/// panel with `scopes` subtrees, each `set { $surface:
+/// $surface.mix($accent, k) }` with its own `k` (each a scope the
+/// contrast check plays through), and text in each; light↔dark with
+/// `$motion.effects` at the design's `spring(1600, 1)` and at
+/// `spring(120, 1)` (about a second). What happens once per swap
+/// (logic's table aside: the render thread's apply, with its contrast
+/// play-through and any snapshots) is held to the 5 ms budget whatever
+/// the spring or the scopes; the work of each frame (the roots and the
+/// frame's token graph) is held to a twentieth of it per frame, so a
+/// swap along the design's springs stays under 5 ms in all and a slower
+/// spring costs the same per frame, over more frames (decisions.md).
+#[test]
+fn set_scopes_and_slow_springs_stay_within_the_budget() {
+    let tok = |p: &str| PropValue::Token(TokenExpr::path(p));
+    let per_frame = BUDGET / 20;
+    let gate_frame = if cfg!(debug_assertions) {
+        per_frame * 4
+    } else {
+        per_frame
+    };
+    let mut report = Vec::new();
+    for scopes in [0usize, 8, 32] {
+        for stiffness in [1600.0f32, 120.0] {
+            let (light, dark) = spring_tables(stiffness);
+            let mut b = Builder::default();
+            b.diff.set_tokens(light.clone(), Transition::Instant);
+            let root = b.node(NodeKind::Panel, None, vec![(Prop::Bg, tok("surface"))]);
+            for i in 0..scopes {
+                let mut set = TokenTable::default();
+                let k = 0.04 + 0.5 * i as f32 / 32.0;
+                set.insert(
+                    "surface",
+                    PropValue::Token(TokenExpr::path("surface").call(
+                        TokenMethod::Mix,
+                        vec![TokenExpr::path("accent"), TokenExpr::value(num(k))],
+                    )),
+                );
+                let sub = b.node(
+                    NodeKind::Box,
+                    Some(root),
+                    vec![
+                        (Prop::X, num(8.0 + 40.0 * (i % 16) as f32)),
+                        (Prop::Y, num(8.0 + 40.0 * (i / 16) as f32)),
+                        (Prop::Width, num(36.0)),
+                        (Prop::Height, num(36.0)),
+                        (Prop::Tokens, PropValue::Tokens(Box::new(set))),
+                        (Prop::Bg, tok("surface")),
+                    ],
+                );
+                b.node(
+                    NodeKind::Text,
+                    Some(sub),
+                    vec![(Prop::Text, text("12")), (Prop::Color, tok("fg"))],
+                );
+            }
+            let mut r = renderer();
+            assert!(r.apply(b.diff).is_empty());
+            r.attach_surface(S, root);
+            let mut buf = Buffer::new(680, 96, Scale::ONE);
+            let mut k = 0u32;
+            let time = |k: u32| Duration::from_secs(1) + Duration::from_micros(16_667 * k as u64);
+            buf.paint_at(&mut r, S, 0, time(k));
+            let mut applies = Vec::new();
+            let mut frame_work = Vec::new();
+            let mut frame_counts = Vec::new();
+            for round in 0..8 {
+                let to = if round % 2 == 0 { &dark } else { &light };
+                let mut d = SceneDiff::new();
+                d.set_tokens(to.clone(), Transition::Default);
+                r.take_swap_work();
+                let started = Instant::now();
+                assert!(r.apply(d).is_empty());
+                applies.push(started.elapsed());
+                r.take_swap_work();
+                let mut frames = 0u32;
+                while r.wants_frame(S) {
+                    k += 1;
+                    buf.paint_at(&mut r, S, 1, time(k));
+                    frames += 1;
+                    assert!(frames < 1200, "never settled");
+                }
+                frame_work.push(r.take_swap_work() / frames.max(1));
+                frame_counts.push(frames);
+            }
+            let apply = median(&applies);
+            let each = median(&frame_work);
+            let frames = frame_counts[frame_counts.len() / 2];
+            eprintln!(
+                "{scopes} scopes, spring({stiffness}, 1): apply {apply:?} (worst {:?}), \
+                 {each:?} per frame over {frames} frames ({} crossfades)",
+                applies.iter().max().unwrap(),
+                r.swap_crossfades()
+            );
+            report.push((scopes, stiffness, apply, each));
+        }
+    }
+    // Unoptimised, evaluating tokens in `set { }` scopes is some six
+    // times slower (the rest about four): a debug build is held to
+    // eight times the budget here, still failing on a change of shape.
+    let gate = if cfg!(debug_assertions) {
+        BUDGET * 8
+    } else {
+        BUDGET
+    };
+    for (scopes, stiffness, apply, each) in report {
+        assert!(
+            apply < gate,
+            "{scopes} scopes, spring({stiffness}, 1): apply {apply:?}, over {gate:?}"
+        );
+        assert!(
+            each < gate_frame,
+            "{scopes} scopes, spring({stiffness}, 1): {each:?} per frame, over {gate_frame:?}"
         );
     }
 }

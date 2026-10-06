@@ -209,13 +209,20 @@ fn oklab_l(c: Color) -> f64 {
 /// the lowest ratio of a text token over its opaque backgrounds, for
 /// pairs some text can meet at 3:1 at both ends of the swap.
 fn worst_pair(t: &TokenTable, readable: &[(String, Vec<String>)]) -> (f64, String) {
+    worst_in(&[t], readable)
+}
+
+/// [`worst_pair`] in the scope `levels` (the global table, then the
+/// `set { }` overrides).
+fn worst_in(levels: &[&TokenTable], readable: &[(String, Vec<String>)]) -> (f64, String) {
+    let scope = TokenScope::new(levels);
     let mut worst = (f64::INFINITY, String::new());
     for (text, bgs) in readable {
-        let Some(PropValue::Color(fg)) = t.lookup(text) else {
+        let Some(PropValue::Color(fg)) = scope.lookup(text) else {
             panic!("{text}")
         };
         for b in bgs.iter().filter(|b| *b != text) {
-            if let Some(PropValue::Color(bg)) = t.lookup(b)
+            if let Some(PropValue::Color(bg)) = scope.lookup(b)
                 && bg.a >= 1.0
             {
                 let r = fg.contrast(bg);
@@ -230,16 +237,24 @@ fn worst_pair(t: &TokenTable, readable: &[(String, Vec<String>)]) -> (f64, Strin
 
 /// The pairs of `to` some text can meet at 3:1 in `from` and in `to`.
 fn readable_pairs(from: &TokenTable, to: &TokenTable) -> Vec<(String, Vec<String>)> {
-    let opaque = |t: &TokenTable, text: &str, bgs: &[String]| -> Vec<Color> {
+    readable_in(&[from], &[to])
+}
+
+/// [`readable_pairs`] in scopes (the global table, then the `set { }`
+/// overrides).
+fn readable_in(from: &[&TokenTable], to: &[&TokenTable]) -> Vec<(String, Vec<String>)> {
+    let opaque = |levels: &[&TokenTable], text: &str, bgs: &[String]| -> Vec<Color> {
+        let scope = TokenScope::new(levels);
         bgs.iter()
             .filter(|b| *b != text)
-            .filter_map(|b| match t.lookup(b) {
+            .filter_map(|b| match scope.lookup(b) {
                 Some(PropValue::Color(c)) if c.a >= 1.0 => Some(c),
                 _ => None,
             })
             .collect()
     };
-    to.contrast
+    to[0]
+        .contrast
         .iter()
         .filter(|(text, bgs)| {
             [from, to]
@@ -477,23 +492,52 @@ fn random_partial(rng: &mut Rng) -> Palette {
         .fill()
 }
 
-/// Plays one swap through frame by frame at `hz`; returns the worst
-/// ratio of a readable declared pair over every frame that sprang (a
-/// crossfade's frames show snapshots, judged at their ends) and whether
-/// it crossfaded.
-fn play(from: &Palette, to: &Palette, hz: u32) -> (f64, String, bool) {
-    let (a, b) = (table(from), table(to));
+/// How one swap played.
+struct Played {
+    /// The worst ratio of a readable declared pair over every frame that
+    /// sprang, in the global scope and in [`scene`]'s `set { }` subtree,
+    /// and where.
+    worst: f64,
+    at: String,
+    /// Every surface crossfaded (the table snapped).
+    faded: bool,
+    /// The subtree's surface crossfaded while the roots sprang (its
+    /// pairs are the new table's in every frame).
+    held: bool,
+}
+
+/// Plays one swap through frame by frame at `hz` on [`scene`] (whose
+/// subtree is `set { $surface: $surface.mix($accent, 0.85) }`): the
+/// worst ratio of a declared pair readable at both ends, over every
+/// frame that sprang, globally and under the subtree's overrides (a
+/// crossfade's frames show snapshots, judged at their ends).
+fn play_tables(a: TokenTable, b: TokenTable, hz: u32) -> Played {
+    let set = subtree_set();
     let readable = readable_pairs(&a, &b);
+    let sub_readable = readable_in(&[&a, &set], &[&b, &set]);
     // A small scene: the pairs live in the table, not the pixels.
     let mut st = Stage::new(a.clone(), 48, 16);
     let before = st.r.swap_crossfades();
     st.swap(b.clone(), Transition::Default);
-    let faded = st.r.swap_crossfades() > before;
-    let mut worst = worst_pair(st.tokens(), &readable);
+    let held = !st.r.swap_held().is_empty();
+    let faded = st.r.swap_crossfades() > before && !held;
+    let judge = |t: &TokenTable| -> (f64, String) {
+        let g = worst_pair(t, &readable);
+        if held {
+            return g;
+        }
+        let s = worst_in(&[t, &set], &sub_readable);
+        if s.0 < g.0 {
+            (s.0, format!("set {{ }}: {}", s.1))
+        } else {
+            g
+        }
+    };
+    let mut worst = judge(st.tokens());
     let mut k = 1;
     while st.r.wants_frame(S) {
         st.paint(at(k, hz));
-        let w = worst_pair(st.tokens(), &readable);
+        let w = judge(st.tokens());
         if w.0 < worst.0 {
             worst = (w.0, format!("frame {k}: {}", w.1));
         }
@@ -501,21 +545,109 @@ fn play(from: &Palette, to: &Palette, hz: u32) -> (f64, String, bool) {
         assert!(k < 20 * hz, "never settled");
     }
     assert_eq!(st.tokens(), &b);
-    (worst.0, worst.1, faded)
+    Played {
+        worst: worst.0,
+        at: worst.1,
+        faded,
+        held,
+    }
+}
+
+fn play(from: &Palette, to: &Palette, hz: u32) -> Played {
+    play_tables(table(from), table(to), hz)
+}
+
+/// Palettes made the way `material(image:)` makes them: synthetic
+/// wallpapers (random bands of colour, mostly one) quantised by
+/// strand-theme's quantiser, light and dark.
+fn wallpaper_palettes(rng: &mut Rng, n: usize) -> Vec<(Palette, Palette)> {
+    let dir = std::env::temp_dir().join(format!("strand-swap-walls-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut q = strand_theme::Quantiser::new(None).unwrap();
+    let mut out = Vec::new();
+    for i in 0..n {
+        let (w, h) = (160u32, 90u32);
+        let bands: Vec<[u8; 3]> = (0..3)
+            .map(|_| {
+                let [r, g, b, _] = rng.color().to_rgba8();
+                [r, g, b]
+            })
+            .collect();
+        let mut rgb = Vec::with_capacity((w * h * 3) as usize);
+        for _ in 0..h {
+            for x in 0..w {
+                let band = if x < w * 2 / 3 {
+                    0
+                } else if x < w * 5 / 6 {
+                    1
+                } else {
+                    2
+                };
+                rgb.extend_from_slice(&bands[band]);
+            }
+        }
+        let path = dir.join(format!("wall{i}.png"));
+        let file = std::fs::File::create(&path).unwrap();
+        let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgb);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header().unwrap().write_image_data(&rgb).unwrap();
+        q.lookup(&path);
+        assert!(q.wait(Duration::from_secs(30)));
+        let strand_theme::Lookup::Ready(seed) = q.lookup(&path) else {
+            panic!("wallpaper {i} not quantised")
+        };
+        let palette = |dark: bool| {
+            from_seed(
+                seed,
+                Options {
+                    dark,
+                    ..Options::default()
+                },
+            )
+            .with_source("wallpaper")
+        };
+        out.push((palette(false), palette(true)));
+    }
+    let _ = std::fs::remove_dir_all(dir);
+    out
 }
 
 /// The M2 gate: contrast never drops below 3:1. Every frame of light→dark,
 /// dark→light and wallpaper→mocha swaps over random palettes (seeds,
-/// variants, contrast levels, Catppuccin flavours, partial imports), at
-/// 60 and 144 Hz, keeps every declared pair that is readable at both
-/// ends at 3:1 or better; a swap where no spring could crossfades
-/// instead (its frames are the two readable ends, blended).
+/// variants, contrast levels, Catppuccin flavours, partial imports, and
+/// palettes quantised from synthetic wallpapers), at 60 and 144 Hz, keeps
+/// every declared pair that is readable at both ends at 3:1 or better,
+/// in the global scope and in a `set { }` subtree; a swap where no
+/// spring could crossfades instead (its frames are the two readable
+/// ends, blended: below 3:1 by construction mid-fade, so exempt), on
+/// every surface or, for the subtree, on its surface alone.
 #[test]
 fn contrast_never_drops_below_three_to_one_during_swaps() {
     let mut rng = Rng(0x5eed_cafe_f00d_d00d);
     let flavours = ["mocha", "macchiato", "frappe", "latte"];
     let mut sprang = 0;
     let mut faded = 0;
+    let mut held = 0;
+    let mut tally = |name: &str, round: u32, hz: u32, p: Played| {
+        if p.faded {
+            eprintln!("round {round} {name}: crossfaded");
+            faded += 1;
+            return;
+        }
+        if p.held {
+            eprintln!("round {round} {name}: the subtree crossfaded");
+            held += 1;
+        }
+        sprang += 1;
+        assert!(
+            p.worst >= MIN_CONTRAST - 1e-6,
+            "round {round} {name} at {hz} Hz: {:.3}:1 ({})",
+            p.worst,
+            p.at
+        );
+    };
     let rounds: u32 = if cfg!(debug_assertions) { 12 } else { 60 };
     for round in 0..rounds {
         let hz = if round.is_multiple_of(3) { 144 } else { 60 };
@@ -536,20 +668,26 @@ fn contrast_never_drops_below_three_to_one_during_swaps() {
             ("partial→material", &partial, &other),
             ("material→partial", &other, &partial),
         ] {
-            let (worst, at, fade) = play(from, to, hz);
-            if fade {
-                eprintln!("round {round} {name}: crossfaded");
-                faded += 1;
-            } else {
-                sprang += 1;
-                assert!(
-                    worst >= MIN_CONTRAST - 1e-6,
-                    "round {round} {name} at {hz} Hz: {worst:.3}:1 ({at})"
-                );
-            }
+            tally(name, round, hz, play(from, to, hz));
         }
     }
-    eprintln!("{sprang} swaps sprang, {faded} crossfaded");
+    // Wallpapers through the real quantiser (`material(image:)`).
+    let walls = wallpaper_palettes(&mut rng, if cfg!(debug_assertions) { 3 } else { 8 });
+    for (round, (light, dark)) in walls.iter().enumerate() {
+        let round = round as u32;
+        let hz = if round.is_multiple_of(2) { 144 } else { 60 };
+        let flavour = flavours[round as usize % flavours.len()];
+        let mocha = import(&format!("catppuccin:{flavour}"), None).unwrap();
+        for (name, from, to) in [
+            ("image wallpaper (light)→mocha", light, &mocha),
+            ("image wallpaper (dark)→mocha", dark, &mocha),
+            ("mocha→image wallpaper (light)", &mocha, light),
+            ("image wallpaper light→dark", light, dark),
+        ] {
+            tally(name, round, hz, play(from, to, hz));
+        }
+    }
+    eprintln!("{sprang} swaps sprang ({held} with the subtree crossfading), {faded} crossfaded");
     assert!(sprang > faded * 4, "{sprang} sprang, {faded} crossfaded");
 }
 
@@ -887,14 +1025,14 @@ fn two_surfaces_on_offset_clocks_swap_at_their_own_times() {
         easing: Easing::Linear,
     };
     let (a, b) = split_tables();
-    // One surface alone at the earlier clock, its last frame before the
-    // swap shown when the later clock's was (where both start from).
+    // One surface alone at the earlier clock (each surface's fade starts
+    // from its own last frame).
     let (diff, root) = scene(a.clone());
     let mut r = renderer();
     assert!(r.apply(diff).is_empty());
     r.attach_surface(S, root);
     let mut alone = Buffer::new(320, 72, Scale::ONE);
-    alone.paint_at(&mut r, S, 0, T0 + off);
+    alone.paint_at(&mut r, S, 0, T0);
     let mut d = SceneDiff::new();
     d.set_tokens(b.clone(), how.clone());
     assert!(r.apply(d).is_empty());
@@ -1092,4 +1230,299 @@ fn a_surface_too_large_to_snapshot_snaps() {
             "row {y}"
         );
     }
+}
+
+/// The largest difference of one channel between two frames.
+fn max_step(a: &[u8], b: &[u8]) -> u8 {
+    a.iter()
+        .zip(b)
+        .map(|(x, y)| x.abs_diff(*y))
+        .max()
+        .unwrap_or(0)
+}
+
+/// [`split_tables`]' `b`, its two surfaces swapped: from `b`, no
+/// spring keeps `$fg` readable over both either.
+fn split_swapped() -> TokenTable {
+    let (_, mut c) = split_tables();
+    c.insert("surface", PropValue::Color(Color::WHITE));
+    c.insert("surface.split", PropValue::Color(Color::BLACK));
+    c
+}
+
+/// A crossfade landing while another runs fades on from the blend on
+/// screen: no frame jumps further than a crossfade's own steps (the old
+/// fade's snapshot is not kept under a new frame at the old progress),
+/// and it ends on the newest table's frame exactly.
+#[test]
+fn a_crossfade_landing_mid_crossfade_fades_on_from_what_shows() {
+    let (a, b) = split_tables();
+    let c = split_swapped();
+    // The steps of a whole crossfade from `b` to `c`.
+    let mut st = Stage::new(b.clone(), 320, 72);
+    st.swap(c.clone(), Transition::Default);
+    let mut prev = st.buf.pixels.clone();
+    let mut whole_step = 0;
+    let mut k = 1;
+    while st.r.wants_frame(S) {
+        st.paint(frame(k));
+        whole_step = whole_step.max(max_step(&prev, &st.buf.pixels));
+        prev = st.buf.pixels.clone();
+        k += 1;
+    }
+    let mut st = Stage::new(a, 320, 72);
+    st.swap(b, Transition::Default);
+    assert_eq!(st.r.swap_crossfades(), 1);
+    let mut prev = st.buf.pixels.clone();
+    let mut fade_step = 0;
+    for k in 1..=3 {
+        st.paint(frame(k));
+        fade_step = fade_step.max(max_step(&prev, &st.buf.pixels));
+        prev = st.buf.pixels.clone();
+    }
+    assert!(fade_step > 8, "the first fade moves ({fade_step})");
+    st.swap(c.clone(), Transition::Default);
+    assert_eq!(st.r.swap_crossfades(), 2, "the second swap crossfades too");
+    let most = fade_step.max(whole_step);
+    let mut k = 4;
+    while st.r.wants_frame(S) {
+        st.paint(frame(k));
+        let step = max_step(&prev, &st.buf.pixels);
+        // Its first frame barely moves from the blend that showed.
+        let bound = if k == 4 { fade_step } else { most };
+        assert!(
+            step <= bound + 2,
+            "frame {k}: jumps {step}, a crossfade steps at most {bound}"
+        );
+        prev = st.buf.pixels.clone();
+        k += 1;
+        assert!(k < 120, "never settled");
+    }
+    let mut fresh = Stage::new(c, 320, 72);
+    fresh.paint(frame(1));
+    assert_eq!(st.buf.pixels, fresh.buf.pixels, "ends on the new frame");
+    assert!(!st.r.swapping());
+}
+
+/// A surface that stops painting mid-crossfade (its output asleep)
+/// neither keeps the swap running nor spoils the next crossfade: once
+/// it has painted nothing for the exit stall `swapping()` is false, and
+/// a later crossfade still blends on the surface that paints.
+#[test]
+fn a_surface_that_stops_painting_does_not_hold_up_later_crossfades() {
+    const T: SurfaceId = SurfaceId(2);
+    let stall = Duration::from_millis(60);
+    let (a, b) = split_tables();
+    let (diff, root) = scene(a.clone());
+    let mut r = renderer();
+    r.set_exit_stall(stall);
+    assert!(r.apply(diff).is_empty());
+    r.attach_surface(S, root);
+    r.attach_surface(T, root);
+    let mut one = Buffer::new(320, 72, Scale::ONE);
+    let mut two = Buffer::new(320, 72, Scale::ONE);
+    one.paint_at(&mut r, S, 0, T0);
+    two.paint_at(&mut r, T, 0, T0);
+    let swap = |r: &mut Renderer, t: &TokenTable| {
+        let mut d = SceneDiff::new();
+        d.set_tokens(t.clone(), Transition::Default);
+        assert!(r.apply(d).is_empty());
+    };
+    swap(&mut r, &b);
+    assert_eq!(r.swap_crossfades(), 1);
+    // Only S paints.
+    let mut k = 1;
+    while r.wants_frame(S) {
+        one.paint_at(&mut r, S, 1, frame(k));
+        k += 1;
+        assert!(k < 120, "never settled");
+    }
+    std::thread::sleep(stall + Duration::from_millis(20));
+    assert!(!r.swapping(), "T painted nothing for the stall");
+    // The next crossfade blends on S from its first frame.
+    let old = one.pixels.clone();
+    swap(&mut r, &a);
+    // From b, a is reached by a spring; a third table needs a fade.
+    let c = split_swapped();
+    swap(&mut r, &c);
+    assert!(r.swap_crossfades() >= 2, "{}", r.swap_crossfades());
+    let mut fresh = Stage::new(c.clone(), 320, 72);
+    fresh.paint(frame(1));
+    let mut blended = 0;
+    while r.wants_frame(S) {
+        one.paint_at(&mut r, S, 1, frame(k));
+        if one.pixels != fresh.buf.pixels && one.pixels != old {
+            blended += 1;
+        }
+        k += 1;
+        assert!(k < 240, "never settled");
+    }
+    assert!(blended > 4, "{blended} blended frames on S");
+    assert_eq!(one.pixels, fresh.buf.pixels);
+    std::thread::sleep(stall + Duration::from_millis(20));
+    assert!(!r.swapping(), "T's new snapshot goes too");
+}
+
+/// A snapshot taken into a buffer two frames old (two buffers in turn)
+/// is the frame on screen: the buffer's copy with the last frame's
+/// change drawn again, the same pixels as from a buffer one frame old.
+#[test]
+fn a_snapshot_from_an_older_buffer_matches_one_from_the_last() {
+    let (a, b) = split_tables();
+    let run = |double: bool| -> Vec<Vec<u8>> {
+        let (mut diff, root) = scene(a.clone());
+        // A clock whose text changes in the frame before the swap.
+        let clock = NodeId::new(900, 0);
+        diff.create(clock, NodeKind::Text, Some(root), u32::MAX);
+        diff.set(clock, Prop::X, num(16.0));
+        diff.set(clock, Prop::Y, num(52.0));
+        diff.set(clock, Prop::Text, text("12:59"));
+        let mut r = renderer();
+        assert!(r.apply(diff).is_empty());
+        r.attach_surface(S, root);
+        let mut bufs = [
+            Buffer::new(320, 72, Scale::ONE),
+            Buffer::new(320, 72, Scale::ONE),
+        ];
+        let mut ages = [0u8, 0u8];
+        let mut k = 0u32;
+        let mut paint = |r: &mut Renderer, k: u32| -> Vec<u8> {
+            let i = if double { k as usize % 2 } else { 0 };
+            let age = ages[i];
+            bufs[i].paint_at(r, S, age, frame(k));
+            ages[i] = if double { 2 } else { 1 };
+            if double {
+                ages[1 - i] = if ages[1 - i] == 0 { 0 } else { 2 };
+            }
+            bufs[i].pixels.clone()
+        };
+        paint(&mut r, k);
+        k += 1;
+        paint(&mut r, k);
+        let mut d = SceneDiff::new();
+        d.set(clock, Prop::Text, text("13:00"));
+        assert!(r.apply(d).is_empty());
+        k += 1;
+        paint(&mut r, k);
+        let mut d = SceneDiff::new();
+        d.set_tokens(b.clone(), Transition::Default);
+        assert!(r.apply(d).is_empty());
+        assert_eq!(r.swap_crossfades(), 1);
+        let mut out = Vec::new();
+        for _ in 0..4 {
+            k += 1;
+            out.push(paint(&mut r, k));
+        }
+        out
+    };
+    let single = run(false);
+    let double = run(true);
+    for (i, (s, d)) in single.iter().zip(&double).enumerate() {
+        assert!(s == d, "frame {i} of the fade differs");
+    }
+}
+
+/// The global scope springs while a `set { }` scope under one surface
+/// cannot: only that surface crossfades (shown the new table at once,
+/// from its snapshot), the other one springs, and both end on the new
+/// table exactly.
+#[test]
+fn only_the_surfaces_drawing_an_unreadable_subtree_crossfade() {
+    const SUB: SurfaceId = SurfaceId(2);
+    let grey = Color::from_oklch(Oklch {
+        l: 0.6,
+        c: 0.0,
+        h: 0.0,
+        alpha: 1.0,
+    });
+    // As `a_subtree_that_a_spring_leaves_unreadable_crossfades`.
+    let mut a = table(&material(seed(), false));
+    let mut b = a.clone();
+    for t in [&mut a, &mut b] {
+        t.insert_contrast("fg", vec!["base".into(), "panel".into()]);
+    }
+    for (path, ca, cb) in [
+        ("base", grey, Color::BLACK),
+        ("panel", grey, Color::BLACK),
+        ("ink", grey, Color::WHITE),
+    ] {
+        a.insert(path, PropValue::Color(ca));
+        b.insert(path, PropValue::Color(cb));
+    }
+    let mut set = TokenTable::default();
+    set.insert("panel", tok("ink"));
+    // Two roots: a plain bar, and one drawing the subtree.
+    let build = |t: &TokenTable| {
+        let mut bl = Builder::default();
+        bl.diff.set_tokens(t.clone(), Transition::Instant);
+        let plain = bl.node(NodeKind::Bar, None, vec![(Prop::Bg, tok("base"))]);
+        bl.node(
+            NodeKind::Text,
+            Some(plain),
+            vec![(Prop::Text, text("global"))],
+        );
+        let other = bl.node(NodeKind::Panel, None, vec![(Prop::Bg, tok("base"))]);
+        let sub = bl.node(
+            NodeKind::Box,
+            Some(other),
+            vec![
+                (Prop::Y, num(30.0)),
+                (Prop::Width, num(100.0)),
+                (Prop::Height, num(30.0)),
+                (Prop::Tokens, PropValue::Tokens(Box::new(set.clone()))),
+                (Prop::Bg, tok("panel")),
+            ],
+        );
+        bl.node(NodeKind::Text, Some(sub), vec![(Prop::Text, text("sub"))]);
+        let mut r = renderer();
+        assert!(r.apply(bl.diff).is_empty());
+        r.attach_surface(S, plain);
+        r.attach_surface(SUB, other);
+        r
+    };
+    let mut r = build(&a);
+    let mut bar = Buffer::new(160, 32, Scale::ONE);
+    let mut panel = Buffer::new(160, 72, Scale::ONE);
+    bar.paint_at(&mut r, S, 0, T0);
+    panel.paint_at(&mut r, SUB, 0, T0);
+    let old = panel.pixels.clone();
+    let mut d = SceneDiff::new();
+    d.set_tokens(b.clone(), Transition::Default);
+    assert!(r.apply(d).is_empty());
+    assert_eq!(r.swap_crossfades(), 1);
+    assert_eq!(r.swap_held(), vec![SUB], "only the subtree's surface");
+    assert!(r.swapping());
+    // The ends.
+    let mut end = build(&b);
+    let mut bar_end = Buffer::new(160, 32, Scale::ONE);
+    let mut panel_end = Buffer::new(160, 72, Scale::ONE);
+    bar_end.paint_at(&mut end, S, 0, frame(1));
+    panel_end.paint_at(&mut end, SUB, 0, frame(1));
+    let mut k = 1;
+    let mut sprang = 0;
+    while r.wants_frame(S) || r.wants_frame(SUB) {
+        bar.paint_at(&mut r, S, 1, frame(k));
+        panel.paint_at(&mut r, SUB, 1, frame(k));
+        // The bar springs: its background is between grey and black,
+        // and neither.
+        let bg = bar.px(150, 2);
+        if bg != bar_end.px(150, 2) {
+            sprang += 1;
+        }
+        // The panel crossfades: each pixel lies between its old frame and
+        // the new table's (no springing colours there).
+        for ((p, o), n) in panel.pixels.iter().zip(&old).zip(&panel_end.pixels) {
+            assert!(
+                *p >= (*o).min(*n).saturating_sub(1) && *p <= (*o).max(*n).saturating_add(1),
+                "frame {k}: the panel shows a springing colour"
+            );
+        }
+        k += 1;
+        assert!(k < 120, "never settled");
+    }
+    assert!(sprang > 4, "{sprang} springing bar frames");
+    assert_eq!(bar.pixels, bar_end.pixels);
+    assert_eq!(panel.pixels, panel_end.pixels);
+    assert_eq!(r.tree().tokens, b);
+    assert!(r.swap_held().is_empty());
 }
