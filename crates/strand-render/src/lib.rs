@@ -15,6 +15,7 @@
 //! diffs the records against the previous frame to get exact damage, widens
 //! it by the buffer's age and rasterises only inside it.
 
+mod anim;
 mod flatten;
 pub mod input;
 mod layout;

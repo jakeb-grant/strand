@@ -277,6 +277,14 @@ impl<'a> TokenScope<'a> {
             {
                 t
             }
+            // A shell with no `motion` tokens still animates with the
+            // design's springs (decisions.md, wave3-pixels).
+            None => match path {
+                "motion.spatial" => Transition::of_spring(crate::motion::SPATIAL),
+                "motion.effects" => Transition::of_spring(crate::motion::EFFECTS),
+                "motion.bouncy" => Transition::of_spring(crate::motion::BOUNCY),
+                _ => Transition::Instant,
+            },
             _ => Transition::Instant,
         }
     }
@@ -658,10 +666,11 @@ mod tests {
             s.transition(&Transition::Token("motion.bouncy".into()), Prop::Width),
             bouncy
         );
-        // No $motion.effects token, fonts snap, unknown tokens snap.
+        // No $motion.effects token: the design's spring; fonts snap,
+        // unknown tokens snap.
         assert_eq!(
             s.transition(&Transition::Default, Prop::Bg),
-            Transition::Instant
+            Transition::of_spring(crate::motion::EFFECTS)
         );
         assert_eq!(
             s.transition(&Transition::Default, Prop::Font),

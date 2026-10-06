@@ -18,6 +18,7 @@ use strand_scene::{
 use strand_text::{Ellipsis, TextAlign, TextLayout, TextSpan, TextStyle};
 use vello_cpu::kurbo::{self, BezPath, RoundedRect, RoundedRectRadii, Shape};
 
+use crate::anim::Animator;
 use crate::layout::Boxes;
 use crate::tree::{Node, SceneTree};
 
@@ -117,6 +118,10 @@ pub enum Item {
     PopClip,
     PushOpacity(f32),
     PopOpacity,
+    /// Draws the group under this transform (physical pixels, from the
+    /// surface's origin): `scale` and `rotate` about the node's centre.
+    PushTransform(kurbo::Affine),
+    PopTransform,
     /// A blurred rounded rect, clipped to outside the casting box.
     Shadow {
         rect: kurbo::Rect,
@@ -252,6 +257,8 @@ struct Inherited<'a> {
     clip: Rect,
     /// Accumulated paint offset (`x`, `y`) of the ancestors, logical.
     offset: (f32, f32),
+    /// Inside a subtree playing its exit pose: drawn, never hit.
+    inert: bool,
 }
 
 /// Flattens the subtree under `root` for a surface of `size` at `scale`.
@@ -263,6 +270,7 @@ pub fn flatten(
     scale: Scale,
     layouts: &HashMap<NodeId, Vec<Shaped>>,
     boxes: &Boxes,
+    anim: &mut Animator,
 ) -> Flattened {
     let mut out = Flattened::default();
     let Some(node) = tree.get(root) else {
@@ -276,6 +284,8 @@ pub fn flatten(
         surface: full,
         layouts,
         boxes,
+        anim,
+        xform: kurbo::Affine::IDENTITY,
         out: &mut out,
     };
     let mut inh = Inherited {
@@ -285,6 +295,7 @@ pub fn flatten(
         ctx: 0,
         clip: full,
         offset: (0.0, 0.0),
+        inert: false,
     };
     // A surface nested in another (a popup in a bar) inherits tokens,
     // colour and font from its ancestors, though it paints on its own.
@@ -312,7 +323,19 @@ struct Flattener<'a> {
     surface: Rect,
     layouts: &'a HashMap<NodeId, Vec<Shaped>>,
     boxes: &'a Boxes,
+    anim: &'a mut Animator,
+    /// The transform of the group being flattened (identity outside any
+    /// `scale` or `rotate`).
+    xform: kurbo::Affine,
     out: &'a mut Flattened,
+}
+
+/// The pixels `r` covers once drawn under `a`.
+fn map_rect(a: kurbo::Affine, r: Rect) -> Rect {
+    if a == kurbo::Affine::IDENTITY || r.is_empty() {
+        return r;
+    }
+    cover(a.transform_rect_bbox(kurbo_rect(r))).inflate(1)
 }
 
 /// Applies a node's inherited props (`tokens`, `color`, `font`, `weight`)
@@ -672,6 +695,13 @@ fn hash_item(h: &mut impl Hasher, item: &Item) {
             hash_f32(h, *o);
         }
         Item::PopOpacity => 3u8.hash(h),
+        Item::PushTransform(a) => {
+            8u8.hash(h);
+            for v in a.as_coeffs() {
+                v.to_bits().hash(h);
+            }
+        }
+        Item::PopTransform => 9u8.hash(h),
         Item::Shadow {
             rect,
             radii,
@@ -801,6 +831,7 @@ pub fn natural_texts(
         ctx: 0,
         clip: Rect::default(),
         offset: (0.0, 0.0),
+        inert: false,
     };
     let mut ancestors = Vec::new();
     let mut up = node.parent;
@@ -849,6 +880,7 @@ pub fn natural_texts(
 
 impl<'a> Flattener<'a> {
     fn push(&mut self, item: Item, bounds: Rect, sig: &mut DefaultHasher, ink: &mut Rect) {
+        let bounds = map_rect(self.xform, bounds);
         hash_item(sig, &item);
         *ink = ink.union(bounds);
         self.out.items.push(DisplayItem { item, bounds });
@@ -879,12 +911,26 @@ impl<'a> Flattener<'a> {
             tokens.push(t);
         }
         let scope = TokenScope::new(&tokens);
-        let props: Vec<(Prop, Cow<'a, PropValue>)> = node
+        let mut props: Vec<(Prop, Cow<'a, PropValue>)> = node
             .props
             .iter()
             .filter(|e| e.prop != Prop::Tokens)
             .filter_map(|e| scope.resolve(&e.value).map(|v| (e.prop, v)))
             .collect();
+        // A node layout did not place (a list row out of view) draws
+        // nothing.
+        let laid = if root {
+            parent
+        } else {
+            match self.boxes.rects.get(&node.id) {
+                Some(r) => *r,
+                None => return Rect::default(),
+            }
+        };
+        // Springs: this frame's values of the props in flight.
+        self.anim
+            .paint(node, &mut props, &scope, inh.color, Some(laid));
+        let inert = inh.inert || self.tree.is_ghost(node.id);
         let get = |p: Prop| props.iter().find(|(q, _)| *q == p).map(|(_, v)| v.as_ref());
 
         // Inherited props.
@@ -901,20 +947,12 @@ impl<'a> Flattener<'a> {
         }
 
         // Geometry: the laid-out box, moved by the paint offsets (`x`,
-        // `y`) of this node and its ancestors. A node layout did not place
-        // (a list row out of view) draws nothing.
-        let laid = if root {
-            parent
-        } else {
-            match self.boxes.rects.get(&node.id) {
-                Some(r) => *r,
-                None => return Rect::default(),
-            }
-        };
-        // A percentage is of the parent's box, as CSS insets are.
+        // `y`, and a FLIP glide) of this node and its ancestors. A
+        // percentage is of the parent's box, as CSS insets are.
+        let glide = self.anim.offset(node.id);
         let own = (
-            length(get(Prop::X), parent.w).unwrap_or(0.0),
-            length(get(Prop::Y), parent.h).unwrap_or(0.0),
+            length(get(Prop::X), parent.w).unwrap_or(0.0) + glide.0,
+            length(get(Prop::Y), parent.h).unwrap_or(0.0) + glide.1,
         );
         let offset = (inh.offset.0 + own.0, inh.offset.1 + own.1);
         let rect = LogicalRect::new(
@@ -995,9 +1033,30 @@ impl<'a> Flattener<'a> {
             return Rect::default();
         }
 
+        // `scale` and `rotate` about the box's centre: the subtree is drawn
+        // under a transform, and its damage is the transformed bounds.
+        let zoom = number(get(Prop::Scale)).unwrap_or(1.0).clamp(0.0, 1000.0);
+        if zoom <= 0.0 {
+            return Rect::default();
+        }
+        let turn = number(get(Prop::Rotate)).unwrap_or(0.0) % 360.0;
+        let saved = self.xform;
+        let transform_group = (zoom != 1.0 || turn != 0.0).then(|| {
+            let c = frame.center();
+            let local = kurbo::Affine::translate(c.to_vec2())
+                * kurbo::Affine::rotate((turn as f64).to_radians())
+                * kurbo::Affine::scale(zoom as f64)
+                * kurbo::Affine::translate(-c.to_vec2());
+            self.xform = saved * local;
+            self.marker(Item::PushTransform(self.xform))
+        });
+
         let mut sig = DefaultHasher::new();
         (inh.ctx, node.kind, node.epoch).hash(&mut sig);
         hash_f32(&mut sig, opacity);
+        for v in self.xform.as_coeffs() {
+            v.to_bits().hash(&mut sig);
+        }
         let mut ink = Rect::default();
 
         let opacity_group = (opacity < 1.0).then(|| self.marker(Item::PushOpacity(opacity)));
@@ -1018,7 +1077,12 @@ impl<'a> Flattener<'a> {
         }
         // Background.
         if has_area && let Some(paint) = paint_of(get(Prop::Bg)) {
-            if root && opacity >= 1.0 && opaque_paint(&paint) {
+            if root
+                && opacity >= 1.0
+                && saved == self.xform
+                && self.xform == kurbo::Affine::IDENTITY
+                && opaque_paint(&paint)
+            {
                 self.out.opaque = opaque_bands(phys, &r).clipped(self.surface);
             }
             let shape = if radii_zero(&r) {
@@ -1152,21 +1216,45 @@ impl<'a> Flattener<'a> {
         }
         .clamp(0.0, 1000.0) as f64
             * s;
-        self.out.hits.push(HitBox {
-            node: node.id,
-            rect: frame.inflate(grow, grow),
-            radii: RoundedRectRadii::new(
-                r.top_left + grow,
-                r.top_right + grow,
-                r.bottom_right + grow,
-                r.bottom_left + grow,
-            ),
-            clip: inh.clip,
-        });
+        if !inert {
+            let k = self.xform.determinant().abs().sqrt();
+            let grown = frame.inflate(grow, grow);
+            let (rect, radii) = if self.xform == kurbo::Affine::IDENTITY {
+                (
+                    grown,
+                    RoundedRectRadii::new(
+                        r.top_left + grow,
+                        r.top_right + grow,
+                        r.bottom_right + grow,
+                        r.bottom_left + grow,
+                    ),
+                )
+            } else {
+                // Transformed: its bounding box, corners scaled.
+                (
+                    self.xform.transform_rect_bbox(grown),
+                    RoundedRectRadii::new(
+                        (r.top_left + grow) * k,
+                        (r.top_right + grow) * k,
+                        (r.bottom_right + grow) * k,
+                        (r.bottom_left + grow) * k,
+                    ),
+                )
+            };
+            self.out.hits.push(HitBox {
+                node: node.id,
+                rect,
+                radii,
+                clip: inh.clip,
+            });
+        }
 
-        // Children. A `scroll` or `list` always clips its content.
+        // Children. A `scroll` or `list` always clips its content, and so
+        // does a node whose size springs (a toast collapsing to `height:
+        // 0`).
         let clips = matches!(get(Prop::Clip), Some(PropValue::Bool(true)))
-            || matches!(node.kind, NodeKind::Scroll | NodeKind::List);
+            || matches!(node.kind, NodeKind::Scroll | NodeKind::List)
+            || self.anim.sizing(node.id);
         let mut ctx = DefaultHasher::new();
         (inh.ctx, node.epoch).hash(&mut ctx);
         hash_f32(&mut ctx, opacity);
@@ -1174,7 +1262,9 @@ impl<'a> Flattener<'a> {
         let mut clip_group = None;
         if clips {
             hash_path(&mut ctx, &box_path);
-            child_clip = phys.intersect(inh.clip).unwrap_or_default();
+            child_clip = map_rect(self.xform, phys)
+                .intersect(inh.clip)
+                .unwrap_or_default();
             clip_group = Some(self.marker(Item::PushClip(box_path)));
         }
         let child_inh = Inherited {
@@ -1184,6 +1274,7 @@ impl<'a> Flattener<'a> {
             ctx: ctx.finish(),
             clip: child_clip,
             offset,
+            inert,
         };
         let mut children = Rect::default();
         if !(clips && child_clip.is_empty()) {
@@ -1202,6 +1293,11 @@ impl<'a> Flattener<'a> {
         if let Some(i) = opacity_group {
             self.out.items[i].bounds = subtree;
             self.marker(Item::PopOpacity);
+        }
+        if let Some(i) = transform_group {
+            self.out.items[i].bounds = subtree;
+            self.marker(Item::PopTransform);
+            self.xform = saved;
         }
         subtree
     }
@@ -1303,8 +1399,17 @@ mod tests {
             crate::layout::RootSize::Fixed(LogicalRect::new(0.0, 0.0, l.w, l.h)),
             &NoText,
             &mut HashMap::new(),
+            &HashMap::new(),
         );
-        flatten(t, id(0), size, scale, &HashMap::new(), &boxes)
+        flatten(
+            t,
+            id(0),
+            size,
+            scale,
+            &HashMap::new(),
+            &boxes,
+            &mut Animator::default(),
+        )
     }
 
     /// Text that fits its box is drawn from its unbounded layout, placed

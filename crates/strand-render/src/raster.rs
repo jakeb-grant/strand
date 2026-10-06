@@ -386,8 +386,8 @@ fn skip_group(items: &[DisplayItem], i: usize) -> usize {
     let mut depth = 0usize;
     for (j, d) in items.iter().enumerate().skip(i) {
         match d.item {
-            Item::PushClip(_) | Item::PushOpacity(_) => depth += 1,
-            Item::PopClip | Item::PopOpacity => {
+            Item::PushClip(_) | Item::PushOpacity(_) | Item::PushTransform(_) => depth += 1,
+            Item::PopClip | Item::PopOpacity | Item::PopTransform => {
                 depth = depth.saturating_sub(1);
                 if depth == 0 {
                     return j + 1;
@@ -410,13 +410,28 @@ fn draw(
     base: Affine,
 ) {
     let touches = |b: &Rect| clip.intersects(*b);
+    // The transform in force (`scale`, `rotate` groups), and the ones
+    // their pops return to.
+    let mut cur = base;
+    let mut saved: Vec<Affine> = Vec::new();
     let mut i = 0;
     while i < items.len() {
         let d = &items[i];
         i += 1;
         match &d.item {
-            Item::PushClip(_) | Item::PushOpacity(_) if !touches(&d.bounds) => {
+            Item::PushClip(_) | Item::PushOpacity(_) | Item::PushTransform(_)
+                if !touches(&d.bounds) =>
+            {
                 i = skip_group(items, i - 1);
+            }
+            Item::PushTransform(a) => {
+                saved.push(cur);
+                cur = base * *a;
+                ctx.set_transform(cur);
+            }
+            Item::PopTransform => {
+                cur = saved.pop().unwrap_or(base);
+                ctx.set_transform(cur);
             }
             Item::PushClip(p) => ctx.push_clip_path(p),
             Item::PopClip => ctx.pop_clip(),
@@ -492,13 +507,14 @@ fn draw(
                 // to a different output) is drawn resampled until the
                 // re-shaped one arrives.
                 let k = scale.as_f64() / layout.scale.as_f64();
-                let quality = if k == 1.0 {
+                let transformed = cur != base;
+                let quality = if k == 1.0 && !transformed {
                     ImageQuality::Low
                 } else {
                     ImageQuality::Medium
                 };
                 ctx.set_transform(
-                    base * Affine::translate((*x as f64, *y as f64)) * Affine::scale(k),
+                    cur * Affine::translate((*x as f64, *y as f64)) * Affine::scale(k),
                 );
                 for (g, run_color) in layout
                     .runs
@@ -514,7 +530,9 @@ fn draw(
                         (g.slot.w as f64 * k).ceil() as u32 + 1,
                         (g.slot.h as f64 * k).ceil() as u32 + 1,
                     );
-                    if !touches(&gb) {
+                    // Under a transform glyph boxes are not in surface
+                    // pixels: the group's bounds already matched.
+                    if !transformed && !touches(&gb) {
                         continue;
                     }
                     // Marks and markup spans paint in their own colour.
@@ -544,7 +562,7 @@ fn draw(
                 }
                 ctx.reset_tint();
                 ctx.reset_paint_transform();
-                ctx.set_transform(base);
+                ctx.set_transform(cur);
             }
         }
     }

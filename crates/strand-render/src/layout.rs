@@ -41,6 +41,7 @@ use taffy::prelude::{
 };
 use taffy::{LayoutInput, LayoutOutput, Overflow, compute_leaf_layout};
 
+use crate::anim::SizeMap;
 use crate::tree::{Node, SceneTree};
 
 /// Width of `1ch` as a fraction of the font size (the `0` advance of
@@ -174,6 +175,8 @@ struct Build<'a> {
     /// buffer, and content moved past it is clipped to the surface.
     shadows: Vec<(NodeId, (f32, f32), Vec<Shadow>)>,
     vertical_split: bool,
+    /// Sizes springs (and exit poses) force on nodes this pass.
+    sizes: &'a SizeMap,
 }
 
 /// What a node inherits for layout: token tables and font size.
@@ -297,6 +300,27 @@ pub fn is_leaf(kind: NodeKind) -> bool {
     )
 }
 
+/// True if `id` has a fixed width and height in logical pixels (`width`
+/// and `height`, or `size`): its children can be laid out again without
+/// it or anything around it moving (a size spring's relayout stops
+/// there).
+pub(crate) fn size_stable(tree: &SceneTree, id: NodeId) -> bool {
+    let Some(node) = tree.get(id) else {
+        return false;
+    };
+    let inh = inherited_at(tree, id);
+    let mut tokens = inh.tokens.clone();
+    if let Some(PropValue::Tokens(t)) = node.get(Prop::Tokens) {
+        tokens.push(t);
+    }
+    let scope = TokenScope::new(&tokens);
+    let get = |p: Prop| node.get(p).and_then(|v| scope.resolve(v));
+    let font = inh.font.size;
+    let size = dim(get(Prop::Size).as_deref(), font);
+    let px = |p: Prop| matches!(dim(get(p).as_deref(), font).or(size), Some(Len::Px(_)));
+    px(Prop::Width) && px(Prop::Height)
+}
+
 /// Applies `node`'s inherited props for its children.
 fn inherit<'a>(node: &'a Node, inh: &mut Inh<'a>) {
     if let Some(PropValue::Tokens(t)) = node.get(Prop::Tokens) {
@@ -354,6 +378,9 @@ impl<'a> Build<'a> {
         if let Some(d) = dim(get(Prop::MinWidth).as_deref(), font) {
             style.min_size.width = d.lpa();
         }
+        // A size in flight: exactly that, however small its content (a
+        // toast collapsing to `height: 0` clips what it holds).
+        let forced = self.sizes.get(&node.id).copied().unwrap_or([None, None]);
         if let Some(d) = dim(get(Prop::MinHeight).as_deref(), font) {
             style.min_size.height = d.lpa();
         }
@@ -362,6 +389,16 @@ impl<'a> Build<'a> {
         }
         if let Some(d) = dim(get(Prop::MaxHeight).as_deref(), font) {
             style.max_size.height = d.lpa();
+        }
+        if let Some(w) = forced[0] {
+            style.size.width = length(w);
+            style.min_size.width = LengthPercentageAuto::length(0.0);
+            style.max_size.width = LengthPercentageAuto::auto();
+        }
+        if let Some(h) = forced[1] {
+            style.size.height = length(h);
+            style.min_size.height = LengthPercentageAuto::length(0.0);
+            style.max_size.height = LengthPercentageAuto::auto();
         }
         if let Some(m) = insets(get(Prop::Margin).as_deref()) {
             style.margin = taffy::Rect {
@@ -742,17 +779,20 @@ pub(crate) fn layout(
     size: RootSize,
     texts: &dyn TextSizes,
     scrolls: &mut HashMap<NodeId, ScrollState>,
+    sizes: &SizeMap,
 ) -> Boxes {
     let mut out = Boxes::default();
     let Some(node) = tree.get(root) else {
         return out;
     };
     let inh = inherited_at(tree, root);
+    // A side bar's `split` runs down; `root` may be a subtree of it.
+    let surface = tree.root_of(root).and_then(|r| tree.get(r)).unwrap_or(node);
     let vertical_split = matches!(
-        node.get(Prop::Edge),
+        surface.get(Prop::Edge),
         Some(PropValue::Keyword(k)) if k == "left" || k == "right"
     );
-    let mut b = Build::new(tree, vertical_split);
+    let mut b = Build::new(tree, vertical_split, sizes);
     let Some(t) = b.node(node, &inh, true) else {
         return out;
     };
@@ -934,8 +974,9 @@ fn rows_height(tree: &SceneTree, id: NodeId, st: &ScrollState, gap: f32) -> f32 
 }
 
 impl<'a> Build<'a> {
-    fn new(tree: &'a SceneTree, vertical_split: bool) -> Self {
+    fn new(tree: &'a SceneTree, vertical_split: bool, sizes: &'a SizeMap) -> Self {
         Build {
+            sizes,
             tree,
             taffy: TaffyTree::new(),
             map: Vec::new(),
@@ -1031,7 +1072,7 @@ impl<'a> Build<'a> {
         out: &mut Boxes,
     ) {
         for (id, _, inh) in std::mem::take(&mut self.lists) {
-            place_list(self.tree, id, &inh, texts, scrolls, out);
+            place_list(self.tree, id, &inh, texts, scrolls, out, self.sizes);
         }
     }
 }
@@ -1044,6 +1085,7 @@ fn place_list(
     texts: &dyn TextSizes,
     scrolls: &mut HashMap<NodeId, ScrollState>,
     out: &mut Boxes,
+    sizes: &SizeMap,
 ) {
     let (Some(node), Some(frame)) = (tree.get(id), out.rects.get(&id).copied()) else {
         return;
@@ -1089,7 +1131,7 @@ fn place_list(
             i += 1;
             continue;
         };
-        let mut b = Build::new(tree, false);
+        let mut b = Build::new(tree, false, sizes);
         let Some(t) = b.node(row, &inh, false) else {
             i += 1;
             continue;

@@ -11,7 +11,7 @@ use common::{Sway, WAIT};
 use strand_render::{Renderer, TextBackend};
 use strand_scene::{
     Color, Damage, Font, NodeId, NodeKind, PaintTarget, Painter, Prop, PropValue, Scale, SceneDiff,
-    Size, SurfaceId,
+    SceneOp, Size, SurfaceId, Transition,
 };
 use strand_surface::{Config, Monitor, SurfaceHost, SurfaceManager};
 use strand_text::{FontConfig, TEST_FONT_FAMILY, TextEngine, TextWorker, test_font_path};
@@ -21,6 +21,8 @@ struct Host {
     renderer: Renderer,
     /// For each non-empty paint: was text still being shaped?
     text_pending_at_paint: Vec<bool>,
+    /// The presentation time of every paint.
+    times: Vec<Duration>,
 }
 
 impl Host {
@@ -28,6 +30,7 @@ impl Host {
         Self {
             renderer,
             text_pending_at_paint: Vec::new(),
+            times: Vec::new(),
         }
     }
 }
@@ -35,6 +38,7 @@ impl Host {
 impl Painter for Host {
     fn paint(&mut self, surface: SurfaceId, target: &mut PaintTarget<'_>) -> Damage {
         let pending = self.renderer.text_pending();
+        self.times.push(target.time);
         let damage = self.renderer.paint(surface, target);
         if !damage.is_empty() {
             self.text_pending_at_paint.push(pending);
@@ -170,9 +174,15 @@ fn renderer_paints_a_bar_through_the_surface_manager() {
     // Clock-tick-sized changes repaint only what moved, from the first
     // change on: the second buffer starts as a copy of the first frame
     // (copy-forward), so it is not painted in full.
+    // Instant moves (`~ instant`): one frame each.
     for x in [500.0, 700.0, 900.0] {
         let mut d = SceneDiff::default();
-        d.set(SQUARE, Prop::X, PropValue::Number(x));
+        d.push(SceneOp::SetProp {
+            id: SQUARE,
+            prop: Prop::X,
+            value: PropValue::Number(x),
+            transition: Transition::Instant,
+        });
         let commits = mgr.state().stats().commits;
         apply(&mut mgr, d);
         let ok = mgr
@@ -266,4 +276,76 @@ fn first_frame_waits_for_its_text() {
         t.elapsed()
     );
     assert_eq!(mgr.state().stats(), before);
+}
+
+/// A spring runs one frame per refresh, sampled at predicted presentation
+/// times, and once it settles the surface is truly idle: no frame
+/// callbacks, no commits, no wakeups.
+#[test]
+fn springs_run_at_the_refresh_rate_then_the_surface_is_idle() {
+    let Some(sway) = Sway::start("springs_run_at_the_refresh_rate_then_the_surface_is_idle") else {
+        return;
+    };
+    let font = std::fs::read(test_font_path()).unwrap();
+    let engine = TextEngine::new(FontConfig::isolated(vec![Arc::new(font)]));
+    let host = Host::new(Renderer::new(TextBackend::Inline(Box::new(engine))));
+    let mut mgr = SurfaceManager::with_connection(sway.connect(), host, Config::default()).unwrap();
+    apply(&mut mgr, scene());
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            let st = s.stats();
+            st.commits > 0 && st.presented >= st.commits
+        })
+        .unwrap();
+    assert!(ok);
+    let id = mgr.state().surfaces()[0].id;
+    let before = mgr.state().stats();
+    let painted = mgr.state().host().times.len();
+    // `$motion.spatial` (the design's spring: no theme here) moves the
+    // square and `$motion.effects` fades its colour.
+    let mut d = SceneDiff::default();
+    d.set(SQUARE, Prop::X, PropValue::Number(1200.0)).set(
+        SQUARE,
+        Prop::Bg,
+        PropValue::Color(Color::from_hex("#89b4fa").unwrap()),
+    );
+    apply(&mut mgr, d);
+    assert!(
+        mgr.state().host().renderer.animating(id) || mgr.state().host().renderer.wants_frame(id)
+    );
+    let ok = mgr
+        .dispatch_until(Duration::from_secs(5), |s| {
+            !s.host().renderer.animating(id) && s.stats().presented >= s.stats().commits
+        })
+        .unwrap();
+    assert!(ok, "never settled");
+    let after = mgr.state().stats();
+    let frames = after.commits - before.commits;
+    assert!((8..=90).contains(&frames), "{frames} frames for one spring");
+    // Each frame waited for the previous one's callback.
+    assert!(after.frame_requests - before.frame_requests >= frames - 1);
+    // Springs sampled increasing presentation times, about a refresh apart.
+    let times = &mgr.state().host().times[painted..];
+    assert!(times.windows(2).all(|w| w[0] < w[1]), "{times:?}");
+    let span = *times.last().unwrap() - times[0];
+    assert!(
+        span >= Duration::from_millis(100) && span <= Duration::from_secs(3),
+        "{span:?} over {} frames",
+        times.len()
+    );
+    std::thread::sleep(Duration::from_millis(50));
+    let shot = sway.grim("HEADLESS-1");
+    assert_eq!(shot.rgb(1210, 18), rgb("#89b4fa"));
+    assert_eq!(shot.rgb(310, 18), rgb("#1e1e2e"));
+
+    // Settled: true idle. Nothing is requested, committed or painted, and
+    // the loop does not wake.
+    let idle = mgr.state().stats();
+    let paints = mgr.state().host().times.len();
+    let t = Instant::now();
+    mgr.dispatch(Some(Duration::from_millis(700))).unwrap();
+    assert!(t.elapsed() >= Duration::from_millis(650), "woke while idle");
+    assert_eq!(mgr.state().stats(), idle);
+    assert_eq!(mgr.state().host().times.len(), paints);
+    assert!(!mgr.state().host().renderer.wants_frame(id));
 }

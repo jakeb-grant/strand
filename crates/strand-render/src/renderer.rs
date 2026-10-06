@@ -12,12 +12,14 @@ use strand_scene::{
 };
 use strand_text::{TextEngine, TextError, TextKey, TextLayout, TextRequest, TextWorker};
 
+use crate::anim::{Animator, ExitKind, SizeMap, exit_pose, is_pose};
 use crate::flatten::{
     Flattened, HitBox, NodeRecord, Shaped, TextSpec, flatten, natural_texts, pick, scope_tables,
 };
 use crate::layout::{Boxes, MAX_CONTENT_SIZE, RootSize, ScrollState, TextSizes, layout};
 use crate::raster::{AtlasMirror, Raster};
 use crate::tree::{SceneError, SceneTree};
+use strand_scene::Curve;
 
 /// How many past frames' damage is kept for buffer-age widening. A buffer
 /// older than this is repainted in full.
@@ -190,6 +192,20 @@ struct SurfaceState {
     /// A content-sized surface whose spec asks for another size than it
     /// is configured at: the buffer size it waits for, and until when.
     size_hold: Option<(LogicalSize, Instant)>,
+    /// Something on it is moving (a spring, a pose, a glide): it wants
+    /// frames until everything settles.
+    animating: bool,
+    /// Size springs are moving: the next frame lays out again (only the
+    /// subtrees under their nearest size-stable ancestors).
+    anim_layout: bool,
+    /// Parents whose children changed (created, removed, moved, a
+    /// layout length snapped): the next layout pass glides their
+    /// children from where they were (FLIP). `flip_all`: every node
+    /// (a token swap).
+    flip: HashSet<NodeId>,
+    flip_all: bool,
+    /// Presentation time of the last frame it painted.
+    painted_time: Option<Duration>,
 }
 
 impl SurfaceState {
@@ -286,6 +302,16 @@ pub struct Renderer {
     /// The logical size of the output each surface is on, when known: a
     /// content-sized surface is never larger (see [`Renderer::set_surface_bounds`]).
     bounds: HashMap<SurfaceId, LogicalSize>,
+    /// Every spring, pose and glide.
+    anim: Animator,
+    /// `reduced_motion` as the host set it ([`Renderer::set_reduced_motion`]).
+    reduced_motion: bool,
+    /// Surfaces whose closing pose finished: their spec reports them
+    /// closed until they open again.
+    closed: HashSet<NodeId>,
+    /// Nodes laid out by the last layout step (tests: a size spring lays
+    /// out only the subtree under its nearest size-stable ancestor).
+    laid_out_nodes: usize,
 }
 
 /// The overhang a surface asks for: on an axis its anchor leaves centred
@@ -329,6 +355,29 @@ impl TextSizes for TextInfo<'_> {
     fn fitted(&self, node: NodeId, width: f32) -> Option<strand_scene::LogicalSize> {
         pick(self.shaped.get(&node)?, self.scale, Some(width)).map(|l| l.size)
     }
+}
+
+/// Layout lengths that snap to a new value while the boxes they move
+/// glide there (design.md, snap rules); `width`, `height` and `size`
+/// spring instead.
+fn snaps_and_glides(prop: Prop) -> bool {
+    use Prop::*;
+    matches!(
+        prop,
+        MinWidth
+            | MaxWidth
+            | MinHeight
+            | MaxHeight
+            | Pad
+            | Margin
+            | Gap
+            | Grow
+            | Shrink
+            | Align
+            | Justify
+            | Place
+            | Columns
+    )
 }
 
 /// True for props layout reads: a change to one relayouts its surface;
@@ -394,7 +443,107 @@ impl Renderer {
             content_sized: BTreeSet::new(),
             bounds: HashMap::new(),
             resize_wait: Duration::ZERO,
+            anim: Animator::default(),
+            reduced_motion: false,
+            closed: HashSet::new(),
+            laid_out_nodes: 0,
         }
+    }
+
+    /// `reduced_motion` (from the system or a setting): every spring,
+    /// pose and glide snaps. The global token `motion.reduced: true` turns
+    /// it on too.
+    pub fn set_reduced_motion(&mut self, on: bool) {
+        self.reduced_motion = on;
+        self.refresh_reduced();
+    }
+
+    /// True while motion is reduced (by the host or the token table).
+    pub fn reduced_motion(&self) -> bool {
+        self.anim.reduced()
+    }
+
+    fn refresh_reduced(&mut self) {
+        let token = matches!(
+            self.tree.tokens.get("motion.reduced"),
+            Some(PropValue::Bool(true))
+        );
+        self.anim.set_reduced(self.reduced_motion || token);
+    }
+
+    /// Nodes laid out by the last layout step of any surface.
+    pub fn last_layout_nodes(&self) -> usize {
+        self.laid_out_nodes
+    }
+
+    /// True while something on `surface` is moving (springs unsettled):
+    /// it wants frames until it settles.
+    pub fn animating(&self, surface: SurfaceId) -> bool {
+        self.surfaces.get(&surface).is_some_and(|s| s.animating)
+    }
+
+    /// True if the surface node `root` is on screen with a clock: a
+    /// change there animates (a frame at time zero, offline, snaps).
+    fn shown(&self, root: Option<NodeId>) -> bool {
+        root.is_some_and(|r| {
+            self.surfaces
+                .values()
+                .any(|s| s.root == r && s.painted && s.painted_time.is_some_and(|t| !t.is_zero()))
+        })
+    }
+
+    /// The children of `parent` change place: the next layout of its
+    /// surfaces glides them (FLIP).
+    fn flip(&mut self, parent: Option<NodeId>) {
+        let Some(p) = parent else { return };
+        let root = self.tree.root_of(p);
+        for s in self.surfaces.values_mut() {
+            if Some(s.root) == root {
+                s.flip.insert(p);
+            }
+        }
+    }
+
+    /// Unmounts ghosts whose exit finished and closes surfaces whose
+    /// closing pose did.
+    fn process_finished(&mut self) {
+        for (id, kind) in self.anim.take_finished() {
+            match kind {
+                ExitKind::Ghost => {
+                    let parent = self.tree.get(id).and_then(|n| n.parent);
+                    let root = self.tree.root_of(id);
+                    self.tree.drop_ghost(id);
+                    self.flip(parent);
+                    for s in self.surfaces.values_mut() {
+                        if Some(s.root) == root {
+                            s.mark_layout();
+                        }
+                    }
+                    self.spec_dirty.extend(root);
+                }
+                ExitKind::Close => {
+                    self.closed.insert(id);
+                    self.spec_dirty.insert(id);
+                }
+            }
+        }
+        let tree = &self.tree;
+        self.anim.retain(|id| tree.contains(id));
+    }
+
+    /// Ends exits nobody can see any more (their surface went or never
+    /// showed).
+    fn reap_exits(&mut self) {
+        let mut shown: HashSet<NodeId> = HashSet::new();
+        for s in self.surfaces.values() {
+            if s.painted {
+                shown.insert(s.root);
+            }
+        }
+        let tree = &self.tree;
+        self.anim
+            .finish_undrawn(|id| tree.root_of(id).is_none_or(|r| !shown.contains(&r)));
+        self.process_finished();
     }
 
     /// How long a content-sized surface whose size changed holds its
@@ -670,6 +819,25 @@ impl Renderer {
             let mut spec =
                 SurfaceSpec::resolve(node.kind, |p| node.get(p).and_then(|v| scope.resolve(v)));
             live.insert(id);
+            // Surface poses: `enter` plays when it opens, `exit` before it
+            // closes (it stays open until the pose settles).
+            let reported = self.specs.get(&id).map(|s| s.open);
+            let reduced = self.anim.reduced();
+            if spec.open {
+                self.closed.remove(&id);
+                if self.anim.exiting(id) == Some(ExitKind::Close) {
+                    self.anim.cancel_exit(id);
+                } else if reported != Some(true) && !reduced && is_pose(node.get(Prop::Enter)) {
+                    self.anim.enter(id);
+                }
+            } else if reported == Some(true) && !self.closed.contains(&id) {
+                if self.anim.exiting(id) == Some(ExitKind::Close) {
+                    spec.open = true;
+                } else if !reduced && is_pose(exit_pose(node)) && self.shown(Some(id)) {
+                    self.anim.exit(id, ExitKind::Close);
+                    spec.open = true;
+                }
+            }
             let bar = spec.kind == NodeKind::Bar;
             let vertical = matches!(spec.edge, Some(Edge::Left | Edge::Right));
             let content_sized = if bar {
@@ -721,14 +889,23 @@ impl Renderer {
                         width: w,
                         height: h,
                     };
-                    let mut b = layout(&self.tree, id, root_size, &info, &mut self.scrolls);
+                    // At rest: exiting nodes take their exit pose's size.
+                    let rest = self.anim.rest_sizes(&self.tree, id);
+                    let mut b = layout(&self.tree, id, root_size, &info, &mut self.scrolls, &rest);
                     self.layout_passes += 1;
                     if b.unsettled {
                         // A list measured rows it had only estimated: its
                         // size (and so the surface's) comes from the
                         // second pass, as the painted one does.
-                        b = layout(&self.tree, id, root_size, &info, &mut self.scrolls);
+                        b = layout(&self.tree, id, root_size, &info, &mut self.scrolls, &rest);
                         self.layout_passes += 1;
+                    }
+                    // Never smaller while something on it moves (a toast
+                    // collapsing, its siblings sliding up): it shrinks
+                    // once everything settles.
+                    if let Some(old) = old.filter(|_| self.anim.busy(&self.tree, id)) {
+                        b.size.w = b.size.w.max(old.width.unwrap_or(0.0));
+                        b.size.h = b.size.h.max(old.height.unwrap_or(0.0));
                     }
                     if content_sized {
                         let r = natural_texts(&self.tree, id, scale, &b.rects);
@@ -840,6 +1017,11 @@ impl Renderer {
                 query_hold: None,
                 query_held: false,
                 size_hold: None,
+                animating: false,
+                anim_layout: false,
+                flip: HashSet::new(),
+                flip_all: false,
+                painted_time: None,
                 overhang: self
                     .specs
                     .get(&root)
@@ -881,6 +1063,7 @@ impl Renderer {
 
     pub fn detach_surface(&mut self, surface: SurfaceId) {
         self.surfaces.remove(&surface);
+        self.reap_exits();
         self.bounds.remove(&surface);
         self.facts_sent.retain(|(s, _), _| *s != surface);
         self.last_damage.remove(&surface);
@@ -1125,7 +1308,12 @@ impl Renderer {
                 }),
                 _ => false,
             };
-            match self.tree.apply_op(op) {
+            let result = if self.animate_op(&op) {
+                Ok(())
+            } else {
+                self.tree.apply_op(op)
+            };
+            match result {
                 Ok(()) => {
                     let roots: Vec<NodeId> = before
                         .into_iter()
@@ -1148,7 +1336,12 @@ impl Renderer {
         }
         if relayout.is_none() {
             self.spec_dirty.extend(self.tree.surface_nodes());
+            self.refresh_reduced();
         }
+        let tree = &self.tree;
+        self.anim.retain(|id| tree.contains(id));
+        self.closed.retain(|id| tree.contains(*id));
+        self.reap_exits();
         // Drop text state of nodes that are gone or no longer show text.
         let tree = &self.tree;
         let text = &self.text;
@@ -1227,6 +1420,85 @@ impl Renderer {
         errors
     }
 
+    /// What an op starts moving, before it applies: logic's new value of
+    /// an animatable prop springs from the old one, a node created on a
+    /// shown surface enters, a removed one with an exit pose becomes a
+    /// ghost (returns true: the removal is done), and structural changes
+    /// glide their siblings. Nothing animates on a surface not shown
+    /// with a clock, or under `reduced_motion`.
+    fn animate_op(&mut self, op: &SceneOp) -> bool {
+        let reduced = self.anim.reduced();
+        match op {
+            SceneOp::Create { id, parent, .. } => {
+                let root = parent.and_then(|p| self.tree.root_of(p));
+                if parent.is_some() && !reduced && self.shown(root) {
+                    self.anim.enter(*id);
+                }
+                self.flip(*parent);
+            }
+            SceneOp::Remove { id } => {
+                let Some(node) = self.tree.get(*id).filter(|_| self.tree.contains_live(*id)) else {
+                    return false;
+                };
+                let parent = node.parent;
+                let root = self.tree.root_of(*id);
+                let laid = self.surfaces.values().any(|s| {
+                    Some(s.root) == root
+                        && s.boxes.as_ref().is_some_and(|b| b.rects.contains_key(id))
+                });
+                if !node.kind.is_surface()
+                    && !reduced
+                    && is_pose(exit_pose(node))
+                    && laid
+                    && self.shown(root)
+                    && self.tree.ghost(*id).is_ok()
+                {
+                    self.anim.exit(*id, ExitKind::Ghost);
+                    return true;
+                }
+                self.flip(parent);
+            }
+            SceneOp::Move { id, parent, .. } => {
+                let old = self.tree.get(*id).and_then(|n| n.parent);
+                self.flip(old);
+                self.flip(*parent);
+            }
+            SceneOp::SetProp { id, prop, .. } => {
+                if !self.tree.contains_live(*id) {
+                    return false;
+                }
+                let root = self.tree.root_of(*id);
+                let animates = !reduced && self.shown(root);
+                if animates && crate::anim::ANIMATED.contains(prop) {
+                    let tables = scope_tables(&self.tree, *id);
+                    let scope = TokenScope::new(&tables);
+                    let old = self
+                        .tree
+                        .get(*id)
+                        .and_then(|n| n.get(*prop))
+                        .and_then(|v| scope.resolve(v))
+                        .map(std::borrow::Cow::into_owned);
+                    self.anim.touch(*id, *prop, old);
+                }
+                if animates && crate::anim::is_size(*prop) {
+                    self.anim.touch_size(*id);
+                }
+                // Layout lengths snap; the boxes they move glide.
+                if snaps_and_glides(*prop) {
+                    let parent = self.tree.get(*id).and_then(|n| n.parent);
+                    self.flip(Some(*id));
+                    self.flip(parent);
+                }
+            }
+            SceneOp::SetTokens { .. } => {
+                for s in self.surfaces.values_mut() {
+                    s.flip_all = true;
+                }
+            }
+        }
+        false
+    }
+
     /// Gives every incomplete layout its retries back and wakes its
     /// surfaces, after something happened that can free atlas pages (a
     /// layout replaced for new text, text removed, a scale dropped).
@@ -1262,7 +1534,12 @@ impl Renderer {
             .map(|(id, _)| *id)
             .collect();
         for id in ids {
+            if let Some(s) = self.surfaces.get(&id) {
+                // A preview: nothing starts until a frame samples it.
+                self.anim.begin(s.time, s.painted_time, false);
+            }
             let f = self.flatten_surface(id);
+            let animating = self.anim.active();
             // Text with a request in flight and no layout for this
             // surface's scale and width yet. A stand-in from another scale
             // or width does not count: a first frame drawn with one would
@@ -1293,6 +1570,7 @@ impl Renderer {
                 if s.valid && s.records == f.records && s.opaque == f.opaque {
                     s.dirty = false;
                 }
+                s.animating = animating;
                 s.awaiting_text = !waiting.is_empty();
                 // A surface in motion holds nothing (see BUSY_WINDOW).
                 let now = Instant::now();
@@ -1520,102 +1798,259 @@ impl Renderer {
     /// flattens it.
     fn flatten_now(&mut self, id: SurfaceId) -> Flattened {
         let layouts = self.shaped();
-        let Some(s) = self.surfaces.get(&id) else {
-            return Flattened::default();
-        };
-        if s.layout_dirty || s.boxes.is_none() {
-            let logical = s.scale.logical_size(s.size);
-            let o = s.overhang;
-            let frame = strand_scene::LogicalRect::new(
-                o.left,
-                o.top,
-                (logical.w - o.left - o.right).max(0.0),
-                (logical.h - o.top - o.bottom).max(0.0),
-            );
-            let info = TextInfo {
-                shaped: &layouts,
-                scale: s.scale,
-            };
-            let root = s.root;
-            let mut boxes = layout(
-                &self.tree,
-                root,
-                RootSize::Fixed(frame),
-                &info,
-                &mut self.scrolls,
-            );
-            self.layout_passes += 1;
-            if boxes.unsettled {
-                boxes = layout(
-                    &self.tree,
-                    root,
-                    RootSize::Fixed(frame),
-                    &info,
-                    &mut self.scrolls,
-                );
-                self.layout_passes += 1;
-            }
-            // A surface of a fixed size takes its overhang from this
-            // pass (no content pass runs for it once shown): a change is
-            // reported, and it lays out again inside the new one.
-            if !self.content_sized.contains(&root)
-                && let Some(mut spec) = self.specs.get(&root).cloned()
-                && spec.open
-            {
-                let o = centred_overhang(&spec, boxes.overhang);
-                if o != spec.overhang {
-                    spec.overhang = o;
-                    self.record_spec(root, spec);
-                    let frame = strand_scene::LogicalRect::new(
-                        o.left,
-                        o.top,
-                        (logical.w - o.left - o.right).max(0.0),
-                        (logical.h - o.top - o.bottom).max(0.0),
-                    );
-                    boxes = layout(
-                        &self.tree,
-                        root,
-                        RootSize::Fixed(frame),
-                        &info,
-                        &mut self.scrolls,
-                    );
-                    self.layout_passes += 1;
-                }
-            }
-            // Sizes logic reads go to it; one a query reads holds the
-            // frame for its answer (once per frame).
-            let mut query = false;
-            for (node, r) in &boxes.rects {
-                let Some(watch) = self.tree.get(*node).and_then(|n| n.get(Prop::Watch)) else {
-                    continue;
-                };
-                let size = (r.w, r.h);
-                if self.facts_sent.get(&(id, *node)) != Some(&size) {
-                    self.facts_sent.insert((id, *node), size);
-                    self.facts.push((*node, r.w, r.h));
-                    query |= matches!(watch, PropValue::Keyword(k) if k == "query");
-                }
-            }
-            let (wait, window) = (self.query_wait, self.busy_window);
-            let seq = self.facts_seq + 1;
-            if let Some(s) = self.surfaces.get_mut(&id) {
-                s.boxes = Some(boxes);
-                s.layout_dirty = false;
-                if query {
-                    s.hold_for_query(seq, wait, window);
-                }
-            }
-        }
+        self.lay_out(id, &layouts);
         let Some(s) = self.surfaces.get(&id) else {
             return Flattened::default();
         };
         let empty = Boxes::default();
         let boxes = s.boxes.as_ref().unwrap_or(&empty);
-        flatten(&self.tree, s.root, s.size, s.scale, &layouts, boxes)
+        flatten(
+            &self.tree,
+            s.root,
+            s.size,
+            s.scale,
+            &layouts,
+            boxes,
+            &mut self.anim,
+        )
     }
 
-    /// Sends requests for text whose spec changed. Returns true if a layout
-    /// was delivered synchronously (inline backend).
+    /// One layout pass of `root` (two when a list measured rows it had
+    /// estimated), with `sizes` forced.
+    fn run_layout(
+        &mut self,
+        root: NodeId,
+        size: RootSize,
+        info: &TextInfo<'_>,
+        sizes: &SizeMap,
+    ) -> Boxes {
+        let mut boxes = layout(&self.tree, root, size, info, &mut self.scrolls, sizes);
+        self.layout_passes += 1;
+        self.laid_out_nodes += boxes.rects.len();
+        if boxes.unsettled {
+            boxes = layout(&self.tree, root, size, info, &mut self.scrolls, sizes);
+            self.layout_passes += 1;
+            self.laid_out_nodes += boxes.rects.len();
+        }
+        boxes
+    }
+
+    /// Lays out surface `id` if anything layout reads changed, or its
+    /// size springs moved. Sizes spring from the boxes of the last pass
+    /// to the ones laid out at rest; a frame where only size springs
+    /// moved lays out just the subtrees under their nearest size-stable
+    /// ancestors. A structural change glides the boxes it moved from
+    /// where they were (FLIP).
+    fn lay_out(&mut self, id: SurfaceId, layouts: &HashMap<NodeId, Vec<Shaped>>) {
+        let Some(s) = self.surfaces.get(&id) else {
+            return;
+        };
+        let full = s.layout_dirty || s.boxes.is_none();
+        if !full && !s.anim_layout {
+            return;
+        }
+        self.laid_out_nodes = 0;
+        let root = s.root;
+        let logical = s.scale.logical_size(s.size);
+        let o = s.overhang;
+        let frame = strand_scene::LogicalRect::new(
+            o.left,
+            o.top,
+            (logical.w - o.left - o.right).max(0.0),
+            (logical.h - o.top - o.bottom).max(0.0),
+        );
+        let info = TextInfo {
+            shaped: layouts,
+            scale: s.scale,
+        };
+        let old = s.boxes.clone();
+        let rest = self.anim.rest_sizes(&self.tree, root);
+        if !full
+            && let Some(old) = &old
+            && let Some(boxes) = self.relayout_sized(root, old, &rest, &info)
+        {
+            let moving = self.anim.sizes_moving(&self.tree, root);
+            if let Some(s) = self.surfaces.get_mut(&id) {
+                s.boxes = Some(boxes);
+                s.anim_layout = moving;
+            }
+            self.report_facts(id);
+            return;
+        }
+        let sized = self.anim.size_work(&self.tree, root);
+        let mut sizes = rest.clone();
+        let mut boxes = if sized {
+            let at_rest = self.run_layout(root, RootSize::Fixed(frame), &info, &rest);
+            let old_rects = old.as_ref().map(|b| &b.rects);
+            self.anim
+                .start_sizes(&self.tree, root, &at_rest.rects, old_rects, false);
+            sizes = self.anim.size_overrides(&self.tree, root, &rest);
+            if sizes == rest {
+                at_rest
+            } else {
+                self.run_layout(root, RootSize::Fixed(frame), &info, &sizes)
+            }
+        } else {
+            self.run_layout(root, RootSize::Fixed(frame), &info, &rest)
+        };
+        if !self.content_sized.contains(&root)
+            && let Some(mut spec) = self.specs.get(&root).cloned()
+            && spec.open
+        {
+            let o = centred_overhang(&spec, boxes.overhang);
+            if o != spec.overhang {
+                spec.overhang = o;
+                self.record_spec(root, spec);
+                let frame = strand_scene::LogicalRect::new(
+                    o.left,
+                    o.top,
+                    (logical.w - o.left - o.right).max(0.0),
+                    (logical.h - o.top - o.bottom).max(0.0),
+                );
+                boxes = self.run_layout(root, RootSize::Fixed(frame), &info, &sizes);
+            }
+        }
+        // FLIP: boxes a structural change moved start where they were.
+        if let Some(s) = self.surfaces.get_mut(&id) {
+            let flip = std::mem::take(&mut s.flip);
+            let all = std::mem::take(&mut s.flip_all);
+            if let Some(old) = &old
+                && (all || !flip.is_empty())
+                && !self.anim.reduced()
+            {
+                let tables = [&self.tree.tokens];
+                let curve = Curve::of(
+                    &TokenScope::new(&tables)
+                        .transition(&strand_scene::Transition::Default, Prop::X),
+                );
+                glide_moved(
+                    &self.tree,
+                    &mut self.anim,
+                    root,
+                    &old.rects,
+                    &boxes.rects,
+                    &flip,
+                    all,
+                    curve,
+                );
+            }
+        }
+        let moving = self.anim.sizes_moving(&self.tree, root);
+        if let Some(s) = self.surfaces.get_mut(&id) {
+            s.boxes = Some(boxes);
+            s.layout_dirty = false;
+            s.anim_layout = moving;
+        }
+        self.report_facts(id);
+    }
+
+    /// Hands the laid-out sizes of watched nodes that changed to logic,
+    /// holding the frame for a container query's answer.
+    fn report_facts(&mut self, id: SurfaceId) {
+        let Some(boxes) = self.surfaces.get(&id).and_then(|s| s.boxes.as_ref()) else {
+            return;
+        };
+        let mut query = false;
+        let mut facts = Vec::new();
+        for (node, r) in &boxes.rects {
+            if self.tree.is_ghost(*node) {
+                continue;
+            }
+            let Some(watch) = self.tree.get(*node).and_then(|n| n.get(Prop::Watch)) else {
+                continue;
+            };
+            let size = (r.w, r.h);
+            if self.facts_sent.get(&(id, *node)) != Some(&size) {
+                facts.push((*node, size));
+                query |= matches!(watch, PropValue::Keyword(k) if k == "query");
+            }
+        }
+        for (node, size) in facts {
+            self.facts_sent.insert((id, node), size);
+            self.facts.push((node, size.0, size.1));
+        }
+        let (wait, window) = (self.query_wait, self.busy_window);
+        let seq = self.facts_seq + 1;
+        if let Some(s) = self.surfaces.get_mut(&id)
+            && query
+        {
+            s.hold_for_query(seq, wait, window);
+        }
+    }
+
+    /// Lays out only what size springs move: the subtree under each
+    /// moving node's nearest size-stable ancestor (a node of fixed width
+    /// and height, or a surface root of fixed size), into a copy of
+    /// `old`. `None` when that would be the whole surface.
+    fn relayout_sized(
+        &mut self,
+        root: NodeId,
+        old: &Boxes,
+        rest: &SizeMap,
+        info: &TextInfo<'_>,
+    ) -> Option<Boxes> {
+        let moving = self.anim.sized_nodes(&self.tree, root);
+        let mut subs: Vec<NodeId> = Vec::new();
+        for n in moving {
+            let mut a = self.tree.get(n)?.parent?;
+            loop {
+                if a == root {
+                    if self.content_sized.contains(&root) {
+                        return None;
+                    }
+                    break;
+                }
+                if !rest.contains_key(&a) && crate::layout::size_stable(&self.tree, a) {
+                    break;
+                }
+                a = self.tree.get(a)?.parent?;
+            }
+            if a == root {
+                return None;
+            }
+            subs.push(a);
+        }
+        let tree = &self.tree;
+        let all = subs.clone();
+        subs.retain(|a| !all.iter().any(|b| b != a && tree.is_ancestor(*b, *a)));
+        subs.sort();
+        subs.dedup();
+        let mut at_rest = Vec::new();
+        for a in &subs {
+            let frame = *old.rects.get(a)?;
+            let b = self.run_layout(*a, RootSize::Fixed(frame), info, rest);
+            at_rest.push((frame, b));
+        }
+        let mut targets = HashMap::new();
+        for (_, b) in &at_rest {
+            targets.extend(b.rects.iter().map(|(k, v)| (*k, *v)));
+        }
+        self.anim
+            .start_sizes(&self.tree, root, &targets, Some(&old.rects), true);
+        let sizes = self.anim.size_overrides(&self.tree, root, rest);
+        let mut boxes = old.clone();
+        for (a, (frame, b)) in subs.iter().zip(at_rest) {
+            let b = if sizes == *rest {
+                b
+            } else {
+                self.run_layout(*a, RootSize::Fixed(frame), info, &sizes)
+            };
+            let mut stack: Vec<NodeId> = self.tree.get(*a)?.children.clone();
+            while let Some(n) = stack.pop() {
+                boxes.rects.remove(&n);
+                if let Some(node) = self.tree.get(n) {
+                    stack.extend(node.children.iter().copied());
+                }
+            }
+            for (k, v) in b.rects {
+                if k != *a {
+                    boxes.rects.insert(k, v);
+                }
+            }
+        }
+        Some(boxes)
+    }
+
     fn request_text(&mut self, needs: &[(NodeId, TextSpec)]) -> bool {
         let mut delivered = false;
         for (node, spec) in needs {
@@ -1678,6 +2113,42 @@ impl Renderer {
 
 /// Damage between two frames' node records: a changed node damages where it
 /// was and where it is; added and removed nodes damage their one place.
+/// FLIP: every node whose parent is in `parents` (all with `all`) and
+/// whose box moved starts where it was and glides to its new place.
+/// Visited top-down, so a node that moved with its parent adds nothing
+/// to the parent's glide.
+#[allow(clippy::too_many_arguments)]
+fn glide_moved(
+    tree: &SceneTree,
+    anim: &mut Animator,
+    root: NodeId,
+    old: &HashMap<NodeId, strand_scene::LogicalRect>,
+    new: &HashMap<NodeId, strand_scene::LogicalRect>,
+    parents: &HashSet<NodeId>,
+    all: bool,
+    curve: Curve,
+) {
+    let mut stack = vec![(root, (0.0f32, 0.0f32))];
+    while let Some((n, acc)) = stack.pop() {
+        let Some(node) = tree.get(n) else { continue };
+        let scope = all || parents.contains(&n);
+        for c in &node.children {
+            if tree.get(*c).is_none_or(|k| k.kind.is_surface()) {
+                continue;
+            }
+            let mut acc_c = acc;
+            if scope && let (Some(o), Some(w)) = (old.get(c), new.get(c)) {
+                let adj = (o.x - w.x - acc.0, o.y - w.y - acc.1);
+                if adj.0.abs() > 0.5 || adj.1.abs() > 0.5 {
+                    anim.glide(*c, [adj.0, adj.1], curve);
+                    acc_c = (acc.0 + adj.0, acc.1 + adj.1);
+                }
+            }
+            stack.push((*c, acc_c));
+        }
+    }
+}
+
 fn diff_records(
     old: &BTreeMap<NodeId, NodeRecord>,
     new: &BTreeMap<NodeId, NodeRecord>,
@@ -1702,6 +2173,26 @@ fn diff_records(
 
 impl Painter for Renderer {
     fn paint(&mut self, surface: SurfaceId, target: &mut PaintTarget<'_>) -> Damage {
+        let damage = self.paint_frame(surface, target);
+        // Exits the frame finished: ghosts unmount (their siblings glide
+        // into the gap from the next frame), closing surfaces close.
+        self.process_finished();
+        damage
+    }
+
+    fn wants_frame(&self, surface: SurfaceId) -> bool {
+        self.wants(surface)
+    }
+
+    fn opaque_region(&self, surface: SurfaceId) -> Damage {
+        self.surfaces
+            .get(&surface)
+            .map_or_else(Damage::new, |s| s.opaque)
+    }
+}
+
+impl Renderer {
+    fn paint_frame(&mut self, surface: SurfaceId, target: &mut PaintTarget<'_>) -> Damage {
         if target.validate().is_err() {
             return Damage::new();
         }
@@ -1729,14 +2220,37 @@ impl Painter for Renderer {
                 return Damage::new();
             }
         }
-        let cached = self.surfaces.get_mut(&surface).and_then(|s| s.cache.take());
+        // Springs sample this frame's time; a scene flattened earlier
+        // (by `update`) is stale while anything moves.
+        let Some(s) = self.surfaces.get_mut(&surface) else {
+            return Damage::new();
+        };
+        let (root, was_animating) = (s.root, s.animating);
+        let cached = if s.animating { None } else { s.cache.take() };
+        self.anim.begin(target.time, s.painted_time, true);
+        let fresh = cached.is_none();
         let f = match cached {
             Some(f) => f,
             None => self.flatten_surface(surface),
         };
+        // A cached scene was drawn at rest.
+        let animating = fresh && self.anim.active();
+        if fresh {
+            // Exits under this surface it did not draw (a row scrolled
+            // out of view) end: nobody sees them.
+            let tree = &self.tree;
+            self.anim
+                .finish_undrawn(|id| tree.root_of(id) == Some(root));
+        }
+        if was_animating && !animating {
+            // Settled: a content-sized surface held at its larger size
+            // while things moved can shrink now.
+            self.spec_dirty.insert(root);
+        }
         let Some(s) = self.surfaces.get_mut(&surface) else {
             return Damage::new();
         };
+        s.animating = animating;
         let bounds = target.bounds();
         s.opaque = f.opaque;
         s.dirty = false;
@@ -1773,6 +2287,7 @@ impl Painter for Renderer {
 
         s.history.push_front(frame);
         s.history.truncate(DAMAGE_HISTORY);
+        s.painted_time = Some(target.time);
         s.valid = true;
         s.painted = true;
         s.query_hold = None;
@@ -1791,7 +2306,7 @@ impl Painter for Renderer {
         total
     }
 
-    fn wants_frame(&self, surface: SurfaceId) -> bool {
+    fn wants(&self, surface: SurfaceId) -> bool {
         // Dirty or never painted. Text still being shaped does not count:
         // its delivery marks the surface dirty (the worker's waker makes
         // the loop call `update`), so waiting costs no frames. A surface
@@ -1801,13 +2316,7 @@ impl Painter for Renderer {
             && self
                 .surfaces
                 .get(&surface)
-                .is_some_and(|s| s.dirty || !s.valid)
-    }
-
-    fn opaque_region(&self, surface: SurfaceId) -> Damage {
-        self.surfaces
-            .get(&surface)
-            .map_or_else(Damage::new, |s| s.opaque)
+                .is_some_and(|s| s.dirty || !s.valid || s.animating)
     }
 }
 
