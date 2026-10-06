@@ -2,7 +2,9 @@
 //! 3:1 (WCAG 2 contrast ratio) by solving the text's OKLCH lightness
 //! (design.md, "How a swap animates", step 3).
 //!
-//! The pairs are Material 3's own: every `on_X` over its `X`, `fg` over
+//! The pairs are Material 3's own: every `on_X` over its `X` (the
+//! fixed accents' `on_X_fixed` and `on_X_fixed_variant` over `X_fixed`
+//! and `X_fixed_dim`), `fg` over
 //! every surface, `fg_variant` over the surface and its variant, and the
 //! inverse roles. [`guard`] applies them to a palette when it is made;
 //! [`crate::Palette::insert_into`] also hands them to the render thread
@@ -43,6 +45,30 @@ pub const PAIRS: &[(Role, &[Role])] = &[
     (Role::FgVariant, &[Role::Surface, Role::SurfaceVariant]),
     (Role::InverseFg, &[Role::InverseSurface]),
     (Role::InverseAccent, &[Role::InverseSurface]),
+    (
+        Role::OnAccentFixed,
+        &[Role::AccentFixed, Role::AccentFixedDim],
+    ),
+    (
+        Role::OnAccentFixedVariant,
+        &[Role::AccentFixed, Role::AccentFixedDim],
+    ),
+    (
+        Role::OnSecondaryFixed,
+        &[Role::SecondaryFixed, Role::SecondaryFixedDim],
+    ),
+    (
+        Role::OnSecondaryFixedVariant,
+        &[Role::SecondaryFixed, Role::SecondaryFixedDim],
+    ),
+    (
+        Role::OnTertiaryFixed,
+        &[Role::TertiaryFixed, Role::TertiaryFixedDim],
+    ),
+    (
+        Role::OnTertiaryFixedVariant,
+        &[Role::TertiaryFixed, Role::TertiaryFixedDim],
+    ),
 ];
 
 /// The WCAG 2 contrast ratio of `text` over `bg`.

@@ -110,6 +110,10 @@ pub fn base_tokens() -> TokenTable {
             alpha: None,
         },
     );
+    let paths: Vec<String> = t.tokens.keys().chain(t.derived.keys()).cloned().collect();
+    for p in paths {
+        t.set_origin(p, "base");
+    }
     t
 }
 

@@ -392,7 +392,10 @@ impl Color {
             return self;
         }
         let lch = self.to_oklch();
+        let l0 = lch.l.clamp(0.0, 1.0);
         let with_l = |l: f64| {
+            #[cfg(test)]
+            SOLVER_STEPS.with(|n| n.set(n.get() + 1));
             Color::from_oklch(Oklch {
                 l: l.clamp(0.0, 1.0),
                 ..lch
@@ -403,45 +406,119 @@ impl Color {
         let mean_lum = bgs.iter().map(|b| b.relative_luminance()).sum::<f64>() / bgs.len() as f64;
         // Towards white over dark backgrounds, towards black over light.
         let up_first = mean_lum < 0.18;
-        let ends = if up_first { [1.0, 0.0] } else { [0.0, 1.0] };
-        for end in ends {
-            if worst(with_l(end)) < min {
-                continue;
-            }
-            // Binary search the smallest move towards `end` that reaches
-            // `min`.
-            let (mut near, mut far) = (lch.l.clamp(0.0, 1.0), end);
+        // Binary search for the lightness between `l0` and `end` nearest
+        // `l0` where `ok` starts to hold (`ok(end)` holds).
+        let search = |end: f64, ok: &dyn Fn(Color) -> bool| {
+            let (mut near, mut far) = (l0, end);
             for _ in 0..40 {
                 let mid = (near + far) / 2.0;
-                if worst(with_l(mid)) >= min {
+                if ok(with_l(mid)) {
                     far = mid;
                 } else {
                     near = mid;
                 }
             }
-            return with_l(far);
+            with_l(far)
+        };
+        if self.a < 1.0 {
+            // Translucent text is judged as drawn over each background,
+            // so its luminance depends on the background: move towards
+            // the end that reaches `min` (if one does).
+            let ends = if up_first { [1.0, 0.0] } else { [0.0, 1.0] };
+            for end in ends {
+                if worst(with_l(end)) >= min {
+                    return search(end, &|c| worst(c) >= min);
+                }
+            }
+            return self;
         }
-        // Neither end reaches `min` over every background (backgrounds
-        // both lighter and darker than the text): a lightness between
-        // them may. Scan, keeping the one nearest the original that
-        // reaches `min`, else the best worst case.
+        // Opaque text of luminance Y reaches `min` over a background of
+        // luminance B unless Y falls in the open gap
+        // ((B + 0.05) / min - 0.05, min (B + 0.05) - 0.05). The text's
+        // luminance rises with its lightness (black at 0, white at 1), so
+        // the reachable lightnesses are the complement of the merged
+        // gaps: the nearest one above or below is a single search, and
+        // gaps covering all of 0..=1 mean nothing reaches `min`.
+        let mut gaps: Vec<(f64, f64)> = bgs
+            .iter()
+            .map(|b| {
+                let k = b.relative_luminance() + 0.05;
+                (k / min - 0.05, k * min - 0.05)
+            })
+            .collect();
+        gaps.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut merged: Vec<(f64, f64)> = Vec::with_capacity(gaps.len());
+        for g in gaps {
+            match merged.last_mut() {
+                Some(last) if g.0 <= last.1 => last.1 = last.1.max(g.1),
+                _ => merged.push(g),
+            }
+        }
+        let y0 = self.relative_luminance();
+        let Some(&(lo, hi)) = merged.iter().find(|(lo, hi)| y0 > *lo && y0 < *hi) else {
+            // Outside every gap, short of `min` only by rounding.
+            return self;
+        };
+        // A small margin keeps the answer on the reaching side after the
+        // colour is rounded to f32.
+        const MARGIN: f64 = 1e-6;
+        let up = (hi < 1.0).then(|| (hi + MARGIN).min(1.0));
+        let down = (lo > 0.0).then(|| (lo - MARGIN).max(0.0));
+        let tries: [(f64, Option<f64>); 2] = if up_first {
+            [(1.0, up), (0.0, down)]
+        } else {
+            [(0.0, down), (1.0, up)]
+        };
+        for (end, target) in tries {
+            let Some(y) = target else { continue };
+            let c = if end > 0.5 {
+                search(end, &|c| c.relative_luminance() >= y)
+            } else {
+                search(end, &|c| c.relative_luminance() <= y)
+            };
+            if worst(c) >= min {
+                return c;
+            }
+        }
+        if up.is_none() && down.is_none() {
+            // No lightness reaches `min` over every background.
+            return self;
+        }
+        // Luminance not monotone in lightness here (a gamut-mapping
+        // step): fall back to scanning.
+        self.with_contrast_scan(bgs, min)
+    }
+
+    /// The reaching lightness nearest the original found by scanning
+    /// 0..=1 (a fallback for colours the luminance model above misjudges;
+    /// not reached by ordinary colours), else `self`.
+    fn with_contrast_scan(self, bgs: &[Color], min: f64) -> Color {
+        let lch = self.to_oklch();
         let mut best: Option<(f64, Color)> = None;
-        let mut fallback = (f64::NEG_INFINITY, self);
-        for i in 0..=400 {
-            let l = i as f64 / 400.0;
-            let c = with_l(l);
-            let w = worst(c);
-            if w >= min {
+        for i in 0..=SCAN_STEPS {
+            let l = i as f64 / SCAN_STEPS as f64;
+            #[cfg(test)]
+            SOLVER_STEPS.with(|n| n.set(n.get() + 1));
+            let c = Color::from_oklch(Oklch { l, ..lch })
+                .gamut_mapped()
+                .with_alpha(self.a);
+            if bgs.iter().all(|b| c.contrast(*b) >= min) {
                 let d = (l - lch.l).abs();
                 if best.is_none_or(|(bd, _)| d < bd) {
                     best = Some((d, c));
                 }
-            } else if w > fallback.0 {
-                fallback = (w, c);
             }
         }
-        best.map_or(fallback.1, |(_, c)| c)
+        best.map_or(self, |(_, c)| c)
     }
+}
+
+const SCAN_STEPS: u32 = 400;
+
+#[cfg(test)]
+thread_local! {
+    /// Lightnesses the solver tried (gamut maps), for cost tests.
+    static SOLVER_STEPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 impl LinearRgb {
@@ -612,6 +689,50 @@ mod tests {
         assert!(Color::BLACK.with_alpha(0.0).contrast(Color::WHITE) < 1.0001);
     }
 
+    fn steps() -> u64 {
+        SOLVER_STEPS.with(|n| n.replace(0))
+    }
+
+    #[test]
+    fn the_solver_is_cheap_even_when_nothing_reaches_the_minimum() {
+        let hex = |h| Color::from_hex(h).unwrap();
+        // Backgrounds on both sides of the text: no lightness reaches 3:1
+        // over all of them, so only the first is met.
+        let bgs = [
+            hex("#7a7a7a"),
+            hex("#000000"),
+            hex("#ffffff"),
+            hex("#303030"),
+        ];
+        steps();
+        let solved = hex("#808080").with_contrast(&bgs, MIN_CONTRAST);
+        let n = steps();
+        assert!(solved.contrast(bgs[0]) >= MIN_CONTRAST - 1e-6);
+        assert!(n <= 50, "{n} lightnesses tried");
+        // A reachable pair over eight backgrounds: one search.
+        let surfaces: Vec<Color> = (0..8)
+            .map(|i| {
+                Color::from_oklch(Oklch {
+                    l: 0.12 + i as f64 * 0.02,
+                    c: 0.02,
+                    h: 270.0,
+                    alpha: 1.0,
+                })
+            })
+            .collect();
+        let fg = hex("#3a3a50").with_contrast(&surfaces, MIN_CONTRAST);
+        let n = steps();
+        assert!(
+            surfaces
+                .iter()
+                .all(|b| fg.contrast(*b) >= MIN_CONTRAST - 1e-6)
+        );
+        assert!(n <= 50, "{n} lightnesses tried");
+        // A pair that already passes costs nothing.
+        Color::WHITE.with_contrast(&surfaces, MIN_CONTRAST);
+        assert_eq!(steps(), 0);
+    }
+
     fn unit() -> impl Strategy<Value = f32> {
         0.0f32..=1.0
     }
@@ -634,6 +755,30 @@ mod tests {
             prop_assert!(solved.contrast(bg) >= MIN_CONTRAST - 1e-6, "{text:?} on {bg:?} -> {solved:?}");
             if text.contrast(bg) >= MIN_CONTRAST {
                 prop_assert_eq!(solved, text);
+            }
+        }
+
+        /// Several backgrounds: whenever some lightness reaches the
+        /// minimum over all of them (a fine scan finds one), the solver
+        /// does too, and the first background is always met.
+        #[test]
+        fn solved_text_reaches_the_minimum_over_many(
+            t in (unit(), unit(), unit()),
+            b in proptest::collection::vec((unit(), unit(), unit()), 1..9),
+        ) {
+            let text = Color::rgb(t.0, t.1, t.2);
+            let bgs: Vec<Color> = b.iter().map(|b| Color::rgb(b.0, b.1, b.2)).collect();
+            let solved = text.with_contrast(&bgs, MIN_CONTRAST);
+            prop_assert!(solved.contrast(bgs[0]) >= MIN_CONTRAST - 1e-6);
+            let lch = text.to_oklch();
+            let feasible = (0..=400).any(|i| {
+                let c = Color::from_oklch(Oklch { l: i as f64 / 400.0, ..lch }).gamut_mapped();
+                bgs.iter().all(|b| c.contrast(*b) >= MIN_CONTRAST)
+            });
+            if feasible {
+                for bg in &bgs {
+                    prop_assert!(solved.contrast(*bg) >= MIN_CONTRAST - 1e-6, "{text:?} over {bgs:?} -> {solved:?}");
+                }
             }
         }
 

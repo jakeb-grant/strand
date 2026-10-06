@@ -29,6 +29,13 @@ impl Shell {
         u.diff.ops
     }
 
+    /// Flushes, returning the errors (as text) instead of failing.
+    fn flush_errors(&mut self) -> Vec<String> {
+        let u = self.inst.flush();
+        self.scene.apply(&u.diff).unwrap();
+        u.errors.iter().map(|e| format!("{e:?}")).collect()
+    }
+
     fn tokens(&self) -> &TokenTable {
         &self.scene.tokens
     }
@@ -55,6 +62,13 @@ impl Shell {
 }
 
 fn boot(files: &[(&str, String)], storage: Storage) -> Shell {
+    let (shell, errors) = try_boot(files, storage);
+    assert!(errors.is_empty(), "{errors:?}");
+    shell
+}
+
+/// Boots, returning the boot flush's errors rather than failing on them.
+fn try_boot(files: &[(&str, String)], storage: Storage) -> (Shell, Vec<String>) {
     let mut map = SourceMap::new();
     for (name, text) in files {
         map.add(*name, text.clone());
@@ -83,8 +97,8 @@ fn boot(files: &[(&str, String)], storage: Storage) -> Shell {
         inst,
         scene: SceneMirror::new(),
     };
-    shell.flush();
-    shell
+    let errors = shell.flush_errors();
+    (shell, errors)
 }
 
 fn temp_dir(name: &str) -> std::path::PathBuf {
@@ -163,6 +177,8 @@ fn the_hello_bar_alone_is_themed_by_the_built_in_theme() {
     ] {
         assert!(t.lookup(path).is_some(), "{path}");
     }
+    assert_eq!(t.origin("border"), Some("base"));
+    assert_eq!(t.origin("accent"), Some("palette:built-in"));
     let seed = hex(strand_theme::defaults::DEFAULT_SEED);
     assert_eq!(
         shell.color("accent"),
@@ -256,6 +272,13 @@ fn every_look_of_the_theme_file() {
     readable(shell.tokens());
     // The derived base tokens follow the palette.
     assert_eq!(shell.color("fg.muted"), hex("#cdd6f4").with_alpha(0.65));
+    // Provenance for the inspector: which tier and source defined what.
+    assert_eq!(
+        shell.tokens().origin("accent"),
+        Some("palette:catppuccin:mocha")
+    );
+    assert_eq!(shell.tokens().origin("fg.muted"), Some("tokens base"));
+    assert_eq!(shell.tokens().origin("motion.bouncy"), Some("tokens base"));
     // wallpaper: quantising, so `?? material(seed: …)` holds first...
     shell.look("wallpaper");
     assert_eq!(
@@ -272,6 +295,7 @@ fn every_look_of_the_theme_file() {
         from_image.to_oklch()
     );
     readable(shell.tokens());
+    assert_eq!(shell.tokens().origin("surface"), Some("palette:wallpaper"));
     // The wallpaper is a file to watch.
     assert_eq!(shell.inst.theme_files().0, std::slice::from_ref(&wall));
     assert!(shell.inst.take_theme_files_changed());
@@ -306,6 +330,18 @@ fn every_look_of_the_theme_file() {
         "the boot table is the wallpaper's"
     );
     assert_eq!(shell.inst.theme().unwrap().quantised(), 0, "from the cache");
+    // A look that reads no wallpaper lets go of it: no longer watched.
+    let mut shell = shell;
+    shell.inst.take_theme_files_changed();
+    shell.look("mocha");
+    assert!(
+        shell.inst.theme_files().0.is_empty(),
+        "{:?}",
+        shell.inst.theme_files()
+    );
+    assert!(shell.inst.take_theme_files_changed());
+    shell.look("wallpaper");
+    assert_eq!(shell.inst.theme_files().0, std::slice::from_ref(&wall));
     drop(shell);
     if let Some(p) = &storage.persist {
         assert!(p.sync(Duration::from_secs(5)));
@@ -405,4 +441,65 @@ fn subtree_overrides_inherit_and_stay_readable() {
     // The built-in light theme's fg is dark; over the darkened surface it
     // was solved lighter.
     assert!(fg.to_oklch().l > shell.color("fg").to_oklch().l);
+}
+
+/// A palette file broken at boot or on a later save: the error is
+/// reported and the last good palette holds (this run's, or the one the
+/// last run persisted), never the built-in colours.
+#[test]
+fn a_broken_palette_file_keeps_the_last_good_palette() {
+    let dir = temp_dir("broken");
+    let config = dir.join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    let scheme = |blue: &str| {
+        format!(
+            "variant: \"dark\"\npalette:\n  base00: \"#1a1b26\"\n  base05: \"#c0caf5\"\n  base0D: \"{blue}\"\n"
+        )
+    };
+    let file = config.join("scheme.yaml");
+    std::fs::write(&file, scheme("#2ac3de")).unwrap();
+    let src = || {
+        "let p = import(\"base16:scheme.yaml\")\nuse palette p\nbar B { text \"x\" }\n".to_string()
+    };
+    let storage = Storage::in_dirs(dir.join("state"), &config);
+    let shell = boot(&[("t.strand", src())], storage.clone());
+    assert_eq!(shell.color("accent"), hex("#2ac3de"));
+    drop(shell);
+    // Broken before the next boot: the boot table is the last run's.
+    std::fs::write(&file, "palette: [this is not\n").unwrap();
+    let (mut shell, errors) = try_boot(&[("t.strand", src())], storage.clone());
+    assert!(!errors.is_empty(), "the broken file is reported");
+    assert_eq!(shell.color("accent"), hex("#2ac3de"), "boot: last palette");
+    // Fixed: the new palette.
+    std::fs::write(&file, scheme("#9ece6a")).unwrap();
+    assert!(shell.inst.theme_files_changed(std::slice::from_ref(&file)));
+    shell.flush();
+    assert_eq!(shell.color("accent"), hex("#9ece6a"));
+    // Broken again while running: reported, the palette holds.
+    std::fs::write(&file, "palette: [this is not\n").unwrap();
+    assert!(shell.inst.theme_files_changed(std::slice::from_ref(&file)));
+    let errors = shell.flush_errors();
+    assert!(!errors.is_empty());
+    assert_eq!(
+        shell.color("accent"),
+        hex("#9ece6a"),
+        "running: last palette"
+    );
+    // Missing entirely, on a fresh state directory: the built-in theme.
+    std::fs::remove_file(&file).unwrap();
+    let (shell, errors) = try_boot(
+        &[("t.strand", src())],
+        Storage::in_dirs(dir.join("fresh"), &config),
+    );
+    assert!(!errors.is_empty());
+    assert_eq!(
+        shell.color("accent"),
+        from_seed(
+            hex(strand_theme::defaults::DEFAULT_SEED),
+            Options::default()
+        )
+        .get(Role::Accent)
+    );
+    drop(shell);
+    let _ = std::fs::remove_dir_all(dir);
 }

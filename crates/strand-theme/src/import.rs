@@ -116,7 +116,7 @@ pub fn import(source: &str, base: Option<&Path>) -> Result<Palette, ImportError>
         }
         _ => return Err(ImportError::UnknownSource(source.to_string())),
     };
-    Ok(partial.fill())
+    Ok(partial.fill().with_source(source))
 }
 
 // ---------------------------------------------------------------------------
@@ -487,12 +487,33 @@ fn collect_tokens(
     }
 }
 
-/// The role a token path names: the longest suffix of its words
-/// (`md.sys.color.on-primary-container` → `on_primary_container`) that
-/// is a role's Strand or Material 3 name.
-fn role_of_path(path: &[String]) -> Option<Role> {
-    let words: Vec<String> = path
+/// Words that group system colours in a token file (`color.primary`,
+/// `md.sys.color.primary`, `palette.surface`): a role under them is the
+/// theme's own, not a component's.
+const COLOUR_GROUPS: &[&str] = &[
+    "color", "colors", "colour", "colours", "sys", "system", "palette", "md", "ref", "theme",
+    "semantic", "base", "global", "core",
+];
+
+/// The role a token path names, ranked: lower is a better claim. A
+/// path whose words before the role are all colour groups (or none)
+/// ranks 0; one other word (`brand.primary`) ranks 1; more
+/// (`component.button.primary`, `tooltip.background` under a component
+/// group) is a component's token and names no role. Ties go to the
+/// shorter path.
+fn ranked_role_of_path(path: &[String]) -> Option<(Role, (usize, usize))> {
+    let words = path_words(path);
+    let (i, role) =
+        (0..words.len()).find_map(|i| Some((i, Role::from_name(&words[i..].join("_"))?)))?;
+    let others = words[..i]
         .iter()
+        .filter(|w| !COLOUR_GROUPS.contains(&w.as_str()))
+        .count();
+    (others <= 1).then_some((role, (others, i)))
+}
+
+fn path_words(path: &[String]) -> Vec<String> {
+    path.iter()
         .flat_map(|s| {
             s.to_lowercase()
                 .split(['-', '_', ' '])
@@ -500,7 +521,15 @@ fn role_of_path(path: &[String]) -> Option<Role> {
                 .collect::<Vec<_>>()
         })
         .filter(|w| !w.is_empty())
-        .collect();
+        .collect()
+}
+
+/// The role a token path names: the longest suffix of its words
+/// (`md.sys.color.on-primary-container` → `on_primary_container`) that
+/// is a role's Strand or Material 3 name.
+#[cfg(test)]
+fn role_of_path(path: &[String]) -> Option<Role> {
+    let words = path_words(path);
     (0..words.len()).find_map(|i| Role::from_name(&words[i..].join("_")))
 }
 
@@ -526,13 +555,20 @@ pub fn w3c(text: &str) -> Result<Partial, String> {
         None
     };
     let mut p = Partial::default();
+    let mut claims: BTreeMap<Role, (usize, usize)> = BTreeMap::new();
     for (path, value, ty) in &tokens {
         if ty.as_deref().is_some_and(|t| t != "color") {
             continue;
         }
-        if let (Some(r), Some(c)) = (role_of_path(path), resolve(value)) {
-            p.set(r, c);
+        let (Some((r, rank)), Some(c)) = (ranked_role_of_path(path), resolve(value)) else {
+            continue;
+        };
+        // The best-ranked path wins whatever the file's order.
+        if claims.get(&r).is_some_and(|best| *best <= rank) {
+            continue;
         }
+        claims.insert(r, rank);
+        p.set(r, c);
     }
     if p.roles.is_empty() {
         return Err("no colour token names a palette role".into());
@@ -562,6 +598,17 @@ mod tests {
             Some(Role::SurfaceHigh)
         );
         assert_eq!(role_of_path(&p("color.fg.muted")), None);
+        // Component tokens name no role; a brand group ranks below a
+        // colour group.
+        assert_eq!(ranked_role_of_path(&p("component.button.primary")), None);
+        assert_eq!(
+            ranked_role_of_path(&p("component.tooltip.background")),
+            None
+        );
+        assert!(
+            ranked_role_of_path(&p("color.primary")).unwrap().1
+                < ranked_role_of_path(&p("brand.primary")).unwrap().1
+        );
     }
 
     #[test]

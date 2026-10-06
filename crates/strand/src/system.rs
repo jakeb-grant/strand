@@ -67,14 +67,20 @@ impl Last {
                 continue;
             };
             let s = match (k.trim(), v.trim()) {
-                ("dark", v) => SystemSetting::Dark {
-                    dark: v == "true",
-                    scheme: if v == "true" {
-                        strand_watch::ColorScheme::PreferDark
-                    } else {
-                        strand_watch::ColorScheme::NoPreference
-                    },
-                },
+                // `dark=<bool>,<scheme>` (an older file has no scheme).
+                ("dark", v) => {
+                    use strand_watch::ColorScheme;
+                    let (dark, scheme) = v.split_once(',').unwrap_or((v, ""));
+                    let dark = dark.trim() == "true";
+                    let scheme = match scheme.trim() {
+                        "prefer-dark" => ColorScheme::PreferDark,
+                        "prefer-light" => ColorScheme::PreferLight,
+                        "none" => ColorScheme::NoPreference,
+                        _ if dark => ColorScheme::PreferDark,
+                        _ => ColorScheme::NoPreference,
+                    };
+                    SystemSetting::Dark { dark, scheme }
+                }
                 ("accent", "none") => SystemSetting::Accent(None),
                 ("accent", v) => match Color::from_hex(v) {
                     Some(c) => SystemSetting::Accent(Some([c.r as f64, c.g as f64, c.b as f64])),
@@ -114,7 +120,14 @@ impl Last {
         let mut out = String::new();
         for s in &self.settings {
             match s {
-                SystemSetting::Dark { dark, .. } => out.push_str(&format!("dark={dark}\n")),
+                SystemSetting::Dark { dark, scheme } => {
+                    let scheme = match scheme {
+                        strand_watch::ColorScheme::PreferDark => "prefer-dark",
+                        strand_watch::ColorScheme::PreferLight => "prefer-light",
+                        strand_watch::ColorScheme::NoPreference => "none",
+                    };
+                    out.push_str(&format!("dark={dark},{scheme}\n"));
+                }
                 SystemSetting::Accent(None) => out.push_str("accent=none\n"),
                 SystemSetting::Accent(Some([r, g, b])) => {
                     let [r, g, b, _] = Color::rgb(*r as f32, *g as f32, *b as f32).to_rgba8();
@@ -127,7 +140,9 @@ impl Last {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let tmp = path.with_extension("tmp");
+        // Per process: two `strand run`s sharing the state directory
+        // never write the same temp file.
+        let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
         std::fs::write(&tmp, out)?;
         std::fs::rename(&tmp, path)
     }
@@ -166,6 +181,27 @@ mod tests {
             Value::Color(Color::rgb(1.0, 0.0, 0.0))
         );
         assert_eq!(value(&last.settings[2]), Value::float(1.0));
+        // An explicit light preference survives a restart as such.
+        let light = SystemBatch {
+            settings: vec![SystemSetting::Dark {
+                dark: false,
+                scheme: strand_watch::ColorScheme::PreferLight,
+            }],
+            at_boot: false,
+            received: Instant::now(),
+        };
+        assert!(last.merge(&light));
+        last.save(&path).unwrap();
+        assert_eq!(Last::load(&path), last);
+        // The older form still reads.
+        std::fs::write(&path, "dark=true\n").unwrap();
+        assert_eq!(
+            Last::load(&path).settings,
+            [SystemSetting::Dark {
+                dark: true,
+                scheme: strand_watch::ColorScheme::PreferDark
+            }]
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }

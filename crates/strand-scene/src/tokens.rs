@@ -158,9 +158,25 @@ pub struct TokenTable {
     /// [`MIN_CONTRAST`] over each background
     /// ([`Color::with_contrast`]).
     pub contrast: BTreeMap<String, Vec<String>>,
+    /// Where each path was defined, for the inspector's provenance
+    /// (`bg ← surface.hi ← base ← palette:wallpaper`): a tier and its
+    /// name (`palette:catppuccin:mocha`, `base`, `tokens compact`,
+    /// `component Toast`). Informational: evaluation never reads it.
+    pub origins: BTreeMap<String, String>,
 }
 
 impl TokenTable {
+    /// Records that `path` was defined by `origin` (see
+    /// [`TokenTable::origins`]).
+    pub fn set_origin(&mut self, path: impl Into<String>, origin: impl Into<String>) {
+        self.origins.insert(path.into(), origin.into());
+    }
+
+    /// Where `path` was defined, if recorded.
+    pub fn origin(&self, path: &str) -> Option<&str> {
+        self.origins.get(path).map(String::as_str)
+    }
+
     /// The plain value stored at `path` (not evaluating derived tokens).
     pub fn get(&self, path: &str) -> Option<&PropValue> {
         self.tokens.get(path)
@@ -205,6 +221,47 @@ impl TokenTable {
     pub fn eval(&self, e: &TokenExpr) -> Option<PropValue> {
         TokenScope::new(&[self]).eval(e)
     }
+}
+
+/// Most solved pairs [`guarded`] remembers before it starts over.
+const GUARD_MEMO: usize = 256;
+
+thread_local! {
+    /// Solved text colours by (text, backgrounds), as f32 bits: a frame's
+    /// text nodes share their scope's few pairs, so each pair is solved
+    /// once per frame (once per palette while nothing springs), not once
+    /// per lookup.
+    static GUARD: std::cell::RefCell<std::collections::HashMap<Vec<u32>, Color>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    /// Solves done (memo misses), for cost tests.
+    static GUARD_SOLVES: Cell<u64> = const { Cell::new(0) };
+}
+
+/// `text` solved over `bgs` ([`Color::with_contrast`]), memoised.
+fn guarded(text: Color, bgs: &[Color]) -> Color {
+    let key: Vec<u32> = std::iter::once(text)
+        .chain(bgs.iter().copied())
+        .flat_map(|c| [c.r, c.g, c.b, c.a].map(f32::to_bits))
+        .collect();
+    if let Some(c) = GUARD.with(|m| m.borrow().get(&key).copied()) {
+        return c;
+    }
+    GUARD_SOLVES.with(|n| n.set(n.get() + 1));
+    let solved = text.with_contrast(bgs, MIN_CONTRAST);
+    GUARD.with(|m| {
+        let mut m = m.borrow_mut();
+        if m.len() >= GUARD_MEMO {
+            m.clear();
+        }
+        m.insert(key, solved);
+    });
+    solved
+}
+
+/// How many contrast solves this thread has done (the memo's misses).
+#[doc(hidden)]
+pub fn guard_solves() -> u64 {
+    GUARD_SOLVES.with(Cell::get)
 }
 
 /// A chain of token tables: the global table sent by
@@ -384,7 +441,7 @@ impl<'a> TokenScope<'a> {
                 _ => None,
             })
             .collect();
-        Some(PropValue::Color(text.with_contrast(&bgs, MIN_CONTRAST)))
+        Some(PropValue::Color(guarded(text, &bgs)))
     }
 
     fn eval_in(
@@ -937,6 +994,70 @@ mod tests {
         // A pair that already passes is untouched.
         t.insert("fg", PropValue::Color(Color::WHITE));
         assert_eq!(t.lookup("fg"), Some(PropValue::Color(Color::WHITE)));
+    }
+
+    /// A light↔dark swap, frame by frame: 50 text nodes evaluate `$fg`
+    /// and `$fg.muted` against eight surfaces each frame. Each frame
+    /// solves the pair once (the memo), whatever the node count, and a
+    /// frame stays far inside design.md's 5 ms swap budget.
+    #[test]
+    fn a_swap_frame_solves_each_pair_once() {
+        let hex = |h| Color::from_hex(h).unwrap();
+        let (light_s, dark_s) = (hex("#fbf8ff"), hex("#121318"));
+        let (light_f, dark_f) = (hex("#1a1b20"), hex("#e3e1e9"));
+        let surfaces = [
+            "surface",
+            "surface.dim",
+            "surface.bright",
+            "surface.lowest",
+            "surface.low",
+            "surface.container",
+            "surface.high",
+            "surface.highest",
+        ];
+        let frames = 60;
+        let mut worst = std::time::Duration::ZERO;
+        for f in 0..=frames {
+            let t = f as f32 / frames as f32;
+            let mut table = TokenTable::default();
+            for (i, s) in surfaces.iter().enumerate() {
+                let c = light_s.lerp_oklab(dark_s, t);
+                table.insert(*s, PropValue::Color(shift_l(c, i as f32 * 0.01)));
+            }
+            table.insert("fg", PropValue::Color(light_f.lerp_oklab(dark_f, t)));
+            table.insert_derived(
+                "fg.muted",
+                TokenExpr::path("fg").call(
+                    TokenMethod::Alpha,
+                    vec![TokenExpr::value(PropValue::Number(0.65))],
+                ),
+            );
+            table.insert_contrast("fg", surfaces.iter().map(|s| s.to_string()).collect());
+            let before = guard_solves();
+            let start = std::time::Instant::now();
+            let levels = [&table];
+            for _ in 0..50 {
+                let scope = TokenScope::new(&levels);
+                let Some(PropValue::Color(fg)) = scope.lookup("fg") else {
+                    panic!()
+                };
+                assert!(
+                    fg.contrast(table.get("surface").and_then(color).unwrap())
+                        >= MIN_CONTRAST - 1e-6
+                );
+                assert!(scope.lookup("fg.muted").is_some());
+            }
+            worst = worst.max(start.elapsed());
+            assert!(
+                guard_solves() - before <= 1,
+                "frame {f}: {} solves",
+                guard_solves() - before
+            );
+        }
+        eprintln!("worst swap frame: {worst:?}");
+        if !cfg!(debug_assertions) {
+            assert!(worst < std::time::Duration::from_millis(5), "{worst:?}");
+        }
     }
 
     #[test]

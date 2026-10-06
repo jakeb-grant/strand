@@ -1013,7 +1013,9 @@ fn scoped_token_overrides_apply_to_their_subtree() {
         TokenExpr::path("surface").call(TokenMethod::Alpha, vec![TokenExpr::value(num(0.5))]),
     );
     let mut b = Builder::default();
-    let root = b.node(NodeKind::Bar, None, vec![]);
+    // Clear, so the boxes are read as drawn (a bar naming no `bg` gets
+    // the table's `$surface`).
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#00000000"))]);
     let boxed = |x: f32, path: &str| {
         vec![
             (Prop::X, num(x)),

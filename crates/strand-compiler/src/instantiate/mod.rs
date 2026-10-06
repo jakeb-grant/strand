@@ -371,7 +371,8 @@ impl Ctx {
                 contrast,
                 ..Default::default()
             },
-        ))
+        )
+        .with_source("built-in"))
     }
 
     fn token_table(self: &Rc<Self>, rt: &Runtime) -> Result<TokenTable, Error> {
@@ -383,25 +384,43 @@ impl Ctx {
         // defines only some base tokens keeps the rest.
         let mut t = strand_theme::defaults::base_tokens();
         let palette = match prog.use_palette {
-            Some(c) => self.vm.eval(rt, c, &root)?,
+            // A palette that fails (an imported file with a syntax error)
+            // is reported, and the last good one holds.
+            Some(c) => self.vm.eval(rt, c, &root).unwrap_or_else(|err| {
+                self.error("use palette", err);
+                Value::Null
+            }),
             None => Value::Palette(Rc::new(self.default_palette(rt)?)),
         };
         let palette = match palette {
             Value::Async(a) => a.usable().cloned().unwrap_or(Value::Null),
             v => v,
         };
+        let theme = self.vm.theme();
         match &palette {
-            Value::Palette(p) => p.insert_into(&mut t),
-            // A palette still loading with no fallback: the built-in one
-            // rather than no colours at all.
-            _ => self.default_palette(rt)?.insert_into(&mut t),
+            Value::Palette(p) => {
+                p.insert_into(&mut t);
+                if let Some(theme) = &theme {
+                    theme.remember_palette(p);
+                }
+            }
+            // Failed, or still loading with no fallback: the last good
+            // palette (this run's, or persisted by the last), else the
+            // built-in one, rather than no colours at all.
+            _ => match theme.and_then(|t| t.last_palette()) {
+                Some(p) => p.insert_into(&mut t),
+                None => self.default_palette(rt)?.insert_into(&mut t),
+            },
         }
         // Component token defaults (`$Toast.radius`) before the sets, so
         // a set's `override Toast.radius` replaces them.
         for c in prog.components.values() {
             for e in &c.tokens {
                 match self.vm.eval(rt, e.value, &root) {
-                    Ok(v) => convert::token_entry(types, &mut t, &e.path, &e.ty, &v),
+                    Ok(v) => {
+                        convert::token_entry(types, &mut t, &e.path, &e.ty, &v);
+                        t.set_origin(e.path.clone(), format!("component {}", c.name));
+                    }
                     Err(err) => self.error(format!("token `${}`", e.path), err),
                 }
             }
@@ -428,7 +447,10 @@ impl Ctx {
             };
             for e in &s.entries {
                 match self.vm.eval(rt, e.value, &root) {
-                    Ok(v) => convert::token_entry(types, &mut t, &e.path, &e.ty, &v),
+                    Ok(v) => {
+                        convert::token_entry(types, &mut t, &e.path, &e.ty, &v);
+                        t.set_origin(e.path.clone(), format!("tokens {}", s.name));
+                    }
                     Err(err) => self.error(format!("token `${}`", e.path), err),
                 }
             }
@@ -1360,7 +1382,36 @@ impl Instance {
                 return Ok((d, parts[n..].iter().map(|s| s.to_string()).collect()));
             }
         }
-        Err(Error::failed(format!("nothing is exported as `{path}`")))
+        // Settings files are user-facing whether exported or not:
+        // `theme.prefs.compact`, or `prefs.compact` when one file has a
+        // settings `prefs` (design.md: `strand set prefs.compact true`).
+        let settings = |module: Option<&str>, name: &str| -> Vec<DefId> {
+            prog.defs
+                .iter()
+                .enumerate()
+                .filter(|(_, d)| {
+                    d.kind == DefKind::Settings
+                        && d.owner.is_none()
+                        && d.name == name
+                        && module.is_none_or(|m| d.module == m)
+                })
+                .map(|(i, _)| DefId(i as u32))
+                .collect()
+        };
+        let rest = |from: usize| parts[from..].iter().map(|s| s.to_string()).collect();
+        if parts.len() >= 2
+            && let [d] = settings(Some(parts[0]), parts[1])[..]
+        {
+            return Ok((d, rest(2)));
+        }
+        match settings(None, parts[0])[..] {
+            [d] => Ok((d, rest(1))),
+            [] => Err(Error::failed(format!("nothing is exported as `{path}`"))),
+            _ => Err(Error::failed(format!(
+                "more than one file has settings `{}`: name it as `<file>.{path}`",
+                parts[0]
+            ))),
+        }
     }
 
     /// Function values the VM called so far ([`crate::vm::Vm::calls`]).

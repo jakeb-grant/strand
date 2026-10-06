@@ -75,6 +75,18 @@ roles! {
     Shadow => "shadow", "shadow";
     Scrim => "scrim", "scrim";
     SurfaceTint => "surface_tint", "surface_tint";
+    AccentFixed => "accent_fixed", "primary_fixed";
+    AccentFixedDim => "accent_fixed_dim", "primary_fixed_dim";
+    OnAccentFixed => "on_accent_fixed", "on_primary_fixed";
+    OnAccentFixedVariant => "on_accent_fixed_variant", "on_primary_fixed_variant";
+    SecondaryFixed => "secondary_fixed", "secondary_fixed";
+    SecondaryFixedDim => "secondary_fixed_dim", "secondary_fixed_dim";
+    OnSecondaryFixed => "on_secondary_fixed", "on_secondary_fixed";
+    OnSecondaryFixedVariant => "on_secondary_fixed_variant", "on_secondary_fixed_variant";
+    TertiaryFixed => "tertiary_fixed", "tertiary_fixed";
+    TertiaryFixedDim => "tertiary_fixed_dim", "tertiary_fixed_dim";
+    OnTertiaryFixed => "on_tertiary_fixed", "on_tertiary_fixed";
+    OnTertiaryFixedVariant => "on_tertiary_fixed_variant", "on_tertiary_fixed_variant";
 }
 
 impl Role {
@@ -114,7 +126,7 @@ mod tests {
         names.sort();
         names.dedup();
         assert_eq!(names.len(), Role::COUNT);
-        assert_eq!(Role::COUNT, 37);
+        assert_eq!(Role::COUNT, 49);
         assert_eq!(Role::from_name("on_surface"), Some(Role::Fg));
     }
 }

@@ -419,20 +419,30 @@ const GENERICS: [&str; 9] = [
     "fangsong",
 ];
 
-/// `family` with `sans-serif` appended when it names no generic family,
-/// so a theme's `"Inter"` on a machine without Inter falls back to the
-/// system sans (whole words, not a per-glyph mix of fallback fonts)
-/// (decisions.md, wave3-theme).
+/// Words in a family name that mark a monospace face.
+const MONO_WORDS: [&str; 5] = ["mono", "code", "courier", "consol", "terminal"];
+
+/// `family` with a generic family appended when it names none, so a
+/// theme's `"Inter"` on a machine without Inter falls back to the system
+/// sans (whole words, not a per-glyph mix of fallback fonts): `monospace`
+/// for a family whose name says it is one (`"JetBrains Mono"`, `"Fira
+/// Code"`), so columns stay aligned, else `sans-serif` (decisions.md,
+/// wave3-theme).
 fn with_generic(family: &str) -> std::borrow::Cow<'_, str> {
     let has_generic = family.split(',').any(|f| {
         let f = f.trim().trim_matches(|c| c == '"' || c == '\'');
         GENERICS.iter().any(|g| g.eq_ignore_ascii_case(f))
     });
     if has_generic {
-        family.into()
-    } else {
-        format!("{family}, sans-serif").into()
+        return family.into();
     }
+    let lower = family.to_ascii_lowercase();
+    let generic = if MONO_WORDS.iter().any(|w| lower.contains(w)) {
+        "monospace"
+    } else {
+        "sans-serif"
+    };
+    format!("{family}, {generic}").into()
 }
 
 /// Shaping parameters shared by every attempt at one request.
@@ -607,4 +617,21 @@ fn rasterise(
         left: p.left,
         top: p.top,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_families_fall_back_to_their_generic() {
+        assert_eq!(with_generic("Inter"), "Inter, sans-serif");
+        assert_eq!(
+            with_generic("\"JetBrains Mono\""),
+            "\"JetBrains Mono\", monospace"
+        );
+        assert_eq!(with_generic("Fira Code"), "Fira Code, monospace");
+        assert_eq!(with_generic("Inter, serif"), "Inter, serif");
+        assert_eq!(with_generic("monospace"), "monospace");
+    }
 }

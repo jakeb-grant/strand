@@ -118,7 +118,7 @@ pub fn from_seed(seed: Color, opts: Options) -> Palette {
     );
     let mut p = Palette::from_fn(opts.dark, |r| from_rgb(role(&s, r)));
     contrast::guard(&mut p);
-    p
+    p.with_source("material(seed)")
 }
 
 fn role(s: &DynamicScheme, r: Role) -> Rgb {
@@ -160,6 +160,18 @@ fn role(s: &DynamicScheme, r: Role) -> Rgb {
         Role::Shadow => s.shadow(),
         Role::Scrim => s.scrim(),
         Role::SurfaceTint => s.surface_tint(),
+        Role::AccentFixed => s.primary_fixed(),
+        Role::AccentFixedDim => s.primary_fixed_dim(),
+        Role::OnAccentFixed => s.on_primary_fixed(),
+        Role::OnAccentFixedVariant => s.on_primary_fixed_variant(),
+        Role::SecondaryFixed => s.secondary_fixed(),
+        Role::SecondaryFixedDim => s.secondary_fixed_dim(),
+        Role::OnSecondaryFixed => s.on_secondary_fixed(),
+        Role::OnSecondaryFixedVariant => s.on_secondary_fixed_variant(),
+        Role::TertiaryFixed => s.tertiary_fixed(),
+        Role::TertiaryFixedDim => s.tertiary_fixed_dim(),
+        Role::OnTertiaryFixed => s.on_tertiary_fixed(),
+        Role::OnTertiaryFixedVariant => s.on_tertiary_fixed_variant(),
     }
 }
 
@@ -211,5 +223,12 @@ mod tests {
         assert!(near(lstar(light.get(Role::OnAccent)), 100.0));
         assert!(near(lstar(dark.get(Role::OnAccent)), 20.0));
         assert!(dark.is_dark() && !light.is_dark());
+        // The fixed accents keep their tones in both: 90, 80, 10, 30.
+        for p in [&light, &dark] {
+            assert!(near(lstar(p.get(Role::AccentFixed)), 90.0));
+            assert!(near(lstar(p.get(Role::TertiaryFixedDim)), 80.0));
+            assert!(near(lstar(p.get(Role::OnSecondaryFixed)), 10.0));
+            assert!(near(lstar(p.get(Role::OnAccentFixedVariant)), 30.0));
+        }
     }
 }

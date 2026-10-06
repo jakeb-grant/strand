@@ -3816,8 +3816,9 @@ the regression the guard is for.
 ## wave3-theme
 
 **2026-10-06 · wave3-theme: a crate for palettes.** `strand-theme` holds
-the palette schema (`Role`, the 37 Material 3 system roles under the
-names of wave2-check round 2), `material(seed:)`/`material(image:)`, the
+the palette schema (`Role`, the Material 3 system roles under the
+names of wave2-check round 2, 49 with the fixed accents of round 1 of
+review below), `material(seed:)`/`material(image:)`, the
 importers, the derivation table and the built-in theme. It depends on
 `strand-scene` only; `strand-compiler` depends on it. The colour maths the
 render thread needs as well (CSS Color 4 gamut mapping, WCAG contrast,
@@ -3883,7 +3884,7 @@ design tokens: a colour token fills the role named by the longest suffix
 of its path's words (`md.sys.color.on-primary-container` →
 `on_accent_container`, Strand or Material 3 names), `{alias}`
 references followed, `$type` inherited, hex strings or the 2025 colour
-object. Every importer fills the rest through one table
+object. Paths are ranked (see "W3C component groups" below). Every importer fills the rest through one table
 (`strand_theme::Partial::fill`, its doc lists the table: Material 3
 tones read as OKLCH lightness) and the contrast guard. A file import is
 read on the logic thread (a few kB), registered with the watcher and
@@ -3912,17 +3913,22 @@ elevations and the derived roles) sits under every token set, so a theme
 that defines only some base tokens keeps the rest, and the palette
 without `use palette` is `material(seed: system.accent ?? #7aa2f7, dark:
 system.dark, contrast: system.contrast)`; a `use palette` still loading
-with no fallback gets the same. Text with no `color` or `font` above it
-is drawn in `$fg` and `$font.ui`. A token path written as a plain value
+with no fallback gets the same (amended below: the last good palette
+first). Text with no `color` or `font` above it is drawn in `$fg` and
+`$font.ui`, looked up in its own scope (below). A token path written as a plain value
 replaces a derived one there and the reverse (`TokenTable::insert`).
 
 **2026-10-06 · wave3-theme: a missing font family falls back whole.**
 design.md's fonts name `"Inter"` and `"JetBrains Mono"`; on a machine
 without them parley fell back glyph by glyph (some letters missing). A
-family with no generic in it now gets `, sans-serif` appended when shaped
-(`strand-text`, one function), outside the crates this track owns
-because the theme's own fonts depend on it
-(`crates/strand-text/tests/fallback.rs`).
+family with no generic in it now gets a generic appended when shaped
+(`strand-text`, one function): `monospace` when the name says it is
+one (`Mono`, `Code`, `Courier`, `Consol`, `Terminal`, so `$font.mono`'s
+`"JetBrains Mono"` keeps columns aligned), else `sans-serif`. This is
+outside the crates this track owns because the theme's own fonts depend
+on it; it needs the integrator's (or the text owner's) sign-off
+(`crates/strand-text/tests/fallback.rs`, `crates/strand-text/src/engine.rs`
+tests).
 
 **2026-10-06 · wave3-theme: the portal in `strand run`.** Until
 `strand-services` runs the shared tokio runtime (M3), the logic thread
@@ -3939,8 +3945,14 @@ theme.look mocha` is the IPC command `{"v": 1, "cmd": "set", "path",
 "value"}` and `strand set <path> <value>`: an exported `state` (or a field
 of one), the value written as text and read by the target's type (enum
 variant by name, `true`/`false`, numbers with their units, `#rrggbb`,
-text and paths as given, `null` for an optional). The rest of the M5
-CLI (`get`, `toggle`, `call`, services and settings paths) is unchanged.
+text and paths as given, `null` for an optional). A settings file's
+state is reachable whether exported or not (settings are user-facing by
+design): `<file>.<name>.<field>`, or `<name>.<field>` when exactly one
+file has settings named so, so design.md's `strand set prefs.compact
+true` works as written against its theme.strand (`state prefs from
+…`, not exported); two files with the same settings name must be told
+apart by file. The rest of the M5 CLI (`get`, `toggle`, `call`,
+services) is unchanged.
 
 **2026-10-06 · wave3-theme: settings notices on the overlay.** Core's
 settings notices (a bad value kept at its last good value, a syntax
@@ -3949,3 +3961,103 @@ error, a read-only file whose changes go to an overlay in
 overlay rows and `strand watch` notices; rows about one file and field
 replace each other, and the shadowed row's `[clear]` drops that field's
 runtime overlay (`Instance::clear_settings_overlay`).
+
+**2026-10-06 · wave3-theme (review 1): the contrast guard's cost.** The
+guard runs where text tokens are evaluated, on the render thread, so its
+cost is bounded two ways. `Color::with_contrast` solves opaque text in
+closed form: WCAG contrast over a background of luminance B fails only
+for text luminance inside ((B+0.05)/3 − 0.05, 3(B+0.05) − 0.05), so the
+gaps of all backgrounds are merged and the nearest reachable luminance
+is found by one bisection on lightness (about 40 gamut maps), or none at
+once when the gaps cover 0..1 (then only the first background is met,
+another single search). Translucent text keeps the end-point search,
+with no scan. And `TokenScope` memoises solved pairs per (text,
+backgrounds) colour bits on the render thread (256 entries, cleared
+when full), so a frame solves each pair once whatever the number of
+text nodes. A 50-node light↔dark swap frame: one solve, 0.1 ms release,
+0.7 ms debug (`crates/strand-scene/src/tokens.rs::tests::a_swap_frame_solves_each_pair_once`,
+`crates/strand-scene/src/color.rs::tests::the_solver_is_cheap_even_when_nothing_reaches_the_minimum`,
+property test `solved_text_reaches_the_minimum_over_many`).
+
+**2026-10-06 · wave3-theme (review 1): theme defaults follow `set`.**
+Text with no `color`, and text with no `font`, inherit "the theme
+default", not a colour fixed at the root: each text node looks `$fg`
+and `$font.ui` up in its own token scope, so inside `set { $fg: … }` it
+takes the override and inside `set { $surface: … }` it takes `$fg` as
+the guard solved it against that surface, exactly as text that writes
+`color: $fg` (`crates/strand-render/tests/themes.rs::text_with_no_colour_follows_set_overrides`).
+
+**2026-10-06 · wave3-theme (review 1): a bar is themed without a
+`bg`.** design.md says the hello bar is "already … themed", and it names
+no background, so a `bar` surface that names no `bg` paints `$surface`
+(render, at flatten; `bg: #0000` keeps it clear). Only bars: design's
+panels and OSDs (`Launcher`, `Toasts`, `Level`) are clear around a
+card that carries its own translucent, blurred `bg`, and an opaque
+surface there would cover the card's corners
+(`crates/strand-render/tests/themes.rs::the_hello_bar_is_themed_with_no_theme_file`,
+references `hello_light.png` / `hello_dark.png`; checked on headless
+sway with `strand run` in light and dark).
+
+**2026-10-06 · wave3-theme (review 1): the fixed accents.** "Mapping 1:1
+onto Material 3 system roles" includes M3's fixed accents, so the
+schema has 49 roles: `accent_fixed`, `accent_fixed_dim`,
+`on_accent_fixed`, `on_accent_fixed_variant` (M3 `primary_fixed`, …) and
+the same for `secondary` and `tertiary`. `material()` takes them from
+the scheme; matugen and W3C files are read by their M3 names; the
+derivation table gives X at OKLCH lightness 0.9, 0.8, 0.12 and 0.32 in
+light and dark alike; `on_X_fixed` and `on_X_fixed_variant` are guarded
+over `X_fixed` and `X_fixed_dim`.
+
+**2026-10-06 · wave3-theme (review 1): W3C component groups.** A DTCG
+file's component tokens (`component.button.primary`,
+`component.tooltip.background`) are not the theme's roles. A path names
+a role only when at most one word before the role is not a colour group
+(`color`, `colors`, `colour(s)`, `sys`, `system`, `palette`, `md`,
+`ref`, `theme`, `semantic`, `base`, `global`, `core`); among paths
+naming the same role, fewer other words win, then the shorter prefix,
+whatever the file's order. Roles an importer gives are gamut-mapped and
+made opaque before the table derives the rest ("results are
+gamut-mapped"; a palette role is a colour to draw in, not a tint).
+
+**2026-10-06 · wave3-theme (review 1): wallpaper cache bounds and
+gaps.** The quantiser remembers the 64 most recently used wallpapers
+(path index, seeds by hash, `.seed` files pruned with them), so a
+slideshow cannot grow it. A file's stamp includes its change time, so a
+copy that keeps size and mtime (`cp -p`, `rsync -t`) is seen as new. A
+wallpaper that gave a seed and goes missing (delete-then-create, a link
+being swapped) answers "pending, last palette" for 500 ms
+(`MISSING_GRACE`) and only then fails, waking the instance to look
+again, so the old palette holds through the gap. The theme host counts
+which evaluations read each wallpaper and imported file (released when
+the reading memo re-runs or is dropped), so a wallpaper no longer used
+is no longer watched.
+
+**2026-10-06 · wave3-theme (review 1): the last good palette.** The
+palette the token table was made with is kept by the instance's theme
+host and persisted (`$XDG_STATE_HOME/strand/palettes/palette`, one
+`role #rrggbb` line per role). When `use palette` fails (an imported
+file with a syntax error, a missing file) the error is reported and the
+last good palette holds, this run's or the last run's; with none, the
+built-in palette. A palette still loading with no fallback takes it too.
+So a broken or missing palette file never boots into default colours
+(`crates/strand-compiler/tests/theme.rs::a_broken_palette_file_keeps_the_last_good_palette`).
+
+**2026-10-06 · wave3-theme (review 1): referenced files are read once
+more when registered.** The program reads a settings file (or a
+wallpaper, or a palette file) before the watcher has it, so an edit in
+between would be missed until the next save. The compiler worker sends
+each newly registered referenced file back as changed right after
+`set_referenced` returns; a re-read of unchanged content changes
+nothing (settings compare values, a wallpaper's stamp and hash decide)
+(`crates/strand/src/live.rs::tests::newly_referenced_files_are_read_again_once_registered`).
+
+**2026-10-06 · wave3-theme (review 1): provenance and small persistence
+fixes.** `TokenTable::origins` records where each path came from
+(`palette:<source>` with the palette's source — `material(seed)`,
+`wallpaper`, the import source, `built-in` — `base`, `tokens <set>`,
+`component <Name>`), for the M5 inspector's `bg ← surface.hi ← base ←
+palette:wallpaper`; nothing evaluates it. The portal's last values keep
+the colour scheme itself (`dark=<bool>,<prefer-dark|prefer-light|none>`;
+the older `dark=<bool>` still reads), and temp files carry the process
+id, so two `strand run`s sharing a state directory never collide.
+

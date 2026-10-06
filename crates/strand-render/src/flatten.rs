@@ -155,8 +155,14 @@ pub struct Flattened {
 
 #[derive(Clone)]
 struct Inherited<'a> {
-    color: Color,
-    font: Font,
+    /// The nearest ancestor's `color`; `None` is the theme's `$fg`,
+    /// looked up in each node's own scope (so a `set { $fg: … }` or
+    /// `set { $surface: … }` subtree, guarded, applies to it).
+    color: Option<Color>,
+    /// The nearest ancestor's `font`; `None` is `$font.ui`, likewise.
+    font: Option<Font>,
+    /// A `weight` set below the nearest `font`.
+    weight: Option<u16>,
     /// Token tables in scope: the global one, then each ancestor's
     /// `tokens` override.
     tokens: Vec<&'a TokenTable>,
@@ -192,14 +198,9 @@ pub fn flatten(
     // Text with no `color` or `font` above it is themed: `$fg` and
     // `$font.ui` when the token table has them (the built-in theme does).
     let mut inh = Inherited {
-        color: match tree.tokens.lookup("fg") {
-            Some(PropValue::Color(c)) => c,
-            _ => Color::BLACK,
-        },
-        font: match tree.tokens.lookup("font.ui") {
-            Some(PropValue::Font(f)) => sane_font(f),
-            _ => Font::default(),
-        },
+        color: None,
+        font: None,
+        weight: None,
         tokens: vec![&tree.tokens],
         ctx: 0,
         clip: full,
@@ -241,13 +242,30 @@ fn inherit<'a>(node: &'a Node, inh: &mut Inherited<'a>) {
     let scope = TokenScope::new(&inh.tokens);
     let get = |p: Prop| node.get(p).and_then(|v| scope.resolve(v));
     if let Some(PropValue::Color(c)) = get(Prop::Color).as_deref() {
-        inh.color = *c;
+        inh.color = Some(*c);
     }
     if let Some(PropValue::Font(f)) = get(Prop::Font).as_deref() {
-        inh.font = sane_font(f.clone());
+        inh.font = Some(sane_font(f.clone()));
+        inh.weight = None;
     }
     if let Some(w) = number(get(Prop::Weight).as_deref()) {
-        inh.font.weight = w.clamp(1.0, 1000.0) as u16;
+        inh.weight = Some(w.clamp(1.0, 1000.0) as u16);
+    }
+}
+
+/// The theme's default text colour in `scope`: `$fg`, else black.
+fn default_color(scope: &TokenScope) -> Color {
+    match scope.lookup("fg") {
+        Some(PropValue::Color(c)) => c,
+        _ => Color::BLACK,
+    }
+}
+
+/// The theme's default font in `scope`: `$font.ui`, else the default.
+fn default_font(scope: &TokenScope) -> Font {
+    match scope.lookup("font.ui") {
+        Some(PropValue::Font(f)) => sane_font(f),
+        _ => Font::default(),
     }
 }
 
@@ -644,21 +662,35 @@ impl<'a> Flattener<'a> {
             .collect();
         let get = |p: Prop| props.iter().find(|(q, _)| *q == p).map(|(_, v)| v.as_ref());
 
-        // Inherited props.
-        let color = match get(Prop::Color) {
-            Some(PropValue::Color(c)) => *c,
+        // Inherited props, as the children see them.
+        let own_color = match get(Prop::Color) {
+            Some(PropValue::Color(c)) => Some(*c),
             _ => inh.color,
         };
-        let mut font = match get(Prop::Font) {
-            Some(PropValue::Font(f)) => sane_font(f.clone()),
-            _ => inh.font.clone(),
+        let (own_font, mut weight) = match get(Prop::Font) {
+            Some(PropValue::Font(f)) => (Some(sane_font(f.clone())), None),
+            _ => (inh.font.clone(), inh.weight),
         };
         if let Some(w) = number(get(Prop::Weight)) {
-            font.weight = w.clamp(1.0, 1000.0) as u16;
+            weight = Some(w.clamp(1.0, 1000.0) as u16);
+        }
+        // What this node draws with; theme defaults come from its scope.
+        let is_text = matches!(node.kind, NodeKind::Text | NodeKind::Button);
+        let color = if is_text {
+            own_color.unwrap_or_else(|| default_color(&scope))
+        } else {
+            Color::BLACK
+        };
+        let mut font = if is_text {
+            own_font.clone().unwrap_or_else(|| default_font(&scope))
+        } else {
+            Font::default()
+        };
+        if let Some(w) = weight {
+            font.weight = w;
         }
 
         // Text shaping need, and the layout to draw meanwhile.
-        let is_text = matches!(node.kind, NodeKind::Text | NodeKind::Button);
         let explicit_w = length(get(Prop::Width), parent.w).or(number(get(Prop::Size)));
         let explicit_h = length(get(Prop::Height), parent.h).or(number(get(Prop::Size)));
         let mut layout = None;
@@ -752,8 +784,17 @@ impl<'a> Flattener<'a> {
                 self.shadow(sh, frame, &r, &box_path, &mut sig, &mut ink);
             }
         }
-        // Background.
-        if has_area && let Some(paint) = paint_of(get(Prop::Bg)) {
+        // Background. A bar that names none is themed: `$surface` (an
+        // edge strip; panels, OSDs and popups stay clear around their
+        // content, which carries its own `bg`).
+        let bg = match get(Prop::Bg) {
+            None if root && node.kind == NodeKind::Bar => match scope.lookup("surface") {
+                Some(PropValue::Color(c)) => Some(Paint::Solid(c)),
+                _ => None,
+            },
+            v => paint_of(v),
+        };
+        if has_area && let Some(paint) = bg {
             if root && opacity >= 1.0 && opaque_paint(&paint) {
                 self.out.opaque = opaque_bands(phys, &r).clipped(self.surface);
             }
@@ -856,8 +897,9 @@ impl<'a> Flattener<'a> {
             clip_group = Some(self.marker(Item::PushClip(box_path)));
         }
         let child_inh = Inherited {
-            color,
-            font,
+            color: own_color,
+            font: own_font,
+            weight,
             tokens,
             ctx: ctx.finish(),
             clip: child_clip,

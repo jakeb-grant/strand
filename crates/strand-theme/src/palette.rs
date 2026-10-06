@@ -9,10 +9,21 @@ use crate::contrast;
 use crate::role::Role;
 
 /// Every palette role with a colour, and whether it is a dark palette.
-#[derive(Clone, Debug, PartialEq)]
+/// Two palettes are equal when their colours and darkness are; the
+/// source label is not compared.
+#[derive(Clone, Debug)]
 pub struct Palette {
     colors: [Color; Role::COUNT],
     dark: bool,
+    /// What made it (`material(seed)`, `wallpaper`, `catppuccin:mocha`,
+    /// `built-in`), for the inspector's provenance.
+    source: Option<std::sync::Arc<str>>,
+}
+
+impl PartialEq for Palette {
+    fn eq(&self, other: &Self) -> bool {
+        self.colors == other.colors && self.dark == other.dark
+    }
 }
 
 impl Palette {
@@ -30,6 +41,17 @@ impl Palette {
         self.colors[role.index()] = color;
     }
 
+    /// What made this palette (see [`Palette::with_source`]).
+    pub fn source(&self) -> Option<&str> {
+        self.source.as_deref()
+    }
+
+    /// The palette labelled as made by `source` (provenance only).
+    pub fn with_source(mut self, source: &str) -> Palette {
+        self.source = Some(source.into());
+        self
+    }
+
     /// Whether this is a dark palette (light text on dark surfaces).
     pub fn is_dark(&self) -> bool {
         self.dark
@@ -44,8 +66,10 @@ impl Palette {
     /// the declared text/background pairs of the contrast guard, so the
     /// render thread keeps them readable while roots spring.
     pub fn insert_into(&self, table: &mut TokenTable) {
+        let origin = format!("palette:{}", self.source().unwrap_or("?"));
         for (r, c) in self.iter() {
             table.insert(r.name(), PropValue::Color(c));
+            table.set_origin(r.name(), origin.clone());
         }
         for (text, bgs) in contrast::PAIRS {
             table.insert_contrast(
@@ -60,6 +84,48 @@ impl Palette {
         partial.fill()
     }
 
+    /// The palette as text, one `role #rrggbb` line per role after a
+    /// `dark true|false` line (what `strand run` persists as the last
+    /// palette).
+    pub fn to_text(&self) -> String {
+        let mut out = format!("# strand palette\ndark {}\n", self.dark);
+        if let Some(s) = self.source().filter(|s| !s.contains('\n')) {
+            out.push_str(&format!("source {s}\n"));
+        }
+        for (r, c) in self.iter() {
+            let [x, y, z, _] = c.to_rgba8();
+            out.push_str(&format!("{} #{x:02x}{y:02x}{z:02x}\n", r.name()));
+        }
+        out
+    }
+
+    /// Reads [`Palette::to_text`]'s form. Roles it lacks (an older
+    /// schema) are derived; `None` if it names no role at all.
+    pub fn from_text(text: &str) -> Option<Palette> {
+        let mut part = Partial::default();
+        let mut source = None;
+        for line in text.lines() {
+            let Some((k, v)) = line.trim().split_once(' ') else {
+                continue;
+            };
+            match (k, Role::from_name(k)) {
+                ("dark", _) => part.dark = v.trim().parse().ok(),
+                ("source", _) => source = Some(v.trim().to_string()),
+                (_, Some(r)) => {
+                    if let Some(c) = Color::from_hex(v.trim()) {
+                        part.set(r, c);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let p = (!part.roles.is_empty()).then(|| part.fill())?;
+        Some(match source {
+            Some(s) => p.with_source(&s),
+            None => p,
+        })
+    }
+
     /// Builds a palette from all roles, as given (no derivation, no
     /// contrast guard).
     pub fn from_fn(dark: bool, mut f: impl FnMut(Role) -> Color) -> Palette {
@@ -67,7 +133,11 @@ impl Palette {
         for &r in Role::ALL {
             colors[r.index()] = f(r);
         }
-        Palette { colors, dark }
+        Palette {
+            colors,
+            dark,
+            source: None,
+        }
     }
 }
 
@@ -148,7 +218,7 @@ impl Partial {
     ///   `secondary` ← the accent at 35% chroma; `tertiary` ← the accent
     ///   turned 60°; `error` ← M3's error (`#ffb4ab` / `#ba1a1a`).
     /// - For each of accent, secondary, tertiary, error: `on_X` ← X at
-    ///   tone 20 (dark) or white (light); `X_container` ← X mixed 60%
+    ///   lightness 0.25 (dark) or white (light); `X_container` ← X mixed 60%
     ///   (dark) or 70% (light) into the surface; `on_X_container` ← X at
     ///   tone 92 / 20.
     /// - `surface_variant` ← surface mixed 18% / 10% towards fg;
@@ -161,8 +231,17 @@ impl Partial {
     ///   ← the accent at tone 40 (dark) or 80 (light).
     /// - `outline` ← fg mixed 45% towards surface, `outline_variant` 75%.
     /// - `shadow`, `scrim` ← black; `surface_tint` ← accent.
+    /// - For each of accent, secondary, tertiary, in light and dark alike
+    ///   (M3's fixed accents): `X_fixed` ← X at lightness 0.9,
+    ///   `X_fixed_dim` 0.8, `on_X_fixed` 0.12, `on_X_fixed_variant` 0.32.
+    ///
+    /// Given roles are kept, gamut-mapped into sRGB and made opaque (a
+    /// palette role is a colour things are drawn in, not a tint).
     pub fn fill(self) -> Palette {
         let mut p = self.roles;
+        for c in p.values_mut() {
+            *c = c.gamut_mapped().with_alpha(1.0);
+        }
         let get = |p: &BTreeMap<Role, Color>, r: Role| p.get(&r).copied();
         fn or<F: FnOnce() -> Color>(p: &mut BTreeMap<Role, Color>, r: Role, f: F) -> Color {
             if let Some(c) = p.get(&r) {
@@ -275,8 +354,42 @@ impl Partial {
         or(&mut p, Role::Shadow, || Color::BLACK);
         or(&mut p, Role::Scrim, || Color::BLACK);
         or(&mut p, Role::SurfaceTint, || accent);
+        // The fixed accents keep Material 3's tones in light and dark.
+        let fixed = [
+            (
+                Role::Accent,
+                Role::AccentFixed,
+                Role::AccentFixedDim,
+                Role::OnAccentFixed,
+                Role::OnAccentFixedVariant,
+            ),
+            (
+                Role::Secondary,
+                Role::SecondaryFixed,
+                Role::SecondaryFixedDim,
+                Role::OnSecondaryFixed,
+                Role::OnSecondaryFixedVariant,
+            ),
+            (
+                Role::Tertiary,
+                Role::TertiaryFixed,
+                Role::TertiaryFixedDim,
+                Role::OnTertiaryFixed,
+                Role::OnTertiaryFixedVariant,
+            ),
+        ];
+        for (x, f, dim, on, on_variant) in fixed {
+            let c = p[&x];
+            or(&mut p, f, || at_lightness(c, 0.9, 0.6));
+            or(&mut p, dim, || at_lightness(c, 0.8, 0.8));
+            or(&mut p, on, || at_lightness(c, 0.12, 0.6));
+            or(&mut p, on_variant, || at_lightness(c, 0.32, 0.8));
+        }
 
-        let mut palette = Palette::from_fn(dark, |r| p.get(&r).copied().unwrap_or(Color::BLACK));
+        // Mixes of in-gamut colours can land a hair outside sRGB.
+        let mut palette = Palette::from_fn(dark, |r| {
+            p.get(&r).map_or(Color::BLACK, |c| c.gamut_mapped())
+        });
         contrast::guard(&mut palette);
         palette
     }
@@ -285,6 +398,17 @@ impl Partial {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_round_trip() {
+        let p = crate::from_seed(Color::from_hex("#7aa2f7").unwrap(), Default::default());
+        let back = Palette::from_text(&p.to_text()).unwrap();
+        for (r, c) in p.iter() {
+            assert_eq!(back.get(r).to_rgba8(), c.to_rgba8(), "{r}");
+        }
+        assert_eq!(back.is_dark(), p.is_dark());
+        assert_eq!(Palette::from_text("nonsense\n"), None);
+    }
 
     #[test]
     fn an_empty_partial_is_a_whole_palette() {

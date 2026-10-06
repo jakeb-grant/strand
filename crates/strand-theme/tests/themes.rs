@@ -205,6 +205,41 @@ fn w3c_design_tokens_fill_the_palette() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// Component groups do not overwrite the system roles, whatever their
+/// order in the file; out-of-gamut and translucent role values are
+/// brought into a usable palette.
+#[test]
+fn w3c_component_tokens_do_not_claim_roles() {
+    let dir = temp("w3c-components");
+    let doc = serde_json::json!({
+        "color": {
+            "$type": "color",
+            "background": { "$value": "#ffffff" },
+            "surface": { "$value": "#ffffff" },
+            "primary": { "$value": "#0057b7" },
+            "on-surface": { "$value": { "colorSpace": "srgb", "components": [0.1, 0.1, 0.12], "alpha": 0.1 } },
+            "error": { "$value": { "colorSpace": "srgb", "components": [1.6, -0.3, 0.2] } }
+        },
+        "component": {
+            "$type": "color",
+            "tooltip": {
+                "background": { "$value": "#222222" },
+                "surface": { "$value": "#333333" }
+            },
+            "button": { "primary": { "$value": "#ff0000" } }
+        }
+    });
+    std::fs::write(dir.join("tokens.json"), doc.to_string()).unwrap();
+    let p = import("w3c:tokens.json", Some(&dir)).unwrap();
+    whole(&p);
+    assert!(!p.is_dark());
+    assert_eq!(p.get(Role::Bg), hex("#ffffff"));
+    assert_eq!(p.get(Role::Surface), hex("#ffffff"));
+    assert_eq!(p.get(Role::Accent), hex("#0057b7"));
+    assert_eq!(p.get(Role::Fg).a, 1.0);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// `material(seed:)` is Material 3's algorithm: material-color-utilities'
 /// reference scheme for blue, every variant whole, the same seed always
 /// the same palette.
@@ -316,6 +351,122 @@ fn material_image_is_deterministic_and_cached_by_content() {
         q.lookup(&dir.join("gone.png")),
         Lookup::Failed { last: Some(_), .. }
     ));
+    drop(q);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A wallpaper copied over in place keeping its size and modification
+/// time (`cp -p`) is a new file (its change time moved); one replaced by
+/// delete-then-create holds its seed through the gap; one that stays
+/// missing fails once the grace is over.
+#[test]
+fn replaced_and_briefly_missing_wallpapers() {
+    use strand_theme::image::{MISSING_GRACE, Stamp};
+    let dir = temp("replace");
+    let wall = dir.join("wall.png");
+    let mut blue = png([30, 90, 200], [240, 200, 40], 64, 64);
+    let mut red = png([200, 40, 40], [20, 20, 20], 64, 64);
+    // Same size (decoders stop at IEND), so only the times tell.
+    let n = blue.len().max(red.len());
+    blue.resize(n, 0);
+    red.resize(n, 0);
+    std::fs::write(&wall, &blue).unwrap();
+    let mut q = Quantiser::new(Some(dir.join("cache"))).unwrap();
+    q.lookup(&wall);
+    let first = wait_ready(&mut q, &wall);
+    // Same size, same mtime, other content.
+    let before = Stamp::of(&wall).unwrap();
+    std::thread::sleep(Duration::from_millis(20));
+    std::fs::write(&wall, &red).unwrap();
+    let f = std::fs::File::options().write(true).open(&wall).unwrap();
+    f.set_modified(std::time::UNIX_EPOCH + Duration::from_nanos(before.mtime_ns as u64))
+        .unwrap();
+    drop(f);
+    let after = Stamp::of(&wall).unwrap();
+    assert_eq!((after.len, after.mtime_ns), (before.len, before.mtime_ns));
+    assert!(matches!(q.lookup(&wall), Lookup::Pending { .. }));
+    let second = wait_ready(&mut q, &wall);
+    assert_ne!(first, second);
+    // Delete, look up in the gap (the watcher saw the delete), create.
+    std::fs::remove_file(&wall).unwrap();
+    q.invalidate(&wall);
+    assert_eq!(q.lookup(&wall), Lookup::Pending { last: Some(second) });
+    std::fs::write(&wall, &blue).unwrap();
+    q.invalidate(&wall);
+    q.lookup(&wall);
+    assert_eq!(wait_ready(&mut q, &wall), first);
+    // Gone for good: failed after the grace, the waker asked to look
+    // again.
+    let (tx, rx) = std::sync::mpsc::channel();
+    q.set_waker(move || {
+        let _ = tx.send(());
+    });
+    std::fs::remove_file(&wall).unwrap();
+    let gone = std::time::Instant::now();
+    assert!(matches!(q.lookup(&wall), Lookup::Pending { .. }));
+    // (An earlier gap's timer may wake us first: look again until the
+    // answer changes.)
+    loop {
+        // The grace running out wakes the owner to look again.
+        rx.recv_timeout(MISSING_GRACE * 4).unwrap();
+        q.poll();
+        match q.lookup(&wall) {
+            Lookup::Failed { .. } => break,
+            Lookup::Pending { .. } => assert!(gone.elapsed() < MISSING_GRACE * 2),
+            other => panic!("{other:?}"),
+        }
+    }
+    assert!(gone.elapsed() >= MISSING_GRACE);
+    // Never there: failed at once.
+    assert!(matches!(
+        q.lookup(&dir.join("nope.png")),
+        Lookup::Failed { .. }
+    ));
+    drop(q);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A slideshow through 300 wallpapers leaves a bounded index, seed cache
+/// and lookup table.
+#[test]
+fn many_wallpapers_leave_a_bounded_cache() {
+    use strand_theme::image::MAX_REMEMBERED;
+    let dir = temp("slideshow");
+    let cache = dir.join("cache");
+    let mut q = Quantiser::new(Some(cache.clone())).unwrap();
+    for i in 0..300u32 {
+        let p = dir.join(format!("w{i}.png"));
+        std::fs::write(
+            &p,
+            png(
+                [(i % 251) as u8, (i / 251) as u8 * 60, 90],
+                [10, 10, 10],
+                4,
+                4,
+            ),
+        )
+        .unwrap();
+        q.lookup(&p);
+        if i % 50 == 49 {
+            assert!(q.wait(Duration::from_secs(60)));
+        }
+    }
+    assert!(q.wait(Duration::from_secs(60)));
+    assert!(q.remembered() <= MAX_REMEMBERED, "{}", q.remembered());
+    let index = std::fs::read_to_string(cache.join("index")).unwrap();
+    let entries = index.lines().filter(|l| l.starts_with("entry ")).count();
+    assert!(entries <= MAX_REMEMBERED, "{entries}");
+    let seeds = std::fs::read_dir(&cache)
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".seed"))
+        .count();
+    assert!(seeds <= MAX_REMEMBERED, "{seeds}");
+    // The most recent ones are the ones kept: a reboot answers the last
+    // wallpaper at once.
+    drop(q);
+    let mut q = Quantiser::new(Some(cache)).unwrap();
+    assert!(matches!(q.lookup(&dir.join("w299.png")), Lookup::Ready(_)));
     drop(q);
     let _ = std::fs::remove_dir_all(dir);
 }

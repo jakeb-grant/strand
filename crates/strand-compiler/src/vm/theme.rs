@@ -12,7 +12,7 @@
 //! [`ThemeHost::files_changed`].
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -55,13 +55,24 @@ pub struct ThemeHost {
     config_dir: Option<PathBuf>,
     generation: Signal<u64>,
     notify: Arc<Mutex<Notify>>,
-    /// Wallpapers looked up (to watch, with their link targets).
-    images: RefCell<BTreeSet<PathBuf>>,
-    /// Files `import()` read.
-    imports: RefCell<BTreeSet<PathBuf>>,
+    /// Wallpapers the current evaluations look up (to watch, with their
+    /// link targets), each with how many evaluations read it: a reading
+    /// memo that re-runs or is dropped lets go of its paths, so a
+    /// wallpaper no longer used is no longer watched.
+    images: RefCell<BTreeMap<PathBuf, usize>>,
+    /// Files the current evaluations `import()`, counted the same way.
+    imports: RefCell<BTreeMap<PathBuf, usize>>,
     /// The watch list changed since [`ThemeHost::take_files_changed`].
     files_dirty: Cell<bool>,
+    /// The last palette the token table was made with (this run, or
+    /// persisted by an earlier one): what a palette that fails to
+    /// evaluate falls back to, so a broken theme file never shows
+    /// default colours.
+    last_palette: RefCell<Option<Palette>>,
 }
+
+/// The persisted last palette, in [`ThemeHost`]'s cache directory.
+const LAST_PALETTE: &str = "palette";
 
 impl std::fmt::Debug for ThemeHost {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -84,7 +95,15 @@ impl ThemeHost {
             images: RefCell::default(),
             imports: RefCell::default(),
             files_dirty: Cell::new(false),
+            last_palette: RefCell::new(None),
         });
+        if let Some(text) = host
+            .cache_dir
+            .as_ref()
+            .and_then(|d| std::fs::read_to_string(d.join(LAST_PALETTE)).ok())
+        {
+            *host.last_palette.borrow_mut() = Palette::from_text(&text);
+        }
         // The task that takes finished quantiser jobs: idle (no wakeups)
         // until the worker fires `notify`. Spawned here, outside any
         // scope, so no reload or re-evaluation cancels it.
@@ -118,6 +137,37 @@ impl ThemeHost {
         strand_theme::import::resolve(path, self.config_dir.as_deref())
     }
 
+    /// Counts a read of `path` in `set` until the reading evaluation
+    /// re-runs or is dropped.
+    fn hold(
+        self: &Rc<Self>,
+        rt: &Runtime,
+        set: fn(&ThemeHost) -> &RefCell<BTreeMap<PathBuf, usize>>,
+        path: PathBuf,
+    ) {
+        let n = {
+            let mut m = set(self).borrow_mut();
+            let n = m.entry(path.clone()).or_insert(0);
+            *n += 1;
+            *n
+        };
+        if n == 1 {
+            self.files_dirty.set(true);
+        }
+        let weak = Rc::downgrade(self);
+        rt.on_cleanup(move || {
+            let Some(host) = weak.upgrade() else { return };
+            let mut m = set(&host).borrow_mut();
+            if let Some(n) = m.get_mut(&path) {
+                *n -= 1;
+                if *n == 0 {
+                    m.remove(&path);
+                    host.files_dirty.set(true);
+                }
+            }
+        });
+    }
+
     fn bump(&self, rt: &Runtime) {
         if let Ok(g) = self.generation.get_untracked(rt) {
             let _ = self.generation.set(rt, g.wrapping_add(1));
@@ -139,9 +189,7 @@ impl ThemeHost {
     ) -> Result<ImagePalette, Error> {
         self.generation.get(rt)?;
         let path = self.resolve(path);
-        if self.images.borrow_mut().insert(path.clone()) {
-            self.files_dirty.set(true);
-        }
+        self.hold(rt, |h| &h.images, path.clone());
         let mut q = self.quantiser.borrow_mut();
         if q.is_none() {
             match Quantiser::new(self.cache_dir.clone()) {
@@ -162,7 +210,7 @@ impl ThemeHost {
         let Some(quantiser) = q.as_mut() else {
             return Ok(ImagePalette::Failed("no quantiser".into(), None));
         };
-        let palette = |c: Color| strand_theme::from_seed(c, opts);
+        let palette = |c: Color| strand_theme::from_seed(c, opts).with_source("wallpaper");
         Ok(match quantiser.lookup(&path) {
             Lookup::Ready(c) => ImagePalette::Ready(palette(c)),
             Lookup::Pending { last } => ImagePalette::Pending(last.map(palette)),
@@ -171,12 +219,10 @@ impl ThemeHost {
     }
 
     /// `import(source)`.
-    pub fn import(&self, rt: &Runtime, source: &str) -> Result<Palette, String> {
+    pub fn import(self: &Rc<Self>, rt: &Runtime, source: &str) -> Result<Palette, String> {
         if let Some(file) = strand_theme::import::file_of(source, self.config_dir.as_deref()) {
             let _ = self.generation.get(rt);
-            if self.imports.borrow_mut().insert(file) {
-                self.files_dirty.set(true);
-            }
+            self.hold(rt, |h| &h.imports, file);
         }
         strand_theme::import(source, self.config_dir.as_deref()).map_err(|e| e.to_string())
     }
@@ -190,13 +236,13 @@ impl ThemeHost {
             let imports = self.imports.borrow();
             let mut q = self.quantiser.borrow_mut();
             for p in paths {
-                if images.contains(p) {
+                if images.contains_key(p) {
                     if let Some(q) = q.as_mut() {
                         q.invalidate(p);
                     }
                     hit = true;
                 }
-                hit |= imports.contains(p);
+                hit |= imports.contains_key(p);
             }
         }
         if hit {
@@ -205,15 +251,15 @@ impl ThemeHost {
         hit
     }
 
-    /// Wallpapers and imported files read so far.
+    /// Wallpapers and imported files the current evaluations read.
     pub fn files(&self) -> (Vec<PathBuf>, Vec<PathBuf>) {
         (
-            self.images.borrow().iter().cloned().collect(),
-            self.imports.borrow().iter().cloned().collect(),
+            self.images.borrow().keys().cloned().collect(),
+            self.imports.borrow().keys().cloned().collect(),
         )
     }
 
-    /// Whether [`ThemeHost::files`] grew since the last call.
+    /// Whether [`ThemeHost::files`] changed since the last call.
     pub fn take_files_changed(&self) -> bool {
         self.files_dirty.replace(false)
     }
@@ -236,6 +282,30 @@ impl ThemeHost {
             .borrow()
             .as_ref()
             .map_or(0, Quantiser::quantised)
+    }
+
+    /// The token table was made with `palette`: kept (and persisted,
+    /// when it changed) as the last good one.
+    pub fn remember_palette(&self, palette: &Palette) {
+        if self.last_palette.borrow().as_ref() == Some(palette) {
+            return;
+        }
+        *self.last_palette.borrow_mut() = Some(palette.clone());
+        if let Some(dir) = &self.cache_dir {
+            let write = || -> std::io::Result<()> {
+                std::fs::create_dir_all(dir)?;
+                let tmp = dir.join(format!("{LAST_PALETTE}.tmp.{}", std::process::id()));
+                std::fs::write(&tmp, palette.to_text())?;
+                std::fs::rename(&tmp, dir.join(LAST_PALETTE))
+            };
+            // Best effort: the palette in memory still holds this run.
+            let _ = write();
+        }
+    }
+
+    /// The last good palette ([`ThemeHost::remember_palette`]).
+    pub fn last_palette(&self) -> Option<Palette> {
+        self.last_palette.borrow().clone()
     }
 
     /// The config directory relative paths are read against.

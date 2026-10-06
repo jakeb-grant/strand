@@ -12,15 +12,16 @@
 //! unchanged wallpaper is answered at once and never flashes default
 //! colours.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use material_colors::color::Rgb;
 use strand_scene::Color;
@@ -33,6 +34,14 @@ pub const DOWNSCALE: u32 = 128;
 pub const MAX_PIXELS: u64 = 256 * 1024 * 1024 / 4;
 /// Colours the quantiser starts from (material-color-utilities' 128).
 const QUANTISE_COLORS: usize = 128;
+/// Wallpapers remembered (path index, seeds by hash, `.seed` files),
+/// most recently used first; older ones are forgotten (a slideshow
+/// cannot grow the cache without bound).
+pub const MAX_REMEMBERED: usize = 64;
+/// How long a wallpaper that gave a seed may be missing before its
+/// lookup fails: a file replaced by delete-then-create, or a link being
+/// swapped, keeps its palette through the gap.
+pub const MISSING_GRACE: Duration = Duration::from_millis(500);
 
 /// Why an image gave no seed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,14 +105,17 @@ pub fn seed_from_pixels(pixels: impl Iterator<Item = Rgb>) -> Result<Color, Imag
 }
 
 /// What identifies the file a path resolves to without reading it: its
-/// device, inode, size and modification time (after every symlink), so a
-/// replaced file or a swapped link is a new stamp.
+/// device, inode, size, modification and change times (after every
+/// symlink), so a replaced file or a swapped link is a new stamp, also
+/// when a copy keeps the size and the modification time (`cp -p`,
+/// `rsync -t`: writing or renaming always moves the change time).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Stamp {
     pub dev: u64,
     pub ino: u64,
     pub len: u64,
     pub mtime_ns: i128,
+    pub ctime_ns: i128,
 }
 
 impl Stamp {
@@ -117,6 +129,7 @@ impl Stamp {
             ino: m.ino(),
             len: m.len(),
             mtime_ns: m.mtime() as i128 * 1_000_000_000 + m.mtime_nsec() as i128,
+            ctime_ns: m.ctime() as i128 * 1_000_000_000 + m.ctime_nsec() as i128,
         })
     }
 }
@@ -137,6 +150,19 @@ pub enum Lookup {
 struct Entry {
     stamp: Stamp,
     seed: Result<Color, String>,
+    /// When the entry was last used (a logical clock), for eviction.
+    used: u64,
+    /// The watcher saw the file change: read it again whatever its stamp.
+    stale: bool,
+}
+
+/// A persisted wallpaper: the file as stamped, its content hash and seed.
+#[derive(Clone, Debug)]
+struct Known {
+    path: PathBuf,
+    stamp: Stamp,
+    hash: blake3::Hash,
+    seed: Color,
 }
 
 struct Job {
@@ -155,7 +181,12 @@ type Waker = Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>;
 /// Wallpaper seeds, quantised off-thread (see the module docs).
 pub struct Quantiser {
     index: HashMap<PathBuf, Entry>,
+    clock: u64,
     in_flight: HashMap<PathBuf, Stamp>,
+    /// Wallpapers that gave a seed and are now missing, since when.
+    missing: HashMap<PathBuf, Instant>,
+    /// Set when a missing wallpaper's grace ran out (see `poll`).
+    grace_over: Arc<AtomicBool>,
     last: Option<Color>,
     jobs: Option<Sender<Job>>,
     done: Receiver<Done>,
@@ -181,47 +212,54 @@ fn color_hex(c: Color) -> String {
 }
 
 /// Parses the persisted index: `last #rrggbb` and `entry dev ino len
-/// mtime_ns #rrggbb path` lines; anything else is skipped.
-fn read_index(dir: &Path) -> (HashMap<PathBuf, Entry>, Option<Color>) {
-    let mut index = HashMap::new();
+/// mtime_ns ctime_ns #rrggbb hash path` lines, least recently used
+/// first; anything else (an older format) is skipped.
+fn read_index(dir: &Path) -> (VecDeque<Known>, Option<Color>) {
+    let mut known = VecDeque::new();
     let mut last = None;
     let Ok(text) = std::fs::read_to_string(dir.join(INDEX)) else {
-        return (index, last);
+        return (known, last);
     };
     for line in text.lines() {
-        let mut parts = line.splitn(7, ' ');
+        let mut parts = line.splitn(9, ' ');
         match parts.next() {
             Some("last") => last = parts.next().and_then(Color::from_hex),
             Some("entry") => {
                 let mut num = || parts.next().and_then(|p| p.parse::<i128>().ok());
-                let (Some(dev), Some(ino), Some(len), Some(mtime_ns)) =
-                    (num(), num(), num(), num())
+                let (Some(dev), Some(ino), Some(len), Some(mtime_ns), Some(ctime_ns)) =
+                    (num(), num(), num(), num(), num())
                 else {
                     continue;
                 };
-                let (Some(seed), Some(path)) =
-                    (parts.next().and_then(Color::from_hex), parts.next())
-                else {
+                let (Some(seed), Some(hash), Some(path)) = (
+                    parts.next().and_then(Color::from_hex),
+                    parts.next().and_then(|h| blake3::Hash::from_hex(h).ok()),
+                    parts.next(),
+                ) else {
                     continue;
                 };
-                let stamp = Stamp {
-                    dev: dev as u64,
-                    ino: ino as u64,
-                    len: len as u64,
-                    mtime_ns,
-                };
-                index.insert(
-                    PathBuf::from(path),
-                    Entry {
-                        stamp,
-                        seed: Ok(seed),
+                let path = PathBuf::from(path);
+                known.retain(|k: &Known| k.path != path);
+                known.push_back(Known {
+                    path,
+                    stamp: Stamp {
+                        dev: dev as u64,
+                        ino: ino as u64,
+                        len: len as u64,
+                        mtime_ns,
+                        ctime_ns,
                     },
-                );
+                    hash,
+                    seed,
+                });
             }
             _ => {}
         }
     }
-    (index, last)
+    while known.len() > MAX_REMEMBERED {
+        known.pop_front();
+    }
+    (known, last)
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -233,31 +271,41 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
-fn write_index(dir: &Path, index: &HashMap<PathBuf, Entry>, last: Option<Color>) -> io::Result<()> {
+fn write_index(dir: &Path, known: &VecDeque<Known>, last: Option<Color>) -> io::Result<()> {
     let mut out = String::from("# strand wallpaper seeds (material-colors 0.5, spec 2021)\n");
     if let Some(l) = last {
         out.push_str(&format!("last {}\n", color_hex(l)));
     }
-    let mut paths: Vec<_> = index.iter().collect();
-    paths.sort_by(|a, b| a.0.cmp(b.0));
-    for (path, e) in paths {
-        let (Ok(seed), Some(p)) = (&e.seed, path.to_str()) else {
-            continue;
-        };
+    for k in known {
+        let Some(p) = k.path.to_str() else { continue };
         if p.contains('\n') {
             continue;
         }
-        let s = e.stamp;
+        let s = k.stamp;
         out.push_str(&format!(
-            "entry {} {} {} {} {} {p}\n",
+            "entry {} {} {} {} {} {} {} {p}\n",
             s.dev,
             s.ino,
             s.len,
             s.mtime_ns,
-            color_hex(*seed)
+            s.ctime_ns,
+            color_hex(k.seed),
+            k.hash.to_hex()
         ));
     }
-    write_atomic(&dir.join(INDEX), out.as_bytes())
+    write_atomic(&dir.join(INDEX), out.as_bytes())?;
+    // Seeds no remembered wallpaper has are forgotten with it.
+    let keep: std::collections::HashSet<String> = known
+        .iter()
+        .map(|k| format!("{}.seed", k.hash.to_hex()))
+        .collect();
+    for e in std::fs::read_dir(dir)?.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name.ends_with(".seed") && !keep.contains(&name) {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+    Ok(())
 }
 
 fn worker(
@@ -266,21 +314,27 @@ fn worker(
     done: Sender<Done>,
     waker: Waker,
     quantised: Arc<AtomicUsize>,
-    mut index: HashMap<PathBuf, Entry>,
+    mut known: VecDeque<Known>,
 ) {
-    let mut by_hash: HashMap<blake3::Hash, Color> = HashMap::new();
     while let Ok(job) = jobs.recv() {
         let seed = match std::fs::read(&job.path) {
             Err(e) => Err(ImageError::Io(e.to_string()).to_string()),
             Ok(bytes) => {
                 let hash = blake3::hash(&bytes);
-                let cached = by_hash.get(&hash).copied().or_else(|| {
-                    let d = dir.as_ref()?;
-                    let text =
-                        std::fs::read_to_string(d.join(format!("{}.seed", hash.to_hex()))).ok()?;
-                    Color::from_hex(text.trim())
-                });
-                match cached {
+                // A content seen before (copied, touched, swapped back)
+                // costs no decode.
+                let cached = known
+                    .iter()
+                    .find(|k| k.hash == hash)
+                    .map(|k| k.seed)
+                    .or_else(|| {
+                        let d = dir.as_ref()?;
+                        let text =
+                            std::fs::read_to_string(d.join(format!("{}.seed", hash.to_hex())))
+                                .ok()?;
+                        Color::from_hex(text.trim())
+                    });
+                let seed = match cached {
                     Some(c) => Ok(c),
                     None => {
                         quantised.fetch_add(1, Ordering::SeqCst);
@@ -293,26 +347,27 @@ fn worker(
                         }
                         r.map_err(|e| e.to_string())
                     }
+                };
+                if let Ok(c) = seed {
+                    known.retain(|k| k.path != job.path);
+                    known.push_back(Known {
+                        path: job.path.clone(),
+                        stamp: job.stamp,
+                        hash,
+                        seed: c,
+                    });
+                    while known.len() > MAX_REMEMBERED {
+                        known.pop_front();
+                    }
+                    if let Some(d) = &dir
+                        && let Err(e) = write_index(d, &known, Some(c))
+                    {
+                        log::warn!("saving the wallpaper index: {e}");
+                    }
                 }
-                .inspect(|c| {
-                    by_hash.insert(hash, *c);
-                })
+                seed
             }
         };
-        if let Ok(c) = seed {
-            index.insert(
-                job.path.clone(),
-                Entry {
-                    stamp: job.stamp,
-                    seed: Ok(c),
-                },
-            );
-            if let Some(d) = &dir
-                && let Err(e) = write_index(d, &index, Some(c))
-            {
-                log::warn!("saving the wallpaper index: {e}");
-            }
-        }
         let sent = done.send(Done {
             path: job.path,
             stamp: job.stamp,
@@ -321,10 +376,14 @@ fn worker(
         if sent.is_err() {
             return;
         }
-        let hook = waker.lock().unwrap_or_else(PoisonError::into_inner).clone();
-        if let Some(w) = hook {
-            w();
-        }
+        wake(&waker);
+    }
+}
+
+fn wake(waker: &Waker) {
+    let hook = waker.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    if let Some(w) = hook {
+        w();
     }
 }
 
@@ -332,21 +391,36 @@ impl Quantiser {
     /// A quantiser whose caches live in `dir` (`None`: memory only). The
     /// index is read now; the worker thread starts now and idles.
     pub fn new(dir: Option<PathBuf>) -> io::Result<Quantiser> {
-        let (index, last) = dir.as_deref().map(read_index).unwrap_or_default();
+        let (known, last) = dir.as_deref().map(read_index).unwrap_or_default();
+        let index: HashMap<PathBuf, Entry> = known
+            .iter()
+            .enumerate()
+            .map(|(i, k)| {
+                let e = Entry {
+                    stamp: k.stamp,
+                    seed: Ok(k.seed),
+                    used: i as u64,
+                    stale: false,
+                };
+                (k.path.clone(), e)
+            })
+            .collect();
         let (job_tx, job_rx) = mpsc::channel();
         let (done_tx, done_rx) = mpsc::channel();
         let waker: Waker = Arc::default();
         let quantised = Arc::new(AtomicUsize::new(0));
         let thread = {
             let (dir, waker, quantised) = (dir.clone(), waker.clone(), quantised.clone());
-            let index = index.clone();
             std::thread::Builder::new()
                 .name("strand-quantise".into())
-                .spawn(move || worker(dir, job_rx, done_tx, waker, quantised, index))?
+                .spawn(move || worker(dir, job_rx, done_tx, waker, quantised, known))?
         };
         Ok(Quantiser {
+            clock: index.len() as u64,
             index,
             in_flight: HashMap::new(),
+            missing: HashMap::new(),
+            grace_over: Arc::default(),
             last,
             jobs: Some(job_tx),
             done: done_rx,
@@ -376,18 +450,47 @@ impl Quantiser {
     /// the image: only a `stat`.
     pub fn lookup(&mut self, path: &Path) -> Lookup {
         self.poll();
+        self.clock += 1;
         let stamp = match Stamp::of(path) {
-            Ok(s) => s,
+            Ok(s) => {
+                self.missing.remove(path);
+                s
+            }
             Err(e) => {
+                // A wallpaper that gave a seed and just went missing is
+                // likely being replaced: hold its palette for a moment.
+                let had = self.index.get(path).is_some_and(|e| e.seed.is_ok());
+                if e.kind() == io::ErrorKind::NotFound && had {
+                    let since = *self.missing.entry(path.to_path_buf()).or_insert_with(|| {
+                        let (flag, waker) = (self.grace_over.clone(), self.waker.clone());
+                        // Wakes the owner when the grace runs out, so a
+                        // file that stays missing is reported.
+                        let _ = std::thread::Builder::new()
+                            .name("strand-quantise-grace".into())
+                            .spawn(move || {
+                                std::thread::sleep(MISSING_GRACE);
+                                flag.store(true, Ordering::SeqCst);
+                                wake(&waker);
+                            });
+                        Instant::now()
+                    });
+                    if since.elapsed() < MISSING_GRACE {
+                        return Lookup::Pending { last: self.last };
+                    }
+                }
+                self.index.remove(path);
                 return Lookup::Failed {
                     error: ImageError::Io(e.to_string()).to_string(),
                     last: self.last,
                 };
             }
         };
-        if let Some(e) = self.index.get(path)
+        let clock = self.clock;
+        if let Some(e) = self.index.get_mut(path)
             && e.stamp == stamp
+            && !e.stale
         {
+            e.used = clock;
             return match &e.seed {
                 Ok(c) => Lookup::Ready(*c),
                 Err(error) => Lookup::Failed {
@@ -415,9 +518,10 @@ impl Quantiser {
         Lookup::Pending { last: self.last }
     }
 
-    /// Takes finished jobs. Returns whether any arrived.
+    /// Takes finished jobs. Returns whether any arrived (or a missing
+    /// wallpaper's grace ran out: look it up again).
     pub fn poll(&mut self) -> bool {
-        let mut any = false;
+        let mut any = self.grace_over.swap(false, Ordering::SeqCst);
         while let Ok(d) = self.done.try_recv() {
             self.take(d);
             any = true;
@@ -432,13 +536,33 @@ impl Quantiser {
         if let Ok(c) = d.seed {
             self.last = Some(c);
         }
+        self.clock += 1;
         self.index.insert(
             d.path,
             Entry {
                 stamp: d.stamp,
                 seed: d.seed,
+                used: self.clock,
+                stale: false,
             },
         );
+        while self.index.len() > MAX_REMEMBERED {
+            let Some(oldest) = self
+                .index
+                .iter()
+                .min_by_key(|(_, e)| e.used)
+                .map(|(p, _)| p.clone())
+            else {
+                break;
+            };
+            self.index.remove(&oldest);
+        }
+    }
+
+    /// How many wallpapers the lookup index holds (at most
+    /// [`MAX_REMEMBERED`]).
+    pub fn remembered(&self) -> usize {
+        self.index.len()
     }
 
     /// Whether a job is still running.
@@ -463,7 +587,9 @@ impl Quantiser {
     /// Forget what is known about `path` (the watcher saw it change), so
     /// the next lookup re-reads it even if its stamp looks the same.
     pub fn invalidate(&mut self, path: &Path) {
-        self.index.remove(path);
+        if let Some(e) = self.index.get_mut(path) {
+            e.stale = true;
+        }
     }
 }
 

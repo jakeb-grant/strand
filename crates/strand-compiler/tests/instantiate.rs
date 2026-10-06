@@ -1881,6 +1881,45 @@ fn surfaces_show_hide_and_hold_services_while_shown() {
 /// Settings files are read through core (overlay > file > default) and
 /// written back field by field.
 #[test]
+fn strand_set_reaches_settings_that_are_not_exported() {
+    let dir = temp_dir("settings-set");
+    let config = dir.join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("prefs.toml"),
+        "# mine\ncompact = true # dense\n",
+    )
+    .unwrap();
+    let storage = Storage::in_dirs(dir.join("state"), &config);
+    // design.md's theme.strand: `state prefs from …`, not exported.
+    let src = "state prefs from \"prefs.toml\" { compact: bool = false; gap: int = 4 }\nbar B { text prefs.compact ? \"compact\" : \"roomy\" }\n";
+    let mut shell = boot_with(
+        &[("theme.strand", src)],
+        |rt, host| screens(rt, host, &["DP-1"]),
+        storage.clone(),
+    );
+    assert_eq!(shell.scene.texts(), ["compact"]);
+    // `strand set prefs.compact false`, as design.md writes it.
+    shell.inst.set_text("prefs.compact", "false").unwrap();
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["roomy"]);
+    // With the file named too.
+    shell.inst.set_text("theme.prefs.gap", "7").unwrap();
+    assert_eq!(shell.inst.get("prefs.gap").unwrap(), Value::int(7));
+    assert!(shell.inst.set_text("prefs.gap", "wide").is_err());
+    assert!(shell.inst.set_text("prefs.nope", "1").is_err());
+    shell.at(1.0);
+    if let Some(s) = &storage.settings {
+        assert!(s.sync(Duration::from_secs(5)));
+    }
+    let text = std::fs::read_to_string(config.join("prefs.toml")).unwrap();
+    assert!(text.contains("# mine"), "{text}");
+    assert!(text.contains("compact = false # dense"), "{text}");
+    assert!(text.contains("gap = 7"), "{text}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn settings_files_are_read_and_written_back() {
     let dir = temp_dir("settings");
     let config = dir.join("config");

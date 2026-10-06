@@ -234,3 +234,146 @@ fn the_built_in_theme_in_three_palettes() {
     );
     check("theme_mocha", &import("catppuccin:mocha", None).unwrap());
 }
+
+/// One `set { }` subtree holding text that names no colour or font (or,
+/// with `explicit`, says `color: $fg; font: $font.ui`).
+fn override_scene(p: &Palette, set: TokenTable, explicit: bool) -> Buffer {
+    let mut b = Builder::default();
+    b.diff.set_tokens(table(p), Transition::Instant);
+    let root = b.node(NodeKind::Panel, None, vec![(Prop::Bg, tok("surface"))]);
+    let sub = b.node(
+        NodeKind::Box,
+        Some(root),
+        vec![
+            (Prop::Width, num(160.0)),
+            (Prop::Height, num(40.0)),
+            (Prop::Tokens, PropValue::Tokens(Box::new(set))),
+            (Prop::Bg, tok("surface")),
+        ],
+    );
+    let mut props = vec![
+        (Prop::X, num(8.0)),
+        (Prop::Y, num(8.0)),
+        (Prop::Text, text("inherits")),
+    ];
+    if explicit {
+        props.push((Prop::Color, tok("fg")));
+        props.push((Prop::Font, tok("font.ui")));
+    }
+    b.node(NodeKind::Text, Some(sub), props);
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    let root = r.tree().roots()[0];
+    r.attach_surface(SurfaceId(1), root);
+    let mut buf = Buffer::new(160, 40, Scale::ONE);
+    buf.paint(&mut r, SurfaceId(1), 0);
+    buf
+}
+
+/// Text with no colour or font takes `$fg` and `$font.ui` in its own
+/// scope: a `set { $fg }`, a `set { $font.ui }` and a `set { $surface }`
+/// (the guard re-solving `$fg` against it) apply to it exactly as to
+/// text that names them.
+#[test]
+fn text_with_no_colour_follows_set_overrides() {
+    let dark = from_seed(
+        hex(strand_theme::defaults::DEFAULT_SEED),
+        Options {
+            dark: true,
+            ..Options::default()
+        },
+    );
+    let mut red_on_accent = TokenTable::default();
+    red_on_accent.insert("surface", tok("accent"));
+    red_on_accent.insert("fg", PropValue::Color(hex("#ff0000")));
+    red_on_accent.insert("font.ui", PropValue::Font(font(20.0)));
+    let mut darker = TokenTable::default();
+    darker.insert(
+        "surface",
+        PropValue::Token(TokenExpr::path("fg").call(
+            TokenMethod::Mix,
+            vec![TokenExpr::path("surface"), TokenExpr::value(num(0.1))],
+        )),
+    );
+    for (name, set) in [
+        ("red on accent", red_on_accent),
+        ("fg-coloured surface", darker),
+    ] {
+        let t = table(&dark);
+        let levels = [&t, &set];
+        let scope = TokenScope::new(&levels);
+        let (Some(PropValue::Color(fg)), Some(PropValue::Color(surface))) =
+            (scope.lookup("fg"), scope.lookup("surface"))
+        else {
+            panic!("{name}")
+        };
+        assert!(fg.contrast(surface) >= MIN_CONTRAST - 1e-6, "{name}");
+        let implicit = override_scene(&dark, set.clone(), false);
+        let explicit = override_scene(&dark, set, true);
+        let differ = implicit
+            .pixels
+            .chunks_exact(4)
+            .zip(explicit.pixels.chunks_exact(4))
+            .filter(|(a, b)| a != b)
+            .count();
+        assert_eq!(differ, 0, "{name}: {differ} pixels differ");
+        // And it was drawn: the ink is on the solved side of the surface.
+        let ink = luma(ink(&implicit, (8, 150), (8, 36), bgra(surface)));
+        assert!(ink.contrast(surface) >= 2.0, "{name}: ink {ink:?}");
+    }
+}
+
+/// design.md's hello bar, as instantiated with no theme file: a `bar`
+/// naming no `bg`, colour or font. It draws on `$surface` with `$fg`
+/// text (`tests/refs/hello_light.png`, `hello_dark.png`).
+#[test]
+fn the_hello_bar_is_themed_with_no_theme_file() {
+    let seed = hex(strand_theme::defaults::DEFAULT_SEED);
+    for (name, dark) in [("hello_light", false), ("hello_dark", true)] {
+        let p = from_seed(
+            seed,
+            Options {
+                dark,
+                ..Options::default()
+            },
+        );
+        let mut b = Builder::default();
+        b.diff.set_tokens(table(&p), Transition::Instant);
+        let root = b.node(NodeKind::Bar, None, vec![(Prop::Height, num(32.0))]);
+        for (x, s) in [(8.0, "Terminal"), (136.0, "12:00"), (280.0, "87%")] {
+            b.node(
+                NodeKind::Text,
+                Some(root),
+                vec![
+                    (Prop::X, num(x)),
+                    (Prop::Y, num(8.0)),
+                    (Prop::Text, text(s)),
+                ],
+            );
+        }
+        let mut r = renderer();
+        assert!(r.apply(b.diff).is_empty());
+        let root = r.tree().roots()[0];
+        r.attach_surface(SurfaceId(1), root);
+        let mut buf = Buffer::new(320, 32, Scale::ONE);
+        buf.paint(&mut r, SurfaceId(1), 0);
+        let t = table(&p);
+        let (Some(PropValue::Color(surface)), Some(PropValue::Color(fg))) =
+            (t.lookup("surface"), t.lookup("fg"))
+        else {
+            panic!()
+        };
+        assert!(
+            close(buf.px(1, 1), bgra(surface), 1),
+            "{name}: {:?}",
+            buf.px(1, 1)
+        );
+        assert!(close(buf.px(318, 30), bgra(surface), 1), "{name}");
+        let ink = luma(ink(&buf, (136, 200), (6, 28), bgra(surface)));
+        assert!(
+            (ink.relative_luminance() - fg.relative_luminance()).abs() < 0.08,
+            "{name}: ink {ink:?} vs fg {fg:?}"
+        );
+        assert_matches_ref(name, &buf, TOLERANCE);
+    }
+}

@@ -44,7 +44,9 @@ sends `live::FromWorker::{Loaded, Settings}` on a calloop channel; logic
 sends it `Job::{Reload { hard, client }, Referenced(files)}` (settings
 files, and the theme's wallpapers and imported files, re-sent whenever
 the theme reads a new one; their changes come back as
-`FromWorker::{Settings, Theme}(paths)`)
+`FromWorker::{Settings, Theme}(paths)`, and so does each newly
+registered file once, right after its registration, so an edit made
+before the watcher had it is read)
 (the `Loaded` a reload causes carries the IPC clients it answers). A
 load that commits nothing but clears the last attempt's problems (a
 broken save reverted to the last good text, `Outcome::cleared`) is
@@ -225,8 +227,14 @@ be built and tested without the language, and the language without pixels.
   (`TokenTable::contrast`: a text token and its background tokens, the
   Material 3 `on_X`/`X` pairs and `fg` over the surfaces): wherever a
   text token is evaluated, its lightness is solved to 3:1 over its
-  backgrounds in that node's scope (`Color::with_contrast`), so a
-  palette mid-spring and subtree overrides stay readable. Logic still
+  backgrounds in that node's scope (`Color::with_contrast`, memoised
+  per text/background colours on the render thread, so a frame solves
+  each pair once), so a palette mid-spring and subtree overrides stay
+  readable. `TokenTable::origins` (path → `palette:<source>`, `base`,
+  `tokens <set>`, `component <Name>`) is provenance for the inspector;
+  evaluation never reads it. Text that names no `color`/`font` draws in
+  `$fg`/`$font.ui` looked up in its own scope, and a `bar` that names no
+  `bg` paints `$surface`. Logic still
   resolves which theme applies. Subtree overrides (`set { $x: … }` and a
   component's `tokens { }`, as `Toast.radius`) are the `tokens` prop
   holding a `PropValue::Tokens` table; render resolves through a
@@ -320,18 +328,25 @@ Palettes, used by the compiler's VM (`material()`, `import()`) and by
 the instance's built-in theme; render reaches it only through the token
 table.
 
-- `Role` (37 Material 3 system roles, `name()` / `m3()`), `Palette`
-  (every role a colour, `is_dark()`, `insert_into(&mut TokenTable)`
-  writes the roots and the contrast pairs), `Partial` (what an importer
-  found; `fill()` derives the rest by one table, then guards).
+- `Role` (49 Material 3 system roles, the fixed accents included,
+  `name()` / `m3()`), `Palette` (every role a colour, `is_dark()`,
+  `source()` / `with_source()` (provenance, not compared),
+  `insert_into(&mut TokenTable)` writes the roots, their origins and
+  the contrast pairs, `to_text()` / `from_text()` the persisted form),
+  `Partial` (what an importer found; `fill()` gamut-maps and makes
+  opaque what it was given, derives the rest by one table, then
+  guards).
 - `material::from_seed(Color, Options { variant, dark, contrast })`:
   `material-colors` 0.5, spec 2021 pinned (`material::SPEC`).
 - `image::Quantiser`: `lookup(path) -> Lookup::{Ready(seed), Pending {
   last }, Failed { error, last }}` from a `stat` on the calling thread;
   a worker thread reads, BLAKE3-hashes, decodes a 128 px downscale and
   quantises only unseen content; seeds by hash and the path index are
-  kept in a directory (`$XDG_STATE_HOME/strand/palettes`); `set_waker`
-  is called after each finished job, `poll()` takes the results.
+  kept in a directory (`$XDG_STATE_HOME/strand/palettes`), the 64 most
+  recently used (`MAX_REMEMBERED`); `set_waker` is called after each
+  finished job and when a missing wallpaper's grace (`MISSING_GRACE`)
+  runs out, `poll()` takes the results; `invalidate(path)` marks an
+  entry stale (the watcher saw it change).
 - `import(source, base_dir)`: `catppuccin:<flavour>[:<accent>]`,
   `base16:`, `base24:`, `matugen:`, `w3c:` + a file
   (`docs/decisions.md`, wave3-theme).
@@ -1069,11 +1084,18 @@ Public interfaces other crates and later stages build on:
     the last image palette while one is quantised; a finished job wakes
     a core task that bumps the host's generation signal, which every
     `material(image:)` and file `import` reads. `Instance::theme_files()
-    -> (wallpapers, imports)` and `take_theme_files_changed()` are for
-    the watcher, `theme_files_changed(&[PathBuf])` re-reads after a
-    change, `theme()` gives the host (tests wait on it).
+    -> (wallpapers, imports)` (the files the current evaluations read:
+    a memo that re-runs or is dropped lets go of its paths) and
+    `take_theme_files_changed()` are for the watcher,
+    `theme_files_changed(&[PathBuf])` re-reads after a change, `theme()`
+    gives the host (tests wait on it). The host keeps the last palette
+    the token table was made with (`remember_palette`, persisted as
+    `palettes/palette`); a `use palette` that fails or has no value yet
+    takes it (error reported), else the built-in palette.
   - `Instance::set_text(path, text)` is `strand set`: `set` with the
-    value parsed by the target's type. `clear_settings_overlay(file,
+    value parsed by the target's type. Paths name an exported value, or
+    a settings file's state whether exported or not (`theme.prefs.compact`,
+    or `prefs.compact` when one file has a settings `prefs`). `clear_settings_overlay(file,
     field)` is a settings notice's `[clear]`.
   - Each bound prop is one watched memo folding the base binding and
     its `when` blocks in source order (later wins; each source keeps its

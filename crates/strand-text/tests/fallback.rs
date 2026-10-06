@@ -37,3 +37,39 @@ fn a_missing_family_falls_back_to_sans_serif() {
     assert_eq!(glyphs(&mut e, "Inter"), sans);
     assert_eq!(glyphs(&mut e, "\"No Such Font\""), sans);
 }
+
+/// With the system's fonts: a missing monospace family (`$font.mono`'s
+/// `"JetBrains Mono"`) falls back to the system monospace, so every
+/// glyph has the same advance.
+#[test]
+fn a_missing_monospace_family_stays_monospace() {
+    let mut e = TextEngine::new(FontConfig::default());
+    let width = |e: &mut TextEngine, text: &str| {
+        e.layout(&TextRequest {
+            key: TextKey(2),
+            text: text.into(),
+            style: TextStyle {
+                font: Font {
+                    family: "\"No Such Mono\"".into(),
+                    size: 13.0,
+                    weight: 400,
+                },
+                line_height: None,
+                align: TextAlign::default(),
+                ellipsis: None,
+                max_lines: None,
+                spans: vec![],
+            },
+            max_width: None,
+            scale: Scale::ONE,
+        })
+        .size
+        .w
+    };
+    let (narrow, wide) = (width(&mut e, "iiii"), width(&mut e, "MMMM"));
+    if narrow == 0.0 {
+        eprintln!("no system fonts: skipped");
+        return;
+    }
+    assert!((narrow - wide).abs() < 0.5, "iiii {narrow} vs MMMM {wide}");
+}

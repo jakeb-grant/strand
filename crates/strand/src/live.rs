@@ -268,6 +268,9 @@ fn run(
     events: mpsc::Receiver<ChangeEvent>,
     out: calloop::channel::Sender<FromWorker>,
 ) {
+    // The referenced files the watcher has, so a newly registered one is
+    // read once more after its registration (below).
+    let mut registered: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     while let Ok(job) = jobs.recv() {
         // Everything queued now is one batch of work.
         let mut queue = vec![job];
@@ -297,15 +300,33 @@ fn run(
                 ChangeEvent::System(_) | ChangeEvent::Compositor(_) => {}
             }
         }
-        if let (Some(r), Some(w)) = (referenced, &watcher)
-            && let Err(e) = w.set_referenced(r)
-        {
-            log::warn!("watching settings files: {e}");
+        let mut settings: Vec<PathBuf> = Vec::new();
+        let mut theme: Vec<PathBuf> = Vec::new();
+        if let (Some(r), Some(w)) = (referenced, &watcher) {
+            match w.set_referenced(r.clone()) {
+                // A file edited after the program read it and before the
+                // watcher had it (a save right after boot or a reload)
+                // was not seen: each newly registered file is read again
+                // now that later edits are (unchanged content changes
+                // nothing; a wallpaper's stamp tells it).
+                Ok(()) => {
+                    for (path, role) in &r {
+                        if registered.contains(path) {
+                            continue;
+                        }
+                        match role {
+                            Role::Settings => settings.push(path.clone()),
+                            Role::Wallpaper | Role::Other => theme.push(path.clone()),
+                            _ => {}
+                        }
+                    }
+                    registered = r.into_iter().map(|(p, _)| p).collect();
+                }
+                Err(e) => log::warn!("watching settings files: {e}"),
+            }
         }
         let started = Instant::now();
         let mut modules: Vec<(PathBuf, bool)> = Vec::new();
-        let mut settings: Vec<PathBuf> = Vec::new();
-        let mut theme: Vec<PathBuf> = Vec::new();
         let mut rescan = false;
         let mut saved: Option<Instant> = None;
         let mut notices = Vec::new();
@@ -392,6 +413,55 @@ fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A referenced file is read once more as soon as the watcher has
+    /// it: an edit made between the program's read and the registration
+    /// (a save right after boot) is not lost. Registering the same list
+    /// again sends nothing.
+    #[test]
+    fn newly_referenced_files_are_read_again_once_registered() {
+        let dir = std::env::temp_dir().join(format!("strand-live-ref-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("config")).unwrap();
+        std::fs::write(dir.join("config/shell.strand"), "").unwrap();
+        let prefs = dir.join("config/prefs.toml");
+        let wall = dir.join("wall.png");
+        std::fs::write(&prefs, "gap = 6\n").unwrap();
+        std::fs::write(&wall, b"png").unwrap();
+        let (out, rx) = calloop::channel::channel::<FromWorker>();
+        let (worker, _boot) = Worker::spawn(&dir.join("config"), None, out).unwrap();
+        let refs = vec![
+            (prefs.clone(), Role::Settings),
+            (wall.clone(), Role::Wallpaper),
+        ];
+        worker.jobs().send(Job::Referenced(refs.clone())).unwrap();
+        let mut got = Vec::new();
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        while got.len() < 2 && Instant::now() < deadline {
+            match rx.try_recv() {
+                Ok(m) => got.push(m),
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(10)),
+            }
+        }
+        assert!(
+            got.iter()
+                .any(|m| matches!(m, FromWorker::Settings(p) if p == std::slice::from_ref(&prefs))),
+            "{got:?}"
+        );
+        assert!(
+            got.iter()
+                .any(|m| matches!(m, FromWorker::Theme(p) if p == std::slice::from_ref(&wall))),
+            "{got:?}"
+        );
+        worker.jobs().send(Job::Referenced(refs)).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(
+            rx.try_recv().is_err(),
+            "nothing new registered, nothing re-read"
+        );
+        assert!(worker.join().is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// The own-write observer must not keep the watcher alive: `join`
     /// stops and joins it even with storage configured, so a watcher
