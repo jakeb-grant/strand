@@ -163,11 +163,13 @@ strand-scene      shared vocabulary: ids, geometry, colour, scene protocol, Pain
   |   strand-render ── strand-text
   |   strand-theme     (palette schema, material(), importers; colour maths in strand-scene)
   |     ^
-  strand-core ── strand-compiler ── strand-dev (LSP, inspector)
-     ^
+  strand-core ── strand-compiler ── strand-dev (LSP, inspector; links
+     ^                                strand-services for its schemas)
      strand-services ──> strand-watch (EventSink, CompositorEvent; portal follow;
-                                       strand-watch depends on no Strand crate)
-strand (binary) wires everything.
+          |                            strand-watch depends on no Strand crate)
+          └── strand-services-macros (#[service], #[derive(Store, Data, Call)])
+strand (binary) wires everything; its ServiceHost adapters join
+strand-services' stores to strand-compiler's VM.
 ```
 
 `strand-scene` has no heavy dependencies; it is what lets render and surface
@@ -1767,8 +1769,108 @@ The inspector joins it in M5; tree-sitter highlighting is not built yet
 
 ### `strand-services`
 
-Specified when M3 starts. It only produces writes and events into
-`strand-core`.
+The M3 service contract (wave 4). `strand-services` depends on
+`strand-core`, `strand-watch` and its proc-macro crate
+`strand-services-macros` (re-exported), never on `strand-compiler`: it
+never sees `Value`. Service state is typed Rust; where something must be
+handled by name it is `strand_services::Data` (`Null`, `Bool`, `Int`,
+`Float`, `Text`, `Duration`, `Color(Rgba)`, `List`, `Record { ty,
+fields }` by name, `Enum { ty, variant }`), with `ToData` / `FromData` /
+`SchemaType` (the schema spelling: `float`, `text?`, `[Workspace]`) for
+the primitives, `Option`, `Vec` and derived types.
+
+- **A service** is a state struct:
+
+  ```rust
+  #[service(name = "battery", schema = SCHEMA)]   // + action = A, call = C, fns = f, thread
+  #[derive(Store, Clone, Debug, Default, PartialEq)]
+  pub struct Battery {
+      pub present: bool,
+      #[store(rw)] pub level: f64,                // `<->` / assignment
+      #[store(keyed)] pub devices: Vec<Device>,  // a keyed collection
+      pub received: Event<Notification>,          // an event (`()`: none, a tuple: several)
+  }
+  impl Battery { async fn run(cx: Cx<Self>) -> Result<(), ServiceError> { … } }
+  ```
+
+  `#[derive(Store)]` generates `BatteryPatch` (`Send`: one variant per
+  field with its new value, a keyed list's `Vec<VecDiff<K, T>>`, an
+  event's payload), `BatteryCells` (logic thread: `Signal<T>` per
+  field, `KeyedSignal<K, T>` per keyed list, `EventQueue<T>` per event)
+  and the `Store` / `Cells` impls (`FIELDS`, `EVENTS` with names, schema
+  types, `rw`, `keyed`, `///` docs; `diff(old, new)`, `apply`,
+  `field_patch`; cells `apply(patch, How::{Initial, Report(echo_of)})`,
+  `snapshot`, `read(field) -> Data` tracked, `ids`, `write(field, Data,
+  send)` with `write_tagged`, `keyed_items`). `#[derive(Data)]` on a
+  record struct (`#[data(name = "Workspace", key = id)]`, `#[data(rename
+  = "type")]` on a field; `key` implements `Keyed`) or a unit enum
+  (variants in snake_case). `#[derive(Call)]` on an enum of actions or
+  async methods: variants in snake_case, fields are the arguments in
+  order, a field named `item` takes the item an action was called on
+  (`ws.focus()`), so the language side routes a record's item actions
+  to the service whose `item_records()` names it. `#[service]`
+  implements `Service` (`NAME`, `schema()`: its declarations in the
+  schema language, `Action`, `Call` (`NoCall` by default), `call`: `fn`
+  methods computed on the logic thread over the cells, `start`).
+- **Service side** (`Cx<S>`): `state()` (the logic thread's values when
+  it started, then its own updates); `update(|s| …)` sends the fields
+  that changed as one `Envelope` (one tick); `send(patches)` for
+  hand-made keyed diffs; `emit(event)`; `report(&write, |s| …)` answers
+  a write (always naming the written field, tagged with its generation,
+  so the logic thread ignores the echo and drops a refused optimistic
+  value); `ready()` ends the boot phase (updates before it are boot
+  values: `on change` takes them as its baseline; it also ends the first
+  frame's wait); `recv().await` / `blocking_recv()` / `try_recv()` give
+  `Msg::{Write(Write { field, path, value, field_value, generation }),
+  Action(S::Action), Call(S::Call, Reply), Visible(bool)}` and `None` once
+  stopped; `visible()` (a reader is visible: streams such as a Wi-Fi
+  scan, audio levels or a polled sensor run only then);
+  `session()` / `system()` (one zbus connection per bus per runtime
+  thread, on the `Buses` the registry was given); `set_notify(f)` for a
+  service on its own thread with its own event loop (PipeWire's): `f`
+  runs whenever a message is queued and when it is stopped.
+- **Threads.** `Start::Shared`: the body runs on the one tokio
+  current-thread runtime thread (`strand-services`, a `LocalSet`, so
+  bodies need not be `Send`), started lazily with the first such service
+  and joined by `Services::shutdown`; stopping drops the body's future.
+  `Start::Thread` (`#[service(thread)]`, a blocking `fn run(cx)`): a
+  thread per run (`strand-<name>`), stopped by closing its messages.
+- **Logic side.** `Services::new(rt, Buses, wake)` (where no owner is
+  current: its cells and timers live in a scope of their own; `wake` is
+  called from any thread after every envelope); `register::<S>(rt) ->
+  Client<S>`; `pump(rt)` applies every waiting envelope (outside
+  handlers, before a step: reports are not handler writes);
+  `wait_ready(rt, limit)` pumps until every running service is ready
+  (the first frame's wait); `shutdown()`. `Client<S>`: `cells()`,
+  `acquire(rt)` / `release(rt)` (the reader count: the first acquire
+  starts it; the last release tells it `Visible(false)` at once and arms
+  a core timer, `STOP_GRACE` = 5 s on the logic clock, that stops it;
+  an acquire inside the grace cancels the stop, nothing restarts;
+  `release` disposes nothing, so it is safe in scope cleanup), `seed(rt,
+  |s| …)` (boot values before it first reports: a host's remembered
+  values), `act`, `request` (async call → future of `Result<Data,
+  String>`), `readers`, `running`, `starts`, `stops`, `dynamic() -> Rc<dyn
+  DynService>`: the by-index view the language side drives (`fields`,
+  `events`, `actions`, `methods`, `item_records`, `read`, `ids`,
+  `keyed_items`, `write(field, path: &[Step], Data)`, `action(name,
+  item, args)`, `call`, `fetch`, `acquire`, `release`, `observe(f)`:
+  every keyed change and event applied, as `Applied::{Keyed { field,
+  diffs: Vec<VecDiff<Data, Data>> }, Event { event, args }}`).
+- **Builtin services here** (wave 4): `system` (the portal's appearance
+  settings through `strand_watch::follow` on the shared runtime, plus
+  `hostname`), `cpu` and `memory` (procfs, sampled once a second only
+  while a reader is visible). `strand_services::schemas()` lists the
+  schema texts of every builtin service implemented (the language
+  extends its builtin schema with them); `Builtin::register(&services,
+  rt)` registers them all. A new service crate module adds its store
+  here and to both lists.
+- **Tests** (`strand_services::testing`): `PrivateBus::start()` (a
+  `dbus-daemon` of the test's own; `buses()` for `Services::new`, `env()`
+  for a child process, `wait_for_name`), `DbusMock::start(&bus,
+  template, system, parameters, name)` (python-dbusmock: the interpreter
+  is `$STRAND_DBUSMOCK_PYTHON`, else the first of `python3`, `python3.12`
+  that imports `dbusmock`). Both skip without their tool unless
+  `STRAND_REQUIRE_DBUS` is set (CI), where they fail.
 
 ### `strand-watch`
 

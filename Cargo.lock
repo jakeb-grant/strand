@@ -2119,7 +2119,21 @@ dependencies = [
 name = "strand-services"
 version = "0.0.0"
 dependencies = [
+ "log",
  "strand-core",
+ "strand-services-macros",
+ "strand-watch",
+ "tokio",
+ "zbus",
+]
+
+[[package]]
+name = "strand-services-macros"
+version = "0.0.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
 ]
 
 [[package]]
