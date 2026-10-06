@@ -838,6 +838,63 @@ mod tests {
         assert_eq!(t.lookup("n1"), Some(PropValue::Number(64.0)));
     }
 
+    /// Every method, exactly: `alpha` sets alpha, `mix` interpolates in
+    /// premultiplied OKLab (a percentage is a fraction), `lighten` and
+    /// `darken` move OKLCH lightness, `oklch(from …)` does channel
+    /// arithmetic; results are gamut-mapped into sRGB.
+    #[test]
+    fn methods_evaluate_exactly() {
+        let mut t = TokenTable::default();
+        let accent = Color::from_hex("#7aa2f7").unwrap();
+        t.insert("accent", PropValue::Color(accent));
+        t.insert("fg", PropValue::Color(Color::WHITE));
+        let call = |m, args| TokenExpr::path("accent").call(m, args);
+        let n = |v: f32| TokenExpr::value(PropValue::Number(v));
+        let eval = |e: TokenExpr| match t.eval(&e) {
+            Some(PropValue::Color(c)) => c,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            eval(call(TokenMethod::Alpha, vec![n(0.22)])),
+            accent.with_alpha(0.22)
+        );
+        let pct = TokenExpr::value(PropValue::Length(Length::Percent(8.0)));
+        assert_eq!(
+            eval(call(TokenMethod::Mix, vec![TokenExpr::path("fg"), pct])),
+            accent.lerp_oklab(Color::WHITE, 0.08).gamut_mapped()
+        );
+        // Lightness lands within the gamut mapper's just-noticeable
+        // difference (ΔEOK 0.02) of the asked value.
+        let l = accent.to_oklch().l;
+        let lighter = eval(call(TokenMethod::Lighten, vec![n(0.1)]));
+        assert!(
+            (lighter.to_oklch().l - (l + 0.1)).abs() < 0.02,
+            "{lighter:?}"
+        );
+        let darker = eval(call(TokenMethod::Darken, vec![n(0.1)]));
+        assert!((darker.to_oklch().l - (l - 0.1)).abs() < 0.02, "{darker:?}");
+        assert!(lighter.in_gamut(1e-6) && darker.in_gamut(1e-6));
+        // Lightening past white is white, not a clipped tint.
+        assert_eq!(eval(call(TokenMethod::Lighten, vec![n(2.0)])), Color::WHITE);
+        // oklch(from $accent, c: c * 4): far out of gamut, mapped back
+        // keeping lightness and hue.
+        let vivid = eval(TokenExpr::OklchFrom {
+            base: Box::new(TokenExpr::path("accent")),
+            l: None,
+            c: Some(Box::new(TokenExpr::Binary {
+                op: BinOp::Mul,
+                lhs: Box::new(TokenExpr::Channel(Channel::C)),
+                rhs: Box::new(n(4.0)),
+            })),
+            h: None,
+            alpha: None,
+        });
+        assert!(vivid.in_gamut(1e-6));
+        let (a, v) = (accent.to_oklch(), vivid.to_oklch());
+        assert!((v.l - a.l).abs() < 0.02 && (v.h - a.h).abs() < 3.0, "{v:?}");
+        assert!(v.c > a.c);
+    }
+
     #[test]
     fn declared_pairs_keep_their_contrast_in_every_scope() {
         let mut t = TokenTable::default();

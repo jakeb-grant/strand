@@ -3812,3 +3812,140 @@ replaced by a mean per lookup (at most 8 for `get`/`index_of`, 2.5 for
 `contains_key`) and a loose per-lookup cap of 24 for all three and for a
 miss. A scan would cost n/2, thousands of compares, so both still fail on
 the regression the guard is for.
+
+## wave3-theme
+
+**2026-10-06 · wave3-theme: a crate for palettes.** `strand-theme` holds
+the palette schema (`Role`, the 37 Material 3 system roles under the
+names of wave2-check round 2), `material(seed:)`/`material(image:)`, the
+importers, the derivation table and the built-in theme. It depends on
+`strand-scene` only; `strand-compiler` depends on it. The colour maths the
+render thread needs as well (CSS Color 4 gamut mapping, WCAG contrast,
+the lightness solver) is in `strand-scene`'s `Color`, so the per-frame
+token evaluator shares it; `strand_theme::gamut` re-exports it.
+`material-colors` 0.5 needs Rust 1.97, so the crate says so in its own
+`rust-version` (the toolchain and CI are 1.97 already).
+
+**2026-10-06 · wave3-theme: the Material spec is pinned to 2021.**
+`material(seed:)` is `DynamicScheme::from_spec(…, Platform::Phone,
+SpecVersion::Spec2021)` (`strand_theme::material::SPEC`): the scheme
+material-color-utilities, matugen and Android 12–14 produce, so a
+`material-colors` release that moves its default cannot recolour a
+theme. Every role comes straight from the scheme, 1:1 by the role
+table; `contrast:` is M3's contrast level, clamped to −1..1. The
+reference value from material-color-utilities (seed `#0000ff`, tonal
+spot, light: primary `#555992`) is a test
+(`crates/strand-theme/tests/themes.rs::material_seed_is_exact_and_deterministic`).
+
+**2026-10-06 · wave3-theme: wallpapers.** `material(image:)` decodes
+(PNG, JPEG, WebP), takes `thumbnail(128, 128)`, quantises the opaque
+pixels with the Celebi quantiser (128 colours) and scores them as
+material-color-utilities does; images over 64 Mpx are refused. The
+quantiser (`strand_theme::image::Quantiser`) answers on the logic thread
+from a `stat` of the file the path resolves to (device, inode, size,
+mtime after every link) and works on its own thread: it reads, hashes
+(BLAKE3) and decodes only on a hash it has not seen. Seeds are kept by
+hash and the path index with the last seed in
+`$XDG_STATE_HOME/strand/palettes/`, so an unchanged wallpaper boots into
+its palette in the boot table. Paths take `~/` and are relative to the
+config directory. While a new wallpaper is quantised, `material(image:)`
+is a pending `Async` holding the last image palette (any path: the most
+recent wallpaper is the old palette); with none yet (the first run), it
+has no value and the theme's `?? material(seed: …)` applies; a missing
+or undecodable file has no value either ("or if missing").
+
+**2026-10-06 · wave3-theme: `??` takes a kept value while loading.** The
+VM's `??` on an `Async` now gives its value whenever it has one, also
+while a newer one loads, as strand-core's `Async::or` already did ("a
+search box keeps showing the last results while typing"); only a value
+loading the first time, or a failure with nothing kept, gives the
+fallback. Without this, design.md's "the old palette holds until the new
+one is ready" could not hold through `material(image:) ?? material(seed:
+…)`. `.pending` still says a load is running
+(`crates/strand-compiler/tests/vm.rs::coalesce_covers_a_pending_async`).
+
+**2026-10-06 · wave3-theme: import sources.** `import()` takes
+`catppuccin:<flavour>` (`mocha`, `macchiato`, `frappe`, `latte`) with an
+optional `:<accent>` (one of Catppuccin's 14 accents, `mauve` by
+default), and `base16:<file>`, `base24:<file>`, `matugen:<file>` and
+`w3c:<file>`. Catppuccin maps base/mantle/crust and surface0–2 onto the
+surface containers, text/subtext0 onto `fg`/`fg_variant`, overlay0 onto
+`outline`, sky/peach/red onto secondary/tertiary/error. base16/base24
+follow tinted-theming's styling guide (00 background, 01/02 lighter
+backgrounds, 03 comments → `outline`, 04 → `fg_variant`, 05 foreground,
+08 → `error`, 0C → `secondary`, 0D → `accent`, 0E → `tertiary`; base24's
+10/11 darker backgrounds → `surface_dim`/`surface_lowest`, 16 →
+`inverse_accent`), YAML `palette:` nested or the legacy flat form, its
+`variant` saying light or dark. matugen's JSON is read in both layouts
+(`colors.<mode>.<role>` and `colors.<role>.<mode>`, values as strings or
+`{ "color": … }`), the mode being the file's `mode`, else dark. W3C
+design tokens: a colour token fills the role named by the longest suffix
+of its path's words (`md.sys.color.on-primary-container` →
+`on_accent_container`, Strand or Material 3 names), `{alias}`
+references followed, `$type` inherited, hex strings or the 2025 colour
+object. Every importer fills the rest through one table
+(`strand_theme::Partial::fill`, its doc lists the table: Material 3
+tones read as OKLCH lightness) and the contrast guard. A file import is
+read on the logic thread (a few kB), registered with the watcher and
+read again when it changes.
+
+**2026-10-06 · wave3-theme: the contrast guard's pairs and where it
+runs.** The declared pairs are Material 3's own: every `on_X` over its
+`X`, `on_bg` over `bg`, `fg` over the surface and every surface
+container, `fg_variant` over the surface and its variant, `inverse_fg`
+and `inverse_accent` over `inverse_surface` (`strand_theme::contrast::
+PAIRS`), at 3:1 by WCAG 2's contrast ratio. Palettes are guarded when
+made, and the pairs travel in the token table (`TokenTable::contrast`):
+wherever a text token is evaluated the render thread solves its OKLCH
+lightness (hue and chroma kept, smallest move, gamut-mapped) against its
+backgrounds as evaluated in that node's scope, so a `set { $surface: … }`
+subtree and a palette mid-spring stay readable too. When no lightness
+reaches 3:1 over every background (backgrounds both lighter and darker
+than any text can be), the first background (the text's own) must be met
+and the rest are let go; translucent backgrounds are not judged. The
+light↔dark crossfade for impossible mid-swap frames is render's (with
+the palette springs).
+
+**2026-10-06 · wave3-theme: the built-in theme.** A config without a
+theme file is themed: design.md's `tokens base` (scales, fonts, springs,
+elevations and the derived roles) sits under every token set, so a theme
+that defines only some base tokens keeps the rest, and the palette
+without `use palette` is `material(seed: system.accent ?? #7aa2f7, dark:
+system.dark, contrast: system.contrast)`; a `use palette` still loading
+with no fallback gets the same. Text with no `color` or `font` above it
+is drawn in `$fg` and `$font.ui`. A token path written as a plain value
+replaces a derived one there and the reverse (`TokenTable::insert`).
+
+**2026-10-06 · wave3-theme: a missing font family falls back whole.**
+design.md's fonts name `"Inter"` and `"JetBrains Mono"`; on a machine
+without them parley fell back glyph by glyph (some letters missing). A
+family with no generic in it now gets `, sans-serif` appended when shaped
+(`strand-text`, one function), outside the crates this track owns
+because the theme's own fonts depend on it
+(`crates/strand-text/tests/fallback.rs`).
+
+**2026-10-06 · wave3-theme: the portal in `strand run`.** Until
+`strand-services` runs the shared tokio runtime (M3), the logic thread
+starts `PortalSettings::spawn(Bus::Session, sink)` on its own thread,
+its sink waking the logic loop. The boot read is written as initial
+values (`SchemaHost::set_initial`, a reload-style write that `on change`
+takes as its baseline), later batches as ordinary writes. The last values
+are kept in `$XDG_STATE_HOME/strand/palettes/system` and written before
+the first frame, so a dark desktop never boots into a light frame while
+the portal answers (up to 500 ms).
+
+**2026-10-06 · wave3-theme: `strand set`.** design.md's `strand set
+theme.look mocha` is the IPC command `{"v": 1, "cmd": "set", "path",
+"value"}` and `strand set <path> <value>`: an exported `state` (or a field
+of one), the value written as text and read by the target's type (enum
+variant by name, `true`/`false`, numbers with their units, `#rrggbb`,
+text and paths as given, `null` for an optional). The rest of the M5
+CLI (`get`, `toggle`, `call`, services and settings paths) is unchanged.
+
+**2026-10-06 · wave3-theme: settings notices on the overlay.** Core's
+settings notices (a bad value kept at its last good value, a syntax
+error, a read-only file whose changes go to an overlay in
+`$XDG_STATE_HOME`, a file change shadowed by the runtime overlay) are
+overlay rows and `strand watch` notices; rows about one file and field
+replace each other, and the shadowed row's `[clear]` drops that field's
+runtime overlay (`Instance::clear_settings_overlay`).

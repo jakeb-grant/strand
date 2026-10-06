@@ -41,7 +41,10 @@ set from `find_files`, rescan callback calling it again), boots the
 none, with diagnostics) and starts the `strand-compile` thread, which
 compiles each watcher batch and `strand reload` off the logic thread and
 sends `live::FromWorker::{Loaded, Settings}` on a calloop channel; logic
-sends it `Job::{Reload { hard, client }, Referenced(settings files)}`
+sends it `Job::{Reload { hard, client }, Referenced(files)}` (settings
+files, and the theme's wallpapers and imported files, re-sent whenever
+the theme reads a new one; their changes come back as
+`FromWorker::{Settings, Theme}(paths)`)
 (the `Loaded` a reload causes carries the IPC clients it answers). A
 load that commits nothing but clears the last attempt's problems (a
 broken save reverted to the last good text, `Outcome::cleared`) is
@@ -71,7 +74,14 @@ a resume or a clock step wakes it at once). SIGINT, SIGTERM (a
 the compositor going away send `ToLogic::Shutdown`; the main thread
 joins the logic thread, which unmounts the instance, runs
 `Runtime::shutdown` and drops its stores, so debounced persist and
-settings writes reach the disk before the process exits. Size facts
+settings writes reach the disk before the process exits. With
+`Live::portal` set, the logic thread also follows the portal's
+appearance settings (`strand_watch::PortalSettings` on its own thread
+until M3's services runtime; the boot read written as initial values,
+later batches as writes into `system.*`), keeping the last values in
+`$XDG_STATE_HOME/strand/palettes/system` and writing them before the
+first frame. Settings-file notices from core are overlay rows (a
+shadowed field's `[clear]`) and `strand watch` notices. Size facts
 address the surface's node until layout boxes land (M2).
 
 **IPC** (`crates/strand/src/ipc.rs`): a Unix socket at `$STRAND_SOCKET`
@@ -79,7 +89,9 @@ or `$XDG_RUNTIME_DIR/strand-<WAYLAND_DISPLAY>.sock`, newline-delimited
 JSON. Requests are `{"v": 1, "cmd": …}`; each is answered with one line
 `{"ok": true, …}` or `{"ok": false, "error": …}`, and an unknown `cmd`
 or a newer `v` is refused without closing the connection, so M5's `get`,
-`set`, `toggle` and `call` are new `cmd`s on the same socket. Version 1:
+`toggle` and `call` are new `cmd`s on the same socket (`set` is one
+already). Version 1: `set` (`"path"`, `"value"` as text: `strand set
+theme.look mocha`, answered `{"ok": true}` or with the error),
 `reload` (`"hard"`; answered once the reload is committed or held, with
 its event; at once with `"deferred": true` in the event while a lock is
 shown), `reset` (`"path"`: a state cell back to its default, as the
@@ -106,6 +118,8 @@ strand-scene      shared vocabulary: ids, geometry, colour, scene protocol, Pain
   ^   ^   ^
   |   |   strand-surface   (layer-shell, shm, damage submit, input, frame timing)
   |   strand-render ── strand-text
+  |   strand-theme     (palette schema, material(), importers; colour maths in strand-scene)
+  |     ^
   strand-core ── strand-compiler ── strand-dev (LSP, inspector)
      ^
      strand-services ──> strand-watch (EventSink, CompositorEvent; portal follow;
@@ -205,7 +219,14 @@ be built and tested without the language, and the language without pixels.
   `TokenTable` sent by `SetTokens` holds plain values (palette roots,
   scales, fonts, `PropValue::Transition` springs for `$motion.*`) and
   derived tokens as expressions; render evaluates references at flatten
-  time, every frame, so only palette roots need to spring. Logic still
+  time, every frame, so only palette roots need to spring. Derived
+  colours are gamut-mapped (`Color::gamut_mapped`, CSS Color 4). The
+  table also carries the contrast guard's declared pairs
+  (`TokenTable::contrast`: a text token and its background tokens, the
+  Material 3 `on_X`/`X` pairs and `fg` over the surfaces): wherever a
+  text token is evaluated, its lightness is solved to 3:1 over its
+  backgrounds in that node's scope (`Color::with_contrast`), so a
+  palette mid-spring and subtree overrides stay readable. Logic still
   resolves which theme applies. Subtree overrides (`set { $x: … }` and a
   component's `tokens { }`, as `Toast.radius`) are the `tokens` prop
   holding a `PropValue::Tokens` table; render resolves through a
@@ -292,6 +313,30 @@ be built and tested without the language, and the language without pixels.
     texts) per surface. Before popups and launchers share the main
     thread, scope the map to the surface's root, or keep it per node
     and update it in `deliver`, and prune once per update.
+
+### `strand-theme`
+
+Palettes, used by the compiler's VM (`material()`, `import()`) and by
+the instance's built-in theme; render reaches it only through the token
+table.
+
+- `Role` (37 Material 3 system roles, `name()` / `m3()`), `Palette`
+  (every role a colour, `is_dark()`, `insert_into(&mut TokenTable)`
+  writes the roots and the contrast pairs), `Partial` (what an importer
+  found; `fill()` derives the rest by one table, then guards).
+- `material::from_seed(Color, Options { variant, dark, contrast })`:
+  `material-colors` 0.5, spec 2021 pinned (`material::SPEC`).
+- `image::Quantiser`: `lookup(path) -> Lookup::{Ready(seed), Pending {
+  last }, Failed { error, last }}` from a `stat` on the calling thread;
+  a worker thread reads, BLAKE3-hashes, decodes a 128 px downscale and
+  quantises only unseen content; seeds by hash and the path index are
+  kept in a directory (`$XDG_STATE_HOME/strand/palettes`); `set_waker`
+  is called after each finished job, `poll()` takes the results.
+- `import(source, base_dir)`: `catppuccin:<flavour>[:<accent>]`,
+  `base16:`, `base24:`, `matugen:`, `w3c:` + a file
+  (`docs/decisions.md`, wave3-theme).
+- `contrast::{PAIRS, guard, ratio, solve}`, `defaults::base_tokens()`
+  (design.md's `tokens base`), `gamut::map`.
 
 ### `strand-core`
 
@@ -1013,7 +1058,23 @@ Public interfaces other crates and later stages build on:
   kept over a changed default, also in `notices`): one diff per tick,
   the boot one starting
   with `SetTokens { transition: Instant }`, later token tables with
-  `Default`.
+  `Default`. The table is the built-in theme's base tokens
+  (`strand_theme::defaults`) under the chosen token set, with the
+  `use palette` palette (or, without one, `material(seed:
+  system.accent ?? #7aa2f7, dark: system.dark, contrast:
+  system.contrast)`).
+  - Theming (`vm::theme::ThemeHost`, one per instance, kept across
+    reloads): `material(image:)` asks its `Quantiser` (cache under
+    `Storage::palette_dir()`) and returns an `Async<Palette>` holding
+    the last image palette while one is quantised; a finished job wakes
+    a core task that bumps the host's generation signal, which every
+    `material(image:)` and file `import` reads. `Instance::theme_files()
+    -> (wallpapers, imports)` and `take_theme_files_changed()` are for
+    the watcher, `theme_files_changed(&[PathBuf])` re-reads after a
+    change, `theme()` gives the host (tests wait on it).
+  - `Instance::set_text(path, text)` is `strand set`: `set` with the
+    value parsed by the target's type. `clear_settings_overlay(file,
+    field)` is a settings notice's `[clear]`.
   - Each bound prop is one watched memo folding the base binding and
     its `when` blocks in source order (later wins; each source keeps its
     own `~` transition); `if`/`match` are effects swapping branch
