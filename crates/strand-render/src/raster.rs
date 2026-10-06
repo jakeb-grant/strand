@@ -22,6 +22,7 @@ use vello_cpu::{
     RenderMode, RenderSettings, Resources, TargetInit, Tint, TintMode,
 };
 
+use crate::cache::{PaintCache, ShadowShape, draw_shadow, gradient_key, image_paint, shadow_key};
 use crate::flatten::{DisplayItem, FillShape, Item};
 
 /// The render thread's copy of the text worker's glyph atlases, as vello
@@ -230,6 +231,8 @@ pub struct Raster {
     scratch: Vec<u8>,
     /// Pixels the last `paint` handed to vello (cells × cell area).
     rasterised: u64,
+    /// Dithered gradients and blurred shadows, drawn from pixmaps.
+    cache: PaintCache,
 }
 
 impl Default for Raster {
@@ -240,6 +243,7 @@ impl Default for Raster {
             resources: None,
             scratch: Vec::new(),
             rasterised: 0,
+            cache: PaintCache::default(),
         }
     }
 }
@@ -257,6 +261,11 @@ impl Raster {
     #[cfg(test)]
     pub fn contexts(&self) -> usize {
         self.contexts.len()
+    }
+
+    /// The cache of dithered gradients and shadows.
+    pub fn cache(&self) -> &PaintCache {
+        &self.cache
     }
 
     /// Pixels the last [`Raster::paint`] rasterised. Tracks damage, not
@@ -317,6 +326,7 @@ impl Raster {
         let Some(bbox) = damage.bounds() else {
             return;
         };
+        self.prepare(items, &damage);
         // Pixel-aligned rect clips leave coverage inside them untouched; a
         // multi-rect clip path would round differently where layers
         // composite through it.
@@ -344,12 +354,13 @@ impl Raster {
                 let (w, h) = (cell.w as u16, cell.h as u16);
                 self.rasterised += cell.area();
                 let base = Affine::translate((-(cell.x as f64), -(cell.y as f64)));
-                let ctx = self.context(w, h);
+                self.context(w, h);
+                let ctx = &mut self.contexts[0];
                 ctx.reset();
                 ctx.set_transform(base);
                 for clip in &clips {
                     ctx.push_clip_rect(&to_kurbo(*clip));
-                    draw(ctx, items, *clip, atlas, scale, base);
+                    draw(ctx, items, *clip, atlas, &self.cache, scale, base);
                     ctx.pop_clip();
                 }
                 ctx.flush();
@@ -381,6 +392,63 @@ impl Raster {
     }
 }
 
+impl Raster {
+    /// Builds the cached pixmaps of the gradients and shadows that touch
+    /// `damage` (see [`crate::cache`]).
+    fn prepare(&mut self, items: &[DisplayItem], damage: &Damage) {
+        self.cache.begin_frame();
+        let touches = |b: &Rect| damage.rects().iter().any(|r| r.intersects(*b));
+        for d in items {
+            if !touches(&d.bounds) {
+                continue;
+            }
+            match &d.item {
+                Item::Fill { paint, frame, .. } | Item::Border { paint, frame, .. } => {
+                    if let Some((w, h)) = frame_px(*frame) {
+                        self.cache.gradient(paint, w, h);
+                    }
+                }
+                Item::Shadow {
+                    rect,
+                    radii,
+                    std_dev,
+                    color,
+                    extent,
+                    ..
+                } => {
+                    self.cache.shadow(&ShadowShape {
+                        rect: *rect,
+                        radii: *radii,
+                        std_dev: *std_dev,
+                        color: *color,
+                        extent: *extent,
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// A gradient frame's size in whole pixels.
+fn frame_px(f: kurbo::Rect) -> Option<(u32, u32)> {
+    let (w, h) = (f.width().round(), f.height().round());
+    (w.is_finite() && h.is_finite() && w >= 1.0 && h >= 1.0 && w <= 65535.0 && h <= 65535.0)
+        .then_some((w as u32, h as u32))
+}
+
+/// The paint of `p` over `frame`: a cached dithered pixmap for a
+/// gradient, else vello's own paint.
+fn paint_for(p: &Paint, frame: kurbo::Rect, cache: &PaintCache) -> (PaintType, Affine) {
+    if !matches!(p, Paint::Solid(_))
+        && let Some((w, h)) = frame_px(frame)
+        && let Some(pm) = cache.peek(gradient_key(p, w, h))
+    {
+        return image_paint(pm, frame.x0.round(), frame.y0.round(), false);
+    }
+    paint_type(p, frame)
+}
+
 /// Index just past the pop matching the push at `i`.
 fn skip_group(items: &[DisplayItem], i: usize) -> usize {
     let mut depth = 0usize;
@@ -406,6 +474,7 @@ fn draw(
     items: &[DisplayItem],
     clip: Rect,
     atlas: &AtlasMirror,
+    cache: &PaintCache,
     scale: Scale,
     base: Affine,
 ) {
@@ -449,28 +518,28 @@ fn draw(
                 ctx.set_fill_rule(Fill::EvenOdd);
                 ctx.push_clip_path(clip);
                 ctx.set_fill_rule(Fill::NonZero);
-                ctx.set_paint(bgra(*color));
-                if radii.iter().all(|r| *r == radii[0]) {
-                    ctx.fill_blurred_rounded_rect(rect, radii[0], *std_dev, false);
-                } else {
-                    // vello blurs one radius per rect: draw each quadrant
-                    // with its own corner's radius, split on whole pixels
-                    // so the seams do not antialias.
-                    let (mx, my) = (rect.center().x.round(), rect.center().y.round());
-                    let quads = [
-                        kurbo::Rect::new(extent.x0, extent.y0, mx, my),
-                        kurbo::Rect::new(mx, extent.y0, extent.x1, my),
-                        kurbo::Rect::new(mx, my, extent.x1, extent.y1),
-                        kurbo::Rect::new(extent.x0, my, mx, extent.y1),
-                    ];
-                    for (q, r) in quads.iter().zip(radii) {
-                        if q.width() <= 0.0 || q.height() <= 0.0 {
-                            continue;
-                        }
-                        ctx.push_clip_rect(q);
-                        ctx.fill_blurred_rounded_rect(rect, *r, *std_dev, false);
-                        ctx.pop_clip();
+                let shape = ShadowShape {
+                    rect: *rect,
+                    radii: *radii,
+                    std_dev: *std_dev,
+                    color: *color,
+                    extent: *extent,
+                };
+                match cache.peek(shadow_key(&shape)) {
+                    Some(pm) => {
+                        let (ox, oy) = (extent.x0.floor(), extent.y0.floor());
+                        let (p, t) = image_paint(pm, ox, oy, false);
+                        ctx.set_paint(p);
+                        ctx.set_paint_transform(t);
+                        ctx.fill_rect(&kurbo::Rect::new(
+                            ox,
+                            oy,
+                            ox + pm.width() as f64,
+                            oy + pm.height() as f64,
+                        ));
+                        ctx.reset_paint_transform();
                     }
+                    None => draw_shadow(ctx, &shape),
                 }
                 ctx.pop_clip();
             }
@@ -479,7 +548,7 @@ fn draw(
                 paint,
                 frame,
             } => {
-                let (p, t) = paint_type(paint, *frame);
+                let (p, t) = paint_for(paint, *frame, cache);
                 ctx.set_paint(p);
                 ctx.set_paint_transform(t);
                 match shape {
@@ -489,7 +558,7 @@ fn draw(
                 ctx.reset_paint_transform();
             }
             Item::Border { path, paint, frame } => {
-                let (p, t) = paint_type(paint, *frame);
+                let (p, t) = paint_for(paint, *frame, cache);
                 ctx.set_paint(p);
                 ctx.set_paint_transform(t);
                 ctx.set_fill_rule(Fill::EvenOdd);

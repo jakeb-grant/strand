@@ -205,6 +205,11 @@ be built and tested without the language, and the language without pixels.
       fn wants_frame(&self, surface: SurfaceId) -> bool;
       /// Fully opaque part of the last painted frame, in buffer pixels.
       fn opaque_region(&self, surface: SurfaceId) -> Damage { Damage::new() }
+      /// Rounded boxes of nodes with `blur`, in buffer pixels, with their
+      /// radius: what the blur ladder's `ext-background-effect-v1` rung
+      /// (M4) sends. Render draws the tint fallback (alpha + 0.15) until
+      /// `Renderer::set_compositor_blur(true)`.
+      fn blur_region(&self, surface: SurfaceId) -> Vec<BlurRegion> { Vec::new() }
   }
   ```
 

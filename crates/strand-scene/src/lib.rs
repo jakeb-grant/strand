@@ -20,7 +20,7 @@ pub use geometry::{LogicalPoint, LogicalRect, LogicalSize, Point, Rect, Scale, S
 pub use id::{NodeId, NodeIdAllocator, SurfaceId};
 pub use input::{AxisDelta, AxisSource, ButtonState, InputEvent, KeyInput, Modifiers};
 pub use motion::{Curve, Motion, Spring};
-pub use paint::{BYTES_PER_PIXEL, PaintTarget, Painter, TargetError};
+pub use paint::{BYTES_PER_PIXEL, BlurRegion, PaintTarget, Painter, TargetError};
 pub use protocol::{
     Border, Corners, Easing, Font, GradientStop, Insets, Length, NodeKind, Paint, Prop, PropClass,
     PropValue, SceneDiff, SceneOp, Shadow, Transition,

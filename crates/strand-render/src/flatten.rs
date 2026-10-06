@@ -12,8 +12,8 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use strand_scene::{
-    Border, Color, Corners, Damage, Font, Length, LogicalRect, NodeId, NodeKind, Paint, Prop,
-    PropValue, Rect, Scale, Shadow, Size, TokenScope, TokenTable,
+    BlurRegion, Border, Color, Corners, Damage, Font, Length, LogicalRect, NodeId, NodeKind, Paint,
+    Prop, PropValue, Rect, Scale, Shadow, Size, TokenScope, TokenTable,
 };
 use strand_text::{Ellipsis, TextAlign, TextLayout, TextSpan, TextStyle};
 use vello_cpu::kurbo::{self, BezPath, RoundedRect, RoundedRectRadii, Shape};
@@ -189,6 +189,10 @@ pub struct Flattened {
     /// Every drawn node's hit shape, in paint order (a node before its
     /// children, earlier siblings before later ones).
     pub hits: Vec<HitBox>,
+    /// Where nodes with `blur` ask the compositor to blur behind the
+    /// surface: their rounded boxes in buffer pixels, with the radius
+    /// (the blur ladder's first rung, M4).
+    pub blur: Vec<BlurRegion>,
 }
 
 /// A node's hit shape: its rounded box in physical pixels, grown by
@@ -273,8 +277,17 @@ struct Inherited<'a> {
     inert: bool,
 }
 
+/// What flattening reads besides the tree, layout and springs.
+#[derive(Debug, Default)]
+pub struct Extras {
+    /// The compositor blurs behind surfaces (`ext-background-effect-v1`,
+    /// M4): `blur` needs no tint fallback.
+    pub compositor_blur: bool,
+}
+
 /// Flattens the subtree under `root` for a surface of `size` at `scale`.
 /// `layouts` holds the delivered text layouts per node (see [`Shaped`]).
+#[allow(clippy::too_many_arguments)]
 pub fn flatten(
     tree: &SceneTree,
     root: NodeId,
@@ -283,6 +296,7 @@ pub fn flatten(
     layouts: &HashMap<NodeId, Vec<Shaped>>,
     boxes: &Boxes,
     anim: &mut Animator,
+    extras: &Extras,
 ) -> Flattened {
     let mut out = Flattened::default();
     let Some(node) = tree.get(root) else {
@@ -297,6 +311,7 @@ pub fn flatten(
         layouts,
         boxes,
         anim,
+        extras,
         xform: kurbo::Affine::IDENTITY,
         out: &mut out,
     };
@@ -336,6 +351,7 @@ struct Flattener<'a> {
     layouts: &'a HashMap<NodeId, Vec<Shaped>>,
     boxes: &'a Boxes,
     anim: &'a mut Animator,
+    extras: &'a Extras,
     /// The transform of the group being flattened (identity outside any
     /// `scale` or `rotate`).
     xform: kurbo::Affine,
@@ -537,6 +553,21 @@ fn opaque_bands(phys: Rect, r: &RoundedRectRadii) -> Damage {
     d
 }
 
+/// `blur`'s tint fallback: every colour's alpha up by 0.15.
+fn tinted(mut p: Paint) -> Paint {
+    let up = |c: &mut Color| c.a = (c.a + BLUR_TINT).min(1.0);
+    match &mut p {
+        Paint::Solid(c) => up(c),
+        Paint::Linear { stops, .. } | Paint::Radial { stops } | Paint::Conic { stops, .. } => {
+            stops.iter_mut().for_each(|s| up(&mut s.color))
+        }
+    }
+    p
+}
+
+/// How much `blur`'s tint fallback raises the background's alpha.
+pub const BLUR_TINT: f32 = 0.15;
+
 fn paint_of(v: Option<&PropValue>) -> Option<Paint> {
     match v? {
         PropValue::Color(c) => Some(Paint::Solid(*c)),
@@ -606,12 +637,71 @@ fn radii_zero(r: &RoundedRectRadii) -> bool {
     r.top_left <= 0.0 && r.top_right <= 0.0 && r.bottom_right <= 0.0 && r.bottom_left <= 0.0
 }
 
-fn shape_path(rect: kurbo::Rect, r: RoundedRectRadii) -> BezPath {
+fn shape_path(rect: kurbo::Rect, r: RoundedRectRadii, squircle: bool) -> BezPath {
     if radii_zero(&r) {
         rect.to_path(TOLERANCE)
+    } else if squircle {
+        squircle_path(rect, r)
     } else {
         RoundedRect::from_rect(rect, r).to_path(TOLERANCE)
     }
+}
+
+/// Superellipse exponent of `corners: squircle`.
+const SQUIRCLE_N: f64 = 5.0;
+
+/// How much further along each edge a squircle corner starts than a
+/// circular one of the same radius: the curve eases into the straight
+/// edge instead of meeting it at a kink in curvature (the "continuous
+/// corner" of iOS and Material 3 Expressive).
+const SQUIRCLE_REACH: f64 = 1.6;
+
+/// A rounded rect whose corners are superellipse quadrants
+/// (`|x|^n + |y|^n = 1`, n = 5) reaching `SQUIRCLE_REACH` × the radius
+/// along each edge (capped at half the side), flattened to lines.
+/// Hit testing and blurred shadows keep the circular shape of the same
+/// radii, which a squircle stays within a pixel or so of.
+fn squircle_path(rect: kurbo::Rect, r: RoundedRectRadii) -> BezPath {
+    let (w, h) = (rect.width(), rect.height());
+    let cap = (w.min(h) / 2.0).max(0.0);
+    let reach = |v: f64| (v * SQUIRCLE_REACH).min(cap).max(0.0);
+    // Corners clockwise from top-left: (corner point, x dir, y dir).
+    let corners = [
+        (rect.x0, rect.y0, 1.0, 1.0, reach(r.top_left)),
+        (rect.x1, rect.y0, -1.0, 1.0, reach(r.top_right)),
+        (rect.x1, rect.y1, -1.0, -1.0, reach(r.bottom_right)),
+        (rect.x0, rect.y1, 1.0, -1.0, reach(r.bottom_left)),
+    ];
+    let mut path = BezPath::new();
+    let e = 2.0 / SQUIRCLE_N;
+    for (i, &(cx, cy, dx, dy, rr)) in corners.iter().enumerate() {
+        // Points from the edge before the corner to the edge after it,
+        // going clockwise.
+        let steps = ((rr.sqrt() * 4.0).ceil() as usize).clamp(4, 64);
+        let pt = |t: f64| {
+            let (s, c) = t.sin_cos();
+            // At t = 0 on the edge before, at π/2 on the edge after.
+            let a = rr - rr * c.abs().powf(e);
+            let b = rr - rr * s.abs().powf(e);
+            match i {
+                0 => kurbo::Point::new(cx + dx * a, cy + dy * b),
+                1 => kurbo::Point::new(cx + dx * b, cy + dy * a),
+                2 => kurbo::Point::new(cx + dx * a, cy + dy * b),
+                _ => kurbo::Point::new(cx + dx * b, cy + dy * a),
+            }
+        };
+        for k in 0..=steps {
+            let t = std::f64::consts::FRAC_PI_2 * k as f64 / steps as f64;
+            let p = pt(t);
+            if i == 0 && k == 0 {
+                path.move_to(p);
+            } else {
+                path.line_to(p);
+            }
+        }
+    }
+    path.close_path();
+    path
 }
 
 fn kurbo_rect(r: Rect) -> kurbo::Rect {
@@ -1087,7 +1177,8 @@ impl<'a> Flattener<'a> {
             frame.height(),
             s,
         );
-        let box_path = shape_path(frame, r);
+        let squircle = matches!(get(Prop::Corners), Some(PropValue::Keyword(k)) if k == "squircle");
+        let box_path = shape_path(frame, r, squircle);
         let has_area = !phys.is_empty();
 
         // Shadows, under the box.
@@ -1096,8 +1187,35 @@ impl<'a> Flattener<'a> {
                 self.shadow(sh, frame, &r, &box_path, &mut sig, &mut ink);
             }
         }
+        // `blur: N` asks the compositor to blur behind the box. Until a
+        // compositor does (M4), the tint fallback raises the background's
+        // alpha by 0.15 so text over it stays readable (`blur_fallback:
+        // none` keeps it as written).
+        let blur = number(get(Prop::Blur)).filter(|b| *b > 0.0);
+        let tint = blur.is_some()
+            && !self.extras.compositor_blur
+            && !matches!(get(Prop::BlurFallback), Some(PropValue::Keyword(k)) if k == "none");
+        if let Some(radius) = blur
+            && has_area
+            && !inert
+        {
+            self.out.blur.push(BlurRegion {
+                rect: map_rect(self.xform, phys)
+                    .intersect(inh.clip)
+                    .unwrap_or_default(),
+                radii: [
+                    r.top_left as f32,
+                    r.top_right as f32,
+                    r.bottom_right as f32,
+                    r.bottom_left as f32,
+                ],
+                radius: radius.min(MAX_BLUR),
+            });
+        }
         // Background.
-        if has_area && let Some(paint) = paint_of(get(Prop::Bg)) {
+        if has_area
+            && let Some(paint) = paint_of(get(Prop::Bg)).map(|p| if tint { tinted(p) } else { p })
+        {
             if root
                 && opacity >= 1.0
                 && saved == self.xform
@@ -1138,7 +1256,7 @@ impl<'a> Flattener<'a> {
                     (r.bottom_right - bw).max(0.0),
                     (r.bottom_left - bw).max(0.0),
                 );
-                path.extend(shape_path(inner, ir));
+                path.extend(shape_path(inner, ir, squircle));
             }
             self.push(
                 Item::Border {
@@ -1423,6 +1541,7 @@ mod tests {
             &HashMap::new(),
             &boxes,
             &mut Animator::default(),
+            &Extras::default(),
         )
     }
 

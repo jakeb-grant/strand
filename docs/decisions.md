@@ -4393,3 +4393,44 @@ compositor-animated poses (M4). Another output's last frame counts as
 (painted within `EXIT_STALL`), and `Renderer::next_wake` tells the
 host's loop when a stalled exit is due to end, so a closing surface on
 an output that stopped sending frame callbacks still closes.
+
+## wave3-pixels (p3)
+
+**2026-10-06 · wave3-pixels (p3): gradients are dithered pixmaps.**
+vello_cpu quantises its gradients to 8 bits with no dithering, so a slow
+ramp over a wide box bands. Render draws every gradient fill and border
+(`linear`, `radial`, `conic`) from a pixmap of the frame's size, computed
+per pixel from a 1,024-entry OKLab colour table and offset by an 8 × 8
+Bayer threshold before rounding (`strand-render/src/cache.rs`). Pixmaps
+live in a paint cache of `PAINT_CACHE_BYTES` (4 MB, design.md's "cached
+offscreen groups, about 4 MB"), least recently used first, never evicting
+what the current frame uses; a gradient larger than `MAX_ENTRY_BYTES`
+(2 MB, about 720 × 720 px) draws with vello's own undithered gradient.
+Whether a gradient is cached depends only on its size, so a partial
+repaint draws the same pixels as a full one.
+
+**2026-10-06 · wave3-pixels (p3): shadows are cached pixmaps.** Each
+shadow of a list (`shadow: $elevation.lg` is two) is rendered once into a
+pixmap of its reach, keyed by its geometry relative to its whole-pixel
+origin, blur, radii and colour, and blitted from the paint cache after
+that, so a toast sliding by whole pixels, a launcher fading in and a
+repaint reuse it; the casting box is cut out at draw time. A shadow
+larger than `MAX_ENTRY_BYTES` draws directly (decided by size alone, as
+gradients).
+
+**2026-10-06 · wave3-pixels (p3): `corners: squircle`.** Each corner is
+a superellipse quadrant (n = 5) reaching 1.6 × the radius along both
+edges (capped at half the shorter side), so it eases into the edge
+instead of meeting it at a curvature kink, the "continuous corner" of
+iOS and Material 3 Expressive. Fill, border and `clip: true` use that
+path; the blurred shadow and the hit shape keep the circular corner of
+the same radius, which the squircle stays within about a pixel of.
+
+**2026-10-06 · wave3-pixels (p3): `blur: N` until the compositor
+blurs.** A node with `blur` reports its rounded box in buffer pixels
+(`Painter::blur_region`, a `BlurRegion` with the radius), the region the
+blur ladder's first rung (`ext-background-effect-v1`, M4) will send. Until
+a host says the compositor blurs (`Renderer::set_compositor_blur(true)`)
+render draws the tint fallback: the background's alpha rises by 0.15
+(`BLUR_TINT`), every gradient stop's too; `blur_fallback: none` keeps it
+as written.

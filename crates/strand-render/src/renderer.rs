@@ -14,7 +14,8 @@ use strand_text::{TextEngine, TextError, TextKey, TextLayout, TextRequest, TextW
 
 use crate::anim::{Animator, ExitKind, SizeMap, exit_pose, is_pose};
 use crate::flatten::{
-    Flattened, HitBox, NodeRecord, Shaped, TextSpec, flatten, natural_texts, pick, scope_tables,
+    Extras, Flattened, HitBox, NodeRecord, Shaped, TextSpec, flatten, natural_texts, pick,
+    scope_tables,
 };
 use crate::layout::{Boxes, MAX_CONTENT_SIZE, RootSize, ScrollState, TextSizes, layout};
 use crate::raster::{AtlasMirror, Raster};
@@ -342,6 +343,9 @@ pub struct Renderer {
     /// Nodes laid out by the last layout step (tests: a size spring lays
     /// out only the subtree under its nearest size-stable ancestor).
     laid_out_nodes: usize,
+    /// What flattening reads besides the tree (compositor blur, widget
+    /// state, images).
+    extras: Extras,
 }
 
 /// The overhang a surface asks for: on an axis its anchor leaves centred
@@ -481,7 +485,27 @@ impl Renderer {
             born: Vec::new(),
             opening: BTreeSet::new(),
             laid_out_nodes: 0,
+            extras: Extras::default(),
         }
+    }
+
+    /// The compositor blurs behind surfaces (`ext-background-effect-v1`,
+    /// M4): `blur` stops drawing its tint fallback (alpha + 0.15).
+    pub fn set_compositor_blur(&mut self, on: bool) {
+        if self.extras.compositor_blur != on {
+            self.extras.compositor_blur = on;
+            for s in self.surfaces.values_mut() {
+                s.mark_dirty();
+            }
+        }
+    }
+
+    /// Bytes of cached gradient and shadow pixmaps (at most
+    /// [`crate::PAINT_CACHE_BYTES`] plus what one frame needs), and how
+    /// many were built so far.
+    pub fn paint_cache(&self) -> (usize, u64) {
+        let c = self.raster.cache();
+        (c.bytes(), c.builds())
     }
 
     /// `reduced_motion` (from the system or a setting): every spring,
@@ -2087,6 +2111,7 @@ impl Renderer {
             &layouts,
             boxes,
             &mut self.anim,
+            &self.extras,
         )
     }
 
@@ -2461,6 +2486,14 @@ impl Painter for Renderer {
 
     fn wants_frame(&self, surface: SurfaceId) -> bool {
         self.wants(surface)
+    }
+
+    fn blur_region(&self, surface: SurfaceId) -> Vec<strand_scene::BlurRegion> {
+        self.surfaces
+            .get(&surface)
+            .and_then(|s| s.cache.as_ref())
+            .map(|f| f.blur.clone())
+            .unwrap_or_default()
     }
 
     fn opaque_region(&self, surface: SurfaceId) -> Damage {
