@@ -372,19 +372,20 @@ pub struct Renderer {
     /// waker), so a tooltip shows when its delay ends.
     waker: Option<LoopWaker>,
     /// One timer thread for the render loop's own wakes (a tooltip's
-    /// delay), re-armed with the earliest due time (started on first
-    /// use).
-    timer: Option<std::sync::mpsc::Sender<Instant>>,
+    /// delay, a stalled exit's end: [`Renderer::next_wake`]), re-armed
+    /// with the earliest due time and cancelled with `None` (started on
+    /// first use).
+    timer: Option<std::sync::mpsc::Sender<Option<Instant>>>,
     /// The due time last sent to `timer`.
     timer_due: Option<Instant>,
 }
 
 /// Starts the thread that wakes the render loop at the latest due time
-/// it was sent; a newer one replaces the one waited for. It ends when the
-/// renderer (the sender) goes.
-fn spawn_timer(waker: LoopWaker) -> Option<std::sync::mpsc::Sender<Instant>> {
+/// it was sent; a newer one replaces the one waited for, and `None`
+/// cancels it. It ends when the renderer (the sender) goes.
+fn spawn_timer(waker: LoopWaker) -> Option<std::sync::mpsc::Sender<Option<Instant>>> {
     use std::sync::mpsc::RecvTimeoutError;
-    let (tx, rx) = std::sync::mpsc::channel::<Instant>();
+    let (tx, rx) = std::sync::mpsc::channel::<Option<Instant>>();
     std::thread::Builder::new()
         .name("strand-tooltip".into())
         .spawn(move || {
@@ -395,7 +396,7 @@ fn spawn_timer(waker: LoopWaker) -> Option<std::sync::mpsc::Sender<Instant>> {
                     Some(d) => rx.recv_timeout(d.saturating_duration_since(Instant::now())),
                 };
                 match next {
-                    Ok(d) => due = Some(d),
+                    Ok(d) => due = d,
                     Err(RecvTimeoutError::Timeout) => {
                         due = None;
                         if let Ok(w) = waker.0.lock() {
@@ -703,28 +704,35 @@ impl Renderer {
         self.arm_timer();
     }
 
-    /// Arms the render loop's timer for a tooltip waiting to show. Its
-    /// wake calls [`Renderer::update`]. The paint cache's idle entries
-    /// are freed at the next paint or wake that comes anyway, never by a
+    /// Arms the render loop's timer at [`Renderer::next_wake`]: a
+    /// tooltip waiting to show, or an exit on a surface whose output
+    /// stopped sending frames. Its wake calls [`Renderer::update`] (the
+    /// host's waker handler), so hosts need no timer of their own. A
+    /// later due time than the one armed is not sent: the earlier wake
+    /// re-arms (at most one wake per `EXIT_STALL` while exits play on a
+    /// painting surface). Nothing left to wake for cancels the timer, so
+    /// an idle shell is not woken. The paint cache's idle entries are
+    /// freed at the next paint or wake that comes anyway, never by a
     /// wake of their own (an idle shell does zero work: a clocked bar
     /// would otherwise wake after every tick to free its shadow).
     fn arm_timer(&mut self) {
-        let due = self
-            .tooltip
-            .as_ref()
-            .filter(|t| t.popup.is_none())
-            .map(|t| t.due);
-        let Some(due) = due else {
+        let Some(due) = self.next_wake() else {
+            if self.timer_due.take().is_some()
+                && let Some(tx) = &self.timer
+            {
+                // A failed send means the thread is gone: nothing to cancel.
+                let _ = tx.send(None);
+            }
             return;
         };
-        if self.timer_due == Some(due) {
+        if self.timer_due.is_some_and(|t| t <= due) {
             return;
         }
         if self.timer.is_none() {
             self.timer = self.waker.clone().and_then(spawn_timer);
         }
         match &self.timer {
-            Some(tx) if tx.send(due).is_ok() => self.timer_due = Some(due),
+            Some(tx) if tx.send(Some(due)).is_ok() => self.timer_due = Some(due),
             _ => {
                 self.timer = None;
                 self.timer_due = None;
@@ -1134,8 +1142,12 @@ impl Renderer {
     /// nothing else happens: the earliest instant an exit in flight is
     /// ended for want of frames (its output asleep, see [`EXIT_STALL`]),
     /// so a closing surface whose frames stopped still closes and its
-    /// ghosts unmount. `None` when no exit is in flight. Arm a timer at
-    /// it after every `apply`, `update` and paint.
+    /// ghosts unmount, or a tooltip's delay ends. `None` when nothing
+    /// waits. The renderer arms its own timer thread at it after every
+    /// `apply`, `update` and paint and wakes the loop through the text
+    /// worker's waker, so a host whose waker handler runs `update` needs
+    /// no timer of its own; a host without a waker (an inline text
+    /// backend) arms one here.
     pub fn next_wake(&self) -> Option<Instant> {
         let stall = self.exit_stall;
         let tooltip = self
@@ -2061,6 +2073,9 @@ impl Renderer {
         if tooltips && !self.extras.widgets.hovered.is_empty() {
             self.refresh_tooltip();
         }
+        // An exit this diff started is woken for even if its output
+        // sends no frame.
+        self.arm_timer();
         errors
     }
 

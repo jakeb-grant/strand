@@ -35,6 +35,11 @@ impl Stage {
     /// A `w × h` panel holding what `build` adds, painted once at `T0`
     /// (so it is on screen with a clock: changes from now on animate).
     fn new(w: u32, h: u32, build: impl FnOnce(&mut Builder, NodeId)) -> Self {
+        Self::with(renderer(), w, h, build)
+    }
+
+    /// [`Stage::new`] on the renderer given.
+    fn with(mut r: Renderer, w: u32, h: u32, build: impl FnOnce(&mut Builder, NodeId)) -> Self {
         let mut b = Builder::default();
         let root = b.node(
             NodeKind::Panel,
@@ -46,7 +51,6 @@ impl Stage {
             ],
         );
         build(&mut b, root);
-        let mut r = renderer();
         assert!(r.apply(b.diff).is_empty());
         r.attach_surface(S, root);
         let mut buf = Buffer::new(w, h, Scale::ONE);
@@ -1422,6 +1426,62 @@ fn exits_stay_bounded_without_frames() {
         st.r.tree().ghost_count() == 0,
         "stalled ghosts unmounted too"
     );
+}
+
+/// The host needs no timer of its own for a stalled exit: the renderer's
+/// timer thread wakes the loop (the waker the host gave the text worker,
+/// whose handler runs `update`) when [`Renderer::next_wake`] comes, and
+/// is cancelled once nothing is left to wake for, so an idle shell is
+/// not woken again.
+#[test]
+fn a_stalled_exit_wakes_the_loop_by_itself() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use strand_text::{FontConfig, TextWorker, test_font_path};
+    let data = std::fs::read(test_font_path()).unwrap();
+    let woken = Arc::new(AtomicUsize::new(0));
+    let w2 = woken.clone();
+    let worker = TextWorker::spawn_with_waker(
+        FontConfig::isolated(vec![Arc::new(data)]),
+        Some(Box::new(move || {
+            w2.fetch_add(1, Ordering::SeqCst);
+        })),
+    )
+    .unwrap();
+    let r = Renderer::new(strand_render::TextBackend::Worker(worker));
+    let mut st = Stage::with(r, 60, 60, |_, _| {});
+    st.r.set_exit_stall(Duration::from_millis(40));
+    let root = st.root;
+    let mut d = SceneDiff::new();
+    d.set(root, Prop::Open, PropValue::Bool(true)).set(
+        root,
+        Prop::Exit,
+        pose(vec![(Prop::Opacity, num(0.0))]),
+    );
+    st.apply(d);
+    st.settle(1);
+    let before = woken.load(Ordering::SeqCst);
+    let mut d = SceneDiff::new();
+    d.set(root, Prop::Open, PropValue::Bool(false));
+    st.apply(d);
+    assert!(st.r.surface_spec(root).unwrap().open, "plays its exit");
+    // No frame comes (the output sleeps) and the host calls nothing.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while woken.load(Ordering::SeqCst) == before {
+        assert!(std::time::Instant::now() < deadline, "never woken");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // The wake's handler.
+    st.r.update();
+    assert!(
+        !st.r.surface_spec(root).unwrap().open,
+        "closed with no frame painted"
+    );
+    assert_eq!(st.r.next_wake(), None);
+    // Nothing armed any more: the loop stays asleep.
+    let after = woken.load(Ordering::SeqCst);
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(woken.load(Ordering::SeqCst), after, "woken while idle");
 }
 
 /// Frame time while the design's animated surfaces move (release builds

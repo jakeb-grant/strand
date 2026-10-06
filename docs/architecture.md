@@ -405,11 +405,14 @@ be built and tested without the language, and the language without pixels.
   exit on a surface that painted nothing for `EXIT_STALL` (1 s; its
   output asleep) or older than `MAX_MOTION` + 1 s ends at the next
   `apply`/`update`; `Renderer::next_wake() -> Option<Instant>` is the
-  earliest such instant, and the host's loop arms a timer at it (after
-  every `apply`, `update` and paint) that runs `update` and hands the
-  surface changes on, so a closing surface whose output stopped sending
-  frame callbacks still closes (wiring it in `strand run` is an
-  integrator item). Another surface's last frame counts as having drawn
+  earliest such instant (or a tooltip's due time). The renderer arms its
+  own timer thread at it after every `apply`, `update` and paint (a
+  later instant than the one armed waits for the earlier wake to
+  re-arm; nothing left cancels it) and wakes the loop through the text
+  worker's waker, whose handler in `strand run` runs `update` and hands
+  the surface changes on, so a closing surface whose output stopped
+  sending frame callbacks still closes. A host with no waker arms a
+  timer at `next_wake` itself. Another surface's last frame counts as having drawn
   a node only while that surface still paints (within `EXIT_STALL`). A node created under a ghost's id replaces the
   ghost. A surface reported closed and then open is opening until
   its first clocked frame: nodes created under it meanwhile enter too.

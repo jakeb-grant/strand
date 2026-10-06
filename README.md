@@ -39,7 +39,11 @@ design.md's bar on two 2560×1440 monitors uses about 26 MB, does no work
 between minute ticks and repaints about 230–750 px² per tick (about
 2,700 px² on the two ticks after midnight, when the centred clock moves:
 a documented exception, within design.md's 60×20 px per output); the full
-shell with the launcher open about 31 MB.
+shell with the launcher open about 31 MB. Left for later milestones: the
+rich `tooltip { … }` element (the checker warns), clipboard in `input`,
+the directional `pages` transitions and mounting only visible list rows
+(M4), real background blur (a tint until the compositor blurs), and
+`strand toggle` (M5; `strand set launcher.open true` is the same write).
 
 `strand run [dir]` compiles your `.strand` files (type checker, bytecode
 VM, reactive core), puts the surfaces on every monitor and reloads live

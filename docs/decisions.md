@@ -6001,3 +6001,19 @@ again is drawn whole on that month (`crates/strand/tests/demo.rs::
 the_design_shells_draw_their_widgets_and_the_calendar_popup`); `crates/
 strand-render/tests/motion.rs::
 content_removed_as_its_surface_closes_stays_through_the_pose`.
+
+## wave3-integration
+
+**2026-10-06 · wave3-integration: the renderer wakes itself for stalled
+exits.** The animation track left `Renderer::next_wake` for `strand run`
+to arm a calloop timer at. The renderer already owns a timer thread that
+wakes the loop through the text worker's waker (tooltips), and `strand
+run`'s waker handler runs `update` and syncs the surface changes, so the
+integration arms that thread at `next_wake` instead (after every
+`apply`, `update` and paint) rather than adding a second timer to the
+host: one concept fewer, and every host with a waker gets it. A later
+instant than the one armed is not sent (the earlier wake re-arms, so an
+exit playing on a painting surface costs at most one wake per
+`EXIT_STALL`), and nothing left to wake for cancels the timer, so an idle
+shell is never woken by it. Proof:
+`crates/strand-render/tests/motion.rs::a_stalled_exit_wakes_the_loop_by_itself`.
