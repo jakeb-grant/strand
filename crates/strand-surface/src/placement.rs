@@ -265,6 +265,139 @@ pub fn layer_config(spec: &SurfaceSpec) -> Result<LayerConfig, PlacementError> {
     })
 }
 
+/// Which side of its anchor a popup opens on.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum PopupSide {
+    Below,
+    Above,
+    Right,
+    Left,
+}
+
+/// Everything an `xdg_positioner` and the popup's `xdg_surface` need.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PopupConfig {
+    pub namespace: String,
+    /// The box (the window geometry), logical pixels.
+    pub width: u32,
+    pub height: u32,
+    /// Shadow reach past the box, top, right, bottom, left: the buffer is
+    /// the box plus it, and the window geometry leaves it out, so the
+    /// compositor positions the box.
+    pub overhang: [i32; 4],
+    /// The anchor rectangle in the parent's window geometry, logical
+    /// pixels: `x, y, w, h` (at least 1 × 1).
+    pub anchor_rect: (i32, i32, i32, i32),
+    pub side: PopupSide,
+    /// The gap between the anchor and the popup's box.
+    pub gap: i32,
+    /// Takes an `xdg_popup.grab` (a menu, the calendar); a tooltip does
+    /// not, and takes no input.
+    pub grab: bool,
+}
+
+impl PopupConfig {
+    /// The buffer's logical size: the box plus the overhang.
+    pub fn buffer(&self) -> (u32, u32) {
+        let [t, r, b, l] = self.overhang;
+        (
+            self.width.saturating_add((l + r).max(0) as u32),
+            self.height.saturating_add((t + b).max(0) as u32),
+        )
+    }
+
+    /// The input region, as a layer surface's: the box, or nothing for a
+    /// tooltip.
+    pub fn as_layer(&self) -> LayerConfig {
+        let (w, h) = self.buffer();
+        LayerConfig {
+            namespace: self.namespace.clone(),
+            layer: Layer::Overlay,
+            anchors: Anchors::default(),
+            width: w,
+            height: h,
+            exclusive_zone: 0,
+            margin: [0; 4],
+            keyboard: if self.grab {
+                Keyboard::Exclusive
+            } else {
+                Keyboard::None
+            },
+            overhang: self.overhang,
+            click_through: !self.grab,
+        }
+    }
+}
+
+/// Resolves the popup state of `spec` nested in a surface of `parent`
+/// (design.md: popups are anchored xdg_popups that nest). The popup
+/// opens away from a bar's edge, across the bar (below a top bar, so a
+/// calendar under the clock clears the bar), and below its anchor
+/// otherwise; `margin` on that side is the gap (default 6). Waits
+/// (`AutoSize`) until render gave it a size and an anchor.
+pub fn popup_config(
+    spec: &SurfaceSpec,
+    parent: &SurfaceSpec,
+) -> Result<PopupConfig, PlacementError> {
+    let (Some(w), Some(h), Some(a)) = (spec.width, spec.height, spec.anchor_rect) else {
+        return Err(PlacementError::AutoSize(spec.kind));
+    };
+    let o = spec.overhang;
+    let overhang = [o.top, o.right, o.bottom, o.left].map(|v| px(v).max(0));
+    let po = parent.overhang;
+    let (pt, pl) = (px(po.top).max(0), px(po.left).max(0));
+    let parent_popup = parent.kind == NodeKind::Popup;
+    // The parent's window geometry: a popup's is its box (inside its
+    // overhang); a layer surface's is its whole buffer.
+    let (gx, gy) = if parent_popup { (pl, pt) } else { (0, 0) };
+    let (mut x, mut y, mut aw, mut ah) = (px(a.x) - gx, px(a.y) - gy, px(a.w), px(a.h));
+    let bar_edge = (parent.kind == NodeKind::Bar).then(|| parent.edge.unwrap_or(Edge::Top));
+    let side = match bar_edge {
+        Some(Edge::Top) | None => PopupSide::Below,
+        Some(Edge::Bottom) => PopupSide::Above,
+        Some(Edge::Left) => PopupSide::Right,
+        Some(Edge::Right) => PopupSide::Left,
+    };
+    if let Some(edge) = bar_edge {
+        // Across the whole bar: from its box's edge to its other edge.
+        let thick = parent.exclusive_zone().map_or(0, |t| px(t).max(0));
+        match edge {
+            Edge::Top | Edge::Bottom => {
+                y = pt;
+                ah = thick;
+            }
+            Edge::Left | Edge::Right => {
+                x = pl;
+                aw = thick;
+            }
+        }
+    }
+    let m = spec.margin;
+    let gap = match side {
+        PopupSide::Below => m.top,
+        PopupSide::Above => m.bottom,
+        PopupSide::Right => m.left,
+        PopupSide::Left => m.right,
+    };
+    let gap = if gap == 0.0 { 6 } else { px(gap) };
+    if spec.tooltip {
+        // A tooltip sits just under what it describes, bars included.
+        if bar_edge.is_some() {
+            (x, y, aw, ah) = (px(a.x) - gx, px(a.y) - gy, px(a.w), px(a.h));
+        }
+    }
+    Ok(PopupConfig {
+        namespace: spec.namespace(),
+        width: size(w),
+        height: size(h),
+        overhang,
+        anchor_rect: (x, y, aw.max(1), ah.max(1)),
+        side: if spec.tooltip { PopupSide::Below } else { side },
+        gap: if spec.tooltip { 4 } else { gap },
+        grab: !spec.tooltip,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -557,5 +690,53 @@ mod tests {
         let e = layer_config(&spec(NodeKind::Popup, &[])).unwrap_err();
         assert_eq!(e, PlacementError::NotLayerSurface(NodeKind::Popup));
         assert!(e.to_string().contains("popup"));
+    }
+
+    /// A popup in a top bar opens below the bar (its anchor spans the
+    /// bar's thickness under the clock), 6 px away; in a bottom bar,
+    /// above; nested in another popup, below its anchor in that popup's
+    /// box (its overhang taken off); a tooltip below what it describes,
+    /// with no grab and no input.
+    #[test]
+    fn popups_open_away_from_their_bar() {
+        use strand_scene::{LogicalRect, NodeId};
+        let mut bar = spec(NodeKind::Bar, &[(Prop::Height, PropValue::Number(36.0))]);
+        bar.overhang = Insets::all(4.0);
+        let mut p = spec(NodeKind::Popup, &[]);
+        p.parent = Some(NodeId::new(1, 0));
+        assert_eq!(
+            popup_config(&p, &bar),
+            Err(PlacementError::AutoSize(NodeKind::Popup)),
+            "no size or anchor yet"
+        );
+        p.width = Some(200.0);
+        p.height = Some(120.0);
+        p.anchor_rect = Some(LogicalRect::new(100.0, 12.0, 60.0, 20.0));
+        p.overhang = Insets::all(10.0);
+        let c = popup_config(&p, &bar).unwrap();
+        assert_eq!(c.side, PopupSide::Below);
+        assert_eq!(c.anchor_rect, (100, 4, 60, 36), "across the bar's box");
+        assert_eq!((c.gap, c.grab), (6, true));
+        assert_eq!(c.buffer(), (220, 140));
+        assert_eq!(
+            c.as_layer().input_region((220, 140)),
+            Some(Some((10, 10, 200, 120)))
+        );
+        bar.edge = Some(Edge::Bottom);
+        assert_eq!(popup_config(&p, &bar).unwrap().side, PopupSide::Above);
+        // Nested: in its parent popup's box.
+        let mut child = p.clone();
+        child.anchor_rect = Some(LogicalRect::new(30.0, 40.0, 50.0, 20.0));
+        child.margin = Insets::all(2.0);
+        let c = popup_config(&child, &p).unwrap();
+        assert_eq!(c.anchor_rect, (20, 30, 50, 20));
+        assert_eq!((c.side, c.gap), (PopupSide::Below, 2));
+        // A tooltip: under its node, no grab, click-through.
+        let mut tip = p.clone();
+        tip.tooltip = true;
+        bar.edge = Some(Edge::Top);
+        let c = popup_config(&tip, &bar).unwrap();
+        assert_eq!(c.anchor_rect, (100, 12, 60, 20));
+        assert!(!c.grab && c.as_layer().click_through);
     }
 }

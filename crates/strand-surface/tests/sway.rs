@@ -1302,3 +1302,184 @@ fn a_click_on_another_output_is_click_away() {
     );
     drop(pointer);
 }
+
+/// `popup`s are anchored `xdg_popup`s that nest (design.md, "Input and
+/// structure"): one in a top bar opens below the bar under its anchor,
+/// its box (the window geometry) placed and its shadow overhang around
+/// it; one nested in it opens below its own anchor; a click away ends
+/// the grab and both are dismissed (`ClickAway` on each, then gone),
+/// and they are not shown again until their specs close and reopen.
+#[test]
+fn popups_nest_under_their_anchors_and_close_on_click_away() {
+    use wayland_client::globals::{GlobalListContents, registry_queue_init};
+    use wayland_client::protocol::{wl_pointer, wl_registry};
+    use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
+    use wayland_protocols_wlr::virtual_pointer::v1::client::{
+        zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1,
+        zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
+    };
+
+    struct Client;
+    impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Client {
+        fn event(
+            _: &mut Self,
+            _: &wl_registry::WlRegistry,
+            _: wl_registry::Event,
+            _: &GlobalListContents,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+    delegate_noop!(Client: ignore ZwlrVirtualPointerManagerV1);
+    delegate_noop!(Client: ignore ZwlrVirtualPointerV1);
+
+    let Some(sway) = Sway::start("popups_nest_under_their_anchors_and_close_on_click_away") else {
+        return;
+    };
+    let mut mgr = strand_surface::SurfaceManager::with_connection(
+        sway.connect(),
+        TestHost::default(),
+        Config::default(),
+    )
+    .unwrap();
+    const BAR: NodeId = NodeId::new(1, 0);
+    const POPUP: NodeId = NodeId::new(2, 0);
+    const MENU: NodeId = NodeId::new(3, 0);
+    mgr.state_mut()
+        .apply_surface_change(BAR, SurfaceChange::Created(bar_spec("Top", 36.0)));
+    let input = mgr.take_input().unwrap();
+    wait_for_bars(&mut mgr, 1);
+
+    // A press on the bar: the serial the popup's grab uses.
+    let conn = sway.connect();
+    let (globals, mut queue) = registry_queue_init::<Client>(&conn).unwrap();
+    let qh = queue.handle();
+    let manager: ZwlrVirtualPointerManagerV1 = globals.bind(&qh, 1..=2, ()).unwrap();
+    let pointer = manager.create_virtual_pointer(None, &qh, ());
+    queue.roundtrip(&mut Client).unwrap();
+    pump(&mut mgr, Duration::from_millis(200));
+    let click = |t: u32, x: u32, y: u32| {
+        pointer.motion_absolute(t, x, y, 1920, 1080);
+        pointer.frame();
+        pointer.button(t + 1, 0x110, wl_pointer::ButtonState::Pressed);
+        pointer.frame();
+        pointer.button(t + 2, 0x110, wl_pointer::ButtonState::Released);
+        pointer.frame();
+    };
+    click(1, 130, 18);
+    queue.roundtrip(&mut Client).unwrap();
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.host()
+                .input
+                .iter()
+                .any(|e| matches!(e, InputEvent::PointerButton { .. }))
+        })
+        .unwrap();
+    assert!(ok, "the press reached the bar");
+
+    // The calendar: 200 × 120 with a 10 px shadow, anchored to a 60 × 20
+    // clock at (100, 8) in the bar.
+    let mut spec =
+        strand_scene::SurfaceSpec::resolve(NodeKind::Popup, |_| None::<&strand_scene::PropValue>);
+    spec.name = Some("Calendar".into());
+    spec.parent = Some(BAR);
+    spec.anchor_rect = Some(LogicalRect::new(100.0, 8.0, 60.0, 20.0));
+    spec.width = Some(200.0);
+    spec.height = Some(120.0);
+    spec.overhang = Insets::all(10.0);
+    spec.open_two_way = true;
+    mgr.state_mut()
+        .apply_surface_change(POPUP, SurfaceChange::Created(spec.clone()));
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surfaces_of(POPUP)
+                .first()
+                .and_then(|id| s.surface(*id))
+                .is_some_and(|i| i.stats.commits > 0)
+        })
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surfaces());
+    let popup = mgr.state().surfaces_of(POPUP)[0];
+    let info = mgr.state().surface(popup).unwrap();
+    assert_eq!(info.kind, NodeKind::Popup);
+    assert_eq!(info.logical_size, (220, 140), "box plus overhang");
+    assert_eq!(info.input_region, Some(Some((10, 10, 200, 120))));
+    pump(&mut mgr, Duration::from_millis(100));
+    let shot = sway.grim("HEADLESS-1");
+    // Below the bar (36) and a 6 px gap, centred under the clock (130):
+    // the box spans x 30..230, y 42..162, its shadow 10 px around it.
+    assert_eq!(shot.rgb(130, 100), BLUE, "the popup's box");
+    assert_eq!(shot.rgb(25, 100), BLUE, "its overhang");
+    assert_ne!(shot.rgb(130, 175), BLUE, "nothing past the overhang");
+    assert_ne!(shot.rgb(10, 100), BLUE);
+
+    // A menu nested in it, anchored to (20, 30, 40, 20) in its buffer.
+    let mut menu = spec.clone();
+    menu.name = Some("Menu".into());
+    menu.parent = Some(POPUP);
+    menu.anchor_rect = Some(LogicalRect::new(20.0, 30.0, 40.0, 20.0));
+    menu.width = Some(80.0);
+    menu.height = Some(60.0);
+    menu.overhang = Insets::default();
+    mgr.state_mut()
+        .apply_surface_change(MENU, SurfaceChange::Created(menu.clone()));
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surfaces_of(MENU)
+                .first()
+                .and_then(|id| s.surface(*id))
+                .is_some_and(|i| i.stats.commits > 0)
+        })
+        .unwrap();
+    assert!(ok, "the nested popup maps: {:?}", mgr.state().surfaces());
+
+    // A click on the desktop ends the grab: both are dismissed.
+    let before = mgr.state().host().input.len();
+    click(10, 1500, 800);
+    queue.roundtrip(&mut Client).unwrap();
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surfaces_of(POPUP).is_empty() && s.surfaces_of(MENU).is_empty()
+        })
+        .unwrap();
+    assert!(ok, "dismissed: {:?}", mgr.state().surfaces());
+    let away: Vec<_> = mgr.state().host().input[before..]
+        .iter()
+        .filter_map(|e| match e {
+            InputEvent::ClickAway { surface } => Some(*surface),
+            _ => None,
+        })
+        .collect();
+    assert!(away.contains(&popup), "{away:?}");
+    assert!(!mgr.state().surfaces_of(BAR).is_empty(), "the bar stays");
+    // Still open in its spec (logic has not answered): not shown again.
+    mgr.state_mut().apply_surface_change(
+        POPUP,
+        SurfaceChange::Updated {
+            spec: spec.clone(),
+            recreate: false,
+        },
+    );
+    pump(&mut mgr, Duration::from_millis(200));
+    assert!(mgr.state().surfaces_of(POPUP).is_empty());
+    // Closed and opened again: it comes back.
+    let mut closed = spec.clone();
+    closed.open = false;
+    for s in [closed, spec] {
+        mgr.state_mut().apply_surface_change(
+            POPUP,
+            SurfaceChange::Updated {
+                spec: s,
+                recreate: false,
+            },
+        );
+    }
+    let ok = mgr
+        .dispatch_until(WAIT, |s| !s.surfaces_of(POPUP).is_empty())
+        .unwrap();
+    assert!(ok);
+    drop(input);
+    drop(pointer);
+}

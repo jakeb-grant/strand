@@ -5051,3 +5051,43 @@ worker's waker (`TextWorker::waker`, added for this), so the binary needs
 no new wiring; `Renderer::update` takes the results and repaints. With
 the inline text backend (tests, offline renders) images decode inline
 and the frame flattens again to draw them, as text does.
+
+**2026-10-06 · wave3-pixels (p3): popups are xdg_popups (from M4 to
+M2).** The four example shells need the bar's calendar `popup`, so
+xdg_popup lands with the M2 widgets: render fills a popup's spec with the
+surface node it nests in (`SurfaceSpec::parent`, the root of the
+element it is declared in), its anchor element's laid-out box in that
+surface (`anchor_rect`, buffer logical pixels; `None` until laid out, and
+the popup waits) and its content size and shadow overhang (uneven: the
+compositor places its window geometry, which is its box). strand-surface
+makes it an `xdg_popup` of the parent's surface (`zwlr_layer_surface.
+get_popup` for a layer surface, the parent popup's `xdg_surface` when
+nested), with a positioner: a popup in a bar opens away from the bar's
+edge across the bar's thickness (below a top bar, under the clock), any
+other below its anchor, `margin` on that side the gap (default 6 px),
+sliding and flipping to stay on screen; a size or anchor change
+repositions it (`xdg_popup.reposition`, version 3) rather than making it
+again. It grabs with the last button press's serial, so the compositor
+gives it the keyboard (Escape goes through the router as for panels) and
+ends the grab on a click away: `popup_done` becomes
+`InputEvent::ClickAway` on the popup, which the router turns into `open:
+false` and `dismiss`, and the surface is destroyed at once, nested
+popups first, and not made again while its spec still says open (logic
+has not answered yet). A popup shows only while its parent surface is
+open and mapped.
+
+**2026-10-06 · wave3-pixels (p3): `tooltip: expr` is a render-owned
+popup.** design.md gives `tooltip: expr` no timing; render shows it after
+the pointer rests on the node for `TOOLTIP_DELAY` (600 ms) and hides it
+when the pointer leaves or a button goes down: the deepest hovered node
+with a non-empty `tooltip` wins. Hover lives on the render thread, so
+logic is never involved: render adds a popup and its label to its own
+tree as overlay nodes (`SceneTree::add_overlay`, ids from
+`OVERLAY_INDEX`, linked to their node by `parent` only, so logic's child
+indices never see them) and reports a `tooltip` popup spec (no grab, no
+input, below its node, 4 px away), styled by `$inverse_surface`,
+`$inverse_on_surface`, `$radius.sm` and `$font.caption` where the table
+has them. The delay is woken through the render loop's waker (a sleeping
+thread pings it), so hosts need no timer of their own;
+`Renderer::next_wake` reports it too. The `tooltip { … }` element (rich
+content) is not drawn yet.

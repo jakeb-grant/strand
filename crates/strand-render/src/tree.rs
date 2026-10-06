@@ -88,16 +88,57 @@ pub struct SceneTree {
     /// their old ids: they stay in their parent's children (keeping their
     /// place) but are dead to logic, which may reuse their slots at once.
     ghosts: HashMap<NodeId, Node>,
+    /// Nodes render owns (a tooltip's popup and its label), under ids
+    /// from [`OVERLAY_INDEX`] up that logic never allocates: dead to
+    /// logic, linked to their anchor by `parent` only (they are in no
+    /// live node's children), so logic's child indices never see them.
+    overlays: HashMap<NodeId, Node>,
 }
+
+/// The first slot index of render-owned overlay nodes (see
+/// [`SceneTree::add_overlay`]); logic allocates ids densely from 0.
+pub const OVERLAY_INDEX: u32 = 0x8000_0000;
 
 impl SceneTree {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// A live node or a ghost (see [`SceneTree::ghost`]).
+    /// A live node, a ghost (see [`SceneTree::ghost`]) or an overlay
+    /// (see [`SceneTree::add_overlay`]).
     pub fn get(&self, id: NodeId) -> Option<&Node> {
-        self.get_live(id).or_else(|| self.ghosts.get(&id))
+        self.get_live(id)
+            .or_else(|| self.ghosts.get(&id))
+            .or_else(|| self.overlays.get(&id))
+    }
+
+    /// Adds render-owned nodes (ids at or past [`OVERLAY_INDEX`]): a
+    /// surface-kind node among them whose `parent` is a live node nests
+    /// in that node's surface (a tooltip's popup); the others hang under
+    /// it through their parents' `children`.
+    pub fn add_overlay(&mut self, nodes: Vec<Node>) {
+        for n in nodes {
+            if n.kind.is_surface() {
+                self.surfaces.insert(n.id);
+            }
+            self.overlays.insert(n.id, n);
+        }
+    }
+
+    /// Removes the overlay subtree at `id`.
+    pub fn remove_overlay(&mut self, id: NodeId) {
+        let mut stack = vec![id];
+        while let Some(n) = stack.pop() {
+            if let Some(node) = self.overlays.remove(&n) {
+                self.surfaces.remove(&n);
+                stack.extend(node.children);
+            }
+        }
+    }
+
+    /// True if `id` is a render-owned overlay node.
+    pub fn is_overlay(&self, id: NodeId) -> bool {
+        self.overlays.contains_key(&id)
     }
 
     /// A node logic can still address.
