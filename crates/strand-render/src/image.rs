@@ -844,12 +844,12 @@ impl ImageStore {
     pub fn want(&mut self, surface: SurfaceId, keys: &[ImageKey], defer: bool) -> bool {
         // Published to the worker only when the surface's set changed (an
         // animation frame drawing the same images allocates nothing).
-        // (Without repeated keys the lengths match and the check is
-        // linear; with them, every held key is looked for.)
+        // Both ways: keys may repeat (two rows showing one app's icon), so
+        // equal lengths do not make one inclusion enough.
         let same = self.frames.get(&surface).is_some_and(|f| {
             f.len() <= keys.len()
                 && keys.iter().all(|k| f.contains(k))
-                && (f.len() == keys.len() || f.iter().all(|k| keys.contains(k)))
+                && f.iter().all(|k| keys.contains(k))
         });
         if !same {
             self.frames.insert(surface, keys.iter().cloned().collect());
@@ -1050,6 +1050,29 @@ mod tests {
         assert_eq!(s.bytes(), 6 * 512 * 512 * 4);
         let has = |s: &ImageStore, i: u32| s.entries.keys().any(|k| k.source == format!("k{i}"));
         assert!(!has(&s, 0) && has(&s, 9), "the oldest go first");
+    }
+
+    /// A surface drawing one image twice (two rows with one app's icon)
+    /// no longer draws an image it dropped.
+    #[test]
+    fn repeated_keys_drop_what_a_frame_no_longer_draws() {
+        let mut s = ImageStore::default();
+        let k = |source: &str| ImageKey {
+            source: source.into(),
+            icon: false,
+            w: 8,
+            h: 8,
+            fit: Fit::Contain,
+            scale: 1,
+        };
+        let (a, b) = (k("/nonexistent/a.png"), k("/nonexistent/b.png"));
+        s.want(SurfaceId(1), &[a.clone(), b.clone()], false);
+        assert!(s.drawn_by(SurfaceId(1), &b));
+        s.want(SurfaceId(1), &[a.clone(), a.clone()], false);
+        assert!(s.drawn_by(SurfaceId(1), &a));
+        assert!(!s.drawn_by(SurfaceId(1), &b), "b is no longer drawn");
+        s.want(SurfaceId(1), &[a.clone(), b.clone(), b.clone()], false);
+        assert!(s.drawn_by(SurfaceId(1), &b));
     }
 
     #[test]

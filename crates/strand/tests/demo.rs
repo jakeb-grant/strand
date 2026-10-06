@@ -894,6 +894,19 @@ fn the_design_launcher_is_centred_and_closes_on_click_away() {
             .all(|&c| c + 3 >= text_end && c <= text_end + 8),
         "the caret ({carets:?}) is not after the typed text (ink to {text_end})"
     );
+    // The one hit is selected (a focused input's list selects its first
+    // row): `when selected { bg: $accent.container }`, the accent at
+    // 0.22 over the launcher's surface, so bluer than the padding above
+    // the input.
+    let hit_icon = (top + 48..bottom)
+        .find(|&y| (left + 20..left + 52).any(|xx| dark(&shot, xx, y)))
+        .unwrap();
+    let tint = |p: [u8; 3]| p[2] as i32 - p[0] as i32;
+    let (sel, plain) = (shot.px(x, hit_icon + 16), shot.px(x, top + 4));
+    assert!(
+        tint(sel) >= tint(plain) + 10,
+        "the hit is not drawn selected: {sel:?} vs the panel's {plain:?}"
+    );
     // The hit's matched letters (`marks: h.ranges; mark_color:
     // $accent`) in blue in its name.
     let marked = (top + 44..bottom)

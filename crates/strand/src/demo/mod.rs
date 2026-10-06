@@ -60,6 +60,8 @@ pub(crate) fn apply(state: &mut State<Host>, diff: SceneDiff) {
     for error in state.host_mut().renderer.apply(diff) {
         log::error!("scene: {error:?}");
     }
+    // A launcher's list refilled: its first row is selected again.
+    state.host_mut().settle_input();
     sync(state);
 }
 

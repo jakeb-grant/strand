@@ -271,6 +271,21 @@ impl Raster {
         &self.cache
     }
 
+    /// Frees the paint cache's idle entries without painting.
+    pub fn trim_idle(&mut self, now: std::time::Instant) {
+        self.cache.trim_idle(now);
+    }
+
+    /// Shortens (tests) how long an unused paint cache entry lives.
+    pub fn set_idle_free(&mut self, idle: std::time::Duration) {
+        self.cache.set_idle_free(idle);
+    }
+
+    /// When the paint cache's next entry becomes idle.
+    pub fn idle_at(&self) -> Option<std::time::Instant> {
+        self.cache.idle_at()
+    }
+
     /// Pixels the last [`Raster::paint`] rasterised. Tracks damage, not
     /// buffer size.
     pub fn rasterised(&self) -> u64 {

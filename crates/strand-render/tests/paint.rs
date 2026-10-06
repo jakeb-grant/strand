@@ -689,3 +689,41 @@ fn blur_tints_until_the_compositor_blurs() {
         TOLERANCE,
     );
 }
+
+/// design.md: cached offscreen groups are "freed when idle". A surface
+/// that stops painting (an idle panel with no clock) still lets its
+/// shadows go: the render loop's timer wakes at the cache's idle time and
+/// `update` frees them without a paint.
+#[test]
+fn an_idle_surface_frees_its_cached_shadows_without_painting() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+    use strand_text::{FontConfig, TextWorker, test_font_path};
+    let data = std::fs::read(test_font_path()).unwrap();
+    let woken = Arc::new(AtomicUsize::new(0));
+    let w2 = woken.clone();
+    let worker = TextWorker::spawn_with_waker(
+        FontConfig::isolated(vec![Arc::new(data)]),
+        Some(Box::new(move || {
+            w2.fetch_add(1, Ordering::SeqCst);
+        })),
+    )
+    .unwrap();
+    let mut r = strand_render::Renderer::new(strand_render::TextBackend::Worker(worker));
+    r.set_paint_cache_idle(Duration::from_millis(150));
+    render_with(&mut r, shadows_scene(), Scale::ONE);
+    assert!(r.paint_cache().0 > 0, "cached");
+    // Only the loop's wakes call `update` (as in `strand run`).
+    let mut seen = woken.load(Ordering::SeqCst);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while r.paint_cache().0 > 0 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+        let now = woken.load(Ordering::SeqCst);
+        if now != seen {
+            seen = now;
+            r.update();
+        }
+    }
+    assert_eq!(r.paint_cache().0, 0, "freed without a paint");
+}

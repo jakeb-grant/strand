@@ -448,10 +448,32 @@ fn the_theme_switcher_writes_the_look() {
 /// `mark_color` (the launcher's matched letters in `$accent`).
 #[test]
 fn search_ranges_reach_text_marks() {
+    use strand_scene::PropValue::{List, Number};
+    let pair = |a: f32, b: f32| vec![List(vec![List(vec![Number(a), Number(b)])])];
+    assert_eq!(
+        marks_of("oo", "Foot"),
+        pair(1.0, 3.0),
+        "\"Foot\" marked at 1..3"
+    );
+    // Characters, not bytes, and case folded per character: "É" is two
+    // bytes.
+    assert_eq!(
+        marks_of("CR", "Écrire"),
+        pair(1.0, 3.0),
+        "\"Écrire\" at 1..3"
+    );
+    assert_eq!(marks_of("é", "Écrire"), pair(0.0, 1.0));
+}
+
+/// The `marks` a text drawing `apps.search(query)`'s one hit for an app
+/// named `name` carries.
+fn marks_of(query: &str, name: &str) -> Vec<strand_scene::PropValue> {
     let mut map = SourceMap::new();
     map.add(
         "marks.strand",
-        "let hits = apps.search(\"oo\")\nbar B { edge: top; height: 40\n  row { for h in hits { text h.app.name { marks: h.ranges } } }\n}\n",
+        format!(
+            "let hits = apps.search(\"{query}\")\nbar B {{ edge: top; height: 40\n  row {{ for h in hits {{ text h.app.name {{ marks: h.ranges }} }} }}\n}}\n"
+        ),
     );
     let compiled = strand_compiler::compile(&map);
     assert_eq!(compiled.errors(), 0, "{:?}", compiled.diagnostics);
@@ -467,8 +489,8 @@ fn search_ranges_reach_text_marks() {
     let app = host.record(
         "App",
         &[
-            ("id", Value::text("foot")),
-            ("name", Value::text("Foot")),
+            ("id", Value::text("app")),
+            ("name", Value::text(name)),
             ("icon", Value::text("utilities-terminal")),
         ],
     );
@@ -492,17 +514,10 @@ fn search_ranges_reach_text_marks() {
     let surface = SurfaceId(1);
     r.attach_surface(surface, bar);
     r.configure_surface(surface, Size::new(400, 40), Scale::ONE);
-    let marks: Vec<_> = r
-        .boxes(surface)
+    r.boxes(surface)
         .unwrap()
         .rects
         .keys()
         .filter_map(|n| r.tree().get(*n)?.get(strand_scene::Prop::Marks).cloned())
-        .collect();
-    use strand_scene::PropValue::{List, Number};
-    assert_eq!(
-        marks,
-        vec![List(vec![List(vec![Number(1.0), Number(3.0)])])],
-        "\"Foot\" marked at 1..3"
-    );
+        .collect()
 }

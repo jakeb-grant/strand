@@ -335,13 +335,56 @@ impl Router {
     /// gets `dismiss`).
     pub fn handle(&mut self, event: &InputEvent, scene: &mut dyn InputScene) -> Vec<Intent> {
         self.route(event, scene);
-        // Widgets draw hover, press and focus at once.
+        self.select_first_rows(scene);
+        self.flush(scene)
+    }
+
+    /// After logic's diff is applied: a focused `input`'s `nav` list that
+    /// has rows and no selected row (its rows just arrived, or the one
+    /// selected left) selects its first, so `selected` shows which row
+    /// Return will `activate`. Returns what logic hears of it.
+    pub fn settle(&mut self, scene: &mut dyn InputScene) -> Vec<Intent> {
+        self.prune(scene.tree());
+        self.select_first_rows(scene);
+        self.flush(scene)
+    }
+
+    /// Widgets draw hover, press, focus and selection at once.
+    fn flush(&mut self, scene: &mut dyn InputScene) -> Vec<Intent> {
         for i in &self.out {
             if let Intent::Flag { node, flag, on } = i {
                 scene.set_flag(*node, *flag, *on);
             }
         }
         std::mem::take(&mut self.out)
+    }
+
+    /// See [`Router::settle`].
+    fn select_first_rows(&mut self, scene: &mut dyn InputScene) {
+        let Some(tree) = scene.tree() else {
+            return;
+        };
+        let mut want = Vec::new();
+        for &f in self.focus.values() {
+            let Some(n) = tree.get(f) else {
+                continue;
+            };
+            let (NodeKind::Input, Some(PropValue::Node(list))) = (n.kind, n.get(Prop::Nav)) else {
+                continue;
+            };
+            if self.selected.contains_key(list) {
+                continue;
+            }
+            let first = tree
+                .get(*list)
+                .and_then(|l| l.children.iter().copied().find(|r| tree.contains_live(*r)));
+            if let Some(row) = first {
+                want.push((*list, row));
+            }
+        }
+        for (list, row) in want {
+            self.select(scene, list, Some(row));
+        }
     }
 
     fn emit(&mut self, i: Intent) {
@@ -431,6 +474,12 @@ impl Router {
                 self.event(under[0], NodeEvent::Scroll { dy, dx });
             }
             InputEvent::KeyboardEnter { .. } => {
+                // Focus held from before (the keyboard back from a popup
+                // that grabbed it: no leave came between) stays where Tab
+                // or a click had moved it.
+                if self.focus.contains_key(&surface) {
+                    return;
+                }
                 let first = scene
                     .tree()
                     .and_then(|t| first_with_focus(t, root))

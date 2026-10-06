@@ -1039,6 +1039,36 @@ fn max_width_text_is_as_tall_as_its_lines() {
     }
 }
 
+/// A `text` showing nothing (the launcher's `h.app.comment ?? ""`) takes
+/// no line, as an empty block in CSS: a row centring a one-line name
+/// beside a 32 px icon centres it on the icon.
+#[test]
+fn an_empty_text_takes_no_line() {
+    let mut ids = Vec::new();
+    let (d, root) = panel(300, 60, |b, root| {
+        let row = b.node(NodeKind::Row, Some(root), vec![(Prop::Align, kw("center"))]);
+        ids.push(swatch(b, row, "#89b4fa", vec![(Prop::Size, num(32.0))]));
+        let col = b.node(NodeKind::Col, Some(row), vec![]);
+        ids.push(b.node(NodeKind::Text, Some(col), vec![(Prop::Text, text("Foot"))]));
+        ids.push(b.node(NodeKind::Text, Some(col), vec![(Prop::Text, text(""))]));
+        ids.push(col);
+    });
+    let (r, _) = show(d, root, 300, 60, Scale::ONE);
+    let (icon, name, empty, col) = (
+        rect(&r, ids[0]),
+        rect(&r, ids[1]),
+        rect(&r, ids[2]),
+        rect(&r, ids[3]),
+    );
+    assert_eq!(empty.h, 0.0, "{empty:?}");
+    assert_eq!(col.h, name.h, "the column is the name's line");
+    let mid = |r: LogicalRect| r.y + r.h / 2.0;
+    assert!(
+        (mid(name) - mid(icon)).abs() <= 1.0,
+        "name {name:?} centred on icon {icon:?}"
+    );
+}
+
 /// A non-finite wheel delta moves nothing, and the list keeps its rows.
 #[test]
 fn a_nan_scroll_is_ignored() {

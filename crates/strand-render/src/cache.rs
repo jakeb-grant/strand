@@ -30,17 +30,14 @@ pub const PAINT_CACHE_BYTES: usize = 4 << 20;
 /// alone).
 pub const MAX_ENTRY_BYTES: usize = 2 << 20;
 
-/// Entries no frame has used for this long are freed at the next paint
-/// (design.md: the cached offscreen groups are "freed when idle"; an idle
-/// bar's minute tick paints only its clock, so the bar-wide shadow goes
-/// then).
+/// Entries no frame has used for this long are freed (design.md: the
+/// cached offscreen groups are "freed when idle"), at the next paint or
+/// by the render loop's timer when nothing paints.
 pub const IDLE_FREE: Duration = Duration::from_secs(10);
 
-/// A gradient built again within this of another one of the same frame
-/// size and kind, in another frame, is animated (a conic ring turning
-/// with `t`): drawn cell by cell, uncached, so it never evicts the
-/// shadows (design.md: "only the ring repaints").
-const ANIMATED_WINDOW: Duration = Duration::from_millis(250);
+/// Most gradient keys remembered as drawn once, uncached (see
+/// [`PaintCache::gradient`]); past it the record starts over.
+const SEEN_MAX: usize = 4096;
 
 /// Entries in a gradient's colour table.
 const LUT: usize = 1024;
@@ -70,14 +67,6 @@ struct Entry {
     at: Instant,
 }
 
-/// The last gradient built for a frame size and kind.
-#[derive(Debug)]
-struct Built {
-    key: u64,
-    frame: u64,
-    at: Instant,
-}
-
 /// Pixmaps of gradients and shadows by key, with an LRU byte budget.
 #[derive(Debug, Default)]
 pub struct PaintCache {
@@ -86,8 +75,13 @@ pub struct PaintCache {
     tick: u64,
     builds: u64,
     frame: u64,
-    /// By frame size and kind, the last gradient built.
-    built: HashMap<(u32, u32, u8), Built>,
+    /// Gradients drawn once, uncached: key to the frame and time that
+    /// drew them. A gradient is cached only when a later frame asks for
+    /// it again.
+    seen: HashMap<u64, (u64, Instant)>,
+    /// How long an unused entry lives (`IDLE_FREE` unless a test
+    /// shortens it).
+    idle: Option<Duration>,
 }
 
 /// A blurred rounded rect, relative to the pixmap's origin.
@@ -205,18 +199,37 @@ impl PaintCache {
         })
     }
 
-    /// Frees the entries no frame has used since `now - IDLE_FREE` (not
-    /// the current frame's).
+    /// Frees the entries no frame has used since `now - IDLE_FREE` (a
+    /// frame touches what it draws first, so a paint's own entries are
+    /// never idle). Called at every paint and, for a surface that stops
+    /// painting, from the render loop's timer at [`PaintCache::idle_at`].
     pub fn trim_idle(&mut self, now: Instant) {
-        let frame = self.frame;
+        let idle = self.idle_free();
         let before = self.entries.len();
         self.entries
-            .retain(|_, e| e.frame == frame || now.saturating_duration_since(e.at) < IDLE_FREE);
+            .retain(|_, e| now.saturating_duration_since(e.at) < idle);
         if self.entries.len() != before {
             self.bytes = self.entries.values().map(|e| e.bytes).sum();
         }
-        self.built
-            .retain(|_, b| now.saturating_duration_since(b.at) < IDLE_FREE);
+        self.seen
+            .retain(|_, (_, at)| now.saturating_duration_since(*at) < idle);
+    }
+
+    /// When the least recently used entry becomes idle (`None` when
+    /// nothing is cached).
+    pub fn idle_at(&self) -> Option<Instant> {
+        let idle = self.idle_free();
+        self.entries.values().map(|e| e.at).min().map(|t| t + idle)
+    }
+
+    /// How long an unused entry lives.
+    pub fn idle_free(&self) -> Duration {
+        self.idle.unwrap_or(IDLE_FREE)
+    }
+
+    /// Shortens (tests) how long an unused entry lives.
+    pub fn set_idle_free(&mut self, idle: Duration) {
+        self.idle = Some(idle);
     }
 
     /// A cached pixmap, without touching the LRU order.
@@ -258,7 +271,8 @@ impl PaintCache {
     }
 
     /// The dithered pixmap of `paint` over a `w × h` frame (`None` for a
-    /// solid paint or one too large to cache).
+    /// solid paint, one too large to cache, or one no earlier frame drew:
+    /// the raster then dithers it cell by cell).
     pub fn gradient(&mut self, paint: &Paint, w: u32, h: u32) -> Option<Arc<Pixmap>> {
         if matches!(paint, Paint::Solid(_)) || !cacheable(w, h) {
             return None;
@@ -267,29 +281,25 @@ impl PaintCache {
         if let Some(p) = self.get(key) {
             return Some(p);
         }
-        let kind = match paint {
-            Paint::Solid(_) => 0,
-            Paint::Linear { .. } => 1,
-            Paint::Radial { .. } => 2,
-            Paint::Conic { .. } => 3,
-        };
-        let now = Instant::now();
-        let animated = self.built.get(&(w, h, kind)).is_some_and(|b| {
-            b.key != key
-                && b.frame != self.frame
-                && now.saturating_duration_since(b.at) < ANIMATED_WINDOW
-        });
-        self.built.insert(
-            (w, h, kind),
-            Built {
-                key,
-                frame: self.frame,
-                at: now,
-            },
-        );
-        if animated {
-            // Drawn cell by cell (`raster::paint_for`): the same pixels.
-            return None;
+        // Admitted on a second frame's use: a gradient whose paint or
+        // size changes every frame (a conic ring turning with `t`, a box
+        // whose size springs, however many share a size) never repeats a
+        // key, so it is drawn cell by cell (`raster::paint_for`, the same
+        // pixels) and never evicts the shadows beside it (design.md:
+        // "only the ring repaints").
+        let frame = self.frame;
+        match self.seen.get(&key) {
+            Some(&(f, _)) if f != frame => {
+                self.seen.remove(&key);
+            }
+            Some(_) => return None,
+            None => {
+                if self.seen.len() >= SEEN_MAX {
+                    self.seen.clear();
+                }
+                self.seen.insert(key, (frame, Instant::now()));
+                return None;
+            }
         }
         let pm = render_gradient(paint, w, h)?;
         Some(self.insert(key, pm))
@@ -634,45 +644,62 @@ mod tests {
         }
     }
 
+    fn stops(a: &str, b: &str) -> Vec<GradientStop> {
+        vec![
+            GradientStop {
+                offset: 0.0,
+                color: Color::from_hex(a).unwrap(),
+            },
+            GradientStop {
+                offset: 1.0,
+                color: Color::from_hex(b).unwrap(),
+            },
+        ]
+    }
+
     /// design.md's rice `border: 1.5, conic(from: t * 40deg, …)`: a
-    /// gradient whose paint changes every frame is drawn uncached after
-    /// its first frame, so it never evicts the shadow beside it.
+    /// gradient whose paint changes every frame is never cached, so it
+    /// never evicts the shadow beside it; nor do two such rings of the
+    /// same size, nor a gradient box whose size springs.
     #[test]
     fn an_animated_conic_border_never_evicts_a_cached_shadow() {
         let mut c = PaintCache::default();
         let key = shadow_key(&shadow());
         c.begin_frame();
         assert!(c.shadow(&shadow()).is_some());
-        let stops = |a: &str, b: &str| {
-            vec![
-                GradientStop {
-                    offset: 0.0,
-                    color: Color::from_hex(a).unwrap(),
-                },
-                GradientStop {
-                    offset: 1.0,
-                    color: Color::from_hex(b).unwrap(),
-                },
-            ]
-        };
         let builds = c.builds();
-        // 240 frames of a 480 × 480 ring (900 KB each, 216 MB uncached).
+        // 240 frames of two 480 × 480 rings turning together (900 KB
+        // each, 432 MB uncached) and a 300-wide box growing a pixel a
+        // frame.
         for i in 0..240 {
             c.begin_frame();
-            let ring = Paint::Conic {
-                from: i as f32 * 0.67,
-                stops: stops("#89b4fa", "#cba6f7"),
-            };
-            c.gradient(&ring, 480, 480);
+            for (n, colors) in [("#89b4fa", "#cba6f7"), ("#a6e3a1", "#f9e2af")]
+                .into_iter()
+                .enumerate()
+            {
+                let ring = Paint::Conic {
+                    from: i as f32 * 0.67 + n as f32 * 90.0,
+                    stops: stops(colors.0, colors.1),
+                };
+                assert!(c.gradient(&ring, 480, 480).is_none());
+            }
+            let grown = ramp("#000000", "#ffffff");
+            assert!(c.gradient(&grown, 300 + i, 200).is_none());
             assert!(c.peek(key).is_some(), "the shadow was evicted at frame {i}");
         }
-        assert!(c.builds() - builds <= 1, "{} builds", c.builds() - builds);
+        assert_eq!(c.builds(), builds);
         assert!(c.bytes() <= PAINT_CACHE_BYTES);
-        // A still gradient of the same size two frames apart is cached.
-        std::thread::sleep(ANIMATED_WINDOW);
-        c.begin_frame();
+        // A still gradient of the same size is cached once a second frame
+        // draws it.
         let still = ramp("#000000", "#ffffff");
+        c.begin_frame();
+        assert!(c.gradient(&still, 480, 480).is_none(), "first drawn");
+        assert!(c.gradient(&still, 480, 480).is_none(), "same frame");
+        c.begin_frame();
         assert!(c.gradient(&still, 480, 480).is_some());
+        c.begin_frame();
+        assert!(c.gradient(&still, 480, 480).is_some());
+        assert_eq!(c.builds(), builds + 1);
     }
 
     /// Entries no frame used for `IDLE_FREE` are freed; the current
@@ -680,9 +707,12 @@ mod tests {
     #[test]
     fn idle_entries_are_freed() {
         let mut c = PaintCache::default();
+        let p = ramp("#000000", "#ffffff");
+        c.begin_frame();
+        assert!(c.gradient(&p, 100, 100).is_none());
         c.begin_frame();
         c.shadow(&shadow()).unwrap();
-        c.gradient(&ramp("#000000", "#ffffff"), 100, 100).unwrap();
+        c.gradient(&p, 100, 100).unwrap();
         let now = Instant::now();
         c.trim_idle(now);
         assert!(c.bytes() > 0, "used this frame");
@@ -692,22 +722,30 @@ mod tests {
         c.trim_idle(now + IDLE_FREE + Duration::from_millis(1));
         assert_eq!(c.bytes(), 0);
         assert!(c.peek(shadow_key(&shadow())).is_none());
+        assert!(c.seen.is_empty());
     }
 
     #[test]
     fn the_cache_reuses_and_evicts() {
         let mut c = PaintCache::default();
         let p = ramp("#000000", "#ffffff");
+        c.begin_frame();
+        assert!(c.gradient(&p, 100, 100).is_none());
+        c.begin_frame();
         let a = c.gradient(&p, 100, 100).unwrap();
+        c.begin_frame();
         let b = c.gradient(&p, 100, 100).unwrap();
         assert!(Arc::ptr_eq(&a, &b));
         assert_eq!(c.builds(), 1);
         // Too large to cache: drawn by vello instead.
         assert!(c.gradient(&p, 2000, 2000).is_none());
-        for i in 0..200 {
-            c.begin_frame();
-            c.gradient(&p, 200 + i, 200);
+        for _ in 0..2 {
+            for i in 0..200 {
+                c.begin_frame();
+                c.gradient(&p, 200 + i, 200);
+            }
         }
+        assert!(c.builds() > 1);
         assert!(c.bytes() <= PAINT_CACHE_BYTES);
     }
 
