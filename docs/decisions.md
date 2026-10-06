@@ -5634,3 +5634,48 @@ thousands). The references come from the dev container (Ubuntu 24.04,
 sway 1.9, fonts-dejavu-core 2.37, adwaita-icon-theme 46), the same
 packages CI installs; `STRAND_UPDATE_REFS=1` rewrites them and every one
 was read before it was committed.
+
+**2026-10-06 · wave3-pixels (exit): mimalloc without transparent huge
+pages.** Measuring design.md's bar (not the M0 demo) on two 2560×1440
+outputs gave 55 MB PSS, 40 MB of it anonymous, while heaptrack (with the
+system allocator) saw a 6.5 MB peak heap. mimalloc v3 marks its arenas
+for transparent huge pages, and with THP in `madvise` mode (the dev
+container's and Ubuntu's default) each thread's first allocations made
+2 MiB pages resident. The `strand` crate now builds mimalloc with its
+`no_thp` feature (`PR_SET_THP_DISABLE` for the process): about 11 MB
+anonymous, 14–25 MB PSS. design.md's "mimalloc as allocator" holds.
+
+**2026-10-06 · wave3-pixels (exit): idle cache entries go without a wake
+of their own.** design.md wants cached offscreen groups "freed when
+idle" and, as an M0 gate, no wakeup between minute ticks. The p3 rule
+woke the render loop at the cache's next idle time, so a clocked bar
+(whose tick repaints over its shadow and uses the cached pixmap) woke 10 s
+after every tick to free the shadow and rebuilt it at the next tick: 14–17
+context switches per minute. Idle entries (unused for `IDLE_FREE`) are now
+freed at the next paint or at any other wake of the render loop
+(`Renderer::update`), never by a wake for them alone. A surface that
+stops painting keeps its entries (at most the 4 MB budget) until something
+else wakes the shell. This replaces the p3 timer rule.
+
+**2026-10-06 · wave3-pixels (exit): a text change damages its changed
+glyphs.** design.md budgets "a clock tick repaints about 60×20 px" and
+M0 gates a tick at 2,000 px² over both outputs. design.md's bar clock is
+`"%a %d  %H:%M"`, about 89 × 11 px at 1× and 111 × 14 at 1.25: repainting
+the whole text was 2,533 px² per tick. A text node drawn untransformed at
+its own scale with nothing after its glyphs (no underline, no caret)
+records each glyph's box and identity (atlas slot and colour) beside a
+hash of everything else it draws; when only glyphs changed, damage is
+the glyphs that differ, where they were and where they are. The partial
+repaint equals a full one (`crates/strand-render/tests/damage.rs::
+a_tick_repaints_only_the_glyphs_that_changed`).
+
+**2026-10-06 · wave3-pixels (exit): `reduced_motion` from the portal.**
+The M2 snap-rules item waited on an integrator: nothing produced
+`reduced_motion`. The portal's `org.freedesktop.appearance`
+`reduced-motion` (0 no preference, 1 reduce) is now read and followed
+like `color-scheme` (`strand_watch::SystemSetting::ReducedMotion`), kept
+with the last values, written to `system.reduced_motion`, and sent to
+render with the next scene diff (`SceneDiff::reduced_motion`, a new
+field of the cross-crate protocol, architecture.md), where
+`Renderer::set_reduced_motion` snaps every spring. design.md §7's
+"turns off loops, time signals and effects" stays logic's (M4 effects).

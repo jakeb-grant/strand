@@ -24,7 +24,9 @@ next diff logic sends echoes the last batch it took in as
 `SceneDiff::layout_seen` (sent even with no ops): render holds a frame
 whose layout changed a `watch: query` node's size until then, or for
 `strand_render::QUERY_WAIT` (`Renderer::set_query_wait`; zero offline),
-so container queries settle inside the frame. No locks are shared across
+so container queries settle inside the frame. `SceneDiff::reduced_motion`
+carries a change of the desktop's reduced-motion preference
+(`system.reduced_motion`) to render (sent even with no ops). No locks are shared across
 threads on a hot path.
 
 `strand run [dir]` (`crates/strand/src/run.rs`) is this wiring: the main
@@ -428,8 +430,11 @@ be built and tested without the language, and the language without pixels.
   to the `system.reduced_motion` value logic reads; a theme writes
   `motion { reduced: system.reduced_motion }` (or a settings field) to
   reach render through the token table
-  (`crates/strand-render/tests/reduced_motion.rs`). Wiring the key in
-  strand-watch and `strand run` is an integrator item (features.md). `Painter::wants_frame` is true while anything
+  (`crates/strand-render/tests/reduced_motion.rs`). `strand run` reads
+  the key with the other appearance settings (`SystemSetting::
+  ReducedMotion`), writes `system.reduced_motion`, and sends render each
+  change of it with the next diff (`SceneDiff::reduced_motion`, applied
+  as `Renderer::set_reduced_motion`). `Painter::wants_frame` is true while anything
   moves (`Renderer::animating`), so frame callbacks stop once it
   settles.
 - **Theme swaps** (`renderer/swap.rs`, on the render thread): a
@@ -555,8 +560,11 @@ be built and tested without the language, and the language without pixels.
   by its fit (`Decoded::placed_in`, `Item::Image::dest`). Gradients draw
   from dithered pixmaps and shadows from cached ones (a 4 MB paint
   cache, entries unused for `IDLE_FREE` (10 s) freed at the next paint
-  or, when nothing paints, by `Renderer::update` woken by the renderer's
-  own timer thread at the cache's next idle time); a gradient is cached
+  or the next `Renderer::update`, whatever woke the loop: nothing wakes
+  just to free them, so an idle shell does zero work between ticks); a
+  text node's record keeps its glyph cells (`NodeRecord::glyphs`), so a
+  change that only swaps glyphs damages those glyphs (a clock tick
+  repaints its last digit); a gradient is cached
   only when a second frame draws the same paint at the same size, so one
   whose paint or size changes every frame is dithered cell by cell,
   uncached. An empty `text` lays out as 0 × 0. `marks:` arrives as a list of `[start, end]` pairs: the

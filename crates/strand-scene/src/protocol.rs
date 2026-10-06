@@ -740,6 +740,10 @@ pub struct SceneDiff {
     /// taken in when it produced this diff: render releases a frame it
     /// held for a container query's answer once this reaches the batch.
     pub layout_seen: Option<u64>,
+    /// The desktop's reduced-motion preference changed (the portal's
+    /// `reduced-motion`, as `system.reduced_motion`): render snaps
+    /// every spring while it is on (`Renderer::set_reduced_motion`).
+    pub reduced_motion: Option<bool>,
 }
 
 impl SceneDiff {
@@ -753,7 +757,7 @@ impl SceneDiff {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.ops.is_empty() && self.layout_seen.is_none()
+        self.ops.is_empty() && self.layout_seen.is_none() && self.reduced_motion.is_none()
     }
 
     /// Convenience for [`SceneOp::Create`].

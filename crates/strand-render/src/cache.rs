@@ -201,8 +201,8 @@ impl PaintCache {
 
     /// Frees the entries no frame has used since `now - IDLE_FREE` (a
     /// frame touches what it draws first, so a paint's own entries are
-    /// never idle). Called at every paint and, for a surface that stops
-    /// painting, from the render loop's timer at [`PaintCache::idle_at`].
+    /// never idle). Called at every paint and at every wake of the render
+    /// loop (`Renderer::update`); nothing wakes just for it.
     pub fn trim_idle(&mut self, now: Instant) {
         let idle = self.idle_free();
         let before = self.entries.len();
@@ -213,13 +213,6 @@ impl PaintCache {
         }
         self.seen
             .retain(|_, (_, at)| now.saturating_duration_since(*at) < idle);
-    }
-
-    /// When the least recently used entry becomes idle (`None` when
-    /// nothing is cached).
-    pub fn idle_at(&self) -> Option<Instant> {
-        let idle = self.idle_free();
-        self.entries.values().map(|e| e.at).min().map(|t| t + idle)
     }
 
     /// How long an unused entry lives.

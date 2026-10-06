@@ -1146,6 +1146,8 @@ pub fn logic(
     }
     shell.watch_settings();
     let start = Instant::now();
+    // The reduced-motion preference render last heard of.
+    let mut reduced_sent = false;
     while !stop {
         if shell.deferred.is_some() || shell.deferred_hard {
             shell.unlocked();
@@ -1154,6 +1156,18 @@ pub fn logic(
         let (mut update, wake) = shell.inst.step(start.elapsed(), wall);
         let mut diff = std::mem::take(&mut update.diff);
         diff.layout_seen = shell.layout_seen.take();
+        // `system.reduced_motion` (the portal's, or its last value) goes
+        // to render, which snaps every spring while it is on.
+        let reduced = shell
+            .host
+            .get(shell.inst.runtime(), "system.reduced_motion")
+            .ok()
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if reduced != reduced_sent {
+            diff.reduced_motion = Some(reduced);
+            reduced_sent = reduced;
+        }
         if !diff.is_empty() && out.send(diff).is_err() {
             break;
         }
@@ -1450,6 +1464,8 @@ pub(crate) mod tests {
         /// Every diff must leave the bar up and the error overlay shut
         /// (saves that are valid once complete never flash it).
         steady: bool,
+        /// The last `reduced_motion` a diff carried.
+        reduced: Option<bool>,
     }
 
     impl Mirror {
@@ -1458,12 +1474,16 @@ pub(crate) mod tests {
                 inbox: inbox(rx),
                 scene: SceneMirror::new(),
                 steady: false,
+                reduced: None,
             }
         }
 
         /// Apply one diff, checking what every diff must keep.
         fn apply(&mut self, what: &str, diff: &SceneDiff) {
             let had = !self.scene.roots().is_empty();
+            if diff.reduced_motion.is_some() {
+                self.reduced = diff.reduced_motion;
+            }
             self.scene.apply(diff).unwrap();
             // No blank frame: once something shows, a diff never leaves
             // nothing.
@@ -1508,6 +1528,18 @@ pub(crate) mod tests {
                 match self.inbox.recv_timeout(left) {
                     Ok(diff) => self.apply(what, &diff),
                     Err(_) => panic!("{what}:\n{}", self.scene.render()),
+                }
+            }
+        }
+
+        /// Until a diff tells render `reduced_motion` is `want`.
+        fn until_reduced(&mut self, want: bool) {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while self.reduced != Some(want) {
+                let left = deadline.saturating_duration_since(Instant::now());
+                match self.inbox.recv_timeout(left) {
+                    Ok(diff) => self.apply("reduced motion", &diff),
+                    Err(_) => panic!("reduced_motion never {want}: {:?}", self.reduced),
                 }
             }
         }
@@ -2872,6 +2904,7 @@ pub(crate) mod tests {
                 owned(ZValue::from((0.88f64, 0.11f64, 0.14f64))),
             ),
             ("contrast".to_string(), owned(ZValue::from(0u32))),
+            ("reduced-motion".to_string(), owned(ZValue::from(1u32))),
         ]);
         let conn = tokio.block_on(async {
             zbus::connection::Builder::address(bus.address.as_str())
@@ -2909,6 +2942,23 @@ pub(crate) mod tests {
         m.until("the portal's boot read", |s| {
             accent(s) == Some(seeded(true))
         });
+        // The portal's `reduced-motion` reaches render (it snaps every
+        // spring), and its change too.
+        m.until_reduced(true);
+        tokio
+            .block_on(conn.emit_signal(
+                None::<&str>,
+                "/org/freedesktop/portal/desktop",
+                "org.freedesktop.portal.Settings",
+                "SettingChanged",
+                &(
+                    "org.freedesktop.appearance",
+                    "reduced-motion",
+                    ZValue::from(0u32),
+                ),
+            ))
+            .unwrap();
+        m.until_reduced(false);
         // The desktop switches to light.
         tokio
             .block_on(conn.emit_signal(

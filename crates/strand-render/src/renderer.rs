@@ -362,8 +362,8 @@ pub struct Renderer {
     /// waker), so a tooltip shows when its delay ends.
     waker: Option<LoopWaker>,
     /// One timer thread for the render loop's own wakes (a tooltip's
-    /// delay, the paint cache's idle free), re-armed with the earliest
-    /// due time (started on first use).
+    /// delay), re-armed with the earliest due time (started on first
+    /// use).
     timer: Option<std::sync::mpsc::Sender<Instant>>,
     /// The due time last sent to `timer`.
     timer_due: Option<Instant>,
@@ -690,20 +690,17 @@ impl Renderer {
         self.arm_timer();
     }
 
-    /// Arms the render loop's timer at its earliest due wake: a tooltip
-    /// waiting to show, or the paint cache's next idle free (design.md:
-    /// cached groups are "freed when idle", so a surface that stops
-    /// painting still lets them go). Its wake calls [`Renderer::update`].
+    /// Arms the render loop's timer for a tooltip waiting to show. Its
+    /// wake calls [`Renderer::update`]. The paint cache's idle entries
+    /// are freed at the next paint or wake that comes anyway, never by a
+    /// wake of their own (an idle shell does zero work: a clocked bar
+    /// would otherwise wake after every tick to free its shadow).
     fn arm_timer(&mut self) {
-        let tooltip = self
+        let due = self
             .tooltip
             .as_ref()
             .filter(|t| t.popup.is_none())
             .map(|t| t.due);
-        let due = match (tooltip, self.raster.idle_at()) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
         let Some(due) = due else {
             return;
         };
@@ -2026,6 +2023,9 @@ impl Renderer {
         // paint-only prop).
         let mut touched: Option<Vec<NodeId>> = Some(Vec::new());
         let mut relayout: Option<Vec<NodeId>> = Some(Vec::new());
+        if let Some(on) = diff.reduced_motion {
+            self.set_reduced_motion(on);
+        }
         // Logic took in the facts a held frame waits for: it answered.
         if let Some(seen) = diff.layout_seen {
             for s in self.surfaces.values_mut() {
@@ -3031,10 +3031,26 @@ fn diff_records(
     for (id, n) in new {
         match old.get(id) {
             Some(o) if o == n => {}
-            Some(o) => {
-                d.add(o.bounds);
-                d.add(n.bounds);
-            }
+            // Only its glyphs changed: the glyphs that differ, where
+            // they were and where they are.
+            Some(o) => match (&o.glyphs, &n.glyphs) {
+                (Some(a), Some(b)) if a.rest == b.rest => {
+                    for c in &a.cells {
+                        if !b.cells.contains(c) {
+                            d.add(c.0);
+                        }
+                    }
+                    for c in &b.cells {
+                        if !a.cells.contains(c) {
+                            d.add(c.0);
+                        }
+                    }
+                }
+                _ => {
+                    d.add(o.bounds);
+                    d.add(n.bounds);
+                }
+            },
             None => d.add(n.bounds),
         }
     }

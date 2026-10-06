@@ -690,12 +690,14 @@ fn blur_tints_until_the_compositor_blurs() {
     );
 }
 
-/// design.md: cached offscreen groups are "freed when idle". A surface
-/// that stops painting (an idle panel with no clock) still lets its
-/// shadows go: the render loop's timer wakes at the cache's idle time and
-/// `update` frees them without a paint.
+/// design.md: cached offscreen groups are "freed when idle", and an idle
+/// shell does zero work (the M0 gate: no wakeup between minute ticks).
+/// Idle entries are freed at the next paint or loop wake that comes
+/// anyway, never by a wake of their own: a clocked bar whose tick redraws
+/// over its shadow would otherwise wake 10 s after every tick to free the
+/// shadow, and rebuild it at the next.
 #[test]
-fn an_idle_surface_frees_its_cached_shadows_without_painting() {
+fn idle_cached_shadows_go_at_the_next_wake_without_one_of_their_own() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
@@ -714,16 +716,18 @@ fn an_idle_surface_frees_its_cached_shadows_without_painting() {
     r.set_paint_cache_idle(Duration::from_millis(150));
     render_with(&mut r, shadows_scene(), Scale::ONE);
     assert!(r.paint_cache().0 > 0, "cached");
-    // Only the loop's wakes call `update` (as in `strand run`).
-    let mut seen = woken.load(Ordering::SeqCst);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while r.paint_cache().0 > 0 && Instant::now() < deadline {
+    let before = woken.load(Ordering::SeqCst);
+    let deadline = Instant::now() + Duration::from_millis(600);
+    while Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(5));
-        let now = woken.load(Ordering::SeqCst);
-        if now != seen {
-            seen = now;
-            r.update();
-        }
     }
-    assert_eq!(r.paint_cache().0, 0, "freed without a paint");
+    assert_eq!(
+        woken.load(Ordering::SeqCst),
+        before,
+        "the cache woke the loop on its own"
+    );
+    assert!(r.paint_cache().0 > 0, "nothing freed without a wake");
+    // The next wake (a tick's diff, a frame callback) frees them.
+    r.update();
+    assert_eq!(r.paint_cache().0, 0, "idle entries freed at the next wake");
 }

@@ -27,6 +27,7 @@ pub fn value(s: &SystemSetting) -> Value {
         SystemSetting::Accent(None) => Value::Null,
         SystemSetting::Contrast(Contrast::High) => Value::float(1.0),
         SystemSetting::Contrast(Contrast::Normal) => Value::float(0.0),
+        SystemSetting::ReducedMotion(on) => Value::Bool(*on),
     }
 }
 
@@ -88,6 +89,7 @@ impl Last {
                 },
                 ("contrast", "high") => SystemSetting::Contrast(Contrast::High),
                 ("contrast", _) => SystemSetting::Contrast(Contrast::Normal),
+                ("reduced_motion", v) => SystemSetting::ReducedMotion(v == "true"),
                 _ => continue,
             };
             settings.push(s);
@@ -143,6 +145,9 @@ impl Last {
                 }
                 SystemSetting::Contrast(Contrast::High) => out.push_str("contrast=high\n"),
                 SystemSetting::Contrast(Contrast::Normal) => out.push_str("contrast=normal\n"),
+                SystemSetting::ReducedMotion(on) => {
+                    out.push_str(&format!("reduced_motion={on}\n"));
+                }
             }
         }
         out
@@ -169,6 +174,7 @@ mod tests {
                 },
                 SystemSetting::Accent(Some([1.0, 0.0, 0.0])),
                 SystemSetting::Contrast(Contrast::High),
+                SystemSetting::ReducedMotion(true),
             ],
             at_boot: true,
             received: Instant::now(),
@@ -182,6 +188,7 @@ mod tests {
             Value::Color(Color::rgb(1.0, 0.0, 0.0))
         );
         assert_eq!(value(&last.settings[2]), Value::float(1.0));
+        assert_eq!(value(&last.settings[3]), Value::Bool(true));
         // An explicit light preference survives a restart as such.
         let light = SystemBatch {
             settings: vec![SystemSetting::Dark {

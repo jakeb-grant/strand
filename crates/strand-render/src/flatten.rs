@@ -205,10 +205,26 @@ pub struct DisplayItem {
 }
 
 /// What damage diffing remembers about a node between frames.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NodeRecord {
     pub bounds: Rect,
     pub sig: u64,
+    /// A text node drawn untransformed at its own scale, with nothing
+    /// after its glyphs (no underline or caret): what it draws besides
+    /// its glyphs, and each glyph's box, so a text change damages only
+    /// the glyphs that changed (a clock tick repaints its last digit,
+    /// design.md: "a clock tick repaints about 60×20 px").
+    pub glyphs: Option<Arc<GlyphCells>>,
+}
+
+/// A text node's glyphs for damage diffing (see [`NodeRecord::glyphs`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GlyphCells {
+    /// The hash of everything the node draws but its glyphs.
+    pub rest: u64,
+    /// Each glyph's box (buffer pixels, grown by a pixel) and identity
+    /// (its atlas slot and colour).
+    pub cells: Vec<(Rect, u64)>,
 }
 
 #[derive(Debug, Default)]
@@ -1583,6 +1599,7 @@ impl<'a> Flattener<'a> {
             );
         }
         // Text.
+        let mut glyph_cells: Option<(DefaultHasher, Vec<(Rect, u64)>)> = None;
         if let Some((l, dx, dy)) = layout {
             // A layout from another scale is drawn resampled (see raster).
             let x = phys.x + (dx as f64 * s).round().clamp(-1e7, 1e7) as i32;
@@ -1615,6 +1632,37 @@ impl<'a> Flattener<'a> {
                     .iter()
                     .filter_map(|r| Some((r.underline?, slot_color(r.color, &span_colors, color))))
                     .collect();
+                // Glyph cells, when the glyphs are the last thing drawn
+                // and land on buffer pixels as they are.
+                if lines.is_empty()
+                    && caret.is_none()
+                    && k == 1.0
+                    && self.xform == kurbo::Affine::IDENTITY
+                {
+                    let mut rest = sig.clone();
+                    (x, y).hash(&mut rest);
+                    let cells = l
+                        .runs
+                        .iter()
+                        .flat_map(|r| {
+                            let c = slot_color(r.color, &span_colors, color);
+                            r.glyphs.iter().map(move |g| (g, c))
+                        })
+                        .map(|(g, c)| {
+                            let b = Rect::new(
+                                x.saturating_add(g.x).saturating_sub(1),
+                                y.saturating_add(g.y).saturating_sub(1),
+                                u32::from(g.slot.w) + 3,
+                                u32::from(g.slot.h) + 3,
+                            );
+                            let mut h = DefaultHasher::new();
+                            (g.slot.page, g.slot.x, g.slot.y, g.slot.w, g.slot.h).hash(&mut h);
+                            hash_color(&mut h, &c);
+                            (b.intersect(bounds).unwrap_or_default(), h.finish())
+                        })
+                        .collect();
+                    glyph_cells = Some((rest, cells));
+                }
                 self.push(
                     Item::Glyphs {
                         x,
@@ -1670,6 +1718,12 @@ impl<'a> Flattener<'a> {
             NodeRecord {
                 bounds,
                 sig: sig.finish(),
+                glyphs: glyph_cells.map(|(rest, cells)| {
+                    Arc::new(GlyphCells {
+                        rest: rest.finish(),
+                        cells,
+                    })
+                }),
             },
         );
 

@@ -129,3 +129,25 @@ fn turning_reduced_motion_on_live_snaps_the_next_change() {
     let n = sh.flip();
     assert!(n <= 1, "snaps: {n} frames");
 }
+
+/// The desktop's preference (the portal's `reduced-motion`, which `strand
+/// run` sends as `SceneDiff::reduced_motion`) reaches the renderer with no
+/// theme token, and turns off again.
+#[test]
+fn a_diff_carries_the_desktops_reduced_motion() {
+    let mut r = Renderer::new(strand_render::TextBackend::Inline(Box::new(
+        strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![Arc::new(
+            std::fs::read(strand_text::test_font_path()).unwrap(),
+        )])),
+    )));
+    assert!(!r.reduced_motion());
+    let diff = |on| SceneDiff {
+        reduced_motion: Some(on),
+        ..SceneDiff::default()
+    };
+    assert!(!diff(true).is_empty(), "a diff carrying only it is sent");
+    r.apply(diff(true));
+    assert!(r.reduced_motion());
+    r.apply(diff(false));
+    assert!(!r.reduced_motion());
+}

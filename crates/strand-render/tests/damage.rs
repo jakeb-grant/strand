@@ -117,6 +117,38 @@ fn clock_tick_damage_is_small_and_exact() {
     assert!(none.is_empty(), "{none:?}");
 }
 
+/// design.md's clock (`"%a %d  %H:%M"`) ticking from 09:41 to 09:42:
+/// only the glyph that changed is repainted (a text node's glyph cells,
+/// `NodeRecord::glyphs`), and the partial repaint equals a full one.
+/// The design bar's whole clock is about 89 × 11 px at 1×; one digit is
+/// a tenth of that.
+#[test]
+fn a_tick_repaints_only_the_glyphs_that_changed() {
+    for (s, budget) in [(Scale::ONE, 250), (Scale::new(150).unwrap(), 400)] {
+        let size = s.physical_size(LogicalSize::new(2560.0, 36.0));
+        let (diff, clock) = bar("Mon 05  09:41");
+        let (mut r, mut buf) = fresh(diff, size.w, size.h, s);
+        r.apply(set_text(clock, "Mon 05  09:42"));
+        let d = buf.paint(&mut r, BAR, 1);
+        assert!(
+            d.area() > 0 && d.area() <= budget,
+            "{s:?}: damage {d:?} area {}",
+            d.area()
+        );
+        let (_, full) = fresh(bar("Mon 05  09:42").0, size.w, size.h, s);
+        assert!(
+            buf.pixels == full.pixels,
+            "{s:?}: partial differs from full"
+        );
+        // A longer text (the day changed width): its own glyphs, and the
+        // ones that moved; still exact.
+        r.apply(set_text(clock, "Tue 06  10:00"));
+        buf.paint(&mut r, BAR, 1);
+        let (_, full) = fresh(bar("Tue 06  10:00").0, size.w, size.h, s);
+        assert!(buf.pixels == full.pixels, "{s:?}: second tick differs");
+    }
+}
+
 #[test]
 fn clock_tick_at_fractional_scale_matches_full_repaint() {
     let s = Scale::new(150).unwrap();

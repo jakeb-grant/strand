@@ -1221,7 +1221,7 @@ impl Instance {
         Update {
             diff: SceneDiff {
                 ops,
-                layout_seen: None,
+                ..SceneDiff::default()
             },
             errors,
             diagnostics: tick.diagnostics,

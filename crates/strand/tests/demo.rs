@@ -156,6 +156,29 @@ fn switches(pid: u32) -> u64 {
     total
 }
 
+/// Context switches per thread of `pid`, by `tid comm`.
+fn per_thread(pid: u32) -> std::collections::BTreeMap<String, u64> {
+    let mut out = std::collections::BTreeMap::new();
+    for task in std::fs::read_dir(format!("/proc/{pid}/task")).unwrap() {
+        let path = task.unwrap().path();
+        let name = format!(
+            "{} {}",
+            path.file_name().unwrap().to_string_lossy(),
+            std::fs::read_to_string(path.join("comm"))
+                .unwrap_or_default()
+                .trim()
+        );
+        let status = std::fs::read_to_string(path.join("status")).unwrap_or_default();
+        let n = status
+            .lines()
+            .filter(|l| l.contains("ctxt_switches:"))
+            .filter_map(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
+            .sum();
+        out.insert(name, n);
+    }
+    out
+}
+
 fn seconds_into_minute() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -406,6 +429,125 @@ fn demo_bar_on_two_outputs_then_idle() {
     Shot::take(&sway, "HEADLESS-1").assert_aligned("HEADLESS-1", 1.0);
     Shot::take(&sway, "HEADLESS-2").assert_aligned("HEADLESS-2", 1.25);
     drop(strand);
+}
+
+/// The M0 budget on design.md's own bar (theme.strand and bar.strand,
+/// unchanged, on the mock desktop with the real clock), not the M0 demo:
+/// two 2560x1440 outputs at 1.0 and 1.25 within the 34 MB PSS gate (in a
+/// release run; the debug ceiling otherwise), and, once boot work is
+/// done, no thread waking for 12 s (no idle-cache or other timer of its
+/// own: the next wake is the minute tick). The per-tick damage is gated offline
+/// (`strand-render/tests/damage.rs::a_tick_repaints_only_the_glyphs_
+/// that_changed`) and over whole minutes by `scripts/m2-exit.sh`.
+#[test]
+fn the_design_bar_keeps_the_m0_budget() {
+    let Some(sway) = Sway::start_as("budget") else {
+        return;
+    };
+    sway.msg(&["create_output"]).unwrap();
+    sway.msg(&[
+        "output",
+        "HEADLESS-2",
+        "resolution",
+        "2560x1440",
+        "position",
+        "2560",
+        "0",
+        "scale",
+        "1.25",
+    ])
+    .unwrap();
+    // The config outside /tmp: the watcher's light watches on its
+    // ancestors would wake for other tests' directories coming and going
+    // there (a desktop's ~/.config has no such neighbours).
+    let home =
+        Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("budget-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let config = home.join(".config/strand");
+    std::fs::create_dir_all(&config).unwrap();
+    for (name, text) in [
+        (
+            "theme.strand",
+            include_str!("../../strand-compiler/tests/fixtures/theme.strand"),
+        ),
+        (
+            "bar.strand",
+            include_str!("../../strand-compiler/tests/fixtures/bar.strand"),
+        ),
+    ] {
+        std::fs::write(config.join(name), text).unwrap();
+    }
+    let log = sway.dir.join("strand.log");
+    let child = Command::new(env!("CARGO_BIN_EXE_strand"))
+        .arg("run")
+        .arg(&config)
+        .env("HOME", &home)
+        .env("XDG_RUNTIME_DIR", &sway.dir)
+        .env("XDG_CACHE_HOME", sway.dir.join("cache"))
+        .env("XDG_STATE_HOME", sway.dir.join("state"))
+        .env("WAYLAND_DISPLAY", &sway.display)
+        .env("STRAND_MOCK", "desktop")
+        .env("STRAND_LOG", "damage")
+        .env_remove("DBUS_SESSION_BUS_ADDRESS")
+        .stdin(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    let mut strand = Proc(child);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while damage_lines(&log).len() < 2 {
+        assert!(
+            strand.0.try_wait().unwrap().is_none(),
+            "strand exited: {}",
+            std::fs::read_to_string(&log).unwrap_or_default()
+        );
+        assert!(Instant::now() < deadline, "bars did not paint");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // Late text and icons settle.
+    std::thread::sleep(Duration::from_millis(1500));
+    let pss = pss_kb(pid);
+    // A debug build of the whole language path carries about 25 MB more
+    // than release (49 against 14–27 MB here): its own ceiling.
+    let (limit, what) = if cfg!(debug_assertions) {
+        (64 * 1024, "debug ceiling")
+    } else {
+        pss_limit()
+    };
+    eprintln!("design bar PSS on two 2560x1440 outputs: {pss} kB ({what} {limit} kB)");
+    assert!(pss <= limit, "PSS {pss} kB over the {limit} kB {what}");
+    // Boot work done (late icons and glyphs, a loaded machine): a whole
+    // second with no wakeup and no frame, early enough in the minute
+    // that the window below ends before the next tick.
+    let deadline = Instant::now() + Duration::from_secs(90);
+    loop {
+        let (f, w) = (damage_lines(&log).len(), switches(pid));
+        std::thread::sleep(Duration::from_secs(1));
+        if damage_lines(&log).len() == f && switches(pid) == w {
+            if seconds_into_minute() <= 45 {
+                break;
+            }
+            // Past the tick, then settle again.
+            std::thread::sleep(Duration::from_secs(63 - seconds_into_minute()));
+        }
+        assert!(Instant::now() < deadline, "boot never settled");
+    }
+    // Then 12 s with nothing (past the paint cache's 10 s idle time).
+    let frames = damage_lines(&log).len();
+    let before = switches(pid);
+    let threads = per_thread(pid);
+    std::thread::sleep(Duration::from_secs(12));
+    let after = switches(pid);
+    let woke: Vec<String> = per_thread(pid)
+        .into_iter()
+        .filter(|(t, n)| threads.get(t) != Some(n))
+        .map(|(t, n)| format!("{t}: {} -> {n}", threads.get(&t).copied().unwrap_or(0)))
+        .collect();
+    assert_eq!(after - before, 0, "woke while idle: {woke:?}");
+    assert_eq!(damage_lines(&log).len(), frames, "painted while idle");
+    drop(strand);
+    let _ = std::fs::remove_dir_all(&home);
 }
 
 /// `strand run <dir>` on the hello bar of the design: the compiled config,
