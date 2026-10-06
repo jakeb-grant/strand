@@ -1867,7 +1867,8 @@ impl Renderer {
             shaped: layouts,
             scale: s.scale,
         };
-        let old = s.boxes.clone();
+        // Replaced below on every path: taken, not copied.
+        let old = self.surfaces.get_mut(&id).and_then(|s| s.boxes.take());
         let rest = self.anim.rest_sizes(&self.tree, root);
         if !full
             && let Some(old) = &old
