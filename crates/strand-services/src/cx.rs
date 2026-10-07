@@ -37,6 +37,8 @@ pub enum Envelope<P> {
     },
     /// Something the user must act on ([`Cx::notice`]).
     Notice(String),
+    /// The run's notice no longer holds ([`Cx::resolve`]).
+    Resolved,
     /// The first read is complete.
     Ready,
     /// The body returned (with its error, if any).
@@ -359,6 +361,13 @@ impl<S: Service> Cx<S> {
     /// `false` once stopped.
     pub fn notice(&mut self, message: impl Into<String>) -> bool {
         self.out.send(Envelope::Notice(message.into()))
+    }
+
+    /// The notice this run raised no longer holds, while the run goes on
+    /// (the name another server held is ours now): the host takes it
+    /// away. `false` once stopped.
+    pub fn resolve(&mut self) -> bool {
+        self.out.send(Envelope::Resolved)
     }
 
     /// Whether [`Cx::ready`] was called.

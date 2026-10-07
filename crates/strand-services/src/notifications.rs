@@ -30,13 +30,15 @@
 //!   new run starts with none, so ids are never reused for a notification
 //!   still shown.
 //! - **Another server owns the name** (dunst, mako, a desktop's): the
-//!   name is asked for without queueing, and the run fails with a
-//!   diagnostic naming the owner's process (`GetConnectionUnixProcessID`,
+//!   name is asked for without queueing, and the run raises a notice
+//!   naming the owner's process (`GetConnectionUnixProcessID`,
 //!   `/proc/<pid>/comm`, and its systemd user unit when it has one:
-//!   `GetUnitByPID`) and how to stop it. There is never a silent
-//!   second server; the client retries with its backoff, so stopping the
-//!   other daemon hands the name over within 30 s, and the diagnostic is
-//!   then resolved.
+//!   `GetUnitByPID`) and how to stop it (`kill <pid>`; `pkill -x` only
+//!   for a command that is not an interpreter; a desktop's own shell is
+//!   told to turn its notifications off instead). There is never a silent
+//!   second server, and no polling: the run follows `NameOwnerChanged`
+//!   and asks for the name again the moment it is free, then resolves
+//!   the notice.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -234,6 +236,9 @@ enum FromBus {
 struct Ids {
     next: u32,
     live: HashSet<u32>,
+    /// The run ended: `Notify` and `CloseNotification` are refused (the
+    /// name may still be ours while the closing signals go out).
+    closed: bool,
 }
 
 /// The `org.freedesktop.Notifications` object.
@@ -297,9 +302,12 @@ impl Server {
         actions: Vec<String>,
         hints: HashMap<String, OwnedValue>,
         expire_timeout: i32,
-    ) -> Arrival {
+    ) -> Option<Arrival> {
         let (id, replaces) = {
             let mut ids = self.ids.lock().unwrap_or_else(|e| e.into_inner());
+            if ids.closed {
+                return None;
+            }
             if replaces_id != 0 && ids.live.contains(&replaces_id) {
                 (replaces_id, true)
             } else {
@@ -351,7 +359,7 @@ impl Server {
             .get("resident")
             .and_then(|v| v.downcast_ref::<bool>().ok())
             .unwrap_or(false);
-        Arrival {
+        Some(Arrival {
             n: Notification {
                 id: i64::from(id),
                 app: NotificationApp {
@@ -376,7 +384,7 @@ impl Server {
             replaces,
             resident,
             default,
-        }
+        })
     }
 }
 
@@ -393,20 +401,34 @@ impl Server {
         actions: Vec<String>,
         hints: HashMap<String, OwnedValue>,
         expire_timeout: i32,
-    ) -> u32 {
-        let a = self.arrival(
-            app_name,
-            replaces_id,
-            app_icon,
-            summary,
-            body,
-            actions,
-            hints,
-            expire_timeout,
-        );
+    ) -> zbus::fdo::Result<u32> {
+        let stopped = || zbus::fdo::Error::Failed("the notification server is stopping".into());
+        let a = self
+            .arrival(
+                app_name,
+                replaces_id,
+                app_icon,
+                summary,
+                body,
+                actions,
+                hints,
+                expire_timeout,
+            )
+            .ok_or_else(stopped)?;
         let id = a.n.id as u32;
-        let _ = self.tx.send(FromBus::Notify(Box::new(a)));
-        id
+        let (fresh, data) = (!a.replaces, matches!(a.image, Image::Data(_)));
+        if self.tx.send(FromBus::Notify(Box::new(a))).is_err() {
+            // The body is gone: no id is handed out for a notification
+            // nobody shows.
+            if fresh && let Ok(mut ids) = self.ids.lock() {
+                ids.live.remove(&id);
+            }
+            if data {
+                self.images.fetch_sub(1, Ordering::AcqRel);
+            }
+            return Err(stopped());
+        }
+        Ok(id)
     }
 
     /// The spec: an id that does not exist (any more) is an error.
@@ -414,7 +436,7 @@ impl Server {
         let live = self
             .ids
             .lock()
-            .map(|ids| ids.live.contains(&id))
+            .map(|ids| !ids.closed && ids.live.contains(&id))
             .unwrap_or(false);
         if !live {
             return Err(zbus::fdo::Error::Failed(format!("no notification {id}")));
@@ -480,6 +502,38 @@ pub async fn systemd_unit(conn: &zbus::Connection, pid: u32) -> Option<String> {
     (id.ends_with(".service") && !id.starts_with("dbus-")).then_some(id)
 }
 
+/// A desktop's own shell, whose notification server is part of it:
+/// stopping the process ends the session.
+fn desktop_shell(comm: &str) -> bool {
+    matches!(
+        comm,
+        "gnome-shell" | "plasmashell" | "cinnamon" | "budgie-daemon" | "budgie-wm" | "gala"
+    )
+}
+
+/// An interpreter: `pkill -x` would stop every script it runs.
+fn interpreter(comm: &str) -> bool {
+    let base = comm.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.' || c == '-');
+    matches!(
+        base,
+        "python"
+            | "perl"
+            | "node"
+            | "nodejs"
+            | "ruby"
+            | "sh"
+            | "bash"
+            | "dash"
+            | "zsh"
+            | "fish"
+            | "gjs"
+            | "lua"
+            | "java"
+            | "dotnet"
+            | "mono"
+    )
+}
+
 /// The diagnostic for a name another process owns.
 pub fn conflict_message(owner: Option<Owner>) -> String {
     let who = match &owner {
@@ -493,6 +547,12 @@ pub fn conflict_message(owner: Option<Owner>) -> String {
     };
     let how = match &owner {
         Some(Owner {
+            comm: Some(comm), ..
+        }) if desktop_shell(comm) => format!(
+            "turn its notifications off in its own settings, or run strand in a session \
+             without `{comm}`"
+        ),
+        Some(Owner {
             unit: Some(unit), ..
         }) => format!(
             "stop it and keep it from starting again (`systemctl --user stop {unit}` and \
@@ -502,9 +562,9 @@ pub fn conflict_message(owner: Option<Owner>) -> String {
             pid,
             comm: Some(comm),
             ..
-        }) => format!(
-            "stop it (`pkill -x {comm}`, or `kill {pid}`) and remove it from your \
-             compositor's autostart"
+        }) if !interpreter(comm) => format!(
+            "stop it (`kill {pid}`, or `pkill -x {comm}` for every one) and remove it from \
+             your compositor's autostart"
         ),
         Some(Owner { pid, .. }) => {
             format!("stop it (`kill {pid}`) and remove it from your compositor's autostart")
@@ -560,31 +620,52 @@ impl Notifications {
                 return Ok(());
             }
         }
+        // Whoever owns the name, followed before it is asked for: the
+        // other server leaving is heard, not polled for.
+        let rule = zbus::MatchRule::builder()
+            .msg_type(zbus::message::Type::Signal)
+            .sender("org.freedesktop.DBus")?
+            .interface("org.freedesktop.DBus")?
+            .member("NameOwnerChanged")?
+            .arg(0, NAME)?
+            .build();
+        let mut owners = zbus::MessageStream::for_match_rule(rule, &conn, Some(8)).await?;
+        let mut noticed = false;
         let flags = zbus::fdo::RequestNameFlags::DoNotQueue;
-        match conn.request_name_with_flags(NAME, flags.into()).await {
-            Ok(RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner) => {}
-            // zbus says `NameTaken` for an `Exists` reply.
-            Ok(RequestNameReply::Exists | RequestNameReply::InQueue)
-            | Err(zbus::Error::NameTaken) => {
-                let owner = match crate::dbus::owner_process(&conn, NAME).await {
-                    Some((pid, comm)) => Some(Owner {
-                        pid,
-                        comm,
-                        unit: systemd_unit(&conn, pid).await,
-                    }),
-                    None => None,
-                };
-                let message = conflict_message(owner);
-                // The notice before readiness: a ready run without one
-                // resolves it (the name taken over).
-                cx.notice(message.clone());
-                cx.ready();
-                return Err(ServiceError(message));
+        loop {
+            match conn.request_name_with_flags(NAME, flags.into()).await {
+                Ok(RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner) => break,
+                // zbus says `NameTaken` for an `Exists` reply.
+                Ok(RequestNameReply::Exists | RequestNameReply::InQueue)
+                | Err(zbus::Error::NameTaken) => {
+                    let owner = match crate::dbus::owner_process(&conn, NAME).await {
+                        Some((pid, comm)) => Some(Owner {
+                            pid,
+                            comm,
+                            unit: systemd_unit(&conn, pid).await,
+                        }),
+                        None => None,
+                    };
+                    // The notice before readiness: a ready run without
+                    // one resolves the last (as a clean stop does).
+                    cx.notice(conflict_message(owner));
+                    cx.ready();
+                    noticed = true;
+                    // No second server, and no polling: the name is
+                    // asked for again once its owner lets it go.
+                    if !name_freed(&mut cx, &mut owners).await? {
+                        return Ok(());
+                    }
+                }
+                Err(e) => {
+                    cx.ready();
+                    return Err(ServiceError(format!("{NAME} not owned: {e}")));
+                }
             }
-            Err(e) => {
-                cx.ready();
-                return Err(ServiceError(format!("{NAME} not owned: {e}")));
-            }
+        }
+        drop(owners);
+        if noticed && !cx.resolve() {
+            return Ok(());
         }
         cx.ready();
         // However the run ends (stopped, which drops this body, or
@@ -603,7 +684,15 @@ impl Notifications {
                     };
                     match m {
                         FromBus::Notify(a) => {
-                            let Arrival { mut n, image, replaces, resident, default } = *a;
+                            let Arrival { mut n, image, mut replaces, resident, default } = *a;
+                            // It replaced one the body closed meanwhile: a
+                            // new notification under that id, open again.
+                            if replaces && !cx.state().all.iter().any(|m| m.id == n.id) {
+                                replaces = false;
+                                if let Ok(mut ids) = ids.lock() {
+                                    ids.live.insert(n.id as u32);
+                                }
+                            }
                             if let Image::Data(d) = image {
                                 // Off the runtime thread: other services go on.
                                 let pinned = tokio::task::spawn_blocking(move || write_image(d))
@@ -707,6 +796,41 @@ impl Notifications {
     }
 }
 
+/// Wait for the other server to let [`NAME`] go (`NameOwnerChanged` to
+/// no owner), answering `dnd` writes meanwhile. `false` once stopped.
+async fn name_freed(
+    cx: &mut Cx<Notifications>,
+    owners: &mut zbus::MessageStream,
+) -> Result<bool, ServiceError> {
+    use futures_lite::StreamExt;
+    loop {
+        tokio::select! {
+            m = owners.next() => {
+                let Some(m) = m else {
+                    return Err(ServiceError("the session bus went away".into()));
+                };
+                let freed = m
+                    .ok()
+                    .and_then(|m| m.body().deserialize::<(String, String, String)>().ok())
+                    .is_some_and(|(_, _, new)| new.is_empty());
+                if freed {
+                    return Ok(true);
+                }
+            }
+            m = cx.recv() => match m {
+                None => return Ok(false),
+                Some(Msg::Write(w)) if w.field == "dnd" => {
+                    let on: bool = w.value().unwrap_or(cx.state().dnd);
+                    if !cx.report(&w, |s| s.dnd = on) {
+                        return Ok(false);
+                    }
+                }
+                Some(_) => {}
+            }
+        }
+    }
+}
+
 /// Closes every notification still open when the run ends: a stopped
 /// body is dropped, not polled to its end, so this is a drop guard. The
 /// signals go out in a task holding the connection, so the name is
@@ -718,19 +842,24 @@ struct CloseOnStop {
 
 impl Drop for CloseOnStop {
     fn drop(&mut self) {
+        // First no new notification is taken (an id handed out now
+        // would name one nobody shows), then those open are closed.
         let mut open: Vec<u32> = match self.ids.lock() {
-            Ok(mut ids) => ids.live.drain().collect(),
+            Ok(mut ids) => {
+                ids.closed = true;
+                ids.live.drain().collect()
+            }
             Err(_) => return,
         };
         if open.is_empty() {
             return;
         }
         open.sort_unstable();
-        let Ok(rt) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
         let conn = self.conn.clone();
-        rt.spawn(async move {
+        // Sent after the body is gone, and waited for (bounded) when the
+        // services' thread ends: `Services::shutdown` closes them too.
+        crate::client::finalize(async move {
+            let _ = conn.object_server().remove::<Server, _>(PATH).await;
             for id in open {
                 signal_closed(&conn, i64::from(id), Closed::Closed).await;
             }
@@ -824,16 +953,18 @@ mod tests {
             )])
         };
         let arrive = |hints| {
-            server.arrival(
-                "a".into(),
-                0,
-                String::new(),
-                "s".into(),
-                String::new(),
-                vec![],
-                hints,
-                -1,
-            )
+            server
+                .arrival(
+                    "a".into(),
+                    0,
+                    String::new(),
+                    "s".into(),
+                    String::new(),
+                    vec![],
+                    hints,
+                    -1,
+                )
+                .unwrap()
         };
         for _ in 0..IMAGES_QUEUED {
             assert!(matches!(arrive(pixels()).image, Image::Data(_)));
@@ -853,6 +984,20 @@ mod tests {
         server.images.fetch_sub(1, Ordering::AcqRel);
         assert!(matches!(arrive(pixels()).image, Image::Data(_)));
         assert!(rx.try_recv().is_err(), "arrival() itself sends nothing");
+        // The run ended: nothing more is taken (no id for a notification
+        // nobody shows).
+        server.ids.lock().unwrap().closed = true;
+        let none = server.arrival(
+            "a".into(),
+            0,
+            String::new(),
+            "s".into(),
+            String::new(),
+            vec![],
+            HashMap::new(),
+            -1,
+        );
+        assert!(none.is_none());
     }
 
     #[test]
@@ -876,9 +1021,30 @@ mod tests {
             unit: None,
         }));
         assert!(!m.contains("systemctl"), "{m}");
-        assert!(m.contains("pkill -x python3.12"), "{m}");
-        assert!(m.contains("kill 7"), "{m}");
+        assert!(m.contains("`kill 7`"), "{m}");
+        assert!(!m.contains("pkill"), "an interpreter is not pkilled: {m}");
         assert!(m.contains("dbus-1/services"), "{m}");
+        let m = conflict_message(Some(Owner {
+            pid: 9,
+            comm: Some("dunst".into()),
+            unit: None,
+        }));
+        assert!(
+            m.contains("`kill 9`") && m.contains("pkill -x dunst"),
+            "{m}"
+        );
+        // A desktop's own shell: never stopped, not even by its unit.
+        let m = conflict_message(Some(Owner {
+            pid: 3,
+            comm: Some("gnome-shell".into()),
+            unit: Some("org.gnome.Shell@wayland.service".into()),
+        }));
+        assert!(m.contains("its own settings"), "{m}");
+        assert!(!m.contains("kill") && !m.contains("systemctl"), "{m}");
+        for i in ["python3", "python3.12", "perl", "node", "bash", "sh", "gjs"] {
+            assert!(interpreter(i), "{i}");
+        }
+        assert!(!interpreter("mako") && !interpreter("swaync"));
         assert!(conflict_message(None).contains("another process"));
     }
 }

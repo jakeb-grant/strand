@@ -774,7 +774,10 @@ fn a_notification_conflict_is_shown_and_resolved() {
     let text = ev["notices"].to_string();
     assert!(text.contains(&format!("(pid {other_pid})")), "{text}");
     assert!(text.contains(&format!("`{other_comm}`")), "{text}");
-    assert!(text.contains(&format!("pkill -x {other_comm}")), "{text}");
+    // The exact process: python-dbusmock is an interpreter, and `pkill
+    // -x` would stop every script it runs.
+    assert!(text.contains(&format!("kill {other_pid}")), "{text}");
+    assert!(!text.contains("pkill"), "{text}");
     assert!(text.contains("dbus-1/services"), "{text}");
     assert!(!text.contains("resolved"), "{text}");
     // And on the overlay.

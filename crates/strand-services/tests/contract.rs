@@ -63,6 +63,8 @@ enum Cmd {
     Ready,
     /// Raise a notice for the user ([`Cx::notice`]).
     Notice(String),
+    /// The notice no longer holds, the run going on ([`Cx::resolve`]).
+    Resolve,
     /// End the run with an error.
     Fail(String),
 }
@@ -193,6 +195,7 @@ impl Probe {
                     Some(Cmd::Emit(p)) => { cx.emit(p); }
                     Some(Cmd::Ready) => { cx.ready(); }
                     Some(Cmd::Notice(m)) => { cx.notice(m); }
+                    Some(Cmd::Resolve) => { cx.resolve(); }
                     Some(Cmd::Fail(m)) => return Err(ServiceError(m)),
                     None => return Ok(()),
                 },
@@ -1278,6 +1281,42 @@ fn a_notice_is_resolved_when_its_service_stops_for_lack_of_readers() {
     assert_eq!(rt.next_deadline(), None);
     s.shutdown();
     assert!(s.take_diagnostics().is_empty(), "resolved once");
+}
+
+/// A run that waits out what its notice names (the other server's
+/// name to come free) and goes on resolves it itself: the host takes it
+/// away at once, with no restart.
+#[test]
+fn a_live_run_resolves_its_own_notice() {
+    let (sc, _guard) = script();
+    let rt = Runtime::new();
+    let (s, _) = services(&rt);
+    let probe = s.register::<Probe>(&rt);
+    probe.acquire(&rt);
+    assert_eq!(sc.next(), "start visible=true");
+    sc.cmd(Cmd::Notice("another server owns the name".into()));
+    sc.cmd(Cmd::Ready);
+    until(&rt, &s, "the notice", || {
+        let d = s.take_diagnostics();
+        assert!(d.iter().all(|d| d.notice && !d.resolved), "{d:?}");
+        !d.is_empty()
+    });
+    sc.cmd(Cmd::Resolve);
+    until(&rt, &s, "the resolved notice", || {
+        let d = s.take_diagnostics();
+        assert!(d.iter().all(|d| d.resolved), "{d:?}");
+        !d.is_empty()
+    });
+    assert!(probe.running());
+    assert_eq!(probe.starts(), 1, "no restart");
+    // The same notice raised again is reported again.
+    sc.cmd(Cmd::Notice("another server owns the name".into()));
+    until(&rt, &s, "the notice again", || {
+        let d = s.take_diagnostics();
+        assert!(d.iter().all(|d| !d.resolved), "{d:?}");
+        !d.is_empty()
+    });
+    s.shutdown();
 }
 
 #[test]
