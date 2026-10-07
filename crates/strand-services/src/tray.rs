@@ -81,6 +81,7 @@ pub struct TrayMenuItem {
 pub struct TrayMenu {
     pub item: String,
     pub items: Vec<TrayMenuItem>,
+    pub opened: bool,
 }
 
 /// An item in the tray.
@@ -102,7 +103,9 @@ pub enum TrayAction {
     Activate { item: TrayItem },
     /// `item.secondary()`.
     Secondary { item: TrayItem },
-    /// `item.scroll(dy)`.
+    /// `item.scroll(dy)`: `dy` in wheel notches (one click is 1, positive
+    /// down), sent to the app as 120 per notch, positive up
+    /// ([`scroll_delta`]).
     Scroll { item: TrayItem, dy: f64 },
     /// `item.menu.open()`.
     Open { item: TrayMenu },
@@ -123,6 +126,29 @@ pub struct Tray {
     /// The tray's items, keyed by `id`: `for item in tray.items`.
     #[store(keyed)]
     pub items: Vec<TrayItem>,
+}
+
+/// What the SNI `Scroll` delta counts per wheel notch: angle units of an
+/// eighth of a degree, 15 degrees a notch (Qt's wheel `angleDelta`, which
+/// KDE's host sends; apps that read only the sign work the same).
+pub const SCROLL_NOTCH: f64 = 120.0;
+
+/// How long after a failed first read of a registered item it is read
+/// once more (an app registering before it exported its item, or busy
+/// as it starts).
+pub const RETRY_READ: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The SNI `Scroll` delta for `dy` notches (a shell's `on scroll(dy)`:
+/// positive is down): 120 a notch, positive up as KDE's host sends it (a
+/// wheel's `angleDelta`), at least one unit in its direction.
+pub fn scroll_delta(dy: f64) -> i32 {
+    if !dy.is_finite() || dy == 0.0 {
+        return 0;
+    }
+    let d = (-dy * SCROLL_NOTCH)
+        .round()
+        .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
+    if d == 0 { -(dy.signum() as i32) } else { d }
 }
 
 /// An item's bus name and object path from what it registered: a bus
@@ -389,6 +415,8 @@ struct Entry {
     menu: MenuModel,
     props_read: Reading,
     menu_read: Reading,
+    /// Its menu is open (`item.menu.open()` until `close()`).
+    menu_open: bool,
     /// Its connection going away.
     gone: MessageStream,
 }
@@ -408,6 +436,7 @@ impl Entry {
             menu: TrayMenu {
                 item: id.clone(),
                 items: self.menu.items.clone(),
+                opened: self.menu_open,
             },
             id,
         }
@@ -480,8 +509,15 @@ async fn read_menu(conn: &zbus::Connection, t: &Target) -> MenuModel {
 /// What a task hands back to the loop.
 #[derive(Debug)]
 enum Done {
-    /// A registered item, read.
-    Added(String, Option<Box<Entry>>),
+    /// A registered item, read (`None`: it could not be). `retry`: this
+    /// was its second read.
+    Added {
+        id: String,
+        bus: String,
+        path: String,
+        entry: Option<Box<Entry>>,
+        retry: bool,
+    },
     /// An item's properties read again.
     Look(String, u64, Option<Look>),
     /// An item's menu read again.
@@ -620,6 +656,8 @@ struct Host {
     entries: BTreeMap<String, Entry>,
     /// Items being read before they are added.
     adding: HashSet<String>,
+    /// Items given up on (unreadable twice), for the watcher to unlist.
+    failed: Vec<String>,
     tasks: JoinSet<Done>,
     generation: u64,
 }
@@ -632,12 +670,27 @@ impl Host {
         if bus.is_empty() || self.entries.contains_key(&id) || !self.adding.insert(id.clone()) {
             return;
         }
+        self.read_new(id, bus, path, false);
+    }
+
+    /// Read item `id` (being added) in a task; a retry waits
+    /// [`RETRY_READ`] first.
+    fn read_new(&mut self, id: String, bus: String, path: String, retry: bool) {
         self.generation += 1;
         let generation = self.generation;
         let conn = self.conn.clone();
         self.tasks.spawn(async move {
-            let entry = new_entry(&conn, bus, path, generation).await;
-            Done::Added(id, entry.map(Box::new))
+            if retry {
+                tokio::time::sleep(RETRY_READ).await;
+            }
+            let entry = new_entry(&conn, bus.clone(), path.clone(), generation).await;
+            Done::Added {
+                id,
+                bus,
+                path,
+                entry: entry.map(Box::new),
+                retry,
+            }
         });
     }
 
@@ -696,16 +749,32 @@ impl Host {
     /// Apply a task's result; whether the state changed.
     fn done(&mut self, d: Done) -> bool {
         match d {
-            Done::Added(id, entry) => {
-                self.adding.remove(&id);
-                match entry {
-                    Some(e) => {
-                        self.entries.insert(id, *e);
-                        true
-                    }
-                    None => false,
+            Done::Added {
+                id,
+                bus,
+                path,
+                entry,
+                retry,
+            } => match entry {
+                Some(e) => {
+                    self.adding.remove(&id);
+                    self.entries.insert(id, *e);
+                    true
                 }
-            }
+                // Read once more a little later (still being added: a
+                // registration meanwhile is the same one).
+                None if !retry => {
+                    self.read_new(id, bus, path, true);
+                    false
+                }
+                // Given up: our watcher lists it no more, so the app
+                // registering again is heard.
+                None => {
+                    self.adding.remove(&id);
+                    self.failed.push(id);
+                    false
+                }
+            },
             Done::Look(id, generation, look) => {
                 let Some(e) = self.current(&id, generation) else {
                     return false;
@@ -818,8 +887,9 @@ impl Host {
         });
     }
 
-    /// Run an action (each call a task of its own).
-    fn act(&mut self, a: TrayAction) {
+    /// Run an action (each call a task of its own); whether the state
+    /// changed (a menu opened or closed).
+    fn act(&mut self, a: TrayAction) -> bool {
         let target = |id: &str| self.entries.get(id).map(Entry::target);
         match a {
             TrayAction::Activate { item } => {
@@ -849,12 +919,7 @@ impl Host {
                 }
             }
             TrayAction::Scroll { item, dy } => {
-                let steps = dy.round() as i32;
-                let steps = if steps == 0 && dy != 0.0 {
-                    dy.signum() as i32
-                } else {
-                    steps
-                };
+                let steps = scroll_delta(dy);
                 if steps != 0
                     && let Some(t) = target(&item.id)
                 {
@@ -871,7 +936,7 @@ impl Host {
             }
             TrayAction::Open { item } => {
                 let Some(t) = target(&item.item) else {
-                    return;
+                    return false;
                 };
                 match t.menu_path.clone() {
                     // No DBusMenu: the app shows its own.
@@ -879,7 +944,17 @@ impl Host {
                         let path = t.path.clone();
                         self.send(&t, &path, ITEM, "ContextMenu", (0i32, 0i32), Then::Nothing);
                     }
-                    Some(menu) => self.opened(&t, &menu, 0),
+                    Some(menu) => {
+                        self.opened(&t, &menu, 0);
+                        // The shell's popup shows it: `open:
+                        // item.menu.opened`.
+                        if let Some(e) = self.entries.get_mut(&item.item)
+                            && !e.menu_open
+                        {
+                            e.menu_open = true;
+                            return true;
+                        }
+                    }
                 }
             }
             TrayAction::OpenEntry { item } => {
@@ -895,6 +970,12 @@ impl Host {
                 {
                     self.event(&t, &menu, 0, "closed");
                 }
+                if let Some(e) = self.entries.get_mut(&item.item)
+                    && e.menu_open
+                {
+                    e.menu_open = false;
+                    return true;
+                }
             }
             TrayAction::ActivateEntry { item } => {
                 if let Some(t) = target(&item.item)
@@ -904,6 +985,7 @@ impl Host {
                 }
             }
         }
+        false
     }
 
     /// Menu entry `id` (0: the root) opens: the app may update it first
@@ -978,6 +1060,7 @@ async fn new_entry(
         menu: MenuModel::default(),
         props_read: Reading::default(),
         menu_read: Reading::default(),
+        menu_open: false,
         gone,
     };
     e.menu = read_menu(conn, &e.target()).await;
@@ -1009,6 +1092,7 @@ impl Tray {
             conn: conn.clone(),
             entries: BTreeMap::new(),
             adding: HashSet::new(),
+            failed: Vec::new(),
             tasks: JoinSet::new(),
             generation: 0,
         };
@@ -1026,6 +1110,7 @@ impl Tray {
                 .ok();
             host.entries.clear();
             host.adding.clear();
+            host.failed.clear();
             if let Ok(mut s) = shared.lock() {
                 s.clear();
             }
@@ -1095,10 +1180,18 @@ impl Tray {
                     std::task::Poll::Pending
                 });
                 let changed = tokio::select! {
-                    Some(d) = host.tasks.join_next(), if !host.tasks.is_empty() => match d {
-                        Ok(d) => host.done(d),
-                        Err(_) => false,
-                    },
+                    Some(d) = host.tasks.join_next(), if !host.tasks.is_empty() => {
+                        let changed = match d {
+                            Ok(d) => host.done(d),
+                            Err(_) => false,
+                        };
+                        for id in std::mem::take(&mut host.failed) {
+                            if ours {
+                                unregistered(&conn, &id).await;
+                            }
+                        }
+                        changed
+                    }
                     r = rx.recv() => match r {
                         Some(Registry::Registered { service, sender }) => {
                             host.add(&service, &sender);
@@ -1171,10 +1264,7 @@ impl Tray {
                     }
                     m = cx.recv() => match m {
                         None => return Ok(()),
-                        Some(Msg::Action(a)) => {
-                            host.act(a);
-                            false
-                        }
+                        Some(Msg::Action(a)) => host.act(a),
                         Some(_) => false,
                     },
                 };
@@ -1209,6 +1299,14 @@ mod tests {
             parse_registration(":1.9/org/x", ""),
             (":1.9".to_string(), "/org/x".to_string())
         );
+        // A notch down is -120 (KDE: positive up); up is +120.
+        assert_eq!(scroll_delta(1.0), -120);
+        assert_eq!(scroll_delta(-2.0), 240);
+        assert_eq!(scroll_delta(0.25), -30);
+        assert_eq!(scroll_delta(-0.001), 1, "at least one unit");
+        assert_eq!(scroll_delta(0.0), 0);
+        assert_eq!(scroll_delta(f64::NAN), 0);
+        assert_eq!(scroll_delta(-1e30), i32::MAX);
         assert_eq!(strip_mnemonic("_Open"), "Open");
         assert_eq!(strip_mnemonic("Save__As"), "Save_As");
         let mut p = Props::new();

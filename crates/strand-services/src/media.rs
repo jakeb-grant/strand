@@ -240,10 +240,10 @@ impl Players {
             }
             p.known = true;
         }
-        if let Some((asked, pos, at)) = r.position {
-            if asked == p.asked {
-                p.at = Some((pos.unwrap_or_default(), at));
-            }
+        if let Some((asked, pos, at)) = r.position
+            && asked == p.asked
+        {
+            p.at = Some((pos.unwrap_or_default(), at));
         }
         if first && p.known {
             self.touch(&r.name);
@@ -528,10 +528,10 @@ fn signal(
         ask.position = Some(p.asked);
     }
     for (k, v) in c.changed {
-        if let Some(pending) = &mut p.pending {
-            if let Ok(v2) = v.try_clone() {
-                pending.insert(k.clone(), v2);
-            }
+        if let Some(pending) = &mut p.pending
+            && let Ok(v2) = v.try_clone()
+        {
+            pending.insert(k.clone(), v2);
         }
         p.props.insert(k, v);
     }
