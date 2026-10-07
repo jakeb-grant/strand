@@ -1954,6 +1954,67 @@ service shelf {
             let _ = std::fs::remove_dir_all(&dir);
         }
 
+        /// `from listen`: a line that is not UTF-8 is read leniently and
+        /// the lines after it are still read.
+        #[test]
+        fn listen_reads_on_past_a_line_that_is_not_utf8() {
+            let src = "permit exec \"sh\"\nservice l from listen [\"sh\", \"-c\", \"echo a=1; printf 'a=\\\\377\\\\n'; sleep .2; echo a=3; sleep 30\"] { a: int }\nbar B { text join(\" \", l.a) }\n";
+            let mut live = Live::boot(src, Buses::none());
+            live.until("the line after it read", |l| {
+                l.value("l", "a") == Value::int(3)
+            });
+            assert!(live.real.services.take_diagnostics().is_empty());
+        }
+
+        fn gone(pid: &str) -> bool {
+            match std::fs::read_to_string(format!("/proc/{}/stat", pid.trim())) {
+                Err(_) => true,
+                Ok(stat) => stat
+                    .rsplit_once(')')
+                    .is_some_and(|(_, rest)| rest.trim_start().starts_with('Z')),
+            }
+        }
+
+        /// What a `listen` command started ends with the service: on a
+        /// reload restart and on a stop.
+        #[test]
+        fn a_listen_command_leaves_nothing_running() {
+            let dir = temp("orphans");
+            let pids = dir.join("pids");
+            let src = |fields: &str, with: bool| {
+                if !with {
+                    return "bar B { text \"x\" }\n".to_string();
+                }
+                format!(
+                    "permit exec \"sh\"\nservice l from listen [\"sh\", \"-c\", \"sleep 30 & echo $! >> {pids}; echo a=1; wait\"] {{ {fields} }}\nbar B {{ text join(\" \", l.a) }}\n",
+                    pids = pids.display()
+                )
+            };
+            let started = || -> Vec<String> {
+                std::fs::read_to_string(&pids)
+                    .unwrap_or_default()
+                    .lines()
+                    .map(str::to_string)
+                    .collect()
+            };
+            let mut live = Live::boot(&src("a: int", true), Buses::none());
+            live.until("read", |l| l.value("l", "a") == Value::int(1));
+            live.until("started", |_| started().len() == 1);
+            let first = started()[0].clone();
+            assert!(!gone(&first));
+            // A reload restart: the first command's child ends.
+            live.reload(&src("a: int; b: text", true));
+            live.until("restarted", |_| started().len() == 2);
+            live.until("the first child gone", |_| gone(&first));
+            let second = started()[1].clone();
+            assert!(!gone(&second));
+            // Stopped: its child ends too.
+            live.reload(&src("", false));
+            live.until("the second child gone", |_| gone(&second));
+            drop(live);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
         /// A reload that changes one custom service's declaration
         /// restarts only it; one that removes it stops it; the other keeps
         /// running.
@@ -2016,7 +2077,7 @@ service shelf {
             ) else {
                 return;
             };
-            let src = "service ppd from dbus system \"net.hadess.PowerProfiles\" { profile: text rw = ActiveProfile; degraded: text = PerformanceDegraded }\nbar B { text ppd.profile }\n";
+            let src = "enum Profile { power_saver, balanced, performance }\nservice ppd from dbus system \"net.hadess.PowerProfiles\" { profile: text rw = ActiveProfile; degraded: text = PerformanceDegraded }\nservice mode from dbus system \"net.hadess.PowerProfiles\" { active: Profile rw = ActiveProfile }\nbar B { text join(\" \", ppd.profile, mode.active) }\n";
             // The check against introspection, on the mock's bus.
             let address = match bus.buses().system {
                 strand_services::Bus::Address(a) => a,
@@ -2141,6 +2202,28 @@ service shelf {
             live.until("followed", |l| {
                 l.value("ppd", "profile") == Value::text("power-saver")
             });
+            // An enum field reads `power-saver` as `power_saver`, and
+            // writes it back as the daemon spells it.
+            let types = live.build.program.types.clone();
+            let profile = types.find_enum("Profile").unwrap();
+            let variant =
+                |name: &str| Value::Enum(profile, types.enum_(profile).variant(name).unwrap());
+            live.until("the enum read", |l| {
+                l.value("mode", "active") == variant("power_saver")
+            });
+            for (name, spelled) in [("balanced", "balanced"), ("power_saver", "power-saver")] {
+                live.real
+                    .host
+                    .write(
+                        &live.rt,
+                        "mode",
+                        &[PathSeg::Field("active".into())],
+                        variant(name),
+                    )
+                    .unwrap();
+                live.until("the daemon has the enum's spelling", |_| get() == spelled);
+                live.until("read back", |l| l.value("mode", "active") == variant(name));
+            }
             // A read-only field refuses writes.
             assert!(
                 live.real

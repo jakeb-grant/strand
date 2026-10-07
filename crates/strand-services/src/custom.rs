@@ -21,7 +21,10 @@
 //!   watch on it and its directory: atomic replacements, sysfs
 //!   notifications); nothing polls.
 //! - **listen**: the command runs while the service runs; each line it
-//!   prints is a document. It ending is a failure (retried with backoff).
+//!   prints is a document (read leniently: bytes that are not UTF-8 do not
+//!   stop it). It ending is a failure (retried with backoff). Commands run
+//!   in a process group of their own, ended whole (`SIGTERM`, then
+//!   `SIGKILL` after [`KILL_GRACE`]) when the service stops or restarts.
 //! - **poll**: the command (or file) is read every interval, only while a
 //!   reader is visible.
 //!
@@ -461,6 +464,57 @@ fn bind(spec: &Spec, name: &str, props: &[strand_introspect::Property]) -> Bound
         .collect()
 }
 
+/// The strings each field's property has held, so an enum variant is
+/// written back as the daemon spells it.
+struct Seen(Vec<Vec<Arc<str>>>);
+
+/// How many spellings a field remembers.
+const SEEN_MAX: usize = 64;
+
+impl Seen {
+    fn new(fields: usize) -> Seen {
+        Seen(vec![Vec::new(); fields])
+    }
+
+    /// Remember `d` (read from field `i`'s property), and hand it back.
+    fn note(&mut self, i: usize, d: Data) -> Data {
+        if let (Data::Text(t), Some(seen)) = (&d, self.0.get_mut(i))
+            && !seen.contains(t)
+            && t.len() <= 256
+        {
+            if seen.len() == SEEN_MAX {
+                seen.remove(0);
+            }
+            seen.push(t.clone());
+        }
+        d
+    }
+
+    /// The ways to write `d` to field `i`, in the order to try them. An
+    /// enum variant is the string read before that names it (any case,
+    /// `-` for `_`), else its name, else its name with `-` for `_`.
+    fn spellings(&self, i: usize, d: &Data) -> Vec<Data> {
+        let Data::Enum { variant, .. } = d else {
+            return vec![d.clone()];
+        };
+        let norm = |s: &str| s.to_ascii_lowercase().replace('-', "_");
+        let want = norm(variant);
+        if let Some(t) = self
+            .0
+            .get(i)
+            .and_then(|seen| seen.iter().rev().find(|t| norm(t) == want))
+        {
+            return vec![Data::Text(t.clone())];
+        }
+        let mut out = vec![Data::text(&**variant)];
+        let hyphens = variant.replace('_', "-");
+        if hyphens != **variant {
+            out.push(Data::text(hyphens));
+        }
+        out
+    }
+}
+
 async fn run_dbus(
     cx: &mut Cx<Custom>,
     spec: &Spec,
@@ -491,6 +545,10 @@ async fn run_dbus(
                 .build(),
         )
         .await?;
+    // The strings each field's property has held: an enum variant is
+    // written as the one it was read from (`power_saver` as
+    // `power-saver`).
+    let mut seen = Seen::new(spec.fields.len());
     loop {
         // (Re)read everything from the current owner.
         let mut bound: Bound = vec![None; spec.fields.len()];
@@ -519,7 +577,7 @@ async fn run_dbus(
                         && bi == iface
                         && let Some(v) = all.get(prop)
                     {
-                        state.set(i, dbus_data(v));
+                        state.set(i, seen.note(i, dbus_data(v)));
                     }
                 }
             }
@@ -548,7 +606,7 @@ async fn run_dbus(
                                 && *bi == iface
                                 && let Some(v) = props.get(prop)
                             {
-                                state.set(i, dbus_data(v));
+                                state.set(i, seen.note(i, dbus_data(v)));
                                 any = true;
                             }
                         }
@@ -573,18 +631,25 @@ async fn run_dbus(
                             Data::Record { .. } => w.field_value.field("value").cloned().unwrap_or(Data::Null),
                             _ => w.value.clone(),
                         };
-                        let set = match to_dbus(&value, &sig) {
-                            Ok(v) => dbus::set(&conn, name, path, &iface, &prop, ZValue::from(v)).await.map_err(|e| e.to_string()),
-                            Err(e) => Err(e),
-                        };
+                        // Each way to spell it, until one is taken.
+                        let mut set = Err(String::new());
+                        for value in seen.spellings(i, &value) {
+                            set = match to_dbus(&value, &sig) {
+                                Ok(v) => dbus::set(&conn, name, path, &iface, &prop, ZValue::from(v)).await.map(|()| value).map_err(|e| e.to_string()),
+                                Err(e) => Err(e),
+                            };
+                            if set.is_ok() {
+                                break;
+                            }
+                        }
                         // What the property holds now: the written value,
                         // or (refused) a fresh read.
                         let now = match set {
-                            Ok(()) => value,
+                            Ok(value) => seen.note(i, value),
                             Err(e) => {
                                 log::warn!("{}.{}: {name} refused the write: {e}", spec.name, spec.fields[i].name);
                                 match dbus::timed(dbus::get(&conn, name, path, &iface, &prop)).await {
-                                    Ok(v) => dbus_data(&v),
+                                    Ok(v) => seen.note(i, dbus_data(&v)),
                                     Err(_) => cx.state().values.get(i).map(|v| v.value.clone()).unwrap_or_default(),
                                 }
                             }
@@ -695,34 +760,147 @@ async fn run_file(cx: &mut Cx<Custom>, spec: &Spec, path: &Path) -> Result<(), S
     }
 }
 
-fn command(argv: &[String]) -> Result<tokio::process::Command, ServiceError> {
-    let (program, args) = argv
-        .split_first()
-        .ok_or_else(|| ServiceError("no command".into()))?;
-    let mut cmd = tokio::process::Command::new(program);
-    cmd.args(args)
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .kill_on_drop(true);
-    Ok(cmd)
+/// How long a stopped command's process group has to end after
+/// `SIGTERM` before it is sent `SIGKILL`.
+pub const KILL_GRACE: Duration = Duration::from_millis(500);
+
+/// A command running in a process group of its own: dropped (the
+/// service stopped or restarted, a poll timed out or finished), the
+/// whole group is ended, so nothing it started outlives it.
+struct Proc {
+    child: tokio::process::Child,
+    pgid: Option<i32>,
+}
+
+impl Proc {
+    fn spawn(argv: &[String]) -> Result<(Proc, tokio::process::ChildStdout), ServiceError> {
+        let (program, args) = argv
+            .split_first()
+            .ok_or_else(|| ServiceError("no command".into()))?;
+        let mut child = tokio::process::Command::new(program)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .process_group(0)
+            .kill_on_drop(false)
+            .spawn()
+            .map_err(|e| ServiceError(format!("cannot run `{program}`: {e}")))?;
+        let pgid = child.id().and_then(|p| i32::try_from(p).ok());
+        let stdout = child.stdout.take();
+        let proc = Proc { child, pgid };
+        // Without its output, dropping `proc` ends the group.
+        let stdout = stdout.ok_or_else(|| ServiceError("no output".into()))?;
+        Ok((proc, stdout))
+    }
+
+    /// How it ended, waiting a moment for it (it closed its output).
+    async fn status(&mut self) -> String {
+        match tokio::time::timeout(Duration::from_millis(200), self.child.wait()).await {
+            Ok(Ok(s)) => s.to_string(),
+            Ok(Err(e)) => e.to_string(),
+            Err(_) => "its output closed; killed".into(),
+        }
+    }
+}
+
+impl Drop for Proc {
+    fn drop(&mut self) {
+        let Some(pgid) = self.pgid.filter(|p| *p > 1) else {
+            return;
+        };
+        // SAFETY: kill(2) on our own child's process group; no memory is
+        // involved. ESRCH (the group is gone) is the common answer.
+        let alive = unsafe { libc::kill(-pgid, libc::SIGTERM) } == 0;
+        if !alive {
+            return;
+        }
+        let kill = move || {
+            std::thread::sleep(KILL_GRACE);
+            // SAFETY: as above.
+            unsafe { libc::kill(-pgid, libc::SIGKILL) };
+        };
+        if std::thread::Builder::new()
+            .name("strand-kill".into())
+            .spawn(kill)
+            .is_err()
+        {
+            // SAFETY: as above.
+            unsafe { libc::kill(-pgid, libc::SIGKILL) };
+        }
+    }
+}
+
+/// A command's output as lines of at most [`MAX_DOCUMENT`] bytes (a
+/// longer one is skipped whole, up to its newline), decoded leniently
+/// (bytes that are not UTF-8 become U+FFFD). Cancel safe: everything
+/// read is kept in `self`.
+struct Lines<R> {
+    reader: tokio::io::BufReader<R>,
+    buf: Vec<u8>,
+    skipping: bool,
+}
+
+impl<R: tokio::io::AsyncRead + Unpin> Lines<R> {
+    fn new(r: R) -> Lines<R> {
+        Lines {
+            reader: tokio::io::BufReader::new(r),
+            buf: Vec::new(),
+            skipping: false,
+        }
+    }
+
+    /// The next line (`None`: the output ended).
+    async fn next(&mut self) -> std::io::Result<Option<String>> {
+        loop {
+            let available = self.reader.fill_buf().await?;
+            if available.is_empty() {
+                let last = std::mem::take(&mut self.buf);
+                let skipped = std::mem::replace(&mut self.skipping, false);
+                return Ok((!last.is_empty() && !skipped).then(|| decode(last)));
+            }
+            let newline = available.iter().position(|b| *b == b'\n');
+            let chunk = &available[..newline.unwrap_or(available.len())];
+            if !self.skipping {
+                if self.buf.len() + chunk.len() > MAX_DOCUMENT {
+                    self.skipping = true;
+                    self.buf = Vec::new();
+                } else {
+                    self.buf.extend_from_slice(chunk);
+                }
+            }
+            let used = newline.map_or(available.len(), |i| i + 1);
+            self.reader.consume(used);
+            if newline.is_some() {
+                if std::mem::replace(&mut self.skipping, false) {
+                    log::warn!("a line longer than {MAX_DOCUMENT} bytes was skipped");
+                    continue;
+                }
+                return Ok(Some(decode(std::mem::take(&mut self.buf))));
+            }
+        }
+    }
+}
+
+fn decode(mut line: Vec<u8>) -> String {
+    if line.last() == Some(&b'\r') {
+        line.pop();
+    }
+    match String::from_utf8(line) {
+        Ok(s) => s,
+        Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+    }
 }
 
 async fn run_listen(cx: &mut Cx<Custom>, spec: &Spec, argv: &[String]) -> Result<(), ServiceError> {
-    let mut child = command(argv)?
-        .spawn()
-        .map_err(|e| ServiceError(format!("cannot run `{}`: {e}", argv[0])))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| ServiceError("no output".into()))?;
-    let mut lines = tokio::io::BufReader::new(stdout).lines();
+    let (mut proc, stdout) = Proc::spawn(argv)?;
+    let mut lines = Lines::new(stdout);
     cx.ready();
     loop {
         tokio::select! {
-            line = lines.next_line() => match line {
+            line = lines.next() => match line {
                 Ok(Some(l)) => {
-                    if l.len() > MAX_DOCUMENT || l.trim().is_empty() {
+                    if l.trim().is_empty() {
                         continue;
                     }
                     let doc = Document::parse(&l);
@@ -732,9 +910,14 @@ async fn run_listen(cx: &mut Cx<Custom>, spec: &Spec, argv: &[String]) -> Result
                         return Ok(());
                     }
                 }
-                Ok(None) | Err(_) => {
-                    let status = child.wait().await.map(|s| s.to_string()).unwrap_or_default();
+                // Ended (or unreadable): its group is ended with `proc`,
+                // and the failure retried with backoff.
+                Ok(None) => {
+                    let status = proc.status().await;
                     return Err(ServiceError(format!("`{}` ended ({status})", argv[0])));
+                }
+                Err(e) => {
+                    return Err(ServiceError(format!("reading `{}`: {e}", argv[0])));
                 }
             },
             m = cx.recv() => match m {
@@ -747,17 +930,30 @@ async fn run_listen(cx: &mut Cx<Custom>, spec: &Spec, argv: &[String]) -> Result
 }
 
 /// Run `argv` once and parse what it printed (`None`: it failed, logged).
+/// At most [`MAX_DOCUMENT`] bytes are read; the command's group ends
+/// with it.
 async fn poll_command(argv: &[String]) -> Option<Document> {
-    let cmd = command(argv).ok();
-    let run = async move {
-        let out = cmd?.output().await.ok()?;
-        if !out.status.success() {
-            log::warn!("`{}` failed ({})", argv[0], out.status);
+    use tokio::io::AsyncReadExt;
+    let (mut proc, stdout) = match Proc::spawn(argv) {
+        Ok(p) => p,
+        Err(e) => {
+            log::warn!("{}", e.0);
             return None;
         }
-        let text =
-            String::from_utf8_lossy(&out.stdout[..out.stdout.len().min(MAX_DOCUMENT)]).into_owned();
-        Some(Document::parse(&text))
+    };
+    let run = async {
+        let mut out = Vec::new();
+        stdout
+            .take(MAX_DOCUMENT as u64)
+            .read_to_end(&mut out)
+            .await
+            .ok()?;
+        let status = proc.child.wait().await.ok()?;
+        if !status.success() {
+            log::warn!("`{}` failed ({status})", argv[0]);
+            return None;
+        }
+        Some(Document::parse(&String::from_utf8_lossy(&out)))
     };
     match tokio::time::timeout(POLL_TIMEOUT, run).await {
         Ok(d) => d,
@@ -867,5 +1063,113 @@ mod tests {
             String::try_from(to_dbus(&e, "s").unwrap()).unwrap(),
             "performance"
         );
+    }
+
+    fn block_on<F: std::future::Future>(f: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(f)
+    }
+
+    /// Lines that are not UTF-8 are read leniently and reading goes on;
+    /// a line longer than a document is skipped up to its newline.
+    #[test]
+    fn lines_are_lenient_and_bounded() {
+        let mut input = b"a=1\na=\xff\r\n".to_vec();
+        input.extend(std::iter::repeat_n(b'x', MAX_DOCUMENT + 10));
+        input.extend(b"\na=3\nlast");
+        let got = block_on(async {
+            let mut lines = Lines::new(&input[..]);
+            let mut got = Vec::new();
+            while let Some(l) = lines.next().await.unwrap() {
+                got.push(l);
+            }
+            got
+        });
+        assert_eq!(got, ["a=1", "a=\u{fffd}", "a=3", "last"]);
+    }
+
+    /// An enum variant is written as the property spelled it, else by
+    /// its name, then with `-` for `_`.
+    #[test]
+    fn enum_writes_use_the_spelling_read() {
+        let e = |v: &'static str| Data::Enum {
+            ty: "Profile".into(),
+            variant: v.into(),
+        };
+        let mut seen = Seen::new(2);
+        assert_eq!(
+            seen.spellings(0, &e("power_saver")),
+            [Data::text("power_saver"), Data::text("power-saver")]
+        );
+        assert_eq!(seen.spellings(0, &e("balanced")), [Data::text("balanced")]);
+        seen.note(0, Data::text("Power-Saver"));
+        assert_eq!(
+            seen.spellings(0, &e("power_saver")),
+            [Data::text("Power-Saver")]
+        );
+        assert_eq!(seen.spellings(1, &e("power_saver")).len(), 2, "per field");
+        assert_eq!(seen.spellings(0, &Data::Int(3)), [Data::Int(3)]);
+        for n in 0..SEEN_MAX * 2 {
+            seen.note(0, Data::text(format!("v{n}")));
+        }
+        assert_eq!(seen.0[0].len(), SEEN_MAX, "bounded");
+    }
+
+    fn gone(pid: &str) -> bool {
+        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Err(_) => true,
+            // A zombie waiting for its reaper has ended.
+            Ok(stat) => stat
+                .rsplit_once(')')
+                .is_some_and(|(_, rest)| rest.trim_start().starts_with('Z')),
+        }
+    }
+
+    fn wait_gone(pid: &str) -> bool {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if gone(pid) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        false
+    }
+
+    /// A command's whole process group ends with it: what it started
+    /// does not outlive it.
+    #[test]
+    fn a_dropped_command_ends_its_whole_group() {
+        let argv: Vec<String> = ["sh", "-c", "sleep 30 & echo $!; trap '' TERM; wait"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let grandchild = block_on(async {
+            let (proc, stdout) = Proc::spawn(&argv).unwrap();
+            let mut lines = Lines::new(stdout);
+            let pid = lines.next().await.unwrap().unwrap();
+            assert!(!gone(&pid));
+            drop(proc);
+            pid
+        });
+        assert!(wait_gone(&grandchild), "the grandchild {grandchild} ended");
+        // A poll that times out ends its group too (here: one that
+        // finished, leaving something behind).
+        let dir = std::env::temp_dir().join(format!("strand-pgid-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("pid");
+        let argv: Vec<String> = vec![
+            "sh".into(),
+            "-c".into(),
+            format!("sleep 30 >/dev/null & echo $! > {}; echo 1", file.display()),
+        ];
+        let doc = block_on(poll_command(&argv));
+        assert!(doc.is_some());
+        let pid = std::fs::read_to_string(&file).unwrap();
+        assert!(wait_gone(pid.trim()), "the poll's leftover {pid} ended");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

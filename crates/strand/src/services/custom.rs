@@ -23,9 +23,9 @@ use std::rc::Rc;
 use strand_compiler::hir::{PollTarget, SourceSpec};
 use strand_compiler::lower::CustomService;
 use strand_compiler::ty::{Prim, Ty, TypeTable};
-use strand_compiler::vm::Value;
 use strand_compiler::vm::host::{ActionTarget, PathSeg, ServiceHost};
 use strand_compiler::vm::schema_host::default_value;
+use strand_compiler::vm::{Num, Value};
 use strand_core::{Error, Memo, NodeId, Runtime, Scope};
 use strand_services::custom::{self, Custom, CustomValue, FieldSpec, Source, Spec};
 use strand_services::{Client, Data, Services, Step, ToData};
@@ -143,8 +143,10 @@ pub fn coerce(types: &TypeTable, ty: &Ty, d: &Data) -> Option<Value> {
     };
     match (ty, d) {
         (_, Data::Null) => None,
+        (Ty::Any, d) => Some(to_value(types, d)),
         (Ty::Prim(Prim::Bool), Data::Bool(b)) => Some(Value::Bool(*b)),
         (Ty::Prim(Prim::Bool), Data::Int(n)) => Some(Value::Bool(*n != 0)),
+        (Ty::Prim(Prim::Bool), Data::Float(f)) if !f.is_nan() => Some(Value::Bool(*f != 0.0)),
         (Ty::Prim(Prim::Bool), Data::Text(t)) => match t.trim().to_ascii_lowercase().as_str() {
             "true" | "yes" | "on" | "1" => Some(Value::Bool(true)),
             "false" | "no" | "off" | "0" => Some(Value::Bool(false)),
@@ -153,10 +155,26 @@ pub fn coerce(types: &TypeTable, ty: &Ty, d: &Data) -> Option<Value> {
         (Ty::Prim(Prim::Int), d) => number(d)
             .filter(|n| n.is_finite())
             .map(|n| Value::int(n.round() as i64)),
-        (Ty::Prim(Prim::Float), d) => number(d).map(Value::float),
+        (Ty::Prim(Prim::Float), d) => number(d).filter(|n| n.is_finite()).map(Value::float),
+        // A fraction, as services hold percentages (`40%` in text is 0.4).
+        (Ty::Prim(Prim::Percent), Data::Int(_) | Data::Float(_) | Data::Bool(_)) => {
+            number(d).filter(|n| n.is_finite()).map(Value::float)
+        }
+        (Ty::Prim(Prim::Percent), Data::Text(t)) if !t.trim().ends_with('%') => {
+            number(d).filter(|n| n.is_finite()).map(Value::float)
+        }
+        (Ty::Prim(Prim::Length), Data::Int(_) | Data::Float(_)) => number(d)
+            .filter(|n| n.is_finite())
+            .map(|n| Value::Num(n, Num::Px)),
+        (Ty::Prim(Prim::Angle), Data::Int(_) | Data::Float(_)) => number(d)
+            .filter(|n| n.is_finite())
+            .map(|n| Value::Num(n, Num::Deg)),
+        // Seconds; a count no duration holds (`1e300`, negative) is none.
         (Ty::Prim(Prim::Duration), Data::Int(_) | Data::Float(_)) => number(d)
-            .filter(|n| n.is_finite() && *n >= 0.0)
-            .map(|s| Value::from(std::time::Duration::from_secs_f64(s))),
+            .and_then(|s| std::time::Duration::try_from_secs_f64(s).ok())
+            .map(Value::from),
+        (Ty::Prim(Prim::Duration), Data::Duration(t)) => Some(Value::from(*t)),
+        (Ty::Prim(Prim::Color), Data::Color(_)) => Some(to_value(types, d)),
         (Ty::Prim(Prim::Text | Prim::Path), d) => match d {
             Data::Text(t) => Some(Value::text(&**t)),
             Data::Int(n) => Some(Value::text(n.to_string())),
@@ -200,7 +218,8 @@ pub fn coerce(types: &TypeTable, ty: &Ty, d: &Data) -> Option<Value> {
             Some(Value::record(*r, values))
         }
         (ty, Data::Text(t)) => strand_compiler::instantiate::parse_text(types, ty, t.trim()),
-        (_, d) => Some(to_value(types, d)),
+        // Anything else does not convert: the type's default.
+        _ => None,
     }
 }
 
@@ -546,4 +565,157 @@ pub fn dbus_check() -> strand_compiler::reconcile::loader::ExtraCheck {
     strand_compiler::reconcile::loader::ExtraCheck(Box::new(move |c| {
         strand_compiler::check::dbus::check(&c.program, &intro)
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use strand_compiler::schema::Schema;
+    use strand_services::Data;
+
+    use super::*;
+
+    /// Every declared type against every kind of value a source can
+    /// say: a value converts, or is `None` (the type's default); none
+    /// panics, and none lets a value of another type through.
+    #[test]
+    fn coerce_converts_or_refuses_every_type_and_value() {
+        let types = &Schema::builtin().types;
+        let urgency = Ty::Enum(types.find_enum("Urgency").unwrap());
+        let variant = Ty::Enum(types.find_enum("Variant").unwrap());
+        let range = Ty::Record(types.find_record("Range").unwrap());
+        let ints = Ty::List(Box::new(Ty::INT), false);
+        let record = |end: Data| Data::Record {
+            ty: "Range".into(),
+            fields: vec![("end".into(), end)],
+        };
+        let datas = [
+            Data::Null,
+            Data::Bool(true),
+            Data::Int(3),
+            Data::Float(2.5),
+            Data::Float(1e300),
+            Data::Float(-1.0),
+            Data::Float(f64::NAN),
+            Data::text("x"),
+            Data::text("42"),
+            Data::Duration(Duration::from_millis(1500)),
+            Data::List(vec![Data::Int(1), Data::text("2"), Data::text("no")]),
+            record(Data::Int(3)),
+            Data::Enum {
+                ty: "Urgency".into(),
+                variant: "critical".into(),
+            },
+        ];
+        let tys = [
+            Ty::BOOL,
+            Ty::INT,
+            Ty::FLOAT,
+            Ty::PERCENT,
+            Ty::Prim(Prim::Duration),
+            Ty::Prim(Prim::Text),
+            Ty::Prim(Prim::Path),
+            Ty::Prim(Prim::Color),
+            Ty::Prim(Prim::Length),
+            urgency.clone(),
+            ints.clone(),
+            range.clone(),
+            Ty::Optional(Box::new(Ty::INT)),
+            Ty::Any,
+        ];
+        // What each value's kind may convert to (`true`: some value).
+        for ty in &tys {
+            for d in &datas {
+                let v = coerce(types, ty, d);
+                let Some(v) = v else { continue };
+                let ok = match (ty, &v) {
+                    (Ty::Any, _) => true,
+                    (Ty::Optional(_), Value::Null) => true,
+                    (Ty::Optional(_) | Ty::Prim(Prim::Int), v) => v.as_f64().is_some(),
+                    (Ty::Prim(Prim::Bool), Value::Bool(_)) => true,
+                    (Ty::Prim(Prim::Float | Prim::Percent), v) => {
+                        v.as_f64().is_some_and(f64::is_finite)
+                    }
+                    (Ty::Prim(Prim::Duration), Value::Num(n, Num::Ms)) => n.is_finite(),
+                    (Ty::Prim(Prim::Text | Prim::Path), Value::Text(_)) => true,
+                    (Ty::Prim(Prim::Color), Value::Color(_)) => true,
+                    (Ty::Prim(Prim::Length), Value::Num(_, Num::Px)) => true,
+                    (Ty::Enum(_), Value::Enum(..)) => true,
+                    (Ty::List(..), Value::List(_)) => true,
+                    (Ty::Record(_), Value::Record(..)) => true,
+                    _ => false,
+                };
+                assert!(ok, "{ty:?} from {d:?} gave {v:?}");
+            }
+        }
+        // The cases that do convert.
+        let c = |ty: &Ty, d: Data| coerce(types, ty, &d);
+        assert_eq!(c(&Ty::BOOL, Data::Float(2.5)), Some(Value::Bool(true)));
+        assert_eq!(c(&Ty::BOOL, Data::Float(0.0)), Some(Value::Bool(false)));
+        assert_eq!(c(&Ty::BOOL, Data::Float(f64::NAN)), None);
+        assert_eq!(c(&Ty::BOOL, Data::text("on")), Some(Value::Bool(true)));
+        assert_eq!(c(&Ty::BOOL, Data::List(vec![])), None);
+        assert_eq!(c(&Ty::INT, Data::text("45 °C")), Some(Value::int(45)));
+        assert_eq!(c(&Ty::INT, Data::Float(2.5)), Some(Value::int(3)));
+        assert_eq!(c(&Ty::FLOAT, Data::Float(f64::NAN)), None);
+        assert_eq!(c(&Ty::PERCENT, Data::Float(0.4)), Some(Value::float(0.4)));
+        assert_eq!(
+            c(&Ty::PERCENT, Data::text("40%")),
+            Some(Value::Num(40.0, Num::Percent))
+        );
+        let dur = Ty::Prim(Prim::Duration);
+        assert_eq!(
+            c(&dur, Data::Float(1.5)),
+            Some(Value::from(Duration::from_millis(1500)))
+        );
+        // Overflow and negative counts are none, not a panic.
+        assert_eq!(c(&dur, Data::Float(1e300)), None);
+        assert_eq!(c(&dur, Data::Float(-1.0)), None);
+        assert_eq!(c(&dur, Data::Float(f64::INFINITY)), None);
+        assert_eq!(
+            c(&dur, Data::Int(i64::MAX)),
+            Some(Value::from(Duration::from_secs_f64(i64::MAX as f64)))
+        );
+        assert_eq!(
+            c(&dur, Data::text("200ms")),
+            Some(Value::Num(200.0, Num::Ms))
+        );
+        assert_eq!(c(&dur, Data::Bool(true)), None);
+        assert_eq!(
+            c(&Ty::Prim(Prim::Color), Data::text("#ff0000")),
+            Some(Value::Color(
+                strand_scene::Color::from_hex("#ff0000").unwrap()
+            ))
+        );
+        assert_eq!(c(&Ty::Prim(Prim::Color), Data::Int(3)), None);
+        // Enums by name, any case, `-` as `_`; never from a number.
+        let critical = c(&urgency, Data::text("Critical")).unwrap();
+        assert!(matches!(critical, Value::Enum(..)));
+        assert!(matches!(
+            c(&variant, Data::text("tonal-spot")),
+            Some(Value::Enum(..))
+        ));
+        assert_eq!(c(&urgency, Data::Int(3)), None);
+        assert_eq!(c(&urgency, Data::text("nope")), None);
+        // Lists keep the items that convert; records by field name.
+        assert_eq!(
+            c(
+                &ints,
+                Data::List(vec![Data::Int(1), Data::text("2"), Data::text("no")])
+            ),
+            Some(Value::list(vec![Value::int(1), Value::int(2)]))
+        );
+        assert_eq!(c(&ints, record(Data::Int(1))), None);
+        let r = c(&range, record(Data::text("7"))).unwrap();
+        assert_eq!(r.field(types, "end"), Some(&Value::int(7)));
+        assert_eq!(r.field(types, "start"), Some(&Value::int(0)));
+        assert_eq!(c(&range, Data::List(vec![])), None);
+        assert_eq!(c(&range, Data::Int(1)), None);
+        assert_eq!(c(&Ty::Prim(Prim::Text), Data::List(vec![])), None);
+        assert_eq!(
+            c(&Ty::Optional(Box::new(Ty::INT)), Data::Null),
+            Some(Value::Null)
+        );
+    }
 }
