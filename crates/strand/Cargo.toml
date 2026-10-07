@@ -42,6 +42,8 @@ serde = "1.0.228"
 # A mock portal on a private bus (the theme's end-to-end test).
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 tokio = { version = "1.53", features = ["rt-multi-thread", "time"] }
+# A bus monitor's message stream (the 100 reloads' bus check).
+futures-util = { version = "0.3.34", default-features = false }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 libmimalloc-sys = { version = "0.1.49", features = ["extended"] }
 wayland-client = "0.31.15"

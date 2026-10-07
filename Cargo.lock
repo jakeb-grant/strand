@@ -2221,6 +2221,7 @@ version = "0.0.0"
 dependencies = [
  "calloop",
  "chrono",
+ "futures-util",
  "image",
  "libc",
  "libmimalloc-sys",
