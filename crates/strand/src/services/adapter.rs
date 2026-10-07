@@ -39,6 +39,46 @@ pub struct StoreHost {
     events: Vec<EventQueue<Vec<Value>>>,
     /// Owns the cells above.
     scope: Scope,
+    /// Async calls waiting for a reader (see [`StoreHost`]'s `fetch`).
+    held: Rc<Held>,
+}
+
+/// Wakes the async calls made while nothing read the service, once
+/// something does.
+#[derive(Default)]
+struct Held {
+    wakers: std::cell::RefCell<Vec<std::task::Waker>>,
+}
+
+impl Held {
+    fn wake(&self) {
+        for w in self.wakers.take() {
+            w.wake();
+        }
+    }
+}
+
+/// Resolves once `svc` has a (visible) reader.
+struct WhenHeld {
+    svc: Rc<dyn DynService>,
+    held: Rc<Held>,
+}
+
+impl std::future::Future for WhenHeld {
+    type Output = ();
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<()> {
+        if self.svc.readers() > 0 {
+            return std::task::Poll::Ready(());
+        }
+        let mut wakers = self.held.wakers.borrow_mut();
+        wakers.retain(|w| !w.will_wake(cx.waker()));
+        wakers.push(cx.waker().clone());
+        std::task::Poll::Pending
+    }
 }
 
 impl std::fmt::Debug for StoreHost {
@@ -189,6 +229,7 @@ impl StoreHost {
             fields,
             events,
             scope,
+            held: Rc::default(),
         }
     }
 
@@ -347,9 +388,33 @@ impl ServiceHost for StoreHost {
             let r = self.call(rt, service, method, &args);
             return Box::pin(async move { r });
         }
-        let fut = self.svc.fetch(rt, method, &self.data_args(&args));
         let types = self.types.clone();
+        let args = self.data_args(&args);
+        if self.svc.readers() > 0 {
+            let fut = self.svc.fetch(rt, method, &args);
+            return Box::pin(async move {
+                fut.await
+                    .map(|d| to_value(&types, &d))
+                    .map_err(Error::failed)
+            });
+        }
+        // Nothing reads the service (a `let hits = apps.search(query)`
+        // only a closed launcher shows): the call waits for a reader
+        // before it reaches the service, so a closed launcher never
+        // searches. A newer query supersedes (drops) it meanwhile.
+        let (svc, held) = (self.svc.clone(), self.held.clone());
+        let rt = rt.downgrade();
+        let method = method.to_string();
         Box::pin(async move {
+            WhenHeld {
+                svc: svc.clone(),
+                held,
+            }
+            .await;
+            let rt = rt
+                .upgrade()
+                .ok_or_else(|| Error::failed("the runtime is gone"))?;
+            let fut = svc.fetch(&rt, &method, &args);
             fut.await
                 .map(|d| to_value(&types, &d))
                 .map_err(Error::failed)
@@ -380,6 +445,7 @@ impl ServiceHost for StoreHost {
 
     fn acquire(&self, rt: &Runtime, _service: &str) {
         self.svc.acquire(rt);
+        self.held.wake();
     }
 
     fn release(&self, rt: &Runtime, _service: &str) {

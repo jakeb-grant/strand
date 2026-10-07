@@ -26,7 +26,8 @@ use std::time::Instant;
 use strand_compiler::reconcile::loader::{Cache, Loader, Outcome};
 use strand_compiler::source::find_files;
 use strand_watch::{
-    ChangeEvent, ChangeKind, ConfigWatch, FileBatch, ModuleSet, Notice, Options, Role, Watcher,
+    CacheKind, ChangeEvent, ChangeKind, ConfigWatch, FileBatch, ModuleSet, Notice, Options, Role,
+    Watcher,
 };
 
 /// What the worker hands the logic thread.
@@ -92,7 +93,82 @@ pub enum Job {
         files: Vec<(PathBuf, Role)>,
         settings: Vec<strand_core::SettingsSources>,
     },
+    /// Watch these cache sources ([`cache_sources`]) and tell `changed`
+    /// which cache a change under them invalidates.
+    Caches {
+        sources: Vec<CacheSource>,
+        changed: CacheSink,
+    },
     Stop,
+}
+
+/// Called (on the worker thread) with each cache a batch invalidated.
+pub struct CacheSink(pub Box<dyn Fn(CacheKind) + Send>);
+
+impl std::fmt::Debug for CacheSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CacheSink")
+    }
+}
+
+/// A cache source the watcher follows (design.md, "Change sources": apps,
+/// icons, fonts).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CacheSource {
+    /// A directory tree, to `depth` directories below it.
+    Tree(PathBuf, usize, CacheKind),
+    /// One file (GTK's settings, which name the icon theme).
+    File(PathBuf, CacheKind),
+}
+
+/// What strand run watches for its caches: every `applications/`
+/// directory the `apps` service reads (and their subdirectories), every
+/// icon base directory to one level (a theme's `index.theme` and
+/// `icon-theme.cache`, a theme installed or removed) and GTK's settings
+/// (the icon theme's name), and the font directories fontconfig reads by
+/// default (`$XDG_DATA_HOME/fonts`, `~/.fonts`, each
+/// `$XDG_DATA_DIRS/fonts`, three levels down) with fontconfig's user
+/// configuration (`$XDG_CONFIG_HOME/fontconfig`).
+pub fn cache_sources() -> Vec<CacheSource> {
+    let mut out = Vec::new();
+    for d in strand_services::apps::Config::current().dirs {
+        out.push(CacheSource::Tree(d, 3, CacheKind::Apps));
+    }
+    for d in strand_icons::base_dirs() {
+        out.push(CacheSource::Tree(d, 1, CacheKind::Icons));
+    }
+    for f in strand_icons::theme_setting_files() {
+        out.push(CacheSource::File(f, CacheKind::Icons));
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let mut fonts = Vec::new();
+    let data_home = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| home.as_ref().map(|h| h.join(".local/share")));
+    fonts.extend(data_home.map(|d| d.join("fonts")));
+    fonts.extend(home.as_ref().map(|h| h.join(".fonts")));
+    let data = std::env::var("XDG_DATA_DIRS")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "/usr/local/share:/usr/share".into());
+    fonts.extend(
+        data.split(':')
+            .filter(|d| d.starts_with('/'))
+            .map(|d| Path::new(d).join("fonts")),
+    );
+    let mut seen = std::collections::HashSet::new();
+    for d in fonts.into_iter().filter(|d| seen.insert(d.clone())) {
+        out.push(CacheSource::Tree(d, 3, CacheKind::Fonts));
+    }
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| home.as_ref().map(|h| h.join(".config")));
+    if let Some(c) = config {
+        out.push(CacheSource::Tree(c.join("fontconfig"), 1, CacheKind::Fonts));
+    }
+    out
 }
 
 /// The worker thread and its watcher.
@@ -287,6 +363,8 @@ fn run(
     // How to read each settings file, off the logic thread.
     let mut sources: std::collections::HashMap<PathBuf, strand_core::SettingsSources> =
         std::collections::HashMap::new();
+    // Who is told when a cache source changes.
+    let mut caches: Option<CacheSink> = None;
     while let Ok(job) = jobs.recv() {
         // Everything queued now is one batch of work.
         let mut queue = vec![job];
@@ -299,6 +377,20 @@ fn run(
         let mut referenced: Option<Vec<(PathBuf, Role)>> = None;
         for j in queue {
             match j {
+                Job::Caches { sources, changed } => {
+                    if let Some(w) = &watcher {
+                        for src in &sources {
+                            let r = match src {
+                                CacheSource::Tree(d, depth, kind) => w.watch_tree(d, *depth, *kind),
+                                CacheSource::File(f, kind) => w.watch_file(f, Role::Cache(*kind)),
+                            };
+                            if let Err(e) = r {
+                                log::warn!("watching {src:?}: {e}");
+                            }
+                        }
+                    }
+                    caches = Some(changed);
+                }
                 Job::Poll => {}
                 Job::Reload { hard, client } => {
                     reload = Some(reload.unwrap_or(false) || hard);
@@ -352,8 +444,13 @@ fn run(
         let mut rescan = false;
         let mut saved: Option<Instant> = None;
         let mut notices = Vec::new();
+        let mut invalid: std::collections::BTreeSet<CacheKind> = std::collections::BTreeSet::new();
         for b in &batches {
             rescan |= b.rescan.is_some();
+            if b.rescan == Some(strand_watch::RescanReason::Overflow) {
+                // Events were lost: every cache may be stale.
+                invalid.extend([CacheKind::Apps, CacheKind::Icons, CacheKind::Fonts]);
+            }
             saved = saved.max(Some(b.last_event));
             notices.extend(b.notices.iter().map(notice_text));
             for c in &b.changes {
@@ -368,8 +465,16 @@ fn run(
                     Role::Wallpaper | Role::Other if !theme.contains(&c.path) => {
                         theme.push(c.path.clone());
                     }
+                    Role::Cache(kind) => {
+                        invalid.insert(kind);
+                    }
                     _ => {}
                 }
+            }
+        }
+        if let Some(sink) = &caches {
+            for kind in &invalid {
+                (sink.0)(*kind);
             }
         }
         for n in &notices {
@@ -497,6 +602,66 @@ mod tests {
             rx.try_recv().is_err(),
             "nothing new registered, nothing re-read"
         );
+        assert!(worker.join().is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// design.md, "Change sources": `applications/`, an icon base
+    /// directory (`index.theme`), GTK's settings and a font directory are
+    /// watched on the worker, and a change under each tells the sink which
+    /// cache it invalidates (once per batch), and nothing else.
+    #[test]
+    fn cache_sources_report_the_cache_they_invalidate() {
+        let dir = std::env::temp_dir().join(format!("strand-live-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for d in [
+            "config",
+            "applications",
+            "icons/Theme",
+            "fonts/truetype",
+            "gtk-3.0",
+        ] {
+            std::fs::create_dir_all(dir.join(d)).unwrap();
+        }
+        std::fs::write(dir.join("config/shell.strand"), "").unwrap();
+        let gtk = dir.join("gtk-3.0/settings.ini");
+        std::fs::write(&gtk, "[Settings]\n").unwrap();
+        let (out, rx) = calloop::channel::channel::<FromWorker>();
+        let (worker, _boot) = Worker::spawn(&dir.join("config"), None, out).unwrap();
+        let (tx, kinds) = std::sync::mpsc::channel::<CacheKind>();
+        let tx = std::sync::Mutex::new(tx);
+        worker
+            .jobs()
+            .send(Job::Caches {
+                sources: vec![
+                    CacheSource::Tree(dir.join("applications"), 3, CacheKind::Apps),
+                    CacheSource::Tree(dir.join("icons"), 1, CacheKind::Icons),
+                    CacheSource::File(gtk.clone(), CacheKind::Icons),
+                    CacheSource::Tree(dir.join("fonts"), 3, CacheKind::Fonts),
+                ],
+                changed: CacheSink(Box::new(move |k| {
+                    let _ = tx.lock().map(|t| t.send(k));
+                })),
+            })
+            .unwrap();
+        // The job is taken before the next poke: give the watches a moment.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let next = || {
+            kinds
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("no cache change reported")
+        };
+        std::fs::write(dir.join("applications/foot.desktop"), "[Desktop Entry]\n").unwrap();
+        assert_eq!(next(), CacheKind::Apps);
+        std::fs::write(dir.join("icons/Theme/index.theme"), "[Icon Theme]\n").unwrap();
+        assert_eq!(next(), CacheKind::Icons);
+        std::fs::write(&gtk, "[Settings]\ngtk-icon-theme-name=Theme\n").unwrap();
+        assert_eq!(next(), CacheKind::Icons);
+        std::fs::write(dir.join("fonts/truetype/new.ttf"), "ttf").unwrap();
+        assert_eq!(next(), CacheKind::Fonts);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(kinds.try_recv().is_err(), "once per change");
+        assert!(rx.try_recv().is_err(), "no reload for a cache change");
         assert!(worker.join().is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }

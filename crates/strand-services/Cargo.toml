@@ -30,8 +30,20 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock", "s
 # Pixmaps (tray icons, notification `image-data`) written as PNG files for
 # `image`.
 png = "0.18.1"
+# Desktop entries for `apps` (design.md's table).
+freedesktop-desktop-entry = { version = "0.8.3", default-features = false }
+# Fuzzy matching with match ranges for `apps.search`, wrapped (design.md:
+# "wrap it, fork if needed").
+nucleo = "0.5.0"
+# The icon theme lookup the renderer uses: an app's icon is checked
+# against it.
+strand-icons.workspace = true
+# `apps` launches detached (setsid and a second fork before exec).
+libc = "0.2.190"
 
 [dev-dependencies]
+# Tests point the icon lookup at a theme of their own.
+strand-icons.workspace = true
 tokio = { version = "1.53", features = ["rt-multi-thread"] }
 # Bodies of the test's own D-Bus calls.
 serde = "1.0.228"

@@ -71,6 +71,8 @@ impl FontConfig {
 
 /// Shapes text and rasterises glyphs.
 pub struct TextEngine {
+    /// What it was made from: [`TextEngine::reload_fonts`] makes it again.
+    config: FontConfig,
     font_cx: FontContext,
     /// Brushes are span indices plus one (0: no span).
     layout_cx: LayoutContext<u32>,
@@ -118,6 +120,7 @@ impl TextEngine {
             }
         }
         Self {
+            config: config.clone(),
             font_cx: FontContext {
                 collection,
                 source_cache: SourceCache::default(),
@@ -129,6 +132,19 @@ impl TextEngine {
             font_keys: HashMap::new(),
             image: Image::new(),
             clock: 0,
+        }
+    }
+
+    /// The installed fonts changed (a fontconfig directory: the watcher's
+    /// `CacheKind::Fonts`): look them up afresh. Every shaped layout and
+    /// rasterised glyph is stale (the atlases start empty), so a holder of
+    /// layouts shapes them again.
+    /// A panic while reading the fonts (fontique panics when fontconfig
+    /// knows no font at all) keeps the engine as it was.
+    pub fn reload_fonts(&mut self) {
+        let config = self.config.clone();
+        if let Ok(fresh) = std::panic::catch_unwind(move || TextEngine::new(config)) {
+            *self = fresh;
         }
     }
 

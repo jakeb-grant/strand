@@ -1,0 +1,46 @@
+/// An installed app, from its desktop entry (watched live).
+record App key id {
+  /// Its desktop entry id (`org.gnome.Nautilus`, `kde-dolphin`: the
+  /// entry's path below `applications/`, `/` as `-`, without `.desktop`).
+  id: AppId
+  /// Its name, in the user's language.
+  name: text
+  /// Its comment, if the entry has one.
+  comment: text?
+  /// Its icon: `image h.app.icon`. An icon name of the desktop's icon
+  /// theme, or a path; `application-x-executable` when the entry names
+  /// none the theme has.
+  icon: text
+  /// Its desktop entry categories.
+  categories: [text]
+  /// Starts it (its `Exec` line, detached; in a terminal when the entry
+  /// asks for one) and counts the launch for frecency: `on activate {
+  /// h.app.launch() }`.
+  action launch()
+}
+
+/// A launcher search result: the app, its score and the matched ranges.
+record Hit key app.id {
+  /// The app found.
+  app: App
+  /// Its score: fuzzy match plus frecency (higher first).
+  score: float
+  /// The matched character ranges of its name: `marks: h.ranges`. Empty
+  /// when the query matched its keywords or generic name instead.
+  ranges: [Range]
+}
+
+/// Installed apps, from the desktop entries in every `applications/`
+/// directory (`$XDG_DATA_HOME`, then `$XDG_DATA_DIRS`; `NoDisplay`,
+/// `Hidden`, `OnlyShowIn`/`NotShowIn` and `TryExec` honoured), watched
+/// live.
+service apps {
+  /// Every installed app, keyed by `id`, by name.
+  all: [App]
+  /// Fuzzy match of `query` (nucleo) against the apps' names, then their
+  /// keywords and generic names, plus frecency (how often and how lately
+  /// each was launched); best first. An empty query lists every app, the
+  /// most used first. Runs only when asked: `let hits =
+  /// apps.search(query)` keeps its last result while searching.
+  fn search(query: text) -> Async<[Hit]>
+}

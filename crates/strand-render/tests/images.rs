@@ -483,3 +483,60 @@ fn icon_lookup_falls_back_to_symbolic_and_generic_names() {
     assert!(load(&key("battery-full-charging"), &theme).is_ok());
     assert!(load(&key("nothing-like-this"), &theme).is_err());
 }
+
+/// design.md, "Change sources": icons are a cache the icon theme's
+/// changes invalidate. An icon missing from the theme draws nothing and
+/// that miss is remembered (no lookup per frame); once it is installed
+/// and the theme is reported changed (`index.theme`, the watcher's
+/// `CacheKind::Icons`), the renderer looks it up afresh and draws it.
+#[test]
+fn an_icon_theme_change_redraws_icons_looked_up_afresh() {
+    let dir = theme_dir();
+    let mut r = renderer_with_theme();
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Width, num(40.0)),
+            (Prop::Height, num(40.0)),
+            (Prop::Bg, color("#000000")),
+        ],
+    );
+    b.node(
+        NodeKind::Image,
+        Some(root),
+        vec![
+            (Prop::Source, text("strand-installed-later")),
+            (Prop::Size, num(40.0)),
+        ],
+    );
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(SurfaceId(1), root);
+    r.configure_surface(SurfaceId(1), Size::new(40, 40), Scale::ONE);
+    let mut buf = Buffer::new(40, 40, Scale::ONE);
+    buf.paint(&mut r, SurfaceId(1), 0);
+    let body = |buf: &Buffer| buf.px(8, 20);
+    assert_eq!(body(&buf), [0, 0, 0, 0xff], "missing: nothing drawn");
+
+    let file = dir.join("share/icons/StrandTest/scalable/apps/strand-installed-later.svg");
+    std::fs::write(&file, APP_SVG).unwrap();
+    buf.paint(&mut r, SurfaceId(1), 1);
+    assert_eq!(body(&buf), [0, 0, 0, 0xff], "the miss is remembered");
+
+    r.icons_changed();
+    use strand_scene::Painter;
+    assert!(r.wants_frame(SurfaceId(1)), "the icon's surface repaints");
+    buf.paint(&mut r, SurfaceId(1), 2);
+    let px = body(&buf);
+    assert!(
+        px[1] > px[0] && px[1] > px[2] && px[1] > 0x80,
+        "drawn: {px:?}"
+    );
+
+    // Removed and reported again: gone.
+    std::fs::remove_file(&file).unwrap();
+    r.icons_changed();
+    buf.paint(&mut r, SurfaceId(1), 3);
+    assert_eq!(body(&buf), [0, 0, 0, 0xff], "removed");
+}

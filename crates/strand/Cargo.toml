@@ -13,6 +13,8 @@ strand-core.workspace = true
 strand-render.workspace = true
 strand-scene.workspace = true
 strand-services.workspace = true
+# The icon lookup's cache, invalidated when an icon base directory changes.
+strand-icons.workspace = true
 strand-surface.workspace = true
 strand-text.workspace = true
 # The last palette and the portal's values written off the logic thread.

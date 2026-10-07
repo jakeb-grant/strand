@@ -846,6 +846,39 @@ impl Renderer {
             ));
     }
 
+    /// The icon theme changed (`index.theme`, a theme installed or
+    /// switched, an icon added: the watcher's `CacheKind::Icons`): the
+    /// shared lookup ([`strand_icons::invalidate`]) and every icon decode
+    /// are forgotten, and the surfaces drawing icons repaint with them
+    /// looked up afresh.
+    pub fn icons_changed(&mut self) {
+        strand_icons::invalidate();
+        for id in self.extras.images.invalidate_icons() {
+            if let Some(s) = self.surfaces.get_mut(&id) {
+                s.mark_dirty();
+            }
+        }
+    }
+
+    /// The installed fonts changed (a fontconfig directory: the watcher's
+    /// `CacheKind::Fonts`): the text engine looks them up afresh and every
+    /// text is shaped again (the old frame stays on screen until the new
+    /// text is in, as for a first frame).
+    pub fn fonts_changed(&mut self) {
+        match &mut self.text {
+            TextBackend::Worker(w) => {
+                // Its reset layout (key 0) arrives through `update`, which
+                // forgets every layout and asks again. A gone worker keeps
+                // the last layouts (as `update` does).
+                let _ = w.reload_fonts();
+            }
+            TextBackend::Inline(engine) => {
+                engine.reload_fonts();
+                self.reset_text();
+            }
+        }
+    }
+
     /// Bytes of decoded images held (at most
     /// [`crate::image::IMAGE_CACHE_BYTES`] beyond what one frame draws).
     pub fn image_bytes(&self) -> usize {

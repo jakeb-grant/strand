@@ -26,13 +26,15 @@
 //! they share): [`battery`] (UPower), [`brightness`] (the backlight,
 //! written through logind), [`network`] (NetworkManager), [`bluetooth`]
 //! (BlueZ), [`notifications`] (the shell's own notification server),
-//! [`media`] (MPRIS) and [`tray`] (StatusNotifierItem and DBusMenu).
+//! [`media`] (MPRIS) and [`tray`] (StatusNotifierItem and DBusMenu);
+//! and [`apps`] (desktop entries, fuzzy search, frecency, launching).
 //! [`schemas`] lists their schema texts, which replace the builtin
 //! schema's provisional stubs. A failed run, and what a service needs the
 //! user to act on, is a [`ServiceDiagnostic`] ([`Services::take_diagnostics`]).
 
 extern crate self as strand_services;
 
+pub mod apps;
 pub mod battery;
 pub mod bluetooth;
 pub mod brightness;
@@ -80,6 +82,7 @@ pub struct Builtin {
     pub notifications: Client<notifications::Notifications>,
     pub media: Client<media::Media>,
     pub tray: Client<tray::Tray>,
+    pub apps: Client<apps::Apps>,
 }
 
 impl Builtin {
@@ -96,6 +99,7 @@ impl Builtin {
             notifications: services.register(rt),
             media: services.register(rt),
             tray: services.register(rt),
+            apps: services.register(rt),
         }
     }
 
@@ -112,6 +116,7 @@ impl Builtin {
             self.notifications.dynamic(),
             self.media.dynamic(),
             self.tray.dynamic(),
+            self.apps.dynamic(),
         ]
     }
 }

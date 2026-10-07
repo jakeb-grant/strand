@@ -688,6 +688,114 @@ mod tests {
         assert_eq!(memory.starts(), 2);
     }
 
+    /// design.md's launcher, unchanged, on the real `apps` service:
+    /// closed, it starts nothing and searches nothing; open, it lists the
+    /// apps (an empty query lists them all), a query narrows them with
+    /// its matched ranges marked on the name, and activating a row
+    /// launches the app (detached) and closes the launcher. A query typed
+    /// while it is closed is never searched.
+    #[test]
+    fn the_design_launcher_searches_real_apps_only_while_open() {
+        use strand_scene::Prop;
+        let root = std::env::temp_dir().join(format!("strand-launcher-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("applications");
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = root.join("launched");
+        let script = root.join("run.sh");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\necho \"$@\" > {0}.tmp\nmv {0}.tmp {0}\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let entry = |id: &str, name: &str| {
+            std::fs::write(
+                dir.join(format!("{id}.desktop")),
+                format!(
+                    "[Desktop Entry]\nType=Application\nName={name}\nComment={name} app\nExec={} {id}\n",
+                    script.display()
+                ),
+            )
+            .unwrap();
+        };
+        entry("editor", "Text Editor");
+        entry("viewer", "Image Viewer");
+        strand_services::apps::set_config(Some(strand_services::apps::Config {
+            dirs: vec![dir.clone()],
+            desktops: Vec::new(),
+            state: None,
+        }));
+        let launcher = include_str!("../../../strand-compiler/tests/fixtures/launcher.strand");
+        let mut shell = Shell::boot(launcher);
+        let apps = shell.real.builtin.apps.clone();
+        let searched = strand_services::apps::searches();
+        assert_eq!(apps.starts(), 0, "a closed launcher starts nothing");
+        shell.set("open", true);
+        assert_eq!(apps.starts(), 1);
+        shell.until("every app listed", |s| {
+            let t = s.scene.texts();
+            t.contains(&"Text Editor".to_string()) && t.contains(&"Image Viewer".to_string())
+        });
+        assert!(strand_services::apps::searches() > searched);
+        shell
+            .inst
+            .set_value("svc", "query", Value::text("edit"))
+            .unwrap();
+        shell.until("the query narrows the list", |s| {
+            let t = s.scene.texts();
+            t.contains(&"Text Editor".to_string()) && !t.contains(&"Image Viewer".to_string())
+        });
+        let name = shell.scene.find_text("Text Editor").unwrap();
+        let marks = format!("{:?}", shell.scene.prop(name, Prop::Marks));
+        assert!(
+            marks.contains('5') && marks.contains('9'),
+            "Edit marked: {marks}"
+        );
+        // Activating the row launches the app and closes the launcher.
+        let rows = shell.inst.nodes_handling("activate");
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert!(shell.inst.event(rows[0], "activate", Vec::new()));
+        shell.tick(Duration::ZERO);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !marker.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(std::fs::read_to_string(&marker).unwrap().trim(), "editor");
+        assert_eq!(shell.inst.get("svc.open").unwrap(), Value::Bool(false));
+        // Closed: a new query is not searched.
+        let before = strand_services::apps::searches();
+        shell
+            .inst
+            .set_value("svc", "query", Value::text("view"))
+            .unwrap();
+        shell.tick(Duration::from_secs(1));
+        std::thread::sleep(Duration::from_millis(100));
+        shell.tick(Duration::ZERO);
+        assert_eq!(
+            strand_services::apps::searches(),
+            before,
+            "closed: no search"
+        );
+        // Opened again (`on show` clears the query): it searches once
+        // more and lists every app.
+        shell.set("open", true);
+        shell.until("listed again", |s| {
+            let t = s.scene.texts();
+            t.contains(&"Text Editor".to_string()) && t.contains(&"Image Viewer".to_string())
+        });
+        assert!(strand_services::apps::searches() > before);
+        drop(shell);
+        strand_services::apps::set_config(None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// A hidden surface stops a visible-only stream at once (cpu samples
     /// only while a reader is visible), long before the service stops.
     #[test]

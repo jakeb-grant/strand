@@ -21,7 +21,10 @@ taffy = { version = "0.14", default-features = false, features = ["std", "taffy_
 png = "0.18"
 jpeg-decoder = { version = "0.3", default-features = false }
 resvg = { version = "0.48", default-features = false }
-freedesktop-icons = "0.4"
+# The icon theme lookup, shared with the apps service and invalidated
+# live (decisions.md, wave4-a3: not freedesktop-icons, whose caches never
+# refresh).
+strand-icons.workspace = true
 
 [dev-dependencies]
 # Theme renders: real palettes and the built-in base tokens.

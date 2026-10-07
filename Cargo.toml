@@ -12,6 +12,8 @@ publish = false
 [workspace.dependencies]
 strand-compiler = { path = "crates/strand-compiler" }
 strand-core = { path = "crates/strand-core" }
+strand-icons = { path = "crates/strand-icons" }
+strand-introspect = { path = "crates/strand-introspect" }
 strand-render = { path = "crates/strand-render" }
 strand-scene = { path = "crates/strand-scene" }
 strand-services = { path = "crates/strand-services" }

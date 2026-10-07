@@ -71,7 +71,7 @@ use crate::live::{self, FromWorker, Job, Loaded, Worker};
 use crate::logging::LogConfig;
 use crate::overlay::{self, Click, Overlay};
 use crate::system;
-use strand_watch::Role;
+use strand_watch::{CacheKind, Role};
 
 /// A monitor as the `screens` service shows it (plain data: it crosses
 /// threads).
@@ -1383,6 +1383,19 @@ fn read_signals(fd: BorrowedFd<'_>) -> Vec<i32> {
     }
 }
 
+/// A cache source changed: the renderer drops what it no longer holds
+/// true (icons looked up afresh, text shaped again) and its surfaces
+/// repaint.
+fn caches_changed(state: &mut strand_surface::State<Host>, kind: CacheKind) {
+    let r = &mut state.host_mut().renderer;
+    match kind {
+        CacheKind::Icons => r.icons_changed(),
+        CacheKind::Fonts => r.fonts_changed(),
+        CacheKind::Apps => return,
+    }
+    crate::demo::text_ready(state);
+}
+
 /// Why the main loop ended.
 enum End {
     /// The compositor went away, or a signal asked us to stop.
@@ -1424,6 +1437,28 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
             .map_err(DemoError::Text)?;
     let mut renderer = Renderer::new(TextBackend::Worker(worker));
     renderer.set_first_frame_wait(FIRST_FRAME_TEXT_WAIT);
+    // Apps, icons and fonts are caches their directories' changes
+    // invalidate (design.md, "Change sources"): the watcher (on the
+    // compiler worker) reports them; the renderer's caches are dropped on
+    // this thread, the apps service is told directly.
+    let (caches_tx, caches_rx) = calloop::channel::channel::<CacheKind>();
+    let _ = compiler.jobs().send(Job::Caches {
+        sources: live::cache_sources(),
+        changed: live::CacheSink(Box::new(move |kind| {
+            match kind {
+                CacheKind::Apps => strand_services::apps::changed(),
+                CacheKind::Icons => {
+                    // Before the apps service looks its icons up again.
+                    strand_icons::invalidate();
+                    strand_services::apps::changed();
+                }
+                CacheKind::Fonts => {}
+            }
+            if kind != CacheKind::Apps {
+                let _ = caches_tx.send(kind);
+            }
+        })),
+    });
     let (to_logic, from_main) = calloop::channel::channel::<ToLogic>();
     let host = Host::new(renderer, log.damage)
         .forwarding(to_logic.clone())
@@ -1432,6 +1467,13 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
     let handle = mgr.loop_handle();
     handle
         .insert_source(ping_source, |_, _, state| crate::demo::text_ready(state))
+        .map_err(|e| DemoError::Io(io::Error::other(e.error)))?;
+    handle
+        .insert_source(caches_rx, |event, _, state| {
+            if let Event::Msg(kind) = event {
+                caches_changed(state, kind);
+            }
+        })
         .map_err(|e| DemoError::Io(io::Error::other(e.error)))?;
     let signalled = Rc::new(Cell::new(false));
     let flag = Rc::clone(&signalled);

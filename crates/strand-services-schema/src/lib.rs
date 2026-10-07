@@ -28,6 +28,9 @@ pub const MEDIA: &str = include_str!("media.schema");
 /// `tray`: StatusNotifierItem host and DBusMenu.
 pub const TRAY: &str = include_str!("tray.schema");
 
+/// `apps`: installed apps (desktop entries), fuzzy search, frecency.
+pub const APPS: &str = include_str!("apps.schema");
+
 /// Every builtin service's schema text, in registration order.
 pub fn schemas() -> Vec<&'static str> {
     vec![
@@ -41,5 +44,6 @@ pub fn schemas() -> Vec<&'static str> {
         NOTIFICATIONS,
         MEDIA,
         TRAY,
+        APPS,
     ]
 }

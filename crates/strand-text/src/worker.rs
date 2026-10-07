@@ -38,6 +38,9 @@ enum Msg {
     Cancel(TextKey),
     /// No output uses this scale any more: free its atlas.
     DropScale(Scale),
+    /// The installed fonts changed: a fresh engine, and a reset layout
+    /// (key 0) telling the receiver every layout and page is stale.
+    ReloadFonts,
 }
 
 /// Called on the worker thread after each layout is sent, so the render
@@ -121,6 +124,21 @@ impl TextWorker {
                             engine.drop_scale(s);
                             continue;
                         }
+                        Msg::ReloadFonts => {
+                            engine.reload_fonts();
+                            if out_tx
+                                .send(TextLayout::reset(TextKey(0), Scale::ONE))
+                                .is_err()
+                            {
+                                return;
+                            }
+                            if let Some(w) = &waker
+                                && let Ok(w) = w.lock()
+                            {
+                                w();
+                            }
+                            continue;
+                        }
                         _ => continue,
                     };
                     let layout = match catch_unwind(AssertUnwindSafe(|| engine.layout(&req))) {
@@ -181,6 +199,14 @@ impl TextWorker {
     /// upload their glyphs again. Never blocks.
     pub fn drop_scale(&self, scale: Scale) -> Result<(), TextError> {
         self.send(Msg::DropScale(scale))
+    }
+
+    /// The installed fonts changed (a fontconfig directory): the worker
+    /// looks them up afresh and answers with a reset layout (key 0,
+    /// [`TextLayout::is_reset`]), after which every layout must be asked
+    /// for again. Never blocks.
+    pub fn reload_fonts(&self) -> Result<(), TextError> {
+        self.send(Msg::ReloadFonts)
     }
 
     fn send(&self, msg: Msg) -> Result<(), TextError> {

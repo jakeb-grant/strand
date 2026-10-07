@@ -155,9 +155,10 @@ impl std::error::Error for ImageError {}
 /// Where icons come from: the theme to look in.
 #[derive(Clone, Debug, Default)]
 pub struct IconTheme {
-    /// A theme by name; `None` is the system's, found on first use.
+    /// A theme by name; `None` is the desktop's
+    /// ([`strand_icons::system_theme`], read again after the icon caches
+    /// are invalidated).
     named: Option<String>,
-    found: std::sync::OnceLock<String>,
 }
 
 impl IconTheme {
@@ -165,11 +166,10 @@ impl IconTheme {
     pub fn named(name: impl Into<String>) -> Self {
         Self {
             named: Some(name.into()),
-            found: std::sync::OnceLock::new(),
         }
     }
 
-    /// The system's theme, read on first use: `$STRAND_ICON_THEME`, else
+    /// The desktop's theme: `$STRAND_ICON_THEME`, else
     /// `gtk-icon-theme-name` in `$XDG_CONFIG_HOME/gtk-3.0/settings.ini`
     /// (or `gtk-4.0`), else Adwaita.
     pub fn system() -> Self {
@@ -177,49 +177,21 @@ impl IconTheme {
     }
 
     /// The theme's name.
-    pub fn name(&self) -> &str {
-        if let Some(n) = &self.named {
-            return n;
+    pub fn name(&self) -> String {
+        match &self.named {
+            Some(n) => n.clone(),
+            None => strand_icons::system_theme(),
         }
-        self.found.get_or_init(system_theme)
     }
 }
 
-fn system_theme() -> String {
-    if let Ok(t) = std::env::var("STRAND_ICON_THEME")
-        && !t.trim().is_empty()
-    {
-        return t.trim().to_string();
-    }
-    let config = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")));
-    for v in ["gtk-3.0", "gtk-4.0"] {
-        let Some(path) = config.as_ref().map(|c| c.join(v).join("settings.ini")) else {
-            continue;
-        };
-        let Ok(text) = std::fs::read_to_string(path) else {
-            continue;
-        };
-        for line in text.lines() {
-            if let Some((k, v)) = line.split_once('=')
-                && k.trim() == "gtk-icon-theme-name"
-            {
-                let v = v.trim().trim_matches('"');
-                if !v.is_empty() {
-                    return v.to_string();
-                }
-            }
-        }
-    }
-    "Adwaita".into()
-}
-
-/// Resolves `key`'s source to a file.
-fn resolve(key: &ImageKey, theme: &IconTheme) -> Result<PathBuf, ImageError> {
+/// Whether `key` is looked up in the icon theme (an `icon`, or an
+/// `image` whose source is no path): what an icon theme change
+/// invalidates.
+pub fn is_icon(key: &ImageKey) -> bool {
     let src = key.source.trim();
-    let path_like = !key.icon
-        && (src.starts_with('/')
+    key.icon
+        || !(src.starts_with('/')
             || src.starts_with("~/")
             || src.starts_with("file://")
             || src.starts_with("./")
@@ -228,8 +200,13 @@ fn resolve(key: &ImageKey, theme: &IconTheme) -> Result<PathBuf, ImageError> {
                     e.to_ascii_lowercase().to_str(),
                     Some("png" | "jpg" | "jpeg" | "svg")
                 )
-            }));
-    if path_like {
+            }))
+}
+
+/// Resolves `key`'s source to a file.
+fn resolve(key: &ImageKey, theme: &IconTheme) -> Result<PathBuf, ImageError> {
+    let src = key.source.trim();
+    if !is_icon(key) {
         let p = if let Some(rest) = src.strip_prefix("file://") {
             PathBuf::from(percent_decode(rest))
         } else if let Some(rest) = src.strip_prefix("~/") {
@@ -250,16 +227,10 @@ fn resolve(key: &ImageKey, theme: &IconTheme) -> Result<PathBuf, ImageError> {
         return Err(ImageError::NotFound(src.into()));
     }
     let size = (key.w.max(key.h) as f32 / key.scale.max(1) as f32).round() as u16;
+    let theme = theme.name();
     icon_candidates(src)
         .into_iter()
-        .find_map(|name| {
-            freedesktop_icons::lookup(&name)
-                .with_theme(theme.name())
-                .with_size(size.max(1))
-                .with_scale(key.scale.max(1))
-                .with_cache()
-                .find()
-        })
+        .find_map(|name| strand_icons::lookup(&name, size.max(1), key.scale.max(1), Some(&theme)))
         .ok_or_else(|| ImageError::NotFound(src.into()))
 }
 
@@ -781,6 +752,9 @@ pub struct ImageStore {
     /// Per source, the latest decode at any size: drawn scaled while the
     /// one at the drawn size is not there yet (a size spring).
     latest: HashMap<SourceKey, ImageKey>,
+    /// Icon decodes in flight when the icon theme changed: their results
+    /// are dropped (and asked for again) when they arrive.
+    stale: HashSet<ImageKey>,
 }
 
 impl Default for ImageStore {
@@ -799,7 +773,36 @@ impl ImageStore {
             tick: 0,
             frames: HashMap::new(),
             latest: HashMap::new(),
+            stale: HashSet::new(),
         }
+    }
+
+    /// The icon theme changed (a theme installed or switched, an icon
+    /// added): every decode looked up in it is forgotten, so the next
+    /// frame asks for it again, and decodes in flight are dropped on
+    /// arrival. Returns the surfaces whose last frame drew one (to
+    /// repaint). Images drawn from paths stay.
+    pub fn invalidate_icons(&mut self) -> Vec<SurfaceId> {
+        let gone: Vec<ImageKey> = self
+            .entries
+            .keys()
+            .filter(|k| is_icon(k))
+            .cloned()
+            .collect();
+        for k in &gone {
+            if let Some(e) = self.entries.remove(k) {
+                self.bytes -= e.bytes;
+            }
+        }
+        // A stand-in of the old icon would be drawn until the new one
+        // arrives: keep it (no blank frame), it is replaced then.
+        self.stale
+            .extend(self.pending.iter().filter(|k| is_icon(k)).cloned());
+        self.frames
+            .iter()
+            .filter(|(_, f)| f.iter().any(is_icon))
+            .map(|(s, _)| *s)
+            .collect()
     }
 
     pub fn set_backend(&mut self, backend: ImageBackend) {
@@ -919,6 +922,14 @@ impl ImageStore {
         let mut arrived = Vec::new();
         for (k, r) in got {
             self.pending.remove(&k);
+            if self.stale.remove(&k) {
+                // Looked up in the old theme: asked for again by the
+                // frame it repaints.
+                if r.is_some() {
+                    arrived.push(k);
+                }
+                continue;
+            }
             if let Some(r) = r {
                 arrived.push(k.clone());
                 self.insert(k, r);
