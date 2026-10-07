@@ -8219,21 +8219,24 @@ budget. Two causes, two fixes:
   thread, file watches, Wayland protocol dispatch, config and document
   parsing) is now built for size in the release profile: `opt-level =
   "z"` for strand-services, zbus, zvariant, zbus_names, tokio,
-  swayipc-types and logind-zbus; `"s"` for strand-icons,
-  strand-introspect, serde_json, toml_edit, toml_parser, the Wayland
-  client crates, calloop, material-colors, fontique, quick-xml,
-  roxmltree, xkeysym, miette, chrono, freedesktop-desktop-entry,
-  pipewire and libspa. The per-frame and per-glyph paths (strand-render,
-  strand-text, strand-scene, strand-compiler, strand-core, vello_cpu,
-  skrifa, harfrust, taffy and the image decoders) stay at 3, and so do
-  the `strand` binary crate and strand-watch, which sit on the reload
-  path: with them at `"s"` `.text` was 1.9 MB smaller (14.3 MB, the bar
-  31.7 MB), but the latency bench's token edits reached their gate
-  (p95 19.5 ms headless, the gate breaking above 19.5; 19.1 against
-  19.7 with them at 3). `.text` went from 19.4 to 16.2 MB. The
-  workspace's `Cargo.toml` carries these as `[profile.release.package]`
-  entries; the profile's own settings (thin LTO, one codegen unit, no
-  debug info) are unchanged.
+  swayipc-types and logind-zbus; `"s"` for the `strand` binary crate
+  (its loops and glue, and the services adapter; the VM, layout and
+  painting are other crates), strand-icons, strand-introspect,
+  serde_json, toml_edit, toml_parser, the Wayland client crates,
+  calloop, material-colors, fontique, quick-xml, roxmltree, xkeysym,
+  miette, chrono, freedesktop-desktop-entry, pipewire and libspa. The
+  per-frame and per-glyph paths (strand-render, strand-text,
+  strand-scene, strand-compiler, strand-core, vello_cpu, skrifa,
+  harfrust, taffy and the image decoders) stay at 3, and so does
+  strand-watch, on the reload path: with it at `"s"` too, one run of the
+  latency bench put the token edits at their gate (p95 19.5 ms headless
+  against a gate breaking above 19.5); with only the `strand` crate at
+  `"s"` three runs gave 19.0, 19.1 and 19.3 against 19.6, 19.5 and 19.6,
+  as at 3 (19.1 against 19.7). The `strand` crate alone is 1.9 MB of
+  `.text` at 3. `.text` went from 19.4 to 14.3 MB. The workspace's
+  `Cargo.toml` carries these as `[profile.release.package]` entries; the
+  profile's own settings (thin LTO, one codegen unit, no debug info) are
+  unchanged.
 - The allocator kept a burst's garbage. mimalloc purges freed spans
   only from a later allocation once their 1 s delay has passed, so a
   shell that goes quiet after boot (or a reload, or a minute tick) kept
@@ -8247,9 +8250,12 @@ budget. Two causes, two fixes:
   span would be returned and faulted back during a burst (a reload's
   compile), where the token-edit gate has under 2 ms of headroom.
 
-After both: 32.7–33.4 MB over runs (this container, where a fault maps
-a large folio: the code 17.7 MB resident, nearly all of `.text`, and
-anonymous memory 10.9 MB); the idle window counts no switch in any of
+After both: 31.5–31.8 MB over runs in this container, where a fault maps
+a large folio, so nearly all of `.text` is resident (anonymous memory
+10.9 MB); in CI (ubuntu-24.04), a run with the `strand` crate still at
+3 read 33.8 MB (run 37693092046, its notice annotation). The M0 mock
+bar now reads 27.8 MB here and `services.rs`'s bar 23.0 MB. The idle
+window counts no switch in any of
 strand's threads (the main thread, logic, services, audio, PipeWire's
 data loop, toplevel, text, image, compile, watch, persist, the state
 writers and tokio's workers).
@@ -8263,8 +8269,14 @@ backends with the machine's own desktop entries and icons
 with `strand set launcher.open true`, two notifications are sent to the
 shell's server and a `wpctl` volume change raises the OSD; PSS is read
 0.7 s after the OSD's surface first draws (it stays up 1.2 s). Release,
-this container (nine desktop entries): the bar alone 35.6 MB, the
-launcher open 44.5 MB, the launcher, two toasts and the OSD 48.3 MB, the
-launcher closed again (toasts up) 38.4 MB; under design.md's 59–64 MB.
+this container (nine desktop entries), two runs: the bar alone
+32.3–34.0 MB, the launcher open 36.5–39.9 MB, the launcher, two toasts
+and the OSD 42.6–45.3 MB, the launcher closed again (toasts up)
+35.2–36.2 MB; CI with the `strand` crate at 3 (twelve desktop entries,
+run 37693092046): 35.9, 46.4, 52.6 and 38.7 MB. All under design.md's
+59–64 MB. The two toasts are urgency 2 (toasts.strand expires the
+others after 6 s) and the OSD gets a volume change every 400 ms until
+its surface draws: a slow debug run on CI had hidden it before its
+first frame.
 The open figure is held to the estimate's top, 64 MB, in release; a
 debug build only prints it.

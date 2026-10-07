@@ -47,9 +47,9 @@ codegen-units = 1
 
 # Code that runs at event rates (D-Bus, sockets, PipeWire's thread,
 # Wayland protocol dispatch, config and document parsing) is optimised
-# for size; the per-frame and per-glyph paths (render, text, layout, the
-# VM) and the reload path (the strand crate, the watcher) stay at 3. The
-# binary's code is most of the bar's PSS (docs/decisions.md,
+# for size, the strand crate's loops and glue too; the per-frame and
+# per-glyph paths (render, text, layout, the VM) and the watcher stay at
+# 3. The binary's code is most of the bar's PSS (docs/decisions.md,
 # wave4-exitMemory).
 
 [profile.release.package.strand-services]
@@ -72,6 +72,9 @@ opt-level = "z"
 
 [profile.release.package.logind-zbus]
 opt-level = "z"
+
+[profile.release.package.strand]
+opt-level = "s"
 
 [profile.release.package.strand-icons]
 opt-level = "s"
