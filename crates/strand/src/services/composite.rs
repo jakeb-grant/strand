@@ -129,6 +129,10 @@ impl ServiceHost for Composite {
         self.declarer().restart(rt, service, types);
     }
 
+    fn retype(&self, rt: &Runtime, service: &CustomService, types: &TypeTable) {
+        self.declarer().retype(rt, service, types);
+    }
+
     fn stop(&self, rt: &Runtime, name: &str) {
         self.declarer().stop(rt, name);
     }

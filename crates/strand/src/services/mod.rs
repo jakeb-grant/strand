@@ -1972,6 +1972,11 @@ service shelf {
                 l.value("mood", "level") == Value::int(5)
             });
             assert_eq!(live.value("mood", "name"), Value::text("busy"));
+            assert_eq!(
+                live.value("mood", "temp"),
+                Value::float(0.0),
+                "a key the new document dropped reads as the default"
+            );
             std::fs::remove_file(&file).unwrap();
             live.until("the removal followed", |l| {
                 l.value("mood", "level") == Value::int(0)
@@ -2280,6 +2285,47 @@ service shelf {
             assert_eq!(live.real.services.registered(), registered - 1);
             assert_eq!((ca.starts(), ca.stops()), (1, 0));
             assert_eq!(live.value("fa", "x"), Value::int(1));
+            drop(live);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// A reload that declares (or removes) types before a service's
+        /// enum renumbers them without changing the service: it keeps
+        /// running, and its value is of the new program's enum.
+        #[test]
+        fn a_reload_that_renumbers_types_retypes_the_service() {
+            let dir = temp("retype");
+            let file = dir.join("mode.json");
+            save(&file, r#"{"mode": "fast"}"#);
+            let src = |extra: &str| {
+                format!(
+                    "{extra}enum Mode {{ slow, fast }}\nservice e from file \"{}\" {{ mode: Mode }}\nbar B {{ text e.mode == fast ? \"yes\" : \"no\" }}\n",
+                    file.display()
+                )
+            };
+            let mode = |l: &Live| l.build.program.types.find_enum("Mode").unwrap();
+            let mut live = Live::boot(&src(""), Buses::none());
+            live.until("the file read", |l| {
+                l.value("e", "mode") == Value::Enum(mode(l), 1)
+            });
+            let client = live.real.custom.client("e").unwrap();
+            let before = mode(&live);
+            for extra in ["enum Aaa { a }\nenum Bbb { b }\n", ""] {
+                live.reload(&src(extra));
+                let now = mode(&live);
+                assert_eq!(
+                    live.value("e", "mode"),
+                    Value::Enum(now, 1),
+                    "the value is of the new program's Mode (after {extra:?})"
+                );
+                assert!(now.0 as usize <= live.build.program.types.enums.len());
+            }
+            assert_eq!(mode(&live), before);
+            assert_eq!(
+                (client.starts(), client.stops()),
+                (1, 0),
+                "renumbered, not restarted"
+            );
             drop(live);
             let _ = std::fs::remove_dir_all(&dir);
         }

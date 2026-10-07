@@ -6959,3 +6959,21 @@ launch). icon-theme sizes from `index.theme` saturate. Rejected: "coerce
 has no colour case" (hex text already parses through `parse_text`; a
 test now pins it) and "listen buffers a line without bound" when raised a
 second time (fixed in the same round).
+
+**2026-10-07 · wave4-a3 (r2): a whole document replaces, a line merges;
+echoes settle the oldest equal write; unchanged services re-type on
+reload.** A `from file` read and a `from poll` result are each the
+source's whole state, so every field is set from the new document and a
+key it no longer holds reads null (the field type's default), never its
+last value (a sensor gone from `sensors -j` must not show stale data). A
+`from listen` line may be a partial update (a status stream that sends
+only what changed), so it keeps merging into the fields it names.
+PropertiesChanged echoes of `rw` writes come back in the order of the
+writes, so an echo settles the oldest pending write of that value, not
+the latest (writes 50, 51, 52, 51, 50 show only the final echo). A
+reload that keeps a custom service's declaration may still renumber the
+record and enum ids its fields name (a type declared or removed
+elsewhere): `ServiceHost::retype` (new, default no-op) is called for every
+surviving service that does not restart, and the custom host converts
+its values as the new program's types from then on without restarting
+the service.

@@ -296,12 +296,22 @@ pub fn json_data(v: &serde_json::Value) -> Data {
     }
 }
 
-/// Apply `doc` to `state`: every field the document holds.
-fn apply_doc(spec: &Spec, doc: &Document, state: &mut Custom) {
+/// Merge `doc` into `state`: every field the document holds; the others
+/// keep their values (a `listen` line may be a partial update).
+fn merge_doc(spec: &Spec, doc: &Document, state: &mut Custom) {
     for (i, f) in spec.fields.iter().enumerate() {
         if let Some(v) = doc.get(&f.key) {
             state.set(i, v);
         }
+    }
+}
+
+/// Replace `state` with `doc`: a whole document (a `file`, a `poll`
+/// result) is the source's state, so a field it no longer holds reads
+/// null (its type's default), not its last value.
+fn replace_doc(spec: &Spec, doc: &Document, state: &mut Custom) {
+    for (i, f) in spec.fields.iter().enumerate() {
+        state.set(i, doc.get(&f.key).unwrap_or(Data::Null));
     }
 }
 
@@ -544,15 +554,17 @@ impl Echoes {
         }
     }
 
-    /// The daemon signalled `d` for field `i`: whether to show it. An
-    /// echo of a write older than the latest is not shown (the writes up
-    /// to it are settled); the latest's echo, or anything else, is.
+    /// The daemon signalled `d` for field `i`: whether to show it. Echoes
+    /// come back in the order of their writes, so `d` is the echo of the
+    /// oldest pending write of that value: if a later write is pending,
+    /// it is not shown (the writes up to it are settled); the latest's
+    /// echo, or anything else, is.
     fn shows(&mut self, i: usize, d: &Data) -> bool {
         let Some(ring) = self.0.get_mut(i) else {
             return true;
         };
         ring.retain(|(_, at)| at.elapsed() < ECHO_WAIT);
-        match ring.iter().rposition(|(w, _)| w == d) {
+        match ring.iter().position(|(w, _)| w == d) {
             Some(p) if p + 1 < ring.len() => {
                 ring.drain(..=p);
                 false
@@ -898,7 +910,7 @@ async fn run_file(cx: &mut Cx<Custom>, spec: &Spec, path: &Path) -> Result<(), S
         if first || doc != last {
             let mut state = cx.state().clone();
             match &doc {
-                Some(d) => apply_doc(spec, d, &mut state),
+                Some(d) => replace_doc(spec, d, &mut state),
                 // Gone: every field null until it is back.
                 None => state.values.iter_mut().for_each(|v| v.value = Data::Null),
             }
@@ -1084,7 +1096,7 @@ async fn run_listen(cx: &mut Cx<Custom>, spec: &Spec, argv: &[String]) -> Result
                     }
                     let doc = Document::parse(&l);
                     let mut state = cx.state().clone();
-                    apply_doc(spec, &doc, &mut state);
+                    merge_doc(spec, &doc, &mut state);
                     if !cx.update(|s| *s = state) {
                         return Ok(());
                     }
@@ -1196,7 +1208,7 @@ async fn run_poll(
         };
         if let Some(doc) = doc {
             let mut state = cx.state().clone();
-            apply_doc(spec, &doc, &mut state);
+            replace_doc(spec, &doc, &mut state);
             if !cx.update(|s| *s = state) {
                 return Ok(());
             }
@@ -1316,6 +1328,26 @@ mod tests {
             w.1 -= ECHO_WAIT;
         }
         assert!(e.shows(0, &a), "no write waits any more");
+    }
+
+    /// A value repeated among the pending writes: each echo settles the
+    /// oldest equal write, so only the last write's echo shows (a slider
+    /// dragged 50, 51, 52, 51, 50 never flickers back).
+    #[test]
+    fn repeated_values_settle_their_oldest_write() {
+        let (a, b) = (Data::text("a"), Data::text("b"));
+        let mut e = Echoes::new(1);
+        e.wrote(0, a.clone());
+        e.wrote(0, b.clone());
+        e.wrote(0, a.clone());
+        let got: Vec<bool> = [&a, &b, &a].iter().map(|d| e.shows(0, d)).collect();
+        assert_eq!(got, [false, false, true]);
+        let v: Vec<Data> = [50, 51, 52, 51, 50].into_iter().map(Data::Int).collect();
+        for d in &v {
+            e.wrote(0, d.clone());
+        }
+        let got: Vec<bool> = v.iter().map(|d| e.shows(0, d)).collect();
+        assert_eq!(got, [false, false, false, false, true]);
     }
 
     /// A FIFO (or any file that is not regular) is refused at once, not

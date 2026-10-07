@@ -57,6 +57,20 @@ pub trait ServiceHost {
     ) {
     }
 
+    /// A live reload kept custom service `service`'s declaration, but the
+    /// new program's `types` may number its record and the types its
+    /// fields name differently (a type declared or removed elsewhere):
+    /// read its values as those types from now on, without restarting
+    /// it. Called on every reload for each surviving service that does
+    /// not restart. The default does nothing.
+    fn retype(
+        &self,
+        _rt: &Runtime,
+        _service: &crate::lower::CustomService,
+        _types: &crate::ty::TypeTable,
+    ) {
+    }
+
     /// A live reload removed custom service `name`'s declaration: dispose
     /// its fields and events. Built-ins never stop. The default does
     /// nothing.

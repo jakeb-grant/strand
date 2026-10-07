@@ -15,7 +15,9 @@
 //! `rw` field written (`ppd.profile = "performance"`, `<-> ppd.profile`)
 //! is an item write of its value, so the service sets the property and
 //! its echo is ignored. A reload that changes a declaration restarts only
-//! that service ([`ServiceHost::restart`]); one that removes it stops it.
+//! that service ([`ServiceHost::restart`]); one that removes it stops it;
+//! one that keeps it re-types its values as the new program numbers its
+//! types ([`ServiceHost::retype`]) without restarting it.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -28,7 +30,7 @@ use strand_compiler::ty::{Prim, Ty, TypeTable};
 use strand_compiler::vm::host::{ActionTarget, PathSeg, ServiceHost};
 use strand_compiler::vm::schema_host::default_value;
 use strand_compiler::vm::{Num, Value};
-use strand_core::{Error, Memo, NodeId, Runtime, Scope};
+use strand_core::{Error, Memo, NodeId, Runtime, Scope, Signal};
 use strand_services::custom::{self, Custom, CustomValue, FieldSpec, Source, Spec};
 use strand_services::{Client, Data, ServiceDiagnostic, Services, Step, ToData};
 
@@ -39,11 +41,41 @@ struct Entry {
     client: Client<Custom>,
     spec: i64,
     decl: CustomService,
-    /// The types its fields are of.
-    table: Rc<TypeTable>,
+    /// The types its fields are of, as the current program numbers them.
+    typing: Rc<RefCell<Typing>>,
+    /// Bumped when `typing` changes: the memos read it, so they convert
+    /// again.
+    epoch: Signal<u64>,
     values: Vec<Memo<Value>>,
     /// Owns the memos.
     scope: Scope,
+}
+
+/// A service's type table and its fields' types (in declaration order).
+struct Typing {
+    table: Rc<TypeTable>,
+    fields: Vec<Ty>,
+}
+
+impl Typing {
+    fn of(decl: &CustomService, types: &TypeTable) -> Typing {
+        let record = types.record(decl.record);
+        let fields = decl
+            .fields
+            .iter()
+            .map(|f| {
+                record
+                    .fields
+                    .iter()
+                    .find(|d| d.name == f.name)
+                    .map_or(Ty::Error, |d| d.ty.clone())
+            })
+            .collect();
+        Typing {
+            table: Rc::new(types.clone()),
+            fields,
+        }
+    }
 }
 
 /// See the module docs.
@@ -333,25 +365,12 @@ impl CustomHost {
         if let Err(e) = client.seed(rt, |s| *s = Custom::seeded(spec, n)) {
             log::warn!("{}: {e}", decl.name);
         }
-        let record = types.record(decl.record);
-        let field_types: Vec<Ty> = decl
-            .fields
-            .iter()
-            .map(|f| {
-                record
-                    .fields
-                    .iter()
-                    .find(|d| d.name == f.name)
-                    .map_or(Ty::Error, |d| d.ty.clone())
-            })
-            .collect();
-        let shared = Rc::new(types.clone());
-        let (scope, values) = rt.scope(|rt| {
-            field_types
-                .iter()
-                .enumerate()
-                .map(|(i, ty)| {
-                    let (client, ty, types) = (client.clone(), ty.clone(), shared.clone());
+        let typing = Rc::new(RefCell::new(Typing::of(decl, types)));
+        let (scope, (epoch, values)) = rt.scope(|rt| {
+            let epoch = rt.signal(0u64);
+            let values = (0..n)
+                .map(|i| {
+                    let (client, typing) = (client.clone(), typing.clone());
                     let name = format!("{}.{}", decl.name, decl.fields[i].name);
                     let report = Mismatch {
                         services: self.services.clone(),
@@ -361,25 +380,30 @@ impl CustomHost {
                         reported: RefCell::new(None),
                     };
                     let m = rt.memo(move |rt| {
+                        epoch.get(rt)?;
                         let d = client
                             .cells()
                             .values
                             .with(rt, |v| v.get(&(i as i64)).map(|v| v.value.clone()))?
                             .unwrap_or_default();
-                        let v = coerce(&types, &ty, &d);
-                        report.saw(&types, &ty, &d, v.is_some());
-                        Ok(v.unwrap_or_else(|| default_value(&types, &ty)))
+                        let typing = typing.borrow();
+                        let (types, ty) = (&*typing.table, &typing.fields[i]);
+                        let v = coerce(types, ty, &d);
+                        report.saw(types, ty, &d, v.is_some());
+                        Ok(v.unwrap_or_else(|| default_value(types, ty)))
                     });
                     rt.set_name(m.id(), name);
                     m
                 })
-                .collect::<Vec<Memo<Value>>>()
+                .collect::<Vec<Memo<Value>>>();
+            (epoch, values)
         });
         Entry {
             client,
             spec,
             decl: decl.clone(),
-            table: shared,
+            typing,
+            epoch,
             values,
             scope,
         }
@@ -457,6 +481,33 @@ impl ServiceHost for CustomHost {
         self.entries.borrow_mut().insert(decl.name.clone(), entry);
     }
 
+    fn retype(&self, rt: &Runtime, decl: &CustomService, types: &TypeTable) {
+        let same = {
+            let entries = self.entries.borrow();
+            let Some(e) = entries.get(&decl.name) else {
+                drop(entries);
+                return self.declare(rt, decl, types);
+            };
+            e.decl.source == decl.source && e.decl.fields == decl.fields
+        };
+        if !same {
+            // Not just renumbered: the declaration changed after all.
+            return self.restart(rt, decl, types);
+        }
+        let epoch = {
+            let mut entries = self.entries.borrow_mut();
+            let Some(e) = entries.get_mut(&decl.name) else {
+                return;
+            };
+            e.decl = decl.clone();
+            *e.typing.borrow_mut() = Typing::of(decl, types);
+            e.epoch
+        };
+        if let Err(e) = epoch.update(rt, |n| *n += 1) {
+            log::warn!("{}: {e}", decl.name);
+        }
+    }
+
     fn stop(&self, rt: &Runtime, name: &str) {
         let old = self.entries.borrow_mut().remove(name);
         if let Some(old) = old {
@@ -502,7 +553,11 @@ impl ServiceHost for CustomHost {
             let e = entries
                 .get(service)
                 .ok_or_else(|| Error::failed(format!("no service `{service}`")))?;
-            (e.client.clone(), e.table.clone(), e.decl.fields[i].rw)
+            (
+                e.client.clone(),
+                e.typing.borrow().table.clone(),
+                e.decl.fields[i].rw,
+            )
         };
         if !rw {
             return Err(Error::failed(format!("`{service}.{field}` is read-only")));

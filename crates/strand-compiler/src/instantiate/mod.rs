@@ -890,6 +890,8 @@ impl Instance {
         for svc in build.program.services.values() {
             if changed_services.contains(&svc.name) {
                 host.restart(&rt, svc, &build.program.types);
+            } else {
+                host.retype(&rt, svc, &build.program.types);
             }
         }
         for name in &removed_services {
@@ -1105,6 +1107,8 @@ impl Instance {
         for svc in build.program.services.values() {
             if changed.contains(&svc.name) {
                 host.restart(&self.rt, svc, &build.program.types);
+            } else {
+                host.retype(&self.rt, svc, &build.program.types);
             }
         }
         if let Some(h) = &self.ctx.hashes {
