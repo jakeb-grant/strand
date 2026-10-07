@@ -44,8 +44,8 @@ pub struct Program {
     /// `use tokens …, palette …`.
     pub use_tokens: Option<ChunkId>,
     pub use_palette: Option<ChunkId>,
-    /// Custom services (`service ppd from dbus …`): name and record.
-    pub services: BTreeMap<DefId, (String, RecordId)>,
+    /// Custom services (`service ppd from dbus …`), by declaration.
+    pub services: BTreeMap<DefId, CustomService>,
     /// Keyframes by declaration.
     pub keyframes: BTreeMap<DefId, String>,
     /// The `key` of keyed `state` collections (`state pins: [Pin] key
@@ -67,6 +67,30 @@ pub struct Program {
     /// Each chunk's assignment targets, by chunk id: what a handler
     /// running it declares with `rt.writes_to`.
     pub writes: Vec<Vec<WriteTarget>>,
+}
+
+/// A no-code service (design.md: `service ppd from dbus system
+/// "net.hadess.PowerProfiles" { profile: text rw = ActiveProfile }`): what
+/// a host needs to run it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CustomService {
+    pub name: String,
+    /// Its fields' record.
+    pub record: RecordId,
+    /// Where it reads from.
+    pub source: crate::hir::SourceSpec,
+    /// Its fields, in declaration order (the record's order).
+    pub fields: Vec<CustomField>,
+}
+
+/// One field of a [`CustomService`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct CustomField {
+    pub name: String,
+    /// The D-Bus property, or the key path in a document, it reads.
+    pub key: Vec<String>,
+    /// Written by the shell: sets the D-Bus property.
+    pub rw: bool,
 }
 
 /// What the VM needs to know about a declaration.
@@ -624,10 +648,26 @@ impl Lowerer<'_> {
                 }
             }
             hir::Item::Service(s) => {
-                if let DefKind::Service(r) = self.hir.def(s.def).kind {
-                    self.out
-                        .services
-                        .insert(s.def, (self.hir.def(s.def).name.clone(), r));
+                if let (DefKind::Service(record), Some(source)) =
+                    (&self.hir.def(s.def).kind, s.spec.clone())
+                {
+                    self.out.services.insert(
+                        s.def,
+                        CustomService {
+                            name: self.hir.def(s.def).name.clone(),
+                            record: *record,
+                            source,
+                            fields: s
+                                .fields
+                                .iter()
+                                .map(|f| CustomField {
+                                    name: f.name.clone(),
+                                    key: f.key.clone(),
+                                    rw: f.rw,
+                                })
+                                .collect(),
+                        },
+                    );
                 }
             }
             hir::Item::Keyframes(k) => {

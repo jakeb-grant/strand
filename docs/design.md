@@ -724,7 +724,7 @@ Services are typed Rust structs that start lazily when a shell first references 
 | bluer 0.17, or own zbus proxies | Bluetooth | bluer uses libdbus; a few zbus proxies may be lighter |
 | Own zbus clients | StatusNotifierItem host plus DBusMenu | system-tray 0.8.9 was the first choice; it only connects to the machine's session bus and leaves detached tasks running after its client is dropped (decisions.md, wave4-a2) |
 | Own zbus `#[interface]` | Notification server | notify-rust's server is experimental; fail clearly if dunst or mako owns the name |
-| freedesktop-desktop-entry 0.8, freedesktop-icons 0.4 | Launcher data and icons | Watched live |
+| freedesktop-desktop-entry 0.8; own icon theme lookup | Launcher data and icons | Watched live; freedesktop-icons 0.4 was the first choice, but its theme and lookup caches are process statics nothing can refresh, so it cannot follow a theme change (decisions.md, wave4-a3) |
 | nucleo 0.5 | Fuzzy matching with match ranges | Releases stalled since 2024; wrap it, fork if needed |
 | swayipc-async 3.0; own Hyprland and niri IPC | Compositor adapters | `hyprland` and `niri-ipc` crates are GPL-3.0; their IPC is simple JSON over a socket |
 | rustix inotify, blake3 | Live reload | Directory watches without `IN_OPEN`; see live reload |

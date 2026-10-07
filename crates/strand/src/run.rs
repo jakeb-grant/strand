@@ -1104,9 +1104,11 @@ pub fn logic(
             .buses
             .clone()
             .unwrap_or_else(strand_services::Buses::none);
-        crate::services::Real::start(&rt, &host_types, buses, host.clone(), move || {
+        let real = crate::services::Real::start(&rt, &host_types, buses, host.clone(), move || {
             services_ping.ping()
-        })
+        });
+        real.custom.set_config_dir(storage.config_dir.clone());
+        real
     });
     // Monitors the main thread already knows about.
     let mut inbox = Inbox::default();

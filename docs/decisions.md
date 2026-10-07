@@ -6710,3 +6710,176 @@ shown, so design.md's toasts panel (`open: shown.len > 0` over
 never open. Lowering now counts the `open` binding's reads for the
 file's top level (a nested surface's props were already read by the
 body around it); `crates/strand/src/services/mod.rs::a_closed_surface_holds_what_its_open_binding_reads`.
+
+## wave4-a3
+
+**2026-10-07 · wave4-a3: our own icon theme lookup, not
+freedesktop-icons.** design.md names `freedesktop-icons` 0.4 for icons,
+"watched live". That crate reads every installed theme once per process
+into a `Lazy` static and remembers every lookup (misses included) in
+another, with no way to refresh either: a theme installed or switched,
+or an app's icon installed after its first miss, would never be seen.
+`strand-icons` is the Icon Theme Specification lookup (theme, its
+parents depth first, then `hicolor`, then the base directories; exact
+size first, else the closest; PNG before SVG, no XPM since nothing here
+draws it) with its state behind `invalidate()`. The renderer resolves
+`icon` and `image` names through it, and the `apps` service checks an
+app's icon against the same lookup, as the spec asks ("icons resolved
+through the same icon theme lookup the renderer uses"). It is its own
+crate (no dependencies) because both `strand-render` and
+`strand-services` need it and neither may depend on the other.
+
+**2026-10-07 · wave4-a3: what `apps` lists and how it launches.** Every
+`*.desktop` under each `applications/` directory (`$XDG_DATA_HOME`, then
+`$XDG_DATA_DIRS` in order; subdirectories give `dir-name` ids), the first
+directory holding an id deciding it (a user's `Hidden=true` copy hides
+the system's). Listed: `Type=Application`, not `NoDisplay`/`Hidden`,
+`OnlyShowIn`/`NotShowIn` admitting `$XDG_CURRENT_DESKTOP`, a `TryExec`
+that exists; names, comments and keywords in the user's language
+(`freedesktop-desktop-entry` 0.8 without its gettext feature, which
+builds gettext from source). `App.id` is the desktop id without
+`.desktop` (what compositors report as an app id). An icon name the
+theme lacks, or a missing icon file, becomes `application-x-executable`
+so a launcher row never shows a hole; `foo.png` as a name loses its
+extension. `launch()` splits `Exec` as the spec quotes it (the string
+escapes first, then double quotes with `\"`, `` \` ``, `\$`, `\\`), and
+expands field codes: no files or URLs are passed, so `%f %F %u %U` (and
+the deprecated `%d %D %n %N %v %m`) go, `%i` is `--icon <Icon>`, `%c`
+the name, `%k` the entry's file, `%%` a `%`; codes inside quotes stay
+(the spec leaves them undefined). `Terminal=true` runs it under
+`xdg-terminal-exec`, else `$TERMINAL -e`, else it is refused with a log
+line. It is spawned detached: `setsid` and a second fork before exec, so
+the app is reparented to init and the shell never holds a zombie, with
+stdio on `/dev/null` and `Path` as its directory. The crate's own
+`parse_exec` splits on whitespace only (quoted arguments break), so we
+do not use it.
+
+**2026-10-07 · wave4-a3: search, ranges and frecency.** `apps.search(q)`
+is nucleo 0.5's matcher (`Pattern` with smart case and smart
+normalisation, words all required) behind `apps::Fuzzy`, our wrapper
+(design.md: "wrap it"); nucleo's threaded `Nucleo` is not used (one
+search over a few hundred names takes well under a millisecond on the
+services thread). The name is matched first, its matched characters
+merged into `[start, end)` character ranges (`marks: h.ranges` counts
+characters); an app whose name does not match but whose generic name or
+keywords do scores half, with no ranges. Frecency adds `10 ×
+ln(1 + points)`, points being launches × a weight for how recent the
+last one is (100 within 4 days, 70 within 2 weeks, 50 within a month, 30
+within 3 months, 10 after: Firefox's buckets). An empty query lists
+every app, the most used first, then by name. At most 200 hits. Launches
+are kept with `strand-core`'s persist store as
+`services:apps.frecency` (one `<last> <count> <id>` line per app), so a
+config's own state can never collide with it.
+
+**2026-10-07 · wave4-a3: an async call waits for a reader.**
+architecture.md says `let hits = apps.search(query)` is created on the
+`let`'s first read, "a closed launcher never searches"; but once created
+the async memo fetched on every change of its input, readers or not, so
+a query written while the launcher was closed was searched. The store
+adapter (`StoreHost::fetch`) now holds an async call made while nothing
+reads its service until something does (the same holds that start and
+stop services: a closed panel's content lets go of them): a closed
+launcher never searches, and opening it runs the latest query once.
+A handler's `await` call is unaffected in practice (the scope holding
+the handler holds the service). Proved by
+`crates/strand/src/services/mod.rs::the_design_launcher_searches_real_apps_only_while_open`.
+
+**2026-10-07 · wave4-a3: what the cache sources watch.** design.md's
+"Apps, icons, fonts | `applications/`, `index.theme`, fontconfig dirs |
+Cache invalidation" row. `strand run`'s compiler worker watches (with
+`Watcher::watch_tree`, completed writes and names only: no wakeup for
+reads) every `applications/` directory the `apps` service reads, three
+levels down; every icon base directory one level down (a theme's
+`index.theme` and the `icon-theme.cache` package installs rewrite, a
+theme installed or removed) plus GTK's `settings.ini` (the theme's
+name); and the font directories fontconfig reads by default
+(`$XDG_DATA_HOME/fonts`, `~/.fonts`, each `$XDG_DATA_DIRS/fonts`, three
+levels down) with `$XDG_CONFIG_HOME/fontconfig`. fontconfig's own
+configured `<dir>`s are not parsed (the default set covers distributions
+and user installs). A change tells its owner: the apps service reads the
+entries again; the icon lookup forgets its themes and lookups, the
+renderer drops its icon decodes (decodes in flight are dropped on
+arrival) and repaints; the text worker builds a fresh engine (fontconfig
+rescans directories newer than its cache) and answers with a reset
+layout, after which every text is shaped again while the old frame stays
+up. An inotify overflow invalidates all three. A fresh engine whose font
+lookup panics (fontique does when fontconfig has no font at all) keeps
+the old one.
+
+**2026-10-07 · wave4-a3: no-code services, their grammar read
+precisely.** grammar.md's `source = IDENT source_arg* ( SAME_LINE every
+expr )?` takes expressions; a source is fixed when the config loads, so
+its arguments must be constants (a string, a list of strings, a
+duration above zero for `every`), else `check::not_constant`: a service
+restarts only when its declaration changes, so a source that followed a
+`let` would silently not. A command given as a string is split into
+words as a shell would (quotes group, backslash escapes) and run without
+a shell; a list is the argv. A `poll` of a string that is a path with no
+whitespace (`/…`, `~/…`, `./…`) reads that file instead of running it
+(design.md: "a command or file at an interval"), and needs no `permit
+exec`; `["/usr/bin/foo"]` runs it. A `file` path, and a polled file,
+starting with `~/` is under the home directory; a relative one under the
+config directory, as a settings file's is. Only a `dbus` field can be
+`rw` (writing sets the property); elsewhere `check::not_writable`. A
+field's `= key` is a property name, or a key path (`= cpu.temp`; a
+string is one key with dots in it); without one it reads its own name.
+
+**2026-10-07 · wave4-a3: what no-code sources read.** A document is JSON
+when it parses as JSON, else `key=value` (or `key: value`) lines when
+every line is one (os-release, `/proc/meminfo`; quotes around a value
+dropped, a key matched exactly, then case-insensitively), else plain
+text. A key path walks a JSON object (array indices as numbers); a first
+key the top level lacks is searched for below it, depth first. A scalar
+document (a number, a word) is every field's value. `listen` takes each
+line it prints as a document (fields the line lacks keep their values);
+its command ending is a failure, retried with the services' backoff
+(1 s doubling to 30 s). `poll` runs its command (10 s at most, then
+killed) or reads its file every interval, only while a reader is
+visible, and at once when one becomes visible again. `file` reads the
+file when the service starts and whenever an inotify watch on the file
+(writes in place, sysfs notifications) or its directory (atomic saves,
+creation, removal) says so; a removed file leaves every field null (its
+type's default for a non-optional field) until it is back. Values are
+converted to each field's declared type on the language side: numbers
+from text (`"41.5"`, `"45 °C"`), booleans from `true/yes/on/1`, enums by
+variant name (any case, `-` as `_`), records by field name, durations
+from seconds or `"5s"`; a value that does not convert is the type's
+default. For `dbus`, the object (by default at the bus name with `.` as
+`/`) is introspected when the service starts; each field reads the
+property its key names from the interface named like the bus name
+first, else the first that has it; `PropertiesChanged` drives the
+fields and a daemon restart is read afresh; an `rw` write is `Set` with
+the property's own signature (basic types and string arrays), its echo
+ignored, and a refused write reports the property as it is.
+
+**2026-10-07 · wave4-a3: checked against introspection, where a bus
+answers.** `strand_compiler::check::dbus::check` compares each `from
+dbus` field with the object's introspection: the property must exist
+(`check::dbus_property`, with a did-you-mean), its D-Bus type must
+convert to the declared one (`check::dbus_type`: `b` to bool, integers
+to int or float, `d` to float, `s`/`o`/`g` to text, `s` to an enum or
+colour, `aX` to lists, `a{s…}` to records, `v` to anything), and `rw`
+needs a writable property (`check::dbus_read_only`). A bus or object
+that cannot be reached is a warning (`check::dbus_unchecked`), not an
+error: a config is not broken because a daemon is down, and the running
+service reports its own failures. `strand check` runs it, `strand run`'s
+loader runs it on every compile (`Loader::with_check`; an error holds
+the file back like any other), and the LSP runs it on every analysis;
+all three introspect the environment's buses through `strand-introspect`
+(zbus only, so the LSP links zbus for this, not the services runtime),
+remembering each answer, failures included, for 10 s.
+
+**2026-10-07 · wave4-a3: one `custom` store per declaration.** A no-code
+service runs on the service contract like a builtin one (start on the
+first reader, stop 5 s after the last, failures retried and reported):
+`strand_services::custom::Custom` is a store whose fields are the items
+of one keyed list (`values`, keyed by the field's index, each value
+untyped `Data`), registered once per declaration, its spec (source and
+fields) found by an id seeded into the store. `ServiceDiagnostic.service`
+is then `custom` for all of them; their messages start with the
+declared name. An `rw` write is an item write of the field's value, so
+its echo is ignored as any item write's is. `ServiceHost::declare` and
+`restart` now take the lowered declaration (`lower::CustomService`:
+name, record, source, fields) instead of a name and record, so the host
+can run it; `Client::restart` and `Client::stop_now` let the host
+restart a changed declaration at once and stop a removed one.

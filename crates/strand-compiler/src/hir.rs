@@ -297,11 +297,51 @@ pub struct Use {
 #[derive(Clone, Debug)]
 pub struct ServiceDecl {
     pub def: DefId,
+    /// The file it is declared in, and its name's and source's spans
+    /// (diagnostics found later: D-Bus introspection).
+    pub file: FileId,
+    pub name_span: Span,
+    pub source_span: Span,
     /// `dbus`, `file`, `listen` or `poll`.
     pub source: String,
     pub args: Vec<Expr>,
     pub every: Option<Expr>,
     pub fields: Vec<ServiceField>,
+    /// The source with its arguments evaluated (they must be constants);
+    /// `None` when they are not (an error says why).
+    pub spec: Option<SourceSpec>,
+}
+
+/// Where a no-code service reads from (design.md: `from dbus`, `from
+/// file`, `from listen`, `from poll`), its arguments evaluated.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SourceSpec {
+    /// Properties of `name`'s object at `path` (by default the name with
+    /// `.` as `/`) on the system or session bus.
+    Dbus {
+        system: bool,
+        name: String,
+        path: Option<String>,
+    },
+    /// A file, read whenever it changes (`~/` is the home directory, a
+    /// relative path the config directory).
+    File { path: String },
+    /// A long-running command: each line it prints is a document.
+    Listen { command: Vec<String> },
+    /// A command run (or a file read) every `every`, only while read.
+    Poll {
+        target: PollTarget,
+        every: std::time::Duration,
+    },
+}
+
+/// What a `poll` service runs or reads.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PollTarget {
+    /// The program and its arguments.
+    Command(Vec<String>),
+    /// A file (`"/sys/class/…"`: a path, no spaces, no arguments).
+    File(String),
 }
 
 #[derive(Clone, Debug)]
@@ -312,6 +352,11 @@ pub struct ServiceField {
     pub rw: bool,
     /// The D-Bus property, JSON key or file key it reads.
     pub source_key: Option<String>,
+    /// That key as a path (`= a.b` is `["a", "b"]`; a string is one
+    /// segment); the field's own name when it names none.
+    pub key: Vec<String>,
+    /// Where the key is written (the field's name when it names none).
+    pub key_span: Span,
 }
 
 #[derive(Clone, Debug)]

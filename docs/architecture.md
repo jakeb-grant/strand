@@ -168,17 +168,32 @@ strand-scene      shared vocabulary: ids, geometry, colour, scene protocol, Pain
   ^   ^   ^
   |   |   strand-surface   (layer-shell, shm, damage submit, input, frame timing)
   |   strand-render ── strand-text
+  |   |   └── strand-icons (the icon theme lookup; no dependencies)
   |   strand-theme     (palette schema, material(), importers; colour maths in strand-scene)
   |     ^
   strand-core ── strand-compiler ── strand-dev (LSP, inspector; links
-     ^                                strand-services-schema, not the runtime)
+     ^                                strand-services-schema and strand-introspect,
+     |                                not the runtime)
      strand-services ──> strand-watch (EventSink, CompositorEvent; portal follow;
           |                            strand-watch depends on no Strand crate)
           ├── strand-services-macros (#[service], #[derive(Store, Data, Call)])
-          └── strand-services-schema (the builtin services' schema texts)
+          ├── strand-services-schema (the builtin services' schema texts)
+          ├── strand-icons (apps' icons, the renderer's lookup)
+          └── strand-introspect (D-Bus introspection; zbus only)
 strand (binary) wires everything; its ServiceHost adapters join
 strand-services' stores to strand-compiler's VM.
 ```
+
+`strand-icons` (wave 4, a3) is the Icon Theme Specification lookup with a
+cache `invalidate()` refreshes (`lookup(name, size, scale, theme)`,
+`exists`, `system_theme`, `base_dirs`, `theme_setting_files`,
+`generation`); the renderer and the `apps` service both look icons up
+through it. `strand-introspect` reads an object's properties from its
+D-Bus introspection (`properties_on(conn, name, path)` async,
+`properties(&Bus, name, path)` blocking with a 2 s bound, `parse(xml)`,
+`default_path(name)`): what `from dbus` services are checked against
+(`strand check`, the loader, the LSP) and what the running service reads
+signatures from.
 
 `strand-scene` has no heavy dependencies; it is what lets render and surface
 be built and tested without the language, and the language without pixels.
@@ -1014,7 +1029,9 @@ Public interfaces other crates and later stages build on:
   `node-added`, `node-removed`, `state-default`, `state-reset`,
   `handler`, `timer`, `surface`, `service`, `lock-deferred`, `hard`).
   `reconcile::loader::Loader::new(root, schema, cache_dir)` is the
-  compiler worker's state: `boot()`, `changed([(path, exists)])`,
+  compiler worker's state (`.with_check(ExtraCheck)` adds a check run on
+  every compile whose diagnostics count as the checker's: `strand run`'s
+  D-Bus introspection of `from dbus` services): `boot()`, `changed([(path, exists)])`,
   `rescan()` each return an `Outcome { build, committed, held,
   diagnostics, sources, unreadable, from_cache, cleared, repeated,
   compile_time }`
@@ -1070,7 +1087,13 @@ Public interfaces other crates and later stages build on:
   must name a field, re-checked across all records after the extension;
   it is atomic, so on error nothing is added and the fingerprint is
   unchanged), and check with
-  `compile_with(&map, &schema)`. The builtin's service stubs, and the
+  `compile_with(&map, &schema)`. A `service … from dbus|file|listen|poll`
+  declaration's source is a constant the checker evaluates
+  (`hir::ServiceDecl::spec`, a `hir::SourceSpec`; fields carry their key
+  path); `check::dbus::check(&hir::Program, &dyn Introspect)` compares
+  its `dbus` fields with an object's introspection (`Introspect::
+  properties(system, name, path) -> Result<Vec<BusProperty>, String>`;
+  the caller brings the bus: `strand check`, the loader, the LSP). The builtin's service stubs, and the
   records only services hand out (`Window`, `Notification`, `Date`, …),
   are declared `provisional service` / `provisional record`: the first
   extension that declares the same name replaces the stub in place (same
@@ -1236,10 +1259,13 @@ Public interfaces other crates and later stages build on:
   is an error value, as a token in arithmetic without numbers is now.
 - **Services** (`strand_compiler::vm::ServiceHost`): the VM's only way
   to services.
-  - `restart(rt, name, record, types)` / `stop(rt, name)`: a reload
-    changed (or added) / removed custom service `name`'s declaration;
-    only that service restarts or stops. Built-ins never do. Both
-    default to nothing.
+  - `declare(rt, &lower::CustomService, types)`: a no-code service the
+    program declares (its name, record of `types`, `hir::SourceSpec`
+    source and fields with their key paths and `rw`), called once at
+    instantiation. `restart(rt, &CustomService, types)` / `stop(rt,
+    name)`: a reload changed (or added) / removed a declaration; only
+    that service restarts or stops. Built-ins never do. All default to
+    nothing.
   - `read(rt, service, field)` and `call(rt, service, method, args)`
     (`fn` methods: `clock.format`, `calendar.days`, `workspaces.on`)
     must read through the graph (a `Signal<Value>` per field) so
@@ -1649,7 +1675,13 @@ text at `MAX_TEXT_BYTES` (64 KiB) per request. A layout that had to
 skip glyphs for want of atlas room says so (`is_incomplete`; render asks
 again a bounded number of times), and each layout lists its scale's live
 pages (`atlas_pages`), so the mirror drops pages the worker trimmed.
-Dropping the worker discards its queue. Each layout lists its caret stops
+Dropping the worker discards its queue. `reload_fonts()` (the installed
+fonts changed: the watcher's `CacheKind::Fonts`) builds a fresh engine and
+answers with a reset layout (key 0), on which render forgets every layout
+and shapes again (`Renderer::fonts_changed`; inline,
+`TextEngine::reload_fonts`). `Renderer::icons_changed` is the icon side:
+`strand_icons::invalidate`, every icon decode dropped (one in flight is
+dropped on arrival) and the surfaces drawing icons repainted. Each layout lists its caret stops
 (`TextLayout::carets`: every cluster boundary per line, byte offset and x
 in logical pixels), from which render draws an `input`'s caret and
 selection and places the caret under a click. `TextWorker::waker()`
@@ -1971,6 +2003,26 @@ the primitives, `Option`, `Vec` and derived types.
   while watched) and `tray` (StatusNotifierItem host, its own watcher
   when the session has none, DBusMenu model). All on our own zbus calls
   (decisions.md, wave4-a2), with `logind-zbus` for `SetBrightness`.
+  `apps` (wave 4, a3): desktop entries (`freedesktop-desktop-entry`;
+  `NoDisplay`, `Hidden`, `OnlyShowIn`/`NotShowIn`, `TryExec`, the first
+  `applications/` directory holding an id deciding it), icons checked
+  against `strand-icons`, `search(query) -> Async<[Hit]>` (nucleo's
+  matcher behind `apps::Fuzzy`, ranges in characters, frecency from the
+  persist store's `services:apps.frecency`), `App.launch()` (`Exec` field
+  codes, a terminal for `Terminal=true`, detached with `setsid` and a
+  double fork); `apps::changed()` makes a running one read its entries
+  again, `apps::set_config` points it at test directories. The no-code
+  services (a3) run on the same contract: `custom::Custom`, one store per
+  declaration (`values`, a keyed list of untyped `Data` by field index,
+  and the id of its `custom::Spec`, which `custom::register` makes known
+  to the body), reading `dbus` properties (introspected;
+  `PropertiesChanged`; `rw` writes `Set` with the property's signature),
+  a `file` (inotify on it and its directory), a `listen` command's lines
+  or a `poll` command or file (only while visible) as `custom::Document`s
+  (JSON, `key=value` lines, or text). `Client::restart(rt)` (a changed
+  declaration: the run stops and starts again if read) and
+  `Client::stop_now(rt)` (a removed one) serve their reloads. `Data`
+  implements `Default` (null) and `SchemaType` (`any`).
   `strand_services::dbus` is what they share: `Daemon` (a bus name
   followed through `NameOwnerChanged`, its signals by match rule, checked
   against the current owner's unique name: a restarted daemon is read
@@ -2057,15 +2109,30 @@ the primitives, `Option`, `Vec` and derived types.
   record, which the checker saw); `write_item` passes the item's record
   name, the item and the path to `DynService::write_item`; `call` is the store's `fn` methods; `fetch` its async
   methods (every async call in a config reaches it);
-  `acquire_field`/`release_field` count readers per field.
+  `acquire_field`/`release_field` count readers per field. An async
+  call made while nothing reads the service waits for a reader before it
+  reaches it (a `let hits = apps.search(query)` only a closed launcher
+  shows never searches; decisions.md, wave4-a3).
+  `CustomHost` serves the config's no-code services: `declare` registers
+  a `custom::Custom` store per declaration (its spec from
+  `lower::CustomService`, relative `file` paths under the config
+  directory), each field a memo converting the untyped value to the
+  declared type (`custom::coerce`); `write` of an `rw` field is an item
+  write of its value; `restart`/`stop` restart or stop only that service.
+  `custom::BusIntrospector` is the compiler's `Introspect` over the
+  environment's buses (answers remembered 10 s); `custom::dbus_check()`
+  is the loader's extra check with it.
   `services::set_text` is `strand set` on a service's `rw` field
   (`brightness.level +5%`: a signed number is a step from the current
   value; `Real::set_text` starts a stopped service and waits up to
   500 ms for its first read first).
   `Composite` routes by service name (one member per name), an item's
   action or write by the record's name to the member whose
-  `item_records()` name it, and everything else (the clock and calendar, services no crate
-  serves yet, `declare`d custom services) to the `SchemaHost` fallback;
+  `item_records()` name it, `declare`d custom services to its
+  `CustomHost` (`set_custom`; without one, under `STRAND_MOCK`, the
+  fallback answers them at their defaults), and everything else (the
+  clock and calendar, services no crate serves yet) to the `SchemaHost`
+  fallback;
   `next_wake` is the earliest of all, `wake` reaches all. A service
   module added to `strand-services` (`Builtin`, `schemas()`) is served
   by `strand run` with no change here.
@@ -2129,7 +2196,14 @@ It does not depend on `strand-compiler` or `strand-core`.
   then register. Module-set membership is separate, so a
   module file registered for another role stays a module. Neither a
   referenced file nor its directory need exist yet. Cache sources come
-  through `watch_tree(dir, depth, CacheKind::{Apps, Icons, Fonts})`.
+  through `watch_tree(dir, depth, CacheKind::{Apps, Icons, Fonts})` (and
+  `watch_file(path, Role::Cache(kind))` for one file: GTK's settings).
+  `strand run`'s compiler worker takes them as `live::Job::Caches {
+  sources: live::cache_sources(), changed }` and calls `changed(kind)`
+  once per kind a batch touched (all three after an overflow); `strand
+  run` then tells the `apps` service (`apps::changed`), the icon lookup
+  (`strand_icons::invalidate`) and, on the main thread, the renderer
+  (`icons_changed`, `fonts_changed`).
   **Blocking:** `watch_file`, `set_referenced` and `watch_tree` wait for
   the watcher thread (watches synced; a new path given without a hash
   is read before they return, one given with a hash is compared later

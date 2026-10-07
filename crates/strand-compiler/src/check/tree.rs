@@ -2228,6 +2228,10 @@ impl<'a> Checker<'a> {
     pub(super) fn service_decl(&mut self, id: DefId, s: &'a ast::Service) -> hir::ServiceDecl {
         let kind = s.source.kind.name.as_str();
         let mut args = Vec::new();
+        // The evaluated source; cleared by any argument that is not a
+        // constant.
+        let mut constant = true;
+        let mut texts: Vec<Option<ConstArg>> = Vec::new();
         match kind {
             "dbus" => {
                 let bus = s.source.args.first();
@@ -2241,6 +2245,7 @@ impl<'a> Checker<'a> {
                             span,
                             "expected `system` or `session`",
                         );
+                        constant = false;
                     }
                 }
                 for (i, a) in s.source.args.iter().enumerate().skip(1) {
@@ -2252,7 +2257,9 @@ impl<'a> Checker<'a> {
                             "one too many",
                         );
                     }
-                    args.push(self.expect(a, &Ty::TEXT, "the bus name"));
+                    let e = self.expect(a, &Ty::TEXT, "the bus name");
+                    texts.push(const_arg(&e));
+                    args.push(e);
                 }
                 if s.source.args.len() < 2 {
                     self.error(
@@ -2262,6 +2269,7 @@ impl<'a> Checker<'a> {
                         "no bus name",
                     )
                     .help = Some("`from dbus system \"net.hadess.PowerProfiles\"`".into());
+                    constant = false;
                 }
             }
             "file" | "listen" | "poll" => {
@@ -2279,10 +2287,32 @@ impl<'a> Checker<'a> {
                     } else {
                         Ty::Union(vec![Ty::TEXT, Ty::list(Ty::TEXT)])
                     };
-                    args.push(self.expect(a, &want, &format!("`{kind}`")));
+                    let e = self.expect(a, &want, &format!("`{kind}`"));
+                    texts.push(const_arg(&e));
+                    args.push(e);
                 }
-                if kind != "file" {
+                if s.source.args.is_empty() {
+                    self.error(
+                        "check::missing_arg",
+                        format!(
+                            "a `{kind}` service needs {}",
+                            if kind == "file" {
+                                "its path"
+                            } else {
+                                "its command"
+                            }
+                        ),
+                        s.source.span,
+                        "nothing to read",
+                    );
+                    constant = false;
+                }
+                // A poll of a file (a path, no spaces) runs nothing.
+                let polls_file = kind == "poll"
+                    && matches!(texts.first(), Some(Some(ConstArg::Text(t))) if is_file_target(t));
+                if kind != "file" && !polls_file {
                     let program = s.source.args.first().and_then(first_program);
+                    let program = program.as_deref();
                     let in_block = s.body.items.iter().any(
                         |i| matches!(&i.kind, ItemKind::Permit(p) if p.capability.name == "exec"),
                     );
@@ -2304,7 +2334,25 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            _ => {}
+            _ => constant = false,
+        }
+        for (a, t) in s
+            .source
+            .args
+            .iter()
+            .skip(usize::from(kind == "dbus"))
+            .zip(&texts)
+        {
+            if t.is_none() {
+                self.error(
+                    "check::not_constant",
+                    "a service's source is fixed when the config loads: write it out",
+                    a.span,
+                    "not a constant",
+                )
+                .help = Some("a string (`\"…\"`), or a list of strings for a command".into());
+                constant = false;
+            }
         }
         let every = match (&s.source.every, kind) {
             (Some(e), "poll") => Some(self.expect(e, &Ty::DURATION, "`every`")),
@@ -2329,6 +2377,60 @@ impl<'a> Checker<'a> {
             }
             (None, _) => None,
         };
+        let interval = every.as_ref().and_then(const_duration);
+        if let (Some(e), None) = (&s.source.every, interval)
+            && kind == "poll"
+        {
+            self.error(
+                "check::not_constant",
+                "a poll's interval is fixed when the config loads: write it out",
+                e.span,
+                "not a constant duration above zero",
+            )
+            .help = Some("`every 5s`, `every 500ms`".into());
+        }
+        let spec = if !constant {
+            None
+        } else {
+            match (kind, texts.as_slice()) {
+                ("dbus", [Some(ConstArg::Text(name)), rest @ ..]) => {
+                    let system = matches!(
+                        s.source.args.first().map(|b| &b.kind),
+                        Some(ast::ExprKind::Name(n)) if n.name == "system"
+                    );
+                    let path = match rest.first() {
+                        Some(Some(ConstArg::Text(p))) => Some(p.clone()),
+                        _ => None,
+                    };
+                    Some(hir::SourceSpec::Dbus {
+                        system,
+                        name: name.clone(),
+                        path,
+                    })
+                }
+                ("file", [Some(ConstArg::Text(path))]) => {
+                    Some(hir::SourceSpec::File { path: path.clone() })
+                }
+                ("listen", [Some(arg)]) => {
+                    command_of(arg).map(|command| hir::SourceSpec::Listen { command })
+                }
+                ("poll", [Some(arg)]) => {
+                    let target = match arg {
+                        ConstArg::Text(t) if is_file_target(t) => {
+                            Some(hir::PollTarget::File(t.clone()))
+                        }
+                        _ => command_of(arg).map(hir::PollTarget::Command),
+                    };
+                    match (target, interval) {
+                        (Some(target), Some(every)) => {
+                            Some(hir::SourceSpec::Poll { target, every })
+                        }
+                        _ => None,
+                    }
+                }
+                _ => None,
+            }
+        };
         let mut fields = Vec::new();
         let rid = match self.defs[id.0 as usize].kind {
             DefKind::Service(r) => Some(r),
@@ -2346,10 +2448,13 @@ impl<'a> Checker<'a> {
                         .map(|d| d.ty.clone())
                 })
                 .unwrap_or(Ty::Error);
-            let source_key = match f.default.as_ref().map(|d| &d.kind) {
-                None => None,
-                Some(ast::ExprKind::String(s)) => Some(s.value.clone()),
-                Some(_) => f.default.as_ref().and_then(path_text),
+            let (source_key, key) = match f.default.as_ref().map(|d| &d.kind) {
+                None => (None, vec![f.name.name.clone()]),
+                Some(ast::ExprKind::String(s)) => (Some(s.value.clone()), vec![s.value.clone()]),
+                Some(_) => match f.default.as_ref().and_then(key_path) {
+                    Some(path) => (Some(path.join(".")), path),
+                    None => (None, vec![f.name.name.clone()]),
+                },
             };
             if let Some(d) = &f.default
                 && source_key.is_none()
@@ -2362,21 +2467,150 @@ impl<'a> Checker<'a> {
                 )
                 .help = Some("`profile: text rw = ActiveProfile`".into());
             }
+            if let Some(rw) = f.rw
+                && kind != "dbus"
+            {
+                self.error(
+                    "check::not_writable",
+                    format!("a `{kind}` service's fields cannot be written"),
+                    rw,
+                    "not writable",
+                )
+                .help = Some(
+                    "only a `dbus` service's fields can be `rw` (writing sets the property)".into(),
+                );
+            }
             fields.push(hir::ServiceField {
                 name: f.name.name.clone(),
                 span: f.name.span,
                 ty,
                 rw: f.rw.is_some(),
                 source_key,
+                key,
+                key_span: f.default.as_ref().map_or(f.name.span, |d| d.span),
             });
         }
         hir::ServiceDecl {
             def: id,
+            file: self.file(),
+            name_span: s.name.span,
+            source_span: s.source.span,
             source: kind.to_string(),
             args,
             every,
             fields,
+            spec,
         }
+    }
+}
+
+/// A source argument known when the config loads.
+enum ConstArg {
+    Text(String),
+    List(Vec<String>),
+}
+
+fn const_arg(e: &hir::Expr) -> Option<ConstArg> {
+    match &e.kind {
+        hir::ExprKind::Text(t) => Some(ConstArg::Text(t.clone())),
+        hir::ExprKind::List(items) => items
+            .iter()
+            .map(|i| match &i.kind {
+                hir::ExprKind::Text(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect::<Option<Vec<String>>>()
+            .map(ConstArg::List),
+        _ => None,
+    }
+}
+
+fn const_duration(e: &hir::Expr) -> Option<std::time::Duration> {
+    let hir::ExprKind::Number { value, unit } = &e.kind else {
+        return None;
+    };
+    let secs = match unit {
+        Some(ast::Unit::S) => *value,
+        Some(ast::Unit::Ms) => *value / 1000.0,
+        _ => return None,
+    };
+    (secs.is_finite() && secs > 0.0).then(|| std::time::Duration::from_secs_f64(secs))
+}
+
+/// A poll target that names a file: a path (`/…`, `~/…`, `./…`) with no
+/// whitespace. Anything else is a command line.
+pub(crate) fn is_file_target(t: &str) -> bool {
+    (t.starts_with('/') || t.starts_with("~/") || t.starts_with("./"))
+        && !t.chars().any(char::is_whitespace)
+}
+
+/// A command's arguments: a list as given, a string split into words
+/// (`"…"` and `'…'` group, `\` escapes; no shell runs it).
+fn command_of(arg: &ConstArg) -> Option<Vec<String>> {
+    let argv = match arg {
+        ConstArg::List(l) => l.clone(),
+        ConstArg::Text(t) => split_words(t),
+    };
+    (!argv.is_empty() && !argv[0].is_empty()).then_some(argv)
+}
+
+/// Split a command line into words as a shell would, without running
+/// one: whitespace separates, quotes group, a backslash escapes.
+pub fn split_words(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut started = false;
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            c if c.is_whitespace() => {
+                if started {
+                    out.push(std::mem::take(&mut cur));
+                    started = false;
+                }
+            }
+            '"' | '\'' => {
+                started = true;
+                for d in chars.by_ref() {
+                    if d == c {
+                        break;
+                    }
+                    cur.push(d);
+                }
+            }
+            '\\' => {
+                started = true;
+                if let Some(d) = chars.next() {
+                    cur.push(d);
+                }
+            }
+            c => {
+                started = true;
+                cur.push(c);
+            }
+        }
+    }
+    if started {
+        out.push(cur);
+    }
+    out
+}
+
+/// `= ActiveProfile`, `= a.b`: the key path a field reads.
+fn key_path(e: &ast::Expr) -> Option<Vec<String>> {
+    match &e.kind {
+        ast::ExprKind::Name(i) => Some(vec![i.name.clone()]),
+        ast::ExprKind::Field {
+            base,
+            name,
+            optional: false,
+        } => {
+            let mut p = key_path(base)?;
+            p.push(name.name.clone());
+            Some(p)
+        }
+        ast::ExprKind::Paren(inner) => key_path(inner),
+        _ => None,
     }
 }
 

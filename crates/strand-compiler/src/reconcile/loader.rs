@@ -103,6 +103,22 @@ pub struct Loader {
     /// The files the last compiling attempt read, and the problems it
     /// found (see [`Outcome::repeated`]).
     tried: Option<(Disk, Outcome)>,
+    /// Checks beyond the checker's, on each compile: `strand run`'s D-Bus
+    /// introspection of `from dbus` services ([`Loader::with_check`]).
+    extra: Option<ExtraCheck>,
+}
+
+/// A check run on each compiled config, adding diagnostics
+/// ([`Loader::with_check`]).
+pub struct ExtraCheck(pub Box<CheckFn>);
+
+/// What an [`ExtraCheck`] runs.
+pub type CheckFn = dyn Fn(&crate::Compiled) -> Vec<Diagnostic> + Send;
+
+impl std::fmt::Debug for ExtraCheck {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ExtraCheck")
+    }
 }
 
 /// Compile attempts per batch at most (each held-back file costs one per
@@ -127,7 +143,31 @@ impl Loader {
             cache_error: None,
             dirty: false,
             tried: None,
+            extra: None,
         }
+    }
+
+    /// Run `check` on every compiled config too (before boot): its
+    /// diagnostics count as the checker's (an error holds the file back).
+    /// `strand run` checks `from dbus` services against introspection
+    /// with it.
+    pub fn with_check(mut self, check: ExtraCheck) -> Self {
+        self.extra = Some(check);
+        self
+    }
+
+    /// Compile `map` with the schema and the extra check.
+    fn compile(&self, map: &SourceMap) -> crate::Compiled {
+        let mut c = crate::compile_with(map, &self.schema);
+        if let Some(extra) = &self.extra {
+            let more = (extra.0)(&c);
+            if !more.is_empty() {
+                c.diagnostics.extend(more);
+                c.diagnostics
+                    .sort_by_key(|d| (d.file(), d.primary_span().map_or(0, |s| s.start)));
+            }
+        }
+        c
     }
 
     /// The config directory.
@@ -186,7 +226,7 @@ impl Loader {
         // any, and take the saved files on top as far as they are
         // consistent.
         let all: BTreeSet<PathBuf> = self.disk.keys().cloned().collect();
-        let broken = crate::compile_with(&self.assemble(&all), &self.schema).errors() > 0;
+        let broken = self.compile(&self.assemble(&all)).errors() > 0;
         let cached = match broken {
             true => self.cache.as_ref().and_then(|c| c.load(&self.schema)),
             false => None,
@@ -199,9 +239,11 @@ impl Loader {
             map.add(p.display().to_string(), t.clone());
         }
         let started = Instant::now();
-        let Ok(build) = Build::compile_with(None, map, &self.schema) else {
+        let compiled = self.compile(&map);
+        if compiled.errors() > 0 {
             return self.reconcile(false);
-        };
+        }
+        let build = Build::lowered(None, map, &compiled, &self.schema);
         self.live = cached;
         self.last = Some(build);
         // Then the saved files on top of it, as far as they are
@@ -365,7 +407,7 @@ impl Loader {
     ) -> Outcome {
         let started = Instant::now();
         let full = self.assemble(&changed);
-        let compiled = crate::compile_with(&full, &self.schema);
+        let compiled = self.compile(&full);
         let mut out = Outcome {
             unreadable,
             ..Outcome::default()
@@ -396,7 +438,7 @@ impl Loader {
         let mut done: Option<(SourceMap, crate::Compiled)> = None;
         while !set.is_empty() && attempts < MAX_ATTEMPTS {
             let map = self.assemble(&set);
-            let c = crate::compile_with(&map, &self.schema);
+            let c = self.compile(&map);
             attempts += 1;
             if c.errors() == 0 {
                 done = Some((map, c));
@@ -425,7 +467,7 @@ impl Loader {
                 }
                 let mut s = set.clone();
                 s.remove(p);
-                let errors = crate::compile_with(&self.assemble(&s), &self.schema).errors();
+                let errors = self.compile(&self.assemble(&s)).errors();
                 attempts += 1;
                 if best.as_ref().is_none_or(|(e, _)| errors < *e) {
                     best = Some((errors, p.clone()));

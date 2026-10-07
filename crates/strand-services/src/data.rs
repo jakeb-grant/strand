@@ -38,9 +38,10 @@ impl Rgba {
 }
 
 /// A value of a schema type, by name.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub enum Data {
     /// `null`, and an absent optional.
+    #[default]
     Null,
     Bool(bool),
     Int(i64),
@@ -384,6 +385,14 @@ impl ToData for Data {
 impl FromData for Data {
     fn from_data(d: &Data) -> Result<Self, DataError> {
         Ok(d.clone())
+    }
+}
+
+/// Any value, untyped: what a no-code service reads before the language
+/// side converts it to the field's declared type ([`crate::custom`]).
+impl SchemaType for Data {
+    fn schema_type() -> String {
+        "any".to_string()
     }
 }
 

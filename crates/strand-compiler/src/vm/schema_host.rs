@@ -534,18 +534,19 @@ impl SchemaHost {
 }
 
 impl ServiceHost for SchemaHost {
-    fn declare(&self, rt: &Runtime, name: &str, record: RecordId) {
-        if !self.services.borrow().contains_key(name) {
-            self.add_service(rt, name, record);
+    fn declare(&self, rt: &Runtime, service: &crate::lower::CustomService, _types: &TypeTable) {
+        if !self.services.borrow().contains_key(&service.name) {
+            self.add_service(rt, &service.name, service.record);
         }
     }
 
-    fn restart(&self, rt: &Runtime, name: &str, record: RecordId, types: &TypeTable) {
+    fn restart(&self, rt: &Runtime, service: &crate::lower::CustomService, types: &TypeTable) {
         // Its old cells go (nobody reads them after the reload); the new
         // declaration's fields start at their defaults.
+        let name = service.name.as_str();
         self.drop_service(rt, name);
         let types = Rc::new(types.clone());
-        self.add_service_in(rt, name, record, &types);
+        self.add_service_in(rt, name, service.record, &types);
     }
 
     fn stop(&self, rt: &Runtime, name: &str) {

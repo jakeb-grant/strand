@@ -15,6 +15,9 @@ strand-scene.workspace = true
 strand-services.workspace = true
 # The icon lookup's cache, invalidated when an icon base directory changes.
 strand-icons.workspace = true
+# `from dbus` services checked against introspection (strand check, the
+# loader).
+strand-introspect.workspace = true
 strand-surface.workspace = true
 strand-text.workspace = true
 # The last palette and the portal's values written off the logic thread.

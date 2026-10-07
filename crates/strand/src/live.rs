@@ -211,7 +211,8 @@ impl Worker {
                 None
             }
         };
-        let mut loader = Loader::new(dir, crate::services::schema().clone(), cache);
+        let mut loader = Loader::new(dir, crate::services::schema().clone(), cache)
+            .with_check(crate::services::custom::dbus_check());
         let boot = loader.boot();
         if let Some(e) = loader.cache_error() {
             log::warn!("last-good cache: {e}");

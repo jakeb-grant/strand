@@ -884,3 +884,189 @@ fn rw_fields_of_service_items_are_writable() {
            }\n\
          }\n");
 }
+
+// ---------------------------------------------------------------------------
+// No-code services
+
+fn codes(src: &str) -> Vec<&'static str> {
+    let (out, _) = compile_files(&[("a.strand", src.to_string())]);
+    out.diagnostics.iter().map(|d| d.code).collect()
+}
+
+/// design.md: `from dbus`, `from file`, `from listen` and `from poll`
+/// sources are constants evaluated at load, lowered with each field's
+/// key; running a command needs `permit exec` (a poll of a file runs
+/// nothing), and only a D-Bus property can be `rw`.
+#[test]
+fn no_code_service_sources_are_constant_and_lowered() {
+    let src = r#"
+permit exec "sensors", "playerctl", "my tool"
+service ppd from dbus system "net.hadess.PowerProfiles" { profile: text rw = ActiveProfile }
+service ups from dbus session "org.example.Thing" "/obj" { level: float = Level }
+service mood from file "~/.cache/mood.json" { level: int = mood.level; name: text? = "Display Name" }
+service music from listen ["playerctl", "-F", "metadata"] { title: text? }
+service temp from poll ["sensors", "-j"] every 5s { cpu: float = package }
+service tool from poll "'my tool' --json a\\ b" every 500ms { x: int }
+service heat from poll "/sys/class/thermal/thermal_zone0/temp" every 2s { milli: int }
+bar B { text join(" ", ppd.profile, ups.level, mood.level, music.title ?? "", temp.cpu, tool.x, heat.milli) }
+"#;
+    let out = one(src);
+    let program =
+        strand_compiler::lower::lower(&out.program, strand_compiler::schema::Schema::builtin());
+    let svc = |name: &str| {
+        program
+            .services
+            .values()
+            .find(|s| s.name == name)
+            .unwrap_or_else(|| panic!("{name} lowered"))
+            .clone()
+    };
+    use std::time::Duration;
+    use strand_compiler::hir::{PollTarget, SourceSpec};
+    assert_eq!(
+        svc("ppd").source,
+        SourceSpec::Dbus {
+            system: true,
+            name: "net.hadess.PowerProfiles".into(),
+            path: None
+        }
+    );
+    assert_eq!(svc("ppd").fields[0].key, ["ActiveProfile"]);
+    assert!(svc("ppd").fields[0].rw);
+    assert_eq!(
+        svc("ups").source,
+        SourceSpec::Dbus {
+            system: false,
+            name: "org.example.Thing".into(),
+            path: Some("/obj".into())
+        }
+    );
+    assert_eq!(
+        svc("mood").source,
+        SourceSpec::File {
+            path: "~/.cache/mood.json".into()
+        }
+    );
+    assert_eq!(svc("mood").fields[0].key, ["mood", "level"]);
+    assert_eq!(svc("mood").fields[1].key, ["Display Name"]);
+    assert_eq!(
+        svc("music").source,
+        SourceSpec::Listen {
+            command: vec!["playerctl".into(), "-F".into(), "metadata".into()]
+        }
+    );
+    assert_eq!(svc("music").fields[0].key, ["title"], "its own name");
+    assert_eq!(
+        svc("temp").source,
+        SourceSpec::Poll {
+            target: PollTarget::Command(vec!["sensors".into(), "-j".into()]),
+            every: Duration::from_secs(5)
+        }
+    );
+    assert_eq!(
+        svc("tool").source,
+        SourceSpec::Poll {
+            target: PollTarget::Command(vec!["my tool".into(), "--json".into(), "a b".into()]),
+            every: Duration::from_millis(500)
+        }
+    );
+    assert_eq!(
+        svc("heat").source,
+        SourceSpec::Poll {
+            target: PollTarget::File("/sys/class/thermal/thermal_zone0/temp".into()),
+            every: Duration::from_secs(2)
+        }
+    );
+
+    // A poll of a file needs no permit; a command does.
+    assert_eq!(
+        codes("service u from poll \"uptime -p\" every 60s { t: text }"),
+        ["check::no_permit"]
+    );
+    assert!(codes("service h from poll \"/sys/x\" every 1s { a: int }").is_empty());
+    // Sources are constants.
+    assert_eq!(
+        codes("let p = \"/tmp/x\"\nservice f from file p { a: int }"),
+        ["check::not_constant"]
+    );
+    assert_eq!(
+        codes("permit exec\nservice f from poll [\"a\"] every 0s { a: int }"),
+        ["check::not_constant"]
+    );
+    // Only D-Bus properties are written.
+    assert_eq!(
+        codes("service f from file \"/tmp/x\" { a: int rw }"),
+        ["check::not_writable"]
+    );
+}
+
+/// `from dbus` fields against the object's introspection: a missing
+/// property (with a did-you-mean), a type that does not convert, `rw` on
+/// a read-only property, and a bus that cannot be reached (a warning, the
+/// config still loads).
+#[test]
+fn dbus_services_are_checked_against_introspection() {
+    use strand_compiler::check::dbus::{BusProperty, Introspect, check};
+    struct Fake(Result<Vec<BusProperty>, String>);
+    impl Introspect for Fake {
+        fn properties(
+            &self,
+            system: bool,
+            name: &str,
+            path: &str,
+        ) -> Result<Vec<BusProperty>, String> {
+            assert!(system);
+            assert_eq!(name, "net.hadess.PowerProfiles");
+            assert_eq!(path, "/net/hadess/PowerProfiles");
+            self.0.clone()
+        }
+    }
+    let prop = |name: &str, sig: &str, writable: bool| BusProperty {
+        interface: "net.hadess.PowerProfiles".into(),
+        name: name.into(),
+        signature: sig.into(),
+        writable,
+    };
+    let ppd = Fake(Ok(vec![
+        prop("ActiveProfile", "s", true),
+        prop("PerformanceDegraded", "s", false),
+        prop("Profiles", "aa{sv}", false),
+    ]));
+    let src = |fields: &str| {
+        format!(
+            "service ppd from dbus system \"net.hadess.PowerProfiles\" {{ {fields} }}\nbar B {{ text \"x\" }}\n"
+        )
+    };
+    let run = |fields: &str, intro: &Fake| {
+        let (out, _) = compile_files(&[("a.strand", src(fields))]);
+        assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
+        check(&out.program, intro)
+    };
+    assert!(
+        run(
+            "profile: text rw = ActiveProfile; degraded: text = PerformanceDegraded",
+            &ppd
+        )
+        .is_empty()
+    );
+    let d = run("profile: text rw = ActiveProfil", &ppd);
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert_eq!(d[0].code, "check::dbus_property");
+    assert_eq!(d[0].help.as_deref(), Some("did you mean `ActiveProfile`?"));
+    assert_eq!(d[0].suggestions[0].replacement, "ActiveProfile");
+    let d = run("profile: int = ActiveProfile", &ppd);
+    assert_eq!(d[0].code, "check::dbus_type", "{d:?}");
+    assert!(d[0].message.contains("`s`"), "{}", d[0].message);
+    let d = run("degraded: text rw = PerformanceDegraded", &ppd);
+    assert_eq!(d[0].code, "check::dbus_read_only", "{d:?}");
+    let down = Fake(Err("cannot reach the bus: no such file".into()));
+    let d = run("profile: text rw = ActiveProfile", &down);
+    assert_eq!(d.len(), 1);
+    assert_eq!(d[0].code, "check::dbus_unchecked");
+    assert!(!d[0].is_error(), "a warning: the config still loads");
+    assert!(
+        d[0].message.contains("cannot reach the bus"),
+        "{}",
+        d[0].message
+    );
+}

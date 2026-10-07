@@ -34,19 +34,25 @@ pub enum ActionTarget<'a> {
 /// (or for `<->`, outside any) and must not block: a real service sends
 /// them to its own thread.
 pub trait ServiceHost {
-    /// A custom service the program declares (`service ppd from dbus …`),
-    /// with its record. Called once at instantiation.
-    fn declare(&self, _rt: &Runtime, _name: &str, _record: crate::ty::RecordId) {}
+    /// A custom service the program declares (`service ppd from dbus …`):
+    /// its name, record (of `types`), source and fields. Called once at
+    /// instantiation.
+    fn declare(
+        &self,
+        _rt: &Runtime,
+        _service: &crate::lower::CustomService,
+        _types: &crate::ty::TypeTable,
+    ) {
+    }
 
-    /// A live reload changed (or added) custom service `name`: restart
-    /// it with `record`, a record of `types` (the new program's table).
-    /// Only that service restarts; built-ins never do. The default does
-    /// nothing.
+    /// A live reload changed (or added) a custom service's declaration:
+    /// restart it as `service` now says, its record one of `types` (the
+    /// new program's table). Only that service restarts; built-ins never
+    /// do. The default does nothing.
     fn restart(
         &self,
         _rt: &Runtime,
-        _name: &str,
-        _record: crate::ty::RecordId,
+        _service: &crate::lower::CustomService,
         _types: &crate::ty::TypeTable,
     ) {
     }

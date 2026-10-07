@@ -411,6 +411,12 @@ impl Lowerer<'_> {
                 }
             }
             ExprKind::Def(d) => {
+                // A custom service (`service ppd from dbus …`) is held by
+                // its readers, as a builtin one is.
+                if matches!(self.hir.def(*d).kind, DefKind::Service(_)) {
+                    let name = self.hir.def(*d).name.clone();
+                    self.note_service(&name);
+                }
                 c.emit(Op::Def(*d), span);
             }
             ExprKind::Service(s) => {

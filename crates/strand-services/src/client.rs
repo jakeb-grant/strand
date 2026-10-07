@@ -1104,6 +1104,35 @@ impl<S: Service> Client<S> {
         self.0.refs.get()
     }
 
+    /// Run it afresh: the current run (if any) stops now, and a new one
+    /// starts at once when something reads it (a no-code service whose
+    /// declaration a reload changed). Its cells keep their values until
+    /// the new run reports.
+    pub fn restart(&self, rt: &Runtime) {
+        self.0.disarm_retry(rt);
+        self.0.failures.set(0);
+        self.0.stop();
+        self.0.cells.forget_echoes(rt);
+        if self.0.refs.get() > 0 {
+            self.0.disarm_stop(rt);
+            self.0.start(rt);
+        } else {
+            self.0.disarm_stop(rt);
+        }
+    }
+
+    /// Stop it now, whoever reads it (a no-code service whose declaration
+    /// a reload removed): no grace, no retry; a notice it raised is
+    /// resolved.
+    pub fn stop_now(&self, rt: &Runtime) {
+        self.0.disarm_retry(rt);
+        self.0.disarm_stop(rt);
+        self.0.failures.set(0);
+        self.0.stop();
+        self.0.resolve();
+        self.0.cells.forget_echoes(rt);
+    }
+
     /// The service is running: started, not stopped, and its body has
     /// not ended.
     pub fn running(&self) -> bool {

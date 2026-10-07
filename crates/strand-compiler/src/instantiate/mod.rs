@@ -621,7 +621,7 @@ impl Storage {
 }
 
 /// A value of type `ty` written as text (`strand set`).
-fn parse_text(types: &crate::ty::TypeTable, ty: &crate::ty::Ty, text: &str) -> Option<Value> {
+pub fn parse_text(types: &crate::ty::TypeTable, ty: &crate::ty::Ty, text: &str) -> Option<Value> {
     use crate::ty::{Prim, Ty};
     use crate::vm::Num;
     if let Ty::Optional(inner) = ty {
@@ -736,8 +736,8 @@ impl Instance {
         host: Rc<dyn ServiceHost>,
         storage: Storage,
     ) -> Instance {
-        for (name, record) in program.services.values() {
-            host.declare(rt, name, *record);
+        for svc in program.services.values() {
+            host.declare(rt, svc, &program.types);
         }
         let warnings = program.warnings.clone();
         let vm = Vm::new(program, host);
@@ -887,9 +887,9 @@ impl Instance {
         let host = old.vm.host.clone();
         // Only custom services whose declaration changed (or that are
         // new) restart; removed ones stop.
-        for (name, record) in build.program.services.values() {
-            if changed_services.contains(name) {
-                host.restart(&rt, name, *record, &build.program.types);
+        for svc in build.program.services.values() {
+            if changed_services.contains(&svc.name) {
+                host.restart(&rt, svc, &build.program.types);
             }
         }
         for name in &removed_services {
@@ -1102,9 +1102,9 @@ impl Instance {
             Some(h) => build.hashes.changed_services(h),
             None => Vec::new(),
         };
-        for (name, record) in build.program.services.values() {
-            if changed.contains(name) {
-                host.restart(&self.rt, name, *record, &build.program.types);
+        for svc in build.program.services.values() {
+            if changed.contains(&svc.name) {
+                host.restart(&self.rt, svc, &build.program.types);
             }
         }
         if let Some(h) = &self.ctx.hashes {

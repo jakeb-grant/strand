@@ -2057,6 +2057,7 @@ dependencies = [
  "strand-compiler",
  "strand-core",
  "strand-icons",
+ "strand-introspect",
  "strand-render",
  "strand-scene",
  "strand-services",
@@ -2112,6 +2113,7 @@ dependencies = [
  "lsp-types",
  "serde_json",
  "strand-compiler",
+ "strand-introspect",
  "strand-services-schema",
 ]
 
@@ -2166,8 +2168,10 @@ dependencies = [
  "png",
  "rustix",
  "serde",
+ "serde_json",
  "strand-core",
  "strand-icons",
+ "strand-introspect",
  "strand-services-macros",
  "strand-services-schema",
  "strand-watch",

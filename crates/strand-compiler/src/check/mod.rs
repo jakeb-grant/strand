@@ -23,6 +23,7 @@
 
 mod collect;
 mod cycles;
+pub mod dbus;
 mod expr;
 mod prepin;
 mod stmt;

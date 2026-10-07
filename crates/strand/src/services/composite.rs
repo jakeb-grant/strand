@@ -13,7 +13,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::SystemTime;
 
-use strand_compiler::ty::{RecordId, TypeTable};
+use strand_compiler::lower::CustomService;
+use strand_compiler::ty::TypeTable;
 use strand_compiler::vm::host::{ActionTarget, Fetch, PathSeg, ServiceHost};
 use strand_compiler::vm::schema_host::SchemaHost;
 use strand_compiler::vm::{Value, ValueKey};
@@ -28,6 +29,9 @@ pub struct Composite {
     /// take them.
     by_item: HashMap<String, usize>,
     fallback: Rc<SchemaHost>,
+    /// The config's no-code services (`service … from dbus|file|listen|
+    /// poll`), when the real services run.
+    custom: Option<Rc<super::CustomHost>>,
     types: Rc<TypeTable>,
 }
 
@@ -49,8 +53,15 @@ impl Composite {
             by_name: HashMap::new(),
             by_item: HashMap::new(),
             fallback,
+            custom: None,
             types,
         }
+    }
+
+    /// Serve declared custom services with `host` (else the fallback
+    /// answers them at their defaults).
+    pub fn set_custom(&mut self, host: Rc<super::CustomHost>) {
+        self.custom = Some(host);
     }
 
     /// Add `host`, serving `names` and the item writes and actions of
@@ -78,6 +89,17 @@ impl Composite {
     fn route(&self, service: &str) -> &dyn ServiceHost {
         match self.by_name.get(service) {
             Some(&i) => &*self.members[i],
+            None => match &self.custom {
+                Some(c) if c.serves(service) => &**c,
+                _ => &*self.fallback,
+            },
+        }
+    }
+
+    /// Where custom service declarations go.
+    fn declarer(&self) -> &dyn ServiceHost {
+        match &self.custom {
+            Some(c) => &**c,
             None => &*self.fallback,
         }
     }
@@ -99,16 +121,16 @@ impl Composite {
 }
 
 impl ServiceHost for Composite {
-    fn declare(&self, rt: &Runtime, name: &str, record: RecordId) {
-        self.route(name).declare(rt, name, record);
+    fn declare(&self, rt: &Runtime, service: &CustomService, types: &TypeTable) {
+        self.declarer().declare(rt, service, types);
     }
 
-    fn restart(&self, rt: &Runtime, name: &str, record: RecordId, types: &TypeTable) {
-        self.route(name).restart(rt, name, record, types);
+    fn restart(&self, rt: &Runtime, service: &CustomService, types: &TypeTable) {
+        self.declarer().restart(rt, service, types);
     }
 
     fn stop(&self, rt: &Runtime, name: &str) {
-        self.route(name).stop(rt, name);
+        self.declarer().stop(rt, name);
     }
 
     fn read(&self, rt: &Runtime, service: &str, field: &str) -> Result<Value, Error> {

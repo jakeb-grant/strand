@@ -41,6 +41,7 @@ pub mod brightness;
 pub mod bus;
 mod client;
 pub mod cpu;
+pub mod custom;
 mod cx;
 mod data;
 pub mod dbus;

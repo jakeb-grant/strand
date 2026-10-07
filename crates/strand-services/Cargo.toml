@@ -17,7 +17,8 @@ strand-services-schema.workspace = true
 strand-watch.workspace = true
 log = { version = "0.4.34", features = ["std"] }
 # `net`: the backlight watch (inotify) on the runtime's reactor.
-tokio = { version = "1.53", features = ["rt", "macros", "sync", "time", "net"] }
+# `process`, `io-util`: the commands of no-code `listen` and `poll` services.
+tokio = { version = "1.53", features = ["rt", "macros", "sync", "time", "net", "process", "io-util"] }
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 # Streams of signals (zbus's own `futures-lite` streams).
 futures-lite = { version = "2.6", default-features = false, features = ["std"] }
@@ -38,6 +39,10 @@ nucleo = "0.5.0"
 # The icon theme lookup the renderer uses: an app's icon is checked
 # against it.
 strand-icons.workspace = true
+# No-code services: documents that are JSON, and their D-Bus objects'
+# introspection.
+serde_json = "1.0.151"
+strand-introspect.workspace = true
 # `apps` launches detached (setsid and a second fork before exec).
 libc = "0.2.190"
 

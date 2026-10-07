@@ -122,7 +122,15 @@ impl Analysis {
             uris.push(f.uri);
             stamps.extend(f.disk);
         }
-        let compiled = strand_compiler::compile_with(&map, &schema);
+        let mut compiled = strand_compiler::compile_with(&map, &schema);
+        // `from dbus` services against the bus's introspection (answers
+        // remembered a while: one bus call per service, not per edit).
+        compiled
+            .diagnostics
+            .extend(strand_compiler::check::dbus::check(
+                &compiled.program,
+                introspector(),
+            ));
         Self {
             key,
             map,
@@ -492,5 +500,57 @@ impl Workspace {
                 (inputs, dirs)
             }
         }
+    }
+}
+
+/// D-Bus introspection on the environment's buses, answers (failures too)
+/// remembered for 10 s.
+#[derive(Debug, Default)]
+struct Introspector {
+    seen: Mutex<std::collections::HashMap<Object, Seen>>,
+}
+
+type Answer = Result<Vec<strand_compiler::check::dbus::BusProperty>, String>;
+
+/// Bus (system?), name and path.
+type Object = (bool, String, String);
+
+/// When it was asked, and the answer.
+type Seen = (std::time::Instant, Answer);
+
+fn introspector() -> &'static Introspector {
+    static I: std::sync::OnceLock<Introspector> = std::sync::OnceLock::new();
+    I.get_or_init(Introspector::default)
+}
+
+impl strand_compiler::check::dbus::Introspect for Introspector {
+    fn properties(&self, system: bool, name: &str, path: &str) -> Answer {
+        let key = (system, name.to_string(), path.to_string());
+        if let Ok(seen) = self.seen.lock()
+            && let Some((at, answer)) = seen.get(&key)
+            && at.elapsed() < std::time::Duration::from_secs(10)
+        {
+            return answer.clone();
+        }
+        let bus = if system {
+            strand_introspect::Bus::System
+        } else {
+            strand_introspect::Bus::Session
+        };
+        let answer: Answer = strand_introspect::properties(&bus, name, path).map(|props| {
+            props
+                .into_iter()
+                .map(|p| strand_compiler::check::dbus::BusProperty {
+                    interface: p.interface,
+                    name: p.name,
+                    signature: p.signature,
+                    writable: p.writable,
+                })
+                .collect()
+        });
+        if let Ok(mut seen) = self.seen.lock() {
+            seen.insert(key, (std::time::Instant::now(), answer.clone()));
+        }
+        answer
     }
 }

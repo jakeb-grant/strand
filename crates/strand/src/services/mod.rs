@@ -15,6 +15,7 @@
 mod adapter;
 mod composite;
 pub mod convert;
+pub mod custom;
 
 use std::rc::Rc;
 use std::sync::OnceLock;
@@ -27,6 +28,7 @@ use strand_services::{Builtin, Buses, Services};
 
 pub use adapter::StoreHost;
 pub use composite::Composite;
+pub use custom::CustomHost;
 
 /// The schema `strand check` and `strand run` check against: the builtin
 /// one with the linked service crates' declarations in place of their
@@ -171,6 +173,8 @@ pub struct Real {
     pub builtin: Builtin,
     /// The host `Instance` gets.
     pub host: Rc<Composite>,
+    /// The config's no-code services.
+    pub custom: Rc<CustomHost>,
     stores: Vec<Rc<StoreHost>>,
     types: Rc<TypeTable>,
 }
@@ -209,10 +213,13 @@ impl Real {
             host.add(store.clone(), &[store.name()], &items);
             stores.push(store);
         }
+        let custom = Rc::new(CustomHost::new(services.clone(), None));
+        host.set_custom(custom.clone());
         Real {
             services,
             builtin,
             host: Rc::new(host),
+            custom,
             stores,
             types,
         }
@@ -244,6 +251,7 @@ impl Real {
     /// the stores' cells.
     pub fn shutdown(&self, rt: &Runtime) {
         self.services.shutdown();
+        self.custom.dispose(rt);
         for s in &self.stores {
             s.dispose(rt);
         }
@@ -1684,6 +1692,420 @@ service shelf {
             );
             host.release(&rt, "tally");
             services.shutdown();
+        }
+    }
+
+    /// No-code services (design.md: `service … from dbus|file|listen|poll`)
+    /// through `strand run`'s composite host: read, written, followed,
+    /// polled only while read, and restarted alone by a reload.
+    mod custom_services {
+        use std::path::Path;
+
+        use strand_compiler::reconcile::Build;
+        use strand_compiler::vm::host::PathSeg;
+        use strand_services::testing::{DbusMock, PrivateBus};
+
+        use super::*;
+
+        /// A config on the real services, mounted from a build (so a
+        /// reload can follow).
+        struct Live {
+            rt: Runtime,
+            real: Real,
+            inst: Instance,
+            build: Build,
+            now: Duration,
+        }
+
+        fn build(src: &str, prev: Option<&Build>) -> Build {
+            let mut map = SourceMap::new();
+            map.add("svc.strand", src.to_string());
+            match Build::compile_with(prev, map, schema()) {
+                Ok(b) => b,
+                Err(d) => panic!("{d:#?}"),
+            }
+        }
+
+        impl Live {
+            fn boot(src: &str, buses: Buses) -> Live {
+                let b = build(src, None);
+                let rt = Runtime::new();
+                let fallback = Rc::new(SchemaHost::new(&rt, &b.program.types, None));
+                let screen = fallback.record(
+                    "Screen",
+                    &[
+                        ("id", Value::text("Mock | DP-1 | Display")),
+                        ("name", Value::text("DP-1")),
+                    ],
+                );
+                fallback
+                    .set(&rt, "screens.all", Value::list(vec![screen]))
+                    .unwrap();
+                let real = Real::start(&rt, &b.program.types, buses, fallback, || {});
+                let inst = Instance::from_build(&rt, &b, real.host.clone(), Storage::none());
+                let mut live = Live {
+                    rt,
+                    real,
+                    inst,
+                    build: b,
+                    now: Duration::ZERO,
+                };
+                live.tick(Duration::ZERO);
+                live
+            }
+
+            fn tick(&mut self, by: Duration) {
+                self.real.services.pump(&self.rt);
+                self.now += by;
+                let u = self.inst.tick(self.now);
+                assert!(u.errors.is_empty(), "{:?}", u.errors);
+            }
+
+            fn value(&self, service: &str, field: &str) -> Value {
+                self.real.host.read(&self.rt, service, field).unwrap()
+            }
+
+            fn until(&mut self, what: &str, done: impl Fn(&Live) -> bool) {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !done(self) {
+                    assert!(
+                        Instant::now() < deadline,
+                        "timed out: {what}; {:?}; {:?}; {:?}",
+                        self.real.services.take_diagnostics(),
+                        self.real.custom,
+                        self.real.custom.debug_state(&self.rt)
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                    self.tick(Duration::ZERO);
+                }
+            }
+
+            fn reload(&mut self, src: &str) {
+                let b = build(src, Some(&self.build));
+                self.inst.reload(&b);
+                self.build = b;
+                self.tick(Duration::ZERO);
+            }
+        }
+
+        impl Drop for Live {
+            fn drop(&mut self) {
+                self.inst.shutdown();
+                self.real.shutdown(&self.rt);
+            }
+        }
+
+        fn temp(tag: &str) -> std::path::PathBuf {
+            let d =
+                std::env::temp_dir().join(format!("strand-custom-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&d);
+            std::fs::create_dir_all(&d).unwrap();
+            d
+        }
+
+        /// Written whole, as editors and tools save.
+        fn save(path: &Path, text: &str) {
+            let tmp = path.with_extension("tmp");
+            std::fs::write(&tmp, text).unwrap();
+            std::fs::rename(&tmp, path).unwrap();
+        }
+
+        /// `from file`: JSON read by key path into the declared types,
+        /// followed through atomic saves and removal, with no polling.
+        #[test]
+        fn a_file_service_follows_its_file() {
+            let dir = temp("file");
+            let file = dir.join("mood.json");
+            save(
+                &file,
+                r#"{"mood": {"level": 3}, "name": "calm", "temp": "41.5"}"#,
+            );
+            let src = format!(
+                "service mood from file \"{}\" {{ level: int = mood.level; name: text; temp: float; gone: text? = nope }}\nbar B {{ text mood.name }}\n",
+                file.display()
+            );
+            let mut live = Live::boot(&src, Buses::none());
+            live.until("the file read", |l| {
+                l.value("mood", "level") == Value::int(3)
+            });
+            assert_eq!(live.value("mood", "name"), Value::text("calm"));
+            assert_eq!(
+                live.value("mood", "temp"),
+                Value::float(41.5),
+                "text to float"
+            );
+            assert_eq!(live.value("mood", "gone"), Value::Null);
+            save(&file, r#"{"mood": {"level": 5}, "name": "busy"}"#);
+            live.until("the save followed", |l| {
+                l.value("mood", "level") == Value::int(5)
+            });
+            assert_eq!(live.value("mood", "name"), Value::text("busy"));
+            std::fs::remove_file(&file).unwrap();
+            live.until("the removal followed", |l| {
+                l.value("mood", "level") == Value::int(0)
+            });
+            assert_eq!(live.value("mood", "name"), Value::text(""));
+            let client = live.real.custom.client("mood").unwrap();
+            assert_eq!(client.starts(), 1);
+            let reports = client.reports();
+            std::thread::sleep(Duration::from_millis(300));
+            live.tick(Duration::ZERO);
+            assert_eq!(
+                client.reports(),
+                reports,
+                "nothing changes, nothing reported"
+            );
+            drop(live);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// `from poll`: the command runs every interval only while a
+        /// reader is visible; `from listen`: each line a command prints is
+        /// a document, and the command ends with the service.
+        #[test]
+        fn poll_runs_only_while_read_and_listen_reads_lines() {
+            let dir = temp("poll");
+            let runs = dir.join("runs");
+            let value = dir.join("value");
+            std::fs::write(&value, "7\n").unwrap();
+            let src = format!(
+                "permit exec \"sh\"\nexport state o = true\nservice p from poll [\"sh\", \"-c\", \"echo run >> {runs}; cat {value}\"] every 100ms {{ n: int }}\nservice l from listen [\"sh\", \"-c\", \"echo '{{\\\"a\\\": 1}}'; echo a=2; echo b=x; sleep 30\"] {{ a: int; b: text }}\npanel P {{ open: <-> o; text join(\" \", p.n, l.a, l.b) }}\n",
+                runs = runs.display(),
+                value = value.display()
+            );
+            let mut live = Live::boot(&src, Buses::none());
+            live.until("polled", |l| l.value("p", "n") == Value::int(7));
+            live.until("several polls", |_| {
+                std::fs::read_to_string(&runs)
+                    .unwrap_or_default()
+                    .lines()
+                    .count()
+                    >= 3
+            });
+            live.until("lines read", |l| {
+                l.value("l", "a") == Value::int(2) && l.value("l", "b") == Value::text("x")
+            });
+            // Hidden: polling stops at once (the service lives on for the
+            // grace).
+            live.inst.set("svc.o", Value::Bool(false)).unwrap();
+            live.tick(Duration::ZERO);
+            std::thread::sleep(Duration::from_millis(150));
+            let count = std::fs::read_to_string(&runs).unwrap().lines().count();
+            std::thread::sleep(Duration::from_millis(500));
+            assert_eq!(
+                std::fs::read_to_string(&runs).unwrap().lines().count(),
+                count,
+                "no polls while hidden"
+            );
+            // Shown again: polling resumes.
+            live.inst.set("svc.o", Value::Bool(true)).unwrap();
+            live.tick(Duration::ZERO);
+            live.until("polling again", |_| {
+                std::fs::read_to_string(&runs).unwrap().lines().count() > count
+            });
+            drop(live);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// A reload that changes one custom service's declaration
+        /// restarts only it; one that removes it stops it; the other keeps
+        /// running.
+        #[test]
+        fn a_reload_restarts_only_the_changed_custom_service() {
+            let dir = temp("reload");
+            let (a, b) = (dir.join("a"), dir.join("b"));
+            save(&a, "1");
+            save(&b, "2");
+            let src = |b_key: &str, with_b: bool| {
+                let mut s = format!("service fa from file \"{}\" {{ x: int }}\n", a.display());
+                if with_b {
+                    s.push_str(&format!(
+                        "service fb from file \"{}\" {{ {b_key}: int }}\nbar B {{ text join(\" \", fa.x, fb.{b_key}) }}\n",
+                        b.display()
+                    ));
+                } else {
+                    s.push_str("bar B { text join(\" \", fa.x) }\n");
+                }
+                s
+            };
+            let mut live = Live::boot(&src("y", true), Buses::none());
+            live.until("both read", |l| {
+                l.value("fa", "x") == Value::int(1) && l.value("fb", "y") == Value::int(2)
+            });
+            let ca = live.real.custom.client("fa").unwrap();
+            let cb = live.real.custom.client("fb").unwrap();
+            assert_eq!((ca.starts(), cb.starts()), (1, 1));
+            live.reload(&src("z", true));
+            live.until("the renamed field read", |l| {
+                l.value("fb", "z") == Value::int(2)
+            });
+            assert_eq!(cb.starts(), 2, "the changed service restarted");
+            assert_eq!((ca.starts(), ca.stops()), (1, 0), "the other did not");
+            live.reload(&src("z", false));
+            assert!(!cb.running(), "a removed service stops");
+            assert!(live.real.custom.client("fb").is_none());
+            assert_eq!((ca.starts(), ca.stops()), (1, 0));
+            assert_eq!(live.value("fa", "x"), Value::int(1));
+            drop(live);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// design.md's `service ppd from dbus system
+        /// "net.hadess.PowerProfiles" { profile: text rw = ActiveProfile }`
+        /// against python-dbusmock's power-profiles-daemon: checked against
+        /// its introspection, read, written through `Set`, and following
+        /// the property when something else changes it.
+        #[test]
+        fn the_design_ppd_service_on_a_mock_power_profiles_daemon() {
+            let Some(bus) = PrivateBus::start() else {
+                return;
+            };
+            let Some(_ppd) = DbusMock::start(
+                &bus,
+                "power_profiles_daemon",
+                true,
+                None,
+                "net.hadess.PowerProfiles",
+            ) else {
+                return;
+            };
+            let src = "service ppd from dbus system \"net.hadess.PowerProfiles\" { profile: text rw = ActiveProfile; degraded: text = PerformanceDegraded }\nbar B { text ppd.profile }\n";
+            // The check against introspection, on the mock's bus.
+            let address = match bus.buses().system {
+                strand_services::Bus::Address(a) => a,
+                other => panic!("{other:?}"),
+            };
+            struct OnBus(String);
+            impl strand_compiler::check::dbus::Introspect for OnBus {
+                fn properties(
+                    &self,
+                    _system: bool,
+                    name: &str,
+                    path: &str,
+                ) -> Result<Vec<strand_compiler::check::dbus::BusProperty>, String>
+                {
+                    let props = strand_introspect::properties(
+                        &strand_introspect::Bus::Address(self.0.clone()),
+                        name,
+                        path,
+                    )?;
+                    Ok(props
+                        .into_iter()
+                        .map(|p| strand_compiler::check::dbus::BusProperty {
+                            interface: p.interface,
+                            name: p.name,
+                            signature: p.signature,
+                            writable: p.writable,
+                        })
+                        .collect())
+                }
+            }
+            let check = |src: &str| {
+                let mut map = SourceMap::new();
+                map.add("svc.strand", src.to_string());
+                let c = strand_compiler::compile_with(&map, schema());
+                strand_compiler::check::dbus::check(&c.program, &OnBus(address.clone()))
+            };
+            assert!(check(src).is_empty(), "{:?}", check(src));
+            let bad = check(&src.replace("= ActiveProfile", "= ActiveProfil"));
+            assert_eq!(bad[0].code, "check::dbus_property", "{bad:?}");
+            assert_eq!(bad[0].suggestions[0].replacement, "ActiveProfile");
+
+            let mut live = Live::boot(src, bus.buses());
+            live.until("read", |l| {
+                l.value("ppd", "profile") == Value::text("balanced")
+            });
+            assert_eq!(live.value("ppd", "degraded"), Value::text(""));
+            // Written: the property is set (and the echo ignored).
+            live.real
+                .host
+                .write(
+                    &live.rt,
+                    "ppd",
+                    &[PathSeg::Field("profile".into())],
+                    Value::text("performance"),
+                )
+                .unwrap();
+            assert_eq!(
+                live.value("ppd", "profile"),
+                Value::text("performance"),
+                "at once"
+            );
+            let get = || {
+                let tokio = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                tokio.block_on(async {
+                    let c = zbus::connection::Builder::address(address.as_str())
+                        .unwrap()
+                        .build()
+                        .await
+                        .unwrap();
+                    let p = zbus::fdo::PropertiesProxy::builder(&c)
+                        .destination("net.hadess.PowerProfiles")
+                        .unwrap()
+                        .path("/net/hadess/PowerProfiles")
+                        .unwrap()
+                        .build()
+                        .await
+                        .unwrap();
+                    let v = p
+                        .get(
+                            zbus::names::InterfaceName::try_from("net.hadess.PowerProfiles")
+                                .unwrap(),
+                            "ActiveProfile",
+                        )
+                        .await
+                        .unwrap();
+                    String::try_from(v).unwrap()
+                })
+            };
+            live.until("the daemon has it", |_| get() == "performance");
+            // Changed by someone else: followed through PropertiesChanged.
+            {
+                let tokio = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                tokio.block_on(async {
+                    let c = zbus::connection::Builder::address(address.as_str())
+                        .unwrap()
+                        .build()
+                        .await
+                        .unwrap();
+                    let p = zbus::fdo::PropertiesProxy::builder(&c)
+                        .destination("net.hadess.PowerProfiles")
+                        .unwrap()
+                        .path("/net/hadess/PowerProfiles")
+                        .unwrap()
+                        .build()
+                        .await
+                        .unwrap();
+                    p.set(
+                        zbus::names::InterfaceName::try_from("net.hadess.PowerProfiles").unwrap(),
+                        "ActiveProfile",
+                        zbus::zvariant::Value::from("power-saver"),
+                    )
+                    .await
+                    .unwrap();
+                });
+            }
+            live.until("followed", |l| {
+                l.value("ppd", "profile") == Value::text("power-saver")
+            });
+            // A read-only field refuses writes.
+            assert!(
+                live.real
+                    .host
+                    .write(
+                        &live.rt,
+                        "ppd",
+                        &[PathSeg::Field("degraded".into())],
+                        Value::text("x"),
+                    )
+                    .is_err()
+            );
         }
     }
 }
