@@ -102,7 +102,11 @@ message, the runtime's wake hook (a ping, so the hook holds no sender
 and the thread ends when the main thread's senders are gone), the logic
 clock's `Wake::deadline` (the dispatch timeout) or `Wake::wall` on a
 `CLOCK_REALTIME` timerfd (`TFD_TIMER_ABSTIME | TFD_TIMER_CANCEL_ON_SET`:
-a resume or a clock step wakes it at once). SIGINT, SIGTERM (a
+a resume or a clock step wakes it at once). 500 ms after its last wake
+the logic thread, and likewise `strand run`'s main thread (a dispatch
+timeout), forces one allocator collect (`run::trim`,
+`mi_collect(true)`), so what a burst freed is returned to the system
+once the shell goes quiet (decisions.md, wave4-exitMemory). SIGINT, SIGTERM (a
 `signalfd` on the main loop, the signals blocked in every thread) and
 the compositor going away send `ToLogic::Shutdown`; the main thread
 joins the logic thread, which unmounts the instance, runs

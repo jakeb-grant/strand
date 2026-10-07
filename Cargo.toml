@@ -44,3 +44,93 @@ debug = 0
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# Code that runs at event rates (D-Bus, sockets, PipeWire's thread, file
+# watches, protocol dispatch, config and document parsing) is optimised
+# for size; the per-frame and per-glyph paths (render, text, layout, the
+# VM) stay at 3. The binary's code is most of the bar's PSS
+# (docs/decisions.md, wave4-exitMemory).
+
+[profile.release.package.strand-services]
+opt-level = "z"
+
+[profile.release.package.zbus]
+opt-level = "z"
+
+[profile.release.package.zvariant]
+opt-level = "z"
+
+[profile.release.package.zbus_names]
+opt-level = "z"
+
+[profile.release.package.tokio]
+opt-level = "z"
+
+[profile.release.package.swayipc-types]
+opt-level = "z"
+
+[profile.release.package.logind-zbus]
+opt-level = "z"
+
+[profile.release.package.strand]
+opt-level = "s"
+
+[profile.release.package.strand-watch]
+opt-level = "s"
+
+[profile.release.package.strand-icons]
+opt-level = "s"
+
+[profile.release.package.strand-introspect]
+opt-level = "s"
+
+[profile.release.package.serde_json]
+opt-level = "s"
+
+[profile.release.package.toml_edit]
+opt-level = "s"
+
+[profile.release.package.toml_parser]
+opt-level = "s"
+
+[profile.release.package.wayland-client]
+opt-level = "s"
+
+[profile.release.package.wayland-backend]
+opt-level = "s"
+
+[profile.release.package.smithay-client-toolkit]
+opt-level = "s"
+
+[profile.release.package.calloop]
+opt-level = "s"
+
+[profile.release.package.material-colors]
+opt-level = "s"
+
+[profile.release.package.fontique]
+opt-level = "s"
+
+[profile.release.package.quick-xml]
+opt-level = "s"
+
+[profile.release.package.roxmltree]
+opt-level = "s"
+
+[profile.release.package.xkeysym]
+opt-level = "s"
+
+[profile.release.package.miette]
+opt-level = "s"
+
+[profile.release.package.chrono]
+opt-level = "s"
+
+[profile.release.package.freedesktop-desktop-entry]
+opt-level = "s"
+
+[profile.release.package.pipewire]
+opt-level = "s"
+
+[profile.release.package.libspa]
+opt-level = "s"

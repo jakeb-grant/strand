@@ -116,6 +116,16 @@ jobs:
       # The same gate and the idle budget on the real services (private
       # bus, mock portal): `the_real_services_sleep_when_nothing_changes`.
       - run: cargo test --release -p strand --test services -- --test-threads=1
+      # M3 exit, "memory verified": design.md's bar on two 2560x1440
+      # outputs reading battery, network, audio, workspaces, windows,
+      # tray and notifications on the real backends (python-dbusmock's
+      # UPower, NetworkManager and logind and a mock portal on a private
+      # bus, the shell's own notifications server and tray host, sway's
+      # IPC, a private PipeWire) within the 34 MB PSS gate with no huge
+      # page, then 10 s without a wakeup or a frame; and the full shell
+      # (launcher open at 2x, two toasts, the OSD) printed against
+      # design.md's 59-64 MB and held to 64.
+      - run: cargo test --release -p strand --test budgets -- --nocapture --test-threads=1
       # M2 exit: design.md's four example shells and theme.strand, byte
       # for byte, in `strand run` on headless sway with two outputs
       # against the deterministic mock services, driven by clicks, the

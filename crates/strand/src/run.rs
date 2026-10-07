@@ -1090,6 +1090,21 @@ fn reload_event(l: &Loaded, report: Option<&Report>, commit: Duration) -> Json {
 /// [`ToLogic::Shutdown`] (or until the main thread is gone), committing
 /// what the compiler worker sends and serving the IPC socket; then
 /// unmount and drop the stores so pending writes reach the disk.
+/// How long the logic thread waits after its last wake before [`trim`].
+const TRIM_AFTER: Duration = Duration::from_millis(500);
+
+/// Returns the memory the allocator holds freed to the system. mimalloc
+/// purges a freed span only on a later allocation once its delay (1 s)
+/// has passed, so a shell that goes quiet after a burst (boot, a reload,
+/// a minute tick) kept the burst's garbage resident for good: about
+/// 2.4 MB of the design bar's PSS on the real services. A forced collect
+/// purges every arena's pending spans and this thread's free pages.
+fn trim() {
+    // SAFETY: `mi_collect` takes no pointers; it runs on a live thread
+    // with mimalloc as the global allocator.
+    unsafe { libmimalloc_sys::mi_collect(true) };
+}
+
 pub fn logic(
     boot: Outcome,
     storage: Storage,
@@ -1245,6 +1260,9 @@ pub fn logic(
     let start = Instant::now();
     // The reduced-motion preference render last heard of.
     let mut reduced_sent = false;
+    // When the allocator's freed memory goes back to the system: once the
+    // process has been quiet a moment ([`trim`]).
+    let mut trim_at: Option<Instant> = None;
     while !stop {
         if shell.deferred.is_some() || shell.deferred_hard {
             shell.unlocked();
@@ -1277,12 +1295,21 @@ pub fn logic(
             s.flush(&handle);
         }
         let now = Instant::now();
+        // Each wake but the trim's own arms (or pushes back) the trim.
+        trim_at = match trim_at {
+            Some(at) if now >= at => {
+                trim();
+                None
+            }
+            _ => Some(now + TRIM_AFTER),
+        };
         let mut timeout = wake.deadline.map(|d| d.saturating_sub(start.elapsed()));
         let mut also = |t: Option<Duration>| {
             if let Some(t) = t {
                 timeout = Some(timeout.map_or(t, |x| x.min(t)));
             }
         };
+        also(trim_at.map(|t| t.saturating_duration_since(now)));
         also(
             shell
                 .overlay
@@ -1577,6 +1604,9 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
             Event::Closed => flag.set(true),
         })
         .map_err(|e| DemoError::Io(io::Error::other(e.error)))?;
+    // The main thread's frees (frames, layouts, surfaces) are returned
+    // to the system once it has been quiet a moment too ([`trim`]).
+    let mut trim_at: Option<Instant> = None;
     let end = loop {
         if hung_up.get() {
             break End::LogicEnded;
@@ -1584,7 +1614,15 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
         if signalled.get() {
             break End::Done;
         }
-        match mgr.dispatch(None) {
+        let now = Instant::now();
+        trim_at = match trim_at {
+            Some(at) if now >= at => {
+                trim();
+                None
+            }
+            _ => Some(now + TRIM_AFTER),
+        };
+        match mgr.dispatch(trim_at.map(|t| t.saturating_duration_since(now))) {
             Ok(()) => {}
             Err(e) if connection_closed(&e) => {
                 log::info!("the compositor went away: {e}");

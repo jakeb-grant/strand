@@ -32,6 +32,8 @@ log = { version = "0.4.34", features = ["std"] }
 # With THP in `always` mode the kernel does so unasked: `main` turns THP
 # off for the process (rustix `thread`: `PR_SET_THP_DISABLE`).
 mimalloc = { version = "0.1.52", default-features = false, features = ["no_thp"] }
+# `mi_collect`: freed memory returned once the shell goes quiet (run.rs).
+libmimalloc-sys = { version = "0.1.49", features = ["extended"] }
 libc = "0.2.190"
 rustix = { version = "1.1.5", features = ["event", "thread", "time"] }
 serde_json = "1.0.151"
@@ -45,7 +47,6 @@ tokio = { version = "1.53", features = ["rt-multi-thread", "time"] }
 # A bus monitor's message stream (the 100 reloads' bus check).
 futures-util = { version = "0.3.34", default-features = false }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
-libmimalloc-sys = { version = "0.1.49", features = ["extended"] }
 wayland-client = "0.31.15"
 wayland-protocols-misc = { version = "0.3.12", features = ["client"] }
 wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }

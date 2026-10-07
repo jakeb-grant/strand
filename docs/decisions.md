@@ -8165,3 +8165,102 @@ tray now serves the watcher interface before requesting the name (and
 removes it if another watcher owns the name), and the host's object
 server is set up before its name request
 (`crates/strand-services/tests/tray.rs::an_item_registering_as_the_watcher_appears_is_heard`).
+
+## wave4-exitMemory
+
+**2026-10-07 · wave4-exitMemory: transparent huge pages are off before the
+first allocation.** CI run 37644817292 failed the M0 gate with the mock
+bar at 35,081 kB against 34,816: the rollup showed 4,096 kB of
+`AnonHugePages` although the process status said `THP_enabled: 0`.
+`main` turned THP off (`PR_SET_THP_DISABLE`), but std's runtime had
+already allocated before `main` (the main thread's handle), and on a
+runner with THP `always` the first touch of mimalloc's 2 MiB-aligned
+arena faulted whole huge pages in, which the prctl does not split. The
+prctl now runs from an ELF constructor in `.init_array.00100`: after
+std's argv capture (priority 99, which does not allocate) and before
+mimalloc's constructor, every other one and `main` (read from the
+release binary's `.init_array` relocations). The M0 test and the new
+budget tests assert `AnonHugePages: 0 kB`, and the M0 report names each
+mapping's huge pages. The gate was not loosened.
+
+**2026-10-07 · wave4-exitMemory: what the bar on the real services is
+measured as.** design.md's bar (`bar.strand` and `theme.strand`) with one
+component added to its `end` section, reading `network` and
+`notifications` beside what the bar reads (workspaces, windows, audio,
+battery, tray, clock), so the idle clause's five services are all read;
+a green box in that component checks each at the value the test gave it
+(battery 42 %, the Wi-Fi network `Home`, the sink at 50 %, one kept
+notification, workspace 1 focused and occupied, the test's window
+focused). The backends are real: python-dbusmock's UPower,
+NetworkManager and logind and a mock portal on a private bus, the
+shell's own notifications server and tray host, sway's IPC on a headless
+sway with two 2560×1440 outputs (1 and 1.25, as the M0 test), a private
+PipeWire with WirePlumber. PSS is read from `smaps_rollup` in a release
+build once both outputs show the green box and a whole second passes
+with no context switch in any of strand's threads and no frame, at most
+45 s into the minute; then 10 s pass with no switch in any thread and no
+frame (`crates/strand/tests/budgets.rs`, CI step after `services`). The
+clock's minute tick is outside the window by construction: the design
+budgets it as the one wakeup a minute.
+
+**2026-10-07 · wave4-exitMemory: why the bar was over budget on the real
+services, and the fix.** Measured first at 38.0 MB (this container,
+kernel 6.18): the binary's code 17.8 MB resident (`r-xp`) plus 2.2 MB of
+read-only data, 13.1 MB anonymous, 2.5 MB of shm buffers. The same
+harness with `STRAND_MOCK=desktop` read 31.6 MB, with the same anonymous
+memory and 5.8 MB less code: running the services makes their code
+resident, and resident code is close to the whole `.text` (19.4 MB) on a
+page cache with large folios, since a fault maps the folio, and to its
+64 KiB fault-around windows on a small-folio one. design.md budgets
+10–14 MB for "code and libraries touched"; the code was the item over
+budget. Two causes, two fixes:
+
+- Code size. Code that runs at event rates (D-Bus, sockets, PipeWire's
+  thread, file watches, Wayland protocol dispatch, config and document
+  parsing) is now built for size in the release profile: `opt-level =
+  "z"` for strand-services, zbus, zvariant, zbus_names, tokio,
+  swayipc-types and logind-zbus; `"s"` for the `strand` binary crate
+  (its loops and glue; the VM, layout and painting are other crates),
+  strand-watch, strand-icons, strand-introspect, serde_json, toml_edit,
+  toml_parser, the Wayland client crates, calloop, material-colors,
+  fontique, quick-xml, roxmltree, xkeysym, miette, chrono,
+  freedesktop-desktop-entry, pipewire and libspa. The per-frame and
+  per-glyph paths (strand-render, strand-text, strand-scene,
+  strand-compiler, strand-core, vello_cpu, skrifa, harfrust, taffy and
+  the image decoders) stay at 3. `.text` went from 19.4 to 14.3 MB. The
+  workspace's `Cargo.toml` carries these as `[profile.release.package]`
+  entries; the profile's own settings (thin LTO, one codegen unit, no
+  debug info) are unchanged.
+- The allocator kept a burst's garbage. mimalloc purges freed spans
+  only from a later allocation once their 1 s delay has passed, so a
+  shell that goes quiet after boot (or a reload, or a minute tick) kept
+  that burst's freed memory resident for good: about 2.1 MB of the bar's
+  anonymous PSS (`MIMALLOC_PURGE_DELAY=0` showed 2.4 MB). The logic
+  thread and `strand run`'s main thread each force a collect
+  (`mi_collect(true)`: every arena's pending purges and the thread's own
+  free pages) 500 ms after their last wake (`run.rs`, `trim`). One
+  extra wakeup per burst on each, inside the burst's settling; none
+  while nothing changes. A purge delay of 0 was not chosen: every freed
+  span would be returned and faulted back during a burst (a reload's
+  compile), where the token-edit gate has under 2 ms of headroom.
+
+After both: 31.7 MB (31,668–31,704 kB over runs), the code 15.9 MB and
+anonymous memory 10.9 MB; the idle window counts no switch in any of
+strand's threads (the main thread, logic, services, audio, PipeWire's
+data loop, toplevel, text, image, compile, watch, persist, the state
+writers and tokio's workers).
+
+**2026-10-07 · wave4-exitMemory: the full shell is measured with the
+launcher's buffers at 2×.** design.md's 59–64 MB estimate for the full
+shell budgets "launcher buffers at 2×", so `HEADLESS-1` runs at scale 2
+there (`HEADLESS-2` at 1.25). The five design files run on the same real
+backends with the machine's own desktop entries and icons
+(`XDG_DATA_DIRS=/usr/local/share:/usr/share`); the launcher is opened
+with `strand set launcher.open true`, two notifications are sent to the
+shell's server and a `wpctl` volume change raises the OSD; PSS is read
+0.7 s after the OSD's surface first draws (it stays up 1.2 s). Release,
+this container: the bar alone 33.9 MB, the launcher open 39.8 MB, the
+launcher, two toasts and the OSD 45.5 MB, the launcher closed again
+(toasts up) 36.4 MB. With `HEADLESS-1` at scale 1 the same steps read
+32.0, 35.1, 36.3 and 34.9 MB. The open figure is held to the estimate's
+top, 64 MB, in release; a debug build only prints it.
