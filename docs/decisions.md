@@ -8017,3 +8017,55 @@ sources line, which the wm track had split into its compositor half
 (ticked there) and the caches half that wave4-a3 finished. The stated
 limitations stay in the lines (the `Route` write path unit-tested only,
 no `zwlr_foreign_toplevel_management_v1` fallback yet).
+
+## wave4-exitReload
+
+**2026-10-07 · wave4-exitReload: what "no reconnects" is measured as.**
+design.md says a live reload keeps services running, and M3's exit box
+asks for 100 reloads with no reconnects; nothing inside a service says
+"I reconnected", so the test (`crates/strand/tests/reloads.rs`) observes
+it from outside, each signal covering a different way to get it wrong:
+a service run that ends and starts again (the client logs one `service
+`x` started (run N)` line per run and one `stopped` line per stop at
+`STRAND_LOG=info`: the lines after the reloads must be the lines before,
+checked 6 s after the last reload so a reader released and not taken
+again would have stopped its service by then); a new D-Bus connection,
+even one closed again (dbus-daemon numbers connections in order, so a
+probe connection's unique name before and after the reloads must be
+consecutive: nobody connected in between); a service re-reading its
+daemon over the same connection (python-dbusmock logs every `Get`,
+`GetAll` and method call it answers; no new line may appear); any other
+reconnect (sway's IPC socket, PipeWire, Wayland): strand's socket inodes
+in `/proc/<pid>/fd`, sampled after every reload, must be the same set,
+and its PipeWire client objects the same `object.serial`s. A connection
+to sway or PipeWire opened and closed within one reload, between two
+samples, would escape the socket check (the bus counter has no such
+gap); no service does that, and the start log would show the run behind
+it. State staying is `strand watch`'s `reset` list being empty for each
+reload, plus the `export state` the test set before the reloads and
+every service's value still on screen after them. The start and stop
+log lines are new: they are the observable form of the client's
+`starts()`/`stops()` counters for a whole `strand run` process, and at
+info they cost nothing at the default `warn` level.
+
+**2026-10-07 · wave4-exitReload: the bench's portal clause.**
+design.md's "portal or monitor change on the next frame" is gated as the
+monitor changes are: the first frame painted after the change shows it
+within one refresh (p95), and that frame is presented at the
+compositor's next frame (under two refreshes). For a monitor the clock
+starts when the main thread hears `wl_output.done`; for the portal it
+starts just before the mock portal sends `SettingChanged` on the private
+bus, so the D-Bus hop, the `system` service on the shared runtime, the
+logic thread and the main thread are all inside the measured time (2–4
+ms here). The swatch reading `system.dark` is added to the bench's bar
+only after the token and markup edits, so their samples time the bar
+they always timed (with it present from the start the token p95 looked
+about 1 ms higher in one A/B pair on a loaded machine, which the gate's
+thin headroom cannot spare). A
+`color-scheme` flip also swaps the built-in theme's palette with its
+springs; changes are made on an idle surface, as the edits are: the next
+waits until no frame was painted for 150 ms (without that, a change
+landing mid-spring waits for the pending frame callback, 7–8 ms, and is
+presented a refresh later: a busy surface, which the bench does not
+claim to measure). Without `dbus-daemon` the clause is skipped with a
+printed notice; CI's `STRAND_REQUIRE_DBUS` makes that a failure.

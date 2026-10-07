@@ -2210,9 +2210,14 @@ the primitives, `Option`, `Vec` and derived types.
   template, system, parameters, name)` (python-dbusmock: the interpreter
   is `$STRAND_DBUSMOCK_PYTHON`, else the first of `python3`, `python3.12`
   that imports `dbusmock`; its output goes to a file in the bus's
-  directory, shown in the failure when the name never appears). Both
-  skip without their tool unless `STRAND_REQUIRE_DBUS` is set (CI),
-  where they fail.
+  directory, shown in the failure when the name never appears;
+  `DbusMock::log()` names that file, where python-dbusmock writes a line
+  for each `Get`, `GetAll` and method call it answers, so a test counts
+  a client's calls). Both skip without their tool unless
+  `STRAND_REQUIRE_DBUS` is set (CI), where they fail. Every service run
+  logs `service `x` started (run N)` and `service `x` stopped` at info
+  (`STRAND_LOG=info`): the client's `starts()`/`stops()` counters as a
+  whole process shows them (`crates/strand/tests/reloads.rs`).
 
 - **Compositor (`strand_services::wm`, the `workspaces`, `windows` and
   `wm` services).** Typed records (`Workspace`, `Window`: the schema's
