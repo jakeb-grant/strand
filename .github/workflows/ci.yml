@@ -32,6 +32,9 @@ jobs:
     # 24.04's sway 1.9, fonts-dejavu-core 2.37 and adwaita-icon-theme 46;
     # a newer image would change glyph and icon pixels.
     runs-on: ubuntu-24.04
+    # A green run takes about 25 min; a hang fails instead of holding the
+    # runner for GitHub's default 6 h.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       # Room for the debug and release builds: the image's SDKs we never
@@ -104,7 +107,10 @@ jobs:
       # accept (sway -d log), no new PipeWire object of strand's (pw-mon),
       # no state reset; then a negative control (a changed custom service
       # restarts alone).
+      # It takes under a minute; its own watchdog prints the stage and
+      # the logs and aborts after 5 min, this bound backs it.
       - run: cargo test -p strand --test reloads -- --nocapture
+        timeout-minutes: 10
       # The 34 MB PSS gate is checked on a release build (design.md, "Testing": budgets).
       - run: cargo test --release -p strand --test demo
       # The same gate and the idle budget on the real services (private

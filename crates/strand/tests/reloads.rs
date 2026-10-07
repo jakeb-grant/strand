@@ -155,6 +155,165 @@ service ppd from dbus system "net.hadess.PowerProfiles" { profile: text = Active
 
 struct Proc(Child);
 
+/// How long a child command (`strand set`, grim, swaymsg, pw-dump,
+/// wpctl) and a D-Bus method call of the test's may take: a hung one
+/// fails the test instead of holding it.
+const STEP_LIMIT: Duration = Duration::from_secs(10);
+/// The whole test's bound (it takes about 40 s): past it the watchdog
+/// prints where the test was and the logs, kills the test's processes
+/// and aborts. `STRAND_RELOADS_LIMIT_SECS` sets another (to see the
+/// watchdog work: `=20`).
+fn test_limit() -> Duration {
+    std::env::var("STRAND_RELOADS_LIMIT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .map_or(Duration::from_secs(300), Duration::from_secs)
+}
+
+/// Runs `cmd` to completion within [`STEP_LIMIT`] (its output read on
+/// threads of their own); `None` when it cannot start. Panics, killing
+/// it, when it takes longer.
+fn bounded(cmd: &mut Command, what: &str) -> Option<std::process::Output> {
+    use std::io::Read;
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?;
+    let pipe = |r: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut v = Vec::new();
+            if let Some(mut r) = r {
+                let _ = r.read_to_end(&mut v);
+            }
+            v
+        })
+    };
+    let out = pipe(child.stdout.take().map(|r| Box::new(r) as _));
+    let err = pipe(child.stderr.take().map(|r| Box::new(r) as _));
+    let deadline = Instant::now() + STEP_LIMIT;
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() {
+            break s;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("{what} took over {STEP_LIMIT:?}");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    Some(std::process::Output {
+        status,
+        stdout: out.join().unwrap(),
+        stderr: err.join().unwrap(),
+    })
+}
+
+/// A test-wide deadline ([`test_limit`]): when it passes, a thread prints
+/// the stage the test reached and the tail of each log it was given,
+/// kills every process the test started (its descendants) and aborts.
+/// Declared first, so it drops last: a hang in a guard's drop is caught
+/// too.
+struct Watchdog {
+    done: Arc<std::sync::atomic::AtomicBool>,
+    state: Arc<std::sync::Mutex<(String, Vec<PathBuf>)>>,
+    t0: Instant,
+}
+
+impl Watchdog {
+    fn start() -> Watchdog {
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let state = Arc::new(std::sync::Mutex::new((
+            "start".to_string(),
+            Vec::<PathBuf>::new(),
+        )));
+        let (d, s) = (done.clone(), state.clone());
+        let t0 = Instant::now();
+        let limit = test_limit();
+        std::thread::spawn(move || {
+            while t0.elapsed() < limit {
+                if d.load(Ordering::Relaxed) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            let (stage, logs) = s.lock().map(|s| s.clone()).unwrap_or_default();
+            eprintln!("\n*** WATCHDOG: the test passed {limit:?}, at: {stage} ***");
+            for log in logs {
+                let text = std::fs::read_to_string(&log).unwrap_or_default();
+                let lines: Vec<&str> = text.lines().collect();
+                eprintln!("--- {} (last 200 lines) ---", log.display());
+                for l in &lines[lines.len().saturating_sub(200)..] {
+                    eprintln!("{l}");
+                }
+            }
+            kill_descendants();
+            std::process::abort();
+        });
+        Watchdog { done, state, t0 }
+    }
+
+    /// The stage the test reached (also printed, with the time).
+    fn stage(&self, what: &str) {
+        eprintln!("[{:6.1} s] {what}", self.t0.elapsed().as_secs_f64());
+        self.at(what);
+    }
+
+    /// The stage the test reached, not printed.
+    fn at(&self, what: &str) {
+        if let Ok(mut s) = self.state.lock() {
+            s.0 = what.to_string();
+        }
+    }
+
+    /// A log to print when the deadline passes.
+    fn log(&self, path: &Path) {
+        if let Ok(mut s) = self.state.lock() {
+            s.1.push(path.to_path_buf());
+        }
+    }
+}
+
+impl Drop for Watchdog {
+    fn drop(&mut self) {
+        self.done.store(true, Ordering::Relaxed);
+    }
+}
+
+/// `SIGKILL`s every descendant of this process (children first found
+/// through `/proc/*/stat`'s parent field).
+fn kill_descendants() {
+    let me = std::process::id();
+    let parents: Vec<(u32, u32)> = std::fs::read_dir("/proc")
+        .map(|d| {
+            d.filter_map(|e| e.ok())
+                .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
+                .filter_map(|pid| {
+                    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+                    // `pid (comm) state ppid ...`: comm may hold spaces.
+                    let rest = &stat[stat.rfind(')')? + 1..];
+                    let ppid = rest.split_whitespace().nth(1)?.parse().ok()?;
+                    Some((pid, ppid))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut ours = vec![me];
+    let mut i = 0;
+    while i < ours.len() {
+        let p = ours[i];
+        ours.extend(parents.iter().filter(|(_, pp)| *pp == p).map(|(c, _)| *c));
+        i += 1;
+    }
+    for pid in &ours[1..] {
+        if let Some(pid) = rustix::process::Pid::from_raw(*pid as i32) {
+            let _ = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
+        }
+    }
+}
+
 /// A directory of the test's, removed when the test ends, failing or not
 /// (kept, and named, when `STRAND_KEEP_TMP` is set).
 struct TmpDir(PathBuf);
@@ -449,7 +608,7 @@ impl Img {
 
 fn tools() -> bool {
     for tool in ["sway", "swaymsg", "grim", "pw-dump"] {
-        if Command::new(tool).arg("--version").output().is_err() {
+        if bounded(Command::new(tool).arg("--version"), tool).is_none() {
             assert!(
                 std::env::var_os("STRAND_REQUIRE_SWAY").is_none(),
                 "{tool} is not installed but STRAND_REQUIRE_SWAY is set"
@@ -509,11 +668,13 @@ fn sway(dir: &Path) -> (Proc, String, PathBuf) {
             .find(|e| e.starts_with("wayland-") && !e.ends_with(".lock"));
         let ipc = names.iter().find(|e| e.starts_with("sway-ipc."));
         if let (Some(d), Some(i)) = (display, ipc) {
-            let ok = Command::new("swaymsg")
-                .args(["-t", "get_version"])
-                .env("SWAYSOCK", dir.join(i))
-                .output()
-                .is_ok_and(|o| o.status.success());
+            let ok = bounded(
+                Command::new("swaymsg")
+                    .args(["-t", "get_version"])
+                    .env("SWAYSOCK", dir.join(i)),
+                "swaymsg",
+            )
+            .is_some_and(|o| o.status.success());
             if ok {
                 return (sway, d.clone(), dir.join(i));
             }
@@ -548,6 +709,7 @@ fn next_connection(tokio: &tokio::runtime::Runtime, bus: &PrivateBus) -> u64 {
     tokio.block_on(async {
         let conn = zbus::connection::Builder::address(bus.address.as_str())
             .unwrap()
+            .method_timeout(STEP_LIMIT)
             .build()
             .await
             .unwrap();
@@ -655,6 +817,7 @@ impl BusLog {
         let conn = tokio.block_on(async {
             let conn = zbus::connection::Builder::address(bus.address.as_str())
                 .unwrap()
+                .method_timeout(STEP_LIMIT)
                 .build()
                 .await
                 .unwrap();
@@ -730,8 +893,8 @@ fn sockets(pid: u32) -> BTreeSet<String> {
 /// PipeWire's client objects of a process, by `object.serial` (a new
 /// connection is a new serial).
 fn pipewire_clients(pw: &PipeWire, pid: u32) -> BTreeSet<u64> {
-    let dump: Vec<serde_json::Value> =
-        serde_json::from_str(&pw.run("pw-dump", &[])).unwrap_or_default();
+    let out = bounded(&mut pw.command("pw-dump"), "pw-dump").expect("pw-dump runs");
+    let dump: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap_or_default();
     dump.iter()
         .filter(|o| o["type"] == "PipeWire:Interface:Client")
         .filter(|o| {
@@ -823,14 +986,23 @@ impl Watch {
 
 #[test]
 fn a_hundred_reloads_reconnect_and_restart_nothing() {
+    // First: it drops last.
+    let dog = Watchdog::start();
     if !tools() {
         return;
     }
     let Some(pw) = PipeWire::start("a_hundred_reloads_reconnect_and_restart_nothing") else {
         return;
     };
+    dog.stage("PipeWire started");
     pw.wait_for_defaults();
-    pw.wpctl(&["set-volume", "@DEFAULT_AUDIO_SINK@", "0.5"]);
+    let out = bounded(
+        pw.command("wpctl")
+            .args(["set-volume", "@DEFAULT_AUDIO_SINK@", "0.5"]),
+        "wpctl",
+    )
+    .expect("wpctl runs");
+    assert!(out.status.success(), "wpctl set-volume failed");
     let Some(bus) = PrivateBus::start() else {
         return;
     };
@@ -842,10 +1014,12 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
     let conn = tokio.block_on(async {
         zbus::connection::Builder::address(bus.address.as_str())
             .unwrap()
+            .method_timeout(STEP_LIMIT)
             .build()
             .await
             .unwrap()
     });
+    dog.stage("private bus started");
     // The system daemons.
     let Some(upower) = DbusMock::start(&bus, "upower", true, None, UPOWER) else {
         return;
@@ -935,6 +1109,7 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
     ) else {
         return;
     };
+    dog.stage("system daemons' mocks set up");
     // The portal: dark.
     let portal_calls = Calls::default();
     let values = std::collections::HashMap::from([(
@@ -944,6 +1119,7 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
     let _portal = tokio.block_on(async {
         zbus::connection::Builder::address(bus.address.as_str())
             .unwrap()
+            .method_timeout(STEP_LIMIT)
             .name("org.freedesktop.portal.Desktop")
             .unwrap()
             .serve_at(
@@ -965,6 +1141,7 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
     let (_player, tray_item) = tokio.block_on(async {
         let player = zbus::connection::Builder::address(bus.address.as_str())
             .unwrap()
+            .method_timeout(STEP_LIMIT)
             .name("org.mpris.MediaPlayer2.reloads")
             .unwrap()
             .serve_at("/org/mpris/MediaPlayer2", PlayerMock(player_calls.clone()))
@@ -979,6 +1156,7 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
             .unwrap();
         let item = zbus::connection::Builder::address(bus.address.as_str())
             .unwrap()
+            .method_timeout(STEP_LIMIT)
             .name(tray_name)
             .unwrap()
             .serve_at("/StatusNotifierItem", TrayItemMock(tray_calls.clone()))
@@ -1046,10 +1224,14 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
     };
     std::fs::write(&file, shell("#204080", true, ">", mood_fields)).unwrap();
 
+    dog.stage("mocks on the bus");
+    dog.log(&dir.join("sway.log"));
     let (_sway, display, ipc) = sway(&dir);
+    dog.stage("sway started");
     // A window: the windows store has one, its workspace is occupied.
     let _window = TestWindow::open(&dir.join(&display), "strand-reloads", "a window");
     let log = dir.join("strand.log");
+    dog.log(&log);
     let mut strand = Proc(
         Command::new(env!("CARGO_BIN_EXE_strand"))
             .arg("run")
@@ -1082,13 +1264,15 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
     ];
     let shot = || -> Option<Img> {
         let path = dir.join("shot.ppm");
-        let ok = Command::new("grim")
-            .args(["-t", "ppm", "-o", "HEADLESS-1"])
-            .arg(&path)
-            .env("XDG_RUNTIME_DIR", &dir)
-            .env("WAYLAND_DISPLAY", &display)
-            .status()
-            .is_ok_and(|s| s.success());
+        let ok = bounded(
+            Command::new("grim")
+                .args(["-t", "ppm", "-o", "HEADLESS-1"])
+                .arg(&path)
+                .env("XDG_RUNTIME_DIR", &dir)
+                .env("WAYLAND_DISPLAY", &display),
+            "grim",
+        )
+        .is_some_and(|o| o.status.success());
         ok.then(|| Img::ppm(&std::fs::read(&path).unwrap()))
     };
     let mut alive = |what: &str| {
@@ -1127,6 +1311,7 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
         }
     };
 
+    dog.stage("strand run started");
     // The shell's tray is the watcher, its notifications server owns the
     // name: the item registers, a notification arrives.
     for name in [
@@ -1166,21 +1351,26 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
             0i32,
         ),
     );
+    dog.stage("tray item registered, notification sent");
     // Every service read: its box green.
     wait_shot("every service's value", false);
+    dog.stage("every service's value on screen");
     alive("at boot");
     // The state the reloads must keep.
-    let out = Command::new(env!("CARGO_BIN_EXE_strand"))
-        .args(["set", "reload.n", "7"])
-        .envs(env.iter().map(|(k, v)| (*k, v.as_os_str())))
-        .output()
-        .unwrap();
+    let out = bounded(
+        Command::new(env!("CARGO_BIN_EXE_strand"))
+            .args(["set", "reload.n", "7"])
+            .envs(env.iter().map(|(k, v)| (*k, v.as_os_str()))),
+        "strand set",
+    )
+    .expect("strand set runs");
     assert!(
         out.status.success(),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
     wait_shot("the state set", true);
+    dog.stage("the state set");
     // Settled: no service started for 2 s.
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
@@ -1191,6 +1381,7 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
         }
         assert!(Instant::now() < deadline, "the services never settled");
     }
+    dog.stage("services settled");
     let watch = Watch::start(&env);
     let runs = lifecycle(&log_text());
     let started: BTreeSet<&str> = runs.iter().filter_map(|l| l.split('`').nth(1)).collect();
@@ -1246,6 +1437,9 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
     let socks = sockets(pid);
     let clients = pipewire_clients(&pw, pid);
     assert!(!clients.is_empty(), "strand is no PipeWire client");
+    for m in [&upower, &logind, &nm, &bluez, &ppd] {
+        dog.log(m.log());
+    }
     let bus_log = BusLog::start(&tokio, &bus);
     let first = next_connection(&tokio, &bus);
     let accepts = sway_accepts(&dir);
@@ -1303,8 +1497,10 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
     // grace), a binding edit of an expression that reads services, in
     // turn.
     let (mut color, mut extra, mut cmp) = ("#204080".to_string(), true, ">");
+    dog.stage("baseline taken; the reloads");
     let t0 = Instant::now();
     for i in 0..RELOADS {
+        dog.at(&format!("reload {i}"));
         match i % 3 {
             0 => color = format!("#{:02x}4080", (i * 7) % 256),
             1 => extra = !extra,
@@ -1339,6 +1535,7 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
     // removed `memory`'s only reader (33 removals, 32 taken back in
     // time): that, and nothing else, stops.
     assert!(!extra, "the reloads end with `memory`'s reader removed");
+    dog.stage("the reloads done; past the stop grace");
     std::thread::sleep(Duration::from_secs(6));
     alive("after the reloads");
     let now = lifecycle(&log_text());
@@ -1394,6 +1591,7 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
     );
     // The state and every service's value, on screen.
     wait_shot("the state and every service after the reloads", true);
+    dog.stage("the negative control");
 
     // The negative control (design.md's edit table: "custom service
     // declaration: only that service restarts; built-ins never do"): a
@@ -1449,6 +1647,7 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
     assert_eq!(sway_accepts(&dir), accepts, "the edit connected to sway");
     assert_eq!(pw_new_of(&mon_text(), pid, pw_serial), Vec::<String>::new());
     wait_shot("every service after the declaration's edit", true);
+    dog.stage("done; stopping");
     drop(watch);
     drop(strand);
 }
