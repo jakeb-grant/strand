@@ -166,7 +166,7 @@ hl.config({
     animations = { enabled = false },
     misc = { disable_hyprland_logo = true, disable_splash_rendering = true, force_default_wallpaper = 0 },
     ecosystem = { no_update_news = true, no_donation_nag = true },
-    debug = { disable_logs = false },
+    debug = { disable_logs = false, suppress_errors = true },
 })
 EOF
     else
@@ -187,6 +187,7 @@ ecosystem {
 }
 debug {
     disable_logs = false
+    suppress_errors = true
 }
 EOF
     fi
@@ -202,8 +203,24 @@ EOF
     export HYPRLAND_INSTANCE_SIGNATURE WAYLAND_DISPLAY
     unset SWAYSOCK NIRI_SOCKET
     export XDG_CURRENT_DESKTOP=Hyprland
-    hyprctl version | head -3
-    hyprctl -j monitors | head -20
+    hyprctl version | sed -n 1,3p
+    hyprctl -j monitors | sed -n 1,20p
+    # A config mistake draws Hyprland's error bar where the bar is read:
+    # fail on it here, with the errors, not later on a pixel.
+    errors=$(hyprctl configerrors 2>&1 || true)
+    case "$errors" in
+      *"unknown request"*) echo "hyprctl configerrors: $errors" ;;
+      *[![:space:]]*) echo "Hyprland reports config errors:" >&2; echo "$errors" >&2; exit 1 ;;
+    esac
+    # The raw reply to a dispatch in the dialect the config selects, for
+    # the record (the adapter's success test, hyprland.rs dispatch_reply).
+    active=$(hyprctl -j activeworkspace | sed -n 's/^ *"name": *"\([^"]*\)".*/\1/p' | sed -n 1p)
+    if [ "${cfg##*.}" = lua ]; then
+      reply=$(hyprctl dispatch "hl.dsp.focus({ workspace = \"$active\" })" 2>&1 || true)
+    else
+      reply=$(hyprctl dispatch workspace "name:$active" 2>&1 || true)
+    fi
+    echo "Hyprland's reply to a dispatch (${cfg##*.} config): '$reply'"
     ;;
 esac
 
@@ -212,6 +229,7 @@ sleep 1
 grim "$OUT/$KIND-desktop.png" || echo "grim failed on the bare $KIND desktop" >&2
 
 status=0
-STRAND_MATRIX=$KIND STRAND_SHOTS=$OUT "$TEST" --test-threads=1 --nocapture || status=$?
+STRAND_MATRIX=$KIND STRAND_SHOTS=$OUT "$TEST" --test-threads=1 --nocapture 2>&1 |
+  tee "$OUT/test.log" || status=${PIPESTATUS[0]}
 echo "compositor matrix on $KIND: exit $status (logs and shots in $OUT)"
 exit "$status"

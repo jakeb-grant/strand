@@ -19,6 +19,12 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 TEST=${1:?the compositor_matrix test binary}
 MATRIX=${MATRIX:-sway niri hyprland}
 
+# pacman's free-space check cannot read an overlayfs root's mount points
+# in a container ("could not determine filesystem mount points"): off.
+sed -i 's/^CheckSpace/#CheckSpace/' /etc/pacman.conf
+# The image's keyring, should it ship uninitialised.
+pacman-key --init >/dev/null 2>&1 || true
+pacman-key --populate archlinux >/dev/null 2>&1 || true
 pacman -Syu --noconfirm --needed \
   sway niri hyprland grim seatd mesa dbus ttf-dejavu adwaita-icon-theme \
   fontconfig libxkbcommon wayland pipewire >/tmp/pacman.log 2>&1 ||
@@ -60,6 +66,13 @@ for kind in $MATRIX; do
       tail -40 "$log"
     done
     failed+=("$kind")
+  fi
+done
+
+# Where the bar's click went untested (no zwlr_virtual_pointer_manager_v1).
+for kind in $MATRIX; do
+  if grep -q 'the click is not tested here' "$ROOT/target/matrix/$kind/test.log" 2>/dev/null; then
+    echo "::warning::the bar's click (ws.focus() from a pointer) was not tested on $kind: no virtual pointer"
   fi
 done
 

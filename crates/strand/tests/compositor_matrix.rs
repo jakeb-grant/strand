@@ -43,7 +43,7 @@ use serde_json::Value;
 use strand_core::Runtime;
 use strand_services::testing::PrivateBus;
 use strand_services::wm::{WindowAction, WorkspaceAction, WorkspaceItem};
-use strand_services::{Applied, Builtin, Buses, Cells, Services};
+use strand_services::{Applied, Builtin, Buses, Cells, Data, Services};
 use window::TestWindow;
 
 const FILES: [(&str, &str); 2] = [
@@ -96,6 +96,8 @@ struct Real {
     workspaces: Vec<RealWs>,
     /// `(app_id, title)` of the focused window.
     window: Option<(String, String)>,
+    /// The focused workspace's name (`workspaces.focused`), on any output.
+    focused: Option<String>,
 }
 
 fn live() -> Option<Live> {
@@ -261,6 +263,7 @@ impl Live {
                 Real {
                     workspaces: workspaces.into_iter().map(|(_, w)| w).collect(),
                     window,
+                    focused: focused_ws,
                 }
             }
             Kind::Hyprland => {
@@ -292,25 +295,34 @@ impl Live {
                 Real {
                     workspaces: workspaces.into_iter().map(|(_, w)| w).collect(),
                     window,
+                    focused: active.get("name").map(text),
                 }
             }
             Kind::Niri => {
                 let all = json("niri", &["msg", "--json", "workspaces"]);
                 let win = json("niri", &["msg", "--json", "focused-window"]);
+                let name = |w: &Value| {
+                    w["name"]
+                        .as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| w["idx"].as_u64().unwrap_or(0).to_string())
+                };
+                let focused = all
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|w| w["is_focused"] == true)
+                    .map(name);
                 let mut workspaces: Vec<(u64, RealWs)> = all
                     .as_array()
                     .into_iter()
                     .flatten()
                     .filter(|w| text(&w["output"]) == self.output)
                     .map(|w| {
-                        let idx = w["idx"].as_u64().unwrap_or(0);
                         (
-                            idx,
+                            w["idx"].as_u64().unwrap_or(0),
                             RealWs {
-                                name: w["name"]
-                                    .as_str()
-                                    .map(str::to_string)
-                                    .unwrap_or_else(|| idx.to_string()),
+                                name: name(w),
                                 focused: w["is_focused"] == true,
                                 occupied: !w["active_window_id"].is_null(),
                             },
@@ -322,6 +334,7 @@ impl Live {
                 Real {
                     workspaces: workspaces.into_iter().map(|(_, w)| w).collect(),
                     window,
+                    focused,
                 }
             }
         }
@@ -408,7 +421,11 @@ impl fmt::Display for Real {
                 if w.occupied { " occupied" } else { "" }
             )?;
         }
-        write!(f, "window: {:?}", self.window)
+        write!(
+            f,
+            "window: {:?} focused workspace: {:?}",
+            self.window, self.focused
+        )
     }
 }
 
@@ -452,6 +469,7 @@ fn stored(b: &Builtin, rt: &Runtime, live: &Live) -> Result<Real, String> {
             })
             .collect(),
         window: win.focused.map(|w| (w.app_id, w.title)),
+        focused: ws.focused.map(|w| w.name),
     })
 }
 
@@ -551,6 +569,38 @@ fn the_stores_report_the_live_compositor() {
         Some(("strand-matrix".into(), "matrix two".into()))
     );
 
+    // `win.focus()`: a second window takes the focus, the first gets it
+    // back through the store.
+    let second = TestWindow::open(&live.socket, "strand-matrix-two", "matrix three");
+    let real = agree(&rt, &s, &b, &live, "a second window");
+    assert_eq!(
+        real.window,
+        Some(("strand-matrix-two".into(), "matrix three".into()))
+    );
+    let first = b
+        .windows
+        .cells()
+        .snapshot(&rt)
+        .unwrap()
+        .all
+        .into_iter()
+        .find(|w| w.app_id == "strand-matrix")
+        .expect("the first window");
+    b.windows
+        .act(&rt, WindowAction::Focus { item: first })
+        .unwrap();
+    let real = agree(&rt, &s, &b, &live, "win.focus()");
+    assert_eq!(
+        real.window,
+        Some(("strand-matrix".into(), "matrix two".into()))
+    );
+    drop(second);
+    let real = agree(&rt, &s, &b, &live, "the second window gone");
+    assert_eq!(
+        real.window,
+        Some(("strand-matrix".into(), "matrix two".into()))
+    );
+
     // A switch from outside, to an empty workspace.
     let other = live.other(&real);
     live.switch(&other);
@@ -588,6 +638,20 @@ fn the_stores_report_the_live_compositor() {
             Err(format!("wm events: {:?}", events.borrow()))
         }
     });
+    // `failed`: niri says the config loaded; Hyprland and sway do not say.
+    let failed = match live.kind {
+        Kind::Niri => Data::Bool(false),
+        Kind::Sway | Kind::Hyprland => Data::Null,
+    };
+    for e in events.borrow().iter() {
+        if let Applied::Event { event: 0, args } = e {
+            assert_eq!(
+                args,
+                std::slice::from_ref(&failed),
+                "config_reloaded's failed"
+            );
+        }
+    }
 
     // `win.close()`: the compositor asks the client.
     let window = b
