@@ -1,0 +1,32 @@
+/// The active media player, over MPRIS: every `org.mpris.MediaPlayer2.*`
+/// on the session bus, the one playing (the latest to start) chosen, else
+/// the latest to pause. Its position is carried forward from the
+/// player's last report at its rate, never asked for again (no polling),
+/// and only while a visible reader shows it.
+service media {
+  /// Something is playing.
+  playing: bool
+  /// The track's title.
+  title: text?
+  /// The track's artist.
+  artist: text?
+  /// The track's album.
+  album: text?
+  /// The album art: `image media.art { fit: cover }`.
+  art: text?
+  /// Fraction of the track played, 0 to 1.
+  position: float
+  /// Time played.
+  elapsed: duration
+  /// The track's length, when known.
+  length: duration?
+  /// The active player's name, such as `Firefox` or `mpv`; null when no
+  /// player runs.
+  player: text?
+  /// Plays or pauses.
+  action play_pause()
+  /// Skips to the next track.
+  action next()
+  /// Goes back to the previous track.
+  action previous()
+}

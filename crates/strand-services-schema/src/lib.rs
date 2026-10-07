@@ -23,6 +23,8 @@ pub const NETWORK: &str = include_str!("network.schema");
 pub const BLUETOOTH: &str = include_str!("bluetooth.schema");
 /// `notifications`: the notification server.
 pub const NOTIFICATIONS: &str = include_str!("notifications.schema");
+/// `media`: the active MPRIS player.
+pub const MEDIA: &str = include_str!("media.schema");
 
 /// Every builtin service's schema text, in registration order.
 pub fn schemas() -> Vec<&'static str> {

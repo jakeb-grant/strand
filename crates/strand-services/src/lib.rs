@@ -36,6 +36,7 @@ pub mod cpu;
 mod cx;
 mod data;
 pub mod dbus;
+pub mod media;
 pub mod memory;
 pub mod network;
 pub mod notifications;
@@ -70,6 +71,7 @@ pub struct Builtin {
     pub network: Client<network::Network>,
     pub bluetooth: Client<bluetooth::Bluetooth>,
     pub notifications: Client<notifications::Notifications>,
+    pub media: Client<media::Media>,
 }
 
 impl Builtin {
@@ -84,6 +86,7 @@ impl Builtin {
             network: services.register(rt),
             bluetooth: services.register(rt),
             notifications: services.register(rt),
+            media: services.register(rt),
         }
     }
 
@@ -98,6 +101,7 @@ impl Builtin {
             self.network.dynamic(),
             self.bluetooth.dynamic(),
             self.notifications.dynamic(),
+            self.media.dynamic(),
         ]
     }
 }
