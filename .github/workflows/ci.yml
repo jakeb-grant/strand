@@ -162,10 +162,13 @@ jobs:
       - name: Build the compositor matrix test
         id: build
         run: |
-          cargo test -p strand --test compositor_matrix --no-run 2>&1 | tee build.log
-          test=$(sed -n 's/.*Executable tests\/compositor_matrix.rs (\(.*\))/\1/p' build.log | tail -1)
+          # The binary's path from cargo's JSON messages: the human
+          # "Executable" line carries colour codes under CARGO_TERM_COLOR.
+          cargo test -p strand --test compositor_matrix --no-run --message-format=json >build.json
+          test=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "compositor_matrix" and .executable != null) | .executable' build.json | tail -1)
+          echo "matrix test: $test"
           test -x "$test"
-          echo "test=$PWD/$test" >>"$GITHUB_OUTPUT"
+          echo "test=$test" >>"$GITHUB_OUTPUT"
       - name: A virtual KMS card (vkms)
         id: drm
         run: |
