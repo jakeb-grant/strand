@@ -74,7 +74,7 @@ for kind in $MATRIX; do
     for log in "$ROOT/target/matrix/$kind"/*.log; do
       [ -f "$log" ] || continue
       echo "--- tail of $log"
-      tail -40 "$log"
+      tail -80 "$log"
     done
     failed+=("$kind")
   fi

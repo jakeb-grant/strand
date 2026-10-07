@@ -50,6 +50,14 @@ PIDS=()
 cleanup() {
   for p in "${PIDS[@]}"; do kill "$p" 2>/dev/null || true; done
   wait 2>/dev/null || true
+  # Hyprland logs into its instance directory and writes a crash report
+  # under ~/.cache: kept with the other logs.
+  if [ "$KIND" = hyprland ]; then
+    for f in "$RT"/hypr/*/hyprland.log; do [ -f "$f" ] && cp "$f" "$OUT/hyprland-instance.log"; done
+    for f in "${XDG_CACHE_HOME:-$HOME/.cache}"/hyprland/hyprlandCrashReport*.txt; do
+      [ -f "$f" ] && cp "$f" "$OUT/hyprland-crash-$(basename "$f" .txt).log"
+    done
+  fi
   rm -rf "$RT"
 }
 trap cleanup EXIT
