@@ -13,7 +13,7 @@ file fixes boundaries; each crate is free inside its own boundary.
 | Text worker | `strand-text` | parley shaping, swash rasterisation, per-scale glyph atlases | Block render: a painted surface keeps drawing its last layout (or a realigned stand-in from another scale or width) until the new one arrives |
 | Watcher | `strand-watch` | inotify directory watches and polling (one `strand-watch` thread); not the IPC socket (`docs/decisions.md`, wave2-watch) | Parse files (it sends paths and hashes) |
 | Persist IO (one per `PersistStore`) | `strand-core` | Atomic writes of persisted cells, settings-file edits, settings overlays and last-good snapshots; reports each file it is about to change to `PersistStore::on_written` | Run on the logic tick or block logic (failures come back as diagnostics in a later tick) |
-| Services | `strand-services` | One tokio current-thread runtime thread (`strand-services`), started with the first service that runs on it: every async service body (the `system` service follows the portal Settings with `strand_watch::follow` here; the compositor IPC adapters run here, the sway adapter on swayipc-async's types over its own tokio framing, so no async-io reactor thread); PipeWire (`strand-pipewire`) and the Wayland toplevel protocols (`strand-toplevel`) get a thread of their own (idle: zero wakeups, `crates/strand-services/tests/idle.rs`, `tests/audio_idle.rs`) | Block logic: they send patches and events over channels, applied by `Services::pump` on the logic thread |
+| Services | `strand-services` | One tokio current-thread runtime thread (`strand-services`), started with the first service that runs on it: every async service body (the `system` service follows the portal Settings with `strand_watch::follow` here; the `workspaces`, `windows` and `wm` stores and their one compositor hub with its IPC adapter run here, the sway adapter on swayipc-async's types over its own tokio framing, so no async-io reactor thread); the `audio` store runs the PipeWire loop on its own service thread (`strand-audio`, `Start::Thread`), and the hub's Wayland toplevel/workspace protocol client its own `strand-toplevel` thread (idle: zero wakeups, `crates/strand-services/tests/idle.rs`, `tests/audio_idle.rs`, `tests/wm_services.rs`, `tests/audio_service.rs`) | Block logic: they send patches and events over channels, applied by `Services::pump` on the logic thread |
 
 Channels are the only coupling between threads. Logic → render is one
 `SceneDiff` per tick. Render → logic is `InputEvent`s (`strand-scene`) and layout facts
@@ -1969,7 +1969,9 @@ the primitives, `Option`, `Vec` and derived types.
   `notifications` (our own `org.freedesktop.Notifications` server),
   `media` (MPRIS; `elapsed`/`position` carried forward, ticking only
   while watched) and `tray` (StatusNotifierItem host, its own watcher
-  when the session has none, DBusMenu model). All on our own zbus calls
+  when the session has none, DBusMenu model), and (wave 4, wm) the
+  compositor's `workspaces`, `windows` and `wm` and PipeWire's `audio`
+  (below). The D-Bus services are all on our own zbus calls
   (decisions.md, wave4-a2), with `logind-zbus` for `SetBrightness`.
   `strand_services::dbus` is what they share: `Daemon` (a bus name
   followed through `NameOwnerChanged`, its signals by match rule, checked
@@ -2097,16 +2099,30 @@ the primitives, `Option`, `Vec` and derived types.
   batch that rebuilds the current state, plus the reloads it missed,
   instead of an unbounded backlog; a store should still drain promptly.
   Each store subscribes from its body, so a store's 5 s stop grace is its
-  own and the hub stops at once once all have stopped; `screens.focused`
-  subscribes only while it is read and takes `FocusedScreen` from the
-  same stream, and its owner keeps the same lifecycle as a store: it
-  drops its subscription only 5 s after the last reader leaves or goes
-  invisible (or holds it through the `screens` store's own grace), so a
-  binding that toggles does not tear down and rebuild the adapter
-  connection and the protocol thread each time (the wiring step tests
-  that `starts()` stays 1 across a read, unread, read cycle within 5 s). `wm::SCHEMA` is the schema text the three stores serve
-  (`Service::schema()`), replacing the provisional stubs (`Workspace.
-  active`, `Window.urgent`, `event config_reloaded(failed: bool?)`). `requests` takes
+  own and the hub stops at once once all have stopped (a store still read
+  keeps it: `tests/wm_services.rs`). The stores (`wm::Windows`,
+  `wm::Workspaces`, `wm::Wm`; records `wm::WindowItem` and
+  `wm::WorkspaceItem`, the schema's `Window` and `Workspace` field for
+  field, converted from the model's, which also carries `toplevel`) are
+  `#[service]` bodies on the shared runtime: each subscribes to
+  `wm::hub()`, the hub of its runtime thread (made on first use, one per
+  `Services` runtime, with the config `wm::configure(Some(config))` set,
+  else `WmConfig::from_env(None)`: what `strand run` uses), sends each
+  batch as one envelope of its patches (keyed diffs stay keyed diffs),
+  is ready once its part of the state has arrived, emits
+  `wm.config_reloaded` (the `wm` store only), and runs `ws.focus()`,
+  `win.focus()`, `win.close()` and `win.minimize()` as `WmAction`s
+  (a failure is logged; the change arrives in the stream).
+  `workspaces.on(screen)` is a `fn` method over the cells (the
+  workspaces whose `screen` is the `Screen` record's `name`).
+  `wm::live_runs()` counts live `run`s (tests). `screens.focused` is the
+  `screens` service's, which no crate serves yet; when one does it takes
+  `FocusedScreen` from the same hub, with a store's lifecycle (it drops
+  its subscription only 5 s after its last reader). The schema texts
+  are `strand_services_schema::{WINDOWS, WORKSPACES, WM}` (one service
+  per text; `wm::{WINDOWS_SCHEMA, WORKSPACES_SCHEMA, WM_SCHEMA}`),
+  replacing the provisional stubs and adding `Workspace.active`,
+  `Window.urgent` and `event config_reloaded(failed: bool?)`. `requests` takes
   `WmRequest { action: WmAction::{FocusWorkspace, FocusWindow,
   CloseWindow, MinimizeWindow}, reply: Option<oneshot> }`
   (`WmRequest::new(action) -> (WmRequest, WmReply)`;
@@ -2123,14 +2139,14 @@ the primitives, `Option`, `Vec` and derived types.
   `strand-toplevel` thread (own connection, `poll(2)` on the socket and an
   eventfd), sending a `ProtocolState` per atomic update; `wm::merge`
   joins the two (`docs/decisions.md`, wave4-wm). `wm::Mirror` applies the
-  stream, for tests and for the store that will hold it. The
-  `#[service]`/`#[derive(Store)]` wiring builds on this stream.
+  stream (tests).
 
 - **Audio (`strand_services::audio`, the `audio` service; cargo feature
   `pipewire`, on by default).**
   `Audio::spawn(AudioConfig { remote }, sink) -> io::Result<Audio>` runs
   pipewire 0.10.1 (`v1_0_0`, built against libpipewire 1.0.5) on its own
-  `strand-pipewire` thread. Dropping the handle asks the thread to stop
+  `strand-pipewire` thread (the library handle; the `audio` store runs
+  the same loop on its own service thread, below). Dropping the handle asks the thread to stop
   and returns at once (safe on the shared runtime at the 5 s stop);
   `stop()` also joins it, which blocks briefly and belongs off the logic
   thread. `sink: FnMut(Vec<AudioChange>) + Send` gets one non-empty
@@ -2148,9 +2164,9 @@ the primitives, `Option`, `Vec` and derived types.
   no peaks). `AudioDevice` is exactly the schema's record (`id`, `name`,
   `description`, `volume` on the cubic scale wpctl shows, `muted`,
   `icon`, `default`), so the store's `#[derive(Data)]` record can be it.
-  `audio::SCHEMA` is the text the store serves, which is exactly the
-  provisional stub; it moves to `strand-services-schema` when this
-  merges with wave4/core. `audio::Mirror` applies the stream.
+  `audio::SCHEMA` (`strand_services_schema::AUDIO`) is the text the
+  store serves, which is exactly the provisional stub. `audio::Mirror`
+  applies the stream.
   `request(AudioAction::{SetVolume(DeviceRef, f64), StepVolume(DeviceRef,
   f64), SetMuted(DeviceRef, bool), MakeDefault(DeviceRef)}) ->
   AudioReply` (a future to `.await` inside a runtime, or `wait()` on a
@@ -2193,18 +2209,39 @@ the primitives, `Option`, `Vec` and derived types.
   element (M4, `spectrum(AudioDevice -> source)`), which will subscribe
   by its source device and needs the meter to hand out samples for
   realfft, not only folded peaks (docs/decisions.md, wave4-wm (audio)).
-  Suppressing write echoes is the store's job. Requests carry no tag, so
-  the audio adapter uses `strand_core::echo`'s value path: an untagged
-  report equal to a pending write is its echo. That works because the
-  thread reports a volume it wrote exactly as written: any of a device's
-  last `audio::ECHOES` (64, core's `MAX_PENDING_ECHOES`) writes, and any
-  volume on the 1/10 000 grid even once forgotten (`audio::perceptual`
-  snaps a root within 1e-6 of it); through a card's `Route` (hardware
-  mixer steps) an echo within 0.005 of a write reads as the closest
-  write. Without the
+  The thread reports a volume it wrote exactly as written: any of a
+  device's last `audio::ECHOES` (64, core's `MAX_PENDING_ECHOES`)
+  writes, and any volume on the 1/10 000 grid even once forgotten
+  (`audio::perceptual` snaps a root within 1e-6 of it); through a card's
+  `Route` (hardware mixer steps) an echo within 0.005 of a write reads
+  as the closest write.
+  The store, `audio::AudioStore` (`#[service(name = "audio", thread)]`,
+  records `AudioDevice` with `#[derive(Data)]`, action
+  `AudioDeviceAction::MakeDefault`): its body runs the loop
+  (`thread::run(config, host, rx)`) on the service's own thread through
+  a `Host` (`changes(batch)`, `poll() -> Vec<Cmd>` after each burst of
+  work, `deadline()`); `Cx::set_notify` pokes the loop (`Cmd::Poke`),
+  which then drains the service's messages there, and a stopped service
+  ends the loop. A write of `audio.sink`/`audio.source` (`.volume`,
+  `.muted`) becomes `SetVolume`/`SetMuted` on `DeviceRef::DefaultSink`
+  (`DefaultSource`); an item write of `audio.sinks`/`audio.sources` on
+  `DeviceRef::Id`. Each write is answered tagged (`Cx::report`) by the
+  first batch whose state shows its value on its device (the earlier
+  writes of that device's field are overtaken and dropped, so the logic
+  thread ignores their echoes and settles on the last), or, refused or
+  unseen within `audio::ANSWER_WAIT` (1 s), with the device as it is: a
+  slider's echoes never snap it back, and the value path of
+  `strand_core::echo` is not relied on (a report's record also carries
+  the `icon`, which the optimistic local value does not update).
+  `audio::configure(Some(AudioConfig))` points stores started later at
+  a socket (tests); `strand run` uses PipeWire's own default. Levels:
+  `audio::tap_levels(target, f) -> LevelTap` (the M4 `spectrum`
+  element's hook) asks the running store to meter `target`; the store
+  passes the tapped targets to the loop only while a reader is visible
+  (`Cx::visible`), an empty set otherwise. Without the
   `pipewire` feature the module is absent and the store answers
-  `audio.*` at the schema's defaults. The `#[service]` store wiring
-  builds on this (docs/decisions.md, wave4-wm (audio)).
+  `audio.*` at the schema's defaults (its schema text is left out of
+  `strand_services::schemas()`).
 
 ### `strand-watch`
 

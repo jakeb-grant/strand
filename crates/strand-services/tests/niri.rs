@@ -290,3 +290,93 @@ async fn niri_adapter_reconnects_without_a_spurious_reload() {
     );
     service.abort();
 }
+
+/// The `workspaces` and `wm` stores over the niri adapter: what shells
+/// read (the focused workspace, a switch, an action as a niri request)
+/// and `wm.config_reloaded(failed)` with niri's answer.
+#[test]
+fn the_stores_follow_niri() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use strand_core::Runtime;
+    use strand_services::wm::WorkspaceAction;
+    use strand_services::{Applied, Builtin, Buses, Cells, Data, Services};
+
+    let tokio = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let _enter = tokio.enter();
+    let fake = FakeNiri::start();
+    let bursts = bursts("niri-26.04/events.txt");
+    // The only test of this binary that sets the process-wide config.
+    wm::configure(Some(WmConfig {
+        backend: Some(Backend::Niri {
+            socket: fake.socket.clone(),
+        }),
+        wayland: None,
+        ..Default::default()
+    }));
+    let rt = Runtime::new();
+    let s = Services::new(&rt, Buses::none(), || {});
+    let b = Builtin::register(&s, &rt);
+    let reloads: Rc<RefCell<Vec<Vec<Data>>>> = Rc::default();
+    let r = reloads.clone();
+    b.wm.dynamic().observe(Box::new(move |_, a| {
+        if let Applied::Event { args, .. } = a {
+            r.borrow_mut().push(args.clone());
+        }
+    }));
+    let until = |what: &str, cond: &dyn Fn() -> bool| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            s.pump(&rt);
+            rt.flush();
+            if cond() {
+                return;
+            }
+            assert!(std::time::Instant::now() < deadline, "never: {what}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    let focused = || {
+        b.workspaces
+            .cells()
+            .snapshot(&rt)
+            .ok()
+            .and_then(|w| w.focused)
+            .map(|w| w.name)
+    };
+    b.workspaces.acquire(&rt);
+    b.wm.acquire(&rt);
+    until("boot", &|| {
+        focused().as_deref() == Some("1")
+            && b.wm.cells().snapshot(&rt).is_ok_and(|w| w.name == "niri")
+    });
+    fake.send(&bursts["focus"]);
+    until("focus", &|| focused().as_deref() == Some("chat"));
+    let three = b
+        .workspaces
+        .cells()
+        .snapshot(&rt)
+        .unwrap()
+        .all
+        .into_iter()
+        .find(|w| w.name == "3")
+        .unwrap();
+    b.workspaces
+        .act(&rt, WorkspaceAction::Focus { item: three })
+        .unwrap();
+    until("the action", &|| {
+        fake.requests()
+            .iter()
+            .any(|r| r.starts_with("{\"Action\"") && r.contains("FocusWorkspace"))
+    });
+    fake.send(&bursts["reload-failed"]);
+    until("the failed reload", &|| {
+        reloads.borrow().as_slice() == [vec![Data::Bool(true)]]
+    });
+    s.shutdown();
+    wm::configure(None);
+}

@@ -6722,6 +6722,83 @@ taken over by a listener that accepts and stays silent: no
 `Connected(true)` and no removals, a write answers `NotConnected`, and
 the real daemon's return reconnects).
 
+**2026-10-07 · wave4-wm (services): three stores, one hub per
+services runtime.** `workspaces`, `windows` and `wm` are three services
+to the language (each its own readers, start and 5 s stop, as design.md's
+lifecycle says per service) but one compositor service underneath:
+each store's body subscribes to `wm::hub()`, a `WmHub` kept in a
+thread-local of the shared runtime thread, so every `Services` registry
+(a `strand run`, a test) has its own and the first store to start starts
+the adapter and the protocol thread, the last to stop stops them. The
+config is process-wide (`wm::configure`, else `WmConfig::from_env(None)`)
+rather than a field of `Buses`: the compositor's sockets come from the
+environment like the session bus, and only tests point elsewhere (they
+serialize). `strand run` passes no `EventSink`: nothing consumes a
+`ChangeEvent::Compositor` yet (live.rs ignores it), and
+`wm.config_reloaded` is the language's event either way. Each store
+waits for its own part of the state before `ready()` (the first frame's
+wait), so a bar does not flash an empty workspace row. Proof:
+`crates/strand-services/tests/wm_services.rs`.
+
+**2026-10-07 · wave4-wm (services): the toplevel client is the hub's
+thread, not a `Start::Thread` body.** The contract's own-thread helper
+runs one service's body on its thread; the Wayland protocol client
+serves three stores, so it stays the `strand-toplevel` thread the shared
+hub's `run` spawns (and drops with it), with the same message protocol
+(typed snapshots over a channel, no shared state). PipeWire serves one
+store and runs on that store's `Start::Thread` (`strand-audio`): the
+loop the `Audio` handle runs on `strand-pipewire` is the same function,
+given a `Host` instead of a sink, so the service thread is the PipeWire
+thread (no second thread, no extra hop).
+
+**2026-10-07 · wave4-wm (services): `wm`'s schema has no focused
+monitor.** The task asked for the focused monitor "if the schema has
+it": the `wm` stub declares only `name` and `config_reloaded`; the
+focused monitor is `screens.focused`, a field of the `screens` service,
+which no crate serves yet. Adding it to `wm` would put one fact in two
+places; the hub already carries `FocusedScreen` for the `screens` store
+to take when it is written.
+
+**2026-10-07 · wave4-wm (services): audio writes are answered by the
+batch that shows them, not by value.** The library's plan was the echo
+module's value path (an untagged report equal to a pending write is its
+echo). Through the store it does not hold: `audio.sink` is a whole
+`AudioDevice` record, and a report's record carries the `icon` PipeWire's
+new volume implies while the optimistic local record still has the old
+one, so a slider's earlier echo crossing an icon boundary compared
+unequal and snapped the slider back (the test fails so when the answers
+are untagged). The store therefore keeps its writes in flight and
+answers each, tagged (`Cx::report`), with the first batch whose state
+shows its value on its device; the writes of that field before it are
+dropped (the logic thread's pending list is cut at the answered tag, so
+their echoes are ignored and the last write settles). A write PipeWire
+refuses, or whose value never shows within `audio::ANSWER_WAIT` (1 s:
+it changed nothing, or was clamped), is answered with the device as it
+is. A field write (`audio.sink.volume`) targets `DeviceRef::DefaultSink`,
+resolved when the action runs, so a write that starts the service lands
+once PipeWire has synced. Proof: `tests/audio_service.rs` (20 slider
+writes, no snap-back).
+
+**2026-10-07 · wave4-wm (services): level meters run for taps, and only
+while a reader is visible.** No schema field carries a level (wave4-wm
+(audio)), so `#[store(stream)]` has nothing to gate them by. The store
+takes the union of `audio::tap_levels` taps (the M4 `spectrum`
+element's hook; a reading goes to the tap's function on the audio
+thread) and passes it to the loop only while `Cx::visible()`; hidden
+(inside the 5 s grace) every meter stops. A tap alone does not start the
+service: the element reading `audio.sink` is its reader. Proof:
+`tests/audio_service.rs` (the `strand-levels` node comes and goes with
+the tap and with the reader's visibility).
+
+**2026-10-07 · wave4-wm (services): the change-sources box is split by
+owner.** features.md's "Change sources beyond files" held two features
+with different owners: the compositor reload (this track: the `wm`
+store's `config_reloaded`) and the cache invalidations of
+`applications/`, `index.theme` and fontconfig (the apps and icon
+caches' owners). It is now two boxes with the same words, so the first
+is ticked with its proofs and the second stays open; nothing was
+dropped.
+
 ## wave4-core
 
 **2026-10-06 · wave4-core: a service's schema is its own text, held to

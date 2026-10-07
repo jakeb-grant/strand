@@ -57,7 +57,9 @@ formats, `strand set` writes an exported state or a settings field,
 go-to-definition, rename and quick fixes. M3 (in progress) makes the
 system services real: the portal, cpu, memory, battery, brightness,
 network, Bluetooth, tray, media and the notification server run on
-D-Bus and procfs; audio, workspaces, windows and apps are pending, and
+D-Bus and procfs, audio on PipeWire, workspaces and windows on the
+compositor (Hyprland, niri and sway IPC, `ext-workspace-v1`,
+`ext-foreign-toplevel-list`); apps are pending, and
 `STRAND_MOCK=desktop` fills everything with a mock desktop. Still open from
 M1: the tree-sitter grammar, the render side of `keyframes`, `shader`
 and `canvas`, a dedicated format-on-save overlay check, the loader's

@@ -21,6 +21,13 @@ use strand_services::wm::{
 };
 use strand_services::{Applied, Builtin, Buses, Cells, Data, STOP_GRACE, Services};
 
+/// The tests configure the process-wide compositor config: one at a time.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Pump until `cond` holds (10 s at most).
 fn until(rt: &Runtime, s: &Services, what: &str, cond: impl Fn() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -60,6 +67,7 @@ fn sway_focused(sway: &Sway) -> String {
 
 #[test]
 fn the_compositor_stores_follow_sway_through_one_hub() {
+    let _serial = serial();
     let Some(sway) = Sway::start("the_compositor_stores_follow_sway_through_one_hub") else {
         return;
     };
@@ -230,6 +238,68 @@ fn the_compositor_stores_follow_sway_through_one_hub() {
         );
         std::thread::sleep(Duration::from_millis(10));
     }
+    s.shutdown();
+    wm::configure(None);
+}
+
+/// The same stores over the Hyprland adapter (a fake Hyprland replaying
+/// 0.56.2's traffic): the hub is adapter-agnostic, so what the sway test
+/// shows holds for Hyprland too; this checks the store side of its
+/// workspaces, a switch, a dispatch and `configreloaded`.
+#[test]
+fn the_compositor_stores_follow_hyprland() {
+    let _serial = serial();
+    let tokio = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let _enter = tokio.enter();
+    let fake = common::hyprland::FakeHyprland::start();
+    wm::configure(Some(WmConfig {
+        backend: Some(fake.backend.clone()),
+        wayland: None,
+        ..Default::default()
+    }));
+    let rt = Runtime::new();
+    let s = Services::new(&rt, Buses::none(), || {});
+    let b = Builtin::register(&s, &rt);
+    let reloads: Rc<RefCell<Vec<Vec<Data>>>> = Rc::default();
+    let r = reloads.clone();
+    b.wm.dynamic().observe(Box::new(move |_, a| {
+        if let Applied::Event { args, .. } = a {
+            r.borrow_mut().push(args.clone());
+        }
+    }));
+    b.workspaces.acquire(&rt);
+    b.wm.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)), "the first read");
+    until(&rt, &s, "boot", || {
+        focused(&b, &rt).as_deref() == Some("1")
+            && b.wm
+                .cells()
+                .snapshot(&rt)
+                .is_ok_and(|w| w.name == "Hyprland")
+    });
+    let bursts = common::bursts("hyprland-0.56.2/events.txt");
+    fake.send(&bursts["switch"]);
+    until(&rt, &s, "switch", || {
+        focused(&b, &rt).as_deref() == Some("2")
+    });
+    let one = workspace(&b, &rt, "1").unwrap();
+    b.workspaces
+        .act(&rt, WorkspaceAction::Focus { item: one })
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !fake.requests().iter().any(|r| r == "dispatch workspace 1") {
+        assert!(Instant::now() < deadline, "{:?}", fake.requests());
+        s.pump(&rt);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    fake.send(&bursts["reload"]);
+    until(&rt, &s, "configreloaded", || {
+        reloads.borrow().as_slice() == [vec![Data::Null]]
+    });
     s.shutdown();
     wm::configure(None);
 }
