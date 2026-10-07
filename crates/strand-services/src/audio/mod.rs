@@ -21,10 +21,14 @@
 //! - runs a peak meter (a passive capture stream) per [`LevelTarget`] only
 //!   while [`Audio::set_levels`] asks for it (the store asks while a
 //!   visible reader wants levels), at most one reading per meter per
-//!   frame (1/60 s, the loudest of the cycles in between);
+//!   frame (1/60 s, the loudest of the cycles in between), read on
+//!   PipeWire's data thread so the loop wakes at most once a frame;
 //! - reconnects when the daemon restarts (100 ms doubling backoff, and an
 //!   inotify watch on the socket's directory while disconnected), keeping
-//!   the last devices meanwhile.
+//!   the last devices meanwhile: a new connection's first state waits for
+//!   the session manager (its `default` metadata, and the defaults shown
+//!   before) for up to [`SETTLE`], so a restart shows no empty default or
+//!   list in between.
 //!
 //! Every change goes to the sink given to [`Audio::spawn`] as one batch of
 //! [`AudioChange`]s per burst of PipeWire events (the [`Publisher`]'s
@@ -33,9 +37,18 @@
 //! changing, the thread sleeps in the loop and wakes for nothing.
 //!
 //! Writes are plain requests; suppressing the echo of a write in the store
-//! (the `rw` contract) is the store's job. The thread does report a volume
-//! it wrote exactly as written (not its cube root's float noise; any of
-//! its last [`ECHOES`] writes to a device), so the echo compares equal.
+//! (the `rw` contract) is the store's job, by generation or pending write.
+//! The thread reports a volume it wrote as written (not its cube root's
+//! float noise; any of its last [`ECHOES`] writes to a device): exactly
+//! on a node's `Props`; through a card's `Route`, whose mixer steps
+//! quantize it, only when the echo is within half a percent, so on
+//! hardware value equality is not a reliable echo test.
+//!
+//! An action sent before a connection has published its first state (a
+//! media key that starts the service with a write, or one sent during a
+//! restart) waits for it and runs right after, so `DeviceRef::DefaultSink`
+//! resolves against the synced defaults; with no connection at all it
+//! waits [`GRACE`], then answers [`AudioError::NotConnected`].
 
 mod meter;
 pub mod model;
@@ -55,7 +68,7 @@ pub use model::{
     linear, perceptual,
 };
 pub use schema::SCHEMA;
-pub use thread::{ECHOES, FRAME};
+pub use thread::{ECHOES, FRAME, GRACE, SETTLE};
 
 /// Where to connect.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -104,8 +117,8 @@ pub enum AudioAction {
 /// Why an action did not run.
 #[derive(Clone, Debug, PartialEq)]
 pub enum AudioError {
-    /// Not connected to PipeWire (it is restarting, or the service stopped
-    /// before the action ran).
+    /// Not connected to PipeWire (no connection came within [`GRACE`], or
+    /// the service stopped before the action ran).
     NotConnected,
     /// No such device (or no default of that direction).
     UnknownDevice(DeviceRef),
@@ -203,7 +216,8 @@ impl Audio {
         })
     }
 
-    /// Runs an action.
+    /// Runs an action: now, or (before a connection's first state) right
+    /// after it, in the order sent.
     pub fn request(&self, action: AudioAction) -> AudioReply {
         let (reply, rx) = oneshot::channel();
         // A thread that has ended drops the request, and with it `reply`.

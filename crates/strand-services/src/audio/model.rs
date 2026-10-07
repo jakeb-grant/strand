@@ -7,6 +7,8 @@
 //! service: the default `sink` and `source`, and every `sinks` and
 //! `sources`.
 
+use std::collections::BTreeMap;
+
 use strand_core::keyed::{KeyedError, VecDiff, keyed_diff};
 
 /// Whether a device plays or records.
@@ -20,8 +22,9 @@ pub enum Direction {
 
 impl Direction {
     /// The direction of a node with this `media.class`, if it is an audio
-    /// device. `Audio/Duplex` counts as a sink: its playback side is what a
-    /// volume control moves.
+    /// device. `Audio/Duplex` counts as a sink only: its playback side is
+    /// what a volume control moves, and one node is one item (so a duplex
+    /// node is never `audio.source`; docs/decisions.md, wave4-wm (audio)).
     pub fn of_media_class(class: &str) -> Option<Self> {
         match class {
             "Audio/Sink" | "Audio/Duplex" => Some(Self::Sink),
@@ -141,6 +144,11 @@ pub struct AudioState {
     /// Connected to PipeWire. While it is away (a restart), the last
     /// devices stay.
     pub connected: bool,
+    /// Each device's `object.serial`, by id. PipeWire reuses ids: the
+    /// same id under a new serial is another device, published as a
+    /// removal and an insertion (so a `for` item's state never passes to
+    /// it). Ids without a serial compare as unchanged.
+    pub serials: BTreeMap<u32, u64>,
 }
 
 impl AudioState {
@@ -172,11 +180,12 @@ pub enum LevelTarget {
     Device(u32),
 }
 
-/// One reading of a peak meter: the loudest sample of each channel in the
-/// last processing cycle (linear, 0 to 1 for unclipped audio). A meter
-/// whose device fell silent, went idle or left sends one quiet reading
-/// (all zeros, or no peaks at all when it stopped), then nothing until
-/// sound comes back.
+/// One reading of a peak meter: the loudest sample of each channel since
+/// the meter's previous reading (linear, 0 to 1 for unclipped audio; at
+/// most one reading per meter per [`FRAME`](super::FRAME), so one may
+/// cover many processing cycles). A meter whose device fell silent, went
+/// idle or left sends one quiet reading (all zeros, or no peaks at all
+/// when it stopped), then nothing until sound comes back.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Levels {
     /// The meter.
@@ -194,8 +203,9 @@ impl Levels {
     }
 }
 
-/// One change to what the service shows. A batch is what one PipeWire
-/// event (or the first sync after connecting) changed.
+/// One change to what the service shows. A batch is what one burst of
+/// PipeWire events (handled together after one loop iteration; or a
+/// connection's first state) changed.
 #[derive(Clone, Debug, PartialEq)]
 pub enum AudioChange {
     /// Connected to PipeWire, or lost it (the devices stay until the new
@@ -220,6 +230,38 @@ fn items(devices: &[AudioDevice]) -> Vec<(i64, AudioDevice)> {
         .iter()
         .map(|d| (i64::from(d.id), d.clone()))
         .collect()
+}
+
+/// The keyed diff of one list, a device whose id now holds another serial
+/// removed first and inserted anew.
+fn list_diff(
+    last: &AudioState,
+    old: &[AudioDevice],
+    next: &AudioState,
+    new: &[AudioDevice],
+) -> Vec<VecDiff<i64, AudioDevice>> {
+    let reused = |d: &AudioDevice| {
+        matches!(
+            (last.serials.get(&d.id), next.serials.get(&d.id)),
+            (Some(a), Some(b)) if a != b
+        )
+    };
+    if old == new && !old.iter().any(reused) {
+        return Vec::new();
+    }
+    let (old, new) = (items(old), items(new));
+    let new_ids: Vec<i64> = new.iter().map(|(k, _)| *k).collect();
+    let gone: Vec<(i64, AudioDevice)> = old
+        .iter()
+        .filter(|(k, d)| !(new_ids.contains(k) && reused(d)))
+        .cloned()
+        .collect();
+    if gone.len() == old.len() {
+        return keyed_diff(&old, &new);
+    }
+    let mut d = keyed_diff(&old, &gone);
+    d.extend(keyed_diff(&gone, &new));
+    d
 }
 
 /// Turns successive [`AudioState`]s into the smallest [`AudioChange`]s.
@@ -260,17 +302,13 @@ impl Publisher {
                 if last.connected != next.connected {
                     out.push(AudioChange::Connected(next.connected));
                 }
-                if last.sinks != next.sinks {
-                    let d = keyed_diff(&items(&last.sinks), &items(&next.sinks));
-                    if !d.is_empty() {
-                        out.push(AudioChange::Sinks(d));
-                    }
+                let d = list_diff(last, &last.sinks, &next, &next.sinks);
+                if !d.is_empty() {
+                    out.push(AudioChange::Sinks(d));
                 }
-                if last.sources != next.sources {
-                    let d = keyed_diff(&items(&last.sources), &items(&next.sources));
-                    if !d.is_empty() {
-                        out.push(AudioChange::Sources(d));
-                    }
+                let d = list_diff(last, &last.sources, &next, &next.sources);
+                if !d.is_empty() {
+                    out.push(AudioChange::Sources(d));
                 }
                 if last.sink() != next.sink() {
                     out.push(AudioChange::Sink(next.sink().cloned()));
@@ -402,6 +440,11 @@ mod tests {
             Direction::of_media_class("Audio/Source/Virtual"),
             Some(Direction::Source)
         );
+        // One item per node: a duplex node is a sink (its playback side).
+        assert_eq!(
+            Direction::of_media_class("Audio/Duplex"),
+            Some(Direction::Sink)
+        );
         assert_eq!(Direction::of_media_class("Stream/Output/Audio"), None);
         assert_eq!(Direction::of_media_class("Video/Source"), None);
     }
@@ -420,6 +463,7 @@ mod tests {
             ],
             sources: vec![dev(40, "mic", Direction::Source, 1.0)],
             connected: true,
+            serials: BTreeMap::new(),
         };
         let first = p.publish(s.clone());
         assert_eq!(first.len(), 5);
@@ -476,6 +520,58 @@ mod tests {
         assert_eq!(
             m.levels(LevelTarget::DefaultSink).map(Levels::peak),
             Some(0.5)
+        );
+    }
+
+    #[test]
+    fn a_reused_id_is_a_new_device() {
+        let mut p = Publisher::new();
+        let mut m = Mirror::default();
+        let mut s = AudioState {
+            sinks: vec![
+                dev(30, "a", Direction::Sink, 0.5),
+                dev(31, "b", Direction::Sink, 1.0),
+            ],
+            connected: true,
+            serials: BTreeMap::from([(30, 100), (31, 101)]),
+            ..AudioState::default()
+        };
+        for c in p.publish(s.clone()) {
+            m.apply(&c).unwrap();
+        }
+        // a leaves and another device gets its id in the same burst.
+        s.sinks[0] = dev(30, "c", Direction::Sink, 0.5);
+        s.serials.insert(30, 205);
+        let c = p.publish(s.clone());
+        let [AudioChange::Sinks(d)] = &c[..] else {
+            panic!("{c:?}")
+        };
+        assert!(
+            matches!(
+                &d[..],
+                [VecDiff::Remove { key: 30, .. }, VecDiff::Insert { key: 30, value, .. }]
+                    if value.name == "c"
+            ),
+            "{d:?}"
+        );
+        for c in &c {
+            m.apply(c).unwrap();
+        }
+        assert_eq!(
+            m.sinks
+                .iter()
+                .map(|(_, d)| d.name.as_str())
+                .collect::<Vec<_>>(),
+            ["c", "b"]
+        );
+        // The same device, even with every field the same: no change.
+        assert!(p.publish(s.clone()).is_empty());
+        // Another serial with identical fields is still a new device.
+        s.serials.insert(31, 300);
+        let c = p.publish(s);
+        assert!(
+            matches!(&c[..], [AudioChange::Sinks(d)] if matches!(d[..], [VecDiff::Remove { key: 31, .. }, VecDiff::Insert { key: 31, .. }])),
+            "{c:?}"
         );
     }
 }

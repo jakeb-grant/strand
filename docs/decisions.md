@@ -6406,19 +6406,34 @@ lower it, so `-= 0.05` from 1.2 does not jump to 1.0. NaN is refused. The
 thread remembers the channel volumes of a device's last 8 writes
 (`audio::ECHOES`) and reports the written value when any of them comes
 back. The echo of `0.37` is then `0.37`, not `0.36999998` (f32 cube and
-root), also when a slider sent several writes before the first echo, so
-the store's echo suppression can compare by value as well as by
-generation. A relative step (`strand set audio.sink.volume +5%`) is
-`AudioAction::StepVolume(device, delta)`, resolved on the audio thread
-when it runs, from the last volume written there while PipeWire has not
-echoed it yet (else the volume shown), with `SetVolume`'s clamp: two
-quick key presses never read the same value and lose a step, which they
-could if the store or IPC added the step to its own mirror. Proof:
+root), also when a slider sent several writes before the first echo.
+That is exact only on the node `Props` path. Through a card's `Route`,
+ACP quantizes to the mixer's steps and splits hardware and software
+volume, so the echo is near the written value, not equal: an echo
+within 0.005 (half a percent, on the perceptual scale) of a remembered
+write reads as that write, and farther is another program's volume. So
+the store suppresses echoes by generation or pending write, never by
+value equality. A relative step is `AudioAction::StepVolume(device,
+delta)`, resolved on the audio thread when it runs, from the last volume
+written there while PipeWire has not reported it yet (else the volume
+shown), with `SetVolume`'s clamp. That pending write ends when its echo
+comes, or when a volume matching no write arrives after the core sync
+issued with the write has returned. A report before that sync (the
+echo of an earlier mute, which carries the whole `Props` and so the old
+volume) is shown, but a second step still adds to the write. The store
+sends VM writes (`audio.sink.volume -= dy * 0.05`) as `SetVolume`:
+`ServiceHost::write` carries an absolute value, and the store's tagged
+local cell already makes quick scroll steps compound. `StepVolume` is
+the path for IPC's relative form (`strand set audio.sink.volume +5%`,
+design.md example (d)), whose parsing in `crates/strand/src/ipc.rs` is
+pending: two quick key presses then never read the same value and lose
+a step. Proof:
 `tests/audio.rs::writes_land_where_wpctl_reads_them` (two steps before
 the first echo land at 0.7; ten slider writes before the first echo all
 read back as written), `src/audio/thread.rs::tests::
-echoes_of_recent_writes_read_back_as_written`, `src/audio/model.rs`
-tests.
+{echoes_of_recent_writes_read_back_as_written,
+an_older_report_before_a_write_is_applied_keeps_the_step_base,
+a_quantized_echo_reads_as_written}`, `src/audio/model.rs` tests.
 
 **2026-10-07 · wave4-wm (audio): the default is read from `default.audio.*`,
 else `default.configured.audio.*`, and `make_default()` writes both.**
@@ -6449,21 +6464,31 @@ stream: a sink's monitor (`stream.capture.sink`) or a source. It is
 `node.passive`, so it never keeps a device awake: a sink that plays
 nothing stays suspended and the meter wakes nothing. It is also
 `node.dont-reconnect`; the thread retargets `DefaultSink` itself when the
-default changes. Its process callback runs on the audio thread (no
-`RT_PROCESS`). Its cycles are held, keeping the loudest peak per
-channel, and at most one `Levels` per meter goes out per frame
-(`audio::FRAME`, 1/60 s), from a timer armed only while a meter holds a
-reading. PipeWire shrinks the whole graph's cycle when any client asks
-for low latency (a game, voice chat: 64 samples is 750 cycles a second),
-and design.md's state is latest-value and coalesced per frame: a meter
-shown on screen needs no more. Only the first all-zero reading after
+default changes. Its process callback runs on PipeWire's data thread
+(`RT_PROCESS`, a listener of its own) and only folds each cycle's peaks
+into per-channel atomics (`f32` bits, `fetch_max`) and counts the
+cycle: no allocation, lock or queue there. It wakes the
+`strand-pipewire` loop (an eventfd) only on the first cycle with sound
+after the loop last read the meter. While sound flows the loop reads
+the meter on the frame timer instead, and the data thread wakes nobody.
+At most one `Levels` per meter goes out per frame (`audio::FRAME`,
+1/60 s), the loudest peak per channel since the last, and the loop
+wakes about as often, however short the graph's cycle. PipeWire
+shrinks the whole graph's cycle when any client asks for low latency (a
+game, voice chat: 64 samples is 750 cycles a second); with the process
+callback on the loop, the loop woke that often even though it published
+60 readings. design.md's state is latest-value and coalesced per frame:
+a meter shown on screen needs no more. A device playing silence wakes
+the loop not at all after its first silent reading. Only the first all-zero reading after
 sound is sent. A meter that pauses, fails, loses its connection, or
 stops (no longer wanted, or retargeted when the default moves or its
 device leaves) sends one closing quiet reading if it last showed sound,
 so a level never stays frozen: hidden while the music stops and shown
 again, or a default that moves to a silent sink, reads 0. A meter whose
-stream failed is started anew at the next look at the meters (the next
-`set_levels`, sync or default change), not kept dead. Meters on sources
+stream failed is started anew after 1 s, doubling per failure in a row
+on the same target and device up to 30 s, and reset once a stream runs:
+a format error never leaves a visible meter dead on an idle system, nor
+restarts it in a storm. Meters on sources
 are passive too, deliberately: a visible microphone level shows nothing
 until something else records. An active capture would open the
 microphone by itself, lighting every "microphone in use" indicator (the
@@ -6474,8 +6499,10 @@ rather than peaks; it can get them from the same stream. Proof:
 show reads 0; a playing sink stays pinned while the default moves to a
 silent one, whose meter then reads 0 with no sound after the switch),
 `peak_readings_are_capped_at_the_frame_rate` (60 batches a second under
-`pw-play --latency 64`, against 741 uncapped), `src/audio/meter.rs::
-tests`, `tests/audio_idle.rs` (zero wakeups of `strand-pipewire` and
+`pw-play --latency 64`, against 741 uncapped, and at most 70 wakeups a
+second of the `strand-pipewire` thread, measured at 60), `src/audio/
+meter.rs::tests` (the data thread's folding and single wake, the retry
+backoff), `tests/audio_idle.rs` (zero wakeups of `strand-pipewire` and
 `pw-data-loop` with a meter on a silent sink).
 
 **2026-10-07 · wave4-wm (audio): reconnection keeps the last devices and does
@@ -6493,13 +6520,64 @@ counts as the socket appearing (its event may be among those lost), and
 a watch that ends (`IN_IGNORED`: the directory was removed) is dropped
 and re-added on each attempt, the timer at 10 s meanwhile, so the
 service never waits on a dead watch. Without a watch (no runtime
-directory) it retries every 10 s. A connection that dies within 10 s
-does not reset the backoff (as with wm's `STABLE`). The new connection's
-first state goes out once its sync after the last bind returns, as a
-diff against the kept devices: ids that changed are a remove and an
-insert. Proof: `tests/audio.rs::a_daemon_restart_reconnects` (back
-within 3 s of a restart 7 s after the loss, when the next timed attempt
-is at 12.7 s), `it_starts_without_pipewire_and_connects_when_it_appears`.
+directory) it retries every 10 s. The timer stops only while the
+socket file is missing: one that is there but refuses (a crashed
+daemon's stale socket, a permission change, a daemon refusing clients)
+keeps the timer at 10 s, since nobody may ever recreate it. A connection
+that dies within 10 s does not reset the backoff (as with wm's
+`STABLE`). The new connection's first state goes out as a diff against
+the kept devices (ids that changed are a remove and an insert) once it
+has settled: its syncs after the last bind are back, the session
+manager's `default` metadata is bound and its properties read (a sync
+after the bind), and each default shown before the loss names a device
+again; or after `audio::SETTLE` (3 s). Until then the last state stays,
+`connected` still false: `connected` turns true with the first settled
+state, so a reader never sees a connected service with an empty
+default. This matters on hardware: inotify reconnects within
+milliseconds of the socket's return, before WirePlumber has made the
+metadata and, through its device monitor, the ALSA and Bluetooth nodes,
+so the first sync used to show an empty `audio.sink` (volume 0, which
+design.md's OSD would flash) and empty lists that then refilled. The
+defaults shown before stay usable meanwhile, after the current
+metadata's effective and configured defaults, until `SETTLE` passes.
+The same holds when the session manager alone restarts (its metadata
+removed): the defaults shown stay until the new metadata's resolve or
+`SETTLE` passes, then an absent session manager shows no default. A
+system without a session manager waits `SETTLE` for its first state.
+Proof: `tests/audio.rs::a_daemon_restart_reconnects` (a crash that
+leaves the socket behind; back within 3 s of a restart 9 s after the
+loss, when the next timed attempt is at 12.7 s; the defaults stay
+`SETTLE` after the session manager goes, and a quick session manager
+restart shows no gap), `a_restart_shows_no_gap_while_the_session_
+manager_comes_back` (a bare daemon whose devices `pw-cli` creates after
+WirePlumber starts: no empty default or list is published between the
+loss and the recovery), `it_starts_without_pipewire_and_connects_when_
+it_appears`, `src/audio/thread.rs::tests::only_a_missing_socket_is_
+waited_for`.
+
+**2026-10-07 · wave4-wm (audio): an action sent before a connection has
+settled waits for it.** The store hands a write to the service as soon as
+the write starts it, before the service is ready (wave4/core: "write
+starts"). So the write of a media key (`strand set audio.sink.volume
+…`), or the first click on a bar whose audio reads have not started it,
+reaches the thread before its first state; it used to answer
+`UnknownDevice(DefaultSink)` (no node was ready yet) or `NotConnected`
+(during a reconnect) and was lost. Now an action that arrives while no
+connection has published its first state is held in order (at most 64;
+more are refused with `NotConnected`) and runs right after that state,
+so `DefaultSink` resolves against the synced defaults. With a
+connection being set up, it waits for it to settle (at most `SETTLE`);
+with none at all (startup without a daemon, or after a loss) it waits
+`audio::GRACE` (2 s) for one, then answers `NotConnected`. After
+`Audio::stop`, actions still queued answer `NotConnected` and nothing
+more is written; `set_levels` after the stop is ignored. Proof:
+`tests/audio.rs::writes_sent_before_the_first_state_land` (a volume and
+a mute sent at spawn land on the default sink as wpctl reads it),
+`a_restart_shows_no_gap_while_the_session_manager_comes_back` (a mute
+sent while the daemon is down lands after it returns),
+`a_daemon_restart_reconnects` (with the daemon away longer than
+`GRACE`, `NotConnected`), `src/audio/mod.rs::tests::
+a_handle_without_a_daemon_answers_not_connected`.
 
 **2026-10-07 · wave4-wm (audio): volume and mute are read from node
 `Props` and written through the card's active `Route` when the node has
@@ -6512,7 +6590,10 @@ names its device (`device.id`) and its profile device
 follows its `Route` params, the active route per profile device. When
 the node's profile device has an active route, the write is that
 device's `Route { index, device, props: Props { channelVolumes | mute },
-save: true }`. That moves the hardware mixer, and it is what WirePlumber
+save: true }`. Each card bind issues a core sync like a node bind, so a
+connection's first state, and the actions waiting for it, wait for the
+card's routes: no early write goes to a card node's `Props`, which
+WirePlumber would revert and not persist. That moves the hardware mixer, and it is what WirePlumber
 saves and restores and re-pushes into the node on a port or profile
 change, so a `Props` write there would be reverted and never persisted.
 Otherwise (null sinks, virtual and filter nodes, pro-audio profiles
@@ -6538,6 +6619,22 @@ volume, muted)`, set when the state is built), and the direction and
 channel count stay on the audio thread, so the store's `#[derive(Data)]`
 record can be `AudioDevice` itself. `audio.sink`/`audio.source` with no
 default (`AudioChange::Sink(None)`) show the record's schema defaults.
+The schema keys devices by `id`, the PipeWire global id, and PipeWire
+reuses freed ids quickly: a device removed and another created under
+its id in one burst would be a keyed update, and a `for` item would
+keep its state for another device. `AudioState::serials` holds each
+device's `object.serial`, and the publisher sends a changed serial
+under the same id as a `Remove` and an `Insert`. A `DeviceRef::Id`
+from a stale item (an open popup) can still reach the device that now
+holds the id; carrying the serial in `DeviceRef` would refuse it, but
+that needs the store's item to carry it too, so it waits for the
+wiring (follow-up). `Audio/Duplex` nodes are listed as sinks only: one
+node is one item, and its playback side is what a volume control
+moves, so a duplex node that `default.audio.source` names (pro-audio
+setups) leaves `audio.source` empty, and `make_default()` on it writes
+the sink keys. Listing it in both lists would show one device twice
+with one volume. Proof: `src/audio/model.rs::tests::
+a_reused_id_is_a_new_device`, `media_classes`.
 `audio::SCHEMA` stays in strand-services on this branch; when this
 merges with wave4/core, it moves to `strand-services-schema` with the
 other builtin schema texts, so the LSP reads it without the runtime. The

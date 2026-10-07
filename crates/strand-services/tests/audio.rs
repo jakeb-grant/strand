@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use pipewire::{PipeWire, square_wav};
 use strand_services::audio::{
     Audio, AudioAction, AudioChange, AudioConfig, AudioDevice, AudioError, DeviceRef, FRAME,
-    LevelTarget, Levels, Mirror,
+    LevelTarget, Levels, Mirror, SETTLE,
 };
 
 /// The service and a mirror of what it sent.
@@ -27,13 +27,28 @@ struct Watch {
     levels: Vec<(Instant, Levels)>,
     /// Every sink volume as each batch left it, by name.
     volumes: Vec<(String, f64)>,
+    /// While set, every batch that leaves no default or an empty list is
+    /// recorded in `gaps`.
+    guard: bool,
+    gaps: Vec<String>,
+    /// The `strand-pipewire` thread's id (`/proc/thread-self`), from its
+    /// first batch.
+    tid: std::sync::Arc<std::sync::OnceLock<String>>,
 }
 
 impl Watch {
     fn start(config: AudioConfig) -> Watch {
         let (tx, rx) = channel();
+        let tid = std::sync::Arc::new(std::sync::OnceLock::new());
+        let thread_tid = tid.clone();
         let audio = Audio::spawn(config, move |batch| {
             assert!(!batch.is_empty(), "the service sent an empty batch");
+            thread_tid.get_or_init(|| {
+                std::fs::read_link("/proc/thread-self")
+                    .ok()
+                    .and_then(|p| Some(p.file_name()?.to_string_lossy().into_owned()))
+                    .unwrap_or_default()
+            });
             let _ = tx.send(batch);
         })
         .expect("the audio thread starts");
@@ -44,6 +59,9 @@ impl Watch {
             batches: 0,
             levels: Vec::new(),
             volumes: Vec::new(),
+            guard: false,
+            gaps: Vec::new(),
+            tid,
         }
     }
 
@@ -59,6 +77,15 @@ impl Watch {
         }
         for (_, d) in &self.mirror.sinks {
             self.volumes.push((d.name.clone(), d.volume));
+        }
+        let m = &self.mirror;
+        if self.guard
+            && (m.sink.is_none()
+                || m.source.is_none()
+                || m.sinks.is_empty()
+                || m.sources.is_empty())
+        {
+            self.gaps.push(format!("{batch:?}"));
         }
     }
 
@@ -87,6 +114,19 @@ impl Watch {
             .sink_named(name)
             .cloned()
             .unwrap_or_else(|| panic!("no sink {name}: {:#?}", self.mirror))
+    }
+
+    /// Voluntary context switches (wakeups) of the `strand-pipewire`
+    /// thread so far.
+    fn wakeups(&self) -> u64 {
+        let tid = self.tid.get().expect("a batch came");
+        let status = std::fs::read_to_string(format!("/proc/self/task/{tid}/status"))
+            .expect("the audio thread runs");
+        status
+            .lines()
+            .find_map(|l| l.strip_prefix("voluntary_ctxt_switches:"))
+            .and_then(|v| v.trim().parse().ok())
+            .expect("its context switches")
     }
 
     fn act(&self, action: AudioAction) -> Result<(), AudioError> {
@@ -370,7 +410,10 @@ fn a_daemon_restart_reconnects() {
     w.until(10, "the devices", ready);
     let before = w.sink("strand-sink-a");
 
-    pw.kill_daemon();
+    // A crash leaves the socket behind: attempts are refused until the
+    // restarted daemon replaces it.
+    pw.crash_daemon();
+    assert!(pw.socket().exists());
     w.until(5, "the connection lost", |m| !m.connected);
     // The devices stay while it is away.
     assert!(w.mirror.sink_named("strand-sink-a").is_some());
@@ -380,8 +423,9 @@ fn a_daemon_restart_reconnects() {
     );
 
     // Away long enough that the backoff waits seconds (attempts at 0.1,
-    // 0.3, 0.7, 1.5, 3.1, 6.3, then 12.7 s): back at ~7 s, only the
-    // socket's appearance (inotify) can bring it back within 3 s.
+    // 0.3, 0.7, 1.5, 3.1, 6.3, then 12.7 s): back at ~9 s (the action
+    // above waited 2 s for a connection), only the socket's replacement
+    // (inotify) can bring it back within 3 s.
     std::thread::sleep(Duration::from_millis(7000));
     let back = Instant::now();
     pw.start_daemon();
@@ -402,14 +446,109 @@ fn a_daemon_restart_reconnects() {
     });
     assert_eq!(pw.volume(after.id).0, 0.5);
 
-    // The session manager alone restarting: the defaults come back with
-    // its new metadata.
+    // The session manager alone restarting: the defaults shown stay a
+    // while (`SETTLE`), and come back with its new metadata.
     pw.kill_wireplumber();
-    w.until(5, "no default without a session manager", |m| {
+    let gone = Instant::now();
+    w.until(10, "no default without a session manager", |m| {
         m.sink.is_none()
     });
+    assert!(gone.elapsed() >= SETTLE - Duration::from_millis(100));
     pw.start_wireplumber();
     w.until(10, "the default back", |m| m.sink.is_some());
+    w.guard = true;
+    pw.kill_wireplumber();
+    std::thread::sleep(Duration::from_millis(300));
+    pw.start_wireplumber();
+    w.until(10, "the default", |m| m.sink.is_some());
+    std::thread::sleep(Duration::from_millis(500));
+    w.poll();
+    assert!(
+        w.gaps.is_empty(),
+        "a quick session manager restart showed gaps: {:#?}",
+        w.gaps
+    );
+}
+
+#[test]
+fn writes_sent_before_the_first_state_land() {
+    let Some(pw) = PipeWire::start("writes_sent_before_the_first_state_land") else {
+        return;
+    };
+    // A media key starts the service with a write: it runs once the
+    // first state is out, on the default it names.
+    let w = Watch::start(pw.config());
+    let replies = [
+        w.audio
+            .request(AudioAction::SetVolume(DeviceRef::DefaultSink, 0.4)),
+        w.audio
+            .request(AudioAction::SetMuted(DeviceRef::DefaultSink, true)),
+    ];
+    for r in replies {
+        assert_eq!(r.wait(), Ok(()));
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while pw.volume_of("@DEFAULT_AUDIO_SINK@") != (0.4, true) {
+        assert!(Instant::now() < deadline, "the early writes did not land");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn a_restart_shows_no_gap_while_the_session_manager_comes_back() {
+    let Some(mut pw) =
+        PipeWire::start("a_restart_shows_no_gap_while_the_session_manager_comes_back")
+    else {
+        return;
+    };
+    let mut w = Watch::start(pw.config());
+    w.until(10, "the devices", ready);
+    pw.crash_daemon();
+    w.until(5, "the connection lost", |m| !m.connected);
+    w.guard = true;
+    // As on hardware: the daemon comes back bare, the service connects at
+    // once, and the session manager then makes the metadata and the
+    // devices.
+    pw.start_bare_daemon();
+    std::thread::sleep(Duration::from_millis(300));
+    pw.spawn_wireplumber();
+    pw.wait_for_metadata();
+    std::thread::sleep(Duration::from_millis(200));
+    pw.create_devices();
+    let back = Instant::now();
+    w.until(10, "reconnected", ready);
+    assert!(
+        back.elapsed() < Duration::from_secs(3),
+        "back {:?} after its devices",
+        back.elapsed()
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    w.poll();
+    assert!(
+        w.gaps.is_empty(),
+        "an empty default or list between the loss and the recovery: {:#?}",
+        w.gaps
+    );
+    assert_eq!(
+        w.mirror.sink.as_ref().map(|d| d.name.as_str()),
+        Some("strand-sink-a")
+    );
+    assert_eq!(
+        w.mirror.source.as_ref().map(|d| d.name.as_str()),
+        Some("strand-source")
+    );
+    // A write during the outage waited for it.
+    pw.crash_daemon();
+    w.until(5, "the connection lost again", |m| !m.connected);
+    let mute = w
+        .audio
+        .request(AudioAction::SetMuted(DeviceRef::DefaultSink, true));
+    pw.start_daemon();
+    assert_eq!(mute.wait(), Ok(()));
+    w.until(10, "the default muted", |m| {
+        m.sink.as_ref().is_some_and(|d| d.muted)
+    });
+    assert!(pw.volume_of("@DEFAULT_AUDIO_SINK@").1);
 }
 
 #[test]
@@ -594,8 +733,10 @@ fn peak_readings_are_capped_at_the_frame_rate() {
     std::thread::sleep(Duration::from_millis(300));
     w.poll();
     let (batches, readings) = (w.batches, w.levels.len());
+    let woken = w.wakeups();
     let start = Instant::now();
     std::thread::sleep(Duration::from_secs(2));
+    let woken = w.wakeups() - woken;
     w.poll();
     let secs = start.elapsed().as_secs_f64();
     let _ = player.kill();
@@ -608,6 +749,14 @@ fn peak_readings_are_capped_at_the_frame_rate() {
         (w.levels.len() - readings) as f64 / secs
     );
     assert!(per_sec <= cap + 2.0, "{per_sec:.0} batches a second");
+    // The loop itself wakes about once a frame, not once a cycle: the
+    // cycles are read on the data thread.
+    let wakes = woken as f64 / secs;
+    eprintln!("strand-pipewire: {wakes:.0} wakeups a second");
+    assert!(
+        wakes <= 70.0,
+        "strand-pipewire woke {wakes:.0} times a second"
+    );
     // The readings still flow, at about the frame rate, and each is the
     // loudest of the cycles it covers (a client this fast may underrun now
     // and then; a held reading covers a dozen cycles).

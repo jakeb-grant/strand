@@ -3,7 +3,9 @@
 //! source from a config of its own, and WirePlumber (which creates the
 //! `default` metadata and applies `default.configured.*`). Driven with
 //! `wpctl`, `pw-cli`, `pw-metadata` and `pw-play`, as a user would. Never
-//! the machine's own daemon or buses.
+//! the machine's own daemon or buses. A bare daemon (no devices of its
+//! own, as on hardware, where the session manager creates them) is
+//! [`PipeWire::start_bare_daemon`] plus [`PipeWire::create_devices`].
 #![allow(dead_code)]
 
 use std::os::unix::process::CommandExt;
@@ -82,6 +84,29 @@ context.objects = [
     }
 ]
 "#;
+
+/// The bare daemon's config: the dummy driver only. Devices come from
+/// [`PipeWire::create_devices`], as a session manager creates them.
+fn bare_config() -> String {
+    let start = CONFIG
+        .find("    { factory = adapter")
+        .expect("the first device");
+    let end = CONFIG.rfind(']').expect("the end of context.objects");
+    format!("{}{}", &CONFIG[..start], &CONFIG[end..])
+}
+
+/// The devices of [`CONFIG`], as `pw-cli create-node` arguments.
+const DEVICES: [&str; 3] = [
+    "{ factory.name=support.null-audio-sink node.name=strand-source \
+     node.description=\"Strand Source\" media.class=Audio/Source/Virtual \
+     audio.channels=1 audio.position=[MONO] priority.session=3000 object.linger=true }",
+    "{ factory.name=support.null-audio-sink node.name=strand-sink-a \
+     node.description=\"Strand Sink A\" media.class=Audio/Sink \
+     audio.position=[FL FR] priority.session=2000 object.linger=true }",
+    "{ factory.name=support.null-audio-sink node.name=strand-sink-b \
+     node.description=\"Strand Sink B\" media.class=Audio/Sink \
+     audio.position=[FL FR] priority.session=1000 object.linger=true }",
+];
 
 /// Whether a missing tool fails the test instead of skipping it (CI).
 fn required() -> bool {
@@ -197,9 +222,22 @@ impl PipeWire {
         cmd
     }
 
-    /// Starts `pipewire` (waiting for its socket), then WirePlumber.
+    /// Starts `pipewire` (waiting until its socket accepts), then
+    /// WirePlumber.
     pub fn start_daemon(&mut self) {
-        let conf = self.dir.path().join("pipewire.conf");
+        self.spawn_daemon("pipewire.conf", CONFIG.to_owned());
+        self.start_wireplumber();
+    }
+
+    /// Starts `pipewire` with no devices of its own (waiting until its
+    /// socket accepts), and no session manager.
+    pub fn start_bare_daemon(&mut self) {
+        self.spawn_daemon("pipewire-bare.conf", bare_config());
+    }
+
+    fn spawn_daemon(&mut self, file: &str, config: String) {
+        let conf = self.dir.path().join(file);
+        std::fs::write(&conf, config).expect("the config");
         let child = self
             .command("pipewire")
             .arg("-c")
@@ -207,19 +245,61 @@ impl PipeWire {
             .spawn()
             .expect("pipewire starts");
         self.pipewire = Some(child);
-        wait_for(&self.socket(), "the PipeWire socket");
-        self.start_wireplumber();
+        // Connectable, not merely there: a crashed daemon leaves its
+        // socket behind.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while std::os::unix::net::UnixStream::connect(self.socket()).is_err() {
+            assert!(
+                Instant::now() < deadline,
+                "the PipeWire socket did not open"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Creates the three devices of the usual config with `pw-cli` (they
+    /// linger after it exits), as a session manager's device monitor
+    /// would.
+    pub fn create_devices(&self) {
+        for d in DEVICES {
+            self.run("pw-cli", &["create-node", "adapter", d]);
+        }
     }
 
     /// Starts WirePlumber and waits for it to choose both defaults (it
     /// may write one well before the other on a busy machine, and the
     /// tests count the batches of a first state that has both).
     pub fn start_wireplumber(&mut self) {
+        self.spawn_wireplumber();
+        self.wait_for_defaults();
+    }
+
+    /// Starts WirePlumber without waiting for it.
+    pub fn spawn_wireplumber(&mut self) {
         let child = self
             .command("wireplumber")
             .spawn()
             .expect("wireplumber starts");
         self.wireplumber = Some(child);
+    }
+
+    /// Waits until the `default` metadata exists.
+    pub fn wait_for_metadata(&self) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !self
+            .run("pw-cli", &["ls", "Metadata"])
+            .contains("metadata.name = \"default\"")
+        {
+            assert!(
+                Instant::now() < deadline,
+                "WirePlumber made no default metadata"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Waits until WirePlumber has chosen both defaults.
+    pub fn wait_for_defaults(&self) {
         let deadline = Instant::now() + Duration::from_secs(10);
         while !["default.audio.sink", "default.audio.source"]
             .iter()
@@ -233,9 +313,16 @@ impl PipeWire {
         }
     }
 
-    /// Stops the daemon (WirePlumber goes with it) and waits until its
-    /// socket is gone.
+    /// Stops the daemon (WirePlumber goes with it) and removes its
+    /// socket.
     pub fn kill_daemon(&mut self) {
+        self.crash_daemon();
+        let _ = std::fs::remove_file(self.socket());
+    }
+
+    /// Kills the daemon and WirePlumber (`SIGKILL`), leaving the daemon's
+    /// socket behind, as a crash does.
+    pub fn crash_daemon(&mut self) {
         for c in [self.wireplumber.take(), self.pipewire.take()]
             .into_iter()
             .flatten()
@@ -244,7 +331,6 @@ impl PipeWire {
             let _ = c.kill();
             let _ = c.wait();
         }
-        let _ = std::fs::remove_file(self.socket());
     }
 
     /// Stops WirePlumber alone.
@@ -286,7 +372,12 @@ impl PipeWire {
 
     /// `wpctl get-volume id`: `(volume, muted)`.
     pub fn volume(&self, id: u32) -> (f64, bool) {
-        let out = self.wpctl(&["get-volume", &id.to_string()]);
+        self.volume_of(&id.to_string())
+    }
+
+    /// `wpctl get-volume node` (an id, or `@DEFAULT_AUDIO_SINK@`).
+    pub fn volume_of(&self, node: &str) -> (f64, bool) {
+        let out = self.wpctl(&["get-volume", node]);
         // "Volume: 0.40" or "Volume: 0.40 [MUTED]"
         let v = out
             .split_whitespace()

@@ -1846,12 +1846,14 @@ Specified when M3 starts. It only produces writes and events into
   batch per burst of PipeWire events, on that thread, and must never
   block (an unbounded channel or a `try_send`): `Connected(bool)`
   (always first in the first batch, which comes once the first connection
-  has synced or the first attempt failed), `Sinks`/`Sources`
+  has settled or the first attempt failed), `Sinks`/`Sources`
   (`Vec<VecDiff<i64, AudioDevice>>` keyed by the PipeWire id, a `Reset`
-  first), `Sink`/`Source` (`Option<AudioDevice>`: the defaults; `None`
+  first; an id PipeWire reused for another device, a new `object.serial`,
+  is a `Remove` and an `Insert`), `Sink`/`Source` (`Option<AudioDevice>`: the defaults; `None`
   is shown as the record's schema defaults) and `Levels { target,
-  device, peaks }` (at most one per meter per `audio::FRAME`, 1/60 s; a
-  meter that stops or is retargeted after showing sound sends one with
+  device, peaks }` (at most one per meter per `audio::FRAME`, 1/60 s,
+  the cycles read on PipeWire's data thread so the loop wakes about once
+  a frame at most; a meter that stops or is retargeted after showing sound sends one with
   no peaks). `AudioDevice` is exactly the schema's record (`id`, `name`,
   `description`, `volume` on the cubic scale wpctl shows, `muted`,
   `icon`, `default`), so the store's `#[derive(Data)]` record can be it.
@@ -1864,19 +1866,36 @@ Specified when M3 starts. It only produces writes and events into
   once PipeWire has been asked (the change comes through the stream) or
   an `AudioError` (`NotConnected`, `UnknownDevice`, `InvalidVolume`,
   `NoDefaultMetadata`, `Failed`). A request dropped unanswered reads as
-  `NotConnected`. `DeviceRef::DefaultSink` resolves on the audio thread
-  when the write runs, and `StepVolume` (`strand set audio.sink.volume
-  +5%`) adds its delta there too, to the last volume written while its
-  echo is pending, so quick steps are never lost; the store and IPC send
-  relative writes as `StepVolume`, never as a `SetVolume` computed from
-  their own mirror. Volume and mute go to the card's active `Route`
-  (`save: true`) when the node has one, else to the node's `Props`.
+  `NotConnected`. A connection settles (its first state goes out) once
+  its syncs are back, including those after binding each card's routes,
+  the session manager's `default` metadata is read, and each default
+  shown before a loss names a device again, or after `audio::SETTLE`
+  (3 s); until then the last state stays (`connected: false` after a
+  loss), and the defaults shown before a restart of the daemon or of
+  the session manager alone stay until new ones resolve or `SETTLE`
+  passes, so a restart never flashes an empty `audio.sink` or list.
+  Actions sent before a connection has settled (a write that lazily
+  starts the service, one sent during a restart) wait, in order, and
+  run right after its first state; with no connection at all they
+  answer `NotConnected` after `audio::GRACE` (2 s). `DeviceRef::
+  DefaultSink` resolves on the audio thread when the write runs.
+  `StepVolume` adds its delta there too, to the last volume written
+  while its echo is pending, so quick steps are never lost. The store
+  sends VM writes as `SetVolume` (`ServiceHost::write` carries an
+  absolute value, and its tagged local cell already makes quick scroll
+  steps compound); `StepVolume` is the path for IPC's relative form
+  (`strand set audio.sink.volume +5%`, design.md example (d)) once
+  `crates/strand/src/ipc.rs` parses it, which is pending. Volume and
+  mute go to the card's active `Route` (`save: true`) when the node has
+  one, else to the node's `Props`.
   `set_levels(targets)` replaces the set of peak meters
   (`LevelTarget::{DefaultSink, DefaultSource, Device(id)}`); the store
   passes what visible readers want, and an empty set stops them all.
-  Suppressing write echoes is the store's job; the thread reports any of
-  a device's last `audio::ECHOES` (8) written volumes exactly as written,
-  so suppression may compare by value or by generation. Without the
+  Suppressing write echoes is the store's job, by generation or pending
+  write, not by value equality: the thread reports any of a device's last
+  `audio::ECHOES` (8) written volumes as written, exactly on the `Props`
+  path but through a card's `Route` (hardware mixer steps) only when the
+  echo is within 0.005 of it. Without the
   `pipewire` feature the module is absent and the store answers
   `audio.*` at the schema's defaults. The `#[service]` store wiring
   builds on this (docs/decisions.md, wave4-wm (audio)).

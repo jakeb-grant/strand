@@ -5,17 +5,26 @@
 //! a device running, so a device with nothing playing suspends and its
 //! meter goes quiet (one reading of zeros, then no wakeups). It does not
 //! follow the session manager's moves (`node.dont-reconnect`): the thread
-//! retargets it itself when the default changes. Its process callback runs
-//! on the `strand-pipewire` thread (no `RT_PROCESS`), which turns each
-//! cycle into a reading; the meter holds readings so that at most one per
-//! [`FRAME`] goes out, the loudest peak per channel in between (a client
-//! asking for low latency shrinks the graph's cycle to ~1.3 ms, and a
-//! level shown on screen needs no more than the frame rate).
+//! retargets it itself when the default changes.
+//!
+//! Its process callback runs on PipeWire's data thread (`RT_PROCESS`) and
+//! only folds each cycle's peaks into [`Shared`] atomics: no allocation,
+//! no lock, no queue. It wakes the `strand-pipewire` loop (an eventfd)
+//! only on the first cycle with sound after the loop last read the meter;
+//! while sound flows the loop reads it on the frame timer instead, so the
+//! loop wakes at most once per [`FRAME`] per meter however short the
+//! graph's cycle is (a client asking for low latency shrinks it to
+//! ~1.3 ms), and not at all while the device plays silence.
 //!
 //! On a source the meter is passive too: it shows a level only while
 //! something else records from it. It never opens a microphone by itself
 //! (which would light the "microphone in use" indicators, the shell's own
 //! included) nor keeps it awake.
+
+use std::os::fd::OwnedFd;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::time::{Duration, Instant};
 
 use pipewire::core::CoreRc;
 use pipewire::properties::PropertiesBox;
@@ -26,14 +35,31 @@ use pipewire::spa::param::format_utils;
 use pipewire::spa::pod::Pod;
 use pipewire::spa::pod::serialize::PodSerializer;
 use pipewire::stream::{StreamFlags, StreamListener, StreamRc, StreamState};
-use std::time::Instant;
 
 use super::model::{Direction, LevelTarget, Levels};
 use super::thread::{FRAME, Queue, Work};
 
+/// The most channels a meter reads (`SPA_AUDIO_MAX_CHANNELS`).
+pub(crate) const MAX_CHANNELS: usize = 64;
+
+/// The first wait before a failed meter is started again; it doubles per
+/// consecutive failure, up to [`RETRY_MAX`].
+pub(crate) const RETRY_FIRST: Duration = Duration::from_secs(1);
+/// The longest wait before a failed meter is started again.
+pub(crate) const RETRY_MAX: Duration = Duration::from_secs(30);
+
+/// How long a meter that failed `failures` times in a row waits before it
+/// is started again.
+pub(crate) fn retry_delay(failures: u32) -> Duration {
+    let doublings = failures.saturating_sub(1).min(16);
+    RETRY_FIRST.saturating_mul(1 << doublings).min(RETRY_MAX)
+}
+
 /// What a meter's stream reports to the thread.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MeterEvent {
+    /// The stream runs (its device is reached).
+    Running,
     /// The device stopped (suspended, or nothing plays): no readings until
     /// it runs again.
     Idle,
@@ -49,6 +75,77 @@ pub(crate) struct MeterTarget<'a> {
     pub direction: Direction,
 }
 
+/// What a meter's realtime process callback shares with the loop: the
+/// loudest peak per channel and the number of cycles since the loop last
+/// read them, and whether the loop is already due to read them.
+pub(crate) struct Shared {
+    channels: AtomicU32,
+    /// `f32` bits: for the non-negative peaks stored here, the bits order
+    /// as the numbers do, so `fetch_max` keeps the loudest.
+    peaks: [AtomicU32; MAX_CHANNELS],
+    cycles: AtomicU32,
+    /// The loop will read the meter (it was woken, or reads it on the
+    /// frame timer): the data thread does not wake it again.
+    armed: AtomicBool,
+}
+
+impl Default for Shared {
+    fn default() -> Self {
+        Shared {
+            channels: AtomicU32::new(0),
+            peaks: std::array::from_fn(|_| AtomicU32::new(0)),
+            cycles: AtomicU32::new(0),
+            armed: AtomicBool::new(false),
+        }
+    }
+}
+
+impl Shared {
+    /// One cycle's samples (interleaved little-endian `f32`), on the data
+    /// thread. True when the loop should be woken: the cycle had sound and
+    /// the loop was not already due to read the meter.
+    pub(crate) fn cycle(&self, bytes: &[u8]) -> bool {
+        let channels = (self.channels.load(Ordering::Relaxed) as usize).min(MAX_CHANNELS);
+        let mut local = [0f32; MAX_CHANNELS];
+        if !fold_peaks(bytes, &mut local[..channels]) {
+            return false;
+        }
+        let mut sound = false;
+        for (slot, p) in self.peaks.iter().zip(&local[..channels]) {
+            if *p > 0.0 {
+                sound = true;
+                slot.fetch_max(p.to_bits(), Ordering::Relaxed);
+            }
+        }
+        self.cycles.fetch_add(1, Ordering::Release);
+        sound && !self.armed.swap(true, Ordering::AcqRel)
+    }
+
+    /// Takes what the cycles since the last take left: the loudest peak
+    /// per channel, and how many cycles there were.
+    pub(crate) fn take(&self) -> (Vec<f32>, u32) {
+        let cycles = self.cycles.swap(0, Ordering::Acquire);
+        let channels = (self.channels.load(Ordering::Relaxed) as usize).min(MAX_CHANNELS);
+        let peaks = self.peaks[..channels]
+            .iter()
+            .map(|p| f32::from_bits(p.swap(0, Ordering::Relaxed)))
+            .collect();
+        (peaks, cycles)
+    }
+
+    fn set_channels(&self, channels: u32) {
+        self.channels.store(channels, Ordering::Relaxed);
+    }
+
+    fn arm(&self, armed: bool) {
+        self.armed.store(armed, Ordering::SeqCst);
+    }
+
+    pub(crate) fn armed(&self) -> bool {
+        self.armed.load(Ordering::SeqCst)
+    }
+}
+
 /// A running meter.
 pub(crate) struct Meter {
     /// Its number in this thread (stale events of a replaced meter carry an
@@ -56,22 +153,44 @@ pub(crate) struct Meter {
     pub id: u64,
     pub target: LevelTarget,
     pub device: u32,
-    /// The stream failed; the next look at the meters starts it anew.
+    /// The stream failed; it is started again at `retry_at`.
     pub failed: bool,
+    /// How many times in a row a meter on this target and device failed
+    /// (reset once a stream runs).
+    pub failures: u32,
+    pub retry_at: Option<Instant>,
     /// Its readings.
     pub hold: Hold,
-    _listener: StreamListener<u32>,
-    _stream: StreamRc,
+    /// While sound flows, when the loop reads it next (on the frame
+    /// timer); `None` while the data thread wakes the loop instead.
+    pub next_tick: Option<Instant>,
+    shared: Arc<Shared>,
+    // Dropped after `Drop::drop` disconnected the stream, so the data
+    // thread no longer runs the process callback.
+    _events: StreamListener<()>,
+    _process: StreamListener<()>,
+    stream: StreamRc,
+}
+
+impl Drop for Meter {
+    fn drop(&mut self) {
+        // Takes the stream off the data loop (synchronously) before its
+        // listeners go.
+        let _ = self.stream.disconnect();
+    }
 }
 
 impl Meter {
-    /// Starts a meter on `device`.
+    /// Starts a meter on `device`. `wake` is the loop's eventfd; `failures`
+    /// is how many meters on this target failed before it.
     pub(crate) fn start(
         core: &CoreRc,
         id: u64,
         target: LevelTarget,
         device: &MeterTarget<'_>,
         q: &Queue,
+        wake: &Arc<OwnedFd>,
+        failures: u32,
     ) -> Result<Meter, String> {
         let mut props = PropertiesBox::new();
         props.insert("media.type", "Audio");
@@ -88,23 +207,26 @@ impl Meter {
         }
         let stream = StreamRc::new(core.clone(), "strand-levels", props)
             .map_err(|e| format!("cannot create a meter stream: {e}"))?;
+        let shared = Arc::new(Shared::default());
 
-        let (q1, q2) = (q.clone(), q.clone());
-        let listener = stream
-            // The user data is the negotiated channel count.
-            .add_local_listener_with_user_data(0u32)
+        // Events on the loop: state and format.
+        let q = q.clone();
+        let format_shared = shared.clone();
+        let events = stream
+            .add_local_listener_with_user_data(())
             .state_changed(move |_, _, _, new| {
                 let ev = match new {
+                    StreamState::Streaming => MeterEvent::Running,
                     StreamState::Paused => MeterEvent::Idle,
                     StreamState::Error(_) | StreamState::Unconnected => MeterEvent::Failed,
-                    StreamState::Connecting | StreamState::Streaming => return,
+                    StreamState::Connecting => return,
                 };
-                q1.borrow_mut().push_back(Work::Meter {
+                q.borrow_mut().push_back(Work::Meter {
                     meter: id,
                     event: ev,
                 });
             })
-            .param_changed(|_, channels, param_id, param| {
+            .param_changed(move |_, _, param_id, param| {
                 let Some(param) = param else { return };
                 if param_id != spa::param::ParamType::Format.as_raw() {
                     return;
@@ -115,10 +237,18 @@ impl Meter {
                 };
                 let mut info = AudioInfoRaw::new();
                 if info.parse(param).is_ok() {
-                    *channels = info.channels();
+                    format_shared.set_channels(info.channels());
                 }
             })
-            .process(move |stream, channels| {
+            .register()
+            .map_err(|e| format!("cannot listen to a meter stream: {e}"))?;
+        // The process callback, on the data thread (`RT_PROCESS`): a
+        // listener of its own, so it shares nothing with the one above
+        // but the atomics and the eventfd.
+        let (cycle_shared, wake) = (shared.clone(), wake.clone());
+        let process = stream
+            .add_local_listener_with_user_data(())
+            .process(move |stream, _| {
                 let Some(mut buffer) = stream.dequeue_buffer() else {
                     return;
                 };
@@ -133,9 +263,8 @@ impl Meter {
                 else {
                     return;
                 };
-                if let Some(peaks) = peaks(bytes, *channels as usize) {
-                    q2.borrow_mut()
-                        .push_back(Work::Reading { meter: id, peaks });
+                if cycle_shared.cycle(bytes) {
+                    let _ = rustix::io::write(&*wake, &1u64.to_ne_bytes());
                 }
             })
             .register()
@@ -157,7 +286,7 @@ impl Meter {
             .connect(
                 spa::utils::Direction::Input,
                 None,
-                StreamFlags::AUTOCONNECT | StreamFlags::MAP_BUFFERS,
+                StreamFlags::AUTOCONNECT | StreamFlags::MAP_BUFFERS | StreamFlags::RT_PROCESS,
                 &mut [pod],
             )
             .map_err(|e| format!("cannot connect a meter stream: {e}"))?;
@@ -166,10 +295,55 @@ impl Meter {
             target,
             device: device.id,
             failed: false,
+            failures,
+            retry_at: None,
             hold: Hold::default(),
-            _listener: listener,
-            _stream: stream,
+            next_tick: None,
+            shared,
+            _events: events,
+            _process: process,
+            stream,
         })
+    }
+
+    /// The data thread woke the loop for this meter.
+    pub(crate) fn woken(&self) -> bool {
+        self.next_tick.is_none() && self.shared.armed()
+    }
+
+    /// Reads what the cycles left and returns the reading due now, if any.
+    /// While sound flows (or a reading is held) the meter is read again on
+    /// the frame timer (`next_tick`) and the data thread wakes nobody;
+    /// after silence or a pause it wakes the loop at the next sound.
+    pub(crate) fn collect(&mut self, now: Instant) -> Option<Levels> {
+        self.shared.arm(false);
+        let (peaks, cycles) = self.shared.take();
+        let sound = peaks.iter().any(|p| *p > 0.0);
+        if (cycles > 0 || sound) && !peaks.is_empty() {
+            self.hold.add(peaks, now);
+        }
+        let out = if self.hold.due(now).is_some_and(|at| at <= now) {
+            self.take(now)
+        } else {
+            None
+        };
+        if sound || self.hold.pending.is_some() {
+            self.shared.arm(true);
+            self.next_tick = Some(self.hold.due(now).unwrap_or(now + FRAME));
+        } else {
+            self.next_tick = None;
+        }
+        out
+    }
+
+    /// The device stopped (paused, failed) or the meter stops: what the
+    /// cycles left is dropped, and the closing quiet reading is returned
+    /// if the last reading showed sound.
+    pub(crate) fn pause(&mut self) -> Option<Levels> {
+        self.next_tick = None;
+        self.shared.take();
+        self.shared.arm(false);
+        self.quiet()
     }
 }
 
@@ -263,26 +437,29 @@ impl Meter {
     }
 }
 
-/// The peak (largest absolute sample) of each channel of interleaved
-/// little-endian `f32` audio. `None` without channels or whole frames.
-pub(crate) fn peaks(bytes: &[u8], channels: usize) -> Option<Vec<f32>> {
-    if channels == 0 {
-        return None;
+/// Folds the peak (largest absolute sample) of each channel of
+/// interleaved little-endian `f32` audio into `out` (one slot per
+/// channel). False without channels or whole frames.
+pub(crate) fn fold_peaks(bytes: &[u8], out: &mut [f32]) -> bool {
+    let channels = out.len();
+    if channels == 0 || bytes.len() < channels * 4 {
+        return false;
     }
-    let frame = channels * 4;
-    let frames = bytes.len() / frame;
-    if frames == 0 {
-        return None;
-    }
-    let mut out = vec![0f32; channels];
-    for f in bytes.chunks_exact(frame) {
-        for (c, s) in f.chunks_exact(4).enumerate() {
+    for f in bytes.chunks_exact(channels * 4) {
+        for (o, s) in out.iter_mut().zip(f.chunks_exact(4)) {
             let v = f32::from_le_bytes([s[0], s[1], s[2], s[3]]).abs();
             // NaN never wins `max`.
-            out[c] = out[c].max(v);
+            *o = o.max(v);
         }
     }
-    Some(out)
+    true
+}
+
+/// [`fold_peaks`] into a new vector.
+#[cfg(test)]
+pub(crate) fn peaks(bytes: &[u8], channels: usize) -> Option<Vec<f32>> {
+    let mut out = vec![0f32; channels];
+    fold_peaks(bytes, &mut out).then_some(out)
 }
 
 #[cfg(test)]
@@ -343,5 +520,45 @@ mod tests {
         assert!(!h.add(vec![0.3], ms(201)));
         assert!(!h.add(vec![0.2, 0.2], ms(202)));
         assert_eq!(h.take(ms(220)), Some(vec![0.2, 0.2]));
+    }
+
+    #[test]
+    fn the_data_thread_folds_cycles_and_wakes_once_per_read() {
+        let s = Shared::default();
+        s.set_channels(2);
+        // Silence wakes nobody, but counts.
+        assert!(!s.cycle(&bytes(&[0.0, 0.0, 0.0, 0.0])));
+        // The first sound wakes the loop; more sound before it reads does
+        // not wake it again.
+        assert!(s.cycle(&bytes(&[0.2, -0.1])));
+        assert!(!s.cycle(&bytes(&[-0.5, 0.05])));
+        assert!(!s.cycle(&bytes(&[0.1, 0.3])));
+        assert!(s.armed());
+        assert_eq!(s.take(), (vec![0.5, 0.3], 4));
+        assert_eq!(s.take(), (vec![0.0, 0.0], 0));
+        // Still armed (the loop reads on its timer): no wake.
+        assert!(!s.cycle(&bytes(&[0.4, 0.4])));
+        s.arm(false);
+        assert!(s.cycle(&bytes(&[0.4, 0.4])));
+        // No channels known yet, or no whole frame: nothing.
+        let t = Shared::default();
+        assert!(!t.cycle(&bytes(&[0.5])));
+        assert_eq!(t.take(), (vec![], 0));
+        t.set_channels(2);
+        assert!(!t.cycle(&bytes(&[0.5])));
+        assert_eq!(t.take().1, 0);
+        // Never past the slots there are.
+        t.set_channels(1000);
+        assert!(t.cycle(&bytes(&[0.5; MAX_CHANNELS])));
+        assert_eq!(t.take().0.len(), MAX_CHANNELS);
+    }
+
+    #[test]
+    fn a_failed_meter_waits_longer_each_time() {
+        assert_eq!(retry_delay(1), Duration::from_secs(1));
+        assert_eq!(retry_delay(2), Duration::from_secs(2));
+        assert_eq!(retry_delay(3), Duration::from_secs(4));
+        assert_eq!(retry_delay(6), RETRY_MAX);
+        assert_eq!(retry_delay(u32::MAX), RETRY_MAX);
     }
 }

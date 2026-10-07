@@ -13,6 +13,7 @@ use std::mem::MaybeUninit;
 use std::os::fd::{AsFd, AsRawFd, OwnedFd, RawFd};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use pipewire::context::ContextRc;
@@ -30,7 +31,7 @@ use pipewire::spa::support::system::IoFlags;
 use pipewire::types::ObjectType;
 use rustix::fs::inotify;
 
-use super::meter::{Meter, MeterEvent, MeterTarget};
+use super::meter::{Meter, MeterEvent, MeterTarget, retry_delay};
 use super::model::{
     AudioChange, AudioDevice, AudioState, Direction, LevelTarget, Publisher, icon, linear,
     perceptual,
@@ -49,8 +50,27 @@ const MAX: Duration = Duration::from_secs(10);
 pub const FRAME: Duration = Duration::from_micros(16_667);
 
 /// How many of its last volume writes a device remembers, so the echo of
-/// any of them reads back exactly as written.
+/// any of them reads back as written.
 pub const ECHOES: usize = 8;
+
+/// How long a new connection's first state waits for the session
+/// manager (its `default` metadata, and the defaults shown before the
+/// loss), and how long the last defaults stay shown after the metadata
+/// leaves.
+pub const SETTLE: Duration = Duration::from_secs(3);
+
+/// How long an action waits for a connection when there is none (the
+/// thread just started, or the daemon went away): it runs once the next
+/// connection's first state is out, or answers `NotConnected`.
+pub const GRACE: Duration = Duration::from_secs(2);
+
+/// The most actions that wait for a connection; more are refused.
+const QUEUED: usize = 64;
+
+/// How close (on the perceptual scale) a reported volume may be to a
+/// written one and still read as it: a card's route quantizes to its
+/// mixer's steps.
+const ECHO_TOLERANCE: f64 = 0.005;
 
 /// The callbacks' queue.
 pub(crate) type Queue = Rc<RefCell<VecDeque<Work>>>;
@@ -113,10 +133,11 @@ pub(crate) enum Work {
     WatchGone(i32),
     /// The meters' frame timer.
     Flush,
-    Reading {
-        meter: u64,
-        peaks: Vec<f32>,
-    },
+    /// A meter's data thread heard sound.
+    MetersWake,
+    /// The deadline timer (settling, kept defaults, waiting actions,
+    /// meter retries).
+    Deadline,
     Meter {
         meter: u64,
         event: MeterEvent,
@@ -161,6 +182,26 @@ pub(crate) fn run(
         let q = q.clone();
         move |_| q.borrow_mut().push_back(Work::Flush)
     });
+    let deadline = lp.add_timer({
+        let q = q.clone();
+        move |_| q.borrow_mut().push_back(Work::Deadline)
+    });
+    // The meters' data threads write it on the first sound after a read.
+    let wake = rustix::event::eventfd(
+        0,
+        rustix::event::EventfdFlags::CLOEXEC | rustix::event::EventfdFlags::NONBLOCK,
+    )
+    .map_err(|e| log::warn!("audio: no eventfd, so no peak meters: {e}"))
+    .ok()
+    .map(Arc::new);
+    let _wake_source = wake.as_ref().map(|fd| {
+        let q = q.clone();
+        lp.add_io(WakeFd(fd.clone()), IoFlags::IN, move |fd| {
+            let mut buf = [0u8; 8];
+            let _ = rustix::io::read(&*fd.0, &mut buf);
+            q.borrow_mut().push_back(Work::MetersWake);
+        })
+    });
     let watch = SocketWatch::new(config.remote.as_deref());
     let _watch_source = watch.as_ref().map(|w| {
         let q = q.clone();
@@ -182,6 +223,9 @@ pub(crate) fn run(
         timer: &timer,
         flush: &flush,
         flush_at: None,
+        deadline: &deadline,
+        deadline_at: None,
+        wake,
         watch,
         sink,
         session: None,
@@ -193,6 +237,8 @@ pub(crate) fn run(
         backoff: FIRST,
         wanted: BTreeSet::new(),
         meters: 0,
+        queued: VecDeque::new(),
+        grace_until: Instant::now() + GRACE,
         quit: false,
     };
     driver.connect();
@@ -200,6 +246,9 @@ pub(crate) fn run(
     while !driver.quit {
         lp.iterate(Timeout::Infinite);
         driver.drain();
+    }
+    for (_, reply) in driver.queued.drain(..) {
+        let _ = reply.send(Err(AudioError::NotConnected));
     }
     // The session (its streams, proxies and core) goes before the loop's
     // sources, the context and the loop.
@@ -210,6 +259,15 @@ pub(crate) fn run(
 struct WatchFd(Rc<OwnedFd>);
 
 impl AsRawFd for WatchFd {
+    fn as_raw_fd(&self) -> RawFd {
+        self.0.as_raw_fd()
+    }
+}
+
+/// The meters' eventfd, shared with their data threads.
+struct WakeFd(Arc<OwnedFd>);
+
+impl AsRawFd for WakeFd {
     fn as_raw_fd(&self) -> RawFd {
         self.0.as_raw_fd()
     }
@@ -250,6 +308,13 @@ impl SocketWatch {
             }
         }
         self.wd.is_some()
+    }
+
+    /// The socket is not there (so only its creation can bring the daemon
+    /// back). Any other answer (it exists, or cannot be checked) is not.
+    fn socket_missing(&self) -> bool {
+        std::fs::symlink_metadata(self.dir.join(&self.name))
+            .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
     }
 
     /// Watch `wd` ended; true if it was ours.
@@ -350,12 +415,28 @@ struct Session {
     _core_listener: pipewire::core::Listener,
     core: CoreRc,
     defaults: Defaults,
+    /// The defaults shown before (the last connection's, or this one's
+    /// before its metadata left), used while the current ones name no
+    /// device, until the deadline.
+    held: Option<Held>,
     /// The connection's first sync has come back.
     initial_done: bool,
     /// The sync after the latest bind, until it comes back.
     awaiting: Option<i32>,
+    /// The sync after binding the `default` metadata, until it comes back
+    /// (its properties are read then).
+    meta_sync: Option<i32>,
+    meta_ready: bool,
     /// The first state of this connection has gone out.
     published: bool,
+    /// The first state goes out once the session manager is back (the
+    /// metadata read, and a default sink and source again if one was
+    /// shown before), or at this deadline.
+    settle_by: Instant,
+    expect_sink: bool,
+    expect_source: bool,
+    /// The settling deadline passed.
+    settled: bool,
     /// When it connected: only a connection that lasted [`MAX`] resets
     /// the backoff when lost (a daemon that dies at once keeps backing
     /// off).
@@ -386,13 +467,21 @@ struct NodeEntry {
 /// The last [`ECHOES`] volumes written to a device, with the linear
 /// channel volumes each became: PipeWire echoes those, and any of them
 /// reads back as the value written (not its cube root's float noise),
-/// also when a slider sent several writes before the first echo.
+/// also when a slider sent several writes before the first echo. On a
+/// node's `Props` the echo is exact; through a card's route it may come
+/// back quantized to the mixer's steps, and still reads as written when
+/// within [`ECHO_TOLERANCE`].
 #[derive(Debug, Default)]
 struct Echoes {
     written: VecDeque<(f64, Vec<f32>)>,
     /// The last write, until PipeWire has reported it (or another
-    /// volume): a step adds to this, not to a volume it is replacing.
+    /// volume, after the write was applied): a step adds to this, not to
+    /// a volume it is replacing.
     pending: Option<f64>,
+    /// The core sync issued after the last write, until it comes back:
+    /// a report before then that matches no write is an older state
+    /// (the echo of a mute, say), not another program's volume.
+    wait: Option<i32>,
 }
 
 impl Echoes {
@@ -404,15 +493,32 @@ impl Echoes {
         self.pending = Some(volume);
     }
 
+    /// PipeWire has applied the last write (its sync came back).
+    fn synced(&mut self, seq: i32) {
+        if self.wait.is_some_and(|w| seq >= w) {
+            self.wait = None;
+        }
+    }
+
     /// The volume to show for reported linear channel volumes.
     fn read(&mut self, reported: &[f32]) -> Option<f64> {
-        let hit = self.written.iter().rposition(|(_, lin)| lin == reported);
-        if hit.is_none_or(|i| i + 1 == self.written.len()) {
-            // The last write landed, or another program set it.
+        let shown = perceptual(reported);
+        let hit = self
+            .written
+            .iter()
+            .rposition(|(_, lin)| lin == reported)
+            .or_else(|| {
+                let shown = shown?;
+                self.written
+                    .iter()
+                    .rposition(|(v, _)| (v - shown).abs() < ECHO_TOLERANCE)
+            });
+        let last = hit.is_some_and(|i| i + 1 == self.written.len());
+        if last || (hit.is_none() && self.wait.is_none()) {
+            // The last write landed, or another program set it after it.
             self.pending = None;
         }
-        hit.map(|i| self.written[i].0)
-            .or_else(|| perceptual(reported))
+        hit.map(|i| self.written[i].0).or(shown)
     }
 
     /// The volume a step starts from.
@@ -514,6 +620,22 @@ struct MetaEntry {
     proxy: Metadata,
 }
 
+impl Defaults {
+    /// The effective and the configured default of `direction`.
+    fn names(&self, direction: Direction) -> [&Option<String>; 2] {
+        match direction {
+            Direction::Sink => [&self.sink, &self.configured_sink],
+            Direction::Source => [&self.source, &self.configured_source],
+        }
+    }
+}
+
+/// Defaults kept from before, until `until`.
+struct Held {
+    defaults: Defaults,
+    until: Instant,
+}
+
 /// The `default` metadata's audio keys.
 #[derive(Default)]
 struct Defaults {
@@ -532,6 +654,11 @@ struct Driver<'l> {
     /// meter holds a reading).
     flush: &'l TimerSource<'l>,
     flush_at: Option<Instant>,
+    /// The deadline timer, and when it fires ([`Driver::next_deadline`]).
+    deadline: &'l TimerSource<'l>,
+    deadline_at: Option<Instant>,
+    /// The meters' eventfd (`None`: no meters).
+    wake: Option<Arc<OwnedFd>>,
     watch: Option<SocketWatch>,
     sink: Box<dyn FnMut(Vec<AudioChange>) + Send>,
     session: Option<Session>,
@@ -545,8 +672,15 @@ struct Driver<'l> {
     backoff: Duration,
     wanted: BTreeSet<LevelTarget>,
     meters: u64,
+    /// Actions that came while no connection had published its first
+    /// state, in order; they run right after it.
+    queued: VecDeque<(AudioAction, Reply)>,
+    /// Until when actions wait while there is no connection at all.
+    grace_until: Instant,
     quit: bool,
 }
+
+type Reply = tokio::sync::oneshot::Sender<Result<(), AudioError>>;
 
 impl Driver<'_> {
     /// Handles every queued item, then publishes once.
@@ -560,6 +694,9 @@ impl Driver<'_> {
             if self.dirty {
                 self.publish();
             }
+            if self.session.as_ref().is_some_and(|s| s.published) && !self.queued.is_empty() {
+                self.run_queued();
+            }
             if self.meters_dirty {
                 self.meters_dirty = false;
                 self.sync_meters();
@@ -572,6 +709,7 @@ impl Driver<'_> {
         if !self.out.is_empty() {
             (self.sink)(std::mem::take(&mut self.out));
         }
+        self.arm_deadline();
     }
 
     fn live(&self, session: u64) -> bool {
@@ -581,17 +719,16 @@ impl Driver<'_> {
     fn handle(&mut self, w: Work) {
         match w {
             Work::Cmd(Cmd::Stop) => self.quit = true,
+            // After a stop, nothing more is done.
+            Work::Cmd(Cmd::Levels(_)) if self.quit => {}
             Work::Cmd(Cmd::Levels(set)) => {
                 self.wanted = set;
                 self.meters_dirty = true;
             }
-            Work::Cmd(Cmd::Action(action, reply)) => {
-                let r = self.action(action);
-                if let Err(e) = &r {
-                    log::debug!("audio: {e}");
-                }
-                let _ = reply.send(r);
+            Work::Cmd(Cmd::Action(_, reply)) if self.quit => {
+                let _ = reply.send(Err(AudioError::NotConnected));
             }
+            Work::Cmd(Cmd::Action(action, reply)) => self.request(action, reply),
             Work::Global { session, global } if self.live(session) => self.global(global),
             Work::GlobalRemove { session, id } if self.live(session) => self.global_remove(id),
             Work::NodeInfo {
@@ -652,10 +789,15 @@ impl Driver<'_> {
                     if s.awaiting.is_some_and(|a| seq >= a) {
                         s.awaiting = None;
                     }
+                    if s.meta_sync.is_some_and(|m| seq >= m) {
+                        s.meta_sync = None;
+                        s.meta_ready = true;
+                    }
                     for n in s.nodes.values_mut() {
                         if !n.ready && seq >= n.sync {
                             n.ready = true;
                         }
+                        n.echoes.synced(seq);
                     }
                     self.dirty = true;
                     self.meters_dirty = true;
@@ -692,9 +834,13 @@ impl Driver<'_> {
             }
             Work::Flush => {
                 self.flush_at = None;
-                self.flush_meters();
+                self.tick_meters(false);
             }
-            Work::Reading { meter, peaks } => self.reading(meter, peaks),
+            Work::MetersWake => self.tick_meters(true),
+            Work::Deadline => {
+                self.deadline_at = None;
+                self.deadline();
+            }
             Work::Meter { meter, event } => self.meter_event(meter, event),
             // Work of a dropped connection.
             Work::Global { .. }
@@ -726,7 +872,15 @@ impl Driver<'_> {
             .map_err(|e| e.to_string())
             .and_then(|core| self.start(core));
         match result {
-            Ok(session) => {
+            Ok(mut session) => {
+                // Until the session manager is back, what was shown before
+                // stays: the first state waits for it (or `SETTLE`), and
+                // the defaults shown resolve meanwhile.
+                if let Some(shown) = self.publisher.state() {
+                    session.expect_sink = shown.sink().is_some();
+                    session.expect_source = shown.source().is_some();
+                    session.held = held(shown, session.settle_by);
+                }
                 self.session = Some(session);
                 let _ = self.timer.update_timer(None, None);
                 if let Some(w) = &mut self.watch {
@@ -805,9 +959,16 @@ impl Driver<'_> {
             _core_listener: core_listener,
             core,
             defaults: Defaults::default(),
+            held: None,
             initial_done: false,
             awaiting: Some(seq),
+            meta_sync: None,
+            meta_ready: false,
             published: false,
+            settle_by: Instant::now() + SETTLE,
+            expect_sink: false,
+            expect_source: false,
+            settled: false,
             since: Instant::now(),
         })
     }
@@ -819,9 +980,11 @@ impl Driver<'_> {
                 self.backoff = FIRST;
             }
             for mut m in s.meters.drain(..) {
-                self.out.extend(m.quiet().map(AudioChange::Levels));
+                self.out.extend(m.pause().map(AudioChange::Levels));
             }
         }
+        // Actions wait a little for the next connection.
+        self.grace_until = Instant::now() + GRACE;
         self.dirty = true;
         self.watching();
         self.schedule_retry();
@@ -834,8 +997,13 @@ impl Driver<'_> {
     }
 
     fn schedule_retry(&mut self) {
-        let watched = self.watch.as_ref().is_some_and(|w| w.wd.is_some());
-        if self.backoff > MAX && watched {
+        // Only a missing socket is waited for; one that is there but
+        // refuses (a stale socket, a permission change) is retried.
+        let waiting = self
+            .watch
+            .as_ref()
+            .is_some_and(|w| w.wd.is_some() && w.socket_missing());
+        if self.backoff > MAX && waiting {
             // The socket's creation will wake us.
             let _ = self.timer.update_timer(None, None);
             return;
@@ -965,6 +1133,12 @@ impl Driver<'_> {
                     })
                     .register();
                 device.subscribe_params(&[ParamType::Route]);
+                // The first state (and the actions waiting for it) waits
+                // for its routes, so no early write goes to a card node's
+                // `Props`.
+                if sync(s).is_none() {
+                    return;
+                }
                 s.devices.insert(
                     id,
                     DeviceEntry {
@@ -998,9 +1172,9 @@ impl Driver<'_> {
                         0
                     })
                     .register();
-                if sync(s).is_none() {
-                    return;
-                }
+                let Some(seq) = sync(s) else { return };
+                s.meta_sync = Some(seq);
+                s.meta_ready = false;
                 s.metadata = Some(MetaEntry {
                     global: global.id,
                     _listener: listener,
@@ -1019,7 +1193,13 @@ impl Driver<'_> {
             self.meters_dirty = true;
         } else if s.metadata.as_ref().is_some_and(|m| m.global == id) {
             // The session manager restarted: its new metadata will come.
+            // The defaults shown stay meanwhile (until `SETTLE`), so a
+            // restart does not flash an empty `audio.sink`.
+            let shown = state_of(s);
+            s.held = held(&shown, Instant::now() + SETTLE);
             s.metadata = None;
+            s.meta_sync = None;
+            s.meta_ready = false;
             s.defaults = Defaults::default();
             self.dirty = true;
             self.meters_dirty = true;
@@ -1032,8 +1212,10 @@ impl Driver<'_> {
         self.dirty = false;
         let state = match &mut self.session {
             Some(s) => {
-                if !s.published && !(s.initial_done && s.awaiting.is_none()) {
-                    // The first state of a connection waits for its sync.
+                if !s.published && !s.settled && !ready_to_publish(s) {
+                    // The first state of a connection waits for its sync
+                    // and for the session manager ([`SETTLE`]); until
+                    // then the last state stays, not connected.
                     return;
                 }
                 s.published = true;
@@ -1049,6 +1231,40 @@ impl Driver<'_> {
     }
 
     // --- Actions -----------------------------------------------------------
+
+    /// An action from the handle: run now when a connection has published
+    /// its first state, else held (in order) until one has, or until the
+    /// grace without a connection ends.
+    fn request(&mut self, action: AudioAction, reply: Reply) {
+        let published = self.session.as_ref().is_some_and(|s| s.published);
+        if published && self.queued.is_empty() {
+            self.answer(action, reply);
+        } else if self.session.is_some() || Instant::now() < self.grace_until {
+            if self.queued.len() >= QUEUED {
+                log::warn!("audio: too many actions wait for PipeWire; refusing one");
+                let _ = reply.send(Err(AudioError::NotConnected));
+            } else {
+                self.queued.push_back((action, reply));
+            }
+        } else {
+            let _ = reply.send(Err(AudioError::NotConnected));
+        }
+    }
+
+    fn answer(&mut self, action: AudioAction, reply: Reply) {
+        let r = self.action(action);
+        if let Err(e) = &r {
+            log::debug!("audio: {e}");
+        }
+        let _ = reply.send(r);
+    }
+
+    /// Runs the actions that waited for this connection's first state.
+    fn run_queued(&mut self) {
+        while let Some((action, reply)) = self.queued.pop_front() {
+            self.answer(action, reply);
+        }
+    }
 
     fn action(&mut self, action: AudioAction) -> Result<(), AudioError> {
         let s = self.session.as_mut().ok_or(AudioError::NotConnected)?;
@@ -1079,7 +1295,18 @@ impl Driver<'_> {
                     }
                 };
                 let id = n.device.id;
-                write(s, id, &props)
+                write(s, id, &props)?;
+                // Its echo comes before this sync returns: a report until
+                // then that matches no write is an older state.
+                match s.core.sync(0) {
+                    Ok(seq) => {
+                        if let Some(n) = s.nodes.get_mut(&id) {
+                            n.echoes.wait = Some(seq.seq());
+                        }
+                    }
+                    Err(e) => log::debug!("audio: cannot sync after a write: {e}"),
+                }
+                Ok(())
             }
             AudioAction::SetMuted(d, m) => {
                 let id = node_mut(s, d)?.device.id;
@@ -1119,6 +1346,7 @@ impl Driver<'_> {
 
     fn sync_meters(&mut self) {
         let Some(s) = &mut self.session else { return };
+        let now = Instant::now();
         let state = state_of(s);
         let mut keep = Vec::new();
         let mut old = std::mem::take(&mut s.meters);
@@ -1129,17 +1357,24 @@ impl Driver<'_> {
                 LevelTarget::Device(id) => state.device(id),
             };
             let Some(device) = device else { continue };
-            // A meter that failed (a stream error) is started anew.
+            let mut failures = 0;
             if let Some(i) = old
                 .iter()
-                .position(|m| m.target == target && m.device == device.id && !m.failed)
+                .position(|m| m.target == target && m.device == device.id)
             {
-                keep.push(old.swap_remove(i));
-                continue;
+                let m = &old[i];
+                // A meter whose stream failed is started anew once its
+                // retry is due (later after each failure in a row).
+                if !m.failed || m.retry_at.is_some_and(|t| t > now) {
+                    keep.push(old.swap_remove(i));
+                    continue;
+                }
+                failures = m.failures;
             }
             let Some(node) = s.nodes.get(&device.id) else {
                 continue;
             };
+            let Some(wake) = &self.wake else { continue };
             self.meters += 1;
             let t = MeterTarget {
                 id: device.id,
@@ -1147,7 +1382,7 @@ impl Driver<'_> {
                 serial: node.serial.as_deref(),
                 direction: node.direction,
             };
-            match Meter::start(&s.core, self.meters, target, &t, &self.q) {
+            match Meter::start(&s.core, self.meters, target, &t, &self.q, wake, failures) {
                 Ok(m) => keep.push(m),
                 Err(e) => log::warn!("audio: {e}"),
             }
@@ -1157,43 +1392,29 @@ impl Driver<'_> {
         // stale level (hidden while the sound stopped, or a default that
         // moved to a silent device).
         for mut m in old {
-            self.out.extend(m.quiet().map(AudioChange::Levels));
+            self.out.extend(m.pause().map(AudioChange::Levels));
         }
         s.meters = keep;
     }
 
-    /// A meter's reading: held, the loudest peak per channel kept, and
-    /// sent at most once per [`FRAME`]. Only the first silent reading
-    /// after sound is sent.
-    fn reading(&mut self, meter: u64, peaks: Vec<f32>) {
-        let now = Instant::now();
-        let Some(m) = self
-            .session
-            .as_mut()
-            .and_then(|s| s.meters.iter_mut().find(|m| m.id == meter))
-        else {
-            return;
-        };
-        if m.hold.add(peaks, now)
-            && let Some(l) = m.take(now)
-        {
-            self.out.push(AudioChange::Levels(l));
-        }
-        if let Some(at) = m.hold.due(now) {
-            self.arm_flush(at, now);
-        }
-    }
-
-    /// The frame timer: sends what each meter held once it is due.
-    fn flush_meters(&mut self) {
+    /// Reads the meters: those whose data thread heard sound (`wake`), or
+    /// those due on the frame timer. Each sends at most one reading per
+    /// [`FRAME`], the loudest peak per channel since its last; only the
+    /// first silent reading after sound is sent.
+    fn tick_meters(&mut self, wake: bool) {
         let now = Instant::now();
         let Some(s) = &mut self.session else { return };
         let mut next: Option<Instant> = None;
         for m in &mut s.meters {
-            match m.hold.due(now) {
-                Some(at) if at <= now => self.out.extend(m.take(now).map(AudioChange::Levels)),
-                Some(at) => next = Some(next.map_or(at, |n| n.min(at))),
-                None => {}
+            let due = match m.next_tick {
+                Some(t) => !wake && t <= now,
+                None => wake && m.woken(),
+            };
+            if due {
+                self.out.extend(m.collect(now).map(AudioChange::Levels));
+            }
+            if let Some(t) = m.next_tick {
+                next = Some(next.map_or(t, |n| n.min(t)));
             }
         }
         if let Some(at) = next {
@@ -1221,14 +1442,119 @@ impl Driver<'_> {
         else {
             return;
         };
-        if event == MeterEvent::Failed && !m.failed {
-            m.failed = true;
-            log::debug!("audio: the meter on device {} stopped", m.device);
+        match event {
+            MeterEvent::Running => m.failures = 0,
+            MeterEvent::Idle | MeterEvent::Failed => {
+                if event == MeterEvent::Failed && !m.failed {
+                    m.failed = true;
+                    m.failures = m.failures.saturating_add(1);
+                    let wait = retry_delay(m.failures);
+                    m.retry_at = Some(Instant::now() + wait);
+                    log::debug!(
+                        "audio: the meter on device {} stopped; again in {wait:?}",
+                        m.device
+                    );
+                }
+                // The device stopped: what it held is dropped, and a meter
+                // that showed sound says it is quiet.
+                self.out.extend(m.pause().map(AudioChange::Levels));
+            }
         }
-        // The device stopped: what it held is dropped, and a meter that
-        // showed sound says it is quiet.
-        self.out.extend(m.quiet().map(AudioChange::Levels));
     }
+
+    // --- Deadlines ---------------------------------------------------------
+
+    /// The next deadline: a connection's settling, defaults kept from
+    /// before, actions waiting without a connection, a failed meter's
+    /// retry. `None` (the timer off) when nothing waits.
+    fn next_deadline(&self) -> Option<Instant> {
+        let mut next: Option<Instant> = None;
+        let mut at = |t: Instant| next = Some(next.map_or(t, |n| n.min(t)));
+        match &self.session {
+            Some(s) => {
+                if !s.published && !s.settled {
+                    at(s.settle_by);
+                }
+                if let Some(h) = &s.held {
+                    at(h.until);
+                }
+                for m in s.meters.iter().filter(|m| m.failed) {
+                    if let Some(t) = m.retry_at {
+                        at(t);
+                    }
+                }
+            }
+            None if !self.queued.is_empty() => at(self.grace_until),
+            None => {}
+        }
+        next
+    }
+
+    fn arm_deadline(&mut self) {
+        let next = self.next_deadline();
+        if next == self.deadline_at {
+            return;
+        }
+        self.deadline_at = next;
+        let delay = next.map(|t| {
+            t.saturating_duration_since(Instant::now())
+                .max(Duration::from_micros(100))
+        });
+        let _ = self.deadline.update_timer(delay, None);
+    }
+
+    fn deadline(&mut self) {
+        // A timer never fires early; the margin covers clock rounding.
+        let now = Instant::now() + Duration::from_millis(1);
+        match &mut self.session {
+            Some(s) => {
+                if !s.published && !s.settled && s.settle_by <= now {
+                    log::debug!("audio: no session manager yet; showing what PipeWire has");
+                    s.settled = true;
+                    self.dirty = true;
+                }
+                if s.held.as_ref().is_some_and(|h| h.until <= now) {
+                    s.held = None;
+                    self.dirty = true;
+                    self.meters_dirty = true;
+                }
+                if s.meters
+                    .iter()
+                    .any(|m| m.failed && m.retry_at.is_some_and(|t| t <= now))
+                {
+                    self.meters_dirty = true;
+                }
+            }
+            None => {
+                if self.grace_until <= now {
+                    for (_, reply) in self.queued.drain(..) {
+                        let _ = reply.send(Err(AudioError::NotConnected));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The defaults `shown`, kept until `until`.
+fn held(shown: &AudioState, until: Instant) -> Option<Held> {
+    let defaults = Defaults {
+        sink: shown.sink().map(|d| d.name.clone()),
+        source: shown.source().map(|d| d.name.clone()),
+        ..Defaults::default()
+    };
+    (defaults.sink.is_some() || defaults.source.is_some()).then_some(Held { defaults, until })
+}
+
+/// Whether a connection's first state may go out before [`SETTLE`]: its
+/// syncs are back, the session manager's `default` metadata is read, and
+/// each default shown before the loss names a device again.
+fn ready_to_publish(s: &Session) -> bool {
+    s.initial_done
+        && s.awaiting.is_none()
+        && s.meta_ready
+        && (!s.expect_sink || default_id(s, Direction::Sink).is_some())
+        && (!s.expect_source || default_id(s, Direction::Source).is_some())
 }
 
 /// Whether a core error means the connection is gone (what pw-cli and
@@ -1285,12 +1611,9 @@ fn apply_meta(d: &mut Defaults, key: Option<&str>, value: Option<&str>) {
 }
 
 /// The default device of `direction`: the effective default when it names
-/// a device, else the configured one.
+/// a device, else the configured one, else (for a while after a restart)
+/// the one shown before.
 fn default_id(s: &Session, direction: Direction) -> Option<u32> {
-    let (effective, configured) = match direction {
-        Direction::Sink => (&s.defaults.sink, &s.defaults.configured_sink),
-        Direction::Source => (&s.defaults.source, &s.defaults.configured_source),
-    };
     let find = |name: &Option<String>| {
         let name = name.as_deref()?;
         s.nodes
@@ -1298,7 +1621,12 @@ fn default_id(s: &Session, direction: Direction) -> Option<u32> {
             .find(|n| n.ready && n.direction == direction && n.device.name == name)
             .map(|n| n.device.id)
     };
-    find(effective).or_else(|| find(configured))
+    let held = s.held.as_ref().map(|h| h.defaults.names(direction));
+    s.defaults
+        .names(direction)
+        .into_iter()
+        .chain(held.into_iter().flatten())
+        .find_map(find)
 }
 
 fn state_of(s: &Session) -> AudioState {
@@ -1312,6 +1640,9 @@ fn state_of(s: &Session) -> AudioState {
         let mut d = n.device.clone();
         d.default = Some(d.id) == sink || Some(d.id) == source;
         d.icon = icon(n.direction, d.volume, d.muted).to_owned();
+        if let Some(serial) = n.serial.as_deref().and_then(|v| v.parse().ok()) {
+            state.serials.insert(d.id, serial);
+        }
         match n.direction {
             Direction::Sink => state.sinks.push(d),
             Direction::Source => state.sources.push(d),
@@ -1467,6 +1798,46 @@ mod tests {
     }
 
     #[test]
+    fn an_older_report_before_a_write_is_applied_keeps_the_step_base() {
+        let mut e = Echoes::default();
+        // Mute, then +5% from 0.5: the volume write waits for sync 7.
+        e.wrote(0.55, vec![linear(0.55); 2]);
+        e.wait = Some(7);
+        // The mute's echo carries the old volume: shown, but a second
+        // step still adds to the write, not to it.
+        assert_eq!(e.read(&[0.125, 0.125]), Some(0.5));
+        assert_eq!(e.base(0.5), 0.55);
+        e.synced(6);
+        assert_eq!(e.read(&[0.125, 0.125]), Some(0.5));
+        assert_eq!(e.base(0.5), 0.55);
+        // The write's echo, then its sync.
+        assert_eq!(e.read(&[linear(0.55); 2]), Some(0.55));
+        assert_eq!(e.pending, None);
+        e.synced(7);
+        assert_eq!(e.wait, None);
+        // Once a write is applied, a volume matching none of the writes
+        // is another program's, and ends a pending write.
+        e.wrote(0.6, vec![linear(0.6); 2]);
+        e.wait = Some(9);
+        e.synced(9);
+        assert_eq!(e.read(&[0.008, 0.008]), perceptual(&[0.008]));
+        assert_eq!(e.base(0.2), 0.2);
+    }
+
+    #[test]
+    fn a_quantized_echo_reads_as_written() {
+        // A card's route moves the mixer in steps: its echo is close to,
+        // not exactly, the volume written.
+        let mut e = Echoes::default();
+        e.wrote(0.37, vec![linear(0.37); 2]);
+        assert_eq!(e.read(&[linear(0.3681); 2]), Some(0.37));
+        assert_eq!(e.pending, None);
+        // Farther than that is another volume.
+        let other = e.read(&[linear(0.38); 2]).unwrap();
+        assert!((other - 0.38).abs() < 1e-6, "{other}");
+    }
+
+    #[test]
     fn inotify_events_that_end_or_overflow_the_watch() {
         let name = OsString::from("pipewire-0");
         let mut seen = Seen::default();
@@ -1483,6 +1854,21 @@ mod tests {
         seen.add(3, inotify::ReadFlags::IGNORED, None, &name);
         assert_eq!(seen.gone, [3]);
         assert!(!seen.hit);
+    }
+
+    #[test]
+    fn only_a_missing_socket_is_waited_for() {
+        let dir = std::env::temp_dir().join(format!("strand-pw-watch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("pipewire-0");
+        let _ = std::fs::remove_file(&socket);
+        let watch = SocketWatch::new(Some(&socket.display().to_string())).unwrap();
+        assert!(watch.socket_missing());
+        // A stale socket (a crashed daemon's), or one that refuses: the
+        // timer keeps trying.
+        std::fs::write(&socket, b"").unwrap();
+        assert!(!watch.socket_missing());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
