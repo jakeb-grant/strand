@@ -34,10 +34,15 @@ record TrayMenu {
   /// Its entries, as the app last laid them out; empty when the item has
   /// no menu.
   items: [TrayMenuItem]
+  /// It is open: true from `open()` until `close()` (or the item going
+  /// away). A popup shows it with `open: item.menu.opened`, and calls
+  /// `item.menu.close()` when it closes.
+  opened: bool
   /// Opens it as a popup: `on secondary { item.menu.open() }`. The app is
-  /// told it opens (and may update its entries first).
+  /// told it opens (and may update its entries first), and `opened`
+  /// becomes true. An item without a DBusMenu shows its own menu.
   action open()
-  /// The popup closed: the app is told.
+  /// The popup closed: the app is told, and `opened` becomes false.
   action close()
 }
 
@@ -60,7 +65,9 @@ record TrayItem key id {
   action activate()
   /// Its secondary action.
   action secondary()
-  /// Scrolls on it.
+  /// Scrolls on it by `dy` wheel notches (one click is 1, a touchpad
+  /// sends fractions; positive is down, as `on scroll(dy)` gives it). The
+  /// app gets 120 per notch, positive up, as KDE's tray sends it.
   action scroll(dy: float)
 }
 

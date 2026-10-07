@@ -1978,15 +1978,18 @@ the primitives, `Option`, `Vec` and derived types.
   against the current owner's unique name: a restarted daemon is read
   afresh without restarting the service; `subscribe`/`unsubscribe` add
   and drop match rules as the service needs them), `get_all`/`get`/`set`
-  of properties, `properties_changed`, `owner_process` (pid and command
-  of a name's owner), `activate` (`StartServiceByName` without waiting:
+  of properties, `properties_changed`, `apply_changed` (its re-reads of
+  invalidated properties bounded by `CALL_TIMEOUT`), `owner_process` (pid
+  and command of a name's owner), `activate` (`StartServiceByName` without waiting:
   a `Daemon` whose name has no owner asks once per start), `timed` (a
   call to an app given up after `CALL_TIMEOUT`, 2 s). A service owning a
   bus name (the notification server, the tray's host and watcher) uses
   a connection of its own (`bus::own_session`), so the name goes with
   the service. Calls that may wait on an app (tray items, players,
   BlueZ connects) run as tasks in a `JoinSet` owned by the body, so they
-  hold up nothing and are cancelled when it stops. Pixels from D-Bus
+  hold up nothing and are cancelled when it stops; what they find (a
+  player read, a tray item read, a failed connect for
+  `bluetooth.failed`) comes back to the loop as the task's result. Pixels from D-Bus
   (`image-data`, `IconPixmap`, a menu entry's `icon-data`) are checked
   against the bytes sent before allocating, sampled down to 512 px a
   side and become content-addressed PNG files under
@@ -2011,7 +2014,9 @@ the primitives, `Option`, `Vec` and derived types.
   hands them out after a pump, one per distinct message (a retry failing
   the same way is not repeated until a run stays up `RETRY_MAX` or ends
   cleanly). A notice no longer holding (a later run ready without
-  raising it, or a clean stop) comes back once with `resolved: true`.
+  raising it, a clean end, or the service stopped: no reader for
+  `STOP_GRACE`, or `Services::shutdown`) comes back once with
+  `resolved: true`.
   `strand run` logs them (`warn`; a notice at `error`), sends them to
   `strand watch` as `notices`, and shows notices as overlay rows under
   `strand: services`, keyed by service, which a resolved one removes.

@@ -340,12 +340,16 @@ fn the_tray_is_the_watcher_when_there_is_none() {
     wait_call(&state, "SecondaryActivate");
     d.action(&rt, "scroll", Some(&it.to_data()), &[Data::Float(-2.0)])
         .unwrap();
-    wait_call(&state, "Scroll -2 vertical");
+    // Two notches up: 120 a notch, positive up (as KDE's host sends).
+    wait_call(&state, "Scroll 240 vertical");
 
-    // The menu opens: the app is told, updates it, and the entry shows.
+    // The menu opens: the app is told, updates it, and the entry shows;
+    // the store says it is open (a popup's `open: item.menu.opened`).
+    assert!(!it.menu.opened);
     d.action(&rt, "open", Some(&it.menu.to_data()), &[])
         .unwrap();
     wait_call(&state, "Event 0 opened");
+    until(&rt, &s, "the menu opened", || items(&b, &rt)[0].menu.opened);
     until(&rt, &s, "the extra entry", || {
         items(&b, &rt)[0]
             .menu
@@ -358,9 +362,13 @@ fn the_tray_is_the_watcher_when_there_is_none() {
     d.action(&rt, "open", Some(&sub.to_data()), &[]).unwrap();
     wait_call(&state, "AboutToShow 4");
     wait_call(&state, "Event 4 opened");
+    assert!(items(&b, &rt)[0].menu.opened, "a submenu leaves it open");
     d.action(&rt, "close", Some(&it.menu.to_data()), &[])
         .unwrap();
     wait_call(&state, "Event 0 closed");
+    until(&rt, &s, "the menu closed", || {
+        !items(&b, &rt)[0].menu.opened
+    });
     // An entry is chosen.
     let check = items(&b, &rt)[0].menu.items[2].clone();
     d.action(&rt, "activate", Some(&check.to_data()), &[])
@@ -561,5 +569,111 @@ fn the_tray_hosts_for_the_sessions_watcher() {
     until(&rt, &s, "items cleared until they register again", || {
         items(&b, &rt).is_empty()
     });
+    s.shutdown();
+}
+
+/// An app registering before it exported its item (or too busy to
+/// answer as it starts): the failed read is tried once more a little
+/// later; given up, our watcher unlists it, so the app registering again
+/// is heard. What the watcher lists is what the tray shows.
+#[test]
+fn an_item_unreadable_at_registration_is_read_again() {
+    let Some(bus) = strand_services::testing::PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    b.tray.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert!(bus.wait_for_name(WATCHER, Duration::from_secs(5)));
+    let listed = |conn: &zbus::Connection| -> Vec<String> {
+        let v: OwnedValue = call(
+            &tokio,
+            conn,
+            WATCHER,
+            WATCHER_PATH,
+            "org.freedesktop.DBus.Properties",
+            "Get",
+            &(WATCHER, "RegisteredStatusNotifierItems"),
+        )
+        .body()
+        .deserialize()
+        .unwrap();
+        v.try_into().unwrap()
+    };
+    let register = |conn: &zbus::Connection, name: &str| {
+        call(
+            &tokio,
+            conn,
+            WATCHER,
+            WATCHER_PATH,
+            WATCHER,
+            "RegisterStatusNotifierItem",
+            &(name,),
+        );
+    };
+    let state = Arc::new(Mutex::new(State {
+        icon_name: "mock-icon".into(),
+        open_label: "_Open".into(),
+        ..State::default()
+    }));
+    let bare = |name: &str| {
+        tokio.block_on(async {
+            zbus::connection::Builder::address(bus.address.as_str())
+                .unwrap()
+                .name(name)
+                .unwrap()
+                .build()
+                .await
+                .unwrap()
+        })
+    };
+    let export = |conn: &zbus::Connection| {
+        tokio.block_on(async {
+            conn.object_server()
+                .at("/StatusNotifierItem", Item(state.clone()))
+                .await
+                .unwrap();
+            conn.object_server()
+                .at("/Menu", Menu(state.clone()))
+                .await
+                .unwrap();
+        })
+    };
+
+    // Registered, exported a moment later: the second read finds it.
+    let early = "org.kde.StatusNotifierItem-777-1";
+    let conn = bare(early);
+    register(&conn, early);
+    std::thread::sleep(Duration::from_millis(300));
+    export(&conn);
+    until(&rt, &s, "the item, read again", || {
+        items(&b, &rt).len() == 1
+    });
+    assert_eq!(items(&b, &rt)[0].id, format!("{early}/StatusNotifierItem"));
+    assert_eq!(listed(&conn), [format!("{early}/StatusNotifierItem")]);
+
+    // Never readable in time: given up and unlisted; the app registering
+    // again once it exported is heard.
+    let late = "org.kde.StatusNotifierItem-778-1";
+    let conn2 = bare(late);
+    register(&conn2, late);
+    let id = format!("{late}/StatusNotifierItem");
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while listed(&conn).contains(&id) {
+        assert!(std::time::Instant::now() < deadline, "never unlisted");
+        s.pump(&rt);
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(items(&b, &rt).len(), 1, "not shown");
+    export(&conn2);
+    register(&conn2, late);
+    until(&rt, &s, "the late item", || items(&b, &rt).len() == 2);
+    let mut shown: Vec<String> = items(&b, &rt).into_iter().map(|i| i.id).collect();
+    let mut on_list = listed(&conn);
+    shown.sort();
+    on_list.sort();
+    assert_eq!(shown, on_list, "the watcher lists what the tray shows");
     s.shutdown();
 }

@@ -61,6 +61,10 @@ enum Cmd {
     Send(Vec<ProbePatch>),
     Emit(ProbeEvent),
     Ready,
+    /// Raise a notice for the user ([`Cx::notice`]).
+    Notice(String),
+    /// End the run with an error.
+    Fail(String),
 }
 
 /// The test's end of the probe service.
@@ -188,6 +192,8 @@ impl Probe {
                     Some(Cmd::Send(p)) => { cx.send(p); }
                     Some(Cmd::Emit(p)) => { cx.emit(p); }
                     Some(Cmd::Ready) => { cx.ready(); }
+                    Some(Cmd::Notice(m)) => { cx.notice(m); }
+                    Some(Cmd::Fail(m)) => return Err(ServiceError(m)),
                     None => return Ok(()),
                 },
                 m = cx.recv() => match m {
@@ -1236,6 +1242,44 @@ impl Flaky {
 /// A body that fails right after saying it is ready keeps backing off
 /// (1, 2, 4, 8, 16 s): about six starts in 30 s, not one a second. Only
 /// a run that stayed up resets the backoff.
+/// A failed run's notice (another notification server, say) is taken
+/// away once nobody reads the service any more: it stops after the
+/// grace, and a resolved diagnostic follows.
+#[test]
+fn a_notice_is_resolved_when_its_service_stops_for_lack_of_readers() {
+    let (sc, _guard) = script();
+    let rt = Runtime::new();
+    let (s, _) = services(&rt);
+    let probe = s.register::<Probe>(&rt);
+    let now = std::cell::Cell::new(Duration::ZERO);
+    let at = |d: Duration| {
+        now.set(now.get() + d);
+        rt.tick(now.get());
+    };
+    probe.acquire(&rt);
+    assert_eq!(sc.next(), "start visible=true");
+    sc.cmd(Cmd::Notice("another server owns the name".into()));
+    sc.cmd(Cmd::Ready);
+    sc.cmd(Cmd::Fail("another server owns the name".into()));
+    until(&rt, &s, "the failed run", || !probe.running());
+    let d = s.take_diagnostics();
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert!(d[0].notice && !d[0].resolved, "{d:?}");
+    // Its reader leaves (a live reload took the toasts away): past the
+    // grace the service stops, and the notice no longer holds.
+    probe.release(&rt);
+    at(STOP_GRACE + Duration::from_millis(1));
+    until(&rt, &s, "the resolved notice", || {
+        let d = s.take_diagnostics();
+        assert!(d.iter().all(|d| d.resolved), "{d:?}");
+        !d.is_empty()
+    });
+    assert!(!probe.running());
+    assert_eq!(rt.next_deadline(), None);
+    s.shutdown();
+    assert!(s.take_diagnostics().is_empty(), "resolved once");
+}
+
 #[test]
 fn a_body_failing_right_after_ready_backs_off() {
     let rt = Runtime::new();

@@ -162,11 +162,13 @@ pub fn properties_changed(msg: &Message) -> Option<Changed> {
 }
 
 /// Apply a `PropertiesChanged` to `props`, reading invalidated
-/// properties again.
+/// properties again (each read bounded by [`CALL_TIMEOUT`]: a sender that
+/// stops answering after its signal costs a bounded wait, and a property
+/// it does not answer for is dropped).
 pub async fn apply_changed(conn: &Connection, dest: &str, props: &mut Props, c: Changed) {
     props.extend(c.changed);
     for name in c.invalidated {
-        match get(conn, dest, &c.path, &c.iface, &name).await {
+        match timed(get(conn, dest, &c.path, &c.iface, &name)).await {
             Ok(v) => {
                 props.insert(name, v);
             }

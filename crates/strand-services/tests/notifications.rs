@@ -147,7 +147,7 @@ fn the_server_serves_the_spec_and_the_store() {
             .deserialize()
             .unwrap();
     assert_eq!(info.0, "strand");
-    assert_eq!(info.3, "1.2");
+    assert_eq!(info.3, "1.1", "no ActivationToken: not 1.2");
 
     // A notification with a default action, a button, a critical
     // urgency, an image and a timeout.
@@ -470,8 +470,11 @@ fn another_notification_server_fails_clearly() {
     let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap();
     assert!(msg.contains(&format!("(pid {pid})")), "{msg}");
     assert!(msg.contains(&format!("`{}`", comm.trim())), "{msg}");
-    assert!(msg.contains("systemctl --user stop"), "{msg}");
-    assert!(msg.contains("systemctl --user mask"), "{msg}");
+    // Not a systemd user service (no systemd on the private bus): the
+    // process is named for pkill, and the activation override given.
+    assert!(msg.contains(&format!("pkill -x {}", comm.trim())), "{msg}");
+    assert!(!msg.contains("systemctl"), "{msg}");
+    assert!(msg.contains("dbus-1/services"), "{msg}");
     assert!(msg.contains(NAME), "{msg}");
     // The other server keeps the name: no second server.
     assert!(bus.wait_for_name(NAME, Duration::from_millis(100)));
@@ -503,5 +506,72 @@ fn another_notification_server_fails_clearly() {
         assert!(d.iter().all(|d| d.resolved), "{d:?}");
         !d.is_empty()
     });
+    s.shutdown();
+}
+
+/// The server stops (nobody read `notifications` for 5 s) and starts
+/// again: what the first run held was closed with it (one
+/// `NotificationClosed`, reason 3, before the name went), and the new run
+/// starts with none, so an id it hands out again never names an old
+/// notification.
+#[test]
+fn a_restarted_server_starts_with_no_notifications() {
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let heard = hear(&tokio, &conn);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    b.notifications.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert!(bus.wait_for_name(NAME, Duration::from_secs(5)));
+    let image = Value::from((1i32, 1i32, 4i32, true, 8i32, 4i32, vec![1u8, 2, 3, 4]));
+    let first = notify(
+        &tokio,
+        &conn,
+        0,
+        "First",
+        &[],
+        HashMap::from([("image-data", image)]),
+        -1,
+    );
+    until(&rt, &s, "the first", || {
+        popups(&b, &rt).iter().any(|n| n.image.is_some())
+    });
+    // Its last reader leaves; past the grace the server stops.
+    b.notifications.release(&rt);
+    rt.tick(strand_services::STOP_GRACE + Duration::from_secs(1));
+    until(&rt, &s, "stopped", || !b.notifications.running());
+    wait_heard(&heard, &format!("Closed {first} 3"));
+    // A reader again: a new server, with nothing from the old one.
+    b.notifications.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert!(bus.wait_for_name(NAME, Duration::from_secs(5)));
+    assert_eq!(b.notifications.cells().count.get_untracked(&rt), Ok(0));
+    assert!(popups(&b, &rt).is_empty());
+    let second = notify(&tokio, &conn, 0, "Second", &[], HashMap::new(), -1);
+    until(&rt, &s, "the second", || popups(&b, &rt).len() == 1);
+    let all: Vec<(i64, String)> = b
+        .notifications
+        .cells()
+        .all
+        .get_untracked(&rt)
+        .unwrap()
+        .items()
+        .iter()
+        .map(|(_, n)| (n.id, n.summary.clone()))
+        .collect();
+    assert_eq!(all, [(i64::from(second), "Second".to_string())]);
+    // The old id names nothing on this server (it was closed).
+    let closed = heard
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|l| *l == &format!("Closed {first} 3"))
+        .count();
+    assert_eq!(closed, 1, "closed once: {:?}", heard.lock().unwrap());
+    assert!(s.take_diagnostics().is_empty());
     s.shutdown();
 }

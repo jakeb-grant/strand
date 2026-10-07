@@ -302,3 +302,147 @@ fn network_follows_networkmanager_and_scans_only_while_watched() {
     assert_eq!(b.network.starts(), 1);
     s.shutdown();
 }
+
+/// Joining with a password (`ap.connect_with(password)`) hands
+/// NetworkManager the WPA settings; a join NetworkManager accepts and
+/// later gives up on (the active connection deactivated for want of a
+/// password) is `failed`, with the reason.
+#[test]
+fn a_join_that_fails_later_is_reported() {
+    use zbus::zvariant::{OwnedValue, Value};
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let Some(_nm) = DbusMock::start(&bus, "networkmanager", true, None, NM) else {
+        return;
+    };
+    let (dev, _) = wifi_home(&tokio, &conn);
+    add_ap(&tokio, &conn, &dev, "Mock_AP2", "Cafe", 60);
+    add_ap(&tokio, &conn, &dev, "Mock_AP3", "Airport", 50);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let failures = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let f = failures.clone();
+    b.network.dynamic().observe(Box::new(move |_, a| {
+        if let strand_services::Applied::Event { args, .. } = a {
+            f.lock().unwrap().push(args.clone());
+        }
+    }));
+    b.network.acquire(&rt);
+    let field = network::Network::FIELDS
+        .iter()
+        .position(|f| f.name == "access_points")
+        .unwrap();
+    b.network.acquire_field(field);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    until(&rt, &s, "the access points", || names(&b, &rt).len() == 3);
+    let ap = |ssid: &str| AccessPoint {
+        ssid: ssid.into(),
+        strength: 0.5,
+        secure: true,
+        active: false,
+    };
+
+    // A password from the shell: a WPA personal connection with it.
+    b.network
+        .dynamic()
+        .action(
+            &rt,
+            "connect_with",
+            Some(&ap("Cafe").to_data()),
+            &[Data::Text("hunter22".into())],
+        )
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let added = loop {
+        let calls = mock_calls(&tokio, &conn, NM, ROOT, "AddAndActivateConnection");
+        if let Some(c) = calls.into_iter().next() {
+            break c;
+        }
+        assert!(std::time::Instant::now() < deadline, "never joined Cafe");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    type Settings =
+        std::collections::HashMap<String, std::collections::HashMap<String, OwnedValue>>;
+    let settings: Settings = added[0].try_clone().unwrap().try_into().unwrap();
+    let sec = &settings["802-11-wireless-security"];
+    assert_eq!(
+        sec["key-mgmt"],
+        OwnedValue::try_from(Value::from("wpa-psk")).unwrap()
+    );
+    assert_eq!(
+        sec["psk"],
+        OwnedValue::try_from(Value::from("hunter22")).unwrap()
+    );
+    // The template activates it at once: no failure.
+    std::thread::sleep(Duration::from_millis(200));
+    s.pump(&rt);
+    assert!(
+        failures.lock().unwrap().is_empty(),
+        "{:?}",
+        failures.lock().unwrap()
+    );
+
+    // NetworkManager accepts a join, then deactivates it: no secrets.
+    let active = "/org/freedesktop/NetworkManager/ActiveConnection/77";
+    let iface = "org.freedesktop.NetworkManager.Connection.Active";
+    mock(
+        &tokio,
+        &conn,
+        NM,
+        ROOT,
+        "AddMethod",
+        &(
+            NM,
+            "AddAndActivateConnection",
+            "a{sa{sv}}oo",
+            "oo",
+            format!(
+                "self.AddObject('{active}', '{iface}', {{'State': dbus.UInt32(1)}}, [])\n\
+                 ret = (dbus.ObjectPath('/org/freedesktop/NetworkManager/Settings/77'), \
+                 dbus.ObjectPath('{active}'))"
+            ),
+        ),
+    );
+    b.network
+        .dynamic()
+        .action(&rt, "connect", Some(&ap("Airport").to_data()), &[])
+        .unwrap();
+    while mock_calls(&tokio, &conn, NM, ROOT, "AddAndActivateConnection").len() < 2 {
+        assert!(std::time::Instant::now() < deadline, "never joined Airport");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(100));
+    s.pump(&rt);
+    assert!(
+        failures.lock().unwrap().is_empty(),
+        "activating is not failing"
+    );
+    // NM_ACTIVE_CONNECTION_STATE_DEACTIVATED, _REASON_NO_SECRETS.
+    mock(
+        &tokio,
+        &conn,
+        NM,
+        active,
+        "EmitSignal",
+        &(
+            iface,
+            "StateChanged",
+            "uu",
+            vec![Value::from(4u32), Value::from(9u32)],
+        ),
+    );
+    until(&rt, &s, "the failure", || {
+        !failures.lock().unwrap().is_empty()
+    });
+    assert_eq!(
+        failures.lock().unwrap()[0],
+        [
+            Data::Text("Airport".into()),
+            Data::Text(network::reason_text(9).into())
+        ]
+    );
+    s.shutdown();
+}

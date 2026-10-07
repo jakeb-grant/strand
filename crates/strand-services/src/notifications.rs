@@ -1,5 +1,7 @@
 //! `notifications`: the shell's own notification server
-//! (`org.freedesktop.Notifications`, Desktop Notifications spec 1.2) as a
+//! (`org.freedesktop.Notifications`, Desktop Notifications spec 1.1: 1.2's
+//! `ActivationToken` needs an xdg-activation token from the clicked
+//! surface, which M4's renderer will provide) as a
 //! zbus `#[interface]` on a session-bus connection of its own, so the
 //! name goes with the connection when the service stops.
 //!
@@ -18,16 +20,26 @@
 //!   expires popups (`after n.timeout ?? 6s { n.expire() }`), so an idle
 //!   server wakes nothing.
 //! - `image-data` is checked and written as a PNG off the runtime thread
-//!   ([`crate::pixmap`]), kept while its notification is.
+//!   ([`crate::pixmap`]), kept while its notification is. At most
+//!   [`IMAGES_QUEUED`] pictures wait to be written; beyond that a sender's
+//!   picture is left out (its notification still arrives), so a flood of
+//!   large pictures cannot queue unbounded memory.
+//! - Notifications belong to the run that received them: when the server
+//!   stops (nobody reads `notifications` for 5 s) each one still open is
+//!   closed (`NotificationClosed`, reason 3) before the name goes, and a
+//!   new run starts with none, so ids are never reused for a notification
+//!   still shown.
 //! - **Another server owns the name** (dunst, mako, a desktop's): the
 //!   name is asked for without queueing, and the run fails with a
 //!   diagnostic naming the owner's process (`GetConnectionUnixProcessID`,
-//!   `/proc/<pid>/comm`) and how to stop it. There is never a silent
+//!   `/proc/<pid>/comm`, and its systemd user unit when it has one:
+//!   `GetUnitByPID`) and how to stop it. There is never a silent
 //!   second server; the client retries with its backoff, so stopping the
 //!   other daemon hands the name over within 30 s, and the diagnostic is
 //!   then resolved.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -50,6 +62,14 @@ pub const PATH: &str = "/org/freedesktop/Notifications";
 /// expired (design.md's memory budget holds notification history to a few
 /// megabytes).
 pub const KEPT: usize = 100;
+
+/// How many `image-data` pictures may wait to be written: beyond it a
+/// new notification's picture is left out.
+pub const IMAGES_QUEUED: usize = 8;
+
+/// What `GetServerInformation` answers as the spec version: 1.1, since
+/// 1.2's `ActivationToken` signal is not sent (decisions.md, wave4-a2).
+pub const SPEC_VERSION: &str = "1.1";
 
 /// What `GetCapabilities` answers.
 pub const CAPABILITIES: &[&str] = &[
@@ -220,6 +240,8 @@ struct Ids {
 struct Server {
     ids: Arc<Mutex<Ids>>,
     tx: mpsc::UnboundedSender<FromBus>,
+    /// Pictures queued for the body, not written yet.
+    images: Arc<AtomicUsize>,
 }
 
 /// A hint's text.
@@ -298,7 +320,17 @@ impl Server {
         } else {
             app_icon
         };
-        let image = image(&hints);
+        let mut image = image(&hints);
+        if let Image::Data(_) = image {
+            // Bounded: a flood of pictures leaves the later ones out.
+            if self.images.fetch_add(1, Ordering::AcqRel) >= IMAGES_QUEUED {
+                self.images.fetch_sub(1, Ordering::AcqRel);
+                log::debug!("notifications: too many pictures queued; one left out");
+                image = hint_text(&hints, &["image-path", "image_path"])
+                    .map(Image::Path)
+                    .unwrap_or_default();
+            }
+        }
         let mut buttons = Vec::new();
         let mut default = false;
         for pair in actions.chunks(2) {
@@ -401,34 +433,88 @@ impl Server {
             "strand".to_string(),
             "strand".to_string(),
             env!("CARGO_PKG_VERSION").to_string(),
-            "1.2".to_string(),
+            SPEC_VERSION.to_string(),
         )
     }
 }
 
+/// The process owning a name, for the diagnostic.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Owner {
+    /// Its pid.
+    pub pid: u32,
+    /// Its command name (`/proc/<pid>/comm`).
+    pub comm: Option<String>,
+    /// The systemd user service running it, if one does (`mako.service`):
+    /// a scope (a terminal's, the compositor's autostart) is not one.
+    pub unit: Option<String>,
+}
+
+/// The systemd user service running `pid`, asked of the session bus's
+/// systemd (`GetUnitByPID`, then the unit's `Id`), bounded by
+/// [`crate::dbus::CALL_TIMEOUT`]. Only a `.service` that is not a D-Bus
+/// activation's transient one counts: stopping a scope would stop the
+/// terminal or the session it belongs to.
+pub async fn systemd_unit(conn: &zbus::Connection, pid: u32) -> Option<String> {
+    const SYSTEMD: &str = "org.freedesktop.systemd1";
+    let reply = crate::dbus::timed(conn.call_method(
+        Some(SYSTEMD),
+        "/org/freedesktop/systemd1",
+        Some("org.freedesktop.systemd1.Manager"),
+        "GetUnitByPID",
+        &(pid,),
+    ))
+    .await
+    .ok()?;
+    let path: zbus::zvariant::OwnedObjectPath = reply.body().deserialize().ok()?;
+    let id = crate::dbus::timed(crate::dbus::get(
+        conn,
+        SYSTEMD,
+        path.as_str(),
+        "org.freedesktop.systemd1.Unit",
+        "Id",
+    ))
+    .await
+    .ok()?;
+    let id = id.downcast_ref::<&str>().ok()?.to_string();
+    (id.ends_with(".service") && !id.starts_with("dbus-")).then_some(id)
+}
+
 /// The diagnostic for a name another process owns.
-pub fn conflict_message(owner: Option<(u32, Option<String>)>) -> String {
+pub fn conflict_message(owner: Option<Owner>) -> String {
     let who = match &owner {
-        Some((pid, Some(comm))) => format!("`{comm}` (pid {pid})"),
-        Some((pid, None)) => format!("process {pid}"),
+        Some(Owner {
+            pid,
+            comm: Some(comm),
+            ..
+        }) => format!("`{comm}` (pid {pid})"),
+        Some(Owner { pid, .. }) => format!("process {pid}"),
         None => "another process".to_string(),
     };
     let how = match &owner {
-        Some((_, Some(comm))) => format!(
-            "stop it (`systemctl --user stop {comm}`, or `pkill -x {comm}`) and remove it from \
-             your compositor's autostart"
+        Some(Owner {
+            unit: Some(unit), ..
+        }) => format!(
+            "stop it and keep it from starting again (`systemctl --user stop {unit}` and \
+             `systemctl --user mask {unit}`)"
         ),
-        Some((pid, None)) => format!("stop it (`kill {pid}`) and remove it from your autostart"),
+        Some(Owner {
+            pid,
+            comm: Some(comm),
+            ..
+        }) => format!(
+            "stop it (`pkill -x {comm}`, or `kill {pid}`) and remove it from your \
+             compositor's autostart"
+        ),
+        Some(Owner { pid, .. }) => {
+            format!("stop it (`kill {pid}`) and remove it from your compositor's autostart")
+        }
         None => "stop the other notification daemon".to_string(),
-    };
-    let unit = match &owner {
-        Some((_, Some(comm))) => comm.clone(),
-        _ => "<daemon>".to_string(),
     };
     format!(
         "another notification server, {who}, owns {NAME}: strand cannot show notifications \
-         while it runs; {how}. D-Bus starts it again on the next notification unless its \
-         activation is masked too (`systemctl --user mask {unit}`, or an empty \
+         while it runs; {how}. D-Bus may start one again on the next notification unless \
+         its activation is overridden (an empty \
          ~/.local/share/dbus-1/services/{NAME}.service). strand takes the name over once it \
          is free."
     )
@@ -450,6 +536,7 @@ impl Notifications {
             Err(e) => return crate::dbus::idle_without_bus(&mut cx, "session", e).await,
         };
         let ids = Arc::new(Mutex::new(Ids::default()));
+        let images = Arc::new(AtomicUsize::new(0));
         let (tx, mut rx) = mpsc::unbounded_channel();
         conn.object_server()
             .at(
@@ -457,16 +544,36 @@ impl Notifications {
                 Server {
                     ids: ids.clone(),
                     tx,
+                    images: images.clone(),
                 },
             )
             .await?;
+        // The notifications of an earlier run were closed with it: this
+        // server starts with none (its ids start again at 1).
+        if !cx.state().all.is_empty() || !cx.state().popups.is_empty() {
+            let cleared = cx.update(|s| {
+                s.all.clear();
+                s.popups.clear();
+                s.count = 0;
+            });
+            if !cleared {
+                return Ok(());
+            }
+        }
         let flags = zbus::fdo::RequestNameFlags::DoNotQueue;
         match conn.request_name_with_flags(NAME, flags.into()).await {
             Ok(RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner) => {}
             // zbus says `NameTaken` for an `Exists` reply.
             Ok(RequestNameReply::Exists | RequestNameReply::InQueue)
             | Err(zbus::Error::NameTaken) => {
-                let owner = crate::dbus::owner_process(&conn, NAME).await;
+                let owner = match crate::dbus::owner_process(&conn, NAME).await {
+                    Some((pid, comm)) => Some(Owner {
+                        pid,
+                        comm,
+                        unit: systemd_unit(&conn, pid).await,
+                    }),
+                    None => None,
+                };
                 let message = conflict_message(owner);
                 // The notice before readiness: a ready run without one
                 // resolves it (the name taken over).
@@ -480,6 +587,13 @@ impl Notifications {
             }
         }
         cx.ready();
+        // However the run ends (stopped, which drops this body, or
+        // failed), the notifications still open close with it, before
+        // the name goes.
+        let _closing = CloseOnStop {
+            conn: conn.clone(),
+            ids: ids.clone(),
+        };
         let mut kept = Kept::default();
         loop {
             tokio::select! {
@@ -496,6 +610,7 @@ impl Notifications {
                                     .await
                                     .ok()
                                     .flatten();
+                                images.fetch_sub(1, Ordering::AcqRel);
                                 n.image = pinned.as_ref().map(crate::pixmap::Pinned::text);
                                 match pinned {
                                     Some(p) => kept.images.insert(n.id, p),
@@ -540,6 +655,7 @@ impl Notifications {
                     }
                 }
                 m = cx.recv() => match m {
+                    // Stopped: `_closing` closes what is still open.
                     None => return Ok(()),
                     Some(Msg::Write(w)) if w.field == "dnd" => {
                         let on: bool = w.value().unwrap_or(cx.state().dnd);
@@ -588,6 +704,37 @@ impl Notifications {
                 }
             }
         }
+    }
+}
+
+/// Closes every notification still open when the run ends: a stopped
+/// body is dropped, not polled to its end, so this is a drop guard. The
+/// signals go out in a task holding the connection, so the name is
+/// released only after them.
+struct CloseOnStop {
+    conn: zbus::Connection,
+    ids: Arc<Mutex<Ids>>,
+}
+
+impl Drop for CloseOnStop {
+    fn drop(&mut self) {
+        let mut open: Vec<u32> = match self.ids.lock() {
+            Ok(mut ids) => ids.live.drain().collect(),
+            Err(_) => return,
+        };
+        if open.is_empty() {
+            return;
+        }
+        open.sort_unstable();
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let conn = self.conn.clone();
+        rt.spawn(async move {
+            for id in open {
+                signal_closed(&conn, i64::from(id), Closed::Closed).await;
+            }
+        });
     }
 }
 
@@ -658,14 +805,80 @@ async fn invoked(conn: &zbus::Connection, id: i64, key: &str) {
 mod tests {
     use super::*;
 
+    /// A flood of pictures: once [`IMAGES_QUEUED`] wait to be written,
+    /// a new notification arrives without its picture (or with its
+    /// `image-path`), and the count of those waiting stays bounded.
+    #[test]
+    fn pictures_waiting_to_be_written_are_bounded() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let server = Server {
+            ids: Arc::default(),
+            tx,
+            images: Arc::new(AtomicUsize::new(0)),
+        };
+        let pixels = || {
+            let d: ImageData = (1, 1, 4, true, 8, 4, vec![1, 2, 3, 4]);
+            HashMap::from([(
+                "image-data".to_string(),
+                OwnedValue::try_from(zbus::zvariant::Value::from(d)).unwrap(),
+            )])
+        };
+        let arrive = |hints| {
+            server.arrival(
+                "a".into(),
+                0,
+                String::new(),
+                "s".into(),
+                String::new(),
+                vec![],
+                hints,
+                -1,
+            )
+        };
+        for _ in 0..IMAGES_QUEUED {
+            assert!(matches!(arrive(pixels()).image, Image::Data(_)));
+        }
+        assert_eq!(server.images.load(Ordering::Acquire), IMAGES_QUEUED);
+        // Full: left out, and the count does not grow.
+        assert!(matches!(arrive(pixels()).image, Image::None));
+        assert_eq!(server.images.load(Ordering::Acquire), IMAGES_QUEUED);
+        // An image-path is still shown.
+        let mut hints = pixels();
+        hints.insert(
+            "image-path".into(),
+            OwnedValue::try_from(zbus::zvariant::Value::from("/tmp/p.png")).unwrap(),
+        );
+        assert!(matches!(arrive(hints).image, Image::Path(p) if p == "/tmp/p.png"));
+        // One written: room for one more.
+        server.images.fetch_sub(1, Ordering::AcqRel);
+        assert!(matches!(arrive(pixels()).image, Image::Data(_)));
+        assert!(rx.try_recv().is_err(), "arrival() itself sends nothing");
+    }
+
     #[test]
     fn the_conflict_names_the_owner_and_how_to_stop_it() {
-        let m = conflict_message(Some((42, Some("mako".into()))));
+        // Run by a systemd user service: that unit is named.
+        let m = conflict_message(Some(Owner {
+            pid: 42,
+            comm: Some("mako".into()),
+            unit: Some("mako.service".into()),
+        }));
         assert!(m.contains("`mako` (pid 42)"), "{m}");
-        assert!(m.contains("systemctl --user stop mako"), "{m}");
-        assert!(m.contains("systemctl --user mask mako"), "{m}");
+        assert!(m.contains("systemctl --user stop mako.service"), "{m}");
+        assert!(m.contains("systemctl --user mask mako.service"), "{m}");
         assert!(m.contains("dbus-1/services"), "{m}");
         assert!(m.contains(NAME), "{m}");
+        // Started some other way (a compositor's exec, a terminal): no
+        // unit to name, the process is.
+        let m = conflict_message(Some(Owner {
+            pid: 7,
+            comm: Some("python3.12".into()),
+            unit: None,
+        }));
+        assert!(!m.contains("systemctl"), "{m}");
+        assert!(m.contains("pkill -x python3.12"), "{m}");
+        assert!(m.contains("kill 7"), "{m}");
+        assert!(m.contains("dbus-1/services"), "{m}");
         assert!(conflict_message(None).contains("another process"));
     }
 }

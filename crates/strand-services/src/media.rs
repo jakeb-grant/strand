@@ -72,6 +72,12 @@ pub struct Media {
     pub player: Option<String>,
 }
 
+/// The playback rates carried forward: MPRIS players report a rate
+/// between their `MinimumRate` and `MaximumRate`; anything outside this
+/// range is a player's mistake, clamped so the arithmetic on it cannot
+/// overflow (decisions.md, wave4-a2).
+const RATES: (f64, f64) = (1e-3, 1e3);
+
 /// One player.
 #[derive(Debug, Default)]
 struct Player {
@@ -84,6 +90,15 @@ struct Player {
     /// When it last started playing or paused (the active player's
     /// choice).
     touched: u64,
+    /// Read at least once: until then it is not a choice for the active
+    /// player.
+    known: bool,
+    /// Changes signalled while a read is in flight, applied over its
+    /// answer.
+    pending: Option<Props>,
+    /// Which position question is the latest (a seek or a newer question
+    /// makes an older answer stale).
+    asked: u64,
 }
 
 impl Player {
@@ -98,7 +113,7 @@ impl Player {
     fn rate(&self) -> f64 {
         dbus::number(&self.props, "Rate")
             .filter(|r| r.is_finite() && *r > 0.0)
-            .unwrap_or(1.0)
+            .map_or(1.0, |r| r.clamp(RATES.0, RATES.1))
     }
 
     fn metadata(&self) -> Props {
@@ -116,7 +131,8 @@ impl Player {
         };
         let mut e = base;
         if self.playing() {
-            e += now.saturating_duration_since(at).mul_f64(self.rate());
+            let played = now.saturating_duration_since(at).as_secs_f64() * self.rate();
+            e = e.saturating_add(Duration::try_from_secs_f64(played).unwrap_or(Duration::MAX));
         }
         match length {
             Some(l) if e > l => l,
@@ -142,16 +158,9 @@ struct Players {
 
 impl Players {
     fn active(&self) -> Option<&Player> {
-        let playing = self
-            .by_name
-            .values()
-            .filter(|p| p.playing())
-            .max_by_key(|p| p.touched);
-        playing.or_else(|| {
-            self.by_name
-                .values()
-                .max_by_key(|p| (p.status() == "Paused", p.touched))
-        })
+        let known = || self.by_name.values().filter(|p| p.known);
+        let playing = known().filter(|p| p.playing()).max_by_key(|p| p.touched);
+        playing.or_else(|| known().max_by_key(|p| (p.status() == "Paused", p.touched)))
     }
 
     fn active_name(&self) -> Option<String> {
@@ -206,6 +215,41 @@ impl Players {
             p.touched = c;
         }
     }
+
+    /// Apply a read's answer; whether anything changed (an answer for an
+    /// owner that is gone, or a position overtaken, is dropped).
+    fn answer(&mut self, r: Read) -> bool {
+        let Some(p) = self.by_name.get_mut(&r.name) else {
+            return false;
+        };
+        if p.owner != r.owner {
+            return false;
+        }
+        if let Some(identity) = r.identity {
+            p.identity = identity;
+        }
+        let first = !p.known;
+        if let Some(props) = r.props {
+            match props {
+                Ok(props) => p.props = props,
+                // A player that does not answer: what its signals said.
+                Err(e) => log::debug!("media: {} not read: {e}", r.name),
+            }
+            if let Some(since) = p.pending.take() {
+                p.props.extend(since);
+            }
+            p.known = true;
+        }
+        if let Some((asked, pos, at)) = r.position
+            && asked == p.asked
+        {
+            p.at = Some((pos.unwrap_or_default(), at));
+        }
+        if first && p.known {
+            self.touch(&r.name);
+        }
+        true
+    }
 }
 
 /// Art `image` can show: a `file://` URL or a path. Remote art (the
@@ -216,31 +260,89 @@ fn local_art(url: &str) -> bool {
     url.starts_with("file://") || url.starts_with('/')
 }
 
-/// Ask a player where it is (a player that does not answer in time is at
-/// the start).
-async fn ask_position(conn: &zbus::Connection, name: &str, p: &mut Player) {
-    let pos = dbus::timed(dbus::get(conn, name, PATH, PLAYER, "Position"))
-        .await
-        .ok()
-        .and_then(|v| micros(&v));
-    p.at = Some((pos.unwrap_or_default(), Instant::now()));
+/// A player read in a task of the body's own (so a player that does not
+/// answer holds up nothing but itself): what was asked, answered.
+#[derive(Debug)]
+struct Read {
+    name: String,
+    owner: String,
+    identity: Option<Option<String>>,
+    props: Option<zbus::Result<Props>>,
+    /// The position question's number, its answer and when it came.
+    position: Option<(u64, Option<Duration>, Instant)>,
 }
 
-/// Read one player.
-async fn read_player(conn: &zbus::Connection, name: &str, owner: String) -> Player {
-    let mut p = Player {
-        owner,
-        identity: dbus::timed(dbus::get(conn, name, PATH, ROOT_IFACE, "Identity"))
+/// What to ask a player.
+#[derive(Debug, Clone, Copy, Default)]
+struct Ask {
+    identity: bool,
+    props: bool,
+    position: Option<u64>,
+}
+
+/// Ask `name` (owned by `owner`) what `ask` says, each call bounded by
+/// [`dbus::CALL_TIMEOUT`] and all at once.
+async fn read(conn: zbus::Connection, name: String, owner: String, ask: Ask) -> Read {
+    let identity = async {
+        if !ask.identity {
+            return None;
+        }
+        Some(
+            dbus::timed(dbus::get(&conn, &name, PATH, ROOT_IFACE, "Identity"))
+                .await
+                .ok()
+                .and_then(|v| v.downcast_ref::<&str>().ok().map(str::to_string)),
+        )
+    };
+    let props = async {
+        if !ask.props {
+            return None;
+        }
+        Some(dbus::timed(dbus::get_all(&conn, &name, PATH, PLAYER)).await)
+    };
+    let position = async {
+        let asked = ask.position?;
+        let pos = dbus::timed(dbus::get(&conn, &name, PATH, PLAYER, "Position"))
             .await
             .ok()
-            .and_then(|v| v.downcast_ref::<&str>().ok().map(str::to_string)),
-        props: dbus::timed(dbus::get_all(conn, name, PATH, PLAYER))
-            .await
-            .unwrap_or_default(),
+            .and_then(|v| micros(&v));
+        Some((asked, pos, Instant::now()))
+    };
+    let (identity, props, position) = tokio::join!(identity, props, position);
+    Read {
+        name,
+        owner,
+        identity,
+        props,
+        position,
+    }
+}
+
+/// The body's tasks: reads (answers to apply) and actions (nothing).
+type Tasks = tokio::task::JoinSet<Option<Read>>;
+
+/// A player appeared (or restarted): follow it and read it whole.
+fn arrived(
+    conn: &zbus::Connection,
+    players: &mut Players,
+    tasks: &mut Tasks,
+    name: String,
+    owner: String,
+) {
+    let p = Player {
+        owner: owner.clone(),
+        pending: Some(Props::new()),
+        asked: 1,
         ..Player::default()
     };
-    ask_position(conn, name, &mut p).await;
-    p
+    players.by_name.insert(name.clone(), p);
+    let ask = Ask {
+        identity: true,
+        props: true,
+        position: Some(1),
+    };
+    let conn = conn.clone();
+    tasks.spawn(async move { Some(read(conn, name, owner, ask).await) });
 }
 
 /// When the shown second next changes (while playing).
@@ -251,8 +353,11 @@ fn next_tick(players: &Players, now: Instant) -> Option<Instant> {
     }
     let e = p.elapsed(now, None);
     let into = Duration::from_nanos((e.as_nanos() % 1_000_000_000) as u64);
-    let wait = (Duration::from_secs(1) - into).div_f64(p.rate());
-    Some(now + wait.max(Duration::from_millis(5)))
+    // The rate is clamped (RATES): this is at most a thousand seconds.
+    let wait =
+        Duration::try_from_secs_f64((Duration::from_secs(1) - into).as_secs_f64() / p.rate())
+            .unwrap_or(Duration::from_secs(1));
+    now.checked_add(wait.max(Duration::from_millis(5)))
 }
 
 impl Media {
@@ -274,6 +379,7 @@ impl Media {
         let mut signals =
             zbus::MessageStream::for_match_rule(dbus::path_rule(PATH)?, &conn, Some(256)).await?;
         let mut players = Players::default();
+        let mut tasks = Tasks::new();
         for name in dbus_proxy.list_names().await? {
             let name = name.to_string();
             if !name.starts_with(PREFIX) {
@@ -285,15 +391,22 @@ impl Media {
             let Ok(owner) = dbus_proxy.get_name_owner(bus_name).await else {
                 continue;
             };
-            let p = read_player(&conn, &name, owner.to_string()).await;
-            players.by_name.insert(name.clone(), p);
-            players.touch(&name);
+            arrived(&conn, &mut players, &mut tasks, name, owner.to_string());
+        }
+        // The players there at the start, read all at once (each bounded).
+        while players.by_name.values().any(|p| !p.known) {
+            match tasks.join_next().await {
+                Some(Ok(Some(r))) => {
+                    players.answer(r);
+                }
+                Some(_) => {}
+                None => break,
+            }
         }
         if !cx.update(|s| *s = players.state(Instant::now())) {
             return Ok(());
         }
         cx.ready();
-        let mut calls: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
         loop {
             let ticking = cx.watched("elapsed") || cx.watched("position");
             let tick = if ticking {
@@ -302,7 +415,10 @@ impl Media {
                 None
             };
             let changed = tokio::select! {
-                Some(_) = calls.join_next(), if !calls.is_empty() => false,
+                Some(done) = tasks.join_next(), if !tasks.is_empty() => match done {
+                    Ok(Some(r)) => players.answer(r),
+                    _ => false,
+                },
                 o = owners.next() => {
                     let Some(Ok(m)) = o else {
                         return Err(ServiceError("the session bus connection ended".into()));
@@ -316,9 +432,7 @@ impl Media {
                     if new.is_empty() {
                         players.by_name.remove(&name);
                     } else {
-                        let p = read_player(&conn, &name, new).await;
-                        players.by_name.insert(name.clone(), p);
-                        players.touch(&name);
+                        arrived(&conn, &mut players, &mut tasks, name, new);
                     }
                     true
                 }
@@ -326,7 +440,7 @@ impl Media {
                     let Some(Ok(m)) = m else {
                         return Err(ServiceError("the session bus connection ended".into()));
                     };
-                    signal(&conn, &mut players, &m).await
+                    signal(&conn, &mut players, &mut tasks, &m)
                 }
                 () = async {
                     match tick {
@@ -346,11 +460,12 @@ impl Media {
                         // holds up nothing (dropped with the body).
                         if let Some(name) = players.active_name() {
                             let conn = conn.clone();
-                            calls.spawn(async move {
+                            tasks.spawn(async move {
                                 let r = dbus::timed(conn.call_method(Some(name.as_str()), PATH, Some(PLAYER), method, &())).await;
                                 if let Err(e) = r {
                                     log::warn!("media: {method} on {name}: {e}");
                                 }
+                                None
                             });
                         }
                         false
@@ -366,8 +481,15 @@ impl Media {
     }
 }
 
-/// Apply a player's signal; whether anything changed.
-async fn signal(conn: &zbus::Connection, players: &mut Players, m: &zbus::Message) -> bool {
+/// Apply a player's signal; whether anything changed. What must be asked
+/// again (invalidated properties, the position after a change) is asked
+/// in a task, never awaited here.
+fn signal(
+    conn: &zbus::Connection,
+    players: &mut Players,
+    tasks: &mut Tasks,
+    m: &zbus::Message,
+) -> bool {
     let Some(sender) = m.header().sender().map(|s| s.to_string()) else {
         return false;
     };
@@ -378,6 +500,7 @@ async fn signal(conn: &zbus::Connection, players: &mut Players, m: &zbus::Messag
     let name = name.clone();
     if member.as_deref() == Some("Seeked") && dbus::interface(m).as_deref() == Some(PLAYER) {
         let pos: i64 = m.body().deserialize().unwrap_or(0);
+        p.asked += 1;
         p.at = Some((Duration::from_micros(pos.max(0) as u64), Instant::now()));
         return true;
     }
@@ -393,16 +516,40 @@ async fn signal(conn: &zbus::Connection, players: &mut Players, m: &zbus::Messag
     let length = p.metadata().get("mpris:length").and_then(micros);
     let here = p.elapsed(now, length);
     p.at = Some((here, now));
-    let status_moved = c.changed.contains_key("PlaybackStatus");
-    let ask = status_moved
+    let status_moved = c.changed.contains_key("PlaybackStatus")
+        || c.invalidated.iter().any(|i| i == "PlaybackStatus");
+    let mut ask = Ask::default();
+    if status_moved
         || c.changed.contains_key("Metadata")
         || c.changed.contains_key("Rate")
-        || c.invalidated
-            .iter()
-            .any(|i| i == "Metadata" || i == "PlaybackStatus");
-    dbus::apply_changed(conn, &name, &mut p.props, c).await;
-    if ask {
-        ask_position(conn, &name, p).await;
+        || c.invalidated.iter().any(|i| i == "Metadata" || i == "Rate")
+    {
+        p.asked += 1;
+        ask.position = Some(p.asked);
+    }
+    for (k, v) in c.changed {
+        if let Some(pending) = &mut p.pending
+            && let Ok(v2) = v.try_clone()
+        {
+            pending.insert(k.clone(), v2);
+        }
+        p.props.insert(k, v);
+    }
+    if !c.invalidated.is_empty() {
+        for i in &c.invalidated {
+            p.props.remove(i);
+            if let Some(pending) = &mut p.pending {
+                pending.remove(i);
+            }
+        }
+        // Read it whole again (one call for any number of properties).
+        ask.props = true;
+        p.pending.get_or_insert_with(Props::new);
+    }
+    if ask.props || ask.position.is_some() {
+        let owner = p.owner.clone();
+        let (conn, name) = (conn.clone(), name.clone());
+        tasks.spawn(async move { Some(read(conn, name, owner, ask).await) });
     }
     if status_moved {
         players.touch(&name);
