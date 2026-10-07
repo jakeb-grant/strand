@@ -6761,7 +6761,10 @@ normalisation, words all required) behind `apps::Fuzzy`, our wrapper
 search over a few hundred names takes well under a millisecond on the
 services thread). The name is matched first, its matched characters
 merged into `[start, end)` character ranges (`marks: h.ranges` counts
-characters); an app whose name does not match but whose generic name or
+characters; nucleo matches extended grapheme clusters, one per cluster's
+first character, so a matched cluster's index becomes the character range
+the whole cluster covers, and a non-ASCII name is always matched by
+clusters, never by nucleo's ASCII shortcut over its bytes); an app whose name does not match but whose generic name or
 keywords do scores half, with no ranges. Frecency adds `10 ×
 ln(1 + points)`, points being launches × a weight for how recent the
 last one is (100 within 4 days, 70 within 2 weeks, 50 within a month, 30

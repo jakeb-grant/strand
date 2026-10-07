@@ -36,6 +36,9 @@ freedesktop-desktop-entry = { version = "0.8.3", default-features = false }
 # Fuzzy matching with match ranges for `apps.search`, wrapped (design.md:
 # "wrap it, fork if needed").
 nucleo = "0.5.0"
+# The grapheme clusters nucleo matches by (its default segmentation),
+# mapped back to the character ranges a hit reports.
+unicode-segmentation = "1.13.3"
 # The icon theme lookup the renderer uses: an app's icon is checked
 # against it.
 strand-icons.workspace = true

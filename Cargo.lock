@@ -2176,6 +2176,7 @@ dependencies = [
  "strand-services-schema",
  "strand-watch",
  "tokio",
+ "unicode-segmentation",
  "zbus",
 ]
 
