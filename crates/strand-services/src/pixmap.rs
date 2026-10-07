@@ -110,7 +110,6 @@ pub fn from_image_data(
 
 /// StatusNotifierItem's `IconPixmap` entry (ARGB32 in network byte
 /// order) as RGBA.
-#[allow(dead_code)] // The tray uses it (next commit).
 pub fn from_argb32(width: i32, height: i32, data: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     let w = u32::try_from(width).map_err(|_| "negative width")?;
     let h = u32::try_from(height).map_err(|_| "negative height")?;

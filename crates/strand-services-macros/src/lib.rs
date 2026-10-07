@@ -831,11 +831,14 @@ fn data(input: &DeriveInput) -> syn::Result<Tokens> {
 }
 
 /// `#[derive(Call)]` on an enum: one variant per action or async method,
-/// named in snake_case (`PlayPause` is `play_pause()`). A variant's
-/// fields are the call's arguments in order (each `FromData`), except a
-/// field named `item`, which takes the item the action was called on
-/// (`ws.focus()`: the `Workspace`).
-#[proc_macro_derive(Call)]
+/// named in snake_case (`PlayPause` is `play_pause()`) or as
+/// `#[call(name = "…")]` says. A variant's fields are the call's
+/// arguments in order (each `FromData`), except a field named `item`,
+/// which takes the item the action was called on (`ws.focus()`: the
+/// `Workspace`). Variants of one name taking items of different records
+/// (`item.activate()` and `entry.activate()`) are told apart by the
+/// item's record type.
+#[proc_macro_derive(Call, attributes(call))]
 pub fn derive_call(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     match call(&input) {
@@ -854,10 +857,33 @@ fn call(input: &DeriveInput) -> syn::Result<Tokens> {
     let mut arms = Vec::new();
     let mut items = Vec::new();
     let mut sigs = Vec::new();
+    // Each variant's call name: `#[call(name = "…")]`, else snake_case.
+    let mut cnames = Vec::new();
     for v in &e.variants {
+        let mut cname = snake(&v.ident.to_string());
+        for a in &v.attrs {
+            if !a.path().is_ident("call") {
+                continue;
+            }
+            a.parse_nested_meta(|m| {
+                if m.path.is_ident("name") {
+                    let lit: LitStr = m.value()?.parse()?;
+                    cname = lit.value();
+                    Ok(())
+                } else {
+                    Err(m.error("expected `name`"))
+                }
+            })?;
+        }
+        cnames.push(cname);
+    }
+    for (v, cname) in e.variants.iter().zip(&cnames) {
         let id = &v.ident;
-        let cname = snake(&id.to_string());
-        names.push(cname.clone());
+        let cname = cname.clone();
+        let shared = cnames.iter().filter(|c| **c == cname).count() > 1;
+        if !names.contains(&cname) {
+            names.push(cname.clone());
+        }
         let mut n = 0usize;
         let mut item_of = None;
         let mut arg = |ty: &Type, fname: Option<&Ident>| -> Tokens {
@@ -893,7 +919,15 @@ fn call(input: &DeriveInput) -> syn::Result<Tokens> {
                 quote!(#name::#id { #(#parts),* })
             }
         };
-        arms.push(quote!(#cname => ::core::result::Result::Ok(#build),));
+        // A name several variants share: the item's record decides.
+        let guard = match (&item_of, shared) {
+            (Some(t), true) => quote!(if item.is_some_and(|d| matches!(
+                d,
+                #sv::Data::Record { ty, .. } if **ty == *#t
+            ))),
+            _ => quote!(),
+        };
+        arms.push(quote!(#cname #guard => ::core::result::Result::Ok(#build),));
         let item = item_of.map_or_else(
             || quote!(::core::option::Option::None),
             |t| quote!(::core::option::Option::Some(#t)),

@@ -88,6 +88,12 @@ impl From<zbus::fdo::Error> for ServiceError {
     }
 }
 
+impl From<zbus::names::Error> for ServiceError {
+    fn from(e: zbus::names::Error) -> Self {
+        ServiceError(e.to_string())
+    }
+}
+
 impl From<DataError> for ServiceError {
     fn from(e: DataError) -> Self {
         ServiceError(e.0)

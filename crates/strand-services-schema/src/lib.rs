@@ -25,6 +25,8 @@ pub const BLUETOOTH: &str = include_str!("bluetooth.schema");
 pub const NOTIFICATIONS: &str = include_str!("notifications.schema");
 /// `media`: the active MPRIS player.
 pub const MEDIA: &str = include_str!("media.schema");
+/// `tray`: StatusNotifierItem host and DBusMenu.
+pub const TRAY: &str = include_str!("tray.schema");
 
 /// Every builtin service's schema text, in registration order.
 pub fn schemas() -> Vec<&'static str> {
@@ -37,5 +39,7 @@ pub fn schemas() -> Vec<&'static str> {
         NETWORK,
         BLUETOOTH,
         NOTIFICATIONS,
+        MEDIA,
+        TRAY,
     ]
 }

@@ -123,6 +123,14 @@ mod tests {
     /// fields and events are exactly its schema record's.
     #[test]
     fn service_schemas_extend_the_builtin_one() {
+        // Every text applies (a failing one would leave `schema()` on the
+        // stubs, with only a log line).
+        if let Err((i, errors)) = Schema::builtin_with(&strand_services::schemas()) {
+            panic!(
+                "service schema #{i} does not apply: {errors:#?}\n{}",
+                strand_services::schemas()[i]
+            );
+        }
         let s = schema();
         assert!(s.undocumented().is_empty(), "{:#?}", s.undocumented());
         assert_ne!(s.fingerprint(), Schema::builtin().fingerprint());
@@ -130,7 +138,11 @@ mod tests {
         let services = Services::new(&rt, Buses::none(), || {});
         for svc in Builtin::register(&services, &rt).all() {
             let name = svc.name();
-            assert!(!s.provisional.contains(name), "{name} is still a stub");
+            assert!(
+                !s.provisional.contains(name),
+                "{name} is still a stub: {:?}",
+                s.provisional
+            );
             let id = s.services[name];
             let rec = s.types.record(id);
             let fields: Vec<(String, String, bool)> = rec

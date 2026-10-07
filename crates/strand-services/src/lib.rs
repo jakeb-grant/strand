@@ -46,6 +46,7 @@ mod service;
 mod store;
 pub mod system;
 pub mod testing;
+pub mod tray;
 
 pub use bus::{Bus, Buses};
 pub use client::{Client, DynService, Observer, STOP_GRACE, ServiceDiagnostic, Services};
@@ -72,6 +73,7 @@ pub struct Builtin {
     pub bluetooth: Client<bluetooth::Bluetooth>,
     pub notifications: Client<notifications::Notifications>,
     pub media: Client<media::Media>,
+    pub tray: Client<tray::Tray>,
 }
 
 impl Builtin {
@@ -87,6 +89,7 @@ impl Builtin {
             bluetooth: services.register(rt),
             notifications: services.register(rt),
             media: services.register(rt),
+            tray: services.register(rt),
         }
     }
 
@@ -102,6 +105,7 @@ impl Builtin {
             self.bluetooth.dynamic(),
             self.notifications.dynamic(),
             self.media.dynamic(),
+            self.tray.dynamic(),
         ]
     }
 }
