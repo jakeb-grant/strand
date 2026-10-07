@@ -28,6 +28,7 @@
 extern crate self as strand_services;
 
 pub mod battery;
+pub mod brightness;
 pub mod bus;
 mod client;
 pub mod cpu;
@@ -61,6 +62,7 @@ pub struct Builtin {
     pub cpu: Client<cpu::Cpu>,
     pub memory: Client<memory::Memory>,
     pub battery: Client<battery::Battery>,
+    pub brightness: Client<brightness::Brightness>,
 }
 
 impl Builtin {
@@ -71,6 +73,7 @@ impl Builtin {
             cpu: services.register(rt),
             memory: services.register(rt),
             battery: services.register(rt),
+            brightness: services.register(rt),
         }
     }
 
@@ -81,6 +84,7 @@ impl Builtin {
             self.cpu.dynamic(),
             self.memory.dynamic(),
             self.battery.dynamic(),
+            self.brightness.dynamic(),
         ]
     }
 }

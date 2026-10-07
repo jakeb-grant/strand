@@ -15,8 +15,10 @@ pub const MEMORY: &str = include_str!("memory.schema");
 
 /// `battery`: UPower's display device and power sources.
 pub const BATTERY: &str = include_str!("battery.schema");
+/// `brightness`: the backlight (sysfs, logind).
+pub const BRIGHTNESS: &str = include_str!("brightness.schema");
 
 /// Every builtin service's schema text, in registration order.
 pub fn schemas() -> Vec<&'static str> {
-    vec![SYSTEM, CPU, MEMORY, BATTERY]
+    vec![SYSTEM, CPU, MEMORY, BATTERY, BRIGHTNESS]
 }

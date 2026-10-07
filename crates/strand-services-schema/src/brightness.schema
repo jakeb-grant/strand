@@ -1,0 +1,9 @@
+/// The screen backlight: read from `/sys/class/backlight` (watched, so a
+/// brightness key shows at once) and set through logind's
+/// `SetBrightness` (no root or udev rules).
+service brightness {
+  /// Backlight level, 0 to 1. Writable.
+  level: float rw
+  /// A backlight was found.
+  available: bool
+}
