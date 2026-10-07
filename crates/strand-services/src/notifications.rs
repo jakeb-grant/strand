@@ -587,6 +587,13 @@ impl Notifications {
             }
         }
         cx.ready();
+        // However the run ends (stopped, which drops this body, or
+        // failed), the notifications still open close with it, before
+        // the name goes.
+        let _closing = CloseOnStop {
+            conn: conn.clone(),
+            ids: ids.clone(),
+        };
         let mut kept = Kept::default();
         loop {
             tokio::select! {
@@ -648,15 +655,8 @@ impl Notifications {
                     }
                 }
                 m = cx.recv() => match m {
-                    None => {
-                        // Stopped: every notification still open closes
-                        // with the server (before the name goes).
-                        let open: Vec<i64> = cx.state().all.iter().map(|n| n.id).collect();
-                        for id in open {
-                            signal_closed(&conn, id, Closed::Closed).await;
-                        }
-                        return Ok(());
-                    }
+                    // Stopped: `_closing` closes what is still open.
+                    None => return Ok(()),
                     Some(Msg::Write(w)) if w.field == "dnd" => {
                         let on: bool = w.value().unwrap_or(cx.state().dnd);
                         if !cx.report(&w, |s| s.dnd = on) {
@@ -704,6 +704,37 @@ impl Notifications {
                 }
             }
         }
+    }
+}
+
+/// Closes every notification still open when the run ends: a stopped
+/// body is dropped, not polled to its end, so this is a drop guard. The
+/// signals go out in a task holding the connection, so the name is
+/// released only after them.
+struct CloseOnStop {
+    conn: zbus::Connection,
+    ids: Arc<Mutex<Ids>>,
+}
+
+impl Drop for CloseOnStop {
+    fn drop(&mut self) {
+        let mut open: Vec<u32> = match self.ids.lock() {
+            Ok(mut ids) => ids.live.drain().collect(),
+            Err(_) => return,
+        };
+        if open.is_empty() {
+            return;
+        }
+        open.sort_unstable();
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let conn = self.conn.clone();
+        rt.spawn(async move {
+            for id in open {
+                signal_closed(&conn, i64::from(id), Closed::Closed).await;
+            }
+        });
     }
 }
 

@@ -6420,7 +6420,8 @@ clicked surface, which M4's renderer can ask for; the server says 1.2
 once it sends one. Notifications belong to the run that received them:
 when the server stops (no reader for 5 s, or a failed run retried) it
 closes each one still open (`NotificationClosed`, reason 3) before the
-name goes, and a new run starts with `popups` and `all` empty (`dnd`
+name goes (a drop guard holding the connection, since a stopped body is
+dropped rather than run to its end), and a new run starts with `popups` and `all` empty (`dnd`
 kept). Keeping them instead would let the new run's ids (from 1 again)
 name kept notifications, a sender's `CloseNotification` close the wrong
 one, and their pictures' files were removed with the old run; a shell
