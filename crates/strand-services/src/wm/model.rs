@@ -33,6 +33,12 @@ pub struct Window {
     pub fullscreen: bool,
     /// It asks for attention.
     pub urgent: bool,
+    /// Its `ext-foreign-toplevel-list-v1` identifier, when known: the one
+    /// the adapter reports (sway 1.10+, Hyprland's `stableId`), or `id`
+    /// itself with the protocols alone. Not a schema field: it is how M4's
+    /// thumbnails (`ext-image-copy-capture-v1`) will find the window's
+    /// handle on the protocol thread.
+    pub toplevel: Option<String>,
 }
 
 /// A workspace: the schema's `Workspace`.

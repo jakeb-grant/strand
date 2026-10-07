@@ -17,6 +17,11 @@
 //! both are decoded lossily: a title that is not UTF-8 shows U+FFFD where
 //! its bad bytes were, instead of costing the connection.
 //!
+//! Event data never holds a newline: `EventManager::formatEvent` turns
+//! each `\n` into a space, while `j/clients` escapes it. Titles from
+//! `j/clients` get the same mapping, so a re-read after a
+//! `windowtitlev2` does not change a title back (a spurious `Update`).
+//!
 //! `j/clients` reports each window's `stableId`, the same `{:x}` string
 //! Hyprland sends as its `ext-foreign-toplevel-list-v1` identifier
 //! (`src/protocols/ForeignToplevel.cpp`), so windows join the protocol.
@@ -148,6 +153,12 @@ impl State {
         self.monitors = monitors;
         self.workspaces = workspaces;
         self.clients = clients;
+        for c in &mut self.clients {
+            // As `windowtitlev2` sends it (see the module docs).
+            if c.title.contains('\n') {
+                c.title = c.title.replace('\n', " ");
+            }
+        }
         self.active = active
             .filter(|c| !c.address.is_empty())
             .map(|c| address(&c.address));
@@ -345,6 +356,8 @@ impl State {
                     minimized: special || self.minimized.contains(&c.address),
                     fullscreen: c.is_fullscreen(),
                     urgent: self.urgent.contains(&c.address),
+                    // Set by `merge` from `toplevel_ids`.
+                    toplevel: None,
                 }
             })
             .collect();
@@ -644,6 +657,15 @@ mod tests {
         assert_eq!(s.apply("windowtitlev2", "a1,vim a, b"), Effect::Changed);
         assert_eq!(s.snapshot().state.windows[0].title, "vim a, b");
         assert_eq!(s.apply("windowtitlev2", "ff,x"), Effect::Requery);
+
+        // A newline in a title: `j/clients` escapes it, the event has a
+        // space instead. Both read the same, so the event changes nothing.
+        let mut nl = state();
+        let mut clients = nl.clients.clone();
+        clients[0].title = "a\nb".into();
+        nl.replace(nl.monitors.clone(), nl.workspaces.clone(), clients, None);
+        assert_eq!(nl.snapshot().state.windows[0].title, "a b");
+        assert_eq!(nl.apply("windowtitlev2", "a1,a b"), Effect::None);
 
         assert_eq!(s.apply("urgent", "a1"), Effect::Changed);
         assert!(s.snapshot().state.windows[0].urgent);

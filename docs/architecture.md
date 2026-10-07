@@ -1772,7 +1772,11 @@ Specified when M3 starts. It only produces writes and events into
 
 - **Compositor (`strand_services::wm`, the `workspaces`, `windows` and
   `wm` services).** Typed records (`Workspace`, `Window`: the schema's
-  fields plus `Workspace::active` and `Window::urgent`) in a `WmState`,
+  fields plus `Workspace::active` and `Window::urgent`, and
+  `Window::toplevel: Option<String>`, the window's
+  `ext-foreign-toplevel-list-v1` identifier, which is not a schema field:
+  M4's thumbnails will capture by it through a new `ProtoCmd` on the
+  `strand-toplevel` thread, the connection that owns the handle) in a `WmState`,
   and `wm::run(WmConfig { backend, wayland, events, desktop }, sink,
   requests) -> impl Future + Send`: the service on the shared runtime,
   stopped by dropping it. `sink: FnMut(Vec<WmChange>)` gets one
@@ -1804,13 +1808,23 @@ Specified when M3 starts. It only produces writes and events into
   Each store subscribes from its body, so a store's 5 s stop grace is its
   own and the hub stops at once once all have stopped; `screens.focused`
   subscribes only while it is read and takes `FocusedScreen` from the
-  same stream. `wm::SCHEMA` is the schema text the three stores serve
+  same stream, and its owner keeps the same lifecycle as a store: it
+  drops its subscription only 5 s after the last reader leaves or goes
+  invisible (or holds it through the `screens` store's own grace), so a
+  binding that toggles does not tear down and rebuild the adapter
+  connection and the protocol thread each time (the wiring step tests
+  that `starts()` stays 1 across a read, unread, read cycle within 5 s). `wm::SCHEMA` is the schema text the three stores serve
   (`Service::schema()`), replacing the provisional stubs (`Workspace.
   active`, `Window.urgent`, `event config_reloaded(failed: bool?)`). `requests` takes
   `WmRequest { action: WmAction::{FocusWorkspace, FocusWindow,
-  CloseWindow, MinimizeWindow}, reply: Option<oneshot> }`, answered
+  CloseWindow, MinimizeWindow}, reply: Option<oneshot> }`
+  (`WmRequest::new(action) -> (WmRequest, WmReply)`;
+  `WmSubscription::request(action) -> WmReply`), answered
   `Ok` or a `WmError` (`NotConnected`, `Unsupported`, `Unknown…`,
-  `Rejected`, `Io`). `wm::detect()` picks the `Backend` (Hyprland, niri
+  `Rejected`, `Io`): `WmReply` is a future of that outcome that reads a
+  request dropped unanswered (the run stopped, or the protocol thread
+  ended, first) as `NotConnected`, so a caller never sees a closed
+  channel. `wm::detect()` picks the `Backend` (Hyprland, niri
   behind the default-on `niri` feature, sway through swayipc-async's
   types over its own lossy i3-ipc framing) from
   the environment; `ProtocolClient::spawn(WaylandTarget, tx)` runs

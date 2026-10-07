@@ -141,7 +141,7 @@ async fn sway_adapter_follows_a_real_sway() {
     assert!(c.mirror.focused_window.is_none());
     let (r, done) = WmRequest::new(WmAction::FocusWorkspace(ws3.id));
     req_tx.send(r).unwrap();
-    assert_eq!(done.await.unwrap(), Ok(()));
+    assert_eq!(done.await, Ok(()));
     c.until("back to 3", |m| {
         m.focused_workspace.as_ref().is_some_and(|w| w.name == "3")
     })
@@ -150,7 +150,7 @@ async fn sway_adapter_follows_a_real_sway() {
     // Minimise: into the scratchpad, off its workspace.
     let (r, done) = WmRequest::new(WmAction::MinimizeWindow(w.id.clone()));
     req_tx.send(r).unwrap();
-    assert_eq!(done.await.unwrap(), Ok(()));
+    assert_eq!(done.await, Ok(()));
     c.until("minimised", |m| {
         m.window_by_app("strand-test")
             .is_some_and(|w| w.minimized && w.workspace.is_none())
@@ -159,7 +159,7 @@ async fn sway_adapter_follows_a_real_sway() {
     // Focus brings it back.
     let (r, done) = WmRequest::new(WmAction::FocusWindow(w.id.clone()));
     req_tx.send(r).unwrap();
-    assert_eq!(done.await.unwrap(), Ok(()));
+    assert_eq!(done.await, Ok(()));
     c.until("restored", |m| {
         m.window_by_app("strand-test")
             .is_some_and(|w| !w.minimized && w.focused)
@@ -192,7 +192,7 @@ async fn sway_adapter_follows_a_real_sway() {
     // Close: sway asks the client, which unmaps.
     let (r, done) = WmRequest::new(WmAction::CloseWindow(w.id.clone()));
     req_tx.send(r).unwrap();
-    assert_eq!(done.await.unwrap(), Ok(()));
+    assert_eq!(done.await, Ok(()));
     c.until("closed", |m| m.window_by_app("strand-test").is_none())
         .await;
     assert!(win.closed.load(std::sync::atomic::Ordering::SeqCst));
@@ -355,7 +355,7 @@ async fn sway_titles_that_are_not_utf8_keep_the_connection() {
     let id = c.mirror.window_by_app("foot").unwrap().id.clone();
     let (r, done) = WmRequest::new(WmAction::FocusWindow(id));
     req_tx.send(r).unwrap();
-    assert_eq!(done.await.unwrap(), Ok(()));
+    assert_eq!(done.await, Ok(()));
     let up = c
         .log
         .iter()

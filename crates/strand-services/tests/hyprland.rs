@@ -116,13 +116,13 @@ async fn hyprland_adapter_follows_replayed_traffic() {
     // Actions go out as dispatches.
     let (r, done) = WmRequest::new(WmAction::FocusWorkspace(3));
     req_tx.send(r).unwrap();
-    assert_eq!(done.await.unwrap(), Ok(()));
+    assert_eq!(done.await, Ok(()));
     let (r, done) = WmRequest::new(WmAction::CloseWindow("0x55d0c0a1c3d0".into()));
     req_tx.send(r).unwrap();
-    assert_eq!(done.await.unwrap(), Ok(()));
+    assert_eq!(done.await, Ok(()));
     let (r, done) = WmRequest::new(WmAction::MinimizeWindow("0x55d0c0a1c3d0".into()));
     req_tx.send(r).unwrap();
-    assert!(matches!(done.await.unwrap(), Err(WmError::Unsupported(_))));
+    assert!(matches!(done.await, Err(WmError::Unsupported(_))));
     let reqs = fake.requests();
     assert!(
         reqs.contains(&"dispatch workspace 3".to_string()),
@@ -275,7 +275,7 @@ async fn a_broken_hyprland_is_retried_with_backoff_not_a_busy_loop() {
     assert!(c.mirror.workspaces.is_empty());
     let (r, done) = WmRequest::new(WmAction::FocusWorkspace(1));
     req_tx.send(r).unwrap();
-    assert_eq!(done.await.unwrap(), Err(WmError::NotConnected));
+    assert_eq!(done.await, Err(WmError::NotConnected));
     service.abort();
     acceptor.abort();
 }
@@ -330,10 +330,7 @@ async fn the_hub_shares_one_adapter_between_stores() {
             }
         }
     }
-    assert_eq!(
-        b.request(WmAction::FocusWorkspace(3)).await.unwrap(),
-        Ok(())
-    );
+    assert_eq!(b.request(WmAction::FocusWorkspace(3)).await, Ok(()));
 
     // The last one to leave stops it; the next one starts it afresh.
     drop(a);

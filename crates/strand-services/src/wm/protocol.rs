@@ -14,7 +14,18 @@
 //!
 //! The thread lives and dies with its connection: when the display goes
 //! away it sends a disconnected [`ProtocolState`] and ends (the shell's
-//! own Wayland connection is gone then too).
+//! own Wayland connection is gone then too). Its startup (the registry
+//! and the syncs that collect the first state) runs in the same `poll(2)`
+//! loop, so dropping the [`ProtocolClient`] stops it even while a hung
+//! compositor never answers.
+//!
+//! A request that reaches the thread after it ended, or that it had not
+//! taken when it ended, is answered [`WmError::NotConnected`].
+//!
+//! M4's window thumbnails (`ext-image-copy-capture-v1`) need the
+//! toplevel's handle on this connection: they will add a `ProtoCmd` that
+//! captures by [`Toplevel::identifier`] (the model keeps it as
+//! [`Window::toplevel`](super::Window::toplevel)).
 
 use std::collections::HashMap;
 use std::io;
@@ -27,8 +38,7 @@ use std::sync::mpsc;
 use rustix::event::{EventfdFlags, PollFd, PollFlags};
 use tokio::sync::mpsc::UnboundedSender;
 use wayland_client::backend::ObjectId;
-use wayland_client::globals::{GlobalListContents, registry_queue_init};
-use wayland_client::protocol::{wl_output, wl_registry};
+use wayland_client::protocol::{wl_callback, wl_output, wl_registry};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, event_created_child};
 use wayland_protocols::ext::foreign_toplevel_list::v1::client::{
     ext_foreign_toplevel_handle_v1::{self, ExtForeignToplevelHandleV1},
@@ -39,6 +49,13 @@ use wayland_protocols::ext::workspace::v1::client::{
     ext_workspace_handle_v1::{self, ExtWorkspaceHandleV1},
     ext_workspace_manager_v1::{self, ExtWorkspaceManagerV1},
 };
+
+use super::WmError;
+
+/// The syncs startup waits for, each sent once the one before it is
+/// answered: the registry's globals (bound as they arrive), the binds'
+/// first events, then the events of the handles those created.
+const STARTUP_SYNCS: u32 = 3;
 
 /// Which Wayland display the protocol client connects to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -109,12 +126,22 @@ pub(crate) enum ProtoCmd {
     /// sent.
     Activate(
         u64,
-        Option<tokio::sync::oneshot::Sender<Result<(), super::WmError>>>,
+        Option<tokio::sync::oneshot::Sender<Result<(), WmError>>>,
     ),
     Stop,
 }
 
-/// The running client; dropping it stops the thread (without waiting).
+impl ProtoCmd {
+    /// The thread is gone: answer `NotConnected`.
+    fn refuse(self) {
+        if let Self::Activate(_, Some(reply)) = self {
+            let _ = reply.send(Err(WmError::NotConnected));
+        }
+    }
+}
+
+/// The running client; dropping it stops the thread (without waiting),
+/// during its startup too.
 #[derive(Debug)]
 pub struct ProtocolClient {
     tx: mpsc::Sender<ProtoCmd>,
@@ -123,7 +150,7 @@ pub struct ProtocolClient {
 
 impl ProtocolClient {
     /// Starts the client thread. Every state goes to `tx`; the first one
-    /// after the initial roundtrips (or one with `connected: false` when
+    /// once the startup syncs are answered (or one with `connected: false` when
     /// the display cannot be reached).
     pub fn spawn(target: WaylandTarget, tx: UnboundedSender<ProtocolState>) -> io::Result<Self> {
         let wake = Arc::new(rustix::event::eventfd(
@@ -148,14 +175,27 @@ impl ProtocolClient {
                 if let Err(e) = run {
                     log::warn!("Wayland toplevel and workspace protocols: {e}");
                 }
+                // Answer what was still queued, then close the channel: a
+                // later `send` fails and answers itself. (One sent between
+                // the two is dropped with its reply, which a `WmReply`
+                // reads as `NotConnected` too.)
+                while let Ok(cmd) = crx.try_recv() {
+                    cmd.refuse();
+                }
+                drop(crx);
                 let _ = tx.send(ProtocolState::default());
             })?;
         Ok(Self { tx: ctx, wake })
     }
 
+    /// Queues a request and wakes the thread; one the ended thread cannot
+    /// take is answered `NotConnected`.
     pub(crate) fn send(&self, cmd: ProtoCmd) {
-        if self.tx.send(cmd).is_ok() {
-            let _ = rustix::io::write(&*self.wake, &1u64.to_ne_bytes());
+        match self.tx.send(cmd) {
+            Ok(()) => {
+                let _ = rustix::io::write(&*self.wake, &1u64.to_ne_bytes());
+            }
+            Err(mpsc::SendError(cmd)) => cmd.refuse(),
         }
     }
 }
@@ -231,6 +271,8 @@ struct Client {
     workspaces: Vec<(ObjectId, WorkspaceEntry)>,
     next_key: u64,
     dirty: bool,
+    /// The highest startup sync answered.
+    synced: u32,
 }
 
 impl Client {
@@ -302,36 +344,32 @@ fn thread_main(
     wake: &OwnedFd,
 ) -> io::Result<()> {
     let conn = Connection::from_socket(UnixStream::connect(socket)?).map_err(io::Error::other)?;
-    let (globals, mut queue): (_, EventQueue<Client>) =
-        registry_queue_init(&conn).map_err(io::Error::other)?;
+    let mut queue: EventQueue<Client> = conn.new_event_queue();
     let qh = queue.handle();
-    let mut client = Client {
-        toplevel_list: globals
-            .bind::<ExtForeignToplevelListV1, _, _>(&qh, 1..=1, ())
-            .ok(),
-        workspace_manager: globals
-            .bind::<ExtWorkspaceManagerV1, _, _>(&qh, 1..=1, ())
-            .ok(),
-        ..Default::default()
-    };
-    for g in globals.contents().clone_list() {
-        if g.interface == wl_output::WlOutput::interface().name {
-            client.bind_output(globals.registry(), g.name, g.version, &qh);
-        }
-    }
-    // Two roundtrips: the binds' first events, then the outputs' names and
-    // the handles those events created.
-    queue.roundtrip(&mut client).map_err(io::Error::other)?;
-    queue.roundtrip(&mut client).map_err(io::Error::other)?;
-    if tx.send(client.snapshot()).is_err() {
-        return Ok(());
-    }
-    client.dirty = false;
+    let display = conn.display();
+    // The registry binds globals as they arrive (see its `Dispatch`); the
+    // syncs mark the end of the startup. No blocking roundtrip: everything
+    // goes through the poll loop below, which also hears `Stop`.
+    let _registry = display.get_registry(&qh, ());
+    display.sync(&qh, 1);
+    let mut syncs_sent = 1;
+    let mut started = false;
+    let mut client = Client::default();
     loop {
         queue
             .dispatch_pending(&mut client)
             .map_err(io::Error::other)?;
-        if std::mem::take(&mut client.dirty) && tx.send(client.snapshot()).is_err() {
+        if !started {
+            if client.synced >= STARTUP_SYNCS {
+                // The first state goes out even when nothing was found.
+                started = true;
+                client.dirty = true;
+            } else if client.synced >= syncs_sent {
+                syncs_sent += 1;
+                display.sync(&qh, syncs_sent);
+            }
+        }
+        if started && std::mem::take(&mut client.dirty) && tx.send(client.snapshot()).is_err() {
             return Ok(());
         }
         // A full socket buffer is not an error: wait until it drains.
@@ -397,18 +435,18 @@ fn thread_main(
     }
 }
 
-fn activate(client: &Client, key: u64) -> Result<(), super::WmError> {
+fn activate(client: &Client, key: u64) -> Result<(), WmError> {
     let manager = client
         .workspace_manager
         .as_ref()
-        .ok_or(super::WmError::Unsupported("no ext-workspace-v1"))?;
+        .ok_or(WmError::Unsupported("no ext-workspace-v1"))?;
     let (_, ws) = client
         .workspaces
         .iter()
         .find(|(_, w)| !w.removed && w.current.as_ref().is_some_and(|c| c.key == key))
-        .ok_or(super::WmError::UnknownWorkspace(key as i64))?;
+        .ok_or(WmError::UnknownWorkspace(key as i64))?;
     if !ws.current.as_ref().is_some_and(|c| c.can_activate) {
-        return Err(super::WmError::Unsupported(
+        return Err(WmError::Unsupported(
             "the compositor does not let this workspace be activated",
         ));
     }
@@ -417,12 +455,27 @@ fn activate(client: &Client, key: u64) -> Result<(), super::WmError> {
     Ok(())
 }
 
-impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Client {
+impl Dispatch<wl_callback::WlCallback, u32> for Client {
+    fn event(
+        state: &mut Self,
+        _: &wl_callback::WlCallback,
+        event: wl_callback::Event,
+        n: &u32,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_callback::Event::Done { .. } = event {
+            state.synced = state.synced.max(*n);
+        }
+    }
+}
+
+impl Dispatch<wl_registry::WlRegistry, ()> for Client {
     fn event(
         state: &mut Self,
         registry: &wl_registry::WlRegistry,
         event: wl_registry::Event,
-        _: &GlobalListContents,
+        _: &(),
         _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
@@ -431,8 +484,20 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Client {
                 name,
                 interface,
                 version,
-            } if interface == wl_output::WlOutput::interface().name => {
-                state.bind_output(registry, name, version, qh);
+            } => {
+                if interface == wl_output::WlOutput::interface().name {
+                    state.bind_output(registry, name, version, qh);
+                } else if interface == ExtForeignToplevelListV1::interface().name
+                    && state.toplevel_list.is_none()
+                {
+                    state.toplevel_list = Some(registry.bind(name, version.min(1), qh, ()));
+                    state.dirty = true;
+                } else if interface == ExtWorkspaceManagerV1::interface().name
+                    && state.workspace_manager.is_none()
+                {
+                    state.workspace_manager = Some(registry.bind(name, version.min(1), qh, ()));
+                    state.dirty = true;
+                }
             }
             wl_registry::Event::GlobalRemove { name } => {
                 let gone: Vec<ObjectId> = state
@@ -714,5 +779,21 @@ mod tests {
             Some(PathBuf::from("/run/user/1000/wayland-0"))
         );
         assert_eq!(p(Some("wayland-1"), None), None);
+    }
+
+    /// A request for a thread that has ended (its display gone) is answered
+    /// `NotConnected`, not dropped.
+    #[tokio::test]
+    async fn a_request_after_the_display_went_away_is_not_connected() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let client =
+            ProtocolClient::spawn(WaylandTarget::Socket(dir.path().join("gone")), tx).unwrap();
+        // The disconnected state is the thread's last act: its command
+        // channel is already closed.
+        assert_eq!(rx.recv().await, Some(ProtocolState::default()));
+        let (reply, outcome) = tokio::sync::oneshot::channel();
+        client.send(ProtoCmd::Activate(1, Some(reply)));
+        assert_eq!(outcome.await, Ok(Err(WmError::NotConnected)));
     }
 }

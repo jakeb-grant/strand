@@ -6062,7 +6062,12 @@ workspaces not `hidden`, numbered by a per-handle key the client assigns
 (the protocol has no integer id), `focused` only when it is the one
 shown (`active`) workspace (see "focus with the protocols alone" below);
 windows by identifier, with no workspace, focus or actions (the list
-protocol has none); `ws.focus()` is `activate` + `commit`. Proof: `src/wm/mod.rs`
+protocol has none); `ws.focus()` is `activate` + `commit`. The cost on a
+compositor with no adapter (labwc, COSMIC, wayfire, river): `windows.
+focused` is always null, so design.md's hello bar (`windows.focused?.
+title`) shows no title there, and `win.focus()`, `win.close()` and
+`win.minimize()` answer `Unsupported` (see "wlr-foreign-toplevel-
+management is a follow-up" below). Proof: `src/wm/mod.rs`
 (tests `the_protocol_wins_where_it_covers_a_field`,
 `protocols_alone_make_the_whole_state`), `tests/protocol.rs::
 the_protocols_alone_serve_workspaces_and_windows` and `tests/protocol.rs::
@@ -6310,3 +6315,62 @@ the adapters are proven as library code (fake Hyprland and niri from
 reconstructed traffic, real and fake sway), but shells still see schema
 defaults until the `#[service]` wiring lands; its progress note lists the
 proving tests.
+
+**2026-10-07 · wave4-wm: wlr-foreign-toplevel-management is a
+follow-up.** `ext-foreign-toplevel-list-v1` carries no state and no
+requests, so without an IPC adapter nothing says which window has the
+focus and no window action can run. `zwlr_foreign_toplevel_management_
+v1` does (activated, minimized, fullscreen; activate, close,
+set_minimized) and is offered by sway 1.9, labwc, wayfire, Hyprland and
+niri. It is a standard protocol, so binding it on the same `strand-
+toplevel` thread as a fallback (joined to the list by app id and title
+order, since it has no identifier) is in the spirit of "compositor-
+agnostic first", but design.md does not name it and this round's spec
+does not ask for it. Recorded as a follow-up on features.md's services
+item rather than done now; until then the hello bar shows no title on
+compositors without an adapter.
+
+**2026-10-07 · wave4-wm: an action's outcome is never a closed
+channel.** `WmRequest::new` and `WmSubscription::request` return a
+`WmReply`, a future of `Result<(), WmError>` that reads a reply dropped
+unanswered as `NotConnected`: a request still queued when the hub
+aborts the run (its last subscription or last `WmHub` gone), one sent
+after, or one the protocol thread never took. The protocol thread also
+answers explicitly: `ProtocolClient::send` answers `NotConnected` when
+the thread has ended, and the thread answers every command still queued
+when it ends before closing its channel. Proof: `src/wm/hub.rs::tests::
+requests_to_a_stopped_service_are_not_connected`, `src/wm/protocol.rs::
+tests::a_request_after_the_display_went_away_is_not_connected`.
+
+**2026-10-07 · wave4-wm: the protocol thread starts inside its poll
+loop.** No blocking roundtrip: the registry binds the globals as they
+arrive and three `wl_display.sync`s, each sent once the one before is
+answered (the globals, the binds' first events, the events of the
+handles those created), mark the first state, all in the `poll(2)` loop
+that also watches the eventfd. A compositor that accepts the connection
+and never answers therefore cannot keep the thread: dropping the
+`ProtocolClient` stops it, so a hung compositor does not leak a thread
+and a connection per subscribe. (`UnixStream::connect` itself only
+blocks while the listener's backlog is full.) Proof: `tests/protocol.rs::
+a_hung_compositor_does_not_keep_the_thread`.
+
+**2026-10-07 · wave4-wm: `Window::toplevel` keeps the join.** Every
+window carries its `ext-foreign-toplevel-list-v1` identifier when known
+(the adapter's: sway 1.10+'s `foreign_toplevel_identifier`, Hyprland's
+`stableId`; with the protocols alone, its id), not a schema field. M4's
+`thumbnail w` (`ext-image-copy-capture-v1`) needs the toplevel's handle
+on the connection that owns it, the `strand-toplevel` thread: it will
+add a `ProtoCmd` that captures by identifier, without changing the
+model. Proof: `src/wm/mod.rs` (tests `the_protocol_wins_where_it_covers_
+a_field`, `protocols_alone_make_the_whole_state`).
+
+**2026-10-07 · wave4-wm: Hyprland titles with a newline.** Hyprland's
+`EventManager::formatEvent` (v0.56.2) turns every `\n` in event data
+into a space; `j/clients` escapes it in JSON instead. Titles read from
+`j/clients` get the same mapping, so a `windowtitlev2` patch and the
+next re-read agree and a window that did not change sends no `Update`.
+Related gap, accepted: Hyprland sends no event when an unfocused
+window's class changes, so its `app_id` stays stale until the next
+re-read; on Hyprland 0.50+ the `stableId` join with the toplevel list
+corrects `app_id` from the protocol anyway. Proof: `src/wm/hyprland.rs::
+tests::events_patch_in_place_or_ask_for_a_requery`.

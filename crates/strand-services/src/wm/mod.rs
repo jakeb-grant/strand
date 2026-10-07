@@ -95,6 +95,26 @@ impl std::fmt::Display for WmError {
 
 impl std::error::Error for WmError {}
 
+/// The outcome of a [`WmRequest`]: `Ok` or a [`WmError`]. A request the
+/// service dropped unanswered (it stopped, or its protocol thread ended,
+/// before the request ran) is [`WmError::NotConnected`]: a caller never
+/// sees a closed channel.
+#[derive(Debug)]
+pub struct WmReply(oneshot::Receiver<Result<(), WmError>>);
+
+impl Future for WmReply {
+    type Output = Result<(), WmError>;
+
+    fn poll(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        Pin::new(&mut self.0)
+            .poll(cx)
+            .map(|r| r.unwrap_or(Err(WmError::NotConnected)))
+    }
+}
+
 /// An action, with an optional channel for its outcome.
 #[derive(Debug)]
 pub struct WmRequest {
@@ -105,15 +125,15 @@ pub struct WmRequest {
 }
 
 impl WmRequest {
-    /// A request and the receiver of its outcome.
-    pub fn new(action: WmAction) -> (Self, oneshot::Receiver<Result<(), WmError>>) {
+    /// A request and its outcome.
+    pub fn new(action: WmAction) -> (Self, WmReply) {
         let (tx, rx) = oneshot::channel();
         (
             Self {
                 action,
                 reply: Some(tx),
             },
-            rx,
+            WmReply(rx),
         )
     }
 }
@@ -186,7 +206,8 @@ pub(crate) type Cmd = (WmAction, Option<oneshot::Sender<Result<(), WmError>>>);
 /// carry the ids actions need); a workspace joined by name (and screen,
 /// when names repeat on either side) takes `active`, `screen` and (or-ed) `urgent` from
 /// `ext-workspace-v1`, and a window joined by its toplevel identifier
-/// takes `title` and `app_id` from `ext-foreign-toplevel-list-v1`. Without
+/// takes `title` and `app_id` from `ext-foreign-toplevel-list-v1` (every
+/// window keeps that identifier as [`Window::toplevel`]). Without
 /// an adapter the protocols are the whole state: workspaces not `hidden`,
 /// numbered by [`ProtoWorkspace::key`]; windows by identifier, with no
 /// workspace or focus. `ext-workspace-v1` says which workspace each output
@@ -228,6 +249,7 @@ pub fn merge(ipc: Option<&WmState>, ids: &[(String, String)], proto: &ProtocolSt
             }
             for w in &mut s.windows {
                 let ident = ids.iter().find(|(id, _)| *id == w.id).map(|(_, i)| i);
+                w.toplevel = ident.cloned();
                 if let Some(t) =
                     ident.and_then(|i| proto.toplevels.iter().find(|t| t.identifier == *i))
                 {
@@ -264,6 +286,7 @@ pub fn merge(ipc: Option<&WmState>, ids: &[(String, String)], proto: &ProtocolSt
                         id: t.identifier.clone(),
                         title: t.title.clone(),
                         app_id: t.app_id.clone(),
+                        toplevel: Some(t.identifier.clone()),
                         ..Default::default()
                     })
                     .collect(),
@@ -527,6 +550,7 @@ mod tests {
         assert_eq!(s.workspaces[0].id, 1);
         assert!(s.workspaces[0].focused);
         assert_eq!(s.windows[0].id, "abc");
+        assert_eq!(s.windows[0].toplevel.as_deref(), Some("abc"));
         assert_eq!(s.windows[0].icon, "foot");
         assert_eq!(s.focused_screen.as_deref(), Some("DP-1"));
 
@@ -623,10 +647,17 @@ mod tests {
         assert!(!s.workspaces[1].urgent);
         assert!(s.workspaces[1].active, "joined by screen when names repeat");
         assert_eq!(s.windows[0].title, "new");
+        assert_eq!(s.windows[0].id, "7");
+        assert_eq!(
+            s.windows[0].toplevel.as_deref(),
+            Some("x1"),
+            "the join is kept"
+        );
         assert!(s.workspaces[0].occupied);
         // No identifier: the IPC title stays.
         let s = merge(Some(&ipc), &[], &proto);
         assert_eq!(s.windows[0].title, "old");
+        assert_eq!(s.windows[0].toplevel, None);
 
         // The IPC has `1` on two screens, the protocol only the one on
         // DP-2: only that one joins; DP-1's keeps its own screen and state.

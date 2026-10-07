@@ -635,7 +635,7 @@ async fn the_protocols_alone_serve_workspaces_and_windows() {
     // ws.focus() activates through ext-workspace-v1.
     let (r, done) = WmRequest::new(WmAction::FocusWorkspace(ws2));
     req_tx.send(r).unwrap();
-    assert_eq!(done.await.unwrap(), Ok(()));
+    assert_eq!(done.await, Ok(()));
     c.until("activated", |m| {
         m.focused_workspace.as_ref().is_some_and(|w| w.name == "2")
     })
@@ -645,7 +645,7 @@ async fn the_protocols_alone_serve_workspaces_and_windows() {
     // The list protocol has no window actions.
     let (r, done) = WmRequest::new(WmAction::CloseWindow("tl-1".into()));
     req_tx.send(r).unwrap();
-    assert!(matches!(done.await.unwrap(), Err(WmError::Unsupported(_))));
+    assert!(matches!(done.await, Err(WmError::Unsupported(_))));
     service.abort();
 }
 
@@ -684,7 +684,7 @@ async fn two_outputs_alone_mark_active_workspaces_not_focus() {
     let ws2 = m.workspace("2").unwrap().id;
     let (r, done) = WmRequest::new(WmAction::FocusWorkspace(ws2));
     req_tx.send(r).unwrap();
-    assert_eq!(done.await.unwrap(), Ok(()));
+    assert_eq!(done.await, Ok(()));
     c.until("activated", |m| m.workspace("2").is_some_and(|w| w.active))
         .await;
     assert!(!c.mirror.workspace("1").unwrap().active);
@@ -729,7 +729,7 @@ async fn a_broken_adapter_does_not_hide_the_protocols() {
     let ws2 = c.mirror.workspace("2").unwrap().id;
     let (r, done) = WmRequest::new(WmAction::FocusWorkspace(ws2));
     req_tx.send(r).unwrap();
-    assert_eq!(done.await.unwrap(), Ok(()));
+    assert_eq!(done.await, Ok(()));
     c.until("activated", |m| {
         m.focused_workspace.as_ref().is_some_and(|w| w.name == "2")
     })
@@ -737,7 +737,7 @@ async fn a_broken_adapter_does_not_hide_the_protocols() {
     // Window actions need the adapter.
     let (r, done) = WmRequest::new(WmAction::CloseWindow("tl-1".into()));
     req_tx.send(r).unwrap();
-    assert_eq!(done.await.unwrap(), Err(WmError::NotConnected));
+    assert_eq!(done.await, Err(WmError::NotConnected));
     service.abort();
 }
 
@@ -765,6 +765,39 @@ async fn no_display_reports_disconnected() {
         .unwrap()
         .unwrap();
     assert_eq!(s, ProtocolState::default());
+}
+
+/// A compositor that accepts the connection and never answers: the
+/// startup waits in the same poll loop as the rest, so dropping the client
+/// still ends its thread and closes the connection (no leaked thread per
+/// subscribe while a compositor hangs).
+#[tokio::test]
+async fn a_hung_compositor_does_not_keep_the_thread() {
+    use std::io::Read;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("wayland-hung");
+    let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+    let (tx, mut rx) = unbounded_channel();
+    let client = ProtocolClient::spawn(WaylandTarget::Socket(path), tx).unwrap();
+    let (mut conn, _) = listener.accept().unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), rx.recv())
+            .await
+            .is_err(),
+        "no state from a compositor that never answered"
+    );
+    drop(client);
+    let last = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("the thread did not stop");
+    assert_eq!(last, Some(ProtocolState::default()));
+    let end = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await;
+    assert_eq!(end, Ok(None), "the thread has ended");
+    conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut sent = Vec::new();
+    conn.read_to_end(&mut sent)
+        .expect("the connection is closed, not left open");
+    assert!(!sent.is_empty(), "it had asked for the registry");
 }
 
 /// A workspace transaction split across reads (a toplevel's `done` read

@@ -29,13 +29,12 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use tokio::runtime::Handle;
 use tokio::sync::Notify;
 use tokio::sync::mpsc::{self, UnboundedSender};
-use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use strand_core::keyed::VecDiff;
 
 use super::model::Mirror;
-use super::{WmAction, WmChange, WmConfig, WmError, WmRequest, run};
+use super::{WmAction, WmChange, WmConfig, WmError, WmReply, WmRequest, run};
 
 /// The most batches a subscriber's queue holds before it is coalesced.
 pub const MAX_QUEUED: usize = 64;
@@ -334,9 +333,11 @@ impl WmSubscription {
         self.queue.lock().batches.len()
     }
 
-    /// Runs an action; the receiver gets its outcome (`NotConnected` if
-    /// the service has stopped).
-    pub fn request(&self, action: WmAction) -> oneshot::Receiver<Result<(), WmError>> {
+    /// Runs an action and resolves to its outcome: `Ok` or a [`WmError`],
+    /// `NotConnected` when the service has stopped (or stops before the
+    /// request runs, such as the last [`WmHub`] dropped while it was
+    /// queued).
+    pub fn request(&self, action: WmAction) -> WmReply {
         let (req, rx) = WmRequest::new(action);
         if let Err(mpsc::error::SendError(req)) = self.requests.send(req)
             && let Some(reply) = req.reply
@@ -467,5 +468,21 @@ mod tests {
         let mut a = hub.subscribe();
         drop(hub);
         assert_eq!(a.recv().await, None);
+    }
+
+    /// A request that the stopped service never ran (queued before the
+    /// last hub went, or sent after) is `NotConnected`, not a closed
+    /// channel.
+    #[tokio::test]
+    async fn requests_to_a_stopped_service_are_not_connected() {
+        let hub = WmHub::new(WmConfig::default(), Handle::current());
+        let a = hub.subscribe();
+        let queued = a.request(WmAction::FocusWorkspace(1));
+        drop(hub);
+        assert_eq!(queued.await, Err(WmError::NotConnected));
+        assert_eq!(
+            a.request(WmAction::FocusWorkspace(1)).await,
+            Err(WmError::NotConnected)
+        );
     }
 }

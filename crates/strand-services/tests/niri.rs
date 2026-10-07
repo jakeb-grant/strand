@@ -232,16 +232,13 @@ async fn niri_adapter_follows_replayed_traffic() {
 
     let (r, done) = WmRequest::new(WmAction::FocusWorkspace(5));
     req_tx.send(r).unwrap();
-    assert_eq!(done.await.unwrap(), Ok(()));
+    assert_eq!(done.await, Ok(()));
     let (r, done) = WmRequest::new(WmAction::CloseWindow("12".into()));
     req_tx.send(r).unwrap();
-    assert_eq!(done.await.unwrap(), Ok(()));
+    assert_eq!(done.await, Ok(()));
     let (r, done) = WmRequest::new(WmAction::FocusWindow("99".into()));
     req_tx.send(r).unwrap();
-    assert_eq!(
-        done.await.unwrap(),
-        Err(WmError::UnknownWindow("99".into()))
-    );
+    assert_eq!(done.await, Err(WmError::UnknownWindow("99".into())));
     let reqs = fake.requests();
     assert!(
         reqs.contains(&r#"{"Action":{"FocusWorkspace":{"reference":{"Id":5}}}}"#.to_string()),
