@@ -1020,6 +1020,29 @@ bar B { text join(" ", ppd.profile, ups.level, mood.level, music.title ?? "", te
         codes("service f from file \"/tmp/x\" { a: int rw }"),
         ["check::not_writable"]
     );
+    // A field's type is one a document holds: a schema entity (`Screen`)
+    // or a paint is not; colours, durations, enums, lists, optionals and
+    // declared records of these are.
+    assert_eq!(
+        codes("service bad from file \"x.json\" { m: Screen; c: color; s: [Screen]; p: paint? }"),
+        [
+            "check::type_mismatch",
+            "check::type_mismatch",
+            "check::type_mismatch"
+        ]
+    );
+    assert!(
+        codes(
+            "enum Mood { calm, busy }\ntype Temp { label: text; c: float; at: duration }\n\
+             service ok from file \"x.json\" { c: color; d: duration; m: Mood?; t: [Temp]; \
+             l: length; p: percent; a: angle; f: path; b: bool }"
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        codes("type Holder { s: Screen }\nservice bad from file \"x.json\" { h: [Holder] }"),
+        ["check::type_mismatch"]
+    );
 }
 
 /// `from dbus` fields against the object's introspection: a missing

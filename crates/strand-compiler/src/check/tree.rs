@@ -2469,6 +2469,23 @@ impl<'a> Checker<'a> {
                     None => (None, vec![f.name.name.clone()]),
                 },
             };
+            if !readable(&self.types, &ty, &mut Vec::new()) {
+                self.error(
+                    "check::type_mismatch",
+                    format!(
+                        "a service field holds data its source reads: `{}` is not data",
+                        self.types.show(&ty)
+                    ),
+                    f.ty.span,
+                    "not readable from a source",
+                )
+                .help = Some(
+                    "use `bool`, `int`, `float`, `percent`, `length`, `angle`, `duration`, \
+                     `color`, `text`, `path`, an enum, a `type` you declare, or a list or \
+                     optional of these"
+                        .into(),
+                );
+            }
             if let Some(d) = &f.default
                 && source_key.is_none()
             {
@@ -2514,6 +2531,49 @@ impl<'a> Checker<'a> {
             fields,
             spec,
         }
+    }
+}
+
+/// Whether a source's document can hold a value of `ty`, as a service
+/// field's type (design.md: `from file`, `from listen` and `from poll`
+/// are checked against the schema you declare): the primitives a value
+/// converts to from text or a number, enums, and lists, optionals and
+/// records you declare (`type`) of these. A schema record (`Screen`) is a
+/// live entity its service owns; paints, fonts, shadows and handles are
+/// not data a document holds.
+fn readable(types: &crate::ty::TypeTable, ty: &Ty, seen: &mut Vec<crate::ty::RecordId>) -> bool {
+    match ty {
+        Ty::Error | Ty::Any | Ty::Enum(_) => true,
+        Ty::Prim(p) => matches!(
+            p,
+            Prim::Bool
+                | Prim::Int
+                | Prim::Float
+                | Prim::Length
+                | Prim::Percent
+                | Prim::Angle
+                | Prim::Duration
+                | Prim::Color
+                | Prim::Text
+                | Prim::Path
+        ),
+        Ty::Optional(inner) | Ty::List(inner, _) => readable(types, inner, seen),
+        Ty::Record(r) => {
+            if seen.contains(r) {
+                return true;
+            }
+            let def = types.record(*r);
+            if !matches!(def.origin, Origin::User(..))
+                || def.handle
+                || !def.methods.is_empty()
+                || !def.events.is_empty()
+            {
+                return false;
+            }
+            seen.push(*r);
+            def.fields.iter().all(|f| readable(types, &f.ty, seen))
+        }
+        _ => false,
     }
 }
 

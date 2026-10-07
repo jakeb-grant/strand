@@ -1906,6 +1906,88 @@ service shelf {
             let _ = std::fs::remove_dir_all(&dir);
         }
 
+        /// A value that does not convert to its field's type reads as the
+        /// type's default and is reported once (naming the field, its key
+        /// and the value) until a value converts again; a colour reads
+        /// from hex text.
+        #[test]
+        fn a_value_that_does_not_convert_is_reported_once() {
+            let dir = temp("mismatch");
+            let file = dir.join("m.json");
+            save(&file, r##"{"level": "abc", "tint": "#ff0000"}"##);
+            let src = format!(
+                "service m from file \"{}\" {{ lvl: int = level; tint: color }}\nbar B {{ text join(\" \", m.lvl) }}\n",
+                file.display()
+            );
+            let mut live = Live::boot(&src, Buses::none());
+            live.until("the file read", |l| {
+                matches!(l.value("m", "tint"), Value::Color(_))
+            });
+            assert_eq!(
+                live.value("m", "tint"),
+                Value::Color(strand_scene::Color::from_hex("#ff0000").unwrap())
+            );
+            assert_eq!(live.value("m", "lvl"), Value::int(0));
+            let mismatches = |l: &Live| -> Vec<strand_services::ServiceDiagnostic> {
+                l.real
+                    .services
+                    .take_diagnostics()
+                    .into_iter()
+                    .filter(|d| d.message.contains("`m.lvl`"))
+                    .collect()
+            };
+            let first = mismatches(&live);
+            assert_eq!(first.len(), 1, "{first:?}");
+            assert!(!first[0].resolved && !first[0].notice);
+            assert!(
+                first[0].message.contains("`level`") && first[0].message.contains("\"abc\""),
+                "{}",
+                first[0].message
+            );
+            // Another value that does not convert: not reported again.
+            save(&file, r##"{"level": [1], "tint": "#ff0000"}"##);
+            live.until("the second save read", |l| {
+                l.real
+                    .custom
+                    .debug_state(&l.rt)
+                    .iter()
+                    .any(|s| s.contains("List"))
+            });
+            assert_eq!(live.value("m", "lvl"), Value::int(0));
+            assert!(mismatches(&live).is_empty());
+            // A value that converts resolves it; a bad one after reports
+            // again.
+            save(&file, r##"{"level": 4}"##);
+            live.until("the fix read", |l| l.value("m", "lvl") == Value::int(4));
+            let fixed = mismatches(&live);
+            assert_eq!(fixed.len(), 1, "{fixed:?}");
+            assert!(fixed[0].resolved);
+            assert_eq!(fixed[0].message, first[0].message);
+            save(&file, r##"{"level": true}"##);
+            live.until("the bad save read", |l| {
+                l.real
+                    .custom
+                    .debug_state(&l.rt)
+                    .iter()
+                    .any(|s| s.contains("Bool"))
+            });
+            assert_eq!(live.value("m", "lvl"), Value::int(1), "a bool is 0 or 1");
+            save(&file, r##"{"level": "nope"}"##);
+            live.until("the bad save read", |l| {
+                l.real
+                    .custom
+                    .debug_state(&l.rt)
+                    .iter()
+                    .any(|s| s.contains("nope"))
+            });
+            assert_eq!(live.value("m", "lvl"), Value::int(0));
+            let again = mismatches(&live);
+            assert_eq!(again.len(), 1, "{again:?}");
+            assert!(!again[0].resolved && again[0].message.contains("\"nope\""));
+            drop(live);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
         /// `from poll`: the command runs every interval only while a
         /// reader is visible; `from listen`: each line a command prints is
         /// a document, and the command ends with the service.
@@ -1963,7 +2045,16 @@ service shelf {
             live.until("the line after it read", |l| {
                 l.value("l", "a") == Value::int(3)
             });
-            assert!(live.real.services.take_diagnostics().is_empty());
+            // No failure: at most the lenient line's value, which is not
+            // an int, reported and resolved by the line after it.
+            let failures: Vec<_> = live
+                .real
+                .services
+                .take_diagnostics()
+                .into_iter()
+                .filter(|d| !d.message.starts_with("`l.a`:"))
+                .collect();
+            assert!(failures.is_empty(), "{failures:?}");
         }
 
         fn gone(pid: &str) -> bool {

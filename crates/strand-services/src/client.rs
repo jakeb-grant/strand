@@ -390,6 +390,18 @@ impl Services {
         }
     }
 
+    /// Report `d` as a host found it (a no-code service's value that does
+    /// not convert to its field's type): logged, and taken with the
+    /// services' own by [`Services::take_diagnostics`].
+    pub fn report(&self, d: ServiceDiagnostic) {
+        if d.resolved {
+            log::info!("{d}");
+        } else {
+            log::warn!("{d}");
+        }
+        self.0.diagnostics.borrow_mut().push(d);
+    }
+
     /// The services' failures since the last call, oldest first
     /// ([`ServiceDiagnostic`]); call it after [`Services::pump`].
     pub fn take_diagnostics(&self) -> Vec<ServiceDiagnostic> {

@@ -9,7 +9,9 @@
 //! The service reads untyped [`Data`]; each field's value here is a memo
 //! converting it to the field's declared type ([`coerce`]): numbers from
 //! text, enums by variant name, records by field name. A value that does
-//! not convert is the type's default (null for an optional field). An
+//! not convert is the type's default (null for an optional field), and is
+//! reported once (log and `strand watch`) naming the field, its key and
+//! the value, until a value converts again ([`Mismatch`]). An
 //! `rw` field written (`ppd.profile = "performance"`, `<-> ppd.profile`)
 //! is an item write of its value, so the service sets the property and
 //! its echo is ignored. A reload that changes a declaration restarts only
@@ -28,7 +30,7 @@ use strand_compiler::vm::schema_host::default_value;
 use strand_compiler::vm::{Num, Value};
 use strand_core::{Error, Memo, NodeId, Runtime, Scope};
 use strand_services::custom::{self, Custom, CustomValue, FieldSpec, Source, Spec};
-use strand_services::{Client, Data, Services, Step, ToData};
+use strand_services::{Client, Data, ServiceDiagnostic, Services, Step, ToData};
 
 use super::convert::{to_data, to_value};
 
@@ -223,6 +225,71 @@ pub fn coerce(types: &TypeTable, ty: &Ty, d: &Data) -> Option<Value> {
     }
 }
 
+/// A field's value that does not convert to its declared type, reported
+/// once (a log line and a `strand watch` notice naming the field, its key
+/// and the value) until a value converts again, which resolves it.
+struct Mismatch {
+    services: Services,
+    /// `sensors.cpu`.
+    field: String,
+    /// The key path it reads (`coretemp.temp1`).
+    key: String,
+    /// The message reported and not yet resolved.
+    reported: RefCell<Option<String>>,
+}
+
+impl Mismatch {
+    /// The field read `d`, which converted or not. No value yet (null)
+    /// says nothing.
+    fn saw(&self, types: &TypeTable, ty: &Ty, d: &Data, converted: bool) {
+        if converted {
+            let taken = self.reported.borrow_mut().take();
+            if let Some(message) = taken {
+                self.services.report(ServiceDiagnostic {
+                    service: "custom",
+                    message,
+                    notice: false,
+                    resolved: true,
+                });
+            }
+            return;
+        }
+        if self.reported.borrow().is_some() || matches!(d, Data::Null) {
+            return;
+        }
+        let message = format!(
+            "`{}`: `{}` holds {}, which is not a `{}`; it reads as the type's default",
+            self.field,
+            self.key,
+            shown(d),
+            types.show(ty),
+        );
+        self.services.report(ServiceDiagnostic {
+            service: "custom",
+            message: message.clone(),
+            notice: false,
+            resolved: false,
+        });
+        *self.reported.borrow_mut() = Some(message);
+    }
+}
+
+/// `d` as a message shows it: short, quoted text, kinds for the rest.
+fn shown(d: &Data) -> String {
+    match d {
+        Data::Text(t) if t.chars().count() > 60 => {
+            let cut: String = t.chars().take(60).collect();
+            format!("{cut:?}…")
+        }
+        Data::Text(t) => format!("{:?}", &**t),
+        Data::Int(n) => n.to_string(),
+        Data::Float(f) => f.to_string(),
+        Data::Bool(b) => b.to_string(),
+        Data::Null => "null".into(),
+        d => format!("a {}", d.kind()),
+    }
+}
+
 impl CustomHost {
     /// Custom services on `services` (they share its runtime and
     /// lifecycle), relative `from file` paths under `config_dir`.
@@ -284,13 +351,21 @@ impl CustomHost {
                 .map(|(i, ty)| {
                     let (client, ty, types) = (client.clone(), ty.clone(), shared.clone());
                     let name = format!("{}.{}", decl.name, decl.fields[i].name);
+                    let report = Mismatch {
+                        services: self.services.clone(),
+                        field: name.clone(),
+                        key: decl.fields[i].key.join("."),
+                        reported: RefCell::new(None),
+                    };
                     let m = rt.memo(move |rt| {
                         let d = client
                             .cells()
                             .values
                             .with(rt, |v| v.get(&(i as i64)).map(|v| v.value.clone()))?
                             .unwrap_or_default();
-                        Ok(coerce(&types, &ty, &d).unwrap_or_else(|| default_value(&types, &ty)))
+                        let v = coerce(&types, &ty, &d);
+                        report.saw(&types, &ty, &d, v.is_some());
+                        Ok(v.unwrap_or_else(|| default_value(&types, &ty)))
                     });
                     rt.set_name(m.id(), name);
                     m
