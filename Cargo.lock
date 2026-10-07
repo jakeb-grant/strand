@@ -2147,7 +2147,6 @@ dependencies = [
 name = "strand-services"
 version = "0.0.0"
 dependencies = [
- "async-io",
  "futures-lite",
  "log",
  "rustix",

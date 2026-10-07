@@ -1,40 +1,143 @@
-//! sway's IPC through swayipc-async 3.0.
+//! sway's IPC: swayipc-async 3.0's types over our own i3-ipc framing.
 //!
 //! One connection subscribes to `workspace`, `window` and `shutdown`
 //! events; another reads `get_workspaces` and `get_tree` and runs commands.
 //! A window's title change is patched from the event; every other event
 //! re-reads the workspaces and the tree, once per burst. sway's `reload`
 //! (a `workspace` event with `change: reload`) is `wm.config_reloaded`.
+//!
+//! The framing is ours (swayipc-async keeps its raw API private) so that
+//! payloads are decoded lossily: wlroots copies an XWayland `WM_NAME` of
+//! type `STRING` (Latin-1) byte for byte and sway's JSON leaves bytes over
+//! 0x7f unescaped, so a title may not be UTF-8. swayipc-async would refuse
+//! the whole tree, for as long as that window lives; here the title shows
+//! U+FFFD where its bad bytes were. Frames are bounded
+//! ([`MAX_MESSAGE`]); the event reader is cancel safe.
 
 use std::io;
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-use async_io::Async;
-use futures_lite::StreamExt;
-use swayipc_async::{Connection, Event, EventType, Node, NodeType, WindowChange, WorkspaceChange};
+use serde::de::DeserializeOwned;
+use swayipc_async::{
+    CommandOutcome, CommandType, Event, Node, NodeType, WindowChange, WorkspaceChange,
+};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::UnixStream;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use super::backoff::Backoff;
+use super::lines::{MAX_MESSAGE, too_long};
 use super::model::{Window, WmState, Workspace};
 use super::{AdapterMsg, Cmd, IpcSnapshot, WmAction, WmError};
 
 /// sway's scratchpad workspace.
 const SCRATCH: &str = "__i3_scratch";
 
-fn io_err(e: swayipc_async::Error) -> io::Error {
-    match e {
-        swayipc_async::Error::Io(e) => e,
-        other => io::Error::other(other.to_string()),
+/// How long one request may take.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+const MAGIC: &[u8; 6] = b"i3-ipc";
+const HEADER: usize = 14;
+
+/// A payload as valid UTF-8: invalid bytes become U+FFFD.
+pub(crate) fn lossy(payload: Vec<u8>) -> Vec<u8> {
+    match String::from_utf8(payload) {
+        Ok(s) => s.into_bytes(),
+        Err(e) => String::from_utf8_lossy(e.as_bytes())
+            .into_owned()
+            .into_bytes(),
     }
 }
 
-/// Whether an event-stream error means the socket is gone.
-fn is_fatal(e: &swayipc_async::Error) -> bool {
-    matches!(
-        e,
-        swayipc_async::Error::Io(_) | swayipc_async::Error::InvalidMagic(_)
-    )
+/// Decodes a reply (lossily, as sway's tree may nest deeply like
+/// swayipc-types does: no recursion limit).
+pub(crate) fn decode<T: DeserializeOwned>(payload: Vec<u8>) -> io::Result<T> {
+    let payload = lossy(payload);
+    let mut de = serde_json::Deserializer::from_slice(&payload);
+    de.disable_recursion_limit();
+    T::deserialize(&mut de).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+}
+
+/// One i3-ipc connection.
+struct Conn {
+    reader: BufReader<tokio::net::unix::OwnedReadHalf>,
+    write: tokio::net::unix::OwnedWriteHalf,
+    buf: Vec<u8>,
+}
+
+impl Conn {
+    async fn connect(path: &Path) -> io::Result<Self> {
+        let (r, w) = UnixStream::connect(path).await?.into_split();
+        Ok(Self {
+            reader: BufReader::new(r),
+            write: w,
+            buf: Vec::new(),
+        })
+    }
+
+    /// The next frame: its type and payload. Cancel safe.
+    async fn frame(&mut self) -> io::Result<(u32, Vec<u8>)> {
+        loop {
+            if self.buf.len() >= HEADER {
+                if &self.buf[..6] != MAGIC {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "not an i3-ipc frame",
+                    ));
+                }
+                let word = |at: usize| {
+                    let mut b = [0u8; 4];
+                    b.copy_from_slice(&self.buf[at..at + 4]);
+                    u32::from_ne_bytes(b)
+                };
+                let len = word(6) as usize;
+                let ty = word(10);
+                if len > MAX_MESSAGE {
+                    return Err(too_long());
+                }
+                if self.buf.len() >= HEADER + len {
+                    let payload = self.buf[HEADER..HEADER + len].to_vec();
+                    self.buf.drain(..HEADER + len);
+                    return Ok((ty, payload));
+                }
+            }
+            let avail = self.reader.fill_buf().await?;
+            if avail.is_empty() {
+                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "sway closed"));
+            }
+            let n = avail.len();
+            self.buf.extend_from_slice(avail);
+            self.reader.consume(n);
+        }
+    }
+
+    /// One request and its reply.
+    async fn request<T: DeserializeOwned>(
+        &mut self,
+        ty: CommandType,
+        payload: &str,
+    ) -> io::Result<T> {
+        let run = async {
+            self.write.write_all(&ty.encode_with(payload)).await?;
+            let (got, reply) = self.frame().await?;
+            if got != u32::from(ty) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("sway answered {got} to {ty:?}"),
+                ));
+            }
+            decode(reply)
+        };
+        tokio::time::timeout(REQUEST_TIMEOUT, run)
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "sway did not answer"))?
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct Success {
+    success: bool,
 }
 
 /// What sway's state turns into.
@@ -163,13 +266,9 @@ impl State {
     }
 }
 
-async fn connect(path: &Path) -> io::Result<Connection> {
-    Ok(Connection::from(Async::<UnixStream>::connect(path).await?))
-}
-
-async fn query(conn: &mut Connection, state: &mut State) -> io::Result<()> {
-    state.workspaces = conn.get_workspaces().await.map_err(io_err)?;
-    let tree = conn.get_tree().await.map_err(io_err)?;
+async fn query(conn: &mut Conn, state: &mut State) -> io::Result<()> {
+    state.workspaces = conn.request(CommandType::GetWorkspaces, "").await?;
+    let tree: Node = conn.request(CommandType::GetTree, "").await?;
     state.set_tree(&tree);
     Ok(())
 }
@@ -229,12 +328,17 @@ async fn session(
     cmds: &mut UnboundedReceiver<Cmd>,
     backoff: &mut Backoff,
 ) -> io::Result<()> {
-    let mut events = connect(socket)
-        .await?
-        .subscribe([EventType::Workspace, EventType::Window, EventType::Shutdown])
-        .await
-        .map_err(io_err)?;
-    let mut conn = connect(socket).await?;
+    let mut events = Conn::connect(socket).await?;
+    let subscribed: Success = events
+        .request(
+            CommandType::Subscribe,
+            r#"["workspace","window","shutdown"]"#,
+        )
+        .await?;
+    if !subscribed.success {
+        return Err(io::Error::other("sway refused the subscription"));
+    }
+    let mut conn = Conn::connect(socket).await?;
     let mut state = State::default();
     query(&mut conn, &mut state).await?;
     backoff.connected();
@@ -246,24 +350,21 @@ async fn session(
     let mut cmds_open = true;
     loop {
         tokio::select! {
-            event = events.next() => {
+            event = events.frame() => {
                 let mut changed = false;
                 let mut requery = false;
                 let mut reloads = 0;
                 let mut shutdown = false;
                 let mut pending = Some(event);
                 while let Some(event) = pending.take() {
-                    match event {
-                        None => {
-                            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "sway closed"));
-                        }
-                        Some(Err(e)) if is_fatal(&e) => return Err(io_err(e)),
-                        Some(Err(e)) => {
+                    let (ty, payload) = event?;
+                    match Event::decode((ty, lossy(payload))) {
+                        Err(e) => {
                             // An event this version cannot decode: re-read.
                             log::warn!("sway IPC: {e}");
                             requery = true;
                         }
-                        Some(Ok(ev)) => match effect(&mut state, ev) {
+                        Ok(ev) => match effect(&mut state, ev) {
                             Effect::None => {}
                             Effect::Changed => changed = true,
                             Effect::Requery => requery = true,
@@ -275,7 +376,7 @@ async fn session(
                         },
                     }
                     // The rest of a burst that is already here.
-                    pending = futures_lite::future::poll_once(events.next()).await;
+                    pending = futures_lite::future::poll_once(events.frame()).await;
                 }
                 if shutdown {
                     return Err(io::Error::new(io::ErrorKind::ConnectionAborted, "sway is shutting down"));
@@ -295,18 +396,21 @@ async fn session(
             cmd = cmds.recv(), if cmds_open => match cmd {
                 Some((action, reply)) => {
                     let result = match state.command_for(&action) {
-                        Ok(c) => match conn.run_command(&c).await {
+                        Ok(c) => match conn
+                            .request::<Vec<CommandOutcome>>(CommandType::RunCommand, &c)
+                            .await
+                        {
                             Ok(outcomes) => outcomes
                                 .into_iter()
+                                .map(CommandOutcome::decode)
                                 .find_map(Result::err)
                                 .map_or(Ok(()), |e| Err(WmError::Rejected(e.to_string()))),
-                            Err(e) if is_fatal(&e) => {
+                            Err(e) => {
                                 if let Some(r) = reply {
                                     let _ = r.send(Err(WmError::Io(e.to_string())));
                                 }
-                                return Err(io_err(e));
+                                return Err(e);
                             }
-                            Err(e) => Err(WmError::Rejected(e.to_string())),
                         },
                         Err(e) => Err(e),
                     };
@@ -317,5 +421,69 @@ async fn session(
                 None => cmds_open = false,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `get_tree` reply (captured from sway 1.9) whose window title is
+    /// Latin-1 decodes, with U+FFFD for the bad byte.
+    #[test]
+    fn replies_that_are_not_utf8_decode_lossily() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/sway-1.9/tree.json"
+        );
+        let text = std::fs::read_to_string(path).unwrap();
+        let (head, tail) = text.split_once("TITLE_HERE").unwrap();
+        let mut raw = head.as_bytes().to_vec();
+        raw.extend_from_slice(b"caf\xe9");
+        raw.extend_from_slice(tail.as_bytes());
+        assert!(
+            serde_json::from_slice::<Node>(&raw).is_err(),
+            "strict fails"
+        );
+        let tree: Node = decode(raw).unwrap();
+        let mut state = State::default();
+        state.set_tree(&tree);
+        let snap = state.snapshot().state;
+        assert_eq!(snap.windows.len(), 1);
+        assert_eq!(snap.windows[0].title, "caf\u{fffd}");
+        assert_eq!(snap.windows[0].app_id, "foot");
+    }
+
+    #[tokio::test]
+    async fn frames_are_bounded_and_cancel_safe() {
+        use tokio::io::AsyncWriteExt;
+        let (a, b) = UnixStream::pair().unwrap();
+        let (r, w) = a.into_split();
+        let mut conn = Conn {
+            reader: BufReader::new(r),
+            write: w,
+            buf: Vec::new(),
+        };
+        let (_br, mut bw) = b.into_split();
+        let frame = CommandType::GetTree.encode_with("{}");
+        // Half a frame, then a cancelled read, then the rest.
+        bw.write_all(&frame[..10]).await.unwrap();
+        assert!(
+            futures_lite::future::poll_once(conn.frame())
+                .await
+                .is_none(),
+            "not whole yet"
+        );
+        bw.write_all(&frame[10..]).await.unwrap();
+        assert_eq!(conn.frame().await.unwrap(), (4, b"{}".to_vec()));
+        // A header that names more than the cap.
+        let mut huge = b"i3-ipc".to_vec();
+        huge.extend_from_slice(&u32::MAX.to_ne_bytes());
+        huge.extend_from_slice(&4u32.to_ne_bytes());
+        bw.write_all(&huge).await.unwrap();
+        assert_eq!(
+            conn.frame().await.unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
     }
 }

@@ -13,7 +13,7 @@ file fixes boundaries; each crate is free inside its own boundary.
 | Text worker | `strand-text` | parley shaping, swash rasterisation, per-scale glyph atlases | Block render: a painted surface keeps drawing its last layout (or a realigned stand-in from another scale or width) until the new one arrives |
 | Watcher | `strand-watch` | inotify directory watches and polling (one `strand-watch` thread); not the IPC socket (`docs/decisions.md`, wave2-watch) | Parse files (it sends paths and hashes) |
 | Persist IO (one per `PersistStore`) | `strand-core` | Atomic writes of persisted cells, settings-file edits, settings overlays and last-good snapshots; reports each file it is about to change to `PersistStore::on_written` | Run on the logic tick or block logic (failures come back as diagnostics in a later tick) |
-| Services | `strand-services` | tokio current-thread runtime (the portal Settings client `strand_watch::follow` and the compositor IPC adapters run here); PipeWire and toplevel (`strand-toplevel`) get their own threads; the sway adapter's swayipc-async also brings async-io's global reactor thread (`async-io`: idle, it blocks in `epoll` with zero wakeups, `crates/strand-services/tests/idle.rs`) | Block logic: they send state diffs and events |
+| Services | `strand-services` | tokio current-thread runtime (the portal Settings client `strand_watch::follow` and the compositor IPC adapters run here); PipeWire and toplevel (`strand-toplevel`) get their own threads (idle: zero wakeups, `crates/strand-services/tests/idle.rs`; the sway adapter uses swayipc-async's types over its own tokio framing, so no async-io reactor thread) | Block logic: they send state diffs and events |
 
 Channels are the only coupling between threads. Logic → render is one
 `SceneDiff` per tick. Render → logic is `InputEvent`s (`strand-scene`) and layout facts
@@ -1792,9 +1792,15 @@ Specified when M3 starts. It only produces writes and events into
   turn it into a second `wm.config_reloaded`.
   The three stores (and the owner of `screens.focused`) share one `run`
   through `wm::WmHub::new(config, runtime_handle)`: `subscribe() ->
-  WmSubscription` (`recv`, `try_recv`, `request(WmAction)`) starts it on
-  the first subscriber, gives a later one the current state as one batch
-  (never a past reload), and stops it when the last subscription drops.
+  WmSubscription` (`recv`, `try_recv`, `queued`, `request(WmAction)`)
+  starts it on the first subscriber, gives a later one the current state
+  as one batch (never a past reload), and stops it when the last
+  subscription drops (or the last `WmHub` does; `recv` then ends with
+  `None`). Runs are numbered, so a stopped run's in-flight batch never
+  reaches the next run's subscribers. A subscriber's queue is bounded
+  (`wm::MAX_QUEUED` = 64 batches): a store that stops draining gets one
+  batch that rebuilds the current state, plus the reloads it missed,
+  instead of an unbounded backlog; a store should still drain promptly.
   Each store subscribes from its body, so a store's 5 s stop grace is its
   own and the hub stops at once once all have stopped; `screens.focused`
   subscribes only while it is read and takes `FocusedScreen` from the
@@ -1805,7 +1811,8 @@ Specified when M3 starts. It only produces writes and events into
   CloseWindow, MinimizeWindow}, reply: Option<oneshot> }`, answered
   `Ok` or a `WmError` (`NotConnected`, `Unsupported`, `Unknown…`,
   `Rejected`, `Io`). `wm::detect()` picks the `Backend` (Hyprland, niri
-  behind the default-on `niri` feature, sway through swayipc-async) from
+  behind the default-on `niri` feature, sway through swayipc-async's
+  types over its own lossy i3-ipc framing) from
   the environment; `ProtocolClient::spawn(WaylandTarget, tx)` runs
   `ext-foreign-toplevel-list-v1` and `ext-workspace-v1` on its own
   `strand-toplevel` thread (own connection, `poll(2)` on the socket and an

@@ -1,6 +1,6 @@
 //! The idle budget: with nothing changing in the compositor, the running
-//! service's threads (its runtime, the protocol thread, async-io's
-//! reactor under swayipc-async) are not woken at all. Alone in its binary
+//! service's threads (its runtime and the protocol thread) are not woken
+//! at all. Alone in its binary
 //! so no other test's threads share these names.
 
 mod common;
@@ -71,7 +71,7 @@ fn an_idle_compositor_wakes_no_service_thread() {
     std::thread::sleep(Duration::from_millis(300));
     while rx.try_recv().is_ok() {}
 
-    let names = ["wm-idle", "strand-toplevel", "async-io"];
+    let names = ["wm-idle", "strand-toplevel"];
     let before = switches(&names);
     let seen: Vec<&str> = before.values().map(|(n, _)| n.as_str()).collect();
     for n in names {

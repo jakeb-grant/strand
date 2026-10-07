@@ -10,11 +10,25 @@
 //! grace has passed). A subscriber that joins a running hub first gets
 //! the current state as one batch (`Reset`s and every field, never a
 //! past `config_reloaded`), then the live stream.
+//!
+//! Each start is a numbered run: a batch from a run that was stopped (its
+//! task aborted while the runtime thread was already delivering) is
+//! dropped, never applied to the next run's state. Dropping the last
+//! [`WmHub`] stops the run even while subscriptions live (they then end
+//! with `None`).
+//!
+//! A subscriber's queue is bounded: one that stops draining (a stalled
+//! logic thread, a store within its grace) while the compositor is busy
+//! holds at most [`MAX_QUEUED`] batches; past that, its queue is replaced
+//! by one batch that rebuilds the current state (the late joiner's replay)
+//! plus the `config_reloaded` events it had not yet seen.
 
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use tokio::runtime::Handle;
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use tokio::sync::Notify;
+use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
@@ -22,6 +36,9 @@ use strand_core::keyed::VecDiff;
 
 use super::model::Mirror;
 use super::{WmAction, WmChange, WmConfig, WmError, WmRequest, run};
+
+/// The most batches a subscriber's queue holds before it is coalesced.
+pub const MAX_QUEUED: usize = 64;
 
 /// The shared compositor service. Cloning shares it.
 #[derive(Clone)]
@@ -40,15 +57,67 @@ impl std::fmt::Debug for WmHub {
 }
 
 struct Running {
+    /// Which start this is: batches from any other are stale.
+    generation: u64,
     task: JoinHandle<()>,
     requests: UnboundedSender<WmRequest>,
+}
+
+/// One subscriber's queue.
+#[derive(Default)]
+struct Queue {
+    state: Mutex<QueueState>,
+    notify: Notify,
+}
+
+#[derive(Default)]
+struct QueueState {
+    batches: VecDeque<Vec<WmChange>>,
+    /// The hub is gone: no batch will come.
+    closed: bool,
+}
+
+impl Queue {
+    fn lock(&self) -> MutexGuard<'_, QueueState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Queues a batch; when the queue is full, `replay` (the state after
+    /// it) replaces everything queued, keeping the events.
+    fn push(&self, batch: Vec<WmChange>, replay: impl FnOnce() -> Vec<WmChange>) {
+        {
+            let mut q = self.lock();
+            if q.batches.len() < MAX_QUEUED {
+                q.batches.push_back(batch);
+            } else {
+                let mut one = replay();
+                let events: Vec<WmChange> = q
+                    .batches
+                    .drain(..)
+                    .flatten()
+                    .chain(batch)
+                    .filter(|c| matches!(c, WmChange::ConfigReloaded { .. }))
+                    .collect();
+                one.extend(events);
+                if !one.is_empty() {
+                    q.batches.push_back(one);
+                }
+            }
+        }
+        self.notify.notify_one();
+    }
+
+    fn close(&self) {
+        self.lock().closed = true;
+        self.notify.notify_one();
+    }
 }
 
 struct Inner {
     config: WmConfig,
     runtime: Handle,
     next_id: u64,
-    subs: Vec<(u64, UnboundedSender<Vec<WmChange>>)>,
+    subs: Vec<(u64, Arc<Queue>)>,
     /// What a subscriber holds after every batch so far.
     mirror: Mirror,
     /// A state was published (not only `Sources`).
@@ -88,24 +157,26 @@ impl WmHub {
     /// queues the current state when it already runs.
     pub fn subscribe(&self) -> WmSubscription {
         let mut inner = lock(&self.inner);
-        let (tx, rx) = mpsc::unbounded_channel();
+        let queue = Arc::new(Queue::default());
         let replay = inner.replay();
         if !replay.is_empty() {
-            let _ = tx.send(replay);
+            queue.push(replay, Vec::new);
         }
         inner.next_id += 1;
         let id = inner.next_id;
-        inner.subs.push((id, tx));
+        inner.subs.push((id, queue.clone()));
         if inner.running.is_none() {
+            inner.starts += 1;
+            let generation = inner.starts;
             let (rtx, rrx) = mpsc::unbounded_channel();
             let weak = Arc::downgrade(&self.inner);
-            let sink = move |batch: Vec<WmChange>| fan_out(&weak, batch);
+            let sink = move |batch: Vec<WmChange>| fan_out(&weak, generation, batch);
             let task = inner.runtime.spawn(run(inner.config.clone(), sink, rrx));
             inner.running = Some(Running {
+                generation,
                 task,
                 requests: rtx,
             });
-            inner.starts += 1;
         }
         let requests = inner
             .running
@@ -115,7 +186,7 @@ impl WmHub {
         WmSubscription {
             hub: Arc::downgrade(&self.inner),
             id,
-            rx,
+            queue,
             requests,
         }
     }
@@ -134,13 +205,24 @@ impl WmHub {
     pub fn subscribers(&self) -> usize {
         lock(&self.inner).subs.len()
     }
+
+    #[cfg(test)]
+    fn sink_for(&self, generation: u64) -> impl FnMut(Vec<WmChange>) + use<> {
+        let weak = Arc::downgrade(&self.inner);
+        move |batch| fan_out(&weak, generation, batch)
+    }
 }
 
-fn fan_out(hub: &Weak<Mutex<Inner>>, batch: Vec<WmChange>) {
+fn fan_out(hub: &Weak<Mutex<Inner>>, generation: u64, batch: Vec<WmChange>) {
     let Some(inner) = hub.upgrade() else {
         return;
     };
     let mut inner = lock(&inner);
+    if inner.running.as_ref().map(|r| r.generation) != Some(generation) {
+        // A stopped run's last batch: its diffs are against a state the
+        // hub (and every current subscriber) no longer holds.
+        return;
+    }
     for change in &batch {
         if let Err(e) = inner.mirror.apply(change) {
             log::warn!("compositor service: inconsistent change {change:?}: {e}");
@@ -153,7 +235,10 @@ fn fan_out(hub: &Weak<Mutex<Inner>>, batch: Vec<WmChange>) {
     }
     // Events are not state: a late subscriber never sees a past reload.
     inner.mirror.reloads.clear();
-    inner.subs.retain(|(_, tx)| tx.send(batch.clone()).is_ok());
+    let inner = &*inner;
+    for (_, q) in &inner.subs {
+        q.push(batch.clone(), || inner.replay());
+    }
 }
 
 impl Inner {
@@ -190,12 +275,24 @@ impl Inner {
     }
 }
 
+impl Drop for Inner {
+    /// The last [`WmHub`] is gone: stop the run (a detached task would keep
+    /// its sockets and protocol thread until the runtime ends) and end
+    /// every subscription's stream.
+    fn drop(&mut self) {
+        self.stop();
+        for (_, q) in &self.subs {
+            q.close();
+        }
+    }
+}
+
 /// One reader of the shared service; dropping it leaves (and stops the
 /// service when it was the last).
 pub struct WmSubscription {
     hub: Weak<Mutex<Inner>>,
     id: u64,
-    rx: UnboundedReceiver<Vec<WmChange>>,
+    queue: Arc<Queue>,
     requests: UnboundedSender<WmRequest>,
 }
 
@@ -208,14 +305,33 @@ impl std::fmt::Debug for WmSubscription {
 }
 
 impl WmSubscription {
-    /// The next batch (`None` only if the hub was dropped).
+    /// The next batch (`None` only once the hub was dropped and every
+    /// queued batch taken). Cancel safe.
     pub async fn recv(&mut self) -> Option<Vec<WmChange>> {
-        self.rx.recv().await
+        loop {
+            {
+                let mut q = self.queue.lock();
+                if let Some(b) = q.batches.pop_front() {
+                    return Some(b);
+                }
+                if q.closed {
+                    return None;
+                }
+            }
+            // `notify_one` keeps a permit when nobody waits: no lost wakeup
+            // between the check above and this wait.
+            self.queue.notify.notified().await;
+        }
     }
 
     /// The next batch if one is waiting.
     pub fn try_recv(&mut self) -> Option<Vec<WmChange>> {
-        self.rx.try_recv().ok()
+        self.queue.lock().batches.pop_front()
+    }
+
+    /// Batches waiting.
+    pub fn queued(&self) -> usize {
+        self.queue.lock().batches.len()
     }
 
     /// Runs an action; the receiver gets its outcome (`NotConnected` if
@@ -241,5 +357,115 @@ impl Drop for WmSubscription {
         if inner.subs.is_empty() {
             inner.stop();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::wm::model::{Publisher, WmState, Workspace};
+
+    fn state(focus: i64) -> WmState {
+        WmState {
+            name: "sway".into(),
+            workspaces: (1..=3)
+                .map(|id| Workspace {
+                    id,
+                    name: id.to_string(),
+                    focused: id == focus,
+                    active: id == focus,
+                    screen: "DP-1".into(),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    fn drain(sub: &mut WmSubscription, m: &mut Mirror) -> usize {
+        let mut n = 0;
+        while let Some(b) = sub.try_recv() {
+            n += 1;
+            for c in &b {
+                m.apply(c).unwrap_or_else(|e| panic!("{c:?}: {e}"));
+            }
+        }
+        n
+    }
+
+    /// The test runtime is current-thread and these tests never await, so
+    /// the spawned run never runs: every batch here comes from the test.
+    #[tokio::test]
+    async fn a_stopped_runs_batch_never_reaches_the_next_run() {
+        let hub = WmHub::new(WmConfig::default(), Handle::current());
+        let mut a = hub.subscribe();
+        let mut publisher = Publisher::new();
+        let mut first = hub.sink_for(1);
+        first(publisher.publish(state(1)));
+        let mut ma = Mirror::default();
+        drain(&mut a, &mut ma);
+        assert_eq!(ma.workspaces.len(), 3);
+
+        // Stop and restart; the first run's next batch (a diff against its
+        // own state) arrives late.
+        drop(a);
+        let mut b = hub.subscribe();
+        assert_eq!(hub.starts(), 2);
+        first(publisher.publish(state(2)));
+        assert!(b.try_recv().is_none(), "a stale run's batch was delivered");
+        assert_eq!(hub.subscribe().queued(), 0, "nor kept for replay");
+
+        // The current run's batches still go through.
+        let mut second = hub.sink_for(2);
+        second(Publisher::new().publish(state(3)));
+        let mut mb = Mirror::default();
+        assert_eq!(drain(&mut b, &mut mb), 1);
+        assert_eq!(mb.focused_workspace.unwrap().id, 3);
+    }
+
+    /// A subscriber that stops draining holds a bounded queue that still
+    /// rebuilds the state, and keeps every reload event.
+    #[tokio::test]
+    async fn a_lagging_subscribers_queue_is_bounded_and_coalesced() {
+        let hub = WmHub::new(WmConfig::default(), Handle::current());
+        let mut lagging = hub.subscribe();
+        let mut keeping_up = hub.subscribe();
+        let mut sink = hub.sink_for(1);
+        let mut publisher = Publisher::new();
+        let mut reference = Mirror::default();
+        let mut send = |batch: Vec<WmChange>, keeping_up: &mut WmSubscription| {
+            sink(batch);
+            drain(keeping_up, &mut reference);
+        };
+        send(publisher.publish(state(1)), &mut keeping_up);
+        for i in 0..(3 * MAX_QUEUED) {
+            send(
+                publisher.publish(state(1 + (i as i64 % 3))),
+                &mut keeping_up,
+            );
+            if i % 50 == 0 {
+                send(
+                    vec![WmChange::ConfigReloaded {
+                        failed: Some(i == 100),
+                    }],
+                    &mut keeping_up,
+                );
+            }
+        }
+        assert!(lagging.queued() <= MAX_QUEUED, "{}", lagging.queued());
+        let mut m = Mirror::default();
+        drain(&mut lagging, &mut m);
+        assert_eq!(m, reference, "the coalesced stream rebuilds the state");
+        assert_eq!(m.reloads.len(), 4, "no reload is lost");
+        assert_eq!(m.reloads[2], Some(true));
+    }
+
+    /// Dropping the last hub ends its subscriptions' streams.
+    #[tokio::test]
+    async fn dropping_the_hub_ends_the_streams() {
+        let hub = WmHub::new(WmConfig::default(), Handle::current());
+        let mut a = hub.subscribe();
+        drop(hub);
+        assert_eq!(a.recv().await, None);
     }
 }

@@ -1,11 +1,12 @@
-//! The sway adapter and the protocol client against a real headless sway.
+//! The sway adapter and the protocol client against a real headless sway,
+//! and the sway adapter against a fake sway serving captured replies.
 
 mod common;
 
 use std::time::Duration;
 
 use common::window::TestWindow;
-use common::{Collector, Sway};
+use common::{Collector, Sway, fixture};
 use strand_services::wm::{
     self, Backend, ProtocolClient, ProtocolState, WaylandTarget, WmAction, WmConfig, WmRequest,
 };
@@ -203,5 +204,173 @@ async fn sway_adapter_follows_a_real_sway() {
     drop(sway);
     c.until("gone", |m| !m.sources.connected).await;
     drop(win);
+    service.abort();
+}
+
+/// A fake sway: answers `subscribe`, `get_workspaces`, `get_tree` and
+/// `run_command` from tests/fixtures/sway-1.9 (window title in Latin-1),
+/// and sends what the test queues as events.
+struct FakeSway {
+    _dir: tempfile::TempDir,
+    socket: std::path::PathBuf,
+    events: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+    connections: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+fn frame(ty: u32, payload: &[u8]) -> Vec<u8> {
+    let mut out = b"i3-ipc".to_vec();
+    out.extend_from_slice(&(payload.len() as u32).to_ne_bytes());
+    out.extend_from_slice(&ty.to_ne_bytes());
+    out.extend_from_slice(payload);
+    out
+}
+
+/// `text` with raw `bytes` where `placeholder` was.
+fn with_raw(text: &str, placeholder: &str, bytes: &[u8]) -> Vec<u8> {
+    let (head, tail) = text.split_once(placeholder).unwrap();
+    let mut out = head.as_bytes().to_vec();
+    out.extend_from_slice(bytes);
+    out.extend_from_slice(tail.as_bytes());
+    out
+}
+
+impl FakeSway {
+    fn start(title: &'static [u8]) -> Self {
+        use std::sync::atomic::Ordering;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("sway-ipc.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let (tx, rx) = unbounded_channel::<Vec<u8>>();
+        let rx = std::sync::Arc::new(tokio::sync::Mutex::new(rx));
+        let connections = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = connections.clone();
+        let tree = std::fs::read_to_string(fixture("sway-1.9/tree.json")).unwrap();
+        let tree = with_raw(&tree, "TITLE_HERE", title);
+        let workspaces = std::fs::read(fixture("sway-1.9/workspaces.json")).unwrap();
+        tokio::spawn(async move {
+            while let Ok((conn, _)) = listener.accept().await {
+                count.fetch_add(1, Ordering::SeqCst);
+                let (mut r, w) = conn.into_split();
+                let w = std::sync::Arc::new(tokio::sync::Mutex::new(w));
+                let (tree, workspaces, rx) = (tree.clone(), workspaces.clone(), rx.clone());
+                tokio::spawn(async move {
+                    loop {
+                        let mut header = [0u8; 14];
+                        if r.read_exact(&mut header).await.is_err() {
+                            return;
+                        }
+                        let len = u32::from_ne_bytes(header[6..10].try_into().unwrap());
+                        let ty = u32::from_ne_bytes(header[10..14].try_into().unwrap());
+                        let mut payload = vec![0u8; len as usize];
+                        r.read_exact(&mut payload).await.unwrap();
+                        let reply: Vec<u8> = match ty {
+                            0 => br#"[{"success": true}]"#.to_vec(),
+                            1 => workspaces.clone(),
+                            4 => tree.clone(),
+                            2 => {
+                                // The subscriber: reply, then forward events.
+                                let w = w.clone();
+                                let rx = rx.clone();
+                                w.lock()
+                                    .await
+                                    .write_all(&frame(2, br#"{"success": true}"#))
+                                    .await
+                                    .unwrap();
+                                tokio::spawn(async move {
+                                    while let Some(ev) = rx.lock().await.recv().await {
+                                        if w.lock().await.write_all(&ev).await.is_err() {
+                                            return;
+                                        }
+                                    }
+                                });
+                                continue;
+                            }
+                            _ => br#"{"success": false}"#.to_vec(),
+                        };
+                        if w.lock().await.write_all(&frame(ty, &reply)).await.is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        Self {
+            _dir: dir,
+            socket,
+            events: tx,
+            connections,
+        }
+    }
+
+    /// A `window` `title` event for the fixture's window, its new title in
+    /// raw bytes.
+    fn retitle(&self, title: &[u8]) {
+        let tree: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(fixture("sway-1.9/tree.json")).unwrap())
+                .unwrap();
+        fn find(n: &serde_json::Value) -> Option<serde_json::Value> {
+            if n["name"] == "TITLE_HERE" {
+                return Some(n.clone());
+            }
+            n["nodes"].as_array()?.iter().find_map(find)
+        }
+        let mut node = find(&tree).unwrap();
+        node["name"] = "NEW_TITLE".into();
+        let event = serde_json::json!({ "change": "title", "container": node }).to_string();
+        let payload = with_raw(&event, "NEW_TITLE", title);
+        self.events.send(frame(0x8000_0003, &payload)).unwrap();
+    }
+}
+
+/// A title that is not UTF-8 (an XWayland Latin-1 `WM_NAME`, which sway
+/// passes through raw) in `get_tree` and in a `window` event shows U+FFFD
+/// and costs nothing: no reconnect, the state follows, actions run.
+#[tokio::test]
+async fn sway_titles_that_are_not_utf8_keep_the_connection() {
+    let fake = FakeSway::start(b"caf\xe9");
+    let (sink, mut c) = Collector::new();
+    let (req_tx, req_rx) = unbounded_channel();
+    let config = WmConfig {
+        backend: Some(Backend::Sway {
+            socket: fake.socket.clone(),
+        }),
+        wayland: None,
+        ..Default::default()
+    };
+    let service = tokio::spawn(wm::run(config, sink, req_rx));
+    c.until("boot", |m| {
+        m.sources.connected
+            && m.window_by_app("foot")
+                .is_some_and(|w| w.title == "caf\u{fffd}")
+    })
+    .await;
+    assert_eq!(c.mirror.workspace_names(), ["1"]);
+    fake.retitle(b"na\xefve");
+    c.until("retitled", |m| {
+        m.window_by_app("foot")
+            .is_some_and(|w| w.title == "na\u{fffd}ve")
+    })
+    .await;
+    let id = c.mirror.window_by_app("foot").unwrap().id.clone();
+    let (r, done) = WmRequest::new(WmAction::FocusWindow(id));
+    req_tx.send(r).unwrap();
+    assert_eq!(done.await.unwrap(), Ok(()));
+    let up = c
+        .log
+        .iter()
+        .position(|ch| matches!(ch, wm::WmChange::Sources(s) if s.connected))
+        .unwrap();
+    assert!(
+        !c.log[up..]
+            .iter()
+            .any(|ch| matches!(ch, wm::WmChange::Sources(s) if !s.connected)),
+        "never disconnected once up"
+    );
+    assert_eq!(
+        fake.connections.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "one event and one request connection: no reconnect"
+    );
     service.abort();
 }

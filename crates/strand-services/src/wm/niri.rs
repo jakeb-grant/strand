@@ -19,12 +19,13 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::net::unix::OwnedReadHalf;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use super::backoff::Backoff;
+use super::lines::next_line;
 use super::model::{Window, WmState, Workspace};
 use super::{AdapterMsg, Cmd, IpcSnapshot, WmAction, WmError};
 
@@ -283,7 +284,8 @@ impl State {
 /// A connection: one request, then its reply (or, after `EventStream`,
 /// the events).
 struct Conn {
-    lines: Lines<BufReader<OwnedReadHalf>>,
+    reader: BufReader<OwnedReadHalf>,
+    buf: Vec<u8>,
     write: tokio::net::unix::OwnedWriteHalf,
 }
 
@@ -291,9 +293,17 @@ impl Conn {
     async fn connect(path: &Path) -> io::Result<Self> {
         let (r, w) = UnixStream::connect(path).await?.into_split();
         Ok(Self {
-            lines: BufReader::new(r).lines(),
+            reader: BufReader::new(r),
+            buf: Vec::new(),
             write: w,
         })
+    }
+
+    /// The next line (bounded, decoded lossily); cancel safe.
+    async fn next_line(&mut self) -> io::Result<Option<String>> {
+        Ok(next_line(&mut self.reader, &mut self.buf)
+            .await?
+            .map(|l| String::from_utf8_lossy(&l).into_owned()))
     }
 
     /// Sends one request; the reply's `Ok` value, or its `Err` text.
@@ -303,7 +313,6 @@ impl Conn {
             line.push('\n');
             self.write.write_all(line.as_bytes()).await?;
             let reply = self
-                .lines
                 .next_line()
                 .await?
                 .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "niri closed"))?;
@@ -393,7 +402,7 @@ async fn session(
     let mut cmds_open = true;
     loop {
         tokio::select! {
-            line = events.lines.next_line() => {
+            line = events.next_line() => {
                 let Some(line) = line? else {
                     return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "event stream closed"));
                 };
@@ -408,7 +417,7 @@ async fn session(
                     Err(e) => log::warn!("niri IPC: bad event: {e}"),
                 };
                 handle(&line);
-                while let Some(next) = futures_lite::future::poll_once(events.lines.next_line()).await {
+                while let Some(next) = futures_lite::future::poll_once(events.next_line()).await {
                     match next? {
                         Some(l) => handle(&l),
                         None => break,

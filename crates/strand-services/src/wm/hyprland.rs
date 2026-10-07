@@ -16,6 +16,10 @@
 //! type `STRING` is Latin-1), into events and into JSON replies alike, so
 //! both are decoded lossily: a title that is not UTF-8 shows U+FFFD where
 //! its bad bytes were, instead of costing the connection.
+//!
+//! `j/clients` reports each window's `stableId`, the same `{:x}` string
+//! Hyprland sends as its `ext-foreign-toplevel-list-v1` identifier
+//! (`src/protocols/ForeignToplevel.cpp`), so windows join the protocol.
 
 use std::collections::HashSet;
 use std::io;
@@ -23,16 +27,21 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Deserialize;
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use super::backoff::Backoff;
+use super::lines::{MAX_MESSAGE, next_line, too_long};
 use super::model::{Window, WmState, Workspace};
 use super::{AdapterMsg, Cmd, IpcSnapshot, WmAction, WmError};
 
 /// How long one request may take; Hyprland answers synchronously.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Hyprland cuts socket2 event data at 1024 bytes
+/// (`src/managers/EventManager.cpp`, `data.substr(0, 1024)`).
+const EVENT_DATA_CAP: usize = 1024;
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(default)]
@@ -70,6 +79,10 @@ pub(crate) struct Client {
     pub title: String,
     /// A bool before Hyprland 0.42, a mode number (0 = none) since.
     pub fullscreen: serde_json::Value,
+    /// The `ext-foreign-toplevel-list-v1` identifier (`{:x}` of the
+    /// window's stable id); empty before Hyprland reported it.
+    #[serde(rename = "stableId")]
+    pub stable_id: String,
 }
 
 impl Client {
@@ -141,6 +154,22 @@ impl State {
         let live: HashSet<&str> = self.clients.iter().map(|c| c.address.as_str()).collect();
         self.urgent.retain(|a| live.contains(a.as_str()));
         self.minimized.retain(|a| live.contains(a.as_str()));
+    }
+
+    /// Applies one raw socket2 line (`EVENT>>DATA`), decoding its data
+    /// lossily. A `windowtitlev2` whose data reached Hyprland's cap may be
+    /// cut short (even inside a UTF-8 sequence): the title is re-read from
+    /// `j/clients`, which is not cut.
+    pub(crate) fn apply_line(&mut self, line: &[u8]) -> Effect {
+        let (event, data) = match line.windows(2).position(|w| w == b">>") {
+            Some(i) => (&line[..i], &line[i + 2..]),
+            None => (line, &[][..]),
+        };
+        let event = String::from_utf8_lossy(event);
+        if event == "windowtitlev2" && data.len() >= EVENT_DATA_CAP {
+            return Effect::Requery;
+        }
+        self.apply(&event, &String::from_utf8_lossy(data))
     }
 
     /// Applies one socket2 event.
@@ -296,11 +325,15 @@ impl State {
         // Numbered workspaces by number, then named ones (negative ids
         // from -1337 down) in creation order.
         workspaces.sort_by_key(|w| (w.id < 0, w.id.unsigned_abs()));
+        let mut toplevel_ids = Vec::new();
         let windows = self
             .clients
             .iter()
             .filter(|c| c.mapped)
             .map(|c| {
+                if !c.stable_id.is_empty() {
+                    toplevel_ids.push((c.address.clone(), c.stable_id.clone()));
+                }
                 let special = is_special(&c.workspace.name);
                 Window {
                     id: c.address.clone(),
@@ -322,7 +355,7 @@ impl State {
                 windows,
                 focused_screen: focused_mon.map(|m| m.name.clone()),
             },
-            toplevel_ids: Vec::new(),
+            toplevel_ids,
         }
     }
 
@@ -369,7 +402,13 @@ pub(crate) async fn request(path: &Path, command: &str) -> io::Result<String> {
         let mut s = UnixStream::connect(path).await?;
         s.write_all(command.as_bytes()).await?;
         let mut out = Vec::new();
-        s.read_to_end(&mut out).await?;
+        (&mut s)
+            .take(MAX_MESSAGE as u64 + 1)
+            .read_to_end(&mut out)
+            .await?;
+        if out.len() > MAX_MESSAGE {
+            return Err(too_long());
+        }
         Ok(String::from_utf8_lossy(&out).into_owned())
     };
     tokio::time::timeout(REQUEST_TIMEOUT, run)
@@ -388,23 +427,6 @@ async fn request_json<T: for<'de> Deserialize<'de>>(path: &Path, command: &str) 
             ),
         )
     })
-}
-
-/// The next socket2 line, decoded lossily; `None` at the end. Cancel
-/// safe: a partial line stays in `buf` for the next call.
-pub(crate) async fn next_line<R: AsyncRead + Unpin>(
-    reader: &mut BufReader<R>,
-    buf: &mut Vec<u8>,
-) -> io::Result<Option<String>> {
-    let n = reader.read_until(b'\n', buf).await?;
-    if n == 0 && buf.is_empty() {
-        return Ok(None);
-    }
-    let mut line = std::mem::take(buf);
-    if line.last() == Some(&b'\n') {
-        line.pop();
-    }
-    Ok(Some(String::from_utf8_lossy(&line).into_owned()))
 }
 
 /// Reads the whole state.
@@ -469,9 +491,8 @@ async fn session(
                 let mut requery = false;
                 let mut changed = false;
                 let mut reloads = 0;
-                let mut handle = |line: &str| {
-                    let (event, data) = line.split_once(">>").unwrap_or((line, ""));
-                    match state.apply(event, data) {
+                let mut handle = |line: &[u8]| {
+                    match state.apply_line(line) {
                         Effect::None => {}
                         Effect::Changed => changed = true,
                         Effect::Requery => requery = true,
@@ -584,6 +605,7 @@ mod tests {
                 class: "kitty".into(),
                 title: "~".into(),
                 fullscreen: serde_json::json!(0),
+                stable_id: "1f".into(),
             }],
             None,
         );
@@ -640,24 +662,40 @@ mod tests {
         assert_eq!(s.apply("workspacev2", "77,77"), Effect::Requery);
     }
 
-    #[tokio::test]
-    async fn lines_that_are_not_utf8_are_decoded_lossily() {
-        let raw: &[u8] = b"windowtitlev2>>a1,caf\xe9\nurgent>>a1\npartial";
-        let mut reader = BufReader::new(raw);
-        let mut buf = Vec::new();
+    #[test]
+    fn raw_lines_are_decoded_lossily_and_long_titles_reread() {
+        let mut s = state();
         assert_eq!(
-            next_line(&mut reader, &mut buf).await.unwrap().as_deref(),
-            Some("windowtitlev2>>a1,caf\u{fffd}")
+            s.apply_line(b"windowtitlev2>>a1,caf\xe9, ok"),
+            Effect::Changed
         );
-        assert_eq!(
-            next_line(&mut reader, &mut buf).await.unwrap().as_deref(),
-            Some("urgent>>a1")
-        );
-        assert_eq!(
-            next_line(&mut reader, &mut buf).await.unwrap().as_deref(),
-            Some("partial")
-        );
-        assert_eq!(next_line(&mut reader, &mut buf).await.unwrap(), None);
+        assert_eq!(s.snapshot().state.windows[0].title, "caf\u{fffd}, ok");
+        assert_eq!(s.apply_line(b"urgent>>a1"), Effect::Changed);
+        assert_eq!(s.apply_line(b"configreloaded>>"), Effect::Reloaded);
+        assert_eq!(s.apply_line(b"nonsense"), Effect::None);
+
+        // Data at Hyprland's 1024-byte cap may be cut (here inside `é`):
+        // re-read instead of showing the cut title.
+        let mut line = b"windowtitlev2>>a1,".to_vec();
+        let mut data = b"a1,".to_vec();
+        while data.len() < EVENT_DATA_CAP - 1 {
+            data.push(b'x');
+        }
+        data.push(0xc3);
+        line.truncate(b"windowtitlev2>>".len());
+        line.extend_from_slice(&data);
+        assert_eq!(data.len(), EVENT_DATA_CAP);
+        assert_eq!(s.apply_line(&line), Effect::Requery);
+        assert_eq!(s.snapshot().state.windows[0].title, "caf\u{fffd}, ok");
+        // One byte under the cap is whole.
+        line.pop();
+        assert_eq!(s.apply_line(&line), Effect::Changed);
+    }
+
+    #[test]
+    fn windows_carry_their_toplevel_identifier() {
+        let ids = state().snapshot().toplevel_ids;
+        assert_eq!(ids, [("0xa1".to_string(), "1f".to_string())]);
     }
 
     #[test]

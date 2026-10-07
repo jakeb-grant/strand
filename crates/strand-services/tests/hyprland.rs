@@ -4,141 +4,15 @@
 
 mod common;
 
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use common::{Collector, bursts, fixture};
+use common::hyprland::FakeHyprland;
+use common::{Collector, bursts};
 use strand_services::wm::{self, Backend, WmAction, WmConfig, WmError, WmRequest};
 use strand_watch::{ChangeEvent, CompositorEvent};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixListener;
-use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
-
-enum Ev {
-    Burst(Vec<u8>),
-    /// Close the event connection (Hyprland restarting, a lost socket).
-    Drop,
-}
-
-/// A fake Hyprland instance answering from one fixture directory.
-struct FakeHyprland {
-    _dir: tempfile::TempDir,
-    backend: Backend,
-    scene: Arc<Mutex<&'static str>>,
-    requests: Arc<Mutex<Vec<String>>>,
-    events: UnboundedSender<Ev>,
-}
-
-impl FakeHyprland {
-    fn start() -> Self {
-        let dir = tempfile::tempdir().unwrap();
-        let backend = Backend::hyprland_in(dir.path(), "a1b2c3_1759780000_123456789");
-        let Backend::Hyprland { requests, events } = backend.clone() else {
-            unreachable!()
-        };
-        std::fs::create_dir_all(requests.parent().unwrap()).unwrap();
-        let scene = Arc::new(Mutex::new("boot"));
-        let log = Arc::new(Mutex::new(Vec::new()));
-        let s1 = UnixListener::bind(&requests).unwrap();
-        let s2 = UnixListener::bind(&events).unwrap();
-        {
-            let scene = scene.clone();
-            let log = log.clone();
-            tokio::spawn(async move {
-                loop {
-                    let Ok((mut conn, _)) = s1.accept().await else {
-                        return;
-                    };
-                    // Hyprland reads one request of up to 1023 bytes.
-                    let mut buf = vec![0u8; 1023];
-                    let n = conn.read(&mut buf).await.unwrap();
-                    let req = String::from_utf8_lossy(&buf[..n]).into_owned();
-                    let reply = answer(*scene.lock().unwrap(), &req);
-                    log.lock().unwrap().push(req);
-                    let _ = conn.write_all(&reply).await;
-                    // Then closes.
-                }
-            });
-        }
-        let (tx, mut rx) = unbounded_channel::<Ev>();
-        tokio::spawn(async move {
-            loop {
-                let Ok((mut conn, _)) = s2.accept().await else {
-                    return;
-                };
-                loop {
-                    match rx.recv().await {
-                        Some(Ev::Burst(b)) => {
-                            // One write: the burst arrives together.
-                            if conn.write_all(&b).await.is_err() {
-                                break;
-                            }
-                        }
-                        Some(Ev::Drop) => break,
-                        None => return,
-                    }
-                }
-            }
-        });
-        Self {
-            _dir: dir,
-            backend,
-            scene,
-            requests: log,
-            events: tx,
-        }
-    }
-
-    fn set_scene(&self, s: &'static str) {
-        *self.scene.lock().unwrap() = s;
-    }
-
-    fn send(&self, burst: &str) {
-        self.send_bytes(burst.as_bytes());
-    }
-
-    fn send_bytes(&self, burst: &[u8]) {
-        self.events.send(Ev::Burst(burst.to_vec())).unwrap();
-    }
-
-    fn requests(&self) -> Vec<String> {
-        self.requests.lock().unwrap().clone()
-    }
-}
-
-/// The title Hyprland copies byte for byte from an XWayland window whose
-/// `WM_NAME` is Latin-1 (`STRING`): `café ÿ`, not UTF-8.
-const LATIN1_TITLE: &[u8] = b"caf\xe9 \xff";
-
-fn answer(scene: &str, req: &str) -> Vec<u8> {
-    // `latin1`: the `opened` moment with foot's title in Latin-1, raw in
-    // the JSON as HyprCtl's escapeJSONStrings leaves bytes over 0x7f.
-    let (dir_scene, latin1) = match scene {
-        "latin1" => ("opened", true),
-        s => (s, false),
-    };
-    let dir: PathBuf = fixture("hyprland-0.56.2").join(dir_scene);
-    let file = |name: &str| std::fs::read(dir.join(name)).unwrap();
-    match req {
-        "j/monitors" => file("monitors.json"),
-        "j/workspaces" => file("workspaces.json"),
-        "j/clients" if latin1 => {
-            let text = String::from_utf8(file("clients.json")).unwrap();
-            let (head, tail) = text.split_once("\"title\": \"foot\"").unwrap();
-            let mut out = head.as_bytes().to_vec();
-            out.extend_from_slice(b"\"title\": \"");
-            out.extend_from_slice(LATIN1_TITLE);
-            out.extend_from_slice(b"\"");
-            out.extend_from_slice(tail.as_bytes());
-            out
-        }
-        "j/clients" => file("clients.json"),
-        "j/activewindow" => file("activewindow.json"),
-        r if r.starts_with("dispatch ") => b"ok".to_vec(),
-        _ => b"unknown request".to_vec(),
-    }
-}
+use tokio::sync::mpsc::unbounded_channel;
 
 fn names(m: &wm::Mirror) -> Vec<String> {
     m.workspace_names()
@@ -286,7 +160,7 @@ async fn hyprland_adapter_reconnects_after_losing_its_socket() {
         .await;
 
     // The event socket goes away; a window opened meanwhile.
-    fake.events.send(Ev::Drop).unwrap();
+    fake.drop_events();
     fake.set_scene("opened");
     c.until("lost", |m| !m.sources.connected).await;
     // The last state stays while away.
@@ -475,4 +349,49 @@ async fn the_hub_shares_one_adapter_between_stores() {
         .unwrap();
     assert!(!batch.is_empty());
     drop(c);
+}
+
+/// Hyprland cuts event data at 1024 bytes, so a long title's
+/// `windowtitlev2` may arrive cut (here inside a UTF-8 sequence): the
+/// adapter re-reads `j/clients` instead of showing the cut title.
+#[tokio::test]
+async fn titles_cut_at_hyprlands_event_cap_are_reread() {
+    let fake = FakeHyprland::start();
+    let bursts = bursts("hyprland-0.56.2/events.txt");
+    let (sink, mut c) = Collector::new();
+    let (_req_tx, req_rx) = unbounded_channel();
+    let config = WmConfig {
+        backend: Some(fake.backend.clone()),
+        wayland: None,
+        ..Default::default()
+    };
+    let service = tokio::spawn(wm::run(config, sink, req_rx));
+    c.until("boot", |m| m.sources.connected && !m.workspaces.is_empty())
+        .await;
+    fake.set_scene("opened");
+    fake.send(&bursts["open"]);
+    c.until("open", |m| m.window_by_app("foot").is_some()).await;
+    let before = fake.requests().len();
+
+    // `<address>,` and a title of 2-byte `é`s, cut by Hyprland at 1024
+    // bytes of data: the last `é` loses its second byte.
+    let mut data = b"55d0c0a1c3d0,".to_vec();
+    while data.len() < 1024 {
+        data.extend_from_slice("é".as_bytes());
+    }
+    data.truncate(1024);
+    let mut line = b"windowtitle>>55d0c0a1c3d0\nwindowtitlev2>>".to_vec();
+    line.extend_from_slice(&data);
+    line.push(b'\n');
+    fake.send_bytes(&line);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while fake.requests().len() < before + 4 {
+        assert!(tokio::time::Instant::now() < deadline, "no re-read");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    c.quiet_for(Duration::from_millis(200)).await;
+    let foot = c.mirror.window_by_app("foot").unwrap();
+    assert_eq!(foot.title, "foot", "j/clients' title, not the cut one");
+    assert!(c.mirror.sources.connected);
+    service.abort();
 }

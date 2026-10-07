@@ -7,6 +7,10 @@
 //! sleeps in `poll(2)` on the Wayland socket and an eventfd, so an idle
 //! compositor costs no wakeup, and sends a [`ProtocolState`] after every
 //! atomic update (a toplevel's `done`, the workspace manager's `done`).
+//! Like a toplevel's events, every workspace and group event (including
+//! creations and removals) is held pending until the manager's `done`
+//! applies them together: a published state never mixes two workspace
+//! transactions, even when a toplevel's `done` is read between them.
 //!
 //! The thread lives and dies with its connection: when the display goes
 //! away it sends a disconnected [`ProtocolState`] and ends (the shell's
@@ -189,16 +193,31 @@ struct ToplevelEntry {
     current: Option<Toplevel>,
 }
 
-#[derive(Debug, Default)]
-struct GroupEntry {
+/// A group's membership: `pending` takes the events, `current` (what
+/// snapshots read) takes `pending` at the manager's `done`.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Members {
     outputs: Vec<ObjectId>,
     workspaces: Vec<ObjectId>,
+}
+
+#[derive(Debug, Default)]
+struct GroupEntry {
+    pending: Members,
+    current: Members,
+    /// `removed` was received: it goes at the next `done`.
+    removed: bool,
 }
 
 #[derive(Debug)]
 struct WorkspaceEntry {
     handle: ExtWorkspaceHandleV1,
-    data: ProtoWorkspace,
+    pending: ProtoWorkspace,
+    /// `None` until the first `done` after its creation.
+    current: Option<ProtoWorkspace>,
+    /// `removed` was received (its handle destroyed): it goes at the next
+    /// `done`.
+    removed: bool,
 }
 
 #[derive(Debug, Default)]
@@ -219,8 +238,8 @@ impl Client {
         let screens_of = |ws: &ObjectId| -> Vec<String> {
             self.groups
                 .iter()
-                .filter(|(_, g)| g.workspaces.contains(ws))
-                .flat_map(|(_, g)| g.outputs.iter())
+                .filter(|(_, g)| g.current.workspaces.contains(ws))
+                .flat_map(|(_, g)| g.current.outputs.iter())
                 .filter_map(|o| self.outputs.get(o).map(|(_, _, n)| n.clone()))
                 .filter(|n| !n.is_empty())
                 .collect()
@@ -237,12 +256,30 @@ impl Client {
             workspaces: self
                 .workspaces
                 .iter()
-                .map(|(id, w)| ProtoWorkspace {
-                    screens: screens_of(id),
-                    ..w.data.clone()
+                .filter_map(|(id, w)| {
+                    Some(ProtoWorkspace {
+                        screens: screens_of(id),
+                        ..w.current.clone()?
+                    })
                 })
                 .collect(),
         }
+    }
+
+    /// The workspace manager's `done`: every pending workspace and group
+    /// change applies at once.
+    fn workspaces_done(&mut self) {
+        self.workspaces.retain(|(_, w)| !w.removed);
+        self.groups.retain(|(_, g)| !g.removed);
+        let live: Vec<ObjectId> = self.workspaces.iter().map(|(id, _)| id.clone()).collect();
+        for (_, w) in &mut self.workspaces {
+            w.current = Some(w.pending.clone());
+        }
+        for (_, g) in &mut self.groups {
+            g.pending.workspaces.retain(|w| live.contains(w));
+            g.current = g.pending.clone();
+        }
+        self.dirty = true;
     }
 
     fn bind_output(
@@ -368,9 +405,9 @@ fn activate(client: &Client, key: u64) -> Result<(), super::WmError> {
     let (_, ws) = client
         .workspaces
         .iter()
-        .find(|(_, w)| w.data.key == key)
+        .find(|(_, w)| !w.removed && w.current.as_ref().is_some_and(|c| c.key == key))
         .ok_or(super::WmError::UnknownWorkspace(key as i64))?;
-    if !ws.data.can_activate {
+    if !ws.current.as_ref().is_some_and(|c| c.can_activate) {
         return Err(super::WmError::Unsupported(
             "the compositor does not let this workspace be activated",
         ));
@@ -535,14 +572,16 @@ impl Dispatch<ExtWorkspaceManagerV1, ()> for Client {
                     workspace.id(),
                     WorkspaceEntry {
                         handle: workspace,
-                        data: ProtoWorkspace {
+                        pending: ProtoWorkspace {
                             key,
                             ..Default::default()
                         },
+                        current: None,
+                        removed: false,
                     },
                 ));
             }
-            ext_workspace_manager_v1::Event::Done => state.dirty = true,
+            ext_workspace_manager_v1::Event::Done => state.workspaces_done(),
             ext_workspace_manager_v1::Event::Finished => {
                 state.workspace_manager = None;
                 state.groups.clear();
@@ -573,25 +612,28 @@ impl Dispatch<ExtWorkspaceGroupHandleV1, ()> for Client {
             return;
         };
         let group = &mut state.groups[pos].1;
+        let members = &mut group.pending;
         match event {
             ext_workspace_group_handle_v1::Event::OutputEnter { output } => {
-                if !group.outputs.contains(&output.id()) {
-                    group.outputs.push(output.id());
+                if !members.outputs.contains(&output.id()) {
+                    members.outputs.push(output.id());
                 }
             }
             ext_workspace_group_handle_v1::Event::OutputLeave { output } => {
-                group.outputs.retain(|o| *o != output.id());
+                members.outputs.retain(|o| *o != output.id());
             }
             ext_workspace_group_handle_v1::Event::WorkspaceEnter { workspace } => {
-                if !group.workspaces.contains(&workspace.id()) {
-                    group.workspaces.push(workspace.id());
+                if !members.workspaces.contains(&workspace.id()) {
+                    members.workspaces.push(workspace.id());
                 }
             }
             ext_workspace_group_handle_v1::Event::WorkspaceLeave { workspace } => {
-                group.workspaces.retain(|w| *w != workspace.id());
+                members.workspaces.retain(|w| *w != workspace.id());
             }
             ext_workspace_group_handle_v1::Event::Removed => {
-                state.groups.remove(pos);
+                // The handle is inert at once; the group leaves the state
+                // at the next `done`.
+                group.removed = true;
                 handle.destroy();
             }
             _ => {}
@@ -612,7 +654,8 @@ impl Dispatch<ExtWorkspaceHandleV1, ()> for Client {
         let Some(pos) = state.workspaces.iter().position(|(i, _)| *i == id) else {
             return;
         };
-        let data = &mut state.workspaces[pos].1.data;
+        let entry = &mut state.workspaces[pos].1;
+        let data = &mut entry.pending;
         match event {
             ext_workspace_handle_v1::Event::Id { id } => data.id = Some(id),
             ext_workspace_handle_v1::Event::Name { name } => data.name = name,
@@ -640,10 +683,8 @@ impl Dispatch<ExtWorkspaceHandleV1, ()> for Client {
                     bits & ext_workspace_handle_v1::WorkspaceCapabilities::Activate.bits() != 0;
             }
             ext_workspace_handle_v1::Event::Removed => {
-                state.workspaces.remove(pos);
-                for (_, g) in &mut state.groups {
-                    g.workspaces.retain(|w| *w != id);
-                }
+                // Inert at once; out of the state at the next `done`.
+                entry.removed = true;
                 handle.destroy();
             }
             _ => {}

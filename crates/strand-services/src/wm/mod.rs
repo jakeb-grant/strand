@@ -29,6 +29,7 @@ mod backoff;
 pub mod detect;
 mod hub;
 mod hyprland;
+mod lines;
 pub mod model;
 #[cfg(feature = "niri")]
 mod niri;
@@ -44,7 +45,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
 
 pub use detect::{Backend, detect, detect_with};
-pub use hub::{WmHub, WmSubscription};
+pub use hub::{MAX_QUEUED, WmHub, WmSubscription};
 pub use model::{CompositorKind, Mirror, Publisher, Sources, Window, WmChange, WmState, Workspace};
 pub use protocol::{ProtoWorkspace, ProtocolClient, ProtocolState, Toplevel, WaylandTarget};
 pub use schema::SCHEMA;
@@ -159,8 +160,9 @@ pub fn first_desktop(value: &str) -> Option<String> {
 }
 
 /// An adapter's typed state, plus the `ext-foreign-toplevel-list`
-/// identifier of the windows whose IPC reports it (sway 1.10 and later),
-/// for joining with the protocol.
+/// identifier of the windows whose IPC reports it (sway 1.10 and later;
+/// Hyprland's `stableId`), for joining with the protocol. niri reports
+/// none.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct IpcSnapshot {
     pub state: WmState,
@@ -182,7 +184,7 @@ pub(crate) type Cmd = (WmAction, Option<oneshot::Sender<Result<(), WmError>>>);
 /// preferred where it covers a field. With an adapter, its workspace and
 /// window sets and ids stand (only they relate windows to workspaces and
 /// carry the ids actions need); a workspace joined by name (and screen,
-/// when names repeat) takes `active`, `screen` and (or-ed) `urgent` from
+/// when names repeat on either side) takes `active`, `screen` and (or-ed) `urgent` from
 /// `ext-workspace-v1`, and a window joined by its toplevel identifier
 /// takes `title` and `app_id` from `ext-foreign-toplevel-list-v1`. Without
 /// an adapter the protocols are the whole state: workspaces not `hidden`,
@@ -201,8 +203,13 @@ pub fn merge(ipc: Option<&WmState>, ids: &[(String, String)], proto: &ProtocolSt
                     .iter()
                     .filter(|p| p.name == ws.name)
                     .collect();
+                // niri names unnamed workspaces by index: `1` on each
+                // output. Then even a lone protocol `1` must be on this
+                // screen (its other twin may be hidden or not yet sent).
+                let ipc_repeats = ipc.workspaces.iter().filter(|w| w.name == ws.name).count() > 1;
                 let joined = match named.as_slice() {
-                    [one] => Some(*one),
+                    [one] if !ipc_repeats || one.screens.contains(&ws.screen) => Some(*one),
+                    [_] => None,
                     many => {
                         let mut on_screen = many.iter().filter(|p| p.screens.contains(&ws.screen));
                         match (on_screen.next(), on_screen.next()) {
@@ -301,7 +308,8 @@ fn adapter(
 /// or, without an adapter or once the adapter has failed to connect, the
 /// protocols' (standard protocols first, IPC as the fallback: a broken
 /// adapter does not hide them). When the adapter's state arrives later,
-/// its ids replace the protocols' as an ordinary keyed diff.
+/// its ids replace the protocols' with a `Reset` of both lists (the same
+/// id may mean another workspace), not a keyed diff.
 pub async fn run<S>(config: WmConfig, mut sink: S, mut requests: UnboundedReceiver<WmRequest>)
 where
     S: FnMut(Vec<WmChange>) + Send,
@@ -333,6 +341,9 @@ where
 
     let coordinator = async move {
         let mut publisher = Publisher::new();
+        // Whose ids the last published state carried (the adapter's or
+        // the protocols').
+        let mut published_ipc_ids: Option<bool> = None;
         let mut ipc: Option<IpcSnapshot> = None;
         let mut connected = false;
         // The adapter has reported a failed attempt: the protocols may be
@@ -393,6 +404,14 @@ where
                     Some(k) => k.name().to_string(),
                     None => desktop.clone().unwrap_or_default(),
                 };
+                // The adapter came up after the protocols' state went out:
+                // equal ids may name different workspaces, so the lists
+                // start over (a `Reset`) instead of updating in place.
+                let ipc_ids = ipc.is_some();
+                if published_ipc_ids.is_some_and(|was| was != ipc_ids) {
+                    publisher.forget();
+                }
+                published_ipc_ids = Some(ipc_ids);
                 changes.extend(publisher.publish(state));
             }
             let sources = Sources {
@@ -608,6 +627,26 @@ mod tests {
         // No identifier: the IPC title stays.
         let s = merge(Some(&ipc), &[], &proto);
         assert_eq!(s.windows[0].title, "old");
+
+        // The IPC has `1` on two screens, the protocol only the one on
+        // DP-2: only that one joins; DP-1's keeps its own screen and state.
+        let lone = ProtocolState {
+            workspaces: vec![ProtoWorkspace {
+                urgent: true,
+                ..proto_ws(2, "1", "DP-2", true)
+            }],
+            ..proto.clone()
+        };
+        let s = merge(Some(&ipc), &[], &lone);
+        assert_eq!(s.workspaces[0].screen, "DP-1");
+        assert!(!s.workspaces[0].urgent);
+        assert_eq!(s.workspaces[1].screen, "DP-2");
+        assert!(s.workspaces[1].urgent && s.workspaces[1].active);
+        // A name the IPC does not repeat joins its lone match anywhere.
+        let mut single = ipc.clone();
+        single.workspaces.truncate(1);
+        let s = merge(Some(&single), &[], &lone);
+        assert_eq!(s.workspaces[0].screen, "DP-2");
     }
 
     /// With no adapter, no display and no requester left, the service

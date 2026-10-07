@@ -271,6 +271,12 @@ impl Publisher {
         out
     }
 
+    /// Forgets the last published state: the next [`Publisher::publish`]
+    /// sends whole lists as `Reset`s and every field again.
+    pub fn forget(&mut self) {
+        self.last = None;
+    }
+
     /// A [`WmChange::Sources`] when `sources` differ from the last sent.
     pub fn sources(&mut self, sources: Sources) -> Option<WmChange> {
         if self.sources.as_ref() == Some(&sources) {

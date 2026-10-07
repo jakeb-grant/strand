@@ -6046,13 +6046,18 @@ means a join, not two lists.** With an IPC adapter its workspace and
 window sets and ids stand: only IPC relates windows to workspaces and
 carries the ids `dispatch`/`Action`/commands need. A workspace joined to
 an `ext-workspace-v1` handle by name (and by screen when names repeat
-across outputs) takes `active`, `screen` and (or-ed) `urgent` from the
+across outputs, on either side: when the IPC has `1` on two outputs, as
+niri's unnamed workspaces do, even a lone protocol `1` joins only the
+one on its screen) takes `active`, `screen` and (or-ed) `urgent` from the
 protocol; a window joined to an `ext-foreign-toplevel-list-v1` handle
 takes `title` and `app_id` from it. The only stable join key for windows
 is the toplevel identifier, which sway 1.10+ reports in IPC
-(`foreign_toplevel_identifier`); Hyprland and niri do not, so their
-windows come from IPC alone (the same values the compositor would send
-in the protocol). Without an adapter the protocols are the whole state:
+(`foreign_toplevel_identifier`) and Hyprland as `stableId` in
+`j/clients` (the same `{:x}` string `src/protocols/ForeignToplevel.cpp`
+sends as the identifier, `src/debug/HyprCtl.cpp`, v0.56.2). Only niri
+reports none, so its windows come from IPC alone (the same values niri
+would send in the protocol). (Corrected in fixer round 2: an earlier
+version said Hyprland had no join key either.) Without an adapter the protocols are the whole state:
 workspaces not `hidden`, numbered by a per-handle key the client assigns
 (the protocol has no integer id), `focused` only when it is the one
 shown (`active`) workspace (see "focus with the protocols alone" below);
@@ -6060,7 +6065,8 @@ windows by identifier, with no workspace, focus or actions (the list
 protocol has none); `ws.focus()` is `activate` + `commit`. Proof: `src/wm/mod.rs`
 (tests `the_protocol_wins_where_it_covers_a_field`,
 `protocols_alone_make_the_whole_state`), `tests/protocol.rs::
-the_protocols_alone_serve_workspaces_and_windows`.
+the_protocols_alone_serve_workspaces_and_windows` and `tests/protocol.rs::
+hyprland_windows_join_the_toplevel_list_by_stable_id`.
 
 **2026-10-06 · wave4-wm: which compositor.** `HYPRLAND_INSTANCE_SIGNATURE`
 (sockets under `$XDG_RUNTIME_DIR/hypr/<sig>/`, falling back to
@@ -6093,7 +6099,11 @@ copies titles as raw bytes into events and JSON replies alike (an
 XWayland `WM_NAME` of type `STRING` is Latin-1), so socket2 lines are
 read as bytes and both are decoded lossily (U+FFFD for bad bytes); one
 such title used to cost the connection and, through `j/clients`, every
-reconnect while that window lived. The fixtures are reconstructed from
+reconnect while that window lived. Hyprland cuts event data at 1024
+bytes (`EventManager.cpp`, `data.substr(0, 1024)`), so a `windowtitlev2`
+whose data reaches the cap (counted in raw bytes) may be cut, even inside
+a UTF-8 sequence: it re-reads `j/clients` instead of patching
+(`tests/hyprland.rs::titles_cut_at_hyprlands_event_cap_are_reread`). The fixtures are reconstructed from
 Hyprland 0.56.2's source (`HyprCtl.cpp` at that tag, the wiki's IPC
 page), not captured from a running Hyprland; real captures replace or
 validate them under M3's "runs on Hyprland, niri and sway" exit box. Known gap: 0.56's optional Lua config turns `dispatch` into
@@ -6120,9 +6130,16 @@ the tests closes after each reply, as those versions do. Proof:
 `tests/niri.rs` (fixtures reconstructed from niri 26.04's `niri-ipc`
 types and `src/ipc/server.rs`, not captured).
 
-**2026-10-06 · wave4-wm: sway.** swayipc-async 3.0, as design.md names;
-it runs on async-io, whose reactor thread blocks in `epoll` with
-nothing to do (measured: no wakeup). A `window` `title` event is
+**2026-10-06 · wave4-wm: sway.** swayipc-async 3.0's types, as design.md
+names, over our own i3-ipc framing on tokio (fixer round 2):
+swayipc-async decodes strictly as UTF-8 and keeps its raw API private,
+and wlroots copies an XWayland `WM_NAME` of type `STRING` (Latin-1) byte
+for byte into titles that sway's json-c output leaves unescaped, so one
+such window made every `get_tree` fail and the adapter reconnect forever
+while it lived. Our framing (`GET_WORKSPACES`, `GET_TREE`, `RUN_COMMAND`,
+`SUBSCRIBE` and the event stream; a 14-byte native-endian header) decodes
+each payload lossily (U+FFFD) and then with swayipc-async's types; it
+also drops the async-io reactor thread. A `window` `title` event is
 patched; every other `workspace`/`window` event re-reads `get_workspaces`
 and `get_tree` once per burst; `workspace` `reload` is
 `wm.config_reloaded` (`failed: None`: sway does not say). Scratchpad
@@ -6133,7 +6150,9 @@ container and CI (1.9, wlroots 0.17) advertises neither
 `ext_foreign_toplevel_list_v1` (sway 1.10) nor `ext_workspace_manager_v1`,
 so the protocol client is proven against an in-process wayland-server
 compositor that implements both, and the sway tests assert what 1.9
-lacks. Proof: `tests/sway.rs`, `tests/protocol.rs`.
+lacks. Proof: `tests/sway.rs` (with `sway_titles_that_are_not_utf8_keep_the_connection`
+against a fake sway serving replies captured from sway 1.9,
+`tests/fixtures/sway-1.9`), `src/wm/sway.rs` tests, `tests/protocol.rs`.
 
 **2026-10-06 · wave4-wm: lost sockets.** Every adapter reconnects with
 backoff (100 ms doubling to 10 s, back to 100 ms only after a connection
@@ -6182,7 +6201,11 @@ adapter's first state, or, once the adapter has reported a failed
 attempt, from the protocols alone (`wm.name` is still the adapter's
 compositor); not before that failure, so a healthy start does not first
 show protocol ids and then IPC ids. When the adapter comes up, its state
-replaces the protocols' as an ordinary keyed diff. Until then actions run
+replaces the protocols' with a `Reset` of both lists, not a keyed diff:
+the protocol's key 1 and Hyprland's workspace 1 are different workspaces,
+and an `Update` of the same key would carry a store's per-item state
+across them (`tests/protocol.rs::a_late_adapter_resets_the_lists`; fixer
+round 2). Until then actions run
 where the protocol can (`ws.focus()` by `activate`) and answer
 `NotConnected` otherwise. Proof: `tests/protocol.rs::
 a_broken_adapter_does_not_hide_the_protocols`, `tests/hyprland.rs::
@@ -6212,9 +6235,23 @@ screen from the same compositor. They share one `wm::run` (one adapter
 connection, one protocol thread) through `wm::WmHub`: the first
 subscription starts it, a later one gets the current state as one
 batch (never a past reload), the last one dropped stops it at once (each
-store's grace already passed by then). Proof: `tests/hyprland.rs::
-the_hub_shares_one_adapter_between_stores` (one connection and one read
-for two subscribers, identical mirrors, restart from clean).
+store's grace already passed by then). Each start is numbered: a batch
+the stopped run was already delivering when it was aborted (the runtime
+thread inside `fan_out` while another thread drops the last subscription
+and subscribes again) is dropped, never applied to the next run's fresh
+state. Dropping the last `WmHub` aborts the run even while subscriptions
+live (a detached task would keep its sockets and protocol thread until
+the runtime ends), and their streams end. Each subscriber's queue holds
+at most 64 batches: one that stops draining while the compositor is busy
+has its queue replaced by one batch that rebuilds the current state (the
+late joiner's replay) plus every `config_reloaded` it had not seen.
+Proof: `tests/hyprland.rs::the_hub_shares_one_adapter_between_stores`
+(one connection and one read for two subscribers, identical mirrors,
+restart from clean), `src/wm/hub.rs` tests
+(`a_stopped_runs_batch_never_reaches_the_next_run`,
+`a_lagging_subscribers_queue_is_bounded_and_coalesced`,
+`dropping_the_hub_ends_the_streams`), `tests/protocol.rs::
+dropping_the_hub_stops_the_service_its_subscriptions_held`.
 
 **2026-10-06 · wave4-wm: the schema the real services serve.**
 `wm::SCHEMA` is the text the three stores give `Service::schema()` to
@@ -6223,8 +6260,13 @@ methods, plus `Workspace.active: bool`, `Window.urgent: bool` and `event
 config_reloaded(failed: bool?)` (niri's `ConfigLoaded { failed }`, which
 design.md's change-source table names; unset from Hyprland and sway).
 Written now so the wiring step adopts it through `Schema::extend`
-without re-deciding. Proof: `src/wm/schema.rs` (test: every provisional
-declaration is served alike).
+without re-deciding. Proof so far is textual: `src/wm/schema.rs`
+compares the text with every provisional declaration in builtin.schema
+(strand-services cannot depend on the compiler). The wiring step adds the
+language-side test: `Schema::extend` with `strand_services::schemas()`
+gives no errors and checks `workspaces.on(screen)`,
+`windows.focused?.title`, `on wm.config_reloaded { }` and
+`on wm.config_reloaded(failed) { }`.
 
 **2026-10-06 · wave4-wm: nested windows are copies.** `Workspace.windows`
 holds copies of its windows, so a title change is also an `Update` of
@@ -6243,3 +6285,28 @@ and dies with the display. The coordinator drains everything already
 queued before it merges, so a busy runtime merges and diffs only the
 newest adapter and protocol states (reloads and connection changes keep
 their order).
+
+**2026-10-07 · wave4-wm: `ext-workspace-v1` applies at `done`.** Every
+workspace event (`name`, `state`, `coordinates`, `capabilities`,
+`removed`) and group event (`output_enter`/`leave`,
+`workspace_enter`/`leave`, `removed`), and the creation of a workspace,
+is held pending until the manager's `done`, as the protocol says; a
+snapshot (which a toplevel's `done` can trigger between the two halves
+of a workspace transaction) reads only the applied copies. A removed
+handle is destroyed at once (it is inert) and leaves the state at the
+next `done`. Proof: `tests/protocol.rs::
+workspace_changes_apply_at_the_managers_done`.
+
+**2026-10-07 · wave4-wm: bounded reads.** The compositor is trusted, but
+a socket2 line, a niri line, a Hyprland reply or an i3-ipc frame over
+16 MiB is an I/O error (the adapter reconnects with backoff) instead of
+an ever-growing buffer. The line and frame readers are cancel safe (the
+partial message stays in the reader's buffer across `select!`). Proof:
+`src/wm/lines.rs` and `src/wm/sway.rs` tests.
+
+**2026-10-07 · wave4-wm: the IPC adapters' box waits for the wiring.**
+features.md's "Hyprland, niri, sway IPC adapters" box is unticked again:
+the adapters are proven as library code (fake Hyprland and niri from
+reconstructed traffic, real and fake sway), but shells still see schema
+defaults until the `#[service]` wiring lands; its progress note lists the
+proving tests.

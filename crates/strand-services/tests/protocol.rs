@@ -4,7 +4,7 @@
 
 mod common;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -42,6 +42,10 @@ enum Cmd {
     AddWorkspaceOn(&'static str, bool, usize),
     SetUrgent(&'static str, bool),
     RemoveWorkspace(&'static str),
+    /// A workspace's `active` state, without the manager's `done`.
+    SetActive(&'static str, bool),
+    /// The manager's `done`.
+    Done,
 }
 
 struct Toplevel {
@@ -192,6 +196,15 @@ impl Server {
                 }
                 self.done();
             }
+            Cmd::SetActive(name, active) => {
+                if let Some(ws) = self.workspaces.iter_mut().find(|w| w.name == name) {
+                    ws.active = active;
+                    for h in &ws.handles {
+                        h.state(Self::ws_state(ws));
+                    }
+                }
+            }
+            Cmd::Done => self.done(),
             Cmd::RemoveWorkspace(name) => {
                 if let Some(i) = self.workspaces.iter().position(|w| w.name == name) {
                     for h in &self.workspaces[i].handles {
@@ -208,10 +221,13 @@ impl Server {
     }
 }
 
-struct ClientState;
+/// Counts the connected clients.
+struct ClientState(Arc<AtomicUsize>);
 impl ClientData for ClientState {
     fn initialized(&self, _: ClientId) {}
-    fn disconnected(&self, _: ClientId, _: DisconnectReason) {}
+    fn disconnected(&self, _: ClientId, _: DisconnectReason) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl GlobalDispatch<ExtForeignToplevelListV1, ()> for Server {
@@ -411,6 +427,7 @@ struct Fake {
     tx: mpsc::Sender<Cmd>,
     stop: Arc<AtomicBool>,
     activated: Arc<Mutex<Vec<String>>>,
+    clients: Arc<AtomicUsize>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -429,6 +446,8 @@ impl Fake {
         let activated = Arc::new(Mutex::new(Vec::new()));
         let thread_stop = stop.clone();
         let thread_activated = activated.clone();
+        let clients = Arc::new(AtomicUsize::new(0));
+        let thread_clients = clients.clone();
         let thread = std::thread::spawn(move || {
             let mut display = Display::<Server>::new().unwrap();
             let dh = display.handle();
@@ -449,9 +468,10 @@ impl Fake {
                     state.apply(&dh, cmd);
                 }
                 if let Ok(Some(stream)) = listener.accept() {
+                    thread_clients.fetch_add(1, Ordering::SeqCst);
                     display
                         .handle()
-                        .insert_client(stream, Arc::new(ClientState))
+                        .insert_client(stream, Arc::new(ClientState(thread_clients.clone())))
                         .unwrap();
                 }
                 display.dispatch_clients(&mut state).unwrap();
@@ -474,8 +494,14 @@ impl Fake {
             tx,
             stop,
             activated,
+            clients,
             thread: Some(thread),
         }
+    }
+
+    /// Clients connected now.
+    fn clients(&self) -> usize {
+        self.clients.load(Ordering::SeqCst)
     }
 
     fn cmd(&self, c: Cmd) {
@@ -739,4 +765,158 @@ async fn no_display_reports_disconnected() {
         .unwrap()
         .unwrap();
     assert_eq!(s, ProtocolState::default());
+}
+
+/// A workspace transaction split across reads (a toplevel's `done` read
+/// between its halves) is published only whole, at the manager's `done`:
+/// no state ever shows the old workspace inactive and the new one not yet
+/// active.
+#[tokio::test]
+async fn workspace_changes_apply_at_the_managers_done() {
+    let fake = Fake::start(true);
+    fake.cmd(Cmd::AddToplevel("tl-1", "~", "foot"));
+    fake.cmd(Cmd::AddWorkspace("1", true));
+    fake.cmd(Cmd::AddWorkspace("2", false));
+    std::thread::sleep(Duration::from_millis(50));
+    let (tx, mut rx) = unbounded_channel();
+    let _client = ProtocolClient::spawn(WaylandTarget::Socket(fake.socket.clone()), tx).unwrap();
+    next_matching(&mut rx, "first", |s| s.connected && s.workspaces.len() == 2).await;
+    while rx.try_recv().is_ok() {}
+
+    // The first half, then a toplevel's update, in one flush.
+    fake.cmd(Cmd::SetActive("1", false));
+    fake.cmd(Cmd::SetTitle("tl-1", "vim"));
+    let s = next_matching(&mut rx, "title", |s| s.toplevels[0].title == "vim").await;
+    let active = |s: &ProtocolState| -> Vec<String> {
+        s.workspaces
+            .iter()
+            .filter(|w| w.active)
+            .map(|w| w.name.clone())
+            .collect()
+    };
+    assert_eq!(active(&s), ["1"], "the half-applied switch is not shown");
+    std::thread::sleep(Duration::from_millis(100));
+    // The second half and the manager's `done`.
+    fake.cmd(Cmd::SetActive("2", true));
+    fake.cmd(Cmd::Done);
+    let s = next_matching(&mut rx, "switched", |s| active(s) == ["2"]).await;
+    assert_eq!(s.toplevels[0].title, "vim");
+}
+
+/// Hyprland reports each window's `ext-foreign-toplevel-list-v1`
+/// identifier as `stableId` in `j/clients`: the protocol's title wins for
+/// the windows it joins; the others keep the IPC's.
+#[tokio::test]
+async fn hyprland_windows_join_the_toplevel_list_by_stable_id() {
+    let hypr = common::hyprland::FakeHyprland::start();
+    let fake = Fake::start(true);
+    // kitty's stableId in the fixture is "a"; pavucontrol's "b" has no
+    // toplevel here.
+    fake.cmd(Cmd::AddToplevel("a", "~ (protocol)", "kitty"));
+    std::thread::sleep(Duration::from_millis(50));
+    let (sink, mut c) = Collector::new();
+    let (_req_tx, req_rx) = unbounded_channel();
+    let config = WmConfig {
+        backend: Some(hypr.backend.clone()),
+        wayland: Some(WaylandTarget::Socket(fake.socket.clone())),
+        ..Default::default()
+    };
+    let service = tokio::spawn(wm::run(config, sink, req_rx));
+    c.until("joined", |m| {
+        m.sources.connected
+            && m.window_by_app("kitty")
+                .is_some_and(|w| w.title == "~ (protocol)")
+    })
+    .await;
+    let kitty = c.mirror.window_by_app("kitty").unwrap();
+    assert_eq!(kitty.id, "0x55d0c0a1b2c0", "IPC ids stand");
+    assert_eq!(
+        c.mirror
+            .window_by_app("org.pulseaudio.pavucontrol")
+            .unwrap()
+            .title,
+        "Volume Control"
+    );
+    fake.cmd(Cmd::SetTitle("a", "vim (protocol)"));
+    c.until("retitled", |m| {
+        m.window_by_app("kitty")
+            .is_some_and(|w| w.title == "vim (protocol)")
+    })
+    .await;
+    service.abort();
+}
+
+/// Dropping the hub while a store still holds a subscription stops the
+/// service (its protocol connection goes) and ends the stream.
+#[tokio::test]
+async fn dropping_the_hub_stops_the_service_its_subscriptions_held() {
+    let fake = Fake::start(true);
+    fake.cmd(Cmd::AddWorkspace("1", true));
+    std::thread::sleep(Duration::from_millis(50));
+    let hub = wm::WmHub::new(
+        WmConfig {
+            wayland: Some(WaylandTarget::Socket(fake.socket.clone())),
+            ..Default::default()
+        },
+        tokio::runtime::Handle::current(),
+    );
+    let mut sub = hub.subscribe();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while fake.clients() == 0 {
+        assert!(tokio::time::Instant::now() < deadline, "never connected");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    drop(hub);
+    while fake.clients() != 0 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the protocol connection outlived the hub"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let end = tokio::time::timeout(Duration::from_secs(5), async {
+        while sub.recv().await.is_some() {}
+    });
+    assert!(end.await.is_ok(), "the stream ends");
+}
+
+/// An adapter that comes up after the protocols' state went out replaces
+/// it with a `Reset` of both lists, not a keyed diff: the protocol's
+/// workspace 1 and Hyprland's workspace 1 are not the same item.
+#[tokio::test]
+async fn a_late_adapter_resets_the_lists() {
+    let fake = Fake::start(true);
+    fake.cmd(Cmd::AddToplevel("x", "~", "foot"));
+    fake.cmd(Cmd::AddWorkspace("web", true));
+    std::thread::sleep(Duration::from_millis(50));
+    let late = tempfile::tempdir().unwrap();
+    let backend = wm::Backend::hyprland_in(late.path(), "late");
+    let (sink, mut c) = Collector::new();
+    let (_req_tx, req_rx) = unbounded_channel();
+    let config = WmConfig {
+        backend: Some(backend.clone()),
+        wayland: Some(WaylandTarget::Socket(fake.socket.clone())),
+        ..Default::default()
+    };
+    let service = tokio::spawn(wm::run(config, sink, req_rx));
+    c.until("protocol state", |m| m.workspace_names() == ["web"])
+        .await;
+    assert_eq!(c.mirror.workspaces[0].0, 1, "the protocol's key 1");
+
+    let _hypr = common::hyprland::FakeHyprland::start_at(backend);
+    c.until_within(10, "adapter up", |m| {
+        m.sources.connected && m.workspace_names() == ["1", "2", "3"]
+    })
+    .await;
+    let resets = |which: fn(&wm::WmChange) -> bool| c.log.iter().filter(|ch| which(ch)).count();
+    let ws_resets = resets(|ch| {
+        matches!(ch, wm::WmChange::Workspaces(d)
+            if d.iter().any(|d| matches!(d, strand_core::keyed::VecDiff::Reset { .. })))
+    });
+    let win_resets = resets(|ch| {
+        matches!(ch, wm::WmChange::Windows(d)
+            if d.iter().any(|d| matches!(d, strand_core::keyed::VecDiff::Reset { .. })))
+    });
+    assert_eq!((ws_resets, win_resets), (2, 2), "{:#?}", c.log);
+    service.abort();
 }
