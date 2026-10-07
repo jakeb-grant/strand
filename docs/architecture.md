@@ -1045,7 +1045,10 @@ Public interfaces other crates and later stages build on:
   compiler worker's state (`.with_check(ExtraCheck)` adds a check run on
   every compile whose diagnostics count as the checker's: `strand run`'s
   D-Bus introspection of `from dbus` services): `boot()`, `changed([(path, exists)])`,
-  `rescan()` each return an `Outcome { build, committed, held,
+  `rescan()` and `recheck()` (the extra check's answers changed since
+  the last compile: the running and held files are checked again, held
+  files that now pass are committed, otherwise no build and the late
+  diagnostics are reported as a held edit's) each return an `Outcome { build, committed, held,
   diagnostics, sources, unreadable, from_cache, cleared, repeated,
   compile_time }`
   (`cleared`: the last attempt had errors, held or unreadable files and
@@ -1282,7 +1285,9 @@ Public interfaces other crates and later stages build on:
     (the new program's table) may renumber its record and the enums and
     records its fields name; the host reads its values as those types
     from then on, without restarting it (called for every surviving
-    service that does not restart). All default to nothing.
+    service that does not restart; `SchemaHost` remounts it at the new
+    defaults when its record or field types moved). All default to
+    nothing.
   - `read(rt, service, field)` and `call(rt, service, method, args)`
     (`fn` methods: `clock.format`, `calendar.days`, `workspaces.on`)
     must read through the graph (a `Signal<Value>` per field) so
@@ -2154,8 +2159,14 @@ the primitives, `Option`, `Vec` and derived types.
   declared type (`custom::coerce`); `write` of an `rw` field is an item
   write of its value; `restart`/`stop` restart or stop only that service.
   `custom::BusIntrospector` is the compiler's `Introspect` over the
-  environment's buses (answers remembered 10 s); `custom::dbus_check()`
-  is the loader's extra check with it.
+  environment's buses (answers remembered 10 s); `custom::dbus_check(recheck)`
+  returns the loader's extra check with it and a `DbusCheck` handle: the
+  check waits on the bus only until `DbusCheck::stop_waiting()` (called
+  by `live.rs` after `boot()`); later compiles use
+  `Cache::properties_or_ask` (a remembered answer even past its ttl, a
+  service whose first answer is pending skipped), and an answer that
+  differs from the one used calls `recheck`, which queues the worker's
+  `Job::Recheck` (`Loader::recheck`). No reload waits on a bus.
   `services::set_text` is `strand set` on a service's `rw` field
   (`brightness.level +5%`: a signed number is a step from the current
   value; `Real::set_text` starts a stopped service and waits up to
@@ -2237,7 +2248,10 @@ It does not depend on `strand-compiler` or `strand-core`.
   once per kind a batch touched (all three after an overflow); `strand
   run` then tells the `apps` service (`apps::changed`), the icon lookup
   (`strand_icons::invalidate`) and, on the main thread, the renderer
-  (`icons_changed`, `fonts_changed`).
+  (`icons_changed`, `fonts_changed`); `Apps` and `Icons` are handled
+  alike (`run::cache_changed`: all three of the apps service, the icon
+  lookup and the renderer's icons), since an installed app may bring an
+  icon the icon watch does not see.
   **Blocking:** `watch_file`, `set_referenced` and `watch_tree` wait for
   the watcher thread (watches synced; a new path given without a hash
   is read before they return, one given with a hash is compared later

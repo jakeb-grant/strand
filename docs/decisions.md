@@ -7026,3 +7026,24 @@ thread. Left for M4: launches carry no `XDG_ACTIVATION_TOKEN`
 (xdg-activation, so a compositor may not focus the app), and
 `DBusActivatable=true` entries run their `Exec` line rather than
 `org.freedesktop.Application.Activate`.
+
+**2026-10-07 · wave4-a3 (r2): an app's install forgets icon misses;
+mismatch reports end with their service; the schema host re-types.**
+The icon cache remembers misses, and an app installed with its own icon
+(an AppImage integration writing `hicolor/256x256/apps/foo.png`) may
+touch no directory the depth-1 icon watch sees, so an `applications/`
+change is handled as an icon theme change too: `strand_icons::invalidate`,
+the `apps` service told, and the renderer's icons looked up afresh
+(lookups refill lazily, so this costs one probe per icon drawn). A
+reported value mismatch (`notice: false`) is resolved when its service
+restarts or stops (the usual fix is changing the declared type, which
+restarts it), so a `strand watch` client is not left holding a notice
+for a field that no longer mismatches; a restart that still mismatches
+reports it again. `SchemaHost` (schema defaults and the mock) implements
+`ServiceHost::retype` by remounting a kept custom service at the new
+program's defaults only when its record id or field types moved, keeping
+values the mock set otherwise. Not done here, and why: the launcher row
+whose long `ellipsis: end` comment shrinks its sized icon is the
+renderer's layout (reported to its owner); dbusmock's templates
+introspect every property as writable, so `check::dbus_read_only` is
+proven only against fake introspection.

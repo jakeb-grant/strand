@@ -1440,8 +1440,6 @@ mod tests {
         assert_eq!(got, ["a=1", "a=\u{fffd}", "a=3", "last"]);
     }
 
-    /// An enum variant is written as the property spelled it, else by
-    /// its name, then with `-` for `_`.
     /// Two quick writes A then B: A's late echo is not shown (B was
     /// reported already), B's is; then a change from elsewhere is news,
     /// even one back to A.
