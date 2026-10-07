@@ -8030,8 +8030,10 @@ a service run that ends and starts again (the client logs one `service
 `STRAND_LOG=info`: the lines after the reloads must be the lines before,
 checked 6 s after the last reload so a reader released and not taken
 again would have stopped its service by then; the only reader of
-`memory` is removed and added back 33 times within the stop grace, and
-the one new line allowed is `memory` stopping once at the end); a new
+`memory` is removed and added back 33 times within the stop grace, once
+held out for 3.8 s of its 5 s (reloads 1 to 4, with no lifecycle line
+allowed meanwhile), and the one new line allowed is `memory` stopping
+once at the end); a new
 D-Bus connection, even one closed again (dbus-daemon numbers
 connections in order; every number between a probe connection before
 and one after the reloads must be accounted for by a bus monitor
@@ -8041,11 +8043,17 @@ reused for only 10 s (wave4-a3), so a reload past that window
 introspects again on a fresh connection; any other call from a new
 connection, as a service reconnecting would make, fails); a service
 re-reading its daemon over the same connection (python-dbusmock logs
-every `Get`, `GetAll` and method call it answers, and the zbus mocks,
+every `Get`, `GetAll` and method call it answers (each log's length is
+taken after the test's own `Add*` setup calls, before `strand run`
+starts, so a mock counts as read only past that point), and the zbus mocks,
 the portal, the tray item with its DBusMenu and the MPRIS player, count
 theirs; no new line or count may appear); any other reconnect (sway's
 IPC socket, PipeWire, Wayland): strand's socket inodes in
-`/proc/<pid>/fd`, sampled after every reload, must be the same set;
+`/proc/<pid>/fd`, sampled after every reload, must be the same set
+(the baseline holds at least 4; a difference is sampled again every 20
+ms for up to 1 s and fails, naming the inodes, only if it lasts, since
+the introspection refresh above may open its short-lived connection
+beside a reload, which the bus monitor already accounts for);
 sway runs with `-d` and every IPC connection it accepts is a `New
 client` line in its log, which must not grow; `pw-mon -N` runs in the
 background and no PipeWire client with strand's pid, nor an object
@@ -8107,3 +8115,24 @@ not touch, each passing in the other run: `strand-render`'s
 and `demo`'s `the_design_bar_keeps_the_m0_budget`, PSS 35173 kB against
 the 34816 kB gate with 4 MB of `AnonHugePages` (run 37649236728; see
 the transparent hugepage note above). They are left to their owners.
+
+**2026-10-07 · wave4-exitReload: the gate's waits are bounded.** Run
+37651595195 (`c3736bc`) sat in the `reloads` step for 28 min with no
+output (the same step took 24–38 s in every other run) and was
+force-cancelled; the cause was not reproduced (13 local runs, some
+with two cores kept busy, and two CI runs since, all green). So that a
+stall fails with evidence instead of holding the runner for GitHub's
+360 min default, every child command the test runs (`strand set`,
+grim, swaymsg, pw-dump, wpctl, the tools' `--version`) is killed after
+10 s, every test D-Bus connection has a 10 s method timeout, and a
+watchdog, dropped last, prints the stage reached and the last 200
+lines of the strand, sway and dbusmock logs, kills the test's
+processes and aborts after 5 min (`STRAND_RELOADS_LIMIT_SECS`
+overrides; a watchdog abort leaves the temp dirs for debugging). CI
+gives the step `timeout-minutes: 10` and the `check` job 60. Kept as
+it is, recorded as follow-up: the bus monitor's carve-out for
+`Hello` + `Introspect` connections exists because `strand-introspect`
+opens a fresh connection for each 10 s introspection refresh of the
+`from dbus` check; once it reuses one connection per bus (owned by the
+services runtime's `Buses`), the test can allow no new connection
+between its probes.
