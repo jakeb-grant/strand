@@ -186,7 +186,9 @@ strand-services' stores to strand-compiler's VM.
 
 `strand-icons` (wave 4, a3) is the Icon Theme Specification lookup with a
 cache `invalidate()` refreshes (`lookup(name, size, scale, theme)`,
-`exists`, `system_theme`, `base_dirs`, `theme_setting_files`,
+`candidates(name)` and `resolve(name, size, scale, theme)`, the one
+candidate chain: the name, its `-symbolic` variant, then the generic
+fallbacks; `exists` follows the same chain; `system_theme`, `base_dirs`, `theme_setting_files`,
 `generation`); the renderer and the `apps` service both look icons up
 through it. `strand-introspect` reads an object's properties from its
 D-Bus introspection (`properties_on(conn, name, path)` async,
@@ -1964,7 +1966,12 @@ the primitives, `Option`, `Vec` and derived types.
 - **Logic side.** `Services::new(rt, Buses, wake)` (where no owner is
   current: its cells and timers live in a scope of their own; `wake` is
   called from any thread after every envelope); `register::<S>(rt) ->
-  Client<S>`; `pump(rt)` applies every waiting envelope (outside
+  Client<S>` (`register_as::<S>(rt, name)` under an instance name, used
+  in logs, timer names, `wait_ready_of` and `ServiceDiagnostic.service`:
+  a no-code service is registered under its declared name;
+  `registered()` counts the members); `report(ServiceDiagnostic)` logs a
+  diagnostic raised outside a run (a no-code field's value that does not
+  convert) and queues it for `take_diagnostics`; `pump(rt)` applies every waiting envelope (outside
   handlers, before a step: reports are not handler writes);
   `wait_ready(rt, limit)` pumps until every running service is ready
   (the first frame's wait); `shutdown()`. `Client<S>`: `cells()`,
@@ -2032,7 +2039,12 @@ the primitives, `Option`, `Vec` and derived types.
   or a `poll` command or file (only while visible) as `custom::Document`s
   (JSON, `key=value` lines, or text). `Client::restart(rt)` (a changed
   declaration: the run stops and starts again if read) and
-  `Client::stop_now(rt)` (a removed one) serve their reloads. `Data`
+  `Client::stop_now(rt)` (a removed one) serve their reloads, and
+  `Client::unregister(rt)` takes a removed declaration out of `Services`
+  (stopped, its cells disposed). Commands run in a process group of
+  their own, ended whole (SIGTERM, then SIGKILL after 500 ms) when the
+  run stops, restarts or a poll times out; `listen` lines are read
+  bounded (`MAX_DOCUMENT`) and lossily decoded. `Data`
   implements `Default` (null) and `SchemaType` (`any`).
   `strand_services::dbus` is what they share: `Daemon` (a bus name
   followed through `NameOwnerChanged`, its signals by match rule, checked
@@ -2081,7 +2093,8 @@ the primitives, `Option`, `Vec` and derived types.
   module adds its text to `strand-services-schema` and its store to
   `Builtin`.
 - **Failures are diagnostics.** A run that ends with an error (or
-  panics) is a `ServiceDiagnostic { service, message, notice: false }`;
+  panics) is a `ServiceDiagnostic { service, message, notice: false }`
+  (`service: String`, the registered name);
   a body raises what the user must act on with `Cx::notice(message)`
   (another notification server owning the name, naming its process:
   `notice: true`, raised before `Cx::ready`). `Services::take_diagnostics()`

@@ -6830,8 +6830,9 @@ exec`; `["/usr/bin/foo"]` runs it. A path that names a program
 starting with `~/` is under the home directory; a relative one under the
 config directory, as a settings file's is. Only a `dbus` field can be
 `rw` (writing sets the property); elsewhere `check::not_writable`. A
-field's `= key` is a property name, or a key path (`= cpu.temp`; a
-string is one key with dots in it); without one it reads its own name.
+field's `= key` is a property name, or (outside `dbus`) a key path
+(`= cpu.temp`; a string is one key with dots in it); without one it
+reads its own name.
 
 **2026-10-07 · wave4-a3: what no-code sources read.** A document is JSON
 when it parses as JSON, else `key=value` (or `key: value`) lines when
@@ -6844,7 +6845,9 @@ line it prints as a document (fields the line lacks keep their values);
 its command ending is a failure, retried with the services' backoff
 (1 s doubling to 30 s). `poll` runs its command (10 s at most, then
 killed) or reads its file every interval, only while a reader is
-visible, and at once when one becomes visible again. `file` reads the
+visible; when one becomes visible again it polls once `every` has
+passed since the last poll began (at once if it has), so a flickering
+reader never polls faster than `every`. `file` reads the
 file when the service starts and whenever an inotify watch on the file
 (writes in place, sysfs notifications) or its directory (atomic saves,
 creation, removal) says so; a removed file leaves every field null (its
@@ -6853,7 +6856,7 @@ converted to each field's declared type on the language side: numbers
 from text (`"41.5"`, `"45 °C"`), booleans from `true/yes/on/1`, enums by
 variant name (any case, `-` as `_`), records by field name, durations
 from seconds or `"5s"`; a value that does not convert is the type's
-default. For `dbus`, the object (by default at the bus name with `.` as
+default, reported (see "review round r1" below). For `dbus`, the object (by default at the bus name with `.` as
 `/`) is introspected when the service starts; each field reads the
 property its key names from the interface named like the bus name
 first, else the first that has it; `PropertiesChanged` drives the
@@ -6898,3 +6901,61 @@ its echo is ignored as any item write's is. `ServiceHost::declare` and
 name, record, source, fields) instead of a name and record, so the host
 can run it; `Client::restart` and `Client::stop_now` let the host
 restart a changed declaration at once and stop a removed one.
+
+**2026-10-07 · wave4-a3: review round r1.** What the first review
+changed, and the readings it fixed. *Checking.* A block's `permit exec`
+lists programs as a top-level one does (bare: any program; with a list:
+only those), so a block permit for `foo` no longer admits `sensors`. An
+`every` no `Duration` can hold is `check::not_constant`, not a checker
+panic. A `dbus` field's key names one property: a key path there is
+`check::type_mismatch` (it silently read the whole property). A no-code
+field's type must be one a document can hold (`check::type_mismatch`
+otherwise): bool, int, float, length, percent, angle, duration, color,
+text, path, enums, lists and optionals of these, and records the config
+declares with `type` built of the same; a schema entity such as
+`Screen` is a service-owned record no file, command or property can
+produce. *Converting.* `coerce` has explicit arms only (bool from a
+non-NaN number, non-zero true; percent from a number kept as a fraction,
+as every service holds percentages, so a file's `85` is 8500% and `85%`
+as text is 85%; length and angle from numbers; durations through
+`try_from_secs_f64`, so `1e300` is the default, not a crash); any other
+mismatch is the default. A non-null value that does not convert is
+reported once per field (`Services::report`: logged and sent to `strand
+watch`, not the overlay) naming `service.field`, the key and the value,
+and resolved when one converts; a key the document lacks is not reported
+(the store holds null both for "not read yet" and "absent"). *Commands.*
+`listen` reads raw lines into a buffer capped at `MAX_DOCUMENT` (a longer
+line is dropped up to its newline), decoding bytes that are not UTF-8 as
+U+FFFD; output ending waits 200 ms for the exit, then fails the run so
+the backoff retries it. Commands run in their own process group, ended
+whole (SIGTERM, SIGKILL after 500 ms) on stop, restart, poll timeout or
+poll end, so `sh -c 'a | b'` leaves nothing running; a poll's command
+runs in a select with the service's messages, so a stop cancels it.
+*D-Bus writes.* An `rw` enum field writes the string the property was
+last seen holding for that variant (up to 64 remembered per field,
+matched ignoring case and `-`/`_`); a variant never seen is written by
+its exact name, then hyphenated if the daemon refuses it (a daemon that
+accepts anything, as dbusmock does, keeps the exact name until the real
+spelling has been read once). A `PropertiesChanged` value equal to an
+earlier write, arriving after a later write, is dropped (8 writes per
+field, each awaited 2 s at most). *Files.* `from file` and a polled file
+read only regular files (sysfs and procfs attributes included), opened
+`O_NONBLOCK`, off the services thread with a 5 s bound; a directory event
+re-reads only when it names the file. *Introspection.* strand and the LSP
+share `strand_introspect::Cache` (10 s, failures included); the LSP never
+waits on a bus: `Introspect::properties` answers `None` while a question
+is out, that service is skipped without a warning, and the answer wakes
+the server to publish again. *apps.* An id is claimed only by a file that
+reads and parses (a `Hidden=true` entry still claims it); frecency saves
+run one at a time, the latest snapshot winning, and forget apps not
+installed whose last launch is older than 90 days. Icons are resolved by
+one chain (`strand_icons::resolve`: name, `-symbolic`, fallbacks) used by
+the renderer and by `apps`. An async service call's load also reads what
+its result depends on (`ServiceHost::fetch_reads`; the store reads every
+field of the service), so an open launcher searches its query again
+when the app list or the icon theme changes; frecency is not store
+state, so a launch does not re-rank an open launcher (it closes on
+launch). icon-theme sizes from `index.theme` saturate. Rejected: "coerce
+has no colour case" (hex text already parses through `parse_text`; a
+test now pins it) and "listen buffers a line without bound" when raised a
+second time (fixed in the same round).
