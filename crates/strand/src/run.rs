@@ -3057,8 +3057,8 @@ pub(crate) mod tests {
     }
 
     /// A mock `org.freedesktop.portal.Settings` for the theme test.
-    struct MockPortal {
-        values: std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
+    pub(crate) struct MockPortal {
+        pub(crate) values: std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
     }
 
     #[zbus::interface(name = "org.freedesktop.portal.Settings")]
@@ -3083,9 +3083,9 @@ pub(crate) mod tests {
         }
     }
 
-    struct Bus {
+    pub(crate) struct Bus {
         child: std::process::Child,
-        address: String,
+        pub(crate) address: String,
     }
 
     impl Drop for Bus {
@@ -3097,7 +3097,7 @@ pub(crate) mod tests {
 
     /// A private session bus (skipped without `dbus-daemon` unless
     /// `STRAND_REQUIRE_DBUS` is set).
-    fn private_bus(dir: &Path) -> Option<Bus> {
+    pub(crate) fn private_bus(dir: &Path) -> Option<Bus> {
         use std::io::BufRead;
         let spawned = std::process::Command::new("dbus-daemon")
             .args(["--session", "--nofork", "--print-address=1"])

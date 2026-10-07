@@ -119,7 +119,9 @@ jobs:
       - run: cargo test --release -p strand-render --test theme_swap_bench -- --nocapture
       # Save → pixels p95 within design.md's 35 ms (token) and 50 ms
       # (markup) on an optimised build, to the painted buffer and to the
-      # frame sway presents; ignored in debug builds.
+      # frame sway presents, and a monitor or portal change (a mock
+      # portal's SettingChanged on a private bus) on the next frame;
+      # ignored in debug builds.
       # 50 edits each so p95 is not the worst of 20 samples (the token
       # gate's headroom is ~1.5 ms: see docs/m1-report.md).
       - run: cargo test --release -p strand --bin strand reload_latency -- --nocapture --test-threads=1
