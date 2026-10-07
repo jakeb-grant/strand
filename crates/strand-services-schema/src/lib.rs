@@ -13,7 +13,10 @@ pub const CPU: &str = include_str!("cpu.schema");
 /// `memory`: memory use (procfs).
 pub const MEMORY: &str = include_str!("memory.schema");
 
+/// `battery`: UPower's display device and power sources.
+pub const BATTERY: &str = include_str!("battery.schema");
+
 /// Every builtin service's schema text, in registration order.
 pub fn schemas() -> Vec<&'static str> {
-    vec![SYSTEM, CPU, MEMORY]
+    vec![SYSTEM, CPU, MEMORY, BATTERY]
 }

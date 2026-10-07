@@ -16,11 +16,25 @@ strand-services-schema.workspace = true
 # The portal Settings client (`follow`) runs on the services runtime.
 strand-watch.workspace = true
 log = { version = "0.4.34", features = ["std"] }
-tokio = { version = "1.53", features = ["rt", "macros", "sync", "time"] }
+# `net`: the backlight watch (inotify) on the runtime's reactor.
+tokio = { version = "1.53", features = ["rt", "macros", "sync", "time", "net"] }
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
+# Streams of signals (zbus's own `futures-lite` streams).
+futures-lite = { version = "2.6", default-features = false, features = ["std"] }
+# logind's `SetBrightness` for `brightness` writes (design.md's table).
+logind-zbus = { version = "5.3.2", default-features = false }
+# The backlight's sysfs files, watched (inotify).
+rustix = { version = "1.1.5", features = ["fs"] }
+# A notification's arrival time as a `Date`, in the local zone.
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+# Pixmaps (tray icons, notification `image-data`) written as PNG files for
+# `image`.
+png = "0.18.1"
 
 [dev-dependencies]
 tokio = { version = "1.53", features = ["rt-multi-thread"] }
+# Bodies of the test's own D-Bus calls.
+serde = "1.0.228"
 
 [lints]
 workspace = true

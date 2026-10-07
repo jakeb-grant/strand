@@ -182,8 +182,10 @@ mod tests {
                     f.name
                 );
             }
-            // Same fields as the provisional stub it replaced: configs
-            // checked before M3 still check.
+            // Every field of the provisional stub it replaced, with the
+            // same `rw` mark and in the same order, and every event: configs
+            // checked before M3 still check. A real service may add fields
+            // (battery's `devices`; decisions.md, wave4-a2).
             let builtin = Schema::builtin();
             let stub = builtin.types.record(builtin.services[name]);
             let stub_fields: Vec<(&str, bool)> = stub
@@ -191,9 +193,18 @@ mod tests {
                 .iter()
                 .map(|f| (f.name.as_str(), f.rw))
                 .collect();
-            let real_fields: Vec<(&str, bool)> =
-                rec.fields.iter().map(|f| (f.name.as_str(), f.rw)).collect();
+            let real_fields: Vec<(&str, bool)> = rec
+                .fields
+                .iter()
+                .map(|f| (f.name.as_str(), f.rw))
+                .filter(|f| stub_fields.iter().any(|s| s.0 == f.0))
+                .collect();
             assert_eq!(stub_fields, real_fields, "{name} against its stub");
+            let stub_events: Vec<&str> = stub.events.iter().map(|e| e.name.as_str()).collect();
+            assert!(
+                stub_events.iter().all(|e| events.contains(e)),
+                "{name} keeps its stub's events {stub_events:?}"
+            );
             assert_calls_match(s, &rt, &*svc);
         }
         // Every service schema text has its store among the builtins, and
