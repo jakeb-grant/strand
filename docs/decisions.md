@@ -8037,8 +8037,11 @@ config file niri watches) must be `wm.config_reloaded`; two idle seconds
 must wake nothing. design.md's bar (theme.strand and bar.strand, byte for
 byte) in `strand run` must draw the same state: one dot per workspace
 read off the bar's middle row, the focused one the 24 px accent pill,
-occupied dots ($fg.muted) told from empty ones ($fg.alpha(0.25)) by their
-distance from the bar's background, and the focused window's title as
+occupied dots ($fg.muted, alpha 0.65) told from empty ones
+($fg.alpha(0.25)) by their alpha: each dot's contrast with the bar's
+background over that of the clock's ink (full `$fg`), cut at 0.45, so a
+lone dot of either kind beside the pill (niri's trailing empty workspace)
+reads right on any theme, and the focused window's title as
 ink right of the dots; a click on a dot (where the compositor offers
 `zwlr_virtual_pointer_v1`) must switch the compositor. The test makes no
 assumption that differs between compositors: niri keeps one empty

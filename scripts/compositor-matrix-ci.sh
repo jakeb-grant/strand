@@ -27,9 +27,20 @@ pacman-key --init >/dev/null 2>&1 || true
 pacman-key --populate archlinux >/dev/null 2>&1 || true
 pacman -Syu --noconfirm --needed \
   sway niri hyprland grim seatd mesa dbus ttf-dejavu adwaita-icon-theme \
-  fontconfig libxkbcommon wayland pipewire >/tmp/pacman.log 2>&1 ||
+  fontconfig libxkbcommon wayland pipewire libcap >/tmp/pacman.log 2>&1 ||
   { tail -40 /tmp/pacman.log; exit 1; }
 pacman -Q sway niri hyprland grim seatd mesa
+# sway is installed with file capabilities (cap_sys_nice, for its
+# realtime scheduling); Docker's bounding set lacks them, so exec(2) of
+# it fails with EPERM ("env: 'sway': Operation not permitted", run 206).
+# Off for every compositor: none needs them headless.
+for bin in /usr/bin/sway /usr/bin/niri /usr/bin/Hyprland /usr/bin/Hyprland-bin; do
+  [ -e "$bin" ] || continue
+  if [ -n "$(getcap "$bin" 2>/dev/null)" ]; then
+    echo "dropping $(getcap "$bin")"
+    setcap -r "$bin"
+  fi
+done
 fc-match sans-serif
 
 # The runner's user, so the logs and shots under target/ are its own.

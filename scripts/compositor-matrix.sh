@@ -153,7 +153,12 @@ EOF
 
   hyprland)
     [ -n "${STRAND_DRM_CARD:-}" ] || { echo "STRAND_DRM_CARD is not set (a vkms card for aquamarine)" >&2; exit 2; }
-    version=$(Hyprland --version 2>/dev/null | sed -n 's/^Hyprland \([0-9]*\)\.\([0-9]*\).*/\1 \2/p' | head -1)
+    export XDG_RUNTIME_DIR=$RT
+    # Its status apart (it aborted in run 206): the version is read from
+    # whatever it printed.
+    Hyprland --version >"$OUT/hyprland-version.log" 2>&1 || echo "Hyprland --version: exit $?" >&2
+    sed -n 1,5p "$OUT/hyprland-version.log"
+    version=$(sed -n 's/^Hyprland \([0-9]*\)\.\([0-9]*\).*/\1 \2/p' "$OUT/hyprland-version.log" | sed -n 1p)
     read -r major minor <<<"${version:-0 0}"
     echo "Hyprland $major.$minor"
     # 0.55 moved the configuration to Lua (hyprland.lua); before it,
@@ -191,7 +196,6 @@ debug {
 }
 EOF
     fi
-    export XDG_RUNTIME_DIR=$RT
     env -u WAYLAND_DISPLAY -u SWAYSOCK -u DISPLAY -u HYPRLAND_INSTANCE_SIGNATURE \
       AQ_DRM_DEVICES="$STRAND_DRM_CARD" LIBGL_ALWAYS_SOFTWARE=1 GBM_ALWAYS_SOFTWARE=1 \
       AQ_TRACE=1 HYPRLAND_TRACE=1 \
