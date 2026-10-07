@@ -8136,3 +8136,32 @@ opens a fresh connection for each 10 s introspection refresh of the
 `from dbus` check; once it reuses one connection per bus (owned by the
 services runtime's `Buses`), the test can allow no new connection
 between its probes.
+
+**2026-10-07 · wave4-exitReload: every box checks a given value; the bench
+reports every gate.** Review round 3 found that two of the 100 reloads'
+boxes only tested that something existed (`windows`, `workspaces`) and
+that `cpu`, `clock`, `calendar` and `memory` were read but nothing
+asserted them, so features.md's "each shown at the value the test gave
+it" overstated what the boxes prove. The `windows` box now asks for the
+test's own window (title `a window`, app id `strand-reloads`), the
+`workspaces` box for workspace `1` focused and occupied, and `cpu`
+(usage in 0..1, at least one core), `clock` (a non-empty year) and
+`calendar` (at least 28 days, exactly one of them today) have boxes;
+`memory`'s reader node is itself a box, expected only while it is
+mounted. A negative control (expecting the title `b window`) failed at
+boot naming `windows`. Values that depend on the machine (cpu, clock,
+calendar, memory) are checked as in range rather than equal, since the
+test does not control them. The latency bench now collects the token,
+markup, scale, plug and portal verdicts before asserting once, listing
+every failure: the token gate's local headroom is under 1 ms at p95, and
+an outlier there used to panic before the portal clause was evaluated.
+The test's hygiene: killed runs' `strand-reloads-<pid>` and
+`reloads-<pid>` directories (pid no longer alive) are swept at start;
+child pipes are read through channels only until the step's deadline;
+`pw-dump`'s presence is required by `STRAND_REQUIRE_PIPEWIRE`, not
+`STRAND_REQUIRE_SWAY`. The run's log also showed zbus warning that the
+tray asked for `org.kde.StatusNotifierWatcher` before serving it; the
+tray now serves the watcher interface before requesting the name (and
+removes it if another watcher owns the name), and the host's object
+server is set up before its name request
+(`crates/strand-services/tests/tray.rs::an_item_registering_as_the_watcher_appears_is_heard`).
