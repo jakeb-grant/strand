@@ -2313,15 +2313,28 @@ impl<'a> Checker<'a> {
                 if kind != "file" && !polls_file {
                     let program = s.source.args.first().and_then(first_program);
                     let program = program.as_deref();
-                    let in_block = s.body.items.iter().any(
-                        |i| matches!(&i.kind, ItemKind::Permit(p) if p.capability.name == "exec"),
-                    );
-                    let allowed = in_block
-                        || self.permits.iter().any(|p| match (p, program) {
-                            (None, _) => true,
-                            (Some(list), Some(prog)) => list.iter().any(|x| x == prog),
-                            (Some(_), None) => false,
-                        });
+                    // A block's own permit lists programs the same way a
+                    // top-level one does: bare allows any, a list only those.
+                    let in_block: Vec<Option<Vec<String>>> = s
+                        .body
+                        .items
+                        .iter()
+                        .filter_map(|i| match &i.kind {
+                            ItemKind::Permit(p) if p.capability.name == "exec" => {
+                                Some(super::collect::permit_programs(&p.args))
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    let allowed =
+                        in_block
+                            .iter()
+                            .chain(self.permits.iter())
+                            .any(|p| match (p, program) {
+                                (None, _) => true,
+                                (Some(list), Some(prog)) => list.iter().any(|x| x == prog),
+                                (Some(_), None) => false,
+                            });
                     if !allowed {
                         let prog = program.unwrap_or("the command");
                         self.error(
@@ -2534,7 +2547,11 @@ fn const_duration(e: &hir::Expr) -> Option<std::time::Duration> {
         Some(ast::Unit::Ms) => *value / 1000.0,
         _ => return None,
     };
-    (secs.is_finite() && secs > 0.0).then(|| std::time::Duration::from_secs_f64(secs))
+    // `try_from` refuses what a `Duration` cannot hold (a typo like
+    // `99999999999999999999s`): reported as not a constant, never a panic.
+    (secs > 0.0)
+        .then(|| std::time::Duration::try_from_secs_f64(secs).ok())
+        .flatten()
 }
 
 /// A poll target that names a file: a path (`/…`, `~/…`, `./…`) with no

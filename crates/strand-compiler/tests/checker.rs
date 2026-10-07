@@ -993,6 +993,28 @@ bar B { text join(" ", ppd.profile, ups.level, mood.level, music.title ?? "", te
         codes("permit exec\nservice f from poll [\"a\"] every 0s { a: int }"),
         ["check::not_constant"]
     );
+    // An interval no `Duration` holds is reported, never a panic (the
+    // checker runs on every keystroke in the LSP).
+    assert!(
+        codes(
+            "permit exec\nservice f from poll [\"a\"] every 99999999999999999999999999s { a: int }"
+        )
+        .contains(&"check::not_constant")
+    );
+    // A permit inside the service block lists programs as a top-level
+    // one does: bare allows any, a list only those it names.
+    assert_eq!(
+        codes(
+            "service t from poll [\"sensors\", \"-j\"] every 5s { cpu: float = package; permit exec \"foo\" }"
+        ),
+        ["check::no_permit"]
+    );
+    assert_eq!(
+        codes("service t from listen [\"curl\", \"x\"] { a: int; permit exec \"sensors\" }"),
+        ["check::no_permit"]
+    );
+    assert!(codes("service t from poll [\"sensors\", \"-j\"] every 5s { cpu: float = package; permit exec \"sensors\" }").is_empty());
+    assert!(codes("service t from listen [\"curl\", \"x\"] { a: int; permit exec }").is_empty());
     // Only D-Bus properties are written.
     assert_eq!(
         codes("service f from file \"/tmp/x\" { a: int rw }"),

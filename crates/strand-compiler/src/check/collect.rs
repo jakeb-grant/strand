@@ -1133,7 +1133,7 @@ fn if_has_slot(f: &ast::If<ast::Item>) -> bool {
 }
 
 /// The programs a `permit exec` lists (`None`: any).
-fn permit_programs(args: &[ast::Expr]) -> Option<Vec<String>> {
+pub(super) fn permit_programs(args: &[ast::Expr]) -> Option<Vec<String>> {
     if args.is_empty() {
         return None;
     }
