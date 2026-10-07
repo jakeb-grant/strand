@@ -95,11 +95,15 @@ jobs:
       # and the 100 reloads too.
       - run: cargo test --workspace -- --skip random_edits_through_five_save_styles --skip a_hundred_reloads_reconnect_and_restart_nothing
       # M3 exit, "100 reloads with no reconnects": a shell reading every
-      # real service (python-dbusmock's daemons and a mock portal on a
-      # private bus, sway's IPC, a private PipeWire), 100 token, markup
-      # and binding edits through `strand run`'s watcher: no service
-      # restarted (start log), no bus connection made, no mock called, the
-      # same sockets and PipeWire clients, no state reset.
+      # builtin service but screens and auth (python-dbusmock's daemons,
+      # a mock portal, a tray item and an MPRIS player on a private bus,
+      # sway's IPC, a private PipeWire), 100 token, markup and binding
+      # edits through `strand run`'s watcher: no service restarted (start
+      # log), no bus connection but the from-dbus introspection refresh
+      # (bus monitor), no mock called, the same sockets, no sway IPC
+      # accept (sway -d log), no new PipeWire object of strand's (pw-mon),
+      # no state reset; then a negative control (a changed custom service
+      # restarts alone).
       - run: cargo test -p strand --test reloads -- --nocapture
       # The 34 MB PSS gate is checked on a release build (design.md, "Testing": budgets).
       - run: cargo test --release -p strand --test demo

@@ -8029,24 +8029,50 @@ a service run that ends and starts again (the client logs one `service
 `x` started (run N)` line per run and one `stopped` line per stop at
 `STRAND_LOG=info`: the lines after the reloads must be the lines before,
 checked 6 s after the last reload so a reader released and not taken
-again would have stopped its service by then); a new D-Bus connection,
-even one closed again (dbus-daemon numbers connections in order, so a
-probe connection's unique name before and after the reloads must be
-consecutive: nobody connected in between); a service re-reading its
-daemon over the same connection (python-dbusmock logs every `Get`,
-`GetAll` and method call it answers; no new line may appear); any other
-reconnect (sway's IPC socket, PipeWire, Wayland): strand's socket inodes
-in `/proc/<pid>/fd`, sampled after every reload, must be the same set,
-and its PipeWire client objects the same `object.serial`s. A connection
-to sway or PipeWire opened and closed within one reload, between two
-samples, would escape the socket check (the bus counter has no such
-gap); no service does that, and the start log would show the run behind
-it. State staying is `strand watch`'s `reset` list being empty for each
-reload, plus the `export state` the test set before the reloads and
-every service's value still on screen after them. The start and stop
+again would have stopped its service by then; the only reader of
+`memory` is removed and added back 33 times within the stop grace, and
+the one new line allowed is `memory` stopping once at the end); a new
+D-Bus connection, even one closed again (dbus-daemon numbers
+connections in order; every number between a probe connection before
+and one after the reloads must be accounted for by a bus monitor
+(`BecomeMonitor`) as having sent `Hello` and `Introspect` and nothing
+else: that is the `from dbus` check's introspection, whose answer is
+reused for only 10 s (wave4-a3), so a reload past that window
+introspects again on a fresh connection; any other call from a new
+connection, as a service reconnecting would make, fails); a service
+re-reading its daemon over the same connection (python-dbusmock logs
+every `Get`, `GetAll` and method call it answers, and the zbus mocks,
+the portal, the tray item with its DBusMenu and the MPRIS player, count
+theirs; no new line or count may appear); any other reconnect (sway's
+IPC socket, PipeWire, Wayland): strand's socket inodes in
+`/proc/<pid>/fd`, sampled after every reload, must be the same set;
+sway runs with `-d` and every IPC connection it accepts is a `New
+client` line in its log, which must not grow; `pw-mon -N` runs in the
+background and no PipeWire client with strand's pid, nor an object
+such a client owns, may carry an `object.serial` above the highest
+serial before the reloads (serials only grow), so a connection opened
+and closed within one reload is caught too. The D-Bus mocks are given
+values before boot (a Wi-Fi network joined, a powered adapter with a
+paired device, a tray item, one notification that never expires, a
+playing MPRIS player) and each service has its own box on screen, so
+the per-object proxies and their subscriptions are inside the gate.
+The custom `from file` and `from dbus` declarations sit below the
+edited markup, so every markup edit moves their spans. A committed
+negative control proves the detectors live and covers design.md's edit
+table ("only that service restarts; built-ins never do"): one more save
+adds a field to `mood`'s declaration and the log gains exactly `mood`
+stopped and `mood` started (run 2), with the bus, mocks, sway and
+PipeWire as quiet as during the reloads. Not read: `screens` (the
+surface host's outputs, not a service with a run) and `auth` (M4);
+`logind` is only written to, by `brightness`. State staying is
+`strand watch`'s `reset` list being empty for each reload, plus the
+`export state` the test set before the reloads and every service's
+value still on screen after them. The start and stop
 log lines are new: they are the observable form of the client's
 `starts()`/`stops()` counters for a whole `strand run` process, and at
-info they cost nothing at the default `warn` level.
+info they cost nothing at the default `warn` level. The test's temporary
+directories are removed by a drop guard, also when it fails
+(`STRAND_KEEP_TMP` keeps them for debugging).
 
 **2026-10-07 · wave4-exitReload: the bench's portal clause.**
 design.md's "portal or monitor change on the next frame" is gated as the
