@@ -330,7 +330,20 @@ impl Live {
     fn switch(&self, name: &str) {
         match self.kind {
             Kind::Sway => drop(run("swaymsg", &["workspace", name])),
-            Kind::Hyprland => drop(run("hyprctl", &["dispatch", "workspace", name])),
+            Kind::Hyprland => {
+                // Classic first; with a Lua config (0.55 on) a dispatch is
+                // a dispatcher object.
+                let classic = Command::new("hyprctl")
+                    .args(["dispatch", "workspace", name])
+                    .output()
+                    .unwrap_or_else(|e| panic!("hyprctl: {e}"));
+                let reply = String::from_utf8_lossy(&classic.stdout);
+                if !classic.status.success() || reply.trim_start().starts_with("error") {
+                    let lua = format!("hl.dsp.focus({{ workspace = \"{name}\" }})");
+                    let out = run("hyprctl", &["dispatch", &lua]);
+                    assert!(!out.trim_start().starts_with("error"), "{out}");
+                }
+            }
             Kind::Niri => drop(run("niri", &["msg", "action", "focus-workspace", name])),
         }
     }

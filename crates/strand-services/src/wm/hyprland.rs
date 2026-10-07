@@ -22,6 +22,16 @@
 //! `j/clients` get the same mapping, so a re-read after a
 //! `windowtitlev2` does not change a title back (a spurious `Update`).
 //!
+//! Actions are `dispatch` requests in one of two dialects. Before 0.55
+//! (hyprlang configs) a dispatcher and its argument (`dispatch workspace
+//! 3`); with a Lua config (0.55 on, the only kind from 0.56) the request's
+//! argument is evaluated as `return hl.dispatch(<argument>)`, so it must
+//! be a dispatcher object (`dispatch hl.dsp.focus({ workspace = "3" })`)
+//! and the classic form is answered `error: [string "return
+//! hl.dispatch(workspace 3)"]:1: ')' expected near '3'`. The adapter sends
+//! the classic form until Hyprland answers with that Lua error, then the
+//! Lua form for the rest of the connection (decisions.md, wave4-exit-ci).
+//!
 //! `j/clients` reports each window's `stableId`, the same `{:x}` string
 //! Hyprland sends as its `ext-foreign-toplevel-list-v1` identifier
 //! (`src/protocols/ForeignToplevel.cpp`), so windows join the protocol.
@@ -372,8 +382,9 @@ impl State {
         }
     }
 
-    /// The `dispatch` request for an action.
-    pub(crate) fn dispatch_for(&self, action: &WmAction) -> Result<String, WmError> {
+    /// The `dispatch` request for an action, in the classic dialect or,
+    /// with `lua`, as a Lua dispatcher object (see the module docs).
+    pub(crate) fn dispatch_for(&self, action: &WmAction, lua: bool) -> Result<String, WmError> {
         match action {
             WmAction::FocusWorkspace(id) => {
                 let ws = self
@@ -381,19 +392,41 @@ impl State {
                     .iter()
                     .find(|w| w.id == *id)
                     .ok_or(WmError::UnknownWorkspace(*id))?;
-                Ok(if *id > 0 {
-                    format!("dispatch workspace {id}")
+                let target = if *id > 0 {
+                    id.to_string()
                 } else {
-                    format!("dispatch workspace name:{}", ws.name)
+                    format!("name:{}", ws.name)
+                };
+                Ok(if lua {
+                    format!(
+                        "dispatch hl.dsp.focus({{ workspace = {} }})",
+                        lua_string(&target)
+                    )
+                } else {
+                    format!("dispatch workspace {target}")
                 })
             }
             WmAction::FocusWindow(a) => {
                 self.client(a)?;
-                Ok(format!("dispatch focuswindow address:{a}"))
+                Ok(if lua {
+                    format!(
+                        "dispatch hl.dsp.focus({{ window = {} }})",
+                        lua_string(&format!("address:{a}"))
+                    )
+                } else {
+                    format!("dispatch focuswindow address:{a}")
+                })
             }
             WmAction::CloseWindow(a) => {
                 self.client(a)?;
-                Ok(format!("dispatch closewindow address:{a}"))
+                Ok(if lua {
+                    format!(
+                        "dispatch hl.dsp.window.close({{ window = {} }})",
+                        lua_string(&format!("address:{a}"))
+                    )
+                } else {
+                    format!("dispatch closewindow address:{a}")
+                })
             }
             WmAction::MinimizeWindow(_) => Err(WmError::Unsupported(
                 "Hyprland has no minimise; move the window to a special workspace",
@@ -495,6 +528,8 @@ async fn session(
         return Ok(());
     }
     let mut cmds_open = true;
+    // The dispatch dialect: classic until Hyprland answers in Lua.
+    let mut lua = false;
     loop {
         tokio::select! {
             line = next_line(&mut reader, &mut buf) => {
@@ -539,14 +574,11 @@ async fn session(
             }
             cmd = cmds.recv(), if cmds_open => match cmd {
                 Some((action, reply)) => {
-                    let result = match state.dispatch_for(&action) {
-                        Ok(req) => match request(requests, &req).await {
-                            Ok(r) if r.trim() == "ok" => Ok(()),
-                            Ok(r) => Err(WmError::Rejected(r.trim().to_string())),
-                            Err(e) => Err(WmError::Io(e.to_string())),
-                        },
-                        Err(e) => Err(e),
-                    };
+                    let mut result = dispatch(requests, state, &action, lua).await;
+                    if !lua && matches!(&result, Err(WmError::Rejected(r)) if wants_lua(r)) {
+                        lua = true;
+                        result = dispatch(requests, state, &action, lua).await;
+                    }
                     if let Some(r) = reply {
                         let _ = r.send(result);
                     }
@@ -555,6 +587,45 @@ async fn session(
             },
         }
     }
+}
+
+/// Sends `action` as a `dispatch` request in the dialect `lua` says.
+async fn dispatch(
+    requests: &Path,
+    state: &State,
+    action: &WmAction,
+    lua: bool,
+) -> Result<(), WmError> {
+    let req = state.dispatch_for(action, lua)?;
+    match request(requests, &req).await {
+        Ok(r) if r.trim() == "ok" => Ok(()),
+        Ok(r) => Err(WmError::Rejected(r.trim().to_string())),
+        Err(e) => Err(WmError::Io(e.to_string())),
+    }
+}
+
+/// Whether a dispatch was refused because Hyprland evaluates dispatches
+/// as Lua (a Lua config): `error: [string "return hl.dispatch(…)"]:1: …`.
+fn wants_lua(reply: &str) -> bool {
+    reply.starts_with("error") && reply.contains("hl.dispatch(")
+}
+
+/// `s` as a Lua string literal.
+fn lua_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\0' => out.push_str("\\0"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 #[cfg(test)]
@@ -724,21 +795,49 @@ mod tests {
     fn dispatches_name_the_target() {
         let s = state();
         assert_eq!(
-            s.dispatch_for(&WmAction::FocusWorkspace(2)).unwrap(),
+            s.dispatch_for(&WmAction::FocusWorkspace(2), false).unwrap(),
             "dispatch workspace 2"
         );
         assert_eq!(
-            s.dispatch_for(&WmAction::FocusWindow("0xa1".into()))
+            s.dispatch_for(&WmAction::FocusWindow("0xa1".into()), false)
                 .unwrap(),
             "dispatch focuswindow address:0xa1"
         );
         assert_eq!(
-            s.dispatch_for(&WmAction::FocusWorkspace(9)),
+            s.dispatch_for(&WmAction::FocusWorkspace(9), false),
             Err(WmError::UnknownWorkspace(9))
         );
         assert!(matches!(
-            s.dispatch_for(&WmAction::MinimizeWindow("0xa1".into())),
+            s.dispatch_for(&WmAction::MinimizeWindow("0xa1".into()), false),
             Err(WmError::Unsupported(_))
         ));
+    }
+
+    /// Hyprland with a Lua config (0.55 on) evaluates a dispatch's
+    /// argument as `return hl.dispatch(<argument>)`.
+    #[test]
+    fn lua_dispatches_are_dispatcher_objects() {
+        let s = state();
+        assert_eq!(
+            s.dispatch_for(&WmAction::FocusWorkspace(2), true).unwrap(),
+            r#"dispatch hl.dsp.focus({ workspace = "2" })"#
+        );
+        assert_eq!(
+            s.dispatch_for(&WmAction::FocusWindow("0xa1".into()), true)
+                .unwrap(),
+            r#"dispatch hl.dsp.focus({ window = "address:0xa1" })"#
+        );
+        assert_eq!(
+            s.dispatch_for(&WmAction::CloseWindow("0xa1".into()), true)
+                .unwrap(),
+            r#"dispatch hl.dsp.window.close({ window = "address:0xa1" })"#
+        );
+        assert_eq!(lua_string("a\"b\\c\nd"), r#""a\"b\\c\nd""#);
+        // Hyprland 0.56.2's reply to a classic dispatch with a Lua config.
+        assert!(wants_lua(
+            r#"error: [string "return hl.dispatch(workspace 2)"]:1: ')' expected near '2'"#
+        ));
+        assert!(!wants_lua("No such window found"));
+        assert!(!wants_lua("ok"));
     }
 }
