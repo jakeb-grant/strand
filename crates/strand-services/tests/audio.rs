@@ -320,15 +320,16 @@ fn a_daemon_restart_reconnects() {
         Err(AudioError::NotConnected)
     );
 
-    // Away long enough that the backoff waits seconds: the socket's
-    // appearance (inotify) brings it back, not a timer.
-    std::thread::sleep(Duration::from_millis(3500));
-    pw.start_daemon();
+    // Away long enough that the backoff waits seconds (attempts at 0.1,
+    // 0.3, 0.7, 1.5, 3.1, 6.3, then 12.7 s): back at ~7 s, only the
+    // socket's appearance (inotify) can bring it back within 3 s.
+    std::thread::sleep(Duration::from_millis(7000));
     let back = Instant::now();
+    pw.start_daemon();
     w.until(10, "reconnected", ready);
     assert!(
-        back.elapsed() < Duration::from_secs(2),
-        "reconnected {:?} after the socket came back",
+        back.elapsed() < Duration::from_secs(3),
+        "reconnected {:?} after the daemon restarted",
         back.elapsed()
     );
     let after = w.sink("strand-sink-a");

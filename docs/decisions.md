@@ -6461,8 +6461,8 @@ does not reset the backoff (as with wm's `STABLE`). The new connection's
 first state goes out once its sync after the last bind returns, as a
 diff against the kept devices: ids that changed are a remove and an
 insert. Proof: `tests/audio.rs::a_daemon_restart_reconnects` (back
-within 2 s of the socket after 3.5 s away, when the timer would wait
-until 6.3 s), `it_starts_without_pipewire_and_connects_when_it_appears`.
+within 3 s of a restart 7 s after the loss, when the next timed attempt
+is at 12.7 s), `it_starts_without_pipewire_and_connects_when_it_appears`.
 
 **2026-10-07 · wave4-audio: volume is read from and written to node
 `Props`; device routes are a follow-up.** As the spec asks, volume and
