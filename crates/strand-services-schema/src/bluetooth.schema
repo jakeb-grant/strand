@@ -10,9 +10,9 @@ record BluetoothDevice key address {
   battery: float?
   /// An icon name for its kind.
   icon: text
-  /// Connects to it.
+  /// Connects to it; a failure is `bluetooth.failed`.
   action connect()
-  /// Disconnects from it.
+  /// Disconnects from it; a failure is `bluetooth.failed`.
   action disconnect()
 }
 
@@ -23,4 +23,8 @@ service bluetooth {
   powered: bool rw
   /// Paired devices, keyed by `address`.
   devices: [BluetoothDevice]
+  /// Connecting or disconnecting a device failed (out of range, turned
+  /// off, timed out after 30 s): `on bluetooth.failed(address, error)
+  /// { … }`.
+  event failed(address: text, error: text)
 }

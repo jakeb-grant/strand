@@ -7,11 +7,20 @@
 //! connections and the access point each Wi-Fi connection uses. The
 //! access points in range (`access_points`, a `#[store(stream)]` field)
 //! are tracked, and a scan requested (`RequestScan`), only while a
-//! visible reader reads them; otherwise their strength changes do not
-//! even reach this process (no match rule for them). NetworkManager
-//! restarting is read afresh; missing, it is "offline".
+//! visible reader reads them; otherwise their strength changes, and the
+//! Wi-Fi devices' access point lists, do not even reach this process (no
+//! match rule for them). NetworkManager restarting is read afresh;
+//! missing, it is "offline".
+//!
+//! Joining (`ap.connect()`, `ap.connect_with(password)`) follows the
+//! active connection NetworkManager answers with until it is up; if it
+//! is deactivated first (`StateChanged` to DEACTIVATED, a missing or
+//! wrong password, a timeout) or the call itself fails, `failed(ssid,
+//! error)` says why.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+
+use zbus::zvariant::OwnedValue;
 
 use crate::dbus::{self, Daemon, DaemonEvent, Props};
 use crate::{Call, Cx, Event, Msg, ServiceError, Store, service};
@@ -46,6 +55,8 @@ pub struct AccessPoint {
 pub enum NetworkAction {
     /// `ap.connect()`.
     Connect { item: AccessPoint },
+    /// `ap.connect_with(password)`.
+    ConnectWith { item: AccessPoint, password: String },
 }
 
 /// See the module docs.
@@ -66,9 +77,60 @@ pub struct Network {
     #[store(keyed, stream)]
     pub access_points: Vec<AccessPoint>,
     /// Joining a network failed (no password and no secret agent to ask
-    /// for one, a wrong one, out of range): `on network.failed(ssid, error)
-    /// { … }`.
+    /// for one, a wrong one, out of range, timed out): `on
+    /// network.failed(ssid, error) { … }`.
     pub failed: Event<(String, String)>,
+}
+
+/// `NMActiveConnectionState`: activated.
+const ACTIVATED: u32 = 2;
+/// `NMActiveConnectionState`: deactivated.
+const DEACTIVATED: u32 = 4;
+
+/// Why an activation ended, for `failed` (`NMActiveConnectionStateReason`).
+pub fn reason_text(reason: u32) -> String {
+    match reason {
+        2 => "disconnected".into(),
+        3 => "the Wi-Fi device disconnected".into(),
+        4 | 7 | 8 => "a NetworkManager service failed".into(),
+        5 => "no IP address was given".into(),
+        6 => "it timed out".into(),
+        9 => "a password is needed (none was given, or it was wrong)".into(),
+        10 => "the login failed (a wrong password?)".into(),
+        11 => "the connection was removed".into(),
+        12 => "a connection it depends on failed".into(),
+        13 | 14 => "the Wi-Fi device is gone".into(),
+        r => format!("it could not be joined (reason {r})"),
+    }
+}
+
+/// A network being joined: the active connection NetworkManager made
+/// for it, followed until it is up or deactivated.
+#[derive(Debug)]
+struct Joining {
+    ssid: String,
+    /// It was listed among the active connections (once gone from them
+    /// before it came up, it failed).
+    seen: bool,
+}
+
+/// A state change of an active connection: its path, state and reason
+/// (`StateChanged`, or a `State` property change, whose reason is
+/// unknown).
+fn active_state(m: &zbus::Message) -> Option<(String, u32, u32)> {
+    let path = dbus::path(m)?;
+    if dbus::interface(m).as_deref() == Some(ACTIVE)
+        && dbus::member(m).as_deref() == Some("StateChanged")
+    {
+        let (state, reason): (u32, u32) = m.body().deserialize().ok()?;
+        return Some((path, state, reason));
+    }
+    let c = dbus::properties_changed(m)?;
+    if c.iface != ACTIVE {
+        return None;
+    }
+    let state = dbus::number(&c.changed, "State")? as u32;
+    Some((path, state, 0))
 }
 
 /// An access point's SSID (bytes; shown lossily as UTF-8).
@@ -302,9 +364,9 @@ impl Network {
             Err(e) => return crate::dbus::idle_without_bus(&mut cx, "system", e).await,
         };
         let mut daemon = Daemon::new(&conn, NM).await?;
-        // The manager, the active connections and the devices' Wi-Fi
-        // interface (access points coming and going); access points only
-        // while scanning.
+        // The manager and the active connections; the devices' Wi-Fi
+        // interface (access points coming and going) and the access
+        // points only while scanning.
         daemon.subscribe("manager", dbus::path_rule(ROOT)?).await?;
         daemon
             .subscribe(
@@ -312,13 +374,8 @@ impl Network {
                 dbus::namespace_rule("/org/freedesktop/NetworkManager/ActiveConnection")?,
             )
             .await?;
-        daemon
-            .subscribe(
-                "devices",
-                dbus::namespace_rule("/org/freedesktop/NetworkManager/Devices")?,
-            )
-            .await?;
         let mut nm = Nm::default();
+        let mut joining: BTreeMap<String, Joining> = BTreeMap::new();
         let mut scanning = cx.watched("access_points");
         let mut used = None;
         // A scan is asked for when scanning starts and when a new
@@ -330,6 +387,9 @@ impl Network {
             }
             nm.read(&daemon, scanning).await;
             sync_subscriptions(&mut daemon, &nm, scanning, &mut used).await;
+            if !settle_joins(&mut cx, &nm, &mut joining) {
+                return Ok(());
+            }
             // Asked once there is a Wi-Fi device to ask (a NetworkManager
             // that just appeared may not list its devices yet).
             if scanning && want_scan && request_scan(&daemon, &nm).await {
@@ -345,9 +405,30 @@ impl Network {
                         None => return Err(ServiceError("the system bus connection ended".into())),
                         Some(DaemonEvent::Owner) => {
                             want_scan = scanning;
+                            // Its activations went with it.
+                            for (_, j) in std::mem::take(&mut joining) {
+                                if !cx.emit(NetworkEvent::Failed((j.ssid, "NetworkManager stopped".into()))) {
+                                    return Ok(());
+                                }
+                            }
                             break 'follow;
                         }
-                        Some(DaemonEvent::Signal(m)) => match nm.signal(&daemon, &m, scanning).await {
+                        Some(DaemonEvent::Signal(m)) => {
+                            if let Some((path, state, reason)) = active_state(&m)
+                                && let Some(j) = joining.get(&path)
+                            {
+                                let ssid = j.ssid.clone();
+                                if state == ACTIVATED {
+                                    joining.remove(&path);
+                                } else if state == DEACTIVATED {
+                                    joining.remove(&path);
+                                    log::info!("network: joining {ssid} failed: reason {reason}");
+                                    if !cx.emit(NetworkEvent::Failed((ssid, reason_text(reason)))) {
+                                        return Ok(());
+                                    }
+                                }
+                            }
+                            match nm.signal(&daemon, &m, scanning).await {
                             None => break 'follow,
                             Some(false) => {}
                             Some(true) => {
@@ -355,7 +436,8 @@ impl Network {
                                     return Ok(());
                                 }
                             }
-                        },
+                            }
+                        }
                     },
                     m = cx.recv() => match m {
                         None => return Ok(()),
@@ -379,15 +461,25 @@ impl Network {
                                 return Ok(());
                             }
                         }
-                        Some(Msg::Action(NetworkAction::Connect { item })) => {
-                            if let Err(e) = connect(&daemon, &nm, &item.ssid).await {
-                                log::warn!("network: not joining {}: {e}", item.ssid);
-                                let error = match e {
-                                    zbus::Error::MethodError(_, Some(text), _) => text,
-                                    e => e.to_string(),
-                                };
-                                if !cx.emit(NetworkEvent::Failed((item.ssid.clone(), error))) {
-                                    return Ok(());
+                        Some(Msg::Action(a)) => {
+                            let (item, password) = match a {
+                                NetworkAction::Connect { item } => (item, None),
+                                NetworkAction::ConnectWith { item, password } => (item, Some(password)),
+                            };
+                            match connect(&daemon, &nm, &item.ssid, password.as_deref()).await {
+                                Ok(active) => {
+                                    // Followed until it is up (or not).
+                                    joining.insert(active, Joining { ssid: item.ssid, seen: false });
+                                }
+                                Err(e) => {
+                                    log::warn!("network: not joining {}: {e}", item.ssid);
+                                    let error = match e {
+                                        zbus::Error::MethodError(_, Some(text), _) => text,
+                                        e => e.to_string(),
+                                    };
+                                    if !cx.emit(NetworkEvent::Failed((item.ssid.clone(), error))) {
+                                        return Ok(());
+                                    }
                                 }
                             }
                         }
@@ -399,9 +491,21 @@ impl Network {
     }
 }
 
-/// The access points' signals only while scanning; otherwise the signals
-/// of the access point in use (its strength), one rule replaced when the
-/// connection moves.
+/// The Wi-Fi devices' access point lists: their `PropertiesChanged` on
+/// the `Wireless` interface only.
+fn wireless_rule() -> zbus::Result<zbus::MatchRule<'static>> {
+    Ok(zbus::MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .path_namespace("/org/freedesktop/NetworkManager/Devices")?
+        .interface(dbus::PROPERTIES)?
+        .member("PropertiesChanged")?
+        .arg(0, WIRELESS)?
+        .build())
+}
+
+/// The access points' signals and the devices' access point lists only
+/// while scanning; otherwise the signals of the access point in use (its
+/// strength), one rule replaced when the connection moves.
 async fn sync_subscriptions(
     daemon: &mut Daemon,
     nm: &Nm,
@@ -417,9 +521,16 @@ async fn sync_subscriptions(
         {
             log::debug!("network: no access point signals: {e}");
         }
+        if !daemon.subscribed("devices")
+            && let Ok(r) = wireless_rule()
+            && let Err(e) = daemon.subscribe("devices", r).await
+        {
+            log::debug!("network: no device signals: {e}");
+        }
         return;
     }
     daemon.unsubscribe("aps");
+    daemon.unsubscribe("devices");
     let now = nm.used_aps().into_iter().next();
     if *used == now {
         return;
@@ -434,6 +545,59 @@ async fn sync_subscriptions(
             Err(e) => log::debug!("network: no signals of {path}: {e}"),
         }
     }
+}
+
+/// After a read: joins whose connection is up are done; one deactivated,
+/// or gone from the active connections once listed, failed. `false` once
+/// the service was stopped.
+fn settle_joins(cx: &mut Cx<Network>, nm: &Nm, joining: &mut BTreeMap<String, Joining>) -> bool {
+    let mut failed = Vec::new();
+    joining.retain(|path, j| match nm.active.get(path) {
+        Some(p) => {
+            j.seen = true;
+            match dbus::number(p, "State").map(|n| n as u32) {
+                Some(ACTIVATED) => false,
+                Some(DEACTIVATED) => {
+                    failed.push((j.ssid.clone(), reason_text(0)));
+                    false
+                }
+                _ => true,
+            }
+        }
+        None if j.seen => {
+            failed.push((j.ssid.clone(), "the connection was deactivated".into()));
+            false
+        }
+        None => true,
+    });
+    failed.into_iter().all(|f| cx.emit(NetworkEvent::Failed(f)))
+}
+
+/// The `802-11-wireless-security` settings for joining access point `p`
+/// with `password`: WPA/WPA2 personal (`wpa-psk`) or WPA3 personal
+/// (`sae`). Enterprise and WEP networks are refused.
+fn security(p: &Props, password: &str) -> zbus::Result<HashMap<&'static str, OwnedValue>> {
+    // NM_802_11_AP_SEC_KEY_MGMT_PSK, _802_1X, _SAE.
+    let mgmt = |k| dbus::number(p, k).map_or(0, |n| n as u32);
+    let flags = mgmt("WpaFlags") | mgmt("RsnFlags");
+    let key_mgmt = if flags & 0x100 != 0 {
+        "wpa-psk"
+    } else if flags & 0x400 != 0 {
+        "sae"
+    } else if flags & 0x200 != 0 {
+        return Err(zbus::Error::Failure(
+            "an enterprise network: join it from the system's network settings".into(),
+        ));
+    } else {
+        return Err(zbus::Error::Failure(
+            "not a WPA network with a password".into(),
+        ));
+    };
+    let text = |s: &str| OwnedValue::try_from(zbus::zvariant::Value::from(s.to_string()));
+    Ok(HashMap::from([
+        ("key-mgmt", text(key_mgmt)?),
+        ("psk", text(password)?),
+    ]))
 }
 
 /// Ask every Wi-Fi device for a fresh scan (NetworkManager rate-limits
@@ -459,8 +623,15 @@ async fn request_scan(daemon: &Daemon, nm: &Nm) -> bool {
 }
 
 /// Join the network named `ssid`: its strongest access point, with a
-/// saved connection for that name if there is one.
-async fn connect(daemon: &Daemon, nm: &Nm, name: &str) -> zbus::Result<()> {
+/// saved connection for that name if there is one (given `password`, it
+/// is saved in it first), else a new one. The active connection
+/// NetworkManager made for it.
+async fn connect(
+    daemon: &Daemon,
+    nm: &Nm,
+    name: &str,
+    password: Option<&str>,
+) -> zbus::Result<String> {
     use zbus::zvariant::ObjectPath;
     let conn = daemon.conn();
     let mut best: Option<(&String, &String, f64)> = None;
@@ -484,6 +655,10 @@ async fn connect(daemon: &Daemon, nm: &Nm, name: &str) -> zbus::Result<()> {
     let Some((dev, ap, _)) = best else {
         return Err(zbus::Error::Failure(format!("`{name}` is not in range")));
     };
+    let secret = match password {
+        Some(pw) => Some(security(nm.aps.get(ap).unwrap_or(&Props::new()), pw)?),
+        None => None,
+    };
     let dev = ObjectPath::try_from(dev.as_str())?;
     let ap = ObjectPath::try_from(ap.as_str())?;
     // A saved connection for the name?
@@ -498,10 +673,7 @@ async fn connect(daemon: &Daemon, nm: &Nm, name: &str) -> zbus::Result<()> {
         .await?
         .body()
         .deserialize()?;
-    type Settings = std::collections::HashMap<
-        String,
-        std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
-    >;
+    type Settings = HashMap<String, HashMap<String, OwnedValue>>;
     for path in saved {
         let Ok(reply) = conn
             .call_method(
@@ -515,35 +687,60 @@ async fn connect(daemon: &Daemon, nm: &Nm, name: &str) -> zbus::Result<()> {
         else {
             continue;
         };
-        let Ok(settings) = reply.body().deserialize::<Settings>() else {
+        let Ok(mut settings) = reply.body().deserialize::<Settings>() else {
             continue;
         };
         let matches = settings
             .get("802-11-wireless")
             .is_some_and(|w| ssid_at(w, "ssid").as_deref() == Some(name));
         if matches {
-            conn.call_method(
-                Some(NM),
-                ROOT,
-                Some(NM),
-                "ActivateConnection",
-                &(path.as_ref(), &dev, &ap),
-            )
-            .await?;
-            return Ok(());
+            if let Some(secret) = &secret {
+                // The new password, saved in it.
+                let mut sec = HashMap::new();
+                for (k, v) in secret {
+                    sec.insert(k.to_string(), v.try_clone()?);
+                }
+                settings.insert("802-11-wireless-security".into(), sec);
+                conn.call_method(
+                    Some(NM),
+                    path.as_str(),
+                    Some(CONNECTION_IFACE),
+                    "Update",
+                    &(settings,),
+                )
+                .await?;
+            }
+            let active: zbus::zvariant::OwnedObjectPath = conn
+                .call_method(
+                    Some(NM),
+                    ROOT,
+                    Some(NM),
+                    "ActivateConnection",
+                    &(path.as_ref(), &dev, &ap),
+                )
+                .await?
+                .body()
+                .deserialize()?;
+            return Ok(active.to_string());
         }
     }
-    let empty: std::collections::HashMap<
-        &str,
-        std::collections::HashMap<&str, zbus::zvariant::Value<'_>>,
-    > = Default::default();
-    conn.call_method(
-        Some(NM),
-        ROOT,
-        Some(NM),
-        "AddAndActivateConnection",
-        &(empty, &dev, &ap),
-    )
-    .await?;
-    Ok(())
+    let mut new: HashMap<&str, HashMap<&str, OwnedValue>> = HashMap::new();
+    if let Some(secret) = secret {
+        new.insert("802-11-wireless-security", secret);
+    }
+    let (_, active): (
+        zbus::zvariant::OwnedObjectPath,
+        zbus::zvariant::OwnedObjectPath,
+    ) = conn
+        .call_method(
+            Some(NM),
+            ROOT,
+            Some(NM),
+            "AddAndActivateConnection",
+            &(new, &dev, &ap),
+        )
+        .await?
+        .body()
+        .deserialize()?;
+    Ok(active.to_string())
 }

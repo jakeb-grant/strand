@@ -96,6 +96,45 @@ fn bluetooth_follows_bluez() {
         .unwrap();
     until(&rt, &s, "disconnected", || !devices(&b, &rt)[0].connected);
 
+    // BlueZ refuses a connect (the headphones are off): `failed` says so.
+    let failures = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let f = failures.clone();
+    b.bluetooth.dynamic().observe(Box::new(move |_, a| {
+        if let strand_services::Applied::Event { args, .. } = a {
+            f.lock().unwrap().push(args.clone());
+        }
+    }));
+    call(
+        &tokio,
+        &conn,
+        BLUEZ,
+        &dev,
+        "org.freedesktop.DBus.Mock",
+        "AddMethod",
+        &(
+            "org.bluez.Device1",
+            "Connect",
+            "",
+            "",
+            "raise dbus.exceptions.DBusException('Page Timeout', name='org.bluez.Error.Failed')",
+        ),
+    );
+    b.bluetooth
+        .dynamic()
+        .action(&rt, "connect", Some(&d[0].to_data()), &[])
+        .unwrap();
+    until(&rt, &s, "the failure", || {
+        !failures.lock().unwrap().is_empty()
+    });
+    assert_eq!(
+        failures.lock().unwrap()[0],
+        [
+            Data::Text(ADDRESS.into()),
+            Data::Text("Page Timeout".into())
+        ]
+    );
+    assert!(!devices(&b, &rt)[0].connected);
+
     // It reports a battery (an interface added).
     let battery =
         std::collections::HashMap::from([("Percentage", zbus::zvariant::Value::from(70u8))]);

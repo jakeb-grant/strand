@@ -87,14 +87,17 @@ fn the_dbus_services_sleep_when_nothing_changes() {
     ) else {
         return;
     };
-    mock(
+    let wlan: String = mock(
         &tokio,
         &conn,
         "org.freedesktop.NetworkManager",
         "/org/freedesktop/NetworkManager",
         "AddWiFiDevice",
         &("wlan", "wlan0", 100i32),
-    );
+    )
+    .body()
+    .deserialize()
+    .unwrap();
     let Some(_bluez) = DbusMock::start(&bus, "bluez5", true, None, "org.bluez") else {
         return;
     };
@@ -161,6 +164,27 @@ fn the_dbus_services_sleep_when_nothing_changes() {
         );
     }
     let before = switches("strand-services");
+    // A background scan finds a network while no menu shows them: the
+    // device's access point list changes, and nothing here wakes (no
+    // match rule for it).
+    mock(
+        &tokio,
+        &conn,
+        "org.freedesktop.NetworkManager",
+        "/org/freedesktop/NetworkManager",
+        "AddAccessPoint",
+        &(
+            wlan.as_str(),
+            "Idle_AP",
+            "Elsewhere",
+            "00:23:F8:7E:12:BB",
+            2u32,
+            2425u32,
+            5400u32,
+            40u8,
+            0x100u32,
+        ),
+    );
     std::thread::sleep(Duration::from_secs(3));
     assert_eq!(
         switches("strand-services"),

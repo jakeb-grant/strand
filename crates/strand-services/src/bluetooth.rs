@@ -13,7 +13,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::dbus::{self, Daemon, DaemonEvent, Props};
-use crate::{Call, Cx, Msg, ServiceError, Store, service};
+use crate::{Call, Cx, Event, Msg, ServiceError, Store, service};
 
 /// The schema the `bluetooth` service serves.
 pub const SCHEMA: &str = strand_services_schema::BLUETOOTH;
@@ -55,6 +55,10 @@ pub struct Bluetooth {
     /// Paired devices, keyed by `address`.
     #[store(keyed)]
     pub devices: Vec<BluetoothDevice>,
+    /// Connecting or disconnecting a device failed (out of range, turned
+    /// off, timed out after 30 s): `on bluetooth.failed(address, error)
+    /// { … }`.
+    pub failed: Event<(String, String)>,
 }
 
 /// BlueZ's objects: path, then interface, then properties.
@@ -106,6 +110,7 @@ impl Bluetooth {
         Bluetooth {
             powered: dbus::boolean(adapter, "Powered").unwrap_or(false),
             devices,
+            failed: Event::default(),
         }
     }
 
@@ -121,7 +126,8 @@ impl Bluetooth {
             .await?;
         // Connects and disconnects in flight: dropped (cancelled) with the
         // body, so a stopped service keeps no call, and no connection.
-        let mut calls: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
+        // Each brings back a failure: the device's address and why.
+        let mut calls: tokio::task::JoinSet<Option<(String, String)>> = tokio::task::JoinSet::new();
         loop {
             let mut objects = read(&daemon).await;
             if !cx.update(|s| *s = Bluetooth::from_objects(&objects)) {
@@ -130,7 +136,13 @@ impl Bluetooth {
             cx.ready();
             'follow: loop {
                 tokio::select! {
-                    Some(_) = calls.join_next(), if !calls.is_empty() => {}
+                    Some(done) = calls.join_next(), if !calls.is_empty() => {
+                        if let Ok(Some(failure)) = done
+                            && !cx.emit(BluetoothEvent::Failed(failure))
+                        {
+                            return Ok(());
+                        }
+                    }
                     ev = daemon.next() => match ev {
                         None => return Err(ServiceError("the system bus connection ended".into())),
                         Some(DaemonEvent::Owner) => break 'follow,
@@ -180,19 +192,28 @@ impl Bluetooth {
                             });
                             let Some(path) = path else {
                                 log::warn!("bluetooth: no device {}", item.address);
+                                if !cx.emit(BluetoothEvent::Failed((item.address, "no such device".into()))) {
+                                    return Ok(());
+                                }
                                 continue;
                             };
                             // Connecting can take seconds: do not hold up
                             // the service; BlueZ reports the outcome as
                             // `Connected` changes.
                             let conn = conn.clone();
+                            let address = item.address;
                             calls.spawn(async move {
                                 let call = conn.call_method(Some(BLUEZ), path.as_str(), Some(DEVICE), method, &());
-                                match tokio::time::timeout(std::time::Duration::from_secs(30), call).await {
-                                    Ok(Ok(_)) => {}
-                                    Ok(Err(e)) => log::warn!("bluetooth: {method} {path}: {e}"),
-                                    Err(_) => log::warn!("bluetooth: {method} {path}: timed out"),
-                                }
+                                let error = match tokio::time::timeout(std::time::Duration::from_secs(30), call).await {
+                                    Ok(Ok(_)) => return None,
+                                    // BlueZ's own words ("Page Timeout",
+                                    // "Host is down").
+                                    Ok(Err(zbus::Error::MethodError(_, Some(text), _))) => text,
+                                    Ok(Err(e)) => e.to_string(),
+                                    Err(_) => "timed out".to_string(),
+                                };
+                                log::warn!("bluetooth: {method} {path}: {error}");
+                                Some((address, error))
                             });
                         }
                         Some(_) => {}

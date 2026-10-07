@@ -11,9 +11,13 @@ record AccessPoint key ssid {
   /// It is the network joined.
   active: bool
   /// Joins it: with its saved connection if there is one, else a new one
-  /// (NetworkManager asks its secret agent for a password); a failure is
-  /// `network.failed`.
+  /// (NetworkManager asks its secret agent for a password); a failure,
+  /// including one NetworkManager reports later (no password, a wrong
+  /// one, a timeout), is `network.failed`.
   action connect()
+  /// Joins it with `password` (WPA personal), saved in its connection:
+  /// a network menu's password field. A failure is `network.failed`.
+  action connect_with(password: text)
 }
 
 /// The network, from NetworkManager, followed live.
@@ -30,7 +34,7 @@ service network {
   /// visible reader reads them (a network menu that is open).
   access_points: [AccessPoint]
   /// Joining a network failed (no password and no secret agent to ask
-  /// for one, a wrong one, out of range): `on network.failed(ssid, error)
-  /// { … }`.
+  /// for one, a wrong one, out of range, timed out): `on
+  /// network.failed(ssid, error) { … }`.
   event failed(ssid: text, error: text)
 }
