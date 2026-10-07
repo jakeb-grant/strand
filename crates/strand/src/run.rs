@@ -1385,6 +1385,25 @@ fn read_signals(fd: BorrowedFd<'_>) -> Vec<i32> {
     }
 }
 
+/// A cache source changed, on the watcher's thread: the shared icon
+/// lookups and the apps service are told at once; the result is what the
+/// renderer drops ([`caches_changed`]). An app installed with its icon
+/// (`~/.local/share/icons/hicolor/256x256/apps/foo.png`, deeper than the
+/// icon directories' one-level watch, `icon-theme.cache` untouched)
+/// counts as an icon change too: a miss remembered for that name is
+/// forgotten, by the apps service and the renderer alike.
+fn cache_changed(kind: CacheKind) -> CacheKind {
+    match kind {
+        CacheKind::Apps | CacheKind::Icons => {
+            // Before the apps service looks its icons up again.
+            strand_icons::invalidate();
+            strand_services::apps::changed();
+            CacheKind::Icons
+        }
+        CacheKind::Fonts => CacheKind::Fonts,
+    }
+}
+
 /// A cache source changed: the renderer drops what it no longer holds
 /// true (icons looked up afresh, text shaped again) and its surfaces
 /// repaint.
@@ -1448,18 +1467,7 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
     let _ = compiler.jobs().send(Job::Caches {
         sources: live::cache_sources(),
         changed: live::CacheSink(Box::new(move |kind| {
-            match kind {
-                CacheKind::Apps => strand_services::apps::changed(),
-                CacheKind::Icons => {
-                    // Before the apps service looks its icons up again.
-                    strand_icons::invalidate();
-                    strand_services::apps::changed();
-                }
-                CacheKind::Fonts => {}
-            }
-            if kind != CacheKind::Apps {
-                let _ = caches_tx.send(kind);
-            }
+            let _ = caches_tx.send(cache_changed(kind));
         })),
     });
     // GNOME (and any portal backend exposing GSettings) names the icon
@@ -3200,5 +3208,45 @@ pub(crate) mod tests {
         assert_eq!(t.join().unwrap(), Ok(()));
         drop(compiler);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// An app installed together with its icon, in a theme directory
+    /// deeper than the icon watch sees and without touching the theme's
+    /// `icon-theme.cache`: the icon's name, looked up (and missed) before,
+    /// resolves after the `applications/` change, and the renderer is told
+    /// to drop its icons too.
+    #[test]
+    fn an_app_installed_with_its_icon_resolves_it() {
+        let root = std::env::temp_dir().join(format!("strand-app-icon-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let theme = format!("StrandAppIcon{}", std::process::id());
+        let base = root.join("icons");
+        std::fs::create_dir_all(base.join(&theme)).unwrap();
+        std::fs::write(
+            base.join(&theme).join("index.theme"),
+            "[Icon Theme]\nName=T\nDirectories=256x256/apps\n\n[256x256/apps]\nSize=256\nType=Fixed\n",
+        )
+        .unwrap();
+        // The defaults too: other tests resolve the system's icons.
+        let mut bases = strand_icons::default_base_dirs();
+        bases.push(base.clone());
+        strand_icons::set_base_dirs(Some(bases));
+        let name = "strand-new-app";
+        assert_eq!(strand_icons::resolve(name, 256, 1, Some(&theme)), None);
+        let icon = base.join(&theme).join("256x256/apps/strand-new-app.png");
+        std::fs::create_dir_all(icon.parent().unwrap()).unwrap();
+        std::fs::write(&icon, b"png").unwrap();
+        assert_eq!(
+            strand_icons::resolve(name, 256, 1, Some(&theme)),
+            None,
+            "the miss is remembered"
+        );
+        assert_eq!(cache_changed(CacheKind::Apps), CacheKind::Icons);
+        assert_eq!(
+            strand_icons::resolve(name, 256, 1, Some(&theme)),
+            Some(icon)
+        );
+        strand_icons::set_base_dirs(None);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

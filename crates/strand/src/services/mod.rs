@@ -2056,13 +2056,10 @@ service shelf {
                 file.display()
             );
             let mut live = Live::boot(&src, Buses::none());
-            live.until("the file read", |l| {
-                matches!(l.value("m", "tint"), Value::Color(_))
-            });
-            assert_eq!(
-                live.value("m", "tint"),
-                Value::Color(strand_scene::Color::from_hex("#ff0000").unwrap())
-            );
+            // (A colour field reads a colour before the file is read too:
+            // the default.)
+            let red = Value::Color(strand_scene::Color::from_hex("#ff0000").unwrap());
+            live.until("the file read", |l| l.value("m", "tint") == red);
             assert_eq!(live.value("m", "lvl"), Value::int(0));
             let mismatches = |l: &Live| -> Vec<strand_services::ServiceDiagnostic> {
                 l.real
@@ -2123,6 +2120,28 @@ service shelf {
             let again = mismatches(&live);
             assert_eq!(again.len(), 1, "{again:?}");
             assert!(!again[0].resolved && again[0].message.contains("\"nope\""));
+            // The usual fix, the declared type changed: the reload
+            // restarts the service, which resolves the open report (and
+            // the new type takes the value, so nothing is reported anew).
+            live.reload(&src.replace("lvl: int", "lvl: text"));
+            live.until("the retyped field read", |l| {
+                l.value("m", "lvl") == Value::text("nope")
+            });
+            let restarted = mismatches(&live);
+            assert_eq!(restarted.len(), 1, "{restarted:?}");
+            assert!(restarted[0].resolved && restarted[0].message == again[0].message);
+            // Back to `int`: reported again; the service removed: resolved.
+            live.reload(&src);
+            live.until("the int field read", |l| {
+                l.value("m", "lvl") == Value::int(0)
+            });
+            let back = mismatches(&live);
+            assert_eq!(back.len(), 1, "{back:?}");
+            assert!(!back[0].resolved);
+            live.reload("bar B { text \"none\" }\n");
+            let stopped = mismatches(&live);
+            assert_eq!(stopped.len(), 1, "{stopped:?}");
+            assert!(stopped[0].resolved && stopped[0].message == back[0].message);
             drop(live);
             let _ = std::fs::remove_dir_all(&dir);
         }

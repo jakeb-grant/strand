@@ -49,8 +49,25 @@ struct Entry {
     /// again.
     epoch: Signal<u64>,
     values: Vec<Memo<Value>>,
+    /// Its fields' mismatch reports: resolved when the service restarts
+    /// or stops (a mismatch is usually fixed by changing the declared
+    /// type, which restarts it; a field that still mismatches is reported
+    /// afresh by the new mount).
+    mismatches: Vec<Rc<Mismatch>>,
     /// Owns the memos.
     scope: Scope,
+}
+
+impl Entry {
+    /// Resolve every open mismatch report and dispose the memos.
+    fn dispose(self, rt: &Runtime) -> Client<Custom> {
+        for m in &self.mismatches {
+            m.resolve();
+        }
+        custom::forget(self.spec);
+        self.scope.dispose(rt);
+        self.client
+    }
 }
 
 /// A service's type table and its fields' types (in declaration order).
@@ -279,16 +296,7 @@ impl Mismatch {
     /// says nothing.
     fn saw(&self, types: &TypeTable, ty: &Ty, d: &Data, converted: bool) {
         if converted {
-            let taken = self.reported.borrow_mut().take();
-            if let Some(message) = taken {
-                self.services.report(ServiceDiagnostic {
-                    service: self.service.clone(),
-                    message,
-                    notice: false,
-                    resolved: true,
-                });
-            }
-            return;
+            return self.resolve();
         }
         if self.reported.borrow().is_some() || matches!(d, Data::Null) {
             return;
@@ -307,6 +315,22 @@ impl Mismatch {
             resolved: false,
         });
         *self.reported.borrow_mut() = Some(message);
+    }
+}
+
+impl Mismatch {
+    /// The report, if open, is resolved (the value converts again, or
+    /// the field's service restarted or stopped).
+    fn resolve(&self) {
+        let taken = self.reported.borrow_mut().take();
+        if let Some(message) = taken {
+            self.services.report(ServiceDiagnostic {
+                service: self.service.clone(),
+                message,
+                notice: false,
+                resolved: true,
+            });
+        }
     }
 }
 
@@ -368,19 +392,21 @@ impl CustomHost {
             log::warn!("{}: {e}", decl.name);
         }
         let typing = Rc::new(RefCell::new(Typing::of(decl, types)));
+        let mut mismatches = Vec::with_capacity(n);
         let (scope, (epoch, values)) = rt.scope(|rt| {
             let epoch = rt.signal(0u64);
             let values = (0..n)
                 .map(|i| {
                     let (client, typing) = (client.clone(), typing.clone());
                     let name = format!("{}.{}", decl.name, decl.fields[i].name);
-                    let report = Mismatch {
+                    let report = Rc::new(Mismatch {
                         services: self.services.clone(),
                         service: decl.name.clone(),
                         field: name.clone(),
                         key: decl.fields[i].key.join("."),
                         reported: RefCell::new(None),
-                    };
+                    });
+                    mismatches.push(report.clone());
                     let m = rt.memo(move |rt| {
                         epoch.get(rt)?;
                         let d = client
@@ -407,6 +433,7 @@ impl CustomHost {
             typing,
             epoch,
             values,
+            mismatches,
             scope,
         }
     }
@@ -443,10 +470,9 @@ impl CustomHost {
 
     /// Stop every service and dispose the cells (shutdown).
     pub fn dispose(&self, rt: &Runtime) {
-        for (_, e) in self.entries.borrow_mut().drain() {
-            custom::forget(e.spec);
-            e.scope.dispose(rt);
-            e.client.unregister(rt);
+        let entries: Vec<Entry> = self.entries.borrow_mut().drain().map(|(_, e)| e).collect();
+        for e in entries {
+            e.dispose(rt).unregister(rt);
         }
     }
 }
@@ -476,10 +502,9 @@ impl ServiceHost for CustomHost {
         let Some(old) = old else {
             return self.declare(rt, decl, types);
         };
-        custom::forget(old.spec);
-        old.scope.dispose(rt);
-        let entry = self.mount(rt, old.client.clone(), decl, types);
-        old.client.restart(rt);
+        let client = old.dispose(rt);
+        let entry = self.mount(rt, client.clone(), decl, types);
+        client.restart(rt);
         self.entries.borrow_mut().insert(decl.name.clone(), entry);
     }
 
@@ -513,9 +538,7 @@ impl ServiceHost for CustomHost {
     fn stop(&self, rt: &Runtime, name: &str) {
         let old = self.entries.borrow_mut().remove(name);
         if let Some(old) = old {
-            custom::forget(old.spec);
-            old.scope.dispose(rt);
-            old.client.unregister(rt);
+            old.dispose(rt).unregister(rt);
         }
     }
 
@@ -992,6 +1015,97 @@ mod tests {
             "{:?}",
             out.diagnostics
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The design's ppd service, as the PowerProfiles daemon is reached
+    /// through the environment's system bus (`DBUS_SYSTEM_BUS_ADDRESS`, a
+    /// private bus with dbusmock's `power_profiles_daemon`): the loader's
+    /// boot compile with [`dbus_check`] holds a misspelled property back
+    /// with its did-you-mean, and commits the correct one. The compile runs
+    /// in a child process (this test, re-run), so the address is that
+    /// process's environment and no other test's.
+    #[test]
+    fn the_loader_checks_from_dbus_services_on_the_system_bus() {
+        use strand_compiler::reconcile::loader::Loader;
+        use strand_services::testing::{DbusMock, PrivateBus};
+        const CHILD: &str = "STRAND_TEST_LOADER_DIR";
+        if let Some(dir) = std::env::var_os(CHILD) {
+            let (check, _waits) = dbus_check(|| {});
+            let mut loader = Loader::new(
+                std::path::Path::new(&dir),
+                crate::services::schema().clone(),
+                None,
+            )
+            .with_check(check);
+            let boot = loader.boot();
+            // On lines of their own (the harness prints the test name first).
+            println!("\nBUILD {}", boot.build.is_some());
+            for d in &boot.diagnostics {
+                let fix: Vec<&str> = d
+                    .suggestions
+                    .iter()
+                    .map(|s| s.replacement.as_str())
+                    .collect();
+                println!("DIAG {} {}", d.code, fix.join(","));
+            }
+            return;
+        }
+        let Some(bus) = PrivateBus::start() else {
+            return;
+        };
+        let Some(_ppd) = DbusMock::start(
+            &bus,
+            "power_profiles_daemon",
+            true,
+            None,
+            "net.hadess.PowerProfiles",
+        ) else {
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("strand-ppd-loader-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let boot = |field: &str| -> String {
+            std::fs::write(
+                dir.join("ppd.strand"),
+                format!(
+                    "service ppd from dbus system \"net.hadess.PowerProfiles\" {{ {field} }}\nbar B {{ text join(\" \", ppd.profile) }}\n"
+                ),
+            )
+            .unwrap();
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "services::custom::tests::the_loader_checks_from_dbus_services_on_the_system_bus",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(CHILD, &dir)
+                .envs(bus.env())
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+            assert!(
+                out.status.success(),
+                "{stdout}\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            stdout
+                .lines()
+                .filter(|l| l.starts_with("BUILD ") || l.starts_with("DIAG "))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        assert_eq!(boot("profile: text rw = ActiveProfile"), "BUILD true");
+        let bad = boot("profile: text rw = ActiveProfil");
+        assert_eq!(
+            bad, "BUILD false\nDIAG check::dbus_property ActiveProfile",
+            "held back, with the did-you-mean"
+        );
+        // A type the property's signature (`s`) does not convert to.
+        let ty = boot("profile: bool = ActiveProfile");
+        assert_eq!(ty, "BUILD false\nDIAG check::dbus_type ", "{ty}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

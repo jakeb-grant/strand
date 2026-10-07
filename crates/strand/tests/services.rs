@@ -25,7 +25,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use strand_services::testing::PrivateBus;
+use strand_services::testing::{DbusMock, PrivateBus};
 use zbus::zvariant::{OwnedValue, Value as ZValue};
 
 const CONFIG: &str = "\
@@ -262,15 +262,32 @@ struct Setup {
     _sway: Proc,
     _portal: zbus::Connection,
     _tokio: tokio::runtime::Runtime,
+    _mocks: Vec<DbusMock>,
     _bus: PrivateBus,
 }
 
 impl Setup {
     fn start(name: &str, config_text: &str) -> Option<Setup> {
+        Setup::start_with(name, config_text, &[], &[])
+    }
+
+    /// [`Setup::start`] with dbusmock templates (`template`, the bus name
+    /// it owns) on the system side of the private bus and extra
+    /// environment for `strand run`.
+    fn start_with(
+        name: &str,
+        config_text: &str,
+        mocks: &[(&str, &str)],
+        env: &[(&str, PathBuf)],
+    ) -> Option<Setup> {
         if !tools() {
             return None;
         }
         let bus = PrivateBus::start()?;
+        let mut started = Vec::new();
+        for (template, owns) in mocks {
+            started.push(DbusMock::start(&bus, template, true, None, owns)?);
+        }
         // Short: the IPC socket paths must fit in sun_path.
         let dir: PathBuf =
             std::env::temp_dir().join(format!("strand-{name}-{}", std::process::id()));
@@ -318,6 +335,7 @@ impl Setup {
                 .env("XDG_CACHE_HOME", dir.join("cache"))
                 .env("XDG_STATE_HOME", dir.join("state"))
                 .envs(bus.env())
+                .envs(env.iter().map(|(k, v)| (*k, v.as_os_str())))
                 .env_remove("STRAND_MOCK")
                 .stdin(Stdio::null())
                 .stderr(std::fs::File::create(&log).unwrap())
@@ -333,6 +351,7 @@ impl Setup {
             _sway: sway,
             _portal: portal,
             _tokio: tokio,
+            _mocks: started,
             _bus: bus,
         })
     }
@@ -519,4 +538,143 @@ fn the_real_services_sleep_when_nothing_changes() {
     std::thread::sleep(Duration::from_secs(3));
     let after: Vec<u64> = threads.iter().map(|t| switches_of(pid, t)).collect();
     assert_eq!(before, after, "{threads:?} woke after cpu stopped");
+}
+
+/// `strand check` reaches the system bus its environment names
+/// (`DBUS_SYSTEM_BUS_ADDRESS`: a private bus with dbusmock's
+/// `power_profiles_daemon`) and checks the design's ppd service against
+/// the daemon's introspection: clean as written, a misspelled property an
+/// error with its did-you-mean.
+#[test]
+fn strand_check_checks_from_dbus_services_on_the_system_bus() {
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let Some(_ppd) = DbusMock::start(
+        &bus,
+        "power_profiles_daemon",
+        true,
+        None,
+        "net.hadess.PowerProfiles",
+    ) else {
+        return;
+    };
+    let dir =
+        Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("ppd-check-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let check = |property: &str| -> (bool, String) {
+        std::fs::write(
+            dir.join("ppd.strand"),
+            format!(
+                "service ppd from dbus system \"net.hadess.PowerProfiles\" {{ profile: text rw = {property} }}\nbar B {{ text ppd.profile }}\n"
+            ),
+        )
+        .unwrap();
+        let out = Command::new(env!("CARGO_BIN_EXE_strand"))
+            .arg("check")
+            .arg(&dir)
+            .envs(bus.env())
+            .output()
+            .unwrap();
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let (ok, text) = check("ActiveProfile");
+    assert!(ok && text.contains("0 errors, 0 warnings"), "{text}");
+    let (ok, text) = check("ActiveProfil");
+    assert!(!ok, "{text}");
+    assert!(
+        text.contains("check::dbus_property") && text.contains("ActiveProfile"),
+        "{text}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The idle budget with M3's other services running: `apps` (its
+/// `applications/` directories watched), a `from file` service (inotify),
+/// the design's ppd `from dbus` service (a PropertiesChanged match on
+/// dbusmock's `power_profiles_daemon`), and a `from poll` service read only
+/// by a closed popup. The bar turns red only once every one of them has
+/// read; then the logic and services threads do not wake at all, and the
+/// poll's command never ran. Opening the popup runs it.
+#[test]
+fn the_m3_services_sleep_when_nothing_changes() {
+    let data =
+        Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("m3-idle-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let apps = data.join("share/applications");
+    std::fs::create_dir_all(&apps).unwrap();
+    std::fs::write(
+        apps.join("one.desktop"),
+        "[Desktop Entry]\nType=Application\nName=One\nExec=true\n",
+    )
+    .unwrap();
+    std::fs::write(data.join("mood.json"), r#"{"level": 7}"#).unwrap();
+    let runs = data.join("runs");
+    let config = format!(
+        "permit exec \"sh\"
+export state open = false
+service ppd from dbus system \"net.hadess.PowerProfiles\" {{ profile: text = ActiveProfile }}
+service mood from file \"{mood}\" {{ level: int }}
+service tick from poll [\"sh\", \"-c\", \"echo run >> {runs}; echo 1\"] every 1s {{ n: int }}
+let t = tick.n
+bar Top {{
+  edge: top; height: 40
+  bg: system.dark && ppd.profile == \"balanced\" && mood.level == 7 && apps.all.count(a => true) == 1 ? #ff0000 : #0000ff
+  row {{ box {{ width: 30; height: 40; bg: #00ff00 }} }}
+  popup {{ open: <-> open; text join(\" \", t) }}
+}}
+",
+        mood = data.join("mood.json").display(),
+        runs = runs.display(),
+    );
+    let env = [
+        ("XDG_DATA_DIRS", data.join("share")),
+        ("XDG_DATA_HOME", data.join("home-share")),
+    ];
+    let Some(setup) = Setup::start_with(
+        "m3idle",
+        &config,
+        &[("power_profiles_daemon", "net.hadess.PowerProfiles")],
+        &env,
+    ) else {
+        let _ = std::fs::remove_dir_all(&data);
+        return;
+    };
+    setup.wait("every service read (the red bar)", |img| {
+        close(img.px(1270, 20), RED)
+    });
+    let pid = setup.strand.0.id();
+    let threads = ["strand-logic", "strand-services"];
+    let woke = || -> Vec<u64> { threads.iter().map(|t| switches_of(pid, t)).collect() };
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let w = woke();
+        std::thread::sleep(Duration::from_secs(1));
+        if woke() == w {
+            break;
+        }
+        assert!(Instant::now() < deadline, "never settled\n{}", setup.log());
+    }
+    let before = woke();
+    std::thread::sleep(Duration::from_secs(4));
+    assert_eq!(
+        before,
+        woke(),
+        "{threads:?} woke while idle\n{}",
+        setup.log()
+    );
+    assert!(!runs.exists(), "the closed popup's poll ran");
+    // Open: the poll runs.
+    setup.cli(&["set", "bar.open", "true"]);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !runs.exists() {
+        assert!(Instant::now() < deadline, "the open popup's poll never ran");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    drop(setup);
+    let _ = std::fs::remove_dir_all(&data);
 }
