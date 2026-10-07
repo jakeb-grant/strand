@@ -25,6 +25,7 @@ mod collect;
 mod cycles;
 pub mod dbus;
 mod expr;
+pub mod paths;
 mod prepin;
 mod stmt;
 mod tokens;

@@ -150,6 +150,11 @@ fn check_config(dir: &Path, focus: Option<&Path>, style: Style) -> Result<Report
         &compiled.program,
         &crate::services::custom::BusIntrospector::default(),
     ));
+    // `from file`/`from poll` paths that name a program (read, not run).
+    diags.extend(strand_compiler::check::paths::check(
+        &compiled.program,
+        Some(dir),
+    ));
     if focus.is_some() {
         // A diagnostic is the file's if any of its labels is there: the
         // first declaration of a name redeclared in another file, a call

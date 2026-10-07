@@ -1,0 +1,4 @@
+// expect: syntax::unknown_bus
+// An unknown bus has its own code and a did-you-mean, and is not also a
+// type mismatch.
+service t from dbus systm "net.hadess.PowerProfiles" { a: text = A }

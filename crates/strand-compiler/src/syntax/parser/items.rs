@@ -1303,7 +1303,7 @@ impl Parser<'_> {
                     Some(ExprKind::Name(id)) if id.name == "system" || id.name == "session" => true,
                     Some(ExprKind::Name(id)) => {
                         let mut d = Diagnostic::error(
-                            "syntax::unknown_source",
+                            "syntax::unknown_bus",
                             format!("unknown bus `{}`", id.name),
                         )
                         .with_label(id.span, "the bus is `system` or `session`");

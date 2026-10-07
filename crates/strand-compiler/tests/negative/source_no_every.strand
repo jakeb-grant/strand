@@ -1,0 +1,4 @@
+// expect: syntax::expected
+// One mistake, one diagnostic: a poll without `every` is the parser's
+// error alone, not also a missing argument.
+service t from poll "/tmp/x" { a: text }

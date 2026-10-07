@@ -2235,18 +2235,13 @@ impl<'a> Checker<'a> {
         match kind {
             "dbus" => {
                 let bus = s.source.args.first();
-                match bus.map(|b| &b.kind) {
-                    Some(ast::ExprKind::Name(n)) if n.name == "system" || n.name == "session" => {}
-                    _ => {
-                        let span = bus.map_or(s.source.span, |b| b.span);
-                        self.error(
-                            "check::type_mismatch",
-                            "a D-Bus service names its bus first: `system` or `session`",
-                            span,
-                            "expected `system` or `session`",
-                        );
-                        constant = false;
-                    }
+                // The parser reports a missing or unknown bus and a missing
+                // bus name (one mistake, one diagnostic): the checker only
+                // stops evaluating the source.
+                if !matches!(bus.map(|b| &b.kind),
+                    Some(ast::ExprKind::Name(n)) if n.name == "system" || n.name == "session")
+                {
+                    constant = false;
                 }
                 for (i, a) in s.source.args.iter().enumerate().skip(1) {
                     if i > 2 {
@@ -2262,26 +2257,13 @@ impl<'a> Checker<'a> {
                     args.push(e);
                 }
                 if s.source.args.len() < 2 {
-                    self.error(
-                        "check::missing_arg",
-                        "a D-Bus service needs its bus name",
-                        s.source.span,
-                        "no bus name",
-                    )
-                    .help = Some("`from dbus system \"net.hadess.PowerProfiles\"`".into());
                     constant = false;
                 }
             }
             "file" | "listen" | "poll" => {
-                for (i, a) in s.source.args.iter().enumerate() {
-                    if i > 0 {
-                        self.error(
-                            "check::too_many_args",
-                            format!("`{kind}` takes one value"),
-                            a.span,
-                            "one too many",
-                        );
-                    }
+                // The parser reports a count other than one (and a poll
+                // without `every`): one mistake, one diagnostic.
+                for a in s.source.args.iter().take(1) {
                     let want = if kind == "file" {
                         Ty::PATH
                     } else {
@@ -2291,20 +2273,7 @@ impl<'a> Checker<'a> {
                     texts.push(const_arg(&e));
                     args.push(e);
                 }
-                if s.source.args.is_empty() {
-                    self.error(
-                        "check::missing_arg",
-                        format!(
-                            "a `{kind}` service needs {}",
-                            if kind == "file" {
-                                "its path"
-                            } else {
-                                "its command"
-                            }
-                        ),
-                        s.source.span,
-                        "nothing to read",
-                    );
+                if s.source.args.len() != 1 {
                     constant = false;
                 }
                 // A poll of a file (a path, no spaces) runs nothing.
@@ -2369,7 +2338,9 @@ impl<'a> Checker<'a> {
         }
         let every = match (&s.source.every, kind) {
             (Some(e), "poll") => Some(self.expect(e, &Ty::DURATION, "`every`")),
-            (Some(e), _) => {
+            // An unknown source is the parser's one diagnostic: its
+            // `every` is not also misplaced.
+            (Some(e), "dbus" | "file" | "listen") => {
                 self.error(
                     "check::misplaced",
                     "`every` is for `poll` services",
@@ -2378,17 +2349,8 @@ impl<'a> Checker<'a> {
                 );
                 None
             }
-            (None, "poll") => {
-                self.error(
-                    "check::missing_arg",
-                    "a `poll` service needs `every`",
-                    s.source.span,
-                    "how often?",
-                )
-                .help = Some("`from poll [\"sensors\", \"-j\"] every 5s`".into());
-                None
-            }
-            (None, _) => None,
+            // A poll without `every` is the parser's diagnostic.
+            _ => None,
         };
         let interval = every.as_ref().and_then(const_duration);
         if let (Some(e), None) = (&s.source.every, interval)

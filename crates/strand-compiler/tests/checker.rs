@@ -1144,3 +1144,36 @@ fn dbus_services_are_checked_against_introspection() {
         d[0].message
     );
 }
+
+/// One mistake in a no-code service's source is one diagnostic: the
+/// parser's, never also a checker error on the same source.
+#[test]
+fn a_bad_service_source_is_one_diagnostic() {
+    for (src, code) in [
+        (
+            "service t from poll \"/tmp/x\" { a: text }",
+            "syntax::expected",
+        ),
+        (
+            "service t from dbus systm \"net.hadess.PowerProfiles\" { a: text = A }",
+            "syntax::unknown_bus",
+        ),
+        (
+            "service t from pol \"x\" every 1s { a: text }",
+            "syntax::unknown_source",
+        ),
+        (
+            "service t from dbus \"net.hadess.PowerProfiles\" { a: text = A }",
+            "syntax::expected",
+        ),
+        ("service t from file { a: text }", "syntax::expected"),
+        (
+            "service t from file \"/a\" \"/b\" { a: text }",
+            "syntax::expected",
+        ),
+    ] {
+        let (out, _) = compile_files(&[("a.strand", src.to_string())]);
+        let codes: Vec<String> = out.diagnostics.iter().map(|d| d.code.to_string()).collect();
+        assert_eq!(codes, [code], "{src}");
+    }
+}

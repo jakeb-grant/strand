@@ -144,6 +144,15 @@ impl Analysis {
                     introspector(),
                 ));
         }
+        // `from file`/`from poll` paths that name a program (a stat and a
+        // four-byte read per such service; none in most configs).
+        let dir = match &key {
+            ConfigKey::Dir(d) => Some(d.as_path()),
+            ConfigKey::Single(_) => None,
+        };
+        compiled
+            .diagnostics
+            .extend(strand_compiler::check::paths::check(&compiled.program, dir));
         Self {
             key,
             map,

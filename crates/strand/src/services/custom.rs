@@ -753,15 +753,24 @@ impl DbusCheck {
 /// must have the loader check the running files again,
 /// `Loader::recheck`) is called, on another thread, when an answer
 /// comes in that differs from the one the compile used.
+///
+/// It also checks the paths `from file` and `from poll` read under
+/// `config_dir` ([`strand_compiler::check::paths`]).
 pub fn dbus_check(
+    config_dir: Option<PathBuf>,
     recheck: impl Fn() + Send + Sync + 'static,
 ) -> (strand_compiler::reconcile::loader::ExtraCheck, DbusCheck) {
-    dbus_check_on(Arc::new(strand_introspect::Cache::default()), recheck)
+    dbus_check_on(
+        Arc::new(strand_introspect::Cache::default()),
+        config_dir,
+        recheck,
+    )
 }
 
 /// [`dbus_check`] over `cache` (tests ask through a fake bus).
 fn dbus_check_on(
     cache: Arc<strand_introspect::Cache>,
+    config_dir: Option<PathBuf>,
     recheck: impl Fn() + Send + Sync + 'static,
 ) -> (strand_compiler::reconcile::loader::ExtraCheck, DbusCheck) {
     let waits = Arc::new(AtomicBool::new(true));
@@ -772,7 +781,12 @@ fn dbus_check_on(
     };
     (
         strand_compiler::reconcile::loader::ExtraCheck(Box::new(move |c| {
-            strand_compiler::check::dbus::check(&c.program, &intro)
+            let mut d = strand_compiler::check::dbus::check(&c.program, &intro);
+            d.extend(strand_compiler::check::paths::check(
+                &c.program,
+                config_dir.as_deref(),
+            ));
+            d
         })),
         DbusCheck(waits),
     )
@@ -967,7 +981,7 @@ mod tests {
             },
         ));
         let (tx, rx) = std::sync::mpsc::channel::<()>();
-        let (check, waits) = dbus_check_on(cache, move || {
+        let (check, waits) = dbus_check_on(cache, None, move || {
             let _ = tx.send(());
         });
         let mut loader =
@@ -1031,7 +1045,7 @@ mod tests {
         use strand_services::testing::{DbusMock, PrivateBus};
         const CHILD: &str = "STRAND_TEST_LOADER_DIR";
         if let Some(dir) = std::env::var_os(CHILD) {
-            let (check, _waits) = dbus_check(|| {});
+            let (check, _waits) = dbus_check(None, || {});
             let mut loader = Loader::new(
                 std::path::Path::new(&dir),
                 crate::services::schema().clone(),

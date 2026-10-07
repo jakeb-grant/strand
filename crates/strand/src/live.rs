@@ -219,9 +219,10 @@ impl Worker {
         // waits for the answers, a reload never does (a late answer that
         // differs checks the running files again).
         let poke = jobs.clone();
-        let (check, waits) = crate::services::custom::dbus_check(move || {
-            let _ = poke.send(Job::Recheck);
-        });
+        let (check, waits) =
+            crate::services::custom::dbus_check(Some(dir.to_path_buf()), move || {
+                let _ = poke.send(Job::Recheck);
+            });
         let mut loader =
             Loader::new(dir, crate::services::schema().clone(), cache).with_check(check);
         let boot = loader.boot();
