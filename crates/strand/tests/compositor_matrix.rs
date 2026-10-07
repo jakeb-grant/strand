@@ -715,8 +715,8 @@ fn drawn(img: &Img) -> Result<(Vec<Drawn>, bool, Vec<usize>), String> {
         }
     }
     let mut dots = Vec::new();
-    // Empty dots are $fg.alpha(0.25), occupied ones $fg.muted: further
-    // from the bar's background.
+    // Empty dots are $fg.alpha(0.25), occupied ones $fg.muted
+    // ($fg.alpha(0.65)): further from the bar's background.
     let mut contrast = Vec::new();
     for &(a, b) in &runs {
         let w = b - a;
@@ -739,14 +739,25 @@ fn drawn(img: &Img) -> Result<(Vec<Drawn>, bool, Vec<usize>), String> {
             _ => return Err(format!("a dot {w} px wide at x {a}: {runs:?}")),
         }
     }
-    let known: Vec<i32> = contrast.iter().flatten().copied().collect();
-    if let (Some(lo), Some(hi)) = (known.iter().min(), known.iter().max()) {
-        // Two kinds of dot, or one; one kind is told apart by how far it
-        // is from the background (empty ones are faint).
-        let cut = if hi - lo > 40 { (lo + hi) / 2 } else { 120 };
+    if contrast.iter().any(Option::is_some) {
+        // A dot's contrast over the full `$fg`'s is its alpha: 0.25 empty,
+        // 0.65 occupied, cut midway. `$fg` is the clock's ink: the pixel
+        // of the centred clock furthest from the background.
+        let mut ink = 0;
+        for y in BAR_Y - 8..BAR_Y + 8 {
+            for x in img.w / 2 - 120..img.w / 2 + 120 {
+                let p = img.px(x, y);
+                if !blue(p) {
+                    ink = ink.max(dist(p, bg));
+                }
+            }
+        }
+        if ink < 150 {
+            return Err(format!("no clock ink to weigh the dots by ({ink})"));
+        }
         for (d, c) in dots.iter_mut().zip(&contrast) {
             if let Some(c) = c {
-                d.occupied = *c > cut;
+                d.occupied = *c as f32 / ink as f32 > 0.45;
             }
         }
     }
@@ -977,4 +988,100 @@ fn the_design_bar_shows_the_live_compositor() {
     }
     drop(bar);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- reading the bar offline -------------------------------------------------
+
+/// The light theme as sway draws it: the bar's background, `$fg` and the
+/// accent (measured from matrix-sway-02-switched.png).
+const SHOT_BG: [u8; 3] = [226, 225, 230];
+const SHOT_FG: [u8; 3] = [26, 26, 31];
+const SHOT_ACCENT: [u8; 3] = [122, 162, 247];
+
+/// `$fg.alpha(a)` over the bar's background.
+fn over(a: f32) -> [u8; 3] {
+    let mut p = [0; 3];
+    for i in 0..3 {
+        p[i] = (SHOT_BG[i] as f32 + a * (SHOT_FG[i] as f32 - SHOT_BG[i] as f32)).round() as u8;
+    }
+    p
+}
+
+/// A bar 800 px wide: the centred clock in `$fg`, and `dots` (width,
+/// colour) from the first dot's edge, 4 px apart, 8 px high.
+fn synthetic(dots: &[(usize, [u8; 3])]) -> Img {
+    let (w, h) = (800, 52);
+    let mut img = Img {
+        w,
+        h,
+        rgb: SHOT_BG.repeat(w * h),
+    };
+    let mut fill = |x0: usize, x1: usize, y0: usize, y1: usize, c: [u8; 3]| {
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let i = (y * w + x) * 3;
+                img.rgb[i..i + 3].copy_from_slice(&c);
+            }
+        }
+    };
+    // The clock: a few glyph stems.
+    for k in 0..8 {
+        let x = w / 2 - 40 + k * 10;
+        fill(x, x + 2, BAR_Y - 6, BAR_Y + 6, SHOT_FG);
+    }
+    let mut x = DOTS_X;
+    for &(dw, c) in dots {
+        fill(x, x + dw, BAR_Y - 4, BAR_Y + 4, c);
+        x += dw + 4;
+    }
+    img
+}
+
+#[test]
+fn a_lone_empty_dot_beside_the_pill_reads_empty() {
+    // niri's trailing empty workspace beside the focused one.
+    let img = synthetic(&[(24, SHOT_ACCENT), (8, over(0.25))]);
+    let (dots, title, _) = drawn(&img).unwrap();
+    assert!(!title);
+    assert_eq!(
+        dots,
+        vec![
+            Drawn {
+                focused: true,
+                occupied: false
+            },
+            Drawn {
+                focused: false,
+                occupied: false
+            },
+        ]
+    );
+}
+
+#[test]
+fn a_lone_occupied_dot_beside_the_pill_reads_occupied() {
+    let img = synthetic(&[(24, SHOT_ACCENT), (8, over(0.65))]);
+    let (dots, _, _) = drawn(&img).unwrap();
+    assert_eq!(
+        dots[1],
+        Drawn {
+            focused: false,
+            occupied: true
+        }
+    );
+}
+
+#[test]
+fn occupied_and_empty_dots_are_told_apart() {
+    let img = synthetic(&[
+        (8, over(0.65)),
+        (24, SHOT_ACCENT),
+        (8, over(0.25)),
+        (8, over(0.65)),
+    ]);
+    let (dots, _, _) = drawn(&img).unwrap();
+    let occupied: Vec<bool> = dots.iter().map(|d| d.occupied).collect();
+    assert_eq!(occupied, [true, false, false, true]);
+    let focused: Vec<bool> = dots.iter().map(|d| d.focused).collect();
+    assert_eq!(focused, [false, true, false, false]);
 }
