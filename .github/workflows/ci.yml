@@ -141,7 +141,8 @@ jobs:
       # portal's SettingChanged on a private bus) on the next frame;
       # ignored in debug builds.
       # 50 edits each so p95 is not the worst of 20 samples (the token
-      # gate's headroom is ~1.5 ms: see docs/m1-report.md).
+      # gate's headroom is thin: 1.6 ms at p95 in GitHub run 37647946808,
+      # 0.5 ms in a reviewer's local run; see docs/m1-report.md).
       - run: cargo test --release -p strand --bin strand reload_latency -- --nocapture --test-threads=1
         env:
           STRAND_LATENCY_ROUNDS: "50"

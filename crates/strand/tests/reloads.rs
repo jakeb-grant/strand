@@ -17,7 +17,8 @@
 //! surface host's outputs, not a service with a run of its own) and
 //! `auth` (M4). Then 100 reloads through `strand run`'s watcher, saved
 //! in place: token edits, markup edits (the only reader of `memory`
-//! removed and added back within the stop grace) and binding edits of an
+//! removed and added back within the stop grace, once after 3.8 s of
+//! its 5) and binding edits of an
 //! expression that reads services, with the custom services declared
 //! below the edits (moved by every markup edit). Nothing restarts or
 //! reconnects:
@@ -77,6 +78,12 @@ use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value as ZValue};
 const W: usize = 1280;
 const H: usize = 720;
 const RELOADS: usize = 100;
+
+/// How long `memory`'s only reader stays removed once (its first
+/// removal, reload 1, to its return, reload 4): most of the 5 s stop
+/// grace, so the grace is seen honoured through `strand run`'s reloads,
+/// not only an early stop ruled out.
+const HELD_REMOVED: Duration = Duration::from_millis(3800);
 const UPOWER: &str = "org.freedesktop.UPower";
 const LOGIND: &str = "org.freedesktop.login1";
 const NM: &str = "org.freedesktop.NetworkManager";
@@ -890,6 +897,29 @@ fn sockets(pid: u32) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
+/// Asserts a process's sockets are `baseline` again within a second: a
+/// short-lived connection (the `from dbus` check's introspection refresh,
+/// on a thread of its own beside a reload) may be open for a moment; the
+/// bus monitor, sway's accept log and pw-mon account for those. A
+/// difference that persists fails, naming the inodes.
+fn same_sockets(pid: u32, baseline: &BTreeSet<String>, after: &str) {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        let now = sockets(pid);
+        if &now == baseline {
+            return;
+        }
+        if Instant::now() >= deadline {
+            panic!(
+                "strand's sockets changed by {after}: opened {:?}, closed {:?}",
+                now.difference(baseline).collect::<Vec<_>>(),
+                baseline.difference(&now).collect::<Vec<_>>()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 /// PipeWire's client objects of a process, by `object.serial` (a new
 /// connection is a new serial).
 fn pipewire_clients(pw: &PipeWire, pid: u32) -> BTreeSet<u64> {
@@ -1225,6 +1255,19 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
     std::fs::write(&file, shell("#204080", true, ">", mood_fields)).unwrap();
 
     dog.stage("mocks on the bus");
+    let mocks = [
+        ("upower", &upower),
+        ("logind", &logind),
+        ("networkmanager", &nm),
+        ("bluez5", &bluez),
+        ("power_profiles_daemon", &ppd),
+    ];
+    // The test's own setup calls (python-dbusmock logs its `Add*` and
+    // `PairDevice` Mock-interface calls too): strand's reads come after.
+    let setup: BTreeMap<String, usize> = mock_calls(&mocks)
+        .into_iter()
+        .map(|(k, c)| (k, c.len()))
+        .collect();
     dog.log(&dir.join("sway.log"));
     let (_sway, display, ipc) = sway(&dir);
     dog.stage("sway started");
@@ -1416,13 +1459,6 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
         "a service ran twice before the reloads:\n{}",
         runs.join("\n")
     );
-    let mocks = [
-        ("upower", &upower),
-        ("logind", &logind),
-        ("networkmanager", &nm),
-        ("bluez5", &bluez),
-        ("power_profiles_daemon", &ppd),
-    ];
     let calls = mock_calls(&mocks);
     let zbus_calls = [
         ("tray item", &tray_calls),
@@ -1435,6 +1471,12 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
         "a zbus mock was never read: {zbus_before:?}"
     );
     let socks = sockets(pid);
+    // Wayland, the bus, sway's IPC and PipeWire at least: an empty set
+    // (an unreadable /proc/<pid>/fd) would make every check below vacuous.
+    assert!(
+        socks.len() >= 4,
+        "strand's sockets not read (or too few): {socks:?}"
+    );
     let clients = pipewire_clients(&pw, pid);
     assert!(!clients.is_empty(), "strand is no PipeWire client");
     for m in [&upower, &logind, &nm, &bluez, &ppd] {
@@ -1487,20 +1529,39 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
         socks.len(),
     );
     // (logind is only written to: brightness reads the backlight.)
+    let unread: Vec<_> = calls
+        .iter()
+        .filter(|(k, c)| *k != "logind" && c.len() <= setup[k.as_str()])
+        .collect();
     assert!(
-        calls.iter().all(|(k, c)| k == "logind" || !c.is_empty()),
-        "a mock was never read: {calls:?}"
+        unread.is_empty(),
+        "a mock was never read by strand (only the test's setup calls): {unread:?}"
     );
 
     // 100 reloads, saved in place: a token edit, a markup edit (the only
     // reader of `memory` removed, then added back within the 5 s stop
-    // grace), a binding edit of an expression that reads services, in
+    // grace: once, reloads 1 to 4, after `HELD_REMOVED`), a binding edit of an expression that reads services, in
     // turn.
     let (mut color, mut extra, mut cmp) = ("#204080".to_string(), true, ">");
     dog.stage("baseline taken; the reloads");
     let t0 = Instant::now();
+    let mut removed_at = None;
     for i in 0..RELOADS {
         dog.at(&format!("reload {i}"));
+        if i == 4 {
+            // `memory`'s reader, removed by reload 1, held out for most
+            // of the grace before reload 4 takes it back: nothing stops.
+            let since: Instant = removed_at.expect("reload 1 removed `memory`'s reader");
+            std::thread::sleep(HELD_REMOVED.saturating_sub(since.elapsed()));
+            let now = lifecycle(&log_text());
+            assert_eq!(
+                now,
+                runs,
+                "a service started or stopped {:.1} s after `memory`'s reader \
+                 was removed (the stop grace is 5 s)",
+                since.elapsed().as_secs_f64()
+            );
+        }
         match i % 3 {
             0 => color = format!("#{:02x}4080", (i * 7) % 256),
             1 => extra = !extra,
@@ -1522,12 +1583,25 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
             .filter(|d| d["severity"] == "error")
             .collect();
         assert!(errors.is_empty(), "reload {i}: {errors:?}");
+        if i == 1 {
+            assert!(!extra, "reload 1 removes `memory`'s reader");
+            removed_at = Some(Instant::now());
+        }
+        if i == 4 {
+            let held = removed_at.map_or(Duration::ZERO, |t| t.elapsed());
+            assert!(
+                extra && held < Duration::from_millis(4800),
+                "`memory`'s reader came back {:.2} s after its removal: too \
+                 close to the 5 s grace for the test to mean anything",
+                held.as_secs_f64()
+            );
+            eprintln!(
+                "`memory`'s only reader held removed for {:.2} s",
+                held.as_secs_f64()
+            );
+        }
         alive(&format!("after reload {i}"));
-        assert_eq!(
-            sockets(pid),
-            socks,
-            "strand's sockets changed by reload {i}"
-        );
+        same_sockets(pid, &socks, &format!("reload {i}"));
     }
     eprintln!("{RELOADS} reloads in {:.1} s", t0.elapsed().as_secs_f64());
     // Past the 5 s stop grace: a reader released by a reload and not
@@ -1583,7 +1657,7 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
             "the {name} answered calls during the reloads"
         );
     }
-    assert_eq!(sockets(pid), socks, "strand's sockets changed");
+    same_sockets(pid, &socks, "the reloads");
     assert_eq!(
         pipewire_clients(&pw, pid),
         clients,
