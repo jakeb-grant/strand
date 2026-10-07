@@ -1160,6 +1160,7 @@ impl Proc {
         // between fork and exec, as `pre_exec` requires.
         unsafe {
             cmd.pre_exec(move || {
+                crate::child::restore_in_child();
                 if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) == -1 {
                     return Err(std::io::Error::last_os_error());
                 }

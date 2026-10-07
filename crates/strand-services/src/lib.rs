@@ -41,6 +41,7 @@ pub mod battery;
 pub mod bluetooth;
 pub mod brightness;
 pub mod bus;
+pub mod child;
 mod client;
 pub mod cpu;
 pub mod custom;

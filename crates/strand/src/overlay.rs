@@ -731,12 +731,19 @@ pub fn open_editor(file: &Path, line: u32, col: u32) {
         return;
     };
     use std::os::unix::process::CommandExt;
-    match std::process::Command::new(prog)
-        .args(args)
+    let mut cmd = std::process::Command::new(prog);
+    cmd.args(args)
         .stdin(std::process::Stdio::null())
-        .process_group(0)
-        .spawn()
-    {
+        .process_group(0);
+    // SAFETY: `restore_in_child` makes only async-signal-safe calls, as
+    // `pre_exec` requires: the editor gets the THP setting strand had.
+    unsafe {
+        cmd.pre_exec(|| {
+            strand_services::child::restore_in_child();
+            Ok(())
+        });
+    }
+    match cmd.spawn() {
         Ok(mut child) => {
             let _ = std::thread::Builder::new()
                 .name("strand-editor".into())

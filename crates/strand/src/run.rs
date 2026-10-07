@@ -1085,13 +1085,17 @@ fn reload_event(l: &Loaded, report: Option<&Report>, commit: Duration) -> Json {
     })
 }
 
-/// The logic thread: mount `boot` (the loader's first outcome: its build,
-/// or nothing and its diagnostics on the overlay), then step until
-/// [`ToLogic::Shutdown`] (or until the main thread is gone), committing
-/// what the compiler worker sends and serving the IPC socket; then
-/// unmount and drop the stores so pending writes reach the disk.
-/// How long the logic thread waits after its last wake before [`trim`].
+/// How long a thread stays quiet after a burst before [`trim`].
 const TRIM_AFTER: Duration = Duration::from_millis(500);
+
+/// How much the allocator's committed memory grows (since the last trim)
+/// before a burst is worth a trim: boot, a reload's compile, a surface
+/// opening. A thread woken on a period (a cpu meter, a seconds clock)
+/// commits nothing new from wake to wake, so it never pays a trim's
+/// extra wakeup and forced collect between its wakes; mimalloc purges
+/// what such a shell frees on its own (from a later allocation, after
+/// its 1 s delay).
+const TRIM_GROWTH: usize = 512 * 1024;
 
 /// Returns the memory the allocator holds freed to the system. mimalloc
 /// purges a freed span only on a later allocation once its delay (1 s)
@@ -1105,6 +1109,72 @@ fn trim() {
     unsafe { libmimalloc_sys::mi_collect(true) };
 }
 
+/// The allocator's committed memory, process-wide (mimalloc's own count:
+/// an atomic load and a `getrusage`).
+fn committed() -> usize {
+    let mut commit = 0usize;
+    let null = std::ptr::null_mut();
+    // SAFETY: mimalloc writes only the pointers that are not null; the
+    // one given is a live `usize`.
+    unsafe {
+        libmimalloc_sys::mi_process_info(null, null, null, null, null, &mut commit, null, null)
+    };
+    commit
+}
+
+/// When a thread's loop [`trim`]s: [`TRIM_AFTER`] after the last wake of
+/// a burst that committed [`TRIM_GROWTH`] more than the last trim left.
+#[derive(Default)]
+struct Trimmer {
+    at: Option<Instant>,
+    /// The committed memory the last trim left.
+    base: usize,
+}
+
+impl Trimmer {
+    /// A wake at `now` with `commit` bytes committed: whether the quiet
+    /// ran out (trim now, then [`Trimmer::trimmed`]; the trim's own wake
+    /// arms nothing). A wake while armed pushes the trim back; one past
+    /// the growth arms it.
+    fn wake(&mut self, now: Instant, commit: usize) -> bool {
+        match self.at {
+            Some(at) if now >= at => {
+                self.at = None;
+                return true;
+            }
+            Some(_) => self.at = Some(now + TRIM_AFTER),
+            None if commit > self.base.saturating_add(TRIM_GROWTH) => {
+                self.at = Some(now + TRIM_AFTER)
+            }
+            None => {}
+        }
+        false
+    }
+
+    /// After the trim: what it left is the new base.
+    fn trimmed(&mut self, commit: usize) {
+        self.base = commit;
+    }
+
+    /// How long the loop may sleep for the trim.
+    fn wait(&self, now: Instant) -> Option<Duration> {
+        self.at.map(|t| t.saturating_duration_since(now))
+    }
+
+    /// A wake at `now`: trims when due.
+    fn run(&mut self, now: Instant) {
+        if self.wake(now, committed()) {
+            trim();
+            self.trimmed(committed());
+        }
+    }
+}
+
+/// The logic thread: mount `boot` (the loader's first outcome: its build,
+/// or nothing and its diagnostics on the overlay), then step until
+/// [`ToLogic::Shutdown`] (or until the main thread is gone), committing
+/// what the compiler worker sends and serving the IPC socket; then
+/// unmount and drop the stores so pending writes reach the disk.
 pub fn logic(
     boot: Outcome,
     storage: Storage,
@@ -1262,7 +1332,7 @@ pub fn logic(
     let mut reduced_sent = false;
     // When the allocator's freed memory goes back to the system: once the
     // process has been quiet a moment ([`trim`]).
-    let mut trim_at: Option<Instant> = None;
+    let mut trimmer = Trimmer::default();
     while !stop {
         if shell.deferred.is_some() || shell.deferred_hard {
             shell.unlocked();
@@ -1295,21 +1365,15 @@ pub fn logic(
             s.flush(&handle);
         }
         let now = Instant::now();
-        // Each wake but the trim's own arms (or pushes back) the trim.
-        trim_at = match trim_at {
-            Some(at) if now >= at => {
-                trim();
-                None
-            }
-            _ => Some(now + TRIM_AFTER),
-        };
+        // A wake after a burst arms (or pushes back) the trim.
+        trimmer.run(now);
         let mut timeout = wake.deadline.map(|d| d.saturating_sub(start.elapsed()));
         let mut also = |t: Option<Duration>| {
             if let Some(t) = t {
                 timeout = Some(timeout.map_or(t, |x| x.min(t)));
             }
         };
-        also(trim_at.map(|t| t.saturating_duration_since(now)));
+        also(trimmer.wait(now));
         also(
             shell
                 .overlay
@@ -1606,7 +1670,7 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
         .map_err(|e| DemoError::Io(io::Error::other(e.error)))?;
     // The main thread's frees (frames, layouts, surfaces) are returned
     // to the system once it has been quiet a moment too ([`trim`]).
-    let mut trim_at: Option<Instant> = None;
+    let mut trimmer = Trimmer::default();
     let end = loop {
         if hung_up.get() {
             break End::LogicEnded;
@@ -1615,14 +1679,8 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
             break End::Done;
         }
         let now = Instant::now();
-        trim_at = match trim_at {
-            Some(at) if now >= at => {
-                trim();
-                None
-            }
-            _ => Some(now + TRIM_AFTER),
-        };
-        match mgr.dispatch(trim_at.map(|t| t.saturating_duration_since(now))) {
+        trimmer.run(now);
+        match mgr.dispatch(trimmer.wait(now)) {
             Ok(()) => {}
             Err(e) if connection_closed(&e) => {
                 log::info!("the compositor went away: {e}");
@@ -1663,6 +1721,79 @@ pub(crate) mod tests {
             width: 1920.0,
             height: 1080.0,
         }
+    }
+
+    /// A loop woken by a source every `period` (none: once, at the
+    /// start) and by its [`Trimmer`], for `span`; each source wake
+    /// commits `grows` more bytes. Its wakes after the first, and trims.
+    fn trims_over(period: Option<Duration>, span: Duration, grows: usize) -> (u32, u32) {
+        let t0 = Instant::now();
+        let end = t0 + span;
+        let mut trimmer = Trimmer::default();
+        trimmer.trimmed(10 << 20);
+        let mut commit = (10 << 20) + grows;
+        let mut now = t0;
+        let mut source = period.map(|p| t0 + p);
+        let (mut wakes, mut trims) = (0, 0);
+        loop {
+            if trimmer.wake(now, commit) {
+                trims += 1;
+                commit -= grows.min(commit);
+                trimmer.trimmed(commit);
+            }
+            let trim = trimmer.wait(now).map(|w| now + w);
+            let Some(next) = [source, trim].into_iter().flatten().min() else {
+                break;
+            };
+            if next > end {
+                break;
+            }
+            now = next;
+            wakes += 1;
+            if source == Some(now) {
+                source = period.map(|p| now + p);
+                commit += grows;
+            }
+        }
+        (wakes, trims)
+    }
+
+    /// A thread woken each second (a cpu meter, a seconds clock) that
+    /// commits nothing new wakes once a second, not twice: no trim comes
+    /// between its wakes. A burst that grew the heap and went quiet trims
+    /// once, [`TRIM_AFTER`] later; one that did not, never.
+    #[test]
+    fn a_one_second_poll_pays_no_trim_wakeup() {
+        let span = Duration::from_secs(10);
+        for period in [Duration::from_millis(700), Duration::from_secs(1)] {
+            let polls = (span.as_millis() / period.as_millis()) as u32;
+            assert_eq!(trims_over(Some(period), span, 0), (polls, 0), "{period:?}");
+        }
+        assert_eq!(trims_over(None, span, 2 << 20), (1, 1));
+        assert_eq!(trims_over(None, span, 4096), (0, 0));
+        // A minute tick that commits a lot each time: one trim after each.
+        assert_eq!(
+            trims_over(
+                Some(Duration::from_secs(60)),
+                Duration::from_secs(150),
+                2 << 20
+            ),
+            (5, 3)
+        );
+    }
+
+    /// `committed` reads mimalloc's own count: it grows with a large
+    /// allocation kept live.
+    #[test]
+    fn the_committed_count_follows_the_heap() {
+        let before = committed();
+        let block = std::hint::black_box(vec![1u8; 8 << 20]);
+        assert!(
+            committed() >= before + (4 << 20),
+            "{before} -> {}",
+            committed()
+        );
+        drop(block);
     }
 
     /// The config in `dir` loaded once (no watcher, no cache).

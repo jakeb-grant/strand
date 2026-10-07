@@ -524,11 +524,21 @@ fn the_real_services_sleep_when_nothing_changes() {
     setup.cli(&["set", "bar.open", "true"]);
     std::thread::sleep(Duration::from_millis(1500));
     let s0 = switches_of(pid, "strand-services");
-    std::thread::sleep(Duration::from_secs(3));
+    let l0 = switches_of(pid, "strand-logic");
+    std::thread::sleep(Duration::from_secs(5));
     let sampled = switches_of(pid, "strand-services") - s0;
+    let logic = switches_of(pid, "strand-logic") - l0;
+    eprintln!("cpu sampling 5 s: services {sampled} switches, logic {logic}");
     assert!(
-        sampled >= 2,
-        "the open popup's cpu samples woke the services thread {sampled} times in 3 s"
+        sampled >= 4,
+        "the open popup's cpu samples woke the services thread {sampled} times in 5 s"
+    );
+    // The logic thread wakes once per sample: the allocator's trim
+    // (run.rs, `Trimmer`) does not come between the samples (it did, at
+    // 500 ms after each wake: 10 switches in 5 s).
+    assert!(
+        logic <= 7,
+        "the logic thread woke {logic} times in 5 s of 1 s cpu samples"
     );
     // Closed: the samples stop at once (the exit pose and in-flight work
     // done first); the stop comes 5 s after the close.

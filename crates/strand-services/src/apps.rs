@@ -822,9 +822,10 @@ pub fn spawn_detached(argv: &[String], dir: Option<&Path>) -> std::io::Result<()
         cmd.current_dir(d);
     }
     // SAFETY: only async-signal-safe calls between fork and exec
-    // (`setsid`, `fork`, `_exit`), as `pre_exec` requires.
+    // (`setsid`, `fork`, `_exit`, `prctl`), as `pre_exec` requires.
     unsafe {
         cmd.pre_exec(|| {
+            crate::child::restore_in_child();
             libc::setsid();
             match libc::fork() {
                 -1 => Err(std::io::Error::last_os_error()),
@@ -960,6 +961,50 @@ mod tests {
             icon_key: Some("x-icon".into()),
             also: Vec::new(),
         }
+    }
+
+    /// Run `sh -c 'grep THP_enabled /proc/self/status'` the way the
+    /// launcher starts an app and read the line it wrote.
+    fn launched_thp() -> Option<bool> {
+        let out = std::env::temp_dir().join(format!("strand-thp-{}", std::process::id()));
+        let _ = std::fs::remove_file(&out);
+        let part = out.with_extension("part");
+        let script = format!(
+            "grep THP_enabled /proc/self/status > '{}' && mv '{}' '{}'",
+            part.display(),
+            part.display(),
+            out.display()
+        );
+        spawn_detached(&["sh".into(), "-c".into(), script], None).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !out.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let text = std::fs::read_to_string(&out).unwrap();
+        let _ = std::fs::remove_file(&out);
+        crate::child::thp_enabled(&text)
+    }
+
+    /// strand turns THP off for itself (`crate::child::thp_off`, as its
+    /// ELF constructor does); the kernel keeps that across fork and exec,
+    /// so a launched app gets back what strand inherited.
+    #[test]
+    fn a_launched_app_gets_back_the_thp_setting_strand_inherited() {
+        let own = || {
+            let s = std::fs::read_to_string("/proc/self/status").unwrap();
+            crate::child::thp_enabled(&s)
+        };
+        let Some(before) = own() else {
+            eprintln!("skipped: no THP_enabled in /proc/self/status");
+            return;
+        };
+        crate::child::thp_off();
+        assert_eq!(own(), Some(false), "THP is off for strand");
+        assert_eq!(
+            launched_thp(),
+            Some(before),
+            "the app inherited strand's THP off"
+        );
     }
 
     #[test]
