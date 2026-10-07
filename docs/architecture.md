@@ -189,8 +189,14 @@ cache `invalidate()` refreshes (`lookup(name, size, scale, theme)`,
 `candidates(name)` and `resolve(name, size, scale, theme)`, the one
 candidate chain: the name, its `-symbolic` variant, then the generic
 fallbacks; `exists` follows the same chain; `system_theme`, `base_dirs`, `theme_setting_files`,
-`generation`); the renderer and the `apps` service both look icons up
-through it. `strand-introspect` reads an object's properties from its
+`generation`, and `set_desktop_theme(Option<String>) -> bool`, the
+portal's theme name, preferred to GTK's settings files and invalidating
+when it changes); the renderer and the `apps` service both look icons up
+through it. `strand_services::icon_theme::spawn(bus, switched)` follows
+the settings portal's `org.gnome.desktop.interface` `icon-theme` on a
+thread of its own and feeds `set_desktop_theme`; `strand run` keeps the
+returned `Follower` and has `switched` redraw icons as an `index.theme`
+change does. `strand-introspect` reads an object's properties from its
 D-Bus introspection (`properties_on(conn, name, path)` async,
 `properties(&Bus, name, path)` blocking with a 2 s bound, `parse(xml)`,
 `default_path(name)`, and `Cache`: answers remembered for `TTL` (10 s),

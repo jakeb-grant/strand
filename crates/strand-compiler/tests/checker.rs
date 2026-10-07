@@ -1015,6 +1015,14 @@ bar B { text join(" ", ppd.profile, ups.level, mood.level, music.title ?? "", te
     );
     assert!(codes("service t from poll [\"sensors\", \"-j\"] every 5s { cpu: float = package; permit exec \"sensors\" }").is_empty());
     assert!(codes("service t from listen [\"curl\", \"x\"] { a: int; permit exec }").is_empty());
+    // A command polled faster than the floor forks for little: warned
+    // (it runs at the floor); a file poll forks nothing.
+    assert_eq!(
+        codes("permit exec\nservice f from poll [\"a\"] every 10ms { a: int }"),
+        ["check::poll_too_fast"]
+    );
+    assert!(codes("permit exec\nservice f from poll [\"a\"] every 100ms { a: int }").is_empty());
+    assert!(codes("service h from poll \"/sys/x\" every 10ms { a: int }").is_empty());
     // A list's first item is the program whole, as it runs (never split
     // into words): `["sh -c", …]` is not the program `sh`.
     assert_eq!(

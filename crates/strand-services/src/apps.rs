@@ -832,6 +832,9 @@ impl Apps {
         let mut generation = 0u64;
         cx.update(|s| s.all = entries.iter().map(|e| e.app.clone()).collect());
         cx.ready();
+        // Launches in flight (each on the blocking pool).
+        let mut launching: tokio::task::JoinSet<Result<String, String>> =
+            tokio::task::JoinSet::new();
         loop {
             tokio::select! {
                 m = cx.recv() => match m {
@@ -848,27 +851,37 @@ impl Apps {
                             log::warn!("apps: no app `{}` to launch", item.id);
                             continue;
                         };
-                        let launched = command(entry).and_then(|argv| {
-                            spawn_detached(&argv, entry.path.as_deref())
-                                .map_err(|e| format!("cannot start `{}`: {e}", argv[0]))
+                        // Forking, waiting for the exec and reaping the
+                        // intermediate process block: off the shared
+                        // runtime, so no service waits on a launch.
+                        let (id, entry) = (entry.app.id.clone(), entry.clone());
+                        launching.spawn_blocking(move || {
+                            command(&entry).and_then(|argv| {
+                                spawn_detached(&argv, entry.path.as_deref())
+                                    .map_err(|e| format!("cannot start `{}`: {e}", argv[0]))
+                            })?;
+                            Ok::<_, String>(id)
                         });
-                        match launched {
-                            Ok(()) => {
-                                LAUNCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                let now = unix_now();
-                                frecency.record(&entry.app.id, now);
-                                frecency.prune(|id| entries.iter().any(|e| e.app.id == id), now);
-                                generation += 1;
-                                let (f, s, w) = (frecency.clone(), state.clone(), written.clone());
-                                tokio::task::spawn_blocking(move || {
-                                    f.save_latest(&w, generation, s.as_deref());
-                                });
-                            }
-                            Err(e) => log::warn!("apps: {e}"),
-                        }
                     }
                     Some(_) => {}
                 },
+                Some(done) = launching.join_next(), if !launching.is_empty() => {
+                    match done {
+                        Ok(Ok(id)) => {
+                            LAUNCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let now = unix_now();
+                            frecency.record(&id, now);
+                            frecency.prune(|id| entries.iter().any(|e| e.app.id == id), now);
+                            generation += 1;
+                            let (f, s, w) = (frecency.clone(), state.clone(), written.clone());
+                            tokio::task::spawn_blocking(move || {
+                                f.save_latest(&w, generation, s.as_deref());
+                            });
+                        }
+                        Ok(Err(e)) => log::warn!("apps: {e}"),
+                        Err(e) => log::warn!("apps: a launch failed: {e}"),
+                    }
+                }
                 r = changes.changed() => {
                     if r.is_err() {
                         continue;

@@ -6991,3 +6991,38 @@ late diagnostics are reported like a held edit's (overlay, `strand
 watch`); a late error in a running file cannot unload it, but holds
 later edits of it back until it is fixed, as an error found at save time
 would have.
+
+**2026-10-07 · wave4-a3 (r2): the portal's icon theme wins over GTK's
+settings files.** GNOME, and any desktop whose portal backend exposes
+GSettings, names the icon theme in `org.gnome.desktop.interface`
+`icon-theme`, not in `settings.ini`; GTK itself follows that on Wayland.
+`strand run` reads it through the settings portal (`ReadOne` at start,
+`SettingChanged` matched on namespace and key, read again when the portal
+restarts) on a thread of its own (`strand_services::icon_theme`, idle in
+epoll between changes). The desktop's theme is then `$STRAND_ICON_THEME`,
+else the portal's name when a portal answers with one, else
+`gtk-icon-theme-name` in `settings.ini`, else Adwaita. A switch
+invalidates the icon cache, tells the `apps` service and redraws icons,
+as an `index.theme` change does. Icon lookups probe files without the
+cache's lock held (a theme read on a slow file system blocks only its own
+lookup); an answer from before an invalidation is not remembered.
+
+**2026-10-07 · wave4-a3 (r2): commands and files of no-code services.**
+A list command's program is its first item as written (it runs whole,
+never split into words), so `permit exec` is checked against that.
+`from poll` runs a command at most every 100 ms (`check::poll_too_fast`
+warns about a shorter `every`, which runs at the floor); a file poll
+forks nothing and has no floor. A polled command that prints more than a
+document (1 MiB) is ended at once and its output ignored, instead of
+blocking on its full pipe until the poll timeout. `listen` and `poll`
+commands get `PR_SET_PDEATHSIG` (SIGTERM) besides their own process
+group, so a strand that crashes or is killed leaves none running. A
+`from file` whose directory does not exist yet is not a failure: the
+nearest existing ancestor is watched for the next directory toward it,
+the watch descends as directories appear (and climbs back when they are
+removed), and every field reads null meanwhile. Launches of the `apps`
+service fork and exec on the blocking pool, not the shared services
+thread. Left for M4: launches carry no `XDG_ACTIVATION_TOKEN`
+(xdg-activation, so a compositor may not focus the app), and
+`DBusActivatable=true` entries run their `Exec` line rather than
+`org.freedesktop.Application.Activate`.

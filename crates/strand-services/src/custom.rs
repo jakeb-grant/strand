@@ -71,6 +71,11 @@ pub const POLL_TIMEOUT: Duration = Duration::from_secs(10);
 /// Longest document read (a file, a line, a command's output).
 pub const MAX_DOCUMENT: usize = 1 << 20;
 
+/// The shortest interval a command is polled at (each poll forks it): a
+/// shorter `every` runs at this. The checker warns about one
+/// (`check::poll_too_fast`, strand-compiler's `hir::MIN_COMMAND_POLL`).
+pub const MIN_COMMAND_POLL: Duration = Duration::from_millis(100);
+
 /// What a declaration reads from.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Source {
@@ -799,46 +804,103 @@ async fn read_doc_bounded(path: &Path) -> Result<Option<Document>, ServiceError>
 
 /// An inotify watch on a file's directory (its replacement, creation and
 /// removal) and on the file itself (writes in place, sysfs
-/// notifications).
+/// notifications). While the directory does not exist (a cache directory
+/// an app makes on its first run), its nearest existing ancestor is
+/// watched for the next directory toward it instead, and the watch
+/// descends as they appear; a directory removed later is followed the
+/// same way.
 struct FileWatch {
     fd: tokio::io::unix::AsyncFd<std::os::fd::OwnedFd>,
     path: PathBuf,
-    /// The directory's watch: only its events naming the file count.
+    /// The watched directory's watch: the file's directory, or (while
+    /// that is missing) its nearest existing ancestor.
     dir_wd: i32,
+    /// The name that matters in it: the file's, or the next directory
+    /// toward it.
     name: Vec<u8>,
+    /// The watched directory is the file's own.
+    complete: bool,
+}
+
+/// The directory a file's path names (`.` for a bare name).
+fn dir_of(path: &Path) -> &Path {
+    path.parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
 }
 
 fn watch_file(path: &Path) -> std::io::Result<FileWatch> {
-    use rustix::fs::inotify::{self, WatchFlags};
-    use std::os::unix::ffi::OsStrExt;
+    use rustix::fs::inotify;
     let fd = inotify::init(inotify::CreateFlags::CLOEXEC | inotify::CreateFlags::NONBLOCK)?;
-    let dir = path
-        .parent()
-        .filter(|d| !d.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let dir_wd = inotify::add_watch(
-        &fd,
-        dir,
-        WatchFlags::CLOSE_WRITE
-            | WatchFlags::MOVED_TO
-            | WatchFlags::MOVED_FROM
-            | WatchFlags::CREATE
-            | WatchFlags::DELETE,
-    )?;
-    let w = FileWatch {
+    let mut w = FileWatch {
         fd: tokio::io::unix::AsyncFd::new(fd)?,
         path: path.to_path_buf(),
-        dir_wd,
-        name: path
-            .file_name()
-            .map(|n| n.as_bytes().to_vec())
-            .unwrap_or_default(),
+        dir_wd: -1,
+        name: Vec::new(),
+        complete: false,
     };
-    w.watch_inode();
+    w.arm()?;
     Ok(w)
 }
 
 impl FileWatch {
+    /// Watch the deepest existing directory on the way to the file (its
+    /// own, once it exists), and the file itself when that is reached.
+    fn arm(&mut self) -> std::io::Result<()> {
+        use rustix::fs::inotify::{self, WatchFlags};
+        use std::os::unix::ffi::OsStrExt;
+        let own = dir_of(&self.path).to_path_buf();
+        // A directory created while the watch was being placed is
+        // descended into at once (bounded by the path's depth).
+        for _ in 0..=self.path.components().count() {
+            let mut dir = own.as_path();
+            let mut name = self
+                .path
+                .file_name()
+                .map(|n| n.as_bytes().to_vec())
+                .unwrap_or_default();
+            while !dir.is_dir() {
+                name = dir
+                    .file_name()
+                    .map(|n| n.as_bytes().to_vec())
+                    .unwrap_or_default();
+                dir = match dir.parent().filter(|d| !d.as_os_str().is_empty()) {
+                    Some(d) => d,
+                    None => Path::new("."),
+                };
+                if dir == Path::new(".") && !dir.is_dir() {
+                    return Err(std::io::Error::other("no directory on the way exists"));
+                }
+            }
+            let complete = dir == own.as_path();
+            if self.dir_wd >= 0 {
+                let _ = inotify::remove_watch(self.fd.get_ref(), self.dir_wd);
+            }
+            self.dir_wd = inotify::add_watch(
+                self.fd.get_ref(),
+                dir,
+                WatchFlags::CLOSE_WRITE
+                    | WatchFlags::MOVED_TO
+                    | WatchFlags::MOVED_FROM
+                    | WatchFlags::CREATE
+                    | WatchFlags::DELETE
+                    | WatchFlags::DELETE_SELF
+                    | WatchFlags::MOVE_SELF,
+            )?;
+            self.name = name;
+            self.complete = complete;
+            if complete {
+                self.watch_inode();
+                return Ok(());
+            }
+            let next = dir.join(std::ffi::OsStr::from_bytes(&self.name));
+            if !next.is_dir() {
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+
     /// Watch the file now at the path (again after it was replaced or
     /// created; the same inode keeps its watch).
     fn watch_inode(&self) {
@@ -851,24 +913,67 @@ impl FileWatch {
     }
 
     /// Reads every queued event: `Some(true)` when one concerns the file
-    /// (not another file of its directory), `None` when the watch failed.
-    fn drain(&self) -> Option<bool> {
+    /// (not another file of its directory) or the way to it changed (a
+    /// directory toward it appeared, its directory went), `None` when the
+    /// watch failed.
+    fn drain(&mut self) -> Option<bool> {
         let mut buf = [0u8; 4096];
         let mut any = false;
+        let mut rearm = false;
         loop {
             match rustix::io::read(self.fd.get_ref(), &mut buf) {
                 Ok(0) => break,
-                Ok(n) => any |= concerns(&buf[..n], self.dir_wd, &self.name),
+                Ok(n) => {
+                    let seen = &buf[..n];
+                    if dir_gone(seen, self.dir_wd) {
+                        // Its watch ended with it.
+                        self.dir_wd = -1;
+                        rearm = true;
+                    } else if concerns(seen, self.dir_wd, &self.name) {
+                        if self.complete {
+                            any = true;
+                        } else {
+                            rearm = true;
+                        }
+                    }
+                }
                 Err(rustix::io::Errno::AGAIN) => break,
                 Err(rustix::io::Errno::INTR) => {}
                 Err(_) => return None,
             }
+        }
+        if rearm {
+            // The file may have appeared with its directory: read it.
+            self.arm().ok()?;
+            return Some(true);
         }
         if any {
             self.watch_inode();
         }
         Some(any)
     }
+}
+
+/// Whether raw inotify events `buf` say the directory watched as
+/// `dir_wd` itself went (removed or moved; its watch ended).
+fn dir_gone(buf: &[u8], dir_wd: i32) -> bool {
+    const HEADER: usize = 16;
+    const GONE: u32 = 0x400 | 0x800 | 0x8000; // DELETE_SELF, MOVE_SELF, IGNORED
+    let mut at = 0;
+    while at + HEADER <= buf.len() {
+        let word = |i: usize| {
+            let b = &buf[at + i..at + i + 4];
+            [b[0], b[1], b[2], b[3]]
+        };
+        let wd = i32::from_ne_bytes(word(0));
+        let mask = u32::from_ne_bytes(word(4));
+        let len = u32::from_ne_bytes(word(12)) as usize;
+        if wd == dir_wd && mask & GONE != 0 {
+            return true;
+        }
+        at = (at + HEADER).saturating_add(len).min(buf.len());
+    }
+    false
 }
 
 /// Whether raw inotify events `buf` concern the file `name` of the
@@ -900,7 +1005,7 @@ fn concerns(buf: &[u8], dir_wd: i32, name: &[u8]) -> bool {
 
 async fn run_file(cx: &mut Cx<Custom>, spec: &Spec, path: &Path) -> Result<(), ServiceError> {
     // Watch first, then read: no change is lost in between.
-    let watch = watch_file(path)
+    let mut watch = watch_file(path)
         .map_err(|e| ServiceError(format!("cannot watch {}: {e}", path.display())))?;
     let mut last: Option<Document> = None;
     let mut first = true;
@@ -968,13 +1073,33 @@ impl Proc {
         let (program, args) = argv
             .split_first()
             .ok_or_else(|| ServiceError("no command".into()))?;
-        let mut child = tokio::process::Command::new(program)
-            .args(args)
+        let mut cmd = tokio::process::Command::new(program);
+        cmd.args(args)
             .stdin(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .process_group(0)
-            .kill_on_drop(false)
+            .kill_on_drop(false);
+        // Its own group keeps it from the terminal's signals, and a crash
+        // or SIGKILL of strand skips `Drop`: the kernel sends it SIGTERM
+        // when the thread that started it ends (the shared services
+        // thread lives as long as the process). A parent already gone
+        // before the setting took hold is seen as a new parent.
+        let parent = std::process::id();
+        // SAFETY: only async-signal-safe calls (`prctl`, `getppid`)
+        // between fork and exec, as `pre_exec` requires.
+        unsafe {
+            cmd.pre_exec(move || {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if u32::try_from(libc::getppid()).ok() != Some(parent) {
+                    return Err(std::io::Error::other("strand ended"));
+                }
+                Ok(())
+            });
+        }
+        let mut child = cmd
             .spawn()
             .map_err(|e| ServiceError(format!("cannot run `{program}`: {e}")))?;
         let pgid = child.id().and_then(|p| i32::try_from(p).ok());
@@ -1121,8 +1246,8 @@ async fn run_listen(cx: &mut Cx<Custom>, spec: &Spec, argv: &[String]) -> Result
 }
 
 /// Run `argv` once and parse what it printed (`None`: it failed, logged).
-/// At most [`MAX_DOCUMENT`] bytes are read; the command's group ends
-/// with it.
+/// At most [`MAX_DOCUMENT`] bytes are read (a command printing more is
+/// ended at once, its output ignored); the command's group ends with it.
 async fn poll_command(argv: &[String]) -> Option<Document> {
     use tokio::io::AsyncReadExt;
     let (mut proc, stdout) = match Proc::spawn(argv) {
@@ -1135,10 +1260,19 @@ async fn poll_command(argv: &[String]) -> Option<Document> {
     let run = async {
         let mut out = Vec::new();
         stdout
-            .take(MAX_DOCUMENT as u64)
+            .take(MAX_DOCUMENT as u64 + 1)
             .read_to_end(&mut out)
             .await
             .ok()?;
+        // More than a document: no wait for it to end (it would block on
+        // its full pipe until the timeout); its group ends with `proc`.
+        if out.len() > MAX_DOCUMENT {
+            log::warn!(
+                "`{}` printed more than {MAX_DOCUMENT} bytes; ignored and ended",
+                argv[0]
+            );
+            return None;
+        }
         let status = proc.child.wait().await.ok()?;
         if !status.success() {
             log::warn!("`{}` failed ({status})", argv[0]);
@@ -1161,6 +1295,10 @@ async fn run_poll(
     target: &PollTarget,
     every: Duration,
 ) -> Result<(), ServiceError> {
+    let every = match target {
+        PollTarget::Command(_) => every.max(MIN_COMMAND_POLL),
+        PollTarget::File(_) => every,
+    };
     // Ready with the first poll's value, or at once when nothing shows
     // it yet.
     let mut first = true;
@@ -1466,6 +1604,66 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         false
+    }
+
+    /// A poll of a command that prints more than a document ends at
+    /// once, not after [`POLL_TIMEOUT`] blocked on its full pipe.
+    #[test]
+    fn an_oversized_poll_ends_at_once() {
+        let started = std::time::Instant::now();
+        assert_eq!(block_on(poll_command(&["yes".to_string()])), None);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "took {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// A command outlives no strand that dies without cleaning up
+    /// (SIGKILL): this test runs itself as that strand, starts `sleep`
+    /// through [`Proc`], is killed, and the `sleep` must end.
+    #[test]
+    fn a_command_ends_when_strand_is_killed() {
+        use std::io::{BufRead, Write};
+        const HELPER: &str = "STRAND_PDEATHSIG_HELPER";
+        if std::env::var_os(HELPER).is_some() {
+            block_on(async {
+                let argv = ["sleep".to_string(), "30".to_string()];
+                let (proc, _out) = Proc::spawn(&argv).unwrap();
+                println!("PID {}", proc.child.id().unwrap());
+                let _ = std::io::stdout().flush();
+                std::thread::sleep(Duration::from_secs(60));
+            });
+            return;
+        }
+        let mut helper = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "custom::tests::a_command_ends_when_strand_is_killed",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(HELPER, "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let out = std::io::BufReader::new(helper.stdout.take().unwrap());
+        let pid = out
+            .lines()
+            .map_while(Result::ok)
+            // libtest prints its own `test … ... ` before it on the line.
+            .find_map(|l| l.split_once("PID ").map(|(_, p)| p.trim().to_string()))
+            .expect("the helper started its command");
+        assert!(!gone(&pid));
+        helper.kill().unwrap();
+        helper.wait().unwrap();
+        let ended = wait_gone(&pid);
+        if !ended && let Ok(p) = pid.parse::<i32>() {
+            // SAFETY: kill(2) of the test's own leftover.
+            unsafe { libc::kill(p, libc::SIGKILL) };
+        }
+        assert!(ended, "the command {pid} ended with its strand");
     }
 
     /// A command's whole process group ends with it: what it started

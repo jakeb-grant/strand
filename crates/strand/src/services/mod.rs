@@ -1996,6 +1996,52 @@ service shelf {
             let _ = std::fs::remove_dir_all(&dir);
         }
 
+        /// A file whose directory does not exist yet (an app's cache
+        /// before its first run) is waited for, not failed and retried:
+        /// the directories are followed as they appear, and again after
+        /// they are removed.
+        #[test]
+        fn a_file_service_waits_for_its_directory() {
+            let dir = temp("file-dir");
+            let file = dir.join("a/b/mood.json");
+            let src = format!(
+                "service mood from file \"{}\" {{ level: int }}\nbar B {{ text join(\" \", mood.level) }}\n",
+                file.display()
+            );
+            let mut live = Live::boot(&src, Buses::none());
+            let client = live.real.custom.client("mood").unwrap();
+            live.until("running", |_| client.running());
+            std::thread::sleep(Duration::from_millis(100));
+            std::fs::create_dir(dir.join("a")).unwrap();
+            std::fs::create_dir(dir.join("a/b")).unwrap();
+            save(&file, r#"{"level": 7}"#);
+            live.until("the file in a new directory", |l| {
+                l.value("mood", "level") == Value::int(7)
+            });
+            // Its directories go, and come back.
+            std::fs::remove_dir_all(dir.join("a")).unwrap();
+            live.until("the removal followed", |l| {
+                l.value("mood", "level") == Value::int(0)
+            });
+            std::fs::create_dir_all(dir.join("a/b")).unwrap();
+            save(&file, r#"{"level": 9}"#);
+            live.until("the file back", |l| {
+                l.value("mood", "level") == Value::int(9)
+            });
+            assert_eq!(client.starts(), 1, "never failed and restarted");
+            assert!(
+                !live
+                    .real
+                    .services
+                    .take_diagnostics()
+                    .iter()
+                    .any(|d| d.service == "mood"),
+                "nothing failed"
+            );
+            drop(live);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
         /// A value that does not convert to its field's type reads as the
         /// type's default and is reported once (naming the field, its key
         /// and the value) until a value converts again; a colour reads

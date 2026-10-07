@@ -2444,6 +2444,27 @@ impl<'a> Checker<'a> {
                 _ => None,
             }
         };
+        // A command polled faster than this forks for little: it runs at
+        // this interval (the runtime clamps the same way).
+        if let Some(hir::SourceSpec::Poll {
+            target: hir::PollTarget::Command(_),
+            every,
+        }) = &spec
+            && *every < hir::MIN_COMMAND_POLL
+            && let Some(e) = &s.source.every
+        {
+            self.warning(
+                "check::poll_too_fast",
+                format!(
+                    "a command is polled at most every {}ms",
+                    hir::MIN_COMMAND_POLL.as_millis()
+                ),
+                e.span,
+                "runs at the floor instead",
+            )
+            .help =
+                Some("use `from listen` for a command that reports changes, or poll a file".into());
+        }
         let mut fields = Vec::new();
         let rid = match self.defs[id.0 as usize].kind {
             DefKind::Service(r) => Some(r),

@@ -335,6 +335,11 @@ pub enum SourceSpec {
     },
 }
 
+/// The shortest interval a `poll` of a command runs at: a shorter
+/// `every` is warned about and runs at this (strand-services'
+/// `custom::MIN_COMMAND_POLL`). A file poll forks nothing and has no floor.
+pub const MIN_COMMAND_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// What a `poll` service runs or reads.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PollTarget {
