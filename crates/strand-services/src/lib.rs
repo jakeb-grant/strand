@@ -6,4 +6,5 @@
 //! their own threads.
 //!
 //! See `docs/design.md`, "System services and third-party crates". Lands in M3.
+pub mod audio;
 pub mod wm;
