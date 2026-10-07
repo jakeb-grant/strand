@@ -31,21 +31,29 @@ struct State {
     extra: bool,
     /// Its main loop is stuck: `Activate` never answers.
     frozen: bool,
+    /// `ItemIsMenu`.
+    is_menu: bool,
+    /// `Activate` is refused (libappindicator items).
+    no_activate: bool,
 }
 
 struct Item(Arc<Mutex<State>>);
 
 #[zbus::interface(name = "org.kde.StatusNotifierItem")]
 impl Item {
-    async fn activate(&self, _x: i32, _y: i32) {
-        let frozen = {
+    async fn activate(&self, _x: i32, _y: i32) -> zbus::fdo::Result<()> {
+        let (frozen, refused) = {
             let mut s = self.0.lock().unwrap();
             s.calls.push("Activate".into());
-            s.frozen
+            (s.frozen, s.no_activate)
         };
         if frozen {
             std::future::pending::<()>().await;
         }
+        if refused {
+            return Err(zbus::fdo::Error::UnknownMethod("no Activate".into()));
+        }
+        Ok(())
     }
     fn secondary_activate(&self, _x: i32, _y: i32) {
         self.0
@@ -94,7 +102,7 @@ impl Item {
     }
     #[zbus(property)]
     fn item_is_menu(&self) -> bool {
-        false
+        self.0.lock().unwrap().is_menu
     }
     #[zbus(signal)]
     async fn new_icon(e: &SignalEmitter<'_>) -> zbus::Result<()>;
@@ -675,5 +683,90 @@ fn an_item_unreadable_at_registration_is_read_again() {
     shown.sort();
     on_list.sort();
     assert_eq!(shown, on_list, "the watcher lists what the tray shows");
+    s.shutdown();
+}
+
+/// libappindicator and ayatana items (`ItemIsMenu`, no `Activate`): a
+/// click opens their DBusMenu in the shell's popup (`item.menu.opened`),
+/// as the SNI spec asks of a host; an item that refuses `Activate`
+/// without saying `ItemIsMenu` gets its menu too.
+#[test]
+fn a_menu_only_item_opens_its_menu_on_activate() {
+    let Some(bus) = strand_services::testing::PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    b.tray.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert!(bus.wait_for_name(WATCHER, Duration::from_secs(5)));
+    let d = b.tray.dynamic();
+
+    let name = "org.kde.StatusNotifierItem-5151-1";
+    let (conn, state) = item(&tokio, &bus.address, name);
+    {
+        let mut st = state.lock().unwrap();
+        st.is_menu = true;
+        st.no_activate = true;
+    }
+    call(
+        &tokio,
+        &conn,
+        WATCHER,
+        WATCHER_PATH,
+        WATCHER,
+        "RegisterStatusNotifierItem",
+        &(name,),
+    );
+    until(&rt, &s, "the item", || items(&b, &rt).len() == 1);
+    let it = items(&b, &rt).remove(0);
+    assert!(!it.menu.opened);
+    d.action(&rt, "activate", Some(&it.to_data()), &[]).unwrap();
+    until(&rt, &s, "the menu opened", || items(&b, &rt)[0].menu.opened);
+    wait_call(&state, "AboutToShow 0");
+    wait_call(&state, "Event 0 opened");
+    assert!(
+        !state.lock().unwrap().calls.iter().any(|c| c == "Activate"),
+        "an ItemIsMenu item is not sent Activate"
+    );
+    d.action(&rt, "close", Some(&it.menu.to_data()), &[])
+        .unwrap();
+    until(&rt, &s, "the menu closed", || {
+        !items(&b, &rt)[0].menu.opened
+    });
+
+    // Not marked, but refusing Activate: its menu opens all the same.
+    {
+        let mut st = state.lock().unwrap();
+        st.is_menu = false;
+        st.icon_name = "other-icon".into();
+    }
+    tokio
+        .block_on(conn.emit_signal(
+            None::<&str>,
+            "/StatusNotifierItem",
+            "org.kde.StatusNotifierItem",
+            "NewIcon",
+            &(),
+        ))
+        .unwrap();
+    until(&rt, &s, "the item read again", || {
+        items(&b, &rt)[0].icon == "other-icon"
+    });
+    d.action(&rt, "activate", Some(&it.to_data()), &[]).unwrap();
+    wait_call(&state, "Activate");
+    until(&rt, &s, "the menu opened on the refusal", || {
+        items(&b, &rt)[0].menu.opened
+    });
+    assert!(
+        !state
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .any(|c| c == "ContextMenu")
+    );
+    drop(conn);
     s.shutdown();
 }

@@ -173,12 +173,9 @@ impl Brightness {
             }
             return Ok(());
         };
-        let level = light.level().unwrap_or(0.0);
-        cx.update(|s| {
-            s.level = level;
-            s.available = true;
-        });
-        cx.ready();
+        // Watch before the first read (subscribe, then read, as
+        // `dbus::Daemon` does): a change between the two is then either in
+        // the read or queued on the watch, never lost.
         let watch = match light.watch() {
             Ok(w) => Some(w),
             Err(e) => {
@@ -186,6 +183,12 @@ impl Brightness {
                 None
             }
         };
+        let level = light.level().unwrap_or(0.0);
+        cx.update(|s| {
+            s.level = level;
+            s.available = true;
+        });
+        cx.ready();
         loop {
             tokio::select! {
                 m = cx.recv() => match m {
