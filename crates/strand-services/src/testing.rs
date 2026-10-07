@@ -244,11 +244,20 @@ impl DbusMock {
         if let Some(p) = parameters {
             cmd.args(["--parameters", p]);
         }
+        // Its output goes to a file in the bus's directory: a template
+        // that fails to load says why in the assertion below.
+        let log = bus
+            .dir
+            .join(format!("dbusmock-{template}-{}.log", unique()));
+        let (out, err) = match std::fs::File::create(&log).and_then(|f| Ok((f.try_clone()?, f))) {
+            Ok((o, e)) => (Stdio::from(o), Stdio::from(e)),
+            Err(_) => (Stdio::null(), Stdio::null()),
+        };
         let child = cmd
             .envs(bus.env())
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(out)
+            .stderr(err)
             .spawn();
         let child = match child {
             Ok(c) => c,
@@ -257,11 +266,24 @@ impl DbusMock {
                 return None;
             }
         };
-        let mock = DbusMock { child };
-        assert!(
-            bus.wait_for_name(name, Duration::from_secs(10)),
-            "python-dbusmock's {template} never owned {name}"
-        );
+        let mut mock = DbusMock { child };
+        // Up to 10 s, but no longer than the mock lives.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut owned = false;
+        while !owned && std::time::Instant::now() < deadline {
+            owned = bus.wait_for_name(name, Duration::from_millis(250));
+            if !owned && matches!(mock.child.try_wait(), Ok(Some(_))) {
+                break;
+            }
+        }
+        if !owned {
+            let exited = mock.child.try_wait().ok().flatten();
+            let output = std::fs::read_to_string(&log).unwrap_or_default();
+            panic!(
+                "python-dbusmock's {template} never owned {name} ({}); its output:\n{output}",
+                exited.map_or_else(|| "still running".to_string(), |s| s.to_string())
+            );
+        }
         Some(mock)
     }
 }

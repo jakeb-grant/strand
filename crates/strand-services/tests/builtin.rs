@@ -162,6 +162,91 @@ fn system_follows_the_portal_on_the_shared_runtime() {
     drop(conn);
 }
 
+/// A portal serving `values` on `bus`.
+fn serve_portal(
+    tokio: &tokio::runtime::Runtime,
+    bus: &PrivateBus,
+    values: HashMap<String, OwnedValue>,
+) -> zbus::Connection {
+    tokio.block_on(async {
+        zbus::connection::Builder::address(bus.address.as_str())
+            .unwrap()
+            .name("org.freedesktop.portal.Desktop")
+            .unwrap()
+            .serve_at(PATH, Portal { values })
+            .unwrap()
+            .build()
+            .await
+            .unwrap()
+    })
+}
+
+/// The session bus restarts under `system` (its connection dies under
+/// the portal follow): the body fails, the client starts it again after
+/// its backoff, and the new run connects afresh and follows the portal
+/// on the new bus.
+#[test]
+fn system_follows_the_portal_again_after_the_bus_restarts() {
+    let Some(mut bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let scheme = |v: u32| HashMap::from([("color-scheme".to_string(), owned(Value::from(v)))]);
+    let conn = serve_portal(&tokio, &bus, scheme(1));
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    b.system.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)), "the boot read");
+    let cells = b.system.cells();
+    assert_eq!(cells.dark.get_untracked(&rt), Ok(true));
+    // The bus restarts; a portal comes back on it, now light.
+    assert!(bus.restart());
+    drop(conn);
+    until(&rt, &s, "the follow to fail", || !b.system.running());
+    let _conn = serve_portal(&tokio, &bus, scheme(2));
+    // The retry (1 s on the logic clock) follows it again.
+    let mut now = Duration::ZERO;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while cells.dark.get_untracked(&rt) != Ok(false) {
+        assert!(Instant::now() < deadline, "never followed the new bus");
+        now += Duration::from_millis(250);
+        rt.tick(now);
+        s.pump(&rt);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(b.system.running());
+    assert!(b.system.starts() >= 2);
+    s.shutdown();
+}
+
+/// A python-dbusmock template that cannot load says why: its output is
+/// in the assertion message, not thrown away.
+#[test]
+fn a_dbusmock_that_fails_shows_its_output() {
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    if strand_services::testing::dbusmock_python().is_none() {
+        return;
+    }
+    let started = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        DbusMock::start(&bus, "no_such_template", true, None, "org.example.Nobody")
+    }));
+    let Err(payload) = started else {
+        panic!("a missing template started");
+    };
+    let msg = payload
+        .downcast_ref::<String>()
+        .cloned()
+        .unwrap_or_default();
+    assert!(msg.contains("never owned org.example.Nobody"), "{msg}");
+    assert!(msg.contains("no_such_template"), "{msg}");
+    assert!(
+        msg.contains("its output:\n") && msg.lines().count() > 2,
+        "{msg}"
+    );
+}
+
 #[test]
 fn without_a_bus_system_keeps_its_seeded_values() {
     let rt = Runtime::new();

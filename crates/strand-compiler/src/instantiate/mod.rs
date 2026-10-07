@@ -681,6 +681,12 @@ pub struct Instance {
     ctx: Rc<Ctx>,
     tokens: Option<Memo<TokenTable>>,
     root: Option<Scope>,
+    /// What the old tree held when a hard reload tore it down, held on
+    /// until the new tree has mounted and taken its own (the end of the
+    /// next tick): a built-in service never stops or restarts on reload,
+    /// and its streams (a Wi-Fi scan, a level meter) never switch off and
+    /// on.
+    bridge: RefCell<Vec<Arc<crate::lower::ServiceUses>>>,
 }
 
 impl std::fmt::Debug for Instance {
@@ -754,6 +760,7 @@ impl Instance {
             ctx,
             tokens: None,
             root: None,
+            bridge: RefCell::default(),
         };
         inst.boot(true);
         inst
@@ -1060,6 +1067,21 @@ impl Instance {
         let parked = std::mem::take(&mut *self.ctx.pending.borrow_mut());
         drop(parked);
         let mut prior = std::mem::take(&mut self.ctx.em.borrow_mut().ops);
+        // Hold what the old tree holds across the teardown (released once
+        // the new tree has taken its own: `Instance::collect`).
+        self.release_bridge();
+        let held: Vec<Arc<crate::lower::ServiceUses>> = self
+            .ctx
+            .holds
+            .borrow()
+            .values()
+            .filter(|h| h.acquired)
+            .map(|h| h.services.clone())
+            .collect();
+        for uses in &held {
+            mount::hold_services(&*host, &self.rt, uses, true);
+        }
+        *self.bridge.borrow_mut() = held;
         if let Some(s) = self.root.take() {
             s.dispose(&self.rt);
         }
@@ -1191,7 +1213,17 @@ impl Instance {
         }
     }
 
+    /// Let go of what a hard reload held across its teardown.
+    fn release_bridge(&self) {
+        let held = std::mem::take(&mut *self.bridge.borrow_mut());
+        for uses in held.iter().rev() {
+            mount::hold_services(&*self.ctx.vm.host, &self.rt, uses, false);
+        }
+    }
+
     fn collect(&self, tick: strand_core::Tick) -> Update {
+        // The new tree took its holds during the tick.
+        self.release_bridge();
         // Props naming a node not on the scene when bound (`nav:
         // results`): set once it is, which may be ticks later (inside an
         // `if` that turns true). Kept while the naming node lives and its
@@ -1925,6 +1957,7 @@ impl Instance {
     /// the instance does the same, so a reload that builds a new instance
     /// on the same runtime leaves nothing of the old one running.
     pub fn shutdown(&mut self) {
+        self.release_bridge();
         if let Some(s) = self.root.take() {
             s.dispose(&self.rt);
         }

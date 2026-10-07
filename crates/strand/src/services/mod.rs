@@ -194,8 +194,133 @@ mod tests {
             let real_fields: Vec<(&str, bool)> =
                 rec.fields.iter().map(|f| (f.name.as_str(), f.rw)).collect();
             assert_eq!(stub_fields, real_fields, "{name} against its stub");
+            assert_calls_match(s, &rt, &*svc);
         }
+        // Every service schema text has its store among the builtins, and
+        // every builtin has its text: a text without a store would check
+        // and hover in the LSP but be served at defaults.
+        let mut texts: Vec<String> = strand_services::schemas()
+            .iter()
+            .map(|t| {
+                // The service a text declares: the stub it makes real.
+                let builtin = Schema::builtin();
+                let mut one = builtin.clone();
+                one.extend(t).unwrap();
+                let names: Vec<&String> = one
+                    .services
+                    .keys()
+                    .filter(|n| builtin.provisional.contains(*n) && !one.provisional.contains(*n))
+                    .collect();
+                assert_eq!(names.len(), 1, "one service per text: {names:?}");
+                names[0].clone()
+            })
+            .collect();
+        texts.sort();
+        let mut stores: Vec<String> = Builtin::register(&services, &rt)
+            .all()
+            .iter()
+            .map(|s| s.name().to_string())
+            .collect();
+        stores.sort();
+        assert_eq!(texts, stores, "schema texts and builtin stores");
         services.shutdown();
+    }
+
+    /// A store's actions, async methods and `fn` methods are its schema
+    /// record's, by name and arity, and the actions and async methods of
+    /// the item records it hands out or takes are those records': the
+    /// language routes calls by these names, so a spelling that differs
+    /// would type-check and then fail at run time.
+    fn assert_calls_match(s: &Schema, rt: &Runtime, svc: &dyn strand_services::DynService) {
+        use strand_compiler::ty::Ty;
+        let name = svc.name();
+        #[derive(Debug, PartialEq)]
+        enum Kind {
+            Action,
+            Async,
+            Fn,
+        }
+        let methods = |r: strand_compiler::ty::RecordId| -> Vec<(Kind, String, usize)> {
+            let mut v: Vec<(Kind, String, usize)> = s
+                .types
+                .record(r)
+                .methods
+                .iter()
+                .filter_map(|m| {
+                    let sig = m.sigs.first()?;
+                    let kind = if sig.action {
+                        Kind::Action
+                    } else if matches!(sig.ret, Ty::Async(_)) {
+                        Kind::Async
+                    } else {
+                        Kind::Fn
+                    };
+                    Some((kind, m.name.clone(), sig.params.len()))
+                })
+                .collect();
+            v.sort_by(|a, b| a.1.cmp(&b.1));
+            v
+        };
+        let of = |sigs: &[strand_services::CallSig], item: Option<&str>| -> Vec<(String, usize)> {
+            let mut v: Vec<(String, usize)> = sigs
+                .iter()
+                .filter(|c| c.item.as_deref() == item)
+                .map(|c| (c.name.to_string(), c.arity))
+                .collect();
+            v.sort();
+            v
+        };
+        let want = |m: &[(Kind, String, usize)], k: Kind| -> Vec<(String, usize)> {
+            m.iter()
+                .filter(|(kind, _, _)| *kind == k)
+                .map(|(_, n, a)| (n.clone(), *a))
+                .collect()
+        };
+        let (actions, calls) = (svc.action_sigs(), svc.method_sigs());
+        let own = methods(s.services[name]);
+        assert_eq!(
+            of(&actions, None),
+            want(&own, Kind::Action),
+            "{name}'s actions"
+        );
+        assert_eq!(
+            of(&calls, None),
+            want(&own, Kind::Async),
+            "{name}'s async methods"
+        );
+        for (f, arity) in want(&own, Kind::Fn) {
+            let args = vec![strand_services::Data::Null; arity];
+            assert!(
+                svc.call(rt, &f, &args).is_some(),
+                "{name} does not answer its `fn {f}`"
+            );
+        }
+        for record in svc.item_records() {
+            let r = s
+                .types
+                .find_record(&record)
+                .unwrap_or_else(|| panic!("{name} hands out `{record}`, which the schema lacks"));
+            let theirs = methods(r);
+            assert_eq!(
+                of(&actions, Some(&record)),
+                want(&theirs, Kind::Action),
+                "{name}: the actions of `{record}`"
+            );
+            assert_eq!(
+                of(&calls, Some(&record)),
+                want(&theirs, Kind::Async),
+                "{name}: the async methods of `{record}`"
+            );
+        }
+        // Every call it takes was compared above.
+        let compared = |c: &strand_services::CallSig| match &c.item {
+            None => true,
+            Some(r) => svc.item_records().contains(r),
+        };
+        assert!(
+            actions.iter().chain(&calls).all(compared),
+            "{name}: {actions:?} {calls:?}"
+        );
     }
 
     /// A config mounted against the real composite host, one monitor.
@@ -521,6 +646,8 @@ service wifi {
 
         /// What the wifi service's body saw, in order.
         static WIFI_LOG: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        /// The tests reading `WIFI_LOG` run one at a time.
+        static WIFI_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
         /// A service with a stream field.
         #[service(name = "wifi", schema = WIFI_SCHEMA)]
@@ -877,6 +1004,7 @@ service shelf {
         /// though the service runs all along.
         #[test]
         fn a_closed_popup_keeps_a_stream_field_off_while_a_bar_reads_another() {
+            let _serial = WIFI_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
             WIFI_LOG.lock().unwrap().clear();
             let rt = Runtime::new();
             let services = Services::new(&rt, Buses::none(), || {});
@@ -934,6 +1062,110 @@ service shelf {
             );
             assert!(wifi.running());
             assert_eq!(wifi.starts(), 1);
+            inst.shutdown();
+            services.shutdown();
+        }
+
+        /// Live reload never restarts a built-in service (design.md, "Live
+        /// reload": built-in services are kept): a bar reading `cpu.usage`
+        /// and a shown popup reading a stream field (`wifi.networks`) go
+        /// through a prop edit and a hard reload with each service started
+        /// once, never stopped, and the stream never switched off and on
+        /// (a Wi-Fi scan or a level meter would restart).
+        #[test]
+        fn live_reload_keeps_the_services_and_their_streams_running() {
+            let _serial = WIFI_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            WIFI_LOG.lock().unwrap().clear();
+            let rt = Runtime::new();
+            let services = Services::new(&rt, Buses::none(), || {});
+            let builtin = Builtin::register(&services, &rt);
+            let wifi = services.register::<Wifi>(&rt);
+            let mut texts = strand_services::schemas();
+            texts.push(WIFI_SCHEMA);
+            let schema = Schema::builtin_with(&texts).unwrap();
+            let src = |w: u32| {
+                format!(
+                    "export state p = true\nbar B {{\n  text pct(cpu.usage)\n  box {{ width: {w} }}\n  popup {{ open: <-> p; for n in wifi.networks key n {{ text n }} }}\n}}\n"
+                )
+            };
+            let build = |prev: Option<&strand_compiler::reconcile::Build>, text: String| {
+                let mut map = SourceMap::new();
+                map.add("svc.strand", text);
+                strand_compiler::reconcile::Build::compile_with(prev, map, &schema)
+                    .unwrap_or_else(|d| panic!("{d:#?}"))
+            };
+            let first = build(None, src(10));
+            let types = Rc::new(first.program.types.clone());
+            let fallback = Rc::new(SchemaHost::new(&rt, &types, None));
+            let screen = fallback.record(
+                "Screen",
+                &[
+                    ("id", Value::text("Mock | DP-1 | Display")),
+                    ("name", Value::text("DP-1")),
+                ],
+            );
+            fallback
+                .set(&rt, "screens.all", Value::list(vec![screen]))
+                .unwrap();
+            let mut host = Composite::new(fallback, types.clone());
+            for svc in builtin.all().into_iter().chain([wifi.dynamic()]) {
+                let name = svc.name();
+                let items = svc.item_records();
+                host.add(
+                    Rc::new(StoreHost::new(&rt, svc, types.clone())),
+                    &[name],
+                    &items,
+                );
+            }
+            let mut inst = Instance::from_build(&rt, &first, Rc::new(host), Storage::none());
+            let mut scene = SceneMirror::new();
+            let mut step = |inst: &mut Instance| {
+                services.pump(&rt);
+                let u = inst.tick(Duration::ZERO);
+                assert!(u.errors.is_empty(), "{:?}", u.errors);
+                scene.apply(&u.diff).unwrap();
+                scene.texts()
+            };
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !step(&mut inst).contains(&"cafe".to_string()) {
+                assert!(
+                    Instant::now() < deadline,
+                    "the popup never listed the networks"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let cpu = &builtin.cpu;
+            let settled = |what: &str| {
+                assert_eq!((cpu.starts(), cpu.stops()), (1, 0), "cpu, {what}");
+                assert_eq!((wifi.starts(), wifi.stops()), (1, 0), "wifi, {what}");
+                assert_eq!(cpu.readers(), 1, "cpu readers, {what}");
+                assert_eq!(wifi.field_readers(1), 1, "networks readers, {what}");
+            };
+            settled("at boot");
+            // A prop edit, reconciled in place.
+            let second = build(Some(&first), src(11));
+            inst.reload(&second);
+            for _ in 0..5 {
+                step(&mut inst);
+            }
+            settled("after a prop edit");
+            // A hard reload: a new tree from the same build.
+            inst.reload_hard(&second);
+            for _ in 0..5 {
+                step(&mut inst);
+            }
+            settled("after a hard reload");
+            // Past the 5 s grace too: nothing was released for good.
+            inst.tick(STOP_GRACE + Duration::from_secs(1));
+            services.pump(&rt);
+            settled("past the grace");
+            // Give the service thread time to log anything it was sent.
+            std::thread::sleep(Duration::from_millis(100));
+            assert_eq!(
+                *WIFI_LOG.lock().unwrap(),
+                ["start scanning=false", "scanning=true (networks)"],
+                "the scan was never switched off and on"
+            );
             inst.shutdown();
             services.shutdown();
         }
@@ -1049,6 +1281,9 @@ service shelf {
             let mut host = Composite::new(fallback, types.clone());
             let items = client.dynamic().item_records();
             assert_eq!(items, ["TallyItem"]);
+            // Its actions and async method are its schema's, and so are
+            // its item record's.
+            super::assert_calls_match(&schema, &rt, &*client.dynamic());
             host.add(store.clone(), &["tally"], &items);
             let host: Rc<dyn ServiceHost> = Rc::new(host);
             host.acquire(&rt, "tally");

@@ -3030,7 +3030,7 @@ fn collect_decls<'a>(
 /// Acquire (`on`) or release what a scope holds of the services: each
 /// service, and the fields it reads directly. A service is acquired
 /// before its fields and released after them.
-fn hold_services(
+pub(crate) fn hold_services(
     host: &dyn crate::vm::ServiceHost,
     rt: &Runtime,
     uses: &crate::lower::ServiceUses,

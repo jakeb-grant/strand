@@ -785,7 +785,17 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   `KeyedVec` clone (`get_untracked`) held across a write makes that write
   copy the items and the key index.
   Service `rw` writes use `write_tagged(value, send)` (throttled writes are
-  held, then sent) and reports come back through `receive`. `let x =
+  held, then sent) and reports come back through `receive`. An item of a
+  service's keyed list is written with `KeyedSignal::write_item_tagged(
+  key, item, send)` (the item updated at once; a throttled handler's item
+  writes are held, the latest per item, each landing with its `send`)
+  and the service's diffs come back through `receive_items(diffs,
+  echo_of)`, which drops an item's echo (by tag, or by value untagged),
+  keeps a written item in a `Reset` that echoes it, and drops updates
+  that change nothing; `keep_pending_items` keeps written items in a
+  boot report, `pending_item_writes(key)` counts them. `forget_echoes()`
+  (on `Signal` and `KeyedSignal`) drops the pending writes of a service
+  run that ended without answering them; tags keep counting up. `let x =
   svc.call(input)` returning `Async` is `rt.async_memo(input, fetch)`, a
   read-only `AsyncMemo`.
 - Service lifecycle (start on first reader, stop 5 s after the last leaves
@@ -1261,6 +1271,18 @@ Public interfaces other crates and later stages build on:
     match the service's reports with `receive`, so the echo of a write
     is ignored (`SchemaHost` writes the field's cell with
     `write_tagged`).
+  - `write_item(rt, item: &Value, path, value)` writes one `rw` leaf
+    below an item of a service's keyed list: `s.volume = 0.5` for `s`
+    in `audio.sinks` (a slider's `<-> s.volume` too) is
+    `write_item(s, [Field("volume")], 0.5)`. The host routes by the
+    item's record and finds the item by its schema `key` (the sink with
+    id 42), applies it at once and ignores its echo, with core's
+    `KeyedSignal::write_item_tagged` / `receive_items`. Lowering roots a
+    place at the base nearest the leaf whose type is a keyed schema
+    record (`lower::PlaceRoot::Item`: the item's value comes first among
+    the place's index values); the checker accepts an `rw` field only
+    where the place starts at a `state`/settings, a service or such an
+    item (`check::read_only` otherwise). The default refuses.
   - `fetch(rt, service, method, args) -> Fetch` (a boxed future):
     `let x = svc.m(args)` whose method returns `Async` is `rt.async_memo(
     args, fetch)` per mounted `let`, created on the `let`'s first read
@@ -1542,8 +1564,11 @@ Public interfaces other crates and later stages build on:
     caller retries after `lock_shown()` turns false. Lock hashes are
     compared with the running build's, so once a lock edit waits, every
     later build carries it and waits too (decisions.md, wave2-runtime). `reload_hard(&Build)`
-    unmounts everything (persisted cells flushed) and mounts afresh. The
-    diff comes with the next `step`/`tick`/`flush`.
+    unmounts everything (persisted cells flushed) and mounts afresh;
+    what the old tree held of the services (each service and the fields
+    it read) stays held until the end of the next tick, by when the new
+    tree has taken its own, so no built-in service stops and no stream
+    switches off and on. The diff comes with the next `step`/`tick`/`flush`.
   - `Instance::freeze(&RuntimeError)` also outlines the frozen
     component's top nodes (or the failing node) with a 2 px red
     `border`; `thaw` restores it, and a reload's new tree clears it.
@@ -1831,16 +1856,24 @@ the primitives, `Option`, `Vec` and derived types.
   types, `rw`, `keyed`, `key` (the item's `Keyed::KEY_FIELD`),
   `stream`, `///` docs (held equal to the schema text's by test);
   `diff(old, new)`, `apply`,
-  `field_patch`; cells `apply(patch, How::{Initial, Report(echo_of)})`,
+  `field_patch`, `item_patch(field, key, sent)` (an item write's
+  answer: one `Update`); cells `apply(patch, How::{Initial,
+  Report(echo_of)})` (a plain field's boot value is skipped while a
+  local write is in flight, a keyed list's boot value keeps items
+  written in flight, a keyed report goes through `receive_items`),
   `snapshot`, `read(field) -> Data` tracked, `ids`, `write(field, Data,
-  send)` with `write_tagged`, `keyed_items`). `#[derive(Data)]` on a
+  send)` with `write_tagged`, `write_item(field, key, path, value,
+  send)` with `write_item_tagged`, `forget_echoes` (a run ended without
+  answering its writes), `keyed_items`). `#[derive(Data)]` on a
   record struct (`#[data(name = "Workspace", key = id)]`, `#[data(rename
   = "type")]` on a field; `key` implements `Keyed`) or a unit enum
   (variants in snake_case). `#[derive(Call)]` on an enum of actions or
   async methods: variants in snake_case, fields are the arguments in
   order, a field named `item` takes the item an action was called on
   (`ws.focus()`), so the language side routes a record's item actions
-  to the service whose `item_records()` names it. `#[service]`
+  to the service whose `item_records()` names it; `FromCall::signatures()`
+  lists each call's name, arity and item record (`CallSig`), which a
+  test holds to the schema's `action`/`fn` declarations. `#[service]`
   implements `Service` (`NAME`, `schema()`: its declarations in the
   schema language, `Action`, `Call` (`NoCall` by default), `call`: `fn`
   methods computed on the logic thread over the cells, `start`).
@@ -1854,7 +1887,9 @@ the primitives, `Option`, `Vec` and derived types.
   outside changes); `ready()` ends the boot phase (updates before it are boot
   values: `on change` takes them as its baseline; it also ends the first
   frame's wait); `recv().await` / `blocking_recv()` / `try_recv()` give
-  `Msg::{Write(Write { field, path, value, field_value, generation }),
+  `Msg::{Write(Write { field, key, path, value, field_value, generation
+  }) (an item write names the keyed list in `field`, the item's key in
+  `key`, the path below the item, and the item's whole new value),
   Action(S::Action), Call(S::Call, Reply), Visible(bool), Watch { field,
   on }}` and `None` once stopped; `visible()` (a reader is visible: a
   service polling as a whole, cpu or memory, runs only then);
@@ -1867,7 +1902,8 @@ the primitives, `Option`, `Vec` and derived types.
   panic, without a tokio runtime: a service on its own thread runs one
   to use them). A body returns when stopped; one that returns an error
   while read is started again after a backoff (1 s doubling to 30 s,
-  reset on `ready()`), and services following a daemon may reconnect
+  reset only after a run stayed up 30 s, so a body failing right after
+  `ready()` keeps backing off), and services following a daemon may reconnect
   themselves (NameOwnerChanged) to avoid that gap; `set_notify(f)` for a
   service on its own thread with its own event loop (PipeWire's): `f`
   runs whenever a message is queued and when it is stopped.
@@ -1900,14 +1936,23 @@ the primitives, `Option`, `Vec` and derived types.
   `field_readers`, `running` (false once its body ended), `starts`,
   `stops`, `reports` (updates applied), `dynamic() -> Rc<dyn
   DynService>`: the by-index view the language side drives (`fields`,
-  `events`, `actions`, `methods`, `item_records`, `read`, `ids`,
-  `keyed_items`, `write(field, path: &[Step], Data)`, `action(rt, name,
-  item, args)`, `call`, `fetch(rt, …)`, `acquire`, `release`,
+  `events`, `actions`, `methods`, `action_sigs`, `method_sigs`,
+  `item_records` (the records its keyed lists hand out and its calls
+  take), `read`, `ids`, `keyed_items`, `write(field, path: &[Step],
+  Data)`, `write_item(rt, record, item, path, Data)` (the keyed list
+  holding the item's key; the mirror hears of it as an `Update`),
+  `action(rt, name, item, args)`, `call`, `fetch(rt, …)`, `acquire`,
+  `release`,
   `acquire_field`, `release_field`, `observe(f)`:
   every keyed change and event applied, as `Applied::{Keyed { field,
   diffs: Vec<VecDiff<Data, Data>>, initial }, Event { event, args }}`;
   `initial`: a boot report the store applied as a reload write, which
   a mirror takes with `replace_all_reloaded` so `on change` skips it).
+  A committed write reaches the run current then; a write the rate
+  guard held that commits with no run (after the 5 s stop, or after the
+  body ended) starts one, as a write to a stopped service does. When a
+  run ends (its body returned, or the stop), the cells forget the
+  writes it never answered (`Cells::forget_echoes`).
 - **Builtin services here** (wave 4): `system` (the portal's appearance
   settings through `strand_watch::follow` on the shared runtime, plus
   `hostname`), `cpu` and `memory` (procfs, sampled once a second only
@@ -1930,13 +1975,15 @@ the primitives, `Option`, `Vec` and derived types.
   exactly that field; a keyed field mirrored as a `KeyedSignal<ValueKey,
   Value>` fed by the store's `Applied::Keyed` diffs (keyed by the item
   record's schema `key`; an `initial` one rebaselines it), events as `EventQueue<Vec<Value>>` fed by
-  `Applied::Event`; `write` refuses non-`rw` fields and passes the leaf
-  path as `Step`s; `call` is the store's `fn` methods; `fetch` its async
+  `Applied::Event`; `write` refuses a non-`rw` field written whole and
+  passes the leaf path as `Step`s (a leaf below a field is `rw` in its
+  record, which the checker saw); `write_item` passes the item's record
+  name, the item and the path to `DynService::write_item`; `call` is the store's `fn` methods; `fetch` its async
   methods (every async call in a config reaches it);
   `acquire_field`/`release_field` count readers per field.
   `Composite` routes by service name (one member per name), an item's
-  action by the record's name to the member whose `item_records()` name
-  it, and everything else (the clock and calendar, services no crate
+  action or write by the record's name to the member whose
+  `item_records()` name it, and everything else (the clock and calendar, services no crate
   serves yet, `declare`d custom services) to the `SchemaHost` fallback;
   `next_wake` is the earliest of all, `wake` reaches all. A service
   module added to `strand-services` (`Builtin`, `schemas()`) is served
@@ -1948,8 +1995,10 @@ the primitives, `Option`, `Vec` and derived types.
   `restart()`: a new daemon at the same address), `DbusMock::start(&bus,
   template, system, parameters, name)` (python-dbusmock: the interpreter
   is `$STRAND_DBUSMOCK_PYTHON`, else the first of `python3`, `python3.12`
-  that imports `dbusmock`). Both skip without their tool unless
-  `STRAND_REQUIRE_DBUS` is set (CI), where they fail.
+  that imports `dbusmock`; its output goes to a file in the bus's
+  directory, shown in the failure when the name never appears). Both
+  skip without their tool unless `STRAND_REQUIRE_DBUS` is set (CI),
+  where they fail.
 
 ### `strand-watch`
 
