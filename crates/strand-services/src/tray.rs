@@ -882,14 +882,15 @@ impl Host {
                         return Done::Relayout(t.id, t.generation);
                     }
                 }
-                // No Activate (a menu-only item not marked `ItemIsMenu`):
-                // its DBusMenu opens in the shell's popup, as for
-                // `item.menu.open()`.
-                (Err(_), Then::MenuOnError) if t.menu_path.is_some() => {
+                // Refused (a menu-only item not marked `ItemIsMenu`): its
+                // DBusMenu opens in the shell's popup, as for
+                // `item.menu.open()`. An app that did not answer in time
+                // (frozen) is asked nothing more.
+                (Err(zbus::Error::MethodError(..)), Then::MenuOnError) if t.menu_path.is_some() => {
                     return Done::OpenMenu(t.id, t.generation);
                 }
                 // Without one the app shows its own.
-                (Err(_), Then::MenuOnError) => {
+                (Err(zbus::Error::MethodError(..)), Then::MenuOnError) => {
                     let _ = timed(conn.call_method(
                         Some(t.bus.as_str()),
                         t.path.as_str(),

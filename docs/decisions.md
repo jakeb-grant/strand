@@ -7497,7 +7497,9 @@ ayatana items: nm-applet, Discord, Steam) is not sent `Activate` (they
 refuse it) but has its DBusMenu opened, exactly as `item.menu.open()`
 does (`AboutToShow`, `opened`, `menu.opened` true), as the SNI spec asks
 of a host and KDE and waybar do; an item refusing `Activate` without the
-mark gets the same when it has a DBusMenu, else `ContextMenu`. So
+mark gets the same when it has a DBusMenu, else `ContextMenu` (a
+refusal only: an app that did not answer in 2 s is frozen and asked
+nothing more). So
 design.md's `on click { item.activate() }` opens these items' menus
 (rather than a schema flag every shell would have to test);
 `scroll(dy)` takes `dy` in wheel notches (one click 1, positive down, as

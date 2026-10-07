@@ -396,7 +396,10 @@ fn history_is_bounded_and_lying_pictures_are_refused() {
     assert_eq!(popups(&b, &rt)[0].image, None);
 
     // A picture of its own on the first kept one: its file goes with it.
-    let image = Value::from((1i32, 1i32, 4i32, true, 8i32, 4i32, vec![1u8, 2, 3, 4]));
+    // (Pixels no other test in this binary sends: the files are
+    // content-addressed per process, and a parallel test's handle on the
+    // same picture would keep the file.)
+    let image = Value::from((1i32, 1i32, 4i32, true, 8i32, 4i32, vec![201u8, 77, 13, 255]));
     let pictured = notify(
         &tokio,
         &conn,
