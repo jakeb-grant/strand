@@ -53,6 +53,10 @@ chown "$uid" "$ROOT/target/matrix"
 
 # seatd hands the KMS card to Hyprland's libseat (no logind here).
 if [ -n "${STRAND_DRM_CARD:-}" ]; then
+  # Hyprland's renderer opens the card by path for GBM (vkms has no render
+  # node), besides seatd's handle: the user needs it read-write (inside
+  # the container it belongs to the host's video gid, run 37652552567).
+  chmod a+rw /dev/dri/card*
   ls -l /dev/dri /sys/class/drm/
   for c in /sys/class/drm/card[0-9]; do echo "$c: $(cat "$c/device/uevent" 2>/dev/null | tr '\n' ' ')"; done
   SEATD_VTBOUND=0 seatd -u "$user" -g "$(id -gn "$user")" -l info >"$ROOT/target/matrix/seatd.log" 2>&1 &
