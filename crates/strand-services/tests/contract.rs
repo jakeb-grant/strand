@@ -94,15 +94,29 @@ impl Script {
         self.cmds.send(c).unwrap();
     }
 
-    /// The next thing the service saw.
+    /// The next thing the service saw. A stopped run's "stopped" may land
+    /// after the next run's script replaced the log (the old body ends on
+    /// the services thread whenever it is polled): skipped.
     fn next(&self) -> String {
-        self.seen
-            .recv_timeout(Duration::from_secs(10))
-            .expect("the service saw nothing")
+        loop {
+            let s = self
+                .seen
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the service saw nothing");
+            if s != "stopped" {
+                return s;
+            }
+        }
     }
 
     fn quiet(&self) -> bool {
-        self.seen.recv_timeout(Duration::from_millis(200)).is_err()
+        loop {
+            match self.seen.recv_timeout(Duration::from_millis(200)) {
+                Ok(s) if s == "stopped" => {}
+                Ok(_) => return false,
+                Err(_) => return true,
+            }
+        }
     }
 }
 

@@ -65,11 +65,12 @@ impl Wake {
     }
 
     pub(crate) fn wake(&self) {
+        // The host first: whoever `wait_past` releases sees it woken.
+        (self.host)();
         if let Ok(mut c) = self.count.lock() {
             *c += 1;
         }
         self.cond.notify_all();
-        (self.host)();
     }
 
     pub(crate) fn count(&self) -> u64 {
