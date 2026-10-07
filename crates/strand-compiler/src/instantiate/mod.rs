@@ -130,7 +130,7 @@ pub(crate) type Forget = dyn Fn(&Runtime, &Value) -> bool;
 /// Services a mounted scope reads ([`Ctx::hold`]).
 pub(crate) struct Hold {
     pub scope: Option<CoreId>,
-    pub services: Arc<std::collections::BTreeSet<String>>,
+    pub services: Arc<crate::lower::ServiceUses>,
     /// The scope wants them (mounted, or its surface shown).
     pub want: bool,
     /// Blocked scopes it is under: a hidden surface's content, a parked
@@ -778,7 +778,7 @@ impl Instance {
                 .collect();
             ctx.declare(rt, &all, &root_env);
             // What the top level reads, and `screens` for per-monitor bars.
-            let mut services: std::collections::BTreeSet<String> = prog
+            let mut services: crate::lower::ServiceUses = prog
                 .files
                 .iter()
                 .flat_map(|f| f.services.iter().cloned())
@@ -789,7 +789,7 @@ impl Instance {
                 .flat_map(|f| f.items.iter())
                 .any(|n| matches!(n, Node::Surface(s) if s.screen.is_some()));
             if bars {
-                services.insert("screens".to_string());
+                services.insert(("screens".to_string(), None));
             }
             ctx.acquire(rt, &services);
             let root_frag = ctx.em.borrow_mut().new_frag(None, None);

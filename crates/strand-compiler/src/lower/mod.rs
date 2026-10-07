@@ -97,7 +97,7 @@ pub struct FileProgram {
     pub items: Vec<Node>,
     /// Services the file's top level reads (`let`s, handlers, timers,
     /// tokens): acquired for as long as the config runs.
-    pub services: Arc<BTreeSet<String>>,
+    pub services: Arc<ServiceUses>,
 }
 
 /// A component declaration.
@@ -145,8 +145,17 @@ pub struct Body {
     /// Elements in this body (not in nested `for` items or components).
     pub owned: Arc<BTreeSet<NodeIdx>>,
     /// Services read anywhere in this body (acquired on mount).
-    pub services: Arc<BTreeSet<String>>,
+    pub services: Arc<ServiceUses>,
 }
+
+/// What a scope reads of the services, collected by the compiler: a
+/// scope holds these while it is mounted and shown. `(service, None)`
+/// holds the service (it starts on its first holder); `(service,
+/// Some(field))` also reads that field directly, which is what keeps a
+/// `#[store(stream)]` field's stream (a Wi-Fi scan, audio levels)
+/// running ([`crate::vm::ServiceHost::acquire_field`]). Every field
+/// entry comes with its service's entry.
+pub type ServiceUses = BTreeSet<(String, Option<String>)>;
 
 /// A tree item.
 #[derive(Clone, Debug)]
@@ -237,7 +246,7 @@ pub struct Element {
     /// For a surface element (`popup`, `panel`, a `bar`): the services its
     /// children read, held only while it is shown. A nested surface's
     /// reads do not count for the body around it.
-    pub services: Option<Arc<BTreeSet<String>>>,
+    pub services: Option<Arc<ServiceUses>>,
 }
 
 /// A prop binding.
@@ -478,7 +487,7 @@ pub(crate) struct Lowerer<'a> {
     /// Elements of the bodies being lowered, innermost last.
     owned: Vec<BTreeSet<NodeIdx>>,
     /// Services read by the bodies being lowered, innermost last.
-    pub(crate) services: Vec<BTreeSet<String>>,
+    pub(crate) services: Vec<ServiceUses>,
     /// The schema of the element whose children are being lowered, for
     /// its `when` and pose props.
     elem: Option<&'a crate::schema::ElementSchema>,
@@ -991,7 +1000,7 @@ impl Lowerer<'_> {
             hir::Event::Element(n) => Event::Element(n.clone()),
             hir::Event::Service { service, event } => {
                 if let Some(s) = self.services.last_mut() {
-                    s.insert(service.clone());
+                    s.insert((service.clone(), None));
                 }
                 Event::Service {
                     service: service.clone(),

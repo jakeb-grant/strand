@@ -179,6 +179,14 @@ impl ServiceHost for Composite {
         self.route(service).release(rt, service);
     }
 
+    fn acquire_field(&self, rt: &Runtime, service: &str, field: &str) {
+        self.route(service).acquire_field(rt, service, field);
+    }
+
+    fn release_field(&self, rt: &Runtime, service: &str, field: &str) {
+        self.route(service).release_field(rt, service, field);
+    }
+
     fn next_wake(&self, rt: &Runtime) -> Option<SystemTime> {
         self.members
             .iter()

@@ -241,7 +241,7 @@ impl Lowerer<'_> {
                 optional: false,
             } => match &base.kind {
                 ExprKind::Service(s) => {
-                    self.note_service(s);
+                    self.note_field(s, name);
                     Some(KeyedRoot::Service {
                         service: c.name(s),
                         field: c.name(name),
@@ -255,7 +255,15 @@ impl Lowerer<'_> {
 
     fn note_service(&mut self, s: &str) {
         if let Some(top) = self.services.last_mut() {
-            top.insert(s.to_string());
+            top.insert((s.to_string(), None));
+        }
+    }
+
+    /// A direct read of `service.field` (it also holds the service).
+    fn note_field(&mut self, s: &str, field: &str) {
+        if let Some(top) = self.services.last_mut() {
+            top.insert((s.to_string(), None));
+            top.insert((s.to_string(), Some(field.to_string())));
         }
     }
 
@@ -429,6 +437,9 @@ impl Lowerer<'_> {
                 name,
                 optional,
             } => {
+                if let ExprKind::Service(svc) = &base.kind {
+                    self.note_field(svc, name);
+                }
                 self.expr(c, base);
                 let skip = optional.then(|| c.emit(Op::NullJump(0), span));
                 let n = c.name(name);

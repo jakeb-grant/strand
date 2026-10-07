@@ -331,4 +331,16 @@ impl ServiceHost for StoreHost {
     fn release(&self, rt: &Runtime, _service: &str) {
         self.svc.release(rt);
     }
+
+    fn acquire_field(&self, _rt: &Runtime, _service: &str, field: &str) {
+        if let Ok(i) = self.index(field) {
+            self.svc.acquire_field(i);
+        }
+    }
+
+    fn release_field(&self, _rt: &Runtime, _service: &str, field: &str) {
+        if let Ok(i) = self.index(field) {
+            self.svc.release_field(i);
+        }
+    }
 }

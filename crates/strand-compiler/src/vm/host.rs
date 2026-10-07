@@ -163,6 +163,19 @@ pub trait ServiceHost {
     /// not dispose nodes synchronously from here.
     fn release(&self, _rt: &Runtime, _service: &str) {}
 
+    /// A scope holding `service` (acquired first) also reads `field`
+    /// directly, and is mounted and shown: what a `#[store(stream)]`
+    /// field's stream (a Wi-Fi scan, audio levels) runs for, so a bar
+    /// showing the SSID does not keep the scan of a closed popup going
+    /// (design.md, "Lifecycle"). The compiler collects these per scope
+    /// ([`crate::lower::ServiceUses`]); a field read only through a `fn`
+    /// method or a `let` in another scope is held by the scope reading
+    /// it there. The default does nothing.
+    fn acquire_field(&self, _rt: &Runtime, _service: &str, _field: &str) {}
+
+    /// The matching unmount or hide (released before the service).
+    fn release_field(&self, _rt: &Runtime, _service: &str, _field: &str) {}
+
     /// The next wall-clock time the host loop must wake for (the next
     /// minute boundary while a clock is shown); `None` when nothing is
     /// due.

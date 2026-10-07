@@ -481,6 +481,137 @@ service tally {
             }
         }
 
+        pub const WIFI_SCHEMA: &str = "
+/// Wi-Fi.
+service wifi {
+  /// The network joined.
+  ssid: text
+  /// The networks in range: scanned only while a visible reader reads
+  /// them.
+  networks: [text]
+}
+";
+
+        /// What the wifi service's body saw, in order.
+        static WIFI_LOG: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+        /// A service with a stream field.
+        #[service(name = "wifi", schema = WIFI_SCHEMA)]
+        #[derive(Store, Clone, Debug, Default, PartialEq)]
+        pub struct Wifi {
+            /// The network joined.
+            pub ssid: String,
+            /// The networks in range: scanned only while a visible reader
+            /// reads them.
+            #[store(stream)]
+            pub networks: Vec<String>,
+        }
+
+        impl Wifi {
+            async fn run(mut cx: Cx<Self>) -> Result<(), ServiceError> {
+                let log = |s: String| WIFI_LOG.lock().unwrap().push(s);
+                log(format!("start scanning={}", cx.watched("networks")));
+                cx.update(|s| s.ssid = "home".into());
+                cx.ready();
+                while let Some(m) = cx.recv().await {
+                    if let Msg::Watch { field, on } = m {
+                        log(format!("scanning={on} ({field})"));
+                        if on {
+                            cx.update(|s| s.networks = vec!["home".into(), "cafe".into()]);
+                        }
+                    }
+                }
+                Ok(())
+            }
+        }
+
+        /// A bar shows the SSID; a closed popup lists the networks. The
+        /// scan (the stream field) runs only while the popup is open,
+        /// though the service runs all along.
+        #[test]
+        fn a_closed_popup_keeps_a_stream_field_off_while_a_bar_reads_another() {
+            WIFI_LOG.lock().unwrap().clear();
+            let schema = Schema::builtin_with(&[WIFI_SCHEMA]).unwrap();
+            let mut map = SourceMap::new();
+            map.add(
+                "svc.strand",
+                "export state p = false\nbar B {\n  text wifi.ssid\n  popup { open: <-> p; for n in wifi.networks key n { text n } }\n}\n"
+                    .to_string(),
+            );
+            let compiled = strand_compiler::compile_with(&map, &schema);
+            assert_eq!(compiled.errors(), 0, "{:#?}", compiled.diagnostics);
+            let program = Arc::new(lower::lower(&compiled.program, &schema));
+            let rt = Runtime::new();
+            let types = Rc::new(program.types.clone());
+            let fallback = Rc::new(SchemaHost::new(&rt, &types, None));
+            let screen = fallback.record(
+                "Screen",
+                &[
+                    ("id", Value::text("Mock | DP-1 | Display")),
+                    ("name", Value::text("DP-1")),
+                ],
+            );
+            fallback
+                .set(&rt, "screens.all", Value::list(vec![screen]))
+                .unwrap();
+            let services = Services::new(&rt, Buses::none(), || {});
+            let wifi = services.register::<Wifi>(&rt);
+            let store = Rc::new(StoreHost::new(&rt, wifi.dynamic(), types.clone()));
+            let mut host = Composite::new(fallback, types.clone());
+            host.add(store, &["wifi"], &[]);
+            let mut inst = Instance::new(&rt, program, Rc::new(host), Storage::none());
+            let mut scene = SceneMirror::new();
+            let mut step = |inst: &mut Instance| {
+                services.pump(&rt);
+                let u = inst.tick(Duration::ZERO);
+                assert!(u.errors.is_empty(), "{:?}", u.errors);
+                scene.apply(&u.diff).unwrap();
+                scene.texts()
+            };
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !step(&mut inst).contains(&"home".to_string()) {
+                assert!(Instant::now() < deadline, "the bar never showed the SSID");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(wifi.running());
+            assert_eq!(wifi.field_readers(0), 1, "the bar reads the SSID");
+            assert_eq!(wifi.field_readers(1), 0, "nobody reads the networks");
+            assert_eq!(*WIFI_LOG.lock().unwrap(), ["start scanning=false"]);
+            // The popup opens: the scan starts.
+            inst.set("svc.p", Value::Bool(true)).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !step(&mut inst).contains(&"cafe".to_string()) {
+                assert!(
+                    Instant::now() < deadline,
+                    "the popup never listed the networks"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert_eq!(wifi.field_readers(1), 1);
+            // It closes: the scan stops at once; the service runs on for
+            // the bar.
+            inst.set("svc.p", Value::Bool(false)).unwrap();
+            step(&mut inst);
+            assert_eq!(wifi.field_readers(1), 0);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while WIFI_LOG.lock().unwrap().len() < 3 {
+                assert!(Instant::now() < deadline, "the scan never stopped");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert_eq!(
+                *WIFI_LOG.lock().unwrap(),
+                [
+                    "start scanning=false",
+                    "scanning=true (networks)",
+                    "scanning=false (networks)"
+                ]
+            );
+            assert!(wifi.running());
+            assert_eq!(wifi.starts(), 1);
+            inst.shutdown();
+            services.shutdown();
+        }
+
         struct Unpark(std::thread::Thread);
 
         impl Wake for Unpark {

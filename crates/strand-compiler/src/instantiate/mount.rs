@@ -1148,7 +1148,7 @@ impl Ctx {
         env: &Rc<Env>,
         parent: FragId,
         extra: Vec<(SceneProp, PropValue)>,
-        services: Option<&Arc<std::collections::BTreeSet<String>>>,
+        services: Option<&Arc<crate::lower::ServiceUses>>,
     ) {
         if let ElementKind::Component(d) = &e.kind
             && self.runaway.borrow().contains(d)
@@ -1208,7 +1208,7 @@ impl Ctx {
         env: &Rc<Env>,
         parent: FragId,
         extra: Vec<(SceneProp, PropValue)>,
-        services: Option<&Arc<std::collections::BTreeSet<String>>>,
+        services: Option<&Arc<crate::lower::ServiceUses>>,
     ) {
         // A nested surface (a `popup` in a bar) holds what its children
         // read while it is shown.
@@ -1340,7 +1340,7 @@ impl Ctx {
         env: &Rc<Env>,
         frag: FragId,
         ec: ElemCtx,
-        services: Option<Arc<std::collections::BTreeSet<String>>>,
+        services: Option<Arc<crate::lower::ServiceUses>>,
     ) {
         let (own, content): (Vec<Node>, Vec<Node>) =
             e.children.iter().cloned().partition(
@@ -2428,11 +2428,7 @@ impl Ctx {
 
     /// Acquire services for the current scope and release them when it
     /// goes.
-    pub(crate) fn acquire(
-        self: &Rc<Self>,
-        rt: &Runtime,
-        services: &std::collections::BTreeSet<String>,
-    ) {
+    pub(crate) fn acquire(self: &Rc<Self>, rt: &Runtime, services: &crate::lower::ServiceUses) {
         let token = self.hold(rt, Arc::new(services.clone()));
         self.set_held(rt, token, true);
     }
@@ -2445,7 +2441,7 @@ impl Ctx {
     pub(crate) fn hold(
         self: &Rc<Self>,
         rt: &Runtime,
-        services: Arc<std::collections::BTreeSet<String>>,
+        services: Arc<crate::lower::ServiceUses>,
     ) -> u64 {
         let token = self.next_hold.get();
         self.next_hold.set(token + 1);
@@ -2479,9 +2475,7 @@ impl Ctx {
                 if let Some(h) = gone
                     && h.acquired
                 {
-                    for s in h.services.iter() {
-                        ctx.vm.host.release(&rt, s);
-                    }
+                    hold_services(&*ctx.vm.host, &rt, &h.services, false);
                 }
             }
         });
@@ -2495,13 +2489,7 @@ impl Ctx {
             return;
         }
         h.acquired = should;
-        for s in h.services.iter() {
-            if should {
-                self.vm.host.acquire(rt, s);
-            } else {
-                self.vm.host.release(rt, s);
-            }
-        }
+        hold_services(&*self.vm.host, rt, &h.services, should);
     }
 
     /// Hold (`true`) or let go of a registered scope's services.
@@ -3144,5 +3132,31 @@ mod tests {
         assert_eq!(longest_increasing(&[1, 2, 3, 0]), [1, 2, 3]);
         assert_eq!(longest_increasing(&[3, 0, 1, 2]), [0, 1, 2]);
         assert_eq!(longest_increasing(&[2, 1, 0]).len(), 1);
+    }
+}
+
+/// Acquire (`on`) or release what a scope holds of the services: each
+/// service, and the fields it reads directly. A service is acquired
+/// before its fields and released after them.
+fn hold_services(
+    host: &dyn crate::vm::ServiceHost,
+    rt: &Runtime,
+    uses: &crate::lower::ServiceUses,
+    on: bool,
+) {
+    if on {
+        for (s, f) in uses {
+            match f {
+                None => host.acquire(rt, s),
+                Some(f) => host.acquire_field(rt, s, f),
+            }
+        }
+    } else {
+        for (s, f) in uses.iter().rev() {
+            match f {
+                None => host.release(rt, s),
+                Some(f) => host.release_field(rt, s, f),
+            }
+        }
     }
 }
