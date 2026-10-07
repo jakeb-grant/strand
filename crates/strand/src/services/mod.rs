@@ -2002,7 +2002,24 @@ service shelf {
         /// they are removed.
         #[test]
         fn a_file_service_waits_for_its_directory() {
-            let dir = temp("file-dir");
+            waits_for_its_directory(Duration::ZERO);
+        }
+
+        /// The same with the directories made one at a time (`a`, then
+        /// `a/b` later): the watch moves down a level and waits there
+        /// (custom::tests::a_file_partly_on_its_way_is_waited_for_quietly
+        /// bounds its turns).
+        #[test]
+        fn a_file_service_waits_for_its_directory_one_level_at_a_time() {
+            waits_for_its_directory(Duration::from_millis(400));
+        }
+
+        fn waits_for_its_directory(pause: Duration) {
+            let dir = temp(if pause.is_zero() {
+                "file-dir"
+            } else {
+                "file-dir-paused"
+            });
             let file = dir.join("a/b/mood.json");
             let src = format!(
                 "service mood from file \"{}\" {{ level: int }}\nbar B {{ text join(\" \", mood.level) }}\n",
@@ -2013,6 +2030,7 @@ service shelf {
             live.until("running", |_| client.running());
             std::thread::sleep(Duration::from_millis(100));
             std::fs::create_dir(dir.join("a")).unwrap();
+            std::thread::sleep(pause);
             std::fs::create_dir(dir.join("a/b")).unwrap();
             save(&file, r#"{"level": 7}"#);
             live.until("the file in a new directory", |l| {

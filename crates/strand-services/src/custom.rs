@@ -820,6 +820,10 @@ struct FileWatch {
     name: Vec<u8>,
     /// The watched directory is the file's own.
     complete: bool,
+    /// The file's own inode watch (`-1` while there is none): only
+    /// events of this watch and of `dir_wd` count; a watch removed or
+    /// replaced (its `IN_IGNORED` included) is not news.
+    file_wd: i32,
 }
 
 /// The directory a file's path names (`.` for a bare name).
@@ -838,6 +842,7 @@ fn watch_file(path: &Path) -> std::io::Result<FileWatch> {
         dir_wd: -1,
         name: Vec::new(),
         complete: false,
+        file_wd: -1,
     };
     w.arm()?;
     Ok(w)
@@ -873,10 +878,10 @@ impl FileWatch {
                 }
             }
             let complete = dir == own.as_path();
-            if self.dir_wd >= 0 {
-                let _ = inotify::remove_watch(self.fd.get_ref(), self.dir_wd);
-            }
-            self.dir_wd = inotify::add_watch(
+            // The directory already watched keeps its watch (`add_watch`
+            // answers the same wd for the same inode): removing and
+            // re-adding it would queue an `IN_IGNORED` per turn.
+            let wd = inotify::add_watch(
                 self.fd.get_ref(),
                 dir,
                 WatchFlags::CLOSE_WRITE
@@ -887,11 +892,20 @@ impl FileWatch {
                     | WatchFlags::DELETE_SELF
                     | WatchFlags::MOVE_SELF,
             )?;
+            if self.dir_wd >= 0 && self.dir_wd != wd {
+                let _ = inotify::remove_watch(self.fd.get_ref(), self.dir_wd);
+            }
+            self.dir_wd = wd;
             self.name = name;
             self.complete = complete;
             if complete {
                 self.watch_inode();
                 return Ok(());
+            }
+            if self.file_wd >= 0 {
+                // Its directory went: the file is waited for again.
+                let _ = inotify::remove_watch(self.fd.get_ref(), self.file_wd);
+                self.file_wd = -1;
             }
             let next = dir.join(std::ffi::OsStr::from_bytes(&self.name));
             if !next.is_dir() {
@@ -903,13 +917,19 @@ impl FileWatch {
 
     /// Watch the file now at the path (again after it was replaced or
     /// created; the same inode keeps its watch).
-    fn watch_inode(&self) {
+    fn watch_inode(&mut self) {
         use rustix::fs::inotify::{self, WatchFlags};
-        let _ = inotify::add_watch(
+        let wd = inotify::add_watch(
             self.fd.get_ref(),
             &self.path,
             WatchFlags::MODIFY | WatchFlags::CLOSE_WRITE,
-        );
+        )
+        .unwrap_or(-1);
+        if self.file_wd >= 0 && self.file_wd != wd {
+            // The inode replaced (moved away, still linked) is let go.
+            let _ = inotify::remove_watch(self.fd.get_ref(), self.file_wd);
+        }
+        self.file_wd = wd;
     }
 
     /// Reads every queued event: `Some(true)` when one concerns the file
@@ -926,10 +946,12 @@ impl FileWatch {
                 Ok(n) => {
                     let seen = &buf[..n];
                     if dir_gone(seen, self.dir_wd) {
-                        // Its watch ended with it.
+                        // Its watch ended with it (a directory moved away
+                        // keeps one: let it go).
+                        let _ = rustix::fs::inotify::remove_watch(self.fd.get_ref(), self.dir_wd);
                         self.dir_wd = -1;
                         rearm = true;
-                    } else if concerns(seen, self.dir_wd, &self.name) {
+                    } else if concerns(seen, self.dir_wd, self.file_wd, &self.name) {
                         if self.complete {
                             any = true;
                         } else {
@@ -977,10 +999,11 @@ fn dir_gone(buf: &[u8], dir_wd: i32) -> bool {
 }
 
 /// Whether raw inotify events `buf` concern the file `name` of the
-/// directory watched as `dir_wd`: any event of the file's own watch, a
-/// directory event naming it, or a queue overflow (anything may have
-/// changed).
-fn concerns(buf: &[u8], dir_wd: i32, name: &[u8]) -> bool {
+/// directory watched as `dir_wd`: any event of the file's own watch
+/// `file_wd`, a directory event naming it, or a queue overflow (anything
+/// may have changed). Events of other watches (the `IN_IGNORED` of one
+/// just removed or replaced) do not.
+fn concerns(buf: &[u8], dir_wd: i32, file_wd: i32, name: &[u8]) -> bool {
     const HEADER: usize = 16;
     const Q_OVERFLOW: u32 = 0x4000;
     let mut at = 0;
@@ -995,7 +1018,10 @@ fn concerns(buf: &[u8], dir_wd: i32, name: &[u8]) -> bool {
         let end = (at + HEADER).saturating_add(len).min(buf.len());
         let raw = &buf[at + HEADER..end];
         let named = &raw[..raw.iter().position(|&b| b == 0).unwrap_or(raw.len())];
-        if mask & Q_OVERFLOW != 0 || wd != dir_wd || named == name {
+        if mask & Q_OVERFLOW != 0
+            || (file_wd >= 0 && wd == file_wd)
+            || (wd == dir_wd && named == name)
+        {
             return true;
         }
         at = end;
@@ -1543,19 +1569,76 @@ mod tests {
             b.extend(n);
             b
         }
-        let (dir, file) = (1, 2);
+        let (dir, file, old) = (1, 2, 3);
         let other = [event(dir, 0x8, "other.json"), event(dir, 0x100, "x")].concat();
-        assert!(!concerns(&other, dir, b"state.json"));
+        assert!(!concerns(&other, dir, file, b"state.json"));
         let named = [other.clone(), event(dir, 0x80, "state.json")].concat();
-        assert!(concerns(&named, dir, b"state.json"));
-        assert!(concerns(&event(file, 0x2, ""), dir, b"state.json"));
-        assert!(concerns(&event(-1, 0x4000, ""), dir, b"state.json"));
+        assert!(concerns(&named, dir, file, b"state.json"));
+        assert!(concerns(&event(file, 0x2, ""), dir, file, b"state.json"));
+        assert!(concerns(&event(-1, 0x4000, ""), dir, file, b"state.json"));
         // A prefix of the name is another file.
         assert!(!concerns(
             &event(dir, 0x8, "state.json.tmp"),
             dir,
+            file,
             b"state.json"
         ));
+        // The end of a watch removed or replaced is not news, nor is a
+        // watch the file no longer has.
+        assert!(!concerns(&event(old, 0x8000, ""), dir, file, b"state.json"));
+        assert!(!concerns(&event(old, 0x2, ""), dir, -1, b"state.json"));
+        assert!(!concerns(&event(file, 0x2, ""), dir, -1, b"state.json"));
+    }
+
+    /// Drains `w` for `ms` milliseconds: how many turns said "read it".
+    fn drain_for(w: &mut FileWatch, ms: u64) -> usize {
+        let end = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+        let mut reads = 0;
+        while std::time::Instant::now() < end {
+            match w.drain() {
+                Some(true) => reads += 1,
+                Some(false) => {}
+                None => panic!("the watch failed"),
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        reads
+    }
+
+    /// A file several directories short, with only some of them made
+    /// yet (an app made its cache directory but not the one below), is
+    /// waited for quietly: the watch moves one level down and stays.
+    #[test]
+    fn a_file_partly_on_its_way_is_waited_for_quietly() {
+        let dir = std::env::temp_dir().join(format!("strand-custom-way-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a/b/c/f.json");
+        block_on(async {
+            let mut w = watch_file(&file).unwrap();
+            std::fs::create_dir(dir.join("a")).unwrap();
+            let reads = drain_for(&mut w, 300);
+            assert!(reads <= 2, "{reads} reads while a/b is missing");
+            assert!(!w.complete);
+            std::fs::create_dir(dir.join("a/b")).unwrap();
+            let reads = drain_for(&mut w, 300);
+            assert!((1..=2).contains(&reads), "{reads} reads for a/b");
+            std::fs::create_dir(dir.join("a/b/c")).unwrap();
+            let reads = drain_for(&mut w, 300);
+            assert!((1..=2).contains(&reads), "{reads} reads for a/b/c");
+            assert!(w.complete, "the file's own directory is watched");
+            std::fs::write(&file, "{}").unwrap();
+            assert!(drain_for(&mut w, 200) >= 1, "the file is seen");
+            std::fs::write(dir.join("a/b/c/other"), "x").unwrap();
+            assert_eq!(drain_for(&mut w, 200), 0, "another file is not");
+            // Its directories go: the watch climbs back, quietly.
+            std::fs::remove_dir_all(dir.join("a/b")).unwrap();
+            let reads = drain_for(&mut w, 300);
+            assert!((1..=3).contains(&reads), "{reads} reads for the removal");
+            assert!(!w.complete);
+            assert_eq!(drain_for(&mut w, 200), 0, "then nothing");
+        });
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
