@@ -8017,3 +8017,95 @@ sources line, which the wm track had split into its compositor half
 (ticked there) and the caches half that wave4-a3 finished. The stated
 limitations stay in the lines (the `Route` write path unit-tested only,
 no `zwlr_foreign_toplevel_management_v1` fallback yet).
+
+## wave4-exit-ci
+
+**2026-10-07 · wave4-exit-ci: the compositor matrix compares strand with
+the compositor's own report.** The M3 exit box "runs on Hyprland, niri and
+sway" is proved by one test, `crates/strand/tests/compositor_matrix.rs`,
+run against a compositor someone else started (`STRAND_MATRIX=sway|niri|
+hyprland` and that compositor's usual environment), so the same assertions
+run on all three. The truth is what the compositor's CLI says
+(`swaymsg -r`, `hyprctl -j`, `niri msg --json`): the output's workspaces
+in the compositor's order (sway's `num`, Hyprland's id, niri's `idx`),
+which is focused, which hold windows, and the focused window. The stores
+(through `WmConfig::from_env`, the real detection path) must equal it at
+boot, after a real window opens, after its title changes, after a switch
+made from outside, after `ws.focus()`, and after `win.close()`; the
+compositor's reload (`swaymsg reload`, `hyprctl reload`, an edit of the
+config file niri watches) must be `wm.config_reloaded`; two idle seconds
+must wake nothing. design.md's bar (theme.strand and bar.strand, byte for
+byte) in `strand run` must draw the same state: one dot per workspace
+read off the bar's middle row, the focused one the 24 px accent pill,
+occupied dots ($fg.muted) told from empty ones ($fg.alpha(0.25)) by their
+distance from the bar's background, and the focused window's title as
+ink right of the dots; a click on a dot (where the compositor offers
+`zwlr_virtual_pointer_v1`) must switch the compositor. The test makes no
+assumption that differs between compositors: niri keeps one empty
+workspace after the last, so "the other workspace" is that one there and
+a new number on sway and Hyprland. Without `STRAND_MATRIX` both tests say
+they were skipped (they are in `cargo test --workspace`).
+
+**2026-10-07 · wave4-exit-ci: how each compositor runs without a display.**
+`scripts/compositor-matrix.sh <compositor>` starts it and runs the test.
+sway: headless with the pixman renderer, as every other sway test. niri:
+its winit backend in a window of a headless sway (`WAYLAND_DISPLAY` set to
+the parent; Mesa's software EGL on the parent's `wl_shm`,
+`LIBGL_ALWAYS_SOFTWARE=1`), in its own runtime directory so its sockets
+are the only ones there. Hyprland: aquamarine allocates every buffer, a
+headless output's included, on a DRM node, so it does not start in a
+container without `/dev/dri` (and cannot nest in a pixman sway, which has
+no `linux-dmabuf`); Hyprland's own test job boots a QEMU VM with
+virtio-gpu for the same reason. The CI job `compositors` loads `vkms` on
+the Ubuntu runner (from `linux-modules-extra-$(uname -r)` when the
+image's kernel lacks it), passes the new card into an `archlinux:latest`
+container (`docker run --device /dev/dri`), and runs Hyprland's DRM
+backend on it through `seatd` (`AQ_DRM_DEVICES`, llvmpipe), as a user
+(Hyprland refuses root without a flag); Hyprland 0.55 and later get a
+`hyprland.lua` config, earlier ones `hyprland.conf`. This is the setup
+another project's CI uses to screenshot Hyprland headlessly
+(hexrift/WardOS#365: vkms on the runner, `--device /dev/dri`, seatd
+without a VT, `AQ_DRM_DEVICES`). The test binary and `strand` are built
+on the runner (the Rust cache, the pinned toolchain) and run in the
+container at the same path; they need only libraries Arch has under the
+same sonames.
+
+**2026-10-07 · wave4-exit-ci: Hyprland's Lua dispatch dialect.** Hyprland
+0.55 moved the configuration to Lua (hyprlang is deprecated and being dropped);
+with a Lua config the `dispatch` request's argument is evaluated as
+`return hl.dispatch(<argument>)`, so `dispatch workspace 3` is answered
+`error: [string "return hl.dispatch(workspace 3)"]:1: ')' expected near
+'3'` and `ws.focus()`, `win.focus()` and `win.close()` failed on every
+current Hyprland (reported against 0.56.2 by several projects, among them
+omarchy-session#24 and hypruse#1, with `dispatch hl.dsp.…(…)` answered
+`ok`). The adapter sends the classic form first (older Hyprland only
+understands it), and on that Lua parse error says it again as a
+dispatcher object (`hl.dsp.focus({ workspace = "3" })`,
+`hl.dsp.focus({ window = "address:0x…" })`,
+`hl.dsp.window.close({ window = "address:0x…" })`), keeping the Lua
+dialect for the rest of the connection; any other refusal is the
+action's error as before. The fixtures reconstructed from 0.56.2's source
+had only the classic form, which is why the replay tests passed. Tests:
+`strand-services/src/wm/hyprland.rs::tests::lua_dispatches_are_dispatcher_objects`,
+`tests/hyprland.rs::a_lua_config_hyprland_gets_lua_dispatches` (the fake
+answers as a Lua-config Hyprland). The matrix test's own workspace switch
+falls back the same way.
+
+**2026-10-07 · wave4-exit-ci: the matrix has not run on Hyprland or niri
+(evidence).** Every GitHub Actions job of the repository, on every branch,
+has been refused since before this step began (runs 187–195 on
+2026-10-07, `wave4/core` and `wave4/exit-ci` alike): the jobs never get a
+runner (`runner_id` 0, no log), and the check run's annotation reads "The
+job was not started because recent account payments have failed or your
+spending limit needs to be increased. Please check the 'Billing & plans'
+section in your settings". The `compositors` job has therefore never
+executed. The dev container cannot stand in: it has no `/dev/dri`, no
+kernel modules (`/lib/modules` is absent, so no vkms or vgem), no Docker
+daemon, and its egress proxy refuses the Arch and Alpine mirrors, so
+neither Hyprland nor niri can be installed or started here. sway passes
+the matrix locally (`scripts/compositor-matrix.sh sway`: both tests, all
+three states drawn, the click switching sway). The exit box stays open;
+the recorded-IPC tests (`tests/hyprland.rs`, `tests/niri.rs`) stay as
+they are. When Actions runs again the `compositors` job is the check: its
+artifact `compositor-matrix` holds each compositor's log, the bare
+desktop and the bar's screenshots.

@@ -19,7 +19,9 @@
 //! Environment: `STRAND_MATRIX` names the compositor (`sway`, `hyprland`
 //! or `niri`); `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR` and its IPC variable
 //! (`SWAYSOCK`, `HYPRLAND_INSTANCE_SIGNATURE`, `NIRI_SOCKET`) point at
-//! it. Without `STRAND_MATRIX` the tests print that they were skipped.
+//! it; `STRAND_MATRIX_NIRI_CONFIG` is the config file niri watches (the
+//! reload edits it). Without `STRAND_MATRIX` the tests print that they
+//! were skipped.
 //! Screenshots go to `$STRAND_SHOTS` when it is set.
 
 mod support;
@@ -353,7 +355,16 @@ impl Live {
         match self.kind {
             Kind::Sway => drop(run("swaymsg", &["reload"])),
             Kind::Hyprland => drop(run("hyprctl", &["reload"])),
-            Kind::Niri => drop(run("niri", &["msg", "action", "load-config-file"])),
+            // niri reloads a config file it watches when the file
+            // changes (every version); `load-config-file` is newer.
+            Kind::Niri => match std::env::var_os("STRAND_MATRIX_NIRI_CONFIG") {
+                Some(path) => {
+                    let mut text = std::fs::read_to_string(&path).unwrap();
+                    text.push_str("// reloaded by the compositor matrix\n");
+                    std::fs::write(&path, text).unwrap();
+                }
+                None => drop(run("niri", &["msg", "action", "load-config-file"])),
+            },
         }
     }
 

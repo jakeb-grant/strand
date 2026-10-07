@@ -144,6 +144,8 @@ EOF
     WAYLAND_DISPLAY=$(first "$RT/niri" '^wayland-')
     NIRI_SOCKET=$RT/niri/$(first "$RT/niri" '^niri\..*\.sock$')
     export WAYLAND_DISPLAY NIRI_SOCKET
+    # The test's reload: an edit of the config niri watches.
+    export STRAND_MATRIX_NIRI_CONFIG=$RT/niri.kdl
     unset SWAYSOCK HYPRLAND_INSTANCE_SIGNATURE
     export XDG_CURRENT_DESKTOP=niri
     niri msg version
