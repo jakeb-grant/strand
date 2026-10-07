@@ -7054,3 +7054,74 @@ whose long `ellipsis: end` comment shrinks its sized icon is the
 renderer's layout (reported to its owner); dbusmock's templates
 introspect every property as writable, so `check::dbus_read_only` is
 proven only against fake introspection.
+
+**2026-10-07 · wave4-a3 (r3): one diagnostic per mistake in a source;
+a path that names a program is a warning.** A wrong source kind
+(`syntax::unknown_source`), an unknown bus (now `syntax::unknown_bus`,
+its own code, each with a did-you-mean) and a `poll` without `every`
+(`syntax::expected`) are reported once, by the parser; the checker no
+longer adds the bus-first, argument-count, missing-`every` or misplaced
+`every` errors that followed from them (design.md's one clear error
+with its fix). grammar.md's path rule stands (a whitespace-free path in
+`from poll` reads a file), but a `from file`/`from poll` path that
+exists and names a program (executable, starting with `#!` or an ELF
+header: the runtime's rule) is a `check::poll_program` warning whose
+help shows the list form and `permit exec`. It is checked off
+`compile` (one `stat`, then a four-byte read of a regular file only, so
+a FIFO never blocks), by the same callers as the D-Bus check: `strand
+check`, the loader's extra check (`dbus_check(config_dir, recheck)`;
+relative paths under the config directory) and the LSP. The LSP runs
+it inline with its analysis rather than off it, as the review proposed:
+the analysis already reads and stats the config's files, this adds one
+stat per path-reading service and never blocks on a FIFO, and it is not
+re-run when only the polled file changes (the next edit sees it). A missing or unreadable path is not reported: the
+service waits for it at runtime.
+
+**2026-10-07 · wave4-a3 (r3): a config that compiles with warnings says
+so in `strand run`.** The loader's `Outcome::diagnostics` keeps a
+successful compile's warnings (before, only a compile with errors
+carried any, so `check::dbus_unchecked` never left `strand check`), and
+`cleared` is also set when a recheck finds the running program's
+warnings gone; a revert to the running text carries the running
+program's warnings, so it does not resolve them by mistake. `strand
+run` logs them (the boot's too), lists them in the reload event's
+`diagnostics`, and tells each `strand watch` that subscribes later in a
+`notices` event with `diagnostics` (the boot's were made before anyone
+watched); the next reload event without them resolves them. The
+overlay stays for errors (design.md: it shows what holds an edit back);
+a warning does not hold anything back, so it is not drawn.
+
+**2026-10-07 · wave4-a3 (r3): file watches that wait stay asleep;
+listen is coalesced to a frame; search ranges are characters.** A `from
+file` watch whose path is several directories short (only some of them
+made yet) re-armed in a loop: removing and re-adding the watched
+directory queued an `IN_IGNORED` for the old watch, which counted as a
+change. Now only the watched directory's events naming the file or the
+next directory, the file's own inode watch and `IN_Q_OVERFLOW` count,
+and the watched directory is kept when it is still the deepest that
+exists (`add_watch` first; the old watch removed only when it differs).
+The watched directory's ancestors are watched for their own move or
+removal, so `mv a a.old` under `a/b/f.json` places the watch again at
+the path instead of following the moved inode; watches no longer needed
+are released after each placement. A `listen` command that prints
+faster than a frame has its lines merged and sent at most once per
+`LISTEN_FLUSH` (16.7 ms; the first line after a quiet frame at once, the
+last always sent before the command's end is reported), as the audio
+meters are coalesced to 60 Hz: the logic thread wakes at most once a
+frame per service and its channel cannot grow without bound. nucleo
+matches extended grapheme clusters (unicode-segmentation, its default),
+so `Fuzzy` builds the haystack itself and maps each matched cluster to
+the characters it covers; for `Cafe\u{301} Files` and `fil` the range
+is `[6, 9)` (the review's `[5, 8)` counted clusters).
+
+**2026-10-07 · wave4-a3 (r3): what was left, and why.** For the
+renderer/text owner, not this track: a mark covering part of a ligature
+cluster is dropped (design.md's launcher with real apps: `LibreOffice`
+marked at `[7, 9)` draws no mark, `ffi` being one glyph in DejaVu Sans
+Bold); a sized icon in a row with a long ellipsised comment shrinks a
+few pixels (flex-shrink 0 proposed); and
+`renderer::tests::crashing_requests_are_not_retried` is flaky under
+load (it assumes the text request is made synchronously). The
+icon-theme follower, now a task on the shared session connection, does
+not reconnect after the session bus restarts (neither did the thread it
+replaced; the `system` service retries through the client's backoff).

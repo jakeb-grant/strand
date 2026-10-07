@@ -154,7 +154,12 @@ message, help, at: {file, line, column}, labels, short}]}`,
 `{"event": "notices", kept_over_default, notices}` for cells kept over a
 changed default outside a reload (persisted cells at boot, a parked bar
 back; with nobody watching they go into the next reload event's
-`kept_over_default`) and lowering's notices, and `{"event": "fault",
+`kept_over_default`) and lowering's notices; right after a `watch` is
+answered, a new watcher also gets `{"event": "notices", …,
+diagnostics}` with the running config's check warnings when it has any
+(`check::dbus_unchecked`, `check::poll_program`; the server hands the
+`Watch` request to the logic thread after answering it), which the next
+reload event without them resolves; and `{"event": "fault",
 message, at, frozen}`). `total_ms` runs from the watcher's last event
 behind the save to the moment the diff holding the reload is sent to
 render. A client whose socket cannot take its output yet gets a write
@@ -1056,7 +1061,9 @@ Public interfaces other crates and later stages build on:
   compile_time }`
   (`cleared`: the last attempt had errors, held or unreadable files and
   this one has none, even when nothing changed against the last good
-  build): the
+  build, or the running program's warnings went on a recheck;
+  `diagnostics` keeps a successful compile's warnings, and a revert to
+  the running text carries the running program's): the
   largest consistent set of changed files committed, the rest held with
   the diagnostics of the whole attempt; a commit stores the sources under
   `Cache` (`$XDG_CACHE_HOME/strand/last-good/<config hash>`) keyed by
@@ -1112,7 +1119,12 @@ Public interfaces other crates and later stages build on:
   path); `check::dbus::check(&hir::Program, &dyn Introspect)` compares
   its `dbus` fields with an object's introspection (`Introspect::
   properties(system, name, path) -> Result<Vec<BusProperty>, String>`;
-  the caller brings the bus: `strand check`, the loader, the LSP). The builtin's service stubs, and the
+  the caller brings the bus: `strand check`, the loader, the LSP).
+  `check::paths::check(&hir::Program, config_dir: Option<&Path>) ->
+  Vec<Diagnostic>` warns (`check::poll_program`) when a `from file` or
+  `from poll` path names a program (executable, `#!` or ELF; stat before
+  open, so a FIFO never blocks); it touches the disk, so it is not part
+  of `compile` and the same three callers run it next to the D-Bus check. The builtin's service stubs, and the
   records only services hand out (`Window`, `Notification`, `Date`, …),
   are declared `provisional service` / `provisional record`: the first
   extension that declares the same name replaces the stub in place (same
@@ -2053,9 +2065,12 @@ the primitives, `Option`, `Vec` and derived types.
   and the id of its `custom::Spec`, which `custom::register` makes known
   to the body), reading `dbus` properties (introspected;
   `PropertiesChanged`; `rw` writes `Set` with the property's signature),
-  a `file` (inotify on it and its directory), a `listen` command's lines
-  or a `poll` command or file (only while visible) as `custom::Document`s
-  (JSON, `key=value` lines, or text). `Client::restart(rt)` (a changed
+  a `file` (inotify on its directory, its own inode, and the watched
+  directory's ancestors for their move or removal; a missing directory
+  waited for from its nearest existing ancestor), a `listen` command's
+  lines (merged and sent at most once per `custom::LISTEN_FLUSH`, a
+  frame) or a `poll` command or file (only while visible) as
+  `custom::Document`s (JSON, `key=value` lines, or text). `Client::restart(rt)` (a changed
   declaration: the run stops and starts again if read) and
   `Client::stop_now(rt)` (a removed one) serve their reloads, and
   `Client::unregister(rt)` takes a removed declaration out of `Services`
@@ -2162,8 +2177,9 @@ the primitives, `Option`, `Vec` and derived types.
   declared type (`custom::coerce`); `write` of an `rw` field is an item
   write of its value; `restart`/`stop` restart or stop only that service.
   `custom::BusIntrospector` is the compiler's `Introspect` over the
-  environment's buses (answers remembered 10 s); `custom::dbus_check(recheck)`
-  returns the loader's extra check with it and a `DbusCheck` handle: the
+  environment's buses (answers remembered 10 s); `custom::dbus_check(config_dir, recheck)`
+  returns the loader's extra check (the D-Bus check and
+  `check::paths::check` under `config_dir`) with it and a `DbusCheck` handle: the
   check waits on the bus only until `DbusCheck::stop_waiting()` (called
   by `live.rs` after `boot()`); later compiles use
   `Cache::properties_or_ask` (a remembered answer even past its ttl, a
