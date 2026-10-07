@@ -443,6 +443,59 @@ fn the_tray_is_the_watcher_when_there_is_none() {
     s.shutdown();
 }
 
+/// An app registering the moment the watcher's name appears (on
+/// NameOwnerChanged, no delay) finds the watcher's interface already
+/// served: it is never told UnknownObject.
+#[test]
+fn an_item_registering_as_the_watcher_appears_is_heard() {
+    let Some(bus) = strand_services::testing::PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let name = "org.kde.StatusNotifierItem-4444-1";
+    let (conn, _state) = item(&tokio, &bus.address, name);
+    let dbus = tokio.block_on(zbus::fdo::DBusProxy::new(&conn)).unwrap();
+    let mut appeared = tokio
+        .block_on(dbus.receive_name_owner_changed_with_args(&[(0, WATCHER)]))
+        .unwrap();
+    let registering = {
+        let conn = conn.clone();
+        tokio.spawn(async move {
+            use futures_lite::StreamExt;
+            loop {
+                let Some(signal) = appeared.next().await else {
+                    return Err("the bus went".to_string());
+                };
+                let args = signal.args().map_err(|e| e.to_string())?;
+                if args.new_owner().is_some() {
+                    break;
+                }
+            }
+            conn.call_method(
+                Some(WATCHER),
+                WATCHER_PATH,
+                Some(WATCHER),
+                "RegisterStatusNotifierItem",
+                &(name,),
+            )
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+        })
+    };
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    b.tray.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    let registered = tokio
+        .block_on(async { tokio::time::timeout(Duration::from_secs(10), registering).await })
+        .expect("the registration was answered")
+        .unwrap();
+    assert_eq!(registered, Ok(()), "registered at once");
+    until(&rt, &s, "the item", || items(&b, &rt).len() == 1);
+    s.shutdown();
+}
+
 #[test]
 fn a_frozen_app_does_not_hold_up_the_tray() {
     let Some(bus) = strand_services::testing::PrivateBus::start() else {

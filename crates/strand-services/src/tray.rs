@@ -645,7 +645,10 @@ fn signal_rule(iface: &str) -> zbus::Result<MatchRule<'static>> {
 }
 
 /// A host name of our own: `org.kde.StatusNotifierHost-<pid>-<n>`.
+/// A host serves no interface, but the connection's object server is set
+/// up first so the watcher's interface is never late for its name.
 async fn own_host_name(conn: &zbus::Connection) -> zbus::Result<String> {
+    let _ = conn.object_server();
     for n in 1..100 {
         let name = format!("org.kde.StatusNotifierHost-{}-{n}", std::process::id());
         let flags = zbus::fdo::RequestNameFlags::DoNotQueue;
@@ -1133,11 +1136,31 @@ impl Tray {
         };
         'session: loop {
             // Be the watcher when there is none; else register with it.
+            // The interface is served before the name is asked for: an
+            // app registering as soon as the name appears must find it.
+            if let Ok(mut s) = shared.lock() {
+                s.clear();
+            }
+            let served = conn
+                .object_server()
+                .at(
+                    WATCHER_PATH,
+                    Watcher {
+                        items: shared.clone(),
+                        tx: tx.clone(),
+                    },
+                )
+                .await?;
             let flags = zbus::fdo::RequestNameFlags::DoNotQueue;
             let ours = matches!(
                 conn.request_name_with_flags(WATCHER, flags.into()).await,
                 Ok(RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner)
             );
+            if !ours && served {
+                conn.object_server()
+                    .remove::<Watcher, _>(WATCHER_PATH)
+                    .await?;
+            }
             let watcher_owner = dbus_proxy
                 .get_name_owner(WATCHER.try_into()?)
                 .await
@@ -1146,19 +1169,7 @@ impl Tray {
             host.entries.clear();
             host.adding.clear();
             host.failed.clear();
-            if let Ok(mut s) = shared.lock() {
-                s.clear();
-            }
             if ours {
-                conn.object_server()
-                    .at(
-                        WATCHER_PATH,
-                        Watcher {
-                            items: shared.clone(),
-                            tx: tx.clone(),
-                        },
-                    )
-                    .await?;
                 if let Ok(emitter) = zbus::object_server::SignalEmitter::new(&conn, WATCHER_PATH) {
                     let _ = Watcher::status_notifier_host_registered(&emitter).await;
                 }
