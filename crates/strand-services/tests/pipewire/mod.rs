@@ -211,7 +211,9 @@ impl PipeWire {
         self.start_wireplumber();
     }
 
-    /// Starts WirePlumber and waits for it to choose the defaults.
+    /// Starts WirePlumber and waits for it to choose both defaults (it
+    /// may write one well before the other on a busy machine, and the
+    /// tests count the batches of a first state that has both).
     pub fn start_wireplumber(&mut self) {
         let child = self
             .command("wireplumber")
@@ -219,10 +221,13 @@ impl PipeWire {
             .expect("wireplumber starts");
         self.wireplumber = Some(child);
         let deadline = Instant::now() + Duration::from_secs(10);
-        while !self.metadata().contains("default.audio.sink") {
+        while !["default.audio.sink", "default.audio.source"]
+            .iter()
+            .all(|k| self.metadata().contains(k))
+        {
             assert!(
                 Instant::now() < deadline,
-                "WirePlumber chose no default sink"
+                "WirePlumber chose no default sink and source"
             );
             std::thread::sleep(Duration::from_millis(50));
         }

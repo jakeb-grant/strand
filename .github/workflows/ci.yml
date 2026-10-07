@@ -79,8 +79,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets
-      # niri's IPC sits behind a default-on feature (design.md, "Risks");
-      # the build without it must stay clean too.
+      # niri's IPC (design.md, "Risks") and PipeWire audio (libpipewire)
+      # sit behind default-on features; the build without them must stay
+      # clean too.
       - run: cargo clippy -p strand-services --no-default-features --all-targets
       - run: cargo test -p strand-services --no-default-features --lib
       # The reload fuzzer runs on its own below (timing-sensitive saves).

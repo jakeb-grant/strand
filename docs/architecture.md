@@ -1835,34 +1835,51 @@ Specified when M3 starts. It only produces writes and events into
   stream, for tests and for the store that will hold it. The
   `#[service]`/`#[derive(Store)]` wiring builds on this stream.
 
-- **Audio (`strand_services::audio`, the `audio` service).**
+- **Audio (`strand_services::audio`, the `audio` service; cargo feature
+  `pipewire`, on by default).**
   `Audio::spawn(AudioConfig { remote }, sink) -> io::Result<Audio>` runs
   pipewire 0.10.1 (`v1_0_0`, built against libpipewire 1.0.5) on its own
-  `strand-pipewire` thread; dropping (or `stop`ping) the handle stops and
-  joins it. `sink: FnMut(Vec<AudioChange>) + Send` gets one non-empty
-  batch per burst of PipeWire events, on that thread: `Connected(bool)`
+  `strand-pipewire` thread. Dropping the handle asks the thread to stop
+  and returns at once (safe on the shared runtime at the 5 s stop);
+  `stop()` also joins it, which blocks briefly and belongs off the logic
+  thread. `sink: FnMut(Vec<AudioChange>) + Send` gets one non-empty
+  batch per burst of PipeWire events, on that thread, and must never
+  block (an unbounded channel or a `try_send`): `Connected(bool)`
   (always first in the first batch, which comes once the first connection
   has synced or the first attempt failed), `Sinks`/`Sources`
   (`Vec<VecDiff<i64, AudioDevice>>` keyed by the PipeWire id, a `Reset`
-  first), `Sink`/`Source` (`Option<AudioDevice>`: the defaults) and
-  `Levels { target, device, peaks }`. `AudioDevice` is the schema's record
-  (`id`, `name`, `description`, `volume` on the cubic scale wpctl shows,
-  `muted`, `default`; `icon()` derives `icon`) plus `direction` and
-  `channels`. `audio::SCHEMA` is the text the store serves, which is
-  exactly the provisional stub. `audio::Mirror` applies the stream.
-  `request(AudioAction::{SetVolume(DeviceRef, f64), SetMuted(DeviceRef,
-  bool), MakeDefault(DeviceRef)}) -> AudioReply` (a future, or `wait()` off
-  the logic thread) answers `Ok` once PipeWire has been asked (the change
-  comes through the stream) or an `AudioError` (`NotConnected`,
-  `UnknownDevice`, `InvalidVolume`, `NoDefaultMetadata`, `Failed`). A
-  request dropped unanswered reads as `NotConnected`. `DeviceRef::
-  DefaultSink` resolves on the audio thread when the write runs.
+  first), `Sink`/`Source` (`Option<AudioDevice>`: the defaults; `None`
+  is shown as the record's schema defaults) and `Levels { target,
+  device, peaks }` (at most one per meter per `audio::FRAME`, 1/60 s; a
+  meter that stops or is retargeted after showing sound sends one with
+  no peaks). `AudioDevice` is exactly the schema's record (`id`, `name`,
+  `description`, `volume` on the cubic scale wpctl shows, `muted`,
+  `icon`, `default`), so the store's `#[derive(Data)]` record can be it.
+  `audio::SCHEMA` is the text the store serves, which is exactly the
+  provisional stub; it moves to `strand-services-schema` when this
+  merges with wave4/core. `audio::Mirror` applies the stream.
+  `request(AudioAction::{SetVolume(DeviceRef, f64), StepVolume(DeviceRef,
+  f64), SetMuted(DeviceRef, bool), MakeDefault(DeviceRef)}) ->
+  AudioReply` (a future, or `wait()` off the logic thread) answers `Ok`
+  once PipeWire has been asked (the change comes through the stream) or
+  an `AudioError` (`NotConnected`, `UnknownDevice`, `InvalidVolume`,
+  `NoDefaultMetadata`, `Failed`). A request dropped unanswered reads as
+  `NotConnected`. `DeviceRef::DefaultSink` resolves on the audio thread
+  when the write runs, and `StepVolume` (`strand set audio.sink.volume
+  +5%`) adds its delta there too, to the last volume written while its
+  echo is pending, so quick steps are never lost; the store and IPC send
+  relative writes as `StepVolume`, never as a `SetVolume` computed from
+  their own mirror. Volume and mute go to the card's active `Route`
+  (`save: true`) when the node has one, else to the node's `Props`.
   `set_levels(targets)` replaces the set of peak meters
   (`LevelTarget::{DefaultSink, DefaultSource, Device(id)}`); the store
   passes what visible readers want, and an empty set stops them all.
-  Suppressing write echoes is the store's job; the thread reports a
-  volume it wrote exactly as written. The `#[service]` store wiring
-  builds on this (docs/decisions.md, wave4-audio).
+  Suppressing write echoes is the store's job; the thread reports any of
+  a device's last `audio::ECHOES` (8) written volumes exactly as written,
+  so suppression may compare by value or by generation. Without the
+  `pipewire` feature the module is absent and the store answers
+  `audio.*` at the schema's defaults. The `#[service]` store wiring
+  builds on this (docs/decisions.md, wave4-wm (audio)).
 
 ### `strand-watch`
 
