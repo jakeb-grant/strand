@@ -1304,7 +1304,9 @@ Public interfaces other crates and later stages build on:
   - `acquire`/`release(rt, service)`: a reader count. Every mounted
     component and the config's top level hold the services their body
     reads; a surface holds its body's services only while shown (its
-    `open` is true, or it has no `open`), a hidden surface's content
+    `open` is true, or it has no `open`; a top-level surface's `open`
+    binding itself is held by the file's top level, so what opens it is
+    read while it is closed), a hidden surface's content
     (components in it, surfaces nested in it) lets go of everything it
     holds, a surface nested in another (`popup` in a `bar`) holds its
     own children's reads only while it is shown (they do not count for
@@ -1957,12 +1959,48 @@ the primitives, `Option`, `Vec` and derived types.
 - **Builtin services here** (wave 4): `system` (the portal's appearance
   settings through `strand_watch::follow` on the shared runtime, plus
   `hostname`), `cpu` and `memory` (procfs, sampled once a second only
-  while a reader is visible). `strand_services::schemas()` (the same as
+  while a reader is visible), and the D-Bus services (wave 4, a2):
+  `battery` (UPower's display device and devices), `brightness`
+  (`/sys/class/backlight` watched with inotify, writes through logind's
+  `SetBrightness`; `brightness::set_backlight_root` /
+  `STRAND_BACKLIGHT_DIR` point it at fake backlights in tests), `network`
+  (NetworkManager; `access_points` is a stream field: read, followed and
+  scanned only while watched), `bluetooth` (BlueZ's object manager),
+  `notifications` (our own `org.freedesktop.Notifications` server),
+  `media` (MPRIS; `elapsed`/`position` carried forward, ticking only
+  while watched) and `tray` (StatusNotifierItem host, its own watcher
+  when the session has none, DBusMenu model). All on our own zbus calls
+  (decisions.md, wave4-a2), with `logind-zbus` for `SetBrightness`.
+  `strand_services::dbus` is what they share: `Daemon` (a bus name
+  followed through `NameOwnerChanged`, its signals by match rule, checked
+  against the current owner's unique name: a restarted daemon is read
+  afresh without restarting the service; `subscribe`/`unsubscribe` add
+  and drop match rules as the service needs them), `get_all`/`get`/`set`
+  of properties, `properties_changed`, `owner_process` (pid and command
+  of a name's owner). A service owning a bus name (the notification
+  server, the tray's host and watcher) uses a connection of its own
+  (`bus::own_session`), so the name goes with the service. Pixels from
+  D-Bus (`image-data`, `IconPixmap`) become content-addressed PNG files
+  under `$XDG_RUNTIME_DIR/strand/pixmaps` that `image` shows by path.
+  `strand_services::schemas()` (the same as
   `strand_services_schema::schemas()`) lists the schema texts of every
   builtin service implemented (the language extends its builtin schema
-  with them); `Builtin::register(&services, rt)` registers them all. A
-  new service module adds its text to `strand-services-schema` and its
-  store to `Builtin`.
+  with them; a real service may add fields and records to its stub, and
+  keeps every stub field with its `rw` mark and every stub event);
+  `Builtin::register(&services, rt)` registers them all. A new service
+  module adds its text to `strand-services-schema` and its store to
+  `Builtin`.
+- **Failures are diagnostics.** A run that ends with an error (or
+  panics) is a `ServiceDiagnostic { service, message }`;
+  `Services::take_diagnostics()` hands them out after a pump, one per
+  distinct failure (a retry failing the same way is not repeated until a
+  run stays up `RETRY_MAX` or ends cleanly). `strand run` logs them and
+  shows them as overlay rows and `strand watch` `notices` (another
+  notification server owning the name, naming its process, is one).
+- **Calls of one name on several records.** `#[derive(Call)]` takes
+  `#[call(name = "…")]` on a variant; variants sharing a name and taking
+  items of different records (`TrayItem.activate()`,
+  `TrayMenuItem.activate()`) are told apart by the item's record type.
 - **Language side** (`crates/strand/src/services`, the binary: it
   depends on both). `services::schema()` is
   `Schema::builtin_with(&strand_services::schemas())`: `strand check`,
@@ -1982,6 +2020,10 @@ the primitives, `Option`, `Vec` and derived types.
   name, the item and the path to `DynService::write_item`; `call` is the store's `fn` methods; `fetch` its async
   methods (every async call in a config reaches it);
   `acquire_field`/`release_field` count readers per field.
+  `services::set_text` is `strand set` on a service's `rw` field
+  (`brightness.level +5%`: a signed number is a step from the current
+  value; `Real::set_text` starts a stopped service and waits up to
+  500 ms for its first read first).
   `Composite` routes by service name (one member per name), an item's
   action or write by the record's name to the member whose
   `item_records()` name it, and everything else (the clock and calendar, services no crate

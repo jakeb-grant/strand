@@ -6316,3 +6316,173 @@ out or takes to those records' members, and its `fn` methods to its
 of schema texts in `strand-services-schema` equal to the stores in
 `Builtin`, so neither can be added without the other.
 
+
+## wave4-a2
+
+**2026-10-07 · wave4-a2: the D-Bus services are real; which they are.**
+`battery` (UPower), `brightness` (sysfs + logind), `network`
+(NetworkManager), `bluetooth` (BlueZ), `notifications` (our own server),
+`media` (MPRIS) and `tray` (StatusNotifierItem + DBusMenu) now run on the
+contract (`crates/strand-services/src/{battery,brightness,network,
+bluetooth,notifications,media,tray}.rs`), each tested against
+python-dbusmock or a small zbus mock on a private bus. The services box
+of features.md stays open: `audio`, `workspaces` and `windows` are the
+wm/audio branch's, and `apps`, `clock` and `calendar` are not services
+yet.
+
+**2026-10-07 · wave4-a2: our own zbus clients, not nmrs, system-tray or
+bluer.** design.md names nmrs 3.5 and system-tray 0.8.9 (and bluer "or
+own zbus proxies"). nmrs's `NetworkManager` is only ever built on
+`Connection::system()` and system-tray's `Client` on
+`Connection::session()`: neither can run on the `Buses` a registry is
+given, which is what keeps every test off the machine's buses (a private
+`dbus-daemon`) and lets a host pick its bus. system-tray also leaves
+detached tasks (and their connection) running after its client is
+dropped, so a stopped tray would keep its D-Bus connection, and panics
+on a few protocol paths; bluer is built on libdbus. The interfaces we
+need are small (NetworkManager's manager, active connection, device,
+wireless and access point properties; BlueZ's object manager; the SNI
+item and watcher; `com.canonical.dbusmenu`'s `GetLayout`, `Event`,
+`AboutToShow`; MPRIS's player), so each service reads and follows them
+with plain zbus calls and match rules (`strand_services::dbus`).
+logind-zbus 5.3 is used as design.md says, for `Session.SetBrightness`,
+with its default features off: they switch zbus to `async-io`, which
+would give the whole workspace a second executor.
+
+**2026-10-07 · wave4-a2: a daemon is followed, not reconnected.**
+`dbus::Daemon` subscribes to the name's `NameOwnerChanged` and to the
+daemon's signals first, then reads: nothing is lost between the read and
+the first signal. A new owner (the daemon restarted) is read afresh
+without restarting the service (tests check `starts() == 1` across a
+restart); no owner is the state's defaults (`battery.present` false, no
+Bluetooth adapter), kept until the daemon appears. Match rules carry no
+sender (a well-known sender is resolved by the bus, but zbus's client-
+side filter compares unique names): every signal is checked against the
+owner's unique name instead. A dead bus ends the run with an error, and
+the client's retry connects afresh.
+
+**2026-10-07 · wave4-a2: real services may add to their stubs.** The
+schema test held each real service to exactly its stub's fields. The
+services now add what their sources offer and the spec asks for:
+`battery.devices: [PowerDevice]` (UPower's other power sources),
+`notifications.dnd: bool rw`, `network.access_points: [AccessPoint]`
+(the scan, a `#[store(stream)]` field), `media.player: text?` (the
+active player's `Identity`). The test now holds the stub's fields as an
+ordered subset with the same `rw` marks, and its events, so every config
+checked before M3 still checks. Records gained what their actions need:
+`NotificationAction.notification` (the id `a.invoke()` acts on),
+`TrayMenu.item` and `items`, and `TrayMenuItem` (recursive `children`),
+the menu model M4's tray menus render.
+
+**2026-10-07 · wave4-a2: notifications.** The server owns
+`org.freedesktop.Notifications` on a connection of its own (the name
+goes with the service when it stops), asked for with `DoNotQueue` and
+without `AllowReplacement`. `popups` and `all` keep arrival order
+(oldest first, as the M2 mock did); `replaces_id` replaces in place.
+`n.expire()` ends the popup and closes it as expired (reason 1) but
+keeps it in `all`; `n.dismiss()`, `n.activate()` (its `default` action)
+and `a.invoke()` close it as dismissed (2) unless it is `resident`;
+`CloseNotification` is reason 3. `expire_timeout` -1 and 0 are both null
+(the shell decides; "never" has no duration, and the design's toasts
+keep critical ones). `dnd` holds new non-critical notifications back
+from `popups` (still in `all`, `received` still fires). The server sets
+no timers: the shell's `after n.timeout ?? 6s` expires popups.
+`image-data` is written as a PNG (`pixmap`, content-addressed under
+`$XDG_RUNTIME_DIR/strand/pixmaps`, at most 256 kept per process),
+`image-path` passed through. Capabilities: `actions`, `body`,
+`body-markup`, `icon-static`, `persistence`.
+
+**2026-10-07 · wave4-a2: another notification server fails clearly.**
+When dunst, mako or a desktop's server owns the name, the run fails with
+`another notification server, `mako` (pid 4242), owns
+org.freedesktop.Notifications: strand cannot show notifications while it
+runs; stop it (`systemctl --user stop mako`, or `pkill -x mako`) and
+remove it from your compositor's autostart. strand takes the name over
+once it is free.` (pid from `GetConnectionUnixProcessID`, name from
+`/proc/<pid>/comm`). The client's retry backoff (up to 30 s) asks again,
+so stopping the other daemon hands the name over without a reload; the
+same failure is reported once. Service failures in general became
+diagnostics: `Services::take_diagnostics` (one per distinct failure, a
+retry failing the same way is not repeated until a run stays up 30 s or
+ends cleanly), which `strand run` shows as overlay rows and `strand
+watch` notices besides the log line.
+
+**2026-10-07 · wave4-a2: brightness.** The level is read from
+`/sys/class/backlight/<dev>` (`actual_brightness`, else `brightness`,
+over `max_brightness`), preferring a firmware backlight over a platform
+one over a raw one, and watched with inotify (`MODIFY`, the kernel's
+`sysfs_notify` of a change, and `CLOSE_WRITE`); backlights appearing
+later are not followed (sysfs sends no events for them). Writes go
+through logind's `SetBrightness("backlight", dev, raw)` on
+`/org/freedesktop/login1/session/auto` and are answered with the value
+written (a refusal is answered with the level read back). Tests point
+the service at a directory of fake backlights
+(`brightness::set_backlight_root`, or `STRAND_BACKLIGHT_DIR` for a
+child process).
+
+**2026-10-07 · wave4-a2: network.** `connected` is NetworkManager's
+`State` at `CONNECTED_LOCAL` (50) or above; `ssid` and `strength` come
+from the access point of the Wi-Fi active connection (`SpecificObject`;
+the default route's first), whose strength changes are followed through
+a match rule for that one object. `wifi` writes `WirelessEnabled`. The
+scan is `access_points`: only while a visible reader reads it are the
+access points read, their signals subscribed (otherwise their frequent
+strength changes do not even reach the process) and a `RequestScan`
+asked for (when watching starts and when a new NetworkManager appears,
+not on every re-read); access points of one SSID are one entry (the
+strongest, active if any is). `ap.connect()` activates a saved
+connection for the SSID, else `AddAndActivateConnection` (NetworkManager's
+secret agent asks for a password).
+
+**2026-10-07 · wave4-a2: bluetooth.** BlueZ's object manager on `/`:
+the first adapter by path gives `powered` (written through `Powered`),
+its paired devices `devices` (`Alias`, `Connected`, `Icon` as
+`<icon>-symbolic`, `Battery1.Percentage`). `connect()`/`disconnect()`
+run as tasks of their own (30 s at most), their outcome arriving as
+`Connected` changes. Nothing discovers: pairing stays with the system's
+settings.
+
+**2026-10-07 · wave4-a2: media.** Every `org.mpris.MediaPlayer2.*` is
+followed (`NameOwnerChanged` with `arg0namespace`, the players' signals
+at `/org/mpris/MediaPlayer2`); the active player is the one playing
+that started playing last, else the one that paused last. `Position` is
+never signalled by players, and design.md wants no polling: it is asked
+for when the state, track or rate changes and on `Seeked`, and carried
+forward at `Rate` from there. `elapsed` and `position` are
+`#[store(stream)]` fields: they tick once a second, on the second, only
+while a visible reader shows them and the player plays.
+
+**2026-10-07 · wave4-a2: tray.** On a connection of its own the
+service owns `org.kde.StatusNotifierHost-<pid>-<n>` and registers with
+the session's watcher, or becomes `org.kde.StatusNotifierWatcher` itself
+when there is none (and when the session's goes away). An item's `id`
+is its bus name and path; its icon is the icon named (found first under
+its `IconThemePath`, four levels deep), else its largest pixmap as a PNG
+(the attention icon while `NeedsAttention`); its tooltip is the
+tooltip's title and description on two lines. `activate()` calls
+`Activate(0, 0)`, falling back to `ContextMenu` for menu-only items;
+`scroll(dy)` sends `dy` rounded (at least one step) as a vertical
+`Scroll`. The menu model is `GetLayout` (again on `LayoutUpdated` and
+`ItemsPropertiesUpdated`), visible entries only, labels without mnemonic
+underscores. `item.menu.open()` sends `AboutToShow` and the `opened`
+event and lays the menu out again when the app says it changed; showing
+it is M4's tray menu. An entry's `activate()` sends `Event(id,
+"clicked")`. Two calls named `activate` on different records
+(`TrayItem`, `TrayMenuItem`) are one name in `#[derive(Call)]`
+(`#[call(name = "activate")]`), told apart by the item's record type.
+
+**2026-10-07 · wave4-a2: `strand set` writes service fields.** `strand
+set brightness.level +5%` (the IPC `set` on a path whose first part is
+a service and that is not an export) writes the `rw` leaf through the
+service host: a value read by the field's type, and a signed number (or
+percentage) as a step from the current value, never below 0. A service
+nobody reads is started for it and its first read awaited (up to
+500 ms) so the step starts from the real value; it stops 5 s later.
+
+**2026-10-07 · wave4-a2: a closed surface's `open` binding is held.**
+A top-level surface held its whole body, `open` included, only while
+shown, so design.md's toasts panel (`open: shown.len > 0` over
+`notifications.popups`) never started the notification server and could
+never open. Lowering now counts the `open` binding's reads for the
+file's top level (a nested surface's props were already read by the
+body around it); `crates/strand/src/services/mod.rs::a_closed_surface_holds_what_its_open_binding_reads`.

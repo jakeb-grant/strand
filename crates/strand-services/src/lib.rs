@@ -22,8 +22,14 @@
 //!
 //! Builtin services implemented here: [`system`] (the portal's
 //! appearance settings), [`cpu`] and [`memory`] (procfs, sampled once a
-//! second while a reader is visible). [`schemas`] lists their schema
-//! texts, which replace the builtin schema's provisional stubs.
+//! second while a reader is visible), and on D-Bus ([`dbus`] holds what
+//! they share): [`battery`] (UPower), [`brightness`] (the backlight,
+//! written through logind), [`network`] (NetworkManager), [`bluetooth`]
+//! (BlueZ), [`notifications`] (the shell's own notification server),
+//! [`media`] (MPRIS) and [`tray`] (StatusNotifierItem and DBusMenu).
+//! [`schemas`] lists their schema texts, which replace the builtin
+//! schema's provisional stubs. A failed run is a [`ServiceDiagnostic`]
+//! ([`Services::take_diagnostics`]).
 
 extern crate self as strand_services;
 
