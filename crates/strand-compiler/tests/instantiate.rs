@@ -3398,3 +3398,23 @@ fn rw_fields_of_keyed_service_items_are_written_by_key() {
         Some(&PropValue::Number(0.75))
     );
 }
+
+/// `audio.sink.volume` (fields all the way from the service) stays a
+/// write of the service's `sink` field, though `sink` is an
+/// `AudioDevice`, a keyed record.
+#[test]
+fn a_field_path_from_a_service_is_a_field_write() {
+    let src = "bar B {\n  box { on click { audio.sink.muted = !audio.sink.muted } }\n}\n";
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"]);
+        let sink = host.record("AudioDevice", &[("id", Value::int(40))]);
+        host.set(rt, "audio.sink", sink).unwrap();
+    });
+    let b = shell.scene.of_kind(NodeKind::Box)[0];
+    assert!(shell.inst.event(b, "click", Vec::new()));
+    let u = shell.flush();
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    let writes = shell.host.take_writes();
+    assert_eq!(writes.len(), 1, "{writes:?}");
+    assert_eq!(writes[0].path, "audio.sink.muted");
+}

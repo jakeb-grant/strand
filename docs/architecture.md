@@ -1277,9 +1277,10 @@ Public interfaces other crates and later stages build on:
     `write_item(s, [Field("volume")], 0.5)`. The host routes by the
     item's record and finds the item by its schema `key` (the sink with
     id 42), applies it at once and ignores its echo, with core's
-    `KeyedSignal::write_item_tagged` / `receive_items`. Lowering roots a
-    place at the base nearest the leaf whose type is a keyed schema
-    record (`lower::PlaceRoot::Item`: the item's value comes first among
+    `KeyedSignal::write_item_tagged` / `receive_items`. Unless the path
+    is fields all the way from a service (`audio.sink.volume` is a
+    `write`), lowering roots a place at the base nearest the leaf whose
+    type is a keyed schema record (`lower::PlaceRoot::Item`: the item's value comes first among
     the place's index values); the checker accepts an `rw` field only
     where the place starts at a `state`/settings, a service or such an
     item (`check::read_only` otherwise). The default refuses.

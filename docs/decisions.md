@@ -6262,9 +6262,11 @@ like a field's (core's `KeyedSignal::write_item_tagged` /
 `receive_items`, one tag counter per list, a pending queue per item).
 A place reaching an `rw` field through anything else (a handler's `let p
 = prefs`, then `p.compact = …`) has nothing to write to and is now
-`check::read_only`. `audio.sink.volume` stays a field write (the leaf is
-`rw` in its record; `StoreHost::write` no longer demands the top field
-be `rw` when a path follows it).
+`check::read_only`. A path of fields straight from a service stays a
+write of that service's field even when it crosses a keyed record:
+`audio.sink.volume` is `write("audio", [sink, volume])` (the leaf is `rw`
+in its record; `StoreHost::write` no longer demands the top field be
+`rw` when a path follows it).
 
 **2026-10-07 · wave4-core: a run's unanswered writes die with it.** A
 write whose run ends before answering it (the body failed on it, or the

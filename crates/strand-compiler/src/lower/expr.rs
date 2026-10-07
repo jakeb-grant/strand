@@ -176,16 +176,28 @@ impl Lowerer<'_> {
 
     /// The root of `target`'s place, its segments (leaf last), the index
     /// expressions above the root and, for [`PlaceRoot::Item`], the item
-    /// expression: the base nearest the leaf that is an item of a
-    /// service's keyed list, else the `state`/settings or service it
-    /// starts at. `None`: no writable root (the checker reported it).
+    /// expression: a path of fields from a service is that service's
+    /// field (`audio.sink.volume`); otherwise the base nearest the leaf
+    /// that is an item of a service's keyed list, else the
+    /// `state`/settings or service it starts at. `None`: no writable root
+    /// (the checker reported it).
     fn place_parts<'e>(&self, target: &'e hir::Expr) -> Option<PlaceParts<'e>> {
+        // `audio.sink.volume`: fields all the way from the service is a
+        // write of the service's field, whatever records it crosses.
+        let mut cur = target;
+        let fields_from_service = loop {
+            match &cur.kind {
+                ExprKind::Field { base, .. } => cur = base,
+                ExprKind::Service(_) => break true,
+                _ => break false,
+            }
+        };
         let mut segs = Vec::new();
         let mut cur = target;
         let mut indices = Vec::new();
         let mut item = None;
         let root = loop {
-            if !std::ptr::eq(cur, target) && self.is_service_item(&cur.ty) {
+            if !fields_from_service && !std::ptr::eq(cur, target) && self.is_service_item(&cur.ty) {
                 item = Some(cur);
                 break PlaceRoot::Item;
             }
