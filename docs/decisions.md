@@ -8095,3 +8095,15 @@ landing mid-spring waits for the pending frame callback, 7–8 ms, and is
 presented a refresh later: a busy surface, which the bench does not
 claim to measure). Without `dbus-daemon` the clause is skipped with a
 printed notice; CI's `STRAND_REQUIRE_DBUS` makes that a failure.
+
+**2026-10-07 · wave4-exitReload: both gates seen green in CI.** GitHub
+run 37647946808 (`6703725`, ubuntu-24.04) ran the `reloads` step (the
+100 reloads with every check this round added) and the release
+`reload_latency` step with its portal clause, both green, with
+`STRAND_REQUIRE_SWAY`, `STRAND_REQUIRE_DBUS` and `STRAND_REQUIRE_PIPEWIRE`
+set. Two neighbouring runs on the branch failed in tests these gates do
+not touch, each passing in the other run: `strand-render`'s
+`renderer::tests::crashing_requests_are_not_retried` (run 37647832719)
+and `demo`'s `the_design_bar_keeps_the_m0_budget`, PSS 35173 kB against
+the 34816 kB gate with 4 MB of `AnonHugePages` (run 37649236728; see
+the transparent hugepage note above). They are left to their owners.
