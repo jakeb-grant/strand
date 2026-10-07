@@ -605,10 +605,11 @@ async fn dispatch(
 
 /// Whether Hyprland's `reply` to a dispatch says it worked. A classic
 /// dispatch answers `ok` or the failure. A Lua one (`return
-/// hl.dispatch(…)`) answers `ok` too by every report so far, but the
-/// reply is the evaluated chunk's, so a success may also come back empty
-/// or as the call's own value (`true`, `nil`); a failure is a Lua error
-/// (`error: …`), `false` or the dispatcher's message, which is kept.
+/// hl.dispatch(…)`) answers `ok` too (Hyprland 0.56.2 in the CI job
+/// `compositors`, run 37653086662), but the reply is the evaluated
+/// chunk's, so a success may also come back empty or as the call's own
+/// value (`true`, `nil`); a failure is a Lua error (`error: …`), `false`
+/// or the dispatcher's message, which is kept.
 /// scripts/compositor-matrix.sh prints a live Hyprland's reply.
 fn dispatch_reply(reply: &str, lua: bool) -> Result<(), WmError> {
     match reply.trim() {

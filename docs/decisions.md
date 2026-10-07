@@ -8094,21 +8094,31 @@ had only the classic form, which is why the replay tests passed. Tests:
 answers as a Lua-config Hyprland). The matrix test's own workspace switch
 falls back the same way.
 
-**2026-10-07 · wave4-exit-ci: the matrix has not run on Hyprland or niri
-(evidence).** Every GitHub Actions job of the repository, on every branch,
-has been refused since before this step began (runs 187–195 on
-2026-10-07, `wave4/core` and `wave4/exit-ci` alike): the jobs never get a
-runner (`runner_id` 0, no log), and the check run's annotation reads "The
-job was not started because recent account payments have failed or your
-spending limit needs to be increased. Please check the 'Billing & plans'
-section in your settings". The `compositors` job has therefore never
-executed. The dev container cannot stand in: it has no `/dev/dri`, no
-kernel modules (`/lib/modules` is absent, so no vkms or vgem), no Docker
-daemon, and its egress proxy refuses the Arch and Alpine mirrors, so
-neither Hyprland nor niri can be installed or started here. sway passes
-the matrix locally (`scripts/compositor-matrix.sh sway`: both tests, all
-three states drawn, the click switching sway). The exit box stays open;
-the recorded-IPC tests (`tests/hyprland.rs`, `tests/niri.rs`) stay as
-they are. When Actions runs again the `compositors` job is the check: its
-artifact `compositor-matrix` holds each compositor's log, the bare
-desktop and the bar's screenshots.
+**2026-10-07 · wave4-exit-ci: the matrix runs green on all three
+(evidence).** Every Actions job was refused for billing until run 201
+(the jobs never got a runner; the annotation asked for the account's
+payments). Once Actions ran, the `compositors` job was iterated to green
+in run 37653086662 (head e01da1f of `wave4/exit-ci`):
+sway 1.12, niri 26.04 and Hyprland 0.56.2 (Arch packages of 2026-10-04),
+five tests each, every step drawn and agreed, and the click on a dot
+switching the compositor on all three (each offers
+`zwlr_virtual_pointer_v1`; no "click not tested" warning). What it took,
+each a fact of the CI container, not of strand: the test binary's path
+from cargo's JSON messages (`CARGO_TERM_COLOR=always` puts colour codes
+inside the human "Executable" line); the compositors' file capabilities
+dropped (`setcap -r`: Arch's sway carries `cap_sys_nice=ep`, which
+Docker's bounding set lacks, so exec(2) failed with EPERM); `Hyprland
+--version` run with `XDG_RUNTIME_DIR` set; and the vkms card made
+read-write for the test user (vkms has no render node, so Hyprland's
+renderer opens the card by path for GBM besides seatd's handle, and
+aborted with "Couldn't open a gbm fd" while the card belonged to the
+host's video gid). Hyprland's reply to a successful Lua dispatch
+(`dispatch hl.dsp.focus({ workspace = "1" })`) is `ok`, as the reports
+said; `dispatch_reply` keeps also taking an empty, `true` or `nil` reply
+from a Lua config. The real compositors agree with the adapters built on
+the reconstructed fixtures (`tests/fixtures/*/SOURCE.txt`), so those stay
+as the offline replay tests; the job's artifact `compositor-matrix` holds
+each compositor's logs, the bare desktop and the bar's screenshots.
+The dev container still cannot run Hyprland or niri (no `/dev/dri`, no
+kernel modules, no Docker, the Arch mirrors refused), so the job is the
+only place they run.
