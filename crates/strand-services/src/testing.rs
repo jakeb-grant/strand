@@ -288,6 +288,14 @@ impl DbusMock {
     }
 }
 
+impl DbusMock {
+    /// The mock's process id (what a diagnostic naming the owner of its
+    /// bus name shows).
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+}
+
 impl Drop for DbusMock {
     fn drop(&mut self) {
         let _ = self.child.kill();

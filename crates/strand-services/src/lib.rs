@@ -38,6 +38,8 @@ mod data;
 pub mod dbus;
 pub mod memory;
 pub mod network;
+pub mod notifications;
+mod pixmap;
 mod procfs;
 mod service;
 mod store;
@@ -45,7 +47,7 @@ pub mod system;
 pub mod testing;
 
 pub use bus::{Bus, Buses};
-pub use client::{Client, DynService, Observer, STOP_GRACE, Services};
+pub use client::{Client, DynService, Observer, STOP_GRACE, ServiceDiagnostic, Services};
 pub use cx::{Cx, Envelope, Msg, Reply, Write};
 pub use data::{Data, DataError, FromData, Name, Rgba, SchemaType, Step, ToData, record_field};
 pub use service::{CallSig, FromCall, LocalFuture, NoCall, Service, ServiceError, Start};
@@ -67,6 +69,7 @@ pub struct Builtin {
     pub brightness: Client<brightness::Brightness>,
     pub network: Client<network::Network>,
     pub bluetooth: Client<bluetooth::Bluetooth>,
+    pub notifications: Client<notifications::Notifications>,
 }
 
 impl Builtin {
@@ -80,6 +83,7 @@ impl Builtin {
             brightness: services.register(rt),
             network: services.register(rt),
             bluetooth: services.register(rt),
+            notifications: services.register(rt),
         }
     }
 
@@ -93,6 +97,7 @@ impl Builtin {
             self.brightness.dynamic(),
             self.network.dynamic(),
             self.bluetooth.dynamic(),
+            self.notifications.dynamic(),
         ]
     }
 }

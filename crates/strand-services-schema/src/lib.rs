@@ -21,8 +21,19 @@ pub const BRIGHTNESS: &str = include_str!("brightness.schema");
 pub const NETWORK: &str = include_str!("network.schema");
 /// `bluetooth`: BlueZ.
 pub const BLUETOOTH: &str = include_str!("bluetooth.schema");
+/// `notifications`: the notification server.
+pub const NOTIFICATIONS: &str = include_str!("notifications.schema");
 
 /// Every builtin service's schema text, in registration order.
 pub fn schemas() -> Vec<&'static str> {
-    vec![SYSTEM, CPU, MEMORY, BATTERY, BRIGHTNESS, NETWORK, BLUETOOTH]
+    vec![
+        SYSTEM,
+        CPU,
+        MEMORY,
+        BATTERY,
+        BRIGHTNESS,
+        NETWORK,
+        BLUETOOTH,
+        NOTIFICATIONS,
+    ]
 }

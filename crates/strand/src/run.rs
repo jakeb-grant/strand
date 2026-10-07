@@ -525,6 +525,22 @@ impl Shell {
     }
 
     /// A result from the compiler worker.
+    /// Services that failed (another notification server owns the name,
+    /// a daemon unreachable): overlay rows and `strand watch` notices, as
+    /// lowering's notices are (each is logged where it is made).
+    fn service_diagnostics(&mut self, diagnostics: Vec<strand_services::ServiceDiagnostic>) {
+        let texts: Vec<String> = diagnostics.iter().map(ToString::to_string).collect();
+        let rows = texts.iter().map(|t| overlay::notice_line(t)).collect();
+        self.overlay.note(rows, Instant::now(), &self.inst);
+        if let Some(s) = &mut self.server {
+            s.broadcast(&json!({
+                "event": "notices",
+                "kept_over_default": [],
+                "notices": texts,
+            }));
+        }
+    }
+
     fn worker(&mut self, msg: FromWorker) {
         match msg {
             FromWorker::Settings(changes) => {
@@ -1215,6 +1231,14 @@ pub fn logic(
             && r.services.pump(shell.inst.runtime())
         {
             keep_system(shell.inst.runtime(), r, &mut last, &saved);
+        }
+        let failed = shell
+            .real
+            .as_ref()
+            .map(|r| r.services.take_diagnostics())
+            .unwrap_or_default();
+        if !failed.is_empty() {
+            shell.service_diagnostics(failed);
         }
         if shell.inst.take_theme_files_changed() {
             shell.watch_settings();

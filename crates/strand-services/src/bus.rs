@@ -135,6 +135,32 @@ pub async fn system(buses: &Buses) -> zbus::Result<zbus::Connection> {
     connect(Which::System, &buses.system).await
 }
 
+/// A connection of its own to the session bus, not shared with other
+/// services: what a service that owns a bus name uses (the notification
+/// server, the tray's watcher), so the name goes with the connection when
+/// the service stops.
+pub async fn own_session(buses: &Buses) -> zbus::Result<zbus::Connection> {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return Err(zbus::Error::Failure(
+            "no tokio runtime on this thread".into(),
+        ));
+    }
+    let fresh = async {
+        match &buses.session {
+            Bus::Disabled => Err(zbus::Error::Failure("no bus".into())),
+            Bus::Default => zbus::Connection::session().await,
+            Bus::Address(a) => {
+                zbus::connection::Builder::address(a.as_str())?
+                    .build()
+                    .await
+            }
+        }
+    };
+    tokio::time::timeout(CONNECT_TIMEOUT, fresh)
+        .await
+        .unwrap_or_else(|_| Err(zbus::Error::Failure("connecting timed out".into())))
+}
+
 /// Forget this thread's connections (the shared runtime's thread ending).
 pub(crate) fn forget() {
     CONNECTIONS.with(|c| c.borrow_mut().clear());

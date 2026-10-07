@@ -168,6 +168,27 @@ struct Registry {
     shared: RefCell<Option<Shared>>,
     members: RefCell<Vec<Rc<dyn Member>>>,
     anchor: Scope,
+    /// Why services failed, not yet taken by the host.
+    diagnostics: RefCell<Vec<ServiceDiagnostic>>,
+}
+
+/// A service's run failed (its body returned an error, or panicked):
+/// what the host shows the user (`strand run`: a log line, an overlay
+/// row and a `strand watch` notice). One per distinct failure: a body
+/// failing the same way on every retry is reported once, until a run
+/// stays up [`RETRY_MAX`] or ends cleanly.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ServiceDiagnostic {
+    /// The service (`notifications`).
+    pub service: &'static str,
+    /// Why (`another notification server, `mako` (pid 4242), owns …`).
+    pub message: String,
+}
+
+impl fmt::Display for ServiceDiagnostic {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "service `{}`: {}", self.service, self.message)
+    }
 }
 
 impl Registry {
@@ -215,6 +236,7 @@ impl Services {
             shared: RefCell::new(None),
             members: RefCell::new(Vec::new()),
             anchor,
+            diagnostics: RefCell::new(Vec::new()),
         }))
     }
 
@@ -248,6 +270,7 @@ impl Services {
             starts: Cell::new(0),
             stops: Cell::new(0),
             reports: Cell::new(0),
+            last_error: RefCell::new(None),
         });
         self.0
             .members
@@ -285,6 +308,12 @@ impl Services {
             }
             self.0.wake.wait_past(seen, left);
         }
+    }
+
+    /// The services' failures since the last call, oldest first
+    /// ([`ServiceDiagnostic`]); call it after [`Services::pump`].
+    pub fn take_diagnostics(&self) -> Vec<ServiceDiagnostic> {
+        std::mem::take(&mut *self.0.diagnostics.borrow_mut())
     }
 
     /// Whether the shared runtime thread was started.
@@ -385,9 +414,36 @@ struct ClientInner<S: Service> {
     starts: Cell<u64>,
     stops: Cell<u64>,
     reports: Cell<u64>,
+    /// The failure last reported ([`ServiceDiagnostic`]).
+    last_error: RefCell<Option<String>>,
 }
 
 impl<S: Service> ClientInner<S> {
+    /// A run failed with `message`: a diagnostic, unless it is the same
+    /// failure as the last one reported (a retry failing again).
+    fn diagnose(&self, rt: &Runtime, message: &str) {
+        let stable = self
+            .run
+            .borrow()
+            .as_ref()
+            .is_some_and(|r| rt.now().saturating_sub(r.started) >= RETRY_MAX);
+        let mut last = self.last_error.borrow_mut();
+        if stable {
+            *last = None;
+        }
+        if last.as_deref() == Some(message) {
+            return;
+        }
+        *last = Some(message.to_string());
+        log::error!("service `{}`: {message}", S::NAME);
+        if let Some(reg) = self.reg.upgrade() {
+            reg.diagnostics.borrow_mut().push(ServiceDiagnostic {
+                service: S::NAME,
+                message: message.to_string(),
+            });
+        }
+    }
+
     fn start(self: &Rc<Self>, rt: &Runtime) {
         let Some(reg) = self.reg.upgrade() else {
             return;
@@ -429,7 +485,7 @@ impl<S: Service> ClientInner<S> {
                             _ = stop_rx => {}
                             r = body() => {
                                 if let Err(e) = &r {
-                                    log::warn!("service {} ended: {e}", S::NAME);
+                                    log::debug!("service {} ended: {e}", S::NAME);
                                 }
                                 ended.send(Envelope::Ended(r.map_err(|e| e.0)));
                             }
@@ -450,7 +506,7 @@ impl<S: Service> ClientInner<S> {
                         }
                         let r = body();
                         if let Err(e) = &r {
-                            log::warn!("service {} ended: {e}", S::NAME);
+                            log::debug!("service {} ended: {e}", S::NAME);
                         }
                         ended.send(Envelope::Ended(r.map_err(|e| e.0)));
                     });
@@ -698,6 +754,10 @@ impl<S: Service> Member for ClientInner<S> {
                 Err(std::sync::mpsc::TryRecvError::Empty) => return any,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     // No `Ended` came first: the body panicked.
+                    let live = self.run.borrow().as_ref().is_some_and(|r| !r.ended);
+                    if live {
+                        self.diagnose(rt, "it stopped unexpectedly (a panic; see the log)");
+                    }
                     self.ended(rt, true);
                     return any;
                 }
@@ -736,7 +796,13 @@ impl<S: Service> Member for ClientInner<S> {
                         run.ready = true;
                     }
                 }
-                Envelope::Ended(r) => self.ended(rt, r.is_err()),
+                Envelope::Ended(r) => {
+                    match &r {
+                        Err(e) => self.diagnose(rt, e),
+                        Ok(()) => *self.last_error.borrow_mut() = None,
+                    }
+                    self.ended(rt, r.is_err())
+                }
             }
         }
     }
