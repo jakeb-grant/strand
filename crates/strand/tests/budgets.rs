@@ -831,8 +831,9 @@ static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// so the measured numbers are read without the job's log.
 fn notice(text: &str) {
     if std::env::var_os("GITHUB_ACTIONS").is_some() {
+        // On a line of its own: the harness has printed `test name ... `.
         println!(
-            "::notice title=M3 memory ({})::{text}",
+            "\n::notice title=M3 memory ({})::{text}",
             if cfg!(debug_assertions) {
                 "debug"
             } else {
