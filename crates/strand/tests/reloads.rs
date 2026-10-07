@@ -94,7 +94,7 @@ const HEADPHONES: &str = "11:22:33:44:55:66";
 
 /// What each service reads at the values the test gives it: one box
 /// each, green when it holds.
-const CHECKS: [(&str, &str); 15] = [
+const CHECKS: [(&str, &str); 18] = [
     (
         "battery",
         "battery.present && battery.percent > 0.41 && battery.percent < 0.43",
@@ -127,14 +127,34 @@ const CHECKS: [(&str, &str); 15] = [
          && notifications.all.count(n => n.summary == \"reloads\") == 1",
     ),
     ("media", "media.playing && media.title == \"Track\""),
-    ("workspaces", "workspaces.all.count(w => true) >= 1"),
-    ("windows", "windows.all.count(w => true) >= 1"),
+    (
+        "workspaces",
+        "workspaces.all.count(w => w.name == \"1\" && w.focused && w.occupied) == 1",
+    ),
+    (
+        "windows",
+        "windows.all.count(w => w.title == \"a window\" && w.app_id == \"strand-reloads\") == 1",
+    ),
     ("system", "system.dark"),
     ("apps", "apps.all.count(a => true) == 1"),
     ("mood (from file)", "mood.level == 7"),
     ("ppd (from dbus)", "ppd.profile == \"balanced\""),
     ("wm", "wm.name == \"sway\""),
+    (
+        "cpu",
+        "cpu.usage >= 0 && cpu.usage <= 1 && cpu.cores.count(c => true) >= 1",
+    ),
+    ("clock", "clock.format(\"%Y\") != \"\""),
+    (
+        "calendar",
+        "calendar.days(clock.today).count(d => true) >= 28 \
+         && calendar.days(clock.today).count(d => d.today) == 1",
+    ),
 ];
+
+/// `memory`'s box, in the node that alone reads it: drawn after
+/// [`CHECKS`] while that node is mounted.
+const MEMORY_CHECK: &str = "memory.usage > 0 && memory.usage < 1 && memory.total > 0";
 
 /// The edited file: `@COLOR@` (a token edit), `@EXTRA@` (a markup edit:
 /// a node that is the only reader of `memory`, mounted at boot, removed
@@ -150,11 +170,11 @@ bar Top {
   row {
     gap: 4
     box { width: 20; height: 40; bg: n == 7 ? #00ff00 : #ff0000 }
-@CHECKS@    text join(" ", network.connected, network.access_points.count(a => true),
+@CHECKS@@EXTRA@    text join(" ", network.connected, network.access_points.count(a => true),
       bluetooth.powered, tray.items.count(t => true), notifications.count,
       wm.name, media.playing, cpu.usage @CMP@ 0,
       clock.format("%H:%M"), calendar.days(clock.today).count(d => true))
-@EXTRA@  }
+  }
 }
 service mood from file "@MOOD@" { @MOODFIELDS@ }
 service ppd from dbus system "net.hadess.PowerProfiles" { profile: text = ActiveProfile }
@@ -188,14 +208,19 @@ fn bounded(cmd: &mut Command, what: &str) -> Option<std::process::Output> {
         .stderr(Stdio::piped())
         .spawn()
         .ok()?;
+    // The pipes are read on threads that send what they read: a pipe
+    // held open past the child's exit (by a grandchild) is waited on
+    // only until the deadline.
     let pipe = |r: Option<Box<dyn Read + Send>>| {
+        let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut v = Vec::new();
             if let Some(mut r) = r {
                 let _ = r.read_to_end(&mut v);
             }
-            v
-        })
+            let _ = tx.send(v);
+        });
+        rx
     };
     let out = pipe(child.stdout.take().map(|r| Box::new(r) as _));
     let err = pipe(child.stderr.take().map(|r| Box::new(r) as _));
@@ -211,10 +236,18 @@ fn bounded(cmd: &mut Command, what: &str) -> Option<std::process::Output> {
         }
         std::thread::sleep(Duration::from_millis(10));
     };
+    let read = |rx: std::sync::mpsc::Receiver<Vec<u8>>, which: &str| {
+        let left = deadline
+            .saturating_duration_since(Instant::now())
+            .max(Duration::from_secs(1));
+        rx.recv_timeout(left).unwrap_or_else(|_| {
+            panic!("{what} exited but its {which} stayed open over {STEP_LIMIT:?} (a process it left behind?)")
+        })
+    };
     Some(std::process::Output {
         status,
-        stdout: out.join().unwrap(),
-        stderr: err.join().unwrap(),
+        stdout: read(out, "stdout"),
+        stderr: read(err, "stderr"),
     })
 }
 
@@ -326,6 +359,28 @@ fn kill_descendants() {
 struct TmpDir(PathBuf);
 
 impl TmpDir {
+    /// Removes what killed runs left in `parent`: directories named
+    /// `<prefix><pid>` whose process is gone (a killed test never drops
+    /// its guards).
+    fn sweep(parent: &Path, prefix: &str) {
+        let Ok(entries) = std::fs::read_dir(parent) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let name = e.file_name();
+            let Some(pid) = name
+                .to_str()
+                .and_then(|n| n.strip_prefix(prefix))
+                .and_then(|p| p.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            if pid != std::process::id() && !Path::new(&format!("/proc/{pid}")).exists() {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+        }
+    }
+
     fn new(path: PathBuf) -> TmpDir {
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).unwrap();
@@ -589,8 +644,9 @@ impl Img {
     }
 
     /// The probe boxes along the bar, green or not: the state set before
-    /// the reloads, then [`CHECKS`] (`None` until all are drawn).
-    fn boxes(&self) -> Option<Vec<bool>> {
+    /// the reloads, then [`CHECKS`], then `memory`'s when `extra` (its
+    /// node is mounted; `None` until all are drawn).
+    fn boxes(&self, extra: bool) -> Option<Vec<bool>> {
         let g = |p: [u8; 3]| p[1] > 200 && p[0] < 60 && p[2] < 60;
         let r = |p: [u8; 3]| p[0] > 200 && p[1] < 60 && p[2] < 60;
         let mut runs = Vec::new();
@@ -609,16 +665,21 @@ impl Img {
             }
             last = now;
         }
-        (runs.len() == 1 + CHECKS.len()).then_some(runs)
+        (runs.len() == 1 + CHECKS.len() + usize::from(extra)).then_some(runs)
     }
 }
 
 fn tools() -> bool {
-    for tool in ["sway", "swaymsg", "grim", "pw-dump"] {
+    for (tool, tier) in [
+        ("sway", "STRAND_REQUIRE_SWAY"),
+        ("swaymsg", "STRAND_REQUIRE_SWAY"),
+        ("grim", "STRAND_REQUIRE_SWAY"),
+        ("pw-dump", "STRAND_REQUIRE_PIPEWIRE"),
+    ] {
         if bounded(Command::new(tool).arg("--version"), tool).is_none() {
             assert!(
-                std::env::var_os("STRAND_REQUIRE_SWAY").is_none(),
-                "{tool} is not installed but STRAND_REQUIRE_SWAY is set"
+                std::env::var_os(tier).is_none(),
+                "{tool} is not installed but {tier} is set"
             );
             eprintln!("\n*** SKIPPED: {tool} is not installed; the 100 reloads did not run ***\n");
             return false;
@@ -1201,6 +1262,8 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
 
     // Removed when the test ends, failing or not (after the processes
     // using them: the guards drop before these).
+    TmpDir::sweep(&std::env::temp_dir(), "strand-reloads-");
+    TmpDir::sweep(Path::new(env!("CARGO_TARGET_TMPDIR")), "reloads-");
     let tmp =
         TmpDir::new(std::env::temp_dir().join(format!("strand-reloads-{}", std::process::id())));
     let dir = tmp.0.clone();
@@ -1241,7 +1304,8 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
         .map(|(_, c)| format!("    box {{ width: 12; height: 40; bg: {c} ? #00ff00 : #ff0000 }}\n"))
         .collect();
     // The node that alone reads `memory`.
-    let memory_node = "    text join(\" \", memory.usage > 0)\n";
+    let memory_node =
+        format!("    box {{ width: 12; height: 40; bg: {MEMORY_CHECK} ? #00ff00 : #ff0000 }}\n");
     let (mood_fields, mood_changed) = ("level: int", "level: int; tag: text");
     let shell = |color: &str, extra: bool, cmp: &str, fields: &str| {
         SHELL
@@ -1250,7 +1314,7 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
             .replace("@CHECKS@", &checks)
             .replace("@COLOR@", color)
             .replace("@CMP@", cmp)
-            .replace("@EXTRA@", if extra { memory_node } else { "" })
+            .replace("@EXTRA@", if extra { &memory_node } else { "" })
     };
     std::fs::write(&file, shell("#204080", true, ">", mood_fields)).unwrap();
 
@@ -1322,12 +1386,13 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
         let exited = strand.0.try_wait().unwrap();
         assert!(exited.is_none(), "strand exited {what}:\n{}", log_text());
     };
-    // Screenshots until every service's box is green and the state's is
-    // `state`; the services not showing their value named otherwise.
-    let wait_shot = |what: &str, state: bool| {
+    // Screenshots until every service's box is green (`memory`'s too when
+    // `extra`: its node mounted) and the state's is `state`; the
+    // services not showing their value named otherwise.
+    let wait_shot = |what: &str, state: bool, extra: bool| {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
-            let boxes = shot().and_then(|img| img.boxes());
+            let boxes = shot().and_then(|img| img.boxes(extra));
             if let Some(b) = &boxes
                 && b[0] == state
                 && b[1..].iter().all(|g| *g)
@@ -1338,6 +1403,7 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
                 let wrong: Vec<&str> = match &boxes {
                     Some(b) => CHECKS
                         .iter()
+                        .chain(extra.then_some(&("memory", MEMORY_CHECK)))
                         .zip(&b[1..])
                         .filter(|(_, g)| !**g)
                         .map(|((name, _), _)| *name)
@@ -1396,7 +1462,7 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
     );
     dog.stage("tray item registered, notification sent");
     // Every service read: its box green.
-    wait_shot("every service's value", false);
+    wait_shot("every service's value", false, true);
     dog.stage("every service's value on screen");
     alive("at boot");
     // The state the reloads must keep.
@@ -1412,7 +1478,7 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    wait_shot("the state set", true);
+    wait_shot("the state set", true, true);
     dog.stage("the state set");
     // Settled: no service started for 2 s.
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -1664,7 +1730,7 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
         "strand's PipeWire clients changed"
     );
     // The state and every service's value, on screen.
-    wait_shot("the state and every service after the reloads", true);
+    wait_shot("the state and every service after the reloads", true, extra);
     dog.stage("the negative control");
 
     // The negative control (design.md's edit table: "custom service
@@ -1720,7 +1786,7 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
     }
     assert_eq!(sway_accepts(&dir), accepts, "the edit connected to sway");
     assert_eq!(pw_new_of(&mon_text(), pid, pw_serial), Vec::<String>::new());
-    wait_shot("every service after the declaration's edit", true);
+    wait_shot("every service after the declaration's edit", true, extra);
     dog.stage("done; stopping");
     drop(watch);
     drop(strand);

@@ -823,16 +823,22 @@ fn reload_latency_to_the_presented_frame() {
         steps(&m.plugs),
         steps(m.first_plug.as_slice()),
     );
-    assert!(
-        ht <= 35.0,
-        "token edits: p95 on a monitor {ht:.1} ms (headless {pt:.1}, the gate breaks above {token_break:.1}: a slow runner shows as every sample a little high, a regression as a step): {:?}",
-        m.tokens
-    );
-    assert!(
-        hm <= 50.0,
-        "markup edits: p95 on a monitor {hm:.1} ms (headless {pm:.1}): {:?}",
-        m.markup
-    );
+    // Every gate's verdict is collected before any fails, so a failure
+    // states each clause's own verdict (a token flake never hides the
+    // portal clause's).
+    let mut failed = Vec::new();
+    if ht.is_nan() || ht > 35.0 {
+        failed.push(format!(
+            "token edits: p95 on a monitor {ht:.1} ms (headless {pt:.1}, the gate breaks above {token_break:.1}: a slow runner shows as every sample a little high, a regression as a step): {:?}",
+            m.tokens
+        ));
+    }
+    if hm.is_nan() || hm > 50.0 {
+        failed.push(format!(
+            "markup edits: p95 on a monitor {hm:.1} ms (headless {pm:.1}): {:?}",
+            m.markup
+        ));
+    }
     // The next frame: the first frame the shell paints once it hears of
     // a scale change or a plugged monitor (for the plug: the logic
     // thread's new bar, its layer surface created and configured, then
@@ -856,12 +862,14 @@ fn reload_latency_to_the_presented_frame() {
         }
         let paint = p95(&v.iter().map(|s| s.to_paint).collect::<Vec<_>>());
         let present = p95(&v.iter().map(|s| s.to_present).collect::<Vec<_>>());
-        assert!(
-            paint <= frame && present < 2.0 * frame,
-            "{what}: p95 {paint:.1} ms from hearing of it to the frame showing it (one frame is {frame:.1}), then {present:.1} ms to its presentation: {}",
-            steps(v)
-        );
+        if !(paint <= frame && present < 2.0 * frame) {
+            failed.push(format!(
+                "{what}: p95 {paint:.1} ms from hearing of it to the frame showing it (one frame is {frame:.1}), then {present:.1} ms to its presentation: {}",
+                steps(v)
+            ));
+        }
     }
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
 }
 
 /// The vblank model is the exact p95 of each sample plus a uniform wait
