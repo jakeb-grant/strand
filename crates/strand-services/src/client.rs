@@ -648,6 +648,10 @@ impl<S: Service> ClientInner<S> {
                         c.disarm_retry(rt);
                         c.failures.set(0);
                         c.stop();
+                        // A notice from a failed run no longer holds for
+                        // a service nobody uses (its rows leave the
+                        // overlay).
+                        c.resolve();
                         // Writes it never answered never will be.
                         c.cells.forget_echoes(rt);
                     }
@@ -901,6 +905,7 @@ impl<S: Service> Member for ClientInner<S> {
 
     fn stop_now(&self) {
         self.stop();
+        self.resolve();
     }
 
     fn take_thread(&self) -> Option<JoinHandle<()>> {
