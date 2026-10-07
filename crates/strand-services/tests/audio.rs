@@ -2,7 +2,10 @@
 //! design.md's "Testing" table has it): devices, volume, mute and the
 //! default arrive from `wpctl`; the service's writes land where `wpctl`
 //! reads them; a daemon restart reconnects; peak meters run only while
-//! asked for.
+//! asked for, never leave a stale level and send at most 60 readings a
+//! second.
+
+#![cfg(feature = "pipewire")]
 
 mod pipewire;
 
@@ -11,8 +14,8 @@ use std::time::{Duration, Instant};
 
 use pipewire::{PipeWire, square_wav};
 use strand_services::audio::{
-    Audio, AudioAction, AudioChange, AudioConfig, AudioDevice, AudioError, DeviceRef, LevelTarget,
-    Mirror,
+    Audio, AudioAction, AudioChange, AudioConfig, AudioDevice, AudioError, DeviceRef, FRAME,
+    LevelTarget, Levels, Mirror,
 };
 
 /// The service and a mirror of what it sent.
@@ -21,7 +24,9 @@ struct Watch {
     rx: Receiver<Vec<AudioChange>>,
     mirror: Mirror,
     batches: usize,
-    levels: Vec<(Instant, f32)>,
+    levels: Vec<(Instant, Levels)>,
+    /// Every sink volume as each batch left it, by name.
+    volumes: Vec<(String, f64)>,
 }
 
 impl Watch {
@@ -38,6 +43,7 @@ impl Watch {
             mirror: Mirror::default(),
             batches: 0,
             levels: Vec::new(),
+            volumes: Vec::new(),
         }
     }
 
@@ -48,8 +54,11 @@ impl Watch {
                 .apply(c)
                 .unwrap_or_else(|e| panic!("inconsistent diff {c:?}: {e}"));
             if let AudioChange::Levels(l) = c {
-                self.levels.push((Instant::now(), l.peak()));
+                self.levels.push((Instant::now(), l.clone()));
             }
+        }
+        for (_, d) in &self.mirror.sinks {
+            self.volumes.push((d.name.clone(), d.volume));
         }
     }
 
@@ -107,9 +116,8 @@ fn devices_volume_mute_and_the_default_arrive() {
     let a = w.sink("strand-sink-a");
     let b = w.sink("strand-sink-b");
     assert_eq!(a.description, "Strand Sink A");
-    assert_eq!(a.channels, 2);
     assert_eq!((a.volume, a.muted), (1.0, false));
-    assert_eq!(a.icon(), "audio-volume-high-symbolic");
+    assert_eq!(a.icon, "audio-volume-high-symbolic");
     let source = w.mirror.source_named("strand-source").cloned().unwrap();
     assert!(source.default);
     // WirePlumber picks the sink with the higher priority.session.
@@ -125,10 +133,7 @@ fn devices_volume_mute_and_the_default_arrive() {
     });
     // The default sink's copy follows.
     assert_eq!(w.mirror.sink.as_ref().map(|d| d.volume), Some(0.5));
-    assert_eq!(
-        w.sink("strand-sink-a").icon(),
-        "audio-volume-medium-symbolic"
-    );
+    assert_eq!(w.sink("strand-sink-a").icon, "audio-volume-medium-symbolic");
 
     // Unbalanced channels read as the loudest, as wpctl shows them.
     pw.run(
@@ -151,10 +156,7 @@ fn devices_volume_mute_and_the_default_arrive() {
     w.until(5, "sink b muted", |m| {
         m.sink_named("strand-sink-b").is_some_and(|d| d.muted)
     });
-    assert_eq!(
-        w.sink("strand-sink-b").icon(),
-        "audio-volume-muted-symbolic"
-    );
+    assert_eq!(w.sink("strand-sink-b").icon, "audio-volume-muted-symbolic");
 
     // The default moves to b (wpctl writes default.configured.audio.sink;
     // WirePlumber then sets default.audio.sink).
@@ -247,7 +249,7 @@ fn writes_land_where_wpctl_reads_them() {
             .is_some_and(|d| (d.volume - 1.5).abs() < 1e-6)
     });
     assert_eq!(
-        w.sink("strand-sink-b").icon(),
+        w.sink("strand-sink-b").icon,
         "audio-volume-overamplified-symbolic"
     );
     w.act(AudioAction::SetVolume(DeviceRef::Id(b.id), 2.0))
@@ -271,7 +273,7 @@ fn writes_land_where_wpctl_reads_them() {
     });
     let source = w.mirror.source.clone().unwrap();
     assert!(pw.volume(source.id).1);
-    assert_eq!(source.icon(), "microphone-sensitivity-muted-symbolic");
+    assert_eq!(source.icon, "microphone-sensitivity-muted-symbolic");
 
     // `dev.make_default()`.
     w.act(AudioAction::MakeDefault(DeviceRef::Id(b.id)))
@@ -290,6 +292,63 @@ fn writes_land_where_wpctl_reads_them() {
             .is_some_and(|d| d.volume == 0.6)
     });
     assert_eq!(w.sink("strand-sink-a").volume, 0.0);
+
+    // `strand set audio.sink.volume +5%`, twice before PipeWire echoes the
+    // first: the second adds to the first, none is lost.
+    let steps = [
+        w.audio
+            .request(AudioAction::StepVolume(DeviceRef::DefaultSink, 0.05)),
+        w.audio
+            .request(AudioAction::StepVolume(DeviceRef::DefaultSink, 0.05)),
+    ];
+    for s in steps {
+        s.wait().unwrap();
+    }
+    w.until(5, "b at 0.7", |m| {
+        m.sink_named("strand-sink-b")
+            .is_some_and(|d| (d.volume - 0.7).abs() < 1e-9)
+    });
+    assert_eq!(pw.volume(b.id).0, 0.7);
+    // Steps clamp as writes do.
+    w.act(AudioAction::StepVolume(DeviceRef::Id(b.id), 5.0))
+        .unwrap();
+    w.until(5, "b at 1", |m| {
+        m.sink_named("strand-sink-b")
+            .is_some_and(|d| d.volume == 1.0)
+    });
+    w.act(AudioAction::StepVolume(DeviceRef::Id(b.id), -5.0))
+        .unwrap();
+    w.until(5, "b at 0", |m| {
+        m.sink_named("strand-sink-b")
+            .is_some_and(|d| d.volume == 0.0)
+    });
+
+    // A slider sends ten writes before the first echo: every echo reads
+    // back as one of the values written, never as float noise of one.
+    let from = w.volumes.len();
+    let values: Vec<f64> = (0..10).map(|i| 0.3 + f64::from(i) / 100.0).collect();
+    let replies: Vec<_> = values
+        .iter()
+        .map(|v| {
+            w.audio
+                .request(AudioAction::SetVolume(DeviceRef::Id(b.id), *v))
+        })
+        .collect();
+    for r in replies {
+        r.wait().unwrap();
+    }
+    w.until(5, "b at 0.39", |m| {
+        m.sink_named("strand-sink-b")
+            .is_some_and(|d| d.volume == 0.39)
+    });
+    for (name, v) in &w.volumes[from..] {
+        if name == "strand-sink-b" {
+            assert!(
+                *v == 0.0 || values.contains(v),
+                "an echo of the slider read as {v}"
+            );
+        }
+    }
 
     // Unknown devices.
     assert_eq!(
@@ -370,6 +429,15 @@ fn it_starts_without_pipewire_and_connects_when_it_appears() {
     w.until(10, "connected", ready);
 }
 
+/// The readings of `target` after `from` (an index into `w.levels`).
+fn readings(w: &Watch, from: usize, target: LevelTarget) -> Vec<Levels> {
+    w.levels[from..]
+        .iter()
+        .filter(|(_, l)| l.target == target)
+        .map(|(_, l)| l.clone())
+        .collect()
+}
+
 #[test]
 fn peak_meters_run_only_while_asked_for() {
     let Some(pw) = PipeWire::start("peak_meters_run_only_while_asked_for") else {
@@ -378,6 +446,7 @@ fn peak_meters_run_only_while_asked_for() {
     let mut w = Watch::start(pw.config());
     w.until(10, "the devices", ready);
     let a = w.sink("strand-sink-a");
+    let b = w.sink("strand-sink-b");
     let wav = pw.dir.path().join("square.wav");
     square_wav(&wav, 30.0, 0.5);
 
@@ -405,7 +474,7 @@ fn peak_meters_run_only_while_asked_for() {
     assert_eq!(l.device, a.id);
     assert_eq!(l.peaks.len(), 2);
 
-    // Stopped: the stream goes and the readings stop.
+    // Hidden: the stream goes, and its last word is a quiet reading.
     w.audio.set_levels([]);
     let deadline = Instant::now() + Duration::from_secs(5);
     while pw.has_node("strand-levels") {
@@ -414,7 +483,15 @@ fn peak_meters_run_only_while_asked_for() {
     }
     std::thread::sleep(Duration::from_millis(200));
     w.poll();
+    assert_eq!(
+        w.mirror.levels(LevelTarget::DefaultSink).map(Levels::peak),
+        Some(0.0),
+        "a hidden meter keeps no level"
+    );
     let stopped = Instant::now();
+    // The sound stops while it is hidden.
+    let _ = player.kill();
+    let _ = player.wait();
     std::thread::sleep(Duration::from_millis(500));
     w.poll();
     assert!(
@@ -422,22 +499,65 @@ fn peak_meters_run_only_while_asked_for() {
         "readings after the meter stopped"
     );
 
-    // A meter on the default follows it: b becomes the default while a
-    // still plays; b is silent.
+    // Shown again over silence: still quiet, nothing sent.
+    let from = w.levels.len();
+    w.audio.set_levels([LevelTarget::DefaultSink]);
+    std::thread::sleep(Duration::from_millis(1500));
+    w.poll();
+    assert_eq!(
+        w.mirror.levels(LevelTarget::DefaultSink).map(Levels::peak),
+        Some(0.0)
+    );
+    assert!(readings(&w, from, LevelTarget::DefaultSink).is_empty());
+
+    // A meter on the default follows it. a plays (pinned there), then b,
+    // which is silent, becomes the default.
+    let mut player = pw.play(&wav, "strand-sink-a");
     w.audio
         .set_levels([LevelTarget::DefaultSink, LevelTarget::Device(a.id)]);
-    w.until(10, "a's own meter reading", |m| {
-        m.levels(LevelTarget::Device(a.id))
-            .is_some_and(|l| l.peak() > 0.4)
+    w.until(10, "both meters reading a", |m| {
+        [LevelTarget::DefaultSink, LevelTarget::Device(a.id)]
+            .iter()
+            .all(|t| {
+                m.levels(*t)
+                    .is_some_and(|l| l.device == a.id && l.peak() > 0.4)
+            })
     });
-    let b = w.sink("strand-sink-b");
     w.act(AudioAction::MakeDefault(DeviceRef::Id(b.id)))
         .unwrap();
-    w.until(10, "the default meter on b, quiet", |m| {
+    w.until(10, "b as the default", |m| {
         m.sink.as_ref().is_some_and(|d| d.id == b.id)
-            && m.levels(LevelTarget::DefaultSink)
-                .is_none_or(|l| l.device == b.id || l.peak() == 0.0)
     });
+    let switched = w.levels.len();
+    std::thread::sleep(Duration::from_millis(1000));
+    w.poll();
+    assert_eq!(pw.linked_to("pw-play"), ["strand-sink-a"], "a still plays");
+    // The default's meter said a is no longer its device (a quiet
+    // reading), and b, silent, sent nothing after.
+    let after = readings(&w, switched, LevelTarget::DefaultSink);
+    assert!(
+        after.iter().all(|l| l.peak() == 0.0),
+        "a sound on the silent default: {after:?}"
+    );
+    assert_eq!(
+        w.mirror.levels(LevelTarget::DefaultSink).map(Levels::peak),
+        Some(0.0)
+    );
+    // a's own meter still reads it.
+    assert!(
+        readings(&w, switched, LevelTarget::Device(a.id))
+            .iter()
+            .any(|l| l.peak() > 0.4)
+    );
+
+    // b plays: the default's meter reads b.
+    let mut player_b = pw.play(&wav, "strand-sink-b");
+    w.until(10, "the default meter on b", |m| {
+        m.levels(LevelTarget::DefaultSink)
+            .is_some_and(|l| l.device == b.id && l.peak() > 0.4)
+    });
+    let _ = player_b.kill();
+    let _ = player_b.wait();
     let _ = player.kill();
     let _ = player.wait();
     // a falls silent: one quiet reading, then nothing.
@@ -451,4 +571,55 @@ fn peak_meters_run_only_while_asked_for() {
     std::thread::sleep(Duration::from_millis(700));
     w.poll();
     assert_eq!(w.levels.len(), quiet, "readings while silent");
+}
+
+#[test]
+fn peak_readings_are_capped_at_the_frame_rate() {
+    let Some(pw) = PipeWire::start("peak_readings_are_capped_at_the_frame_rate") else {
+        return;
+    };
+    let mut w = Watch::start(pw.config());
+    w.until(10, "the devices", ready);
+    let a = w.sink("strand-sink-a");
+    let wav = pw.dir.path().join("square.wav");
+    square_wav(&wav, 30.0, 0.5);
+    w.audio.set_levels([LevelTarget::Device(a.id)]);
+    // A low-latency client shrinks the graph's cycle to 64 samples
+    // (1.3 ms, 750 cycles a second).
+    let mut player = pw.play_with(&wav, "strand-sink-a", &["--latency", "64"]);
+    w.until(10, "a reading", |m| {
+        m.levels(LevelTarget::Device(a.id))
+            .is_some_and(|l| l.peak() > 0.4)
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    w.poll();
+    let (batches, readings) = (w.batches, w.levels.len());
+    let start = Instant::now();
+    std::thread::sleep(Duration::from_secs(2));
+    w.poll();
+    let secs = start.elapsed().as_secs_f64();
+    let _ = player.kill();
+    let _ = player.wait();
+    let per_sec = (w.batches - batches) as f64 / secs;
+    let cap = 1.0 / FRAME.as_secs_f64();
+    eprintln!(
+        "{:.0} batches/s, {:.0} readings/s (cap {cap:.0})",
+        per_sec,
+        (w.levels.len() - readings) as f64 / secs
+    );
+    assert!(per_sec <= cap + 2.0, "{per_sec:.0} batches a second");
+    // The readings still flow, at about the frame rate, and each is the
+    // loudest of the cycles it covers (a client this fast may underrun now
+    // and then; a held reading covers a dozen cycles).
+    assert!(per_sec >= 20.0, "only {per_sec:.0} batches a second");
+    let read = &w.levels[readings..];
+    let at_peak = read
+        .iter()
+        .filter(|(_, l)| (l.peak() - 0.5).abs() < 0.01)
+        .count();
+    assert!(
+        at_peak * 10 >= read.len() * 9,
+        "{at_peak} of {} readings at the peak",
+        read.len()
+    );
 }

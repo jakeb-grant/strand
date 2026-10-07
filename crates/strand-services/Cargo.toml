@@ -8,10 +8,14 @@ repository.workspace = true
 publish.workspace = true
 
 [features]
-default = ["niri"]
+default = ["niri", "pipewire"]
 # niri's IPC changes in patch versions (design.md, "Risks"), so our own
 # implementation of it sits behind a flag.
 niri = []
+# The `audio` service (PipeWire). Building it needs libpipewire's headers
+# and libclang (bindgen), and the binary then links libpipewire-0.3; a
+# build without it answers `audio.*` at the schema's defaults.
+pipewire = ["dep:pipewire"]
 
 [dependencies]
 strand-core.workspace = true
@@ -33,7 +37,7 @@ rustix = { version = "1.1.5", features = ["event", "fs"] }
 # Audio (design.md names pipewire 0.10): its own `strand-pipewire` thread,
 # since pipewire-rs is `!Send`. `v1_0_0`: the oldest PipeWire we build
 # against (Ubuntu 24.04's 1.0.5).
-pipewire = { version = "0.10.1", features = ["v1_0_0"] }
+pipewire = { version = "0.10.1", features = ["v1_0_0"], optional = true }
 
 [dev-dependencies]
 tempfile = "3.27.0"

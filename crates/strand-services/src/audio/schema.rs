@@ -77,21 +77,23 @@ mod tests {
         }
     }
 
-    /// The model's record has every schema field.
+    /// The model's record has every schema field, and nothing else.
     #[test]
-    fn the_model_has_every_field() {
+    fn the_model_has_exactly_the_schema_fields() {
         let d = crate::audio::AudioDevice::new(1, "n", crate::audio::Direction::Sink);
         let shown = format!("{d:?}");
-        for member in block(SCHEMA, "record AudioDevice key id {") {
-            let name = member.split(':').next().unwrap_or(member).trim();
-            if member.starts_with("action ") || name == "icon" {
-                // `icon` is derived: `AudioDevice::icon`.
-                continue;
-            }
+        let fields: Vec<&str> = block(SCHEMA, "record AudioDevice key id {")
+            .into_iter()
+            .filter(|m| !m.starts_with("action "))
+            .map(|m| m.split(':').next().unwrap_or(m).trim())
+            .collect();
+        for name in &fields {
             assert!(
                 shown.contains(&format!("{name}:")),
                 "AudioDevice lacks {name}"
             );
         }
+        // `AudioDevice { a: …, b: … }`: as many fields as the schema has.
+        assert_eq!(shown.matches(": ").count(), fields.len(), "{shown}");
     }
 }

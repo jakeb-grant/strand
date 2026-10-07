@@ -297,14 +297,42 @@ impl PipeWire {
             .contains(&format!("node.name = \"{name}\""))
     }
 
-    /// Plays `wav` to the node named `target`, in the background.
+    /// Plays `wav` to the node named `target`, in the background. Pinned
+    /// there (`node.dont-reconnect`): WirePlumber does not move it when
+    /// the default changes.
     pub fn play(&self, wav: &Path, target: &str) -> Child {
+        self.play_with(wav, target, &[])
+    }
+
+    /// [`PipeWire::play`] with more `pw-play` arguments.
+    pub fn play_with(&self, wav: &Path, target: &str, args: &[&str]) -> Child {
         self.command("pw-play")
             .arg("--target")
             .arg(target)
+            .args(["-P", "{ node.dont-reconnect = true }"])
+            .args(args)
             .arg(wav)
             .spawn()
             .expect("pw-play starts")
+    }
+
+    /// The node names `node`'s output ports are linked to (`pw-link -l`).
+    pub fn linked_to(&self, node: &str) -> Vec<String> {
+        let out = self.run("pw-link", &["-l"]);
+        let mut to = Vec::new();
+        let mut from_node = false;
+        for line in out.lines() {
+            if let Some(peer) = line.trim_start().strip_prefix("|-> ") {
+                if from_node && let Some((n, _)) = peer.split_once(':') {
+                    to.push(n.to_owned());
+                }
+            } else if !line.trim_start().starts_with("|<-") {
+                from_node = line.split_once(':').is_some_and(|(n, _)| n == node);
+            }
+        }
+        to.sort();
+        to.dedup();
+        to
     }
 }
 

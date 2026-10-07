@@ -9,15 +9,19 @@
 //! - follows the registry's audio nodes (`media.class` `Audio/Sink`,
 //!   `Audio/Duplex`, `Audio/Source`, `Audio/Source/Virtual`) and each one's
 //!   `Props` param: volume (`channelVolumes`, shown on the cubic scale
-//!   `pactl` and `wpctl` show) and mute;
+//!   `pactl` and `wpctl` show) and mute; and the active `Route` params of
+//!   the audio devices (cards) those nodes belong to;
 //! - reads the default sink and source from the `default` metadata
 //!   (`default.audio.sink`, else `default.configured.audio.sink`; the same
 //!   for sources);
-//! - writes volume and mute with `set_param(Props)` on every channel, and
-//!   the default with the metadata (see [`AudioAction`]);
+//! - writes volume and mute on every channel: through the card's active
+//!   `Route` (`save: true`) when the node has one, as `wpctl` and
+//!   pipewire-pulse do, else with the node's `set_param(Props)`; and the
+//!   default with the metadata (see [`AudioAction`]);
 //! - runs a peak meter (a passive capture stream) per [`LevelTarget`] only
-//!   while [`Audio::set_levels`] asks for it: the store asks while a
-//!   visible reader wants levels;
+//!   while [`Audio::set_levels`] asks for it (the store asks while a
+//!   visible reader wants levels), at most one reading per meter per
+//!   frame (1/60 s, the loudest of the cycles in between);
 //! - reconnects when the daemon restarts (100 ms doubling backoff, and an
 //!   inotify watch on the socket's directory while disconnected), keeping
 //!   the last devices meanwhile.
@@ -30,8 +34,8 @@
 //!
 //! Writes are plain requests; suppressing the echo of a write in the store
 //! (the `rw` contract) is the store's job. The thread does report a volume
-//! it wrote exactly as written (not its cube root's float noise), so the
-//! echo compares equal.
+//! it wrote exactly as written (not its cube root's float noise; any of
+//! its last [`ECHOES`] writes to a device), so the echo compares equal.
 
 mod meter;
 pub mod model;
@@ -47,10 +51,11 @@ use std::thread::JoinHandle;
 use tokio::sync::oneshot;
 
 pub use model::{
-    AudioChange, AudioDevice, AudioState, Direction, LevelTarget, Levels, Mirror, Publisher,
+    AudioChange, AudioDevice, AudioState, Direction, LevelTarget, Levels, Mirror, Publisher, icon,
     linear, perceptual,
 };
 pub use schema::SCHEMA;
+pub use thread::{ECHOES, FRAME};
 
 /// Where to connect.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -80,6 +85,12 @@ pub enum AudioAction {
     /// scale, clamped to 0..1 (or to the current volume, when another
     /// program amplified it past 1: a write never raises it further).
     SetVolume(DeviceRef, f64),
+    /// `audio.sink.volume += d` (`strand set audio.sink.volume +5%`): the
+    /// step is added to the device's volume on the audio thread when the
+    /// action runs (to the last volume written there, if PipeWire has not
+    /// echoed it yet), so quick steps never read the same value and lose
+    /// one. Clamped as `SetVolume`.
+    StepVolume(DeviceRef, f64),
     /// `audio.sink.muted = m`.
     SetMuted(DeviceRef, bool),
     /// `dev.make_default()`: writes the `default` metadata's
@@ -157,8 +168,9 @@ pub(crate) enum Cmd {
     Stop,
 }
 
-/// The running service: its `strand-pipewire` thread. Dropping it stops
-/// the thread and waits for it.
+/// The running service: its `strand-pipewire` thread. Dropping it asks
+/// the thread to stop and returns at once (the thread ends on its own,
+/// after the batch it is handling); [`Audio::stop`] also waits for it.
 pub struct Audio {
     tx: pipewire::channel::Sender<Cmd>,
     thread: Option<JoinHandle<()>>,
@@ -174,7 +186,9 @@ impl Audio {
     /// Starts the thread. `sink` gets every batch of changes, on that
     /// thread; the first batch (once the first connection has synced, or
     /// the first attempt failed) holds every field, [`AudioChange::Connected`]
-    /// first.
+    /// first. `sink` must never block (an unbounded channel, or a
+    /// `try_send` that drops a full queue): it runs on the PipeWire loop,
+    /// and [`Audio::stop`] waits for that loop.
     pub fn spawn(
         config: AudioConfig,
         sink: impl FnMut(Vec<AudioChange>) + Send + 'static,
@@ -204,15 +218,13 @@ impl Audio {
         let _ = self.tx.send(Cmd::Levels(targets.into_iter().collect()));
     }
 
-    /// Stops the thread and waits for it.
+    /// Stops the thread and waits for it (briefly: until the loop has
+    /// handled the stop, and the sink has returned). Not on the logic
+    /// thread or a shared runtime; dropping the handle does not wait.
     pub fn stop(mut self) {
-        self.shutdown();
-    }
-
-    fn shutdown(&mut self) {
         let _ = self.tx.send(Cmd::Stop);
         let Some(t) = self.thread.take() else { return };
-        // Dropped on its own thread (from the sink): it stops after this
+        // Stopped on its own thread (from the sink): it stops after this
         // batch; joining itself would never return.
         if t.thread().id() == std::thread::current().id() {
             return;
@@ -225,7 +237,8 @@ impl Audio {
 
 impl Drop for Audio {
     fn drop(&mut self) {
-        self.shutdown();
+        // Detached: the thread ends on its own once it reads the stop.
+        let _ = self.tx.send(Cmd::Stop);
     }
 }
 

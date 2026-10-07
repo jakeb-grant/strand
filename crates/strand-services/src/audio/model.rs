@@ -3,9 +3,9 @@
 //!
 //! [`AudioDevice`] mirrors the builtin schema's `AudioDevice` record field
 //! for field (`id`, `name`, `description`, `volume`, `muted`, `icon`,
-//! `default`), plus what the thread needs that the schema does not show
-//! (the channel count). [`AudioState`] is the `audio` service: the default
-//! `sink` and `source`, and every `sinks` and `sources`.
+//! `default`) and holds nothing else. [`AudioState`] is the `audio`
+//! service: the default `sink` and `source`, and every `sinks` and
+//! `sources`.
 
 use strand_core::keyed::{KeyedError, VecDiff, keyed_diff};
 
@@ -31,7 +31,10 @@ impl Direction {
     }
 }
 
-/// An audio sink or source: the schema's `AudioDevice`.
+/// An audio sink or source: the schema's `AudioDevice`, field for field
+/// and nothing else (so the store's `#[derive(Data)]` record is exactly
+/// this). Whether it plays or records is the list it is in; its channel
+/// count stays on the audio thread.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AudioDevice {
     /// Its PipeWire global id.
@@ -42,8 +45,6 @@ pub struct AudioDevice {
     /// A readable description (`node.description`, else `node.nick`, else
     /// the name).
     pub description: String,
-    /// Whether it plays or records.
-    pub direction: Direction,
     /// Volume on the perceptual (cubic) scale `pactl` and `wpctl` show:
     /// the cube root of the loudest channel's linear volume. 1 is 100 %;
     /// above 1 is amplified (another program set it so; our writes stop
@@ -51,58 +52,58 @@ pub struct AudioDevice {
     pub volume: f64,
     /// Muted.
     pub muted: bool,
-    /// How many channels its volume has (0 while unknown).
-    pub channels: u32,
+    /// An icon name for its volume and mute state ([`icon`]).
+    pub icon: String,
     /// It is the default device of its direction.
     pub default: bool,
 }
 
 impl AudioDevice {
-    /// A device with nothing known yet but its identity.
+    /// A device with nothing known yet but its identity (volume 1,
+    /// unmuted).
     pub fn new(id: u32, name: impl Into<String>, direction: Direction) -> Self {
         let name = name.into();
         Self {
             id,
             description: name.clone(),
             name,
-            direction,
             volume: 1.0,
             muted: false,
-            channels: 0,
+            icon: icon(direction, 1.0, false).to_owned(),
             default: false,
         }
     }
+}
 
-    /// An icon name for its volume and mute state (Adwaita's names):
-    /// `audio-volume-{muted,low,medium,high,overamplified}-symbolic` for a
-    /// sink, `microphone-sensitivity-{muted,low,medium,high}-symbolic` for
-    /// a source.
-    pub fn icon(&self) -> &'static str {
-        let v = self.volume;
-        match self.direction {
-            Direction::Sink => {
-                if self.muted || v <= 0.0 {
-                    "audio-volume-muted-symbolic"
-                } else if v <= 1.0 / 3.0 {
-                    "audio-volume-low-symbolic"
-                } else if v <= 2.0 / 3.0 {
-                    "audio-volume-medium-symbolic"
-                } else if v <= 1.0 + VOLUME_EPSILON {
-                    "audio-volume-high-symbolic"
-                } else {
-                    "audio-volume-overamplified-symbolic"
-                }
+/// An icon name for a device's volume and mute state (Adwaita's names):
+/// `audio-volume-{muted,low,medium,high,overamplified}-symbolic` for a
+/// sink, `microphone-sensitivity-{muted,low,medium,high}-symbolic` for a
+/// source.
+pub fn icon(direction: Direction, volume: f64, muted: bool) -> &'static str {
+    let v = volume;
+    match direction {
+        Direction::Sink => {
+            if muted || v <= 0.0 {
+                "audio-volume-muted-symbolic"
+            } else if v <= 1.0 / 3.0 {
+                "audio-volume-low-symbolic"
+            } else if v <= 2.0 / 3.0 {
+                "audio-volume-medium-symbolic"
+            } else if v <= 1.0 + VOLUME_EPSILON {
+                "audio-volume-high-symbolic"
+            } else {
+                "audio-volume-overamplified-symbolic"
             }
-            Direction::Source => {
-                if self.muted || v <= 0.0 {
-                    "microphone-sensitivity-muted-symbolic"
-                } else if v <= 1.0 / 3.0 {
-                    "microphone-sensitivity-low-symbolic"
-                } else if v <= 2.0 / 3.0 {
-                    "microphone-sensitivity-medium-symbolic"
-                } else {
-                    "microphone-sensitivity-high-symbolic"
-                }
+        }
+        Direction::Source => {
+            if muted || v <= 0.0 {
+                "microphone-sensitivity-muted-symbolic"
+            } else if v <= 1.0 / 3.0 {
+                "microphone-sensitivity-low-symbolic"
+            } else if v <= 2.0 / 3.0 {
+                "microphone-sensitivity-medium-symbolic"
+            } else {
+                "microphone-sensitivity-high-symbolic"
             }
         }
     }
@@ -204,9 +205,11 @@ pub enum AudioChange {
     Sinks(Vec<VecDiff<i64, AudioDevice>>),
     /// `audio.sources`, keyed by id.
     Sources(Vec<VecDiff<i64, AudioDevice>>),
-    /// `audio.sink`: the default output, if any.
+    /// `audio.sink`: the default output, if any. `None` (no default, or
+    /// no PipeWire yet) is shown as the schema's defaults for the record
+    /// (`id` 0, empty texts, `volume` 0, `muted` and `default` false).
     Sink(Option<AudioDevice>),
-    /// `audio.source`: the default input, if any.
+    /// `audio.source`: the default input, if any (`None` as for `Sink`).
     Source(Option<AudioDevice>),
     /// A peak meter's reading (only while one is asked for).
     Levels(Levels),
@@ -349,7 +352,7 @@ mod tests {
     fn dev(id: u32, name: &str, dir: Direction, volume: f64) -> AudioDevice {
         AudioDevice {
             volume,
-            channels: 2,
+            icon: icon(dir, volume, false).to_owned(),
             ..AudioDevice::new(id, name, dir)
         }
     }
@@ -373,23 +376,20 @@ mod tests {
 
     #[test]
     fn icons_follow_volume_and_mute() {
-        let mut d = dev(1, "a", Direction::Sink, 0.2);
-        assert_eq!(d.icon(), "audio-volume-low-symbolic");
-        d.volume = 0.5;
-        assert_eq!(d.icon(), "audio-volume-medium-symbolic");
-        d.volume = 1.0;
-        assert_eq!(d.icon(), "audio-volume-high-symbolic");
-        d.volume = 1.2;
-        assert_eq!(d.icon(), "audio-volume-overamplified-symbolic");
-        d.muted = true;
-        assert_eq!(d.icon(), "audio-volume-muted-symbolic");
-        d.muted = false;
-        d.volume = 0.0;
-        assert_eq!(d.icon(), "audio-volume-muted-symbolic");
-        let mut s = dev(2, "mic", Direction::Source, 0.9);
-        assert_eq!(s.icon(), "microphone-sensitivity-high-symbolic");
-        s.muted = true;
-        assert_eq!(s.icon(), "microphone-sensitivity-muted-symbolic");
+        let sink = |v, m| icon(Direction::Sink, v, m);
+        assert_eq!(sink(0.2, false), "audio-volume-low-symbolic");
+        assert_eq!(sink(0.5, false), "audio-volume-medium-symbolic");
+        assert_eq!(sink(1.0, false), "audio-volume-high-symbolic");
+        assert_eq!(sink(1.2, false), "audio-volume-overamplified-symbolic");
+        assert_eq!(sink(1.2, true), "audio-volume-muted-symbolic");
+        assert_eq!(sink(0.0, false), "audio-volume-muted-symbolic");
+        let source = |v, m| icon(Direction::Source, v, m);
+        assert_eq!(source(0.9, false), "microphone-sensitivity-high-symbolic");
+        assert_eq!(source(0.9, true), "microphone-sensitivity-muted-symbolic");
+        assert_eq!(
+            AudioDevice::new(1, "a", Direction::Sink).icon,
+            "audio-volume-high-symbolic"
+        );
     }
 
     #[test]

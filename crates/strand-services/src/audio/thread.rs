@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 use pipewire::context::ContextRc;
 use pipewire::core::{CoreRc, PW_ID_CORE};
+use pipewire::device::{Device, DeviceListener};
 use pipewire::loop_::{Timeout, TimerSource};
 use pipewire::main_loop::MainLoopRc;
 use pipewire::metadata::{Metadata, MetadataListener};
@@ -31,10 +32,10 @@ use rustix::fs::inotify;
 
 use super::meter::{Meter, MeterEvent, MeterTarget};
 use super::model::{
-    AudioChange, AudioDevice, AudioState, Direction, LevelTarget, Levels, Publisher, linear,
+    AudioChange, AudioDevice, AudioState, Direction, LevelTarget, Publisher, icon, linear,
     perceptual,
 };
-use super::pod::{Props, default_name, default_value};
+use super::pod::{Props, Route, default_name, default_value};
 use super::{AudioAction, AudioConfig, AudioError, Cmd, DeviceRef};
 
 /// The first wait after a lost or refused connection.
@@ -42,6 +43,14 @@ const FIRST: Duration = Duration::from_millis(100);
 /// The longest wait between attempts. Once the doubling passes it and the
 /// socket's directory is watched, attempts wait for the socket to appear.
 const MAX: Duration = Duration::from_secs(10);
+
+/// The shortest time between two readings of one meter (60 per second):
+/// readings in between are held, the loudest peak per channel kept.
+pub const FRAME: Duration = Duration::from_micros(16_667);
+
+/// How many of its last volume writes a device remembers, so the echo of
+/// any of them reads back exactly as written.
+pub const ECHOES: usize = 8;
 
 /// The callbacks' queue.
 pub(crate) type Queue = Rc<RefCell<VecDeque<Work>>>;
@@ -63,6 +72,19 @@ pub(crate) enum Work {
         id: u32,
         name: Option<String>,
         description: Option<String>,
+        link: Option<RouteLink>,
+    },
+    /// A device's `Route` param info flags (they change, the serial bit
+    /// toggling, whenever its routes change).
+    DeviceInfo {
+        session: u64,
+        id: u32,
+        route_flags: Option<u32>,
+    },
+    DeviceRoute {
+        session: u64,
+        id: u32,
+        route: Route,
     },
     NodeProps {
         session: u64,
@@ -87,6 +109,10 @@ pub(crate) enum Work {
     },
     Retry,
     SocketAppeared,
+    /// The socket directory's watch ended (the directory went away).
+    WatchGone(i32),
+    /// The meters' frame timer.
+    Flush,
     Reading {
         meter: u64,
         peaks: Vec<f32>,
@@ -131,13 +157,20 @@ pub(crate) fn run(
         let q = q.clone();
         move |_| q.borrow_mut().push_back(Work::Retry)
     });
+    let flush = lp.add_timer({
+        let q = q.clone();
+        move |_| q.borrow_mut().push_back(Work::Flush)
+    });
     let watch = SocketWatch::new(config.remote.as_deref());
     let _watch_source = watch.as_ref().map(|w| {
         let q = q.clone();
         let name = w.name.clone();
         lp.add_io(WatchFd(w.fd.clone()), IoFlags::IN, move |fd| {
-            if drain_inotify(&fd.0, &name) {
-                q.borrow_mut().push_back(Work::SocketAppeared);
+            let seen = drain_inotify(&fd.0, &name);
+            let mut q = q.borrow_mut();
+            q.extend(seen.gone.into_iter().map(Work::WatchGone));
+            if seen.hit {
+                q.push_back(Work::SocketAppeared);
             }
         })
     });
@@ -147,6 +180,8 @@ pub(crate) fn run(
         q,
         context,
         timer: &timer,
+        flush: &flush,
+        flush_at: None,
         watch,
         sink,
         session: None,
@@ -217,6 +252,15 @@ impl SocketWatch {
         self.wd.is_some()
     }
 
+    /// Watch `wd` ended; true if it was ours.
+    fn gone(&mut self, wd: i32) -> bool {
+        if self.wd == Some(wd) {
+            self.wd = None;
+            return true;
+        }
+        false
+    }
+
     fn unwatch(&mut self) {
         if let Some(wd) = self.wd.take() {
             let _ = inotify::remove_watch(&*self.fd, wd);
@@ -246,24 +290,50 @@ fn socket_path(remote: Option<&str>) -> Option<(PathBuf, OsString)> {
     Some((full.parent()?.to_path_buf(), full.file_name()?.to_owned()))
 }
 
-/// Reads every queued inotify event; true if one named `name`.
-fn drain_inotify(fd: &OwnedFd, name: &OsString) -> bool {
-    use std::os::unix::ffi::OsStrExt;
+/// What the queued inotify events said.
+#[derive(Debug, Default, PartialEq)]
+struct Seen {
+    /// One named the socket, or the queue overflowed (events were lost:
+    /// one may have been the socket's).
+    hit: bool,
+    /// Watches that ended (`IN_IGNORED`: the directory went away, or we
+    /// removed it).
+    gone: Vec<i32>,
+}
+
+/// Reads every queued inotify event.
+fn drain_inotify(fd: &OwnedFd, name: &OsString) -> Seen {
     let mut buf = [MaybeUninit::<u8>::uninit(); 4096];
     let mut reader = inotify::Reader::new(fd.as_fd(), &mut buf);
-    let mut hit = false;
+    let mut seen = Seen::default();
     // Bounded: a reader that keeps failing never spins.
     for _ in 0..4096 {
         match reader.next() {
-            Ok(ev) => {
-                if ev.file_name().map(|n| n.to_bytes()) == Some(name.as_bytes()) {
-                    hit = true;
-                }
-            }
+            Ok(ev) => seen.add(ev.wd(), ev.events(), ev.file_name(), name),
             Err(_) => break,
         }
     }
-    hit
+    seen
+}
+
+impl Seen {
+    fn add(
+        &mut self,
+        wd: i32,
+        events: inotify::ReadFlags,
+        file: Option<&std::ffi::CStr>,
+        name: &OsString,
+    ) {
+        use std::os::unix::ffi::OsStrExt;
+        if events.contains(inotify::ReadFlags::QUEUE_OVERFLOW)
+            || file.map(|n| n.to_bytes()) == Some(name.as_bytes())
+        {
+            self.hit = true;
+        }
+        if events.contains(inotify::ReadFlags::IGNORED) {
+            self.gone.push(wd);
+        }
+    }
 }
 
 /// One connection to the daemon and what it follows.
@@ -273,6 +343,7 @@ struct Session {
     // registry and the core.
     meters: Vec<Meter>,
     nodes: BTreeMap<u32, NodeEntry>,
+    devices: BTreeMap<u32, DeviceEntry>,
     metadata: Option<MetaEntry>,
     _registry_listener: pipewire::registry::Listener,
     registry: RegistryRc,
@@ -295,17 +366,146 @@ struct NodeEntry {
     _listener: NodeListener,
     proxy: Node,
     device: AudioDevice,
+    direction: Direction,
+    /// How many channels its volume has (0 while unknown).
+    channels: u32,
     serial: Option<String>,
+    /// The card profile device it belongs to, if it is a card's node.
+    link: Option<RouteLink>,
     /// The sync issued after binding it; it is shown once that returns
     /// (with its properties and volume read).
     sync: i32,
     ready: bool,
-    /// The last volume we wrote: what we wrote and the channel volumes it
-    /// became, so the echo reads back exactly as written.
-    written: Option<(f64, Vec<f32>)>,
+    /// Its volume writes and their echoes ([`Echoes`]).
+    echoes: Echoes,
     /// It has reported `channelVolumes` (the `volume` prop is then
     /// ignored).
     has_channel_volumes: bool,
+}
+
+/// The last [`ECHOES`] volumes written to a device, with the linear
+/// channel volumes each became: PipeWire echoes those, and any of them
+/// reads back as the value written (not its cube root's float noise),
+/// also when a slider sent several writes before the first echo.
+#[derive(Debug, Default)]
+struct Echoes {
+    written: VecDeque<(f64, Vec<f32>)>,
+    /// The last write, until PipeWire has reported it (or another
+    /// volume): a step adds to this, not to a volume it is replacing.
+    pending: Option<f64>,
+}
+
+impl Echoes {
+    fn wrote(&mut self, volume: f64, linear: Vec<f32>) {
+        if self.written.len() == ECHOES {
+            self.written.pop_front();
+        }
+        self.written.push_back((volume, linear));
+        self.pending = Some(volume);
+    }
+
+    /// The volume to show for reported linear channel volumes.
+    fn read(&mut self, reported: &[f32]) -> Option<f64> {
+        let hit = self.written.iter().rposition(|(_, lin)| lin == reported);
+        if hit.is_none_or(|i| i + 1 == self.written.len()) {
+            // The last write landed, or another program set it.
+            self.pending = None;
+        }
+        hit.map(|i| self.written[i].0)
+            .or_else(|| perceptual(reported))
+    }
+
+    /// The volume a step starts from.
+    fn base(&self, shown: f64) -> f64 {
+        self.pending.unwrap_or(shown)
+    }
+}
+
+/// A node's place on a card: the device (`device.id`) and the device's
+/// profile device (`card.profile.device`) it plays or records through.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RouteLink {
+    pub device: u32,
+    pub profile_device: i32,
+}
+
+impl RouteLink {
+    fn of(device: Option<&str>, profile_device: Option<&str>) -> Option<RouteLink> {
+        Some(RouteLink {
+            device: device?.parse().ok()?,
+            profile_device: profile_device?.parse().ok()?,
+        })
+    }
+}
+
+/// A bound audio device (a card): its active routes, by profile device.
+struct DeviceEntry {
+    _listener: DeviceListener,
+    proxy: Device,
+    routes: Routes,
+}
+
+/// A device's active routes.
+#[derive(Debug, Default)]
+struct Routes {
+    /// The flags of its last `Route` param info.
+    flags: Option<u32>,
+    /// The routes changed and the new set has not come yet: until it
+    /// does, none is used (a device without routes stays so, and its
+    /// nodes are written directly).
+    stale: bool,
+    by_profile_device: BTreeMap<i32, Route>,
+}
+
+impl Routes {
+    /// Its `Route` info flags: a change means a new set of routes comes.
+    fn info(&mut self, flags: Option<u32>) {
+        if flags != self.flags {
+            self.flags = flags;
+            self.stale = true;
+        }
+    }
+
+    /// One route of the set that follows the info.
+    fn route(&mut self, route: Route) {
+        if self.stale {
+            self.stale = false;
+            self.by_profile_device.clear();
+        }
+        self.by_profile_device.insert(route.device, route);
+    }
+
+    fn active(&self, profile_device: i32) -> Option<Route> {
+        if self.stale {
+            return None;
+        }
+        self.by_profile_device.get(&profile_device).copied()
+    }
+}
+
+/// Where a volume or mute write goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WriteVia {
+    /// The node's own `Props`.
+    Node,
+    /// The card's active route for the node (`save: true`): what moves a
+    /// hardware mixer and what the session manager saves and restores.
+    Route { device: u32, route: Route },
+}
+
+/// The write path for a node `link`ed to a card: its active route when
+/// the device has one for the node's profile device, else the node.
+fn write_via(link: Option<RouteLink>, routes: impl Fn(u32) -> Option<Route>) -> WriteVia {
+    let Some(link) = link else {
+        return WriteVia::Node;
+    };
+    match routes(link.device) {
+        Some(route) if route.device == link.profile_device => WriteVia::Route {
+            device: link.device,
+            route,
+        },
+        _ => WriteVia::Node,
+    }
 }
 
 struct MetaEntry {
@@ -328,6 +528,10 @@ struct Driver<'l> {
     q: Queue,
     context: ContextRc,
     timer: &'l TimerSource<'l>,
+    /// The meters' frame timer, and when it fires (armed only while a
+    /// meter holds a reading).
+    flush: &'l TimerSource<'l>,
+    flush_at: Option<Instant>,
     watch: Option<SocketWatch>,
     sink: Box<dyn FnMut(Vec<AudioChange>) + Send>,
     session: Option<Session>,
@@ -395,6 +599,7 @@ impl Driver<'_> {
                 id,
                 name,
                 description,
+                link,
             } if self.live(session) => {
                 if let Some(n) = self.session.as_mut().and_then(|s| s.nodes.get_mut(&id)) {
                     if let Some(name) = name {
@@ -403,7 +608,22 @@ impl Driver<'_> {
                     if let Some(d) = description {
                         n.device.description = d;
                     }
+                    n.link = link;
                     self.dirty = true;
+                }
+            }
+            Work::DeviceInfo {
+                session,
+                id,
+                route_flags,
+            } if self.live(session) => {
+                if let Some(d) = self.session.as_mut().and_then(|s| s.devices.get_mut(&id)) {
+                    d.routes.info(route_flags);
+                }
+            }
+            Work::DeviceRoute { session, id, route } if self.live(session) => {
+                if let Some(d) = self.session.as_mut().and_then(|s| s.devices.get_mut(&id)) {
+                    d.routes.route(route);
                 }
             }
             Work::NodeProps { session, id, props } if self.live(session) => {
@@ -447,7 +667,7 @@ impl Driver<'_> {
                 res,
                 message,
             } if self.live(session) => {
-                if id == PW_ID_CORE {
+                if id == PW_ID_CORE && disconnected(res) {
                     log::info!("audio: lost PipeWire ({res}: {message}); reconnecting");
                     self.lost();
                 } else {
@@ -461,12 +681,27 @@ impl Driver<'_> {
                     self.connect();
                 }
             }
+            Work::WatchGone(wd) => {
+                let ours = self.watch.as_mut().is_some_and(|w| w.gone(wd));
+                if ours && self.session.is_none() {
+                    // Watch again (the directory may be back), or fall
+                    // back to the timer.
+                    self.watching();
+                    self.schedule_retry();
+                }
+            }
+            Work::Flush => {
+                self.flush_at = None;
+                self.flush_meters();
+            }
             Work::Reading { meter, peaks } => self.reading(meter, peaks),
             Work::Meter { meter, event } => self.meter_event(meter, event),
             // Work of a dropped connection.
             Work::Global { .. }
             | Work::GlobalRemove { .. }
             | Work::NodeInfo { .. }
+            | Work::DeviceInfo { .. }
+            | Work::DeviceRoute { .. }
             | Work::NodeProps { .. }
             | Work::Meta { .. }
             | Work::Done { .. }
@@ -541,7 +776,10 @@ impl Driver<'_> {
             .add_listener_local()
             .global(move |g| {
                 // Only what the thread binds is copied.
-                if matches!(g.type_, ObjectType::Node | ObjectType::Metadata) {
+                if matches!(
+                    g.type_,
+                    ObjectType::Node | ObjectType::Device | ObjectType::Metadata
+                ) {
                     q1.borrow_mut().push_back(Work::Global {
                         session: number,
                         global: g.to_owned(),
@@ -560,6 +798,7 @@ impl Driver<'_> {
             number,
             meters: Vec::new(),
             nodes: BTreeMap::new(),
+            devices: BTreeMap::new(),
             metadata: None,
             _registry_listener: registry_listener,
             registry,
@@ -579,14 +818,8 @@ impl Driver<'_> {
             if s.since.elapsed() >= MAX {
                 self.backoff = FIRST;
             }
-            for m in s.meters.drain(..) {
-                if !m.silent {
-                    self.out.push(AudioChange::Levels(Levels {
-                        target: m.target,
-                        device: m.device,
-                        peaks: Vec::new(),
-                    }));
-                }
+            for mut m in s.meters.drain(..) {
+                self.out.extend(m.quiet().map(AudioChange::Levels));
             }
         }
         self.dirty = true;
@@ -649,6 +882,7 @@ impl Driver<'_> {
                             id,
                             name: p.get("node.name").map(str::to_owned),
                             description,
+                            link: RouteLink::of(p.get("device.id"), p.get("card.profile.device")),
                         });
                     })
                     .param(move |_, ty, _, _, pod| {
@@ -677,11 +911,66 @@ impl Driver<'_> {
                         _listener: listener,
                         proxy: node,
                         device,
+                        direction,
+                        channels: 0,
                         serial: get("object.serial"),
+                        link: None,
                         sync,
                         ready: false,
-                        written: None,
+                        echoes: Echoes::default(),
                         has_channel_volumes: false,
+                    },
+                );
+            }
+            ObjectType::Device => {
+                // Cards (ALSA, Bluetooth): only their routes are read, for
+                // writes; they show nothing themselves.
+                if get("media.class").as_deref() != Some("Audio/Device") {
+                    return;
+                }
+                let device: Device = match s.registry.bind(&global) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        log::warn!("audio: cannot bind device {}: {e}", global.id);
+                        return;
+                    }
+                };
+                let (number, id) = (s.number, global.id);
+                let (q1, q2) = (q.clone(), q);
+                let listener = device
+                    .add_listener_local()
+                    .info(move |info| {
+                        let route_flags = info
+                            .params()
+                            .iter()
+                            .find(|p| p.id() == ParamType::Route)
+                            .map(|p| p.flags().bits());
+                        q1.borrow_mut().push_back(Work::DeviceInfo {
+                            session: number,
+                            id,
+                            route_flags,
+                        });
+                    })
+                    .param(move |_, ty, _, _, pod| {
+                        if ty != ParamType::Route {
+                            return;
+                        }
+                        if let Some(route) = pod.and_then(|p| Route::parse(p.as_bytes())) {
+                            q2.borrow_mut().push_back(Work::DeviceRoute {
+                                session: number,
+                                id,
+                                route,
+                            });
+                        }
+                    })
+                    .register();
+                device.subscribe_params(&[ParamType::Route]);
+                s.devices.insert(
+                    id,
+                    DeviceEntry {
+                        _listener: listener,
+                        proxy: device,
+                        routes: Routes::default(),
                     },
                 );
             }
@@ -724,6 +1013,7 @@ impl Driver<'_> {
 
     fn global_remove(&mut self, id: u32) {
         let Some(s) = &mut self.session else { return };
+        s.devices.remove(&id);
         if s.nodes.remove(&id).is_some() {
             self.dirty = true;
             self.meters_dirty = true;
@@ -763,31 +1053,39 @@ impl Driver<'_> {
     fn action(&mut self, action: AudioAction) -> Result<(), AudioError> {
         let s = self.session.as_mut().ok_or(AudioError::NotConnected)?;
         match action {
-            AudioAction::SetVolume(d, v) => {
+            AudioAction::SetVolume(d, v) | AudioAction::StepVolume(d, v) => {
                 if !v.is_finite() {
                     return Err(AudioError::InvalidVolume(v));
                 }
+                let step = matches!(action, AudioAction::StepVolume(..));
                 let n = node_mut(s, d)?;
-                let v = v.clamp(0.0, n.device.volume.max(1.0));
-                let props = if n.has_channel_volumes && n.device.channels > 0 {
-                    let lin = vec![linear(v); n.device.channels as usize];
-                    n.written = Some((v, lin.clone()));
+                let current = n.device.volume;
+                let v = if step { n.echoes.base(current) + v } else { v };
+                // Never raised past 1 by us, nor past a volume another
+                // program amplified it to.
+                let v = v.clamp(0.0, current.max(1.0));
+                let props = if n.has_channel_volumes && n.channels > 0 {
+                    let lin = vec![linear(v); n.channels as usize];
+                    n.echoes.wrote(v, lin.clone());
                     Props {
                         channel_volumes: Some(lin),
                         ..Props::default()
                     }
                 } else {
+                    n.echoes.wrote(v, vec![linear(v)]);
                     Props {
                         volume: Some(linear(v)),
                         ..Props::default()
                     }
                 };
-                set_props(&n.proxy, &props)
+                let id = n.device.id;
+                write(s, id, &props)
             }
             AudioAction::SetMuted(d, m) => {
-                let n = node_mut(s, d)?;
-                set_props(
-                    &n.proxy,
+                let id = node_mut(s, d)?.device.id;
+                write(
+                    s,
+                    id,
                     &Props {
                         mute: Some(m),
                         ..Props::default()
@@ -797,7 +1095,7 @@ impl Driver<'_> {
             AudioAction::MakeDefault(d) => {
                 let (name, direction) = {
                     let n = node_mut(s, d)?;
-                    (n.device.name.clone(), n.device.direction)
+                    (n.device.name.clone(), n.direction)
                 };
                 let meta = s.metadata.as_ref().ok_or(AudioError::NoDefaultMetadata)?;
                 let kind = match direction {
@@ -831,32 +1129,44 @@ impl Driver<'_> {
                 LevelTarget::Device(id) => state.device(id),
             };
             let Some(device) = device else { continue };
+            // A meter that failed (a stream error) is started anew.
             if let Some(i) = old
                 .iter()
-                .position(|m| m.target == target && m.device == device.id)
+                .position(|m| m.target == target && m.device == device.id && !m.failed)
             {
                 keep.push(old.swap_remove(i));
                 continue;
             }
-            let serial = s.nodes.get(&device.id).and_then(|n| n.serial.as_deref());
+            let Some(node) = s.nodes.get(&device.id) else {
+                continue;
+            };
             self.meters += 1;
             let t = MeterTarget {
                 id: device.id,
                 name: &device.name,
-                serial,
-                direction: device.direction,
+                serial: node.serial.as_deref(),
+                direction: node.direction,
             };
             match Meter::start(&s.core, self.meters, target, &t, &self.q) {
                 Ok(m) => keep.push(m),
                 Err(e) => log::warn!("audio: {e}"),
             }
         }
-        // Meters no longer wanted, or retargeted, stop here.
-        drop(old);
+        // Meters no longer wanted, or retargeted, stop here; each that
+        // last showed sound says it is quiet, so a reader never keeps a
+        // stale level (hidden while the sound stopped, or a default that
+        // moved to a silent device).
+        for mut m in old {
+            self.out.extend(m.quiet().map(AudioChange::Levels));
+        }
         s.meters = keep;
     }
 
+    /// A meter's reading: held, the loudest peak per channel kept, and
+    /// sent at most once per [`FRAME`]. Only the first silent reading
+    /// after sound is sent.
     fn reading(&mut self, meter: u64, peaks: Vec<f32>) {
+        let now = Instant::now();
         let Some(m) = self
             .session
             .as_mut()
@@ -864,16 +1174,43 @@ impl Driver<'_> {
         else {
             return;
         };
-        let silent = peaks.iter().all(|p| *p == 0.0);
-        if silent && m.silent {
+        if m.hold.add(peaks, now)
+            && let Some(l) = m.take(now)
+        {
+            self.out.push(AudioChange::Levels(l));
+        }
+        if let Some(at) = m.hold.due(now) {
+            self.arm_flush(at, now);
+        }
+    }
+
+    /// The frame timer: sends what each meter held once it is due.
+    fn flush_meters(&mut self) {
+        let now = Instant::now();
+        let Some(s) = &mut self.session else { return };
+        let mut next: Option<Instant> = None;
+        for m in &mut s.meters {
+            match m.hold.due(now) {
+                Some(at) if at <= now => self.out.extend(m.take(now).map(AudioChange::Levels)),
+                Some(at) => next = Some(next.map_or(at, |n| n.min(at))),
+                None => {}
+            }
+        }
+        if let Some(at) = next {
+            self.arm_flush(at, now);
+        }
+    }
+
+    fn arm_flush(&mut self, at: Instant, now: Instant) {
+        if self.flush_at.is_some_and(|t| t <= at) {
             return;
         }
-        m.silent = silent;
-        self.out.push(AudioChange::Levels(Levels {
-            target: m.target,
-            device: m.device,
-            peaks,
-        }));
+        self.flush_at = Some(at);
+        // Never zero: a zero timeout disarms the timer.
+        let delay = at
+            .saturating_duration_since(now)
+            .max(Duration::from_micros(100));
+        let _ = self.flush.update_timer(Some(delay), None);
     }
 
     fn meter_event(&mut self, meter: u64, event: MeterEvent) {
@@ -888,15 +1225,19 @@ impl Driver<'_> {
             m.failed = true;
             log::debug!("audio: the meter on device {} stopped", m.device);
         }
-        if !m.silent {
-            m.silent = true;
-            self.out.push(AudioChange::Levels(Levels {
-                target: m.target,
-                device: m.device,
-                peaks: Vec::new(),
-            }));
-        }
+        // The device stopped: what it held is dropped, and a meter that
+        // showed sound says it is quiet.
+        self.out.extend(m.quiet().map(AudioChange::Levels));
     }
+}
+
+/// Whether a core error means the connection is gone (what pw-cli and
+/// pw-mon treat so); any other error on the core is logged and kept.
+fn disconnected(res: i32) -> bool {
+    use rustix::io::Errno;
+    [Errno::PIPE, Errno::CONNRESET, Errno::NOTCONN]
+        .iter()
+        .any(|e| res == -e.raw_os_error())
 }
 
 /// Issues a sync after a bind; the bound object is shown once it returns.
@@ -916,15 +1257,12 @@ fn sync(s: &mut Session) -> Option<i32> {
 fn apply_props(n: &mut NodeEntry, props: &Props) {
     if let Some(cv) = &props.channel_volumes {
         n.has_channel_volumes = true;
-        n.device.channels = cv.len() as u32;
-        n.device.volume = match &n.written {
-            Some((v, lin)) if lin == cv => *v,
-            _ => perceptual(cv).unwrap_or(1.0),
-        };
+        n.channels = cv.len() as u32;
+        n.device.volume = n.echoes.read(cv).unwrap_or(1.0);
     } else if let Some(v) = props.volume
         && !n.has_channel_volumes
     {
-        n.device.volume = perceptual(&[v]).unwrap_or(1.0);
+        n.device.volume = n.echoes.read(&[v]).unwrap_or(1.0);
     }
     if let Some(m) = props.mute {
         n.device.muted = m;
@@ -957,7 +1295,7 @@ fn default_id(s: &Session, direction: Direction) -> Option<u32> {
         let name = name.as_deref()?;
         s.nodes
             .values()
-            .find(|n| n.ready && n.device.direction == direction && n.device.name == name)
+            .find(|n| n.ready && n.direction == direction && n.device.name == name)
             .map(|n| n.device.id)
     };
     find(effective).or_else(|| find(configured))
@@ -973,7 +1311,8 @@ fn state_of(s: &Session) -> AudioState {
     for n in s.nodes.values().filter(|n| n.ready) {
         let mut d = n.device.clone();
         d.default = Some(d.id) == sink || Some(d.id) == source;
-        match d.direction {
+        d.icon = icon(n.direction, d.volume, d.muted).to_owned();
+        match n.direction {
             Direction::Sink => state.sinks.push(d),
             Direction::Source => state.sources.push(d),
         }
@@ -992,9 +1331,166 @@ fn node_mut(s: &mut Session, d: DeviceRef) -> Result<&mut NodeEntry, AudioError>
         .ok_or(AudioError::UnknownDevice(d))
 }
 
-fn set_props(node: &Node, props: &Props) -> Result<(), AudioError> {
-    let bytes = props.to_pod().map_err(AudioError::Failed)?;
-    let pod = Pod::from_bytes(&bytes).ok_or_else(|| AudioError::Failed("bad Props pod".into()))?;
-    node.set_param(ParamType::Props, 0, pod);
+/// Writes volume or mute to node `id`: through its card's active route
+/// when it has one (as `wpctl` and pipewire-pulse do, so the hardware
+/// mixer moves and the session manager saves it), else to its `Props`.
+fn write(s: &Session, id: u32, props: &Props) -> Result<(), AudioError> {
+    let n = s
+        .nodes
+        .get(&id)
+        .ok_or(AudioError::UnknownDevice(DeviceRef::Id(id)))?;
+    let via = write_via(n.link, |device| {
+        let profile_device = n.link?.profile_device;
+        s.devices.get(&device)?.routes.active(profile_device)
+    });
+    match via {
+        WriteVia::Route { device, route } => {
+            let d = s.devices.get(&device).ok_or_else(|| {
+                AudioError::Failed(format!("device {device} of node {id} is gone"))
+            })?;
+            let bytes = route.write_pod(props).map_err(AudioError::Failed)?;
+            let pod = Pod::from_bytes(&bytes)
+                .ok_or_else(|| AudioError::Failed("bad Route pod".into()))?;
+            d.proxy.set_param(ParamType::Route, 0, pod);
+        }
+        WriteVia::Node => {
+            let bytes = props.to_pod().map_err(AudioError::Failed)?;
+            let pod = Pod::from_bytes(&bytes)
+                .ok_or_else(|| AudioError::Failed("bad Props pod".into()))?;
+            n.proxy.set_param(ParamType::Props, 0, pod);
+        }
+    }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn writes_go_through_the_active_route_of_a_card_node() {
+        let route = Route {
+            index: 4,
+            device: 1,
+        };
+        let routes = |device: u32| (device == 50).then_some(route);
+        // A null sink, or any node of no card: its Props.
+        assert_eq!(write_via(None, routes), WriteVia::Node);
+        // A card's node whose profile device has an active route.
+        let link = RouteLink {
+            device: 50,
+            profile_device: 1,
+        };
+        assert_eq!(
+            write_via(Some(link), routes),
+            WriteVia::Route { device: 50, route }
+        );
+        // A card without that route (another profile device, or no
+        // routes at all, e.g. a pro-audio profile): its Props.
+        let other = RouteLink {
+            profile_device: 0,
+            ..link
+        };
+        assert_eq!(write_via(Some(other), routes), WriteVia::Node);
+        let elsewhere = RouteLink { device: 51, ..link };
+        assert_eq!(write_via(Some(elsewhere), routes), WriteVia::Node);
+    }
+
+    #[test]
+    fn node_links_come_from_its_properties() {
+        assert_eq!(
+            RouteLink::of(Some("48"), Some("1")),
+            Some(RouteLink {
+                device: 48,
+                profile_device: 1
+            })
+        );
+        assert_eq!(RouteLink::of(Some("48"), None), None);
+        assert_eq!(RouteLink::of(None, Some("1")), None);
+        assert_eq!(RouteLink::of(Some("x"), Some("1")), None);
+    }
+
+    #[test]
+    fn a_device_uses_only_its_current_set_of_routes() {
+        let r = |index, device| Route { index, device };
+        let mut routes = Routes::default();
+        // Before any info and set: nothing.
+        assert_eq!(routes.active(0), None);
+        routes.info(Some(0b111));
+        assert_eq!(routes.active(0), None);
+        routes.route(r(2, 0));
+        routes.route(r(5, 1));
+        assert_eq!(routes.active(0), Some(r(2, 0)));
+        assert_eq!(routes.active(1), Some(r(5, 1)));
+        // The same flags again (another param changed): kept.
+        routes.info(Some(0b111));
+        assert_eq!(routes.active(1), Some(r(5, 1)));
+        // The routes changed (the serial bit toggled): none is used
+        // until the new set comes, which replaces the old one.
+        routes.info(Some(0b110));
+        assert_eq!(routes.active(0), None);
+        routes.route(r(3, 1));
+        assert_eq!(routes.active(1), Some(r(3, 1)));
+        assert_eq!(routes.active(0), None);
+        // A set with no routes never comes: none is used.
+        routes.info(Some(0b111));
+        assert_eq!(routes.active(1), None);
+    }
+
+    #[test]
+    fn echoes_of_recent_writes_read_back_as_written() {
+        let mut e = Echoes::default();
+        // Not ours: the cube root.
+        assert_eq!(e.read(&[0.125, 0.125]), Some(0.5));
+        // A slider sends three writes before the first echo.
+        for v in [0.3, 0.31, 0.32] {
+            e.wrote(v, vec![linear(v); 2]);
+        }
+        assert_eq!(e.base(0.5), 0.32);
+        // The echoes come back one by one, each as written.
+        assert_eq!(e.read(&[linear(0.3); 2]), Some(0.3));
+        assert_eq!(e.base(0.3), 0.32, "the last write is still pending");
+        assert_eq!(e.read(&[linear(0.31); 2]), Some(0.31));
+        assert_eq!(e.read(&[linear(0.32); 2]), Some(0.32));
+        assert_eq!(e.base(0.32), 0.32);
+        assert_eq!(e.pending, None);
+        // Only the last ECHOES writes are remembered.
+        for i in 0..=ECHOES {
+            e.wrote(0.1 + i as f64 / 100.0, vec![linear(0.1 + i as f64 / 100.0)]);
+        }
+        assert_eq!(e.written.len(), ECHOES);
+        assert_eq!(e.read(&[linear(0.1)]), perceptual(&[linear(0.1)]));
+        // Another program's volume ends the pending write.
+        e.wrote(0.9, vec![linear(0.9)]);
+        assert_eq!(e.read(&[0.008]), perceptual(&[0.008]));
+        assert_eq!(e.base(0.2), 0.2);
+    }
+
+    #[test]
+    fn inotify_events_that_end_or_overflow_the_watch() {
+        let name = OsString::from("pipewire-0");
+        let mut seen = Seen::default();
+        let other = std::ffi::CString::new("other").unwrap();
+        seen.add(3, inotify::ReadFlags::CREATE, Some(&other), &name);
+        assert_eq!(seen, Seen::default());
+        let ours = std::ffi::CString::new("pipewire-0").unwrap();
+        seen.add(3, inotify::ReadFlags::CREATE, Some(&ours), &name);
+        assert!(seen.hit);
+        let mut seen = Seen::default();
+        seen.add(-1, inotify::ReadFlags::QUEUE_OVERFLOW, None, &name);
+        assert!(seen.hit, "an overflow may have lost the socket's event");
+        let mut seen = Seen::default();
+        seen.add(3, inotify::ReadFlags::IGNORED, None, &name);
+        assert_eq!(seen.gone, [3]);
+        assert!(!seen.hit);
+    }
+
+    #[test]
+    fn only_a_broken_connection_counts_as_lost() {
+        assert!(disconnected(-32)); // EPIPE
+        assert!(disconnected(-104)); // ECONNRESET
+        assert!(!disconnected(-22)); // EINVAL: a bad request
+        assert!(!disconnected(-2)); // ENOENT
+        assert!(!disconnected(0));
+    }
 }

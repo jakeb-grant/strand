@@ -1,6 +1,7 @@
-//! A node's `Props` param: what the audio thread reads (channel volumes,
-//! mute) and writes. Pure functions over pod bytes, so they are tested
-//! without a PipeWire daemon.
+//! A node's `Props` param (what the audio thread reads: channel volumes,
+//! mute) and a device's `Route` param (where a card's volume is written).
+//! Pure functions over pod bytes, so they are tested without a PipeWire
+//! daemon.
 
 use pipewire::spa::pod::deserialize::PodDeserializer;
 use pipewire::spa::pod::serialize::PodSerializer;
@@ -47,6 +48,11 @@ impl Props {
 
     /// The `Props` object pod setting what is `Some` here.
     pub fn to_pod(&self) -> Result<Vec<u8>, String> {
+        serialize(&self.to_value())
+    }
+
+    /// The `Props` object setting what is `Some` here.
+    fn to_value(&self) -> Value {
         let mut properties = Vec::new();
         if let Some(v) = &self.channel_volumes {
             properties.push(Property {
@@ -69,14 +75,71 @@ impl Props {
                 value: Value::Bool(m),
             });
         }
-        let value = Value::Object(Object {
+        Value::Object(Object {
             type_: sys::SPA_TYPE_OBJECT_Props,
             id: sys::SPA_PARAM_Props,
             properties,
-        });
-        PodSerializer::serialize(std::io::Cursor::new(Vec::new()), &value)
-            .map(|(cursor, _)| cursor.into_inner())
-            .map_err(|e| format!("cannot build a Props pod: {e:?}"))
+        })
+    }
+}
+
+fn serialize(value: &Value) -> Result<Vec<u8>, String> {
+    PodSerializer::serialize(std::io::Cursor::new(Vec::new()), value)
+        .map(|(cursor, _)| cursor.into_inner())
+        .map_err(|e| format!("cannot build a pod: {e:?}"))
+}
+
+/// One of a device's active routes (its `Route` param): the port a card
+/// profile device (`card.profile.device` of a node) plays to or records
+/// from now, as ALSA cards (ACP) and Bluetooth devices report them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Route {
+    /// The route's index (`SPA_PARAM_ROUTE_index`).
+    pub index: i32,
+    /// The card profile device it belongs to (`SPA_PARAM_ROUTE_device`),
+    /// what a node's `card.profile.device` names.
+    pub device: i32,
+}
+
+impl Route {
+    /// Reads a `Route` object pod. `None` for anything else, or a route
+    /// without an index or device.
+    pub fn parse(bytes: &[u8]) -> Option<Route> {
+        let (_, value) = PodDeserializer::deserialize_any_from(bytes).ok()?;
+        let Value::Object(obj) = value else {
+            return None;
+        };
+        if obj.type_ != sys::SPA_TYPE_OBJECT_ParamRoute {
+            return None;
+        }
+        let (mut index, mut device) = (None, None);
+        for p in obj.properties {
+            match (p.key, p.value) {
+                (sys::SPA_PARAM_ROUTE_index, Value::Int(i)) => index = Some(i),
+                (sys::SPA_PARAM_ROUTE_device, Value::Int(d)) => device = Some(d),
+                _ => {}
+            }
+        }
+        Some(Route {
+            index: index?,
+            device: device?,
+        })
+    }
+
+    /// The `Route` pod that sets `props` on this route and asks the
+    /// session manager to save them (`save: true`), as `wpctl
+    /// set-volume` and pipewire-pulse write a card's volume and mute.
+    pub fn write_pod(&self, props: &Props) -> Result<Vec<u8>, String> {
+        serialize(&Value::Object(Object {
+            type_: sys::SPA_TYPE_OBJECT_ParamRoute,
+            id: sys::SPA_PARAM_Route,
+            properties: vec![
+                Property::new(sys::SPA_PARAM_ROUTE_index, Value::Int(self.index)),
+                Property::new(sys::SPA_PARAM_ROUTE_device, Value::Int(self.device)),
+                Property::new(sys::SPA_PARAM_ROUTE_props, props.to_value()),
+                Property::new(sys::SPA_PARAM_ROUTE_save, Value::Bool(true)),
+            ],
+        }))
     }
 }
 
@@ -157,6 +220,81 @@ mod tests {
         assert_eq!(Props::parse(&bytes), None);
         assert_eq!(Props::parse(b"not a pod"), None);
         assert_eq!(Props::parse(&[]), None);
+    }
+
+    #[test]
+    fn route_pods() {
+        // A Route as ACP reports it: more keys than we read.
+        let value = Value::Object(Object {
+            type_: sys::SPA_TYPE_OBJECT_ParamRoute,
+            id: sys::SPA_PARAM_Route,
+            properties: vec![
+                Property::new(sys::SPA_PARAM_ROUTE_index, Value::Int(3)),
+                Property::new(
+                    sys::SPA_PARAM_ROUTE_direction,
+                    Value::Id(pipewire::spa::utils::Id(sys::SPA_DIRECTION_OUTPUT)),
+                ),
+                Property::new(sys::SPA_PARAM_ROUTE_device, Value::Int(1)),
+                Property::new(
+                    sys::SPA_PARAM_ROUTE_name,
+                    Value::String("analog-output-headphones".into()),
+                ),
+                Property::new(
+                    sys::SPA_PARAM_ROUTE_props,
+                    Props {
+                        channel_volumes: Some(vec![0.5, 0.5]),
+                        ..Props::default()
+                    }
+                    .to_value(),
+                ),
+            ],
+        });
+        let bytes = serialize(&value).unwrap();
+        let route = Route::parse(&bytes).unwrap();
+        assert_eq!(
+            route,
+            Route {
+                index: 3,
+                device: 1
+            }
+        );
+        // Not a route, or a route missing what a write needs.
+        assert_eq!(Route::parse(&Props::default().to_pod().unwrap()), None);
+        let partial = Value::Object(Object {
+            type_: sys::SPA_TYPE_OBJECT_ParamRoute,
+            id: sys::SPA_PARAM_Route,
+            properties: vec![Property::new(sys::SPA_PARAM_ROUTE_index, Value::Int(3))],
+        });
+        assert_eq!(Route::parse(&serialize(&partial).unwrap()), None);
+
+        // The write: index, device, the props and save, as pipewire-pulse
+        // builds it.
+        let props = Props {
+            channel_volumes: Some(vec![0.125, 0.125]),
+            mute: Some(false),
+            ..Props::default()
+        };
+        let bytes = route.write_pod(&props).unwrap();
+        let (_, Value::Object(obj)) = PodDeserializer::deserialize_any_from(&bytes).unwrap() else {
+            panic!("not an object");
+        };
+        assert_eq!(obj.type_, sys::SPA_TYPE_OBJECT_ParamRoute);
+        assert_eq!(obj.id, sys::SPA_PARAM_Route);
+        let keys: Vec<u32> = obj.properties.iter().map(|p| p.key).collect();
+        assert_eq!(
+            keys,
+            [
+                sys::SPA_PARAM_ROUTE_index,
+                sys::SPA_PARAM_ROUTE_device,
+                sys::SPA_PARAM_ROUTE_props,
+                sys::SPA_PARAM_ROUTE_save
+            ]
+        );
+        assert_eq!(obj.properties[0].value, Value::Int(3));
+        assert_eq!(obj.properties[1].value, Value::Int(1));
+        assert_eq!(obj.properties[3].value, Value::Bool(true));
+        let inner = serialize(&obj.properties[2].value).unwrap();
+        assert_eq!(Props::parse(&inner), Some(props));
     }
 
     #[test]

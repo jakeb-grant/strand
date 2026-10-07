@@ -7,7 +7,15 @@
 //! follow the session manager's moves (`node.dont-reconnect`): the thread
 //! retargets it itself when the default changes. Its process callback runs
 //! on the `strand-pipewire` thread (no `RT_PROCESS`), which turns each
-//! cycle into one reading.
+//! cycle into a reading; the meter holds readings so that at most one per
+//! [`FRAME`] goes out, the loudest peak per channel in between (a client
+//! asking for low latency shrinks the graph's cycle to ~1.3 ms, and a
+//! level shown on screen needs no more than the frame rate).
+//!
+//! On a source the meter is passive too: it shows a level only while
+//! something else records from it. It never opens a microphone by itself
+//! (which would light the "microphone in use" indicators, the shell's own
+//! included) nor keeps it awake.
 
 use pipewire::core::CoreRc;
 use pipewire::properties::PropertiesBox;
@@ -18,9 +26,10 @@ use pipewire::spa::param::format_utils;
 use pipewire::spa::pod::Pod;
 use pipewire::spa::pod::serialize::PodSerializer;
 use pipewire::stream::{StreamFlags, StreamListener, StreamRc, StreamState};
+use std::time::Instant;
 
-use super::model::{Direction, LevelTarget};
-use super::thread::{Queue, Work};
+use super::model::{Direction, LevelTarget, Levels};
+use super::thread::{FRAME, Queue, Work};
 
 /// What a meter's stream reports to the thread.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,10 +56,10 @@ pub(crate) struct Meter {
     pub id: u64,
     pub target: LevelTarget,
     pub device: u32,
-    /// The last reading was all zeros (or none came yet).
-    pub silent: bool,
-    /// The stream failed; it is not restarted until its device changes.
+    /// The stream failed; the next look at the meters starts it anew.
     pub failed: bool,
+    /// Its readings.
+    pub hold: Hold,
     _listener: StreamListener<u32>,
     _stream: StreamRc,
 }
@@ -156,10 +165,100 @@ impl Meter {
             id,
             target,
             device: device.id,
-            silent: true,
             failed: false,
+            hold: Hold::default(),
             _listener: listener,
             _stream: stream,
+        })
+    }
+}
+
+/// A meter's readings between the cycles and what is sent: at most one
+/// reading per [`FRAME`] (the loudest peak per channel since the last),
+/// and of silence only the first reading after sound.
+#[derive(Debug)]
+pub(crate) struct Hold {
+    /// The last reading sent was all zeros or the closing quiet reading
+    /// (or none was sent yet).
+    pub silent: bool,
+    /// The loudest peaks per channel since the last reading sent.
+    pub pending: Option<Vec<f32>>,
+    /// When the last reading went out.
+    pub sent: Option<Instant>,
+}
+
+impl Default for Hold {
+    fn default() -> Self {
+        Hold {
+            silent: true,
+            pending: None,
+            sent: None,
+        }
+    }
+}
+
+impl Hold {
+    /// Holds one cycle's peaks. True if a reading is due now.
+    pub(crate) fn add(&mut self, peaks: Vec<f32>, now: Instant) -> bool {
+        let silent = peaks.iter().all(|p| *p == 0.0);
+        match &mut self.pending {
+            // Silence after silence: nothing to say.
+            None if silent && self.silent => return false,
+            Some(held) if held.len() == peaks.len() => {
+                for (h, p) in held.iter_mut().zip(&peaks) {
+                    *h = h.max(*p);
+                }
+            }
+            held => *held = Some(peaks),
+        }
+        self.due(now).is_some_and(|at| at <= now)
+    }
+
+    /// When the held reading may go out (`now` if nothing was sent yet),
+    /// if one is held.
+    pub(crate) fn due(&self, now: Instant) -> Option<Instant> {
+        self.pending.as_ref()?;
+        Some(self.sent.map_or(now, |t| t + FRAME))
+    }
+
+    /// The held reading's peaks, to send now (`None` for silence after
+    /// silence).
+    pub(crate) fn take(&mut self, now: Instant) -> Option<Vec<f32>> {
+        let peaks = self.pending.take()?;
+        let silent = peaks.iter().all(|p| *p == 0.0);
+        if silent && self.silent {
+            return None;
+        }
+        self.silent = silent;
+        self.sent = Some(now);
+        Some(peaks)
+    }
+
+    /// The device stopped (paused, failed, or the meter stops): what was
+    /// held is dropped. True if the closing quiet reading is due (the
+    /// last reading sent showed sound).
+    pub(crate) fn stop(&mut self) -> bool {
+        self.pending = None;
+        !std::mem::replace(&mut self.silent, true)
+    }
+}
+
+impl Meter {
+    /// The held reading, to send now.
+    pub(crate) fn take(&mut self, now: Instant) -> Option<Levels> {
+        Some(Levels {
+            target: self.target,
+            device: self.device,
+            peaks: self.hold.take(now)?,
+        })
+    }
+
+    /// The closing quiet reading, if the last reading sent showed sound.
+    pub(crate) fn quiet(&mut self) -> Option<Levels> {
+        self.hold.stop().then(|| Levels {
+            target: self.target,
+            device: self.device,
+            peaks: Vec::new(),
         })
     }
 }
@@ -206,5 +305,43 @@ mod tests {
         b.extend_from_slice(&[1, 2, 3]);
         assert_eq!(peaks(&b, 2), Some(vec![0.5, 0.25]));
         assert_eq!(peaks(&bytes(&[f32::NAN, 0.5]), 1), Some(vec![0.5]));
+    }
+
+    #[test]
+    fn readings_are_held_to_one_per_frame_and_silence_is_said_once() {
+        let t0 = Instant::now();
+        let ms = |n: u64| t0 + std::time::Duration::from_millis(n);
+        let mut h = Hold::default();
+        // Silence before any sound: nothing.
+        assert!(!h.add(vec![0.0, 0.0], ms(0)));
+        assert_eq!(h.due(ms(0)), None);
+        // The first sound goes out at once.
+        assert!(h.add(vec![0.2, 0.1], ms(1)));
+        assert_eq!(h.take(ms(1)), Some(vec![0.2, 0.1]));
+        // Cycles within the frame are held, the loudest per channel kept.
+        assert!(!h.add(vec![0.5, 0.0], ms(3)));
+        assert!(!h.add(vec![0.1, 0.4], ms(5)));
+        assert!(!h.add(vec![0.0, 0.0], ms(7)));
+        assert_eq!(h.due(ms(7)), Some(ms(1) + FRAME));
+        assert_eq!(h.take(ms(18)), Some(vec![0.5, 0.4]));
+        // Silence: the first reading of it goes out, then nothing.
+        assert!(h.add(vec![0.0, 0.0], ms(40)));
+        assert_eq!(h.take(ms(40)), Some(vec![0.0, 0.0]));
+        assert!(!h.add(vec![0.0, 0.0], ms(60)));
+        assert_eq!(h.take(ms(60)), None);
+        assert!(!h.stop(), "already quiet");
+        // Sound, then the device stops: one closing quiet reading.
+        assert!(h.add(vec![0.3, 0.3], ms(80)));
+        assert_eq!(h.take(ms(80)), Some(vec![0.3, 0.3]));
+        assert!(!h.add(vec![0.6, 0.6], ms(85)));
+        assert!(h.stop(), "the quiet reading is due");
+        assert_eq!(h.pending, None, "what was held is dropped");
+        assert!(!h.stop());
+        // A channel count change replaces what was held.
+        assert!(h.add(vec![0.1], ms(200)));
+        assert_eq!(h.take(ms(200)), Some(vec![0.1]));
+        assert!(!h.add(vec![0.3], ms(201)));
+        assert!(!h.add(vec![0.2, 0.2], ms(202)));
+        assert_eq!(h.take(ms(220)), Some(vec![0.2, 0.2]));
     }
 }

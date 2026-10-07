@@ -4,6 +4,8 @@
 //! plays nothing. Alone in its binary so no other test's threads share
 //! these names.
 
+#![cfg(feature = "pipewire")]
+
 mod pipewire;
 
 use std::collections::HashMap;
