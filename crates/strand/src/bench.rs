@@ -427,6 +427,7 @@ fn measure(rounds: usize) -> Option<Measured> {
         jobs: Some(compiler.jobs()),
         socket: None,
         buses: None,
+        icon_theme_switched: None,
     };
     let (ping, ping_source) = calloop::ping::make_ping().unwrap();
     let font = std::fs::read(strand_text::test_font_path()).unwrap();

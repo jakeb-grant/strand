@@ -13,7 +13,7 @@ file fixes boundaries; each crate is free inside its own boundary.
 | Text worker | `strand-text` | parley shaping, swash rasterisation, per-scale glyph atlases | Block render: a painted surface keeps drawing its last layout (or a realigned stand-in from another scale or width) until the new one arrives |
 | Watcher | `strand-watch` | inotify directory watches and polling (one `strand-watch` thread); not the IPC socket (`docs/decisions.md`, wave2-watch) | Parse files (it sends paths and hashes) |
 | Persist IO (one per `PersistStore`) | `strand-core` | Atomic writes of persisted cells, settings-file edits, settings overlays and last-good snapshots; reports each file it is about to change to `PersistStore::on_written` | Run on the logic tick or block logic (failures come back as diagnostics in a later tick) |
-| Services | `strand-services` | One tokio current-thread runtime thread (`strand-services`), started with the first service that runs on it: every async service body (the `system` service follows the portal Settings with `strand_watch::follow` here; the compositor IPC adapters run here); PipeWire and the Wayland toplevel protocols get a thread of their own per run (`Start::Thread`) | Block logic: they send patches and events over channels, applied by `Services::pump` on the logic thread |
+| Services | `strand-services` | One tokio current-thread runtime thread (`strand-services`), started with the first service that runs on it: every async service body (the `system` service follows the portal Settings with `strand_watch::follow` here; the compositor IPC adapters run here) and the portal icon-theme follower (`strand_services::icon_theme`, a task on the same session connection); PipeWire and the Wayland toplevel protocols get a thread of their own per run (`Start::Thread`) | Block logic: they send patches and events over channels, applied by `Services::pump` on the logic thread |
 
 Channels are the only coupling between threads. Logic → render is one
 `SceneDiff` per tick. Render → logic is `InputEvent`s (`strand-scene`) and layout facts
@@ -192,11 +192,14 @@ fallbacks; `exists` follows the same chain; `system_theme`, `base_dirs`, `theme_
 `generation`, and `set_desktop_theme(Option<String>) -> bool`, the
 portal's theme name, preferred to GTK's settings files and invalidating
 when it changes); the renderer and the `apps` service both look icons up
-through it. `strand_services::icon_theme::spawn(bus, switched)` follows
-the settings portal's `org.gnome.desktop.interface` `icon-theme` on a
-thread of its own and feeds `set_desktop_theme`; `strand run` keeps the
-returned `Follower` and has `switched` redraw icons as an `index.theme`
-change does. `strand-introspect` reads an object's properties from its
+through it. `strand_services::icon_theme::spawn(&Services, switched)`
+follows the settings portal's `org.gnome.desktop.interface` `icon-theme`
+as a task of the shared services runtime, on its shared session
+connection (`Services::spawn_task`, crate-private), and feeds
+`set_desktop_theme`; `strand run`'s logic thread keeps the returned
+`Follower` with the real services (`run::Live::icon_theme_switched` is the
+main thread's callback) and has `switched` redraw icons as an
+`index.theme` change does. `strand-introspect` reads an object's properties from its
 D-Bus introspection (`properties_on(conn, name, path)` async,
 `properties(&Bus, name, path)` blocking with a 2 s bound, `parse(xml)`,
 `default_path(name)`, and `Cache`: answers remembered for `TTL` (10 s),

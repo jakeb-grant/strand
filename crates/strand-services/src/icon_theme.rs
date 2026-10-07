@@ -5,7 +5,8 @@
 //!
 //! GNOME, and any desktop whose portal backend exposes GSettings, sets the
 //! icon theme there rather than in GTK's `settings.ini`; GTK itself
-//! follows it on Wayland. [`spawn`] hands each answer to
+//! follows it on Wayland. [`spawn`] (a task on the shared services
+//! runtime, on its shared session connection) hands each answer to
 //! [`strand_icons::set_desktop_theme`], which [`strand_icons::system_theme`]
 //! prefers to the settings files (decisions.md, wave4-a3), and on a switch
 //! tells the `apps` service and the caller (the renderer's icons are
@@ -16,7 +17,8 @@ use std::time::Duration;
 use futures_lite::StreamExt;
 use zbus::zvariant::{OwnedValue, Value};
 
-use crate::bus::{Bus, CONNECT_TIMEOUT};
+use crate::Services;
+use crate::bus::CONNECT_TIMEOUT;
 
 /// The GSettings schema the portal exposes the theme under.
 pub const NAMESPACE: &str = "org.gnome.desktop.interface";
@@ -134,7 +136,8 @@ pub async fn follow(
     }
 }
 
-/// Follows the portal's icon theme on a thread of its own until dropped.
+/// Follows the portal's icon theme on the shared services runtime until
+/// dropped.
 #[derive(Debug)]
 pub struct Follower {
     stop: Option<tokio::sync::oneshot::Sender<()>>,
@@ -148,65 +151,33 @@ impl Drop for Follower {
     }
 }
 
-/// Follow the portal's icon theme on the session bus `bus` (a thread with
-/// a current-thread runtime of its own, idle in `epoll` between changes).
-/// Each answer goes to [`strand_icons::set_desktop_theme`]; when it
-/// switches the theme, the `apps` service is told ([`crate::apps::changed`])
-/// and `switched` is called (on that thread): the renderer's icons must be
-/// looked up again. Without a bus or portal, nothing happens.
-pub fn spawn(bus: Bus, switched: impl Fn() + Send + 'static) -> std::io::Result<Follower> {
-    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-    std::thread::Builder::new()
-        .name("strand-icon-theme".into())
-        .spawn(move || {
-            let rt = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(rt) => rt,
-                Err(e) => {
-                    log::warn!("not following the portal's icon theme: {e}");
-                    return;
-                }
-            };
-            rt.block_on(async move {
-                let connect = async {
-                    match &bus {
-                        Bus::Disabled => Err(zbus::Error::Failure("no bus".into())),
-                        Bus::Default => zbus::Connection::session().await,
-                        Bus::Address(a) => {
-                            zbus::connection::Builder::address(a.as_str())?
-                                .build()
-                                .await
-                        }
-                    }
-                };
-                let conn = match tokio::time::timeout(CONNECT_TIMEOUT, connect).await {
-                    Ok(Ok(c)) => c,
-                    Ok(Err(e)) => {
-                        log::debug!("not following the portal's icon theme: {e}");
-                        return;
-                    }
-                    Err(_) => {
-                        log::debug!("not following the portal's icon theme: connecting timed out");
-                        return;
-                    }
-                };
-                let follow = follow(&conn, |name| {
-                    if strand_icons::set_desktop_theme(name) {
-                        crate::apps::changed();
-                        switched();
-                    }
-                });
-                tokio::select! {
-                    r = follow => {
-                        if let Err(e) = r {
-                            log::debug!("following the portal's icon theme ended: {e}");
-                        }
-                    }
-                    _ = stopped => {}
-                }
-            });
-        })?;
-    Ok(Follower { stop: Some(stop) })
+/// Follow the portal's icon theme on the session bus of `services`: a
+/// task on the shared services runtime (design.md: "Services share one
+/// tokio current-thread runtime"), on the session connection the other
+/// services share (the `system` service's), idle between changes. Each
+/// answer goes to [`strand_icons::set_desktop_theme`]; when it switches
+/// the theme, the `apps` service is told ([`crate::apps::changed`]) and
+/// `switched` is called (on the services thread): the renderer's icons
+/// must be looked up again. Without a bus or portal, nothing happens.
+pub fn spawn(services: &Services, switched: impl Fn() + Send + 'static) -> Follower {
+    let stop = services.spawn_task(move |buses| async move {
+        let conn = match crate::bus::session(&buses).await {
+            Ok(c) => c,
+            Err(e) => {
+                log::debug!("not following the portal's icon theme: {e}");
+                return;
+            }
+        };
+        let r = follow(&conn, |name| {
+            if strand_icons::set_desktop_theme(name) {
+                crate::apps::changed();
+                switched();
+            }
+        })
+        .await;
+        if let Err(e) = r {
+            log::debug!("following the portal's icon theme ended: {e}");
+        }
+    });
+    Follower { stop }
 }

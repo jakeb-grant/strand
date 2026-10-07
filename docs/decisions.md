@@ -7001,8 +7001,12 @@ GSettings, names the icon theme in `org.gnome.desktop.interface`
 `icon-theme`, not in `settings.ini`; GTK itself follows that on Wayland.
 `strand run` reads it through the settings portal (`ReadOne` at start,
 `SettingChanged` matched on namespace and key, read again when the portal
-restarts) on a thread of its own (`strand_services::icon_theme`, idle in
-epoll between changes). The desktop's theme is then `$STRAND_ICON_THEME`,
+restarts) as a task of the shared services runtime
+(`strand_services::icon_theme`, idle between changes; r3: it first ran on
+a thread with a runtime and a session connection of its own, which
+design.md's "Services share one tokio current-thread runtime" and the
+PSS budget rule out; it now shares the `system` service's runtime and
+connection). The desktop's theme is then `$STRAND_ICON_THEME`,
 else the portal's name when a portal answers with one, else
 `gtk-icon-theme-name` in `settings.ini`, else Adwaita. A switch
 invalidates the icon cache, tells the `apps` service and redraws icons,

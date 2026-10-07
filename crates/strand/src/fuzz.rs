@@ -1428,6 +1428,7 @@ impl Shell {
             jobs: Some(worker.jobs()),
             socket: Some(socket.clone()),
             buses: None,
+            icon_theme_switched: None,
         };
         let (to_logic, from_main) = calloop::channel::channel();
         to_logic.send(ToLogic::Screens(screens())).unwrap();

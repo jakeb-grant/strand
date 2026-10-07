@@ -426,6 +426,33 @@ impl Services {
         std::mem::take(&mut *self.0.diagnostics.borrow_mut())
     }
 
+    /// Run the future `make` builds on the shared runtime (starting it if
+    /// need be), as one more user of its shared connections, until the
+    /// returned sender is dropped or the future ends; `None` when the
+    /// runtime cannot start. For work every run needs that is no
+    /// service of the schema's ([`crate::icon_theme`]).
+    pub(crate) fn spawn_task<F, Fut>(&self, make: F) -> Option<oneshot::Sender<()>>
+    where
+        F: FnOnce(Buses) -> Fut + Send + 'static,
+        Fut: Future<Output = ()> + 'static,
+    {
+        let (stop_tx, stop_rx) = oneshot::channel::<()>();
+        let buses = self.0.buses.clone();
+        let spawned = self.0.shared_spawn(Box::new(move || {
+            Box::pin(async move {
+                let _counted = SharedBody::enter();
+                crate::bus::with_user(async move {
+                    tokio::select! {
+                        _ = stop_rx => {}
+                        () = make(buses) => {}
+                    }
+                })
+                .await
+            })
+        }));
+        spawned.then_some(stop_tx)
+    }
+
     /// Whether the shared runtime thread was started.
     pub fn runtime_started(&self) -> bool {
         self.0.shared.borrow().is_some()

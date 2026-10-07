@@ -415,10 +415,27 @@ fn the_portal_icon_theme_is_followed_live() {
     let pinned = std::env::var("STRAND_ICON_THEME").is_ok_and(|t| !t.trim().is_empty());
     let switches = Arc::new(Mutex::new(0u32));
     let n = switches.clone();
-    let follower = strand_services::icon_theme::spawn(bus.buses().session, move || {
+    let rt = Runtime::new();
+    let (services, builtin) = services(&rt, bus.buses());
+    // `system` is held for the whole of a run, on the same shared
+    // runtime and session connection as the follower.
+    builtin.system.acquire(&rt);
+    let follower = strand_services::icon_theme::spawn(&services, move || {
         *n.lock().unwrap() += 1;
-    })
-    .unwrap();
+    });
+    assert!(services.runtime_started(), "a task of the shared runtime");
+    let threads = || -> Vec<String> {
+        std::fs::read_dir("/proc/self/task")
+            .unwrap()
+            .filter_map(|t| std::fs::read_to_string(t.ok()?.path().join("comm")).ok())
+            .map(|c| c.trim().to_string())
+            .collect()
+    };
+    assert!(
+        !threads().iter().any(|t| t.contains("icon-the")),
+        "no thread of its own: {:?}",
+        threads()
+    );
     let wait = |what: &str, count: u32| {
         let deadline = Instant::now() + Duration::from_secs(10);
         while *switches.lock().unwrap() < count {
@@ -455,5 +472,7 @@ fn the_portal_icon_theme_is_followed_live() {
     std::thread::sleep(Duration::from_millis(100));
     assert_eq!(*switches.lock().unwrap(), 3, "one call per switch");
     drop(follower);
+    builtin.system.release(&rt);
+    services.shutdown();
     strand_icons::set_desktop_theme(None);
 }

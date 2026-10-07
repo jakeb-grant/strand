@@ -405,6 +405,20 @@ pub struct Live {
     /// need one keep their seeded values (`system` its last values).
     /// Unused under `STRAND_MOCK`, whose mock host serves everything.
     pub buses: Option<strand_services::Buses>,
+    /// Called (on the services thread) when the portal's icon theme
+    /// switches (`strand_services::icon_theme`, followed on the shared
+    /// services runtime with the real services): the renderer's icons
+    /// are looked up again. `None`: the theme is not followed.
+    pub icon_theme_switched: Option<Switched>,
+}
+
+/// A callback for [`Live::icon_theme_switched`].
+pub struct Switched(pub Box<dyn Fn() + Send>);
+
+impl std::fmt::Debug for Switched {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Switched")
+    }
 }
 
 /// What a load attempt found wrong (held and unreadable files, its
@@ -1110,6 +1124,14 @@ pub fn logic(
         real.custom.set_config_dir(storage.config_dir.clone());
         real
     });
+    // GNOME (and any portal backend exposing GSettings) names the icon
+    // theme in `org.gnome.desktop.interface`, not GTK's settings files:
+    // followed for the whole run as a task of the services' shared
+    // runtime, a switch invalidates like an `index.theme` change.
+    let _icon_theme = real
+        .as_ref()
+        .zip(live.icon_theme_switched)
+        .map(|(r, switched)| strand_services::icon_theme::spawn(&r.services, switched.0));
     // Monitors the main thread already knows about.
     let mut inbox = Inbox::default();
     sleeper
@@ -1445,11 +1467,12 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
     if boot.build.is_none() && boot.errors() == 0 {
         log::warn!("{}: nothing to run yet", dir.display());
     }
-    let live = Live {
+    let mut live = Live {
         worker: Some(worker_rx),
         jobs: Some(compiler.jobs()),
         socket: ipc::socket_path(),
         buses: Some(strand_services::Buses::default()),
+        icon_theme_switched: None,
     };
     let (ping, ping_source) = calloop::ping::make_ping()?;
     let wake = ping.clone();
@@ -1470,22 +1493,11 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
             let _ = caches_tx.send(cache_changed(kind));
         })),
     });
-    // GNOME (and any portal backend exposing GSettings) names the icon
-    // theme in `org.gnome.desktop.interface`, not GTK's settings files:
-    // a switch there invalidates like an `index.theme` change.
-    let _icon_theme = live
-        .buses
-        .as_ref()
-        .map(|b| {
-            strand_services::icon_theme::spawn(b.session.clone(), move || {
-                let _ = icons_tx.send(CacheKind::Icons);
-            })
-        })
-        .transpose()
-        .unwrap_or_else(|e| {
-            log::warn!("not following the portal's icon theme: {e}");
-            None
-        });
+    // The portal's icon theme switching (followed by the logic thread's
+    // services) invalidates like an `index.theme` change.
+    live.icon_theme_switched = Some(Switched(Box::new(move || {
+        let _ = icons_tx.send(CacheKind::Icons);
+    })));
     let (to_logic, from_main) = calloop::channel::channel::<ToLogic>();
     let host = Host::new(renderer, log.damage)
         .forwarding(to_logic.clone())
@@ -1858,6 +1870,7 @@ pub(crate) mod tests {
             jobs: Some(compiler.jobs()),
             socket: Some(socket.clone()),
             buses: None,
+            icon_theme_switched: None,
         };
         let (to_logic, from_main) = calloop::channel::channel();
         let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -2019,6 +2032,7 @@ pub(crate) mod tests {
             jobs: Some(compiler.jobs()),
             socket,
             buses,
+            icon_theme_switched: None,
         };
         let (to_logic, from_main) = calloop::channel::channel();
         let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -2697,6 +2711,7 @@ pub(crate) mod tests {
             jobs: Some(compiler.jobs()),
             socket: None,
             buses: None,
+            icon_theme_switched: None,
         };
         let (to_logic, from_main) = calloop::channel::channel();
         let (tx, rx) = calloop::channel::channel::<SceneDiff>();

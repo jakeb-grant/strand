@@ -496,6 +496,18 @@ fn the_real_services_sleep_when_nothing_changes() {
         switches_of(pid, "strand-services") > 0,
         "the services thread runs (it follows the portal)"
     );
+    // The portal's icon theme is followed there too, not on a thread
+    // (and runtime, and bus connection) of its own.
+    let names: Vec<String> = std::fs::read_dir(format!("/proc/{pid}/task"))
+        .map(|tasks| {
+            tasks
+                .flatten()
+                .filter_map(|t| std::fs::read_to_string(t.path().join("comm")).ok())
+                .map(|c| c.trim().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(!names.iter().any(|n| n.contains("icon-the")), "{names:?}");
     let before: Vec<u64> = threads.iter().map(|t| switches_of(pid, t)).collect();
     std::thread::sleep(Duration::from_secs(4));
     let after: Vec<u64> = threads.iter().map(|t| switches_of(pid, t)).collect();
