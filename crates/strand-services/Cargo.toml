@@ -45,9 +45,11 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock", "s
 # Pixmaps (tray icons, notification `image-data`) written as PNG files for
 # `image`.
 png = "0.18.1"
-# sway's adapter (design.md names swayipc-async 3.0): its types, over our
-# own lossy i3-ipc framing on tokio.
-swayipc-async = "3.0.0"
+# sway's adapter: swayipc-types, the types design.md's swayipc-async 3.0
+# re-exports (it pins swayipc-types 2.0), over our own lossy i3-ipc
+# framing on tokio; without swayipc-async's async-io stack (decisions.md,
+# wave4-wm). Its default `error` feature holds the `decode` functions.
+swayipc-types = "2.0.3"
 # The Wayland toplevel and workspace protocols, on their own thread.
 wayland-client = "0.31.15"
 wayland-protocols = { version = "0.32.13", features = ["client", "staging"] }

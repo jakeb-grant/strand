@@ -146,6 +146,10 @@ impl ProtoCmd {
 pub struct ProtocolClient {
     sender: ProtocolSender,
     thread: Option<std::thread::JoinHandle<()>>,
+    /// Disconnected once the thread's body has ended (its sender is the
+    /// last thing the thread drops), so a stop waits on it instead of
+    /// polling `is_finished`.
+    done: mpsc::Receiver<()>,
 }
 
 /// Sends requests to a [`ProtocolClient`]'s thread (the run that routes
@@ -184,6 +188,7 @@ impl ProtocolClient {
         )?);
         let (ctx, crx) = mpsc::channel();
         let thread_wake = wake.clone();
+        let (done_tx, done) = mpsc::channel::<()>();
         // Resolved here, on the caller's thread: the client thread never
         // touches the environment.
         let socket = match target {
@@ -209,10 +214,12 @@ impl ProtocolClient {
                 }
                 drop(crx);
                 let _ = tx.send(ProtocolState::default());
+                drop(done_tx);
             })?;
         Ok(Self {
             sender: ProtocolSender { tx: ctx, wake },
             thread: Some(thread),
+            done,
         })
     }
 
@@ -227,19 +234,33 @@ impl ProtocolClient {
         self.sender.clone()
     }
 
+    /// Tells the thread to stop without waiting for it: it ends as soon
+    /// as its poll hears the stop. [`Self::stop`] (or dropping the client)
+    /// later reaps it.
+    pub fn request_stop(&self) {
+        self.send(ProtoCmd::Stop);
+    }
+
+    /// The thread has ended (a stop or join would not wait).
+    pub fn is_finished(&self) -> bool {
+        self.thread.as_ref().is_none_or(|t| t.is_finished())
+    }
+
     /// Stops the thread and waits for it to end (2 s at most; it ends at
     /// once unless the system is starved, and is then left to end alone).
+    /// Blocks: never call it on the shared services runtime with others
+    /// waiting (the hub stops runs with [`Self::request_stop`] and joins
+    /// here only when it is dropped).
     pub fn stop(mut self) {
-        self.send(ProtoCmd::Stop);
+        self.request_stop();
         let Some(t) = self.thread.take() else { return };
-        let deadline = std::time::Instant::now() + STOP_WAIT;
-        while !t.is_finished() && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-        if t.is_finished() {
-            let _ = t.join();
-        } else {
-            log::warn!("strand-toplevel did not stop within {STOP_WAIT:?}; left running");
+        match self.done.recv_timeout(STOP_WAIT) {
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = t.join();
+            }
+            Ok(()) | Err(mpsc::RecvTimeoutError::Timeout) => {
+                log::warn!("strand-toplevel did not stop within {STOP_WAIT:?}; left running");
+            }
         }
     }
 }

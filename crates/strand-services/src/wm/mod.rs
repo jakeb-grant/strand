@@ -7,7 +7,7 @@
 //! on, keyboard focus, fullscreen, the focused screen, config reloads) and
 //! serve compositors without them: Hyprland and niri (own
 //! implementations; niri behind the `niri` feature) and sway (through
-//! swayipc-async). [`detect`] picks the adapter from the environment.
+//! swayipc-types, swayipc-async 3.0's types). [`detect`] picks the adapter from the environment.
 //!
 //! [`run`] is the service: one future (for the shared tokio current-thread
 //! runtime) that starts the protocol thread and the adapter, merges what

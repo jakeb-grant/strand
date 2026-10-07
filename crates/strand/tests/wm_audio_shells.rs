@@ -449,3 +449,100 @@ fn design_shells_on_the_real_compositor_and_audio() {
     sh.cli(&["set", "audio.sink.muted", "true"]);
     sh.wait("PipeWire muted", |_| pw.volume_of("@DEFAULT_AUDIO_SINK@").1);
 }
+
+/// `on wm.config_reloaded { ... }` as a shell's only use of `wm` starts
+/// the compositor service and fires on `swaymsg reload` (design.md's
+/// change sources: "Compositor reload"): the box goes red, then green
+/// after one reload, then blue after a second (the count is also shown).
+#[test]
+fn a_reload_handler_alone_hears_the_compositor_reload() {
+    if !tools() {
+        return;
+    }
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("strand-wm-reload-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let (sway, display, ipc) = sway(&dir);
+    let home = dir.join("home");
+    let config = home.join(".config/strand");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("reloads.strand"),
+        "state reloads = 0\n\
+         on wm.config_reloaded { reloads += 1 }\n\
+         bar Top {\n  edge: top; height: 32\n  row {\n    \
+         box { size: 24; bg: #ff0000\n      \
+         when reloads == 1 { bg: #00ff00 }\n      \
+         when reloads >= 2 { bg: #0000ff }\n    }\n    \
+         text join(\" \", \"reloads\", reloads)\n  }\n}\n",
+    )
+    .unwrap();
+    let log = dir.join("strand.log");
+    let strand = Proc(
+        Command::new(env!("CARGO_BIN_EXE_strand"))
+            .arg("run")
+            .arg(&config)
+            .env("XDG_RUNTIME_DIR", &dir)
+            .env("WAYLAND_DISPLAY", &display)
+            .env("SWAYSOCK", &ipc)
+            .env("HOME", &home)
+            .env("XDG_CACHE_HOME", dir.join("cache"))
+            .env("XDG_STATE_HOME", dir.join("state"))
+            .envs(bus.env())
+            .env_remove("STRAND_MOCK")
+            .stdin(Stdio::null())
+            .stderr(std::fs::File::create(&log).unwrap())
+            .spawn()
+            .unwrap(),
+    );
+    let mut sh = Shell {
+        dir: dir.clone(),
+        display,
+        ipc,
+        log,
+        shots: std::env::var_os("STRAND_SHOTS").map(PathBuf::from),
+        n: std::cell::Cell::new(0),
+        strand: Some(strand),
+        _sway: sway,
+    };
+    // The box's pixels of one colour, in the bar.
+    let of = |img: &Img, c: [u8; 3]| {
+        img.count(0..200, 0..32, |p| {
+            p.iter()
+                .zip(c)
+                .all(|(a, b)| (*a as i32 - b as i32).abs() < 24)
+        })
+    };
+    const RED: [u8; 3] = [255, 0, 0];
+    const GREEN: [u8; 3] = [0, 255, 0];
+    const BLUE: [u8; 3] = [0, 0, 255];
+    sh.wait("the box, no reload yet", |s| of(&s.shot(), RED) > 300);
+    // The reload event is not state: one sent before the service's
+    // adapter subscribed is not heard, so the first is resent (3 s
+    // apart) until it is.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        sh.swaymsg(&["reload"]);
+        let heard = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < heard && of(&sh.shot(), GREEN) <= 300 {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        if of(&sh.shot(), GREEN) > 300 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no reload heard\n{}",
+            sh.log_text()
+        );
+    }
+    sh.keep("reloaded-once");
+    sh.swaymsg(&["reload"]);
+    sh.wait("two reloads", |s| of(&s.shot(), BLUE) > 300);
+    sh.keep("reloaded-twice");
+    assert_eq!(of(&sh.shot(), RED), 0);
+}

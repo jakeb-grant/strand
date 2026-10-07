@@ -13,7 +13,7 @@ file fixes boundaries; each crate is free inside its own boundary.
 | Text worker | `strand-text` | parley shaping, swash rasterisation, per-scale glyph atlases | Block render: a painted surface keeps drawing its last layout (or a realigned stand-in from another scale or width) until the new one arrives |
 | Watcher | `strand-watch` | inotify directory watches and polling (one `strand-watch` thread); not the IPC socket (`docs/decisions.md`, wave2-watch) | Parse files (it sends paths and hashes) |
 | Persist IO (one per `PersistStore`) | `strand-core` | Atomic writes of persisted cells, settings-file edits, settings overlays and last-good snapshots; reports each file it is about to change to `PersistStore::on_written` | Run on the logic tick or block logic (failures come back as diagnostics in a later tick) |
-| Services | `strand-services` | One tokio current-thread runtime thread (`strand-services`), started with the first service that runs on it: every async service body (the `system` service follows the portal Settings with `strand_watch::follow` here; the `workspaces`, `windows` and `wm` stores and their one compositor hub with its IPC adapter run here, the sway adapter on swayipc-async's types over its own tokio framing, so no async-io reactor thread); the `audio` store runs the PipeWire loop on its own service thread (`strand-audio`, `Start::Thread`), and the hub's Wayland toplevel/workspace protocol client its own `strand-toplevel` thread (the hub's, not a `Start::Thread` body: three stores share it; the hub joins it on its last stop and on `Services::shutdown`) (idle: zero wakeups, `crates/strand-services/tests/idle.rs`, `tests/audio_idle.rs`, `tests/wm_services.rs`, `tests/audio_service.rs`) | Block logic: they send patches and events over channels, applied by `Services::pump` on the logic thread |
+| Services | `strand-services` | One tokio current-thread runtime thread (`strand-services`), started with the first service that runs on it: every async service body (the `system` service follows the portal Settings with `strand_watch::follow` here; the `workspaces`, `windows` and `wm` stores and their one compositor hub with its IPC adapter run here, the sway adapter on swayipc-types (swayipc-async 3.0's types) over its own tokio framing, so no async-io reactor thread); the `audio` store runs the PipeWire loop on its own service thread (`strand-audio`, `Start::Thread`), and the hub's Wayland toplevel/workspace protocol client its own `strand-toplevel` thread (the hub's, not a `Start::Thread` body: three stores share it; the hub tells it to stop on its last stop without waiting on the shared runtime, and joins it at the next start or stop and on `Services::shutdown`) (idle: zero wakeups, `crates/strand-services/tests/idle.rs`, `tests/audio_idle.rs`, `tests/wm_services.rs`, `tests/audio_service.rs`) | Block logic: they send patches and events over channels, applied by `Services::pump` on the logic thread |
 
 Channels are the only coupling between threads. Logic → render is one
 `SceneDiff` per tick. Render → logic is `InputEvent`s (`strand-scene`) and layout facts
@@ -2108,7 +2108,9 @@ the primitives, `Option`, `Vec` and derived types.
   change source (design.md's change-source table); the binary must not
   turn it into a second `wm.config_reloaded`.
   The three stores (and the owner of `screens.focused`) share one `run`
-  through `wm::WmHub::new(config, runtime_handle)`: `subscribe() ->
+  through `wm::WmHub::new(config, runtime_handle)` (or
+  `WmHub::fresh(make_config, runtime_handle)`, which makes the config at
+  each start): `subscribe() ->
   WmSubscription` (`recv`, `try_recv`, `queued`, `request(WmAction)`)
   starts it on the first subscriber, gives a later one the current state
   as one batch (never a past reload), and stops it when the last
@@ -2127,16 +2129,21 @@ the primitives, `Option`, `Vec` and derived types.
   unread, read cycle within 5 s keeps the store's `starts()`,
   `wm::live_runs()` and the one `strand-toplevel` thread. The hub starts
   the protocol thread itself (`ProtocolClient::spawn`; `wm::run` does
-  the same for direct users) and owns it: every stop (the last
-  subscriber gone, the hub dropped, `Services::shutdown`) sends `Stop`
-  and joins it (`ProtocolClient::stop`, 2 s at most). The stores (`wm::Windows`,
+  the same for direct users) and owns it: a stop (the last subscriber
+  gone, on the shared runtime under the hub's lock) only sends `Stop`
+  (`ProtocolClient::request_stop`) and keeps the client, joined without
+  waiting at the next start or stop; dropping the hub (the runtime
+  thread's end, which `Services::shutdown` joins) joins it
+  (`ProtocolClient::stop`: a done channel, 2 s at most). The stores (`wm::Windows`,
   `wm::Workspaces`, `wm::Wm`; records `wm::WindowItem` and
   `wm::WorkspaceItem`, the schema's `Window` and `Workspace` field for
   field, converted from the model's, which also carries `toplevel`) are
   `#[service]` bodies on the shared runtime: each subscribes to
   `wm::hub()`, the hub of its runtime thread (made on first use, one per
-  `Services` runtime, with the config `wm::configure(Some(config))` set,
-  else `WmConfig::from_env(None)`: what `strand run` uses), sends each
+  `Services` runtime; each start takes the config
+  `wm::configure(Some(config))` set, else `WmConfig::from_env(None)`
+  afresh, so a compositor socket that appeared since is found: what
+  `strand run` uses), sends each
   batch as one envelope of its patches (keyed diffs stay keyed diffs),
   is ready once its part of the state has arrived, emits
   `wm.config_reloaded` (the `wm` store only), and runs `ws.focus()`,
@@ -2161,8 +2168,8 @@ the primitives, `Option`, `Vec` and derived types.
   request dropped unanswered (the run stopped, or the protocol thread
   ended, first) as `NotConnected`, so a caller never sees a closed
   channel. `wm::detect()` picks the `Backend` (Hyprland, niri
-  behind the default-on `niri` feature, sway through swayipc-async's
-  types over its own lossy i3-ipc framing) from
+  behind the default-on `niri` feature, sway through swayipc-types
+  (swayipc-async 3.0's types) over its own lossy i3-ipc framing) from
   the environment; `ProtocolClient::spawn(WaylandTarget, tx)` runs
   `ext-foreign-toplevel-list-v1` and `ext-workspace-v1` on its own
   `strand-toplevel` thread (own connection, `poll(2)` on the socket and an
@@ -2183,7 +2190,7 @@ the primitives, `Option`, `Vec` and derived types.
   block (an unbounded channel or a `try_send`): `Connected(bool)`
   (always first in the first batch, which comes once the first connection
   has settled or the first attempt failed), `Sinks`/`Sources`
-  (`Vec<VecDiff<i64, AudioDevice>>` keyed by the PipeWire id, a `Reset`
+  (`Vec<VecDiff<u32, AudioDevice>>` keyed by the PipeWire id, a `Reset`
   first; an id PipeWire reused for another device, a new `object.serial`,
   is a `Remove` and an `Insert`), `Sink`/`Source` (`Option<AudioDevice>`: the defaults; `None`
   is shown as the record's schema defaults) and `Levels { target,

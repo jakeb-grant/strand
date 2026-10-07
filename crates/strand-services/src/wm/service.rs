@@ -6,8 +6,9 @@
 //!
 //! Each store's body runs on the shared current-thread runtime. It
 //! subscribes to the hub of that runtime's thread ([`hub`]: one per
-//! services runtime, made on first use with the [`configure`]d
-//! [`WmConfig`], else [`WmConfig::from_env`]), turns each batch of
+//! services runtime, made on first use; each start of it takes the
+//! [`configure`]d [`WmConfig`], else [`WmConfig::from_env`] afresh, so a
+//! compositor whose IPC socket appeared after an earlier start is found), turns each batch of
 //! [`WmChange`]s into one envelope of its own patches (keyed diffs pass
 //! through as keyed diffs: a title change is one `Update`, never a new
 //! list), and runs its actions as [`WmAction`]s. The `strand-toplevel`
@@ -27,9 +28,10 @@ use crate::{Call, Cx, Data, Event, Msg, ServiceError, Store, ToData, service};
 
 static CONFIG: Mutex<Option<WmConfig>> = Mutex::new(None);
 
-/// What hubs made from now on connect to (tests: a fake compositor's
-/// sockets and display). `None` restores [`WmConfig::from_env`]. A hub
-/// already made keeps its config.
+/// What the compositor service connects to from its next start on
+/// (tests: a fake compositor's sockets and display). `None` restores
+/// [`WmConfig::from_env`]. A running service keeps its config until it
+/// stops.
 pub fn configure(config: Option<WmConfig>) {
     if let Ok(mut c) = CONFIG.lock() {
         *c = config;
@@ -55,7 +57,7 @@ pub fn hub() -> Option<WmHub> {
     let handle = tokio::runtime::Handle::try_current().ok()?;
     Some(HUB.with(|h| {
         h.borrow_mut()
-            .get_or_insert_with(|| WmHub::new(config(), handle))
+            .get_or_insert_with(|| WmHub::fresh(config, handle))
             .clone()
     }))
 }

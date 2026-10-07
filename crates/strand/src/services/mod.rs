@@ -294,9 +294,6 @@ mod tests {
         assert!(err("nothing.level", "1").contains("nothing is exported"));
     }
 
-    /// The schema the binary checks against holds each linked service's
-    /// declaration in place of its stub, documented, and each store's
-    /// fields and events are exactly its schema record's.
     /// The compositor services' uses design.md shows (and the reload
     /// event in both handler forms: its `failed` argument may be left
     /// out) check against the served schema, and alike against the bare
@@ -321,6 +318,9 @@ mod tests {
         }
     }
 
+    /// The schema the binary checks against holds each linked service's
+    /// declaration in place of its stub, documented, and each store's
+    /// fields and events are exactly its schema record's.
     #[test]
     fn service_schemas_extend_the_builtin_one() {
         // Every text applies (a failing one would leave `schema()` on the

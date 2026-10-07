@@ -1,4 +1,5 @@
-//! sway's IPC: swayipc-async 3.0's types over our own i3-ipc framing.
+//! sway's IPC: swayipc-types (swayipc-async 3.0's types) over our own
+//! i3-ipc framing.
 //!
 //! One connection subscribes to `workspace`, `window` and `shutdown`
 //! events; another reads `get_workspaces` and `get_tree` and runs commands.
@@ -6,7 +7,8 @@
 //! re-reads the workspaces and the tree, once per burst. sway's `reload`
 //! (a `workspace` event with `change: reload`) is `wm.config_reloaded`.
 //!
-//! The framing is ours (swayipc-async keeps its raw API private) so that
+//! The framing is ours (swayipc-async keeps its raw API private, and its
+//! async-io stack would be a second reactor for nothing) so that
 //! payloads are decoded lossily: wlroots copies an XWayland `WM_NAME` of
 //! type `STRING` (Latin-1) byte for byte and sway's JSON leaves bytes over
 //! 0x7f unescaped, so a title may not be UTF-8. swayipc-async would refuse
@@ -19,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::de::DeserializeOwned;
-use swayipc_async::{
+use swayipc_types::{
     CommandOutcome, CommandType, Event, Node, NodeType, WindowChange, WorkspaceChange,
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -143,7 +145,7 @@ struct Success {
 /// What sway's state turns into.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct State {
-    pub workspaces: Vec<swayipc_async::Workspace>,
+    pub workspaces: Vec<swayipc_types::Workspace>,
     /// Windows with their workspace (`None` in the scratchpad).
     pub windows: Vec<(Option<i64>, Node)>,
 }

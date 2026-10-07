@@ -5,10 +5,12 @@
 //! reads the focused screen from the same source. They must share one
 //! [`super::run`]: one adapter connection and one protocol thread. A
 //! [`WmHub`] runs it while at least one [`WmSubscription`] lives: the first
-//! subscriber starts it, the last one to go stops it and joins its
-//! `strand-toplevel` thread, which the hub starts and owns (at once: the 5 s
-//! grace is each store's own, so the hub only sees a body end once that
-//! grace has passed). A subscriber that joins a running hub first gets
+//! subscriber starts it, the last one to go stops it and tells its
+//! `strand-toplevel` thread (which the hub starts and owns) to stop, at
+//! once: the 5 s grace is each store's own, so the hub only sees a body
+//! end once that grace has passed. The stop never waits on the shared
+//! runtime: the thread ends within milliseconds and is joined at the next
+//! start or stop, or when the hub is dropped (the services' shutdown). A subscriber that joins a running hub first gets
 //! the current state as one batch (`Reset`s and every field, never a
 //! past `config_reloaded`), then the live stream.
 //!
@@ -34,7 +36,8 @@ use tokio::task::JoinHandle;
 
 use strand_core::keyed::VecDiff;
 
-use super::model::Mirror;
+use super::detect::Backend;
+use super::model::{CompositorKind, Mirror};
 use super::protocol::ProtocolClient;
 use super::{WmAction, WmChange, WmConfig, WmError, WmReply, WmRequest, drive, spawn_protocol};
 
@@ -62,6 +65,8 @@ struct Running {
     generation: u64,
     task: JoinHandle<()>,
     requests: UnboundedSender<WmRequest>,
+    /// The compositor IPC this run talks to (none: the protocols alone).
+    backend: Option<CompositorKind>,
     /// The run's `strand-toplevel` thread: the hub's, so a stop (the last
     /// subscriber gone, the hub dropped, the services shut down) joins it.
     protocol: Option<ProtocolClient>,
@@ -117,8 +122,27 @@ impl Queue {
     }
 }
 
+/// Where each start's [`WmConfig`] comes from.
+enum ConfigSource {
+    /// The same config every start.
+    Fixed(WmConfig),
+    /// Made afresh at each start, so a compositor socket that appeared
+    /// since the last start (strand started before the compositor's IPC
+    /// was up) is found.
+    Fresh(fn() -> WmConfig),
+}
+
+impl ConfigSource {
+    fn get(&self) -> WmConfig {
+        match self {
+            Self::Fixed(c) => c.clone(),
+            Self::Fresh(make) => make(),
+        }
+    }
+}
+
 struct Inner {
-    config: WmConfig,
+    config: ConfigSource,
     runtime: Handle,
     next_id: u64,
     subs: Vec<(u64, Arc<Queue>)>,
@@ -130,6 +154,11 @@ struct Inner {
     has_sources: bool,
     running: Option<Running>,
     starts: u64,
+    /// Stopped runs' protocol threads, told to stop but not yet joined:
+    /// a stop on the shared runtime never waits for a thread (they end
+    /// within milliseconds and are reaped at the next start or stop);
+    /// dropping the hub joins them.
+    stopping: Vec<ProtocolClient>,
 }
 
 fn lock(inner: &Mutex<Inner>) -> MutexGuard<'_, Inner> {
@@ -142,6 +171,17 @@ impl WmHub {
     /// A hub that runs `config` on `runtime` (the shared current-thread
     /// runtime) while subscribed.
     pub fn new(config: WmConfig, runtime: Handle) -> Self {
+        Self::with_source(ConfigSource::Fixed(config), runtime)
+    }
+
+    /// A hub that makes its [`WmConfig`] with `make` at each start (the
+    /// environment's compositor is detected again whenever the service
+    /// starts).
+    pub fn fresh(make: fn() -> WmConfig, runtime: Handle) -> Self {
+        Self::with_source(ConfigSource::Fresh(make), runtime)
+    }
+
+    fn with_source(config: ConfigSource, runtime: Handle) -> Self {
         Self {
             inner: Arc::new(Mutex::new(Inner {
                 config,
@@ -153,6 +193,7 @@ impl WmHub {
                 has_sources: false,
                 running: None,
                 starts: 0,
+                stopping: Vec::new(),
             })),
         }
     }
@@ -170,21 +211,23 @@ impl WmHub {
         let id = inner.next_id;
         inner.subs.push((id, queue.clone()));
         if inner.running.is_none() {
+            inner.reap();
+            let config = inner.config.get();
+            let backend = config.backend.as_ref().map(Backend::kind);
             inner.starts += 1;
             let generation = inner.starts;
             let (rtx, rrx) = mpsc::unbounded_channel();
             let weak = Arc::downgrade(&self.inner);
             let sink = move |batch: Vec<WmChange>| fan_out(&weak, generation, batch);
             let (ptx, prx) = mpsc::unbounded_channel();
-            let protocol = spawn_protocol(&inner.config, ptx);
+            let protocol = spawn_protocol(&config, ptx);
             let sender = protocol.as_ref().map(ProtocolClient::sender);
-            let task = inner
-                .runtime
-                .spawn(drive(inner.config.clone(), sink, rrx, sender, prx));
+            let task = inner.runtime.spawn(drive(config, sink, rrx, sender, prx));
             inner.running = Some(Running {
                 generation,
                 task,
                 requests: rtx,
+                backend,
                 protocol,
             });
         }
@@ -204,6 +247,11 @@ impl WmHub {
     /// The service is running.
     pub fn running(&self) -> bool {
         lock(&self.inner).running.is_some()
+    }
+
+    /// The compositor IPC the running service talks to.
+    pub fn backend(&self) -> Option<CompositorKind> {
+        lock(&self.inner).running.as_ref().and_then(|r| r.backend)
     }
 
     /// How many times the service was started.
@@ -275,18 +323,35 @@ impl Inner {
         out
     }
 
+    /// Stops the run without waiting: its protocol thread is told to
+    /// stop and kept in `stopping` (this runs under the hub's lock, on the
+    /// shared runtime).
     fn stop(&mut self) {
         if let Some(r) = self.running.take() {
             r.task.abort();
-            // Joined here (it ends as soon as it hears the stop), so no
-            // protocol thread outlives the stores or the services.
             if let Some(p) = r.protocol {
-                p.stop();
+                p.request_stop();
+                self.stopping.push(p);
             }
         }
+        self.reap();
         self.mirror = Mirror::default();
         self.has_state = false;
         self.has_sources = false;
+    }
+}
+
+impl Inner {
+    /// Joins the stopped runs' protocol threads that have ended (never
+    /// waits).
+    fn reap(&mut self) {
+        let (ended, live) = std::mem::take(&mut self.stopping)
+            .into_iter()
+            .partition::<Vec<_>, _>(ProtocolClient::is_finished);
+        self.stopping = live;
+        for p in ended {
+            p.stop();
+        }
     }
 }
 
@@ -296,6 +361,11 @@ impl Drop for Inner {
     /// every subscription's stream.
     fn drop(&mut self) {
         self.stop();
+        // Joined here, so no protocol thread outlives the services (their
+        // shutdown drops the runtime thread's hub).
+        for p in self.stopping.drain(..) {
+            p.stop();
+        }
         for (_, q) in &self.subs {
             q.close();
         }
@@ -475,6 +545,37 @@ mod tests {
         assert_eq!(m, reference, "the coalesced stream rebuilds the state");
         assert_eq!(m.reloads.len(), 4, "no reload is lost");
         assert_eq!(m.reloads[2], Some(true));
+    }
+
+    /// A hub made with [`WmHub::fresh`] detects the compositor at each
+    /// start: strand started before sway's IPC socket existed uses the
+    /// adapter once a later start finds the socket.
+    #[tokio::test]
+    async fn each_start_detects_the_compositor_afresh() {
+        static SOCKET: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
+        fn make() -> WmConfig {
+            let socket = SOCKET.lock().unwrap().clone();
+            WmConfig {
+                backend: crate::wm::detect_with(|k| {
+                    (k == "SWAYSOCK").then(|| socket.clone().map(|p| p.into_os_string()))?
+                }),
+                ..Default::default()
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sway-ipc.sock");
+        *SOCKET.lock().unwrap() = Some(path.clone());
+        let hub = WmHub::fresh(make, Handle::current());
+        let first = hub.subscribe();
+        assert!(hub.running());
+        assert_eq!(hub.backend(), None, "no socket yet");
+        drop(first);
+        assert!(!hub.running());
+
+        let _listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let _second = hub.subscribe();
+        assert_eq!(hub.starts(), 2);
+        assert_eq!(hub.backend(), Some(CompositorKind::Sway));
     }
 
     /// Dropping the last hub ends its subscriptions' streams.

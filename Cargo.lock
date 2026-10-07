@@ -104,34 +104,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "async-io"
-version = "2.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "456b8a8feb6f42d237746d4b3e9a178494627745c3c56c6ea55d92ba50d026fc"
-dependencies = [
- "autocfg",
- "cfg-if",
- "concurrent-queue",
- "futures-io",
- "futures-lite",
- "parking",
- "polling",
- "rustix",
- "slab",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "async-pidfd"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "958321a23896f573a3f1809437af5816f3bc90dd2d5ffe8b1cd5645f42230c17"
-dependencies = [
- "async-io",
- "libc",
-]
-
-[[package]]
 name = "async-recursion"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2349,7 +2321,7 @@ dependencies = [
  "strand-services-macros",
  "strand-services-schema",
  "strand-watch",
- "swayipc-async",
+ "swayipc-types",
  "tempfile",
  "tokio",
  "wayland-client",
@@ -2484,20 +2456,6 @@ dependencies = [
  "skrifa",
  "yazi",
  "zeno",
-]
-
-[[package]]
-name = "swayipc-async"
-version = "3.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "806f344927009a79deb17bcf103abdc93492254165f651df2bb64e0d6b4bda67"
-dependencies = [
- "async-io",
- "async-pidfd",
- "futures-lite",
- "serde",
- "serde_json",
- "swayipc-types",
 ]
 
 [[package]]

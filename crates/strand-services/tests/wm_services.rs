@@ -246,15 +246,16 @@ fn the_compositor_stores_follow_sway_through_one_hub() {
     rt.tick(t0 + 2 * STOP_GRACE + Duration::from_millis(2));
     assert!(!b.wm.running());
     let deadline = Instant::now() + Duration::from_secs(5);
-    while wm::live_runs() != runs {
+    while wm::live_runs() != runs || threads_named("strand-toplevel") != 0 {
         assert!(
             Instant::now() < deadline,
-            "the compositor service outlived its stores"
+            "the compositor service or its protocol thread outlived its stores"
         );
         std::thread::sleep(Duration::from_millis(10));
     }
-    // The hub joined its protocol thread before its run went.
-    assert_eq!(threads_named("strand-toplevel"), 0, "after the last stop");
+    // The stop told the protocol thread to end without waiting for it on
+    // the shared runtime; it ended on its own (and is joined at the next
+    // start, or at the shutdown).
 
     // Read again (a new run and protocol thread), then shut the services
     // down while it is read: the shutdown joins the protocol thread too.

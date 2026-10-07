@@ -6874,6 +6874,31 @@ use them serialize; when a second registry needs another target, the
 compositor and PipeWire targets move into `Buses` (or a sibling
 `Targets`) as the D-Bus buses did.
 
+**2026-10-07 · wave4-wm (services, fixes r2): a stop never waits on the
+shared runtime; each start detects afresh; swayipc-types.** (a) This
+supersedes the r1 entry's join on stop: the last subscriber's stop runs
+on the shared current-thread runtime under the hub's lock, so it now
+only sends `Stop` and keeps the `ProtocolClient` in the hub's stopping
+list; ended threads are joined (without waiting) at the next start or
+stop, and dropping the hub (the runtime thread's end, which
+`Services::shutdown` joins) joins the rest synchronously. The join waits
+on a done channel with a 2 s `recv_timeout` instead of a 1 ms sleep
+loop. Proof: `tests/wm_services.rs::
+the_compositor_stores_follow_sway_through_one_hub` (the thread ends
+after the last stop; none after a shutdown with a store still read).
+(b) The runtime thread's hub makes its `WmConfig` at each start
+(`WmHub::fresh`: the `wm::configure` override, else
+`WmConfig::from_env`), not once per process, so strand started before
+Hyprland's `.socket2.sock` or niri's socket existed uses the adapter
+from the next start on; a running service keeps its config until it
+stops. Proof: `src/wm/hub.rs::each_start_detects_the_compositor_afresh`.
+(c) The sway adapter depends on swayipc-types 2.0 (the types
+swayipc-async 3.0 re-exports and pins), not swayipc-async itself: the
+adapter only ever used the types, and swayipc-async's async-io,
+async-pidfd and polling stack was build time and binary size for
+nothing. It stands in for design.md's swayipc-async 3.0; moving to
+swayipc-async's own connection later is a dependency swap.
+
 ## wave4-core
 
 **2026-10-06 · wave4-core: a service's schema is its own text, held to
