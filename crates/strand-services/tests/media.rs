@@ -21,6 +21,10 @@ struct Track {
     title: String,
     position_us: i64,
     calls: Vec<String>,
+    rate: f64,
+    /// Its position (and so `GetAll`) does not answer: a player whose
+    /// main loop is blocked.
+    frozen: bool,
 }
 
 struct Player(Arc<Mutex<Track>>);
@@ -80,13 +84,17 @@ impl Player {
     }
 
     #[zbus(property(emits_changed_signal = "false"))]
-    fn position(&self) -> i64 {
+    async fn position(&self) -> i64 {
+        let frozen = self.0.lock().unwrap().frozen;
+        if frozen {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        }
         self.0.lock().unwrap().position_us
     }
 
     #[zbus(property)]
     fn rate(&self) -> f64 {
-        1.0
+        self.0.lock().unwrap().rate
     }
 
     #[zbus(signal)]
@@ -111,12 +119,28 @@ fn player(
     title: &str,
     position_us: i64,
 ) -> (zbus::Connection, Arc<Mutex<Track>>) {
-    let track = Arc::new(Mutex::new(Track {
+    player_with(tokio, address, name, status, title, position_us, |_| {})
+}
+
+fn player_with(
+    tokio: &tokio::runtime::Runtime,
+    address: &str,
+    name: &str,
+    status: &str,
+    title: &str,
+    position_us: i64,
+    f: impl FnOnce(&mut Track),
+) -> (zbus::Connection, Arc<Mutex<Track>>) {
+    let mut t = Track {
         status: status.into(),
         title: title.into(),
         position_us,
         calls: Vec::new(),
-    }));
+        rate: 1.0,
+        frozen: false,
+    };
+    f(&mut t);
+    let track = Arc::new(Mutex::new(t));
     let conn = tokio.block_on(async {
         zbus::connection::Builder::address(address)
             .unwrap()
@@ -247,5 +271,91 @@ fn media_follows_the_active_player_without_polling() {
     });
     assert_eq!(cells.playing.get_untracked(&rt), Ok(false));
     assert_eq!(b.media.starts(), 1);
+    s.shutdown();
+}
+
+#[test]
+fn an_absurd_rate_is_clamped_not_a_panic() {
+    let Some(bus) = strand_services::testing::PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    // A rate no player plays at, overflowing a duration on the first read.
+    let (_fast, _) = player_with(&tokio, &bus.address, "fast", "Playing", "Fast", 0, |t| {
+        t.rate = 1e300
+    });
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let cells = b.media.cells();
+    b.media.acquire(&rt);
+    let elapsed = media::Media::FIELDS
+        .iter()
+        .position(|f| f.name == "elapsed")
+        .unwrap();
+    b.media.acquire_field(elapsed);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    until(&rt, &s, "time to pass, a thousand times as fast", || {
+        cells
+            .elapsed
+            .get_untracked(&rt)
+            .is_ok_and(|e| e >= Duration::from_secs(20))
+    });
+    // At the clamped rate it reaches the track's end, and stays there.
+    until(&rt, &s, "the end of the track", || {
+        cells.position.get_untracked(&rt) == Ok(1.0)
+    });
+    // And one far too slow: no tick a long way off overflows either.
+    let (_slow, _) = player_with(&tokio, &bus.address, "slow", "Playing", "Slow", 0, |t| {
+        t.rate = 1e-300
+    });
+    until(&rt, &s, "the slow player active", || {
+        cells.player.get_untracked(&rt) == Ok(Some("slow".into()))
+    });
+    std::thread::sleep(Duration::from_millis(200));
+    s.pump(&rt);
+    assert!(b.media.running(), "the media body is still running");
+    assert_eq!(b.media.starts(), 1, "it never failed");
+    assert!(
+        s.take_diagnostics().is_empty(),
+        "nothing went wrong to report"
+    );
+    s.shutdown();
+}
+
+#[test]
+fn a_frozen_player_does_not_hold_up_the_others() {
+    let Some(bus) = strand_services::testing::PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let (_a_conn, a) = player(&tokio, &bus.address, "mpv", "Paused", "First", 0);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let cells = b.media.cells();
+    b.media.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert_eq!(cells.title.get_untracked(&rt), Ok(Some("First".into())));
+    // A player whose main loop is blocked appears: it is read in a task
+    // of its own.
+    let (_frozen, _) = player_with(&tokio, &bus.address, "stuck", "Playing", "Stuck", 0, |t| {
+        t.frozen = true
+    });
+    std::thread::sleep(Duration::from_millis(200));
+    // mpv is still answered at once (well inside the frozen player's 2 s).
+    let asked = std::time::Instant::now();
+    b.media
+        .dynamic()
+        .action(&rt, "play_pause", None, &[])
+        .unwrap();
+    until(&rt, &s, "playing", || {
+        cells.playing.get_untracked(&rt) == Ok(true)
+    });
+    assert!(
+        asked.elapsed() < Duration::from_millis(1500),
+        "mpv waited for the frozen player: {:?}",
+        asked.elapsed()
+    );
+    assert_eq!(a.lock().unwrap().calls, ["PlayPause"]);
+    assert_eq!(cells.player.get_untracked(&rt), Ok(Some("mpv".into())));
     s.shutdown();
 }
