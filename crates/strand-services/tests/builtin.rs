@@ -4,6 +4,7 @@
 //! python-dbusmock).
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -236,4 +237,46 @@ fn python_dbusmock_runs_on_a_private_bus() {
     };
     assert!(bus.wait_for_name("org.freedesktop.UPower", Duration::from_secs(1)));
     assert!(!bus.wait_for_name("org.example.Nobody", Duration::from_millis(50)));
+}
+
+#[test]
+fn the_buses_are_an_error_without_a_tokio_runtime() {
+    // A body on a thread of its own that runs no tokio runtime gets an
+    // error from `cx.session()`, never a panic.
+    let none = Buses::none();
+    let fut = strand_services::bus::session(&none);
+    let mut fut = std::pin::pin!(fut);
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    match fut.as_mut().poll(&mut cx) {
+        std::task::Poll::Ready(Err(e)) => assert!(e.to_string().contains("tokio"), "{e}"),
+        other => panic!("{:?}", other.map(|r| r.map(|_| ()))),
+    }
+}
+
+#[test]
+fn a_restarted_bus_is_connected_afresh_and_nothing_installed_activates() {
+    let Some(mut bus) = PrivateBus::start() else {
+        return;
+    };
+    let buses = bus.buses();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let a = strand_services::bus::session(&buses).await.unwrap();
+        let b = strand_services::bus::session(&buses).await.unwrap();
+        assert_eq!(a.unique_name(), b.unique_name(), "one shared connection");
+        // The private bus activates nothing the machine has installed.
+        let dbus = zbus::fdo::DBusProxy::new(&a).await.unwrap();
+        let name = zbus::names::WellKnownName::try_from("ca.desrt.dconf").unwrap();
+        assert!(dbus.start_service_by_name(name, 0).await.is_err());
+    });
+    assert!(bus.restart());
+    rt.block_on(async {
+        let c = strand_services::bus::session(&buses).await.unwrap();
+        // The new connection works (the old one died with its daemon).
+        let dbus = zbus::fdo::DBusProxy::new(&c).await.unwrap();
+        assert!(dbus.get_id().await.is_ok());
+    });
 }

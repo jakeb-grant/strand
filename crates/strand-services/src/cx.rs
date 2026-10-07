@@ -26,8 +26,11 @@ pub enum Envelope<P> {
     /// Patches of one update, applied together in one tick.
     Patches {
         patches: Vec<P>,
-        /// The local write this answers ([`Cx::report`]).
-        echo_of: Option<Generation>,
+        /// The local write this answers ([`Cx::report`]): the written
+        /// field's index and the write's generation. Only that field's
+        /// patch is matched against its pending writes; the update's
+        /// other patches are outside changes.
+        echo_of: Option<(usize, Generation)>,
         /// Sent before [`Cx::ready`]: boot values (`on change` does not
         /// fire for them).
         initial: bool,
@@ -166,9 +169,13 @@ pub enum Msg<S: Service> {
     /// An async method call, to answer through the [`Reply`].
     Call(S::Call, Reply),
     /// Whether a reader is visible now. [`Cx::visible`] already says so;
-    /// a service streaming only while visible (a Wi-Fi scan, audio
-    /// levels, a polled sensor) starts or stops here.
+    /// a service streaming only while visible (a polled sensor) starts
+    /// or stops here.
     Visible(bool),
+    /// Whether a visible reader reads `#[store(stream)]` field `field`
+    /// now. [`Cx::watched`] already says so; the stream behind it (a
+    /// Wi-Fi scan, audio levels) starts or stops here.
+    Watch { field: &'static str, on: bool },
 }
 
 impl<S: Service> fmt::Debug for Msg<S> {
@@ -178,6 +185,11 @@ impl<S: Service> fmt::Debug for Msg<S> {
             Msg::Action(_) => f.write_str("Action(..)"),
             Msg::Call(..) => f.write_str("Call(..)"),
             Msg::Visible(v) => f.debug_tuple("Visible").field(v).finish(),
+            Msg::Watch { field, on } => f
+                .debug_struct("Watch")
+                .field("field", field)
+                .field("on", on)
+                .finish(),
         }
     }
 }
@@ -188,6 +200,9 @@ pub struct Cx<S: Service> {
     out: Out<S::Patch>,
     msgs: mpsc::UnboundedReceiver<Msg<S>>,
     visible: bool,
+    /// Per field: a visible reader reads it (meaningful for stream
+    /// fields).
+    watched: Vec<bool>,
     ready: bool,
     buses: Buses,
     notify: Notify,
@@ -210,12 +225,14 @@ impl<S: Service> Cx<S> {
         msgs: mpsc::UnboundedReceiver<Msg<S>>,
         buses: Buses,
         notify: Notify,
+        watched: Vec<bool>,
     ) -> Cx<S> {
         Cx {
             state,
             out,
             msgs,
             visible: true,
+            watched,
             ready: false,
             buses,
             notify,
@@ -237,14 +254,13 @@ impl<S: Service> Cx<S> {
     /// as one envelope (one tick). Returns `false` once the service was
     /// stopped (nothing listens any more: return from the body).
     pub fn update(&mut self, f: impl FnOnce(&mut S)) -> bool {
-        self.update_with(f, None, None)
+        self.update_with(f, None)
     }
 
     fn update_with(
         &mut self,
         f: impl FnOnce(&mut S),
-        echo_of: Option<Generation>,
-        always: Option<&'static str>,
+        answer: Option<(&'static str, Generation)>,
     ) -> bool {
         let mut new = self.state.clone();
         f(&mut new);
@@ -253,13 +269,17 @@ impl<S: Service> Cx<S> {
         self.state = new;
         // A write's answer always names its field, even when the service
         // kept the old value (refused it), so the optimistic local value
-        // does not stay.
-        if let Some(field) = always
+        // does not stay. Only that field is tagged with the write.
+        let mut echo_of = None;
+        if let Some((field, generation)) = answer
             && let Some(i) = S::FIELDS.iter().position(|f| f.name == field)
-            && !patches.iter().any(|p| p.target() == Target::Field(i))
-            && let Some(p) = S::field_patch(&self.state, i)
         {
-            patches.push(p);
+            echo_of = Some((i, generation));
+            if !patches.iter().any(|p| p.target() == Target::Field(i))
+                && let Some(p) = S::field_patch(&self.state, i)
+            {
+                patches.push(p);
+            }
         }
         if patches.is_empty() {
             return !self.stopped();
@@ -287,11 +307,11 @@ impl<S: Service> Cx<S> {
         })
     }
 
-    /// Emit an event (its patch variant): lossless, one delivery per
-    /// emit.
-    pub fn emit(&mut self, event: S::Patch) -> bool {
+    /// Emit an event (`<Name>Event::Received(n)`): lossless, one
+    /// delivery per emit.
+    pub fn emit(&mut self, event: S::Event) -> bool {
         self.out.send(Envelope::Patches {
-            patches: vec![event],
+            patches: vec![event.into()],
             echo_of: None,
             initial: false,
         })
@@ -302,7 +322,7 @@ impl<S: Service> Cx<S> {
     /// always reported, tagged with the write's generation, so the logic
     /// thread ignores the echo of a write it already shows.
     pub fn report(&mut self, write: &Write, f: impl FnOnce(&mut S)) -> bool {
-        self.update_with(f, Some(write.generation), Some(write.field))
+        self.update_with(f, Some((write.field, write.generation)))
     }
 
     /// The first read is complete: until now updates were boot values
@@ -327,6 +347,17 @@ impl<S: Service> Cx<S> {
         self.visible
     }
 
+    /// A visible reader reads `#[store(stream)]` field `field` now: its
+    /// stream (a scan, a level meter) runs only while this holds
+    /// ([`Msg::Watch`] says when it changes). Unknown names are `false`.
+    pub fn watched(&self, field: &str) -> bool {
+        S::FIELDS
+            .iter()
+            .position(|f| f.name == field)
+            .and_then(|i| self.watched.get(i).copied())
+            .unwrap_or(false)
+    }
+
     /// The next message (shared runtime). `None`: the service was
     /// stopped; return from the body.
     pub async fn recv(&mut self) -> Option<Msg<S>> {
@@ -347,9 +378,7 @@ impl<S: Service> Cx<S> {
     pub fn try_recv(&mut self) -> Result<Msg<S>, bool> {
         match self.msgs.try_recv() {
             Ok(m) => {
-                if let Msg::Visible(v) = m {
-                    self.visible = v;
-                }
+                self.note(&m);
                 Ok(m)
             }
             Err(mpsc::error::TryRecvError::Empty) => Err(false),
@@ -363,8 +392,22 @@ impl<S: Service> Cx<S> {
     }
 
     fn seen(&mut self, m: &Option<Msg<S>>) {
-        if let Some(Msg::Visible(v)) = m {
-            self.visible = *v;
+        if let Some(m) = m {
+            self.note(m);
+        }
+    }
+
+    fn note(&mut self, m: &Msg<S>) {
+        match m {
+            Msg::Visible(v) => self.visible = *v,
+            Msg::Watch { field, on } => {
+                if let Some(i) = S::FIELDS.iter().position(|f| f.name == *field)
+                    && let Some(w) = self.watched.get_mut(i)
+                {
+                    *w = *on;
+                }
+            }
+            _ => {}
         }
     }
 
@@ -383,7 +426,8 @@ impl<S: Service> Cx<S> {
     }
 
     /// The session bus (one connection shared by the services of this
-    /// runtime thread).
+    /// runtime thread). It needs a tokio runtime: a service on a thread
+    /// of its own runs its own (or gets an error, never a panic).
     pub async fn session(&self) -> zbus::Result<zbus::Connection> {
         bus::session(&self.buses).await
     }

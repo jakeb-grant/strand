@@ -59,7 +59,7 @@ const SCHEMA: &str = "service probe { level: float rw }";
 enum Cmd {
     Update(Box<dyn FnOnce(&mut Probe) + Send>),
     Send(Vec<ProbePatch>),
-    Emit(ProbePatch),
+    Emit(ProbeEvent),
     Ready,
 }
 
@@ -120,6 +120,12 @@ pub struct Probe {
     /// Every workspace, keyed.
     #[store(keyed)]
     pub all: Vec<Ws>,
+    /// A second writable value.
+    #[store(rw)]
+    pub gain: f64,
+    /// A scan's result: produced only while a visible reader reads it.
+    #[store(stream)]
+    pub scan: Option<String>,
     /// A workspace arrived.
     pub received: Event<Ws>,
     /// Nothing but a ping.
@@ -158,6 +164,9 @@ impl Probe {
             return Err("no script".into());
         };
         log(format!("start visible={}", cx.visible()));
+        if cx.watched("scan") {
+            log("scan watched at start".into());
+        }
         loop {
             tokio::select! {
                 c = cmds.recv() => match c {
@@ -176,8 +185,16 @@ impl Probe {
                         let v: f64 = w.value().map_err(ServiceError::from)?;
                         log(format!("write {}{} {v}", w.field, w.path.iter().map(ToString::to_string).collect::<String>()));
                         if w.field == "level" {
-                            // The service clamps.
-                            cx.report(&w, |s| s.level = v.min(1.0));
+                            // The service clamps; 0.25 also moves the
+                            // gain (one answer changing two fields).
+                            cx.report(&w, |s| {
+                                s.level = v.min(1.0);
+                                if v == 0.25 {
+                                    s.gain = 42.0;
+                                }
+                            });
+                        } else if w.field == "gain" {
+                            cx.report(&w, |s| s.gain = v);
                         }
                     }
                     Some(Msg::Action(a)) => log(format!("action {a:?}")),
@@ -185,6 +202,10 @@ impl Probe {
                         reply.send(Ok::<_, String>(text.to_uppercase()));
                     }
                     Some(Msg::Visible(v)) => log(format!("visible {v}")),
+                    Some(Msg::Watch { field, on }) => {
+                        assert_eq!(cx.watched(field), on);
+                        log(format!("watch {field} {on}"));
+                    }
                 },
             }
         }
@@ -194,11 +215,25 @@ impl Probe {
 #[test]
 fn the_derives_describe_the_store() {
     let names: Vec<&str> = Probe::FIELDS.iter().map(|f| f.name).collect();
-    assert_eq!(names, ["level", "label", "focus", "all"]);
+    assert_eq!(names, ["level", "label", "focus", "all", "gain", "scan"]);
     let types: Vec<String> = Probe::FIELDS.iter().map(|f| (f.ty)()).collect();
-    assert_eq!(types, ["float", "text?", "Workspace", "[Workspace]"]);
+    assert_eq!(
+        types,
+        [
+            "float",
+            "text?",
+            "Workspace",
+            "[Workspace]",
+            "float",
+            "text?"
+        ]
+    );
     assert!(Probe::FIELDS[0].rw && !Probe::FIELDS[1].rw);
     assert!(Probe::FIELDS[3].keyed && !Probe::FIELDS[2].keyed);
+    assert!(Probe::FIELDS[5].stream && !Probe::FIELDS[4].stream);
+    // Events are their own type: `Cx::emit` takes no field patch.
+    let p: ProbePatch = ProbeEvent::Pinged(()).into();
+    assert_eq!(p.target(), Target::Event(1));
     assert_eq!(Probe::FIELDS[0].doc, "A writable level.");
     let events: Vec<(&str, usize)> = Probe::EVENTS.iter().map(|e| (e.name, e.arity)).collect();
     assert_eq!(events, [("received", 1), ("pinged", 0), ("pair", 2)]);
@@ -457,8 +492,8 @@ fn a_service_patches_its_cells_through_the_shared_runtime() {
         index: 0,
         key: 1,
     }])]));
-    sc.cmd(Cmd::Emit(ProbePatch::Received(ws(9, "z"))));
-    sc.cmd(Cmd::Emit(ProbePatch::Pinged(())));
+    sc.cmd(Cmd::Emit(ProbeEvent::Received(ws(9, "z"))));
+    sc.cmd(Cmd::Emit(ProbeEvent::Pinged(())));
     until(&rt, &s, "the events", || typed.lock().unwrap().len() == 1);
     assert_eq!(*typed.lock().unwrap(), [9]);
     until(&rt, &s, "the ping", || events.lock().unwrap().len() >= 3);
@@ -497,9 +532,6 @@ fn writes_actions_and_async_calls_reach_the_service() {
     let (s, _) = services(&rt);
     let probe = s.register::<Probe>(&rt);
     let dynamic = probe.dynamic();
-    // Not running: refused, nothing applied.
-    assert!(dynamic.write(&rt, 0, &[], Data::Float(0.5)).is_err());
-    assert!(dynamic.action("bump", None, &[]).is_err());
     probe.acquire(&rt);
     assert_eq!(sc.next(), "start visible=true");
     sc.cmd(Cmd::Ready);
@@ -519,29 +551,136 @@ fn writes_actions_and_async_calls_reach_the_service() {
     assert_eq!(probe.cells().focus.get_untracked(&rt).unwrap().id, 5);
     assert_eq!(sc.next(), "write focus.id 5");
     // Actions, typed.
-    dynamic.action("bump", None, &[]).unwrap();
+    dynamic.action(&rt, "bump", None, &[]).unwrap();
     assert_eq!(sc.next(), "action Bump");
     dynamic
-        .action("focus", Some(&ws(4, "d").to_data()), &[])
+        .action(&rt, "focus", Some(&ws(4, "d").to_data()), &[])
         .unwrap();
     assert_eq!(
         sc.next(),
         format!("action {:?}", ProbeAction::Focus { item: ws(4, "d") })
     );
-    assert!(dynamic.action("rename", None, &[]).is_err());
+    assert!(dynamic.action(&rt, "rename", None, &[]).is_err());
     // An async call completes with the service's answer.
-    let fut = dynamic.fetch("echo", &[Data::text("hi")]);
+    let fut = dynamic.fetch(&rt, "echo", &[Data::text("hi")]);
     let tokio = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
     assert_eq!(tokio.block_on(fut), Ok(Data::text("HI")));
-    let bad = dynamic.fetch("echo", &[Data::Int(1)]);
+    let bad = dynamic.fetch(&rt, "echo", &[Data::Int(1)]);
     assert!(tokio.block_on(bad).is_err());
     s.shutdown();
-    // Stopped: a call made now fails instead of hanging.
-    let late = dynamic.fetch("echo", &[Data::text("x")]);
+    // Shut down: a call made now fails instead of hanging.
+    let late = dynamic.fetch(&rt, "echo", &[Data::text("x")]);
     assert!(tokio.block_on(late).is_err());
+}
+
+#[test]
+fn a_write_answer_tags_only_the_written_field() {
+    let (sc, _guard) = script();
+    let rt = Runtime::new();
+    let (s, _) = services(&rt);
+    let probe = s.register::<Probe>(&rt);
+    let dynamic = probe.dynamic();
+    probe.acquire(&rt);
+    assert_eq!(sc.next(), "start visible=true");
+    sc.cmd(Cmd::Ready);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    // Two writes of `gain`, both answered: its generations move on.
+    for v in [1.0, 2.0] {
+        dynamic.write(&rt, 4, &[], Data::Float(v)).unwrap();
+        assert_eq!(sc.next(), format!("write gain {v}"));
+        until(&rt, &s, "the gain's answer", || {
+            probe.cells().gain.pending_writes(&rt) == 0
+        });
+    }
+    // A write of `level` whose answer also moves `gain`: the gain's change
+    // is an outside change, not an echo of anything.
+    dynamic.write(&rt, 0, &[], Data::Float(0.25)).unwrap();
+    assert_eq!(sc.next(), "write level 0.25");
+    until(&rt, &s, "the gain the service set", || {
+        probe.cells().gain.get_untracked(&rt) == Ok(42.0)
+    });
+    assert_eq!(probe.cells().level.get_untracked(&rt), Ok(0.25));
+    s.shutdown();
+}
+
+#[test]
+fn writes_and_actions_start_a_stopped_service_for_a_moment() {
+    let (sc, _guard) = script();
+    let rt = Runtime::new();
+    let (s, _) = services(&rt);
+    let probe = s.register::<Probe>(&rt);
+    let dynamic = probe.dynamic();
+    let now = std::cell::Cell::new(Duration::ZERO);
+    let at = |d: Duration| {
+        now.set(now.get() + d);
+        rt.tick(now.get());
+    };
+    // `strand set brightness.level` with nothing reading it: started,
+    // the write delivered, stopped 5 s later.
+    dynamic.write(&rt, 0, &[], Data::Float(0.5)).unwrap();
+    assert_eq!(sc.next(), "start visible=true");
+    assert_eq!(sc.next(), "visible false");
+    assert_eq!(sc.next(), "write level 0.5");
+    assert_eq!(probe.readers(), 0);
+    assert!(probe.running());
+    // Still inside its grace: the action goes to the running service.
+    dynamic.action(&rt, "bump", None, &[]).unwrap();
+    assert_eq!(sc.next(), "action Bump");
+    assert_eq!(probe.starts(), 1);
+    at(STOP_GRACE + Duration::from_millis(1));
+    assert!(!probe.running());
+    assert_eq!(probe.stops(), 1);
+    s.shutdown();
+}
+
+#[test]
+fn a_stream_field_is_watched_only_while_a_visible_reader_reads_it() {
+    let (sc, _guard) = script();
+    let rt = Runtime::new();
+    let (s, _) = services(&rt);
+    let probe = s.register::<Probe>(&rt);
+    // A bar reads `level` (a plain field: nobody is told).
+    probe.acquire(&rt);
+    probe.acquire_field(0);
+    assert_eq!(sc.next(), "start visible=true");
+    assert!(sc.quiet(), "a plain field's readers are not announced");
+    // A popup opens reading `scan`: its stream starts; a second reader
+    // changes nothing.
+    probe.acquire(&rt);
+    probe.acquire_field(5);
+    assert_eq!(sc.next(), "watch scan true");
+    probe.acquire_field(5);
+    assert!(sc.quiet());
+    probe.release_field(5);
+    assert!(sc.quiet());
+    // It closes: the stream stops at once, the service carries on.
+    probe.release_field(5);
+    probe.release(&rt);
+    assert_eq!(sc.next(), "watch scan false");
+    assert!(probe.running());
+    assert_eq!(probe.field_readers(5), 0);
+    // A run started while the field is read starts watching it.
+    probe.release_field(0);
+    probe.release(&rt);
+    assert_eq!(sc.next(), "visible false");
+    s.shutdown();
+    let sc2 = script_again();
+    probe.acquire(&rt);
+    probe.acquire_field(5);
+    assert_eq!(sc2.next(), "start visible=true");
+    assert_eq!(sc2.next(), "watch scan true");
+    probe.release_field(5);
+    probe.release(&rt);
+    s.shutdown();
+    let sc3 = script_again();
+    probe.acquire_field(5);
+    probe.acquire(&rt);
+    assert_eq!(sc3.next(), "start visible=true");
+    assert_eq!(sc3.next(), "scan watched at start");
+    s.shutdown();
 }
 
 #[test]
@@ -571,6 +710,8 @@ fn a_service_stops_five_seconds_after_its_last_reader() {
     // Back inside the 5 s: the stop is cancelled, nothing restarts.
     probe.acquire(&rt);
     assert_eq!(sc.next(), "visible true");
+    // The pending stop went with it: nothing wakes 5 s later.
+    assert_eq!(rt.next_deadline(), None);
     at(Duration::from_secs(10));
     assert!(probe.running());
     assert_eq!((probe.starts(), probe.stops()), (1, 0));
@@ -678,14 +819,40 @@ fn errors_from_a_body_end_the_run_and_a_reader_restarts_it() {
     let rt = Runtime::new();
     let (s, _) = services(&rt);
     let probe = s.register::<Probe>(&rt);
+    let now = std::cell::Cell::new(Duration::ZERO);
+    let at = |d: Duration| {
+        now.set(now.get() + d);
+        rt.tick(now.get());
+    };
     probe.acquire(&rt);
     // Ended counts as ready: the first frame does not wait for it.
     assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert!(!probe.running(), "an ended body is not running");
+    // Still read: started again after 1 s, then 2 s (backoff).
+    assert_eq!(rt.next_deadline(), Some(now.get() + Duration::from_secs(1)));
+    at(Duration::from_secs(1));
+    assert_eq!(probe.starts(), 2);
+    until(&rt, &s, "the second failure", || {
+        rt.next_deadline() == Some(now.get() + Duration::from_secs(2))
+    });
+    // A run that comes up and says it is ready resets the backoff.
+    let sc = script_again();
+    at(Duration::from_secs(2));
+    assert_eq!(sc.next(), "start visible=true");
+    assert_eq!(probe.starts(), 3);
+    assert!(probe.running());
+    sc.cmd(Cmd::Ready);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    drop(sc);
+    // Its script gone, the body returns Ok: no retry for a clean end.
+    until(&rt, &s, "the clean end", || !probe.running());
+    assert_eq!(rt.next_deadline(), None);
     probe.release(&rt);
+    // A new reader starts an ended service at once.
     let sc = script_again();
     probe.acquire(&rt);
     assert_eq!(sc.next(), "start visible=true");
-    assert_eq!(probe.starts(), 2);
+    assert_eq!(probe.starts(), 4);
     s.shutdown();
 }
 

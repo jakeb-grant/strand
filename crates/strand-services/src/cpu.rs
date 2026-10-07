@@ -39,14 +39,15 @@ pub fn samples() -> u64 {
 }
 
 /// See the module docs.
-#[service(name = "cpu", schema = SCHEMA)]
+#[service(name = "cpu")]
 #[derive(Store, Clone, Debug, Default, PartialEq)]
 pub struct Cpu {
-    /// Load over every core, 0 to 1.
+    /// Load over every core, 0 to 1: `graph cpu.usage`.
     pub usage: f64,
     /// The load of each core, 0 to 1.
     pub cores: Vec<f64>,
-    /// Degrees Celsius.
+    /// The processor's temperature in degrees Celsius, when a sensor
+    /// reports one.
     pub temperature: Option<f64>,
 }
 

@@ -32,14 +32,14 @@ pub fn samples() -> u64 {
 }
 
 /// See the module docs.
-#[service(name = "memory", schema = SCHEMA)]
+#[service(name = "memory")]
 #[derive(Store, Clone, Debug, Default, PartialEq)]
 pub struct Memory {
     /// The fraction in use, 0 to 1.
     pub usage: f64,
-    /// Bytes in use.
+    /// Memory in use, in bytes (installed memory less what is available).
     pub used: f64,
-    /// Bytes installed.
+    /// Memory installed, in bytes.
     pub total: f64,
 }
 

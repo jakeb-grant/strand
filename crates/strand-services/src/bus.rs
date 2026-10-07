@@ -6,6 +6,7 @@
 //! talks to the machine's real buses.
 
 use std::cell::RefCell;
+use std::rc::Rc;
 use std::time::Duration;
 
 /// One bus.
@@ -55,21 +56,55 @@ enum Which {
     System,
 }
 
+/// One bus's connection slot: its lock makes concurrent first users
+/// share one connect.
+type Slot = Rc<tokio::sync::Mutex<Option<zbus::Connection>>>;
+
 thread_local! {
     /// The connections of this services thread, shared by its services
-    /// (one session and one system connection per runtime).
-    static CONNECTIONS: RefCell<Vec<((Which, Bus), zbus::Connection)>> = const { RefCell::new(Vec::new()) };
+    /// (one session and one system connection per runtime). Dropped when
+    /// the last body on the thread ends ([`forget`]).
+    static CONNECTIONS: RefCell<Vec<((Which, Bus), Slot)>> = const { RefCell::new(Vec::new()) };
+}
+
+fn slot(which: Which, bus: &Bus) -> Slot {
+    CONNECTIONS.with(|c| {
+        let mut c = c.borrow_mut();
+        if let Some((_, s)) = c.iter().find(|(k, _)| k.0 == which && &k.1 == bus) {
+            return s.clone();
+        }
+        let s = Slot::default();
+        c.push(((which, bus.clone()), s.clone()));
+        s
+    })
+}
+
+/// A cached connection still answers (the daemon may have restarted).
+async fn alive(conn: &zbus::Connection) -> bool {
+    let ping = conn.call_method(
+        Some("org.freedesktop.DBus"),
+        "/org/freedesktop/DBus",
+        Some("org.freedesktop.DBus.Peer"),
+        "Ping",
+        &(),
+    );
+    matches!(tokio::time::timeout(CONNECT_TIMEOUT, ping).await, Ok(Ok(_)))
 }
 
 async fn connect(which: Which, bus: &Bus) -> zbus::Result<zbus::Connection> {
-    let cached = CONNECTIONS.with(|c| {
-        c.borrow()
-            .iter()
-            .find(|(k, _)| k.0 == which && &k.1 == bus)
-            .map(|(_, conn)| conn.clone())
-    });
-    if let Some(conn) = cached {
-        return Ok(conn);
+    if tokio::runtime::Handle::try_current().is_err() {
+        return Err(zbus::Error::Failure(
+            "no tokio runtime on this thread: a service on a thread of its own runs one to use the buses".into(),
+        ));
+    }
+    let slot = slot(which, bus);
+    let mut held = slot.lock().await;
+    if let Some(conn) = held.as_ref() {
+        if alive(conn).await {
+            return Ok(conn.clone());
+        }
+        // Dead (the bus restarted): connect afresh.
+        *held = None;
     }
     let fresh = async {
         match (which, bus) {
@@ -86,7 +121,7 @@ async fn connect(which: Which, bus: &Bus) -> zbus::Result<zbus::Connection> {
     let conn = tokio::time::timeout(CONNECT_TIMEOUT, fresh)
         .await
         .unwrap_or_else(|_| Err(zbus::Error::Failure("connecting timed out".into())))?;
-    CONNECTIONS.with(|c| c.borrow_mut().push(((which, bus.clone()), conn.clone())));
+    *held = Some(conn.clone());
     Ok(conn)
 }
 

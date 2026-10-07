@@ -8,7 +8,17 @@
 //! again inside the grace cancels the stop: the running service carries
 //! on, nothing restarts. The service sees [`Cx::visible`] turn false at
 //! once on the last release (streams stop then, not 5 s later) and true
-//! again on the next acquire.
+//! again on the next acquire. Readers of a `#[store(stream)]` field are
+//! counted per field too ([`Client::acquire_field`]): the service sees
+//! [`Cx::watched`] for that field, so a Wi-Fi scan runs only while a
+//! visible reader reads the access points, not while a bar shows the
+//! SSID.
+//!
+//! A body that ends with an error while readers still hold it is started
+//! again on a core timer, backing off from 1 s to [`RETRY_MAX`] (reset
+//! once a run says it is ready); [`Client::running`] is false meanwhile.
+//! A write, action or async call reaching a stopped service starts it
+//! for that one operation (a reader for a moment: it stops 5 s later).
 //!
 //! **Threads**: services marked shared run on one tokio current-thread
 //! runtime thread (`strand-services`), started lazily with the first of
@@ -36,10 +46,23 @@ use crate::bus::Buses;
 use crate::cx::{Cx, Envelope, Msg, Notify, Out, Reply, Wake, Write};
 use crate::data::{Data, Step};
 use crate::service::{FromCall, Service, Start};
-use crate::store::{Applied, Cells, EventInfo, FieldInfo, How};
+use crate::store::{Applied, Cells, EventInfo, FieldInfo, How, Patch, Target};
 
 /// How long a service keeps running after its last reader left.
 pub const STOP_GRACE: Duration = Duration::from_secs(5);
+
+/// The longest wait before a failed body is started again.
+pub const RETRY_MAX: Duration = Duration::from_secs(30);
+
+/// How long [`Services::shutdown`] waits for services on threads of
+/// their own to return.
+pub const JOIN_LIMIT: Duration = Duration::from_secs(2);
+
+thread_local! {
+    /// Bodies running on this shared runtime thread: when the last ends,
+    /// the bus connections they shared are dropped.
+    static SHARED_BODIES: Cell<usize> = const { Cell::new(0) };
+}
 
 /// A job for the shared runtime thread: builds a future there.
 type Job = Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()>>> + Send>;
@@ -100,6 +123,8 @@ trait Member {
     /// Running and not ready yet.
     fn waiting(&self) -> bool;
     fn stop_now(&self);
+    /// The thread of its last run on a thread of its own, if any.
+    fn take_thread(&self) -> Option<JoinHandle<()>>;
 }
 
 struct Registry {
@@ -173,12 +198,17 @@ impl Services {
                 rt.untrack(|rt| S::Cells::new(rt, S::NAME, &S::default()))
             })
             .unwrap_or_else(|_| S::Cells::new(rt, S::NAME, &S::default()));
-        let inner = Rc::new(ClientInner::<S> {
+        let inner = Rc::new_cyclic(|me| ClientInner::<S> {
+            me: me.clone(),
             reg: Rc::downgrade(&self.0),
             cells,
             refs: Cell::new(0),
+            field_refs: S::FIELDS.iter().map(|_| Cell::new(0)).collect(),
             run: RefCell::new(None),
             timer: Cell::new(None),
+            retry: Cell::new(None),
+            failures: Cell::new(0),
+            last_thread: RefCell::new(None),
             observers: RefCell::new(Vec::new()),
             starts: Cell::new(0),
             stops: Cell::new(0),
@@ -229,22 +259,42 @@ impl Services {
 
     /// Stop every service now and end the shared runtime (joining its
     /// thread). Services on threads of their own are told to stop and
-    /// not waited for.
+    /// joined, [`JOIN_LIMIT`] at most in all (one that overruns is
+    /// logged and left).
     pub fn shutdown(&self) {
         let members: Vec<Rc<dyn Member>> = self.0.members.borrow().clone();
-        for m in members {
+        for m in &members {
             m.stop_now();
         }
         self.0.shared.borrow_mut().take();
+        join_all(members.iter().filter_map(|m| m.take_thread()).collect());
     }
 }
 
 impl Drop for Registry {
     fn drop(&mut self) {
-        for m in self.members.get_mut().drain(..) {
+        let members: Vec<Rc<dyn Member>> = self.members.get_mut().drain(..).collect();
+        for m in &members {
             m.stop_now();
         }
         self.shared.get_mut().take();
+        join_all(members.iter().filter_map(|m| m.take_thread()).collect());
+    }
+}
+
+/// Join service threads, [`JOIN_LIMIT`] at most in all.
+fn join_all(threads: Vec<JoinHandle<()>>) {
+    let deadline = Instant::now() + JOIN_LIMIT;
+    for t in threads {
+        while !t.is_finished() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        if t.is_finished() {
+            let _ = t.join();
+        } else {
+            let name = t.thread().name().unwrap_or("a service").to_string();
+            log::warn!("{name} did not stop within {JOIN_LIMIT:?}; left running");
+        }
     }
 }
 
@@ -255,6 +305,8 @@ struct Run<S: Service> {
     /// Ends the body on the shared runtime.
     stop: Option<oneshot::Sender<()>>,
     notify: Notify,
+    /// A body on a thread of its own: its thread.
+    thread: Option<JoinHandle<()>>,
     ready: bool,
     ended: bool,
 }
@@ -279,11 +331,19 @@ impl<S: Service> Run<S> {
 pub type Observer = Box<dyn Fn(&Runtime, &Applied)>;
 
 struct ClientInner<S: Service> {
+    me: Weak<ClientInner<S>>,
     reg: Weak<Registry>,
     cells: S::Cells,
     refs: Cell<u32>,
+    /// Readers per field (stream fields are told of theirs).
+    field_refs: Vec<Cell<u32>>,
     run: RefCell<Option<Run<S>>>,
     timer: Cell<Option<Timer>>,
+    retry: Cell<Option<Timer>>,
+    /// Failed runs in a row (the retry backoff).
+    failures: Cell<u32>,
+    /// The last run's thread (a service on a thread of its own).
+    last_thread: RefCell<Option<JoinHandle<()>>>,
     observers: RefCell<Vec<Observer>>,
     starts: Cell<u64>,
     stops: Cell<u64>,
@@ -313,14 +373,21 @@ impl<S: Service> ClientInner<S> {
             tx: out_tx,
             wake: reg.wake.clone(),
         };
-        let cx = Cx::new(state, out, msgs, reg.buses.clone(), notify.clone());
+        let watched = S::FIELDS
+            .iter()
+            .zip(&self.field_refs)
+            .map(|(f, n)| f.stream && n.get() > 0)
+            .collect();
+        let cx = Cx::new(state, out, msgs, reg.buses.clone(), notify.clone(), watched);
         let mut stop = None;
+        let mut thread = None;
         let started = match S::start(cx) {
             Start::Shared(body) => {
                 let (stop_tx, stop_rx) = oneshot::channel::<()>();
                 stop = Some(stop_tx);
                 reg.shared_spawn(Box::new(move || {
                     Box::pin(async move {
+                        SHARED_BODIES.with(|n| n.set(n.get() + 1));
                         tokio::select! {
                             _ = stop_rx => {}
                             r = body() => {
@@ -330,20 +397,45 @@ impl<S: Service> ClientInner<S> {
                                 ended.send(Envelope::Ended(r.map_err(|e| e.0)));
                             }
                         }
+                        // The last body gone: its connections go too (a
+                        // dead bus is connected afresh next time).
+                        if SHARED_BODIES.with(|n| {
+                            n.set(n.get().saturating_sub(1));
+                            n.get() == 0
+                        }) {
+                            crate::bus::forget();
+                        }
                     })
                 }))
             }
-            Start::Thread(body) => std::thread::Builder::new()
-                .name(format!("strand-{}", S::NAME))
-                .spawn(move || {
-                    let r = body();
-                    if let Err(e) = &r {
-                        log::warn!("service {} ended: {e}", S::NAME);
+            Start::Thread(body) => {
+                // The previous run's thread (told to stop) is joined by
+                // this one before its body starts: two PipeWire or
+                // Wayland connections of one service never overlap.
+                let prev = self.last_thread.borrow_mut().take();
+                let spawned = std::thread::Builder::new()
+                    .name(format!("strand-{}", S::NAME))
+                    .spawn(move || {
+                        if let Some(p) = prev {
+                            let _ = p.join();
+                        }
+                        let r = body();
+                        if let Err(e) = &r {
+                            log::warn!("service {} ended: {e}", S::NAME);
+                        }
+                        ended.send(Envelope::Ended(r.map_err(|e| e.0)));
+                    });
+                match spawned {
+                    Ok(h) => {
+                        thread = Some(h);
+                        true
                     }
-                    ended.send(Envelope::Ended(r.map_err(|e| e.0)));
-                })
-                .map_err(|e| log::error!("service {}: no thread: {e}", S::NAME))
-                .is_ok(),
+                    Err(e) => {
+                        log::error!("service {}: no thread: {e}", S::NAME);
+                        false
+                    }
+                }
+            }
         };
         if !started {
             return;
@@ -354,6 +446,7 @@ impl<S: Service> ClientInner<S> {
             tx,
             stop,
             notify,
+            thread,
             ready: false,
             ended: false,
         });
@@ -364,6 +457,9 @@ impl<S: Service> ClientInner<S> {
         if let Some(mut run) = run {
             if let Some(s) = run.stop.take() {
                 let _ = s.send(());
+            }
+            if let Some(t) = run.thread.take() {
+                *self.last_thread.borrow_mut() = Some(t);
             }
             let notify = run.notify.clone();
             drop(run);
@@ -409,6 +505,86 @@ impl<S: Service> ClientInner<S> {
             Err(e) => log::warn!("{}: no stop timer: {e}", S::NAME),
         }
     }
+
+    /// A reader came back inside the grace: the pending stop goes (no
+    /// wakeup 5 s later for nothing).
+    fn disarm_stop(&self, rt: &Runtime) {
+        if let Some(t) = self.timer.take() {
+            t.dispose(rt);
+        }
+    }
+
+    /// The body ended with an error while read: start it again after a
+    /// backoff (1 s, doubling to [`RETRY_MAX`]).
+    fn arm_retry(&self, rt: &Runtime) {
+        if let Some(t) = self.retry.take() {
+            t.dispose(rt);
+        }
+        let (Some(me), Some(reg)) = (self.me.upgrade(), self.reg.upgrade()) else {
+            return;
+        };
+        let n = self.failures.get();
+        self.failures.set(n.saturating_add(1));
+        let wait = Duration::from_secs(1u64 << n.min(5)).min(RETRY_MAX);
+        let weak = Rc::downgrade(&me);
+        let timer = reg.anchor.run(rt, |rt| {
+            rt.after(
+                wait,
+                |_| Ok(true),
+                move |rt| {
+                    if let Some(c) = weak.upgrade() {
+                        c.retry.set(None);
+                        let ended = c.run.borrow().as_ref().is_some_and(|r| r.ended);
+                        if c.refs.get() > 0 && ended {
+                            c.stop();
+                            c.start(rt);
+                        }
+                    }
+                    Ok(())
+                },
+            )
+        });
+        match timer {
+            Ok(t) => {
+                rt.set_name(t.id(), format!("{} retry", S::NAME));
+                self.retry.set(Some(t));
+            }
+            Err(e) => log::warn!("{}: no retry timer: {e}", S::NAME),
+        }
+    }
+
+    /// The run ended (an `Ended` envelope, or its channel closed).
+    fn ended(&self, rt: &Runtime, failed: bool) {
+        let was = match self.run.borrow_mut().as_mut() {
+            Some(run) => {
+                let was = run.ended;
+                run.ended = true;
+                run.ready = true;
+                was
+            }
+            None => return,
+        };
+        if !was && failed && self.refs.get() > 0 {
+            self.arm_retry(rt);
+        }
+    }
+
+    /// Run `f` on the running service; a stopped one is started for it
+    /// (acquired and released at once: it stops [`STOP_GRACE`] later).
+    fn with_run<R>(self: &Rc<Self>, rt: &Runtime, f: impl FnOnce(&Run<S>) -> R) -> Option<R> {
+        let idle = self.run.borrow().is_none();
+        if idle {
+            Client(self.clone()).acquire(rt);
+        }
+        let r = match self.run.borrow().as_ref() {
+            Some(run) if !run.ended => Some(f(run)),
+            _ => None,
+        };
+        if idle {
+            Client(self.clone()).release(rt);
+        }
+        r
+    }
 }
 
 impl<S: Service> Member for ClientInner<S> {
@@ -423,10 +599,8 @@ impl<S: Service> Member for ClientInner<S> {
                 Ok(env) => env,
                 Err(std::sync::mpsc::TryRecvError::Empty) => return any,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    if let Some(run) = self.run.borrow_mut().as_mut() {
-                        run.ended = true;
-                        run.ready = true;
-                    }
+                    // No `Ended` came first: the body panicked.
+                    self.ended(rt, true);
                     return any;
                 }
             };
@@ -438,12 +612,14 @@ impl<S: Service> Member for ClientInner<S> {
                     initial,
                 } => {
                     self.reports.set(self.reports.get() + 1);
-                    let how = if initial {
-                        How::Initial
-                    } else {
-                        How::Report(echo_of)
-                    };
                     for p in &patches {
+                        // Only the written field's patch answers the
+                        // write; the rest are outside changes.
+                        let how = match echo_of {
+                            _ if initial => How::Initial,
+                            Some((i, g)) if p.target() == Target::Field(i) => How::Report(Some(g)),
+                            _ => How::Report(None),
+                        };
                         match self.cells.apply(rt, p, how) {
                             Ok(Some(applied)) => {
                                 for o in self.observers.borrow().iter() {
@@ -459,13 +635,9 @@ impl<S: Service> Member for ClientInner<S> {
                     if let Some(run) = self.run.borrow_mut().as_mut() {
                         run.ready = true;
                     }
+                    self.failures.set(0);
                 }
-                Envelope::Ended(_) => {
-                    if let Some(run) = self.run.borrow_mut().as_mut() {
-                        run.ended = true;
-                        run.ready = true;
-                    }
-                }
+                Envelope::Ended(r) => self.ended(rt, r.is_err()),
             }
         }
     }
@@ -476,6 +648,10 @@ impl<S: Service> Member for ClientInner<S> {
 
     fn stop_now(&self) {
         self.stop();
+    }
+
+    fn take_thread(&self) -> Option<JoinHandle<()>> {
+        self.last_thread.borrow_mut().take()
     }
 }
 
@@ -512,6 +688,7 @@ impl<S: Service> Client<S> {
         if n > 1 {
             return;
         }
+        self.0.disarm_stop(rt);
         let running = self.0.run.borrow().as_ref().map(|r| r.ended);
         match running {
             Some(false) => {
@@ -519,12 +696,65 @@ impl<S: Service> Client<S> {
                     run.send(Msg::Visible(true));
                 }
             }
-            // Ended by itself (an error): a new reader starts it again.
+            // Ended by itself: a new reader starts it again.
             Some(true) => {
+                if let Some(t) = self.0.retry.take() {
+                    t.dispose(rt);
+                }
                 self.0.stop();
                 self.0.start(rt);
             }
             None => self.0.start(rt),
+        }
+    }
+
+    /// A visible reader of field `field` came (on top of
+    /// [`Client::acquire`] of the service): a `#[store(stream)]` field's
+    /// stream starts with its first ([`Cx::watched`]).
+    pub fn acquire_field(&self, field: usize) {
+        let Some(n) = self.0.field_refs.get(field) else {
+            return;
+        };
+        n.set(n.get() + 1);
+        if n.get() == 1 {
+            self.watch(field, true);
+        }
+    }
+
+    /// The matching release: the stream stops with the field's last
+    /// visible reader (at once, not after the grace).
+    pub fn release_field(&self, field: usize) {
+        let Some(n) = self.0.field_refs.get(field) else {
+            return;
+        };
+        if n.get() == 0 {
+            return;
+        }
+        n.set(n.get() - 1);
+        if n.get() == 0 {
+            self.watch(field, false);
+        }
+    }
+
+    /// Visible readers of field `field` now.
+    pub fn field_readers(&self, field: usize) -> u32 {
+        self.0.field_refs.get(field).map_or(0, Cell::get)
+    }
+
+    fn watch(&self, field: usize, on: bool) {
+        let Some(info) = S::FIELDS.get(field) else {
+            return;
+        };
+        if !info.stream {
+            return;
+        }
+        if let Some(run) = self.0.run.borrow().as_ref()
+            && !run.ended
+        {
+            run.send(Msg::Watch {
+                field: info.name,
+                on,
+            });
         }
     }
 
@@ -551,9 +781,10 @@ impl<S: Service> Client<S> {
         self.0.refs.get()
     }
 
-    /// The service is running (started and not stopped).
+    /// The service is running: started, not stopped, and its body has
+    /// not ended.
     pub fn running(&self) -> bool {
-        self.0.run.borrow().is_some()
+        self.0.run.borrow().as_ref().is_some_and(|r| !r.ended)
     }
 
     /// How many times it started.
@@ -592,23 +823,26 @@ impl<S: Service> Client<S> {
         Ok(())
     }
 
-    /// Send an action.
-    pub fn act(&self, action: S::Action) -> Result<(), Error> {
-        match self.0.run.borrow().as_ref() {
-            Some(run) if run.send(Msg::Action(action)) => Ok(()),
+    /// Send an action (a stopped service starts for it).
+    pub fn act(&self, rt: &Runtime, action: S::Action) -> Result<(), Error> {
+        match self.0.with_run(rt, |run| run.send(Msg::Action(action))) {
+            Some(true) => Ok(()),
             _ => Err(not_running(S::NAME)),
         }
     }
 
-    /// Call an async method; the future completes with its answer.
-    pub fn request(&self, call: S::Call) -> Pin<Box<dyn Future<Output = Result<Data, String>>>> {
+    /// Call an async method (a stopped service starts for it); the
+    /// future completes with its answer.
+    pub fn request(
+        &self,
+        rt: &Runtime,
+        call: S::Call,
+    ) -> Pin<Box<dyn Future<Output = Result<Data, String>>>> {
         let (tx, rx) = oneshot::channel();
         let sent = self
             .0
-            .run
-            .borrow()
-            .as_ref()
-            .is_some_and(|run| run.send(Msg::Call(call, Reply(tx))));
+            .with_run(rt, |run| run.send(Msg::Call(call, Reply(tx))))
+            .unwrap_or(false);
         Box::pin(async move {
             if !sent {
                 return Err(format!("`{}` is not running", S::NAME));
@@ -625,7 +859,7 @@ impl<S: Service> Client<S> {
 }
 
 fn not_running(name: &str) -> Error {
-    Error::failed(format!("`{name}` is not running (nothing reads it)"))
+    Error::failed(format!("`{name}` is not running (it failed to start)"))
 }
 
 /// A service as the language side drives it, by field index and name
@@ -653,17 +887,28 @@ pub trait DynService {
     /// to the service tagged; its echo is ignored).
     fn write(&self, rt: &Runtime, field: usize, path: &[Step], value: Data) -> Result<(), Error>;
     /// Run action `name` (on `item` for an item's action).
-    fn action(&self, name: &str, item: Option<&Data>, args: &[Data]) -> Result<(), Error>;
+    fn action(
+        &self,
+        rt: &Runtime,
+        name: &str,
+        item: Option<&Data>,
+        args: &[Data],
+    ) -> Result<(), Error>;
     /// A `fn` method, computed on the logic thread; `None`: none such.
     fn call(&self, rt: &Runtime, method: &str, args: &[Data]) -> Option<Result<Data, Error>>;
     /// An async method: the future completes with the service's answer.
     fn fetch(
         &self,
+        rt: &Runtime,
         method: &str,
         args: &[Data],
     ) -> Pin<Box<dyn Future<Output = Result<Data, String>>>>;
     fn acquire(&self, rt: &Runtime);
     fn release(&self, rt: &Runtime);
+    /// A visible reader of field `field` came ([`Client::acquire_field`]).
+    fn acquire_field(&self, field: usize);
+    /// It left or was hidden ([`Client::release_field`]).
+    fn release_field(&self, field: usize);
     fn readers(&self) -> u32;
     fn running(&self) -> bool;
     fn starts(&self) -> u64;
@@ -723,8 +968,12 @@ impl<S: Service> DynService for Client<S> {
                 S::NAME
             )));
         };
-        let tx = match self.0.run.borrow().as_ref() {
-            Some(run) => (run.tx.clone(), run.notify.clone()),
+        // A stopped service starts for the write.
+        let tx = match self
+            .0
+            .with_run(rt, |run| (run.tx.clone(), run.notify.clone()))
+        {
+            Some(tx) => tx,
             None => return Err(not_running(S::NAME)),
         };
         let whole = if path.is_empty() {
@@ -757,10 +1006,16 @@ impl<S: Service> DynService for Client<S> {
         )
     }
 
-    fn action(&self, name: &str, item: Option<&Data>, args: &[Data]) -> Result<(), Error> {
+    fn action(
+        &self,
+        rt: &Runtime,
+        name: &str,
+        item: Option<&Data>,
+        args: &[Data],
+    ) -> Result<(), Error> {
         let a = <S::Action as FromCall>::from_call(name, item, args)
             .map_err(|e| Error::failed(format!("{}.{name}: {e}", S::NAME)))?;
-        self.act(a)
+        self.act(rt, a)
     }
 
     fn call(&self, rt: &Runtime, method: &str, args: &[Data]) -> Option<Result<Data, Error>> {
@@ -769,11 +1024,12 @@ impl<S: Service> DynService for Client<S> {
 
     fn fetch(
         &self,
+        rt: &Runtime,
         method: &str,
         args: &[Data],
     ) -> Pin<Box<dyn Future<Output = Result<Data, String>>>> {
         match <S::Call as FromCall>::from_call(method, None, args) {
-            Ok(c) => self.request(c),
+            Ok(c) => self.request(rt, c),
             Err(e) => {
                 let msg = format!("{}.{method}: {e}", S::NAME);
                 Box::pin(async move { Err(msg) })
@@ -787,6 +1043,14 @@ impl<S: Service> DynService for Client<S> {
 
     fn release(&self, rt: &Runtime) {
         Client::release(self, rt);
+    }
+
+    fn acquire_field(&self, field: usize) {
+        Client::acquire_field(self, field);
+    }
+
+    fn release_field(&self, field: usize) {
+        Client::release_field(self, field);
     }
 
     fn readers(&self) -> u32 {

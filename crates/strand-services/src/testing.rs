@@ -34,7 +34,8 @@ fn skip(what: &str) {
     eprintln!("\n*** SKIPPED: {what} ***\n");
 }
 
-/// A private `dbus-daemon` (session configuration), killed on drop.
+/// A private `dbus-daemon` (a session bus of its own configuration, with
+/// no service directories), killed on drop.
 #[derive(Debug)]
 pub struct PrivateBus {
     child: Child,
@@ -53,38 +54,58 @@ impl PrivateBus {
             skip(&format!("no directory for a private bus ({e})"));
             return None;
         }
-        let spawned = Command::new("dbus-daemon")
-            .args(["--session", "--nofork", "--print-address=1"])
-            .arg(format!("--address=unix:path={}/bus", dir.display()))
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn();
-        let mut child = match spawned {
+        // A configuration of its own, not `--session`: no standard
+        // service directories, so nothing installed on the machine
+        // (a portal, dconf, systemd) can be activated on this bus.
+        let config = dir.join("bus.conf");
+        let text = format!(
+            "<!DOCTYPE busconfig PUBLIC \"-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN\"\n \
+             \"http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd\">\n\
+             <busconfig>\n  <type>session</type>\n  <keep_umask/>\n  \
+             <listen>unix:path={}/bus</listen>\n  <auth>EXTERNAL</auth>\n  \
+             <policy context=\"default\">\n    <allow send_destination=\"*\" eavesdrop=\"true\"/>\n    \
+             <allow eavesdrop=\"true\"/>\n    <allow own=\"*\"/>\n  </policy>\n</busconfig>\n",
+            dir.display()
+        );
+        if let Err(e) = std::fs::write(&config, text) {
+            let _ = std::fs::remove_dir_all(&dir);
+            skip(&format!("no private bus configuration ({e})"));
+            return None;
+        }
+        let child = match spawn_daemon(&config) {
             Ok(c) => c,
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&dir);
-                skip(&format!("dbus-daemon is not available ({e})"));
+                skip(&e);
                 return None;
             }
         };
-        let mut line = String::new();
-        let read = child
-            .stdout
-            .take()
-            .map(|out| BufReader::new(out).read_line(&mut line));
-        if !matches!(read, Some(Ok(n)) if n > 0) {
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = std::fs::remove_dir_all(&dir);
-            skip("dbus-daemon printed no address");
-            return None;
-        }
+        // The address without the daemon's guid, so it stays valid
+        // across [`PrivateBus::restart`].
+        let address = format!("unix:path={}/bus", dir.display());
         Some(PrivateBus {
             child,
-            address: line.trim().to_string(),
+            address,
             dir,
         })
+    }
+
+    /// Kill the daemon and start a new one at the same address (a bus or
+    /// daemon restarting): every connection to the old one is closed.
+    pub fn restart(&mut self) -> bool {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = std::fs::remove_file(self.dir.join("bus"));
+        match spawn_daemon(&self.dir.join("bus.conf")) {
+            Ok(c) => {
+                self.child = c;
+                true
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                false
+            }
+        }
     }
 
     /// Session and system bus both this one.
@@ -140,6 +161,29 @@ impl Drop for PrivateBus {
         let _ = self.child.wait();
         let _ = std::fs::remove_dir_all(&self.dir);
     }
+}
+
+/// Run `dbus-daemon` with `config` until it prints its address.
+fn spawn_daemon(config: &std::path::Path) -> Result<Child, String> {
+    let mut child = Command::new("dbus-daemon")
+        .arg(format!("--config-file={}", config.display()))
+        .args(["--nofork", "--print-address=1"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("dbus-daemon is not available ({e})"))?;
+    let mut line = String::new();
+    let read = child
+        .stdout
+        .take()
+        .map(|out| BufReader::new(out).read_line(&mut line));
+    if !matches!(read, Some(Ok(n)) if n > 0) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err("dbus-daemon printed no address".into());
+    }
+    Ok(child)
 }
 
 fn unique() -> u64 {

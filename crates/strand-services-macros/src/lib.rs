@@ -109,6 +109,7 @@ fn field_name(id: &Ident) -> String {
 struct StoreFieldAttr {
     rw: bool,
     keyed: bool,
+    stream: bool,
 }
 
 fn store_attr(attrs: &[Attribute]) -> syn::Result<StoreFieldAttr> {
@@ -124,8 +125,11 @@ fn store_attr(attrs: &[Attribute]) -> syn::Result<StoreFieldAttr> {
             } else if m.path.is_ident("keyed") {
                 out.keyed = true;
                 Ok(())
+            } else if m.path.is_ident("stream") {
+                out.stream = true;
+                Ok(())
             } else {
-                Err(m.error("expected `rw` or `keyed`"))
+                Err(m.error("expected `rw`, `keyed` or `stream`"))
             }
         })?;
     }
@@ -157,8 +161,12 @@ fn event_args(payload: &Type, value: &Tokens) -> (usize, Tokens) {
 /// `#[derive(Store)]`: see the crate docs. Field attributes:
 /// `#[store(rw)]` marks a writable field (`<->`, assignment),
 /// `#[store(keyed)]` a `Vec<T>` of `Keyed` records published as a keyed
-/// collection; a field of type `Event<T>` is an event (`T` its payload:
-/// `()` for none, a tuple for several arguments).
+/// collection, `#[store(stream)]` a field the service produces only while
+/// a visible reader reads that field (a Wi-Fi scan, audio levels:
+/// `Cx::watched`); a field of type `Event<T>` is an event (`T` its
+/// payload: `()` for none, a tuple for several arguments). The derive
+/// also generates `<Name>Event`, one variant per event, which
+/// `Cx::emit` takes.
 #[proc_macro_derive(Store, attributes(store))]
 pub fn derive_store(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -191,6 +199,7 @@ fn store(input: &DeriveInput) -> syn::Result<Tokens> {
     }
     let patch = format_ident!("{}Patch", name);
     let cells = format_ident!("{}Cells", name);
+    let event = format_ident!("{}Event", name);
     let sv = quote!(::strand_services);
 
     let mut variants = Vec::new();
@@ -210,6 +219,8 @@ fn store(input: &DeriveInput) -> syn::Result<Tokens> {
     let mut disposes = Vec::new();
     let mut debug = Vec::new();
     let mut field_patches = Vec::new();
+    let mut event_variants = Vec::new();
+    let mut event_into = Vec::new();
 
     let (mut fi, mut ei) = (0usize, 0usize);
     for f in &fields.named {
@@ -240,7 +251,7 @@ fn store(input: &DeriveInput) -> syn::Result<Tokens> {
             Kind::Plain => {
                 let i = fi;
                 fi += 1;
-                let rw = attr.rw;
+                let (rw, stream) = (attr.rw, attr.stream);
                 variants.push(quote!(#[doc = #doc] #var(#ty)));
                 cell_fields.push(quote!(pub #id: #sv::core::Signal<#ty>));
                 cell_new.push(quote!(#id: {
@@ -253,6 +264,8 @@ fn store(input: &DeriveInput) -> syn::Result<Tokens> {
                     ty: <#ty as #sv::SchemaType>::schema_type,
                     rw: #rw,
                     keyed: false,
+                    key: ::core::option::Option::None,
+                    stream: #stream,
                     doc: #doc,
                 }));
                 diffs.push(quote!(if old.#id != new.#id {
@@ -289,6 +302,7 @@ fn store(input: &DeriveInput) -> syn::Result<Tokens> {
                 let i = fi;
                 fi += 1;
                 let key = quote!(<#item as #sv::Keyed>::Key);
+                let stream = attr.stream;
                 variants.push(
                     quote!(#[doc = #doc] #var(::std::vec::Vec<#sv::core::VecDiff<#key, #item>>)),
                 );
@@ -303,6 +317,8 @@ fn store(input: &DeriveInput) -> syn::Result<Tokens> {
                     ty: <::std::vec::Vec<#item> as #sv::SchemaType>::schema_type,
                     rw: false,
                     keyed: true,
+                    key: ::core::option::Option::Some(<#item as #sv::Keyed>::KEY_FIELD),
+                    stream: #stream,
                     doc: #doc,
                 }));
                 diffs.push(quote!({
@@ -355,6 +371,8 @@ fn store(input: &DeriveInput) -> syn::Result<Tokens> {
                 ei += 1;
                 let (arity, args) = event_args(payload, &quote!(v));
                 variants.push(quote!(#[doc = #doc] #var(#payload)));
+                event_variants.push(quote!(#[doc = #doc] #var(#payload)));
+                event_into.push(quote!(#event::#var(v) => #patch::#var(v),));
                 cell_fields.push(quote!(pub #id: #sv::core::EventQueue<#payload>));
                 cell_new.push(quote!(#id: rt.events::<#payload>()));
                 event_infos.push(quote!(#sv::EventInfo {
@@ -376,6 +394,7 @@ fn store(input: &DeriveInput) -> syn::Result<Tokens> {
         }
     }
     let patch_doc = format!("A change to [`{name}`]'s state, sent by its service thread.");
+    let event_doc = format!("An event of [`{name}`], emitted with `Cx::emit`.");
     let cells_doc = format!(
         "[`{name}`]'s state on the logic thread: a core cell per field, a queue per event."
     );
@@ -384,6 +403,20 @@ fn store(input: &DeriveInput) -> syn::Result<Tokens> {
         #[derive(Clone, Debug, PartialEq)]
         #vis enum #patch {
             #(#variants),*
+        }
+
+        #[doc = #event_doc]
+        #[derive(Clone, Debug, PartialEq)]
+        #vis enum #event {
+            #(#event_variants),*
+        }
+
+        impl ::core::convert::From<#event> for #patch {
+            fn from(e: #event) -> #patch {
+                match e {
+                    #(#event_into)*
+                }
+            }
         }
 
         #[doc = #cells_doc]
@@ -409,6 +442,7 @@ fn store(input: &DeriveInput) -> syn::Result<Tokens> {
 
         impl #sv::Store for #name {
             type Patch = #patch;
+            type Event = #event;
             type Cells = #cells;
             const FIELDS: &'static [#sv::FieldInfo] = &[#(#infos),*];
             const EVENTS: &'static [#sv::EventInfo] = &[#(#event_infos),*];
@@ -604,6 +638,7 @@ fn data(input: &DeriveInput) -> syn::Result<Tokens> {
                     key = Some(quote! {
                         impl #sv::Keyed for #name {
                             type Key = #ty;
+                            const KEY_FIELD: &'static str = #fname;
                             fn key(&self) -> #ty {
                                 ::core::clone::Clone::clone(&self.#id)
                             }
@@ -790,7 +825,8 @@ struct ServiceAttr {
     thread: bool,
 }
 
-/// `#[service(name = "cpu", schema = CPU_SCHEMA)]` on a `Store` struct:
+/// `#[service(name = "cpu")]` on a `Store` struct, its schema text the
+/// `SCHEMA` constant in scope (or `schema = EXPR`):
 /// implements `strand_services::Service`, running the struct's inherent
 /// `async fn run(cx: Cx<Self>) -> Result<(), ServiceError>` on the shared
 /// services runtime, or with `thread` its `fn run(cx: Cx<Self>) ->
@@ -829,12 +865,8 @@ pub fn service(args: TokenStream, item: TokenStream) -> TokenStream {
     let Some(name) = attr.name else {
         return err(Span::call_site(), "#[service] needs `name = \"…\"`");
     };
-    let Some(schema) = attr.schema else {
-        return err(
-            Span::call_site(),
-            "#[service] needs `schema = …` (its schema text)",
-        );
-    };
+    // Its schema text: `schema = …`, or the module's `SCHEMA` constant.
+    let schema = attr.schema.map_or_else(|| quote!(SCHEMA), |e| quote!(#e));
     let action = attr
         .action
         .map_or_else(|| quote!(#sv::NoCall), |t| quote!(#t));

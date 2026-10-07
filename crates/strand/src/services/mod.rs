@@ -147,6 +147,41 @@ mod tests {
             let events: Vec<&str> = rec.events.iter().map(|e| e.name.as_str()).collect();
             let store_events: Vec<&str> = svc.events().iter().map(|e| e.name).collect();
             assert_eq!(events, store_events, "{name}'s events");
+            // The struct's `///` docs are the schema's (hover shows the
+            // schema's): the two copies say the same.
+            let member_doc = |m: &str| {
+                s.doc(&strand_compiler::schema::DocKey::Member(
+                    name.to_string(),
+                    m.to_string(),
+                ))
+                .unwrap_or_default()
+                .to_string()
+            };
+            for f in svc.fields() {
+                assert_eq!(f.doc, member_doc(f.name), "{name}.{}'s docs", f.name);
+            }
+            for e in svc.events() {
+                assert_eq!(e.doc, member_doc(e.name), "{name}.{}'s docs", e.name);
+            }
+            // A keyed list is keyed by what its record's schema `key` says.
+            for (f, def) in svc.fields().iter().zip(&rec.fields) {
+                if !f.keyed {
+                    continue;
+                }
+                let key = match &def.ty {
+                    strand_compiler::ty::Ty::List(item, _) => match &**item {
+                        strand_compiler::ty::Ty::Record(r) => s.types.record(*r).key.clone(),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                assert_eq!(
+                    key,
+                    f.key.map(|k| vec![k.to_string()]),
+                    "{name}.{}'s key",
+                    f.name
+                );
+            }
             // Same fields as the provisional stub it replaced: configs
             // checked before M3 still check.
             let builtin = Schema::builtin();
@@ -434,12 +469,12 @@ service tally {
                         }
                         Msg::Action(TallyAction::Remove { item }) => {
                             cx.update(|s| s.items.retain(|i| i.id != item.id));
-                            cx.emit(TallyPatch::Removed(item));
+                            cx.emit(TallyEvent::Removed(item));
                         }
                         Msg::Call(TallyCall::Echo { text }, reply) => {
                             reply.send::<_, String>(Ok(text));
                         }
-                        Msg::Visible(_) => {}
+                        Msg::Visible(_) | Msg::Watch { .. } => {}
                     }
                 }
                 Ok(())

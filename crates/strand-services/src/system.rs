@@ -37,16 +37,18 @@ service system {
 "#;
 
 /// See the module docs.
-#[service(name = "system", schema = SCHEMA)]
+#[service(name = "system")]
 #[derive(Store, Clone, Debug, Default, PartialEq)]
 pub struct System {
     /// The desktop prefers a dark style.
     pub dark: bool,
-    /// The desktop's accent colour.
+    /// The desktop's accent colour, if it sets one.
     pub accent: Option<Rgba>,
-    /// 0 normal, 1 high.
+    /// The contrast preference, as `material(contrast:)` takes it: 0 for
+    /// normal, 1 for high.
     pub contrast: f64,
-    /// Motion should be reduced.
+    /// Motion should be reduced: springs snap, and loops, time signals and
+    /// effects stop.
     pub reduced_motion: bool,
     /// The machine's host name.
     pub hostname: String,

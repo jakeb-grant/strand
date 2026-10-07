@@ -52,7 +52,8 @@ impl Composite {
     }
 
     /// Add `host`, serving `names` and the item actions of `items`. A name
-    /// belongs to one member: a second claim is refused (logged).
+    /// or a record belongs to one member: a second claim is refused
+    /// (logged).
     pub fn add(&mut self, host: Rc<dyn ServiceHost>, names: &[&str], items: &[String]) {
         let i = self.members.len();
         self.members.push(host);
@@ -64,7 +65,11 @@ impl Composite {
             self.by_name.insert(n.to_string(), i);
         }
         for r in items {
-            self.by_item.entry(r.clone()).or_insert(i);
+            if self.by_item.contains_key(r) {
+                log::error!("the actions of `{r}` items are served twice; keeping the first");
+                continue;
+            }
+            self.by_item.insert(r.clone(), i);
         }
     }
 

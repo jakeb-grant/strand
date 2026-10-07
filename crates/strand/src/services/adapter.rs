@@ -293,7 +293,7 @@ impl ServiceHost for StoreHost {
             let r = self.call(rt, service, method, &args);
             return Box::pin(async move { r });
         }
-        let fut = self.svc.fetch(method, &self.data_args(&args));
+        let fut = self.svc.fetch(rt, method, &self.data_args(&args));
         let types = self.types.clone();
         Box::pin(async move {
             fut.await
@@ -304,15 +304,18 @@ impl ServiceHost for StoreHost {
 
     fn action(
         &self,
-        _rt: &Runtime,
+        rt: &Runtime,
         target: ActionTarget<'_>,
         name: &str,
         args: &[Value],
     ) -> Result<(), Error> {
         let args = self.data_args(args);
         match target {
-            ActionTarget::Service(_) => self.svc.action(name, None, &args),
-            ActionTarget::Item(v) => self.svc.action(name, Some(&to_data(&self.types, v)), &args),
+            ActionTarget::Service(_) => self.svc.action(rt, name, None, &args),
+            ActionTarget::Item(v) => {
+                self.svc
+                    .action(rt, name, Some(&to_data(&self.types, v)), &args)
+            }
         }
     }
 

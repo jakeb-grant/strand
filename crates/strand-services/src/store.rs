@@ -40,6 +40,12 @@ pub struct FieldInfo {
     pub rw: bool,
     /// A `#[store(keyed)]` list: published as a keyed collection.
     pub keyed: bool,
+    /// A keyed list's key: its item record's key field, as the schema
+    /// spells it (the record's `key` must say the same).
+    pub key: Option<&'static str>,
+    /// A `#[store(stream)]` field: the service produces it only while a
+    /// visible reader reads this field ([`Cx::watched`](crate::Cx::watched)).
+    pub stream: bool,
     /// Its `///` doc.
     pub doc: &'static str,
 }
@@ -51,6 +57,7 @@ impl fmt::Debug for FieldInfo {
             .field("ty", &(self.ty)())
             .field("rw", &self.rw)
             .field("keyed", &self.keyed)
+            .field("stream", &self.stream)
             .finish()
     }
 }
@@ -106,6 +113,10 @@ pub enum Applied {
 /// A service's state (`#[derive(Store)]`).
 pub trait Store: Clone + PartialEq + Default + Send + 'static {
     type Patch: Patch;
+    /// Its events (`<Name>Event`, one variant per `Event<T>` field): what
+    /// [`Cx::emit`](crate::Cx::emit) takes, so a field patch can never be
+    /// sent as an event.
+    type Event: Clone + fmt::Debug + Send + Into<Self::Patch> + 'static;
     type Cells: Cells<Self>;
     /// Its fields, in declaration order (events excluded).
     const FIELDS: &'static [FieldInfo];
@@ -182,6 +193,8 @@ impl<T> fmt::Debug for Event<T> {
 /// A record kept in a keyed list (`#[derive(Data)] #[data(key = id)]`).
 pub trait Keyed {
     type Key: Clone + Eq + Hash + fmt::Debug + Send + ToData + 'static;
+    /// The key field's name, as the schema spells it.
+    const KEY_FIELD: &'static str;
     fn key(&self) -> Self::Key;
 }
 
