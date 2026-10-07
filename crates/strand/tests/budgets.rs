@@ -822,6 +822,21 @@ fn seconds_into_minute() -> u64 {
 /// children going), which the idle window would count.
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// A figure CI shows on the run's page (a workflow `notice` annotation),
+/// so the measured numbers are read without the job's log.
+fn notice(text: &str) {
+    if std::env::var_os("GITHUB_ACTIONS").is_some() {
+        println!(
+            "::notice title=M3 memory ({})::{text}",
+            if cfg!(debug_assertions) {
+                "debug"
+            } else {
+                "release"
+            }
+        );
+    }
+}
+
 /// The limit and its name for the build under test.
 fn pss_limit() -> (u64, &'static str) {
     if cfg!(debug_assertions) {
@@ -903,6 +918,9 @@ fn the_design_bar_on_the_real_services_keeps_the_budget() {
         "design bar on the real services, two 2560x1440 outputs: PSS {pss} kB ({what} {limit} kB)\n{}",
         memory_report(pid)
     );
+    notice(&format!(
+        "design bar on the real services: PSS {pss} kB ({what} {limit} kB)"
+    ));
     assert_eq!(huge, 0, "huge pages resident\n{}", memory_report(pid));
     assert!(
         pss <= limit,
@@ -1025,6 +1043,11 @@ fn the_full_shell_on_the_real_services_is_measured() {
          \x20 launcher open, two toasts, OSD up: {full} kB (design.md: 59-64 MB)\n\
          \x20 launcher closed (toasts up): {closed} kB\n{full_report}"
     );
+    notice(&format!(
+        "full shell on the real services ({apps} desktop entries): bar {bar} kB, \
+         launcher open {launcher} kB, with two toasts and the OSD {full} kB, \
+         launcher closed {closed} kB (design.md: 59-64 MB)"
+    ));
     assert_eq!(full_huge, 0, "huge pages resident\n{full_report}");
     if !cfg!(debug_assertions) {
         assert!(
