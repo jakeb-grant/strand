@@ -525,25 +525,22 @@ service wifi {
             }
         }
 
-        /// A bar shows the SSID; a closed popup lists the networks. The
-        /// scan (the stream field) runs only while the popup is open,
-        /// though the service runs all along.
-        #[test]
-        fn a_closed_popup_keeps_a_stream_field_off_while_a_bar_reads_another() {
-            WIFI_LOG.lock().unwrap().clear();
-            let schema = Schema::builtin_with(&[WIFI_SCHEMA]).unwrap();
+        /// `src` mounted on one monitor against a composite host serving
+        /// `svc` (declared by `schema_text`) and the schema's defaults.
+        fn mount(
+            rt: &Runtime,
+            schema_text: &str,
+            src: &str,
+            svc: Rc<dyn strand_services::DynService>,
+        ) -> (Instance, SceneMirror) {
+            let schema = Schema::builtin_with(&[schema_text]).unwrap();
             let mut map = SourceMap::new();
-            map.add(
-                "svc.strand",
-                "export state p = false\nbar B {\n  text wifi.ssid\n  popup { open: <-> p; for n in wifi.networks key n { text n } }\n}\n"
-                    .to_string(),
-            );
+            map.add("svc.strand", src.to_string());
             let compiled = strand_compiler::compile_with(&map, &schema);
             assert_eq!(compiled.errors(), 0, "{:#?}", compiled.diagnostics);
             let program = Arc::new(lower::lower(&compiled.program, &schema));
-            let rt = Runtime::new();
             let types = Rc::new(program.types.clone());
-            let fallback = Rc::new(SchemaHost::new(&rt, &types, None));
+            let fallback = Rc::new(SchemaHost::new(rt, &types, None));
             let screen = fallback.record(
                 "Screen",
                 &[
@@ -552,15 +549,85 @@ service wifi {
                 ],
             );
             fallback
-                .set(&rt, "screens.all", Value::list(vec![screen]))
+                .set(rt, "screens.all", Value::list(vec![screen]))
                 .unwrap();
+            let name = svc.name();
+            let items = svc.item_records();
+            let store = Rc::new(StoreHost::new(rt, svc, types.clone()));
+            let mut host = Composite::new(fallback, types);
+            host.add(store, &[name], &items);
+            let inst = Instance::new(rt, program, Rc::new(host), Storage::none());
+            (inst, SceneMirror::new())
+        }
+
+        /// An async method called anywhere reaches the service: inside a
+        /// larger expression of a binding (`tally.echo(x) ?? "none"`, the
+        /// scope's load of that call) and awaited in a handler.
+        #[test]
+        fn async_calls_anywhere_reach_the_service() {
+            let rt = Runtime::new();
+            let services = Services::new(&rt, Buses::none(), || {});
+            let tally = services.register::<Tally>(&rt);
+            let (mut inst, mut scene) = mount(
+                &rt,
+                SCHEMA,
+                "export state q = \"hi\"\nexport state got = \"\"\nbar B {\n  text tally.echo(q) ?? \"none\"\n  text join(\"+\", tally.echo(\"a\") ?? \"\", \"b\")\n  text got\n}\nafter 1s { got = await tally.echo(\"late\") }\n",
+                tally.dynamic(),
+            );
+            let mut now = Duration::ZERO;
+            let mut step = |inst: &mut Instance, by: Duration| {
+                services.pump(&rt);
+                now += by;
+                let u = inst.tick(now);
+                assert!(u.errors.is_empty(), "{:?}", u.errors);
+                scene.apply(&u.diff).unwrap();
+                scene.texts()
+            };
+            let wait = |what: &str,
+                        step: &mut dyn FnMut(&mut Instance, Duration) -> Vec<String>,
+                        inst: &mut Instance,
+                        want: &[&str]| {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                loop {
+                    let texts = step(inst, Duration::ZERO);
+                    if want.iter().all(|w| texts.iter().any(|t| t == w)) {
+                        return;
+                    }
+                    assert!(Instant::now() < deadline, "never: {what} ({texts:?})");
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            };
+            wait(
+                "the answers in bindings",
+                &mut step,
+                &mut inst,
+                &["hi", "a+b"],
+            );
+            // The argument changes: one new fetch, its answer shown.
+            inst.set("svc.q", Value::text("there")).unwrap();
+            wait("the new answer", &mut step, &mut inst, &["there"]);
+            // A handler awaits the call.
+            step(&mut inst, Duration::from_secs(1));
+            wait("the handler's answer", &mut step, &mut inst, &["late"]);
+            inst.shutdown();
+            services.shutdown();
+        }
+
+        /// A bar shows the SSID; a closed popup lists the networks. The
+        /// scan (the stream field) runs only while the popup is open,
+        /// though the service runs all along.
+        #[test]
+        fn a_closed_popup_keeps_a_stream_field_off_while_a_bar_reads_another() {
+            WIFI_LOG.lock().unwrap().clear();
+            let rt = Runtime::new();
             let services = Services::new(&rt, Buses::none(), || {});
             let wifi = services.register::<Wifi>(&rt);
-            let store = Rc::new(StoreHost::new(&rt, wifi.dynamic(), types.clone()));
-            let mut host = Composite::new(fallback, types.clone());
-            host.add(store, &["wifi"], &[]);
-            let mut inst = Instance::new(&rt, program, Rc::new(host), Storage::none());
-            let mut scene = SceneMirror::new();
+            let (mut inst, mut scene) = mount(
+                &rt,
+                WIFI_SCHEMA,
+                "export state p = false\nbar B {\n  text wifi.ssid\n  popup { open: <-> p; for n in wifi.networks key n { text n } }\n}\n",
+                wifi.dynamic(),
+            );
             let mut step = |inst: &mut Instance| {
                 services.pump(&rt);
                 let u = inst.tick(Duration::ZERO);

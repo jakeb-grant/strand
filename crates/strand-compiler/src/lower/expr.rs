@@ -38,16 +38,20 @@ impl Lowerer<'_> {
     /// A handler or timer body.
     pub(crate) fn stmts_chunk(&mut self, body: &[hir::Stmt], _span: Span) -> ChunkId {
         let mut c = Chunk::new(self.file);
+        self.frame += 1;
         for s in body {
             self.stmt(&mut c, s, false);
         }
+        self.frame -= 1;
         self.add_chunk(c)
     }
 
     /// A `fn` body or block lambda: its value is its last expression.
     pub(crate) fn fn_chunk(&mut self, body: &[hir::Stmt]) -> ChunkId {
         let mut c = Chunk::new(self.file);
+        self.frame += 1;
         self.block_value(&mut c, body);
+        self.frame -= 1;
         self.add_chunk(c)
     }
 
@@ -492,10 +496,12 @@ impl Lowerer<'_> {
             }
             ExprKind::Lambda { params, body } => {
                 let mut inner = Chunk::new(self.file);
+                self.frame += 1;
                 match body {
                     LambdaBody::Expr(b) => self.expr(&mut inner, b),
                     LambdaBody::Block(stmts) => self.block_value(&mut inner, stmts),
                 }
+                self.frame -= 1;
                 let free = free_locals(&inner, params);
                 let chunk = self.add_chunk(inner);
                 c.lambdas.push(Lambda {
@@ -544,11 +550,38 @@ impl Lowerer<'_> {
                 }
                 c.emit(Op::Spaced(items.len() as u32), span);
             }
-            ExprKind::Call { callee, args } => self.call(c, callee, args, span),
+            ExprKind::Call { callee, args } => {
+                let service_async = matches!(e.ty, Ty::Async(_))
+                    && match callee {
+                        Callee::Method {
+                            receiver,
+                            name,
+                            overload,
+                        } => {
+                            matches!(receiver.kind, ExprKind::Service(_))
+                                && !self.method_sig(&receiver.ty, name, *overload).2
+                        }
+                        _ => false,
+                    };
+                // Only the site's own call is lowered as a plain call: its
+                // arguments' async calls are sites of their own.
+                let whole = std::mem::take(&mut self.whole_async_call);
+                if service_async && self.frame == 0 && !whole {
+                    // In a binding: the scope's load of this call (its
+                    // own chunk, as a `let` of it would be).
+                    self.whole_async_call = true;
+                    let site = self.expr_chunk(e);
+                    c.emit(Op::AsyncSite(site), span);
+                } else {
+                    self.call(c, callee, args, span, service_async && self.frame > 0);
+                }
+            }
         }
     }
 
-    fn call(&mut self, c: &mut Chunk, callee: &Callee, args: &[CallArg], span: Span) {
+    /// `fetch`: an async service method called in a handler, `fn` or
+    /// lambda ([`Op::FetchMethod`]).
+    fn call(&mut self, c: &mut Chunk, callee: &Callee, args: &[CallArg], span: Span, fetch: bool) {
         match callee {
             Callee::Fn(d) => {
                 let arity = self.out_fn_arity(*d);
@@ -611,6 +644,10 @@ impl Lowerer<'_> {
                 let arity = arity.unwrap_or(args.len());
                 let map = self.push_args(c, args, arity, variadic.map(usize::from));
                 let n = c.name(name);
+                if fetch {
+                    c.emit(Op::FetchMethod { name: n, args: map }, span);
+                    return;
+                }
                 c.emit(
                     Op::CallMethod {
                         name: n,

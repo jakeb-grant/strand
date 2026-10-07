@@ -277,7 +277,7 @@ impl ServiceHost for StoreHost {
         match self.svc.call(rt, method, &self.data_args(args)) {
             Some(r) => r.map(|d| to_value(&self.types, &d)),
             None if self.svc.methods().contains(&method) => Err(Error::failed(format!(
-                "`{}.{method}` is asynchronous: bind it with `let`",
+                "`{}.{method}` is asynchronous: it is fetched (`ServiceHost::fetch`), not called",
                 self.name()
             ))),
             None => Err(Error::failed(format!(

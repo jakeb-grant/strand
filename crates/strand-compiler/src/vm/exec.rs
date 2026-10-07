@@ -472,6 +472,29 @@ impl Machine {
                     let v = self.pop();
                     return Ok(Exit::Await(v));
                 }
+                Op::AsyncSite(site) => {
+                    let v = vm.async_site(rt, *site, &self.env)?;
+                    self.stack.push(v);
+                }
+                Op::FetchMethod { name, args } => {
+                    let a = self.pop_args(&chunk.args[*args as usize]);
+                    let Value::Service(s) = self.pop() else {
+                        return Err(fail("not a service call"));
+                    };
+                    let name = &chunk.names[*name as usize];
+                    let fut = vm.host.fetch(rt, &s, name, a.into_vec());
+                    let op =
+                        PendingOp::new(Box::pin(
+                            async move { fut.await.map_err(|e| e.to_string()) },
+                        ));
+                    self.stack
+                        .push(Value::Async(Rc::new(super::value::AsyncValue {
+                            value: None,
+                            pending: true,
+                            error: None,
+                            op: Some(Rc::new(op)),
+                        })));
+                }
                 Op::Play => {
                     let v = self.pop();
                     if let (Some(hooks), Some(ctx)) = (vm.hooks(), &self.ctx)

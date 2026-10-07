@@ -113,6 +113,8 @@ fn direct(prog: &Program, id: ChunkId) -> (Reads, Vec<ChunkId>, Vec<ChunkId>) {
                 r.nodes.insert(*n);
             }
             Op::Closure(l) => lambdas.push(chunk.lambdas[*l as usize].chunk),
+            // The load reads what its call chunk reads.
+            Op::AsyncSite(site) => deps.push(*site),
             Op::Keyed { root, .. } => match root {
                 super::code::KeyedRoot::Def(d) => {
                     r.defs.insert(*d);

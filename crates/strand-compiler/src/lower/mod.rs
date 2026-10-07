@@ -431,6 +431,8 @@ pub fn lower(program: &hir::Program, schema: &Schema) -> Program {
         elem: None,
         let_exprs: BTreeMap::new(),
         time_warned: BTreeSet::new(),
+        frame: 0,
+        whole_async_call: false,
     };
     for d in &program.defs {
         let module = program
@@ -495,6 +497,14 @@ pub(crate) struct Lowerer<'a> {
     let_exprs: BTreeMap<DefId, &'a hir::Expr>,
     /// Time signals already warned about.
     time_warned: BTreeSet<&'static str>,
+    /// Inside a handler, timer, `fn` or lambda body (its locals live in
+    /// the VM's frame, not in a scope): an async service call there is
+    /// fetched in place ([`Op::FetchMethod`]) instead of a scope's load
+    /// ([`Op::AsyncSite`]).
+    pub(crate) frame: u32,
+    /// Lowering an [`Op::AsyncSite`]'s own chunk: the call itself is
+    /// lowered as a plain call there.
+    pub(crate) whole_async_call: bool,
 }
 
 impl Lowerer<'_> {

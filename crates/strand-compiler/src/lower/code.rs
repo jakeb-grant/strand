@@ -200,6 +200,20 @@ pub enum Op {
     Spaced(u32),
     /// Make a closure (lambda index).
     Closure(u32),
+    /// An async service method call in a binding (`apps.search(q) ??
+    /// []`): the value of the scope's load of that call, a chunk ending
+    /// with the call (`[Service, args…, CallMethod]`), made on its first
+    /// read and kept with the scope, as a `let` of it would be: each
+    /// change of the arguments starts one `ServiceHost::fetch` and the
+    /// value keeps its last result while pending.
+    AsyncSite(ChunkId),
+    /// An async service method call in a handler, `fn` or lambda: pops
+    /// the receiver and arguments like [`Op::CallMethod`] and pushes a
+    /// pending `Async` whose `await` waits for `ServiceHost::fetch`.
+    FetchMethod {
+        name: u32,
+        args: u32,
+    },
     /// Pop the scrutinee, push whether it matches (pattern index).
     Match(u32),
     /// Pop a value into a frame local.
@@ -333,6 +347,8 @@ impl Chunk {
                     | Op::CallValue { .. }
                     | Op::Await
                     | Op::Keyed { .. }
+                    | Op::AsyncSite(_)
+                    | Op::FetchMethod { .. }
             )
         })
     }
