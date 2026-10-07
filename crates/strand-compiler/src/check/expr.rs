@@ -1210,6 +1210,15 @@ impl<'a> Checker<'a> {
                         return hir::Expr::error(span);
                     };
                     let (args, ret) = self.call_args(&sig, args, &format!("`{name}`"), span);
+                    if self.speculating == 0 {
+                        match self.ctx.fn_def {
+                            Some(caller) => self.fn_calls.push((caller, d)),
+                            None if !self.ctx.handler => {
+                                self.binding_fn_calls.push((d, self.module, span));
+                            }
+                            None => {}
+                        }
+                    }
                     return hir::Expr {
                         kind: ExprKind::Call {
                             callee: Callee::Fn(d),
@@ -1784,6 +1793,23 @@ impl<'a> Checker<'a> {
         let reported = sigs.iter().any(|s| s.action) && self.action_check(&label, name.span);
         let (overload, args, ret) = self.call_overloads(&sigs, args, &label, span);
         let ret = if reported { Ty::Error } else { ret };
+        if matches!(recv.kind, ExprKind::Service(_)) && matches!(ret, Ty::Async(_)) {
+            if self.ctx.binding_lambda {
+                self.warning(
+                    "check::async_in_binding_fn",
+                    format!("`{label}` in a lambda never answers the binding"),
+                    span,
+                    "its answer never reaches this binding",
+                )
+                .help = Some(format!(
+                    "call it outside the lambda: `let r = {label}(…)`, then read `r ?? fallback`"
+                ));
+            } else if let Some(f) = self.ctx.fn_def
+                && self.speculating == 0
+            {
+                self.fetching_fns.insert(f);
+            }
+        }
         wrap(
             ExprKind::Call {
                 callee: Callee::Method {
@@ -2382,6 +2408,8 @@ impl<'a> Checker<'a> {
             );
         }
         let want_ret = sig.as_ref().map(|s| s.ret.clone());
+        let outer_binding_lambda = self.ctx.binding_lambda;
+        self.ctx.binding_lambda |= !self.ctx.handler && !self.ctx.pure_fn;
         let (hbody, ret) = match body {
             ast::LambdaBody::Expr(e) => {
                 let (h, ty) = match &want_ret {
@@ -2414,6 +2442,7 @@ impl<'a> Checker<'a> {
                 (hir::LambdaBody::Block(stmts), ty)
             }
         };
+        self.ctx.binding_lambda = outer_binding_lambda;
         self.pop_scope();
         hir::Expr {
             kind: ExprKind::Lambda {

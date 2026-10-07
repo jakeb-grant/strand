@@ -6103,7 +6103,8 @@ LSP must hover and complete with the same schema `strand run` checks
 against, so `strand-dev` depends on `strand-services` for
 `schemas()` (the crate graph already drew this edge) and `serve` uses
 `strand_dev::schema()`; `serve_with` takes any schema (tests extend it
-with a schema of their own).
+with a schema of their own). (Narrowed 2026-10-07: it links only
+`strand-services-schema`.)
 
 **2026-10-07 · wave4-core: streams are fields, watched per field.**
 "Streams such as a Wi-Fi scan run only while visible" is read per
@@ -6117,9 +6118,9 @@ None)` and `(service, Some(field))`), holds call the new
 service's `acquire` (released in reverse), and `Client` counts readers
 per field, telling the service `Msg::Watch { field, on }` for stream
 fields (`Cx::watched`). Service authors put stream data in a field of
-its own; a stream reached only through a `fn` method or another scope's
-`let` is held by the scope reading it there. Service-wide `Visible`
-stays for services that poll as a whole (cpu, memory).
+its own; a stream reached only through a `fn` method is held by the
+scope reading it there. Service-wide `Visible` stays for services that
+poll as a whole (cpu, memory). (A `let`'s reads: see below.)
 
 **2026-10-07 · wave4-core: an async call anywhere is a load.**
 design.md has `x ?? fallback` cover pending and error, so
@@ -6134,7 +6135,8 @@ may read anything the scope binds (component parameters, `for` items,
 frame) the call lowers to `Op::FetchMethod`: a pending `Async` whose
 `await` waits for `ServiceHost::fetch`; a binding that calls an async
 method inside a lambda gets that pending value too (it never re-runs
-for the answer), so such calls belong outside the lambda.
+for the answer), so such calls belong outside the lambda; `strand check`
+warns there (below).
 
 **2026-10-07 · wave4-core: a write answer tags its field only.**
 `Signal` generations are counted per cell, so `Cx::report`'s envelope
@@ -6150,8 +6152,11 @@ returns `Ok` while read is done (its last values stay). Services that
 follow a daemon may still reconnect themselves (NameOwnerChanged) to
 avoid the gap; the retry is the floor. A write, action or async call
 reaching a stopped service starts it for that operation (acquired and
-released at once, so it stops 5 s later): `strand set
-brightness.level` works with nothing reading it.
+released at once, so it stops 5 s later), so a service field written
+with nothing reading it is delivered. (`strand set <service>.<field>`
+does not reach services yet: the CLI's `set` resolves exported state
+and settings only; routing it, with design.md's relative `+5%`, through
+`ServiceHost::write` is open, owned by the M3 audio/brightness step.)
 
 **2026-10-07 · wave4-core: threads and buses are cleaned up.** A
 service on a thread of its own is joined: its next run's thread joins
@@ -6177,3 +6182,63 @@ attribute); `schema = …` still overrides. The second copy of the docs
 field's record `key` is the store's `#[data(key = …)]`
 (`Keyed::KEY_FIELD`); the composite logs a record whose item actions two
 members claim.
+
+**2026-10-07 · wave4-core: a `let` holds nothing; its readers do.**
+design.md's own idiom reads services through top-level `let`s shown
+only in popups (`let hits = apps.search(query)`, a popup's `let load =
+cpu.usage`); held by the file's top level, such a service ran for the
+whole session and a stream through it never stopped. So a `let` (at any
+level) and a `fn` hold no services themselves: each scope's
+`ServiceUses` takes, besides what its own chunks read, what the `let`s
+and `fn`s they read read, transitively (lowering resolves them after
+`reads::compute`, which already follows `fn`s and lambdas). A closed
+popup showing `let u = cpu.usage` leaves `cpu` stopped; the open popup
+holds it and its field. The file's top level still holds for the whole
+run what its handlers, timers (`on change u` included), tokens, `state`
+initialisers and exported `let`s read (an exported `let` is read from
+outside too, `strand get`).
+
+**2026-10-07 · wave4-core: boot reports rebaseline mirrors too.**
+`Applied::Keyed` carries `initial` (the store applied the diffs as a
+reload write), and the binary's mirror of a keyed field
+(`StoreHost`'s `KeyedSignal<Value>`) then takes the store's list with
+`replace_all_reloaded` instead of applying the diffs as a change: `on
+change` over a keyed service field never fires for a boot report, at
+boot or when a popup's service starts late.
+
+**2026-10-07 · wave4-core: a write an outside change overtook settles
+on its answer.** strand-core's echo suppression forgot a pending write
+when an outside value arrived first, and then took the service's tagged
+answer to that write for an old echo, leaving the cell on the outside
+value while the service held the write. `Signal::receive` now remembers
+the generations an outside value overtook: a tagged answer to one of
+them settles the cell (it is newer than that outside value), unless a
+newer write of ours is pending, whose answer comes next. (An internal
+fix in strand-core's `echo.rs`; no interface changed.)
+
+**2026-10-07 · wave4-core: an ended run is a stopped one for writes.**
+A write, action or async call to a service whose body ended is a fresh
+start for that operation (as for a stopped service), unless the body
+failed and waits out its retry backoff, which is reported as such (a
+slider drag does not restart a failing body 30 times a second). A write
+the rate guard held commits to the run current then, not to the one it
+was made against; with none, it is not sent and the next start begins
+from the cells, which hold it. The stop 5 s after the last reader also
+cancels a pending retry; a shared body counts itself with a drop guard,
+so a panicking body still lets the bus connections go.
+
+**2026-10-07 · wave4-core: async calls a binding reaches through a
+function are warned.** A binding's own async service call is the
+scope's load; one inside a lambda the binding makes, or inside a `fn`
+(directly or through the `fn`s it calls) the binding calls, is fetched
+once in place and never answers the binding. The checker warns
+(`check::async_in_binding_fn`) at the lambda's call or at the
+binding's `fn` call, so `strand check` and the LSP show it; calls in
+handlers (`await f(q)`) are fine.
+
+**2026-10-07 · wave4-core: schema texts in a crate of their own.**
+`strand-services-schema` holds the builtin services' schema texts
+(`SYSTEM`, `CPU`, `MEMORY`, `schemas()`), and each service module's
+`SCHEMA` is its constant there, so `strand-dev` links the texts without
+the service runtime (tokio, zbus, and later PipeWire and the Wayland
+protocols). A new service adds its text there.

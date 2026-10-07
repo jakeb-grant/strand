@@ -6,6 +6,10 @@
 //! protocols such as D-Bus `PropertiesChanged` that carry no tag) it is
 //! ignored, so a slider being dragged never snaps back to an older value.
 //! A value that matches no pending write is an outside change and wins.
+//! A write an outside change overtook (the outside value reached the cell
+//! before the service answered the write) is not forgotten: the service
+//! handled the write after that change, so its tagged answer is the
+//! newest truth and settles the cell.
 //!
 //! The write-rate guard covers the service path too: while a handler's
 //! writes to the cell are throttled, nothing is sent; the latest value is
@@ -40,6 +44,20 @@ pub const MAX_PENDING_ECHOES: usize = 64;
 struct EchoState<T> {
     next: u64,
     pending: VecDeque<(Generation, T)>,
+    /// Pending writes an outside value cleared, oldest first: their tagged
+    /// answers settle (bounded like `pending`).
+    overtaken: VecDeque<Generation>,
+}
+
+impl<T> EchoState<T> {
+    /// An outside value: pending writes are overtaken.
+    fn overtake(&mut self) {
+        self.overtaken
+            .extend(self.pending.drain(..).map(|(g, _)| g));
+        while self.overtaken.len() > MAX_PENDING_ECHOES {
+            self.overtaken.pop_front();
+        }
+    }
 }
 
 impl<T: Clone + PartialEq + 'static> Signal<T> {
@@ -55,6 +73,7 @@ impl<T: Clone + PartialEq + 'static> Signal<T> {
                 Box::new(EchoState::<T> {
                     next: 1,
                     pending: VecDeque::new(),
+                    overtaken: VecDeque::new(),
                 }),
             );
         }
@@ -67,6 +86,7 @@ impl<T: Clone + PartialEq + 'static> Signal<T> {
             None => f(&mut EchoState {
                 next: 0,
                 pending: VecDeque::new(),
+                overtaken: VecDeque::new(),
             }),
         }
     }
@@ -150,7 +170,21 @@ impl<T: Clone + PartialEq + 'static> Signal<T> {
             Some(g) => {
                 let known = s.pending.iter().any(|(pg, _)| *pg == g);
                 let older = s.pending.front().is_some_and(|(pg, _)| g < *pg);
-                if known {
+                let overtaken = s.overtaken.contains(&g);
+                while s.overtaken.front().is_some_and(|og| *og <= g) {
+                    s.overtaken.pop_front();
+                }
+                if overtaken {
+                    // The service handled this write after an outside
+                    // value we already applied: its answer is newer than
+                    // that value, unless a newer write of ours is pending
+                    // (whose answer comes next).
+                    if s.pending.is_empty() {
+                        Verdict::Settle
+                    } else {
+                        Verdict::Echo
+                    }
+                } else if known {
                     while s.pending.front().is_some_and(|(pg, _)| *pg <= g) {
                         s.pending.pop_front();
                     }
@@ -164,6 +198,7 @@ impl<T: Clone + PartialEq + 'static> Signal<T> {
                     Verdict::Echo
                 } else {
                     s.pending.clear();
+                    s.overtaken.clear();
                     Verdict::Apply
                 }
             }
@@ -173,7 +208,7 @@ impl<T: Clone + PartialEq + 'static> Signal<T> {
                     Verdict::Echo
                 }
                 None => {
-                    s.pending.clear();
+                    s.overtake();
                     Verdict::Apply
                 }
             },

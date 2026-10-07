@@ -824,3 +824,44 @@ fn unknown_named_arguments_offer_the_parameters_left() {
     assert_eq!(help, "it takes `a`, `b` and `c`");
     assert_eq!(names, vec!["b".to_string(), "c".to_string()]);
 }
+
+/// An async service call a binding reaches through a lambda or a `fn` is
+/// fetched once in place and never answers the binding: warned at the
+/// call (a binding's own call, and calls in handlers, are fine).
+#[test]
+fn async_service_calls_a_binding_reaches_through_functions_are_warned() {
+    let codes = |src: &str| {
+        let (out, map) = compile_files(&[("a.strand", src.to_string())]);
+        assert_eq!(
+            out.errors(),
+            0,
+            "{}",
+            render(&out.diagnostics, &map, Style::Plain)
+        );
+        out.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>()
+    };
+    const W: &str = "check::async_in_binding_fn";
+    assert_eq!(
+        codes("let qs = [\"a\"]\nlet r = qs.map(q => apps.search(q))\n"),
+        [W]
+    );
+    assert_eq!(
+        codes(
+            "fn f(q: text) -> Async<[Hit]> { apps.search(q) }\n\
+             fn g(q: text) -> Async<[Hit]> { f(q) }\n\
+             let r = g(\"x\")\n"
+        ),
+        [W]
+    );
+    // Fine: the binding's own call, and calls in handlers (awaited).
+    assert!(codes("let r = apps.search(\"x\")\n").is_empty());
+    assert!(
+        codes(
+            "fn f(q: text) -> Async<[Hit]> { apps.search(q) }\n\
+             export state q = \"\"\n\
+             export state n = 0\n\
+             on change q { let h = await f(q)\n  n = h.count(x => true) }\n"
+        )
+        .is_empty()
+    );
+}

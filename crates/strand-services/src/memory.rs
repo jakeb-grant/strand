@@ -9,17 +9,7 @@ use crate::procfs;
 use crate::{Cx, Msg, ServiceError, Store, service};
 
 /// The schema the `memory` service serves.
-pub const SCHEMA: &str = r#"
-/// Memory use, sampled once a second while a reader is visible.
-service memory {
-  /// The fraction in use, 0 to 1.
-  usage: float
-  /// Memory in use, in bytes (installed memory less what is available).
-  used: float
-  /// Memory installed, in bytes.
-  total: float
-}
-"#;
+pub const SCHEMA: &str = strand_services_schema::MEMORY;
 
 /// How often it samples while visible.
 pub const PERIOD: Duration = Duration::from_secs(1);

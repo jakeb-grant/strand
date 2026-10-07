@@ -504,10 +504,15 @@ fn two_way_bindings_write_back() {
     let mut shell = boot(&refs(&files), desktop);
     // A closed launcher has no content yet and runs no search.
     assert!(shell.scene.of_kind(NodeKind::Input).is_empty());
-    assert_eq!(shell.host.readers("apps"), 1, "the config's own `let`");
+    assert_eq!(
+        shell.host.readers("apps"),
+        0,
+        "`let hits = apps.search(query)` is read only inside the closed popup"
+    );
     // `strand toggle launcher.open`.
     shell.inst.set("launcher.open", Value::Bool(true)).unwrap();
     shell.flush();
+    assert_eq!(shell.host.readers("apps"), 1, "the open launcher reads it");
     let input = shell.scene.of_kind(NodeKind::Input)[0];
     shell
         .inst

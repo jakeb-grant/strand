@@ -525,6 +525,123 @@ service wifi {
             }
         }
 
+        pub const SHELF_SCHEMA: &str = "
+/// A shelf: its boot report carries a keyed list and a flag.
+service shelf {
+  /// Whether it is dark.
+  dark: bool
+  /// The items, keyed by `id`.
+  items: [TallyItem]
+  /// Adds an item.
+  action add(name: text)
+}
+";
+
+        #[derive(Call, Debug)]
+        pub enum ShelfAction {
+            Add(String),
+        }
+
+        /// A service whose first report (before `ready()`) holds a keyed
+        /// list and a plain field, as a real service's boot read does.
+        #[service(name = "shelf", schema = SHELF_SCHEMA, action = ShelfAction)]
+        #[derive(Store, Clone, Debug, Default, PartialEq)]
+        pub struct Shelf {
+            /// Whether it is dark.
+            pub dark: bool,
+            /// The items.
+            #[store(keyed)]
+            pub items: Vec<Item>,
+        }
+
+        /// Lets the shelf's boot read finish (after the shell has run).
+        static SHELF_GO: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+        impl Shelf {
+            async fn run(mut cx: Cx<Self>) -> Result<(), ServiceError> {
+                SHELF_GO.notified().await;
+                cx.update(|s| {
+                    s.dark = true;
+                    s.items = vec![
+                        Item {
+                            id: 1,
+                            name: "a".into(),
+                        },
+                        Item {
+                            id: 2,
+                            name: "b".into(),
+                        },
+                    ];
+                });
+                cx.ready();
+                while let Some(m) = cx.recv().await {
+                    if let Msg::Action(ShelfAction::Add(name)) = m {
+                        cx.update(|s| {
+                            let id = s.items.len() as i64 + 1;
+                            s.items.push(Item { id, name });
+                            s.dark = !s.dark;
+                        });
+                    }
+                }
+                Ok(())
+            }
+        }
+
+        /// A service's boot report reaches `on change` as a baseline, not
+        /// a change, through the store host: neither a keyed field's list
+        /// nor a plain field fires (`on change` never fires at boot, nor
+        /// when a service starts late); a later change fires both.
+        #[test]
+        fn on_change_skips_a_services_boot_report() {
+            let rt = Runtime::new();
+            let services = Services::new(&rt, Buses::none(), || {});
+            let shelf = services.register::<Shelf>(&rt);
+            let schema_text = format!("{SCHEMA}{SHELF_SCHEMA}");
+            let (mut inst, mut scene) = mount(
+                &rt,
+                &schema_text,
+                "export state items = 0\nexport state darks = 0\non change shelf.items { items = items + 1 }\non change shelf.dark { darks = darks + 1 }\nbar B { text join(\" \", shelf.items.count(i => true), shelf.dark) }\n",
+                shelf.dynamic(),
+            );
+            let mut step = |inst: &mut Instance| {
+                services.pump(&rt);
+                let u = inst.tick(Duration::ZERO);
+                assert!(u.errors.is_empty(), "{:?}", u.errors);
+                scene.apply(&u.diff).unwrap();
+                scene.texts()
+            };
+            // The shell runs (its handlers have their baselines) before the
+            // service's boot read lands, as with a slow D-Bus service.
+            for _ in 0..3 {
+                step(&mut inst);
+            }
+            SHELF_GO.notify_one();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !step(&mut inst).contains(&"2 true".to_string()) {
+                assert!(Instant::now() < deadline, "the boot report never landed");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            for _ in 0..5 {
+                step(&mut inst);
+            }
+            assert_eq!(inst.value_of("svc", "items").unwrap(), Value::int(0));
+            assert_eq!(inst.value_of("svc", "darks").unwrap(), Value::int(0));
+            shelf
+                .dynamic()
+                .action(&rt, "add", None, &[strand_services::Data::Text("c".into())])
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !step(&mut inst).contains(&"3 false".to_string()) {
+                assert!(Instant::now() < deadline, "the change never landed");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            step(&mut inst);
+            assert_eq!(inst.value_of("svc", "items").unwrap(), Value::int(1));
+            assert_eq!(inst.value_of("svc", "darks").unwrap(), Value::int(1));
+            inst.shutdown();
+            services.shutdown();
+        }
+
         /// `src` mounted on one monitor against a composite host serving
         /// `svc` (declared by `schema_text`) and the schema's defaults.
         fn mount(
@@ -675,6 +792,66 @@ service wifi {
             );
             assert!(wifi.running());
             assert_eq!(wifi.starts(), 1);
+            inst.shutdown();
+            services.shutdown();
+        }
+
+        /// A service read only through a top-level `let` (or a `fn`) is
+        /// held by the scopes that read the `let`, not by the top level:
+        /// a closed popup showing it keeps it stopped, and its field
+        /// unread; a top-level `on change` of a `let` holds it for good.
+        #[test]
+        fn a_let_read_only_by_a_closed_popup_holds_nothing() {
+            let rt = Runtime::new();
+            let services = Services::new(&rt, Buses::none(), || {});
+            let tally = services.register::<Tally>(&rt);
+            let (mut inst, mut scene) = mount(
+                &rt,
+                SCHEMA,
+                "export state p = false\nlet lv = tally.level\nlet twice = lv * 2.0\nfn n() -> int { tally.items.count(i => true) }\nbar B {\n  text \"bar\"\n  popup { open: <-> p; text join(\" \", twice, n()) }\n}\n",
+                tally.dynamic(),
+            );
+            let mut step = |inst: &mut Instance| {
+                services.pump(&rt);
+                let u = inst.tick(Duration::ZERO);
+                assert!(u.errors.is_empty(), "{:?}", u.errors);
+                scene.apply(&u.diff).unwrap();
+                scene.texts()
+            };
+            for _ in 0..5 {
+                step(&mut inst);
+            }
+            assert_eq!(tally.readers(), 0, "nothing shown reads the `let`");
+            assert!(!tally.running());
+            assert_eq!(tally.starts(), 0);
+            // The popup opens: it holds what `twice` and `n()` read.
+            inst.set("svc.p", Value::Bool(true)).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !step(&mut inst).contains(&"0 0".to_string()) {
+                assert!(Instant::now() < deadline, "the popup never showed");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert_eq!(tally.readers(), 1);
+            assert!(tally.running());
+            assert_eq!(tally.field_readers(0), 1, "the popup reads the level");
+            assert_eq!(tally.field_readers(1), 1, "and the items");
+            inst.set("svc.p", Value::Bool(false)).unwrap();
+            step(&mut inst);
+            assert_eq!(tally.readers(), 0);
+            assert_eq!(tally.field_readers(0), 0);
+            inst.shutdown();
+
+            // A top-level handler reading the `let` holds it all along.
+            let (mut inst, _) = mount(
+                &rt,
+                SCHEMA,
+                "export state seen = 0.0\nlet lv = tally.level\non change lv { seen = lv }\nbar B { text \"bar\" }\n",
+                tally.dynamic(),
+            );
+            services.pump(&rt);
+            inst.tick(Duration::ZERO);
+            assert_eq!(tally.readers(), 1);
+            assert_eq!(tally.field_readers(0), 1);
             inst.shutdown();
             services.shutdown();
         }

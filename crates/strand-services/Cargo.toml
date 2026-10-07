@@ -10,6 +10,9 @@ publish.workspace = true
 [dependencies]
 strand-core.workspace = true
 strand-services-macros.workspace = true
+# The schema texts it serves (shared with the LSP, which does not link
+# this runtime).
+strand-services-schema.workspace = true
 # The portal Settings client (`follow`) runs on the services runtime.
 strand-watch.workspace = true
 log = { version = "0.4.34", features = ["std"] }

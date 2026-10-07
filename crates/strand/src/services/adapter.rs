@@ -143,11 +143,31 @@ impl StoreHost {
         rt.set_name(scope.id(), format!("{name} host"));
         // Keyed diffs and events the store applies, mirrored.
         let (keyed, queues, t) = (fields.clone(), events.clone(), types.clone());
+        let svc_items = Rc::downgrade(&svc);
         svc.observe(Box::new(move |rt, applied| match applied {
-            Applied::Keyed { field, diffs } => {
+            Applied::Keyed {
+                field,
+                diffs,
+                initial,
+            } => {
                 if let Some(Field::Keyed(k, _)) = keyed.get(*field) {
-                    let diffs: Vec<_> = diffs.iter().map(|d| diff_value(&t, d)).collect();
-                    if let Err(e) = k.apply(rt, &diffs) {
+                    let done = if *initial {
+                        // A boot value: the store rebaselined its cell, and
+                        // so does the mirror (`on change` never fires at
+                        // boot, nor when a service starts late).
+                        match svc_items.upgrade() {
+                            Some(svc) => svc.keyed_items(rt, *field).and_then(|items| {
+                                let items: Vec<Value> =
+                                    items.iter().map(|d| to_value(&t, d)).collect();
+                                k.replace_all_reloaded(rt, items).map(drop)
+                            }),
+                            None => Ok(()),
+                        }
+                    } else {
+                        let diffs: Vec<_> = diffs.iter().map(|d| diff_value(&t, d)).collect();
+                        k.apply(rt, &diffs).map(drop)
+                    };
+                    if let Err(e) = done {
                         log::warn!("{name}: keyed field #{field}: {e}");
                     }
                 }

@@ -1,0 +1,9 @@
+/// Memory use, sampled once a second while a reader is visible.
+service memory {
+  /// The fraction in use, 0 to 1.
+  usage: float
+  /// Memory in use, in bytes (installed memory less what is available).
+  used: float
+  /// Memory installed, in bytes.
+  total: float
+}

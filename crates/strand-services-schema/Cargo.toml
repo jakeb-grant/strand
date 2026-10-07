@@ -1,0 +1,13 @@
+[package]
+name = "strand-services-schema"
+description = "The builtin services' schema texts, without the service runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

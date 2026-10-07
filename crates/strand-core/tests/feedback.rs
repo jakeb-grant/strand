@@ -35,6 +35,36 @@ fn tagged_echo_of_pending_write_is_ignored() {
     assert_eq!(volume.get(&rt), Ok(30));
 }
 
+/// An outside change overtakes a write the service has not answered yet:
+/// the outside value applies at once, and the service's answer to the
+/// write, handled after that change, settles the cell on what the service
+/// now holds.
+#[test]
+fn a_write_answered_after_an_outside_change_settles() {
+    let rt = Runtime::new();
+    let volume = rt.signal(0.5f64);
+    let g = volume.write_tagged(&rt, 0.6, no_send).unwrap().unwrap();
+    // Another app set 0.3 before the service saw our write.
+    assert_eq!(volume.receive(&rt, 0.3, None), Ok(Received::Applied));
+    assert_eq!(volume.get(&rt), Ok(0.3));
+    assert_eq!(volume.pending_writes(&rt), 0);
+    // The service then applies our write and answers it.
+    assert_eq!(volume.receive(&rt, 0.6, Some(g)), Ok(Received::Applied));
+    assert_eq!(volume.get(&rt), Ok(0.6));
+    // A duplicate of that answer changes nothing.
+    assert_eq!(volume.receive(&rt, 0.6, Some(g)), Ok(Received::Echo));
+    // With a newer write of ours pending, the overtaken write's answer is
+    // an echo: the newer answer comes next.
+    let g1 = volume.write_tagged(&rt, 0.7, no_send).unwrap().unwrap();
+    assert_eq!(volume.receive(&rt, 0.2, None), Ok(Received::Applied));
+    let g2 = volume.write_tagged(&rt, 0.8, no_send).unwrap().unwrap();
+    assert_eq!(volume.receive(&rt, 0.7, Some(g1)), Ok(Received::Echo));
+    assert_eq!(volume.get(&rt), Ok(0.8));
+    assert_eq!(volume.receive(&rt, 0.8, Some(g2)), Ok(Received::Echo));
+    assert_eq!(volume.get(&rt), Ok(0.8));
+    assert_eq!(volume.pending_writes(&rt), 0);
+}
+
 #[test]
 fn service_clamping_our_write_is_applied() {
     let rt = Runtime::new();

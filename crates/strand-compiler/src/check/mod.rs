@@ -259,6 +259,11 @@ pub(crate) struct Ctx {
     pub let_value: bool,
     /// Checking a token definition (an index into the token entries).
     pub token_entry: Option<usize>,
+    /// The `fn` whose body is being checked.
+    pub fn_def: Option<DefId>,
+    /// In a lambda a binding makes (not a handler's, not a `fn`'s): an
+    /// async service call there never gets its answer.
+    pub binding_lambda: bool,
 }
 
 /// An element being checked.
@@ -396,6 +401,12 @@ pub(crate) struct Checker<'a> {
     pub field_base: bool,
     /// `let`s whose value reads nothing that changes (`let c = 1`).
     pub constant_lets: HashSet<DefId>,
+    /// `fn`s whose body calls an async service method directly.
+    pub fetching_fns: HashSet<DefId>,
+    /// `fn` calls inside `fn` bodies: caller, callee.
+    pub fn_calls: Vec<(DefId, DefId)>,
+    /// `fn` calls in bindings: callee, module and span of the call.
+    pub binding_fn_calls: Vec<(DefId, usize, Span)>,
     /// Untyped `state`s and `let`s initialised with a whole number (or a
     /// list of them), with the type they hold this pass: `int`, `[int]`
     /// (see [`check`] and [`whole_shape`]).
@@ -484,6 +495,9 @@ impl<'a> Checker<'a> {
             deep_flows: false,
             field_base: false,
             constant_lets: HashSet::new(),
+            fetching_fns: HashSet::new(),
+            fn_calls: Vec::new(),
+            binding_fn_calls: Vec::new(),
             whole: HashMap::new(),
             widened: HashSet::new(),
             float_pins: HashSet::new(),
@@ -517,7 +531,49 @@ impl<'a> Checker<'a> {
         self.deferred_components(&mut files);
         self.after(&files);
         self.component_cycles(&files);
+        self.fetching_fn_calls();
         self.out_files = files;
+    }
+
+    /// A `fn` that calls an async service method (itself or through the
+    /// `fn`s it calls), called in a binding: the call there is fetched
+    /// once in place and never answers the binding (only a binding's own
+    /// call is the scope's load). Warned at the binding's call.
+    fn fetching_fn_calls(&mut self) {
+        if self.fetching_fns.is_empty() || self.binding_fn_calls.is_empty() {
+            return;
+        }
+        let mut fetching = self.fetching_fns.clone();
+        loop {
+            let before = fetching.len();
+            for (caller, callee) in &self.fn_calls {
+                if fetching.contains(callee) {
+                    fetching.insert(*caller);
+                }
+            }
+            if fetching.len() == before {
+                break;
+            }
+        }
+        let calls = std::mem::take(&mut self.binding_fn_calls);
+        let saved = self.module;
+        for (d, module, span) in calls {
+            if !fetching.contains(&d) {
+                continue;
+            }
+            self.module = module;
+            let name = self.defs[d.0 as usize].name.clone();
+            self.warning(
+                "check::async_in_binding_fn",
+                format!("`{name}` calls an async service method, which never answers a binding"),
+                span,
+                "its answer never reaches this binding",
+            )
+            .help = Some(format!(
+                "call the service method in the binding itself (`let r = apps.search(q)`, read `r ?? fallback`), or call `{name}` from a handler with `await`"
+            ));
+        }
+        self.module = saved;
     }
 
     fn finish(mut self) -> Checked {

@@ -101,10 +101,13 @@ pub enum How {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Applied {
     /// Keyed field `field` changed by these diffs (keys and items as
-    /// [`Data`]).
+    /// [`Data`]). `initial`: a boot value ([`How::Initial`]), which the
+    /// store applied as a reload write (`on change` takes it as its
+    /// baseline): a mirror rebaselines too.
     Keyed {
         field: usize,
         diffs: Vec<VecDiff<Data, Data>>,
+        initial: bool,
     },
     /// Event `event` fired with these arguments.
     Event { event: usize, args: Vec<Data> },

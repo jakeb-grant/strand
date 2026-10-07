@@ -171,10 +171,11 @@ strand-scene      shared vocabulary: ids, geometry, colour, scene protocol, Pain
   |   strand-theme     (palette schema, material(), importers; colour maths in strand-scene)
   |     ^
   strand-core ── strand-compiler ── strand-dev (LSP, inspector; links
-     ^                                strand-services for its schemas)
+     ^                                strand-services-schema, not the runtime)
      strand-services ──> strand-watch (EventSink, CompositorEvent; portal follow;
           |                            strand-watch depends on no Strand crate)
-          └── strand-services-macros (#[service], #[derive(Store, Data, Call)])
+          ├── strand-services-macros (#[service], #[derive(Store, Data, Call)])
+          └── strand-services-schema (the builtin services' schema texts)
 strand (binary) wires everything; its ServiceHost adapters join
 strand-services' stores to strand-compiler's VM.
 ```
@@ -1288,7 +1289,11 @@ Public interfaces other crates and later stages build on:
     content is unmounted, its components' `state` cells kept for its
     next opening), and a parked bar
     (monitor unplugged) lets go of everything under it until it
-    returns. The
+    returns. A scope's reads include those of the `let`s and `fn`s it
+    reads, transitively; a `let` or `fn` holds nothing itself (the top
+    level holds what its handlers, timers, tokens, `state` initialisers
+    and exported `let`s read), so a service read only through a `let`
+    that a closed popup shows stays stopped. The
     service starts on its first reader and stops 5 s after its last
     leaves or goes invisible: `rt` lets a host create a service's cells
     lazily on `acquire` and arm the 5 s stop with core's timers on
@@ -1789,8 +1794,12 @@ The inspector joins it in M5; tree-sitter highlighting is not built yet
 ### `strand-services`
 
 The M3 service contract (wave 4). `strand-services` depends on
-`strand-core`, `strand-watch` and its proc-macro crate
-`strand-services-macros` (re-exported), never on `strand-compiler`: it
+`strand-core`, `strand-watch`, its proc-macro crate
+`strand-services-macros` (re-exported) and `strand-services-schema` (the
+builtin services' schema texts as constants and `schemas()`, with no
+dependencies: what `strand-dev` links instead of the runtime; each
+service module's `SCHEMA` is its constant there), never on
+`strand-compiler`: it
 never sees `Value`. Service state is typed Rust; where something must be
 handled by name it is `strand_services::Data` (`Null`, `Bool`, `Int`,
 `Float`, `Text`, `Duration`, `Color(Rgba)`, `List`, `Record { ty,
@@ -1896,27 +1905,31 @@ the primitives, `Option`, `Vec` and derived types.
   item, args)`, `call`, `fetch(rt, …)`, `acquire`, `release`,
   `acquire_field`, `release_field`, `observe(f)`:
   every keyed change and event applied, as `Applied::{Keyed { field,
-  diffs: Vec<VecDiff<Data, Data>> }, Event { event, args }}`).
+  diffs: Vec<VecDiff<Data, Data>>, initial }, Event { event, args }}`;
+  `initial`: a boot report the store applied as a reload write, which
+  a mirror takes with `replace_all_reloaded` so `on change` skips it).
 - **Builtin services here** (wave 4): `system` (the portal's appearance
   settings through `strand_watch::follow` on the shared runtime, plus
   `hostname`), `cpu` and `memory` (procfs, sampled once a second only
-  while a reader is visible). `strand_services::schemas()` lists the
-  schema texts of every builtin service implemented (the language
-  extends its builtin schema with them); `Builtin::register(&services,
-  rt)` registers them all. A new service crate module adds its store
-  here and to both lists.
+  while a reader is visible). `strand_services::schemas()` (the same as
+  `strand_services_schema::schemas()`) lists the schema texts of every
+  builtin service implemented (the language extends its builtin schema
+  with them); `Builtin::register(&services, rt)` registers them all. A
+  new service module adds its text to `strand-services-schema` and its
+  store to `Builtin`.
 - **Language side** (`crates/strand/src/services`, the binary: it
   depends on both). `services::schema()` is
   `Schema::builtin_with(&strand_services::schemas())`: `strand check`,
   the live loader (whose cache key is the schema's fingerprint) and
   `strand run` use it, and `strand-dev lsp` serves the same
-  (`strand_dev::schema()`, `serve`; `serve_with` takes any). `StoreHost`
+  (`strand_dev::schema()` over `strand_services_schema::schemas()`,
+  `serve`; `serve_with` takes any). `StoreHost`
   is one store as a `ServiceHost`: a `Memo<Value>` per plain field over
   `DynService::read` (converted by name, `services::convert`: records by
   type and field name, enums by variant), so a binding depends on
   exactly that field; a keyed field mirrored as a `KeyedSignal<ValueKey,
   Value>` fed by the store's `Applied::Keyed` diffs (keyed by the item
-  record's schema `key`), events as `EventQueue<Vec<Value>>` fed by
+  record's schema `key`; an `initial` one rebaselines it), events as `EventQueue<Vec<Value>>` fed by
   `Applied::Event`; `write` refuses non-`rw` fields and passes the leaf
   path as `Step`s; `call` is the store's `fn` methods; `fetch` its async
   methods (every async call in a config reaches it);

@@ -348,6 +348,7 @@ fn store(input: &DeriveInput) -> syn::Result<Tokens> {
                     ::core::result::Result::Ok(::core::option::Option::Some(#sv::Applied::Keyed {
                         field: #i,
                         diffs: d.iter().map(#sv::diff_data).collect(),
+                        initial: how == #sv::How::Initial,
                     }))
                 }));
                 snapshot.push(quote!(#id: self.#id.with_untracked(rt, |v| {

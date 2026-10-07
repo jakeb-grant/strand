@@ -84,10 +84,8 @@ impl Builtin {
 /// the language extends its builtin schema with (`Schema::extend`), so
 /// `strand check`, `strand run` and the LSP check against the real
 /// services.
+/// They live in `strand-services-schema` (the LSP reads them without this
+/// runtime); each service's `SCHEMA` is its text there.
 pub fn schemas() -> Vec<&'static str> {
-    vec![
-        <system::System as Service>::schema(),
-        <cpu::Cpu as Service>::schema(),
-        <memory::Memory as Service>::schema(),
-    ]
+    strand_services_schema::schemas()
 }

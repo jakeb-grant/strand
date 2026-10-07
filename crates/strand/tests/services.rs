@@ -439,18 +439,20 @@ fn pss_kb(pid: u32) -> u64 {
 
 const IDLE_CONFIG: &str = "\
 export state open = false
+let load = cpu.usage
 bar Top {
   edge: top; height: 40
   bg: system.dark ? #ff0000 : #0000ff
   row { box { width: 30; height: 40; bg: #00ff00 } }
-  popup { open: <-> open; text pct(cpu.usage) }
+  popup { open: <-> open; text pct(load) }
 }
 ";
 
 /// The idle budget on the real services: once the bar settles, the logic
 /// and services threads do not wake at all (the portal follow waits on
-/// D-Bus, nothing polls), within the memory ceiling; a popup reading
-/// `cpu.usage` samples once a second while open, and closing it stops the
+/// D-Bus, nothing polls; `cpu`, read only by the closed popup through a
+/// top-level `let`, stays stopped), within the memory ceiling; a popup
+/// reading `cpu.usage` samples once a second while open, and closing it stops the
 /// samples at once and the service 5 s later.
 #[test]
 fn the_real_services_sleep_when_nothing_changes() {

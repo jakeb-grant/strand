@@ -14,18 +14,7 @@ use crate::procfs::{self, Times};
 use crate::{Cx, Msg, ServiceError, Store, service};
 
 /// The schema the `cpu` service serves.
-pub const SCHEMA: &str = r#"
-/// Processor load, sampled once a second while a reader is visible.
-service cpu {
-  /// Load over every core, 0 to 1: `graph cpu.usage`.
-  usage: float
-  /// The load of each core, 0 to 1.
-  cores: [float]
-  /// The processor's temperature in degrees Celsius, when a sensor
-  /// reports one.
-  temperature: float?
-}
-"#;
+pub const SCHEMA: &str = strand_services_schema::CPU;
 
 /// How often it samples while visible.
 pub const PERIOD: Duration = Duration::from_secs(1);

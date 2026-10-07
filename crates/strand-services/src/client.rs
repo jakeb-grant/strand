@@ -64,6 +64,33 @@ thread_local! {
     static SHARED_BODIES: Cell<usize> = const { Cell::new(0) };
 }
 
+/// One body counted in [`SHARED_BODIES`] while it lives: dropped when the
+/// body returns, is stopped, or panics (its task is dropped then too).
+struct SharedBody;
+
+impl SharedBody {
+    fn enter() -> SharedBody {
+        let _ = SHARED_BODIES.try_with(|n| n.set(n.get() + 1));
+        SharedBody
+    }
+}
+
+impl Drop for SharedBody {
+    fn drop(&mut self) {
+        // The last body gone: its connections go too (a dead bus is
+        // connected afresh next time).
+        let last = SHARED_BODIES
+            .try_with(|n| {
+                n.set(n.get().saturating_sub(1));
+                n.get() == 0
+            })
+            .unwrap_or(false);
+        if last {
+            crate::bus::forget();
+        }
+    }
+}
+
 /// A job for the shared runtime thread: builds a future there.
 type Job = Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()>>> + Send>;
 
@@ -387,7 +414,7 @@ impl<S: Service> ClientInner<S> {
                 stop = Some(stop_tx);
                 reg.shared_spawn(Box::new(move || {
                     Box::pin(async move {
-                        SHARED_BODIES.with(|n| n.set(n.get() + 1));
+                        let _counted = SharedBody::enter();
                         tokio::select! {
                             _ = stop_rx => {}
                             r = body() => {
@@ -396,14 +423,6 @@ impl<S: Service> ClientInner<S> {
                                 }
                                 ended.send(Envelope::Ended(r.map_err(|e| e.0)));
                             }
-                        }
-                        // The last body gone: its connections go too (a
-                        // dead bus is connected afresh next time).
-                        if SHARED_BODIES.with(|n| {
-                            n.set(n.get().saturating_sub(1));
-                            n.get() == 0
-                        }) {
-                            crate::bus::forget();
                         }
                     })
                 }))
@@ -487,10 +506,14 @@ impl<S: Service> ClientInner<S> {
             rt.after(
                 STOP_GRACE,
                 |_| Ok(true),
-                move |_| {
+                move |rt| {
                     if let Some(c) = weak.upgrade()
                         && c.refs.get() == 0
                     {
+                        // A retry pending from a failed run goes with it
+                        // (no wakeup later for a service nobody reads).
+                        c.disarm_retry(rt);
+                        c.failures.set(0);
                         c.stop();
                     }
                     Ok(())
@@ -514,12 +537,16 @@ impl<S: Service> ClientInner<S> {
         }
     }
 
-    /// The body ended with an error while read: start it again after a
-    /// backoff (1 s, doubling to [`RETRY_MAX`]).
-    fn arm_retry(&self, rt: &Runtime) {
+    fn disarm_retry(&self, rt: &Runtime) {
         if let Some(t) = self.retry.take() {
             t.dispose(rt);
         }
+    }
+
+    /// The body ended with an error while read: start it again after a
+    /// backoff (1 s, doubling to [`RETRY_MAX`]).
+    fn arm_retry(&self, rt: &Runtime) {
+        self.disarm_retry(rt);
         let (Some(me), Some(reg)) = (self.me.upgrade(), self.reg.upgrade()) else {
             return;
         };
@@ -569,18 +596,41 @@ impl<S: Service> ClientInner<S> {
         }
     }
 
-    /// Run `f` on the running service; a stopped one is started for it
-    /// (acquired and released at once: it stops [`STOP_GRACE`] later).
-    fn with_run<R>(self: &Rc<Self>, rt: &Runtime, f: impl FnOnce(&Run<S>) -> R) -> Option<R> {
+    /// Run `f` on the running service; a stopped one, or one whose body
+    /// ended, is started for it (acquired and released at once when
+    /// nobody reads it: it stops [`STOP_GRACE`] later). A failed body
+    /// waiting out its retry backoff is not restarted early.
+    fn with_run<R>(
+        self: &Rc<Self>,
+        rt: &Runtime,
+        f: impl FnOnce(&Run<S>) -> R,
+    ) -> Result<R, Error> {
+        let ended = self.run.borrow().as_ref().is_some_and(|r| r.ended);
+        if ended {
+            if self.retry.get().is_some() {
+                return Err(Error::failed(format!(
+                    "`{}` is not running: its body failed and restarts after a backoff",
+                    S::NAME
+                )));
+            }
+            self.stop();
+        }
         let idle = self.run.borrow().is_none();
-        if idle {
+        let held = idle && self.refs.get() == 0;
+        if held {
             Client(self.clone()).acquire(rt);
+        } else if idle {
+            self.start(rt);
         }
         let r = match self.run.borrow().as_ref() {
-            Some(run) if !run.ended => Some(f(run)),
-            _ => None,
+            Some(run) if !run.ended => Ok(f(run)),
+            Some(_) => Err(Error::failed(format!("`{}` ended", S::NAME))),
+            None => Err(Error::failed(format!(
+                "`{}` is not running (it failed to start)",
+                S::NAME
+            ))),
         };
-        if idle {
+        if held {
             Client(self.clone()).release(rt);
         }
         r
@@ -698,13 +748,14 @@ impl<S: Service> Client<S> {
             }
             // Ended by itself: a new reader starts it again.
             Some(true) => {
-                if let Some(t) = self.0.retry.take() {
-                    t.dispose(rt);
-                }
+                self.0.disarm_retry(rt);
                 self.0.stop();
                 self.0.start(rt);
             }
-            None => self.0.start(rt),
+            None => {
+                self.0.disarm_retry(rt);
+                self.0.start(rt);
+            }
         }
     }
 
@@ -825,9 +876,9 @@ impl<S: Service> Client<S> {
 
     /// Send an action (a stopped service starts for it).
     pub fn act(&self, rt: &Runtime, action: S::Action) -> Result<(), Error> {
-        match self.0.with_run(rt, |run| run.send(Msg::Action(action))) {
-            Some(true) => Ok(()),
-            _ => Err(not_running(S::NAME)),
+        match self.0.with_run(rt, |run| run.send(Msg::Action(action)))? {
+            true => Ok(()),
+            false => Err(not_running(S::NAME)),
         }
     }
 
@@ -841,11 +892,12 @@ impl<S: Service> Client<S> {
         let (tx, rx) = oneshot::channel();
         let sent = self
             .0
-            .with_run(rt, |run| run.send(Msg::Call(call, Reply(tx))))
-            .unwrap_or(false);
+            .with_run(rt, |run| run.send(Msg::Call(call, Reply(tx))));
         Box::pin(async move {
-            if !sent {
-                return Err(format!("`{}` is not running", S::NAME));
+            match sent {
+                Ok(true) => {}
+                Ok(false) => return Err(not_running(S::NAME).to_string()),
+                Err(e) => return Err(e.to_string()),
             }
             rx.await
                 .unwrap_or_else(|_| Err(format!("`{}` stopped before answering", S::NAME)))
@@ -858,8 +910,9 @@ impl<S: Service> Client<S> {
     }
 }
 
+/// The run's channel closed under a message: its body just ended.
 fn not_running(name: &str) -> Error {
-    Error::failed(format!("`{name}` is not running (it failed to start)"))
+    Error::failed(format!("`{name}` is not running (its body ended)"))
 }
 
 /// A service as the language side drives it, by field index and name
@@ -969,13 +1022,7 @@ impl<S: Service> DynService for Client<S> {
             )));
         };
         // A stopped service starts for the write.
-        let tx = match self
-            .0
-            .with_run(rt, |run| (run.tx.clone(), run.notify.clone()))
-        {
-            Some(tx) => tx,
-            None => return Err(not_running(S::NAME)),
-        };
+        self.0.with_run(rt, |_| ())?;
         let whole = if path.is_empty() {
             value.clone()
         } else {
@@ -984,23 +1031,29 @@ impl<S: Service> DynService for Client<S> {
                 .map_err(|e| Error::failed(format!("{}.{}: {e}", S::NAME, info.name)))?
         };
         let (path, name, sent_whole) = (path.to_vec(), info.name, whole.clone());
+        let me = Rc::downgrade(&self.0);
         self.0.cells.write(
             rt,
             field,
             &whole,
+            // Sent to the run current when the write commits (a write the
+            // rate guard held may commit after a restart). With no run
+            // then, it is not sent: the next start begins from the cells,
+            // which hold it.
             Box::new(move |_, generation| {
-                let (tx, notify) = tx;
-                let _ = tx.send(Msg::Write(Write {
-                    field: name,
-                    path,
-                    value,
-                    field_value: sent_whole,
-                    generation,
-                }));
-                if let Ok(n) = notify.lock()
-                    && let Some(f) = n.as_ref()
+                let Some(c) = me.upgrade() else {
+                    return;
+                };
+                if let Some(run) = c.run.borrow().as_ref()
+                    && !run.ended
                 {
-                    f();
+                    run.send(Msg::Write(Write {
+                        field: name,
+                        path,
+                        value,
+                        field_value: sent_whole,
+                        generation,
+                    }));
                 }
             }),
         )

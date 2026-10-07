@@ -405,7 +405,7 @@ fn cells_apply_reports_and_ignore_echoes_of_local_writes() {
         .unwrap();
     assert!(matches!(
         applied,
-        Some(Applied::Keyed { field: 3, ref diffs }) if diffs.len() == 1
+        Some(Applied::Keyed { field: 3, ref diffs, .. }) if diffs.len() == 1
     ));
     assert_eq!(
         cells.all.get_key(&rt, &7).unwrap().map(|w| w.name),
@@ -513,7 +513,7 @@ fn a_service_patches_its_cells_through_the_shared_runtime() {
     until(&rt, &s, "the ping", || events.lock().unwrap().len() >= 3);
     let ev = events.lock().unwrap().clone();
     assert!(
-        matches!(&ev[0], Applied::Keyed { field: 3, diffs } if matches!(diffs[0], VecDiff::Remove { key: Data::Int(1), .. }))
+        matches!(&ev[0], Applied::Keyed { field: 3, diffs, .. } if matches!(diffs[0], VecDiff::Remove { key: Data::Int(1), .. }))
     );
     assert_eq!(
         ev[1],
@@ -617,6 +617,43 @@ fn a_write_answer_tags_only_the_written_field() {
         probe.cells().gain.get_untracked(&rt) == Ok(42.0)
     });
     assert_eq!(probe.cells().level.get_untracked(&rt), Ok(0.25));
+    s.shutdown();
+}
+
+/// An outside change that reaches the logic thread before the service's
+/// answer to a local write does not leave the cell on the outside value:
+/// the service handled the write after that change, so the answer settles.
+#[test]
+fn a_write_answered_after_an_outside_change_ends_on_the_answer() {
+    let (sc, _guard) = script();
+    let rt = Runtime::new();
+    let (s, _) = services(&rt);
+    let probe = s.register::<Probe>(&rt);
+    let dynamic = probe.dynamic();
+    probe.acquire(&rt);
+    assert_eq!(sc.next(), "start visible=true");
+    sc.cmd(Cmd::Ready);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    // Another app moves the gain; its patch waits in the channel.
+    sc.cmd(Cmd::Update(Box::new(|p| {
+        p.gain = 0.3;
+        log("outside".into());
+    })));
+    assert_eq!(sc.next(), "outside");
+    // The shell writes before the logic thread has seen that change; the
+    // service answers the write after it.
+    dynamic.write(&rt, 4, &[], Data::Float(0.6)).unwrap();
+    assert_eq!(sc.next(), "write gain 0.6");
+    until(&rt, &s, "the answer settles", || {
+        probe.cells().gain.get_untracked(&rt) == Ok(0.6)
+    });
+    for _ in 0..10 {
+        s.pump(&rt);
+        rt.flush();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(probe.cells().gain.get_untracked(&rt), Ok(0.6));
+    assert_eq!(probe.cells().gain.pending_writes(&rt), 0);
     s.shutdown();
 }
 
@@ -844,6 +881,13 @@ fn errors_from_a_body_end_the_run_and_a_reader_restarts_it() {
     assert!(!probe.running(), "an ended body is not running");
     // Still read: started again after 1 s, then 2 s (backoff).
     assert_eq!(rt.next_deadline(), Some(now.get() + Duration::from_secs(1)));
+    // A write while it backs off is refused with that reason (it does not
+    // restart a failing body early).
+    let err = probe
+        .dynamic()
+        .write(&rt, 0, &[], Data::Float(0.1))
+        .unwrap_err();
+    assert!(err.to_string().contains("backoff"), "{err}");
     at(Duration::from_secs(1));
     assert_eq!(probe.starts(), 2);
     until(&rt, &s, "the second failure", || {
@@ -867,6 +911,24 @@ fn errors_from_a_body_end_the_run_and_a_reader_restarts_it() {
     probe.acquire(&rt);
     assert_eq!(sc.next(), "start visible=true");
     assert_eq!(probe.starts(), 4);
+    // It ends cleanly again and its reader leaves: a write inside the
+    // grace starts it again for the write (an ended run is a stopped one).
+    drop(sc);
+    until(&rt, &s, "the second clean end", || !probe.running());
+    probe.release(&rt);
+    let sc = script_again();
+    probe
+        .dynamic()
+        .write(&rt, 0, &[], Data::Float(0.5))
+        .unwrap();
+    assert_eq!(sc.next(), "start visible=true");
+    assert_eq!(sc.next(), "visible false");
+    assert_eq!(sc.next(), "write level 0.5");
+    assert_eq!(probe.starts(), 5);
+    // Past the grace it stops; nothing stays scheduled.
+    at(STOP_GRACE + Duration::from_millis(1));
+    assert!(!probe.running());
+    assert_eq!(rt.next_deadline(), None);
     s.shutdown();
 }
 
