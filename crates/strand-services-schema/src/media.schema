@@ -12,7 +12,9 @@ service media {
   artist: text?
   /// The track's album.
   album: text?
-  /// The album art: `image media.art { fit: cover }`.
+  /// The album art: `image media.art { fit: cover }`. Local art only (a
+  /// `file://` URL or a path); null when the player sent none or a remote
+  /// URL, so `media.art ?? "audio-x-generic"` falls back.
   art: text?
   /// Fraction of the track played, 0 to 1.
   position: float

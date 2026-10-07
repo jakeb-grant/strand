@@ -119,6 +119,9 @@ impl Bluetooth {
         daemon
             .subscribe("objects", dbus::namespace_rule("/org/bluez")?)
             .await?;
+        // Connects and disconnects in flight: dropped (cancelled) with the
+        // body, so a stopped service keeps no call, and no connection.
+        let mut calls: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
         loop {
             let mut objects = read(&daemon).await;
             if !cx.update(|s| *s = Bluetooth::from_objects(&objects)) {
@@ -127,6 +130,7 @@ impl Bluetooth {
             cx.ready();
             'follow: loop {
                 tokio::select! {
+                    Some(_) = calls.join_next(), if !calls.is_empty() => {}
                     ev = daemon.next() => match ev {
                         None => return Err(ServiceError("the system bus connection ended".into())),
                         Some(DaemonEvent::Owner) => break 'follow,
@@ -156,7 +160,8 @@ impl Bluetooth {
                                 Ok(()) => on,
                                 Err(e) => {
                                     log::warn!("bluetooth: not powered {}: {e}", if on { "on" } else { "off" });
-                                    !on
+                                    // The adapter as last read.
+                                    Bluetooth::from_objects(&objects).powered
                                 }
                             };
                             if !cx.report(&w, |s| s.powered = now) {
@@ -181,7 +186,7 @@ impl Bluetooth {
                             // the service; BlueZ reports the outcome as
                             // `Connected` changes.
                             let conn = conn.clone();
-                            tokio::task::spawn_local(async move {
+                            calls.spawn(async move {
                                 let call = conn.call_method(Some(BLUEZ), path.as_str(), Some(DEVICE), method, &());
                                 match tokio::time::timeout(std::time::Duration::from_secs(30), call).await {
                                     Ok(Ok(_)) => {}

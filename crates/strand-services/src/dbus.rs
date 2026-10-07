@@ -7,7 +7,10 @@
 //! subscribe to the name's owner changes and to the daemon's signals
 //! first, then read its state; a new owner (the daemon restarted) is read
 //! afresh without the service restarting, and no owner is the state's
-//! defaults. Nothing polls: an idle daemon wakes nothing.
+//! defaults. Nothing polls: an idle daemon wakes nothing. A daemon that
+//! is not running is asked for once per start (D-Bus activation:
+//! distributions often start UPower or bluetoothd only when first called),
+//! without waiting: its arrival is an owner change like any other.
 
 use std::collections::HashMap;
 
@@ -261,6 +264,9 @@ impl Daemon {
             .receive_name_owner_changed_with_args(&[(0, name.as_str())])
             .await?;
         let owner = dbus.get_name_owner(name.clone()).await.ok();
+        if owner.is_none() {
+            activate(conn, name.as_str()).await;
+        }
         Ok(Daemon {
             conn: conn.clone(),
             name,
@@ -360,6 +366,26 @@ impl Daemon {
     /// Ask the bus for the owner again (after a failed read, say).
     pub async fn refresh_owner(&mut self) {
         self.owner = self.dbus.get_name_owner(self.name.clone()).await.ok();
+    }
+}
+
+/// Ask the bus to start `name`'s service (`StartServiceByName`, D-Bus
+/// activation), without waiting for the reply: the service owning its
+/// name is a `NameOwnerChanged` for whoever follows it. A name nothing
+/// can start is ignored.
+pub async fn activate(conn: &Connection, name: &str) {
+    let msg = Message::method_call("/org/freedesktop/DBus", "StartServiceByName")
+        .and_then(|b| b.destination("org.freedesktop.DBus"))
+        .and_then(|b| b.interface("org.freedesktop.DBus"))
+        .and_then(|b| b.with_flags(zbus::message::Flags::NoReplyExpected))
+        .and_then(|b| b.build(&(name, 0u32)));
+    match msg {
+        Ok(m) => {
+            if let Err(e) = conn.send(&m).await {
+                log::debug!("{name} not started: {e}");
+            }
+        }
+        Err(e) => log::debug!("{name} not started: {e}"),
     }
 }
 

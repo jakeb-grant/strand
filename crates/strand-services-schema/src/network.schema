@@ -11,7 +11,8 @@ record AccessPoint key ssid {
   /// It is the network joined.
   active: bool
   /// Joins it: with its saved connection if there is one, else a new one
-  /// (NetworkManager asks its secret agent for a password).
+  /// (NetworkManager asks its secret agent for a password); a failure is
+  /// `network.failed`.
   action connect()
 }
 
@@ -28,4 +29,8 @@ service network {
   /// The Wi-Fi networks in range, keyed by `ssid`. Scanned only while a
   /// visible reader reads them (a network menu that is open).
   access_points: [AccessPoint]
+  /// Joining a network failed (no password and no secret agent to ask
+  /// for one, a wrong one, out of range): `on network.failed(ssid, error)
+  /// { … }`.
+  event failed(ssid: text, error: text)
 }

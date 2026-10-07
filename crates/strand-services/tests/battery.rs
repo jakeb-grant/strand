@@ -197,3 +197,52 @@ fn without_upower_there_is_no_battery() {
     assert!(b.battery.running(), "it waits for UPower to appear");
     s.shutdown();
 }
+
+/// UPower started by D-Bus activation, as distributions often ship it
+/// (`SystemdService=upower.service`): nothing runs it until someone
+/// calls; the battery service asks for it once and follows it in.
+#[test]
+fn battery_starts_an_activatable_upower() {
+    let Some(bus) = PrivateBus::start_activating(&[("upower", true, UPOWER)]) else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    assert!(
+        !bus.wait_for_name(UPOWER, Duration::from_millis(200)),
+        "not running before it is asked for"
+    );
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    b.battery.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert!(
+        bus.wait_for_name(UPOWER, Duration::from_secs(15)),
+        "the battery service had UPower started"
+    );
+    // The activated UPower's display device appears: followed in.
+    mock(
+        &tokio,
+        &conn,
+        UPOWER,
+        ROOT,
+        "SetupDisplayDevice",
+        &(
+            2u32, 2u32, 77.0f64, 77.0f64, 100.0f64, 12.5f64, 5400i64, 0i64, true, "", 1u32,
+        ),
+    );
+    until(&rt, &s, "the activated UPower's battery", || {
+        b.battery.cells().percent.get_untracked(&rt) == Ok(0.77)
+            && b.battery.cells().present.get_untracked(&rt) == Ok(true)
+    });
+    assert_eq!(b.battery.starts(), 1);
+    s.shutdown();
+    // The activated mock is the bus's child: stop it with the test.
+    let dbus = tokio.block_on(zbus::fdo::DBusProxy::new(&conn)).unwrap();
+    if let Ok(pid) = tokio.block_on(dbus.get_connection_unix_process_id(UPOWER.try_into().unwrap()))
+    {
+        let _ = std::process::Command::new("kill")
+            .arg(pid.to_string())
+            .status();
+    }
+}

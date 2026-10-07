@@ -47,6 +47,26 @@ pub struct PrivateBus {
 impl PrivateBus {
     /// Start one; `None` (skipped) without `dbus-daemon`.
     pub fn start() -> Option<PrivateBus> {
+        Self::start_activating(&[])
+    }
+
+    /// Start one whose bus can start python-dbusmock templates (D-Bus
+    /// activation, as distributions start UPower or bluetoothd): each
+    /// `(template, system, name)` is a service file for `name` running
+    /// `template`. `None` (skipped) without `dbus-daemon`, or without a
+    /// Python that has dbusmock when there are templates.
+    pub fn start_activating(mocks: &[(&str, bool, &str)]) -> Option<PrivateBus> {
+        let py = if mocks.is_empty() {
+            None
+        } else {
+            match dbusmock_python() {
+                Some(py) => Some(py),
+                None => {
+                    skip("no python with dbusmock (python3-dbusmock)");
+                    return None;
+                }
+            }
+        };
         let dir =
             std::env::temp_dir().join(format!("strand-bus-{}-{}", std::process::id(), unique()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -56,13 +76,34 @@ impl PrivateBus {
         }
         // A configuration of its own, not `--session`: no standard
         // service directories, so nothing installed on the machine
-        // (a portal, dconf, systemd) can be activated on this bus.
+        // (a portal, dconf, systemd) can be activated on this bus; only
+        // the test's own templates are.
+        let address = format!("unix:path={}/bus", dir.display());
+        let mut servicedir = String::new();
+        if let Some(py) = &py {
+            let services = dir.join("services");
+            let _ = std::fs::create_dir_all(&services);
+            for (template, system, name) in mocks {
+                // Its output to a log of its own: the daemon's stdout is
+                // a pipe nobody reads after the address.
+                let log = dir.join(format!("activated-{template}.log"));
+                let file = format!(
+                    "[D-BUS Service]\nName={name}\nExec=/bin/sh -c \"exec env \
+                     DBUS_SYSTEM_BUS_ADDRESS={address} DBUS_SESSION_BUS_ADDRESS={address} \
+                     {py} -m dbusmock --template {template}{} >>{} 2>&1\"\n",
+                    if *system { " --system" } else { "" },
+                    log.display()
+                );
+                let _ = std::fs::write(services.join(format!("{name}.service")), file);
+            }
+            servicedir = format!("  <servicedir>{}</servicedir>\n", services.display());
+        }
         let config = dir.join("bus.conf");
         let text = format!(
             "<!DOCTYPE busconfig PUBLIC \"-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN\"\n \
              \"http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd\">\n\
              <busconfig>\n  <type>session</type>\n  <keep_umask/>\n  \
-             <listen>unix:path={}/bus</listen>\n  <auth>EXTERNAL</auth>\n  \
+             <listen>unix:path={}/bus</listen>\n  <auth>EXTERNAL</auth>\n{servicedir}  \
              <policy context=\"default\">\n    <allow send_destination=\"*\" eavesdrop=\"true\"/>\n    \
              <allow eavesdrop=\"true\"/>\n    <allow own=\"*\"/>\n  </policy>\n</busconfig>\n",
             dir.display()
@@ -82,7 +123,6 @@ impl PrivateBus {
         };
         // The address without the daemon's guid, so it stays valid
         // across [`PrivateBus::restart`].
-        let address = format!("unix:path={}/bus", dir.display());
         Some(PrivateBus {
             child,
             address,

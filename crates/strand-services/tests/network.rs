@@ -59,19 +59,12 @@ fn names(b: &strand_services::Builtin, rt: &Runtime) -> Vec<(String, bool)> {
         .collect()
 }
 
-#[test]
-fn network_follows_networkmanager_and_scans_only_while_watched() {
-    let Some(bus) = PrivateBus::start() else {
-        return;
-    };
-    let tokio = tokio();
-    let conn = connect(&tokio, &bus.address);
-    let Some(_nm) = DbusMock::start(&bus, "networkmanager", true, None, NM) else {
-        return;
-    };
+/// A Wi-Fi device with the network `Home` joined (its saved connection
+/// active): the device's and the access point's paths.
+fn wifi_home(tokio: &tokio::runtime::Runtime, conn: &zbus::Connection) -> (String, String) {
     let dev: String = mock(
-        &tokio,
-        &conn,
+        tokio,
+        conn,
         NM,
         ROOT,
         "AddWiFiDevice",
@@ -80,10 +73,10 @@ fn network_follows_networkmanager_and_scans_only_while_watched() {
     .body()
     .deserialize()
     .unwrap();
-    let home = add_ap(&tokio, &conn, &dev, "Mock_AP1", "Home", 82);
+    let home = add_ap(tokio, conn, &dev, "Mock_AP1", "Home", 82);
     let saved: String = mock(
-        &tokio,
-        &conn,
+        tokio,
+        conn,
         NM,
         ROOT,
         "AddWiFiConnection",
@@ -93,8 +86,8 @@ fn network_follows_networkmanager_and_scans_only_while_watched() {
     .deserialize()
     .unwrap();
     mock(
-        &tokio,
-        &conn,
+        tokio,
+        conn,
         NM,
         ROOT,
         "AddActiveConnection",
@@ -106,8 +99,29 @@ fn network_follows_networkmanager_and_scans_only_while_watched() {
             2u32,
         ),
     );
+    (dev, home)
+}
+
+#[test]
+fn network_follows_networkmanager_and_scans_only_while_watched() {
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let Some(nm1) = DbusMock::start(&bus, "networkmanager", true, None, NM) else {
+        return;
+    };
+    let (dev, home) = wifi_home(&tokio, &conn);
     let rt = Runtime::new();
     let (s, b) = services(&rt, bus.buses());
+    let failures = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let f = failures.clone();
+    b.network.dynamic().observe(Box::new(move |_, a| {
+        if let strand_services::Applied::Event { args, .. } = a {
+            f.lock().unwrap().push(args.clone());
+        }
+    }));
     let cells = b.network.cells();
     b.network.acquire(&rt);
     assert!(s.wait_ready(&rt, Duration::from_secs(10)));
@@ -230,6 +244,61 @@ fn network_follows_networkmanager_and_scans_only_while_watched() {
     until(&rt, &s, "offline", || {
         cells.connected.get_untracked(&rt) == Ok(false)
     });
+
+    // Joining a network out of range fails: `failed` says so.
+    let gone = AccessPoint {
+        ssid: "Elsewhere".into(),
+        strength: 0.0,
+        secure: true,
+        active: false,
+    };
+    b.network
+        .dynamic()
+        .action(&rt, "connect", Some(&gone.to_data()), &[])
+        .unwrap();
+    until(&rt, &s, "the failure", || {
+        !failures.lock().unwrap().is_empty()
+    });
+    assert_eq!(
+        failures.lock().unwrap()[0][0],
+        Data::Text("Elsewhere".into())
+    );
+
+    // NetworkManager restarts while a network menu is open: offline while
+    // it is gone, then read afresh (and one new scan asked for) without
+    // the service restarting.
+    b.network.acquire_field(field);
+    until(&rt, &s, "the menu's list", || !names(&b, &rt).is_empty());
+    drop(nm1);
+    until(&rt, &s, "NetworkManager gone", || {
+        cells.ssid.get_untracked(&rt) == Ok(None)
+            && cells.connected.get_untracked(&rt) == Ok(false)
+            && names(&b, &rt).is_empty()
+    });
+    let Some(_nm2) = DbusMock::start(&bus, "networkmanager", true, None, NM) else {
+        return;
+    };
+    let (dev2, _) = wifi_home(&tokio, &conn);
+    until(&rt, &s, "NetworkManager back", || {
+        cells.ssid.get_untracked(&rt) == Ok(Some("Home".to_string()))
+            && cells.connected.get_untracked(&rt) == Ok(true)
+            && names(&b, &rt) == [("Home".to_string(), true)]
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while mock_calls(&tokio, &conn, NM, &dev2, "RequestScan").is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no scan on the new one"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    s.pump(&rt);
+    assert_eq!(
+        mock_calls(&tokio, &conn, NM, &dev2, "RequestScan").len(),
+        1,
+        "one scan"
+    );
     assert_eq!(b.network.starts(), 1);
     s.shutdown();
 }

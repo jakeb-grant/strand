@@ -55,7 +55,9 @@ pub struct Media {
     pub artist: Option<String>,
     /// The track's album.
     pub album: Option<String>,
-    /// The album art: `image media.art { fit: cover }`.
+    /// The album art: `image media.art { fit: cover }`. Local art only (a
+    /// `file://` URL or a path); null when the player sent none or a
+    /// remote URL.
     pub art: Option<String>,
     /// Fraction of the track played, 0 to 1.
     #[store(stream)]
@@ -180,7 +182,7 @@ impl Players {
             title: text("xesam:title"),
             artist,
             album: text("xesam:album"),
-            art: text("mpris:artUrl"),
+            art: text("mpris:artUrl").filter(|u| local_art(u)),
             position: match length {
                 Some(l) if !l.is_zero() => {
                     (elapsed.as_secs_f64() / l.as_secs_f64()).clamp(0.0, 1.0)
@@ -206,9 +208,18 @@ impl Players {
     }
 }
 
-/// Ask a player where it is.
+/// Art `image` can show: a `file://` URL or a path. Remote art (the
+/// `https://` URLs some players send) is left out, so a shell's fallback
+/// (`media.art ?? "audio-x-generic"`) shows instead of a blank picture
+/// (decisions.md, wave4-a2).
+fn local_art(url: &str) -> bool {
+    url.starts_with("file://") || url.starts_with('/')
+}
+
+/// Ask a player where it is (a player that does not answer in time is at
+/// the start).
 async fn ask_position(conn: &zbus::Connection, name: &str, p: &mut Player) {
-    let pos = dbus::get(conn, name, PATH, PLAYER, "Position")
+    let pos = dbus::timed(dbus::get(conn, name, PATH, PLAYER, "Position"))
         .await
         .ok()
         .and_then(|v| micros(&v));
@@ -219,11 +230,11 @@ async fn ask_position(conn: &zbus::Connection, name: &str, p: &mut Player) {
 async fn read_player(conn: &zbus::Connection, name: &str, owner: String) -> Player {
     let mut p = Player {
         owner,
-        identity: dbus::get(conn, name, PATH, ROOT_IFACE, "Identity")
+        identity: dbus::timed(dbus::get(conn, name, PATH, ROOT_IFACE, "Identity"))
             .await
             .ok()
             .and_then(|v| v.downcast_ref::<&str>().ok().map(str::to_string)),
-        props: dbus::get_all(conn, name, PATH, PLAYER)
+        props: dbus::timed(dbus::get_all(conn, name, PATH, PLAYER))
             .await
             .unwrap_or_default(),
         ..Player::default()
@@ -282,6 +293,7 @@ impl Media {
             return Ok(());
         }
         cx.ready();
+        let mut calls: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
         loop {
             let ticking = cx.watched("elapsed") || cx.watched("position");
             let tick = if ticking {
@@ -290,6 +302,7 @@ impl Media {
                 None
             };
             let changed = tokio::select! {
+                Some(_) = calls.join_next(), if !calls.is_empty() => false,
                 o = owners.next() => {
                     let Some(Ok(m)) = o else {
                         return Err(ServiceError("the session bus connection ended".into()));
@@ -329,13 +342,16 @@ impl Media {
                             MediaAction::Next => "Next",
                             MediaAction::Previous => "Previous",
                         };
+                        // A task of its own: a player that does not answer
+                        // holds up nothing (dropped with the body).
                         if let Some(name) = players.active_name() {
-                            let r = conn
-                                .call_method(Some(name.as_str()), PATH, Some(PLAYER), method, &())
-                                .await;
-                            if let Err(e) = r {
-                                log::warn!("media: {method} on {name}: {e}");
-                            }
+                            let conn = conn.clone();
+                            calls.spawn(async move {
+                                let r = dbus::timed(conn.call_method(Some(name.as_str()), PATH, Some(PLAYER), method, &())).await;
+                                if let Err(e) = r {
+                                    log::warn!("media: {method} on {name}: {e}");
+                                }
+                            });
                         }
                         false
                     }
@@ -392,4 +408,17 @@ async fn signal(conn: &zbus::Connection, players: &mut Players, m: &zbus::Messag
         players.touch(&name);
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_local_art_is_shown() {
+        assert!(local_art("file:///tmp/a.png"));
+        assert!(local_art("/tmp/a.png"));
+        assert!(!local_art("https://i.scdn.co/image/ab67"));
+        assert!(!local_art("http://x/a.jpg"));
+    }
 }

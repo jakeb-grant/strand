@@ -14,7 +14,7 @@
 use std::collections::BTreeMap;
 
 use crate::dbus::{self, Daemon, DaemonEvent, Props};
-use crate::{Call, Cx, Msg, ServiceError, Store, service};
+use crate::{Call, Cx, Event, Msg, ServiceError, Store, service};
 
 /// The schema the `network` service serves.
 pub const SCHEMA: &str = strand_services_schema::NETWORK;
@@ -65,6 +65,10 @@ pub struct Network {
     /// visible reader reads them (a network menu that is open).
     #[store(keyed, stream)]
     pub access_points: Vec<AccessPoint>,
+    /// Joining a network failed (no password and no secret agent to ask
+    /// for one, a wrong one, out of range): `on network.failed(ssid,
+    /// error) { … }`.
+    pub failed: Event<(String, String)>,
 }
 
 /// An access point's SSID (bytes; shown lossily as UTF-8).
@@ -182,6 +186,7 @@ impl Nm {
             strength: joined.map(strength).unwrap_or(0.0),
             wifi: dbus::boolean(&self.manager, "WirelessEnabled").unwrap_or(false),
             access_points,
+            failed: Event::default(),
         }
     }
 
@@ -226,7 +231,10 @@ impl Nm {
 
     /// Apply a signal: `Some(true)` it changed something, `Some(false)` it
     /// did not, `None` read everything again (the set of objects moved).
-    async fn signal(&mut self, daemon: &Daemon, m: &zbus::Message) -> Option<bool> {
+    /// A device's access points coming and going matter only while
+    /// `scanning` (the one in use is followed through its connection's
+    /// `SpecificObject`); then only the new ones are read.
+    async fn signal(&mut self, daemon: &Daemon, m: &zbus::Message, scanning: bool) -> Option<bool> {
         let c = dbus::properties_changed(m)?;
         match c.iface.as_str() {
             AP => match self.aps.get_mut(&c.path) {
@@ -252,9 +260,36 @@ impl Nm {
                     dbus::apply_changed(daemon.conn(), NM, p, c).await;
                     Some(true)
                 }
-                _ => None,
+                Some(_) => None,
+                // Not one of ours (yet): the manager's `ActiveConnections`
+                // says when it is.
+                None => Some(false),
             },
-            WIRELESS if c.changed.contains_key("AccessPoints") => None,
+            WIRELESS if c.changed.contains_key("AccessPoints") => {
+                if !scanning {
+                    return Some(false);
+                }
+                let Some(dev) = self.wifi_devices.get_mut(&c.path) else {
+                    return Some(false);
+                };
+                dev.extend(c.changed);
+                let listed: Vec<String> = self
+                    .wifi_devices
+                    .values()
+                    .flat_map(|w| object_paths(w, "AccessPoints"))
+                    .chain(self.used_aps())
+                    .collect();
+                self.aps.retain(|p, _| listed.contains(p));
+                for path in listed {
+                    if self.aps.contains_key(&path) {
+                        continue;
+                    }
+                    if let Ok(p) = dbus::get_all(daemon.conn(), NM, &path, AP).await {
+                        self.aps.insert(path, p);
+                    }
+                }
+                Some(true)
+            }
             _ => Some(false),
         }
     }
@@ -295,8 +330,9 @@ impl Network {
             }
             nm.read(&daemon, scanning).await;
             sync_subscriptions(&mut daemon, &nm, scanning, &mut used).await;
-            if scanning && want_scan {
-                request_scan(&daemon, &nm).await;
+            // Asked once there is a Wi-Fi device to ask (a NetworkManager
+            // that just appeared may not list its devices yet).
+            if scanning && want_scan && request_scan(&daemon, &nm).await {
                 want_scan = false;
             }
             if !cx.update(|s| *s = nm.state(scanning)) {
@@ -311,7 +347,7 @@ impl Network {
                             want_scan = scanning;
                             break 'follow;
                         }
-                        Some(DaemonEvent::Signal(m)) => match nm.signal(&daemon, &m).await {
+                        Some(DaemonEvent::Signal(m)) => match nm.signal(&daemon, &m, scanning).await {
                             None => break 'follow,
                             Some(false) => {}
                             Some(true) => {
@@ -335,7 +371,8 @@ impl Network {
                                 Ok(()) => on,
                                 Err(e) => {
                                     log::warn!("network: Wi-Fi not switched: {e}");
-                                    !on
+                                    // The radio as last read.
+                                    nm.state(scanning).wifi
                                 }
                             };
                             if !cx.report(&w, |s| s.wifi = now) {
@@ -345,6 +382,13 @@ impl Network {
                         Some(Msg::Action(NetworkAction::Connect { item })) => {
                             if let Err(e) = connect(&daemon, &nm, &item.ssid).await {
                                 log::warn!("network: not joining {}: {e}", item.ssid);
+                                let error = match e {
+                                    zbus::Error::MethodError(_, Some(text), _) => text,
+                                    e => e.to_string(),
+                                };
+                                if !cx.emit(NetworkEvent::Failed((item.ssid.clone(), error))) {
+                                    return Ok(());
+                                }
                             }
                         }
                         Some(_) => {}
@@ -393,8 +437,8 @@ async fn sync_subscriptions(
 }
 
 /// Ask every Wi-Fi device for a fresh scan (NetworkManager rate-limits
-/// these itself).
-async fn request_scan(daemon: &Daemon, nm: &Nm) {
+/// these itself); whether there was one to ask.
+async fn request_scan(daemon: &Daemon, nm: &Nm) -> bool {
     for dev in nm.wifi_devices.keys() {
         let opts: std::collections::HashMap<&str, zbus::zvariant::Value<'_>> = Default::default();
         let r = daemon
@@ -411,6 +455,7 @@ async fn request_scan(daemon: &Daemon, nm: &Nm) {
             log::debug!("network: no scan on {dev}: {e}");
         }
     }
+    !nm.wifi_devices.is_empty()
 }
 
 /// Join the network named `ssid`: its strongest access point, with a
