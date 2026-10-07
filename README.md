@@ -54,9 +54,11 @@ frame). `strand check` reports did-you-mean diagnostics, `strand fmt`
 formats, `strand set` writes an exported state or a settings field,
 `strand watch` / `strand reload` talk to a running shell, and
 `strand-dev lsp` serves diagnostics, completion, hover,
-go-to-definition, rename and quick fixes. Real system services (audio,
-battery, notifications, apps, tray, workspaces) come in M3; until then
-`STRAND_MOCK=desktop` fills them with a mock desktop. Still open from
+go-to-definition, rename and quick fixes. M3 (in progress) makes the
+system services real: the portal, cpu, memory, battery, brightness,
+network, Bluetooth, tray, media and the notification server run on
+D-Bus and procfs; audio, workspaces, windows and apps are pending, and
+`STRAND_MOCK=desktop` fills everything with a mock desktop. Still open from
 M1: the tree-sitter grammar, the render side of `keyframes`, `shader`
 and `canvas`, a dedicated format-on-save overlay check, the loader's
 `.wgsl` and wallpaper module paths and the portal clause of the latency
@@ -126,7 +128,9 @@ installed so the Wayland integration tests and the M0 demo run (set
 
 A nightly job runs the fuzzer for 10,000 edits (`STRAND_FUZZ_EDITS`,
 `STRAND_FUZZ_SEED`), the instance-level fuzzers long, and the latency
-benches for 200 edits per kind. The mocked D-Bus services tier comes with M3.
+benches for 200 edits per kind. The services tier runs every push: python-dbusmock's
+UPower, NetworkManager, BlueZ, logind and notification daemon and small zbus mocks on a
+private `dbus-daemon`.
 
 `scripts/m0-exit.sh` and `scripts/m2-exit.sh` measure the memory, idle
 and damage gates over whole minutes on a release build (the M0 demo and

@@ -172,18 +172,21 @@ struct Registry {
     diagnostics: RefCell<Vec<ServiceDiagnostic>>,
 }
 
-/// Something a service needs the user to act on ([`Cx::notice`]: another
-/// notification server owns the name): what the host shows (`strand
-/// run`: a log line, an overlay row and a `strand watch` notice). One per
-/// distinct notice: a body raising the same one on every retry is
-/// reported once, until a run stays up [`RETRY_MAX`] or ends cleanly.
-/// Other failures (a bus that cannot be reached) are logged, once each.
+/// A service's run failed (its body returned an error, or panicked), or
+/// its body raised something the user must act on ([`Cx::notice`]:
+/// another notification server owns the name). One per distinct message:
+/// a body failing the same way on every retry is reported once, until a
+/// run stays up [`RETRY_MAX`] or ends cleanly. `strand run` logs each,
+/// sends each to `strand watch`, and shows notices on the overlay.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceDiagnostic {
     /// The service (`notifications`).
     pub service: &'static str,
     /// Why (`another notification server, `mako` (pid 4242), owns …`).
     pub message: String,
+    /// The user must act on it ([`Cx::notice`]); else a failure the
+    /// service retries (a daemon or bus that cannot be reached).
+    pub notice: bool,
 }
 
 impl fmt::Display for ServiceDiagnostic {
@@ -423,16 +426,20 @@ struct ClientInner<S: Service> {
 }
 
 impl<S: Service> ClientInner<S> {
-    /// A run failed with `message` (logged), or its body raised a notice
-    /// for the user ([`Cx::notice`]: a [`ServiceDiagnostic`]); either is
-    /// dropped when it repeats the last one (a retry failing the same
-    /// way), until a run stays up [`RETRY_MAX`] or ends cleanly.
+    /// A run failed with `message`, or its body raised a notice for the
+    /// user ([`Cx::notice`]): a [`ServiceDiagnostic`], dropped when it
+    /// repeats the last one of its kind (a retry failing the same way),
+    /// until a run stays up [`RETRY_MAX`] or ends cleanly.
     fn diagnose(&self, rt: &Runtime, message: &str, notice: bool) {
         let stable = self
             .run
             .borrow()
             .as_ref()
             .is_some_and(|r| rt.now().saturating_sub(r.started) >= RETRY_MAX);
+        // A failure the body already raised as a notice is that notice.
+        if !notice && self.last_notice.borrow().as_deref() == Some(message) {
+            return;
+        }
         let slot = if notice {
             &self.last_notice
         } else {
@@ -446,15 +453,16 @@ impl<S: Service> ClientInner<S> {
             return;
         }
         *last = Some(message.to_string());
-        if !notice {
+        if notice {
+            log::error!("service `{}`: {message}", S::NAME);
+        } else {
             log::warn!("service `{}` failed: {message}", S::NAME);
-            return;
         }
-        log::error!("service `{}`: {message}", S::NAME);
         if let Some(reg) = self.reg.upgrade() {
             reg.diagnostics.borrow_mut().push(ServiceDiagnostic {
                 service: S::NAME,
                 message: message.to_string(),
+                notice,
             });
         }
     }

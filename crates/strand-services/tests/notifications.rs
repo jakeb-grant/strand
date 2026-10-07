@@ -326,6 +326,7 @@ fn another_notification_server_fails_clearly() {
     let d = s.take_diagnostics();
     assert_eq!(d.len(), 1, "{d:?}");
     assert_eq!(d[0].service, "notifications");
+    assert!(d[0].notice, "for the overlay: the user must act");
     let msg = d[0].to_string();
     // The owner's process, by pid and command name.
     let pid = other.pid();

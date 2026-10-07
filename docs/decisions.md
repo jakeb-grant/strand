@@ -6401,14 +6401,15 @@ remove it from your compositor's autostart. strand takes the name over
 once it is free.` (pid from `GetConnectionUnixProcessID`, name from
 `/proc/<pid>/comm`). The client's retry backoff (up to 30 s) asks again,
 so stopping the other daemon hands the name over without a reload; the
-same failure is reported once. A body raises such a notice with
-`Cx::notice` (a `ServiceDiagnostic` from `Services::take_diagnostics`,
-one per distinct notice: a retry raising the same one is not repeated
-until a run stays up 30 s or ends cleanly), which `strand run` shows as
-an overlay row and a `strand watch` notice besides the log line. Other
-failures (a bus that cannot be reached) stay log lines (once each, at
-`warn`): a machine without a session bus is not something to put on
-the screen, and the overlay is for what the user must act on.
+same failure is reported once. Service failures became diagnostics:
+`Services::take_diagnostics` hands out a `ServiceDiagnostic` per
+distinct failure (a retry failing the same way is not repeated until a
+run stays up 30 s or ends cleanly), which `strand run` logs and sends to
+`strand watch` as notices. Only a `notice` (raised by the body with
+`Cx::notice`: what the user must act on, as this conflict) is also an
+overlay row and an `ERROR` line; other failures (a bus that cannot be
+reached, which the client retries) are `warn` lines: a machine without
+a session bus is not something to put on the screen.
 
 **2026-10-07 · wave4-a2: brightness.** The level is read from
 `/sys/class/backlight/<dev>` (`actual_brightness`, else `brightness`,
