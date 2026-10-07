@@ -747,15 +747,28 @@ fn read_doc(path: &Path) -> Result<Option<Document>, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(format!("{}: {e}", path.display())),
     };
-    match f.metadata() {
-        Ok(m) if m.is_file() => {}
+    let executable = match f.metadata() {
+        Ok(m) if m.is_file() => {
+            use std::os::unix::fs::PermissionsExt;
+            m.permissions().mode() & 0o111 != 0
+        }
         Ok(_) => return Err(format!("{}: not a regular file", path.display())),
         Err(e) => return Err(format!("{}: {e}", path.display())),
-    }
+    };
     let mut buf = Vec::new();
     f.take(MAX_DOCUMENT as u64)
         .read_to_end(&mut buf)
         .map_err(|e| format!("{}: {e}", path.display()))?;
+    // `from poll "/usr/local/bin/gpu-temp" every 5s` reads a path as a
+    // file; a program there was meant to run: say so rather than parse
+    // its bytes.
+    if executable && (buf.starts_with(b"\x7fELF") || buf.starts_with(b"#!")) {
+        return Err(format!(
+            "{0} is a program, not a document: a path is read as a file; to run it, \
+             write the command as a list (`[\"{0}\"]`) and `permit exec`",
+            path.display()
+        ));
+    }
     Ok(Some(Document::parse(&String::from_utf8_lossy(&buf))))
 }
 
@@ -1136,41 +1149,61 @@ async fn run_poll(
     target: &PollTarget,
     every: Duration,
 ) -> Result<(), ServiceError> {
+    // Ready with the first poll's value, or at once when nothing shows
+    // it yet.
     let mut first = true;
+    // When the last poll began: shown again sooner than `every` after it
+    // (a hover popup flickering), the next poll still waits for `every`.
+    let mut last: Option<tokio::time::Instant> = None;
     loop {
-        if cx.visible() {
-            let doc = match target {
-                PollTarget::Command(argv) => poll_command(argv).await,
-                PollTarget::File(path) => read_doc_bounded(path).await?,
-            };
-            if let Some(doc) = doc {
-                let mut state = cx.state().clone();
-                apply_doc(spec, &doc, &mut state);
-                if !cx.update(|s| *s = state) {
-                    return Ok(());
-                }
-            }
-            if first {
-                cx.ready();
-                first = false;
-            }
-        } else if first {
+        // Until the next poll is due while shown.
+        let due = last.map_or_else(tokio::time::Instant::now, |t| t + every);
+        let sleep = tokio::time::sleep_until(due);
+        tokio::pin!(sleep);
+        if first && !cx.visible() {
             cx.ready();
             first = false;
         }
-        // Until the next poll, or until shown again.
-        let sleep = tokio::time::sleep(every);
-        tokio::pin!(sleep);
         loop {
             tokio::select! {
                 _ = &mut sleep, if cx.visible() => break,
                 m = cx.recv() => match m {
                     None => return Ok(()),
-                    Some(Msg::Visible(true)) => break,
                     Some(Msg::Write(w)) => if !refuse(cx, &w) { return Ok(()) },
                     Some(_) => {}
                 },
             }
+        }
+        last = Some(tokio::time::Instant::now());
+        // The poll itself answers messages: a stop ends it (and the
+        // command's group) at once, writes are refused meanwhile.
+        let fetch = async {
+            match target {
+                PollTarget::Command(argv) => Ok(poll_command(argv).await),
+                PollTarget::File(path) => read_doc_bounded(path).await,
+            }
+        };
+        tokio::pin!(fetch);
+        let doc = loop {
+            tokio::select! {
+                d = &mut fetch => break d?,
+                m = cx.recv() => match m {
+                    None => return Ok(()),
+                    Some(Msg::Write(w)) => if !refuse(cx, &w) { return Ok(()) },
+                    Some(_) => {}
+                },
+            }
+        };
+        if let Some(doc) = doc {
+            let mut state = cx.state().clone();
+            apply_doc(spec, &doc, &mut state);
+            if !cx.update(|s| *s = state) {
+                return Ok(());
+            }
+        }
+        if first {
+            cx.ready();
+            first = false;
         }
     }
 }
@@ -1286,7 +1319,7 @@ mod tests {
     }
 
     /// A FIFO (or any file that is not regular) is refused at once, not
-    /// waited on; a missing file is no document.
+    /// waited on; a missing file is no document; a program is refused.
     #[test]
     fn only_regular_files_are_read() {
         let dir = std::env::temp_dir().join(format!("strand-custom-fifo-{}", std::process::id()));
@@ -1300,6 +1333,23 @@ mod tests {
         assert!(e.contains("not a regular file"), "{e}");
         assert!(t.elapsed() < Duration::from_secs(1));
         assert_eq!(read_doc(&dir.join("none")), Ok(None));
+        // A program (executable, a script or ELF) is not read as a
+        // document; an executable data file (a vfat mount) still is.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let script = dir.join("gpu-temp");
+            std::fs::write(&script, "#!/bin/sh\necho 40\n").unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let e = read_doc(&script).unwrap_err();
+            assert!(
+                e.contains("is a program") && e.contains("permit exec"),
+                "{e}"
+            );
+            let data = dir.join("data");
+            std::fs::write(&data, "temp=40\n").unwrap();
+            std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(read_doc(&data).unwrap().is_some());
+        }
         std::fs::write(dir.join("doc"), "{\"a\": 1}").unwrap();
         assert!(read_doc(&dir.join("doc")).unwrap().is_some());
         let _ = std::fs::remove_dir_all(&dir);

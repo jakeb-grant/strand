@@ -6783,6 +6783,13 @@ launcher never searches, and opening it runs the latest query once.
 A handler's `await` call is unaffected in practice (the scope holding
 the handler holds the service). Proved by
 `crates/strand/src/services/mod.rs::the_design_launcher_searches_real_apps_only_while_open`.
+The gate is the service's readers, not the call site's own visibility:
+while another shown surface reads the service (a dock listing
+`apps.all`), a closed launcher's new query is searched (once per change,
+its result not shown). Gating on the async load's own visible readers
+needs strand-core to pause an async memo whose readers are all
+suspended, left for later; pinned by
+`crates/strand/src/services/mod.rs::a_closed_launcher_searches_only_while_another_surface_reads_apps`.
 
 **2026-10-07 · wave4-a3: what the cache sources watch.** design.md's
 "Apps, icons, fonts | `applications/`, `index.theme`, fontconfig dirs |
@@ -6817,7 +6824,9 @@ words as a shell would (quotes group, backslash escapes) and run without
 a shell; a list is the argv. A `poll` of a string that is a path with no
 whitespace (`/…`, `~/…`, `./…`) reads that file instead of running it
 (design.md: "a command or file at an interval"), and needs no `permit
-exec`; `["/usr/bin/foo"]` runs it. A `file` path, and a polled file,
+exec`; `["/usr/bin/foo"]` runs it. A path that names a program
+(executable, `#!` or ELF) is a failure saying so, never parsed
+(`custom::tests::only_regular_files_are_read`). A `file` path, and a polled file,
 starting with `~/` is under the home directory; a relative one under the
 config directory, as a settings file's is. Only a `dbus` field can be
 `rw` (writing sets the property); elsewhere `check::not_writable`. A
@@ -6875,9 +6884,15 @@ first reader, stop 5 s after the last, failures retried and reported):
 `strand_services::custom::Custom` is a store whose fields are the items
 of one keyed list (`values`, keyed by the field's index, each value
 untyped `Data`), registered once per declaration, its spec (source and
-fields) found by an id seeded into the store. `ServiceDiagnostic.service`
-is then `custom` for all of them; their messages start with the
-declared name. An `rw` write is an item write of the field's value, so
+fields) found by an id seeded into the store. Each is registered under
+its declared name (`Services::register_as`), so its log lines and
+`ServiceDiagnostic.service` (now a `String`) say `ppd`, not `custom`, and
+two custom services' notices never share an overlay key; a removed one
+is taken out of `Services` with `Client::unregister` (its cells
+disposed), so declaring and removing services across reloads leaves
+nothing behind. The language side addresses its fields by their
+declared names (`ppd.profile`); the index keys stay inside the store. An
+`rw` write is an item write of the field's value, so
 its echo is ignored as any item write's is. `ServiceHost::declare` and
 `restart` now take the lowered declaration (`lower::CustomService`:
 name, record, source, fields) instead of a name and record, so the host

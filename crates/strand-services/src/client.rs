@@ -207,7 +207,7 @@ impl Drop for Shared {
 
 /// What the registry asks of every client.
 trait Member {
-    fn name(&self) -> &'static str;
+    fn name(&self) -> &str;
     fn pump(&self, rt: &Runtime) -> bool;
     /// Running and not ready yet.
     fn waiting(&self) -> bool;
@@ -234,8 +234,9 @@ struct Registry {
 /// sends each to `strand watch`, and shows notices on the overlay.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceDiagnostic {
-    /// The service (`notifications`).
-    pub service: &'static str,
+    /// The service: a builtin's name (`notifications`), a no-code
+    /// service's declared name (`ppd`).
+    pub service: String,
     /// Why (`another notification server, `mako` (pid 4242), owns …`).
     pub message: String,
     /// The user must act on it ([`Cx::notice`]); else a failure the
@@ -315,15 +316,26 @@ impl Services {
     /// Register service `S`: its cells are created now (holding the
     /// store's defaults); it starts on its first [`Client::acquire`].
     pub fn register<S: Service>(&self, rt: &Runtime) -> Client<S> {
-        let cells = self
-            .0
-            .anchor
-            .run(rt, |rt| {
-                rt.untrack(|rt| S::Cells::new(rt, S::NAME, &S::default()))
-            })
-            .unwrap_or_else(|_| S::Cells::new(rt, S::NAME, &S::default()));
+        self.register_as::<S>(rt, S::NAME)
+    }
+
+    /// [`Services::register`] for one instance of `S` named `name`: a
+    /// no-code service (`ppd`), one [`crate::custom::Custom`] per
+    /// declaration. Its log lines and [`ServiceDiagnostic`]s say `name`,
+    /// [`Services::wait_ready_of`] finds it by it, and
+    /// [`Client::unregister`] takes it away again.
+    pub fn register_as<S: Service>(&self, rt: &Runtime, name: &str) -> Client<S> {
+        let made = self.0.anchor.run(rt, |rt| {
+            rt.untrack(|rt| rt.scope(|rt| S::Cells::new(rt, S::NAME, &S::default())))
+        });
+        let (scope, cells) = match made {
+            Ok((scope, cells)) => (Some(scope), cells),
+            Err(_) => (None, S::Cells::new(rt, S::NAME, &S::default())),
+        };
         let inner = Rc::new_cyclic(|me| ClientInner::<S> {
             me: me.clone(),
+            name: Rc::from(name),
+            scope: Cell::new(scope),
             reg: Rc::downgrade(&self.0),
             cells,
             refs: Cell::new(0),
@@ -345,6 +357,12 @@ impl Services {
             .borrow_mut()
             .push(inner.clone() as Rc<dyn Member>);
         Client(inner)
+    }
+
+    /// How many services are registered (tests: a removed no-code
+    /// service leaves none behind).
+    pub fn registered(&self) -> usize {
+        self.0.members.borrow().len()
     }
 
     /// Apply every envelope waiting from every service. Returns whether
@@ -492,6 +510,11 @@ pub type Observer = Box<dyn Fn(&Runtime, &Applied)>;
 
 struct ClientInner<S: Service> {
     me: Weak<ClientInner<S>>,
+    /// The instance's name: `S::NAME`, or a no-code service's declared
+    /// name (its log lines and [`ServiceDiagnostic`]s say it).
+    name: Rc<str>,
+    /// Owns its cells (disposed by [`Client::unregister`]).
+    scope: Cell<Option<Scope>>,
     reg: Weak<Registry>,
     cells: S::Cells,
     refs: Cell<u32>,
@@ -543,13 +566,13 @@ impl<S: Service> ClientInner<S> {
         }
         *last = Some(message.to_string());
         if notice {
-            log::error!("service `{}`: {message}", S::NAME);
+            log::error!("service `{}`: {message}", self.name);
         } else {
-            log::warn!("service `{}` failed: {message}", S::NAME);
+            log::warn!("service `{}` failed: {message}", self.name);
         }
         if let Some(reg) = self.reg.upgrade() {
             reg.diagnostics.borrow_mut().push(ServiceDiagnostic {
-                service: S::NAME,
+                service: self.name.to_string(),
                 message: message.to_string(),
                 notice,
                 resolved: false,
@@ -563,10 +586,10 @@ impl<S: Service> ClientInner<S> {
         let Some(message) = self.last_notice.borrow_mut().take() else {
             return;
         };
-        log::info!("service `{}`: resolved: {message}", S::NAME);
+        log::info!("service `{}`: resolved: {message}", self.name);
         if let Some(reg) = self.reg.upgrade() {
             reg.diagnostics.borrow_mut().push(ServiceDiagnostic {
-                service: S::NAME,
+                service: self.name.to_string(),
                 message,
                 notice: true,
                 resolved: true,
@@ -581,7 +604,7 @@ impl<S: Service> ClientInner<S> {
         let state = match self.cells.snapshot(rt) {
             Ok(s) => s,
             Err(e) => {
-                log::warn!("{}: {e}", S::NAME);
+                log::warn!("{}: {e}", self.name);
                 S::default()
             }
         };
@@ -651,7 +674,7 @@ impl<S: Service> ClientInner<S> {
                         true
                     }
                     Err(e) => {
-                        log::error!("service {}: no thread: {e}", S::NAME);
+                        log::error!("service {}: no thread: {e}", self.name);
                         false
                     }
                 }
@@ -731,10 +754,10 @@ impl<S: Service> ClientInner<S> {
         });
         match timer {
             Ok(t) => {
-                rt.set_name(t.id(), format!("{} stop", S::NAME));
+                rt.set_name(t.id(), format!("{} stop", self.name));
                 self.timer.set(Some(t));
             }
-            Err(e) => log::warn!("{}: no stop timer: {e}", S::NAME),
+            Err(e) => log::warn!("{}: no stop timer: {e}", self.name),
         }
     }
 
@@ -782,10 +805,10 @@ impl<S: Service> ClientInner<S> {
         });
         match timer {
             Ok(t) => {
-                rt.set_name(t.id(), format!("{} retry", S::NAME));
+                rt.set_name(t.id(), format!("{} retry", self.name));
                 self.retry.set(Some(t));
             }
-            Err(e) => log::warn!("{}: no retry timer: {e}", S::NAME),
+            Err(e) => log::warn!("{}: no retry timer: {e}", self.name),
         }
     }
 
@@ -831,7 +854,7 @@ impl<S: Service> ClientInner<S> {
         } else {
             self.with_run(rt, |run| run.send(Msg::Write(write)))
                 .unwrap_or_else(|e| {
-                    log::warn!("{}: a write was not sent: {e}", S::NAME);
+                    log::warn!("{}: a write was not sent: {e}", self.name);
                     false
                 })
         };
@@ -854,7 +877,7 @@ impl<S: Service> ClientInner<S> {
             if self.retry.get().is_some() {
                 return Err(Error::failed(format!(
                     "`{}` is not running: its body failed and restarts after a backoff",
-                    S::NAME
+                    self.name
                 )));
             }
             self.stop();
@@ -868,10 +891,10 @@ impl<S: Service> ClientInner<S> {
         }
         let r = match self.run.borrow().as_ref() {
             Some(run) if !run.ended => Ok(f(run)),
-            Some(_) => Err(Error::failed(format!("`{}` ended", S::NAME))),
+            Some(_) => Err(Error::failed(format!("`{}` ended", self.name))),
             None => Err(Error::failed(format!(
                 "`{}` is not running (it failed to start)",
-                S::NAME
+                self.name
             ))),
         };
         if held {
@@ -882,8 +905,8 @@ impl<S: Service> ClientInner<S> {
 }
 
 impl<S: Service> Member for ClientInner<S> {
-    fn name(&self) -> &'static str {
-        S::NAME
+    fn name(&self) -> &str {
+        &self.name
     }
 
     fn pump(&self, rt: &Runtime) -> bool {
@@ -931,7 +954,7 @@ impl<S: Service> Member for ClientInner<S> {
                                 }
                             }
                             Ok(None) => {}
-                            Err(e) => log::warn!("{}: {e}", S::NAME),
+                            Err(e) => log::warn!("{}: {e}", self.name),
                         }
                     }
                 }
@@ -1001,7 +1024,7 @@ impl<S: Service> Clone for Client<S> {
 impl<S: Service> fmt::Debug for Client<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Client")
-            .field("service", &S::NAME)
+            .field("service", &self.0.name)
             .field("readers", &self.0.refs.get())
             .field("running", &self.running())
             .finish()
@@ -1145,6 +1168,27 @@ impl<S: Service> Client<S> {
         self.0.cells.forget_echoes(rt);
     }
 
+    /// Stop it now ([`Client::stop_now`]) and take it out of its
+    /// [`Services`]: it is pumped no more and its cells are disposed (a
+    /// no-code service a reload removed). Reading it afterwards fails.
+    pub fn unregister(&self, rt: &Runtime) {
+        self.stop_now(rt);
+        if let Some(reg) = self.0.reg.upgrade() {
+            let me: *const ClientInner<S> = Rc::as_ptr(&self.0);
+            reg.members
+                .borrow_mut()
+                .retain(|m| !std::ptr::addr_eq(Rc::as_ptr(m), me));
+        }
+        if let Some(scope) = self.0.scope.take() {
+            scope.dispose(rt);
+        }
+    }
+
+    /// Its name ([`Services::register_as`]).
+    pub fn name(&self) -> &str {
+        &self.0.name
+    }
+
     /// The service is running: started, not stopped, and its body has
     /// not ended.
     pub fn running(&self) -> bool {
@@ -1191,7 +1235,7 @@ impl<S: Service> Client<S> {
     pub fn act(&self, rt: &Runtime, action: S::Action) -> Result<(), Error> {
         match self.0.with_run(rt, |run| run.send(Msg::Action(action)))? {
             true => Ok(()),
-            false => Err(not_running(S::NAME)),
+            false => Err(not_running(&self.0.name)),
         }
     }
 
@@ -1206,14 +1250,15 @@ impl<S: Service> Client<S> {
         let sent = self
             .0
             .with_run(rt, |run| run.send(Msg::Call(call, Reply(tx))));
+        let name = self.0.name.clone();
         Box::pin(async move {
             match sent {
                 Ok(true) => {}
-                Ok(false) => return Err(not_running(S::NAME).to_string()),
+                Ok(false) => return Err(not_running(&name).to_string()),
                 Err(e) => return Err(e.to_string()),
             }
             rx.await
-                .unwrap_or_else(|_| Err(format!("`{}` stopped before answering", S::NAME)))
+                .unwrap_or_else(|_| Err(format!("`{name}` stopped before answering")))
         })
     }
 

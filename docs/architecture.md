@@ -1400,7 +1400,7 @@ Public interfaces other crates and later stages build on:
     describing its fields by name), it moves into `strand-compiler`
     behind a `strand-core` trait instead; no edge from `strand-services`
     to `strand-compiler` is added either way.
-  - `declare(rt, name, record)` adds a custom service; `next_wake(rt) ->
+  - `declare(rt, &lower::CustomService, types)` adds a custom service; `next_wake(rt) ->
     Option<SystemTime>` and `wake(rt, now)` let wall-clock services (the
     clock) wake the host loop only at minute boundaries (seconds only
     while a binding shows them).

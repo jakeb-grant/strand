@@ -230,6 +230,8 @@ pub fn coerce(types: &TypeTable, ty: &Ty, d: &Data) -> Option<Value> {
 /// and the value) until a value converts again, which resolves it.
 struct Mismatch {
     services: Services,
+    /// The service's declared name (`sensors`): its diagnostics' key.
+    service: String,
     /// `sensors.cpu`.
     field: String,
     /// The key path it reads (`coretemp.temp1`).
@@ -246,7 +248,7 @@ impl Mismatch {
             let taken = self.reported.borrow_mut().take();
             if let Some(message) = taken {
                 self.services.report(ServiceDiagnostic {
-                    service: "custom",
+                    service: self.service.clone(),
                     message,
                     notice: false,
                     resolved: true,
@@ -265,7 +267,7 @@ impl Mismatch {
             types.show(ty),
         );
         self.services.report(ServiceDiagnostic {
-            service: "custom",
+            service: self.service.clone(),
             message: message.clone(),
             notice: false,
             resolved: false,
@@ -353,6 +355,7 @@ impl CustomHost {
                     let name = format!("{}.{}", decl.name, decl.fields[i].name);
                     let report = Mismatch {
                         services: self.services.clone(),
+                        service: decl.name.clone(),
                         field: name.clone(),
                         key: decl.fields[i].key.join("."),
                         reported: RefCell::new(None),
@@ -415,9 +418,9 @@ impl CustomHost {
     /// Stop every service and dispose the cells (shutdown).
     pub fn dispose(&self, rt: &Runtime) {
         for (_, e) in self.entries.borrow_mut().drain() {
-            e.client.stop_now(rt);
             custom::forget(e.spec);
             e.scope.dispose(rt);
+            e.client.unregister(rt);
         }
     }
 }
@@ -435,7 +438,7 @@ impl ServiceHost for CustomHost {
             Some(true) => {}
             Some(false) => self.restart(rt, decl, types),
             None => {
-                let client = self.services.register::<Custom>(rt);
+                let client = self.services.register_as::<Custom>(rt, &decl.name);
                 let entry = self.mount(rt, client, decl, types);
                 self.entries.borrow_mut().insert(decl.name.clone(), entry);
             }
@@ -457,9 +460,9 @@ impl ServiceHost for CustomHost {
     fn stop(&self, rt: &Runtime, name: &str) {
         let old = self.entries.borrow_mut().remove(name);
         if let Some(old) = old {
-            old.client.stop_now(rt);
             custom::forget(old.spec);
             old.scope.dispose(rt);
+            old.client.unregister(rt);
         }
     }
 

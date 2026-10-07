@@ -535,9 +535,9 @@ impl Shell {
         // service retries (no session bus) is a log line and a `strand
         // watch` notice.
         for d in diagnostics.iter().filter(|d| d.notice) {
-            self.overlay.forget_service(d.service, &self.inst);
+            self.overlay.forget_service(&d.service, &self.inst);
             if !d.resolved {
-                let rows = overlay::service_lines(d.service, &d.to_string());
+                let rows = overlay::service_lines(&d.service, &d.to_string());
                 self.overlay.note(rows, Instant::now(), &self.inst);
             }
         }

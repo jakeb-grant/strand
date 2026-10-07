@@ -702,9 +702,14 @@ mod tests {
     /// its matched ranges marked on the name, and activating a row
     /// launches the app (detached) and closes the launcher. A query typed
     /// while it is closed is never searched.
+    /// The apps tests set the process's apps configuration: one at a
+    /// time.
+    static APPS_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn the_design_launcher_searches_real_apps_only_while_open() {
         use strand_scene::Prop;
+        let _serial = APPS_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let root = std::env::temp_dir().join(format!("strand-launcher-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let dir = root.join("applications");
@@ -846,6 +851,86 @@ mod tests {
             let icon = icon.display().to_string();
             sources(s).iter().any(|x| x.contains(&icon))
         });
+        drop(shell);
+        strand_services::apps::set_config(None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The documented limit of the async gate (decisions.md, wave4-a3
+    /// "an async call waits for a reader"): it holds a call back while
+    /// nothing reads the *service*, so with a dock showing `apps.all` a
+    /// launcher opened once and closed searches a new query (once,
+    /// nothing shown);
+    /// with the dock gone too it is not.
+    #[test]
+    fn a_closed_launcher_searches_only_while_another_surface_reads_apps() {
+        let _serial = APPS_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("strand-dock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("applications");
+        std::fs::create_dir_all(&dir).unwrap();
+        for (id, name) in [("editor", "Text Editor"), ("viewer", "Image Viewer")] {
+            std::fs::write(
+                dir.join(format!("{id}.desktop")),
+                format!("[Desktop Entry]\nType=Application\nName={name}\nExec=true\n"),
+            )
+            .unwrap();
+        }
+        strand_services::apps::set_config(Some(strand_services::apps::Config {
+            dirs: vec![dir.clone()],
+            desktops: Vec::new(),
+            state: None,
+        }));
+        let launcher = include_str!("../../../strand-compiler/tests/fixtures/launcher.strand");
+        let src = format!(
+            "{launcher}\nexport state dock = true\npanel Dock {{ open: <-> dock; row {{ for a in apps.all {{ text a.name }} }} }}\n"
+        );
+        let mut shell = Shell::boot(&src);
+        shell.until("the dock lists the apps", |s| {
+            s.scene.texts().contains(&"Text Editor".to_string())
+        });
+        // Opened once (its search created) and closed again.
+        shell.set("open", true);
+        shell.until("the launcher lists the apps", |s| {
+            s.scene
+                .texts()
+                .iter()
+                .filter(|t| *t == "Text Editor")
+                .count()
+                == 2
+        });
+        shell.set("open", false);
+        // The dock reads `apps`: the closed launcher's query is searched.
+        let before = strand_services::apps::searches();
+        shell
+            .inst
+            .set_value("svc", "query", Value::text("view"))
+            .unwrap();
+        shell.until("searched", |_| strand_services::apps::searches() > before);
+        shell.tick(Duration::from_secs(1));
+        std::thread::sleep(Duration::from_millis(100));
+        shell.tick(Duration::ZERO);
+        assert_eq!(
+            strand_services::apps::searches(),
+            before + 1,
+            "one search per query change"
+        );
+        assert_eq!(shell.inst.get("svc.open").unwrap(), Value::Bool(false));
+        // The dock hidden too: nothing reads `apps`, no search.
+        shell.set("dock", false);
+        let before = strand_services::apps::searches();
+        shell
+            .inst
+            .set_value("svc", "query", Value::text("edit"))
+            .unwrap();
+        shell.tick(Duration::from_secs(1));
+        std::thread::sleep(Duration::from_millis(100));
+        shell.tick(Duration::ZERO);
+        assert_eq!(
+            strand_services::apps::searches(),
+            before,
+            "nothing reads apps"
+        );
         drop(shell);
         strand_services::apps::set_config(None);
         let _ = std::fs::remove_dir_all(&root);
@@ -1939,6 +2024,9 @@ service shelf {
             let first = mismatches(&live);
             assert_eq!(first.len(), 1, "{first:?}");
             assert!(!first[0].resolved && !first[0].notice);
+            // Keyed by the declared name, not one key for every custom
+            // service.
+            assert_eq!(first[0].service, "m");
             assert!(
                 first[0].message.contains("`level`") && first[0].message.contains("\"abc\""),
                 "{}",
@@ -2032,6 +2120,40 @@ service shelf {
             live.until("polling again", |_| {
                 std::fs::read_to_string(&runs).unwrap().lines().count() > count
             });
+            drop(live);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// `from poll`: shown again sooner than `every` after the last
+        /// poll (a hover popup flickering), it does not poll early.
+        #[test]
+        fn a_flickering_reader_does_not_poll_faster_than_every() {
+            let dir = temp("flicker");
+            let runs = dir.join("runs");
+            let src = format!(
+                "permit exec \"sh\"\nexport state o = true\nservice p from poll [\"sh\", \"-c\", \"echo run >> {runs}; echo 7\"] every 30s {{ n: int }}\npanel P {{ open: <-> o; text join(\" \", p.n) }}\n",
+                runs = runs.display()
+            );
+            let count = || {
+                std::fs::read_to_string(&runs)
+                    .unwrap_or_default()
+                    .lines()
+                    .count()
+            };
+            let mut live = Live::boot(&src, Buses::none());
+            live.until("polled", |l| l.value("p", "n") == Value::int(7));
+            assert_eq!(count(), 1);
+            for _ in 0..5 {
+                live.inst.set("svc.o", Value::Bool(false)).unwrap();
+                live.tick(Duration::ZERO);
+                std::thread::sleep(Duration::from_millis(40));
+                live.inst.set("svc.o", Value::Bool(true)).unwrap();
+                live.tick(Duration::ZERO);
+                std::thread::sleep(Duration::from_millis(40));
+            }
+            std::thread::sleep(Duration::from_millis(300));
+            live.tick(Duration::ZERO);
+            assert_eq!(count(), 1, "shown again within `every`: no early poll");
             drop(live);
             let _ = std::fs::remove_dir_all(&dir);
         }
@@ -2134,6 +2256,8 @@ service shelf {
             let ca = live.real.custom.client("fa").unwrap();
             let cb = live.real.custom.client("fb").unwrap();
             assert_eq!((ca.starts(), cb.starts()), (1, 1));
+            assert_eq!((ca.name(), cb.name()), ("fa", "fb"));
+            let registered = live.real.services.registered();
             live.reload(&src("z", true));
             live.until("the renamed field read", |l| {
                 l.value("fb", "z") == Value::int(2)
@@ -2143,6 +2267,17 @@ service shelf {
             live.reload(&src("z", false));
             assert!(!cb.running(), "a removed service stops");
             assert!(live.real.custom.client("fb").is_none());
+            assert_eq!(
+                live.real.services.registered(),
+                registered - 1,
+                "a removed service leaves no registration behind"
+            );
+            // Declared again and removed again: still none left behind.
+            live.reload(&src("w", true));
+            live.until("declared again", |l| l.value("fb", "w") == Value::int(2));
+            assert_eq!(live.real.services.registered(), registered);
+            live.reload(&src("w", false));
+            assert_eq!(live.real.services.registered(), registered - 1);
             assert_eq!((ca.starts(), ca.stops()), (1, 0));
             assert_eq!(live.value("fa", "x"), Value::int(1));
             drop(live);
