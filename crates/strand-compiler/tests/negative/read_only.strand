@@ -9,3 +9,6 @@ component C {
 // A settings record is written field by field.
 state prefs from "~/.config/strand/prefs.toml" { accent: color = #7aa2f7; compact: bool = false }
 component Reset { box { on click { prefs = prefs } } }
+// An `rw` field reached through neither its service, an item of a
+// service's keyed list, nor `state` has nothing to write to.
+component Copy { box { on click { let p = prefs; p.compact = true } } }

@@ -8,7 +8,9 @@
 //! keyed collection of values, fed by the store's diffs, so a `for` over
 //! it follows them; events are lossless queues fed the same way. Writes,
 //! actions and calls are converted back to [`Data`] and handed to the
-//! store, which tags writes (`write_tagged`) so their echoes are ignored.
+//! store, which tags writes (`write_tagged`, and `write_item_tagged` for
+//! an item of a keyed list: `s.volume` for `s` in `audio.sinks`) so their
+//! echoes are ignored.
 
 use std::rc::Rc;
 
@@ -277,7 +279,9 @@ impl ServiceHost for StoreHost {
             )));
         };
         let i = self.index(field)?;
-        if !self.svc.fields()[i].rw {
+        // A leaf below the field (`audio.sink.volume`) is `rw` in its
+        // record, which the checker saw; the field itself must be.
+        if rest.is_empty() && !self.svc.fields()[i].rw {
             return Err(Error::failed(format!(
                 "`{}.{field}` is read-only",
                 self.name()
@@ -285,6 +289,36 @@ impl ServiceHost for StoreHost {
         }
         self.svc
             .write(rt, i, &steps(rest), to_data(&self.types, &value))
+    }
+
+    fn write_item(
+        &self,
+        rt: &Runtime,
+        item: &Value,
+        path: &[PathSeg],
+        value: Value,
+    ) -> Result<(), Error> {
+        let record = match item {
+            Value::Record(r) => self
+                .types
+                .records
+                .get(r.ty.0 as usize)
+                .map(|d| d.name.clone()),
+            _ => None,
+        };
+        let Some(record) = record else {
+            return Err(Error::failed(format!(
+                "`{}`: no item to write",
+                self.name()
+            )));
+        };
+        self.svc.write_item(
+            rt,
+            &record,
+            &to_data(&self.types, item),
+            &steps(path),
+            to_data(&self.types, &value),
+        )
     }
 
     fn call(

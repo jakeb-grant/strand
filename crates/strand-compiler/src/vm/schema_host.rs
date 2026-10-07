@@ -641,6 +641,62 @@ impl ServiceHost for SchemaHost {
         Ok(())
     }
 
+    fn write_item(
+        &self,
+        rt: &Runtime,
+        item: &Value,
+        path: &[PathSeg],
+        value: Value,
+    ) -> Result<(), Error> {
+        let Value::Record(r) = item else {
+            return Err(fail("no item to write"));
+        };
+        let Some(def) = self.types.records.get(r.ty.0 as usize) else {
+            return Err(fail("no item to write"));
+        };
+        let Some(key_path) = &def.key else {
+            return Err(fail(format!("`{}` items have no key", def.name)));
+        };
+        let key = ValueKey(
+            item.key_path(&self.types, key_path)
+                .cloned()
+                .unwrap_or(Value::Null),
+        );
+        // The keyed list holding an item of this record with this key.
+        let lists: Vec<KeyedSignal<ValueKey, Value>> = self
+            .fields
+            .borrow()
+            .values()
+            .filter_map(|f| match f {
+                Field::Keyed(k, _) => Some(*k),
+                Field::Plain(_) => None,
+            })
+            .collect();
+        for k in lists {
+            let Some(cur) = k.get_key(rt, &key)? else {
+                continue;
+            };
+            if !matches!(&cur, Value::Record(c) if c.ty == r.ty) {
+                continue;
+            }
+            let new = self.set_path(&cur, path, value.clone())?;
+            let shown: String = path.iter().map(ToString::to_string).collect();
+            let log = self.record_actions.then(|| WriteCall {
+                path: format!("{}{shown}", self.item_name(item)),
+                value,
+            });
+            let writes = self.writes_log();
+            // The mock's service applies every write as sent.
+            k.write_item_tagged(rt, key, new, move |_, _, _, _| {
+                if let (Some(log), Some(w)) = (log, writes.upgrade()) {
+                    w.borrow_mut().push(log);
+                }
+            })?;
+            return Ok(());
+        }
+        Err(fail(format!("no `{}` with this key to write", def.name)))
+    }
+
     fn fetch(&self, rt: &Runtime, service: &str, method: &str, args: Vec<Value>) -> Fetch {
         let name = format!("{service}.{method}");
         let r = self.call(rt, service, method, &args);

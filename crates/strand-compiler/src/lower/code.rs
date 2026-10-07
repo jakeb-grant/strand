@@ -55,6 +55,13 @@ pub enum PlaceRoot {
     Def(DefId),
     /// A service (`audio` in `audio.sink.volume`).
     Service(String),
+    /// An item of a service's keyed list (`s` in `s.volume` for `s` in
+    /// `audio.sinks`; `audio.sinks[i]`): its `rw` fields are written
+    /// through the service, which finds the item by its key
+    /// (`ServiceHost::write_item`). The item's value comes first among
+    /// the place's index values (pushed before them; a two-way binding's
+    /// first index chunk); the segments are below it.
+    Item,
 }
 
 /// A writable place: `level`, `prefs.compact`, `audio.sink.volume`,

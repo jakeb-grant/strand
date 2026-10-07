@@ -108,6 +108,24 @@ pub trait ServiceHost {
         value: Value,
     ) -> Result<(), Error>;
 
+    /// Write one `rw` leaf below an item of a service's keyed list:
+    /// `s.volume = 0.5` for `s` in `audio.sinks` is `write_item(rt, s,
+    /// [Field("volume")], 0.5)`. `item` is the record as the program read
+    /// it: the host routes by its record type and finds the item by its
+    /// key (the sink with id 42), so the write reaches the service with
+    /// the key, applied at once and its echo ignored like
+    /// [`ServiceHost::write`]'s. The default refuses.
+    fn write_item(
+        &self,
+        _rt: &Runtime,
+        item: &Value,
+        _path: &[PathSeg],
+        _value: Value,
+    ) -> Result<(), Error> {
+        let _ = item;
+        Err(Error::failed("this host does not write service items"))
+    }
+
     /// Call a `fn` method of a service (`clock.format(p)`,
     /// `calendar.days(m)`, `workspaces.on(s)`), tracked.
     fn call(

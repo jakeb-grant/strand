@@ -400,6 +400,8 @@ record TallyItem key id {
   id: int
   /// Its name.
   name: text
+  /// Its own level, written by the shell.
+  level: float rw
   /// Takes it off the tally.
   action remove()
 }
@@ -424,6 +426,7 @@ service tally {
         pub struct Item {
             pub id: i64,
             pub name: String,
+            pub level: f64,
         }
 
         #[derive(Call, Debug)]
@@ -451,11 +454,31 @@ service tally {
             pub removed: Event<Item>,
         }
 
+        /// The item writes the tally saw.
+        static TALLY_WRITES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
         impl Tally {
             async fn run(mut cx: Cx<Self>) -> Result<(), ServiceError> {
                 cx.ready();
                 while let Some(m) = cx.recv().await {
                     match m {
+                        // An item's level: applied as written, the write
+                        // logged with the item's key.
+                        Msg::Write(w) if w.key.is_some() => {
+                            let item: Item = w.field_value().map_err(ServiceError::from)?;
+                            TALLY_WRITES.lock().unwrap().push(format!(
+                                "{} {:?}{} {:?}",
+                                w.field,
+                                w.key,
+                                w.path.iter().map(ToString::to_string).collect::<String>(),
+                                w.value
+                            ));
+                            cx.report(&w, |s| {
+                                if let Some(i) = s.items.iter_mut().find(|i| i.id == item.id) {
+                                    *i = item;
+                                }
+                            });
+                        }
                         // Settles on half what was written.
                         Msg::Write(w) => {
                             let v: f64 = w.value().unwrap_or(0.0);
@@ -464,7 +487,11 @@ service tally {
                         Msg::Action(TallyAction::Add(name)) => {
                             cx.update(|s| {
                                 let id = s.items.len() as i64 + 1;
-                                s.items.push(Item { id, name });
+                                s.items.push(Item {
+                                    id,
+                                    name,
+                                    level: 0.0,
+                                });
                             });
                         }
                         Msg::Action(TallyAction::Remove { item }) => {
@@ -566,10 +593,12 @@ service shelf {
                         Item {
                             id: 1,
                             name: "a".into(),
+                            level: 0.0,
                         },
                         Item {
                             id: 2,
                             name: "b".into(),
+                            level: 0.0,
                         },
                     ];
                 });
@@ -578,7 +607,11 @@ service shelf {
                     if let Msg::Action(ShelfAction::Add(name)) = m {
                         cx.update(|s| {
                             let id = s.items.len() as i64 + 1;
-                            s.items.push(Item { id, name });
+                            s.items.push(Item {
+                                id,
+                                name,
+                                level: 0.0,
+                            });
                             s.dark = !s.dark;
                         });
                     }
@@ -726,6 +759,115 @@ service shelf {
             // A handler awaits the call.
             step(&mut inst, Duration::from_secs(1));
             wait("the handler's answer", &mut step, &mut inst, &["late"]);
+            inst.shutdown();
+            services.shutdown();
+        }
+
+        /// `for i in tally.items { … i.level = … }`: an `rw` field of an
+        /// item of a keyed list is written through the service by the
+        /// item's key, from a handler and from a slider's `<->`. The row
+        /// shows each write at once; the service's answer to an earlier
+        /// write, arriving after a later one, is ignored as its echo, so
+        /// the item never goes back to the earlier value.
+        #[test]
+        fn an_items_rw_field_is_written_by_its_key() {
+            TALLY_WRITES.lock().unwrap().clear();
+            let rt = Runtime::new();
+            let services = Services::new(&rt, Buses::none(), || {});
+            let tally = services.register::<Tally>(&rt);
+            let (mut inst, mut scene) = mount(
+                &rt,
+                SCHEMA,
+                "bar B {\n  for i in tally.items {\n    row {\n      text join(\" \", i.name, i.level)\n      box { on click { i.level = 0.3; i.level = 0.6 } }\n      slider { value: <-> i.level }\n    }\n  }\n}\n",
+                tally.dynamic(),
+            );
+            let mut step = |inst: &mut Instance| {
+                services.pump(&rt);
+                let u = inst.tick(Duration::ZERO);
+                assert!(u.errors.is_empty(), "{:?}", u.errors);
+                scene.apply(&u.diff).unwrap();
+                scene.clone()
+            };
+            for name in ["a", "b"] {
+                tally
+                    .dynamic()
+                    .action(
+                        &rt,
+                        "add",
+                        None,
+                        &[strand_services::Data::Text(name.into())],
+                    )
+                    .unwrap();
+            }
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !step(&mut inst).texts().contains(&"b 0".to_string()) {
+                assert!(Instant::now() < deadline, "the items never showed");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            // Every level the second item takes, as the store applies it.
+            let levels: Rc<std::cell::RefCell<Vec<strand_services::Data>>> = Rc::default();
+            let l = levels.clone();
+            tally.dynamic().observe(Box::new(move |_, a| {
+                if let strand_services::Applied::Keyed { diffs, .. } = a {
+                    for d in diffs {
+                        if let strand_core::VecDiff::Update { value, .. } = d
+                            && let Ok(level) =
+                                strand_services::record_field(value, "TallyItem", "level")
+                        {
+                            l.borrow_mut().push(level.clone());
+                        }
+                    }
+                }
+            }));
+            // Its button writes 0.3, then 0.6: both shown at once (the last
+            // wins), both sent with the item's key.
+            let sc = step(&mut inst);
+            let b = sc.of_kind(strand_scene::NodeKind::Box)[1];
+            assert!(inst.event(b, "click", Vec::new()));
+            assert!(step(&mut inst).texts().contains(&"b 0.6".to_string()));
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while TALLY_WRITES.lock().unwrap().len() < 2
+                || tally.cells().items.pending_item_writes(&rt, &2) > 0
+            {
+                assert!(Instant::now() < deadline, "the answers never came");
+                std::thread::sleep(Duration::from_millis(5));
+                step(&mut inst);
+            }
+            assert_eq!(
+                *TALLY_WRITES.lock().unwrap(),
+                [
+                    "items Some(Int(2)).level Float(0.3)",
+                    "items Some(Int(2)).level Float(0.6)"
+                ]
+            );
+            use strand_services::Data::Float;
+            assert_eq!(
+                *levels.borrow(),
+                [Float(0.3), Float(0.6)],
+                "the answer to 0.3 came after the 0.6 write: an echo, ignored"
+            );
+            let texts = step(&mut inst).texts();
+            assert!(texts.contains(&"b 0.6".to_string()), "{texts:?}");
+            assert!(texts.contains(&"a 0".to_string()), "{texts:?}");
+            // The first row's slider writes the first item.
+            let slider = step(&mut inst).of_kind(strand_scene::NodeKind::Slider)[0];
+            inst.write(
+                slider,
+                strand_scene::Prop::Value,
+                strand_scene::PropValue::Number(0.25),
+            )
+            .unwrap();
+            assert!(step(&mut inst).texts().contains(&"a 0.25".to_string()));
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while TALLY_WRITES.lock().unwrap().len() < 3 {
+                assert!(Instant::now() < deadline, "the slider's write never came");
+                std::thread::sleep(Duration::from_millis(5));
+                step(&mut inst);
+            }
+            assert_eq!(
+                TALLY_WRITES.lock().unwrap()[2],
+                "items Some(Int(1)).level Float(0.25)"
+            );
             inst.shutdown();
             services.shutdown();
         }

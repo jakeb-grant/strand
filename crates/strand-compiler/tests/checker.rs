@@ -865,3 +865,22 @@ fn async_service_calls_a_binding_reaches_through_functions_are_warned() {
         .is_empty()
     );
 }
+
+/// An `rw` field of an item of a service's keyed list is written through
+/// the item (the service finds it by its key): assigned in a handler, or
+/// bound two-way, through a `for` local or an index.
+#[test]
+fn rw_fields_of_service_items_are_writable() {
+    one("component Mixer {\n\
+           col {\n\
+             for s in audio.sinks {\n\
+               row {\n\
+                 text s.description\n\
+                 box { on click { s.volume = 0.5; s.muted = !s.muted } }\n\
+                 slider { value: <-> s.volume }\n\
+               }\n\
+             }\n\
+             box { on click { audio.sinks[0].volume += 0.1 } }\n\
+           }\n\
+         }\n");
+}

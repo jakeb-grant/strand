@@ -144,6 +144,9 @@ fn target(prog: &Program, place: &Place) -> Option<WriteTarget> {
             _ => WriteTarget::Def(*d),
         }),
         PlaceRoot::Service(s) => first.map(|f| WriteTarget::Service(s.clone(), f)),
+        // Which service holds the item is known when it runs (its record
+        // routes it): the write edge is learned then.
+        PlaceRoot::Item => None,
     }
 }
 

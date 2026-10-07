@@ -616,12 +616,14 @@ impl Machine {
         self.stack.drain(at..).collect()
     }
 
+    /// The place's index values (its item first for an item place).
     fn pop_indices(&mut self, place: &Place) -> Vec<Value> {
         let n = place
             .segs
             .iter()
             .filter(|s| matches!(s, PlaceSeg::Index))
-            .count();
+            .count()
+            + usize::from(place.root == PlaceRoot::Item);
         self.pop_n(n as u32)
     }
 }
@@ -860,14 +862,15 @@ fn read_place(
     indices: &[Value],
     env: &Rc<Env>,
 ) -> Result<Value, Error> {
+    let mut idx = indices.iter();
     let (mut v, segs) = match &place.root {
         PlaceRoot::Def(d) => (vm.read_def(rt, *d, env)?, &place.segs[..]),
         PlaceRoot::Service(s) => match place.segs.first() {
             Some(PlaceSeg::Field(f)) => (vm.host.read(rt, s, f)?, &place.segs[1..]),
             _ => (Value::Service(s.as_str().into()), &place.segs[..]),
         },
+        PlaceRoot::Item => (idx.next().cloned().unwrap_or(Value::Null), &place.segs[..]),
     };
-    let mut idx = indices.iter();
     for seg in segs {
         v = match seg {
             PlaceSeg::Field(f) => builtins::field(vm, rt, &v, f)?,
@@ -1010,18 +1013,7 @@ pub(crate) fn store(
             // changed.
             let mut path = vec![super::host::PathSeg::Field(f.clone())];
             let mut idx = indices.iter();
-            for seg in &place.segs[1..] {
-                path.push(match seg {
-                    PlaceSeg::Field(n) => super::host::PathSeg::Field(n.clone()),
-                    PlaceSeg::Index => {
-                        let i = idx.next().and_then(Value::as_f64).unwrap_or(-1.0);
-                        if i < 0.0 {
-                            return Err(fail(format!("index {i} out of range")));
-                        }
-                        super::host::PathSeg::Index(i as usize)
-                    }
-                });
-            }
+            service_path(&mut path, &place.segs[1..], &mut idx)?;
             let value = match op.binary() {
                 None => value,
                 Some(b) => {
@@ -1031,7 +1023,47 @@ pub(crate) fn store(
             };
             vm.host.write(rt, s, &path, value)
         }
+        PlaceRoot::Item => {
+            // `s.volume = 0.5` for `s` in `audio.sinks`: the service finds
+            // the item by its key.
+            let mut idx = indices.iter();
+            let item = idx.next().cloned().unwrap_or(Value::Null);
+            if item.is_null() {
+                return Err(fail("no item to write (it is null)"));
+            }
+            let mut path = Vec::new();
+            service_path(&mut path, &place.segs, &mut idx)?;
+            let value = match op.binary() {
+                None => value,
+                Some(b) => {
+                    let cur = rt.untrack(|rt| read_place(vm, rt, place, &indices, env))?;
+                    builtins::binary(b, &cur, &value)?
+                }
+            };
+            vm.host.write_item(rt, &item, &path, value)
+        }
     }
+}
+
+/// `segs` as a host path, their indices resolved from `idx`.
+fn service_path<'a>(
+    path: &mut Vec<super::host::PathSeg>,
+    segs: &[PlaceSeg],
+    idx: &mut impl Iterator<Item = &'a Value>,
+) -> Result<(), Error> {
+    for seg in segs {
+        path.push(match seg {
+            PlaceSeg::Field(n) => super::host::PathSeg::Field(n.clone()),
+            PlaceSeg::Index => {
+                let i = idx.next().and_then(Value::as_f64).unwrap_or(-1.0);
+                if i < 0.0 {
+                    return Err(fail(format!("index {i} out of range")));
+                }
+                super::host::PathSeg::Index(i as usize)
+            }
+        });
+    }
+    Ok(())
 }
 
 /// `cur` with `value` (combined with `op`) written at `segs`; `ty` is

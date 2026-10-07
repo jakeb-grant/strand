@@ -25,6 +25,10 @@ pub(crate) enum NotWritable {
         field: String,
     },
     Local(String),
+    /// An `rw` field reached through neither its service, an item of a
+    /// service's keyed list, nor `state`: there is nothing to write to
+    /// (`let p = prefs` in a handler, then `p.compact = true`).
+    Unrooted(String),
     Other,
 }
 
@@ -2761,7 +2765,7 @@ impl<'a> Checker<'a> {
                     _ => None,
                 };
                 match rec.and_then(|r| r.field(name).map(|f| (r, f))) {
-                    Some((_, f)) if f.rw => Ok(()),
+                    Some((_, f)) if f.rw => self.rw_root(base, name),
                     Some((r, _)) if matches!(r.origin, crate::ty::Origin::User(..)) => {
                         // A plain record: writable through the state
                         // holding it.
@@ -2780,6 +2784,40 @@ impl<'a> Checker<'a> {
             ExprKind::Node(_) => Err(NotWritable::BoundProp("self".into())),
             ExprKind::Error => Ok(()),
             _ => Err(NotWritable::Other),
+        }
+    }
+
+    /// Whether an item of a service's keyed list (a schema record with a
+    /// key): writes below it go to the service by the item's key.
+    pub(crate) fn is_service_item(&self, ty: &Ty) -> bool {
+        match ty.non_null() {
+            Ty::Record(r) => {
+                let def = self.types.record(*r);
+                def.key.is_some() && !def.handle && matches!(def.origin, crate::ty::Origin::Schema)
+            }
+            _ => false,
+        }
+    }
+
+    /// An `rw` field `field` of `base`: written through the service it
+    /// starts at (`audio.sink.volume`), through an item of a service's
+    /// keyed list (`s.volume` for `s` in `audio.sinks`, `audio.sinks[0]
+    /// .volume`: the service finds the item by its key), or in `state`
+    /// or a settings file. Reached any other way, the write would go
+    /// nowhere.
+    fn rw_root(&self, base: &hir::Expr, field: &str) -> Result<(), NotWritable> {
+        let mut cur = base;
+        loop {
+            if self.is_service_item(&cur.ty) {
+                return Ok(());
+            }
+            match &cur.kind {
+                ExprKind::Service(_) | ExprKind::Error => return Ok(()),
+                ExprKind::Def(_) => return self.writable_place(cur, false),
+                ExprKind::Field { base, .. } | ExprKind::Index { base, .. } => cur = base,
+                _ if cur.ty.is_error() => return Ok(()),
+                _ => return Err(NotWritable::Unrooted(field.to_string())),
+            }
         }
     }
 
@@ -2830,6 +2868,12 @@ impl<'a> Checker<'a> {
                 format!("cannot {verb} `{n}`"),
                 "read-only".to_string(),
                 "only `state`, settings fields and `rw` service fields can be written".to_string(),
+            ),
+            NotWritable::Unrooted(f) => (
+                "check::read_only",
+                format!("cannot {verb} `{f}` here: it is not reached from a `state`, a service or an item of a service's list"),
+                "nothing to write to".to_string(),
+                "write it where it lives: `prefs.compact = …`, `audio.sink.volume = …`, or `s.volume = …` for `s` in `audio.sinks`".to_string(),
             ),
             NotWritable::Other => (
                 "check::read_only",

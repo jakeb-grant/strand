@@ -277,7 +277,8 @@ pub struct Prop {
 #[derive(Clone, Debug)]
 pub struct TwoWay {
     pub place: Place,
-    /// One chunk per `Index` segment of the place.
+    /// One chunk per `Index` segment of the place, after the item's for
+    /// a [`PlaceRoot::Item`] place.
     pub indices: Vec<ChunkId>,
     /// The type of the target (for converting written values).
     pub ty: Ty,

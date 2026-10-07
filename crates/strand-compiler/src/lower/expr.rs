@@ -162,12 +162,33 @@ impl Lowerer<'_> {
         }
     }
 
-    /// Pushes the index values of `target`'s place and returns the place.
-    fn place(&mut self, c: &mut Chunk, target: &hir::Expr) -> Place {
+    /// An item of a service's keyed list (a schema record with a key):
+    /// a write below it goes to the service by the item's key.
+    pub(crate) fn is_service_item(&self, ty: &Ty) -> bool {
+        match ty.non_null() {
+            Ty::Record(r) => {
+                let def = self.hir.types.record(*r);
+                def.key.is_some() && !def.handle && matches!(def.origin, crate::ty::Origin::Schema)
+            }
+            _ => false,
+        }
+    }
+
+    /// The root of `target`'s place, its segments (leaf last), the index
+    /// expressions above the root and, for [`PlaceRoot::Item`], the item
+    /// expression: the base nearest the leaf that is an item of a
+    /// service's keyed list, else the `state`/settings or service it
+    /// starts at. `None`: no writable root (the checker reported it).
+    fn place_parts<'e>(&self, target: &'e hir::Expr) -> Option<PlaceParts<'e>> {
         let mut segs = Vec::new();
         let mut cur = target;
         let mut indices = Vec::new();
+        let mut item = None;
         let root = loop {
+            if !std::ptr::eq(cur, target) && self.is_service_item(&cur.ty) {
+                item = Some(cur);
+                break PlaceRoot::Item;
+            }
             match &cur.kind {
                 ExprKind::Field { base, name, .. } => {
                     segs.push(PlaceSeg::Field(name.clone()));
@@ -179,16 +200,43 @@ impl Lowerer<'_> {
                     cur = base;
                 }
                 ExprKind::Def(d) => break PlaceRoot::Def(*d),
-                ExprKind::Service(s) => {
-                    self.note_service(s);
-                    break PlaceRoot::Service(s.clone());
-                }
-                // Already reported; writes go nowhere.
-                _ => break PlaceRoot::Service(String::new()),
+                ExprKind::Service(s) => break PlaceRoot::Service(s.clone()),
+                _ => return None,
             }
         };
         segs.reverse();
         indices.reverse();
+        Some(PlaceParts {
+            root,
+            segs,
+            indices,
+            item,
+        })
+    }
+
+    /// Pushes the item (for [`PlaceRoot::Item`]) and the index values of
+    /// `target`'s place and returns the place.
+    fn place(&mut self, c: &mut Chunk, target: &hir::Expr) -> Place {
+        let Some(PlaceParts {
+            root,
+            segs,
+            indices,
+            item,
+        }) = self.place_parts(target)
+        else {
+            // Rejected by the checker (`check::read_only`): nothing
+            // reaches a program that writes here.
+            return Place {
+                root: PlaceRoot::Service(String::new()),
+                segs: Vec::new(),
+            };
+        };
+        if let PlaceRoot::Service(s) = &root {
+            self.note_service(s);
+        }
+        if let Some(e) = item {
+            self.expr(c, e);
+        }
         for i in indices {
             self.expr(c, i);
         }
@@ -201,29 +249,14 @@ impl Lowerer<'_> {
         target: &hir::Expr,
         indices: &mut Vec<ChunkId>,
     ) -> Option<Place> {
-        let mut segs = Vec::new();
-        let mut cur = target;
-        let mut idx = Vec::new();
-        let root = loop {
-            match &cur.kind {
-                ExprKind::Field { base, name, .. } => {
-                    segs.push(PlaceSeg::Field(name.clone()));
-                    cur = base;
-                }
-                ExprKind::Index { base, index } => {
-                    segs.push(PlaceSeg::Index);
-                    idx.push(index.as_ref());
-                    cur = base;
-                }
-                ExprKind::Def(d) => break PlaceRoot::Def(*d),
-                ExprKind::Service(s) => break PlaceRoot::Service(s.clone()),
-                _ => return None,
-            }
-        };
-        segs.reverse();
-        idx.reverse();
-        for i in idx {
-            let id = self.expr_chunk(i);
+        let PlaceParts {
+            root,
+            segs,
+            indices: idx,
+            item,
+        } = self.place_parts(target)?;
+        for e in item.into_iter().chain(idx) {
+            let id = self.expr_chunk(e);
             indices.push(id);
         }
         Some(Place { root, segs })
@@ -859,4 +892,15 @@ fn free_locals(inner: &Chunk, params: &[hir::LocalId]) -> Vec<hir::LocalId> {
         used.extend(l.free.iter().copied());
     }
     used.difference(&bound).copied().collect()
+}
+
+/// A writable place taken apart: see [`Lowerer::place_parts`].
+struct PlaceParts<'e> {
+    root: PlaceRoot,
+    /// Its segments, leaf last.
+    segs: Vec<PlaceSeg>,
+    /// The index expressions above the root.
+    indices: Vec<&'e hir::Expr>,
+    /// The item expression of a [`PlaceRoot::Item`] place.
+    item: Option<&'e hir::Expr>,
 }

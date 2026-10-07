@@ -2,8 +2,9 @@
 //! "Several service crates, one host").
 //!
 //! Every call is routed by service name to the member serving it; an
-//! item's action (`ws.focus()`) goes to the member whose actions take
-//! that record. Names no member serves (the clock and the calendar, the
+//! item's action (`ws.focus()`) or write (`s.volume = 0.5` for `s` in
+//! `audio.sinks`) goes to the member that hands out or takes that
+//! record. Names no member serves (the clock and the calendar, the
 //! services later tracks bring, `declare`d custom services) go to the
 //! fallback, a [`SchemaHost`] answering at the schema's defaults.
 //! `next_wake` is the earliest any member asks for; `wake` reaches all.
@@ -23,7 +24,8 @@ pub struct Composite {
     members: Vec<Rc<dyn ServiceHost>>,
     /// Service name → member.
     by_name: HashMap<String, usize>,
-    /// Record name → the member whose actions take its items.
+    /// Record name → the member handing out its items, or whose actions
+    /// take them.
     by_item: HashMap<String, usize>,
     fallback: Rc<SchemaHost>,
     types: Rc<TypeTable>,
@@ -51,9 +53,9 @@ impl Composite {
         }
     }
 
-    /// Add `host`, serving `names` and the item actions of `items`. A name
-    /// or a record belongs to one member: a second claim is refused
-    /// (logged).
+    /// Add `host`, serving `names` and the item writes and actions of
+    /// `items` (`DynService::item_records`). A name or a record belongs
+    /// to one member: a second claim is refused (logged).
     pub fn add(&mut self, host: Rc<dyn ServiceHost>, names: &[&str], items: &[String]) {
         let i = self.members.len();
         self.members.push(host);
@@ -66,7 +68,7 @@ impl Composite {
         }
         for r in items {
             if self.by_item.contains_key(r) {
-                log::error!("the actions of `{r}` items are served twice; keeping the first");
+                log::error!("`{r}` items are served twice; keeping the first");
                 continue;
             }
             self.by_item.insert(r.clone(), i);
@@ -138,6 +140,16 @@ impl ServiceHost for Composite {
         value: Value,
     ) -> Result<(), Error> {
         self.route(service).write(rt, service, path, value)
+    }
+
+    fn write_item(
+        &self,
+        rt: &Runtime,
+        item: &Value,
+        path: &[PathSeg],
+        value: Value,
+    ) -> Result<(), Error> {
+        self.route_item(item).write_item(rt, item, path, value)
     }
 
     fn call(
