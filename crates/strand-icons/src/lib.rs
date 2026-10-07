@@ -209,24 +209,55 @@ pub fn theme_setting_files() -> Vec<PathBuf> {
         .collect()
 }
 
-/// The desktop's icon theme: `$STRAND_ICON_THEME`, else
-/// `gtk-icon-theme-name` in GTK's settings ([`theme_setting_files`]),
-/// else Adwaita. Read again after [`invalidate`].
+/// The desktop's icon theme: `$STRAND_ICON_THEME`, else the settings
+/// portal's `org.gnome.desktop.interface` `icon-theme` when a portal
+/// answered ([`set_desktop_theme`]; what GTK itself follows on Wayland),
+/// else `gtk-icon-theme-name` in GTK's settings
+/// ([`theme_setting_files`]), else Adwaita. Read again after
+/// [`invalidate`].
 pub fn system_theme() -> String {
+    let (desktop, epoch) = {
+        let s = state();
+        if let Some(t) = &s.system {
+            return t.clone();
+        }
+        (s.desktop.clone(), generation())
+    };
+    // The settings files are read without the lock held.
+    let t = read_system_theme(desktop);
     let mut s = state();
-    if let Some(t) = &s.system {
-        return t.clone();
+    if generation() == epoch {
+        s.system = Some(t.clone());
     }
-    let t = read_system_theme();
-    s.system = Some(t.clone());
     t
 }
 
-fn read_system_theme() -> String {
+/// The icon theme the desktop's settings portal names (`None`: no portal,
+/// or it names none), which [`system_theme`] prefers to GTK's settings
+/// files. `true` when it differs from the one set before: the caches were
+/// invalidated ([`invalidate`]), and holders of icons must look them up
+/// again.
+pub fn set_desktop_theme(name: Option<String>) -> bool {
+    let name = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+    {
+        let mut s = state();
+        if s.desktop == name {
+            return false;
+        }
+        s.desktop = name;
+    }
+    invalidate();
+    true
+}
+
+fn read_system_theme(desktop: Option<String>) -> String {
     if let Ok(t) = std::env::var("STRAND_ICON_THEME")
         && !t.trim().is_empty()
     {
         return t.trim().to_string();
+    }
+    if let Some(t) = desktop {
+        return t;
     }
     for path in theme_setting_files() {
         let Ok(text) = std::fs::read_to_string(path) else {
@@ -253,6 +284,8 @@ struct State {
     themes: HashMap<String, Option<Arc<Theme>>>,
     found: HashMap<(String, String, u16, u16), Option<PathBuf>>,
     system: Option<String>,
+    /// The portal's theme ([`set_desktop_theme`]); kept by [`invalidate`].
+    desktop: Option<String>,
 }
 
 static STATE: LazyLock<Mutex<State>> = LazyLock::new(|| Mutex::new(State::default()));
@@ -312,31 +345,38 @@ fn load_theme(bases: &[PathBuf], name: &str) -> Option<Theme> {
     })
 }
 
-fn theme(s: &mut State, bases: &[PathBuf], name: &str) -> Option<Arc<Theme>> {
-    if let Some(t) = s.themes.get(name) {
+/// The theme `name`, read once per [`generation`]. Its `index.theme` is
+/// read without the lock held (a slow file system blocks only this
+/// lookup); it is remembered only if no [`invalidate`] ran meanwhile
+/// (`epoch`, the generation the lookup began in).
+fn theme(bases: &[PathBuf], name: &str, epoch: u64) -> Option<Arc<Theme>> {
+    if let Some(t) = state().themes.get(name) {
         return t.clone();
     }
     let t = load_theme(bases, name).map(Arc::new);
-    s.themes.insert(name.to_string(), t.clone());
-    t
+    let mut s = state();
+    if generation() != epoch {
+        return t;
+    }
+    // Another lookup may have read it meanwhile: keep the first.
+    s.themes.entry(name.to_string()).or_insert(t).clone()
 }
 
 /// Whether the theme `name` is installed (it has an `index.theme`).
 pub fn theme_exists(name: &str) -> bool {
-    let bases = base_dirs();
-    let mut s = state();
-    theme(&mut s, &bases, name).is_some()
+    let epoch = generation();
+    theme(&base_dirs(), name, epoch).is_some()
 }
 
 /// The themes a lookup in `name` visits: it, its parents depth first,
 /// then `hicolor`.
-fn chain(s: &mut State, bases: &[PathBuf], name: &str) -> Vec<Arc<Theme>> {
+fn chain(bases: &[PathBuf], name: &str, epoch: u64) -> Vec<Arc<Theme>> {
     let mut out = Vec::new();
     let mut seen = Vec::new();
     fn visit(
-        s: &mut State,
         bases: &[PathBuf],
         name: &str,
+        epoch: u64,
         seen: &mut Vec<String>,
         out: &mut Vec<Arc<Theme>>,
     ) {
@@ -344,18 +384,18 @@ fn chain(s: &mut State, bases: &[PathBuf], name: &str) -> Vec<Arc<Theme>> {
             return;
         }
         seen.push(name.to_string());
-        let Some(t) = theme(s, bases, name) else {
+        let Some(t) = theme(bases, name, epoch) else {
             return;
         };
         out.push(t.clone());
         for parent in &t.inherits {
             if parent != "hicolor" {
-                visit(s, bases, parent, seen, out);
+                visit(bases, parent, epoch, seen, out);
             }
         }
     }
-    visit(s, bases, name, &mut seen, &mut out);
-    visit(s, bases, "hicolor", &mut seen, &mut out);
+    visit(bases, name, epoch, &mut seen, &mut out);
+    visit(bases, "hicolor", epoch, &mut seen, &mut out);
     out
 }
 
@@ -393,7 +433,9 @@ fn lookup_in(t: &Theme, name: &str, size: u32, scale: u32) -> Option<PathBuf> {
 /// The file of icon `name` at `size` logical pixels and integer `scale`
 /// in `theme` (the desktop's, [`system_theme`], when `None`), as the Icon
 /// Theme Specification finds it. Hits and misses are remembered until
-/// [`invalidate`].
+/// [`invalidate`]. The files are probed without the cache's lock held,
+/// so lookups (the renderer's, the `apps` service's) never wait on each
+/// other's file system work.
 pub fn lookup(name: &str, size: u16, scale: u16, theme: Option<&str>) -> Option<PathBuf> {
     if name.is_empty() || name.contains('/') {
         return None;
@@ -405,11 +447,14 @@ pub fn lookup(name: &str, size: u16, scale: u16, theme: Option<&str>) -> Option<
     let (size, scale) = (size.max(1), scale.max(1));
     let key = (theme_name.clone(), name.to_string(), size, scale);
     let bases = base_dirs();
-    let mut s = state();
-    if let Some(found) = s.found.get(&key) {
-        return found.clone();
-    }
-    let themes = chain(&mut s, &bases, &theme_name);
+    let epoch = {
+        let s = state();
+        if let Some(found) = s.found.get(&key) {
+            return found.clone();
+        }
+        generation()
+    };
+    let themes = chain(&bases, &theme_name, epoch);
     let found = themes
         .iter()
         .find_map(|t| lookup_in(t, name, u32::from(size), u32::from(scale)))
@@ -417,6 +462,11 @@ pub fn lookup(name: &str, size: u16, scale: u16, theme: Option<&str>) -> Option<
             // Unthemed icons in the base directories themselves.
             bases.iter().find_map(|b| file_in(b, "", name))
         });
+    let mut s = state();
+    // An answer from before an invalidation is not remembered.
+    if generation() != epoch {
+        return found;
+    }
     if s.found.len() >= MAX_REMEMBERED {
         s.found.clear();
     }
@@ -487,8 +537,17 @@ mod tests {
         [16x16/apps]\nSize=16\nType=Fixed\n\n[48x48/apps]\nSize=48\nType=Fixed\n\n\
         [scalable/apps]\nSize=48\nType=Scalable\nMinSize=8\nMaxSize=512\n";
 
+    /// Tests that set the process-wide base directories or desktop theme
+    /// run one at a time.
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    fn serial() -> MutexGuard<'static, ()> {
+        SERIAL.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     #[test]
     fn the_spec_lookup_sizes_parents_hicolor_and_invalidation() {
+        let _serial = serial();
         let base = std::env::temp_dir().join(format!("strand-icons-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let icons = base.join("icons");
@@ -578,6 +637,77 @@ mod tests {
         );
         set_base_dirs(None);
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A lookup whose `index.theme` read hangs (a slow file system; here
+    /// a FIFO nobody writes yet) does not hold the cache's lock: a lookup
+    /// in another theme answers meanwhile.
+    #[test]
+    fn a_slow_theme_read_blocks_no_other_lookup() {
+        let _serial = serial();
+        let base = std::env::temp_dir().join(format!("strand-icons-slow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let icons = base.join("icons");
+        write(&icons.join("T/index.theme"), INDEX);
+        write(&icons.join("T/48x48/apps/small.png"), "png");
+        std::fs::create_dir_all(icons.join("Slow")).unwrap();
+        let fifo = icons.join("Slow/index.theme");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .is_ok_and(|s| s.success());
+        if !made {
+            eprintln!("skipped: no mkfifo");
+            return;
+        }
+        set_base_dirs(Some(vec![icons.clone()]));
+        let slow = std::thread::spawn(|| lookup("small", 48, 1, Some("Slow")));
+        // Let it reach the read.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(lookup("small", 48, 1, Some("T")));
+        });
+        let other = rx.recv_timeout(std::time::Duration::from_secs(3));
+        // Release the slow read (opening blocks until it reads), then
+        // check.
+        std::fs::write(&fifo, INDEX.replace("Parent", "T")).unwrap();
+        let slow = slow.join().unwrap();
+        assert_eq!(
+            other,
+            Ok(Some(icons.join("T/48x48/apps/small.png"))),
+            "a lookup in T answered while Slow's index was being read"
+        );
+        assert_eq!(
+            slow,
+            Some(icons.join("T/48x48/apps/small.png")),
+            "Slow inherits T"
+        );
+        set_base_dirs(None);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The portal's theme name wins over GTK's settings files (not over
+    /// `$STRAND_ICON_THEME`); setting a different one invalidates, the
+    /// same one does nothing, and `None` falls back to the files.
+    #[test]
+    fn the_portal_theme_is_preferred_and_invalidates_on_change() {
+        let _serial = serial();
+        let files = read_system_theme(None);
+        let pinned = std::env::var("STRAND_ICON_THEME").is_ok_and(|t| !t.trim().is_empty());
+        let g = generation();
+        assert!(set_desktop_theme(Some("PortalTheme".into())));
+        assert!(generation() > g, "a switch invalidates");
+        if !pinned {
+            assert_eq!(system_theme(), "PortalTheme");
+        }
+        let g = generation();
+        assert!(!set_desktop_theme(Some(" PortalTheme ".into())));
+        assert_eq!(generation(), g, "the same theme again changes nothing");
+        assert!(set_desktop_theme(Some(String::new())), "empty: no theme");
+        assert_eq!(system_theme(), files);
+        assert!(!set_desktop_theme(None));
+        assert_eq!(system_theme(), files);
     }
 
     #[test]

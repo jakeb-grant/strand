@@ -1015,6 +1015,16 @@ bar B { text join(" ", ppd.profile, ups.level, mood.level, music.title ?? "", te
     );
     assert!(codes("service t from poll [\"sensors\", \"-j\"] every 5s { cpu: float = package; permit exec \"sensors\" }").is_empty());
     assert!(codes("service t from listen [\"curl\", \"x\"] { a: int; permit exec }").is_empty());
+    // A list's first item is the program whole, as it runs (never split
+    // into words): `["sh -c", …]` is not the program `sh`.
+    assert_eq!(
+        codes("permit exec \"sh\"\nservice t from listen [\"sh -c\", \"x\"] { a: int }"),
+        ["check::no_permit"]
+    );
+    assert!(
+        codes("permit exec \"my tool\"\nservice t from listen [\"my tool\", \"x\"] { a: int }")
+            .is_empty()
+    );
     // A D-Bus field reads one property whole; a key path on it is an
     // error, not `Prop` read silently (a file's key path walks the document).
     assert_eq!(

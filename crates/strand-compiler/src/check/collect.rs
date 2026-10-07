@@ -1147,12 +1147,17 @@ pub(super) fn permit_programs(args: &[ast::Expr]) -> Option<Vec<String>> {
     )
 }
 
-/// The program a command runs: a list's first item, or a command line's
-/// first word (quotes group, as the command is split when it runs).
+/// The program a command runs: a list's first item as is, or a command
+/// line's first word (quotes group, as the command is split when it runs).
 pub(super) fn first_program(e: &ast::Expr) -> Option<String> {
     match &e.kind {
         ast::ExprKind::String(s) => super::tree::split_words(&s.value).into_iter().next(),
-        ast::ExprKind::Array(items) => items.first().and_then(first_program),
+        // A list's first item is the program as written: it runs whole,
+        // never split, so `["sh -c", …]` names a program `sh -c`.
+        ast::ExprKind::Array(items) => items.first().and_then(|e| match &e.kind {
+            ast::ExprKind::String(s) => Some(s.value.clone()),
+            _ => None,
+        }),
         _ => None,
     }
 }

@@ -365,3 +365,95 @@ fn a_restarted_bus_is_connected_afresh_and_nothing_installed_activates() {
         assert!(dbus.get_id().await.is_ok());
     });
 }
+
+/// A portal exposing GSettings' `org.gnome.desktop.interface`.
+struct GnomePortal {
+    theme: String,
+}
+
+#[zbus::interface(name = "org.freedesktop.portal.Settings")]
+impl GnomePortal {
+    async fn read_one(&self, namespace: &str, key: &str) -> zbus::fdo::Result<OwnedValue> {
+        if namespace != "org.gnome.desktop.interface" || key != "icon-theme" {
+            return Err(zbus::fdo::Error::Failed("not found".into()));
+        }
+        Ok(owned(Value::from(self.theme.as_str())))
+    }
+
+    #[zbus(property)]
+    fn version(&self) -> u32 {
+        2
+    }
+}
+
+/// The icon theme a GNOME desktop sets through GSettings reaches the
+/// icon lookup through the portal: read at start, followed on
+/// `SettingChanged` (another key changes nothing), each switch reported
+/// once; `$STRAND_ICON_THEME` still wins over it.
+#[test]
+fn the_portal_icon_theme_is_followed_live() {
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = tokio.block_on(async {
+        zbus::connection::Builder::address(bus.address.as_str())
+            .unwrap()
+            .name("org.freedesktop.portal.Desktop")
+            .unwrap()
+            .serve_at(
+                PATH,
+                GnomePortal {
+                    theme: "Papirus".into(),
+                },
+            )
+            .unwrap()
+            .build()
+            .await
+            .unwrap()
+    });
+    let pinned = std::env::var("STRAND_ICON_THEME").is_ok_and(|t| !t.trim().is_empty());
+    let switches = Arc::new(Mutex::new(0u32));
+    let n = switches.clone();
+    let follower = strand_services::icon_theme::spawn(bus.buses().session, move || {
+        *n.lock().unwrap() += 1;
+    })
+    .unwrap();
+    let wait = |what: &str, count: u32| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while *switches.lock().unwrap() < count {
+            assert!(Instant::now() < deadline, "never: {what}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    wait("the boot read", 1);
+    if !pinned {
+        assert_eq!(strand_icons::system_theme(), "Papirus");
+    }
+    let emit = |key: &str, v: &str| {
+        tokio
+            .block_on(conn.emit_signal(
+                None::<&str>,
+                PATH,
+                "org.freedesktop.portal.Settings",
+                "SettingChanged",
+                &("org.gnome.desktop.interface", key, Value::from(v)),
+            ))
+            .unwrap();
+    };
+    // Another key of the namespace is not the theme.
+    emit("gtk-theme", "Other");
+    emit("icon-theme", "Breeze");
+    wait("the switch", 2);
+    if !pinned {
+        assert_eq!(strand_icons::system_theme(), "Breeze");
+    }
+    // The same name again is no switch.
+    emit("icon-theme", "Breeze");
+    emit("icon-theme", "Adwaita");
+    wait("the second switch", 3);
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(*switches.lock().unwrap(), 3, "one call per switch");
+    drop(follower);
+    strand_icons::set_desktop_theme(None);
+}

@@ -1444,6 +1444,7 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
     // compiler worker) reports them; the renderer's caches are dropped on
     // this thread, the apps service is told directly.
     let (caches_tx, caches_rx) = calloop::channel::channel::<CacheKind>();
+    let icons_tx = caches_tx.clone();
     let _ = compiler.jobs().send(Job::Caches {
         sources: live::cache_sources(),
         changed: live::CacheSink(Box::new(move |kind| {
@@ -1461,6 +1462,22 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
             }
         })),
     });
+    // GNOME (and any portal backend exposing GSettings) names the icon
+    // theme in `org.gnome.desktop.interface`, not GTK's settings files:
+    // a switch there invalidates like an `index.theme` change.
+    let _icon_theme = live
+        .buses
+        .as_ref()
+        .map(|b| {
+            strand_services::icon_theme::spawn(b.session.clone(), move || {
+                let _ = icons_tx.send(CacheKind::Icons);
+            })
+        })
+        .transpose()
+        .unwrap_or_else(|e| {
+            log::warn!("not following the portal's icon theme: {e}");
+            None
+        });
     let (to_logic, from_main) = calloop::channel::channel::<ToLogic>();
     let host = Host::new(renderer, log.damage)
         .forwarding(to_logic.clone())

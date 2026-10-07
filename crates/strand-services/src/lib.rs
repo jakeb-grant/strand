@@ -45,6 +45,7 @@ pub mod custom;
 mod cx;
 mod data;
 pub mod dbus;
+pub mod icon_theme;
 pub mod media;
 pub mod memory;
 pub mod network;
