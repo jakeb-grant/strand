@@ -33,7 +33,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{LazyLock, Mutex, PoisonError};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use freedesktop_desktop_entry::DesktopEntry;
@@ -53,6 +53,10 @@ pub const FRECENCY_PATH: &str = "services:apps.frecency";
 
 /// Most results a search returns.
 pub const MAX_HITS: usize = 200;
+
+/// How long an app no longer installed keeps its frecency (90 days, in
+/// seconds).
+pub const FORGET_AFTER: u64 = 90 * 86_400;
 
 /// An installed app.
 #[derive(crate::Data, Clone, Debug, Default, PartialEq)]
@@ -284,9 +288,10 @@ pub fn load(config: &Config) -> Vec<Entry> {
     let mut out = Vec::new();
     for dir in &config.dirs {
         for (id, file) in files_in(dir) {
-            // The first directory holding an id decides it, even when it
-            // hides it.
-            if !seen.insert(id.clone()) {
+            // The first directory holding an id that reads decides it,
+            // even when it hides it (`Hidden=true`); a file that does not
+            // read or parse leaves the id to the next directory's.
+            if seen.contains(&id) {
                 continue;
             }
             let Ok(text) = std::fs::read_to_string(&file) else {
@@ -295,6 +300,7 @@ pub fn load(config: &Config) -> Vec<Entry> {
             let Ok(entry) = DesktopEntry::from_str(&file, &text, Some(&locales)) else {
                 continue;
             };
+            seen.insert(id.clone());
             if let Some(e) = listed(&entry, id, file, &locales, &config.desktops) {
                 out.push(e);
             }
@@ -447,6 +453,15 @@ impl Frecency {
         f64::from(count) * weight
     }
 
+    /// Forgets apps no longer installed (`installed` says no) whose last
+    /// launch is older than [`FORGET_AFTER`]: the table does not grow
+    /// with every app ever removed, and an app removed for a while (an
+    /// update, a moved entry) keeps its count meanwhile.
+    pub fn prune(&mut self, installed: impl Fn(&str) -> bool, now: u64) {
+        self.uses
+            .retain(|id, &mut (_, last)| installed(id) || now.saturating_sub(last) < FORGET_AFTER);
+    }
+
     /// The score frecency adds to a match.
     pub fn bonus(&self, id: &str, now: u64) -> f64 {
         10.0 * (1.0 + self.points(id, now)).ln()
@@ -464,6 +479,19 @@ impl Frecency {
                 Frecency::default()
             }
         }
+    }
+
+    /// Keeps snapshot `generation` unless a later one is kept already.
+    /// Saves run one at a time (`written` is held while writing), so two
+    /// quick launches whose saves finish out of order never leave the
+    /// older table on disk.
+    pub fn save_latest(&self, written: &Mutex<u64>, generation: u64, state: Option<&Path>) {
+        let mut written = written.lock().unwrap_or_else(PoisonError::into_inner);
+        if *written >= generation {
+            return;
+        }
+        self.save(state);
+        *written = generation;
     }
 
     fn save(&self, state: Option<&Path>) {
@@ -799,6 +827,9 @@ impl Apps {
                 .await
                 .unwrap_or_default()
         };
+        // The snapshots saved: the latest one wins (`save_latest`).
+        let written = Arc::new(Mutex::new(0u64));
+        let mut generation = 0u64;
         cx.update(|s| s.all = entries.iter().map(|e| e.app.clone()).collect());
         cx.ready();
         loop {
@@ -824,9 +855,14 @@ impl Apps {
                         match launched {
                             Ok(()) => {
                                 LAUNCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                frecency.record(&entry.app.id, unix_now());
-                                let (f, s) = (frecency.clone(), state.clone());
-                                tokio::task::spawn_blocking(move || f.save(s.as_deref()));
+                                let now = unix_now();
+                                frecency.record(&entry.app.id, now);
+                                frecency.prune(|id| entries.iter().any(|e| e.app.id == id), now);
+                                generation += 1;
+                                let (f, s, w) = (frecency.clone(), state.clone(), written.clone());
+                                tokio::task::spawn_blocking(move || {
+                                    f.save_latest(&w, generation, s.as_deref());
+                                });
                             }
                             Err(e) => log::warn!("apps: {e}"),
                         }
@@ -937,6 +973,74 @@ mod tests {
         let entries = vec![mk("e", "Éditeur de texte", &[])];
         let h = search(&entries, &f, "tex", now);
         assert_eq!(h[0].ranges, [Range { start: 11, end: 14 }]);
+    }
+
+    /// An app gone for longer than [`FORGET_AFTER`] is forgotten; one
+    /// still installed, or gone only lately, keeps its count.
+    #[test]
+    fn frecency_forgets_long_uninstalled_apps() {
+        let mut f = Frecency::default();
+        let now = 1_000 * 86_400;
+        f.record("gone-long", now - FORGET_AFTER - 1);
+        f.record("gone-lately", now - 86_400);
+        f.record("installed-old", now - FORGET_AFTER - 1);
+        f.prune(|id| id == "installed-old", now);
+        let mut kept: Vec<&str> = f.uses.keys().map(String::as_str).collect();
+        kept.sort();
+        assert_eq!(kept, ["gone-lately", "installed-old"]);
+    }
+
+    /// Two saves finishing out of order leave the later snapshot on disk.
+    #[test]
+    fn frecency_saves_keep_the_latest_snapshot() {
+        let dir = std::env::temp_dir().join(format!("strand-apps-save-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let written = Mutex::new(0);
+        let mut first = Frecency::default();
+        first.record("a", 1);
+        let mut second = first.clone();
+        second.record("a", 2);
+        // The second launch's save runs first; the first's comes late.
+        second.save_latest(&written, 2, Some(&dir));
+        first.save_latest(&written, 1, Some(&dir));
+        assert_eq!(Frecency::load(Some(&dir)), second);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A user entry that does not read leaves its id to the system's; a
+    /// hidden one still claims it.
+    #[test]
+    fn unreadable_entries_do_not_hide_the_next_directorys() {
+        let root = std::env::temp_dir().join(format!("strand-apps-load-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (user, system) = (root.join("user"), root.join("system"));
+        std::fs::create_dir_all(&user).unwrap();
+        std::fs::create_dir_all(&system).unwrap();
+        let ok =
+            |name: &str| format!("[Desktop Entry]\nType=Application\nName={name}\nExec=true\n");
+        std::fs::write(
+            user.join("broken.desktop"),
+            b"[Desktop Entry]\nName=\xff\xfe\n",
+        )
+        .unwrap();
+        std::fs::write(system.join("broken.desktop"), ok("System Copy")).unwrap();
+        std::fs::write(
+            user.join("hidden.desktop"),
+            format!("{}Hidden=true\n", ok("Hidden")),
+        )
+        .unwrap();
+        std::fs::write(system.join("hidden.desktop"), ok("Hidden")).unwrap();
+        let entries = load(&Config {
+            dirs: vec![user, system],
+            desktops: vec![],
+            state: None,
+        });
+        let names: Vec<(&str, &str)> = entries
+            .iter()
+            .map(|e| (e.app.id.as_str(), e.app.name.as_str()))
+            .collect();
+        assert_eq!(names, [("broken", "System Copy")]);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -424,10 +424,54 @@ pub fn lookup(name: &str, size: u16, scale: u16, theme: Option<&str>) -> Option<
     found
 }
 
-/// Whether `name` is an icon of the desktop's theme (or its parents, or
-/// `hicolor`, or a base directory) at any size.
+/// The names an icon lookup tries, in order: the name, then its other
+/// variant (`-symbolic` added, or removed for a symbolic name), then the
+/// same for each generic fallback with a trailing `-segment` stripped
+/// (the freedesktop icon naming spec: `network-wireless-signal-good`,
+/// `network-wireless-signal`, `network-wireless`, `network`). GTK 4 does
+/// both; current themes (Adwaita) ship mostly symbolic icons, so a tray
+/// item's `network-wireless` finds `network-wireless-symbolic`.
+pub fn candidates(name: &str) -> Vec<String> {
+    let (base, symbolic) = match name.strip_suffix("-symbolic") {
+        Some(b) if !b.is_empty() => (b, true),
+        _ => (name, false),
+    };
+    let mut out = Vec::new();
+    let mut g = base;
+    loop {
+        let sym = format!("{g}-symbolic");
+        if symbolic {
+            out.push(sym);
+            out.push(g.to_string());
+        } else {
+            out.push(g.to_string());
+            out.push(sym);
+        }
+        match g.rfind('-') {
+            Some(i) if i > 0 => g = &g[..i],
+            _ => break,
+        }
+    }
+    out
+}
+
+/// The file icon `name` draws from: the first of its [`candidates`] the
+/// theme has ([`lookup`]). What the renderer draws, and what the `apps`
+/// service checks an app's icon against: both agree on which names draw.
+pub fn resolve(name: &str, size: u16, scale: u16, theme: Option<&str>) -> Option<PathBuf> {
+    if name.is_empty() || name.contains('/') {
+        return None;
+    }
+    candidates(name)
+        .into_iter()
+        .find_map(|n| lookup(&n, size, scale, theme))
+}
+
+/// Whether `name` draws from the desktop's theme (or its parents, or
+/// `hicolor`, or a base directory) at any size: [`resolve`] finds it,
+/// through the same fallbacks the renderer takes.
 pub fn exists(name: &str) -> bool {
-    lookup(name, 48, 1, None).is_some()
+    resolve(name, 48, 1, None).is_some()
 }
 
 #[cfg(test)]
@@ -464,9 +508,23 @@ mod tests {
         );
         write(&icons.join("hicolor/64x64/apps/colour.png"), "png");
         write(&pixmaps.join("legacy.png"), "png");
+        write(&icons.join("T/48x48/apps/terminal-symbolic.png"), "png");
         set_base_dirs(Some(vec![icons.clone(), pixmaps.clone()]));
 
         let t = Some("T");
+        // The renderer's chain (resolve, and `exists` the apps service
+        // asks): a name the theme has only as `-symbolic` draws, and so
+        // does a generic fallback (`small-thing` → `small`).
+        assert_eq!(lookup("terminal", 48, 1, t), None);
+        assert_eq!(
+            resolve("terminal", 48, 1, t),
+            Some(icons.join("T/48x48/apps/terminal-symbolic.png"))
+        );
+        assert_eq!(
+            resolve("small-thing", 48, 1, t),
+            Some(icons.join("T/48x48/apps/small.png"))
+        );
+        assert_eq!(resolve("nothing", 48, 1, t), None);
         // Exact sizes first, else the closest.
         assert_eq!(
             lookup("small", 16, 1, t),

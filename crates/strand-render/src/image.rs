@@ -228,42 +228,13 @@ fn resolve(key: &ImageKey, theme: &IconTheme) -> Result<PathBuf, ImageError> {
     }
     let size = (key.w.max(key.h) as f32 / key.scale.max(1) as f32).round() as u16;
     let theme = theme.name();
-    icon_candidates(src)
-        .into_iter()
-        .find_map(|name| strand_icons::lookup(&name, size.max(1), key.scale.max(1), Some(&theme)))
+    strand_icons::resolve(src, size.max(1), key.scale.max(1), Some(&theme))
         .ok_or_else(|| ImageError::NotFound(src.into()))
 }
 
-/// The names an icon lookup tries, in order: the name, then its other
-/// variant (`-symbolic` added, or removed for a symbolic name), then the
-/// same for each generic fallback with a trailing `-segment` stripped
-/// (the freedesktop icon naming spec: `network-wireless-signal-good`,
-/// `network-wireless-signal`, `network-wireless`, `network`). GTK 4 does
-/// both; current themes (Adwaita) ship mostly symbolic icons, so a tray
-/// item's `network-wireless` finds `network-wireless-symbolic`.
-pub fn icon_candidates(name: &str) -> Vec<String> {
-    let (base, symbolic) = match name.strip_suffix("-symbolic") {
-        Some(b) if !b.is_empty() => (b, true),
-        _ => (name, false),
-    };
-    let mut out = Vec::new();
-    let mut g = base;
-    loop {
-        let sym = format!("{g}-symbolic");
-        if symbolic {
-            out.push(sym);
-            out.push(g.to_string());
-        } else {
-            out.push(g.to_string());
-            out.push(sym);
-        }
-        match g.rfind('-') {
-            Some(i) if i > 0 => g = &g[..i],
-            _ => break,
-        }
-    }
-    out
-}
+/// The names an icon lookup tries ([`strand_icons::candidates`]: the
+/// name, its other `-symbolic` variant, then its generic fallbacks).
+pub use strand_icons::candidates as icon_candidates;
 
 fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();

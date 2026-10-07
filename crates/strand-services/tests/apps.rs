@@ -57,6 +57,12 @@ fn apps_lists_searches_launches_and_follows_entries() {
         "[Icon Theme]\nDirectories=48x48/apps\n[48x48/apps]\nSize=48\nType=Fixed\n",
     );
     write(&icons.join("hicolor/48x48/apps/strand-editor.png"), "png");
+    // Only a symbolic variant: the renderer draws it, so the app keeps
+    // the name (one lookup chain, strand_icons::resolve).
+    write(
+        &icons.join("hicolor/48x48/apps/strand-term-symbolic.png"),
+        "png",
+    );
     strand_icons::set_base_dirs(Some(vec![icons.clone()]));
 
     write(
@@ -224,13 +230,18 @@ fn apps_lists_searches_launches_and_follows_entries() {
     // A new entry, a removed one: read again once told.
     write(
         &user.join("new.desktop"),
-        &desktop("Another", "true", "Icon=strand-editor\n"),
+        &desktop("Another", "true", "Icon=strand-term\n"),
     );
     std::fs::remove_file(system.join("editor.desktop")).unwrap();
     apps::changed();
     until(&rt, &s, "the entries are read again", || {
         ids(&rt, &*d) == ["new", "kde-viewer"]
     });
+    let another = App::from_data(&d.keyed_items(&rt, 0).unwrap()[0]).unwrap();
+    assert_eq!(
+        another.icon, "strand-term",
+        "drawn from its symbolic variant"
+    );
 
     s.shutdown();
     apps::set_config(None);
