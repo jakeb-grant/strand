@@ -13,7 +13,7 @@ file fixes boundaries; each crate is free inside its own boundary.
 | Text worker | `strand-text` | parley shaping, swash rasterisation, per-scale glyph atlases | Block render: a painted surface keeps drawing its last layout (or a realigned stand-in from another scale or width) until the new one arrives |
 | Watcher | `strand-watch` | inotify directory watches and polling (one `strand-watch` thread); not the IPC socket (`docs/decisions.md`, wave2-watch) | Parse files (it sends paths and hashes) |
 | Persist IO (one per `PersistStore`) | `strand-core` | Atomic writes of persisted cells, settings-file edits, settings overlays and last-good snapshots; reports each file it is about to change to `PersistStore::on_written` | Run on the logic tick or block logic (failures come back as diagnostics in a later tick) |
-| Services | `strand-services` | tokio current-thread runtime (the portal Settings client `strand_watch::follow` and the compositor IPC adapters run here); PipeWire and toplevel (`strand-toplevel`) get their own threads (idle: zero wakeups, `crates/strand-services/tests/idle.rs`; the sway adapter uses swayipc-async's types over its own tokio framing, so no async-io reactor thread) | Block logic: they send state diffs and events |
+| Services | `strand-services` | tokio current-thread runtime (the portal Settings client `strand_watch::follow` and the compositor IPC adapters run here); PipeWire (`strand-pipewire`) and toplevel (`strand-toplevel`) get their own threads (idle: zero wakeups, `crates/strand-services/tests/idle.rs`, `tests/audio_idle.rs`; the sway adapter uses swayipc-async's types over its own tokio framing, so no async-io reactor thread) | Block logic: they send state diffs and events |
 
 Channels are the only coupling between threads. Logic → render is one
 `SceneDiff` per tick. Render → logic is `InputEvent`s (`strand-scene`) and layout facts
@@ -1834,6 +1834,35 @@ Specified when M3 starts. It only produces writes and events into
   joins the two (`docs/decisions.md`, wave4-wm). `wm::Mirror` applies the
   stream, for tests and for the store that will hold it. The
   `#[service]`/`#[derive(Store)]` wiring builds on this stream.
+
+- **Audio (`strand_services::audio`, the `audio` service).**
+  `Audio::spawn(AudioConfig { remote }, sink) -> io::Result<Audio>` runs
+  pipewire 0.10.1 (`v1_0_0`, built against libpipewire 1.0.5) on its own
+  `strand-pipewire` thread; dropping (or `stop`ping) the handle stops and
+  joins it. `sink: FnMut(Vec<AudioChange>) + Send` gets one non-empty
+  batch per burst of PipeWire events, on that thread: `Connected(bool)`
+  (always first in the first batch, which comes once the first connection
+  has synced or the first attempt failed), `Sinks`/`Sources`
+  (`Vec<VecDiff<i64, AudioDevice>>` keyed by the PipeWire id, a `Reset`
+  first), `Sink`/`Source` (`Option<AudioDevice>`: the defaults) and
+  `Levels { target, device, peaks }`. `AudioDevice` is the schema's record
+  (`id`, `name`, `description`, `volume` on the cubic scale wpctl shows,
+  `muted`, `default`; `icon()` derives `icon`) plus `direction` and
+  `channels`. `audio::SCHEMA` is the text the store serves, which is
+  exactly the provisional stub. `audio::Mirror` applies the stream.
+  `request(AudioAction::{SetVolume(DeviceRef, f64), SetMuted(DeviceRef,
+  bool), MakeDefault(DeviceRef)}) -> AudioReply` (a future, or `wait()` off
+  the logic thread) answers `Ok` once PipeWire has been asked (the change
+  comes through the stream) or an `AudioError` (`NotConnected`,
+  `UnknownDevice`, `InvalidVolume`, `NoDefaultMetadata`, `Failed`). A
+  request dropped unanswered reads as `NotConnected`. `DeviceRef::
+  DefaultSink` resolves on the audio thread when the write runs.
+  `set_levels(targets)` replaces the set of peak meters
+  (`LevelTarget::{DefaultSink, DefaultSource, Device(id)}`); the store
+  passes what visible readers want, and an empty set stops them all.
+  Suppressing write echoes is the store's job; the thread reports a
+  volume it wrote exactly as written. The `#[service]` store wiring
+  builds on this (docs/decisions.md, wave4-audio).
 
 ### `strand-watch`
 

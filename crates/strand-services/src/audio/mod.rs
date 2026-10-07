@@ -24,7 +24,8 @@
 //!
 //! Every change goes to the sink given to [`Audio::spawn`] as one batch of
 //! [`AudioChange`]s per burst of PipeWire events (the [`Publisher`]'s
-//! keyed diffs); [`Mirror`] applies them. Nothing polls: with nothing
+//! keyed diffs); [`Mirror`] applies them. [`SCHEMA`] is the schema text
+//! the store will serve (exactly the builtin provisional stub). Nothing polls: with nothing
 //! changing, the thread sleeps in the loop and wakes for nothing.
 //!
 //! Writes are plain requests; suppressing the echo of a write in the store
@@ -35,6 +36,7 @@
 mod meter;
 pub mod model;
 pub mod pod;
+mod schema;
 mod thread;
 
 use std::collections::BTreeSet;
@@ -48,6 +50,7 @@ pub use model::{
     AudioChange, AudioDevice, AudioState, Direction, LevelTarget, Levels, Mirror, Publisher,
     linear, perceptual,
 };
+pub use schema::SCHEMA;
 
 /// Where to connect.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

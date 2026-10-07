@@ -1,0 +1,97 @@
+//! The schema the `audio` service serves: the text its store gives
+//! `Service::schema()` to replace the builtin schema's provisional stubs
+//! (`record AudioDevice`, `service audio`). The same names, fields, `rw`
+//! marks and actions; the real service adds nothing the language sees
+//! (peak meters feed the `spectrum` and `meter` elements through the
+//! store, not a field).
+
+/// See the module docs.
+pub const SCHEMA: &str = r#"
+/// An audio sink or source, from PipeWire.
+record AudioDevice key id {
+  /// Its PipeWire id.
+  id: int
+  /// Its node name.
+  name: text
+  /// A readable description of it.
+  description: text
+  /// Volume, 0 to 1, on the cubic scale `wpctl` and `pactl` show (above 1
+  /// when another program amplified it). Writable:
+  /// `audio.sink.volume -= dy * 0.05`; every channel takes the new value.
+  volume: float rw
+  /// Muted. Writable: `audio.sink.muted = !audio.sink.muted`.
+  muted: bool rw
+  /// An icon name for its volume and mute state.
+  icon: text
+  /// It is the default device.
+  default: bool
+  /// Makes it the default device.
+  action make_default()
+}
+
+/// Audio devices, from PipeWire.
+service audio {
+  /// The default output: `audio.sink.volume`, `audio.sink.muted`.
+  sink: AudioDevice
+  /// The default input.
+  source: AudioDevice
+  /// Every output, keyed by `id`.
+  sinks: [AudioDevice]
+  /// Every input, keyed by `id`.
+  sources: [AudioDevice]
+}
+"#;
+
+#[cfg(test)]
+mod tests {
+    use super::SCHEMA;
+
+    /// The builtin schema's provisional declarations: the contract.
+    const BUILTIN: &str = include_str!("../../../strand-compiler/src/schema/builtin.schema");
+
+    /// The member lines of the block that starts with `head`.
+    fn block<'a>(text: &'a str, head: &str) -> Vec<&'a str> {
+        let start = text.find(head).unwrap_or_else(|| panic!("no `{head}`"));
+        text[start..]
+            .lines()
+            .skip(1)
+            .map(str::trim)
+            .take_while(|l| *l != "}")
+            .filter(|l| !l.is_empty() && !l.starts_with("//"))
+            .collect()
+    }
+
+    /// Every member the stubs declare is declared alike, and nothing else.
+    #[test]
+    fn the_schema_serves_exactly_the_provisional_declarations() {
+        for (stub, real) in [
+            (
+                "provisional record AudioDevice key id {",
+                "record AudioDevice key id {",
+            ),
+            ("provisional service audio {", "service audio {"),
+        ] {
+            let ours = block(SCHEMA, real);
+            let theirs = block(BUILTIN, stub);
+            assert_eq!(ours, theirs, "{real} differs from the stub");
+        }
+    }
+
+    /// The model's record has every schema field.
+    #[test]
+    fn the_model_has_every_field() {
+        let d = crate::audio::AudioDevice::new(1, "n", crate::audio::Direction::Sink);
+        let shown = format!("{d:?}");
+        for member in block(SCHEMA, "record AudioDevice key id {") {
+            let name = member.split(':').next().unwrap_or(member).trim();
+            if member.starts_with("action ") || name == "icon" {
+                // `icon` is derived: `AudioDevice::icon`.
+                continue;
+            }
+            assert!(
+                shown.contains(&format!("{name}:")),
+                "AudioDevice lacks {name}"
+            );
+        }
+    }
+}
