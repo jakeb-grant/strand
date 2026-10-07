@@ -66,8 +66,8 @@ pub struct Network {
     #[store(keyed, stream)]
     pub access_points: Vec<AccessPoint>,
     /// Joining a network failed (no password and no secret agent to ask
-    /// for one, a wrong one, out of range): `on network.failed(ssid,
-    /// error) { … }`.
+    /// for one, a wrong one, out of range): `on network.failed(ssid, error)
+    /// { … }`.
     pub failed: Event<(String, String)>,
 }
 

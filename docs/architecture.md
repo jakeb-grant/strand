@@ -1977,11 +1977,22 @@ the primitives, `Option`, `Vec` and derived types.
   afresh without restarting the service; `subscribe`/`unsubscribe` add
   and drop match rules as the service needs them), `get_all`/`get`/`set`
   of properties, `properties_changed`, `owner_process` (pid and command
-  of a name's owner). A service owning a bus name (the notification
-  server, the tray's host and watcher) uses a connection of its own
-  (`bus::own_session`), so the name goes with the service. Pixels from
-  D-Bus (`image-data`, `IconPixmap`) become content-addressed PNG files
-  under `$XDG_RUNTIME_DIR/strand/pixmaps` that `image` shows by path.
+  of a name's owner), `activate` (`StartServiceByName` without waiting:
+  a `Daemon` whose name has no owner asks once per start), `timed` (a
+  call to an app given up after `CALL_TIMEOUT`, 2 s). A service owning a
+  bus name (the notification server, the tray's host and watcher) uses
+  a connection of its own (`bus::own_session`), so the name goes with
+  the service. Calls that may wait on an app (tray items, players,
+  BlueZ connects) run as tasks in a `JoinSet` owned by the body, so they
+  hold up nothing and are cancelled when it stops. Pixels from D-Bus
+  (`image-data`, `IconPixmap`, a menu entry's `icon-data`) are checked
+  against the bytes sent before allocating, sampled down to 512 px a
+  side and become content-addressed PNG files under
+  `$XDG_RUNTIME_DIR/strand/pixmaps/<pid>` (`strand_services::pixmap`)
+  that `image` shows by path; each file lives while a `Pinned` handle
+  to it does (the notification or tray item showing it).
+  `testing::PrivateBus::start_activating` gives a private bus a service
+  directory that starts python-dbusmock templates (D-Bus activation).
   `strand_services::schemas()` (the same as
   `strand_services_schema::schemas()`) lists the schema texts of every
   builtin service implemented (the language extends its builtin schema
@@ -1994,11 +2005,16 @@ the primitives, `Option`, `Vec` and derived types.
   panics) is a `ServiceDiagnostic { service, message, notice: false }`;
   a body raises what the user must act on with `Cx::notice(message)`
   (another notification server owning the name, naming its process:
-  `notice: true`). `Services::take_diagnostics()` hands them out after a
-  pump, one per distinct message (a retry failing the same way is not
-  repeated until a run stays up `RETRY_MAX` or ends cleanly). `strand
-  run` logs them (`warn`; a notice at `error`), sends them to `strand
-  watch` as `notices`, and shows notices as overlay rows.
+  `notice: true`, raised before `Cx::ready`). `Services::take_diagnostics()`
+  hands them out after a pump, one per distinct message (a retry failing
+  the same way is not repeated until a run stays up `RETRY_MAX` or ends
+  cleanly). A notice no longer holding (a later run ready without
+  raising it, or a clean stop) comes back once with `resolved: true`.
+  `strand run` logs them (`warn`; a notice at `error`), sends them to
+  `strand watch` as `notices`, and shows notices as overlay rows under
+  `strand: services`, keyed by service, which a resolved one removes.
+  `Services::wait_ready_of(rt, Some(name), limit)` waits for one
+  service's first read (`strand set`'s relative step).
 - **Calls of one name on several records.** `#[derive(Call)]` takes
   `#[call(name = "…")]` on a variant; variants sharing a name and taking
   items of different records (`TrayItem.activate()`,

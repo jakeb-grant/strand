@@ -56,8 +56,8 @@ pub struct Media {
     /// The track's album.
     pub album: Option<String>,
     /// The album art: `image media.art { fit: cover }`. Local art only (a
-    /// `file://` URL or a path); null when the player sent none or a
-    /// remote URL.
+    /// `file://` URL or a path); null when the player sent none or a remote
+    /// URL, so `media.art ?? "audio-x-generic"` falls back.
     pub art: Option<String>,
     /// Fraction of the track played, 0 to 1.
     #[store(stream)]

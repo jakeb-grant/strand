@@ -716,13 +716,13 @@ Services are typed Rust structs that start lazily when a shell first references 
 | Crate | Purpose | Notes |
 | --- | --- | --- |
 | [zbus](https://crates.io/crates/zbus) 5.19, zbus\_xmlgen | D-Bus for UPower, logind, MPRIS, portal, power profiles, notifications | Generate our own typed proxies; `upower_dbus` and `mpris` are stale or libdbus-based |
-| tokio 1.53 | Services runtime | zbus, nmrs and system-tray all assume it |
+| tokio 1.53 | Services runtime | zbus (and the services built on it) assume it |
 | smithay-client-toolkit 0.21, wayland-protocols 0.32 | Surfaces and protocols | Staging includes ext-workspace, foreign-toplevel-list, image-copy-capture, background-effect |
 | pipewire 0.10 | Audio, levels, default sink | No usable WirePlumber binding; read PipeWire's `default` metadata |
 | logind-zbus 5.3 | Brightness via `SetBrightness` | No root or udev rules needed |
-| nmrs 3.5 | NetworkManager | zbus 5, actively released |
+| Own zbus clients | NetworkManager | nmrs 3.5 was the first choice; it only connects to the machine's system bus, so it cannot run on the buses the services are given or a private test bus (decisions.md, wave4-a2) |
 | bluer 0.17, or own zbus proxies | Bluetooth | bluer uses libdbus; a few zbus proxies may be lighter |
-| system-tray 0.8.9 | StatusNotifierItem host plus DBusMenu | Used by ironbar |
+| Own zbus clients | StatusNotifierItem host plus DBusMenu | system-tray 0.8.9 was the first choice; it only connects to the machine's session bus and leaves detached tasks running after its client is dropped (decisions.md, wave4-a2) |
 | Own zbus `#[interface]` | Notification server | notify-rust's server is experimental; fail clearly if dunst or mako owns the name |
 | freedesktop-desktop-entry 0.8, freedesktop-icons 0.4 | Launcher data and icons | Watched live |
 | nucleo 0.5 | Fuzzy matching with match ranges | Releases stalled since 2024; wrap it, fork if needed |

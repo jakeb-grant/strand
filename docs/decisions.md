@@ -6347,7 +6347,9 @@ item and watcher; `com.canonical.dbusmenu`'s `GetLayout`, `Event`,
 with plain zbus calls and match rules (`strand_services::dbus`).
 logind-zbus 5.3 is used as design.md says, for `Session.SetBrightness`,
 with its default features off: they switch zbus to `async-io`, which
-would give the whole workspace a second executor.
+would give the whole workspace a second executor. design.md's crate table now says
+"own zbus clients" for NetworkManager and the tray, with this reason
+(round 1 review: the docs win, so they change with the code).
 
 **2026-10-07 · wave4-a2: a daemon is followed, not reconnected.**
 `dbus::Daemon` subscribes to the name's `NameOwnerChanged` and to the
@@ -6379,18 +6381,39 @@ the menu model M4's tray menus render.
 goes with the service when it stops), asked for with `DoNotQueue` and
 without `AllowReplacement`. `popups` and `all` keep arrival order
 (oldest first, as the M2 mock did); `replaces_id` replaces in place.
-`n.expire()` ends the popup and closes it as expired (reason 1) but
-keeps it in `all`; `n.dismiss()`, `n.activate()` (its `default` action)
-and `a.invoke()` close it as dismissed (2) unless it is `resident`;
-`CloseNotification` is reason 3. `expire_timeout` -1 and 0 are both null
-(the shell decides; "never" has no duration, and the design's toasts
-keep critical ones). `dnd` holds new non-critical notifications back
-from `popups` (still in `all`, `received` still fires). The server sets
-no timers: the shell's `after n.timeout ?? 6s` expires popups.
-`image-data` is written as a PNG (`pixmap`, content-addressed under
-`$XDG_RUNTIME_DIR/strand/pixmaps`, at most 256 kept per process),
-`image-path` passed through. Capabilities: `actions`, `body`,
-`body-markup`, `icon-static`, `persistence`.
+A notification is open exactly while it is in `all`, and closed once,
+when it leaves it (one `NotificationClosed`, never two): `n.dismiss()`,
+`n.activate()` (its `default` action) and `a.invoke()` close it as
+dismissed (2) unless it is `resident`, `clear()` closes every one,
+`CloseNotification` is reason 3 (an id not open is a D-Bus error, as the
+spec says). `n.expire()` only ends the popup: the notification stays
+open in `all`, its actions still reaching the sender, as the
+`persistence` capability we advertise promises (GNOME does the same; a
+popup timing out is not the notification closing). `all` keeps the
+newest 100 (design.md's memory budget gives notification history a few
+megabytes): beyond that the oldest close as expired (1), so a shell
+with no history list still closes everything eventually.
+`expire_timeout` -1 is a null `timeout` (the shell's choice); 0, the
+spec's "never expire", is a null `timeout` and `persistent: true`, which
+a shell keeps with `after n.timeout ?? 6s while !n.persistent {
+n.expire() }` (design.md's toasts keep only critical ones up, and are
+unchanged). `urgency` is read from any integer type (the spec says a
+byte; some senders send an int). `dnd` holds new non-critical
+notifications back from `popups` (still in `all`, `received` still
+fires). The server sets no timers: the shell's `after n.timeout ?? 6s`
+expires popups. `image-data` is checked against the bytes sent before
+anything is allocated (a side above 16384 is refused; a sender claiming
+100000×100000 pixels in four bytes got a 40 GB allocation and an abort
+before), sampled down to 512 px a side, and written as a PNG off the
+runtime thread (`spawn_blocking`) under
+`$XDG_RUNTIME_DIR/strand/pixmaps/<pid>`, content-addressed; the file
+lives while the notification is kept (a `pixmap::Pinned` handle: no
+shared LRU can delete a picture still shown). `image-path` is passed
+through. Capabilities: `actions`, `body`, `body-markup`, `icon-static`,
+`persistence`. Known gap: `Notification.time` is the clock's `Date`,
+which has no time of day in the VM, so a notification centre cannot
+show "12:04" yet; the language track adds a time of day to `Date` (or a
+`received_at`), and the field follows.
 
 **2026-10-07 · wave4-a2: another notification server fails clearly.**
 When dunst, mako or a desktop's server owns the name, the run fails with
@@ -6399,9 +6422,19 @@ org.freedesktop.Notifications: strand cannot show notifications while it
 runs; stop it (`systemctl --user stop mako`, or `pkill -x mako`) and
 remove it from your compositor's autostart. strand takes the name over
 once it is free.` (pid from `GetConnectionUnixProcessID`, name from
-`/proc/<pid>/comm`). The client's retry backoff (up to 30 s) asks again,
-so stopping the other daemon hands the name over without a reload; the
-same failure is reported once. Service failures became diagnostics:
+`/proc/<pid>/comm`), followed by how to keep D-Bus from starting it
+again on the next notification (`systemctl --user mask <it>`, or an
+empty `~/.local/share/dbus-1/services/org.freedesktop.Notifications.service`):
+dunst and mako ship activation files for the name. The client's retry
+backoff (up to 30 s) asks again, so stopping the other daemon hands the
+name over without a reload; the same failure is reported once. Once a
+run becomes ready without raising the notice again (the name taken
+over), or the service stops cleanly, the client hands out the same
+diagnostic `resolved`: `strand run` removes its overlay rows (keyed
+`service:<name>#<n>`, the message wrapped to the panel under a
+`strand: services` header) and sends `service \`notifications\`:
+resolved: …` to `strand watch`. A body raises a notice before
+`Cx::ready`, so its own readiness does not resolve it. Service failures became diagnostics:
 `Services::take_diagnostics` hands out a `ServiceDiagnostic` per
 distinct failure (a retry failing the same way is not repeated until a
 run stays up 30 s or ends cleanly), which `strand run` logs and sends to
@@ -6410,6 +6443,18 @@ run stays up 30 s or ends cleanly), which `strand run` logs and sends to
 overlay row and an `ERROR` line; other failures (a bus that cannot be
 reached, which the client retries) are `warn` lines: a machine without
 a session bus is not something to put on the screen.
+
+**2026-10-07 · wave4-a2: daemons are started by D-Bus activation.**
+Distributions often start UPower (and bluetoothd) only when someone
+first calls them (`SystemdService=`). `dbus::Daemon` follows a name
+without calling it, so when the name has no owner it sends
+`StartServiceByName(name, 0)` once per start, with no reply expected:
+the daemon owning its name is a `NameOwnerChanged` like a restart. A
+name nothing can start is ignored. Tested with a private bus whose
+service directory starts python-dbusmock's `upower` template
+(`PrivateBus::start_activating`). UPower's device kinds follow its
+`up-types.h`: 17 headset, 19 headphones and 21 other audio are
+`headset`; speakers (18) and printers (23) are `other`.
 
 **2026-10-07 · wave4-a2: brightness.** The level is read from
 `/sys/class/backlight/<dev>` (`actual_brightness`, else `brightness`,
@@ -6436,14 +6481,25 @@ asked for (when watching starts and when a new NetworkManager appears,
 not on every re-read); access points of one SSID are one entry (the
 strongest, active if any is). `ap.connect()` activates a saved
 connection for the SSID, else `AddAndActivateConnection` (NetworkManager's
-secret agent asks for a password).
+secret agent asks for a password). A join that fails (no agent to ask
+for the password, out of range) is the `failed(ssid, error)` event, not
+only a log line; `connect(password)` waits for optional action
+arguments in the language (a call may not omit an argument yet). While
+not scanning, a device's `AccessPoints` changes are ignored (only the
+access point in use matters, and its change is the connection's
+`SpecificObject`); while scanning only the new access points are read.
+A scan is asked for once there is a Wi-Fi device to ask (a
+NetworkManager that just restarted may list none yet). A failed `wifi`
+write reports the radio as last read.
 
 **2026-10-07 · wave4-a2: bluetooth.** BlueZ's object manager on `/`:
 the first adapter by path gives `powered` (written through `Powered`),
 its paired devices `devices` (`Alias`, `Connected`, `Icon` as
 `<icon>-symbolic`, `Battery1.Percentage`). `connect()`/`disconnect()`
-run as tasks of their own (30 s at most), their outcome arriving as
-`Connected` changes. Nothing discovers: pairing stays with the system's
+run as tasks owned by the body (30 s at most, cancelled when the service
+stops, so a stopped service keeps no connection), their outcome
+arriving as `Connected` changes; a failed `powered` write reports the
+adapter as last read. Nothing discovers: pairing stays with the system's
 settings.
 
 **2026-10-07 · wave4-a2: media.** Every `org.mpris.MediaPlayer2.*` is
@@ -6454,7 +6510,12 @@ never signalled by players, and design.md wants no polling: it is asked
 for when the state, track or rate changes and on `Seeked`, and carried
 forward at `Rate` from there. `elapsed` and `position` are
 `#[store(stream)]` fields: they tick once a second, on the second, only
-while a visible reader shows them and the player plays.
+while a visible reader shows them and the player plays. Calls to players are
+bounded (2 s) and actions are tasks of their own. `art` is local art
+only (`file://` or a path): remote `https://` art (Spotify, browsers)
+is null, so `media.art ?? "audio-x-generic"` falls back instead of
+showing a blank picture; fetching remote art (an HTTP client and a
+cache) is left for when a shell needs it.
 
 **2026-10-07 · wave4-a2: tray.** On a connection of its own the
 service owns `org.kde.StatusNotifierHost-<pid>-<n>` and registers with
@@ -6468,9 +6529,24 @@ tooltip's title and description on two lines. `activate()` calls
 `scroll(dy)` sends `dy` rounded (at least one step) as a vertical
 `Scroll`. The menu model is `GetLayout` (again on `LayoutUpdated` and
 `ItemsPropertiesUpdated`), visible entries only, labels without mnemonic
-underscores. `item.menu.open()` sends `AboutToShow` and the `opened`
-event and lays the menu out again when the app says it changed; showing
-it is M4's tray menu. An entry's `activate()` sends `Event(id,
+underscores, with `shortcut` (`Control+S`) and an icon by name or from
+`icon-data` (a PNG file, kept while the menu is). `item.menu.open()`
+sends `AboutToShow(0)` and the `opened` event and lays the menu out
+again when the app says it changed; an entry's `open()` does the same
+for its submenu (lazily filled submenus); `item.menu.close()` sends the
+`closed` event. Showing menus is M4's tray menu. Click positions are not
+passed yet (`Activate(0, 0)`, `ContextMenu(0, 0)`): the shell knows
+where a click was only once M4's popups place things; the schema's
+actions gain optional `x`/`y` then. Apps freeze, so nothing the service
+asks an item waits in its loop: reads and actions are tasks owned by
+the body (dropped with it), each call given up after 2 s
+(`dbus::CALL_TIMEOUT`), results applied by the loop; one property read
+and one menu read per item in flight, later signals asking for one more
+after it; icons and tooltips are resolved off the runtime thread once
+per read and cached with the item. Our watcher emits
+`PropertiesChanged` for `RegisteredStatusNotifierItems`; any owner
+change of the session's watcher while it is not ours registers again
+(a watcher replaced without a gap included). An entry's `activate()` sends `Event(id,
 "clicked")`. Two calls named `activate` on different records
 (`TrayItem`, `TrayMenuItem`) are one name in `#[derive(Call)]`
 (`#[call(name = "activate")]`), told apart by the item's record type.
@@ -6480,8 +6556,10 @@ set brightness.level +5%` (the IPC `set` on a path whose first part is
 a service and that is not an export) writes the `rw` leaf through the
 service host: a value read by the field's type, and a signed number (or
 percentage) as a step from the current value, never below 0. A service
-nobody reads is started for it and its first read awaited (up to
-500 ms) so the step starts from the real value; it stops 5 s later.
+nobody reads is started for it; for a relative step its first read
+(that service's only) is awaited, up to 500 ms, so the step starts from
+the real value; an absolute value is written at once. It stops 5 s
+later.
 
 **2026-10-07 · wave4-a2: a closed surface's `open` binding is held.**
 A top-level surface held its whole body, `open` included, only while
