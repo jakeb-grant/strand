@@ -10,6 +10,8 @@
 # Usage (as root): scripts/compositor-matrix-ci.sh TEST_BINARY
 # Env:   STRAND_DRM_CARD  the vkms card passed in with --device (Hyprland)
 #        MATRIX           the compositors (default "sway niri hyprland")
+# The bar's click is required (STRAND_MATRIX_REQUIRE_CLICK=1): a
+# compositor without zwlr_virtual_pointer_manager_v1 fails, not skips it.
 # Exit status is non-zero when any compositor failed; logs and shots are
 # in target/matrix/<compositor>.
 
@@ -70,6 +72,7 @@ for kind in $MATRIX; do
   runuser -u "$user" -- env \
     HOME="/home/$user" USER="$user" \
     STRAND_DRM_CARD="${STRAND_DRM_CARD:-}" LIBSEAT_BACKEND=seatd SEATD_SOCK=/run/seatd.sock \
+    STRAND_MATRIX_REQUIRE_CLICK=1 \
     OUT="$ROOT/target/matrix/$kind" \
     "$ROOT/scripts/compositor-matrix.sh" "$kind" "$TEST"
   status=$?
@@ -84,13 +87,6 @@ for kind in $MATRIX; do
       esac
     done
     failed+=("$kind")
-  fi
-done
-
-# Where the bar's click went untested (no zwlr_virtual_pointer_manager_v1).
-for kind in $MATRIX; do
-  if grep -q 'the click is not tested here' "$ROOT/target/matrix/$kind/test.log" 2>/dev/null; then
-    echo "::warning::the bar's click (ws.focus() from a pointer) was not tested on $kind: no virtual pointer"
   fi
 done
 

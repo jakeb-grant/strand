@@ -274,7 +274,12 @@ impl Live {
                     .as_array()
                     .into_iter()
                     .flatten()
-                    .filter(|w| w["id"].as_i64().unwrap_or(0) > 0)
+                    // Special workspaces (`special:…`, negative ids) are
+                    // not listed; named ones (negative ids too) are.
+                    .filter(|w| {
+                        let name = text(&w["name"]);
+                        !(name == "special" || name.starts_with("special:"))
+                    })
                     .filter(|w| text(&w["monitor"]) == self.output)
                     .map(|w| {
                         (
@@ -287,7 +292,8 @@ impl Live {
                         )
                     })
                     .collect();
-                workspaces.sort_by_key(|(id, _)| *id);
+                // Numbered ones by number, then named ones as created.
+                workspaces.sort_by_key(|(id, _)| (*id < 0, id.unsigned_abs()));
                 let window = win
                     .get("address")
                     .is_some()
@@ -622,6 +628,48 @@ fn the_stores_report_the_live_compositor() {
         "{real}"
     );
 
+    // Hyprland: a named workspace (a negative id) is focused by
+    // `name:<name>`, in the Lua dialect too (`hl.dsp.focus({ workspace =
+    // "name:matrix" })`): one made from outside, holding a window so it
+    // lives on, then `ws.focus()` away from it and back.
+    if live.kind == Kind::Hyprland {
+        live.switch("name:matrix");
+        let named = TestWindow::open(&live.socket, "strand-matrix-named", "matrix named");
+        let real = agree(&rt, &s, &b, &live, "a named workspace");
+        assert!(
+            real.workspaces
+                .iter()
+                .any(|w| w.name == "matrix" && w.focused && w.occupied),
+            "{real}"
+        );
+        let item = workspace_named(&b, &rt, &home);
+        b.workspaces
+            .act(&rt, WorkspaceAction::Focus { item })
+            .unwrap();
+        agree(&rt, &s, &b, &live, "ws.focus() off the named workspace");
+        let item = workspace_named(&b, &rt, "matrix");
+        b.workspaces
+            .act(&rt, WorkspaceAction::Focus { item })
+            .unwrap();
+        let real = agree(&rt, &s, &b, &live, "ws.focus() on the named workspace");
+        assert!(
+            real.workspaces
+                .iter()
+                .any(|w| w.name == "matrix" && w.focused),
+            "{real}"
+        );
+        drop(named);
+        let item = workspace_named(&b, &rt, &home);
+        b.workspaces
+            .act(&rt, WorkspaceAction::Focus { item })
+            .unwrap();
+        let real = agree(&rt, &s, &b, &live, "back from the named workspace");
+        assert!(
+            real.workspaces.iter().any(|w| w.name == home && w.focused),
+            "{real}"
+        );
+    }
+
     // The compositor's reload is `wm.config_reloaded`.
     events.borrow_mut().clear();
     live.reload();
@@ -941,6 +989,13 @@ impl Bar<'_> {
 }
 
 /// Whether the compositor offers `interface`.
+/// Whether the bar's click must be tested (`STRAND_MATRIX_REQUIRE_CLICK`
+/// set and not `0`, as in CI): without a virtual pointer the test fails
+/// instead of skipping the click.
+fn click_required() -> bool {
+    std::env::var("STRAND_MATRIX_REQUIRE_CLICK").is_ok_and(|v| !v.is_empty() && v != "0")
+}
+
 fn offers(live: &Live, interface: &str) -> bool {
     use wayland_client::Connection;
     use wayland_client::globals::registry_queue_init;
@@ -1045,10 +1100,17 @@ fn the_design_bar_shows_the_live_compositor() {
         let (real, _) = bar.shows("clicked");
         assert!(real.workspaces[home_ws].focused, "{real}");
     } else {
-        eprintln!(
+        // CI (scripts/compositor-matrix-ci.sh) requires the click: a
+        // compositor that stops offering the protocol fails there.
+        let msg = format!(
             "matrix: {:?} offers no zwlr_virtual_pointer_manager_v1: the click is not tested here",
             live.kind
         );
+        assert!(
+            !click_required(),
+            "{msg} (STRAND_MATRIX_REQUIRE_CLICK is set)"
+        );
+        eprintln!("{msg}");
     }
     drop(bar);
     let _ = std::fs::remove_dir_all(&dir);

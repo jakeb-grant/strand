@@ -598,23 +598,22 @@ async fn dispatch(
 ) -> Result<(), WmError> {
     let req = state.dispatch_for(action, lua)?;
     match request(requests, &req).await {
-        Ok(r) => dispatch_reply(&r, lua),
+        Ok(r) => dispatch_reply(&r),
         Err(e) => Err(WmError::Io(e.to_string())),
     }
 }
 
-/// Whether Hyprland's `reply` to a dispatch says it worked. A classic
-/// dispatch answers `ok` or the failure. A Lua one (`return
-/// hl.dispatch(…)`) answers `ok` too (Hyprland 0.56.2 in the CI job
-/// `compositors`, run 37653086662), but the reply is the evaluated
-/// chunk's, so a success may also come back empty or as the call's own
-/// value (`true`, `nil`); a failure is a Lua error (`error: …`), `false`
-/// or the dispatcher's message, which is kept.
-/// scripts/compositor-matrix.sh prints a live Hyprland's reply.
-fn dispatch_reply(reply: &str, lua: bool) -> Result<(), WmError> {
+/// Whether Hyprland's `reply` to a dispatch says it worked: `ok`, in
+/// either dialect (a Lua dispatch, `return hl.dispatch(…)`, answers `ok`
+/// too: Hyprland 0.56.2 in the CI job `compositors`, run 37653086662).
+/// Anything else is the failure and kept: a Lua error (`error: …`), the
+/// dispatcher's message, or a value of the chunk (`false`, `nil`, `true`,
+/// nothing) no live Hyprland has been seen to answer for a success, so a
+/// dispatch that did nothing is not taken for one (decisions.md,
+/// wave4-exit-ci). scripts/compositor-matrix.sh prints a live reply.
+fn dispatch_reply(reply: &str) -> Result<(), WmError> {
     match reply.trim() {
         "ok" => Ok(()),
-        "" | "true" | "nil" if lua => Ok(()),
         r => Err(WmError::Rejected(r.to_string())),
     }
 }
@@ -856,27 +855,25 @@ mod tests {
         assert!(!wants_lua("ok"));
     }
 
-    /// A Lua dispatch's success may come back as the chunk's value, not
-    /// only `ok`; its failures stay failures.
+    /// A dispatch succeeds only on `ok`, the one success reply seen from
+    /// a live Hyprland in either dialect; every other reply is the failure.
     #[test]
-    fn lua_dispatch_replies() {
-        for ok in ["ok", "ok\n", "", "true", "nil"] {
-            assert!(dispatch_reply(ok, true).is_ok(), "{ok:?}");
+    fn dispatch_replies() {
+        for ok in ["ok", "ok\n"] {
+            assert!(dispatch_reply(ok).is_ok(), "{ok:?}");
         }
         for failed in [
+            "",
+            "true",
+            "nil",
             "false",
             "error: [string \"return hl.dispatch(x)\"]:1: nope",
             "No such window found",
         ] {
             assert!(
-                matches!(dispatch_reply(failed, true), Err(WmError::Rejected(r)) if r == failed),
+                matches!(dispatch_reply(failed), Err(WmError::Rejected(r)) if r == failed),
                 "{failed:?}"
             );
-        }
-        // The classic dialect: `ok` or the failure.
-        assert!(dispatch_reply("ok", false).is_ok());
-        for failed in ["", "true", "No such window found"] {
-            assert!(dispatch_reply(failed, false).is_err(), "{failed:?}");
         }
     }
 }

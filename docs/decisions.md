@@ -8122,3 +8122,24 @@ each compositor's logs, the bare desktop and the bar's screenshots.
 The dev container still cannot run Hyprland or niri (no `/dev/dri`, no
 kernel modules, no Docker, the Arch mirrors refused), so the job is the
 only place they run.
+
+**2026-10-07 · wave4-exit-ci: what the matrix holds fixed and what it
+tracks (review round).** The `compositors` job tracks upstream on
+purpose: `archlinux:latest` and `pacman -Syu` install the Hyprland, niri
+and sway Arch ships that day (pinning the image alone would not pin the
+packages, which `-Syu` upgrades from the live mirrors), so a new release
+can turn the job red with no change here; that is what an exit gate for
+"runs on the compositors people use" should notice, and the job prints
+`pacman -Q` so a red run names the versions. A Hyprland dispatch counts
+as done only on `ok`, in either dialect: the Lua replies once also taken
+for success (empty, `true`, `nil`) were never seen from a live Hyprland
+and would hide a dispatch that did nothing
+(`hyprland.rs::tests::dispatch_replies`). Hyprland's run now also makes a
+named workspace from outside (`hl.dsp.focus({ workspace = "name:matrix"
+})`), and `ws.focus()` leaves it and comes back through the adapter's
+`name:<name>` selector, so a named (negative-id) workspace is checked
+live too. CI sets `STRAND_MATRIX_REQUIRE_CLICK=1`: a compositor that
+stops offering `zwlr_virtual_pointer_manager_v1` fails the bar test
+instead of skipping its click. Still unchecked live: a second output
+(per-screen `workspaces.on(screen)`, one bar per monitor) on any of the
+three.

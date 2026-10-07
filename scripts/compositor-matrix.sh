@@ -37,7 +37,8 @@ mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
 
 if [ -z "$TEST" ]; then
-  TEST=$(cd "$ROOT" && cargo test -p strand --test compositor_matrix --no-run 2>&1 |
+  # No colour: CARGO_TERM_COLOR=always puts codes inside the line read.
+  TEST=$(cd "$ROOT" && CARGO_TERM_COLOR=never cargo test -p strand --test compositor_matrix --no-run 2>&1 |
     sed -n 's/.*Executable tests\/compositor_matrix.rs (\(.*\))/\1/p' | tail -1)
   [ -n "$TEST" ] || { echo "could not build the compositor_matrix test" >&2; exit 2; }
   case "$TEST" in /*) ;; *) TEST=$ROOT/$TEST ;; esac
