@@ -799,6 +799,53 @@ mod tests {
             t.contains(&"Text Editor".to_string()) && t.contains(&"Image Viewer".to_string())
         });
         assert!(strand_services::apps::searches() > before);
+
+        // Open, the hits follow the app list and the icons it resolves
+        // (the search memo reads the service's state, not just `query`).
+        let sources = |s: &Shell| -> Vec<String> {
+            s.scene
+                .of_kind(strand_scene::NodeKind::Image)
+                .into_iter()
+                .map(|n| format!("{:?}", s.scene.prop(n, Prop::Source)))
+                .collect()
+        };
+        entry("player", "Music Player");
+        strand_services::apps::changed();
+        shell.until("a new app is listed", |s| {
+            s.scene.texts().contains(&"Music Player".to_string())
+        });
+        std::fs::remove_file(dir.join("viewer.desktop")).unwrap();
+        strand_services::apps::changed();
+        shell.until("a removed app is gone", |s| {
+            !s.scene.texts().contains(&"Image Viewer".to_string())
+        });
+        assert!(shell.scene.texts().contains(&"Text Editor".to_string()));
+        // An icon that appears (as a theme switch makes a name resolve):
+        // the shown hit's icon changes from the fallback to it.
+        let icon = root.join("editor-icon.png");
+        std::fs::write(
+            dir.join("editor.desktop"),
+            format!(
+                "[Desktop Entry]\nType=Application\nName=Text Editor\nIcon={}\nExec={} editor\n",
+                icon.display(),
+                script.display()
+            ),
+        )
+        .unwrap();
+        strand_services::apps::changed();
+        shell.until("the fallback icon", |s| {
+            sources(s)
+                .iter()
+                .filter(|x| x.contains(strand_services::apps::FALLBACK_ICON))
+                .count()
+                == 2
+        });
+        std::fs::write(&icon, b"png").unwrap();
+        strand_services::apps::changed();
+        shell.until("the hit shows the icon that appeared", |s| {
+            let icon = icon.display().to_string();
+            sources(s).iter().any(|x| x.contains(&icon))
+        });
         drop(shell);
         strand_services::apps::set_config(None);
         let _ = std::fs::remove_dir_all(&root);

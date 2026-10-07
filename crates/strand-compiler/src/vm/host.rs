@@ -142,6 +142,16 @@ pub trait ServiceHost {
         args: &[Value],
     ) -> Result<Value, Error>;
 
+    /// Read, tracked, what an `Async` method's result depends on besides
+    /// its arguments. A load (`let hits = apps.search(query)`) calls it
+    /// where it reads its arguments, so it fetches again when these change
+    /// as when the arguments do: an open launcher searches its query again
+    /// when the app list or the icon theme changes. The default reads
+    /// nothing (the result is a function of the arguments alone).
+    fn fetch_reads(&self, _rt: &Runtime, _service: &str, _method: &str) -> Result<(), Error> {
+        Ok(())
+    }
+
     /// Start an `Async` method (`apps.search(q)`) as a load: `let hits =
     /// apps.search(query)` is `rt.async_memo(args, fetch)` per mounted
     /// `let`, so each change of the arguments starts one fetch and drops

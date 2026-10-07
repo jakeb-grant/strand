@@ -59,6 +59,9 @@ impl Vm {
                                     }
                                     _ => String::new(),
                                 };
+                                // What the result depends on besides the
+                                // arguments: a change fetches again.
+                                vm2.host.fetch_reads(rt, &s, &method)?;
                                 Ok((s, method, args))
                             },
                             move |(s, method, args): (Rc<str>, String, Vec<Value>)| {

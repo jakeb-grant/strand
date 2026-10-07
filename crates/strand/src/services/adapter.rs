@@ -382,6 +382,25 @@ impl ServiceHost for StoreHost {
         }
     }
 
+    /// An `Async` method answers from the service's state (`apps.search`
+    /// from the entries and the icons they resolved): its load reads every
+    /// field, so a change to the state searches the current query again.
+    /// A keyed field is read as its collection (no list is built).
+    fn fetch_reads(&self, rt: &Runtime, _service: &str, method: &str) -> Result<(), Error> {
+        if !self.svc.methods().contains(&method) {
+            return Ok(());
+        }
+        for f in &self.fields {
+            match f {
+                Field::Plain(m) => {
+                    m.get(rt)?;
+                }
+                Field::Keyed(k, _) => k.with(rt, |_| ())?,
+            }
+        }
+        Ok(())
+    }
+
     fn fetch(&self, rt: &Runtime, service: &str, method: &str, args: Vec<Value>) -> Fetch {
         if !self.svc.methods().contains(&method) {
             // A `fn` method: computed at once.

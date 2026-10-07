@@ -1323,6 +1323,12 @@ Public interfaces other crates and later stages build on:
     made on first read and kept with the scope); in a handler, `fn` or
     lambda to `Op::FetchMethod`, a pending `Async` whose `await` waits
     for the fetch. `call` is never asked for an async method.
+  - `fetch_reads(rt, service, method)`: read, tracked, what an async
+    method's result depends on besides its arguments; a load calls it
+    where it reads its arguments, so a change fetches again (an open
+    launcher searches its query again when the app list or the icon
+    theme changes). The default reads nothing; `StoreHost` reads every
+    field of the service (a keyed one as its collection).
   - `action(rt, ActionTarget::{Service, Item(&record)}, name, args)` runs
     `notifications.clear()` or `ws.focus()`; `event(rt, service,
     event) -> EventQueue<Vec<Value>>` is the lossless queue `on

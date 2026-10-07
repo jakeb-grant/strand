@@ -188,6 +188,10 @@ impl ServiceHost for Composite {
         self.route(service).fetch(rt, service, method, args)
     }
 
+    fn fetch_reads(&self, rt: &Runtime, service: &str, method: &str) -> Result<(), Error> {
+        self.route(service).fetch_reads(rt, service, method)
+    }
+
     fn action(
         &self,
         rt: &Runtime,
