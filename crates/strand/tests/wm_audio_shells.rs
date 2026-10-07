@@ -1,0 +1,451 @@
+//! design.md's bar (a) and OSD (d) on the real compositor and audio
+//! services (M3), end to end: `strand run` without `STRAND_MOCK` on a
+//! headless sway (`SWAYSOCK`: the sway IPC adapter) with a private
+//! PipeWire (null sinks, WirePlumber). The bar shows sway's workspaces
+//! (`for ws in workspaces.on(screen) { Dot ws }`: the occupied one and
+//! the focused pill) and the focused window's title, and a click on a
+//! dot switches sway's workspace (`ws.focus()`); a volume change made
+//! with `wpctl` pops the OSD up; `strand set audio.sink.volume` (absolute
+//! and `+5%`) lands in PipeWire, where `wpctl` reads it.
+//!
+//! Shots of each state are written to `$STRAND_SHOTS` when it is set.
+//! Skipped, loudly, without sway, grim, PipeWire or WirePlumber (CI sets
+//! `STRAND_REQUIRE_SWAY` and `STRAND_REQUIRE_PIPEWIRE`).
+
+mod support;
+
+#[path = "../../strand-services/tests/pipewire/mod.rs"]
+mod pipewire;
+#[allow(dead_code)]
+#[path = "../../strand-services/tests/common/window.rs"]
+mod window;
+
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+
+use pipewire::PipeWire;
+use strand_services::testing::PrivateBus;
+use support::pointer::Pointer;
+use window::TestWindow;
+
+const FILES: [(&str, &str); 3] = [
+    (
+        "theme.strand",
+        include_str!("../../strand-compiler/tests/fixtures/theme.strand"),
+    ),
+    (
+        "bar.strand",
+        include_str!("../../strand-compiler/tests/fixtures/bar.strand"),
+    ),
+    (
+        "osd.strand",
+        include_str!("../../strand-compiler/tests/fixtures/osd.strand"),
+    ),
+];
+
+const W: usize = 1280;
+const H: usize = 720;
+/// The bar's vertical middle: 8 px margin, 36 px high.
+const BAR_Y: usize = 26;
+/// The first workspace dot's left edge: the bar's 8 px margin and the
+/// split's 12 px padding.
+const DOTS_X: usize = 20;
+
+struct Proc(Child);
+
+impl Drop for Proc {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+struct Img {
+    w: usize,
+    h: usize,
+    rgb: Vec<u8>,
+}
+
+impl Img {
+    fn ppm(ppm: &[u8]) -> Img {
+        let mut nl = ppm.iter().enumerate().filter(|(_, b)| **b == b'\n');
+        let (a, b, c) = (
+            nl.next().unwrap().0,
+            nl.next().unwrap().0,
+            nl.next().unwrap().0,
+        );
+        let dims = std::str::from_utf8(&ppm[a + 1..b]).unwrap();
+        let mut it = dims.split_whitespace().map(|v| v.parse::<usize>().unwrap());
+        let (w, h) = (it.next().unwrap(), it.next().unwrap());
+        Img {
+            w,
+            h,
+            rgb: ppm[c + 1..c + 1 + w * h * 3].to_vec(),
+        }
+    }
+
+    fn px(&self, x: usize, y: usize) -> [u8; 3] {
+        let i = (y * self.w + x) * 3;
+        [self.rgb[i], self.rgb[i + 1], self.rgb[i + 2]]
+    }
+
+    fn count(
+        &self,
+        xs: std::ops::Range<usize>,
+        ys: std::ops::Range<usize>,
+        f: impl Fn([u8; 3]) -> bool,
+    ) -> usize {
+        ys.flat_map(|y| xs.clone().map(move |x| (x, y)))
+            .filter(|&(x, y)| x < self.w && y < self.h && f(self.px(x, y)))
+            .count()
+    }
+
+    /// The runs of accent (clearly blue) pixels along the bar's middle,
+    /// in the workspace dots' part, as `(start, end)` x ranges.
+    fn pills(&self) -> Vec<(usize, usize)> {
+        let mut runs = Vec::new();
+        let mut start = None;
+        for x in DOTS_X - 4..DOTS_X + 120 {
+            let on = blue(self.px(x, BAR_Y));
+            match (on, start) {
+                (true, None) => start = Some(x),
+                (false, Some(s)) => {
+                    runs.push((s, x));
+                    start = None;
+                }
+                _ => {}
+            }
+        }
+        runs
+    }
+}
+
+/// The accent: clearly blue (the theme's accent on the light surface).
+fn blue(p: [u8; 3]) -> bool {
+    p[2] as i32 - p[0] as i32 > 40 && p[2] > 110
+}
+
+struct Shell {
+    dir: PathBuf,
+    display: String,
+    ipc: PathBuf,
+    log: PathBuf,
+    shots: Option<PathBuf>,
+    n: std::cell::Cell<u32>,
+    strand: Option<Proc>,
+    _sway: Proc,
+}
+
+impl Drop for Shell {
+    fn drop(&mut self) {
+        self.strand.take();
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+impl Shell {
+    fn env(&self) -> Vec<(&'static str, PathBuf)> {
+        vec![
+            ("XDG_RUNTIME_DIR", self.dir.clone()),
+            ("WAYLAND_DISPLAY", PathBuf::from(&self.display)),
+            ("SWAYSOCK", self.ipc.clone()),
+        ]
+    }
+
+    fn log_text(&self) -> String {
+        std::fs::read_to_string(&self.log).unwrap_or_default()
+    }
+
+    fn shot(&self) -> Img {
+        let path = self.dir.join("shot.ppm");
+        let ok = Command::new("grim")
+            .args(["-t", "ppm", "-o", "HEADLESS-1"])
+            .arg(&path)
+            .envs(self.env())
+            .status()
+            .is_ok_and(|s| s.success());
+        assert!(ok, "grim");
+        Img::ppm(&std::fs::read(&path).unwrap())
+    }
+
+    fn keep(&self, name: &str) {
+        let Some(dir) = &self.shots else {
+            return;
+        };
+        let n = self.n.get() + 1;
+        self.n.set(n);
+        let _ = std::fs::create_dir_all(dir);
+        let _ = Command::new("grim")
+            .args(["-t", "png", "-o", "HEADLESS-1"])
+            .arg(dir.join(format!("wm-audio-{n:02}-{name}.png")))
+            .envs(self.env())
+            .status();
+    }
+
+    fn wait(&mut self, what: &str, done: impl Fn(&Shell) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !done(self) {
+            let exited = self
+                .strand
+                .as_mut()
+                .is_some_and(|p| p.0.try_wait().unwrap().is_some());
+            assert!(!exited, "strand exited: {}", self.log_text());
+            assert!(
+                Instant::now() < deadline,
+                "never: {what}\n{}",
+                self.log_text()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    fn swaymsg(&self, args: &[&str]) -> String {
+        let out = Command::new("swaymsg")
+            .args(args)
+            .env("SWAYSOCK", &self.ipc)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "swaymsg {args:?}");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// The name of the workspace sway has focused.
+    fn focused(&self) -> String {
+        let out = self.swaymsg(&["-t", "get_workspaces", "-r"]);
+        let v: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
+        v.iter()
+            .find(|w| w["focused"] == true)
+            .and_then(|w| w["name"].as_str())
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    fn cli(&self, args: &[&str]) {
+        let out = Command::new(env!("CARGO_BIN_EXE_strand"))
+            .args(args)
+            .envs(self.env())
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "strand {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+fn tools() -> bool {
+    for tool in ["sway", "swaymsg", "grim"] {
+        if Command::new(tool).arg("--version").output().is_err() {
+            assert!(
+                std::env::var_os("STRAND_REQUIRE_SWAY").is_none(),
+                "{tool} is not installed but STRAND_REQUIRE_SWAY is set"
+            );
+            eprintln!(
+                "\n*** SKIPPED: {tool} is not installed; the compositor and audio shells test did not run ***\n"
+            );
+            return false;
+        }
+    }
+    true
+}
+
+/// A headless sway in `dir`: the process, its display and its IPC socket.
+fn sway(dir: &Path) -> (Proc, String, PathBuf) {
+    let cfg = dir.join("sway.cfg");
+    std::fs::write(
+        &cfg,
+        format!("xwayland disable\noutput HEADLESS-1 resolution {W}x{H} position 0 0 scale 1\n"),
+    )
+    .unwrap();
+    let log = std::fs::File::create(dir.join("sway.log")).unwrap();
+    let mut cmd = Command::new("sway");
+    // SAFETY: the hook runs between fork and exec and makes one
+    // async-signal-safe syscall.
+    unsafe {
+        cmd.pre_exec(|| {
+            rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::KILL))
+                .map_err(std::io::Error::from)
+        });
+    }
+    let child = cmd
+        .arg("-c")
+        .arg(&cfg)
+        .env("XDG_RUNTIME_DIR", dir)
+        .env("WLR_BACKENDS", "headless")
+        .env("WLR_RENDERER", "pixman")
+        .env("WLR_LIBINPUT_NO_DEVICES", "1")
+        .env_remove("WAYLAND_DISPLAY")
+        .env_remove("SWAYSOCK")
+        .env_remove("DISPLAY")
+        .stdin(Stdio::null())
+        .stdout(log.try_clone().unwrap())
+        .stderr(log)
+        .spawn()
+        .unwrap();
+    let sway = Proc(child);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        let display = names
+            .iter()
+            .find(|e| e.starts_with("wayland-") && !e.ends_with(".lock"));
+        let ipc = names.iter().find(|e| e.starts_with("sway-ipc."));
+        if let (Some(d), Some(i)) = (display, ipc) {
+            let ok = Command::new("swaymsg")
+                .args(["-t", "get_version"])
+                .env("SWAYSOCK", dir.join(i))
+                .output()
+                .is_ok_and(|o| o.status.success());
+            if ok {
+                return (sway, d.clone(), dir.join(i));
+            }
+        }
+        assert!(Instant::now() < deadline, "sway did not start");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn design_shells_on_the_real_compositor_and_audio() {
+    if !tools() {
+        return;
+    }
+    let Some(pw) = PipeWire::start("design_shells_on_the_real_compositor_and_audio") else {
+        return;
+    };
+    pw.wait_for_defaults();
+    pw.wpctl(&["set-volume", "@DEFAULT_AUDIO_SINK@", "0.5"]);
+    // The other services (the tray) on a bus of their own.
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("strand-wm-audio-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let (sway, display, ipc) = sway(&dir);
+
+    // A window on workspace 1, then workspace 2: two dots, 1 occupied
+    // and 2 focused.
+    let socket = dir.join(&display);
+    let _window = TestWindow::open(&socket, "strand-e2e", "an e2e window");
+    let home = dir.join("home");
+    let config = home.join(".config/strand");
+    std::fs::create_dir_all(&config).unwrap();
+    for (name, text) in FILES {
+        std::fs::write(config.join(name), text).unwrap();
+    }
+    let log = dir.join("strand.log");
+    let strand = Proc(
+        Command::new(env!("CARGO_BIN_EXE_strand"))
+            .arg("run")
+            .arg(&config)
+            .env("XDG_RUNTIME_DIR", &dir)
+            .env("WAYLAND_DISPLAY", &display)
+            .env("SWAYSOCK", &ipc)
+            .env("PIPEWIRE_RUNTIME_DIR", pw.dir.path())
+            .env_remove("PIPEWIRE_REMOTE")
+            .env("HOME", &home)
+            .env("XDG_CACHE_HOME", dir.join("cache"))
+            .env("XDG_STATE_HOME", dir.join("state"))
+            .env("STRAND_LOG", "damage")
+            .envs(bus.env())
+            .env_remove("STRAND_MOCK")
+            .stdin(Stdio::null())
+            .stderr(std::fs::File::create(&log).unwrap())
+            .spawn()
+            .unwrap(),
+    );
+    let mut sh = Shell {
+        dir: dir.clone(),
+        display,
+        ipc,
+        log,
+        shots: std::env::var_os("STRAND_SHOTS").map(PathBuf::from),
+        n: std::cell::Cell::new(0),
+        strand: Some(strand),
+        _sway: sway,
+    };
+    // Workspace 1 (the window's) is focused: one pill, first.
+    sh.wait("workspace 1's pill", |s| {
+        let p = s.shot().pills();
+        p.len() == 1 && p[0].0 <= DOTS_X + 1
+    });
+    // The focused window's title is in the bar next to it.
+    sh.wait("the window's title", |s| {
+        let img = s.shot();
+        img.count(56..160, 18..34, |p| p[0] < 160) > 40
+    });
+    std::thread::sleep(Duration::from_millis(500));
+    sh.keep("workspace-1-with-a-window");
+    sh.swaymsg(&["workspace", "2"]);
+    sh.wait("workspace 2 focused: the pill moves right", |s| {
+        let p = s.shot().pills();
+        p.len() == 1 && p[0].0 > DOTS_X + 6
+    });
+    std::thread::sleep(Duration::from_millis(500));
+    sh.keep("workspace-2");
+    let img = sh.shot();
+    let pill = img.pills()[0];
+    eprintln!("pill on workspace 2: {pill:?}");
+    // Workspace 1's dot, occupied, left of the pill: not the bar's
+    // background.
+    let bg = img.px(DOTS_X - 6, BAR_Y);
+    assert_ne!(img.px(DOTS_X + 4, BAR_Y), bg, "workspace 1's dot");
+
+    // A click on workspace 1's dot: `ws.focus()` switches sway.
+    let mut pointer = Pointer::new(&sh.dir.join(&sh.display));
+    // (A new virtual pointer's first buttons reach no surface: one on
+    // the empty desktop first.)
+    pointer.click(1200, 700, W as u32, H as u32);
+    std::thread::sleep(Duration::from_millis(200));
+    pointer.click(DOTS_X as u32 + 4, BAR_Y as u32, W as u32, H as u32);
+    pointer.motion(1200, 700, W as u32, H as u32);
+    sh.wait("sway on workspace 1", |s| s.focused() == "1");
+    sh.wait("the pill back on workspace 1", |s| {
+        let p = s.shot().pills();
+        p.len() == 1 && p[0].0 <= DOTS_X + 1
+    });
+    std::thread::sleep(Duration::from_millis(500));
+    sh.keep("clicked-workspace-1");
+
+    // The OSD's part of the screen, against the desktop.
+    let osd = |img: &Img| {
+        img.count(W / 2 - 140..W / 2 + 140, H - 140..H - 60, |p| {
+            p != img.px(8, H / 2)
+        })
+    };
+    assert!(osd(&sh.shot()) < 100, "no OSD before a change");
+
+    // A volume change from outside (wpctl) pops the OSD up.
+    pw.wpctl(&["set-volume", "@DEFAULT_AUDIO_SINK@", "0.3"]);
+    sh.wait("the OSD", |s| osd(&s.shot()) > 1000);
+    std::thread::sleep(Duration::from_millis(400));
+    sh.keep("osd-wpctl-30");
+    // ... and it goes 1.2 s after the last change.
+    sh.wait("the OSD gone", |s| osd(&s.shot()) < 100);
+
+    // `strand set audio.sink.volume`: absolute, then a relative step,
+    // land in PipeWire.
+    sh.cli(&["set", "audio.sink.volume", "0.55"]);
+    sh.wait("PipeWire at 0.55", |_| {
+        pw.volume_of("@DEFAULT_AUDIO_SINK@").0 == 0.55
+    });
+    sh.wait("the OSD for the set", |s| osd(&s.shot()) > 1000);
+    std::thread::sleep(Duration::from_millis(400));
+    sh.keep("osd-strand-set-55");
+    sh.cli(&["set", "audio.sink.volume", "+5%"]);
+    sh.wait("PipeWire at 0.6", |_| {
+        (pw.volume_of("@DEFAULT_AUDIO_SINK@").0 - 0.6).abs() < 0.001
+    });
+    sh.cli(&["set", "audio.sink.muted", "true"]);
+    sh.wait("PipeWire muted", |_| pw.volume_of("@DEFAULT_AUDIO_SINK@").1);
+}

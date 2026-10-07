@@ -2,14 +2,17 @@
 //! (null sinks, WirePlumber): its loop runs on the service's own thread;
 //! outside changes arrive as reports; `audio.sink.volume` and item writes
 //! land where `wpctl` reads them, a slider's writes never snap back;
-//! `make_default()` moves the default; level meters run only for a tap
-//! and only while a reader is visible; the service stops 5 s (logic
-//! clock) after its last reader.
+//! `make_default()` moves the default; nothing wakes the host while
+//! nothing changes; level meters run only for a tap and only while a
+//! reader is visible; the service stops 5 s (logic clock) after its last
+//! reader.
 
 #![cfg(feature = "pipewire")]
 
 mod pipewire;
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use pipewire::PipeWire;
@@ -50,7 +53,11 @@ fn the_audio_store_follows_and_writes_pipewire() {
     pw.wait_for_defaults();
     audio::configure(Some(pw.config()));
     let rt = Runtime::new();
-    let s = Services::new(&rt, Buses::none(), || {});
+    let wakes = Arc::new(AtomicU32::new(0));
+    let w = wakes.clone();
+    let s = Services::new(&rt, Buses::none(), move || {
+        w.fetch_add(1, Ordering::SeqCst);
+    });
     let b = Builtin::register(&s, &rt);
     let dynamic = b.audio.dynamic();
 
@@ -127,6 +134,16 @@ fn the_audio_store_follows_and_writes_pipewire() {
     s.pump(&rt);
     rt.flush();
     assert!((state(&b, &rt).sink.volume - last).abs() < 1e-9);
+
+    // Idle: nothing changes, nothing wakes the logic thread (no polling
+    // on the service's thread either).
+    let before = wakes.load(Ordering::SeqCst);
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(
+        wakes.load(Ordering::SeqCst),
+        before,
+        "an idle PipeWire woke the host"
+    );
 
     // An item write: `s.volume = 0.6` for `s` in `audio.sinks`.
     let item = state(&b, &rt)

@@ -42,7 +42,11 @@ libmimalloc-sys = { version = "0.1.49", features = ["extended"] }
 wayland-client = "0.31.15"
 wayland-protocols-misc = { version = "0.3.12", features = ["client"] }
 wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
-rustix = { version = "1.1.5", features = ["process"] }
+rustix = { version = "1.1.5", features = ["process", "event", "fs"] }
+# The compositor and audio end-to-end test: a real window (xdg-shell) on
+# sway and a private PipeWire (strand-services' test helpers).
+wayland-protocols = { version = "0.32.13", features = ["client"] }
+tempfile = "3.27.0"
 
 [lints]
 workspace = true
