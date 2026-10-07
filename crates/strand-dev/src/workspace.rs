@@ -99,6 +99,9 @@ pub struct Analysis {
     pub schema: Arc<Schema>,
     /// Files and directories read from disk, to notice changes.
     stamps: Vec<Stamp>,
+    /// It checks `from dbus` services, against the introspection answers
+    /// in by then ([`introspected`]).
+    introspected: Option<u64>,
     /// The last [`Analysis::with_inserted`] asked for, kept with this
     /// analysis (so dropped when the text changes): completion after a
     /// `.` asks for the same one again on every request at that place.
@@ -124,13 +127,23 @@ impl Analysis {
         }
         let mut compiled = strand_compiler::compile_with(&map, &schema);
         // `from dbus` services against the bus's introspection (answers
-        // remembered a while: one bus call per service, not per edit).
-        compiled
-            .diagnostics
-            .extend(strand_compiler::check::dbus::check(
-                &compiled.program,
-                introspector(),
-            ));
+        // remembered a while: one bus call per service, not per edit;
+        // never waited for here).
+        let dbus = compiled.program.files.iter().any(|f| {
+            f.items.iter().any(|i| {
+                matches!(i, strand_compiler::hir::Item::Service(s)
+                    if matches!(s.spec, Some(strand_compiler::hir::SourceSpec::Dbus { .. })))
+            })
+        });
+        let introspected = dbus.then(|| introspector().answered());
+        if dbus {
+            compiled
+                .diagnostics
+                .extend(strand_compiler::check::dbus::check(
+                    &compiled.program,
+                    introspector(),
+                ));
+        }
         Self {
             key,
             map,
@@ -139,6 +152,7 @@ impl Analysis {
             compiled,
             schema,
             stamps,
+            introspected,
             inserted: Mutex::new(None),
         }
     }
@@ -193,9 +207,13 @@ impl Analysis {
         self.inserted.lock().ok()?.as_ref().map(|(.., a)| a.clone())
     }
 
-    /// Nothing it read from disk has changed since.
+    /// Nothing it read from disk has changed since, nor any D-Bus object
+    /// it checks against answered since.
     fn fresh(&self) -> bool {
         self.stamps.iter().all(Stamp::fresh)
+            && self
+                .introspected
+                .is_none_or(|n| n == introspector().answered())
     }
 
     pub fn file(&self, uri: &str) -> Option<FileId> {
@@ -503,41 +521,63 @@ impl Workspace {
     }
 }
 
-/// D-Bus introspection on the environment's buses, answers (failures too)
-/// remembered for 10 s.
-#[derive(Debug, Default)]
+/// D-Bus introspection on the environment's buses for the analyses
+/// ([`strand_introspect::Cache`], as `strand check` and the loader use):
+/// an analysis never waits on a bus. An object not answered yet is left
+/// unchecked and asked on a thread of its own; once its answer is in (or
+/// differs from the one remembered), [`Introspector::answered`] moves on,
+/// analyses that checked `from dbus` services before that are stale, and
+/// [`introspected`] wakes the server to publish them again.
+#[derive(Debug)]
 struct Introspector {
-    seen: Mutex<std::collections::HashMap<Object, Seen>>,
+    cache: Arc<strand_introspect::Cache>,
+    answered: Arc<std::sync::atomic::AtomicU64>,
+    wake: (
+        crossbeam_channel::Sender<()>,
+        crossbeam_channel::Receiver<()>,
+    ),
 }
-
-type Answer = Result<Vec<strand_compiler::check::dbus::BusProperty>, String>;
-
-/// Bus (system?), name and path.
-type Object = (bool, String, String);
-
-/// When it was asked, and the answer.
-type Seen = (std::time::Instant, Answer);
 
 fn introspector() -> &'static Introspector {
     static I: std::sync::OnceLock<Introspector> = std::sync::OnceLock::new();
-    I.get_or_init(Introspector::default)
+    I.get_or_init(|| Introspector {
+        cache: Arc::new(strand_introspect::Cache::default()),
+        answered: Arc::default(),
+        wake: crossbeam_channel::unbounded(),
+    })
+}
+
+/// Ticks when an introspection answer came in: analyses that check a
+/// `from dbus` service are due again.
+pub fn introspected() -> &'static crossbeam_channel::Receiver<()> {
+    &introspector().wake.1
+}
+
+impl Introspector {
+    fn answered(&self) -> u64 {
+        self.answered.load(std::sync::atomic::Ordering::SeqCst)
+    }
 }
 
 impl strand_compiler::check::dbus::Introspect for Introspector {
-    fn properties(&self, system: bool, name: &str, path: &str) -> Answer {
-        let key = (system, name.to_string(), path.to_string());
-        if let Ok(seen) = self.seen.lock()
-            && let Some((at, answer)) = seen.get(&key)
-            && at.elapsed() < std::time::Duration::from_secs(10)
-        {
-            return answer.clone();
-        }
+    fn properties(
+        &self,
+        system: bool,
+        name: &str,
+        path: &str,
+    ) -> Option<Result<Vec<strand_compiler::check::dbus::BusProperty>, String>> {
         let bus = if system {
             strand_introspect::Bus::System
         } else {
             strand_introspect::Bus::Session
         };
-        let answer: Answer = strand_introspect::properties(&bus, name, path).map(|props| {
+        let answered = self.answered.clone();
+        let wake = self.wake.0.clone();
+        let answer = self.cache.properties_or_ask(&bus, name, path, move || {
+            answered.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let _ = wake.send(());
+        })?;
+        Some(answer.map(|props| {
             props
                 .into_iter()
                 .map(|p| strand_compiler::check::dbus::BusProperty {
@@ -547,10 +587,6 @@ impl strand_compiler::check::dbus::Introspect for Introspector {
                     writable: p.writable,
                 })
                 .collect()
-        });
-        if let Ok(mut seen) = self.seen.lock() {
-            seen.insert(key, (std::time::Instant::now(), answer.clone()));
-        }
-        answer
+        }))
     }
 }

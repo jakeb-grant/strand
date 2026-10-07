@@ -2497,6 +2497,23 @@ impl<'a> Checker<'a> {
                 )
                 .help = Some("`profile: text rw = ActiveProfile`".into());
             }
+            // A D-Bus field reads one property whole: `= Prop.sub` would
+            // otherwise read `Prop` and drop `.sub` without a word.
+            if kind == "dbus"
+                && key.len() > 1
+                && let Some(d) = &f.default
+            {
+                self.error(
+                    "check::type_mismatch",
+                    "a `dbus` service's field reads one property: name it alone",
+                    d.span,
+                    "a key path, not a property name",
+                )
+                .help = Some(format!(
+                    "`= {}`; declare the property's dictionary or struct as a `type`",
+                    key[0]
+                ));
+            }
             if let Some(rw) = f.rw
                 && kind != "dbus"
             {

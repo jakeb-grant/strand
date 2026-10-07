@@ -10,7 +10,9 @@
 //! scanner of its own: only `<interface name>` and `<property name type
 //! access>` matter.
 
-use std::time::Duration;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 /// How long introspecting may take (connecting included) before it is
 /// given up: a check must not hang on a bus that does not answer.
@@ -141,7 +143,7 @@ pub async fn properties_on(
 }
 
 /// Which bus.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Bus {
     /// The environment's system bus (`DBUS_SYSTEM_BUS_ADDRESS`, else the
     /// system socket).
@@ -180,9 +182,205 @@ pub fn properties(bus: &Bus, name: &str, path: &str) -> Result<Vec<Property>, St
     })
 }
 
+/// What introspecting one object answered: its properties, or why they
+/// could not be read.
+pub type Answer = Result<Vec<Property>, String>;
+
+type Fetch = dyn Fn(&Bus, &str, &str) -> Answer + Send + Sync;
+
+/// Bus, name and path.
+type Key = (Bus, String, String);
+
+#[derive(Default)]
+struct Entry {
+    /// When it was last answered, and the answer.
+    known: Option<(Instant, Answer)>,
+    /// A background ask ([`Cache::properties_or_ask`]) is under way.
+    asking: bool,
+}
+
+/// [`properties`] answers, failures included, remembered for a while: a
+/// reload burst or an LSP's keystrokes ask the bus once per object, and a
+/// daemon that does not answer costs one bounded wait per `ttl`. `strand
+/// check`, the loader and the LSP share it.
+pub struct Cache {
+    ttl: Duration,
+    fetch: Box<Fetch>,
+    seen: Mutex<HashMap<Key, Entry>>,
+}
+
+impl std::fmt::Debug for Cache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Cache").field("ttl", &self.ttl).finish()
+    }
+}
+
+/// How long [`Cache::new`]'s answers are reused.
+pub const TTL: Duration = Duration::from_secs(10);
+
+impl Default for Cache {
+    fn default() -> Self {
+        Self::new(TTL)
+    }
+}
+
+impl Cache {
+    /// Introspection on the buses ([`properties`]), answers reused `ttl`.
+    pub fn new(ttl: Duration) -> Self {
+        Self::with_fetch(ttl, properties)
+    }
+
+    /// The same over another way of asking (tests).
+    pub fn with_fetch(
+        ttl: Duration,
+        fetch: impl Fn(&Bus, &str, &str) -> Answer + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            ttl,
+            fetch: Box::new(fetch),
+            seen: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn key(bus: &Bus, name: &str, path: &str) -> Key {
+        (bus.clone(), name.to_string(), path.to_string())
+    }
+
+    fn remember(&self, key: Key, answer: &Answer) -> bool {
+        let Ok(mut seen) = self.seen.lock() else {
+            return true;
+        };
+        let e = seen.entry(key).or_default();
+        let changed = e.known.as_ref().is_none_or(|(_, a)| a != answer);
+        e.known = Some((Instant::now(), answer.clone()));
+        e.asking = false;
+        changed
+    }
+
+    /// `path`'s properties, blocking at most [`TIMEOUT`] when the answer
+    /// is not remembered (or is older than the ttl).
+    pub fn properties(&self, bus: &Bus, name: &str, path: &str) -> Answer {
+        let key = Self::key(bus, name, path);
+        if let Ok(seen) = self.seen.lock()
+            && let Some((at, answer)) = seen.get(&key).and_then(|e| e.known.as_ref())
+            && at.elapsed() < self.ttl
+        {
+            return answer.clone();
+        }
+        let answer = (self.fetch)(bus, name, path);
+        self.remember(key, &answer);
+        answer
+    }
+
+    /// `path`'s properties without waiting on the bus: the remembered
+    /// answer (even one past the ttl, which is asked again meanwhile), or
+    /// `None` when nothing was ever answered. A question this call starts
+    /// runs on a thread of its own and calls `done` when its answer
+    /// differs from what was remembered (the caller checks again). For
+    /// the LSP, whose analyses must not wait on a daemon.
+    pub fn properties_or_ask(
+        self: &Arc<Self>,
+        bus: &Bus,
+        name: &str,
+        path: &str,
+        done: impl FnOnce() + Send + 'static,
+    ) -> Option<Answer> {
+        let key = Self::key(bus, name, path);
+        let remembered = {
+            let Ok(mut seen) = self.seen.lock() else {
+                return Some((self.fetch)(bus, name, path));
+            };
+            let e = seen.entry(key.clone()).or_default();
+            let remembered = e
+                .known
+                .as_ref()
+                .map(|(at, a)| (at.elapsed() < self.ttl, a.clone()));
+            if let Some((true, answer)) = remembered {
+                return Some(answer);
+            }
+            if e.asking {
+                return remembered.map(|(_, a)| a);
+            }
+            e.asking = true;
+            remembered.map(|(_, a)| a)
+        };
+        let me = self.clone();
+        let (b, n, p) = key.clone();
+        let spawned = std::thread::Builder::new()
+            .name("strand-introspect".into())
+            .spawn(move || {
+                let answer = (me.fetch)(&b, &n, &p);
+                if me.remember((b, n, p), &answer) {
+                    done();
+                }
+            });
+        if spawned.is_err() {
+            // No thread to ask on: ask here.
+            let answer = (self.fetch)(bus, name, path);
+            self.remember(key, &answer);
+            return Some(answer);
+        }
+        remembered
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The cache asks once per ttl, blocking or not; a non-blocking
+    /// question is answered on its own thread and `done` says so only
+    /// when the answer changed.
+    #[test]
+    fn cached_answers_are_reused_and_asked_off_the_caller() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let asked = Arc::new(AtomicUsize::new(0));
+        let a = asked.clone();
+        let cache = Arc::new(Cache::with_fetch(
+            Duration::from_millis(200),
+            move |_, _, _| {
+                a.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(50));
+                Err("down".to_string())
+            },
+        ));
+        let bus = Bus::Session;
+        assert_eq!(cache.properties(&bus, "a.B", "/a"), Err("down".into()));
+        assert_eq!(cache.properties(&bus, "a.B", "/a"), Err("down".into()));
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+        // Another object, not blocking: nothing known yet, asked on a
+        // thread; the caller is not held up by the 50 ms answer.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let t = Instant::now();
+        let tx1 = tx.clone();
+        assert_eq!(
+            cache.properties_or_ask(&bus, "c.D", "/c", move || {
+                let _ = tx1.send(());
+            }),
+            None
+        );
+        assert!(t.elapsed() < Duration::from_millis(40));
+        // Asked once while the first question is out.
+        assert_eq!(cache.properties_or_ask(&bus, "c.D", "/c", || {}), None);
+        rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(asked.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            cache.properties_or_ask(&bus, "c.D", "/c", || {}),
+            Some(Err("down".into()))
+        );
+        // Past the ttl: the old answer now, asked again behind it; the
+        // same answer again is no news (no `done`).
+        std::thread::sleep(Duration::from_millis(250));
+        let tx2 = tx.clone();
+        assert_eq!(
+            cache.properties_or_ask(&bus, "c.D", "/c", move || {
+                let _ = tx2.send(());
+            }),
+            Some(Err("down".into()))
+        );
+        assert!(rx.recv_timeout(Duration::from_millis(300)).is_err());
+        assert_eq!(asked.load(Ordering::SeqCst), 3);
+    }
 
     #[test]
     fn introspection_xml_gives_properties_by_interface() {

@@ -1015,6 +1015,15 @@ bar B { text join(" ", ppd.profile, ups.level, mood.level, music.title ?? "", te
     );
     assert!(codes("service t from poll [\"sensors\", \"-j\"] every 5s { cpu: float = package; permit exec \"sensors\" }").is_empty());
     assert!(codes("service t from listen [\"curl\", \"x\"] { a: int; permit exec }").is_empty());
+    // A D-Bus field reads one property whole; a key path on it is an
+    // error, not `Prop` read silently (a file's key path walks the document).
+    assert_eq!(
+        codes(
+            "service p from dbus system \"net.hadess.PowerProfiles\" { a: text = ActiveProfile.sub }"
+        ),
+        ["check::type_mismatch"]
+    );
+    assert!(codes("service f from file \"/tmp/x.json\" { a: int = outer.inner }").is_empty());
     // Only D-Bus properties are written.
     assert_eq!(
         codes("service f from file \"/tmp/x\" { a: int rw }"),
@@ -1052,14 +1061,14 @@ bar B { text join(" ", ppd.profile, ups.level, mood.level, music.title ?? "", te
 #[test]
 fn dbus_services_are_checked_against_introspection() {
     use strand_compiler::check::dbus::{BusProperty, Introspect, check};
-    struct Fake(Result<Vec<BusProperty>, String>);
+    struct Fake(Option<Result<Vec<BusProperty>, String>>);
     impl Introspect for Fake {
         fn properties(
             &self,
             system: bool,
             name: &str,
             path: &str,
-        ) -> Result<Vec<BusProperty>, String> {
+        ) -> Option<Result<Vec<BusProperty>, String>> {
             assert!(system);
             assert_eq!(name, "net.hadess.PowerProfiles");
             assert_eq!(path, "/net/hadess/PowerProfiles");
@@ -1072,11 +1081,11 @@ fn dbus_services_are_checked_against_introspection() {
         signature: sig.into(),
         writable,
     };
-    let ppd = Fake(Ok(vec![
+    let ppd = Fake(Some(Ok(vec![
         prop("ActiveProfile", "s", true),
         prop("PerformanceDegraded", "s", false),
         prop("Profiles", "aa{sv}", false),
-    ]));
+    ])));
     let src = |fields: &str| {
         format!(
             "service ppd from dbus system \"net.hadess.PowerProfiles\" {{ {fields} }}\nbar B {{ text \"x\" }}\n"
@@ -1104,7 +1113,9 @@ fn dbus_services_are_checked_against_introspection() {
     assert!(d[0].message.contains("`s`"), "{}", d[0].message);
     let d = run("degraded: text rw = PerformanceDegraded", &ppd);
     assert_eq!(d[0].code, "check::dbus_read_only", "{d:?}");
-    let down = Fake(Err("cannot reach the bus: no such file".into()));
+    // An answer still being asked for (the LSP's): not checked, no word.
+    assert!(run("profile: int rw = Nope", &Fake(None)).is_empty());
+    let down = Fake(Some(Err("cannot reach the bus: no such file".into())));
     let d = run("profile: text rw = ActiveProfile", &down);
     assert_eq!(d.len(), 1);
     assert_eq!(d[0].code, "check::dbus_unchecked");

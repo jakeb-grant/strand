@@ -60,23 +60,27 @@ impl Dir {
             Kind::Scalable => self.min <= size && size <= self.max,
             Kind::Threshold => {
                 self.size.saturating_sub(self.threshold) <= size
-                    && size <= self.size + self.threshold
+                    && size <= self.size.saturating_add(self.threshold)
             }
         }
     }
 
+    /// How far the directory's size is from `size` at `scale`, in device
+    /// pixels. Saturating: the sizes come from an `index.theme` (any
+    /// `MaxSize=4294967295`).
     fn distance(&self, size: u32, scale: u32) -> u32 {
-        let want = size * scale;
+        let want = size.saturating_mul(scale);
+        let at = |n: u32| n.saturating_mul(self.scale);
         match self.kind {
-            Kind::Fixed => (self.size * self.scale).abs_diff(want),
-            Kind::Scalable => {
-                (self.min * self.scale).saturating_sub(want)
-                    + want.saturating_sub(self.max * self.scale)
-            }
+            Kind::Fixed => at(self.size).abs_diff(want),
+            Kind::Scalable => at(self.min)
+                .saturating_sub(want)
+                .saturating_add(want.saturating_sub(at(self.max))),
             Kind::Threshold => {
-                let lo = self.size.saturating_sub(self.threshold) * self.scale;
-                let hi = (self.size + self.threshold) * self.scale;
-                lo.saturating_sub(want) + want.saturating_sub(hi)
+                let lo = at(self.size.saturating_sub(self.threshold));
+                let hi = at(self.size.saturating_add(self.threshold));
+                lo.saturating_sub(want)
+                    .saturating_add(want.saturating_sub(hi))
             }
         }
     }
@@ -538,5 +542,24 @@ mod tests {
         assert!(threshold.matches(22, 1) && threshold.matches(26, 1) && !threshold.matches(27, 1));
         assert_eq!(threshold.distance(30, 1), 4);
         assert!(parse_index("[Other]\nx=1").is_none());
+    }
+
+    /// Sizes an odd `index.theme` declares at the edge of `u32` saturate
+    /// instead of overflowing (a panic in debug builds).
+    #[test]
+    fn huge_index_sizes_saturate() {
+        let text = "[Icon Theme]\nDirectories=a,b,c\n\
+                    [a]\nSize=4294967295\nScale=2\nType=Fixed\n\
+                    [b]\nSize=16\nMinSize=4294967295\nMaxSize=4294967295\nScale=4294967295\nType=Scalable\n\
+                    [c]\nSize=4294967295\nThreshold=4294967295\nScale=3\n";
+        let (_, dirs) = parse_index(text).unwrap();
+        for d in &dirs {
+            for (size, scale) in [(1, 1), (48, 2), (65535, 65535)] {
+                let _ = d.matches(size, scale);
+                let _ = d.distance(size, scale);
+            }
+        }
+        assert_eq!(dirs[0].distance(48, 2), u32::MAX - 96);
+        assert!(dirs[2].matches(4294967295, 3));
     }
 }

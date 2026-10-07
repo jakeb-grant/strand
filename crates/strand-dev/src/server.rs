@@ -12,7 +12,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::RecvTimeoutError;
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
 use lsp_types::{
     CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams,
@@ -200,24 +199,25 @@ impl Server<'_> {
             if self.deadline.is_some_and(|d| d <= Instant::now()) {
                 self.flush()?;
             }
-            let msg = match self.deadline {
-                Some(d) => {
-                    match self
-                        .conn
-                        .receiver
-                        .recv_timeout(d.saturating_duration_since(Instant::now()))
-                    {
-                        Ok(m) => m,
-                        Err(RecvTimeoutError::Timeout) => {
-                            self.flush()?;
-                            continue;
-                        }
-                        Err(RecvTimeoutError::Disconnected) => return Ok(()),
-                    }
-                }
-                None => match self.conn.receiver.recv() {
+            let timer = match self.deadline {
+                Some(d) => crossbeam_channel::after(d.saturating_duration_since(Instant::now())),
+                None => crossbeam_channel::never(),
+            };
+            let msg = crossbeam_channel::select! {
+                recv(self.conn.receiver) -> m => match m {
                     Ok(m) => m,
                     Err(_) => return Ok(()),
+                },
+                // An introspection answer came in: what checks `from
+                // dbus` services is due again.
+                recv(crate::workspace::introspected()) -> _ => {
+                    while crate::workspace::introspected().try_recv().is_ok() {}
+                    self.introspected();
+                    continue;
+                },
+                recv(timer) -> _ => {
+                    self.flush()?;
+                    continue;
                 },
             };
             match msg {
@@ -352,6 +352,17 @@ impl Server<'_> {
         }
         self.prune();
         Ok(())
+    }
+
+    /// Schedules what is shown for a check again: an analysis that checked
+    /// a `from dbus` service against introspection is stale once a bus
+    /// answered ([`Workspace::analysis`] rebuilds it).
+    fn introspected(&mut self) {
+        let keys: Vec<ConfigKey> = self.published.keys().cloned().collect();
+        if !keys.is_empty() {
+            self.dirty.extend(keys);
+            self.deadline = Some(Instant::now() + self.debounce);
+        }
     }
 
     /// Schedules the configs a request found changed on disk (the client

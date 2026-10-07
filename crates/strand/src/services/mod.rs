@@ -2181,22 +2181,16 @@ service shelf {
                     _system: bool,
                     name: &str,
                     path: &str,
-                ) -> Result<Vec<strand_compiler::check::dbus::BusProperty>, String>
+                ) -> Option<Result<Vec<strand_compiler::check::dbus::BusProperty>, String>>
                 {
-                    let props = strand_introspect::properties(
-                        &strand_introspect::Bus::Address(self.0.clone()),
-                        name,
-                        path,
-                    )?;
-                    Ok(props
-                        .into_iter()
-                        .map(|p| strand_compiler::check::dbus::BusProperty {
-                            interface: p.interface,
-                            name: p.name,
-                            signature: p.signature,
-                            writable: p.writable,
-                        })
-                        .collect())
+                    Some(
+                        strand_introspect::properties(
+                            &strand_introspect::Bus::Address(self.0.clone()),
+                            name,
+                            path,
+                        )
+                        .map(crate::services::custom::bus_properties),
+                    )
                 }
             }
             let check = |src: &str| {

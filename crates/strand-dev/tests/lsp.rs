@@ -1699,3 +1699,59 @@ service weather {
     plain.open("b.strand");
     assert!(!plain.diagnostics("b.strand").is_empty());
 }
+
+/// A `from dbus` service is checked against introspection off the
+/// analysis path: a bus that does not answer holds no publish up (the
+/// first one comes before the 2 s introspection bound), and once the
+/// question gives up the diagnostics are published again with the
+/// "not checked" warning. Runs in a child process of its own, whose
+/// session bus is a socket nobody answers on.
+#[test]
+fn dbus_services_are_checked_off_the_analysis_path() {
+    const NAME: &str = "dbus_services_are_checked_off_the_analysis_path";
+    const ENV: &str = "STRAND_LSP_TEST_HUNG_BUS";
+    if std::env::var_os(ENV).is_none() {
+        let dir = TempDir::new();
+        let sock = dir.0.join("bus");
+        // Connections queue in the backlog and are never answered.
+        let _listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", NAME, "--test-threads=1"])
+            .env(ENV, "1")
+            .env(
+                "DBUS_SESSION_BUS_ADDRESS",
+                format!("unix:path={}", sock.display()),
+            )
+            .output()
+            .unwrap();
+        let log = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(out.status.success(), "{log}");
+        assert!(log.contains("1 passed"), "{log}");
+        return;
+    }
+    let src = "service thing from dbus session \"org.example.Hung\" { level: float = Level }\n\
+               bar B { text \"x\" }\n"
+        .to_string();
+    let mut c = Client::start(&[("a.strand", src)]);
+    let t = Instant::now();
+    c.open("a.strand");
+    assert_eq!(c.diagnostics("a.strand"), Vec::<Value>::new());
+    assert!(
+        t.elapsed() < Duration::from_millis(1500),
+        "the analysis waited on the bus: {:?}",
+        t.elapsed()
+    );
+    let diags = c
+        .diagnostics_within("a.strand", Duration::from_secs(10))
+        .expect("published again once the bus gave up");
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert_eq!(diags[0]["code"], "check::dbus_unchecked");
+    assert!(
+        diags[0]["message"].as_str().unwrap().contains("no answer"),
+        "{diags:?}"
+    );
+}

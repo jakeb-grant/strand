@@ -26,8 +26,16 @@ pub struct BusProperty {
 /// Reads an object's properties from a bus.
 pub trait Introspect {
     /// The properties of `path` of bus name `name` on the system (or
-    /// session) bus; `Err` says why it could not be read.
-    fn properties(&self, system: bool, name: &str, path: &str) -> Result<Vec<BusProperty>, String>;
+    /// session) bus; `Err` says why it could not be read. `None` while
+    /// the answer is still being asked for (the LSP does not wait on a
+    /// bus): the service is not checked now, nor warned about, and the
+    /// caller checks again once the answer is in.
+    fn properties(
+        &self,
+        system: bool,
+        name: &str,
+        path: &str,
+    ) -> Option<Result<Vec<BusProperty>, String>>;
 }
 
 /// The object path a bus name's object is at by convention.
@@ -73,8 +81,9 @@ pub fn check(program: &hir::Program, intro: &dyn Introspect) -> Vec<Diagnostic> 
             let path = path.clone().unwrap_or_else(|| default_path(name));
             let service = &program.def(s.def).name;
             let props = match intro.properties(*system, name, &path) {
-                Ok(p) => p,
-                Err(why) => {
+                None => continue,
+                Some(Ok(p)) => p,
+                Some(Err(why)) => {
                     let mut d = Diagnostic::warning(
                         "check::dbus_unchecked",
                         format!("`{service}` was not checked against D-Bus introspection: {why}"),

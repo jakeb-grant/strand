@@ -191,9 +191,14 @@ cache `invalidate()` refreshes (`lookup(name, size, scale, theme)`,
 through it. `strand-introspect` reads an object's properties from its
 D-Bus introspection (`properties_on(conn, name, path)` async,
 `properties(&Bus, name, path)` blocking with a 2 s bound, `parse(xml)`,
-`default_path(name)`): what `from dbus` services are checked against
-(`strand check`, the loader, the LSP) and what the running service reads
-signatures from.
+`default_path(name)`, and `Cache`: answers remembered for `TTL` (10 s),
+`properties` blocking, `properties_or_ask` answering from what it
+remembers and asking on a thread of its own): what `from dbus` services
+are checked against (`strand check`, the loader, the LSP) and what the
+running service reads signatures from. The compiler's
+`check::dbus::Introspect::properties` answers `None` while a question is
+out (the LSP's, which never waits on a bus: an unanswered service is
+unchecked until the answer wakes the server to publish again).
 
 `strand-scene` has no heavy dependencies; it is what lets render and surface
 be built and tested without the language, and the language without pixels.

@@ -583,54 +583,43 @@ impl ServiceHost for CustomHost {
 /// D-Bus introspection for the compiler's `from dbus` check
 /// ([`strand_compiler::check::dbus`]), on the environment's buses (a test
 /// points `DBUS_SYSTEM_BUS_ADDRESS` and `DBUS_SESSION_BUS_ADDRESS` at a
-/// private bus). Answers, failures included, are remembered for
-/// [`INTROSPECT_TTL`], so a reload burst (or an LSP's keystrokes) asks
-/// once and a daemon that does not answer costs one bounded wait.
+/// private bus), blocking. Answers, failures included, are remembered for
+/// [`strand_introspect::TTL`] ([`strand_introspect::Cache`], shared with the
+/// LSP's), so a reload burst asks once and a daemon that does not answer
+/// costs one bounded wait.
 #[derive(Debug, Default)]
 pub struct BusIntrospector {
-    seen: std::sync::Mutex<HashMap<Object, Seen>>,
+    cache: strand_introspect::Cache,
 }
 
-type Answer = Result<Vec<strand_compiler::check::dbus::BusProperty>, String>;
-
-/// Bus (system?), name and path.
-type Object = (bool, String, String);
-
-/// When it was asked, and the answer.
-type Seen = (std::time::Instant, Answer);
-
-/// How long an introspection answer is reused.
-pub const INTROSPECT_TTL: std::time::Duration = std::time::Duration::from_secs(10);
+/// Introspected properties as the compiler's check reads them.
+pub fn bus_properties(
+    props: Vec<strand_introspect::Property>,
+) -> Vec<strand_compiler::check::dbus::BusProperty> {
+    props
+        .into_iter()
+        .map(|p| strand_compiler::check::dbus::BusProperty {
+            interface: p.interface,
+            name: p.name,
+            signature: p.signature,
+            writable: p.writable,
+        })
+        .collect()
+}
 
 impl strand_compiler::check::dbus::Introspect for BusIntrospector {
-    fn properties(&self, system: bool, name: &str, path: &str) -> Answer {
-        let key = (system, name.to_string(), path.to_string());
-        if let Ok(seen) = self.seen.lock()
-            && let Some((at, answer)) = seen.get(&key)
-            && at.elapsed() < INTROSPECT_TTL
-        {
-            return answer.clone();
-        }
+    fn properties(
+        &self,
+        system: bool,
+        name: &str,
+        path: &str,
+    ) -> Option<Result<Vec<strand_compiler::check::dbus::BusProperty>, String>> {
         let bus = if system {
             strand_introspect::Bus::System
         } else {
             strand_introspect::Bus::Session
         };
-        let answer: Answer = strand_introspect::properties(&bus, name, path).map(|props| {
-            props
-                .into_iter()
-                .map(|p| strand_compiler::check::dbus::BusProperty {
-                    interface: p.interface,
-                    name: p.name,
-                    signature: p.signature,
-                    writable: p.writable,
-                })
-                .collect()
-        });
-        if let Ok(mut seen) = self.seen.lock() {
-            seen.insert(key, (std::time::Instant::now(), answer.clone()));
-        }
-        answer
+        Some(self.cache.properties(&bus, name, path).map(bus_properties))
     }
 }
 
