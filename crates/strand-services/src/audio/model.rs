@@ -116,16 +116,39 @@ pub fn icon(direction: Direction, volume: f64, muted: bool) -> &'static str {
 /// of the cube and its root).
 pub(crate) const VOLUME_EPSILON: f64 = 1e-6;
 
+/// The grid a perceptual volume snaps to ([`perceptual`]): 1/10 000, finer
+/// than any slider step or `strand set` percentage.
+const SNAP_STEPS: f64 = 10_000.0;
+
+/// How close to a grid point a perceptual volume snaps to it: far more
+/// than the float noise of an `f32` cube and its root (under 1e-7 up to a
+/// volume of 1.5), far less than a step anyone sets.
+const SNAP: f64 = 1e-6;
+
 /// The perceptual volume of linear channel volumes: the cube root of the
 /// loudest channel, as `pactl` and `wpctl` show it. `None` for no
 /// channels.
+///
+/// A root within [`SNAP`] of a multiple of 1/10 000 reads as that
+/// multiple (the same `f64` as the literal, `0.3` and not
+/// `0.3000000025939058`), so a volume set on that grid (by us, `wpctl` or
+/// `pactl`) reads back exactly as set, also when the write is long
+/// forgotten: the store's echo test compares values.
 pub fn perceptual(channel_volumes: &[f32]) -> Option<f64> {
     let max = channel_volumes
         .iter()
         .copied()
         .filter(|v| v.is_finite())
         .fold(None, |m: Option<f32>, v| Some(m.map_or(v, |m| m.max(v))))?;
-    Some(f64::from(max.max(0.0)).cbrt())
+    Some(snap(f64::from(max.max(0.0)).cbrt()))
+}
+
+/// `v`, or the grid point within [`SNAP`] of it.
+fn snap(v: f64) -> f64 {
+    // An exact integer over an exact integer: the nearest `f64` to the
+    // decimal, as the literal parses.
+    let g = (v * SNAP_STEPS).round() / SNAP_STEPS;
+    if (v - g).abs() < SNAP { g } else { v }
 }
 
 /// The linear channel volume of a perceptual volume (its cube).
@@ -406,9 +429,19 @@ mod tests {
         assert_eq!(perceptual(&[-1.0]), Some(0.0));
         assert_eq!(linear(0.5), 0.125);
         assert_eq!(linear(-0.5), 0.0);
-        for v in [0.0, 0.05, 0.37, 0.5, 0.99, 1.0, 1.5] {
+        // A volume on the 1/10 000 grid reads back exactly as written.
+        for v in [0.0, 0.05, 0.3, 0.37, 0.5, 0.99, 1.0, 1.5] {
+            assert_eq!(perceptual(&[linear(v)]), Some(v));
+        }
+        for i in 0..=15_000 {
+            let v = f64::from(i) / 10_000.0;
+            assert_eq!(perceptual(&[linear(v)]), Some(v), "{v}");
+        }
+        // Off the grid: the root, within float noise.
+        for v in [0.123_456_7, 0.333_333_3, std::f64::consts::FRAC_1_PI] {
             let back = perceptual(&[linear(v)]).unwrap();
             assert!((back - v).abs() < 1e-6, "{v} -> {back}");
+            assert!((back * 10_000.0).fract() != 0.0, "{v} pulled to the grid");
         }
     }
 

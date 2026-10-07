@@ -28,7 +28,9 @@
 //!   the last devices meanwhile: a new connection's first state waits for
 //!   the session manager (its `default` metadata, and the defaults shown
 //!   before) for up to [`SETTLE`], so a restart shows no empty default or
-//!   list in between.
+//!   list in between; a daemon that accepts the connection but never
+//!   answers its first sync publishes nothing and is dropped after
+//!   [`UNANSWERED`] (then retried, as a lost one).
 //!
 //! Every change goes to the sink given to [`Audio::spawn`] as one batch of
 //! [`AudioChange`]s per burst of PipeWire events (the [`Publisher`]'s
@@ -36,13 +38,16 @@
 //! the store will serve (exactly the builtin provisional stub). Nothing polls: with nothing
 //! changing, the thread sleeps in the loop and wakes for nothing.
 //!
-//! Writes are plain requests; suppressing the echo of a write in the store
-//! (the `rw` contract) is the store's job, by generation or pending write.
-//! The thread reports a volume it wrote as written (not its cube root's
-//! float noise; any of its last [`ECHOES`] writes to a device): exactly
-//! on a node's `Props`; through a card's `Route`, whose mixer steps
-//! quantize it, only when the echo is within half a percent, so on
-//! hardware value equality is not a reliable echo test.
+//! Writes are plain requests, untagged; suppressing the echo of a write in
+//! the store (the `rw` contract) is the store's job. The adapter uses
+//! `strand_core::echo`'s value path (an untagged report that equals a
+//! pending write is its echo), which holds because the thread reports a
+//! volume it wrote exactly as written, never as its cube root's float
+//! noise: any of its last [`ECHOES`] writes to a device (as many as the
+//! store keeps pending), and any volume on the 1/10 000 grid
+//! ([`perceptual`]) even once forgotten; through a card's `Route`, whose
+//! mixer steps quantize it, an echo within half a percent reads as the
+//! closest write.
 //!
 //! An action sent before a connection has published its first state (a
 //! media key that starts the service with a write, or one sent during a
@@ -68,7 +73,7 @@ pub use model::{
     linear, perceptual,
 };
 pub use schema::SCHEMA;
-pub use thread::{ECHOES, FRAME, GRACE, SETTLE};
+pub use thread::{ECHOES, FRAME, GRACE, SETTLE, UNANSWERED};
 
 /// Where to connect.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -152,9 +157,15 @@ impl std::error::Error for AudioError {}
 pub struct AudioReply(oneshot::Receiver<Result<(), AudioError>>);
 
 impl AudioReply {
-    /// Waits for the outcome on a thread that may block (tests, a
-    /// service thread; never the logic thread).
+    /// Waits for the outcome on a plain thread outside any tokio runtime
+    /// (tests, a sink thread of its own); never the logic thread. Inside a
+    /// runtime (the services' shared current-thread runtime), `.await`
+    /// the reply instead: it is a [`Future`], and blocking there panics.
     pub fn wait(self) -> Result<(), AudioError> {
+        debug_assert!(
+            tokio::runtime::Handle::try_current().is_err(),
+            "AudioReply::wait inside a tokio runtime: await the reply instead"
+        );
         self.0
             .blocking_recv()
             .unwrap_or(Err(AudioError::NotConnected))

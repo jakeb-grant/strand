@@ -1,9 +1,11 @@
 //! The schema the `audio` service serves: the text its store gives
 //! `Service::schema()` to replace the builtin schema's provisional stubs
 //! (`record AudioDevice`, `service audio`). The same names, fields, `rw`
-//! marks and actions; the real service adds nothing the language sees
-//! (peak meters feed the `spectrum` and `meter` elements through the
-//! store, not a field).
+//! marks and actions; the real service adds nothing the language sees.
+//! No field carries a level: the peak meters are the stream the
+//! `spectrum` element (M4, `spectrum(AudioDevice -> source)`) will drive,
+//! subscribed by its source device (docs/decisions.md, wave4-wm (audio):
+//! levels reach the language through the `spectrum` element).
 
 /// See the module docs.
 pub const SCHEMA: &str = r#"

@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use pipewire::{PipeWire, square_wav};
 use strand_services::audio::{
     Audio, AudioAction, AudioChange, AudioConfig, AudioDevice, AudioError, DeviceRef, FRAME,
-    LevelTarget, Levels, Mirror, SETTLE,
+    LevelTarget, Levels, Mirror, SETTLE, UNANSWERED,
 };
 
 /// The service and a mirror of what it sent.
@@ -363,10 +363,12 @@ fn writes_land_where_wpctl_reads_them() {
             .is_some_and(|d| d.volume == 0.0)
     });
 
-    // A slider sends ten writes before the first echo: every echo reads
-    // back as one of the values written, never as float noise of one.
+    // A slider sends 80 writes (more than the thread remembers, `ECHOES`)
+    // before the first echo: every echo reads back as one of the values
+    // written, never as float noise of one, also when PipeWire echoes an
+    // early, forgotten one.
     let from = w.volumes.len();
-    let values: Vec<f64> = (0..10).map(|i| 0.3 + f64::from(i) / 100.0).collect();
+    let values: Vec<f64> = (0..80).map(|i| f64::from(300 + i) / 1000.0).collect();
     let replies: Vec<_> = values
         .iter()
         .map(|v| {
@@ -377,9 +379,9 @@ fn writes_land_where_wpctl_reads_them() {
     for r in replies {
         r.wait().unwrap();
     }
-    w.until(5, "b at 0.39", |m| {
+    w.until(5, "b at 0.379", |m| {
         m.sink_named("strand-sink-b")
-            .is_some_and(|d| d.volume == 0.39)
+            .is_some_and(|d| d.volume == 0.379)
     });
     for (name, v) in &w.volumes[from..] {
         if name == "strand-sink-b" {
@@ -413,6 +415,7 @@ fn a_daemon_restart_reconnects() {
     // A crash leaves the socket behind: attempts are refused until the
     // restarted daemon replaces it.
     pw.crash_daemon();
+    let crashed = Instant::now();
     assert!(pw.socket().exists());
     w.until(5, "the connection lost", |m| !m.connected);
     // The devices stay while it is away.
@@ -423,15 +426,18 @@ fn a_daemon_restart_reconnects() {
     );
 
     // Away long enough that the backoff waits seconds (attempts at 0.1,
-    // 0.3, 0.7, 1.5, 3.1, 6.3, then 12.7 s): back at ~9 s (the action
-    // above waited 2 s for a connection), only the socket's replacement
-    // (inotify) can bring it back within 3 s.
-    std::thread::sleep(Duration::from_millis(7000));
+    // 0.3, 0.7, 1.5, 3.1, 6.3, 12.7 s, then every 10 s): back at 13.5 s,
+    // the next attempt is 9 s away, so only the socket's replacement
+    // (inotify) can bring it back within 6 s (the daemon's and
+    // WirePlumber's start on a loaded machine, and at worst `SETTLE`).
+    std::thread::sleep(
+        (crashed + Duration::from_millis(13_500)).saturating_duration_since(Instant::now()),
+    );
     let back = Instant::now();
     pw.start_daemon();
     w.until(10, "reconnected", ready);
     assert!(
-        back.elapsed() < Duration::from_secs(3),
+        back.elapsed() < Duration::from_secs(6),
         "reconnected {:?} after the daemon restarted",
         back.elapsed()
     );
@@ -549,6 +555,91 @@ fn a_restart_shows_no_gap_while_the_session_manager_comes_back() {
         m.sink.as_ref().is_some_and(|d| d.muted)
     });
     assert!(pw.volume_of("@DEFAULT_AUDIO_SINK@").1);
+}
+
+#[test]
+fn a_silent_daemon_shows_nothing_and_is_retried() {
+    use std::io::ErrorKind;
+    use std::os::unix::net::UnixListener;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    let Some(mut pw) = PipeWire::start("a_silent_daemon_shows_nothing_and_is_retried") else {
+        return;
+    };
+    let mut w = Watch::start(pw.config());
+    w.until(10, "the devices", ready);
+    pw.crash_daemon();
+    w.until(5, "the connection lost", |m| !m.connected);
+
+    // Socket activation with a failing `pipewire.service`: the socket
+    // accepts connections, and nobody ever answers.
+    let _ = std::fs::remove_file(pw.socket());
+    let listener = UnixListener::bind(pw.socket()).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let accepts = Arc::new(AtomicUsize::new(0));
+    let stop = Arc::new(AtomicBool::new(false));
+    let server = {
+        let (accepts, stop) = (accepts.clone(), stop.clone());
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            while !stop.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((s, _)) => {
+                        held.push(s);
+                        accepts.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(e) => panic!("accept: {e}"),
+                }
+            }
+        })
+    };
+    let since = Instant::now();
+    let mute = w
+        .audio
+        .request(AudioAction::SetMuted(DeviceRef::DefaultSink, true));
+    let mut seen = Vec::new();
+    let mut record = |w: &mut Watch, until: Instant| {
+        while let Some(left) = until.checked_duration_since(Instant::now()) {
+            if let Ok(b) = w.rx.recv_timeout(left.min(Duration::from_millis(100))) {
+                seen.extend(b.iter().cloned());
+                w.take(b);
+            }
+        }
+    };
+    // Past SETTLE and UNANSWERED: nothing is published, the devices and
+    // defaults of before stay, not connected.
+    record(&mut w, since + UNANSWERED + Duration::from_secs(1));
+    assert!(accepts.load(Ordering::Relaxed) >= 1, "it never connected");
+    assert_eq!(mute.wait(), Err(AudioError::NotConnected));
+    // Dropped and retried, as a lost connection.
+    let deadline = since + Duration::from_secs(20);
+    while accepts.load(Ordering::Relaxed) < 2 {
+        assert!(
+            Instant::now() < deadline,
+            "the silent daemon was not retried"
+        );
+        record(&mut w, Instant::now() + Duration::from_millis(100));
+    }
+    assert!(
+        seen.is_empty(),
+        "a silent daemon changed the state: {seen:#?}"
+    );
+    assert!(!w.mirror.connected);
+    assert!(ready(&Mirror {
+        connected: true,
+        ..w.mirror.clone()
+    }));
+
+    // The real daemon's return reconnects.
+    stop.store(true, Ordering::Relaxed);
+    server.join().unwrap();
+    let _ = std::fs::remove_file(pw.socket());
+    pw.start_daemon();
+    w.until(15, "reconnected", ready);
 }
 
 #[test]

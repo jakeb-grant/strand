@@ -50,14 +50,23 @@ const MAX: Duration = Duration::from_secs(10);
 pub const FRAME: Duration = Duration::from_micros(16_667);
 
 /// How many of its last volume writes a device remembers, so the echo of
-/// any of them reads back as written.
-pub const ECHOES: usize = 8;
+/// any of them reads back as written: as many as the store keeps pending
+/// (`strand_core::echo::MAX_PENDING_ECHOES`). A volume on the 1/10 000
+/// grid reads back as written also once forgotten ([`perceptual`]).
+pub const ECHOES: usize = 64;
 
 /// How long a new connection's first state waits for the session
 /// manager (its `default` metadata, and the defaults shown before the
 /// loss), and how long the last defaults stay shown after the metadata
 /// leaves.
 pub const SETTLE: Duration = Duration::from_secs(3);
+
+/// How long a connection's first sync may take: a daemon that accepted
+/// the connection but has not answered by then (a socket-activated
+/// `pipewire.service` that is slow to start or keeps failing) counts as
+/// lost, and the thread reconnects. Until its first sync is back a
+/// connection publishes nothing, so the devices shown before stay.
+pub const UNANSWERED: Duration = Duration::from_secs(6);
 
 /// How long an action waits for a connection when there is none (the
 /// thread just started, or the daemon went away): it runs once the next
@@ -467,13 +476,17 @@ struct NodeEntry {
 /// The last [`ECHOES`] volumes written to a device, with the linear
 /// channel volumes each became: PipeWire echoes those, and any of them
 /// reads back as the value written (not its cube root's float noise),
-/// also when a slider sent several writes before the first echo. On a
+/// also when a slider sent many writes before the first echo. On a
 /// node's `Props` the echo is exact; through a card's route it may come
-/// back quantized to the mixer's steps, and still reads as written when
-/// within [`ECHO_TOLERANCE`].
+/// back quantized to the mixer's steps, and still reads as the closest
+/// write through a route within [`ECHO_TOLERANCE`]. An echo of a write already forgotten
+/// reads as [`perceptual`] reads it: exactly as written for a volume on
+/// its grid.
 #[derive(Debug, Default)]
 struct Echoes {
-    written: VecDeque<(f64, Vec<f32>)>,
+    /// Each write: the volume, its linear channel volumes, and whether it
+    /// went through a card's route (its echo may be quantized).
+    written: VecDeque<(f64, Vec<f32>, bool)>,
     /// The last write, until PipeWire has reported it (or another
     /// volume, after the write was applied): a step adds to this, not to
     /// a volume it is replacing.
@@ -485,11 +498,11 @@ struct Echoes {
 }
 
 impl Echoes {
-    fn wrote(&mut self, volume: f64, linear: Vec<f32>) {
+    fn wrote(&mut self, volume: f64, linear: Vec<f32>, quantized: bool) {
         if self.written.len() == ECHOES {
             self.written.pop_front();
         }
-        self.written.push_back((volume, linear));
+        self.written.push_back((volume, linear, quantized));
         self.pending = Some(volume);
     }
 
@@ -506,12 +519,21 @@ impl Echoes {
         let hit = self
             .written
             .iter()
-            .rposition(|(_, lin)| lin == reported)
+            .rposition(|(_, lin, _)| lin == reported)
             .or_else(|| {
+                // The closest write through a route (the latest of equally
+                // close ones). A write to a node's `Props` echoes exactly:
+                // a near miss there is another volume (or the echo of a
+                // write already forgotten, which `perceptual` reads).
                 let shown = shown?;
                 self.written
                     .iter()
-                    .rposition(|(v, _)| (v - shown).abs() < ECHO_TOLERANCE)
+                    .enumerate()
+                    .filter(|(_, (_, _, quantized))| *quantized)
+                    .map(|(i, (v, _, _))| (i, (v - shown).abs()))
+                    .filter(|(_, d)| *d < ECHO_TOLERANCE)
+                    .min_by(|a, b| a.1.total_cmp(&b.1).then(b.0.cmp(&a.0)))
+                    .map(|(i, _)| i)
             });
         let last = hit.is_some_and(|i| i + 1 == self.written.len());
         if last || (hit.is_none() && self.wait.is_none()) {
@@ -1212,10 +1234,12 @@ impl Driver<'_> {
         self.dirty = false;
         let state = match &mut self.session {
             Some(s) => {
-                if !s.published && !s.settled && !ready_to_publish(s) {
+                if !s.published && !(ready_to_publish(s) || s.settled && s.initial_done) {
                     // The first state of a connection waits for its sync
-                    // and for the session manager ([`SETTLE`]); until
-                    // then the last state stays, not connected.
+                    // (always: a daemon that never answers is not a
+                    // connection, [`UNANSWERED`]) and for the session
+                    // manager ([`SETTLE`]); until then the last state
+                    // stays, not connected.
                     return;
                 }
                 s.published = true;
@@ -1280,22 +1304,25 @@ impl Driver<'_> {
                 // Never raised past 1 by us, nor past a volume another
                 // program amplified it to.
                 let v = v.clamp(0.0, current.max(1.0));
-                let props = if n.has_channel_volumes && n.channels > 0 {
+                let (props, lin) = if n.has_channel_volumes && n.channels > 0 {
                     let lin = vec![linear(v); n.channels as usize];
-                    n.echoes.wrote(v, lin.clone());
-                    Props {
-                        channel_volumes: Some(lin),
+                    let props = Props {
+                        channel_volumes: Some(lin.clone()),
                         ..Props::default()
-                    }
+                    };
+                    (props, lin)
                 } else {
-                    n.echoes.wrote(v, vec![linear(v)]);
-                    Props {
+                    let props = Props {
                         volume: Some(linear(v)),
                         ..Props::default()
-                    }
+                    };
+                    (props, vec![linear(v)])
                 };
                 let id = n.device.id;
-                write(s, id, &props)?;
+                let via = write(s, id, &props)?;
+                if let Some(n) = s.nodes.get_mut(&id) {
+                    n.echoes.wrote(v, lin, via == Written::Route);
+                }
                 // Its echo comes before this sync returns: a report until
                 // then that matches no write is an older state.
                 match s.core.sync(0) {
@@ -1318,6 +1345,7 @@ impl Driver<'_> {
                         ..Props::default()
                     },
                 )
+                .map(|_| ())
             }
             AudioAction::MakeDefault(d) => {
                 let (name, direction) = {
@@ -1475,6 +1503,9 @@ impl Driver<'_> {
                 if !s.published && !s.settled {
                     at(s.settle_by);
                 }
+                if !s.initial_done {
+                    at(s.since + UNANSWERED);
+                }
                 if let Some(h) = &s.held {
                     at(h.until);
                 }
@@ -1506,6 +1537,19 @@ impl Driver<'_> {
     fn deadline(&mut self) {
         // A timer never fires early; the margin covers clock rounding.
         let now = Instant::now() + Duration::from_millis(1);
+        if self
+            .session
+            .as_ref()
+            .is_some_and(|s| !s.initial_done && s.since + UNANSWERED <= now)
+        {
+            log::info!("audio: PipeWire accepted the connection but never answered; reconnecting");
+            // What waited for this connection does not wait for the next.
+            for (_, reply) in self.queued.drain(..) {
+                let _ = reply.send(Err(AudioError::NotConnected));
+            }
+            self.lost();
+            return;
+        }
         match &mut self.session {
             Some(s) => {
                 if !s.published && !s.settled && s.settle_by <= now {
@@ -1665,7 +1709,16 @@ fn node_mut(s: &mut Session, d: DeviceRef) -> Result<&mut NodeEntry, AudioError>
 /// Writes volume or mute to node `id`: through its card's active route
 /// when it has one (as `wpctl` and pipewire-pulse do, so the hardware
 /// mixer moves and the session manager saves it), else to its `Props`.
-fn write(s: &Session, id: u32, props: &Props) -> Result<(), AudioError> {
+/// Where a write went.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Written {
+    /// The node's `Props`: its echo is exact.
+    Node,
+    /// A card's `Route`: its echo is quantized to the mixer's steps.
+    Route,
+}
+
+fn write(s: &Session, id: u32, props: &Props) -> Result<Written, AudioError> {
     let n = s
         .nodes
         .get(&id)
@@ -1683,15 +1736,16 @@ fn write(s: &Session, id: u32, props: &Props) -> Result<(), AudioError> {
             let pod = Pod::from_bytes(&bytes)
                 .ok_or_else(|| AudioError::Failed("bad Route pod".into()))?;
             d.proxy.set_param(ParamType::Route, 0, pod);
+            Ok(Written::Route)
         }
         WriteVia::Node => {
             let bytes = props.to_pod().map_err(AudioError::Failed)?;
             let pod = Pod::from_bytes(&bytes)
                 .ok_or_else(|| AudioError::Failed("bad Props pod".into()))?;
             n.proxy.set_param(ParamType::Props, 0, pod);
+            Ok(Written::Node)
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1775,7 +1829,7 @@ mod tests {
         assert_eq!(e.read(&[0.125, 0.125]), Some(0.5));
         // A slider sends three writes before the first echo.
         for v in [0.3, 0.31, 0.32] {
-            e.wrote(v, vec![linear(v); 2]);
+            e.wrote(v, vec![linear(v); 2], false);
         }
         assert_eq!(e.base(0.5), 0.32);
         // The echoes come back one by one, each as written.
@@ -1785,23 +1839,53 @@ mod tests {
         assert_eq!(e.read(&[linear(0.32); 2]), Some(0.32));
         assert_eq!(e.base(0.32), 0.32);
         assert_eq!(e.pending, None);
-        // Only the last ECHOES writes are remembered.
-        for i in 0..=ECHOES {
-            e.wrote(0.1 + i as f64 / 100.0, vec![linear(0.1 + i as f64 / 100.0)]);
-        }
-        assert_eq!(e.written.len(), ECHOES);
-        assert_eq!(e.read(&[linear(0.1)]), perceptual(&[linear(0.1)]));
         // Another program's volume ends the pending write.
-        e.wrote(0.9, vec![linear(0.9)]);
+        e.wrote(0.9, vec![linear(0.9)], false);
         assert_eq!(e.read(&[0.008]), perceptual(&[0.008]));
         assert_eq!(e.base(0.2), 0.2);
+    }
+
+    #[test]
+    fn an_echo_of_a_forgotten_write_still_reads_as_written() {
+        let mut e = Echoes::default();
+        // A slider drag: more writes than the ring holds before the first
+        // echo, on the grid (as `strand set` and a slider's steps are).
+        let grid: Vec<f64> = (0..ECHOES as u32 + 10)
+            .map(|i| f64::from(300 + i) / 1000.0)
+            .collect();
+        for v in &grid {
+            e.wrote(*v, vec![linear(*v); 2], false);
+        }
+        assert_eq!(e.written.len(), ECHOES);
+        // The sync issued after the last write is out.
+        e.wait = Some(1);
+        // The oldest writes are forgotten, and their echoes still read as
+        // written (not 0.3000000025939058).
+        for v in &grid[..10] {
+            assert_eq!(e.read(&[linear(*v); 2]), Some(*v));
+        }
+        assert_eq!(e.pending, Some(grid[grid.len() - 1]));
+        for v in &grid[10..] {
+            assert_eq!(e.read(&[linear(*v); 2]), Some(*v));
+        }
+        assert_eq!(e.pending, None);
+        // Off the grid: any of the last ECHOES reads as written.
+        let off: Vec<f64> = (0..ECHOES as u32)
+            .map(|i| 0.2 + f64::from(i) * 0.001_234_567)
+            .collect();
+        for v in &off {
+            e.wrote(*v, vec![linear(*v); 2], false);
+        }
+        for v in &off {
+            assert_eq!(e.read(&[linear(*v); 2]), Some(*v));
+        }
     }
 
     #[test]
     fn an_older_report_before_a_write_is_applied_keeps_the_step_base() {
         let mut e = Echoes::default();
         // Mute, then +5% from 0.5: the volume write waits for sync 7.
-        e.wrote(0.55, vec![linear(0.55); 2]);
+        e.wrote(0.55, vec![linear(0.55); 2], false);
         e.wait = Some(7);
         // The mute's echo carries the old volume: shown, but a second
         // step still adds to the write, not to it.
@@ -1817,7 +1901,7 @@ mod tests {
         assert_eq!(e.wait, None);
         // Once a write is applied, a volume matching none of the writes
         // is another program's, and ends a pending write.
-        e.wrote(0.6, vec![linear(0.6); 2]);
+        e.wrote(0.6, vec![linear(0.6); 2], false);
         e.wait = Some(9);
         e.synced(9);
         assert_eq!(e.read(&[0.008, 0.008]), perceptual(&[0.008]));
@@ -1829,12 +1913,17 @@ mod tests {
         // A card's route moves the mixer in steps: its echo is close to,
         // not exactly, the volume written.
         let mut e = Echoes::default();
-        e.wrote(0.37, vec![linear(0.37); 2]);
+        e.wrote(0.37, vec![linear(0.37); 2], true);
         assert_eq!(e.read(&[linear(0.3681); 2]), Some(0.37));
         assert_eq!(e.pending, None);
         // Farther than that is another volume.
         let other = e.read(&[linear(0.38); 2]).unwrap();
         assert!((other - 0.38).abs() < 1e-6, "{other}");
+        // A write to a node's `Props` echoes exactly: a near miss is
+        // another volume, read as it is.
+        let mut e = Echoes::default();
+        e.wrote(0.37, vec![linear(0.37); 2], false);
+        assert_eq!(e.read(&[linear(0.368); 2]), Some(0.368));
     }
 
     #[test]

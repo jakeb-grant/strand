@@ -1862,7 +1862,8 @@ Specified when M3 starts. It only produces writes and events into
   merges with wave4/core. `audio::Mirror` applies the stream.
   `request(AudioAction::{SetVolume(DeviceRef, f64), StepVolume(DeviceRef,
   f64), SetMuted(DeviceRef, bool), MakeDefault(DeviceRef)}) ->
-  AudioReply` (a future, or `wait()` off the logic thread) answers `Ok`
+  AudioReply` (a future to `.await` inside a runtime, or `wait()` on a
+  plain thread outside any runtime) answers `Ok`
   once PipeWire has been asked (the change comes through the stream) or
   an `AudioError` (`NotConnected`, `UnknownDevice`, `InvalidVolume`,
   `NoDefaultMetadata`, `Failed`). A request dropped unanswered reads as
@@ -1870,32 +1871,46 @@ Specified when M3 starts. It only produces writes and events into
   its syncs are back, including those after binding each card's routes,
   the session manager's `default` metadata is read, and each default
   shown before a loss names a device again, or after `audio::SETTLE`
-  (3 s); until then the last state stays (`connected: false` after a
-  loss), and the defaults shown before a restart of the daemon or of
-  the session manager alone stay until new ones resolve or `SETTLE`
-  passes, so a restart never flashes an empty `audio.sink` or list.
+  (3 s) once at least its first sync is back; until then the last
+  state stays (`connected: false` after a loss), and the defaults shown
+  before a restart of the daemon or of the session manager alone stay
+  until new ones resolve or `SETTLE` passes, so a restart never flashes
+  an empty `audio.sink` or list. A daemon that accepts the connection but
+  never answers its first sync (socket activation with a failing
+  `pipewire.service`) publishes nothing and is dropped after
+  `audio::UNANSWERED` (6 s), then retried like a lost connection.
   Actions sent before a connection has settled (a write that lazily
   starts the service, one sent during a restart) wait, in order, and
   run right after its first state; with no connection at all they
   answer `NotConnected` after `audio::GRACE` (2 s). `DeviceRef::
   DefaultSink` resolves on the audio thread when the write runs.
-  `StepVolume` adds its delta there too, to the last volume written
-  while its echo is pending, so quick steps are never lost. The store
-  sends VM writes as `SetVolume` (`ServiceHost::write` carries an
-  absolute value, and its tagged local cell already makes quick scroll
-  steps compound); `StepVolume` is the path for IPC's relative form
-  (`strand set audio.sink.volume +5%`, design.md example (d)) once
-  `crates/strand/src/ipc.rs` parses it, which is pending. Volume and
-  mute go to the card's active `Route` (`save: true`) when the node has
-  one, else to the node's `Props`.
+  Every language-side write arrives as `SetVolume`: VM writes, and
+  IPC's relative form (`strand set audio.sink.volume +5%`, design.md
+  example (d)), which wave4/core's `services::set_text` resolves
+  generically by reading the current value through `ServiceHost` and
+  writing an absolute one with `ServiceHost::write` (its optimistic
+  tagged cell makes quick steps compound). `StepVolume` adds its delta on
+  the audio thread, to the last volume written while its echo is
+  pending; it is kept only for callers holding the `Audio` handle
+  directly (none on the language path). Volume and mute go to the
+  card's active `Route` (`save: true`) when the node has one, else to
+  the node's `Props`.
   `set_levels(targets)` replaces the set of peak meters
   (`LevelTarget::{DefaultSink, DefaultSource, Device(id)}`); the store
   passes what visible readers want, and an empty set stops them all.
-  Suppressing write echoes is the store's job, by generation or pending
-  write, not by value equality: the thread reports any of a device's last
-  `audio::ECHOES` (8) written volumes as written, exactly on the `Props`
-  path but through a card's `Route` (hardware mixer steps) only when the
-  echo is within 0.005 of it. Without the
+  No schema field carries levels yet: their consumer is the `spectrum`
+  element (M4, `spectrum(AudioDevice -> source)`), which will subscribe
+  by its source device and needs the meter to hand out samples for
+  realfft, not only folded peaks (docs/decisions.md, wave4-wm (audio)).
+  Suppressing write echoes is the store's job. Requests carry no tag, so
+  the audio adapter uses `strand_core::echo`'s value path: an untagged
+  report equal to a pending write is its echo. That works because the
+  thread reports a volume it wrote exactly as written: any of a device's
+  last `audio::ECHOES` (64, core's `MAX_PENDING_ECHOES`) writes, and any
+  volume on the 1/10 000 grid even once forgotten (`audio::perceptual`
+  snaps a root within 1e-6 of it); through a card's `Route` (hardware
+  mixer steps) an echo within 0.005 of a write reads as the closest
+  write. Without the
   `pipewire` feature the module is absent and the store answers
   `audio.*` at the schema's defaults. The `#[service]` store wiring
   builds on this (docs/decisions.md, wave4-wm (audio)).

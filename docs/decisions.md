@@ -6403,35 +6403,48 @@ without `channelVolumes` falls back to the `volume` prop. Writes clamp to
 0..1, or to the current volume when another program has already pushed it
 past 1 (pactl allows 150 %). A write then never raises it further but can
 lower it, so `-= 0.05` from 1.2 does not jump to 1.0. NaN is refused. The
-thread remembers the channel volumes of a device's last 8 writes
-(`audio::ECHOES`) and reports the written value when any of them comes
-back. The echo of `0.37` is then `0.37`, not `0.36999998` (f32 cube and
-root), also when a slider sent several writes before the first echo.
+thread remembers the channel volumes of a device's last 64 writes
+(`audio::ECHOES`, as many as core's `MAX_PENDING_ECHOES`) and reports
+the written value when any of them comes back. The echo of `0.37` is
+then `0.37`, not `0.36999998` (f32 cube and root), also when a slider
+sent many writes before the first echo. And `audio::perceptual` snaps a
+root within 1e-6 of a multiple of 1/10 000 to it (the f32 noise is under
+1e-7; no step anyone sets is that fine), so a volume on that grid reads
+back exactly also when its write is forgotten (fixer round 3: with 8
+remembered writes, PipeWire under load echoed an evicted one of a ten
+write drag as `0.3000000025939058`).
 That is exact only on the node `Props` path. Through a card's `Route`,
 ACP quantizes to the mixer's steps and splits hardware and software
 volume, so the echo is near the written value, not equal: an echo
 within 0.005 (half a percent, on the perceptual scale) of a remembered
-write reads as that write, and farther is another program's volume. So
-the store suppresses echoes by generation or pending write, never by
-value equality. A relative step is `AudioAction::StepVolume(device,
+write (the closest) reads as that write, and farther is another
+program's volume. Requests carry no tag, so the audio adapter uses
+`strand_core::echo`'s value path (an untagged report equal to a pending
+write is its echo); the exact readback above is what makes that work.
+Answering writes with tags (a tag per request, echoed back when the
+thread recognises the write) would let the store settle by generation
+instead; it is not done, since the readback holds for every write the
+store still keeps pending. A relative step is `AudioAction::StepVolume(device,
 delta)`, resolved on the audio thread when it runs, from the last volume
 written there while PipeWire has not reported it yet (else the volume
 shown), with `SetVolume`'s clamp. That pending write ends when its echo
 comes, or when a volume matching no write arrives after the core sync
 issued with the write has returned. A report before that sync (the
 echo of an earlier mute, which carries the whole `Props` and so the old
-volume) is shown, but a second step still adds to the write. The store
-sends VM writes (`audio.sink.volume -= dy * 0.05`) as `SetVolume`:
-`ServiceHost::write` carries an absolute value, and the store's tagged
-local cell already makes quick scroll steps compound. `StepVolume` is
-the path for IPC's relative form (`strand set audio.sink.volume +5%`,
-design.md example (d)), whose parsing in `crates/strand/src/ipc.rs` is
-pending: two quick key presses then never read the same value and lose
-a step. Proof:
+volume) is shown, but a second step still adds to the write. Every language-side
+write arrives as `SetVolume`: VM writes (`audio.sink.volume -= dy *
+0.05`), and IPC's relative form (`strand set audio.sink.volume +5%`,
+design.md example (d)), which wave4/core's `services::set_text` resolves
+for every service by reading the current value through `ServiceHost`
+and writing an absolute one with `ServiceHost::write`, whose optimistic
+tagged cell makes quick steps compound. `StepVolume` is kept only for
+callers that hold the `Audio` handle directly; nothing on the language
+path sends it, and the wiring may drop it if nothing does. Proof:
 `tests/audio.rs::writes_land_where_wpctl_reads_them` (two steps before
-the first echo land at 0.7; ten slider writes before the first echo all
+the first echo land at 0.7; 80 slider writes before the first echo all
 read back as written), `src/audio/thread.rs::tests::
 {echoes_of_recent_writes_read_back_as_written,
+an_echo_of_a_forgotten_write_still_reads_as_written,
 an_older_report_before_a_write_is_applied_keeps_the_step_base,
 a_quantized_echo_reads_as_written}`, `src/audio/model.rs` tests.
 
@@ -6520,7 +6533,9 @@ counts as the socket appearing (its event may be among those lost), and
 a watch that ends (`IN_IGNORED`: the directory was removed) is dropped
 and re-added on each attempt, the timer at 10 s meanwhile, so the
 service never waits on a dead watch. Without a watch (no runtime
-directory) it retries every 10 s. The timer stops only while the
+directory, or no inotify instance: the per-user limit, 128 by default,
+which eight parallel runs of the audio tests exhaust, each test running
+its own dbus-daemon, pipewire and WirePlumber) it retries every 10 s. The timer stops only while the
 socket file is missing: one that is there but refuses (a crashed
 daemon's stale socket, a permission change, a daemon refusing clients)
 keeps the timer at 10 s, since nobody may ever recreate it. A connection
@@ -6530,7 +6545,8 @@ the kept devices (ids that changed are a remove and an insert) once it
 has settled: its syncs after the last bind are back, the session
 manager's `default` metadata is bound and its properties read (a sync
 after the bind), and each default shown before the loss names a device
-again; or after `audio::SETTLE` (3 s). Until then the last state stays,
+again; or after `audio::SETTLE` (3 s), provided its first sync is back
+(see "a daemon that accepts but never answers"). Until then the last state stays,
 `connected` still false: `connected` turns true with the first settled
 state, so a reader never sees a connected service with an empty
 default. This matters on hardware: inotify reconnects within
@@ -6671,3 +6687,37 @@ stream to a new default). With `STRAND_REQUIRE_PIPEWIRE=1` or
 `STRAND_REQUIRE_DBUS=1` (CI) a missing tool fails the test instead of
 skipping it. pactl is not used, because the container has no
 pulseaudio-utils; wpctl covers the same ground.
+
+**2026-10-07 · wave4-wm (audio): levels reach the language through the
+`spectrum` element, not a field.** The builtin schema exposes no level:
+no `AudioDevice` or `audio` field carries one, and `meter(float ->
+value)` takes a plain float the shell computes. The only declared
+consumer of audio levels is `spectrum(AudioDevice -> source)` (M4,
+realfft), so levels reach the language through that element: each
+mounted, visible `spectrum` subscribes by its source device (a
+`LevelTarget`), and the store passes the union of those subscriptions to
+`Audio::set_levels`, which keeps "audio levels only while visible"
+without a new schema field. A `level: float` stream field on
+`AudioDevice` (so a `meter` could show it) would add a concept the
+schema lacks; it can come through architecture.md and the schema if a
+shell needs it. What the element needs is samples, not the folded
+per-channel peaks `Levels` carries now: when the spectrum lands, the
+meter's process callback must also copy each cycle's samples into a
+lock-free ring for the FFT (the peaks stay, for "stops when audio is
+silent"). Until then `Levels` has no language-side consumer.
+
+**2026-10-07 · wave4-wm (audio): a daemon that accepts but never answers
+is not a connection.** With socket activation (`pipewire.socket`),
+systemd accepts the connection while `pipewire.service` is slow to start
+or keeps failing, and nobody replies. A connection's first state
+therefore goes out only once its first sync is back: `SETTLE` (3 s)
+forces it out without the session manager, never without the daemon.
+Until then the last state stays (`connected: false`, the devices of
+before), and actions keep waiting. If the first sync has not come back
+after `audio::UNANSWERED` (6 s, twice `SETTLE`), the connection counts
+as lost: the actions that waited for it answer `NotConnected`, the core
+is dropped, and the usual backoff retries. Proof: `tests/audio.rs::
+a_silent_daemon_shows_nothing_and_is_retried` (a crashed daemon's socket
+taken over by a listener that accepts and stays silent: no
+`Connected(true)` and no removals, a write answers `NotConnected`, and
+the real daemon's return reconnects).
