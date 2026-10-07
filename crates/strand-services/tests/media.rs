@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use strand_core::Runtime;
-use strand_services::{DynService as _, Store, media};
+use strand_services::{Store, media};
 use support::*;
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{OwnedValue, Value};
