@@ -195,8 +195,33 @@ impl Probe {
                         log("stopped".into());
                         return Ok(());
                     }
+                    Some(Msg::Write(w)) if w.key.is_some() => {
+                        // An item write: `w.path` below the item with key
+                        // `w.key` of the list `w.field`.
+                        let key = w.key.clone().unwrap_or(Data::Null);
+                        let item: Ws = w.field_value().map_err(ServiceError::from)?;
+                        log(format!(
+                            "write item {} {key:?}{} {:?}",
+                            w.field,
+                            w.path.iter().map(ToString::to_string).collect::<String>(),
+                            w.value
+                        ));
+                        cx.report(&w, |s| {
+                            if let Some(x) = s.all.iter_mut().find(|x| x.id.to_data() == key) {
+                                // The service refuses empty names.
+                                if !item.name.is_empty() {
+                                    *x = item;
+                                }
+                            }
+                        });
+                    }
                     Some(Msg::Write(w)) => {
                         let v: f64 = w.value().map_err(ServiceError::from)?;
+                        if v == 13.0 {
+                            // The system call behind the write fails.
+                            log("write failed".into());
+                            return Err("the write failed".into());
+                        }
                         log(format!("write {}{} {v}", w.field, w.path.iter().map(ToString::to_string).collect::<String>()));
                         if w.field == "level" {
                             // The service clamps; 0.25 also moves the
@@ -313,6 +338,21 @@ fn calls_are_typed_from_name_item_and_arguments() {
     assert!(ProbeAction::from_call("focus", None, &[]).is_err());
     assert!(ProbeAction::from_call("rename", None, &[Data::Int(1)]).is_err());
     assert!(ProbeAction::from_call("nope", None, &[]).is_err());
+    // Each call's arity and item record, for the schema to match.
+    let sig = |name, arity, item: Option<&str>| strand_services::CallSig {
+        name,
+        arity,
+        item: item.map(String::from),
+    };
+    assert_eq!(
+        ProbeAction::signatures(),
+        vec![
+            sig("bump", 0, None),
+            sig("focus", 0, Some("Workspace")),
+            sig("rename", 2, None)
+        ]
+    );
+    assert_eq!(ProbeCall::signatures(), vec![sig("echo", 1, None)]);
 }
 
 #[test]
@@ -428,6 +468,60 @@ fn cells_apply_reports_and_ignore_echoes_of_local_writes() {
     let snap = cells.snapshot(&rt).unwrap();
     assert_eq!(snap.level, 0.3);
     assert_eq!(snap.all, vec![ws(7, "g")]);
+}
+
+/// A boot read that predates a local write still in flight (the write
+/// started the service) does not snap the cell back: the write's answer
+/// comes next. Without a write in flight a boot read applies. A keyed
+/// boot read keeps an item written in flight the same way.
+#[test]
+fn a_boot_read_keeps_a_write_in_flight() {
+    let rt = Runtime::new();
+    let cells = ProbeCells::new(&rt, "probe", &Probe::default());
+    let g: Arc<Mutex<Option<strand_core::Generation>>> = Arc::default();
+    let g2 = g.clone();
+    cells
+        .write(
+            &rt,
+            0,
+            &Data::Float(0.7),
+            Box::new(move |_, tag| *g2.lock().unwrap() = Some(tag)),
+        )
+        .unwrap();
+    let initial = strand_services::How::Initial;
+    cells.apply(&rt, &ProbePatch::Level(0.2), initial).unwrap();
+    assert_eq!(cells.level.get_untracked(&rt), Ok(0.7), "no snap-back");
+    let answer = strand_services::How::Report(*g.lock().unwrap());
+    cells.apply(&rt, &ProbePatch::Level(0.7), answer).unwrap();
+    assert_eq!(cells.level.get_untracked(&rt), Ok(0.7));
+    assert_eq!(cells.level.pending_writes(&rt), 0);
+    cells.apply(&rt, &ProbePatch::Level(0.4), initial).unwrap();
+    assert_eq!(cells.level.get_untracked(&rt), Ok(0.4));
+    // Keyed: an item written in flight survives the boot read.
+    let boot = |names: [&str; 2]| {
+        ProbePatch::All(vec![VecDiff::Reset {
+            items: vec![(1, ws(1, names[0])), (2, ws(2, names[1]))],
+        }])
+    };
+    cells.apply(&rt, &boot(["a", "b"]), initial).unwrap();
+    cells
+        .write_item(
+            &rt,
+            3,
+            &Data::Int(2),
+            &[Step::Field("name".into())],
+            &Data::text("x"),
+            Box::new(|_, _, _, _| {}),
+        )
+        .unwrap();
+    cells.apply(&rt, &boot(["a2", "b"]), initial).unwrap();
+    assert_eq!(cells.all.get_key(&rt, &1).unwrap().unwrap().name, "a2");
+    assert_eq!(cells.all.get_key(&rt, &2).unwrap().unwrap().name, "x");
+    // Forgotten (the run ended), the next boot read wins.
+    cells.forget_echoes(&rt);
+    assert_eq!(cells.level.pending_writes(&rt), 0);
+    cells.apply(&rt, &boot(["a2", "b"]), initial).unwrap();
+    assert_eq!(cells.all.get_key(&rt, &2).unwrap().unwrap().name, "b");
 }
 
 /// A registry whose waker counts.
@@ -893,7 +987,7 @@ fn errors_from_a_body_end_the_run_and_a_reader_restarts_it() {
     until(&rt, &s, "the second failure", || {
         rt.next_deadline() == Some(now.get() + Duration::from_secs(2))
     });
-    // A run that comes up and says it is ready resets the backoff.
+    // A run that comes up and says it is ready.
     let sc = script_again();
     at(Duration::from_secs(2));
     assert_eq!(sc.next(), "start visible=true");
@@ -949,4 +1043,214 @@ fn keyed_helpers_dedupe_and_diff() {
             ..
         }
     ));
+}
+
+/// An item of a keyed list written from the language side (`s.volume =
+/// 0.5` for `s` in `audio.sinks`): the item changes at once (and the
+/// language side's mirror hears of it), the service gets the write with
+/// the item's key, its answer settles, and a refusal puts the item back.
+#[test]
+fn item_writes_reach_the_service_with_the_items_key() {
+    let (sc, _guard) = script();
+    let rt = Runtime::new();
+    let (s, _) = services(&rt);
+    let probe = s.register::<Probe>(&rt);
+    let dynamic = probe.dynamic();
+    assert!(dynamic.item_records().contains(&"Workspace".to_string()));
+    let mirrored: Arc<Mutex<Vec<Applied>>> = Arc::default();
+    let m = mirrored.clone();
+    dynamic.observe(Box::new(move |_, a| m.lock().unwrap().push(a.clone())));
+    probe.acquire(&rt);
+    assert_eq!(sc.next(), "start visible=true");
+    sc.cmd(Cmd::Update(Box::new(|p| {
+        p.all = vec![ws(1, "a"), ws(2, "b")]
+    })));
+    sc.cmd(Cmd::Ready);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    mirrored.lock().unwrap().clear();
+    let name = |k: i64| probe.cells().all.get_key(&rt, &k).unwrap().unwrap().name;
+    let path = [Step::Field("name".into())];
+    dynamic
+        .write_item(
+            &rt,
+            "Workspace",
+            &ws(2, "b").to_data(),
+            &path,
+            Data::text("x"),
+        )
+        .unwrap();
+    assert_eq!(name(2), "x", "applied at once");
+    assert_eq!(
+        mirrored.lock().unwrap().first(),
+        Some(&Applied::Keyed {
+            field: 3,
+            diffs: vec![VecDiff::Update {
+                index: 1,
+                key: Data::Int(2),
+                value: ws(2, "x").to_data(),
+            }],
+            initial: false,
+        })
+    );
+    assert_eq!(sc.next(), "write item all Int(2).name Text(\"x\")");
+    until(&rt, &s, "the answer", || {
+        probe.cells().all.pending_item_writes(&rt, &2) == 0
+    });
+    assert_eq!(name(2), "x");
+    // The service refuses an empty name: its answer puts the old one back.
+    dynamic
+        .write_item(
+            &rt,
+            "Workspace",
+            &ws(2, "x").to_data(),
+            &path,
+            Data::text(""),
+        )
+        .unwrap();
+    assert_eq!(name(2), "");
+    assert_eq!(sc.next(), "write item all Int(2).name Text(\"\")");
+    until(&rt, &s, "the refusal", || name(2) == "x");
+    // An outside rename applies.
+    sc.cmd(Cmd::Update(Box::new(|p| p.all[1].name = "y".into())));
+    until(&rt, &s, "the outside rename", || name(2) == "y");
+    // An item the lists do not hold, or a record they do not hand out.
+    assert!(
+        dynamic
+            .write_item(
+                &rt,
+                "Workspace",
+                &ws(9, "z").to_data(),
+                &path,
+                Data::text("q")
+            )
+            .is_err()
+    );
+    assert!(
+        dynamic
+            .write_item(&rt, "Window", &ws(1, "a").to_data(), &path, Data::text("q"))
+            .is_err()
+    );
+    s.shutdown();
+}
+
+/// A write whose run fails handling it is never answered: the cell
+/// forgets it, so the next run's boot read and a later outside value
+/// equal to the lost write both apply (a brightness key after a failed
+/// slider write).
+#[test]
+fn a_write_lost_with_its_run_does_not_swallow_later_reports() {
+    let (sc, _guard) = script();
+    let rt = Runtime::new();
+    let (s, _) = services(&rt);
+    let probe = s.register::<Probe>(&rt);
+    let dynamic = probe.dynamic();
+    let now = std::cell::Cell::new(Duration::ZERO);
+    let at = |d: Duration| {
+        now.set(now.get() + d);
+        rt.tick(now.get());
+    };
+    probe.acquire(&rt);
+    assert_eq!(sc.next(), "start visible=true");
+    sc.cmd(Cmd::Ready);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    dynamic.write(&rt, 0, &[], Data::Float(13.0)).unwrap();
+    assert_eq!(sc.next(), "write failed");
+    until(&rt, &s, "the failed run", || !probe.running());
+    assert_eq!(probe.cells().level.pending_writes(&rt), 0, "forgotten");
+    // The retry boots reading 0.3.
+    let sc = script_again();
+    at(Duration::from_secs(1));
+    assert_eq!(sc.next(), "start visible=true");
+    sc.cmd(Cmd::Update(Box::new(|p| p.level = 0.3)));
+    sc.cmd(Cmd::Ready);
+    until(&rt, &s, "the boot read", || {
+        probe.cells().level.get_untracked(&rt) == Ok(0.3)
+    });
+    // The system then moves to the lost write's value on its own.
+    sc.cmd(Cmd::Update(Box::new(|p| p.level = 13.0)));
+    until(&rt, &s, "the outside value", || {
+        probe.cells().level.get_untracked(&rt) == Ok(13.0)
+    });
+    s.shutdown();
+}
+
+/// A write the rate guard held commits when the run it was meant for has
+/// ended: a run is started for it, as for a write to a stopped service.
+#[test]
+fn a_held_write_committing_after_its_run_ended_starts_one() {
+    let (sc, _guard) = script();
+    let rt = Runtime::new();
+    let (s, _) = services(&rt);
+    let probe = s.register::<Probe>(&rt);
+    let dynamic = probe.dynamic();
+    probe.acquire(&rt);
+    assert_eq!(sc.next(), "start visible=true");
+    sc.cmd(Cmd::Ready);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    // A handler writing the level 40 times in 200 ms: throttled after 30,
+    // the latest held.
+    let events = rt.events::<f64>();
+    let d = dynamic.clone();
+    events
+        .on(&rt, move |rt, v| d.write(rt, 4, &[], Data::Float(*v)))
+        .unwrap();
+    let mut t = Duration::ZERO;
+    for v in 1..=40 {
+        events.emit(&rt, f64::from(v)).unwrap();
+        t += Duration::from_millis(5);
+        rt.tick(t);
+    }
+    assert_ne!(
+        probe.cells().gain.get_untracked(&rt),
+        Ok(40.0),
+        "the last write is held"
+    );
+    // The run ends (cleanly) before the held write commits.
+    drop(sc);
+    until(&rt, &s, "the clean end", || !probe.running());
+    let sc = script_again();
+    rt.tick(t + Duration::from_secs(1));
+    assert_eq!(probe.cells().gain.get_untracked(&rt), Ok(40.0));
+    assert_eq!(sc.next(), "start visible=true");
+    assert_eq!(sc.next(), "write gain 40");
+    until(&rt, &s, "the answer", || {
+        probe.cells().gain.pending_writes(&rt) == 0
+    });
+    s.shutdown();
+}
+
+/// A service that says it is ready and fails at once.
+#[service(name = "flaky", schema = "service flaky { n: int }")]
+#[derive(Store, Clone, Debug, Default, PartialEq)]
+pub struct Flaky {
+    pub n: i64,
+}
+
+impl Flaky {
+    async fn run(mut cx: Cx<Self>) -> Result<(), ServiceError> {
+        cx.ready();
+        Err("the daemon is gone".into())
+    }
+}
+
+/// A body that fails right after saying it is ready keeps backing off
+/// (1, 2, 4, 8, 16 s): about six starts in 30 s, not one a second. Only
+/// a run that stayed up resets the backoff.
+#[test]
+fn a_body_failing_right_after_ready_backs_off() {
+    let rt = Runtime::new();
+    let (s, _) = services(&rt);
+    let flaky = s.register::<Flaky>(&rt);
+    let now = std::cell::Cell::new(Duration::ZERO);
+    flaky.acquire(&rt);
+    for _ in 0..30 {
+        until(&rt, &s, "the failed run", || {
+            !flaky.running() && rt.next_deadline().is_some()
+        });
+        now.set(now.get() + Duration::from_secs(1));
+        rt.tick(now.get());
+    }
+    let starts = flaky.starts();
+    assert!((5..=6).contains(&starts), "{starts} starts in 30 s");
+    s.shutdown();
 }

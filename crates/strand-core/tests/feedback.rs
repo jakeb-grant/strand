@@ -1021,6 +1021,8 @@ fn forgotten_writes_do_not_swallow_outside_values() {
 
 type Dev = (u32, f64);
 
+type Sent = std::rc::Rc<std::cell::RefCell<Vec<(usize, Dev, Generation)>>>;
+
 fn devices(rt: &Runtime) -> strand_core::KeyedSignal<u32, Dev> {
     rt.keyed(strand_core::KeyedVec::from_values(|d: &Dev| d.0, [(1, 0.2), (2, 0.4)]).unwrap())
 }
@@ -1035,13 +1037,12 @@ fn item(rt: &Runtime, k: strand_core::KeyedSignal<u32, Dev>, key: u32) -> f64 {
 /// apply.
 #[test]
 fn item_writes_ignore_their_echoes() {
-    use std::cell::RefCell;
     use std::rc::Rc;
     use strand_core::VecDiff;
     let rt = Runtime::new();
     let sinks = devices(&rt);
-    let sent: Rc<RefCell<Vec<(usize, Dev, Generation)>>> = Rc::default();
-    let send = |s: &Rc<RefCell<Vec<(usize, Dev, Generation)>>>| {
+    let sent: Sent = Rc::default();
+    let send = |s: &Sent| {
         let s = s.clone();
         move |_: &Runtime, i: usize, d: &Dev, g: Generation| s.borrow_mut().push((i, *d, g))
     };

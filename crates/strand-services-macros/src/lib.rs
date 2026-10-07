@@ -216,6 +216,9 @@ fn store(input: &DeriveInput) -> syn::Result<Tokens> {
     let mut ids = Vec::new();
     let mut writes = Vec::new();
     let mut keyed_items = Vec::new();
+    let mut item_writes = Vec::new();
+    let mut item_patches = Vec::new();
+    let mut forgets = Vec::new();
     let mut disposes = Vec::new();
     let mut debug = Vec::new();
     let mut field_patches = Vec::new();
@@ -277,8 +280,13 @@ fn store(input: &DeriveInput) -> syn::Result<Tokens> {
                     #patch::#var(::core::clone::Clone::clone(&self.#id))
                 ),));
                 targets.push(quote!(#patch::#var(_) => #sv::Target::Field(#i),));
+                forgets.push(quote!(self.#id.forget_echoes(rt);));
                 cell_apply.push(quote!(#patch::#var(v) => {
                     match how {
+                        // A boot read from before a local write still in
+                        // flight: the write's answer comes next, and the
+                        // local value stays until then (no snap-back).
+                        #sv::How::Initial if self.#id.pending_writes(rt) > 0 => {}
                         #sv::How::Initial => {
                             self.#id.set_reloaded(rt, ::core::clone::Clone::clone(v))?;
                         }
@@ -334,22 +342,78 @@ fn store(input: &DeriveInput) -> syn::Result<Tokens> {
                     }
                 ])),));
                 targets.push(quote!(#patch::#var(_) => #sv::Target::Field(#i),));
+                forgets.push(quote!(self.#id.forget_echoes(rt);));
                 cell_apply.push(quote!(#patch::#var(d) => {
-                    match how {
+                    let applied = match how {
                         #sv::How::Initial => {
                             let mut items = self.#id.with_untracked(rt, |v| {
                                 v.items().iter().map(|(_, t)| ::core::clone::Clone::clone(t)).collect::<::std::vec::Vec<_>>()
                             })?;
                             #sv::apply_keyed(&mut items, d);
+                            // Items written locally since the boot read
+                            // stay as written.
+                            self.#id.keep_pending_items(rt, &mut items)?;
                             self.#id.replace_all_reloaded(rt, items)?;
+                            d.iter().map(#sv::diff_data).collect()
                         }
-                        #sv::How::Report(_) => self.#id.apply(rt, d)?,
-                    }
+                        #sv::How::Report(echo) => self
+                            .#id
+                            .receive_items(rt, d, echo)?
+                            .iter()
+                            .map(#sv::diff_data)
+                            .collect(),
+                    };
                     ::core::result::Result::Ok(::core::option::Option::Some(#sv::Applied::Keyed {
                         field: #i,
-                        diffs: d.iter().map(#sv::diff_data).collect(),
+                        diffs: applied,
                         initial: how == #sv::How::Initial,
                     }))
+                }));
+                item_writes.push(quote!(#i => {
+                    let found = self.#id.with_untracked(rt, |v| {
+                        v.items()
+                            .iter()
+                            .find(|(k, _)| #sv::ToData::to_data(k) == *key)
+                            .map(|(k, t)| (::core::clone::Clone::clone(k), #sv::ToData::to_data(t)))
+                    })?;
+                    let ::core::option::Option::Some((k, item)) = found else {
+                        return ::core::result::Result::Err(#sv::core::Error::failed(
+                            ::std::format!("`{}` holds no item with key {:?}", #fname, key),
+                        ));
+                    };
+                    let new = item
+                        .with_path(path, ::core::clone::Clone::clone(value))
+                        .and_then(|d| <#item as #sv::FromData>::from_data(&d))
+                        .map_err(|e| #sv::core::Error::failed(::std::format!("{}: {e}", #fname)))?;
+                    self.#id.write_item_tagged(rt, k, new, move |rt, i, t, g| {
+                        send(rt, i, #sv::ToData::to_data(t), g)
+                    })?;
+                    ::core::result::Result::Ok(())
+                }));
+                item_patches.push(quote!(#i => {
+                    let reported = sent.iter().any(|p| match p {
+                        #patch::#var(ds) => ds.iter().any(|d| match d {
+                            #sv::core::VecDiff::Update { key: k, .. }
+                            | #sv::core::VecDiff::Insert { key: k, .. } => #sv::ToData::to_data(k) == *key,
+                            #sv::core::VecDiff::Reset { items } => {
+                                items.iter().any(|(k, _)| #sv::ToData::to_data(k) == *key)
+                            }
+                            _ => false,
+                        }),
+                        _ => false,
+                    });
+                    if reported {
+                        return ::core::option::Option::None;
+                    }
+                    self.#id
+                        .iter()
+                        .enumerate()
+                        .find(|(_, t)| #sv::ToData::to_data(&#sv::Keyed::key(*t)) == *key)
+                        .map(|(index, t)| #patch::#var(::std::vec![#sv::core::VecDiff::Update {
+                            index,
+                            key: #sv::Keyed::key(t),
+                            value: ::core::clone::Clone::clone(t),
+                        }]))
                 }));
                 snapshot.push(quote!(#id: self.#id.with_untracked(rt, |v| {
                     v.items().iter().map(|(_, t)| ::core::clone::Clone::clone(t)).collect()
@@ -464,6 +528,20 @@ fn store(input: &DeriveInput) -> syn::Result<Tokens> {
                     _ => ::core::option::Option::None,
                 }
             }
+
+            #[allow(unreachable_patterns)]
+            fn item_patch(
+                &self,
+                field: usize,
+                key: &#sv::Data,
+                sent: &[#patch],
+            ) -> ::core::option::Option<#patch> {
+                let _ = (&key, &sent);
+                match field {
+                    #(#item_patches)*
+                    _ => ::core::option::Option::None,
+                }
+            }
         }
 
         impl #sv::Cells<#name> for #cells {
@@ -516,6 +594,29 @@ fn store(input: &DeriveInput) -> syn::Result<Tokens> {
                         ::std::format!("no field #{field}"),
                     )),
                 }
+            }
+
+            fn write_item(
+                &self,
+                rt: &#sv::core::Runtime,
+                field: usize,
+                key: &#sv::Data,
+                path: &[#sv::Step],
+                value: &#sv::Data,
+                send: #sv::SendItemWrite,
+            ) -> ::core::result::Result<(), #sv::core::Error> {
+                let _ = (&rt, &key, &path, &value, &send);
+                match field {
+                    #(#item_writes)*
+                    _ => ::core::result::Result::Err(#sv::core::Error::failed(
+                        ::std::format!("field #{field} is not a keyed list"),
+                    )),
+                }
+            }
+
+            fn forget_echoes(&self, rt: &#sv::core::Runtime) {
+                let _ = rt;
+                #(#forgets)*
             }
 
             fn keyed_items(
@@ -752,14 +853,17 @@ fn call(input: &DeriveInput) -> syn::Result<Tokens> {
     let mut names = Vec::new();
     let mut arms = Vec::new();
     let mut items = Vec::new();
+    let mut sigs = Vec::new();
     for v in &e.variants {
         let id = &v.ident;
         let cname = snake(&id.to_string());
         names.push(cname.clone());
         let mut n = 0usize;
+        let mut item_of = None;
         let mut arg = |ty: &Type, fname: Option<&Ident>| -> Tokens {
             if fname.is_some_and(|f| f == "item") {
                 items.push(quote!(<#ty as #sv::SchemaType>::schema_type()));
+                item_of = Some(quote!(<#ty as #sv::SchemaType>::schema_type()));
                 return quote!(<#ty as #sv::FromData>::from_data(
                     item.ok_or_else(|| #sv::DataError::new(::std::format!("`{}` needs an item", #cname)))?
                 )?);
@@ -790,10 +894,19 @@ fn call(input: &DeriveInput) -> syn::Result<Tokens> {
             }
         };
         arms.push(quote!(#cname => ::core::result::Result::Ok(#build),));
+        let item = item_of.map_or_else(
+            || quote!(::core::option::Option::None),
+            |t| quote!(::core::option::Option::Some(#t)),
+        );
+        sigs.push(quote!(#sv::CallSig { name: #cname, arity: #n, item: #item }));
     }
     Ok(quote! {
         impl #sv::FromCall for #name {
             const NAMES: &'static [&'static str] = &[#(#names),*];
+
+            fn signatures() -> ::std::vec::Vec<#sv::CallSig> {
+                ::std::vec![#(#sigs),*]
+            }
 
             fn from_call(
                 name: &str,

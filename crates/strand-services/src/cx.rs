@@ -107,17 +107,23 @@ impl<P> Out<P> {
 pub(crate) type Notify = Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>;
 
 /// A local write of an `rw` field (or of a leaf inside one:
-/// `audio.sink.volume`), passed to the service. Answer it with
-/// [`Cx::report`].
+/// `audio.sink.volume`), or of an `rw` leaf inside an item of a keyed
+/// list (`s.volume` for `s` in `audio.sinks`), passed to the service.
+/// Answer it with [`Cx::report`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct Write {
-    /// The service field written (`sink`).
+    /// The service field written (`sink`), or the keyed list holding the
+    /// written item (`sinks`).
     pub field: &'static str,
-    /// The path below it (`[.volume]`; empty for the field itself).
+    /// An item write: the item's key (`Data::Int(42)` for the sink with
+    /// id 42). `None` for a field write.
+    pub key: Option<Data>,
+    /// The path below the field, or below the item (`[.volume]`; empty
+    /// for the field itself).
     pub path: Vec<Step>,
     /// The value written at `path`.
     pub value: Data,
-    /// The field's whole new value.
+    /// The field's whole new value, or the item's.
     pub field_value: Data,
     /// The write's tag: [`Cx::report`] it back so the echo is ignored.
     pub generation: Generation,
@@ -261,26 +267,30 @@ impl<S: Service> Cx<S> {
     fn update_with(
         &mut self,
         f: impl FnOnce(&mut S),
-        answer: Option<(&'static str, Generation)>,
+        answer: Option<(&'static str, Generation, Option<&Data>)>,
     ) -> bool {
         let mut new = self.state.clone();
         f(&mut new);
         let mut patches = Vec::new();
         S::diff(&self.state, &new, &mut patches);
         self.state = new;
-        // A write's answer always names its field, even when the service
-        // kept the old value (refused it), so the optimistic local value
-        // does not stay. Only that field is tagged with the write.
+        // A write's answer always names its field (an item write's, its
+        // item), even when the service kept the old value (refused it), so
+        // the optimistic local value does not stay. Only that field is
+        // tagged with the write.
         let mut echo_of = None;
-        if let Some((field, generation)) = answer
+        if let Some((field, generation, key)) = answer
             && let Some(i) = S::FIELDS.iter().position(|f| f.name == field)
         {
             echo_of = Some((i, generation));
-            if !patches.iter().any(|p| p.target() == Target::Field(i))
-                && let Some(p) = S::field_patch(&self.state, i)
-            {
-                patches.push(p);
-            }
+            let extra = match key {
+                Some(key) => S::item_patch(&self.state, i, key, &patches),
+                None if !patches.iter().any(|p| p.target() == Target::Field(i)) => {
+                    S::field_patch(&self.state, i)
+                }
+                None => None,
+            };
+            patches.extend(extra);
         }
         if patches.is_empty() {
             return !self.stopped();
@@ -319,11 +329,12 @@ impl<S: Service> Cx<S> {
     }
 
     /// Answer `write`: change the state as the service now has it
-    /// (the written value, or what it settled on). The written field is
-    /// always reported, tagged with the write's generation, so the logic
-    /// thread ignores the echo of a write it already shows.
+    /// (the written value, or what it settled on). The written field (an
+    /// item write's item) is always reported, tagged with the write's
+    /// generation, so the logic thread ignores the echo of a write it
+    /// already shows.
     pub fn report(&mut self, write: &Write, f: impl FnOnce(&mut S)) -> bool {
-        self.update_with(f, Some((write.field, write.generation)))
+        self.update_with(f, Some((write.field, write.generation, write.key.as_ref())))
     }
 
     /// The first read is complete: until now updates were boot values

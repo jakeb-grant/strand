@@ -12,9 +12,11 @@
 //!   `strand-core`): a `Signal<T>` per field, a `KeyedSignal` per keyed
 //!   list, an `EventQueue<T>` per event. [`Cells::apply`] applies a patch:
 //!   a field's report goes through `Signal::receive`, so the echo of a
-//!   local write (tagged by `write_tagged`) is ignored; a first report is
-//!   applied as a boot value (`set_reloaded`: `on change` takes it as its
-//!   baseline).
+//!   local write (tagged by `write_tagged`) is ignored, and so is an
+//!   item's echo in a keyed list (`write_item_tagged`, `receive_items`);
+//!   a first report is applied as a boot value (`set_reloaded`: `on
+//!   change` takes it as its baseline), except where a local write is in
+//!   flight (the boot read predates it; its answer comes next).
 //!
 //! The language side (the binary's `ServiceHost` adapter) reads the cells
 //! by field index as [`Data`] ([`Cells::read`], tracked) and hears of
@@ -26,7 +28,7 @@ use std::marker::PhantomData;
 
 use strand_core::{Error, Generation, KeyedVec, NodeId, Runtime, VecDiff, keyed_diff};
 
-use crate::data::{Data, ToData};
+use crate::data::{Data, Step, ToData};
 
 /// What a store's field is, as the derive saw it.
 #[derive(Clone, Copy)]
@@ -133,10 +135,20 @@ pub trait Store: Clone + PartialEq + Default + Send + 'static {
     /// The patch setting field `field` to its value in `self` (a keyed
     /// list as one `Reset`); `None` for no such field.
     fn field_patch(&self, field: usize) -> Option<Self::Patch>;
+    /// The patch reporting the item with key `key` of keyed field `field`
+    /// as it is in `self` (one `Update`): the answer to an item write.
+    /// `None` when `sent` already reports that item (an `Update`,
+    /// `Insert` or `Reset` holding it), when the list no longer holds
+    /// it, or for no such keyed field.
+    fn item_patch(&self, field: usize, key: &Data, sent: &[Self::Patch]) -> Option<Self::Patch>;
 }
 
 /// Passes a local write on to the service, with its generation.
 pub type SendWrite = Box<dyn FnOnce(&Runtime, Generation)>;
+
+/// Passes a local write of a keyed list's item on to the service: the
+/// item's index and whole new value, and the write's generation.
+pub type SendItemWrite = Box<dyn FnOnce(&Runtime, usize, Data, Generation)>;
 
 /// A store's cells on the logic thread (generated).
 pub trait Cells<S: Store>: fmt::Debug + 'static {
@@ -158,6 +170,25 @@ pub trait Cells<S: Store>: fmt::Debug + 'static {
     /// the service.
     fn write(&self, rt: &Runtime, field: usize, value: &Data, send: SendWrite)
     -> Result<(), Error>;
+    /// A local write inside the item with key `key` of keyed field
+    /// `field` (`s.volume = 0.5` for `s` in `audio.sinks`): `value` at
+    /// `path` below the item. The item is updated at once with
+    /// `KeyedSignal::write_item_tagged` (its echoes are then ignored), and
+    /// `send` (called when the write-rate guard lets it through) passes
+    /// it to the service.
+    fn write_item(
+        &self,
+        rt: &Runtime,
+        field: usize,
+        key: &Data,
+        path: &[Step],
+        value: &Data,
+        send: SendItemWrite,
+    ) -> Result<(), Error>;
+    /// Forget every field's pending writes: the service run they went to
+    /// ended without answering them, so the next run's reports are not
+    /// their echoes.
+    fn forget_echoes(&self, rt: &Runtime);
     /// A keyed field's items as [`Data`], untracked.
     fn keyed_items(&self, rt: &Runtime, field: usize) -> Result<Vec<Data>, Error>;
     /// Dispose every cell.

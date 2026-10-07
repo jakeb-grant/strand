@@ -43,10 +43,10 @@ pub use bus::{Bus, Buses};
 pub use client::{Client, DynService, Observer, STOP_GRACE, Services};
 pub use cx::{Cx, Envelope, Msg, Reply, Write};
 pub use data::{Data, DataError, FromData, Name, Rgba, SchemaType, Step, ToData, record_field};
-pub use service::{FromCall, LocalFuture, NoCall, Service, ServiceError, Start};
+pub use service::{CallSig, FromCall, LocalFuture, NoCall, Service, ServiceError, Start};
 pub use store::{
-    Applied, Cells, Event, EventInfo, FieldInfo, How, Keyed, Patch, SendWrite, Store, Target,
-    apply_keyed, diff_data, keyed_changes, keyed_vec_of,
+    Applied, Cells, Event, EventInfo, FieldInfo, How, Keyed, Patch, SendItemWrite, SendWrite,
+    Store, Target, apply_keyed, diff_data, keyed_changes, keyed_vec_of,
 };
 /// `strand-core`, as the generated code names it.
 pub use strand_core as core;

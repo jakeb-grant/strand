@@ -6,9 +6,13 @@
 //! services runtime with the runtime's session connection (it used to
 //! run on a thread of its own). Its boot read is the service's first
 //! report: boot values, so `on change system.dark` does not fire at
-//! boot; then [`Cx::ready`]. With no session bus or no portal, the
-//! values the service started from are kept (a host seeds them with the
-//! last values it saw: `Client::seed`).
+//! boot; then [`Cx::ready`]. With no portal, the values the service
+//! started from are kept (a host seeds them with the last values it saw:
+//! `Client::seed`) and the portal is followed when it appears. When the
+//! session bus cannot be reached, or the connection dies under the
+//! follow (a session-bus restart), the body fails after `ready`: the
+//! client starts it again with its backoff, and the bus cache connects
+//! afresh. Only a bus disabled outright (`Bus::Disabled`) is not retried.
 
 use std::sync::Arc;
 
@@ -57,12 +61,16 @@ impl System {
         }
         let conn = match cx.session().await {
             Ok(c) => c,
-            Err(e) => {
-                log::warn!("not following the portal's appearance settings: {e}");
+            Err(e) if cx.buses().session == crate::Bus::Disabled => {
+                log::debug!("not following the portal's appearance settings: {e}");
                 cx.ready();
                 // Keep serving the values it has until stopped.
                 while cx.recv().await.is_some() {}
                 return Ok(());
+            }
+            Err(e) => {
+                cx.ready();
+                return Err(ServiceError(format!("no session bus: {e}")));
             }
         };
         let (sink, rx) = strand_watch::channel();
@@ -71,19 +79,21 @@ impl System {
         let sink = sink.with_waker(move || notify.notify_one());
         let follow = strand_watch::follow(&conn, sink);
         tokio::pin!(follow);
-        let mut following = true;
         loop {
             tokio::select! {
-                r = &mut follow, if following => {
-                    following = false;
-                    if let Err(e) = r {
-                        log::warn!("not following the portal's appearance settings: {e}");
-                    }
+                r = &mut follow => {
                     // Batches it sent before ending.
                     if !drain(&mut cx, &rx) {
                         return Ok(());
                     }
                     cx.ready();
+                    // It follows until the connection goes: the bus died
+                    // or restarted. Fail, so the client starts it again
+                    // (backing off) on a fresh connection.
+                    return Err(ServiceError(match r {
+                        Ok(()) => "the session bus connection ended".to_string(),
+                        Err(e) => format!("following the portal failed: {e}"),
+                    }));
                 }
                 () = arrived.notified() => {
                     if !drain(&mut cx, &rx) {

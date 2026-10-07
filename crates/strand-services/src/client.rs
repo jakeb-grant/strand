@@ -16,9 +16,17 @@
 //!
 //! A body that ends with an error while readers still hold it is started
 //! again on a core timer, backing off from 1 s to [`RETRY_MAX`] (reset
-//! once a run says it is ready); [`Client::running`] is false meanwhile.
-//! A write, action or async call reaching a stopped service starts it
-//! for that one operation (a reader for a moment: it stops 5 s later).
+//! only after a run stayed up [`RETRY_MAX`]: a body that fails right
+//! after saying it is ready still backs off); [`Client::running`] is
+//! false meanwhile. A write, action or async call reaching a stopped
+//! service starts it for that one operation (a reader for a moment: it
+//! stops 5 s later).
+//!
+//! **Echoes**: a write the service has not answered when its run ends
+//! (the body failed on it, or the 5 s stop came first) never will be: the
+//! cells forget their pending writes then ([`Cells::forget_echoes`]), so
+//! a later report equal to a lost write is an outside change, not its
+//! echo.
 //!
 //! **Threads**: services marked shared run on one tokio current-thread
 //! runtime thread (`strand-services`), started lazily with the first of
@@ -44,8 +52,8 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::bus::Buses;
 use crate::cx::{Cx, Envelope, Msg, Notify, Out, Reply, Wake, Write};
-use crate::data::{Data, Step};
-use crate::service::{FromCall, Service, Start};
+use crate::data::{Data, Step, record_field};
+use crate::service::{CallSig, FromCall, Service, Start};
 use crate::store::{Applied, Cells, EventInfo, FieldInfo, How, Patch, Target};
 
 /// How long a service keeps running after its last reader left.
@@ -336,6 +344,8 @@ struct Run<S: Service> {
     thread: Option<JoinHandle<()>>,
     ready: bool,
     ended: bool,
+    /// When it started (the logic clock).
+    started: Duration,
 }
 
 impl<S: Service> Run<S> {
@@ -468,6 +478,7 @@ impl<S: Service> ClientInner<S> {
             thread,
             ready: false,
             ended: false,
+            started: rt.now(),
         });
     }
 
@@ -515,6 +526,8 @@ impl<S: Service> ClientInner<S> {
                         c.disarm_retry(rt);
                         c.failures.set(0);
                         c.stop();
+                        // Writes it never answered never will be.
+                        c.cells.forget_echoes(rt);
                     }
                     Ok(())
                 },
@@ -582,17 +595,52 @@ impl<S: Service> ClientInner<S> {
 
     /// The run ended (an `Ended` envelope, or its channel closed).
     fn ended(&self, rt: &Runtime, failed: bool) {
-        let was = match self.run.borrow_mut().as_mut() {
+        let (was, started) = match self.run.borrow_mut().as_mut() {
             Some(run) => {
                 let was = run.ended;
                 run.ended = true;
                 run.ready = true;
-                was
+                (was, run.started)
             }
             None => return,
         };
-        if !was && failed && self.refs.get() > 0 {
+        if was {
+            return;
+        }
+        // Writes it never answered never will be.
+        self.cells.forget_echoes(rt);
+        if failed && self.refs.get() > 0 {
+            // Only a run that stayed up resets the backoff: one that fails
+            // right after saying it is ready (a daemon missing or
+            // flapping) keeps backing off.
+            if rt.now().saturating_sub(started) >= RETRY_MAX {
+                self.failures.set(0);
+            }
             self.arm_retry(rt);
+        }
+    }
+
+    /// Send a committed write to the run current now (a write the rate
+    /// guard held may commit after a restart, or after the 5 s stop: a
+    /// run is then started for it, as for a write to a stopped service).
+    /// When none can start (a failed body backing off), the write is
+    /// dropped and the cells forget it: the next run's boot read wins.
+    fn deliver(self: &Rc<Self>, rt: &Runtime, write: Write) {
+        let live = self.run.borrow().as_ref().is_some_and(|r| !r.ended);
+        let sent = if live {
+            self.run
+                .borrow()
+                .as_ref()
+                .is_some_and(|run| run.send(Msg::Write(write)))
+        } else {
+            self.with_run(rt, |run| run.send(Msg::Write(write)))
+                .unwrap_or_else(|e| {
+                    log::warn!("{}: a write was not sent: {e}", S::NAME);
+                    false
+                })
+        };
+        if !sent {
+            self.cells.forget_echoes(rt);
         }
     }
 
@@ -664,10 +712,12 @@ impl<S: Service> Member for ClientInner<S> {
                     self.reports.set(self.reports.get() + 1);
                     for p in &patches {
                         // Only the written field's patch answers the
-                        // write; the rest are outside changes.
+                        // write (even before the service is ready: the
+                        // answer is newer than its boot read); the rest
+                        // are outside changes, or boot values.
                         let how = match echo_of {
-                            _ if initial => How::Initial,
                             Some((i, g)) if p.target() == Target::Field(i) => How::Report(Some(g)),
+                            _ if initial => How::Initial,
                             _ => How::Report(None),
                         };
                         match self.cells.apply(rt, p, how) {
@@ -685,7 +735,6 @@ impl<S: Service> Member for ClientInner<S> {
                     if let Some(run) = self.run.borrow_mut().as_mut() {
                         run.ready = true;
                     }
-                    self.failures.set(0);
                 }
                 Envelope::Ended(r) => self.ended(rt, r.is_err()),
             }
@@ -910,6 +959,21 @@ impl<S: Service> Client<S> {
     }
 }
 
+/// The keyed fields of `S` and the record each hands out (`[Workspace]`
+/// is `Workspace`).
+fn keyed_records<S: Service>() -> Vec<(usize, String)> {
+    S::FIELDS
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.keyed)
+        .filter_map(|(i, f)| {
+            let ty = (f.ty)();
+            let rec = ty.strip_prefix('[')?.strip_suffix(']')?.to_string();
+            Some((i, rec))
+        })
+        .collect()
+}
+
 /// The run's channel closed under a message: its body just ended.
 fn not_running(name: &str) -> Error {
     Error::failed(format!("`{name}` is not running (its body ended)"))
@@ -928,7 +992,14 @@ pub trait DynService {
     fn actions(&self) -> &'static [&'static str];
     /// Its async method names.
     fn methods(&self) -> &'static [&'static str];
-    /// The record types whose items its actions are called on.
+    /// Its actions, with their arities and item records.
+    fn action_sigs(&self) -> Vec<CallSig>;
+    /// Its async methods, with their arities and item records.
+    fn method_sigs(&self) -> Vec<CallSig>;
+    /// The record types of its items: those its keyed lists hand out
+    /// (their `rw` fields are written through [`DynService::write_item`])
+    /// and those its actions and async methods are called on. The
+    /// language side routes item writes and item calls here by them.
     fn item_records(&self) -> Vec<String>;
     /// Field `field`, tracked.
     fn read(&self, rt: &Runtime, field: usize) -> Result<Data, Error>;
@@ -939,6 +1010,19 @@ pub trait DynService {
     /// Write `value` at `path` below field `field` (applied at once, sent
     /// to the service tagged; its echo is ignored).
     fn write(&self, rt: &Runtime, field: usize, path: &[Step], value: Data) -> Result<(), Error>;
+    /// Write `value` at `path` below `item`, an item of record `record`
+    /// one of its keyed lists holds (`s.volume = 0.5` for `s` in
+    /// `audio.sinks`): the list holding the item's key is updated at once
+    /// and the write sent to the service with the key
+    /// ([`Write::key`](crate::Write::key)); the item's echoes are ignored.
+    fn write_item(
+        &self,
+        rt: &Runtime,
+        record: &str,
+        item: &Data,
+        path: &[Step],
+        value: Data,
+    ) -> Result<(), Error>;
     /// Run action `name` (on `item` for an item's action).
     fn action(
         &self,
@@ -994,8 +1078,17 @@ impl<S: Service> DynService for Client<S> {
         <S::Call as FromCall>::NAMES
     }
 
+    fn action_sigs(&self) -> Vec<CallSig> {
+        <S::Action as FromCall>::signatures()
+    }
+
+    fn method_sigs(&self) -> Vec<CallSig> {
+        <S::Call as FromCall>::signatures()
+    }
+
     fn item_records(&self) -> Vec<String> {
-        let mut v = <S::Action as FromCall>::item_records();
+        let mut v: Vec<String> = keyed_records::<S>().into_iter().map(|(_, r)| r).collect();
+        v.extend(<S::Action as FromCall>::item_records());
         v.extend(<S::Call as FromCall>::item_records());
         v.sort();
         v.dedup();
@@ -1036,27 +1129,89 @@ impl<S: Service> DynService for Client<S> {
             rt,
             field,
             &whole,
-            // Sent to the run current when the write commits (a write the
-            // rate guard held may commit after a restart). With no run
-            // then, it is not sent: the next start begins from the cells,
-            // which hold it.
-            Box::new(move |_, generation| {
-                let Some(c) = me.upgrade() else {
-                    return;
-                };
-                if let Some(run) = c.run.borrow().as_ref()
-                    && !run.ended
-                {
-                    run.send(Msg::Write(Write {
-                        field: name,
-                        path,
-                        value,
-                        field_value: sent_whole,
-                        generation,
-                    }));
+            Box::new(move |rt, generation| {
+                if let Some(c) = me.upgrade() {
+                    c.deliver(
+                        rt,
+                        Write {
+                            field: name,
+                            key: None,
+                            path,
+                            value,
+                            field_value: sent_whole,
+                            generation,
+                        },
+                    );
                 }
             }),
         )
+    }
+
+    fn write_item(
+        &self,
+        rt: &Runtime,
+        record: &str,
+        item: &Data,
+        path: &[Step],
+        value: Data,
+    ) -> Result<(), Error> {
+        let lists: Vec<usize> = keyed_records::<S>()
+            .into_iter()
+            .filter(|(_, r)| r == record)
+            .map(|(i, _)| i)
+            .collect();
+        let Some(&first) = lists.first() else {
+            return Err(Error::failed(format!(
+                "`{}` hands out no `{record}` items",
+                S::NAME
+            )));
+        };
+        let key_name = S::FIELDS[first].key.unwrap_or("id");
+        let key = record_field(item, record, key_name)
+            .map_err(|e| Error::failed(format!("{}: {e}", S::NAME)))?
+            .clone();
+        // A stopped service starts for the write.
+        self.0.with_run(rt, |_| ())?;
+        let mut last = None;
+        for i in lists {
+            let (name, me, key2) = (S::FIELDS[i].name, Rc::downgrade(&self.0), key.clone());
+            let (path2, value2) = (path.to_vec(), value.clone());
+            let send: crate::store::SendItemWrite = Box::new(move |rt, index, item, generation| {
+                let Some(c) = me.upgrade() else {
+                    return;
+                };
+                // The language side mirrors the item at once.
+                let applied = Applied::Keyed {
+                    field: i,
+                    diffs: vec![strand_core::VecDiff::Update {
+                        index,
+                        key: key2.clone(),
+                        value: item.clone(),
+                    }],
+                    initial: false,
+                };
+                for o in c.observers.borrow().iter() {
+                    o(rt, &applied);
+                }
+                c.deliver(
+                    rt,
+                    Write {
+                        field: name,
+                        key: Some(key2),
+                        path: path2,
+                        value: value2,
+                        field_value: item,
+                        generation,
+                    },
+                );
+            });
+            // The list holding the key takes it (`sinks` or `sources`).
+            match self.0.cells.write_item(rt, i, &key, path, &value, send) {
+                Ok(()) => return Ok(()),
+                Err(e) => last = Some(e),
+            }
+        }
+        Err(last.unwrap_or_else(|| Error::failed(format!("no `{record}` to write"))))
     }
 
     fn action(

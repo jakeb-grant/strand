@@ -136,12 +136,28 @@ impl Start {
     }
 }
 
+/// One call an action or async-method enum takes, as `#[derive(Call)]`
+/// saw it: what the schema's `action`/`fn` declaration must match.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallSig {
+    /// Its name (`focus`).
+    pub name: &'static str,
+    /// How many arguments it takes (the item it is called on not
+    /// counted).
+    pub arity: usize,
+    /// The record whose items it is called on (`Workspace` for
+    /// `ws.focus()`); `None` for a service-level call.
+    pub item: Option<String>,
+}
+
 /// An action or async method typed from its call: name (`play_pause`),
 /// the item it was called on (`ws.focus()`) and its arguments
 /// (`#[derive(Call)]`).
 pub trait FromCall: Sized {
     /// Every call name it takes.
     const NAMES: &'static [&'static str];
+    /// Every call it takes, with its arity and item record.
+    fn signatures() -> Vec<CallSig>;
     fn from_call(name: &str, item: Option<&Data>, args: &[Data]) -> Result<Self, DataError>;
     /// The record types whose items it is called on (`Workspace` for
     /// `ws.focus()`), so the language side routes item calls here.
@@ -156,6 +172,10 @@ pub enum NoCall {}
 
 impl FromCall for NoCall {
     const NAMES: &'static [&'static str] = &[];
+
+    fn signatures() -> Vec<CallSig> {
+        Vec::new()
+    }
 
     fn from_call(name: &str, _: Option<&Data>, _: &[Data]) -> Result<Self, DataError> {
         Err(DataError::new(format!("no call `{name}`")))
