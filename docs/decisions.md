@@ -6095,9 +6095,8 @@ anyone asked for) and reports a second later. Hidden, neither wakes.
 sends it to the member whose `#[derive(Call)]` actions take an `item` of
 that record type (`DynService::item_records`), else to the fallback.
 `declare`d custom services (`service … from dbus`) go to the fallback
-until their sources land. An async method called outside a `let`
-(`StoreHost::call`) is an error value rather than a value that never
-resolves.
+until their sources land. (An async method called outside a `let` was
+an error value here; superseded below: every async call is fetched.)
 
 **2026-10-06 · wave4-core: `strand-dev` links `strand-services`.** The
 LSP must hover and complete with the same schema `strand run` checks
@@ -6105,3 +6104,76 @@ against, so `strand-dev` depends on `strand-services` for
 `schemas()` (the crate graph already drew this edge) and `serve` uses
 `strand_dev::schema()`; `serve_with` takes any schema (tests extend it
 with a schema of their own).
+
+**2026-10-07 · wave4-core: streams are fields, watched per field.**
+"Streams such as a Wi-Fi scan run only while visible" is read per
+stream, not per service: a bar always showing `network.ssid` must not
+keep a closed popup's access-point scan running. A stream is a
+top-level store field marked `#[store(stream)]` (the access points, the
+level meter), so the compiler's per-scope service collection now keeps
+the fields each scope reads directly (`lower::ServiceUses`: `(service,
+None)` and `(service, Some(field))`), holds call the new
+`ServiceHost::acquire_field`/`release_field` (default no-ops) after the
+service's `acquire` (released in reverse), and `Client` counts readers
+per field, telling the service `Msg::Watch { field, on }` for stream
+fields (`Cx::watched`). Service authors put stream data in a field of
+its own; a stream reached only through a `fn` method or another scope's
+`let` is held by the scope reading it there. Service-wide `Visible`
+stays for services that poll as a whole (cpu, memory).
+
+**2026-10-07 · wave4-core: an async call anywhere is a load.**
+design.md has `x ?? fallback` cover pending and error, so
+`apps.search(q) ?? []` must work where it is written, not only as a
+`let`. The compiler lowers an async service method call in a binding to
+`Op::AsyncSite(call chunk)`: the scope's own load of that call (core's
+`async_memo`, made on its first read, kept with the scope's core owner,
+the same `Vm::async_load` an async `let` uses), so it re-fetches when its
+arguments change and keeps its last result while pending. Its arguments
+may read anything the scope binds (component parameters, `for` items,
+`screen`). In a handler, `fn` or lambda (whose locals live in the VM's
+frame) the call lowers to `Op::FetchMethod`: a pending `Async` whose
+`await` waits for `ServiceHost::fetch`; a binding that calls an async
+method inside a lambda gets that pending value too (it never re-runs
+for the answer), so such calls belong outside the lambda.
+
+**2026-10-07 · wave4-core: a write answer tags its field only.**
+`Signal` generations are counted per cell, so `Cx::report`'s envelope
+carries `(field index, generation)` and only the written field's patch
+is matched against its pending writes; other fields the answer moves
+(a sink's mute beside its volume) are outside changes.
+
+**2026-10-07 · wave4-core: bodies that fail while read come back.**
+A body that ends with an error while it still has readers is started
+again on a core timer (1 s, doubling to 30 s; reset when a run says it
+is ready), and `Client::running` is false while it is down. A body that
+returns `Ok` while read is done (its last values stay). Services that
+follow a daemon may still reconnect themselves (NameOwnerChanged) to
+avoid the gap; the retry is the floor. A write, action or async call
+reaching a stopped service starts it for that operation (acquired and
+released at once, so it stops 5 s later): `strand set
+brightness.level` works with nothing reading it.
+
+**2026-10-07 · wave4-core: threads and buses are cleaned up.** A
+service on a thread of its own is joined: its next run's thread joins
+the previous one before its body starts (two PipeWire connections of
+one service never overlap), and `Services::shutdown` joins with a 2 s
+bound (an overrun is logged and left). The shared runtime's bus
+connections are shared per bus behind one connect, pinged before reuse
+(a restarted daemon is connected afresh) and dropped with the last body
+on the thread; `Cx::session`/`system` return an error, not a panic, on
+a thread without a tokio runtime. `PrivateBus` runs a configuration of
+its own without service directories, so nothing installed on the
+machine can be activated on a test's bus, and can restart its daemon at
+the same address.
+
+**2026-10-07 · wave4-core: events are typed, schemas default to
+`SCHEMA`.** `#[derive(Store)]` generates `<Name>Event` (one variant per
+`Event<T>` field) and `Cx::emit` takes only it, so a field patch can
+never be sent as an event. `#[service(name = "battery")]` takes its
+schema text from the `SCHEMA` constant in scope (as design.md writes the
+attribute); `schema = …` still overrides. The second copy of the docs
+(the struct's `///`) is held to the schema's by
+`service_schemas_extend_the_builtin_one`, which also checks that a keyed
+field's record `key` is the store's `#[data(key = …)]`
+(`Keyed::KEY_FIELD`); the composite logs a record whose item actions two
+members claim.

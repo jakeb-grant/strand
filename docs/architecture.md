@@ -1266,8 +1266,13 @@ Public interfaces other crates and later stages build on:
     (a closed launcher never searches). Each change of the argument
     tuple starts one fetch and drops the superseded future (cancelling
     it); the value keeps its last result while pending. The default
-    runs `call` once and is ready at once. Async calls anywhere else
-    (inside a larger expression) still go through `call`.
+    runs `call` once and is ready at once. Every other async service
+    call goes through `fetch` too: in a binding (`apps.search(q) ?? []`)
+    the compiler lowers it to `Op::AsyncSite(call chunk)`, the scope's
+    own load of that call (the same `Vm::async_load` as an async `let`,
+    made on first read and kept with the scope); in a handler, `fn` or
+    lambda to `Op::FetchMethod`, a pending `Async` whose `await` waits
+    for the fetch. `call` is never asked for an async method.
   - `action(rt, ActionTarget::{Service, Item(&record)}, name, args)` runs
     `notifications.clear()` or `ws.focus()`; `event(rt, service,
     event) -> EventQueue<Vec<Value>>` is the lossless queue `on
@@ -1289,6 +1294,13 @@ Public interfaces other crates and later stages build on:
     lazily on `acquire` and arm the 5 s stop with core's timers on
     `release` (also called from scope cleanup: no synchronous disposal
     there).
+  - `acquire_field`/`release_field(rt, service, field)`: the same holds
+    for each field a scope reads directly (`lower::ServiceUses` keeps
+    `(service, None)` and `(service, Some(field))` per scope; a hold
+    acquires the service, then its fields, and releases in reverse).
+    What a `#[store(stream)]` field's stream runs for (a Wi-Fi scan,
+    audio levels): a bar showing `network.ssid` does not keep a closed
+    popup's scan of `network` access points going. Default: nothing.
   - Several service crates, one host (M3 plan): `Instance::new` takes one
     `Rc<dyn ServiceHost>`, and `ServiceHost` (with `Value`, `RecordId`
     and the rest of the VM's dynamic types) stays in `strand-compiler`:
@@ -1789,12 +1801,13 @@ the primitives, `Option`, `Vec` and derived types.
 - **A service** is a state struct:
 
   ```rust
-  #[service(name = "battery", schema = SCHEMA)]   // + action = A, call = C, fns = f, thread
+  #[service(name = "battery")]   // schema: the `SCHEMA` const in scope (or `schema = …`); + action = A, call = C, fns = f, thread
   #[derive(Store, Clone, Debug, Default, PartialEq)]
   pub struct Battery {
       pub present: bool,
       #[store(rw)] pub level: f64,                // `<->` / assignment
       #[store(keyed)] pub devices: Vec<Device>,  // a keyed collection
+      #[store(stream)] pub scan: Vec<Ap>,        // produced only while a visible reader reads it
       pub received: Event<Notification>,          // an event (`()`: none, a tuple: several)
   }
   impl Battery { async fn run(cx: Cx<Self>) -> Result<(), ServiceError> { … } }
@@ -1802,10 +1815,13 @@ the primitives, `Option`, `Vec` and derived types.
 
   `#[derive(Store)]` generates `BatteryPatch` (`Send`: one variant per
   field with its new value, a keyed list's `Vec<VecDiff<K, T>>`, an
-  event's payload), `BatteryCells` (logic thread: `Signal<T>` per
+  event's payload), `BatteryEvent` (one variant per event: what
+  `Cx::emit` takes), `BatteryCells` (logic thread: `Signal<T>` per
   field, `KeyedSignal<K, T>` per keyed list, `EventQueue<T>` per event)
   and the `Store` / `Cells` impls (`FIELDS`, `EVENTS` with names, schema
-  types, `rw`, `keyed`, `///` docs; `diff(old, new)`, `apply`,
+  types, `rw`, `keyed`, `key` (the item's `Keyed::KEY_FIELD`),
+  `stream`, `///` docs (held equal to the schema text's by test);
+  `diff(old, new)`, `apply`,
   `field_patch`; cells `apply(patch, How::{Initial, Report(echo_of)})`,
   `snapshot`, `read(field) -> Data` tracked, `ids`, `write(field, Data,
   send)` with `write_tagged`, `keyed_items`). `#[derive(Data)]` on a
@@ -1822,18 +1838,28 @@ the primitives, `Option`, `Vec` and derived types.
 - **Service side** (`Cx<S>`): `state()` (the logic thread's values when
   it started, then its own updates); `update(|s| …)` sends the fields
   that changed as one `Envelope` (one tick); `send(patches)` for
-  hand-made keyed diffs; `emit(event)`; `report(&write, |s| …)` answers
-  a write (always naming the written field, tagged with its generation,
-  so the logic thread ignores the echo and drops a refused optimistic
-  value); `ready()` ends the boot phase (updates before it are boot
+  hand-made keyed diffs; `emit(BatteryEvent::…)`; `report(&write, |s|
+  …)` answers a write (always naming the written field, tagged with its
+  field index and generation, so the logic thread ignores the echo and
+  drops a refused optimistic value; other fields the answer changes are
+  outside changes); `ready()` ends the boot phase (updates before it are boot
   values: `on change` takes them as its baseline; it also ends the first
   frame's wait); `recv().await` / `blocking_recv()` / `try_recv()` give
   `Msg::{Write(Write { field, path, value, field_value, generation }),
-  Action(S::Action), Call(S::Call, Reply), Visible(bool)}` and `None` once
-  stopped; `visible()` (a reader is visible: streams such as a Wi-Fi
-  scan, audio levels or a polled sensor run only then);
-  `session()` / `system()` (one zbus connection per bus per runtime
-  thread, on the `Buses` the registry was given); `set_notify(f)` for a
+  Action(S::Action), Call(S::Call, Reply), Visible(bool), Watch { field,
+  on }}` and `None` once stopped; `visible()` (a reader is visible: a
+  service polling as a whole, cpu or memory, runs only then);
+  `watched(field)` (a visible reader reads that `#[store(stream)]`
+  field: a Wi-Fi scan or a level meter runs only then; `Msg::Watch`
+  says when it changes); `session()` / `system()` (one zbus connection
+  per bus per runtime thread, on the `Buses` the registry was given,
+  shared behind one connect, pinged before reuse so a restarted daemon is
+  reconnected, dropped with the last body on the thread; an error, not a
+  panic, without a tokio runtime: a service on its own thread runs one
+  to use them). A body returns when stopped; one that returns an error
+  while read is started again after a backoff (1 s doubling to 30 s,
+  reset on `ready()`), and services following a daemon may reconnect
+  themselves (NameOwnerChanged) to avoid that gap; `set_notify(f)` for a
   service on its own thread with its own event loop (PipeWire's): `f`
   runs whenever a message is queued and when it is stopped.
 - **Threads.** `Start::Shared`: the body runs on the one tokio
@@ -1841,7 +1867,9 @@ the primitives, `Option`, `Vec` and derived types.
   bodies need not be `Send`), started lazily with the first such service
   and joined by `Services::shutdown`; stopping drops the body's future.
   `Start::Thread` (`#[service(thread)]`, a blocking `fn run(cx)`): a
-  thread per run (`strand-<name>`), stopped by closing its messages.
+  thread per run (`strand-<name>`), stopped by closing its messages;
+  the next run's thread joins the previous one first, and
+  `Services::shutdown` joins them (2 s at most, an overrun logged).
 - **Logic side.** `Services::new(rt, Buses, wake)` (where no owner is
   current: its cells and timers live in a scope of their own; `wake` is
   called from any thread after every envelope); `register::<S>(rt) ->
@@ -1853,14 +1881,20 @@ the primitives, `Option`, `Vec` and derived types.
   starts it; the last release tells it `Visible(false)` at once and arms
   a core timer, `STOP_GRACE` = 5 s on the logic clock, that stops it;
   an acquire inside the grace cancels the stop, nothing restarts;
-  `release` disposes nothing, so it is safe in scope cleanup), `seed(rt,
-  |s| …)` (boot values before it first reports: a host's remembered
-  values), `act`, `request` (async call → future of `Result<Data,
-  String>`), `readers`, `running`, `starts`, `stops`, `reports` (updates applied), `dynamic() -> Rc<dyn
+  `release` disposes nothing, so it is safe in scope cleanup),
+  `acquire_field(i)` / `release_field(i)` (readers of field `i`; a
+  stream field's service is told `Watch` on the first and last),
+  `seed(rt, |s| …)` (boot values before it first reports: a host's
+  remembered values), `act(rt, a)`, `request(rt, call)` (async call →
+  future of `Result<Data, String>`; like a write, both start a stopped
+  service for that operation, which then stops 5 s later), `readers`,
+  `field_readers`, `running` (false once its body ended), `starts`,
+  `stops`, `reports` (updates applied), `dynamic() -> Rc<dyn
   DynService>`: the by-index view the language side drives (`fields`,
   `events`, `actions`, `methods`, `item_records`, `read`, `ids`,
-  `keyed_items`, `write(field, path: &[Step], Data)`, `action(name,
-  item, args)`, `call`, `fetch`, `acquire`, `release`, `observe(f)`:
+  `keyed_items`, `write(field, path: &[Step], Data)`, `action(rt, name,
+  item, args)`, `call`, `fetch(rt, …)`, `acquire`, `release`,
+  `acquire_field`, `release_field`, `observe(f)`:
   every keyed change and event applied, as `Applied::{Keyed { field,
   diffs: Vec<VecDiff<Data, Data>> }, Event { event, args }}`).
 - **Builtin services here** (wave 4): `system` (the portal's appearance
@@ -1884,8 +1918,9 @@ the primitives, `Option`, `Vec` and derived types.
   Value>` fed by the store's `Applied::Keyed` diffs (keyed by the item
   record's schema `key`), events as `EventQueue<Vec<Value>>` fed by
   `Applied::Event`; `write` refuses non-`rw` fields and passes the leaf
-  path as `Step`s; `call` is the store's `fn` methods (an async method
-  called outside a `let` is an error value); `fetch` its async methods.
+  path as `Step`s; `call` is the store's `fn` methods; `fetch` its async
+  methods (every async call in a config reaches it);
+  `acquire_field`/`release_field` count readers per field.
   `Composite` routes by service name (one member per name), an item's
   action by the record's name to the member whose `item_records()` name
   it, and everything else (the clock and calendar, services no crate
@@ -1894,8 +1929,10 @@ the primitives, `Option`, `Vec` and derived types.
   module added to `strand-services` (`Builtin`, `schemas()`) is served
   by `strand run` with no change here.
 - **Tests** (`strand_services::testing`): `PrivateBus::start()` (a
-  `dbus-daemon` of the test's own; `buses()` for `Services::new`, `env()`
-  for a child process, `wait_for_name`), `DbusMock::start(&bus,
+  `dbus-daemon` of the test's own, on a configuration without service
+  directories so nothing installed can be activated on it; `buses()`
+  for `Services::new`, `env()` for a child process, `wait_for_name`,
+  `restart()`: a new daemon at the same address), `DbusMock::start(&bus,
   template, system, parameters, name)` (python-dbusmock: the interpreter
   is `$STRAND_DBUSMOCK_PYTHON`, else the first of `python3`, `python3.12`
   that imports `dbusmock`). Both skip without their tool unless

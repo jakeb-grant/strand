@@ -87,6 +87,9 @@ jobs:
       - run: cargo test --workspace -- --skip random_edits_through_five_save_styles
       # The 34 MB PSS gate is checked on a release build (design.md, "Testing": budgets).
       - run: cargo test --release -p strand --test demo
+      # The same gate and the idle budget on the real services (private
+      # bus, mock portal): `the_real_services_sleep_when_nothing_changes`.
+      - run: cargo test --release -p strand --test services -- --test-threads=1
       # M2 exit: design.md's four example shells and theme.strand, byte
       # for byte, in `strand run` on headless sway with two outputs
       # against the deterministic mock services, driven by clicks, the
