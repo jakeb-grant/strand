@@ -515,6 +515,56 @@ impl Seen {
     }
 }
 
+/// The values written to each field lately, oldest first, until the
+/// daemon's PropertiesChanged for the latest comes back: a signal for an
+/// earlier write that arrives after a later write was reported (a slider
+/// dragged, a quick double click) is that write's late echo, not news,
+/// and must not show the old value until the latest echo arrives.
+struct Echoes(Vec<Vec<(Data, std::time::Instant)>>);
+
+/// How long a written value waits for its echo (a daemon that does not
+/// signal a change it was asked for leaves nothing behind for long).
+const ECHO_WAIT: Duration = Duration::from_secs(2);
+
+/// How many writes to one field wait for their echoes.
+const ECHO_MAX: usize = 8;
+
+impl Echoes {
+    fn new(fields: usize) -> Echoes {
+        Echoes(vec![Vec::new(); fields])
+    }
+
+    /// `d` was written to field `i` (as the daemon will signal it).
+    fn wrote(&mut self, i: usize, d: Data) {
+        if let Some(ring) = self.0.get_mut(i) {
+            if ring.len() == ECHO_MAX {
+                ring.remove(0);
+            }
+            ring.push((d, std::time::Instant::now()));
+        }
+    }
+
+    /// The daemon signalled `d` for field `i`: whether to show it. An
+    /// echo of a write older than the latest is not shown (the writes up
+    /// to it are settled); the latest's echo, or anything else, is.
+    fn shows(&mut self, i: usize, d: &Data) -> bool {
+        let Some(ring) = self.0.get_mut(i) else {
+            return true;
+        };
+        ring.retain(|(_, at)| at.elapsed() < ECHO_WAIT);
+        match ring.iter().rposition(|(w, _)| w == d) {
+            Some(p) if p + 1 < ring.len() => {
+                ring.drain(..=p);
+                false
+            }
+            _ => {
+                ring.clear();
+                true
+            }
+        }
+    }
+}
+
 async fn run_dbus(
     cx: &mut Cx<Custom>,
     spec: &Spec,
@@ -549,6 +599,7 @@ async fn run_dbus(
     // written as the one it was read from (`power_saver` as
     // `power-saver`).
     let mut seen = Seen::new(spec.fields.len());
+    let mut echoes = Echoes::new(spec.fields.len());
     loop {
         // (Re)read everything from the current owner.
         let mut bound: Bound = vec![None; spec.fields.len()];
@@ -606,7 +657,11 @@ async fn run_dbus(
                                 && *bi == iface
                                 && let Some(v) = props.get(prop)
                             {
-                                state.set(i, seen.note(i, dbus_data(v)));
+                                let d = dbus_data(v);
+                                if !echoes.shows(i, &d) {
+                                    continue;
+                                }
+                                state.set(i, seen.note(i, d));
                                 any = true;
                             }
                         }
@@ -635,7 +690,11 @@ async fn run_dbus(
                         let mut set = Err(String::new());
                         for value in seen.spellings(i, &value) {
                             set = match to_dbus(&value, &sig) {
-                                Ok(v) => dbus::set(&conn, name, path, &iface, &prop, ZValue::from(v)).await.map(|()| value).map_err(|e| e.to_string()),
+                                Ok(v) => {
+                                    // As the daemon will signal it back.
+                                    let echo = dbus_data(&v);
+                                    dbus::set(&conn, name, path, &iface, &prop, ZValue::from(v)).await.map(|()| (value, echo)).map_err(|e| e.to_string())
+                                }
                                 Err(e) => Err(e),
                             };
                             if set.is_ok() {
@@ -645,7 +704,10 @@ async fn run_dbus(
                         // What the property holds now: the written value,
                         // or (refused) a fresh read.
                         let now = match set {
-                            Ok(value) => seen.note(i, value),
+                            Ok((value, echo)) => {
+                                echoes.wrote(i, echo);
+                                seen.note(i, value)
+                            }
                             Err(e) => {
                                 log::warn!("{}.{}: {name} refused the write: {e}", spec.name, spec.fields[i].name);
                                 match dbus::timed(dbus::get(&conn, name, path, &iface, &prop)).await {
@@ -665,33 +727,71 @@ async fn run_dbus(
     }
 }
 
-/// Read `path` as a document (`None`: it is not there).
+/// How long reading a `from file` (or polled) file may take: a hung
+/// network or FUSE mount fails the run instead of holding the services
+/// thread.
+const READ_WAIT: Duration = Duration::from_secs(5);
+
+/// Read `path` as a document (`None`: it is not there). Opened without
+/// blocking, and only a regular file is read (sysfs and procfs
+/// attributes are): a FIFO or a device would block the reader.
 fn read_doc(path: &Path) -> Result<Option<Document>, String> {
     use std::io::Read;
-    match std::fs::File::open(path) {
-        Ok(f) => {
-            let mut buf = Vec::new();
-            f.take(MAX_DOCUMENT as u64)
-                .read_to_end(&mut buf)
-                .map_err(|e| e.to_string())?;
-            Ok(Some(Document::parse(&String::from_utf8_lossy(&buf))))
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(format!("{}: {e}", path.display())),
+    use std::os::unix::fs::OpenOptionsExt;
+    let f = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
+        .open(path)
+    {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    match f.metadata() {
+        Ok(m) if m.is_file() => {}
+        Ok(_) => return Err(format!("{}: not a regular file", path.display())),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    }
+    let mut buf = Vec::new();
+    f.take(MAX_DOCUMENT as u64)
+        .read_to_end(&mut buf)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(Some(Document::parse(&String::from_utf8_lossy(&buf))))
+}
+
+/// [`read_doc`] off the services thread, at most [`READ_WAIT`].
+async fn read_doc_bounded(path: &Path) -> Result<Option<Document>, ServiceError> {
+    let p = path.to_path_buf();
+    match tokio::time::timeout(READ_WAIT, tokio::task::spawn_blocking(move || read_doc(&p))).await {
+        Ok(Ok(r)) => r.map_err(ServiceError),
+        Ok(Err(e)) => Err(ServiceError(format!("{}: {e}", path.display()))),
+        Err(_) => Err(ServiceError(format!(
+            "{}: not read within {READ_WAIT:?}",
+            path.display()
+        ))),
     }
 }
 
-/// An inotify watch on `path`'s directory (its replacement, creation and
+/// An inotify watch on a file's directory (its replacement, creation and
 /// removal) and on the file itself (writes in place, sysfs
 /// notifications).
-fn watch_file(path: &Path) -> std::io::Result<tokio::io::unix::AsyncFd<std::os::fd::OwnedFd>> {
+struct FileWatch {
+    fd: tokio::io::unix::AsyncFd<std::os::fd::OwnedFd>,
+    path: PathBuf,
+    /// The directory's watch: only its events naming the file count.
+    dir_wd: i32,
+    name: Vec<u8>,
+}
+
+fn watch_file(path: &Path) -> std::io::Result<FileWatch> {
     use rustix::fs::inotify::{self, WatchFlags};
+    use std::os::unix::ffi::OsStrExt;
     let fd = inotify::init(inotify::CreateFlags::CLOEXEC | inotify::CreateFlags::NONBLOCK)?;
     let dir = path
         .parent()
         .filter(|d| !d.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    inotify::add_watch(
+    let dir_wd = inotify::add_watch(
         &fd,
         dir,
         WatchFlags::CLOSE_WRITE
@@ -700,21 +800,77 @@ fn watch_file(path: &Path) -> std::io::Result<tokio::io::unix::AsyncFd<std::os::
             | WatchFlags::CREATE
             | WatchFlags::DELETE,
     )?;
-    let _ = inotify::add_watch(&fd, path, WatchFlags::MODIFY | WatchFlags::CLOSE_WRITE);
-    tokio::io::unix::AsyncFd::new(fd)
+    let w = FileWatch {
+        fd: tokio::io::unix::AsyncFd::new(fd)?,
+        path: path.to_path_buf(),
+        dir_wd,
+        name: path
+            .file_name()
+            .map(|n| n.as_bytes().to_vec())
+            .unwrap_or_default(),
+    };
+    w.watch_inode();
+    Ok(w)
 }
 
-fn drain(fd: &std::os::fd::OwnedFd) -> bool {
-    let mut buf = [0u8; 4096];
-    loop {
-        match rustix::io::read(fd, &mut buf) {
-            Ok(0) => return true,
-            Ok(_) => {}
-            Err(rustix::io::Errno::AGAIN) => return true,
-            Err(rustix::io::Errno::INTR) => {}
-            Err(_) => return false,
-        }
+impl FileWatch {
+    /// Watch the file now at the path (again after it was replaced or
+    /// created; the same inode keeps its watch).
+    fn watch_inode(&self) {
+        use rustix::fs::inotify::{self, WatchFlags};
+        let _ = inotify::add_watch(
+            self.fd.get_ref(),
+            &self.path,
+            WatchFlags::MODIFY | WatchFlags::CLOSE_WRITE,
+        );
     }
+
+    /// Reads every queued event: `Some(true)` when one concerns the file
+    /// (not another file of its directory), `None` when the watch failed.
+    fn drain(&self) -> Option<bool> {
+        let mut buf = [0u8; 4096];
+        let mut any = false;
+        loop {
+            match rustix::io::read(self.fd.get_ref(), &mut buf) {
+                Ok(0) => break,
+                Ok(n) => any |= concerns(&buf[..n], self.dir_wd, &self.name),
+                Err(rustix::io::Errno::AGAIN) => break,
+                Err(rustix::io::Errno::INTR) => {}
+                Err(_) => return None,
+            }
+        }
+        if any {
+            self.watch_inode();
+        }
+        Some(any)
+    }
+}
+
+/// Whether raw inotify events `buf` concern the file `name` of the
+/// directory watched as `dir_wd`: any event of the file's own watch, a
+/// directory event naming it, or a queue overflow (anything may have
+/// changed).
+fn concerns(buf: &[u8], dir_wd: i32, name: &[u8]) -> bool {
+    const HEADER: usize = 16;
+    const Q_OVERFLOW: u32 = 0x4000;
+    let mut at = 0;
+    while at + HEADER <= buf.len() {
+        let word = |i: usize| {
+            let b = &buf[at + i..at + i + 4];
+            [b[0], b[1], b[2], b[3]]
+        };
+        let wd = i32::from_ne_bytes(word(0));
+        let mask = u32::from_ne_bytes(word(4));
+        let len = u32::from_ne_bytes(word(12)) as usize;
+        let end = (at + HEADER).saturating_add(len).min(buf.len());
+        let raw = &buf[at + HEADER..end];
+        let named = &raw[..raw.iter().position(|&b| b == 0).unwrap_or(raw.len())];
+        if mask & Q_OVERFLOW != 0 || wd != dir_wd || named == name {
+            return true;
+        }
+        at = end;
+    }
+    false
 }
 
 async fn run_file(cx: &mut Cx<Custom>, spec: &Spec, path: &Path) -> Result<(), ServiceError> {
@@ -722,40 +878,50 @@ async fn run_file(cx: &mut Cx<Custom>, spec: &Spec, path: &Path) -> Result<(), S
     let watch = watch_file(path)
         .map_err(|e| ServiceError(format!("cannot watch {}: {e}", path.display())))?;
     let mut last: Option<Document> = None;
-    let read = |cx: &mut Cx<Custom>, last: &mut Option<Document>| -> Result<bool, ServiceError> {
-        let doc = read_doc(path).map_err(ServiceError)?;
-        if doc == *last {
-            return Ok(true);
-        }
-        let mut state = cx.state().clone();
-        match &doc {
-            Some(d) => apply_doc(spec, d, &mut state),
-            // Gone: every field null until it is back.
-            None => state.values.iter_mut().for_each(|v| v.value = Data::Null),
-        }
-        *last = doc;
-        Ok(cx.update(|s| *s = state))
-    };
-    if !read(cx, &mut last)? {
-        return Ok(());
-    }
-    cx.ready();
+    let mut first = true;
     loop {
-        tokio::select! {
-            r = watch.readable() => {
-                let ok = r.map(|mut g| g.clear_ready()).is_ok() && drain(watch.get_ref());
-                if !ok {
-                    return Err(ServiceError("the file watch failed".into()));
-                }
-                if !read(cx, &mut last)? {
-                    return Ok(());
-                }
+        // Read (first, or after a change to the file itself).
+        let doc = read_doc_bounded(path).await?;
+        if first || doc != last {
+            let mut state = cx.state().clone();
+            match &doc {
+                Some(d) => apply_doc(spec, d, &mut state),
+                // Gone: every field null until it is back.
+                None => state.values.iter_mut().for_each(|v| v.value = Data::Null),
             }
-            m = cx.recv() => match m {
-                None => return Ok(()),
-                Some(Msg::Write(w)) => if !refuse(cx, &w) { return Ok(()) },
-                Some(_) => {}
-            },
+            last = doc;
+            if !cx.update(|s| *s = state) {
+                return Ok(());
+            }
+        }
+        if first {
+            cx.ready();
+            first = false;
+        }
+        // Until something happens to the file.
+        loop {
+            tokio::select! {
+                r = watch.fd.readable() => {
+                    let changed = match r {
+                        Ok(mut g) => {
+                            g.clear_ready();
+                            watch.drain()
+                        }
+                        Err(_) => None,
+                    };
+                    match changed {
+                        None => return Err(ServiceError("the file watch failed".into())),
+                        Some(true) => break,
+                        // Another file of the directory.
+                        Some(false) => {}
+                    }
+                }
+                m = cx.recv() => match m {
+                    None => return Ok(()),
+                    Some(Msg::Write(w)) => if !refuse(cx, &w) { return Ok(()) },
+                    Some(_) => {}
+                },
+            }
         }
     }
 }
@@ -975,7 +1141,7 @@ async fn run_poll(
         if cx.visible() {
             let doc = match target {
                 PollTarget::Command(argv) => poll_command(argv).await,
-                PollTarget::File(path) => read_doc(path).map_err(ServiceError)?,
+                PollTarget::File(path) => read_doc_bounded(path).await?,
             };
             if let Some(doc) = doc {
                 let mut state = cx.state().clone();
@@ -1093,6 +1259,87 @@ mod tests {
 
     /// An enum variant is written as the property spelled it, else by
     /// its name, then with `-` for `_`.
+    /// Two quick writes A then B: A's late echo is not shown (B was
+    /// reported already), B's is; then a change from elsewhere is news,
+    /// even one back to A.
+    #[test]
+    fn late_echoes_of_earlier_writes_are_not_shown() {
+        let (a, b) = (Data::text("power-saver"), Data::text("performance"));
+        let mut e = Echoes::new(2);
+        e.wrote(0, a.clone());
+        e.wrote(0, b.clone());
+        assert!(!e.shows(0, &a), "A's late echo");
+        assert!(e.shows(0, &b), "B's echo");
+        assert!(e.shows(0, &a), "A from elsewhere, nothing pending");
+        // A write whose echo is the latest is shown; another field is
+        // untouched.
+        e.wrote(0, a.clone());
+        assert!(e.shows(1, &b));
+        assert!(e.shows(0, &a));
+        // An echo that never comes is forgotten.
+        e.wrote(0, a.clone());
+        e.wrote(0, b.clone());
+        for w in &mut e.0[0] {
+            w.1 -= ECHO_WAIT;
+        }
+        assert!(e.shows(0, &a), "no write waits any more");
+    }
+
+    /// A FIFO (or any file that is not regular) is refused at once, not
+    /// waited on; a missing file is no document.
+    #[test]
+    fn only_regular_files_are_read() {
+        let dir = std::env::temp_dir().join(format!("strand-custom-fifo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let fifo = dir.join("pipe");
+        let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let t = std::time::Instant::now();
+        let e = read_doc(&fifo).unwrap_err();
+        assert!(e.contains("not a regular file"), "{e}");
+        assert!(t.elapsed() < Duration::from_secs(1));
+        assert_eq!(read_doc(&dir.join("none")), Ok(None));
+        std::fs::write(dir.join("doc"), "{\"a\": 1}").unwrap();
+        assert!(read_doc(&dir.join("doc")).unwrap().is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Directory events re-read the file only when they name it; the
+    /// file's own watch and an overflow always do.
+    #[test]
+    fn directory_events_count_only_for_the_file() {
+        fn event(wd: i32, mask: u32, name: &str) -> Vec<u8> {
+            let mut b = Vec::new();
+            let len = if name.is_empty() {
+                0
+            } else {
+                (name.len() + 1).next_multiple_of(16)
+            };
+            b.extend(wd.to_ne_bytes());
+            b.extend(mask.to_ne_bytes());
+            b.extend(0u32.to_ne_bytes());
+            b.extend((len as u32).to_ne_bytes());
+            let mut n = name.as_bytes().to_vec();
+            n.resize(len, 0);
+            b.extend(n);
+            b
+        }
+        let (dir, file) = (1, 2);
+        let other = [event(dir, 0x8, "other.json"), event(dir, 0x100, "x")].concat();
+        assert!(!concerns(&other, dir, b"state.json"));
+        let named = [other.clone(), event(dir, 0x80, "state.json")].concat();
+        assert!(concerns(&named, dir, b"state.json"));
+        assert!(concerns(&event(file, 0x2, ""), dir, b"state.json"));
+        assert!(concerns(&event(-1, 0x4000, ""), dir, b"state.json"));
+        // A prefix of the name is another file.
+        assert!(!concerns(
+            &event(dir, 0x8, "state.json.tmp"),
+            dir,
+            b"state.json"
+        ));
+    }
+
     #[test]
     fn enum_writes_use_the_spelling_read() {
         let e = |v: &'static str| Data::Enum {
