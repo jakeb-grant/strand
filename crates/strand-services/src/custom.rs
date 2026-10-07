@@ -824,6 +824,11 @@ struct FileWatch {
     /// events of this watch and of `dir_wd` count; a watch removed or
     /// replaced (its `IN_IGNORED` included) is not news.
     file_wd: i32,
+    /// The watched directory's ancestors, watched for their own move or
+    /// removal only: `mv a a.old` for the file `a/b/f.json` moves the
+    /// watched `a/b` along without an event of its own, and the watch
+    /// would follow `a.old/b` for ever.
+    ancestors: Vec<i32>,
 }
 
 /// The directory a file's path names (`.` for a bare name).
@@ -843,6 +848,7 @@ fn watch_file(path: &Path) -> std::io::Result<FileWatch> {
         name: Vec::new(),
         complete: false,
         file_wd: -1,
+        ancestors: Vec::new(),
     };
     w.arm()?;
     Ok(w)
@@ -855,6 +861,12 @@ impl FileWatch {
         use rustix::fs::inotify::{self, WatchFlags};
         use std::os::unix::ffi::OsStrExt;
         let own = dir_of(&self.path).to_path_buf();
+        // Watches this turn may leave behind: let go at the end unless
+        // they are kept (the same inode answers the same wd, so a
+        // directory watched before as the way down may be an ancestor
+        // now, and the other way round).
+        let mut stale = std::mem::take(&mut self.ancestors);
+        let mut watched = PathBuf::new();
         // A directory created while the watch was being placed is
         // descended into at once (bounded by the path's depth).
         for _ in 0..=self.path.components().count() {
@@ -893,14 +905,15 @@ impl FileWatch {
                     | WatchFlags::MOVE_SELF,
             )?;
             if self.dir_wd >= 0 && self.dir_wd != wd {
-                let _ = inotify::remove_watch(self.fd.get_ref(), self.dir_wd);
+                stale.push(self.dir_wd);
             }
             self.dir_wd = wd;
             self.name = name;
             self.complete = complete;
+            watched = dir.to_path_buf();
             if complete {
                 self.watch_inode();
-                return Ok(());
+                break;
             }
             if self.file_wd >= 0 {
                 // Its directory went: the file is waited for again.
@@ -909,10 +922,36 @@ impl FileWatch {
             }
             let next = dir.join(std::ffi::OsStr::from_bytes(&self.name));
             if !next.is_dir() {
-                return Ok(());
+                break;
+            }
+        }
+        self.watch_ancestors(&watched);
+        for wd in stale {
+            if wd != self.dir_wd && !self.ancestors.contains(&wd) {
+                let _ = inotify::remove_watch(self.fd.get_ref(), wd);
             }
         }
         Ok(())
+    }
+
+    /// Watch each ancestor of the watched directory for its own move or
+    /// removal (one that cannot be watched, unreadable, is skipped).
+    fn watch_ancestors(&mut self, dir: &Path) {
+        use rustix::fs::inotify::{self, WatchFlags};
+        self.ancestors.clear();
+        for a in dir.ancestors().skip(1) {
+            if a.as_os_str().is_empty() {
+                break;
+            }
+            if let Ok(wd) = inotify::add_watch(
+                self.fd.get_ref(),
+                a,
+                WatchFlags::MOVE_SELF | WatchFlags::DELETE_SELF | WatchFlags::ONLYDIR,
+            ) && wd != self.dir_wd
+            {
+                self.ancestors.push(wd);
+            }
+        }
     }
 
     /// Watch the file now at the path (again after it was replaced or
@@ -945,6 +984,11 @@ impl FileWatch {
                 Ok(0) => break,
                 Ok(n) => {
                     let seen = &buf[..n];
+                    if self.ancestors.iter().any(|&a| dir_gone(seen, a)) {
+                        // A directory on the way moved or went: the
+                        // watched one may be elsewhere now.
+                        rearm = true;
+                    }
                     if dir_gone(seen, self.dir_wd) {
                         // Its watch ended with it (a directory moved away
                         // keeps one: let it go).
@@ -1234,10 +1278,20 @@ fn decode(mut line: Vec<u8>) -> String {
     }
 }
 
+/// How often a `from listen` service sends what its command printed, at
+/// most: one frame. A command printing faster (`while :; do echo …;
+/// done`) has its lines merged, the latest value of each field kept, so
+/// the logic thread wakes at most once a frame for it.
+pub const LISTEN_FLUSH: Duration = Duration::from_micros(16_667);
+
 async fn run_listen(cx: &mut Cx<Custom>, spec: &Spec, argv: &[String]) -> Result<(), ServiceError> {
     let (mut proc, stdout) = Proc::spawn(argv)?;
     let mut lines = Lines::new(stdout);
     cx.ready();
+    // Lines read since the last send, merged; and when the next send may
+    // go. A line after a quiet frame is sent at once.
+    let mut pending: Option<Custom> = None;
+    let mut next_send = tokio::time::Instant::now();
     loop {
         tokio::select! {
             line = lines.next() => match line {
@@ -1246,15 +1300,27 @@ async fn run_listen(cx: &mut Cx<Custom>, spec: &Spec, argv: &[String]) -> Result
                         continue;
                     }
                     let doc = Document::parse(&l);
-                    let mut state = cx.state().clone();
+                    let mut state = pending.take().unwrap_or_else(|| cx.state().clone());
                     merge_doc(spec, &doc, &mut state);
+                    let now = tokio::time::Instant::now();
+                    if now < next_send {
+                        pending = Some(state);
+                        continue;
+                    }
+                    next_send = now + LISTEN_FLUSH;
                     if !cx.update(|s| *s = state) {
                         return Ok(());
                     }
                 }
                 // Ended (or unreadable): its group is ended with `proc`,
-                // and the failure retried with backoff.
+                // and the failure retried with backoff. What it printed
+                // last is sent first.
                 Ok(None) => {
+                    if let Some(state) = pending.take()
+                        && !cx.update(|s| *s = state)
+                    {
+                        return Ok(());
+                    }
                     let status = proc.status().await;
                     return Err(ServiceError(format!("`{}` ended ({status})", argv[0])));
                 }
@@ -1262,6 +1328,14 @@ async fn run_listen(cx: &mut Cx<Custom>, spec: &Spec, argv: &[String]) -> Result
                     return Err(ServiceError(format!("reading `{}`: {e}", argv[0])));
                 }
             },
+            () = tokio::time::sleep_until(next_send), if pending.is_some() => {
+                next_send = tokio::time::Instant::now() + LISTEN_FLUSH;
+                if let Some(state) = pending.take()
+                    && !cx.update(|s| *s = state)
+                {
+                    return Ok(());
+                }
+            }
             m = cx.recv() => match m {
                 None => return Ok(()),
                 Some(Msg::Write(w)) => if !refuse(cx, &w) { return Ok(()) },
@@ -1637,6 +1711,36 @@ mod tests {
             assert!((1..=3).contains(&reads), "{reads} reads for the removal");
             assert!(!w.complete);
             assert_eq!(drain_for(&mut w, 200), 0, "then nothing");
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `mv a a.old` for the file `a/b/f.json` moves the watched `a/b`
+    /// along without an event of its own: the ancestors' watches notice,
+    /// the watch climbs back to what is at the path now, and a new
+    /// `a/b/f.json` is read.
+    #[test]
+    fn a_file_whose_ancestor_is_renamed_is_followed_at_its_path() {
+        let dir = std::env::temp_dir().join(format!("strand-custom-mv-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("a/b")).unwrap();
+        let file = dir.join("a/b/f.json");
+        std::fs::write(&file, "{\"t\": 1}").unwrap();
+        block_on(async {
+            let mut w = watch_file(&file).unwrap();
+            assert!(w.complete);
+            std::fs::rename(dir.join("a"), dir.join("a.old")).unwrap();
+            assert!(drain_for(&mut w, 300) >= 1, "the move is seen");
+            assert!(!w.complete, "the watch climbed back");
+            // The old directory is not followed any more.
+            std::fs::write(dir.join("a.old/b/f.json"), "{\"t\": 2}").unwrap();
+            assert_eq!(drain_for(&mut w, 200), 0, "a.old is not the path");
+            std::fs::create_dir_all(dir.join("a/b")).unwrap();
+            std::fs::write(&file, "{\"t\": 3}").unwrap();
+            assert!(drain_for(&mut w, 300) >= 1, "the new file is seen");
+            assert!(w.complete);
+            std::fs::write(&file, "{\"t\": 4}").unwrap();
+            assert!(drain_for(&mut w, 200) >= 1, "and its writes");
         });
         let _ = std::fs::remove_dir_all(&dir);
     }
