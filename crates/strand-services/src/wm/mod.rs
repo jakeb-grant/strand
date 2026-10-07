@@ -35,10 +35,12 @@ pub mod model;
 mod niri;
 pub mod protocol;
 mod schema;
+mod service;
 mod sway;
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use strand_watch::{ChangeEvent, CompositorEvent, EventSink};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -48,7 +50,11 @@ pub use detect::{Backend, detect, detect_with};
 pub use hub::{MAX_QUEUED, WmHub, WmSubscription};
 pub use model::{CompositorKind, Mirror, Publisher, Sources, Window, WmChange, WmState, Workspace};
 pub use protocol::{ProtoWorkspace, ProtocolClient, ProtocolState, Toplevel, WaylandTarget};
-pub use schema::SCHEMA;
+pub use schema::{WINDOWS_SCHEMA, WM_SCHEMA, WORKSPACES_SCHEMA};
+pub use service::{
+    WindowAction, WindowItem, Windows, WindowsCells, Wm, WmCells, WmEvent, WorkspaceAction,
+    WorkspaceItem, Workspaces, WorkspacesCells, configure, hub,
+};
 
 /// An action on a workspace or window.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -303,6 +309,24 @@ pub fn merge(ipc: Option<&WmState>, ids: &[(String, String)], proto: &ProtocolSt
 
 type BoxFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 
+static LIVE_RUNS: AtomicUsize = AtomicUsize::new(0);
+
+/// How many [`run`]s of this process are live (started and not yet
+/// dropped): tests check that the three stores share one, and that it
+/// goes with them.
+pub fn live_runs() -> usize {
+    LIVE_RUNS.load(Ordering::SeqCst)
+}
+
+/// Counts a live [`run`] until dropped.
+struct LiveRun;
+
+impl Drop for LiveRun {
+    fn drop(&mut self) {
+        LIVE_RUNS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 fn adapter(
     backend: Option<Backend>,
     tx: UnboundedSender<AdapterMsg>,
@@ -337,6 +361,8 @@ pub async fn run<S>(config: WmConfig, mut sink: S, mut requests: UnboundedReceiv
 where
     S: FnMut(Vec<WmChange>) + Send,
 {
+    LIVE_RUNS.fetch_add(1, Ordering::SeqCst);
+    let _live = LiveRun;
     #[allow(unused_mut)]
     let mut backend = config.backend.clone();
     #[cfg(not(feature = "niri"))]

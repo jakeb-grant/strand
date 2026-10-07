@@ -7,42 +7,8 @@
 //! subscribed by its source device (docs/decisions.md, wave4-wm (audio):
 //! levels reach the language through the `spectrum` element).
 
-/// See the module docs.
-pub const SCHEMA: &str = r#"
-/// An audio sink or source, from PipeWire.
-record AudioDevice key id {
-  /// Its PipeWire id.
-  id: int
-  /// Its node name.
-  name: text
-  /// A readable description of it.
-  description: text
-  /// Volume, 0 to 1, on the cubic scale `wpctl` and `pactl` show (above 1
-  /// when another program amplified it). Writable:
-  /// `audio.sink.volume -= dy * 0.05`; every channel takes the new value.
-  volume: float rw
-  /// Muted. Writable: `audio.sink.muted = !audio.sink.muted`.
-  muted: bool rw
-  /// An icon name for its volume and mute state.
-  icon: text
-  /// It is the default device.
-  default: bool
-  /// Makes it the default device.
-  action make_default()
-}
-
-/// Audio devices, from PipeWire.
-service audio {
-  /// The default output: `audio.sink.volume`, `audio.sink.muted`.
-  sink: AudioDevice
-  /// The default input.
-  source: AudioDevice
-  /// Every output, keyed by `id`.
-  sinks: [AudioDevice]
-  /// Every input, keyed by `id`.
-  sources: [AudioDevice]
-}
-"#;
+/// See the module docs (the text lives in `strand-services-schema`).
+pub const SCHEMA: &str = strand_services_schema::AUDIO;
 
 #[cfg(test)]
 mod tests {

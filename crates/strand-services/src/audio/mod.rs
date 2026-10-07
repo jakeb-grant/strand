@@ -59,6 +59,7 @@ mod meter;
 pub mod model;
 pub mod pod;
 mod schema;
+mod service;
 mod thread;
 
 use std::collections::BTreeSet;
@@ -73,6 +74,9 @@ pub use model::{
     linear, perceptual,
 };
 pub use schema::SCHEMA;
+pub use service::{
+    ANSWER_WAIT, AudioDeviceAction, AudioStore, AudioStoreCells, LevelTap, configure, tap_levels,
+};
 pub use thread::{ECHOES, FRAME, GRACE, SETTLE, UNANSWERED};
 
 /// Where to connect.
@@ -185,11 +189,40 @@ impl Future for AudioReply {
     }
 }
 
-/// What the handle sends the thread.
+/// What the handle (or the [`Host`]) sends the thread.
 pub(crate) enum Cmd {
     Action(AudioAction, oneshot::Sender<Result<(), AudioError>>),
     Levels(BTreeSet<LevelTarget>),
+    /// The host has work: [`Host::poll`] is called once the queue is
+    /// handled (it is after every batch of work anyway).
+    Poke,
     Stop,
+}
+
+/// Who a PipeWire loop reports to: [`Audio::spawn`]'s sink, or the `audio`
+/// store running the loop on its own service thread ([`AudioStore`]).
+pub(crate) trait Host {
+    /// A batch of changes, on the loop's thread. Must never block.
+    fn changes(&mut self, batch: Vec<AudioChange>);
+    /// Commands of the host's own (its inbox drained), called after each
+    /// burst of work and after each batch; empty when it has none.
+    fn poll(&mut self) -> Vec<Cmd> {
+        Vec::new()
+    }
+    /// When the host next needs [`Host::poll`] called with nothing else
+    /// happening (a write's answer timing out).
+    fn deadline(&self) -> Option<std::time::Instant> {
+        None
+    }
+}
+
+/// [`Audio::spawn`]'s host: the sink alone.
+struct SinkHost<F>(F);
+
+impl<F: FnMut(Vec<AudioChange>)> Host for SinkHost<F> {
+    fn changes(&mut self, batch: Vec<AudioChange>) {
+        (self.0)(batch)
+    }
 }
 
 /// The running service: its `strand-pipewire` thread. Dropping it asks
@@ -220,7 +253,7 @@ impl Audio {
         let (tx, rx) = pipewire::channel::channel();
         let thread = std::thread::Builder::new()
             .name("strand-pipewire".into())
-            .spawn(move || thread::run(config, Box::new(sink), rx))?;
+            .spawn(move || thread::run(config, Box::new(SinkHost(sink)), rx))?;
         Ok(Audio {
             tx,
             thread: Some(thread),

@@ -1,0 +1,33 @@
+/// A workspace, from `ext-workspace-v1`, keyed by `id`.
+record Workspace key id {
+  /// Its identity.
+  id: int
+  /// Its name.
+  name: text
+  /// It is the focused workspace (at most one is; with the standard
+  /// protocols alone and several screens, none is).
+  focused: bool
+  /// It is shown on its screen (one per screen).
+  active: bool
+  /// It holds windows.
+  occupied: bool
+  /// A window on it asks for attention.
+  urgent: bool
+  /// The name of the screen it is on.
+  screen: text
+  /// Its windows, keyed by `id`.
+  windows: [Window]
+  /// Switches to it: `on click { ws.focus() }`.
+  action focus()
+}
+
+/// Workspaces, from `ext-workspace-v1`; Hyprland, niri and sway IPC fill
+/// in what the protocol does not cover yet.
+service workspaces {
+  /// Every workspace, keyed by `id`.
+  all: [Workspace]
+  /// The focused workspace, if any.
+  focused: Workspace?
+  /// The workspaces on `screen`: `for ws in workspaces.on(screen)`.
+  fn on(screen: Screen) -> [Workspace]
+}

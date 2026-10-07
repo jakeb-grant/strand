@@ -37,7 +37,7 @@ use super::model::{
     perceptual,
 };
 use super::pod::{Props, Route, default_name, default_value};
-use super::{AudioAction, AudioConfig, AudioError, Cmd, DeviceRef};
+use super::{AudioAction, AudioConfig, AudioError, Cmd, DeviceRef, Host};
 
 /// The first wait after a lost or refused connection.
 const FIRST: Duration = Duration::from_millis(100);
@@ -153,19 +153,17 @@ pub(crate) enum Work {
     },
 }
 
-/// The thread's body.
-pub(crate) fn run(
-    config: AudioConfig,
-    sink: Box<dyn FnMut(Vec<AudioChange>) + Send>,
-    rx: pipewire::channel::Receiver<Cmd>,
-) {
+/// The thread's body: the PipeWire loop on the calling thread until a
+/// [`Cmd::Stop`] (from the channel, or from the host's
+/// [`Host::poll`]).
+pub(crate) fn run(config: AudioConfig, host: Box<dyn Host>, rx: pipewire::channel::Receiver<Cmd>) {
     pipewire::init();
-    let mut sink = sink;
+    let mut host = host;
     let mainloop = match MainLoopRc::new(None) {
         Ok(m) => m,
         Err(e) => {
             log::error!("audio: cannot create a PipeWire loop: {e}");
-            sink(Publisher::new().publish(AudioState::default()));
+            host.changes(Publisher::new().publish(AudioState::default()));
             return;
         }
     };
@@ -173,7 +171,7 @@ pub(crate) fn run(
         Ok(c) => c,
         Err(e) => {
             log::error!("audio: cannot create a PipeWire context: {e}");
-            sink(Publisher::new().publish(AudioState::default()));
+            host.changes(Publisher::new().publish(AudioState::default()));
             return;
         }
     };
@@ -236,7 +234,7 @@ pub(crate) fn run(
         deadline_at: None,
         wake,
         watch,
-        sink,
+        host,
         session: None,
         sessions: 0,
         publisher: Publisher::new(),
@@ -682,7 +680,8 @@ struct Driver<'l> {
     /// The meters' eventfd (`None`: no meters).
     wake: Option<Arc<OwnedFd>>,
     watch: Option<SocketWatch>,
-    sink: Box<dyn FnMut(Vec<AudioChange>) + Send>,
+    /// Who gets the changes, and gives commands of its own.
+    host: Box<dyn Host>,
     session: Option<Session>,
     sessions: u64,
     publisher: Publisher,
@@ -705,13 +704,21 @@ struct Driver<'l> {
 type Reply = tokio::sync::oneshot::Sender<Result<(), AudioError>>;
 
 impl Driver<'_> {
-    /// Handles every queued item, then publishes once.
+    /// Handles every queued item (and what the host asks for), then
+    /// publishes once.
     fn drain(&mut self) {
         loop {
             loop {
                 let w = self.q.borrow_mut().pop_front();
                 let Some(w) = w else { break };
                 self.handle(w);
+            }
+            if !self.quit {
+                let cmds = self.host.poll();
+                if !cmds.is_empty() {
+                    self.q.borrow_mut().extend(cmds.into_iter().map(Work::Cmd));
+                    continue;
+                }
             }
             if self.dirty {
                 self.publish();
@@ -729,7 +736,15 @@ impl Driver<'_> {
             }
         }
         if !self.out.is_empty() {
-            (self.sink)(std::mem::take(&mut self.out));
+            self.host.changes(std::mem::take(&mut self.out));
+            // The host may answer what the batch settled.
+            if !self.quit {
+                let cmds = self.host.poll();
+                if !cmds.is_empty() {
+                    self.q.borrow_mut().extend(cmds.into_iter().map(Work::Cmd));
+                    return self.drain();
+                }
+            }
         }
         self.arm_deadline();
     }
@@ -741,6 +756,8 @@ impl Driver<'_> {
     fn handle(&mut self, w: Work) {
         match w {
             Work::Cmd(Cmd::Stop) => self.quit = true,
+            // The host's own inbox: read by `Host::poll` after the queue.
+            Work::Cmd(Cmd::Poke) => {}
             // After a stop, nothing more is done.
             Work::Cmd(Cmd::Levels(_)) if self.quit => {}
             Work::Cmd(Cmd::Levels(set)) => {
@@ -1517,6 +1534,9 @@ impl Driver<'_> {
             }
             None if !self.queued.is_empty() => at(self.grace_until),
             None => {}
+        }
+        if let Some(t) = self.host.deadline() {
+            at(t);
         }
         next
     }

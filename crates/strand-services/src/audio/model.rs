@@ -38,7 +38,8 @@ impl Direction {
 /// and nothing else (so the store's `#[derive(Data)]` record is exactly
 /// this). Whether it plays or records is the list it is in; its channel
 /// count stays on the audio thread.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(crate::Data, Clone, Debug, Default, PartialEq)]
+#[data(name = "AudioDevice", key = id)]
 pub struct AudioDevice {
     /// Its PipeWire global id.
     pub id: u32,

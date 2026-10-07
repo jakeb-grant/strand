@@ -1,0 +1,37 @@
+/// A toplevel window, from `ext-foreign-toplevel-list`, with what the
+/// compositor's IPC adds.
+record Window key id {
+  /// Its identity: the compositor's id when its IPC is used, else the
+  /// protocol's identifier.
+  id: text
+  /// Its title: `windows.focused?.title`.
+  title: text
+  /// The app's id, such as `firefox`.
+  app_id: text
+  /// An icon name for its app.
+  icon: text
+  /// The workspace it is on, when known.
+  workspace: int?
+  /// It has focus.
+  focused: bool
+  /// It is minimised.
+  minimized: bool
+  /// It is fullscreen.
+  fullscreen: bool
+  /// It asks for attention.
+  urgent: bool
+  /// Raises and focuses it.
+  action focus()
+  /// Asks it to close.
+  action close()
+  /// Minimises it.
+  action minimize()
+}
+
+/// Toplevel windows, from `ext-foreign-toplevel-list`.
+service windows {
+  /// The focused window, if any: `windows.focused?.title`.
+  focused: Window?
+  /// Every window, keyed by `id`.
+  all: [Window]
+}
