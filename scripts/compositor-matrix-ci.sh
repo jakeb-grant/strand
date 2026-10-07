@@ -53,7 +53,8 @@ chown "$uid" "$ROOT/target/matrix"
 
 # seatd hands the KMS card to Hyprland's libseat (no logind here).
 if [ -n "${STRAND_DRM_CARD:-}" ]; then
-  ls -l /dev/dri
+  ls -l /dev/dri /sys/class/drm/
+  for c in /sys/class/drm/card[0-9]; do echo "$c: $(cat "$c/device/uevent" 2>/dev/null | tr '\n' ' ')"; done
   SEATD_VTBOUND=0 seatd -u "$user" -g "$(id -gn "$user")" -l info >"$ROOT/target/matrix/seatd.log" 2>&1 &
   for _ in $(seq 100); do [ -S /run/seatd.sock ] && break; sleep 0.1; done
   [ -S /run/seatd.sock ] || { echo "seatd did not start"; cat "$ROOT/target/matrix/seatd.log"; }
@@ -73,8 +74,10 @@ for kind in $MATRIX; do
     echo "::error::the compositor matrix failed on $kind (exit $status)"
     for log in "$ROOT/target/matrix/$kind"/*.log; do
       [ -f "$log" ] || continue
-      echo "--- tail of $log"
-      tail -80 "$log"
+      case "$log" in
+        *-crash-*) echo "--- head of $log"; sed -n 1,70p "$log" ;;
+        *) echo "--- tail of $log"; tail -80 "$log" ;;
+      esac
     done
     failed+=("$kind")
   fi
