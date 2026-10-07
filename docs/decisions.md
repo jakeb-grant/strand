@@ -6408,9 +6408,24 @@ before), sampled down to 512 px a side, and written as a PNG off the
 runtime thread (`spawn_blocking`) under
 `$XDG_RUNTIME_DIR/strand/pixmaps/<pid>`, content-addressed; the file
 lives while the notification is kept (a `pixmap::Pinned` handle: no
-shared LRU can delete a picture still shown). `image-path` is passed
-through. Capabilities: `actions`, `body`, `body-markup`, `icon-static`,
-`persistence`. Known gap: `Notification.time` is the clock's `Date`,
+shared LRU can delete a picture still shown). At most 8 pictures wait
+to be written (`IMAGES_QUEUED`): beyond that a new notification arrives
+without its picture (or with its `image-path`), so a sender flooding
+large `image-data` cannot queue unbounded memory ahead of the 100 kept.
+`image-path` is passed through. Capabilities: `actions`, `body`,
+`body-markup`, `icon-static`, `persistence`. `GetServerInformation`
+says spec 1.1: 1.2's `ActivationToken` (sent before `ActionInvoked` so
+the app can raise its window) needs an xdg-activation token from the
+clicked surface, which M4's renderer can ask for; the server says 1.2
+once it sends one. Notifications belong to the run that received them:
+when the server stops (no reader for 5 s, or a failed run retried) it
+closes each one still open (`NotificationClosed`, reason 3) before the
+name goes, and a new run starts with `popups` and `all` empty (`dnd`
+kept). Keeping them instead would let the new run's ids (from 1 again)
+name kept notifications, a sender's `CloseNotification` close the wrong
+one, and their pictures' files were removed with the old run; a shell
+showing history holds `notifications` (its toasts do), so the server
+does not stop under it. Known gap: `Notification.time` is the clock's `Date`,
 which has no time of day in the VM, so a notification centre cannot
 show "12:04" yet; the language track adds a time of day to `Date` (or a
 `received_at`), and the field follows.
@@ -6419,18 +6434,26 @@ show "12:04" yet; the language track adds a time of day to `Date` (or a
 When dunst, mako or a desktop's server owns the name, the run fails with
 `another notification server, `mako` (pid 4242), owns
 org.freedesktop.Notifications: strand cannot show notifications while it
-runs; stop it (`systemctl --user stop mako`, or `pkill -x mako`) and
-remove it from your compositor's autostart. strand takes the name over
-once it is free.` (pid from `GetConnectionUnixProcessID`, name from
-`/proc/<pid>/comm`), followed by how to keep D-Bus from starting it
-again on the next notification (`systemctl --user mask <it>`, or an
-empty `~/.local/share/dbus-1/services/org.freedesktop.Notifications.service`):
-dunst and mako ship activation files for the name. The client's retry
+runs; stop it (`pkill -x mako`, or `kill 4242`) and remove it from
+your compositor's autostart. D-Bus may start one again on the next
+notification unless its activation is overridden (an empty
+~/.local/share/dbus-1/services/org.freedesktop.Notifications.service).
+strand takes the name over once it is free.` (pid from
+`GetConnectionUnixProcessID`, name from `/proc/<pid>/comm`). When the
+process runs as a systemd user service (`GetUnitByPID` on the session
+bus's systemd, bounded to 2 s; only a `.service` that is not D-Bus
+activation's transient `dbus-…` one), the advice names that unit
+instead: `systemctl --user stop mako.service` and `systemctl --user mask
+mako.service`. A process name is not a unit name (xfce4-notifyd,
+notification-daemon, a python server), and stopping a scope would stop
+the terminal or session it belongs to. dunst and mako ship activation
+files for the name. The client's retry
 backoff (up to 30 s) asks again, so stopping the other daemon hands the
 name over without a reload; the same failure is reported once. Once a
 run becomes ready without raising the notice again (the name taken
-over), or the service stops cleanly, the client hands out the same
-diagnostic `resolved`: `strand run` removes its overlay rows (keyed
+over), or the service stops (it ended cleanly, nobody read it for 5 s,
+or `Services::shutdown`: a notice is about a service someone uses), the
+client hands out the same diagnostic `resolved`: `strand run` removes its overlay rows (keyed
 `service:<name>#<n>`, the message wrapped to the panel under a
 `strand: services` header) and sends `service \`notifications\`:
 resolved: …` to `strand watch`. A body raises a notice before
@@ -6481,13 +6504,26 @@ asked for (when watching starts and when a new NetworkManager appears,
 not on every re-read); access points of one SSID are one entry (the
 strongest, active if any is). `ap.connect()` activates a saved
 connection for the SSID, else `AddAndActivateConnection` (NetworkManager's
-secret agent asks for a password). A join that fails (no agent to ask
-for the password, out of range) is the `failed(ssid, error)` event, not
-only a log line; `connect(password)` waits for optional action
-arguments in the language (a call may not omit an argument yet). While
-not scanning, a device's `AccessPoints` changes are ignored (only the
-access point in use matters, and its change is the connection's
-`SpecificObject`); while scanning only the new access points are read.
+secret agent asks for a password). `ap.connect_with(password)` is the
+same with a WPA personal password (`802-11-wireless-security`:
+`key-mgmt` `wpa-psk`, or `sae` for a WPA3-only network; enterprise and
+WEP networks are refused): a new connection carries it, a saved one is
+updated with it (`Update`) before it is activated. A second action
+rather than an optional argument, since a call cannot omit an argument
+yet. Both follow the active connection NetworkManager answers with:
+NetworkManager accepts the call and reports a missing or wrong password
+or a timeout later, as that connection's `StateChanged(DEACTIVATED,
+reason)`. Until it is `ACTIVATED`, a `DEACTIVATED` (or the connection
+leaving `ActiveConnections` once listed, or NetworkManager going away)
+is the `failed(ssid, error)` event, the reason in words
+(`network::reason_text`: 9, no secrets, is "a password is needed (none
+was given, or it was wrong)"); so is a call that fails outright (out of
+range, a refused password). While not scanning nothing about the
+devices is subscribed: their `AccessPoints` changes on NetworkManager's
+background scans do not reach the process (only the access point in use
+matters, and its change is the connection's `SpecificObject`); while
+scanning only the devices' `Wireless` `PropertiesChanged` (`arg0`) and
+the access points are, and only the new access points are read.
 A scan is asked for once there is a Wi-Fi device to ask (a
 NetworkManager that just restarted may list none yet). A failed `wifi`
 write reports the radio as last read.
@@ -6498,8 +6534,10 @@ its paired devices `devices` (`Alias`, `Connected`, `Icon` as
 `<icon>-symbolic`, `Battery1.Percentage`). `connect()`/`disconnect()`
 run as tasks owned by the body (30 s at most, cancelled when the service
 stops, so a stopped service keeps no connection), their outcome
-arriving as `Connected` changes; a failed `powered` write reports the
-adapter as last read. Nothing discovers: pairing stays with the system's
+arriving as `Connected` changes; one BlueZ refuses (its own words, such
+as "Page Timeout") or that times out is the `failed(address, error)`
+event, as `network.failed` is for joins, so a menu can say so. A
+failed `powered` write reports the adapter as last read. Nothing discovers: pairing stays with the system's
 settings.
 
 **2026-10-07 · wave4-a2: media.** Every `org.mpris.MediaPlayer2.*` is
@@ -6511,7 +6549,16 @@ for when the state, track or rate changes and on `Seeked`, and carried
 forward at `Rate` from there. `elapsed` and `position` are
 `#[store(stream)]` fields: they tick once a second, on the second, only
 while a visible reader shows them and the player plays. Calls to players are
-bounded (2 s) and actions are tasks of their own. `art` is local art
+bounded (2 s), and nothing the service asks a player is awaited in its
+loop: a new player's reads (identity, properties, position, all at
+once), the re-read of properties a player invalidated, the position
+after a change and the actions are tasks owned by the body, their
+answers applied by the loop (a position answer overtaken by a seek or a
+newer question is dropped; changes signalled while a read is in flight
+are applied over its answer). A player not read yet is not a choice for
+the active one. `Rate` is clamped to 0.001–1000: a player sending
+`Rate = 1e300` made the duration arithmetic overflow and panic, every
+retry again. `art` is local art
 only (`file://` or a path): remote `https://` art (Spotify, browsers)
 is null, so `media.art ?? "audio-x-generic"` falls back instead of
 showing a blank picture; fetching remote art (an HTTP client and a
@@ -6526,15 +6573,23 @@ its `IconThemePath`, four levels deep), else its largest pixmap as a PNG
 (the attention icon while `NeedsAttention`); its tooltip is the
 tooltip's title and description on two lines. `activate()` calls
 `Activate(0, 0)`, falling back to `ContextMenu` for menu-only items;
-`scroll(dy)` sends `dy` rounded (at least one step) as a vertical
-`Scroll`. The menu model is `GetLayout` (again on `LayoutUpdated` and
+`scroll(dy)` takes `dy` in wheel notches (one click 1, positive down, as
+`on scroll(dy)` gives it) and sends a vertical `Scroll` of 120 a notch,
+positive up (at least one unit): KDE's host sends Qt's wheel
+`angleDelta`, which Qt and KStatusNotifierItem apps read as eighths of a
+degree, while libappindicator apps read only the sign. The menu model is `GetLayout` (again on `LayoutUpdated` and
 `ItemsPropertiesUpdated`), visible entries only, labels without mnemonic
 underscores, with `shortcut` (`Control+S`) and an icon by name or from
 `icon-data` (a PNG file, kept while the menu is). `item.menu.open()`
 sends `AboutToShow(0)` and the `opened` event and lays the menu out
 again when the app says it changed; an entry's `open()` does the same
 for its submenu (lazily filled submenus); `item.menu.close()` sends the
-`closed` event. Showing menus is M4's tray menu. Click positions are not
+`closed` event. `TrayMenu.opened` is true from `open()` until `close()`
+(or the item going away), so M4's tray menu is `popup { open:
+item.menu.opened … for e in item.menu.items }`, calling
+`item.menu.close()` when the popup closes (click-away, Escape, an entry
+chosen); an item without a DBusMenu shows its own menu and `opened`
+stays false. Showing menus is M4's tray menu. Click positions are not
 passed yet (`Activate(0, 0)`, `ContextMenu(0, 0)`): the shell knows
 where a click was only once M4's popups place things; the schema's
 actions gain optional `x`/`y` then. Apps freeze, so nothing the service
@@ -6546,7 +6601,12 @@ after it; icons and tooltips are resolved off the runtime thread once
 per read and cached with the item. Our watcher emits
 `PropertiesChanged` for `RegisteredStatusNotifierItems`; any owner
 change of the session's watcher while it is not ours registers again
-(a watcher replaced without a gap included). An entry's `activate()` sends `Event(id,
+(a watcher replaced without a gap included). An item that cannot be
+read when it registers (an app registering before it exported its item,
+or too busy as it starts) is read once more 2 s later; failing again,
+it is given up and, when the watcher is ours, unlisted (with
+`StatusNotifierItemUnregistered`), so the app registering again is
+heard and the watcher never lists an item the tray does not show. An entry's `activate()` sends `Event(id,
 "clicked")`. Two calls named `activate` on different records
 (`TrayItem`, `TrayMenuItem`) are one name in `#[derive(Call)]`
 (`#[call(name = "activate")]`), told apart by the item's record type.
