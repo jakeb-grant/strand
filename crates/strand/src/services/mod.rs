@@ -634,6 +634,20 @@ mod tests {
         );
     }
 
+    /// A surface's `open` binding is read by the scope around the
+    /// surface, not by its content: design.md's toasts panel (`open:
+    /// shown.len > 0` over `notifications.popups`) holds `notifications`
+    /// while it is closed, or no notification could ever open it.
+    #[test]
+    fn a_closed_surface_holds_what_its_open_binding_reads() {
+        let shell = Shell::boot(
+            "let shown = memory.usage\npanel P {\n  open: shown > 2\n  text \"x\"\n}\n",
+        );
+        let memory = shell.real.builtin.memory.clone();
+        assert_eq!(memory.starts(), 1, "the closed panel's `open` reads it");
+        assert_eq!(memory.readers(), 1);
+    }
+
     /// A popup reading `memory` starts it when it opens; closing it stops
     /// it 5 s later on the logic clock, and reopening inside those 5 s
     /// cancels the stop without a restart.

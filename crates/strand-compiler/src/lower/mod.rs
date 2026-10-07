@@ -558,6 +558,15 @@ impl Lowerer<'_> {
             hir::Item::Surface(s) => {
                 self.begin_body();
                 let element = self.element(&s.element);
+                // Its `open` binding is read while it is closed too (it
+                // is what opens it): its reads count for the file's top
+                // level, not only for the surface while shown (design.md's
+                // toasts panel opens on `notifications.popups`).
+                if let Some(open) = element.props.iter().find(|p| p.name == "open")
+                    && let Some(n) = self.frame_chunks.len().checked_sub(2)
+                {
+                    self.frame_chunks[n].push(open.value);
+                }
                 // A top-level surface holds what its props and children
                 // read while it is shown.
                 if let (Some(own), Some(top)) = (&element.services, self.services.last_mut()) {

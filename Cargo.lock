@@ -2040,6 +2040,7 @@ dependencies = [
  "log",
  "mimalloc",
  "rustix",
+ "serde",
  "serde_json",
  "strand-compiler",
  "strand-core",
