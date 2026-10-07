@@ -23,6 +23,18 @@ pub type Props = HashMap<String, OwnedValue>;
 /// `org.freedesktop.DBus.Properties`.
 pub const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
 
+/// How long a call to an app on the bus may take (a tray item, a media
+/// player): an app with its main loop blocked must not hold up the
+/// service behind it.
+pub const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// `call`, given up after [`CALL_TIMEOUT`].
+pub async fn timed<T>(call: impl std::future::Future<Output = zbus::Result<T>>) -> zbus::Result<T> {
+    tokio::time::timeout(CALL_TIMEOUT, call)
+        .await
+        .unwrap_or_else(|_| Err(zbus::Error::Failure("no answer in time".into())))
+}
+
 /// A property as `T`, if present and of that type.
 pub fn prop<'a, T>(props: &'a Props, name: &str) -> Option<T>
 where
@@ -367,6 +379,27 @@ pub async fn owner_process(conn: &Connection, name: &str) -> Option<(u32, Option
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
     Some((pid, comm))
+}
+
+/// A service whose bus cannot be reached: ready at its defaults. A bus
+/// disabled outright keeps it that way until stopped; any other failure
+/// ends the run with an error (the client retries with its backoff).
+pub(crate) async fn idle_without_bus<S: crate::Service>(
+    cx: &mut crate::Cx<S>,
+    which: &str,
+    e: zbus::Error,
+) -> Result<(), crate::ServiceError> {
+    cx.ready();
+    let disabled = match which {
+        "system" => cx.buses().system == crate::Bus::Disabled,
+        _ => cx.buses().session == crate::Bus::Disabled,
+    };
+    if disabled {
+        log::debug!("{}: no {which} bus: {e}", cx.name());
+        while cx.recv().await.is_some() {}
+        return Ok(());
+    }
+    Err(crate::ServiceError(format!("no {which} bus: {e}")))
 }
 
 #[cfg(test)]

@@ -66,8 +66,8 @@ fn kind(t: u32) -> &'static str {
         6 => "keyboard",
         8 => "phone",
         10 => "tablet",
-        // Headset, headphones, speakers.
-        17 | 18 | 23 => "headset",
+        // Headset, headphones, other audio (speakers are `other`).
+        17 | 19 | 21 => "headset",
         12 => "gaming_input",
         _ => "other",
     }
@@ -151,7 +151,7 @@ impl Battery {
     async fn run(mut cx: Cx<Self>) -> Result<(), ServiceError> {
         let conn = match cx.system().await {
             Ok(c) => c,
-            Err(e) => return idle_without_bus(&mut cx, "system", e).await,
+            Err(e) => return dbus::idle_without_bus(&mut cx, "system", e).await,
         };
         let mut daemon = Daemon::follow(&conn, UPOWER, ROOT).await?;
         let mut upower = UPower::default();
@@ -266,27 +266,6 @@ impl UPower {
     }
 }
 
-/// A service whose bus cannot be reached: ready at its defaults. A bus
-/// disabled outright keeps it that way until stopped; any other failure
-/// ends the run with an error (the client retries with its backoff).
-pub(crate) async fn idle_without_bus<S: crate::Service>(
-    cx: &mut Cx<S>,
-    which: &str,
-    e: zbus::Error,
-) -> Result<(), ServiceError> {
-    cx.ready();
-    let disabled = match which {
-        "system" => cx.buses().system == crate::Bus::Disabled,
-        _ => cx.buses().session == crate::Bus::Disabled,
-    };
-    if disabled {
-        log::debug!("{}: no {which} bus: {e}", cx.name());
-        while cx.recv().await.is_some() {}
-        return Ok(());
-    }
-    Err(ServiceError(format!("no {which} bus: {e}")))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,6 +311,11 @@ mod tests {
         assert_eq!(b.devices.len(), 1, "line power is left out");
         assert_eq!(b.devices[0].kind, "mouse");
         assert_eq!(b.devices[0].name, "MX");
+        // UPower's kinds: 17 headset, 18 speakers, 19 headphones, 23 printer.
+        assert_eq!(kind(17), "headset");
+        assert_eq!(kind(19), "headset");
+        assert_eq!(kind(18), "other");
+        assert_eq!(kind(23), "other");
         // No UPower: no battery.
         assert_eq!(
             Battery::from_upower(&Props::new(), &BTreeMap::new()),

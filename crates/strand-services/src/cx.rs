@@ -353,8 +353,10 @@ impl<S: Service> Cx<S> {
     /// Tell the user something they must act on (another notification
     /// server owns the name): a [`crate::ServiceDiagnostic`] the host
     /// shows (`strand run`: the overlay and `strand watch`), not only a
-    /// log line. Repeats of the same notice are dropped. `false` once
-    /// stopped.
+    /// log line. Repeats of the same notice are dropped. Raise it before
+    /// [`Cx::ready`]: a run that becomes ready without one resolves the
+    /// last notice (the host takes it away), as a clean stop does.
+    /// `false` once stopped.
     pub fn notice(&mut self, message: impl Into<String>) -> bool {
         self.out.send(Envelope::Notice(message.into()))
     }

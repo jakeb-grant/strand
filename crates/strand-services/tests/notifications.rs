@@ -226,19 +226,68 @@ fn the_server_serves_the_spec_and_the_store() {
     wait_heard(&heard, &format!("Closed {id2} 2"));
     until(&rt, &s, "one popup", || popups(&b, &rt).len() == 1);
 
-    // Expired: out of the popups, kept in `all`.
+    // Expired: out of the popups, kept open in `all` (not closed yet).
     let first = popups(&b, &rt)[0].to_data();
     b.notifications
         .dynamic()
         .action(&rt, "expire", Some(&first), &[])
         .unwrap();
-    wait_heard(&heard, &format!("Closed {id} 1"));
     until(&rt, &s, "no popups", || popups(&b, &rt).is_empty());
     assert_eq!(b.notifications.cells().count.get_untracked(&rt), Ok(1));
 
-    // The sender closes it.
+    // The sender closes it: closed once, when it leaves `all`.
     call(&tokio, &conn, NAME, PATH, NAME, "CloseNotification", &(id,));
     wait_heard(&heard, &format!("Closed {id} 3"));
+    until(&rt, &s, "none kept", || {
+        b.notifications.cells().count.get_untracked(&rt) == Ok(0)
+    });
+    let closed = |id: u32| {
+        heard
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.starts_with(&format!("Closed {id} ")))
+            .count()
+    };
+    assert_eq!(closed(id), 1, "{:?}", heard.lock().unwrap());
+    // Closing it again, or an id never given, is an error (the spec).
+    for gone in [id, 9999] {
+        let r = tokio.block_on(conn.call_method(
+            Some(NAME),
+            PATH,
+            Some(NAME),
+            "CloseNotification",
+            &(gone,),
+        ));
+        assert!(r.is_err(), "closing {gone} succeeded");
+    }
+
+    // 0 is "never expire": `persistent`; an urgency sent as another
+    // integer type still counts.
+    let kept = notify(
+        &tokio,
+        &conn,
+        0,
+        "Kept",
+        &[],
+        HashMap::from([("urgency", Value::from(0i32))]),
+        0,
+    );
+    until(&rt, &s, "the persistent one", || {
+        popups(&b, &rt).iter().any(|n| n.id == i64::from(kept))
+    });
+    let k = popups(&b, &rt)
+        .into_iter()
+        .find(|n| n.id == i64::from(kept))
+        .unwrap();
+    assert!(k.persistent && k.timeout.is_none());
+    assert_eq!(k.urgency, Urgency::Low);
+    b.notifications
+        .dynamic()
+        .action(&rt, "dismiss", Some(&k.to_data()), &[])
+        .unwrap();
+    wait_heard(&heard, &format!("Closed {kept} 2"));
+    assert_eq!(closed(id2), 1, "{:?}", heard.lock().unwrap());
     until(&rt, &s, "none kept", || {
         b.notifications.cells().count.get_untracked(&rt) == Ok(0)
     });
@@ -264,7 +313,7 @@ fn the_server_serves_the_spec_and_the_store() {
     });
     let shown: Vec<i64> = popups(&b, &rt).iter().map(|n| n.id).collect();
     assert_eq!(shown, [i64::from(loud)], "only the critical one shows");
-    assert_eq!(received.lock().unwrap().len(), 5, "received fires for each");
+    assert_eq!(received.lock().unwrap().len(), 6, "received fires for each");
 
     // Activate: its default action (none here: nothing invoked), closed.
     let l = popups(&b, &rt)[0].to_data();
@@ -292,6 +341,10 @@ fn the_server_serves_the_spec_and_the_store() {
         heard.lock().unwrap()
     );
     assert!(s.take_diagnostics().is_empty());
+    // Exactly one NotificationClosed per notification.
+    for n in [id, id2, kept, quiet, loud] {
+        assert_eq!(closed(n), 1, "{n}: {:?}", heard.lock().unwrap());
+    }
 
     // Stopped: the name is released with its connection.
     b.notifications.release(&rt);
@@ -308,6 +361,90 @@ fn the_server_serves_the_spec_and_the_store() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+#[test]
+fn history_is_bounded_and_lying_pictures_are_refused() {
+    use strand_services::notifications::KEPT;
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let heard = hear(&tokio, &conn);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    b.notifications.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert!(bus.wait_for_name(NAME, Duration::from_secs(5)));
+
+    // image-data claiming 100000x100000 pixels in four bytes: answered,
+    // shown without the picture, and the server lives on.
+    let liar = Value::from((100_000i32, 100_000i32, 0i32, true, 8i32, 4i32, vec![0u8; 4]));
+    let lied = notify(
+        &tokio,
+        &conn,
+        0,
+        "Liar",
+        &[],
+        HashMap::from([("image-data", liar)]),
+        -1,
+    );
+    until(&rt, &s, "the liar's notification", || {
+        popups(&b, &rt).iter().any(|n| n.id == i64::from(lied))
+    });
+    assert_eq!(popups(&b, &rt)[0].image, None);
+
+    // A picture of its own on the first kept one: its file goes with it.
+    let image = Value::from((1i32, 1i32, 4i32, true, 8i32, 4i32, vec![1u8, 2, 3, 4]));
+    let pictured = notify(
+        &tokio,
+        &conn,
+        0,
+        "Pictured",
+        &[],
+        HashMap::from([("image-data", image)]),
+        -1,
+    );
+    until(&rt, &s, "the picture", || {
+        popups(&b, &rt)
+            .iter()
+            .any(|n| n.id == i64::from(pictured) && n.image.is_some())
+    });
+    let file = popups(&b, &rt)
+        .into_iter()
+        .find(|n| n.id == i64::from(pictured))
+        .and_then(|n| n.image)
+        .unwrap();
+    assert!(std::path::Path::new(&file).exists());
+
+    // KEPT + 10 more: the oldest close as expired, and `all` holds KEPT.
+    let mut last = 0;
+    for i in 0..KEPT + 10 {
+        last = notify(&tokio, &conn, 0, &format!("n{i}"), &[], HashMap::new(), -1);
+    }
+    until(&rt, &s, "the last one", || {
+        popups(&b, &rt)
+            .last()
+            .is_some_and(|n| n.id == i64::from(last))
+    });
+    assert_eq!(
+        b.notifications.cells().count.get_untracked(&rt),
+        Ok(KEPT as i64)
+    );
+    wait_heard(&heard, &format!("Closed {lied} 1"));
+    wait_heard(&heard, &format!("Closed {pictured} 1"));
+    let expired = heard
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|l| l.starts_with("Closed ") && l.ends_with(" 1"))
+        .count();
+    assert_eq!(expired, 12, "the 12 oldest closed");
+    until(&rt, &s, "the picture's file removed", || {
+        !std::path::Path::new(&file).exists()
+    });
+    s.shutdown();
 }
 
 #[test]
@@ -334,6 +471,7 @@ fn another_notification_server_fails_clearly() {
     assert!(msg.contains(&format!("(pid {pid})")), "{msg}");
     assert!(msg.contains(&format!("`{}`", comm.trim())), "{msg}");
     assert!(msg.contains("systemctl --user stop"), "{msg}");
+    assert!(msg.contains("systemctl --user mask"), "{msg}");
     assert!(msg.contains(NAME), "{msg}");
     // The other server keeps the name: no second server.
     assert!(bus.wait_for_name(NAME, Duration::from_millis(100)));
@@ -359,5 +497,11 @@ fn another_notification_server_fails_clearly() {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(bus.wait_for_name(NAME, Duration::from_secs(5)));
+    // The notice is resolved: the host takes it away.
+    until(&rt, &s, "the notice resolved", || {
+        let d = s.take_diagnostics();
+        assert!(d.iter().all(|d| d.resolved), "{d:?}");
+        !d.is_empty()
+    });
     s.shutdown();
 }

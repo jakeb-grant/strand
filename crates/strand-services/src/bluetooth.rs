@@ -112,7 +112,7 @@ impl Bluetooth {
     async fn run(mut cx: Cx<Self>) -> Result<(), ServiceError> {
         let conn = match cx.system().await {
             Ok(c) => c,
-            Err(e) => return crate::battery::idle_without_bus(&mut cx, "system", e).await,
+            Err(e) => return crate::dbus::idle_without_bus(&mut cx, "system", e).await,
         };
         let mut daemon = Daemon::new(&conn, BLUEZ).await?;
         daemon.subscribe("manager", dbus::path_rule("/")?).await?;

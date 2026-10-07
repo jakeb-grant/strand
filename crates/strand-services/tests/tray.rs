@@ -29,14 +29,23 @@ struct State {
     calls: Vec<String>,
     open_label: String,
     extra: bool,
+    /// Its main loop is stuck: `Activate` never answers.
+    frozen: bool,
 }
 
 struct Item(Arc<Mutex<State>>);
 
 #[zbus::interface(name = "org.kde.StatusNotifierItem")]
 impl Item {
-    fn activate(&self, _x: i32, _y: i32) {
-        self.0.lock().unwrap().calls.push("Activate".into());
+    async fn activate(&self, _x: i32, _y: i32) {
+        let frozen = {
+            let mut s = self.0.lock().unwrap();
+            s.calls.push("Activate".into());
+            s.frozen
+        };
+        if frozen {
+            std::future::pending::<()>().await;
+        }
     }
     fn secondary_activate(&self, _x: i32, _y: i32) {
         self.0
@@ -164,9 +173,10 @@ impl Menu {
             .push(format!("Event {id} {event_id}"));
     }
 
-    fn about_to_show(&self, _id: i32) -> bool {
+    fn about_to_show(&self, id: i32) -> bool {
         let mut s = self.0.lock().unwrap();
         s.calls.push("AboutToShow".into());
+        s.calls.push(format!("AboutToShow {id}"));
         let first = !s.extra;
         s.extra = true;
         first
@@ -247,6 +257,33 @@ fn the_tray_is_the_watcher_when_there_is_none() {
         "it owns the watcher"
     );
     assert!(items(&b, &rt).is_empty());
+    // Hosts follow the watcher's list by PropertiesChanged.
+    let listing = connect(&tokio, &bus.address);
+    let rule = zbus::MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .path(WATCHER_PATH)
+        .unwrap()
+        .member("PropertiesChanged")
+        .unwrap()
+        .build();
+    let mut changes = tokio
+        .block_on(zbus::MessageStream::for_match_rule(rule, &listing, None))
+        .unwrap();
+    let next_listing = |changes: &mut zbus::MessageStream| -> Vec<String> {
+        use futures_lite::StreamExt;
+        let m = tokio
+            .block_on(async { tokio::time::timeout(Duration::from_secs(10), changes.next()).await })
+            .expect("a PropertiesChanged")
+            .unwrap()
+            .unwrap();
+        let (_, changed, _): (String, HashMap<String, OwnedValue>, Vec<String>) =
+            m.body().deserialize().unwrap();
+        changed["RegisteredStatusNotifierItems"]
+            .try_clone()
+            .unwrap()
+            .try_into()
+            .unwrap()
+    };
 
     // An app's item registers with the watcher.
     let name = "org.kde.StatusNotifierItem-4242-1";
@@ -292,6 +329,7 @@ fn the_tray_is_the_watcher_when_there_is_none() {
     .unwrap();
     let listed: Vec<String> = listed.try_into().unwrap();
     assert_eq!(listed, std::slice::from_ref(&it.id));
+    assert_eq!(next_listing(&mut changes), std::slice::from_ref(&it.id));
 
     // Clicks and scrolls reach the app.
     let d = b.tray.dynamic();
@@ -315,6 +353,14 @@ fn the_tray_is_the_watcher_when_there_is_none() {
             .iter()
             .any(|e| e.label == "Extra")
     });
+    // A submenu opens, and the menu closes: the app is told.
+    let sub = items(&b, &rt)[0].menu.items[3].clone();
+    d.action(&rt, "open", Some(&sub.to_data()), &[]).unwrap();
+    wait_call(&state, "AboutToShow 4");
+    wait_call(&state, "Event 4 opened");
+    d.action(&rt, "close", Some(&it.menu.to_data()), &[])
+        .unwrap();
+    wait_call(&state, "Event 0 closed");
     // An entry is chosen.
     let check = items(&b, &rt)[0].menu.items[2].clone();
     d.action(&rt, "activate", Some(&check.to_data()), &[])
@@ -371,7 +417,76 @@ fn the_tray_is_the_watcher_when_there_is_none() {
     // The app quits: its item goes.
     drop(conn);
     until(&rt, &s, "the item gone", || items(&b, &rt).is_empty());
+    assert!(next_listing(&mut changes).is_empty(), "unlisted");
+    {
+        // Its match rule is removed on the runtime.
+        let _on = tokio.enter();
+        drop(changes);
+    }
     assert_eq!(b.tray.starts(), 1);
+    s.shutdown();
+}
+
+#[test]
+fn a_frozen_app_does_not_hold_up_the_tray() {
+    let Some(bus) = strand_services::testing::PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    b.tray.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    let register = |conn: &zbus::Connection, name: &str| {
+        call(
+            &tokio,
+            conn,
+            WATCHER,
+            WATCHER_PATH,
+            WATCHER,
+            "RegisterStatusNotifierItem",
+            &(name,),
+        );
+    };
+    let frozen_name = "org.kde.StatusNotifierItem-5151-1";
+    let (frozen, frozen_state) = item(&tokio, &bus.address, frozen_name);
+    register(&frozen, frozen_name);
+    until(&rt, &s, "the first item", || items(&b, &rt).len() == 1);
+    // Its main loop gets stuck in a click (a modal dialog before the
+    // reply, say).
+    frozen_state.lock().unwrap().frozen = true;
+    let first = items(&b, &rt).remove(0);
+    b.tray
+        .dynamic()
+        .action(&rt, "activate", Some(&first.to_data()), &[])
+        .unwrap();
+    wait_call(&frozen_state, "Activate");
+    // Another app's item registers and changes its icon meanwhile: shown
+    // at once, long before the stuck call is given up.
+    let started = std::time::Instant::now();
+    let live_name = "org.kde.StatusNotifierItem-5151-2";
+    let (live, live_state) = item(&tokio, &bus.address, live_name);
+    register(&live, live_name);
+    until(&rt, &s, "the second item", || items(&b, &rt).len() == 2);
+    live_state.lock().unwrap().icon_name = "changed-icon".into();
+    tokio
+        .block_on(live.emit_signal(
+            None::<&str>,
+            "/StatusNotifierItem",
+            "org.kde.StatusNotifierItem",
+            "NewIcon",
+            &(),
+        ))
+        .unwrap();
+    until(&rt, &s, "the new icon", || {
+        items(&b, &rt).iter().any(|i| i.icon == "changed-icon")
+    });
+    assert!(
+        started.elapsed() < strand_services::dbus::CALL_TIMEOUT,
+        "the tray waited on the frozen app: {:?}",
+        started.elapsed()
+    );
+    drop(frozen);
     s.shutdown();
 }
 

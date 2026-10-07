@@ -46,7 +46,7 @@ pub mod media;
 pub mod memory;
 pub mod network;
 pub mod notifications;
-mod pixmap;
+pub mod pixmap;
 mod procfs;
 mod service;
 mod store;

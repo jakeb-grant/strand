@@ -526,20 +526,20 @@ impl Shell {
 
     /// Service failures and notices: `strand watch` notices, and overlay
     /// rows for what the user must act on (another notification server
-    /// owns the name), as lowering's notices are (each is logged where it
-    /// is made).
+    /// owns the name), under a `strand: services` header; a resolved
+    /// notice (the name taken over) takes its rows away and is a `strand
+    /// watch` notice of its own (each is logged where it is made).
     fn service_diagnostics(&mut self, diagnostics: Vec<strand_services::ServiceDiagnostic>) {
         let texts: Vec<String> = diagnostics.iter().map(ToString::to_string).collect();
         // The overlay shows what the user must act on; a failure the
         // service retries (no session bus) is a log line and a `strand
         // watch` notice.
-        let rows: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.notice)
-            .map(|d| overlay::notice_line(&d.to_string()))
-            .collect();
-        if !rows.is_empty() {
-            self.overlay.note(rows, Instant::now(), &self.inst);
+        for d in diagnostics.iter().filter(|d| d.notice) {
+            self.overlay.forget_service(d.service, &self.inst);
+            if !d.resolved {
+                let rows = overlay::service_lines(d.service, &d.to_string());
+                self.overlay.note(rows, Instant::now(), &self.inst);
+            }
         }
         if let Some(s) = &mut self.server {
             s.broadcast(&json!({

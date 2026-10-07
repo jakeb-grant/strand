@@ -14,12 +14,17 @@ record TrayMenuItem key id {
   toggle: text
   /// Its check mark or radio button is on.
   checked: bool
-  /// Its icon name, if it has one.
+  /// Its icon: an icon name, or the path of the picture the app sent.
   icon: text?
+  /// Its keyboard shortcut, if it has one (`Control+S`).
+  shortcut: text?
   /// Its submenu's entries; empty when it has none.
   children: [TrayMenuItem]
   /// Chooses it: the app is told it was clicked.
   action activate()
+  /// Opens its submenu: the app is told (and may update the entries
+  /// first).
+  action open()
 }
 
 /// A tray item's menu (DBusMenu).
@@ -32,6 +37,8 @@ record TrayMenu {
   /// Opens it as a popup: `on secondary { item.menu.open() }`. The app is
   /// told it opens (and may update its entries first).
   action open()
+  /// The popup closed: the app is told.
+  action close()
 }
 
 /// An item in the system tray (StatusNotifierItem), keyed by `id`.

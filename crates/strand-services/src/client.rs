@@ -187,11 +187,20 @@ pub struct ServiceDiagnostic {
     /// The user must act on it ([`Cx::notice`]); else a failure the
     /// service retries (a daemon or bus that cannot be reached).
     pub notice: bool,
+    /// The notice `message` no longer holds: a later run became ready
+    /// without raising it (the other notification server stopped and the
+    /// name was taken over), or the service stopped cleanly. The host
+    /// takes the notice's rows away.
+    pub resolved: bool,
 }
 
 impl fmt::Display for ServiceDiagnostic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "service `{}`: {}", self.service, self.message)
+        if self.resolved {
+            write!(f, "service `{}`: resolved: {}", self.service, self.message)
+        } else {
+            write!(f, "service `{}`: {}", self.service, self.message)
+        }
     }
 }
 
@@ -378,6 +387,8 @@ struct Run<S: Service> {
     thread: Option<JoinHandle<()>>,
     ready: bool,
     ended: bool,
+    /// It raised a notice ([`Cx::notice`]).
+    noticed: bool,
     /// When it started (the logic clock).
     started: Duration,
 }
@@ -463,6 +474,24 @@ impl<S: Service> ClientInner<S> {
                 service: S::NAME,
                 message: message.to_string(),
                 notice,
+                resolved: false,
+            });
+        }
+    }
+
+    /// The notice last reported no longer holds: a resolved
+    /// [`ServiceDiagnostic`] for it.
+    fn resolve(&self) {
+        let Some(message) = self.last_notice.borrow_mut().take() else {
+            return;
+        };
+        log::info!("service `{}`: resolved: {message}", S::NAME);
+        if let Some(reg) = self.reg.upgrade() {
+            reg.diagnostics.borrow_mut().push(ServiceDiagnostic {
+                service: S::NAME,
+                message,
+                notice: true,
+                resolved: true,
             });
         }
     }
@@ -556,6 +585,7 @@ impl<S: Service> ClientInner<S> {
             notify,
             thread,
             ready: false,
+            noticed: false,
             ended: false,
             started: rt.now(),
         });
@@ -814,10 +844,24 @@ impl<S: Service> Member for ClientInner<S> {
                         }
                     }
                 }
-                Envelope::Notice(m) => self.diagnose(rt, &m, true),
-                Envelope::Ready => {
+                Envelope::Notice(m) => {
                     if let Some(run) = self.run.borrow_mut().as_mut() {
-                        run.ready = true;
+                        run.noticed = true;
+                    }
+                    self.diagnose(rt, &m, true)
+                }
+                Envelope::Ready => {
+                    // Ready without a notice (raised before readiness):
+                    // the last notice no longer holds.
+                    let resolves = match self.run.borrow_mut().as_mut() {
+                        Some(run) => {
+                            run.ready = true;
+                            !run.noticed
+                        }
+                        None => false,
+                    };
+                    if resolves {
+                        self.resolve();
                     }
                 }
                 Envelope::Ended(r) => {
@@ -825,7 +869,7 @@ impl<S: Service> Member for ClientInner<S> {
                         Err(e) => self.diagnose(rt, e, false),
                         Ok(()) => {
                             *self.last_error.borrow_mut() = None;
-                            *self.last_notice.borrow_mut() = None;
+                            self.resolve();
                         }
                     }
                     self.ended(rt, r.is_err())

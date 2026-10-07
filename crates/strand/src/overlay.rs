@@ -71,6 +71,41 @@ pub fn notice_line(n: &str) -> Line {
     }
 }
 
+/// A service's notice (another notification server owns the name) as
+/// overlay rows, wrapped to the panel's width; the rows are keyed by the
+/// service (`service:<name>#<n>`), so [`Overlay::forget_service`] takes
+/// them away once the notice is resolved.
+pub fn service_lines(service: &str, text: &str) -> Vec<Line> {
+    // The panel's text is 12 px monospace, about 7.2 px a character.
+    let width = ((WIDTH - PAD * 2.0) / 7.4) as usize;
+    let mut rows: Vec<String> = Vec::new();
+    let mut row = String::new();
+    for word in text.split_whitespace() {
+        if !row.is_empty() && row.chars().count() + 1 + word.chars().count() > width {
+            rows.push(std::mem::take(&mut row));
+            row.push_str("  ");
+        } else if !row.is_empty() && row != "  " {
+            row.push(' ');
+        }
+        row.push_str(word);
+    }
+    if !row.trim().is_empty() {
+        rows.push(row);
+    }
+    rows.into_iter()
+        .enumerate()
+        .map(|(i, text)| Line {
+            text,
+            notice: true,
+            cell: Some(format!("{SERVICE_CELL}{service}#{i}")),
+            ..Line::default()
+        })
+        .collect()
+}
+
+/// The cell key prefix of a service's rows.
+const SERVICE_CELL: &str = "service:";
+
 /// A settings-file notice (a bad value kept at its last good value, a
 /// syntax error, a read-only file whose changes go to an overlay, a file
 /// change the runtime overlay shadows) as an overlay row. Rows about one
@@ -368,6 +403,18 @@ impl Overlay {
         }
     }
 
+    /// Service `service`'s notice was resolved (the notification server
+    /// took the name over): its rows go.
+    pub fn forget_service(&mut self, service: &str, inst: &Instance) {
+        let prefix = format!("{SERVICE_CELL}{service}#");
+        let before = self.notes.len();
+        self.notes
+            .retain(|n| n.cell.as_deref().is_none_or(|c| !c.starts_with(&prefix)));
+        if self.notes.len() != before {
+            self.refresh(inst);
+        }
+    }
+
     /// Show the current list again (or hide it when empty).
     fn refresh(&mut self, inst: &Instance) {
         if self.lines.is_empty() && self.notes.is_empty() {
@@ -516,6 +563,12 @@ impl Overlay {
             )
         } else if all.iter().any(|l| l.reset.is_some()) {
             format!("strand: reloaded with notices — click [reset] to go back to a default{more}")
+        } else if all.iter().all(|l| {
+            l.cell
+                .as_deref()
+                .is_some_and(|c| c.starts_with(SERVICE_CELL))
+        }) {
+            format!("strand: services{more}")
         } else if all.iter().all(|l| {
             l.cell
                 .as_deref()

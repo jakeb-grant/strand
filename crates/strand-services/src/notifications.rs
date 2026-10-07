@@ -7,19 +7,25 @@
 //!   `image-path`, `desktop-entry`, `resident`; `expire_timeout`),
 //!   `CloseNotification`, `GetCapabilities`, `GetServerInformation`; the
 //!   `NotificationClosed` and `ActionInvoked` signals.
-//! - The store: `popups` (shown now), `all` (kept), `count`, `dnd`, the
-//!   `received` event; `n.expire()` ends a popup (closed as expired),
-//!   `n.dismiss()` closes it (dismissed), `n.activate()` invokes its
-//!   `default` action, `a.invoke()` one of its buttons, `clear()` closes
-//!   every one. The server sets no timers: the shell expires popups
-//!   (`after n.timeout ?? 6s { n.expire() }`), so an idle server wakes
-//!   nothing.
+//! - The store: `popups` (shown now), `all` (kept, at most [`KEPT`]),
+//!   `count`, `dnd`, the `received` event; `n.expire()` ends a popup (the
+//!   notification stays open in `all`: the server keeps notifications,
+//!   `persistence`), `n.dismiss()` closes it (dismissed), `n.activate()`
+//!   invokes its `default` action, `a.invoke()` one of its buttons,
+//!   `clear()` closes every one. A notification is closed (one
+//!   `NotificationClosed`) exactly when it leaves `all`; beyond [`KEPT`]
+//!   the oldest closes as expired. The server sets no timers: the shell
+//!   expires popups (`after n.timeout ?? 6s { n.expire() }`), so an idle
+//!   server wakes nothing.
+//! - `image-data` is checked and written as a PNG off the runtime thread
+//!   ([`crate::pixmap`]), kept while its notification is.
 //! - **Another server owns the name** (dunst, mako, a desktop's): the
 //!   name is asked for without queueing, and the run fails with a
 //!   diagnostic naming the owner's process (`GetConnectionUnixProcessID`,
 //!   `/proc/<pid>/comm`) and how to stop it. There is never a silent
 //!   second server; the client retries with its backoff, so stopping the
-//!   other daemon hands the name over within 30 s.
+//!   other daemon hands the name over within 30 s, and the diagnostic is
+//!   then resolved.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -39,6 +45,11 @@ pub const SCHEMA: &str = strand_services_schema::NOTIFICATIONS;
 pub const NAME: &str = "org.freedesktop.Notifications";
 /// Its object path.
 pub const PATH: &str = "/org/freedesktop/Notifications";
+
+/// How many notifications `all` keeps: beyond it, the oldest closes as
+/// expired (design.md's memory budget holds notification history to a few
+/// megabytes).
+pub const KEPT: usize = 100;
 
 /// What `GetCapabilities` answers.
 pub const CAPABILITIES: &[&str] = &[
@@ -110,6 +121,7 @@ pub struct Notification {
     pub image: Option<String>,
     pub urgency: Urgency,
     pub timeout: Option<Duration>,
+    pub persistent: bool,
     pub time: Date,
     pub actions: Vec<NotificationAction>,
 }
@@ -137,7 +149,8 @@ pub struct Notifications {
     /// dismissed.
     #[store(keyed)]
     pub popups: Vec<Notification>,
-    /// Every notification kept, popups included.
+    /// Every notification kept, popups included: the newest 100 (older
+    /// ones close as expired).
     #[store(keyed)]
     pub all: Vec<Notification>,
     /// How many notifications are kept.
@@ -161,10 +174,25 @@ pub enum Closed {
     Closed = 3,
 }
 
+/// The picture a `Notify` carried: `image-data` pixels (written as a PNG
+/// by the body, off the runtime thread) or a path.
+#[derive(Clone, Debug, Default)]
+enum Image {
+    #[default]
+    None,
+    Path(String),
+    Data(ImageData),
+}
+
+/// `image-data`: width, height, rowstride, has alpha, bits, channels,
+/// pixels.
+type ImageData = (i32, i32, i32, bool, i32, i32, Vec<u8>);
+
 /// What a sender's `Notify` asked for, as the store keeps it.
 #[derive(Clone, Debug)]
 struct Arrival {
     n: Notification,
+    image: Image,
     /// It replaces the notification of the same id.
     replaces: bool,
     /// `resident`: kept after an action is invoked.
@@ -205,17 +233,29 @@ fn hint_text(hints: &HashMap<String, OwnedValue>, keys: &[&str]) -> Option<Strin
     })
 }
 
-/// The `image-data` hint (or its older names) written as a PNG file.
-fn image_data(hints: &HashMap<String, OwnedValue>) -> Option<String> {
-    let v = ["image-data", "image_data", "icon_data"]
+/// The `image-data` hint (or its older names), else `image-path`.
+fn image(hints: &HashMap<String, OwnedValue>) -> Image {
+    let data = ["image-data", "image_data", "icon_data"]
         .iter()
-        .find_map(|k| hints.get(*k))?;
-    type Raw = (i32, i32, i32, bool, i32, i32, Vec<u8>);
-    let (w, h, stride, alpha, bits, ch, data): Raw = v.try_clone().ok()?.try_into().ok()?;
+        .find_map(|k| hints.get(*k))
+        .and_then(|v| v.try_clone().ok())
+        .and_then(|v| ImageData::try_from(v).ok());
+    match data {
+        Some(d) => Image::Data(d),
+        None => hint_text(hints, &["image-path", "image_path"])
+            .map(Image::Path)
+            .unwrap_or_default(),
+    }
+}
+
+/// `image-data` as a PNG file, kept while the handle lives (run off the
+/// runtime thread: the pixels may be large).
+fn write_image(d: ImageData) -> Option<crate::pixmap::Pinned> {
+    let (w, h, stride, alpha, bits, ch, data) = d;
     let written = crate::pixmap::from_image_data(w, h, stride, alpha, bits, ch, &data)
         .and_then(|(w, h, rgba)| crate::pixmap::write_rgba(w, h, &rgba));
     match written {
-        Ok(p) => Some(p.to_string_lossy().into_owned()),
+        Ok(p) => Some(p),
         Err(e) => {
             log::debug!("notifications: image-data not shown: {e}");
             None
@@ -247,10 +287,8 @@ impl Server {
                 (id, false)
             }
         };
-        let urgency = match hints
-            .get("urgency")
-            .and_then(|v| v.downcast_ref::<u8>().ok())
-        {
+        // A byte by the spec; some senders use another integer type.
+        let urgency = match crate::dbus::number(&hints, "urgency").map(|n| n as i64) {
             Some(0) => Urgency::Low,
             Some(2) => Urgency::Critical,
             _ => Urgency::Normal,
@@ -260,7 +298,7 @@ impl Server {
         } else {
             app_icon
         };
-        let image = image_data(&hints).or_else(|| hint_text(&hints, &["image-path", "image_path"]));
+        let image = image(&hints);
         let mut buttons = Vec::new();
         let mut default = false;
         for pair in actions.chunks(2) {
@@ -290,14 +328,19 @@ impl Server {
                 },
                 summary,
                 body,
-                image,
+                image: match &image {
+                    Image::Path(p) => Some(p.clone()),
+                    _ => None,
+                },
                 urgency,
-                // -1: the server's choice; 0: never (left to the shell
-                // too, which keeps critical ones; decisions.md, wave4-a2).
+                // -1: the server's choice (null: the shell's); 0: never,
+                // `persistent` (decisions.md, wave4-a2).
                 timeout: (expire_timeout > 0).then(|| Duration::from_millis(expire_timeout as u64)),
+                persistent: expire_timeout == 0,
                 time: Date::today(),
                 actions: buttons,
             },
+            image,
             replaces,
             resident,
             default,
@@ -334,8 +377,18 @@ impl Server {
         id
     }
 
-    async fn close_notification(&self, id: u32) {
+    /// The spec: an id that does not exist (any more) is an error.
+    async fn close_notification(&self, id: u32) -> zbus::fdo::Result<()> {
+        let live = self
+            .ids
+            .lock()
+            .map(|ids| ids.live.contains(&id))
+            .unwrap_or(false);
+        if !live {
+            return Err(zbus::fdo::Error::Failed(format!("no notification {id}")));
+        }
         let _ = self.tx.send(FromBus::Close(id));
+        Ok(())
     }
 
     async fn get_capabilities(&self) -> Vec<String> {
@@ -368,9 +421,16 @@ pub fn conflict_message(owner: Option<(u32, Option<String>)>) -> String {
         Some((pid, None)) => format!("stop it (`kill {pid}`) and remove it from your autostart"),
         None => "stop the other notification daemon".to_string(),
     };
+    let unit = match &owner {
+        Some((_, Some(comm))) => comm.clone(),
+        _ => "<daemon>".to_string(),
+    };
     format!(
         "another notification server, {who}, owns {NAME}: strand cannot show notifications \
-         while it runs; {how}. strand takes the name over once it is free."
+         while it runs; {how}. D-Bus starts it again on the next notification unless its \
+         activation is masked too (`systemctl --user mask {unit}`, or an empty \
+         ~/.local/share/dbus-1/services/{NAME}.service). strand takes the name over once it \
+         is free."
     )
 }
 
@@ -379,13 +439,15 @@ pub fn conflict_message(owner: Option<(u32, Option<String>)>) -> String {
 struct Kept {
     resident: HashSet<i64>,
     default: HashSet<i64>,
+    /// The `image-data` files of the notifications kept.
+    images: HashMap<i64, crate::pixmap::Pinned>,
 }
 
 impl Notifications {
     async fn run(mut cx: Cx<Self>) -> Result<(), ServiceError> {
         let conn = match crate::bus::own_session(cx.buses()).await {
             Ok(c) => c,
-            Err(e) => return crate::battery::idle_without_bus(&mut cx, "session", e).await,
+            Err(e) => return crate::dbus::idle_without_bus(&mut cx, "session", e).await,
         };
         let ids = Arc::new(Mutex::new(Ids::default()));
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -406,8 +468,10 @@ impl Notifications {
             | Err(zbus::Error::NameTaken) => {
                 let owner = crate::dbus::owner_process(&conn, NAME).await;
                 let message = conflict_message(owner);
-                cx.ready();
+                // The notice before readiness: a ready run without one
+                // resolves it (the name taken over).
                 cx.notice(message.clone());
+                cx.ready();
                 return Err(ServiceError(message));
             }
             Err(e) => {
@@ -425,7 +489,21 @@ impl Notifications {
                     };
                     match m {
                         FromBus::Notify(a) => {
-                            let Arrival { n, replaces, resident, default } = *a;
+                            let Arrival { mut n, image, replaces, resident, default } = *a;
+                            if let Image::Data(d) = image {
+                                // Off the runtime thread: other services go on.
+                                let pinned = tokio::task::spawn_blocking(move || write_image(d))
+                                    .await
+                                    .ok()
+                                    .flatten();
+                                n.image = pinned.as_ref().map(crate::pixmap::Pinned::text);
+                                match pinned {
+                                    Some(p) => kept.images.insert(n.id, p),
+                                    None => kept.images.remove(&n.id),
+                                };
+                            } else {
+                                kept.images.remove(&n.id);
+                            }
                             if resident { kept.resident.insert(n.id); } else { kept.resident.remove(&n.id); }
                             if default { kept.default.insert(n.id); } else { kept.default.remove(&n.id); }
                             // A replacement updates a popup shown; a new one
@@ -442,6 +520,16 @@ impl Notifications {
                             });
                             if !sent || !cx.emit(NotificationsEvent::Received(n)) {
                                 return Ok(());
+                            }
+                            // History is bounded: the oldest beyond it close.
+                            let over: Vec<i64> = {
+                                let all = &cx.state().all;
+                                all.iter().take(all.len().saturating_sub(KEPT)).map(|n| n.id).collect()
+                            };
+                            for id in over {
+                                if !close(&mut cx, &conn, &ids, &mut kept, id, Closed::Expired).await {
+                                    return Ok(());
+                                }
                             }
                         }
                         FromBus::Close(id) => {
@@ -469,11 +557,9 @@ impl Notifications {
                                 }
                                 alive
                             }
+                            // The popup ends; the notification stays open in
+                            // `all` (closed once, when it leaves it).
                             NotificationsAction::Expire { item } => {
-                                let shown = cx.state().popups.iter().any(|n| n.id == item.id);
-                                if shown {
-                                    signal_closed(&conn, item.id, Closed::Expired).await;
-                                }
                                 cx.update(|s| s.popups.retain(|n| n.id != item.id))
                             }
                             NotificationsAction::Dismiss { item } => {
@@ -487,7 +573,9 @@ impl Notifications {
                                     || close(&mut cx, &conn, &ids, &mut kept, item.id, Closed::Dismissed).await
                             }
                             NotificationsAction::Invoke { item } => {
-                                invoked(&conn, item.notification, &item.id).await;
+                                if cx.state().all.iter().any(|n| n.id == item.notification) {
+                                    invoked(&conn, item.notification, &item.id).await;
+                                }
                                 kept.resident.contains(&item.notification)
                                     || close(&mut cx, &conn, &ids, &mut kept, item.notification, Closed::Dismissed).await
                             }
@@ -527,15 +615,19 @@ async fn close(
     }
     kept.resident.remove(&id);
     kept.default.remove(&id);
+    // The file goes once the state no longer names it.
+    let image = kept.images.remove(&id);
     if !known {
         return !cx.stopped();
     }
     signal_closed(conn, id, why).await;
-    cx.update(|s| {
+    let alive = cx.update(|s| {
         s.popups.retain(|n| n.id != id);
         s.all.retain(|n| n.id != id);
         s.count = s.all.len() as i64;
-    })
+    });
+    drop(image);
+    alive
 }
 
 async fn signal_closed(conn: &zbus::Connection, id: i64, why: Closed) {
@@ -571,6 +663,8 @@ mod tests {
         let m = conflict_message(Some((42, Some("mako".into()))));
         assert!(m.contains("`mako` (pid 42)"), "{m}");
         assert!(m.contains("systemctl --user stop mako"), "{m}");
+        assert!(m.contains("systemctl --user mask mako"), "{m}");
+        assert!(m.contains("dbus-1/services"), "{m}");
         assert!(m.contains(NAME), "{m}");
         assert!(conflict_message(None).contains("another process"));
     }
