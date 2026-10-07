@@ -208,9 +208,13 @@ impl Audio {
 
     fn shutdown(&mut self) {
         let _ = self.tx.send(Cmd::Stop);
-        if let Some(t) = self.thread.take()
-            && t.join().is_err()
-        {
+        let Some(t) = self.thread.take() else { return };
+        // Dropped on its own thread (from the sink): it stops after this
+        // batch; joining itself would never return.
+        if t.thread().id() == std::thread::current().id() {
+            return;
+        }
+        if t.join().is_err() {
             log::error!("the strand-pipewire thread panicked");
         }
     }
@@ -219,5 +223,42 @@ impl Audio {
 impl Drop for Audio {
     fn drop(&mut self) {
         self.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_handle_and_its_reply_are_send() {
+        fn send<T: Send>() {}
+        send::<Audio>();
+        send::<AudioReply>();
+        send::<AudioAction>();
+    }
+
+    #[test]
+    fn a_handle_without_a_daemon_answers_not_connected() {
+        let dir = std::env::temp_dir().join(format!("strand-no-pw-{}", std::process::id()));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let audio = Audio::spawn(
+            AudioConfig {
+                remote: Some(dir.join("pipewire-0").display().to_string()),
+            },
+            move |b| {
+                let _ = tx.send(b);
+            },
+        )
+        .unwrap();
+        let first = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert_eq!(first[0], AudioChange::Connected(false));
+        assert_eq!(
+            audio
+                .request(AudioAction::SetMuted(DeviceRef::DefaultSink, true))
+                .wait(),
+            Err(AudioError::NotConnected)
+        );
+        audio.stop();
     }
 }

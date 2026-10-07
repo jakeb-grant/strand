@@ -17,6 +17,9 @@ env:
   # The theme's end-to-end test (mock portal on a private bus) fails
   # instead of skipping when dbus-daemon is missing.
   STRAND_REQUIRE_DBUS: "1"
+  # The audio tier (a private PipeWire with null sinks and WirePlumber)
+  # fails instead of skipping when pipewire or wireplumber is missing.
+  STRAND_REQUIRE_PIPEWIRE: "1"
   # No debug info: a full debug test build of the workspace with it does
   # not fit the runner's disk (as in the dev container, CLAUDE.md).
   CARGO_PROFILE_DEV_DEBUG: "0"
@@ -39,10 +42,13 @@ jobs:
           df -h /
       # smithay-client-toolkit's build script finds xkbcommon through
       # pkg-config; wayland-sys and fontconfig link their system libraries.
-      - name: Install headless sway, grim, dbus, fonts, icons and build headers
+      # The audio tier runs its own PipeWire (pipewire, pipewire-bin's
+      # pw-cli/pw-play, wireplumber's wpctl); pipewire-rs binds
+      # libpipewire 1.0.5 through bindgen (libclang).
+      - name: Install headless sway, grim, dbus, PipeWire, fonts, icons and build headers
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends sway grim dbus fonts-dejavu-core adwaita-icon-theme pkg-config libfontconfig1-dev libxkbcommon-dev libwayland-dev
+          sudo apt-get install -y --no-install-recommends sway grim dbus fonts-dejavu-core adwaita-icon-theme pkg-config libfontconfig1-dev libxkbcommon-dev libwayland-dev pipewire pipewire-bin wireplumber libpipewire-0.3-dev libspa-0.2-dev libclang-dev
       # The references are drawn with fonts-dejavu-core alone, whose DejaVu
       # Sans has no oblique face (italic text is slanted from the upright
       # one). The image also ships fonts-dejavu-extra, whose real
@@ -132,7 +138,7 @@ jobs:
       - name: Install headless sway, grim, dbus, fonts, icons and build headers
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends sway grim dbus fonts-dejavu-core adwaita-icon-theme pkg-config libfontconfig1-dev libxkbcommon-dev libwayland-dev
+          sudo apt-get install -y --no-install-recommends sway grim dbus fonts-dejavu-core adwaita-icon-theme pkg-config libfontconfig1-dev libxkbcommon-dev libwayland-dev libpipewire-0.3-dev libspa-0.2-dev libclang-dev
           sudo dpkg --remove --force-depends fonts-dejavu fonts-dejavu-extra || true
       - uses: dtolnay/rust-toolchain@master
         with:

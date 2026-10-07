@@ -13,7 +13,7 @@ use std::mem::MaybeUninit;
 use std::os::fd::{AsFd, AsRawFd, OwnedFd, RawFd};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use pipewire::context::ContextRc;
 use pipewire::core::{CoreRc, PW_ID_CORE};
@@ -285,6 +285,10 @@ struct Session {
     awaiting: Option<i32>,
     /// The first state of this connection has gone out.
     published: bool,
+    /// When it connected: only a connection that lasted [`MAX`] resets
+    /// the backoff when lost (a daemon that dies at once keeps backing
+    /// off).
+    since: Instant,
 }
 
 struct NodeEntry {
@@ -565,12 +569,16 @@ impl Driver<'_> {
             initial_done: false,
             awaiting: Some(seq),
             published: false,
+            since: Instant::now(),
         })
     }
 
     /// The daemon went away: keep the devices, say so, and reconnect.
     fn lost(&mut self) {
         if let Some(mut s) = self.session.take() {
+            if s.since.elapsed() >= MAX {
+                self.backoff = FIRST;
+            }
             for m in s.meters.drain(..) {
                 if !m.silent {
                     self.out.push(AudioChange::Levels(Levels {
@@ -582,7 +590,6 @@ impl Driver<'_> {
             }
         }
         self.dirty = true;
-        self.backoff = FIRST;
         self.watching();
         self.schedule_retry();
     }
