@@ -455,8 +455,13 @@ impl Desktop {
     }
 
     /// An app's notification to the shell's server.
-    fn notify(&self, summary: &str, body: &str) {
-        let hints: HashMap<&str, ZValue> = HashMap::new();
+    /// `critical`: urgency 2, a toast that does not expire (toasts.strand
+    /// expires the others after 6 s, which a slow debug run can outlast).
+    fn notify(&self, summary: &str, body: &str, critical: bool) {
+        let mut hints: HashMap<&str, ZValue> = HashMap::new();
+        if critical {
+            hints.insert("urgency", ZValue::U8(2));
+        }
         (
             "budgets",
             0u32,
@@ -869,7 +874,7 @@ fn the_design_bar_on_the_real_services_keeps_the_budget() {
     let Some(mut desk) = Desktop::start("bar", &files, None, 1) else {
         return;
     };
-    desk.notify("budgets", "one kept");
+    desk.notify("budgets", "one kept", false);
     // Every value on screen: the added box green on both outputs.
     let deadline = Instant::now() + Duration::from_secs(30);
     for output in ["HEADLESS-1", "HEADLESS-2"] {
@@ -1010,20 +1015,38 @@ fn the_full_shell_on_the_real_services_is_measured() {
     let launcher = pss_kb(pid);
     // Two toasts from an app.
     let before = desk.surfaces();
-    desk.notify("Build finished", "strand: all <b>green</b>");
-    desk.notify("Meeting", "Stand-up in 5 minutes");
+    desk.notify("Build finished", "strand: all <b>green</b>", true);
+    desk.notify("Meeting", "Stand-up in 5 minutes", true);
     desk.wait_surfaces(before, "the toasts");
-    // The OSD: a volume change made outside the shell.
+    // The OSD: volume changes made outside the shell, one every 400 ms
+    // until its surface draws (each keeps it up 1.2 s longer; a slow
+    // debug run can hide it again before its first frame).
     let before = desk.surfaces();
-    let out = bounded(
-        desk.pw
-            .command("wpctl")
-            .args(["set-volume", "@DEFAULT_AUDIO_SINK@", "0.6"]),
-        "wpctl",
-    )
-    .expect("wpctl runs");
-    assert!(out.status.success(), "wpctl set-volume failed");
-    desk.wait_surfaces(before, "the OSD");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    for step in 0.. {
+        let volume = if step % 2 == 0 { "0.6" } else { "0.62" };
+        let out = bounded(
+            desk.pw
+                .command("wpctl")
+                .args(["set-volume", "@DEFAULT_AUDIO_SINK@", volume]),
+            "wpctl",
+        )
+        .expect("wpctl runs");
+        assert!(out.status.success(), "wpctl set-volume failed");
+        let sent = Instant::now();
+        while desk.surfaces() <= before && sent.elapsed() < Duration::from_millis(400) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if desk.surfaces() > before {
+            break;
+        }
+        desk.alive("raising the OSD");
+        assert!(
+            Instant::now() < deadline,
+            "the OSD never drew\n{}",
+            desk.log_text()
+        );
+    }
     // Their enter animations done (the OSD stays up 1.2 s).
     std::thread::sleep(Duration::from_millis(700));
     let full = pss_kb(pid);
