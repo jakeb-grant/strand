@@ -246,3 +246,55 @@ fn battery_starts_an_activatable_upower() {
             .status();
     }
 }
+
+/// The shared system bus connection lives only while a running body uses
+/// it: `battery` stopping closes it although `cpu` (on the same services
+/// thread, using no bus) runs on.
+#[test]
+fn a_shared_connection_closes_with_its_last_user() {
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let Some(_mock) = upower(&tokio, &bus, &conn, 50.0) else {
+        return;
+    };
+    let dbus = tokio.block_on(zbus::fdo::DBusProxy::new(&conn)).unwrap();
+    let peers = || {
+        tokio
+            .block_on(dbus.list_names())
+            .unwrap()
+            .iter()
+            .filter(|n| n.starts_with(':'))
+            .count()
+    };
+    let before = peers();
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    b.cpu.acquire(&rt);
+    b.battery.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert!(b.battery.cells().present.get_untracked(&rt).unwrap());
+    assert_eq!(peers(), before + 1, "one shared connection");
+    // Nobody reads the battery: it stops after the grace, and its
+    // connection goes with it; cpu goes on.
+    b.battery.release(&rt);
+    rt.tick(strand_services::STOP_GRACE + Duration::from_millis(1));
+    until(&rt, &s, "battery stopped", || !b.battery.running());
+    assert!(b.cpu.running());
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while peers() != before {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the system bus connection stayed"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // Read again: connected afresh.
+    b.battery.acquire(&rt);
+    until(&rt, &s, "battery again", || {
+        b.battery.running() && peers() == before + 1
+    });
+    s.shutdown();
+}

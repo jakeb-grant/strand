@@ -36,11 +36,16 @@ record TrayMenu {
   items: [TrayMenuItem]
   /// It is open: true from `open()` until `close()` (or the item going
   /// away). A popup shows it with `open: item.menu.opened`, and calls
-  /// `item.menu.close()` when it closes.
+  /// `item.menu.close()` when it closes. One flag per item, not per
+  /// screen: a bar on every screen keeps which screen opened it
+  /// (`on secondary { item.menu.open(); menu_screen = screen }`, `open:
+  /// item.menu.opened && menu_screen == screen`).
   opened: bool
   /// Opens it as a popup: `on secondary { item.menu.open() }`. The app is
   /// told it opens (and may update its entries first), and `opened`
-  /// becomes true. An item without a DBusMenu shows its own menu.
+  /// becomes true. An item without a DBusMenu shows its own menu. An
+  /// item that is only a menu (`ItemIsMenu`, or one refusing `Activate`)
+  /// opens it on `item.activate()` too.
   action open()
   /// The popup closed: the app is told, and `opened` becomes false.
   action close()
@@ -61,7 +66,9 @@ record TrayItem key id {
   status: text
   /// Its menu.
   menu: TrayMenu
-  /// Its primary action: `on click { item.activate() }`.
+  /// Its primary action: `on click { item.activate() }`. An item that is
+  /// only a menu (`ItemIsMenu`: most libappindicator apps) opens its
+  /// menu instead (`menu.opened`), as the StatusNotifierItem spec asks.
   action activate()
   /// Its secondary action.
   action secondary()

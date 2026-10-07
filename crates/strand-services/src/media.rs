@@ -94,8 +94,11 @@ struct Player {
     /// player.
     known: bool,
     /// Changes signalled while a read is in flight, applied over its
-    /// answer.
+    /// answer (over every answer until the last read in flight is in: an
+    /// older read answering last cannot undo a change signalled since).
     pending: Option<Props>,
+    /// Property reads in flight.
+    reading: u32,
     /// Which position question is the latest (a seek or a newer question
     /// makes an older answer stale).
     asked: u64,
@@ -235,7 +238,18 @@ impl Players {
                 // A player that does not answer: what its signals said.
                 Err(e) => log::debug!("media: {} not read: {e}", r.name),
             }
-            if let Some(since) = p.pending.take() {
+            p.reading = p.reading.saturating_sub(1);
+            let since = if p.reading == 0 {
+                p.pending.take()
+            } else {
+                p.pending.as_ref().map(|since| {
+                    since
+                        .iter()
+                        .filter_map(|(k, v)| Some((k.clone(), v.try_clone().ok()?)))
+                        .collect()
+                })
+            };
+            if let Some(since) = since {
                 p.props.extend(since);
             }
             p.known = true;
@@ -332,6 +346,7 @@ fn arrived(
     let p = Player {
         owner: owner.clone(),
         pending: Some(Props::new()),
+        reading: 1,
         asked: 1,
         ..Player::default()
     };
@@ -544,6 +559,7 @@ fn signal(
         }
         // Read it whole again (one call for any number of properties).
         ask.props = true;
+        p.reading += 1;
         p.pending.get_or_insert_with(Props::new);
     }
     if ask.props || ask.position.is_some() {
@@ -560,6 +576,47 @@ fn signal(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two reads in flight, a change signalled between their answers, and
+    /// the older read answering last: the change stands.
+    #[test]
+    fn a_stale_read_answering_last_does_not_undo_a_signal() {
+        use zbus::zvariant::{OwnedValue, Value};
+        let status = |s: &str| {
+            Props::from([(
+                "PlaybackStatus".to_string(),
+                OwnedValue::try_from(Value::from(s)).unwrap(),
+            )])
+        };
+        let mut players = Players::default();
+        players.by_name.insert(
+            "org.mpris.MediaPlayer2.p".into(),
+            Player {
+                owner: ":1.5".into(),
+                pending: Some(Props::new()),
+                reading: 2,
+                ..Player::default()
+            },
+        );
+        let answer = |props: Props| Read {
+            name: "org.mpris.MediaPlayer2.p".into(),
+            owner: ":1.5".into(),
+            identity: None,
+            props: Some(Ok(props)),
+            position: None,
+        };
+        assert!(players.answer(answer(status("Paused"))));
+        // Signalled now: playing.
+        let p = players.by_name.get_mut("org.mpris.MediaPlayer2.p").unwrap();
+        p.props.extend(status("Playing"));
+        p.pending.as_mut().unwrap().extend(status("Playing"));
+        // The other read, asked before the signal, answers last.
+        assert!(players.answer(answer(status("Paused"))));
+        let p = &players.by_name["org.mpris.MediaPlayer2.p"];
+        assert_eq!(p.status(), "Playing");
+        assert_eq!(p.reading, 0);
+        assert!(p.pending.is_none(), "nothing in flight: nothing held");
+    }
 
     #[test]
     fn only_local_art_is_shown() {

@@ -599,15 +599,20 @@ impl<S: Service> ClientInner<S> {
                 reg.shared_spawn(Box::new(move || {
                     Box::pin(async move {
                         let _counted = SharedBody::enter();
-                        tokio::select! {
-                            _ = stop_rx => {}
-                            r = body() => {
-                                if let Err(e) = &r {
-                                    log::debug!("service {} ended: {e}", S::NAME);
+                        // The shared connections it uses are let go
+                        // with it.
+                        crate::bus::with_user(async move {
+                            tokio::select! {
+                                _ = stop_rx => {}
+                                r = body() => {
+                                    if let Err(e) = &r {
+                                        log::debug!("service {} ended: {e}", S::NAME);
+                                    }
+                                    ended.send(Envelope::Ended(r.map_err(|e| e.0)));
                                 }
-                                ended.send(Envelope::Ended(r.map_err(|e| e.0)));
                             }
-                        }
+                        })
+                        .await
                     })
                 }))
             }

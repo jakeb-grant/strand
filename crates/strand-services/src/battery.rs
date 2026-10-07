@@ -157,7 +157,10 @@ impl Battery {
         let mut upower = UPower::default();
         loop {
             // (Re)read everything from the current owner, if any.
-            upower.read(&daemon).await;
+            upower
+                .read(&daemon)
+                .await
+                .map_err(|e| ServiceError(format!("UPower did not answer: {e}")))?;
             if !cx.update(|s| *s = upower.state()) {
                 return Ok(());
             }
@@ -196,32 +199,39 @@ impl UPower {
         Battery::from_upower(&self.display, &self.devices)
     }
 
-    async fn read(&mut self, daemon: &Daemon) {
+    /// Read everything; a hung UPower (no answer in
+    /// [`dbus::READ_TIMEOUT`]) is an error: the run fails and is retried.
+    async fn read(&mut self, daemon: &Daemon) -> zbus::Result<()> {
         self.display.clear();
         self.devices.clear();
         if daemon.owner().is_none() {
-            return;
+            return Ok(());
         }
         let conn = daemon.conn();
         match dbus::get_all(conn, UPOWER, DISPLAY, DEVICE).await {
             Ok(p) => self.display = p,
+            Err(e) if dbus::is_timeout(&e) => return Err(e),
             Err(e) => log::debug!("battery: no display device: {e}"),
         }
-        let listed = conn
-            .call_method(Some(UPOWER), ROOT, Some(UPOWER), "EnumerateDevices", &())
-            .await
-            .and_then(|r| {
-                r.body()
-                    .deserialize::<Vec<zbus::zvariant::OwnedObjectPath>>()
-            });
+        let listed = dbus::timed_for(
+            dbus::READ_TIMEOUT,
+            conn.call_method(Some(UPOWER), ROOT, Some(UPOWER), "EnumerateDevices", &()),
+        )
+        .await
+        .and_then(|r| {
+            r.body()
+                .deserialize::<Vec<zbus::zvariant::OwnedObjectPath>>()
+        });
         match listed {
             Ok(paths) => {
                 for path in dbus::paths(paths) {
                     self.add(daemon, path).await;
                 }
             }
+            Err(e) if dbus::is_timeout(&e) => return Err(e),
             Err(e) => log::debug!("battery: no devices: {e}"),
         }
+        Ok(())
     }
 
     async fn add(&mut self, daemon: &Daemon, path: String) {

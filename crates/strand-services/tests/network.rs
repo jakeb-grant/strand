@@ -345,6 +345,10 @@ fn a_join_that_fails_later_is_reported() {
         active: false,
     };
 
+    // The menu closes as the shell joins (the access points are not
+    // followed any more): the join reads them afresh.
+    b.network.release_field(field);
+    until(&rt, &s, "no access points", || names(&b, &rt).is_empty());
     // A password from the shell: a WPA personal connection with it.
     b.network
         .dynamic()
@@ -419,6 +423,36 @@ fn a_join_that_fails_later_is_reported() {
     assert!(
         failures.lock().unwrap().is_empty(),
         "activating is not failing"
+    );
+    // NetworkManager says DEACTIVATED twice: as a property change (no
+    // reason) and then as StateChanged with the reason. The join is
+    // settled on the second, so the reason is kept.
+    mock(
+        &tokio,
+        &conn,
+        NM,
+        active,
+        "EmitSignal",
+        &(
+            "org.freedesktop.DBus.Properties",
+            "PropertiesChanged",
+            "sa{sv}as",
+            vec![
+                Value::from(iface),
+                Value::from(std::collections::HashMap::from([(
+                    "State".to_string(),
+                    Value::from(4u32),
+                )])),
+                Value::from(Vec::<String>::new()),
+            ],
+        ),
+    );
+    std::thread::sleep(Duration::from_millis(200));
+    s.pump(&rt);
+    assert!(
+        failures.lock().unwrap().is_empty(),
+        "not settled without a reason: {:?}",
+        failures.lock().unwrap()
     );
     // NM_ACTIVE_CONNECTION_STATE_DEACTIVATED, _REASON_NO_SECRETS.
     mock(

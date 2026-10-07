@@ -50,8 +50,8 @@ impl Buses {
 /// How long connecting to a bus may take.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-enum Which {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum Which {
     Session,
     System,
 }
@@ -60,23 +60,96 @@ enum Which {
 /// share one connect.
 type Slot = Rc<tokio::sync::Mutex<Option<zbus::Connection>>>;
 
+/// A shared connection: its bus, its slot, and how many running bodies
+/// use it.
+type Shared = ((Which, Bus), Slot, usize);
+
 thread_local! {
     /// The connections of this services thread, shared by its services
-    /// (one session and one system connection per runtime). Dropped when
-    /// the last body on the thread ends ([`forget`]).
-    static CONNECTIONS: RefCell<Vec<((Which, Bus), Slot)>> = const { RefCell::new(Vec::new()) };
+    /// (one session and one system connection per runtime), each with
+    /// how many running bodies use it: a connection is dropped when the
+    /// last body that used it ends ([`User`]), and all of them when the
+    /// thread's last body does ([`forget`]).
+    static CONNECTIONS: RefCell<Vec<Shared>> = const { RefCell::new(Vec::new()) };
 }
 
+tokio::task_local! {
+    /// The body running in this task (a service body on the shared
+    /// runtime, [`with_user`]).
+    static USER: Rc<User>;
+}
+
+/// One body's hold on the shared connections it used: dropped with the
+/// body (stopped, returned or failed), it lets go of them, and a
+/// connection no running body uses is closed. A bar reading only `cpu`
+/// keeps no bus connection because `battery` once ran.
+#[derive(Default)]
+pub(crate) struct User {
+    held: RefCell<Vec<(Which, Bus)>>,
+}
+
+impl User {
+    fn hold(&self, which: Which, bus: &Bus) {
+        let key = (which, bus.clone());
+        if self.held.borrow().contains(&key) {
+            return;
+        }
+        CONNECTIONS.with(|c| {
+            if let Some(e) = c.borrow_mut().iter_mut().find(|e| e.0 == key) {
+                e.2 += 1;
+            }
+        });
+        self.held.borrow_mut().push(key);
+    }
+}
+
+impl Drop for User {
+    fn drop(&mut self) {
+        let held = std::mem::take(&mut *self.held.borrow_mut());
+        // Taken out under the borrow, dropped after it (dropping a
+        // connection may run code that looks here again).
+        let closed: Vec<Slot> = CONNECTIONS
+            .try_with(|c| {
+                let mut c = c.borrow_mut();
+                for key in &held {
+                    if let Some(e) = c.iter_mut().find(|e| &e.0 == key) {
+                        e.2 = e.2.saturating_sub(1);
+                    }
+                }
+                let mut closed = Vec::new();
+                c.retain(|e| {
+                    let unused = e.2 == 0 && held.contains(&e.0);
+                    if unused {
+                        closed.push(e.1.clone());
+                    }
+                    !unused
+                });
+                closed
+            })
+            .unwrap_or_default();
+        drop(closed);
+    }
+}
+
+/// Run `body` as one user of this thread's shared connections ([`User`]).
+pub(crate) async fn with_user<F: std::future::Future>(body: F) -> F::Output {
+    USER.scope(Rc::new(User::default()), body).await
+}
+
+/// The slot for `which`/`bus`, held by the body asking (before it
+/// connects: a body ending meanwhile does not close it under this one).
 fn slot(which: Which, bus: &Bus) -> Slot {
-    CONNECTIONS.with(|c| {
+    let s = CONNECTIONS.with(|c| {
         let mut c = c.borrow_mut();
-        if let Some((_, s)) = c.iter().find(|(k, _)| k.0 == which && &k.1 == bus) {
+        if let Some((_, s, _)) = c.iter().find(|(k, _, _)| k.0 == which && &k.1 == bus) {
             return s.clone();
         }
         let s = Slot::default();
-        c.push(((which, bus.clone()), s.clone()));
+        c.push(((which, bus.clone()), s.clone(), 0));
         s
-    })
+    });
+    let _ = USER.try_with(|u| u.hold(which, bus));
+    s
 }
 
 /// A cached connection still answers (the daemon may have restarted).
