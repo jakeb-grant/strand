@@ -2,13 +2,15 @@
 //! a reload keeps services running; "System services": a service starts
 //! on its first reader and stops 5 s after its last one leaves).
 //!
-//! `strand run` without `STRAND_MOCK` runs a shell that reads every real
-//! service: python-dbusmock's UPower, NetworkManager (a Wi-Fi network
-//! joined), BlueZ (a powered adapter, a paired device), logind and
+//! `strand run` without `STRAND_MOCK` runs a shell that reads every
+//! builtin service but `screens` and `auth`: python-dbusmock's UPower,
+//! NetworkManager (a Wi-Fi network joined), BlueZ (a powered adapter, a
+//! paired device), logind (only written to, by `brightness`) and
 //! power-profiles-daemon (a `from dbus` service) and a mock portal on a
 //! private `dbus-daemon`; the shell's own notifications server (one
 //! notification sent) and tray host there, with an app's tray item and
-//! its DBusMenu and an MPRIS player playing (zbus mocks); sway's IPC (workspaces, windows, wm) on a headless sway; a
+//! its DBusMenu and an MPRIS player playing (zbus mocks); sway's IPC
+//! (workspaces, windows, wm) on a headless sway; a
 //! private PipeWire with WirePlumber (audio); a backlight directory
 //! (brightness), desktop entries (apps), a `from file` service, procfs
 //! (cpu, memory), the clock and the calendar. Not read: `screens` (the
