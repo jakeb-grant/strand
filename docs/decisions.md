@@ -8138,7 +8138,8 @@ and would hide a dispatch that did nothing
 named workspace from outside (`hl.dsp.focus({ workspace = "name:matrix"
 })`), and `ws.focus()` leaves it and comes back through the adapter's
 `name:<name>` selector, so a named (negative-id) workspace is checked
-live too. CI sets `STRAND_MATRIX_REQUIRE_CLICK=1`: a compositor that
+live too (green on Hyprland 0.56.2, job 112910256243 of run 37655626535,
+with the click required on all three). CI sets `STRAND_MATRIX_REQUIRE_CLICK=1`: a compositor that
 stops offering `zwlr_virtual_pointer_manager_v1` fails the bar test
 instead of skipping its click. Still unchecked live: a second output
 (per-screen `workspaces.on(screen)`, one bar per monitor) on any of the
