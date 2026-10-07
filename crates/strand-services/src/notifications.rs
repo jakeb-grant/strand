@@ -405,8 +405,10 @@ impl Notifications {
             Ok(RequestNameReply::Exists | RequestNameReply::InQueue)
             | Err(zbus::Error::NameTaken) => {
                 let owner = crate::dbus::owner_process(&conn, NAME).await;
+                let message = conflict_message(owner);
                 cx.ready();
-                return Err(ServiceError(conflict_message(owner)));
+                cx.notice(message.clone());
+                return Err(ServiceError(message));
             }
             Err(e) => {
                 cx.ready();

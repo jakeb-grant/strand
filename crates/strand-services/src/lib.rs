@@ -28,7 +28,7 @@
 //! (BlueZ), [`notifications`] (the shell's own notification server),
 //! [`media`] (MPRIS) and [`tray`] (StatusNotifierItem and DBusMenu).
 //! [`schemas`] lists their schema texts, which replace the builtin
-//! schema's provisional stubs. A failed run is a [`ServiceDiagnostic`]
+//! schema's provisional stubs. What a service needs the user to act on is a [`ServiceDiagnostic`]
 //! ([`Services::take_diagnostics`]).
 
 extern crate self as strand_services;

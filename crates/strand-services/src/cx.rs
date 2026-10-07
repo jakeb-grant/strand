@@ -35,6 +35,8 @@ pub enum Envelope<P> {
         /// fire for them).
         initial: bool,
     },
+    /// Something the user must act on ([`Cx::notice`]).
+    Notice(String),
     /// The first read is complete.
     Ready,
     /// The body returned (with its error, if any).
@@ -346,6 +348,15 @@ impl<S: Service> Cx<S> {
         }
         self.ready = true;
         self.out.send(Envelope::Ready)
+    }
+
+    /// Tell the user something they must act on (another notification
+    /// server owns the name): a [`crate::ServiceDiagnostic`] the host
+    /// shows (`strand run`: the overlay and `strand watch`), not only a
+    /// log line. Repeats of the same notice are dropped. `false` once
+    /// stopped.
+    pub fn notice(&mut self, message: impl Into<String>) -> bool {
+        self.out.send(Envelope::Notice(message.into()))
     }
 
     /// Whether [`Cx::ready`] was called.

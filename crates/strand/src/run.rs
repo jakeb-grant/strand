@@ -524,9 +524,8 @@ impl Shell {
         }
     }
 
-    /// A result from the compiler worker.
-    /// Services that failed (another notification server owns the name,
-    /// a daemon unreachable): overlay rows and `strand watch` notices, as
+    /// What a service needs the user to act on (another notification
+    /// server owns the name): overlay rows and `strand watch` notices, as
     /// lowering's notices are (each is logged where it is made).
     fn service_diagnostics(&mut self, diagnostics: Vec<strand_services::ServiceDiagnostic>) {
         let texts: Vec<String> = diagnostics.iter().map(ToString::to_string).collect();
@@ -541,6 +540,7 @@ impl Shell {
         }
     }
 
+    /// A result from the compiler worker.
     fn worker(&mut self, msg: FromWorker) {
         match msg {
             FromWorker::Settings(changes) => {

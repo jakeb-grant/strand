@@ -172,11 +172,12 @@ struct Registry {
     diagnostics: RefCell<Vec<ServiceDiagnostic>>,
 }
 
-/// A service's run failed (its body returned an error, or panicked):
-/// what the host shows the user (`strand run`: a log line, an overlay
-/// row and a `strand watch` notice). One per distinct failure: a body
-/// failing the same way on every retry is reported once, until a run
-/// stays up [`RETRY_MAX`] or ends cleanly.
+/// Something a service needs the user to act on ([`Cx::notice`]: another
+/// notification server owns the name): what the host shows (`strand
+/// run`: a log line, an overlay row and a `strand watch` notice). One per
+/// distinct notice: a body raising the same one on every retry is
+/// reported once, until a run stays up [`RETRY_MAX`] or ends cleanly.
+/// Other failures (a bus that cannot be reached) are logged, once each.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceDiagnostic {
     /// The service (`notifications`).
@@ -271,6 +272,7 @@ impl Services {
             stops: Cell::new(0),
             reports: Cell::new(0),
             last_error: RefCell::new(None),
+            last_notice: RefCell::new(None),
         });
         self.0
             .members
@@ -414,20 +416,29 @@ struct ClientInner<S: Service> {
     starts: Cell<u64>,
     stops: Cell<u64>,
     reports: Cell<u64>,
-    /// The failure last reported ([`ServiceDiagnostic`]).
+    /// The failure last logged.
     last_error: RefCell<Option<String>>,
+    /// The notice last reported ([`ServiceDiagnostic`]).
+    last_notice: RefCell<Option<String>>,
 }
 
 impl<S: Service> ClientInner<S> {
-    /// A run failed with `message`: a diagnostic, unless it is the same
-    /// failure as the last one reported (a retry failing again).
-    fn diagnose(&self, rt: &Runtime, message: &str) {
+    /// A run failed with `message` (logged), or its body raised a notice
+    /// for the user ([`Cx::notice`]: a [`ServiceDiagnostic`]); either is
+    /// dropped when it repeats the last one (a retry failing the same
+    /// way), until a run stays up [`RETRY_MAX`] or ends cleanly.
+    fn diagnose(&self, rt: &Runtime, message: &str, notice: bool) {
         let stable = self
             .run
             .borrow()
             .as_ref()
             .is_some_and(|r| rt.now().saturating_sub(r.started) >= RETRY_MAX);
-        let mut last = self.last_error.borrow_mut();
+        let slot = if notice {
+            &self.last_notice
+        } else {
+            &self.last_error
+        };
+        let mut last = slot.borrow_mut();
         if stable {
             *last = None;
         }
@@ -435,6 +446,10 @@ impl<S: Service> ClientInner<S> {
             return;
         }
         *last = Some(message.to_string());
+        if !notice {
+            log::warn!("service `{}` failed: {message}", S::NAME);
+            return;
+        }
         log::error!("service `{}`: {message}", S::NAME);
         if let Some(reg) = self.reg.upgrade() {
             reg.diagnostics.borrow_mut().push(ServiceDiagnostic {
@@ -756,7 +771,7 @@ impl<S: Service> Member for ClientInner<S> {
                     // No `Ended` came first: the body panicked.
                     let live = self.run.borrow().as_ref().is_some_and(|r| !r.ended);
                     if live {
-                        self.diagnose(rt, "it stopped unexpectedly (a panic; see the log)");
+                        self.diagnose(rt, "it stopped unexpectedly (a panic; see the log)", false);
                     }
                     self.ended(rt, true);
                     return any;
@@ -791,6 +806,7 @@ impl<S: Service> Member for ClientInner<S> {
                         }
                     }
                 }
+                Envelope::Notice(m) => self.diagnose(rt, &m, true),
                 Envelope::Ready => {
                     if let Some(run) = self.run.borrow_mut().as_mut() {
                         run.ready = true;
@@ -798,8 +814,11 @@ impl<S: Service> Member for ClientInner<S> {
                 }
                 Envelope::Ended(r) => {
                     match &r {
-                        Err(e) => self.diagnose(rt, e),
-                        Ok(()) => *self.last_error.borrow_mut() = None,
+                        Err(e) => self.diagnose(rt, e, false),
+                        Ok(()) => {
+                            *self.last_error.borrow_mut() = None;
+                            *self.last_notice.borrow_mut() = None;
+                        }
                     }
                     self.ended(rt, r.is_err())
                 }

@@ -1990,13 +1990,14 @@ the primitives, `Option`, `Vec` and derived types.
   `Builtin::register(&services, rt)` registers them all. A new service
   module adds its text to `strand-services-schema` and its store to
   `Builtin`.
-- **Failures are diagnostics.** A run that ends with an error (or
-  panics) is a `ServiceDiagnostic { service, message }`;
-  `Services::take_diagnostics()` hands them out after a pump, one per
-  distinct failure (a retry failing the same way is not repeated until a
-  run stays up `RETRY_MAX` or ends cleanly). `strand run` logs them and
-  shows them as overlay rows and `strand watch` `notices` (another
-  notification server owning the name, naming its process, is one).
+- **Notices.** A body raises what the user must act on with
+  `Cx::notice(message)` (another notification server owning the name,
+  naming its process): a `ServiceDiagnostic { service, message }` that
+  `Services::take_diagnostics()` hands out after a pump, one per
+  distinct notice (a retry raising the same one is not repeated until a
+  run stays up `RETRY_MAX` or ends cleanly); `strand run` logs it and
+  shows it as an overlay row and a `strand watch` `notices` event. A run
+  that ends with an error is logged at `warn`, once per distinct error.
 - **Calls of one name on several records.** `#[derive(Call)]` takes
   `#[call(name = "…")]` on a variant; variants sharing a name and taking
   items of different records (`TrayItem.activate()`,
