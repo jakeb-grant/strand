@@ -113,6 +113,8 @@ fn direct(prog: &Program, id: ChunkId) -> (Reads, Vec<ChunkId>, Vec<ChunkId>) {
                 r.nodes.insert(*n);
             }
             Op::Closure(l) => lambdas.push(chunk.lambdas[*l as usize].chunk),
+            // The load reads what its call chunk reads.
+            Op::AsyncSite(site) => deps.push(*site),
             Op::Keyed { root, .. } => match root {
                 super::code::KeyedRoot::Def(d) => {
                     r.defs.insert(*d);
@@ -142,6 +144,9 @@ fn target(prog: &Program, place: &Place) -> Option<WriteTarget> {
             _ => WriteTarget::Def(*d),
         }),
         PlaceRoot::Service(s) => first.map(|f| WriteTarget::Service(s.clone(), f)),
+        // Which service holds the item is known when it runs (its record
+        // routes it): the write edge is learned then.
+        PlaceRoot::Item => None,
     }
 }
 

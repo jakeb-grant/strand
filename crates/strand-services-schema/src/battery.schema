@@ -1,0 +1,37 @@
+/// A power source UPower reports besides the combined battery: a
+/// laptop's own batteries, a mouse's, a headset's. Keyed by `id`.
+record PowerDevice key id {
+  /// Its UPower object path.
+  id: text
+  /// Its model name, or its kernel name when it has none.
+  name: text
+  /// What it is: `battery`, `ups`, `mouse`, `keyboard`, `headset`,
+  /// `phone`, `tablet`, `gaming_input` or `other`.
+  kind: text
+  /// Charge, 0 to 1.
+  percent: float
+  /// It is charging.
+  charging: bool
+  /// An icon name for its charge and state.
+  icon: text
+}
+
+/// The battery, from UPower: its combined display device, followed live,
+/// and every power source it reports.
+service battery {
+  /// A battery is present: `if battery.present { Battery }`.
+  present: bool
+  /// Charge, 0 to 1: `pct(battery.percent)`.
+  percent: float
+  /// It is charging.
+  charging: bool
+  /// Time until empty, or until full while charging; null when unknown.
+  time_left: duration?
+  /// An icon name for its charge and state.
+  icon: text
+  /// Power draw in watts.
+  power: float
+  /// Every power source but line power, keyed by `id`: laptop batteries
+  /// and the batteries of peripherals.
+  devices: [PowerDevice]
+}

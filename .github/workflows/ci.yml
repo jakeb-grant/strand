@@ -14,8 +14,8 @@ env:
   RUSTFLAGS: -D warnings
   # The Wayland and budget tiers fail instead of skipping when sway is missing.
   STRAND_REQUIRE_SWAY: "1"
-  # The theme's end-to-end test (mock portal on a private bus) fails
-  # instead of skipping when dbus-daemon is missing.
+  # The services tier (private dbus-daemon, python-dbusmock, the mock
+  # portal) fails instead of skipping when its tools are missing.
   STRAND_REQUIRE_DBUS: "1"
   # The audio tier (a private PipeWire with null sinks and WirePlumber)
   # fails instead of skipping when pipewire or wireplumber is missing.
@@ -42,13 +42,20 @@ jobs:
           df -h /
       # smithay-client-toolkit's build script finds xkbcommon through
       # pkg-config; wayland-sys and fontconfig link their system libraries.
-      # The audio tier runs its own PipeWire (pipewire, pipewire-bin's
-      # pw-cli/pw-play, wireplumber's wpctl); pipewire-rs binds
-      # libpipewire 1.0.5 through bindgen (libclang).
-      - name: Install headless sway, grim, dbus, PipeWire, fonts, icons and build headers
+      # The services tier (design.md, "Testing"): private buses
+      # (dbus-daemon), python-dbusmock for UPower, NetworkManager, BlueZ,
+      # logind and notifications, PipeWire with WirePlumber and a null
+      # sink; pipewire-rs needs its headers and libclang (bindgen).
+      - name: Install headless sway, grim, dbus, fonts, icons and build headers
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends sway grim dbus fonts-dejavu-core adwaita-icon-theme pkg-config libfontconfig1-dev libxkbcommon-dev libwayland-dev pipewire pipewire-bin wireplumber libpipewire-0.3-dev libspa-0.2-dev libclang-dev
+          sudo apt-get install -y --no-install-recommends sway grim dbus fonts-dejavu-core adwaita-icon-theme pkg-config libfontconfig1-dev libxkbcommon-dev libwayland-dev \
+            dbus-daemon python3-dbusmock pipewire pipewire-pulse pipewire-bin wireplumber pulseaudio-utils libpipewire-0.3-dev libspa-0.2-dev clang libclang-dev
+      - name: Services tier tools
+        run: |
+          dbus-daemon --version | head -1
+          python3 -c 'import dbusmock' && dpkg -s python3-dbusmock | grep '^Version'
+          pipewire --version
       # The references are drawn with fonts-dejavu-core alone, whose DejaVu
       # Sans has no oblique face (italic text is slanted from the upright
       # one). The image also ships fonts-dejavu-extra, whose real
@@ -88,6 +95,9 @@ jobs:
       - run: cargo test --workspace -- --skip random_edits_through_five_save_styles
       # The 34 MB PSS gate is checked on a release build (design.md, "Testing": budgets).
       - run: cargo test --release -p strand --test demo
+      # The same gate and the idle budget on the real services (private
+      # bus, mock portal): `the_real_services_sleep_when_nothing_changes`.
+      - run: cargo test --release -p strand --test services -- --test-threads=1
       # M2 exit: design.md's four example shells and theme.strand, byte
       # for byte, in `strand run` on headless sway with two outputs
       # against the deterministic mock services, driven by clicks, the
@@ -136,10 +146,15 @@ jobs:
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
           df -h /
+      # The services tier (design.md, "Testing"): private buses
+      # (dbus-daemon), python-dbusmock for UPower, NetworkManager, BlueZ,
+      # logind and notifications, PipeWire with WirePlumber and a null
+      # sink; pipewire-rs needs its headers and libclang (bindgen).
       - name: Install headless sway, grim, dbus, fonts, icons and build headers
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends sway grim dbus fonts-dejavu-core adwaita-icon-theme pkg-config libfontconfig1-dev libxkbcommon-dev libwayland-dev libpipewire-0.3-dev libspa-0.2-dev libclang-dev
+          sudo apt-get install -y --no-install-recommends sway grim dbus fonts-dejavu-core adwaita-icon-theme pkg-config libfontconfig1-dev libxkbcommon-dev libwayland-dev \
+            dbus-daemon python3-dbusmock pipewire pipewire-pulse pipewire-bin wireplumber pulseaudio-utils libpipewire-0.3-dev libspa-0.2-dev clang libclang-dev
           sudo dpkg --remove --force-depends fonts-dejavu fonts-dejavu-extra || true
       - uses: dtolnay/rust-toolchain@master
         with:

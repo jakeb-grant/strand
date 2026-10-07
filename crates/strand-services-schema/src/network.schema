@@ -1,0 +1,36 @@
+/// A Wi-Fi network in range, from NetworkManager's last scan; access
+/// points of one network name are one entry (the strongest). Keyed by
+/// `ssid`.
+record AccessPoint key ssid {
+  /// The network's name.
+  ssid: text
+  /// Signal strength, 0 to 1.
+  strength: float
+  /// It needs a password.
+  secure: bool
+  /// It is the network joined.
+  active: bool
+  /// Joins it: with its saved connection if there is one, else a new one
+  /// (NetworkManager asks its secret agent for a password); a failure is
+  /// `network.failed`.
+  action connect()
+}
+
+/// The network, from NetworkManager, followed live.
+service network {
+  /// A network connection is up.
+  connected: bool
+  /// The Wi-Fi network joined, if any.
+  ssid: text?
+  /// The Wi-Fi signal strength, 0 to 1.
+  strength: float
+  /// The Wi-Fi radio is on. Writable.
+  wifi: bool rw
+  /// The Wi-Fi networks in range, keyed by `ssid`. Scanned only while a
+  /// visible reader reads them (a network menu that is open).
+  access_points: [AccessPoint]
+  /// Joining a network failed (no password and no secret agent to ask
+  /// for one, a wrong one, out of range): `on network.failed(ssid, error)
+  /// { … }`.
+  event failed(ssid: text, error: text)
+}

@@ -16,7 +16,7 @@
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::hash::Hash;
 use std::marker::PhantomData;
@@ -26,6 +26,7 @@ use foldhash::HashSetExt;
 
 use super::ops::{Filter, IncrementalOp, Map, SortBy, Take};
 use super::{KeyedVec, VecDiff, keyed_diff};
+use crate::echo::{EchoState, Generation, Verdict, peek_state, with_state};
 use crate::error::Error;
 use crate::runtime::{Color, NodeData, NodeId, NodeKind, RunOutcome, Runtime};
 
@@ -521,6 +522,262 @@ where
     /// The item with `key` (cloned), untracked: no copy of the list.
     pub fn get_key(self, rt: &Runtime, key: &K) -> Result<Option<T>, Error> {
         self.with_untracked(rt, |v| v.get(key).cloned())
+    }
+}
+
+/// The echo bookkeeping of a keyed list's items written through
+/// [`KeyedSignal::write_item_tagged`]: one tag counter for the list, a
+/// state per item with writes in flight.
+struct ItemEchoes<K, T> {
+    next: u64,
+    items: HashMap<K, EchoState<T>>,
+}
+
+impl<K, T> Default for ItemEchoes<K, T> {
+    fn default() -> Self {
+        ItemEchoes {
+            next: 1,
+            items: HashMap::new(),
+        }
+    }
+}
+
+/// Passes an item write on: the item's index, its new value, its tag.
+type ItemSend<T> = Box<dyn FnOnce(&Runtime, usize, &T, Generation)>;
+
+/// The item writes a throttled handler holds: the latest per item.
+struct HeldItems<K, T>(Vec<(K, T, ItemSend<T>)>);
+
+/// Service-backed keyed lists: optimistic item writes and their echoes
+/// (the keyed counterpart of [`crate::Signal::write_tagged`] and
+/// [`crate::Signal::receive`]).
+impl<K, T> KeyedSignal<K, T>
+where
+    K: Clone + Eq + Hash + 'static,
+    T: Clone + PartialEq + 'static,
+{
+    /// A local write of the item with `key` (its whole new value),
+    /// destined for a service: `s.volume = 0.5` for `s` in `audio.sinks`.
+    /// Like [`crate::Signal::write_tagged`]: when the write-rate guard
+    /// lets it through, the item is updated at once, the write is
+    /// remembered as pending for that item, and `send` is called with the
+    /// item's index, its value and the write's tag (returned). A throttled
+    /// handler's item writes are held, the latest per item, and land
+    /// (each with its `send`) when its window has room: `Ok(None)`.
+    /// Writing an item the list does not hold is an error.
+    pub fn write_item_tagged(
+        self,
+        rt: &Runtime,
+        key: K,
+        value: T,
+        send: impl FnOnce(&Runtime, usize, &T, Generation) + 'static,
+    ) -> Result<Option<Generation>, Error> {
+        rt.check_write_allowed(self.id)?;
+        rt.note_write(self.id);
+        if !rt.exists(self.id) {
+            return Err(Error::Disposed(self.id));
+        }
+        if !self.with_untracked(rt, |v| v.contains_key(&key))? {
+            return Err(super::KeyedError::MissingKey.into());
+        }
+        let mut held = rt
+            .take_deferred::<HeldItems<K, T>>(self.id)
+            .map_or_else(Vec::new, |h| h.0);
+        held.retain(|(k, _, _)| *k != key);
+        held.push((key.clone(), value, Box::new(send)));
+        if rt.rate_gate(self.id) {
+            let mut mine = Ok(None);
+            for (k, v, send) in held {
+                let r = self.commit_item(rt, k.clone(), v, send);
+                if k == key {
+                    mine = r.map(Some);
+                }
+            }
+            mine
+        } else {
+            rt.defer_write(
+                self.id,
+                Some(Box::new(HeldItems(held))),
+                Box::new(move |rt: &Runtime, h| {
+                    if let Some(Ok(h)) = h.map(|h| h.downcast::<HeldItems<K, T>>()) {
+                        for (k, v, send) in h.0 {
+                            let _ = self.commit_item(rt, k, v, send);
+                        }
+                    }
+                }),
+                None,
+            );
+            Ok(None)
+        }
+    }
+
+    /// Apply one item write, remember it, send it.
+    fn commit_item(
+        self,
+        rt: &Runtime,
+        key: K,
+        value: T,
+        send: ItemSend<T>,
+    ) -> Result<Generation, Error> {
+        let (index, changed) = rt.with_data::<CellData<K, T>, _>(self.id, |d| {
+            let mut vec = d.vec.try_borrow_mut().map_err(|_| Error::Reentrant)?;
+            let index = vec.index_of(&key).ok_or(super::KeyedError::MissingKey)?;
+            let diff = vec.update(&key, |t| *t = value.clone())?;
+            let changed = diff.is_some();
+            if let Some(diff) = diff {
+                d.log.borrow_mut().push(diff);
+            }
+            Ok::<_, Error>((index, changed))
+        })??;
+        if changed {
+            rt.cell_changed(self.id);
+        }
+        let g = with_state::<ItemEchoes<K, T>, _>(rt, self.id, |s| {
+            let g = Generation(s.next);
+            s.next += 1;
+            s.items.entry(key).or_default().record(g, value.clone());
+            g
+        });
+        send(rt, index, &value, g);
+        Ok(g)
+    }
+
+    /// Local writes of the item with `key` the service has not answered.
+    pub fn pending_item_writes(self, rt: &Runtime, key: &K) -> usize {
+        peek_state::<ItemEchoes<K, T>, _>(rt, self.id, |s| {
+            s.items.get(key).map_or(0, EchoState::pending_len)
+        })
+        .unwrap_or(0)
+    }
+
+    /// Forget every item's pending writes (the service run they went to
+    /// ended without answering them). Tags keep counting up.
+    pub fn forget_echoes(self, rt: &Runtime) {
+        peek_state::<ItemEchoes<K, T>, _>(rt, self.id, |s| s.items.clear());
+    }
+
+    /// Replace the items of `items` (a boot report) that have local
+    /// writes pending with the list's own: the report predates those
+    /// writes, whose answers come next.
+    pub fn keep_pending_items(self, rt: &Runtime, items: &mut [T]) -> Result<(), Error> {
+        let Some(keys) = peek_state::<ItemEchoes<K, T>, _>(rt, self.id, |s| {
+            s.items
+                .iter()
+                .filter(|(_, st)| st.pending_len() > 0)
+                .map(|(k, _)| k.clone())
+                .collect::<Vec<K>>()
+        }) else {
+            return Ok(());
+        };
+        if keys.is_empty() {
+            return Ok(());
+        }
+        self.with_untracked(rt, |v| {
+            let key_of = v.key_fn();
+            for item in items.iter_mut() {
+                let k = key_of(item);
+                if keys.contains(&k)
+                    && let Some(local) = v.get(&k)
+                {
+                    *item = local.clone();
+                }
+            }
+        })
+    }
+
+    /// Apply diffs a service reported, `echo_of` the tag of the local
+    /// write they answer (if they do). An item's update that is the echo
+    /// of a pending write of it is dropped (by tag, or by value for an
+    /// untagged report), so a slider dragged over a sink's volume never
+    /// snaps back; an update matching no pending write is an outside
+    /// change and wins; a `Reset` keeps the local item where its report
+    /// is such an echo. Updates that change nothing are dropped. Returns
+    /// the diffs applied.
+    pub fn receive_items(
+        self,
+        rt: &Runtime,
+        diffs: &[VecDiff<K, T>],
+        echo_of: Option<Generation>,
+    ) -> Result<Vec<VecDiff<K, T>>, Error> {
+        if !rt.exists(self.id) {
+            return Err(Error::Disposed(self.id));
+        }
+        // The local items of keys with writes in flight (a `Reset` keeps
+        // them where its report is an echo).
+        let locals: HashMap<K, T> = peek_state::<ItemEchoes<K, T>, _>(rt, self.id, |s| {
+            s.items.keys().cloned().collect::<Vec<K>>()
+        })
+        .map(|keys| {
+            self.with_untracked(rt, |v| {
+                keys.into_iter()
+                    .filter_map(|k| v.get(&k).cloned().map(|t| (k, t)))
+                    .collect()
+            })
+        })
+        .transpose()?
+        .unwrap_or_default();
+        let kept: Vec<VecDiff<K, T>> = if locals.is_empty()
+            && peek_state::<ItemEchoes<K, T>, _>(rt, self.id, |s| s.items.is_empty())
+                .unwrap_or(true)
+        {
+            diffs.to_vec()
+        } else {
+            with_state::<ItemEchoes<K, T>, _>(rt, self.id, |s| {
+                let next = s.next;
+                let mut out = Vec::with_capacity(diffs.len());
+                // Whether the report of `key` is the echo of its writes.
+                let echo = |items: &mut HashMap<K, EchoState<T>>, key: &K, value: &T| -> bool {
+                    let Some(st) = items.get_mut(key) else {
+                        return false;
+                    };
+                    let tag = echo_of.filter(|g| st.knows(*g));
+                    let v = st.verdict(value, tag, next);
+                    if st.is_idle() {
+                        items.remove(key);
+                    }
+                    v == Verdict::Echo
+                };
+                for d in diffs {
+                    match d {
+                        VecDiff::Update { key, value, .. } => {
+                            if !echo(&mut s.items, key, value) {
+                                out.push(d.clone());
+                            }
+                        }
+                        VecDiff::Reset { items } => {
+                            let items = items
+                                .iter()
+                                .map(|(k, v)| {
+                                    let v = match locals.get(k) {
+                                        Some(local) if echo(&mut s.items, k, v) => local.clone(),
+                                        _ => v.clone(),
+                                    };
+                                    (k.clone(), v)
+                                })
+                                .collect();
+                            out.push(VecDiff::Reset { items });
+                        }
+                        VecDiff::Insert { key, .. } | VecDiff::Remove { key, .. } => {
+                            s.items.remove(key);
+                            out.push(d.clone());
+                        }
+                        VecDiff::Move { .. } => out.push(d.clone()),
+                    }
+                }
+                out
+            })
+        };
+        // An update to what the item already is changes nothing.
+        let kept: Vec<VecDiff<K, T>> = self.with_untracked(rt, |v| {
+            kept.into_iter()
+                .filter(|d| match d {
+                    VecDiff::Update { key, value, .. } => v.get(key) != Some(value),
+                    _ => true,
+                })
+                .collect()
+        })?;
+        self.apply(rt, &kept)?;
+        Ok(kept)
     }
 }
 

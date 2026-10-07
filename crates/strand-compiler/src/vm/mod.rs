@@ -19,6 +19,8 @@ pub(crate) mod builtins;
 pub mod clock;
 mod exec;
 pub mod host;
+mod load;
+pub(crate) use load::DeclareLoad;
 pub mod persist;
 pub mod schema_host;
 pub mod theme;
@@ -82,6 +84,9 @@ pub struct Env {
     /// identities (`/c12/f7[3]`): what the reconciler keys state, scene
     /// nodes and handlers by.
     ident: RefCell<Rc<str>>,
+    /// The loads of async service calls made in this scope's bindings
+    /// ([`crate::lower::Op::AsyncSite`]), by call chunk.
+    sites: RefCell<Vec<(ChunkId, strand_core::Memo<Value>)>>,
 }
 
 /// A settings file's fields (`state prefs from "prefs.toml" { … }`):
@@ -133,6 +138,7 @@ impl Env {
             instance: RefCell::new(None),
             settings: RefCell::default(),
             ident: RefCell::new(Rc::from("")),
+            sites: RefCell::default(),
         })
     }
 
@@ -155,6 +161,7 @@ impl Env {
             instance: RefCell::new(None),
             settings: RefCell::default(),
             ident: RefCell::new(parent.ident()),
+            sites: RefCell::default(),
         })
     }
 

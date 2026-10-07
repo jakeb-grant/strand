@@ -6721,3 +6721,550 @@ a_silent_daemon_shows_nothing_and_is_retried` (a crashed daemon's socket
 taken over by a listener that accepts and stays silent: no
 `Connected(true)` and no removals, a write answers `NotConnected`, and
 the real daemon's return reconnects).
+
+## wave4-core
+
+**2026-10-06 · wave4-core: a service's schema is its own text, held to
+its store by a test.** `#[service(name = "cpu", schema = SCHEMA)]` takes
+the service's declarations in the schema language (the same text the
+provisional stub had, now beside the struct) rather than generating them
+from the Rust types: docs, `key`s, `fn`/`action`/`event` members and the
+records only a service hands out are already spelled there, and the
+derive's `FIELDS`/`EVENTS` (names, schema types, `rw`) are compared with
+the parsed record by `crates/strand/src/services/mod.rs::service_schemas_extend_the_builtin_one`,
+which also holds each real service to its stub's field names and `rw`
+marks, so configs checked before M3 still check. The text replaces the
+stub in place (`Schema::extend`), keeping its `RecordId`, so the
+`SchemaHost` fallback and every type naming it see the real record.
+
+**2026-10-06 · wave4-core: `Data` crosses the boundary, not `Value`.**
+architecture.md fixes that `strand-services` never sees the VM's `Value`;
+the small `strand_services::Data` (null, bool, int, float, text,
+duration, color, list, record by type and field names, enum by variant
+name) is what writes, actions, calls and keyed diffs carry, and the
+binary converts it by name against the program's type table
+(`services::convert`). A record or enum the table does not know becomes
+null instead of failing: the schema test above keeps them in step.
+
+**2026-10-06 · wave4-core: "goes invisible" is a release.** The VM's
+`ServiceHost` has only `acquire`/`release`, and it already releases a
+hidden surface's reads (architecture.md, `acquire`/`release`). So a
+service's visibility is "it has a reader": the last release tells it
+`Visible(false)` at once (a visible-only stream such as `cpu`'s sampling
+stops then, not 5 s later) and arms the 5 s stop on core's timers, on
+the logic clock (testable with a fake clock); an acquire inside the
+grace cancels the stop and sends `Visible(true)`, without a restart. A
+body that ended (an error) starts again with its next first reader.
+
+**2026-10-06 · wave4-core: a service's first report is a boot value.**
+Updates a service sends before `Cx::ready` are applied with
+`set_reloaded` (readers update, `on change` takes them as its baseline):
+"`on change` never fires at boot" holds for services that start late
+(a popup's) as for those at boot. `strand run`'s first frame waits up to
+100 ms (`Services::wait_ready`) for the services the mounted config
+started, replacing the portal-only boot hold.
+
+**2026-10-06 · wave4-core: `strand run` holds `system` itself.** Render
+needs `system.reduced_motion` whether or not the config reads `system`,
+and the portal's last values must be kept for the next boot, so the
+logic thread is a reader of `system` for the whole run (the service
+follows the portal on the shared runtime, as `strand_watch::follow`
+did on a thread of its own; an idle portal costs no wakeups). Its kept
+values (`palettes/system`) seed the service as boot values; the color
+scheme's "no preference" versus "prefer light" is no longer kept (the
+service exposes `dark` only).
+
+**2026-10-06 · wave4-core: the mock stays a mock.** With `STRAND_MOCK`
+the logic thread builds no services registry at all: the mock
+`SchemaHost` serves every name, and neither the portal nor the kept
+`system` values are read, so the acceptance screenshots do not depend on
+the machine. Without it, `Live::buses` names the buses the real
+services use (`strand run`: the environment's; in-process tests: none or
+a private `dbus-daemon`), the explicit override that keeps every test
+off the machine's real buses.
+
+**2026-10-06 · wave4-core: cpu and memory sample while visible.** The
+schema says once a second; they sample at start (cpu's first value is
+the load since boot, so a bar never shows 0 for a second) and then once
+a second only while a reader is visible. Back in view, memory reports at
+once and cpu takes a fresh baseline (the load over the pause is not what
+anyone asked for) and reports a second later. Hidden, neither wakes.
+
+**2026-10-06 · wave4-core: the composite routes item actions by record.**
+`ws.focus()` arrives as `ActionTarget::Item(record)`; the composite
+sends it to the member whose `#[derive(Call)]` actions take an `item` of
+that record type (`DynService::item_records`), else to the fallback.
+`declare`d custom services (`service … from dbus`) go to the fallback
+until their sources land. (An async method called outside a `let` was
+an error value here; superseded below: every async call is fetched.)
+
+**2026-10-06 · wave4-core: `strand-dev` links `strand-services`.** The
+LSP must hover and complete with the same schema `strand run` checks
+against, so `strand-dev` depends on `strand-services` for
+`schemas()` (the crate graph already drew this edge) and `serve` uses
+`strand_dev::schema()`; `serve_with` takes any schema (tests extend it
+with a schema of their own). (Narrowed 2026-10-07: it links only
+`strand-services-schema`.)
+
+**2026-10-07 · wave4-core: streams are fields, watched per field.**
+"Streams such as a Wi-Fi scan run only while visible" is read per
+stream, not per service: a bar always showing `network.ssid` must not
+keep a closed popup's access-point scan running. A stream is a
+top-level store field marked `#[store(stream)]` (the access points, the
+level meter), so the compiler's per-scope service collection now keeps
+the fields each scope reads directly (`lower::ServiceUses`: `(service,
+None)` and `(service, Some(field))`), holds call the new
+`ServiceHost::acquire_field`/`release_field` (default no-ops) after the
+service's `acquire` (released in reverse), and `Client` counts readers
+per field, telling the service `Msg::Watch { field, on }` for stream
+fields (`Cx::watched`). Service authors put stream data in a field of
+its own; a stream reached only through a `fn` method is held by the
+scope reading it there. Service-wide `Visible` stays for services that
+poll as a whole (cpu, memory). (A `let`'s reads: see below.)
+
+**2026-10-07 · wave4-core: an async call anywhere is a load.**
+design.md has `x ?? fallback` cover pending and error, so
+`apps.search(q) ?? []` must work where it is written, not only as a
+`let`. The compiler lowers an async service method call in a binding to
+`Op::AsyncSite(call chunk)`: the scope's own load of that call (core's
+`async_memo`, made on its first read, kept with the scope's core owner,
+the same `Vm::async_load` an async `let` uses), so it re-fetches when its
+arguments change and keeps its last result while pending. Its arguments
+may read anything the scope binds (component parameters, `for` items,
+`screen`). In a handler, `fn` or lambda (whose locals live in the VM's
+frame) the call lowers to `Op::FetchMethod`: a pending `Async` whose
+`await` waits for `ServiceHost::fetch`; a binding that calls an async
+method inside a lambda gets that pending value too (it never re-runs
+for the answer), so such calls belong outside the lambda; `strand check`
+warns there (below).
+
+**2026-10-07 · wave4-core: a write answer tags its field only.**
+`Signal` generations are counted per cell, so `Cx::report`'s envelope
+carries `(field index, generation)` and only the written field's patch
+is matched against its pending writes; other fields the answer moves
+(a sink's mute beside its volume) are outside changes.
+
+**2026-10-07 · wave4-core: bodies that fail while read come back.**
+A body that ends with an error while it still has readers is started
+again on a core timer (1 s, doubling to 30 s; reset when a run says it
+is ready), and `Client::running` is false while it is down. A body that
+returns `Ok` while read is done (its last values stay). Services that
+follow a daemon may still reconnect themselves (NameOwnerChanged) to
+avoid the gap; the retry is the floor. A write, action or async call
+reaching a stopped service starts it for that operation (acquired and
+released at once, so it stops 5 s later), so a service field written
+with nothing reading it is delivered. (`strand set <service>.<field>`
+does not reach services yet: the CLI's `set` resolves exported state
+and settings only; routing it, with design.md's relative `+5%`, through
+`ServiceHost::write` is open, owned by the M3 audio/brightness step.)
+
+**2026-10-07 · wave4-core: threads and buses are cleaned up.** A
+service on a thread of its own is joined: its next run's thread joins
+the previous one before its body starts (two PipeWire connections of
+one service never overlap), and `Services::shutdown` joins with a 2 s
+bound (an overrun is logged and left). The shared runtime's bus
+connections are shared per bus behind one connect, pinged before reuse
+(a restarted daemon is connected afresh) and dropped with the last body
+on the thread; `Cx::session`/`system` return an error, not a panic, on
+a thread without a tokio runtime. `PrivateBus` runs a configuration of
+its own without service directories, so nothing installed on the
+machine can be activated on a test's bus, and can restart its daemon at
+the same address.
+
+**2026-10-07 · wave4-core: events are typed, schemas default to
+`SCHEMA`.** `#[derive(Store)]` generates `<Name>Event` (one variant per
+`Event<T>` field) and `Cx::emit` takes only it, so a field patch can
+never be sent as an event. `#[service(name = "battery")]` takes its
+schema text from the `SCHEMA` constant in scope (as design.md writes the
+attribute); `schema = …` still overrides. The second copy of the docs
+(the struct's `///`) is held to the schema's by
+`service_schemas_extend_the_builtin_one`, which also checks that a keyed
+field's record `key` is the store's `#[data(key = …)]`
+(`Keyed::KEY_FIELD`); the composite logs a record whose item actions two
+members claim.
+
+**2026-10-07 · wave4-core: a `let` holds nothing; its readers do.**
+design.md's own idiom reads services through top-level `let`s shown
+only in popups (`let hits = apps.search(query)`, a popup's `let load =
+cpu.usage`); held by the file's top level, such a service ran for the
+whole session and a stream through it never stopped. So a `let` (at any
+level) and a `fn` hold no services themselves: each scope's
+`ServiceUses` takes, besides what its own chunks read, what the `let`s
+and `fn`s they read read, transitively (lowering resolves them after
+`reads::compute`, which already follows `fn`s and lambdas). A closed
+popup showing `let u = cpu.usage` leaves `cpu` stopped; the open popup
+holds it and its field. The file's top level still holds for the whole
+run what its handlers, timers (`on change u` included), tokens, `state`
+initialisers and exported `let`s read (an exported `let` is read from
+outside too, `strand get`).
+
+**2026-10-07 · wave4-core: boot reports rebaseline mirrors too.**
+`Applied::Keyed` carries `initial` (the store applied the diffs as a
+reload write), and the binary's mirror of a keyed field
+(`StoreHost`'s `KeyedSignal<Value>`) then takes the store's list with
+`replace_all_reloaded` instead of applying the diffs as a change: `on
+change` over a keyed service field never fires for a boot report, at
+boot or when a popup's service starts late.
+
+**2026-10-07 · wave4-core: a write an outside change overtook settles
+on its answer.** strand-core's echo suppression forgot a pending write
+when an outside value arrived first, and then took the service's tagged
+answer to that write for an old echo, leaving the cell on the outside
+value while the service held the write. `Signal::receive` now remembers
+the generations an outside value overtook: a tagged answer to one of
+them settles the cell (it is newer than that outside value), unless a
+newer write of ours is pending, whose answer comes next. (An internal
+fix in strand-core's `echo.rs`; no interface changed.)
+
+**2026-10-07 · wave4-core: an ended run is a stopped one for writes.**
+A write, action or async call to a service whose body ended is a fresh
+start for that operation (as for a stopped service), unless the body
+failed and waits out its retry backoff, which is reported as such (a
+slider drag does not restart a failing body 30 times a second). A write
+the rate guard held commits to the run current then, not to the one it
+was made against; with none, it is not sent and the next start begins
+from the cells, which hold it (superseded below: a run is started for
+it). The stop 5 s after the last reader also
+cancels a pending retry; a shared body counts itself with a drop guard,
+so a panicking body still lets the bus connections go.
+
+**2026-10-07 · wave4-core: async calls a binding reaches through a
+function are warned.** A binding's own async service call is the
+scope's load; one inside a lambda the binding makes, or inside a `fn`
+(directly or through the `fn`s it calls) the binding calls, is fetched
+once in place and never answers the binding. The checker warns
+(`check::async_in_binding_fn`) at the lambda's call or at the
+binding's `fn` call, so `strand check` and the LSP show it; calls in
+handlers (`await f(q)`) are fine.
+
+**2026-10-07 · wave4-core: schema texts in a crate of their own.**
+`strand-services-schema` holds the builtin services' schema texts
+(`SYSTEM`, `CPU`, `MEMORY`, `schemas()`), and each service module's
+`SCHEMA` is its constant there, so `strand-dev` links the texts without
+the service runtime (tokio, zbus, and later PipeWire and the Wayland
+protocols). A new service adds its text there.
+
+**2026-10-07 · wave4-core: an item of a service's keyed list is written
+by its key.** The schema marks `AudioDevice.volume` and `muted` `rw`,
+and `audio.sinks` hands out `AudioDevice`s, so `for s in audio.sinks {
+… s.volume = 0.5 }` (and a slider's `<-> s.volume`) is a write the
+design implies; it used to check clean and write nowhere. Reading the
+`rw` mark as "written through its service", a place whose path crosses
+an item of a keyed schema record (the base nearest the leaf whose record
+has a `key`: a `for` local, `audio.sinks[0]`, even a `state` holding a
+copy) is written through the service holding that item:
+`ServiceHost::write_item(item, path, value)`, routed by the item's record
+(`Composite`: the member whose `item_records()`, now also the records
+its keyed lists hand out, names it), found by its `key`, and sent as a
+`Write` carrying the key (`Write::key`; `field` names the list, `path`
+is below the item). The item is updated at once and its echoes ignored
+like a field's (core's `KeyedSignal::write_item_tagged` /
+`receive_items`, one tag counter per list, a pending queue per item).
+A place reaching an `rw` field through anything else (a handler's `let p
+= prefs`, then `p.compact = …`) has nothing to write to and is now
+`check::read_only`. A path of fields straight from a service stays a
+write of that service's field even when it crosses a keyed record:
+`audio.sink.volume` is `write("audio", [sink, volume])` (the leaf is `rw`
+in its record; `StoreHost::write` no longer demands the top field be
+`rw` when a path follows it).
+
+**2026-10-07 · wave4-core: a run's unanswered writes die with it.** A
+write whose run ends before answering it (the body failed on it, or the
+5 s stop came first) is never answered, so its pending entry would take
+a later outside report of the same value for an echo and drop it (a
+brightness key after a failed slider write would never show). When a
+run ends, the cells forget every pending write (`Cells::forget_echoes`;
+tags keep counting up). Conversely, a boot read that arrives while a
+local write is still in flight (the write started the service) predates
+the write: it is skipped for that field, and a keyed boot read keeps the
+items written in flight, so the slider does not snap back before the
+answer; an answer tagged before `ready()` is taken as an answer, not a
+boot value. A write the rate guard held that commits with no run (after
+the stop, or after the body ended) now starts one, as a write to a
+stopped service does; when none can start (a failed body backing off)
+the write is dropped and forgotten, and the next run's boot read wins.
+
+**2026-10-07 · wave4-core: the retry backoff resets only after a stable
+run.** Resetting it on `ready()` let a body that says it is ready and
+fails at once (a daemon missing or flapping) restart every second
+forever: a wakeup, a connect and an envelope per second against the idle
+budget. The failure count now goes back to 0 only when the failed run
+had stayed up `RETRY_MAX` (30 s); otherwise it keeps doubling (1, 2, 4,
+8, 16, 30 s). `system` uses it: when the portal follow ends (the session
+bus died or restarted) or the session bus cannot be reached, its body
+fails after `ready()`, and the retry connects afresh (the bus cache's
+ping drops a dead connection); only a bus disabled outright is not
+retried.
+
+**2026-10-07 · wave4-core: a hard reload keeps the services held.**
+`reload_hard` unmounts the old tree before mounting the new one, so
+every service hold dropped to zero in between: within the 5 s grace
+nothing restarted, but each service was told it was invisible and every
+stream field's watch went off and on (a Wi-Fi scan or a level meter
+restarted). The instance now holds what the old tree held (each service
+and the fields it read) across the teardown and lets go at the end of
+the next tick, when the new tree holds its own. An in-place reload
+already acquired the new tree's holds before the old ones went.
+
+**2026-10-07 · wave4-core: a store's calls are its schema's, by test.**
+`FromCall::signatures()` (generated by `#[derive(Call)]`: name, arity,
+item record) lets `service_schemas_extend_the_builtin_one` hold every
+store's actions and async methods to its schema record's `action` and
+`fn … -> Async<…>` members by name and arity, the item records it hands
+out or takes to those records' members, and its `fn` methods to its
+`call` (each schema `fn` must be answered); the same test holds the set
+of schema texts in `strand-services-schema` equal to the stores in
+`Builtin`, so neither can be added without the other.
+
+
+## wave4-a2
+
+**2026-10-07 · wave4-a2: the D-Bus services are real; which they are.**
+`battery` (UPower), `brightness` (sysfs + logind), `network`
+(NetworkManager), `bluetooth` (BlueZ), `notifications` (our own server),
+`media` (MPRIS) and `tray` (StatusNotifierItem + DBusMenu) now run on the
+contract (`crates/strand-services/src/{battery,brightness,network,
+bluetooth,notifications,media,tray}.rs`), each tested against
+python-dbusmock or a small zbus mock on a private bus. The services box
+of features.md stays open: `audio`, `workspaces` and `windows` are the
+wm/audio branch's, and `apps`, `clock` and `calendar` are not services
+yet.
+
+**2026-10-07 · wave4-a2: our own zbus clients, not nmrs, system-tray or
+bluer.** design.md names nmrs 3.5 and system-tray 0.8.9 (and bluer "or
+own zbus proxies"). nmrs's `NetworkManager` is only ever built on
+`Connection::system()` and system-tray's `Client` on
+`Connection::session()`: neither can run on the `Buses` a registry is
+given, which is what keeps every test off the machine's buses (a private
+`dbus-daemon`) and lets a host pick its bus. system-tray also leaves
+detached tasks (and their connection) running after its client is
+dropped, so a stopped tray would keep its D-Bus connection, and panics
+on a few protocol paths; bluer is built on libdbus. The interfaces we
+need are small (NetworkManager's manager, active connection, device,
+wireless and access point properties; BlueZ's object manager; the SNI
+item and watcher; `com.canonical.dbusmenu`'s `GetLayout`, `Event`,
+`AboutToShow`; MPRIS's player), so each service reads and follows them
+with plain zbus calls and match rules (`strand_services::dbus`).
+logind-zbus 5.3 is used as design.md says, for `Session.SetBrightness`,
+with its default features off: they switch zbus to `async-io`, which
+would give the whole workspace a second executor. design.md's crate table now says
+"own zbus clients" for NetworkManager and the tray, with this reason
+(round 1 review: the docs win, so they change with the code).
+
+**2026-10-07 · wave4-a2: a daemon is followed, not reconnected.**
+`dbus::Daemon` subscribes to the name's `NameOwnerChanged` and to the
+daemon's signals first, then reads: nothing is lost between the read and
+the first signal. A new owner (the daemon restarted) is read afresh
+without restarting the service (tests check `starts() == 1` across a
+restart); no owner is the state's defaults (`battery.present` false, no
+Bluetooth adapter), kept until the daemon appears. Match rules carry no
+sender (a well-known sender is resolved by the bus, but zbus's client-
+side filter compares unique names): every signal is checked against the
+owner's unique name instead. A dead bus ends the run with an error, and
+the client's retry connects afresh.
+
+**2026-10-07 · wave4-a2: real services may add to their stubs.** The
+schema test held each real service to exactly its stub's fields. The
+services now add what their sources offer and the spec asks for:
+`battery.devices: [PowerDevice]` (UPower's other power sources),
+`notifications.dnd: bool rw`, `network.access_points: [AccessPoint]`
+(the scan, a `#[store(stream)]` field), `media.player: text?` (the
+active player's `Identity`). The test now holds the stub's fields as an
+ordered subset with the same `rw` marks, and its events, so every config
+checked before M3 still checks. Records gained what their actions need:
+`NotificationAction.notification` (the id `a.invoke()` acts on),
+`TrayMenu.item` and `items`, and `TrayMenuItem` (recursive `children`),
+the menu model M4's tray menus render.
+
+**2026-10-07 · wave4-a2: notifications.** The server owns
+`org.freedesktop.Notifications` on a connection of its own (the name
+goes with the service when it stops), asked for with `DoNotQueue` and
+without `AllowReplacement`. `popups` and `all` keep arrival order
+(oldest first, as the M2 mock did); `replaces_id` replaces in place.
+A notification is open exactly while it is in `all`, and closed once,
+when it leaves it (one `NotificationClosed`, never two): `n.dismiss()`,
+`n.activate()` (its `default` action) and `a.invoke()` close it as
+dismissed (2) unless it is `resident`, `clear()` closes every one,
+`CloseNotification` is reason 3 (an id not open is a D-Bus error, as the
+spec says). `n.expire()` only ends the popup: the notification stays
+open in `all`, its actions still reaching the sender, as the
+`persistence` capability we advertise promises (GNOME does the same; a
+popup timing out is not the notification closing). `all` keeps the
+newest 100 (design.md's memory budget gives notification history a few
+megabytes): beyond that the oldest close as expired (1), so a shell
+with no history list still closes everything eventually.
+`expire_timeout` -1 is a null `timeout` (the shell's choice); 0, the
+spec's "never expire", is a null `timeout` and `persistent: true`, which
+a shell keeps with `after n.timeout ?? 6s while !n.persistent {
+n.expire() }` (design.md's toasts keep only critical ones up, and are
+unchanged). `urgency` is read from any integer type (the spec says a
+byte; some senders send an int). `dnd` holds new non-critical
+notifications back from `popups` (still in `all`, `received` still
+fires). The server sets no timers: the shell's `after n.timeout ?? 6s`
+expires popups. `image-data` is checked against the bytes sent before
+anything is allocated (a side above 16384 is refused; a sender claiming
+100000×100000 pixels in four bytes got a 40 GB allocation and an abort
+before), sampled down to 512 px a side, and written as a PNG off the
+runtime thread (`spawn_blocking`) under
+`$XDG_RUNTIME_DIR/strand/pixmaps/<pid>`, content-addressed; the file
+lives while the notification is kept (a `pixmap::Pinned` handle: no
+shared LRU can delete a picture still shown). `image-path` is passed
+through. Capabilities: `actions`, `body`, `body-markup`, `icon-static`,
+`persistence`. Known gap: `Notification.time` is the clock's `Date`,
+which has no time of day in the VM, so a notification centre cannot
+show "12:04" yet; the language track adds a time of day to `Date` (or a
+`received_at`), and the field follows.
+
+**2026-10-07 · wave4-a2: another notification server fails clearly.**
+When dunst, mako or a desktop's server owns the name, the run fails with
+`another notification server, `mako` (pid 4242), owns
+org.freedesktop.Notifications: strand cannot show notifications while it
+runs; stop it (`systemctl --user stop mako`, or `pkill -x mako`) and
+remove it from your compositor's autostart. strand takes the name over
+once it is free.` (pid from `GetConnectionUnixProcessID`, name from
+`/proc/<pid>/comm`), followed by how to keep D-Bus from starting it
+again on the next notification (`systemctl --user mask <it>`, or an
+empty `~/.local/share/dbus-1/services/org.freedesktop.Notifications.service`):
+dunst and mako ship activation files for the name. The client's retry
+backoff (up to 30 s) asks again, so stopping the other daemon hands the
+name over without a reload; the same failure is reported once. Once a
+run becomes ready without raising the notice again (the name taken
+over), or the service stops cleanly, the client hands out the same
+diagnostic `resolved`: `strand run` removes its overlay rows (keyed
+`service:<name>#<n>`, the message wrapped to the panel under a
+`strand: services` header) and sends `service \`notifications\`:
+resolved: …` to `strand watch`. A body raises a notice before
+`Cx::ready`, so its own readiness does not resolve it. Service failures became diagnostics:
+`Services::take_diagnostics` hands out a `ServiceDiagnostic` per
+distinct failure (a retry failing the same way is not repeated until a
+run stays up 30 s or ends cleanly), which `strand run` logs and sends to
+`strand watch` as notices. Only a `notice` (raised by the body with
+`Cx::notice`: what the user must act on, as this conflict) is also an
+overlay row and an `ERROR` line; other failures (a bus that cannot be
+reached, which the client retries) are `warn` lines: a machine without
+a session bus is not something to put on the screen.
+
+**2026-10-07 · wave4-a2: daemons are started by D-Bus activation.**
+Distributions often start UPower (and bluetoothd) only when someone
+first calls them (`SystemdService=`). `dbus::Daemon` follows a name
+without calling it, so when the name has no owner it sends
+`StartServiceByName(name, 0)` once per start, with no reply expected:
+the daemon owning its name is a `NameOwnerChanged` like a restart. A
+name nothing can start is ignored. Tested with a private bus whose
+service directory starts python-dbusmock's `upower` template
+(`PrivateBus::start_activating`). UPower's device kinds follow its
+`up-types.h`: 17 headset, 19 headphones and 21 other audio are
+`headset`; speakers (18) and printers (23) are `other`.
+
+**2026-10-07 · wave4-a2: brightness.** The level is read from
+`/sys/class/backlight/<dev>` (`actual_brightness`, else `brightness`,
+over `max_brightness`), preferring a firmware backlight over a platform
+one over a raw one, and watched with inotify (`MODIFY`, the kernel's
+`sysfs_notify` of a change, and `CLOSE_WRITE`); backlights appearing
+later are not followed (sysfs sends no events for them). Writes go
+through logind's `SetBrightness("backlight", dev, raw)` on
+`/org/freedesktop/login1/session/auto` and are answered with the value
+written (a refusal is answered with the level read back). Tests point
+the service at a directory of fake backlights
+(`brightness::set_backlight_root`, or `STRAND_BACKLIGHT_DIR` for a
+child process).
+
+**2026-10-07 · wave4-a2: network.** `connected` is NetworkManager's
+`State` at `CONNECTED_LOCAL` (50) or above; `ssid` and `strength` come
+from the access point of the Wi-Fi active connection (`SpecificObject`;
+the default route's first), whose strength changes are followed through
+a match rule for that one object. `wifi` writes `WirelessEnabled`. The
+scan is `access_points`: only while a visible reader reads it are the
+access points read, their signals subscribed (otherwise their frequent
+strength changes do not even reach the process) and a `RequestScan`
+asked for (when watching starts and when a new NetworkManager appears,
+not on every re-read); access points of one SSID are one entry (the
+strongest, active if any is). `ap.connect()` activates a saved
+connection for the SSID, else `AddAndActivateConnection` (NetworkManager's
+secret agent asks for a password). A join that fails (no agent to ask
+for the password, out of range) is the `failed(ssid, error)` event, not
+only a log line; `connect(password)` waits for optional action
+arguments in the language (a call may not omit an argument yet). While
+not scanning, a device's `AccessPoints` changes are ignored (only the
+access point in use matters, and its change is the connection's
+`SpecificObject`); while scanning only the new access points are read.
+A scan is asked for once there is a Wi-Fi device to ask (a
+NetworkManager that just restarted may list none yet). A failed `wifi`
+write reports the radio as last read.
+
+**2026-10-07 · wave4-a2: bluetooth.** BlueZ's object manager on `/`:
+the first adapter by path gives `powered` (written through `Powered`),
+its paired devices `devices` (`Alias`, `Connected`, `Icon` as
+`<icon>-symbolic`, `Battery1.Percentage`). `connect()`/`disconnect()`
+run as tasks owned by the body (30 s at most, cancelled when the service
+stops, so a stopped service keeps no connection), their outcome
+arriving as `Connected` changes; a failed `powered` write reports the
+adapter as last read. Nothing discovers: pairing stays with the system's
+settings.
+
+**2026-10-07 · wave4-a2: media.** Every `org.mpris.MediaPlayer2.*` is
+followed (`NameOwnerChanged` with `arg0namespace`, the players' signals
+at `/org/mpris/MediaPlayer2`); the active player is the one playing
+that started playing last, else the one that paused last. `Position` is
+never signalled by players, and design.md wants no polling: it is asked
+for when the state, track or rate changes and on `Seeked`, and carried
+forward at `Rate` from there. `elapsed` and `position` are
+`#[store(stream)]` fields: they tick once a second, on the second, only
+while a visible reader shows them and the player plays. Calls to players are
+bounded (2 s) and actions are tasks of their own. `art` is local art
+only (`file://` or a path): remote `https://` art (Spotify, browsers)
+is null, so `media.art ?? "audio-x-generic"` falls back instead of
+showing a blank picture; fetching remote art (an HTTP client and a
+cache) is left for when a shell needs it.
+
+**2026-10-07 · wave4-a2: tray.** On a connection of its own the
+service owns `org.kde.StatusNotifierHost-<pid>-<n>` and registers with
+the session's watcher, or becomes `org.kde.StatusNotifierWatcher` itself
+when there is none (and when the session's goes away). An item's `id`
+is its bus name and path; its icon is the icon named (found first under
+its `IconThemePath`, four levels deep), else its largest pixmap as a PNG
+(the attention icon while `NeedsAttention`); its tooltip is the
+tooltip's title and description on two lines. `activate()` calls
+`Activate(0, 0)`, falling back to `ContextMenu` for menu-only items;
+`scroll(dy)` sends `dy` rounded (at least one step) as a vertical
+`Scroll`. The menu model is `GetLayout` (again on `LayoutUpdated` and
+`ItemsPropertiesUpdated`), visible entries only, labels without mnemonic
+underscores, with `shortcut` (`Control+S`) and an icon by name or from
+`icon-data` (a PNG file, kept while the menu is). `item.menu.open()`
+sends `AboutToShow(0)` and the `opened` event and lays the menu out
+again when the app says it changed; an entry's `open()` does the same
+for its submenu (lazily filled submenus); `item.menu.close()` sends the
+`closed` event. Showing menus is M4's tray menu. Click positions are not
+passed yet (`Activate(0, 0)`, `ContextMenu(0, 0)`): the shell knows
+where a click was only once M4's popups place things; the schema's
+actions gain optional `x`/`y` then. Apps freeze, so nothing the service
+asks an item waits in its loop: reads and actions are tasks owned by
+the body (dropped with it), each call given up after 2 s
+(`dbus::CALL_TIMEOUT`), results applied by the loop; one property read
+and one menu read per item in flight, later signals asking for one more
+after it; icons and tooltips are resolved off the runtime thread once
+per read and cached with the item. Our watcher emits
+`PropertiesChanged` for `RegisteredStatusNotifierItems`; any owner
+change of the session's watcher while it is not ours registers again
+(a watcher replaced without a gap included). An entry's `activate()` sends `Event(id,
+"clicked")`. Two calls named `activate` on different records
+(`TrayItem`, `TrayMenuItem`) are one name in `#[derive(Call)]`
+(`#[call(name = "activate")]`), told apart by the item's record type.
+
+**2026-10-07 · wave4-a2: `strand set` writes service fields.** `strand
+set brightness.level +5%` (the IPC `set` on a path whose first part is
+a service and that is not an export) writes the `rw` leaf through the
+service host: a value read by the field's type, and a signed number (or
+percentage) as a step from the current value, never below 0. A service
+nobody reads is started for it; for a relative step its first read
+(that service's only) is awaited, up to 500 ms, so the step starts from
+the real value; an absolute value is written at once. It stops 5 s
+later.
+
+**2026-10-07 · wave4-a2: a closed surface's `open` binding is held.**
+A top-level surface held its whole body, `open` included, only while
+shown, so design.md's toasts panel (`open: shown.len > 0` over
+`notifications.popups`) never started the notification server and could
+never open. Lowering now counts the `open` binding's reads for the
+file's top level (a nested surface's props were already read by the
+body around it); `crates/strand/src/services/mod.rs::a_closed_surface_holds_what_its_open_binding_reads`.

@@ -1,0 +1,10 @@
+/// Processor load, sampled once a second while a reader is visible.
+service cpu {
+  /// Load over every core, 0 to 1: `graph cpu.usage`.
+  usage: float
+  /// The load of each core, 0 to 1.
+  cores: [float]
+  /// The processor's temperature in degrees Celsius, when a sensor
+  /// reports one.
+  temperature: float?
+}

@@ -78,10 +78,32 @@ pub fn capabilities() -> ServerCapabilities {
     }
 }
 
-/// Runs the server on `conn` against the builtin schema: the initialize
+/// The schema `strand-dev lsp` serves: the builtin schema extended by
+/// every builtin service (`strand_services_schema::schemas()`, the texts
+/// without the service runtime), as
+/// `strand check` and `strand run` check against it. A service schema
+/// that does not apply (a bug the service crates' tests catch) is
+/// logged and left out.
+pub fn schema() -> Arc<Schema> {
+    static SCHEMA: std::sync::OnceLock<Arc<Schema>> = std::sync::OnceLock::new();
+    SCHEMA
+        .get_or_init(|| {
+            let texts = strand_services_schema::schemas();
+            Arc::new(match Schema::builtin_with(&texts) {
+                Ok(s) => s,
+                Err((i, errors)) => {
+                    eprintln!("strand-dev: service schema #{i} does not apply: {errors:?}");
+                    Schema::builtin().clone()
+                }
+            })
+        })
+        .clone()
+}
+
+/// Runs the server on `conn` against [`schema`]: the initialize
 /// handshake, then requests and notifications until `shutdown` and `exit`.
 pub fn serve(conn: &Connection) -> Result<()> {
-    serve_with(conn, Arc::new(Schema::builtin().clone()))
+    serve_with(conn, schema())
 }
 
 /// [`serve`] against `schema`: the builtin schema as the service crates

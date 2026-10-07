@@ -1302,6 +1302,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
+name = "logind-zbus"
+version = "5.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "469c962578b549a82f3d0cc72d0f77d1123780fa7121e2b03d78b0780f6ccac6"
+dependencies = [
+ "serde",
+ "zbus",
+]
+
+[[package]]
 name = "lsp-server"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2233,6 +2243,7 @@ dependencies = [
  "log",
  "mimalloc",
  "rustix",
+ "serde",
  "serde_json",
  "strand-compiler",
  "strand-core",
@@ -2291,6 +2302,7 @@ dependencies = [
  "lsp-types",
  "serde_json",
  "strand-compiler",
+ "strand-services-schema",
 ]
 
 [[package]]
@@ -2322,13 +2334,18 @@ dependencies = [
 name = "strand-services"
 version = "0.0.0"
 dependencies = [
+ "chrono",
  "futures-lite",
  "log",
+ "logind-zbus",
  "pipewire",
+ "png",
  "rustix",
  "serde",
  "serde_json",
  "strand-core",
+ "strand-services-macros",
+ "strand-services-schema",
  "strand-watch",
  "swayipc-async",
  "tempfile",
@@ -2336,7 +2353,21 @@ dependencies = [
  "wayland-client",
  "wayland-protocols",
  "wayland-server",
+ "zbus",
 ]
+
+[[package]]
+name = "strand-services-macros"
+version = "0.0.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
+]
+
+[[package]]
+name = "strand-services-schema"
+version = "0.0.0"
 
 [[package]]
 name = "strand-surface"

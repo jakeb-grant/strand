@@ -232,6 +232,74 @@ impl Schema {
         Ok(())
     }
 
+    /// The entries without a `///` doc (design.md: hovers are generated
+    /// from the schemas, so every service, record member, function,
+    /// method, value, element, prop, event and token has one). Empty for
+    /// the builtin schema and for every service crate's extension (tests
+    /// hold both to it).
+    pub fn undocumented(&self) -> Vec<String> {
+        let s = self;
+        let mut missing = Vec::new();
+        let mut need = |k: DocKey| {
+            if s.doc(&k).is_none() {
+                missing.push(format!("{k:?}"));
+            }
+        };
+        for name in s.services.keys() {
+            need(DocKey::Type(name.clone()));
+        }
+        for r in &s.types.records {
+            need(DocKey::Type(r.name.clone()));
+            let member = |n: &str| DocKey::Member(r.name.clone(), n.to_string());
+            r.fields.iter().for_each(|f| need(member(&f.name)));
+            r.methods.iter().for_each(|m| need(member(&m.name)));
+            r.events.iter().for_each(|e| need(member(&e.name)));
+        }
+        for name in s.functions.keys() {
+            need(DocKey::Function(name.clone()));
+        }
+        for name in s.values.keys() {
+            need(DocKey::Value(name.clone()));
+        }
+        for (ty, ms) in &s.methods {
+            for m in ms {
+                need(DocKey::Method(ty.clone(), m.name.clone()));
+            }
+        }
+        for (name, e) in s.groups.iter().chain(&s.elements) {
+            need(DocKey::Element(name.clone()));
+            let prop = |n: String| DocKey::Prop(name.clone(), n);
+            for p in &e.props {
+                need(prop(p.name.clone()));
+                for q in &p.sub {
+                    need(prop(format!("{}.{}", p.name, q.name)));
+                }
+            }
+            e.events
+                .iter()
+                .for_each(|ev| need(prop(format!("on {}", ev.name))));
+            e.scope.iter().for_each(|(n, _)| need(prop(n.clone())));
+        }
+        for path in s.tokens.keys() {
+            if s.token_doc(path).is_none() {
+                missing.push(format!("token {path}"));
+            }
+        }
+        missing
+    }
+
+    /// The builtin schema extended by each of `texts` in order (the
+    /// service crates a binary links: `strand_services::schemas()`), for
+    /// `strand check`, `strand run` and the LSP alike. Fails with the
+    /// index of the first text that does not apply, and its errors.
+    pub fn builtin_with(texts: &[&str]) -> Result<Schema, (usize, Vec<SchemaError>)> {
+        let mut s = Schema::builtin().clone();
+        for (i, t) in texts.iter().enumerate() {
+            s.extend(t).map_err(|e| (i, e))?;
+        }
+        Ok(s)
+    }
+
     /// The fingerprint after `text` is added.
     fn next_fingerprint(&self, text: &str) -> [u8; 32] {
         let mut h = blake3::Hasher::new();
@@ -695,52 +763,7 @@ mod tests {
     #[test]
     fn builtin_schema_is_documented() {
         let s = Schema::builtin();
-        let mut missing = Vec::new();
-        let mut need = |k: DocKey| {
-            if s.doc(&k).is_none() {
-                missing.push(format!("{k:?}"));
-            }
-        };
-        for name in s.services.keys() {
-            need(DocKey::Type(name.clone()));
-        }
-        for r in &s.types.records {
-            need(DocKey::Type(r.name.clone()));
-            let member = |n: &str| DocKey::Member(r.name.clone(), n.to_string());
-            r.fields.iter().for_each(|f| need(member(&f.name)));
-            r.methods.iter().for_each(|m| need(member(&m.name)));
-            r.events.iter().for_each(|e| need(member(&e.name)));
-        }
-        for name in s.functions.keys() {
-            need(DocKey::Function(name.clone()));
-        }
-        for name in s.values.keys() {
-            need(DocKey::Value(name.clone()));
-        }
-        for (ty, ms) in &s.methods {
-            for m in ms {
-                need(DocKey::Method(ty.clone(), m.name.clone()));
-            }
-        }
-        for (name, e) in s.groups.iter().chain(&s.elements) {
-            need(DocKey::Element(name.clone()));
-            let prop = |n: String| DocKey::Prop(name.clone(), n);
-            for p in &e.props {
-                need(prop(p.name.clone()));
-                for q in &p.sub {
-                    need(prop(format!("{}.{}", p.name, q.name)));
-                }
-            }
-            e.events
-                .iter()
-                .for_each(|ev| need(prop(format!("on {}", ev.name))));
-            e.scope.iter().for_each(|(n, _)| need(prop(n.clone())));
-        }
-        for path in s.tokens.keys() {
-            if s.token_doc(path).is_none() {
-                missing.push(format!("token {path}"));
-            }
-        }
+        let missing = s.undocumented();
         assert!(missing.is_empty(), "undocumented: {missing:#?}");
         // A token reads its group's doc; its own comes first.
         assert_eq!(

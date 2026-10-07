@@ -108,6 +108,24 @@ pub trait ServiceHost {
         value: Value,
     ) -> Result<(), Error>;
 
+    /// Write one `rw` leaf below an item of a service's keyed list:
+    /// `s.volume = 0.5` for `s` in `audio.sinks` is `write_item(rt, s,
+    /// [Field("volume")], 0.5)`. `item` is the record as the program read
+    /// it: the host routes by its record type and finds the item by its
+    /// key (the sink with id 42), so the write reaches the service with
+    /// the key, applied at once and its echo ignored like
+    /// [`ServiceHost::write`]'s. The default refuses.
+    fn write_item(
+        &self,
+        _rt: &Runtime,
+        item: &Value,
+        _path: &[PathSeg],
+        _value: Value,
+    ) -> Result<(), Error> {
+        let _ = item;
+        Err(Error::failed("this host does not write service items"))
+    }
+
     /// Call a `fn` method of a service (`clock.format(p)`,
     /// `calendar.days(m)`, `workspaces.on(s)`), tracked.
     fn call(
@@ -162,6 +180,19 @@ pub trait ServiceHost {
     /// timers on `rt`). Called during scope cleanup too, so a host must
     /// not dispose nodes synchronously from here.
     fn release(&self, _rt: &Runtime, _service: &str) {}
+
+    /// A scope holding `service` (acquired first) also reads `field`
+    /// directly, and is mounted and shown: what a `#[store(stream)]`
+    /// field's stream (a Wi-Fi scan, audio levels) runs for, so a bar
+    /// showing the SSID does not keep the scan of a closed popup going
+    /// (design.md, "Lifecycle"). The compiler collects these per scope
+    /// ([`crate::lower::ServiceUses`]); a field read only through a `fn`
+    /// method or a `let` in another scope is held by the scope reading
+    /// it there. The default does nothing.
+    fn acquire_field(&self, _rt: &Runtime, _service: &str, _field: &str) {}
+
+    /// The matching unmount or hide (released before the service).
+    fn release_field(&self, _rt: &Runtime, _service: &str, _field: &str) {}
 
     /// The next wall-clock time the host loop must wake for (the next
     /// minute boundary while a clock is shown); `None` when nothing is

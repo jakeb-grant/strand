@@ -22,5 +22,19 @@ check::read_only
  11 │ component Reset { box { on click { prefs = prefs } } }
     ·                                    ──┬──
     ·                                      ╰── a settings file
+ 12 │ // An `rw` field reached through neither its service, an item of a
     ╰────
   help: assign a field: `prefs.accent = …`
+
+check::read_only
+
+  × cannot assign `compact` here: it is not reached from a `state`, a service or an item of a
+  │ service's list
+    ╭─[read_only.strand:14:50]
+ 13 │ // service's keyed list, nor `state` has nothing to write to.
+ 14 │ component Copy { box { on click { let p = prefs; p.compact = true } } }
+    ·                                                  ────┬────
+    ·                                                      ╰── nothing to write to
+    ╰────
+  help: write it where it lives: `prefs.compact = …`, `audio.sink.volume = …`, or `s.volume = …`
+        for `s` in `audio.sinks`

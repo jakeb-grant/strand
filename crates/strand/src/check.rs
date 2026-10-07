@@ -142,7 +142,7 @@ fn check_config(dir: &Path, focus: Option<&Path>, style: Style) -> Result<Report
             focus_id = Some(id);
         }
     }
-    let mut diags = strand_compiler::compile(&map).diagnostics;
+    let mut diags = strand_compiler::compile_with(&map, crate::services::schema()).diagnostics;
     if focus.is_some() {
         // A diagnostic is the file's if any of its labels is there: the
         // first declaration of a name redeclared in another file, a call

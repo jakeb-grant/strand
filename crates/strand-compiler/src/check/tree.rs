@@ -2099,6 +2099,7 @@ impl<'a> Checker<'a> {
         let saved = self.ctx;
         self.ctx = super::Ctx {
             pure_fn: true,
+            fn_def: Some(id),
             ..super::Ctx::default()
         };
         self.push_scope();
