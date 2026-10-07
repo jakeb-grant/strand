@@ -998,3 +998,170 @@ fn a_held_insert_of_a_key_another_write_inserted_is_reported() {
     );
     assert_eq!(sorted_keys(xs, &rt), (0..pushed.get()).collect::<Vec<_>>());
 }
+
+/// A run of the service that ended without answering a write never will:
+/// forgetting it means a later outside value equal to the lost write
+/// applies (a brightness key after a slider write the service failed on).
+#[test]
+fn forgotten_writes_do_not_swallow_outside_values() {
+    let rt = Runtime::new();
+    let level = rt.signal(0.3f64);
+    level.write_tagged(&rt, 0.5, no_send).unwrap().unwrap();
+    // The run failed handling it; the next run boots reading 0.3.
+    level.forget_echoes(&rt);
+    assert_eq!(level.pending_writes(&rt), 0);
+    level.set_reloaded(&rt, 0.3).unwrap();
+    // The system then moves to 0.5 on its own: an outside change.
+    assert_eq!(level.receive(&rt, 0.5, None), Ok(Received::Applied));
+    assert_eq!(level.get(&rt), Ok(0.5));
+    // Tags keep counting up: a new write's tag is newer than the old.
+    let g = level.write_tagged(&rt, 0.6, no_send).unwrap().unwrap();
+    assert!(g > Generation(1));
+}
+
+type Dev = (u32, f64);
+
+fn devices(rt: &Runtime) -> strand_core::KeyedSignal<u32, Dev> {
+    rt.keyed(strand_core::KeyedVec::from_values(|d: &Dev| d.0, [(1, 0.2), (2, 0.4)]).unwrap())
+}
+
+fn item(rt: &Runtime, k: strand_core::KeyedSignal<u32, Dev>, key: u32) -> f64 {
+    k.get_key(rt, &key).unwrap().unwrap().1
+}
+
+/// Item writes of a keyed list (`s.volume` for `s` in `audio.sinks`):
+/// applied at once, sent with the item's index and a tag; the service's
+/// echoes of them are ignored, other items' reports and outside changes
+/// apply.
+#[test]
+fn item_writes_ignore_their_echoes() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use strand_core::VecDiff;
+    let rt = Runtime::new();
+    let sinks = devices(&rt);
+    let sent: Rc<RefCell<Vec<(usize, Dev, Generation)>>> = Rc::default();
+    let send = |s: &Rc<RefCell<Vec<(usize, Dev, Generation)>>>| {
+        let s = s.clone();
+        move |_: &Runtime, i: usize, d: &Dev, g: Generation| s.borrow_mut().push((i, *d, g))
+    };
+    let g1 = sinks
+        .write_item_tagged(&rt, 2, (2, 0.5), send(&sent))
+        .unwrap()
+        .unwrap();
+    let g2 = sinks
+        .write_item_tagged(&rt, 2, (2, 0.6), send(&sent))
+        .unwrap()
+        .unwrap();
+    assert_eq!(item(&rt, sinks, 2), 0.6);
+    assert_eq!(sent.borrow()[0], (1, (2, 0.5), g1));
+    assert_eq!(sinks.pending_item_writes(&rt, &2), 2);
+    let up = |key: u32, v: f64| VecDiff::Update {
+        index: (key - 1) as usize,
+        key,
+        value: (key, v),
+    };
+    // The late answer to the first write: an echo, dropped.
+    let kept = sinks.receive_items(&rt, &[up(2, 0.5)], Some(g1)).unwrap();
+    assert!(kept.is_empty());
+    assert_eq!(item(&rt, sinks, 2), 0.6);
+    // The other item moved in the same report: applied.
+    let kept = sinks
+        .receive_items(&rt, &[up(1, 0.9), up(2, 0.6)], Some(g2))
+        .unwrap();
+    assert_eq!(kept, vec![up(1, 0.9)]);
+    assert_eq!(item(&rt, sinks, 1), 0.9);
+    assert_eq!(sinks.pending_item_writes(&rt, &2), 0);
+    // An outside change applies; an untagged echo by value is dropped.
+    sinks
+        .write_item_tagged(&rt, 2, (2, 0.7), send(&sent))
+        .unwrap();
+    assert!(
+        sinks
+            .receive_items(&rt, &[up(2, 0.7)], None)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        sinks.receive_items(&rt, &[up(2, 0.1)], None).unwrap(),
+        vec![up(2, 0.1)]
+    );
+    assert_eq!(item(&rt, sinks, 2), 0.1);
+    // A missing item cannot be written.
+    assert!(
+        sinks
+            .write_item_tagged(&rt, 9, (9, 0.0), send(&sent))
+            .is_err()
+    );
+}
+
+/// A whole-list report (`Reset`) and a boot report keep an item whose
+/// write is in flight; forgetting the writes lets them through.
+#[test]
+fn resets_and_boot_reports_keep_items_written_in_flight() {
+    use strand_core::VecDiff;
+    let rt = Runtime::new();
+    let sinks = devices(&rt);
+    sinks
+        .write_item_tagged(&rt, 1, (1, 0.8), |_, _, _, _| {})
+        .unwrap();
+    let reset = VecDiff::Reset {
+        items: vec![(1, (1, 0.8)), (2, (2, 0.3))],
+    };
+    // The service's refresh holds our write (an echo): kept as is.
+    sinks.receive_items(&rt, &[reset], None).unwrap();
+    assert_eq!(item(&rt, sinks, 1), 0.8);
+    assert_eq!(item(&rt, sinks, 2), 0.3);
+    sinks
+        .write_item_tagged(&rt, 1, (1, 0.9), |_, _, _, _| {})
+        .unwrap();
+    // A boot read from before the write keeps the local item.
+    let mut boot = vec![(1, 0.2), (2, 0.3)];
+    sinks.keep_pending_items(&rt, &mut boot).unwrap();
+    assert_eq!(boot, vec![(1, 0.9), (2, 0.3)]);
+    sinks.forget_echoes(&rt);
+    let mut boot = vec![(1, 0.2), (2, 0.3)];
+    sinks.keep_pending_items(&rt, &mut boot).unwrap();
+    assert_eq!(boot[0], (1, 0.2));
+}
+
+/// A throttled handler's item writes are held, the latest per item, and
+/// each lands with its own send when the window has room.
+#[test]
+fn throttled_item_writes_land_per_item() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let rt = Runtime::new();
+    let sinks = devices(&rt);
+    let sent: Rc<RefCell<Vec<Dev>>> = Rc::default();
+    let report = rt.events::<u32>();
+    let s = sent.clone();
+    report
+        .on(&rt, move |rt, v| {
+            for key in [1u32, 2] {
+                let s = s.clone();
+                sinks.write_item_tagged(rt, key, (key, f64::from(*v)), move |_, _, d, _| {
+                    s.borrow_mut().push(*d)
+                })?;
+            }
+            Ok(())
+        })
+        .unwrap();
+    let mut t = Duration::ZERO;
+    for v in 1..=100u32 {
+        report.emit(&rt, v).unwrap();
+        t += Duration::from_millis(5);
+        rt.tick(t);
+    }
+    let n = sent.borrow().len();
+    assert!(n < 200, "{n} item writes sent: none were held");
+    rt.tick(t + Duration::from_secs(1));
+    let sent = sent.borrow();
+    let last: Vec<&Dev> = sent.iter().rev().take(2).collect();
+    assert!(
+        last.contains(&&(1, 100.0)) && last.contains(&&(2, 100.0)),
+        "{last:?}"
+    );
+    assert_eq!(item(&rt, sinks, 1), 100.0);
+    assert_eq!(item(&rt, sinks, 2), 100.0);
+}
