@@ -179,7 +179,7 @@ hl.config({
     animations = { enabled = false },
     misc = { disable_hyprland_logo = true, disable_splash_rendering = true, force_default_wallpaper = 0 },
     ecosystem = { no_update_news = true, no_donation_nag = true },
-    debug = { disable_logs = false, suppress_errors = true },
+    debug = { disable_logs = false, enable_stdout_logs = true, suppress_errors = true },
 })
 EOF
     else
@@ -200,6 +200,7 @@ ecosystem {
 }
 debug {
     disable_logs = false
+    enable_stdout_logs = true
     suppress_errors = true
 }
 EOF
