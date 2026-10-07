@@ -220,15 +220,18 @@ impl Real {
 
     /// `strand set brightness.level 0.4` (or `+5%`): an `rw` service
     /// field written from the CLI ([`set_text`]). A service nobody reads
-    /// is started for it and its first read waited for (up to
-    /// [`SET_WAIT`]), so a relative step starts from its real value; it
-    /// stops 5 s later.
+    /// is started for it; for a relative step its first read is waited
+    /// for (up to [`SET_WAIT`], that service's only), so the step starts
+    /// from its real value. It stops 5 s later.
     pub fn set_text(&self, rt: &Runtime, path: &str, text: &str) -> Result<(), String> {
         let name = path.split('.').next().unwrap_or_default();
         let svc = self.builtin.all().into_iter().find(|s| s.name() == name);
+        let relative = text.trim().starts_with(['+', '-']);
         if let Some(svc) = &svc {
             svc.acquire(rt);
-            self.services.wait_ready(rt, SET_WAIT);
+            if relative {
+                self.services.wait_ready_of(rt, Some(name), SET_WAIT);
+            }
         }
         let r = set_text(&*self.host, rt, &self.types, path, text);
         if let Some(svc) = &svc {

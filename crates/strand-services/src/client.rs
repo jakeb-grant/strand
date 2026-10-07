@@ -154,6 +154,7 @@ impl Drop for Shared {
 
 /// What the registry asks of every client.
 trait Member {
+    fn name(&self) -> &'static str;
     fn pump(&self, rt: &Runtime) -> bool;
     /// Running and not ready yet.
     fn waiting(&self) -> bool;
@@ -309,11 +310,23 @@ impl Services {
     /// is in), at most `limit`: the first frame waits this long so a
     /// shell does not boot showing defaults. Returns whether all were.
     pub fn wait_ready(&self, rt: &Runtime, limit: Duration) -> bool {
+        self.wait_ready_of(rt, None, limit)
+    }
+
+    /// [`Services::wait_ready`] for the service named `name` only (every
+    /// service when `None`).
+    pub fn wait_ready_of(&self, rt: &Runtime, name: Option<&str>, limit: Duration) -> bool {
         let deadline = Instant::now() + limit;
         loop {
             let seen = self.0.wake.count();
             self.pump(rt);
-            if !self.0.members.borrow().iter().any(|m| m.waiting()) {
+            let waiting = self
+                .0
+                .members
+                .borrow()
+                .iter()
+                .any(|m| name.is_none_or(|n| m.name() == n) && m.waiting());
+            if !waiting {
                 return true;
             }
             let left = deadline.saturating_duration_since(Instant::now());
@@ -795,6 +808,10 @@ impl<S: Service> ClientInner<S> {
 }
 
 impl<S: Service> Member for ClientInner<S> {
+    fn name(&self) -> &'static str {
+        S::NAME
+    }
+
     fn pump(&self, rt: &Runtime) -> bool {
         let mut any = false;
         loop {

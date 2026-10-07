@@ -619,3 +619,215 @@ fn design_shells_on_the_real_dbus_services() {
         .collect();
     assert!(errors.is_empty(), "{errors:?}");
 }
+
+/// `strand watch --json`'s events, read on a thread of their own.
+struct Watch {
+    _child: Proc,
+    events: std::sync::mpsc::Receiver<serde_json::Value>,
+}
+
+impl Watch {
+    fn start(sh: &Shell) -> Watch {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_strand"))
+            .args(["watch", "--json"])
+            .envs(sh.env())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let out = child.stdout.take().unwrap();
+        let (tx, events) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for line in std::io::BufReader::new(out).lines() {
+                let Ok(line) = line else { return };
+                if let Ok(v) = serde_json::from_str(&line)
+                    && tx.send(v).is_err()
+                {
+                    return;
+                }
+            }
+        });
+        let w = Watch {
+            _child: Proc(child),
+            events,
+        };
+        w.until("subscribed", |ev| ev["event"] == "watching");
+        w
+    }
+
+    /// The first event `f` accepts (30 s at most).
+    fn until(&self, what: &str, f: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let ev = self
+                .events
+                .recv_timeout(left)
+                .unwrap_or_else(|_| panic!("strand watch never said: {what}"));
+            if f(&ev) {
+                return ev;
+            }
+        }
+    }
+}
+
+/// The overlay's notice rows: its warning colour (`#f9e2af`) in the panel
+/// at the top centre.
+fn notice_ink(img: &Img) -> usize {
+    img.count(W / 2 - 480..W / 2 + 480, 48..200, |p| {
+        p[0] > 220 && p[1] > 190 && (130..210).contains(&p[2])
+    })
+}
+
+/// dunst or mako owns `org.freedesktop.Notifications` when design.md's
+/// toasts arrive (a live reload adds them): `strand run` shows the
+/// conflict on its overlay, under a `strand: services` header, and sends
+/// it to `strand watch` naming the owner's process; once the other daemon
+/// stops, the shell takes the name over, the notice is resolved (its rows
+/// go, `strand watch` is told) and notifications reach the toasts.
+#[test]
+fn a_notification_conflict_is_shown_and_resolved() {
+    if !tools() {
+        return;
+    }
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let Some(other) = DbusMock::start(&bus, "notification_daemon", false, None, NOTIFICATIONS)
+    else {
+        return;
+    };
+    let other_pid = other.pid();
+    let other_comm = std::fs::read_to_string(format!("/proc/{other_pid}/comm"))
+        .unwrap()
+        .trim()
+        .to_string();
+    let tokio = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let conn = tokio.block_on(async {
+        zbus::connection::Builder::address(bus.address.as_str())
+            .unwrap()
+            .build()
+            .await
+            .unwrap()
+    });
+    let dir = std::env::temp_dir().join(format!("strand-dbus-conflict-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let (sway, display) = sway(&dir);
+    let home = dir.join("home");
+    let config = home.join(".config/strand");
+    std::fs::create_dir_all(&config).unwrap();
+    // The bar first; the toasts come with a live reload, once `strand
+    // watch` listens.
+    for (name, text) in FILES {
+        if name == "theme.strand" || name == "bar.strand" {
+            std::fs::write(config.join(name), text).unwrap();
+        }
+    }
+    let log = dir.join("strand.log");
+    let strand = Proc(
+        Command::new(env!("CARGO_BIN_EXE_strand"))
+            .arg("run")
+            .arg(&config)
+            .env("XDG_RUNTIME_DIR", &dir)
+            .env("WAYLAND_DISPLAY", &display)
+            .env("HOME", &home)
+            .env("XDG_CACHE_HOME", dir.join("cache"))
+            .env("XDG_STATE_HOME", dir.join("state"))
+            .env("STRAND_LOG", "damage")
+            .envs(bus.env())
+            .env_remove("STRAND_MOCK")
+            .stdin(Stdio::null())
+            .stderr(std::fs::File::create(&log).unwrap())
+            .spawn()
+            .unwrap(),
+    );
+    let strand_pid = strand.0.id();
+    let mut sh = Shell {
+        dir: dir.clone(),
+        display,
+        log,
+        shots: std::env::var_os("STRAND_SHOTS").map(PathBuf::from),
+        n: std::cell::Cell::new(0),
+        strand: Some(strand),
+        _sway: sway,
+    };
+    sh.wait("the bar", |s| s.surfaces() >= 1);
+    let watch = Watch::start(&sh);
+    let toasts = FILES.iter().find(|(n, _)| *n == "toasts.strand").unwrap().1;
+    std::fs::write(config.join("toasts.strand"), toasts).unwrap();
+
+    // The conflict: on `strand watch`, naming the owner.
+    let ev = watch.until("the conflict", |ev| {
+        ev["event"] == "notices"
+            && ev["notices"].as_array().is_some_and(|n| {
+                n.iter()
+                    .any(|t| t.as_str().is_some_and(|t| t.contains(NOTIFICATIONS)))
+            })
+    });
+    let text = ev["notices"].to_string();
+    assert!(text.contains(&format!("(pid {other_pid})")), "{text}");
+    assert!(text.contains(&format!("`{other_comm}`")), "{text}");
+    assert!(text.contains("systemctl --user mask"), "{text}");
+    assert!(!text.contains("resolved"), "{text}");
+    // And on the overlay.
+    sh.wait("the conflict on the overlay", |s| {
+        notice_ink(&s.shot()) > 200
+    });
+    std::thread::sleep(Duration::from_millis(500));
+    sh.keep("conflict-overlay");
+
+    // The other daemon stops: the shell takes the name over.
+    drop(other);
+    let ev = watch.until("the conflict resolved", |ev| {
+        ev["event"] == "notices"
+            && ev["notices"].as_array().is_some_and(|n| {
+                n.iter()
+                    .any(|t| t.as_str().is_some_and(|t| t.contains("resolved")))
+            })
+    });
+    assert!(ev["notices"].to_string().contains(NOTIFICATIONS));
+    sh.wait("the overlay's rows gone", |s| notice_ink(&s.shot()) == 0);
+    let dbus = tokio.block_on(zbus::fdo::DBusProxy::new(&conn)).unwrap();
+    let owner = tokio
+        .block_on(dbus.get_connection_unix_process_id(NOTIFICATIONS.try_into().unwrap()))
+        .unwrap();
+    assert_eq!(owner, strand_pid, "the shell owns the name");
+
+    // Notifications now reach the toasts.
+    call(
+        &tokio,
+        &conn,
+        NOTIFICATIONS,
+        "/org/freedesktop/Notifications",
+        NOTIFICATIONS,
+        "Notify",
+        &(
+            "Mail",
+            0u32,
+            "mail-unread",
+            "After the takeover",
+            "strand serves notifications now",
+            Vec::<&str>::new(),
+            HashMap::<&str, Value<'_>>::new(),
+            600_000i32,
+        ),
+    );
+    let toasts = |img: &Img| img.count(W - 420..W - 12, 60..200, |p| p != img.px(W - 2, H / 2));
+    sh.wait("the toast", |s| toasts(&s.shot()) > 2000);
+    std::thread::sleep(Duration::from_millis(800));
+    sh.keep("after-takeover-toast");
+    let panics: Vec<String> = sh
+        .log_text()
+        .lines()
+        .filter(|l| l.contains("panicked"))
+        .map(String::from)
+        .collect();
+    assert!(panics.is_empty(), "{panics:?}");
+}

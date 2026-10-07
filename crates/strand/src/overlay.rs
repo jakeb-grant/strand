@@ -1032,4 +1032,25 @@ mod tests {
             ["xdg-open", "/c/bar.strand"]
         );
     }
+
+    #[test]
+    fn service_notices_wrap_and_are_keyed_by_service() {
+        let text = "word ".repeat(80);
+        let rows = service_lines("notifications", &text);
+        assert!(rows.len() >= 3, "{rows:?}");
+        let width = ((WIDTH - PAD * 2.0) / 7.4) as usize;
+        for (i, r) in rows.iter().enumerate() {
+            assert!(r.text.chars().count() <= width, "{r:?}");
+            assert!(r.notice);
+            assert_eq!(
+                r.cell.as_deref(),
+                Some(&*format!("service:notifications#{i}"))
+            );
+            if i > 0 {
+                assert!(r.text.starts_with("  word"), "continuations indent: {r:?}");
+            }
+        }
+        let words: usize = rows.iter().map(|r| r.text.split_whitespace().count()).sum();
+        assert_eq!(words, 80, "no word lost");
+    }
 }
