@@ -28,6 +28,31 @@ use strand_compiler::diagnostic::Style;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+/// No transparent huge pages, from before the first allocation. On a
+/// system with THP `always` (GitHub's runners) the kernel backs a
+/// 2 MiB-aligned anonymous range with a huge page on its first touch:
+/// mimalloc's arenas filled 2 MiB pages for a few KiB of heap (55 MB PSS
+/// for design.md's bar instead of about 25). mimalloc's `no_thp` only
+/// stops it asking for them, and turning THP off in `main` came after
+/// the runtime's first allocations (the thread handle, the arguments)
+/// had already faulted two huge pages in (4 MB of `AnonHugePages`, the
+/// M0 gate missed by 265 kB in CI run 37644817292). An ELF constructor
+/// at priority 100 runs before `main` and every other constructor in the
+/// executable but std's argv capture (priority 99, which does not
+/// allocate): mimalloc's own included (checked in the release binary's
+/// `.init_array`: argv, this, then the unprioritised rest). The call
+/// makes one `prctl` and does not allocate. A failure (an old kernel)
+/// leaves the default.
+#[cfg(target_os = "linux")]
+#[used]
+#[unsafe(link_section = ".init_array.00100")]
+static NO_THP: extern "C" fn() = {
+    extern "C" fn no_thp() {
+        let _ = rustix::thread::disable_transparent_huge_pages(true);
+    }
+    no_thp
+};
+
 /// Subcommands the design commits to, with the milestone that delivers each.
 const COMMANDS: &[(&str, &str, &str)] = &[
     (
@@ -120,12 +145,6 @@ fn dispatch(args: &[String]) -> Result<Action, String> {
 type Tool = fn(&[String], Style) -> (String, bool);
 
 fn main() -> ExitCode {
-    // No transparent huge pages: on a system with THP `always` (GitHub's
-    // runners), mimalloc's arenas fill 2 MiB pages for a few KiB of heap
-    // (55 MB PSS for design.md's bar instead of about 25). mimalloc's
-    // `no_thp` only stops it asking for them. Before anything allocates
-    // much; a failure (an old kernel) leaves the default.
-    let _ = rustix::thread::disable_transparent_huge_pages(true);
     let args: Vec<String> = std::env::args().skip(1).collect();
     let tool: Option<Tool> = match args.first().map(String::as_str) {
         Some("check") => Some(check::run),
@@ -259,6 +278,15 @@ mod tests {
         );
         assert!(run(&["run", "--demo", "x"]).is_err());
         assert!(run(&["run", "a", "b"]).is_err());
+    }
+
+    /// `NO_THP` ran before the test harness's `main`.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn transparent_huge_pages_are_off_before_main() {
+        if let Ok(off) = rustix::thread::transparent_huge_pages_are_disabled() {
+            assert!(off, "THP is on for the process");
+        }
     }
 
     #[test]

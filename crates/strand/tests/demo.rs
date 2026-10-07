@@ -242,8 +242,14 @@ fn memory_report(pid: u32) -> String {
     }
     // The ten mappings with the most PSS.
     let smaps = read(&format!("/proc/{pid}/smaps"));
-    let mut maps: Vec<(u64, String)> = Vec::new();
+    let mut maps: Vec<(u64, u64, String)> = Vec::new();
     let mut head = String::new();
+    let kb = |v: &str| {
+        v.split_whitespace()
+            .next()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
+    };
     for l in smaps.lines() {
         if l.split_whitespace()
             .next()
@@ -251,17 +257,21 @@ fn memory_report(pid: u32) -> String {
         {
             head = l.to_string();
         } else if let Some(v) = l.strip_prefix("Pss:") {
-            let kb = v
-                .split_whitespace()
-                .next()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(0);
-            maps.push((kb, head.clone()));
+            maps.push((kb(v), 0, head.clone()));
+        } else if let Some(v) = l.strip_prefix("AnonHugePages:")
+            && let Some(m) = maps.last_mut()
+        {
+            m.1 = kb(v);
         }
     }
     maps.sort_by_key(|m| std::cmp::Reverse(m.0));
-    for (kb, m) in maps.iter().take(10) {
-        out.push_str(&format!("{kb:>7} kB  {m}\n"));
+    for (kb, huge, m) in maps.iter().take(10) {
+        let huge = if *huge > 0 {
+            format!(" ({huge} kB huge)")
+        } else {
+            String::new()
+        };
+        out.push_str(&format!("{kb:>7} kB{huge}  {m}\n"));
     }
     out
 }
@@ -275,6 +285,18 @@ fn assert_thp_off(pid: u32) {
     if let Some(l) = line {
         assert_eq!(l.split_whitespace().nth(1), Some("0"), "THP is on: {l}");
     }
+    // Off from before the first allocation (`main.rs`, `NO_THP`): with
+    // THP `always`, pages the runtime touched before `main` were huge.
+    let rollup = std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup")).unwrap();
+    let huge = rollup
+        .lines()
+        .find_map(|l| l.strip_prefix("AnonHugePages:"))
+        .map(str::trim);
+    assert!(
+        huge.is_none_or(|h| h == "0 kB"),
+        "huge pages resident: {huge:?}\n{}",
+        memory_report(pid)
+    );
 }
 
 fn pss_kb(pid: u32) -> u64 {
