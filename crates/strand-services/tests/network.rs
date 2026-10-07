@@ -1,0 +1,235 @@
+//! `network` against python-dbusmock's `networkmanager` template on a
+//! private bus: the joined Wi-Fi network, the radio written through
+//! `WirelessEnabled`, access points scanned only while a visible reader
+//! reads them, and joining a network.
+
+mod support;
+
+use std::time::Duration;
+
+use strand_core::Runtime;
+use strand_services::network::{AccessPoint, NM};
+use strand_services::testing::{DbusMock, PrivateBus};
+use strand_services::{Data, Store, ToData, network};
+use support::*;
+
+const ROOT: &str = "/org/freedesktop/NetworkManager";
+
+fn add_ap(
+    tokio: &tokio::runtime::Runtime,
+    conn: &zbus::Connection,
+    dev: &str,
+    name: &str,
+    ssid: &str,
+    strength: u8,
+) -> String {
+    mock(
+        tokio,
+        conn,
+        NM,
+        ROOT,
+        "AddAccessPoint",
+        &(
+            dev,
+            name,
+            ssid,
+            "00:23:F8:7E:12:BA",
+            2u32,
+            2425u32,
+            5400u32,
+            strength,
+            // NM_802_11_AP_SEC_KEY_MGMT_PSK.
+            0x100u32,
+        ),
+    )
+    .body()
+    .deserialize()
+    .unwrap()
+}
+
+fn names(b: &strand_services::Builtin, rt: &Runtime) -> Vec<(String, bool)> {
+    b.network
+        .cells()
+        .access_points
+        .get_untracked(rt)
+        .unwrap()
+        .items()
+        .iter()
+        .map(|(_, a)| (a.ssid.clone(), a.active))
+        .collect()
+}
+
+#[test]
+fn network_follows_networkmanager_and_scans_only_while_watched() {
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let Some(_nm) = DbusMock::start(&bus, "networkmanager", true, None, NM) else {
+        return;
+    };
+    let dev: String = mock(
+        &tokio,
+        &conn,
+        NM,
+        ROOT,
+        "AddWiFiDevice",
+        &("mock_WiFi", "wlan0", 100i32),
+    )
+    .body()
+    .deserialize()
+    .unwrap();
+    let home = add_ap(&tokio, &conn, &dev, "Mock_AP1", "Home", 82);
+    let saved: String = mock(
+        &tokio,
+        &conn,
+        NM,
+        ROOT,
+        "AddWiFiConnection",
+        &(dev.as_str(), "Mock_Con1", "Home", "wpa-psk"),
+    )
+    .body()
+    .deserialize()
+    .unwrap();
+    mock(
+        &tokio,
+        &conn,
+        NM,
+        ROOT,
+        "AddActiveConnection",
+        &(
+            vec![dev.as_str()],
+            saved.as_str(),
+            home.as_str(),
+            "Mock_Active1",
+            2u32,
+        ),
+    );
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let cells = b.network.cells();
+    b.network.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert_eq!(cells.connected.get_untracked(&rt), Ok(true));
+    assert_eq!(cells.ssid.get_untracked(&rt), Ok(Some("Home".to_string())));
+    assert_eq!(cells.strength.get_untracked(&rt), Ok(0.82));
+    assert_eq!(cells.wifi.get_untracked(&rt), Ok(true));
+    assert!(names(&b, &rt).is_empty(), "nobody reads the access points");
+    let scans = || mock_calls(&tokio, &conn, NM, &dev, "RequestScan").len();
+    assert_eq!(scans(), 0, "no scan while nobody reads the access points");
+
+    // The joined network's strength moves.
+    mock(
+        &tokio,
+        &conn,
+        NM,
+        &home,
+        "UpdateProperties",
+        &(
+            "org.freedesktop.NetworkManager.AccessPoint",
+            std::collections::HashMap::from([("Strength", zbus::zvariant::Value::from(40u8))]),
+        ),
+    );
+    until(&rt, &s, "the new strength", || {
+        cells.strength.get_untracked(&rt) == Ok(0.4)
+    });
+
+    // A network menu opens: access points are read and a scan asked for.
+    let field = network::Network::FIELDS
+        .iter()
+        .position(|f| f.name == "access_points")
+        .unwrap();
+    b.network.acquire_field(field);
+    until(&rt, &s, "the access points", || {
+        names(&b, &rt) == [("Home".to_string(), true)]
+    });
+    assert_eq!(scans(), 1);
+    let cafe = add_ap(&tokio, &conn, &dev, "Mock_AP2", "Cafe", 60);
+    until(&rt, &s, "a new access point", || {
+        names(&b, &rt) == [("Home".to_string(), true), ("Cafe".to_string(), false)]
+    });
+    let _ = cafe;
+
+    // Joining Cafe (no saved connection): a new one is added.
+    let item = AccessPoint {
+        ssid: "Cafe".into(),
+        strength: 0.6,
+        secure: true,
+        active: false,
+    };
+    b.network
+        .dynamic()
+        .action(&rt, "connect", Some(&item.to_data()), &[])
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while mock_calls(&tokio, &conn, NM, ROOT, "AddAndActivateConnection").is_empty() {
+        assert!(std::time::Instant::now() < deadline, "never joined Cafe");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // Joining Home (saved): its connection is activated.
+    let home_item = AccessPoint {
+        ssid: "Home".into(),
+        ..item
+    };
+    b.network
+        .dynamic()
+        .action(&rt, "connect", Some(&home_item.to_data()), &[])
+        .unwrap();
+    while mock_calls(&tokio, &conn, NM, ROOT, "ActivateConnection").is_empty() {
+        assert!(std::time::Instant::now() < deadline, "never joined Home");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // The menu closes: the list goes, and new access points are not
+    // followed.
+    b.network.release_field(field);
+    until(&rt, &s, "no access points", || names(&b, &rt).is_empty());
+    add_ap(&tokio, &conn, &dev, "Mock_AP3", "Library", 30);
+    std::thread::sleep(Duration::from_millis(200));
+    s.pump(&rt);
+    assert!(names(&b, &rt).is_empty());
+    assert_eq!(scans(), 1);
+
+    // The radio is switched off from the shell.
+    b.network
+        .dynamic()
+        .write(&rt, 3, &[], Data::Bool(false))
+        .unwrap();
+    rt.flush();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        s.pump(&rt);
+        rt.flush();
+        let on = tokio
+            .block_on(conn.call_method(
+                Some(NM),
+                ROOT,
+                Some("org.freedesktop.DBus.Properties"),
+                "Get",
+                &(NM, "WirelessEnabled"),
+            ))
+            .unwrap();
+        let on: zbus::zvariant::OwnedValue = on.body().deserialize().unwrap();
+        if on == zbus::zvariant::OwnedValue::from(false) {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "the radio stayed on");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(cells.wifi.get_untracked(&rt), Ok(false));
+    // NetworkManager says it went offline.
+    mock(
+        &tokio,
+        &conn,
+        NM,
+        ROOT,
+        "SetGlobalConnectionState",
+        &(20u32,),
+    );
+    until(&rt, &s, "offline", || {
+        cells.connected.get_untracked(&rt) == Ok(false)
+    });
+    assert_eq!(b.network.starts(), 1);
+    s.shutdown();
+}

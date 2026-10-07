@@ -178,13 +178,15 @@ pub fn path(msg: &Message) -> Option<String> {
 }
 
 /// A daemon followed by its well-known name: its owner changes, and the
-/// signals it sends under a path namespace.
+/// signals it sends that the daemon's subscriptions match (each a match
+/// rule of its own, added and dropped as the service needs them: a scan's
+/// access points only while watched).
 pub struct Daemon {
     conn: Connection,
     name: BusName<'static>,
     dbus: zbus::fdo::DBusProxy<'static>,
     owners: zbus::fdo::NameOwnerChangedStream,
-    signals: MessageStream,
+    subscriptions: Vec<(String, MessageStream)>,
     owner: Option<OwnedUniqueName>,
 }
 
@@ -193,6 +195,10 @@ impl std::fmt::Debug for Daemon {
         f.debug_struct("Daemon")
             .field("name", &self.name)
             .field("owner", &self.owner)
+            .field(
+                "subscriptions",
+                &self.subscriptions.iter().map(|s| &s.0).collect::<Vec<_>>(),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -207,39 +213,69 @@ pub enum DaemonEvent {
     Signal(Message),
 }
 
+/// A signal rule: the signals of objects under `namespace`.
+pub fn namespace_rule(namespace: &str) -> zbus::Result<MatchRule<'static>> {
+    Ok(MatchRule::builder()
+        .msg_type(MessageType::Signal)
+        .path_namespace(namespace.to_string())?
+        .build())
+}
+
+/// A signal rule: the signals of the object at `path`.
+pub fn path_rule(path: &str) -> zbus::Result<MatchRule<'static>> {
+    Ok(MatchRule::builder()
+        .msg_type(MessageType::Signal)
+        .path(path.to_string())?
+        .build())
+}
+
 impl Daemon {
     /// Follow `name` on `conn`, with the signals of the daemon's objects
     /// under `namespace` (`/` for all). Subscribes before the first read,
     /// so nothing is missed between them.
     pub async fn follow(conn: &Connection, name: &str, namespace: &str) -> zbus::Result<Daemon> {
-        let rule = MatchRule::builder()
-            .msg_type(MessageType::Signal)
-            .path_namespace(namespace.to_string())?
-            .build();
-        Self::follow_rule(conn, name, rule).await
+        let mut d = Self::new(conn, name).await?;
+        d.subscribe("main", namespace_rule(namespace)?).await?;
+        Ok(d)
     }
 
-    /// Follow `name` with the signals `rule` matches.
-    pub async fn follow_rule(
-        conn: &Connection,
-        name: &str,
-        rule: MatchRule<'_>,
-    ) -> zbus::Result<Daemon> {
+    /// Follow `name` on `conn` with no signal subscription yet
+    /// ([`Daemon::subscribe`]); its owner is asked for once the
+    /// owner-change subscription is in place.
+    pub async fn new(conn: &Connection, name: &str) -> zbus::Result<Daemon> {
         let name = BusName::try_from(name.to_string())?;
         let dbus = zbus::fdo::DBusProxy::new(conn).await?;
         let owners = dbus
             .receive_name_owner_changed_with_args(&[(0, name.as_str())])
             .await?;
-        let signals = MessageStream::for_match_rule(rule.to_owned(), conn, Some(256)).await?;
         let owner = dbus.get_name_owner(name.clone()).await.ok();
         Ok(Daemon {
             conn: conn.clone(),
             name,
             dbus,
             owners,
-            signals,
+            subscriptions: Vec::new(),
             owner,
         })
+    }
+
+    /// Add the signals `rule` matches, under `key` (replacing a
+    /// subscription of the same key).
+    pub async fn subscribe(&mut self, key: &str, rule: MatchRule<'_>) -> zbus::Result<()> {
+        let stream = MessageStream::for_match_rule(rule.to_owned(), &self.conn, Some(256)).await?;
+        self.unsubscribe(key);
+        self.subscriptions.push((key.to_string(), stream));
+        Ok(())
+    }
+
+    /// Drop the subscription `key` (its match rule goes with it).
+    pub fn unsubscribe(&mut self, key: &str) {
+        self.subscriptions.retain(|(k, _)| k != key);
+    }
+
+    /// Whether subscription `key` is in place.
+    pub fn subscribed(&self, key: &str) -> bool {
+        self.subscriptions.iter().any(|(k, _)| k == key)
     }
 
     /// The connection.
@@ -257,28 +293,54 @@ impl Daemon {
         self.name.as_str()
     }
 
+    /// `msg` was sent by the name's current owner.
+    pub fn from_owner(&self, msg: &Message) -> bool {
+        match (&self.owner, msg.header().sender()) {
+            (Some(o), Some(s)) => o.as_str() == s.as_str(),
+            _ => false,
+        }
+    }
+
     /// The next owner change or signal from the owner. `None`: the
     /// connection ended (the bus went away).
     pub async fn next(&mut self) -> Option<DaemonEvent> {
+        use std::task::Poll;
         loop {
-            tokio::select! {
-                o = self.owners.next() => {
-                    let o = o?;
-                    let owner = o.args().ok().and_then(|a| a.new_owner().as_ref().map(|n| OwnedUniqueName::from(n.to_owned())));
+            let got = std::future::poll_fn(|cx| {
+                match self.owners.poll_next(cx) {
+                    Poll::Ready(None) => return Poll::Ready(None),
+                    Poll::Ready(Some(o)) => {
+                        let owner = o.args().ok().and_then(|a| {
+                            a.new_owner()
+                                .as_ref()
+                                .map(|n| OwnedUniqueName::from(n.to_owned()))
+                        });
+                        return Poll::Ready(Some(Err(owner)));
+                    }
+                    Poll::Pending => {}
+                }
+                for (_, s) in &mut self.subscriptions {
+                    loop {
+                        match s.poll_next(cx) {
+                            Poll::Ready(None) => return Poll::Ready(None),
+                            Poll::Ready(Some(Ok(m))) => return Poll::Ready(Some(Ok(m))),
+                            // A message that did not parse: skip it (and
+                            // poll again, so the waker stays registered).
+                            Poll::Ready(Some(Err(_))) => continue,
+                            Poll::Pending => break,
+                        }
+                    }
+                }
+                Poll::Pending
+            })
+            .await?;
+            match got {
+                Err(owner) => {
                     self.owner = owner;
                     return Some(DaemonEvent::Owner);
                 }
-                m = self.signals.next() => {
-                    let m = m?;
-                    let Ok(m) = m else { continue };
-                    let from_owner = match (&self.owner, m.header().sender()) {
-                        (Some(o), Some(s)) => o.as_str() == s.as_str(),
-                        _ => false,
-                    };
-                    if from_owner {
-                        return Some(DaemonEvent::Signal(m));
-                    }
-                }
+                Ok(m) if self.from_owner(&m) => return Some(DaemonEvent::Signal(m)),
+                Ok(_) => {}
             }
         }
     }

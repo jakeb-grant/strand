@@ -28,6 +28,7 @@
 extern crate self as strand_services;
 
 pub mod battery;
+pub mod bluetooth;
 pub mod brightness;
 pub mod bus;
 mod client;
@@ -36,6 +37,7 @@ mod cx;
 mod data;
 pub mod dbus;
 pub mod memory;
+pub mod network;
 mod procfs;
 mod service;
 mod store;
@@ -63,6 +65,8 @@ pub struct Builtin {
     pub memory: Client<memory::Memory>,
     pub battery: Client<battery::Battery>,
     pub brightness: Client<brightness::Brightness>,
+    pub network: Client<network::Network>,
+    pub bluetooth: Client<bluetooth::Bluetooth>,
 }
 
 impl Builtin {
@@ -74,6 +78,8 @@ impl Builtin {
             memory: services.register(rt),
             battery: services.register(rt),
             brightness: services.register(rt),
+            network: services.register(rt),
+            bluetooth: services.register(rt),
         }
     }
 
@@ -85,6 +91,8 @@ impl Builtin {
             self.memory.dynamic(),
             self.battery.dynamic(),
             self.brightness.dynamic(),
+            self.network.dynamic(),
+            self.bluetooth.dynamic(),
         ]
     }
 }

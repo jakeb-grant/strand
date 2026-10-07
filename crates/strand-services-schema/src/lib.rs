@@ -17,8 +17,12 @@ pub const MEMORY: &str = include_str!("memory.schema");
 pub const BATTERY: &str = include_str!("battery.schema");
 /// `brightness`: the backlight (sysfs, logind).
 pub const BRIGHTNESS: &str = include_str!("brightness.schema");
+/// `network`: NetworkManager.
+pub const NETWORK: &str = include_str!("network.schema");
+/// `bluetooth`: BlueZ.
+pub const BLUETOOTH: &str = include_str!("bluetooth.schema");
 
 /// Every builtin service's schema text, in registration order.
 pub fn schemas() -> Vec<&'static str> {
-    vec![SYSTEM, CPU, MEMORY, BATTERY, BRIGHTNESS]
+    vec![SYSTEM, CPU, MEMORY, BATTERY, BRIGHTNESS, NETWORK, BLUETOOTH]
 }
