@@ -303,6 +303,25 @@ impl Loader {
         }
     }
 
+    /// The extra check's answers changed since the last compile (a `from
+    /// dbus` daemon answered after a reload went ahead without it): check
+    /// the running files, and those held back, again. Files held back
+    /// that now compile are committed (`build`); otherwise there is no
+    /// build (the running program is unchanged) and the diagnostics say
+    /// what the late answer found: an error in a running file cannot
+    /// unload it, but is reported (and holds later edits back) like any
+    /// other until it is fixed.
+    pub fn recheck(&mut self) -> Outcome {
+        let last = self.last.clone();
+        let mut out = self.reconcile(true);
+        if out.committed.is_empty() && out.build.is_some() {
+            // Nothing new committed: the same program, not a reload.
+            out.build = None;
+            self.last = last;
+        }
+        out
+    }
+
     /// The source map of `live` with `take` taken from disk.
     fn assemble(&self, take: &BTreeSet<PathBuf>) -> SourceMap {
         let mut texts: BTreeMap<&PathBuf, Arc<str>> = BTreeMap::new();

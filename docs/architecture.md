@@ -1271,8 +1271,12 @@ Public interfaces other crates and later stages build on:
     source and fields with their key paths and `rw`), called once at
     instantiation. `restart(rt, &CustomService, types)` / `stop(rt,
     name)`: a reload changed (or added) / removed a declaration; only
-    that service restarts or stops. Built-ins never do. All default to
-    nothing.
+    that service restarts or stops. Built-ins never do. `retype(rt,
+    &CustomService, types)`: a reload kept the declaration, but `types`
+    (the new program's table) may renumber its record and the enums and
+    records its fields name; the host reads its values as those types
+    from then on, without restarting it (called for every surviving
+    service that does not restart). All default to nothing.
   - `read(rt, service, field)` and `call(rt, service, method, args)`
     (`fn` methods: `clock.format`, `calendar.days`, `workspaces.on`)
     must read through the graph (a `Signal<Value>` per field) so

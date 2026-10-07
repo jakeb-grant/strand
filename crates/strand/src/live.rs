@@ -99,6 +99,10 @@ pub enum Job {
         sources: Vec<CacheSource>,
         changed: CacheSink,
     },
+    /// The `from dbus` check heard an answer that differs from the one
+    /// the last compile used: check the running files again
+    /// (`Loader::recheck`).
+    Recheck,
     Stop,
 }
 
@@ -211,9 +215,17 @@ impl Worker {
                 None
             }
         };
-        let mut loader = Loader::new(dir, crate::services::schema().clone(), cache)
-            .with_check(crate::services::custom::dbus_check());
+        // `from dbus` services are checked against the bus: the boot
+        // waits for the answers, a reload never does (a late answer that
+        // differs checks the running files again).
+        let poke = jobs.clone();
+        let (check, waits) = crate::services::custom::dbus_check(move || {
+            let _ = poke.send(Job::Recheck);
+        });
+        let mut loader =
+            Loader::new(dir, crate::services::schema().clone(), cache).with_check(check);
         let boot = loader.boot();
+        waits.stop_waiting();
         if let Some(e) = loader.cache_error() {
             log::warn!("last-good cache: {e}");
         }
@@ -376,6 +388,7 @@ fn run(
         let mut reload: Option<bool> = None;
         let mut clients: Vec<u64> = Vec::new();
         let mut referenced: Option<Vec<(PathBuf, Role)>> = None;
+        let mut recheck = false;
         for j in queue {
             match j {
                 Job::Caches { sources, changed } => {
@@ -393,6 +406,7 @@ fn run(
                     caches = Some(changed);
                 }
                 Job::Poll => {}
+                Job::Recheck => recheck = true,
                 Job::Reload { hard, client } => {
                     reload = Some(reload.unwrap_or(false) || hard);
                     clients.extend(client);
@@ -504,13 +518,25 @@ fn run(
             w.rescan();
         }
         let files: Vec<PathBuf> = modules.iter().map(|(p, _)| p.clone()).collect();
-        let outcome = if reload.is_some() || rescan {
+        let mut outcome = if reload.is_some() || rescan {
             loader.rescan()
         } else if !modules.is_empty() {
             loader.changed(modules)
+        } else if recheck {
+            recheck = false;
+            loader.recheck()
         } else {
             continue;
         };
+        if recheck
+            && (outcome.repeated
+                || (outcome.build.is_none()
+                    && outcome.diagnostics.is_empty()
+                    && outcome.held.is_empty()))
+        {
+            // The files did not compile again, but the answers changed.
+            outcome = loader.recheck();
+        }
         if let Some(e) = loader.cache_error() {
             log::warn!("last-good cache: {e}");
         }

@@ -23,6 +23,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use strand_compiler::hir::{PollTarget, SourceSpec};
 use strand_compiler::lower::CustomService;
@@ -641,13 +643,34 @@ impl ServiceHost for CustomHost {
 /// D-Bus introspection for the compiler's `from dbus` check
 /// ([`strand_compiler::check::dbus`]), on the environment's buses (a test
 /// points `DBUS_SYSTEM_BUS_ADDRESS` and `DBUS_SESSION_BUS_ADDRESS` at a
-/// private bus), blocking. Answers, failures included, are remembered for
+/// private bus). Answers, failures included, are remembered for
 /// [`strand_introspect::TTL`] ([`strand_introspect::Cache`], shared with the
 /// LSP's), so a reload burst asks once and a daemon that does not answer
-/// costs one bounded wait.
-#[derive(Debug, Default)]
+/// costs one bounded wait. It waits for an answer (`strand check`, and
+/// `strand run`'s boot) until [`DbusCheck::stop_waiting`]; from then on it
+/// answers from what it remembers, asks again off the caller's thread,
+/// and calls its `recheck` when an answer differs ([`dbus_check`]).
+#[derive(Default)]
 pub struct BusIntrospector {
-    cache: strand_introspect::Cache,
+    cache: Arc<strand_introspect::Cache>,
+    /// Not waiting: what to call when a late answer differs.
+    ask: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Still waiting for answers (`ask` is used once this is false).
+    waits: Arc<AtomicBool>,
+}
+
+impl std::fmt::Debug for BusIntrospector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BusIntrospector")
+            .field("waits", &self.waits())
+            .finish_non_exhaustive()
+    }
+}
+
+impl BusIntrospector {
+    fn waits(&self) -> bool {
+        self.ask.is_none() || self.waits.load(Ordering::SeqCst)
+    }
 }
 
 /// Introspected properties as the compiler's check reads them.
@@ -677,16 +700,59 @@ impl strand_compiler::check::dbus::Introspect for BusIntrospector {
         } else {
             strand_introspect::Bus::Session
         };
-        Some(self.cache.properties(&bus, name, path).map(bus_properties))
+        let answer = match &self.ask {
+            Some(ask) if !self.waits() => {
+                let ask = ask.clone();
+                self.cache
+                    .properties_or_ask(&bus, name, path, move || ask())?
+            }
+            _ => self.cache.properties(&bus, name, path),
+        };
+        Some(answer.map(bus_properties))
+    }
+}
+
+/// Ends the waiting of a [`dbus_check`].
+#[derive(Clone, Debug)]
+pub struct DbusCheck(Arc<AtomicBool>);
+
+impl DbusCheck {
+    /// From now on the check never waits on a bus: a service whose answer
+    /// is not in yet is not checked, and `recheck` is called once it is.
+    pub fn stop_waiting(&self) {
+        self.0.store(false, Ordering::SeqCst);
     }
 }
 
 /// The loader's extra check: `from dbus` services against introspection.
-pub fn dbus_check() -> strand_compiler::reconcile::loader::ExtraCheck {
-    let intro = BusIntrospector::default();
-    strand_compiler::reconcile::loader::ExtraCheck(Box::new(move |c| {
-        strand_compiler::check::dbus::check(&c.program, &intro)
-    }))
+/// It waits for answers (the boot) until [`DbusCheck::stop_waiting`];
+/// then a compile (a reload) never waits on a bus, and `recheck` (which
+/// must have the loader check the running files again,
+/// `Loader::recheck`) is called, on another thread, when an answer
+/// comes in that differs from the one the compile used.
+pub fn dbus_check(
+    recheck: impl Fn() + Send + Sync + 'static,
+) -> (strand_compiler::reconcile::loader::ExtraCheck, DbusCheck) {
+    dbus_check_on(Arc::new(strand_introspect::Cache::default()), recheck)
+}
+
+/// [`dbus_check`] over `cache` (tests ask through a fake bus).
+fn dbus_check_on(
+    cache: Arc<strand_introspect::Cache>,
+    recheck: impl Fn() + Send + Sync + 'static,
+) -> (strand_compiler::reconcile::loader::ExtraCheck, DbusCheck) {
+    let waits = Arc::new(AtomicBool::new(true));
+    let intro = BusIntrospector {
+        cache,
+        ask: Some(Arc::new(recheck)),
+        waits: waits.clone(),
+    };
+    (
+        strand_compiler::reconcile::loader::ExtraCheck(Box::new(move |c| {
+            strand_compiler::check::dbus::check(&c.program, &intro)
+        })),
+        DbusCheck(waits),
+    )
 }
 
 #[cfg(test)]
@@ -839,5 +905,93 @@ mod tests {
             c(&Ty::Optional(Box::new(Ty::INT)), Data::Null),
             Some(Value::Null)
         );
+    }
+
+    /// `strand run`'s loader never waits on a bus after its boot: a save
+    /// of a config whose `from dbus` daemon does not answer compiles at
+    /// once (the remembered answer is used and asked again off the
+    /// compiler's thread), and a service added by a reload is checked
+    /// once its answer is in, through `recheck` and `Loader::recheck`.
+    #[test]
+    fn the_loader_checks_dbus_services_off_the_reload_path() {
+        use std::sync::atomic::AtomicUsize;
+        use strand_compiler::reconcile::loader::Loader;
+        let dir = std::env::temp_dir().join(format!("strand-dbus-loader-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.strand");
+        let hung =
+            "service thing from dbus session \"org.example.Hung\" { level: float = Level }\n";
+        std::fs::write(&file, format!("{hung}bar B {{ text \"x\" }}\n")).unwrap();
+        let asked = Arc::new(AtomicUsize::new(0));
+        let n = asked.clone();
+        let cache = Arc::new(strand_introspect::Cache::with_fetch(
+            Duration::from_millis(50),
+            move |_, name, _| {
+                n.fetch_add(1, Ordering::SeqCst);
+                if name == "org.example.Hung" {
+                    std::thread::sleep(Duration::from_millis(1500));
+                    return Err("no answer".into());
+                }
+                std::thread::sleep(Duration::from_millis(200));
+                Ok(vec![strand_introspect::Property {
+                    interface: "org.example.Late".into(),
+                    name: "Level".into(),
+                    signature: "d".into(),
+                    readable: true,
+                    writable: false,
+                }])
+            },
+        ));
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let (check, waits) = dbus_check_on(cache, move || {
+            let _ = tx.send(());
+        });
+        let mut loader =
+            Loader::new(&dir, crate::services::schema().clone(), None).with_check(check);
+        let t = std::time::Instant::now();
+        let boot = loader.boot();
+        assert!(boot.build.is_some());
+        assert!(
+            t.elapsed() >= Duration::from_millis(1400) && asked.load(Ordering::SeqCst) == 1,
+            "the boot waits for the answer"
+        );
+        waits.stop_waiting();
+        // Past the remembered answer's ttl: a markup save does not wait.
+        std::thread::sleep(Duration::from_millis(100));
+        std::fs::write(&file, format!("{hung}bar B {{ text \"y\" }}\n")).unwrap();
+        let t = std::time::Instant::now();
+        let out = loader.changed([(file.clone(), true)]);
+        assert!(
+            t.elapsed() < Duration::from_millis(700),
+            "the reload waited on the bus: {:?}",
+            t.elapsed()
+        );
+        assert!(out.build.is_some(), "{:?}", out.diagnostics);
+        // A service added by a reload: not checked yet, committed; its
+        // late answer (a read-only property written `rw`) checks again.
+        let late =
+            "service late from dbus session \"org.example.Late\" { level: float rw = Level }\n";
+        std::fs::write(&file, format!("{hung}{late}bar B {{ text \"y\" }}\n")).unwrap();
+        let t = std::time::Instant::now();
+        let out = loader.changed([(file.clone(), true)]);
+        assert!(
+            t.elapsed() < Duration::from_millis(700),
+            "{:?}",
+            t.elapsed()
+        );
+        assert!(out.build.is_some(), "{:?}", out.diagnostics);
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("the late answer asks for a check");
+        let out = loader.recheck();
+        assert!(out.build.is_none(), "the running program is unchanged");
+        assert!(
+            out.diagnostics
+                .iter()
+                .any(|d| d.code == "check::dbus_read_only"),
+            "{:?}",
+            out.diagnostics
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

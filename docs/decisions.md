@@ -6977,3 +6977,17 @@ elsewhere): `ServiceHost::retype` (new, default no-op) is called for every
 surviving service that does not restart, and the custom host converts
 its values as the new program's types from then on without restarting
 the service.
+
+**2026-10-07 · wave4-a3 (r2): `strand run`'s reloads never wait on a
+bus.** The loader's `from dbus` check waits for introspection only at
+boot (nothing runs yet, and a bad `rw` must refuse the config as `strand
+check` does). After the boot it answers from the shared cache, even past
+its ttl, and asks again on a thread of its own; a service whose first
+answer is not in yet is not checked by that compile. When an answer
+arrives that differs from the one used, the worker runs
+`Loader::recheck`: files held back are compiled again (and committed if
+they now pass), and otherwise the running program is unchanged and the
+late diagnostics are reported like a held edit's (overlay, `strand
+watch`); a late error in a running file cannot unload it, but holds
+later edits of it back until it is fixed, as an error found at save time
+would have.
