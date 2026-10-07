@@ -711,6 +711,13 @@ impl<S: Service> ClientInner<S> {
             return;
         }
         self.starts.set(self.starts.get() + 1);
+        // One line per run, as `STRAND_LOG=info` shows it: what a test
+        // (and a user) counts to see that nothing restarted.
+        log::info!(
+            "service `{}` started (run {})",
+            self.name,
+            self.starts.get()
+        );
         *self.run.borrow_mut() = Some(Run {
             rx,
             tx,
@@ -742,6 +749,7 @@ impl<S: Service> ClientInner<S> {
                 f();
             }
             self.stops.set(self.stops.get() + 1);
+            log::info!("service `{}` stopped", self.name);
         }
     }
 

@@ -15,7 +15,7 @@
 //! tool fails the test instead of passing it silently.
 
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -258,6 +258,7 @@ pub fn dbusmock_python() -> Option<String> {
 #[derive(Debug)]
 pub struct DbusMock {
     child: Child,
+    log: PathBuf,
 }
 
 impl DbusMock {
@@ -306,7 +307,7 @@ impl DbusMock {
                 return None;
             }
         };
-        let mut mock = DbusMock { child };
+        let mut mock = DbusMock { child, log };
         // Up to 10 s, but no longer than the mock lives.
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let mut owned = false;
@@ -318,7 +319,7 @@ impl DbusMock {
         }
         if !owned {
             let exited = mock.child.try_wait().ok().flatten();
-            let output = std::fs::read_to_string(&log).unwrap_or_default();
+            let output = std::fs::read_to_string(&mock.log).unwrap_or_default();
             panic!(
                 "python-dbusmock's {template} never owned {name} ({}); its output:\n{output}",
                 exited.map_or_else(|| "still running".to_string(), |s| s.to_string())
@@ -333,6 +334,13 @@ impl DbusMock {
     /// bus name shows).
     pub fn pid(&self) -> u32 {
         self.child.id()
+    }
+
+    /// The mock's output: python-dbusmock logs each method call it
+    /// answers there (`Get`, `GetAll`, the template's methods), one line
+    /// each, so a test can count the calls a client made.
+    pub fn log(&self) -> &Path {
+        &self.log
     }
 }
 
