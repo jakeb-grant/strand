@@ -154,10 +154,40 @@ pub fn write_rgba(width: u32, height: u32, rgba: &[u8]) -> Result<Pinned, String
     }
     sweep();
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let tmp = dir.join(format!(".{:016x}.tmp", h.finish()));
-    encode(&tmp, width, height, rgba)?;
-    std::fs::rename(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))?;
+    publish(&dir, &path, |tmp| encode(tmp, width, height, rgba))?;
     Ok(pinned)
+}
+
+/// Write a file at `path` through `write` on a temporary file of this
+/// writer's own, then rename it into place. Writers of the same pixels at
+/// once each have their own temporary file; one rename wins, and a writer
+/// whose rename fails while the file exists has it all the same (the name
+/// is the content's).
+fn publish(
+    dir: &Path,
+    path: &Path,
+    write: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<(), String> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("pixmap");
+    let tmp = dir.join(format!(".{stem}.{n}.tmp"));
+    let done = write(&tmp).and_then(|()| {
+        std::fs::rename(&tmp, path).or_else(|e| {
+            if path.exists() {
+                Ok(())
+            } else {
+                Err(format!("{}: {e}", path.display()))
+            }
+        })
+    });
+    if done.is_err() || tmp.exists() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    done
 }
 
 /// The largest PNG a sender may hand over as bytes.
@@ -179,9 +209,9 @@ pub fn write_png(bytes: &[u8]) -> Result<Pinned, String> {
     }
     sweep();
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let tmp = dir.join(format!(".{:016x}.tmp", h.finish()));
-    std::fs::write(&tmp, bytes).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))?;
+    publish(&dir, &path, |tmp| {
+        std::fs::write(tmp, bytes).map_err(|e| format!("{}: {e}", tmp.display()))
+    })?;
     Ok(pinned)
 }
 
@@ -331,6 +361,53 @@ mod tests {
         assert!(write_png(b"GIF89a").is_err());
         let png = write_png(&bytes).unwrap();
         assert!(png.path().exists());
+    }
+
+    #[test]
+    fn writers_of_the_same_pixels_at_once_all_succeed() {
+        let rgba: Vec<u8> = (0..64 * 64 * 4).map(|i| (i % 251) as u8).collect();
+        let png = {
+            let p = write_rgba(64, 64, &rgba).unwrap();
+            std::fs::read(p.path()).unwrap()
+        };
+        for _ in 0..20 {
+            let threads: Vec<_> = (0..4)
+                .map(|_| {
+                    let (rgba, png) = (rgba.clone(), png.clone());
+                    std::thread::spawn(move || {
+                        let a = write_rgba(64, 64, &rgba).unwrap();
+                        assert!(a.path().exists());
+                        let b = write_png(&png).unwrap();
+                        assert!(b.path().exists());
+                        (a, b)
+                    })
+                })
+                .collect();
+            let held: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+            let paths = [
+                held[0].0.path().to_path_buf(),
+                held[0].1.path().to_path_buf(),
+            ];
+            assert!(paths.iter().all(|p| p.exists()));
+            drop(held);
+            assert!(
+                paths.iter().all(|p| !p.exists()),
+                "removed with the last handle"
+            );
+            let ours: Vec<String> = paths
+                .iter()
+                .filter_map(|p| p.file_stem()?.to_str().map(|s| format!(".{s}.")))
+                .collect();
+            let tmps = std::fs::read_dir(dir())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|e| {
+                    let n = e.file_name().to_string_lossy().into_owned();
+                    ours.iter().any(|o| n.starts_with(o.as_str()))
+                })
+                .count();
+            assert_eq!(tmps, 0, "no temporary file left behind");
+        }
     }
 
     #[test]

@@ -66,6 +66,54 @@ pub const RETRY_MAX: Duration = Duration::from_secs(30);
 /// their own to return.
 pub const JOIN_LIMIT: Duration = Duration::from_secs(2);
 
+/// How long the shared runtime thread, ending, waits for what dropped
+/// bodies left to finish ([`finalize`]: a notification server's closing
+/// signals).
+pub const FINALIZE_LIMIT: Duration = Duration::from_millis(500);
+
+thread_local! {
+    /// What dropped bodies left to finish on this thread's runtime
+    /// ([`finalize`]).
+    static FINALIZERS: std::cell::RefCell<Vec<tokio::task::JoinHandle<()>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Finish `f` after its body is gone (a drop guard's last words: the
+/// notification server's `NotificationClosed` signals). It runs on the
+/// current runtime; when that is the shared thread's and the thread ends
+/// ([`crate::Services::shutdown`], the registry dropped), it is given up
+/// to [`FINALIZE_LIMIT`] before the runtime goes. Without a runtime it is
+/// dropped.
+pub(crate) fn finalize(f: impl Future<Output = ()> + Send + 'static) {
+    let Ok(rt) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    let handle = rt.spawn(f);
+    let _ = FINALIZERS.try_with(|v| {
+        let mut v = v.borrow_mut();
+        v.retain(|h| !h.is_finished());
+        v.push(handle);
+    });
+}
+
+/// Wait (at most [`FINALIZE_LIMIT`]) for this thread's finalizers.
+fn run_finalizers(rt: &tokio::runtime::Runtime) {
+    let pending = FINALIZERS
+        .try_with(|v| std::mem::take(&mut *v.borrow_mut()))
+        .unwrap_or_default();
+    if pending.iter().all(|h| h.is_finished()) {
+        return;
+    }
+    rt.block_on(async {
+        let all = async {
+            for h in pending {
+                let _ = h.await;
+            }
+        };
+        let _ = tokio::time::timeout(FINALIZE_LIMIT, all).await;
+    });
+}
+
 thread_local! {
     /// Bodies running on this shared runtime thread: when the last ends,
     /// the bus connections they shared are dropped.
@@ -128,6 +176,11 @@ impl Shared {
                 // connection spawns its cleanup).
                 let enter = rt.enter();
                 drop(local);
+                drop(enter);
+                // What the dropped bodies left to say (a notification
+                // server's closing signals) goes out first, bounded.
+                run_finalizers(&rt);
+                let enter = rt.enter();
                 crate::bus::forget();
                 drop(enter);
                 drop(rt);
@@ -546,15 +599,20 @@ impl<S: Service> ClientInner<S> {
                 reg.shared_spawn(Box::new(move || {
                     Box::pin(async move {
                         let _counted = SharedBody::enter();
-                        tokio::select! {
-                            _ = stop_rx => {}
-                            r = body() => {
-                                if let Err(e) = &r {
-                                    log::debug!("service {} ended: {e}", S::NAME);
+                        // The shared connections it uses are let go
+                        // with it.
+                        crate::bus::with_user(async move {
+                            tokio::select! {
+                                _ = stop_rx => {}
+                                r = body() => {
+                                    if let Err(e) = &r {
+                                        log::debug!("service {} ended: {e}", S::NAME);
+                                    }
+                                    ended.send(Envelope::Ended(r.map_err(|e| e.0)));
                                 }
-                                ended.send(Envelope::Ended(r.map_err(|e| e.0)));
                             }
-                        }
+                        })
+                        .await
                     })
                 }))
             }
@@ -870,6 +928,12 @@ impl<S: Service> Member for ClientInner<S> {
                         run.noticed = true;
                     }
                     self.diagnose(rt, &m, true)
+                }
+                Envelope::Resolved => {
+                    if let Some(run) = self.run.borrow_mut().as_mut() {
+                        run.noticed = false;
+                    }
+                    self.resolve();
                 }
                 Envelope::Ready => {
                     // Ready without a notice (raised before readiness):

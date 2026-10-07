@@ -459,11 +459,18 @@ fn another_notification_server_fails_clearly() {
     let rt = Runtime::new();
     let (s, b) = services(&rt, bus.buses());
     b.notifications.acquire(&rt);
-    until(&rt, &s, "the run to fail", || !b.notifications.running());
-    let d = s.take_diagnostics();
+    let d = std::cell::RefCell::new(Vec::new());
+    until(&rt, &s, "the notice", || {
+        d.borrow_mut().extend(s.take_diagnostics());
+        !d.borrow().is_empty()
+    });
+    let d = d.into_inner();
     assert_eq!(d.len(), 1, "{d:?}");
     assert_eq!(d[0].service, "notifications");
-    assert!(d[0].notice, "for the overlay: the user must act");
+    assert!(
+        d[0].notice && !d[0].resolved,
+        "for the overlay: the user must act"
+    );
     let msg = d[0].to_string();
     // The owner's process, by pid and command name.
     let pid = other.pid();
@@ -471,40 +478,44 @@ fn another_notification_server_fails_clearly() {
     assert!(msg.contains(&format!("(pid {pid})")), "{msg}");
     assert!(msg.contains(&format!("`{}`", comm.trim())), "{msg}");
     // Not a systemd user service (no systemd on the private bus): the
-    // process is named for pkill, and the activation override given.
-    assert!(msg.contains(&format!("pkill -x {}", comm.trim())), "{msg}");
+    // exact process is named for kill (python-dbusmock is an
+    // interpreter: no pkill, which would stop every script it runs), and
+    // the activation override given.
+    assert!(msg.contains(&format!("`kill {pid}`")), "{msg}");
+    assert!(!msg.contains("pkill"), "{msg}");
     assert!(!msg.contains("systemctl"), "{msg}");
     assert!(msg.contains("dbus-1/services"), "{msg}");
     assert!(msg.contains(NAME), "{msg}");
-    // The other server keeps the name: no second server.
+    // The other server keeps the name: no second server. The run waits
+    // for the name, polling nothing: no timer, no restart.
     assert!(bus.wait_for_name(NAME, Duration::from_millis(100)));
-    // A retry failing the same way is not reported again.
-    let mut now = Duration::ZERO;
-    let starts = b.notifications.starts();
-    while b.notifications.starts() == starts {
-        now += Duration::from_millis(500);
-        rt.tick(now);
-        s.pump(&rt);
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    until(&rt, &s, "the retry to fail", || !b.notifications.running());
+    assert!(b.notifications.running());
+    assert_eq!(rt.next_deadline(), None, "no retry timer");
+    std::thread::sleep(Duration::from_millis(1500));
+    s.pump(&rt);
+    assert_eq!(b.notifications.starts(), 1, "not restarted");
     assert!(s.take_diagnostics().is_empty(), "reported once");
-    // The other daemon stops: the next retry takes the name over.
+    // The other daemon stops: the name is taken over at once.
+    let stopped = std::time::Instant::now();
     drop(other);
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
-    while !b.notifications.running() {
-        assert!(std::time::Instant::now() < deadline, "never took the name");
-        now += Duration::from_millis(500);
-        rt.tick(now);
-        s.pump(&rt);
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(bus.wait_for_name(NAME, Duration::from_secs(5)));
-    // The notice is resolved: the host takes it away.
     until(&rt, &s, "the notice resolved", || {
         let d = s.take_diagnostics();
         assert!(d.iter().all(|d| d.resolved), "{d:?}");
         !d.is_empty()
+    });
+    let took = stopped.elapsed();
+    assert!(
+        took < Duration::from_secs(3),
+        "took the name over in {took:?}"
+    );
+    assert!(bus.wait_for_name(NAME, Duration::from_secs(5)));
+    assert_eq!(b.notifications.starts(), 1, "the same run");
+    // It serves: a notification arrives.
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    notify(&tokio, &conn, 0, "Taken over", &[], HashMap::new(), -1);
+    until(&rt, &s, "the notification", || {
+        popups(&b, &rt).iter().any(|n| n.summary == "Taken over")
     });
     s.shutdown();
 }
@@ -574,4 +585,28 @@ fn a_restarted_server_starts_with_no_notifications() {
     assert_eq!(closed, 1, "closed once: {:?}", heard.lock().unwrap());
     assert!(s.take_diagnostics().is_empty());
     s.shutdown();
+}
+
+/// strand exiting (`Services::shutdown`) closes what the server holds:
+/// one `NotificationClosed` (reason 3) each, sent before the services'
+/// runtime goes.
+#[test]
+fn shutdown_closes_the_notifications_still_open() {
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let heard = hear(&tokio, &conn);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    b.notifications.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert!(bus.wait_for_name(NAME, Duration::from_secs(5)));
+    let one = notify(&tokio, &conn, 0, "One", &[], HashMap::new(), -1);
+    let two = notify(&tokio, &conn, 0, "Two", &[], HashMap::new(), 0);
+    until(&rt, &s, "both", || popups(&b, &rt).len() == 2);
+    s.shutdown();
+    wait_heard(&heard, &format!("Closed {one} 3"));
+    wait_heard(&heard, &format!("Closed {two} 3"));
 }

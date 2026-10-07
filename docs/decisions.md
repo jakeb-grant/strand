@@ -7274,7 +7274,16 @@ when the server stops (no reader for 5 s, or a failed run retried) it
 closes each one still open (`NotificationClosed`, reason 3) before the
 name goes (a drop guard holding the connection, since a stopped body is
 dropped rather than run to its end), and a new run starts with `popups` and `all` empty (`dnd`
-kept). Keeping them instead would let the new run's ids (from 1 again)
+kept). The guard first marks the server closed (under the ids' lock):
+from then on `Notify` and `CloseNotification` are D-Bus errors, so no id
+is handed out for a notification nobody would show, and a `Notify`
+whose body is already gone is refused the same way. The closing
+signals are a finalizer (`client::finalize`): on a stop they go out on
+the runtime as before, and when the services' thread ends
+(`Services::shutdown`, strand exiting) it waits up to 500 ms
+(`FINALIZE_LIMIT`) for them before dropping its runtime, which used to
+cancel them unsent. A `Notify` replacing an id the body closed while it
+was on its way is a new notification under that id, open again. Keeping them instead would let the new run's ids (from 1 again)
 name kept notifications, a sender's `CloseNotification` close the wrong
 one, and their pictures' files were removed with the old run; a shell
 showing history holds `notifications` (its toasts do), so the server
@@ -7284,29 +7293,43 @@ show "12:04" yet; the language track adds a time of day to `Date` (or a
 `received_at`), and the field follows.
 
 **2026-10-07 · wave4-a2: another notification server fails clearly.**
-When dunst, mako or a desktop's server owns the name, the run fails with
-`another notification server, `mako` (pid 4242), owns
+When dunst, mako or a desktop's server owns the name, the run raises a
+notice: `another notification server, `mako` (pid 4242), owns
 org.freedesktop.Notifications: strand cannot show notifications while it
-runs; stop it (`pkill -x mako`, or `kill 4242`) and remove it from
-your compositor's autostart. D-Bus may start one again on the next
-notification unless its activation is overridden (an empty
+runs; stop it (`kill 4242`, or `pkill -x mako` for every one) and
+remove it from your compositor's autostart. D-Bus may start one again
+on the next notification unless its activation is overridden (an empty
 ~/.local/share/dbus-1/services/org.freedesktop.Notifications.service).
 strand takes the name over once it is free.` (pid from
-`GetConnectionUnixProcessID`, name from `/proc/<pid>/comm`). When the
-process runs as a systemd user service (`GetUnitByPID` on the session
-bus's systemd, bounded to 2 s; only a `.service` that is not D-Bus
-activation's transient `dbus-…` one), the advice names that unit
-instead: `systemctl --user stop mako.service` and `systemctl --user mask
-mako.service`. A process name is not a unit name (xfce4-notifyd,
-notification-daemon, a python server), and stopping a scope would stop
-the terminal or session it belongs to. dunst and mako ship activation
-files for the name. The client's retry
-backoff (up to 30 s) asks again, so stopping the other daemon hands the
-name over without a reload; the same failure is reported once. Once a
-run becomes ready without raising the notice again (the name taken
-over), or the service stops (it ended cleanly, nobody read it for 5 s,
-or `Services::shutdown`: a notice is about a service someone uses), the
-client hands out the same diagnostic `resolved`: `strand run` removes its overlay rows (keyed
+`GetConnectionUnixProcessID`, name from `/proc/<pid>/comm`). `kill
+<pid>` leads, the exact process; `pkill -x` is offered only when the
+command is not an interpreter (`python3.12`, `perl`, `node`, `sh`,
+`gjs`, …: a python server's `pkill -x python3.12` would stop every
+python script the user runs). A desktop's own shell (`gnome-shell`,
+`plasmashell`, `cinnamon`, …) is never to be stopped (that ends the
+session, unit or not): the advice is to turn its notifications off in
+its own settings. When the process runs as a systemd user service
+(`GetUnitByPID` on the session bus's systemd, bounded to 2 s; only a
+`.service` that is not D-Bus activation's transient `dbus-…` one), the
+advice names that unit instead: `systemctl --user stop mako.service`
+and `systemctl --user mask mako.service`. A process name is not a unit
+name (xfce4-notifyd, notification-daemon, a python server), and
+stopping a scope would stop the terminal or session it belongs to.
+dunst and mako ship activation files for the name. The run does not
+fail and is not retried: it subscribes to the name's
+`NameOwnerChanged` before asking for it, and after the notice waits
+for the owner to let it go (answering `dnd` writes meanwhile), then
+asks again; so nothing polls while the other daemon runs (a retry
+every 30 s used to open a session connection and ask three questions),
+and stopping it hands the name over at once (the test asserts under
+3 s, with the same run). A queued owner taking over raises its own
+notice. Once the name is ours the run resolves its notice itself
+(`Cx::resolve`, an `Envelope::Resolved` the client turns into the
+`resolved` diagnostic while the run goes on). A notice is also
+resolved when the service stops (it ended cleanly, nobody read it for
+5 s, or `Services::shutdown`: a notice is about a service someone
+uses), or when a later run becomes ready without raising it again. The
+client then hands out the same diagnostic `resolved`: `strand run` removes its overlay rows (keyed
 `service:<name>#<n>`, the message wrapped to the panel under a
 `strand: services` header) and sends `service \`notifications\`:
 resolved: …` to `strand watch`. A body raises a notice before
@@ -7319,6 +7342,22 @@ run stays up 30 s or ends cleanly), which `strand run` logs and sends to
 overlay row and an `ERROR` line; other failures (a bus that cannot be
 reached, which the client retries) are `warn` lines: a machine without
 a session bus is not something to put on the screen.
+
+**2026-10-07 · wave4-a2: a shared connection lives while a body uses
+it.** The session and system connections of the shared services thread
+are counted per running body that asked for them (`bus::with_user`
+around each shared body; the hold is taken before connecting, so a body
+ending meanwhile cannot close one under another): the last body using
+one closes it. They used to go only when the thread's last body did,
+so a bar reading `cpu` kept the system bus connection `battery` once
+opened (`tests/battery.rs::a_shared_connection_closes_with_its_last_user`).
+Pictures written from D-Bus pixels (`pixmap::write_rgba`, `write_png`)
+each go through a temporary file of the writer's own (`.<hash>.<n>.tmp`,
+a process-wide counter), and a rename that fails while the
+content-addressed file exists is a success: two writers of the same
+pixels at once (a tray icon and a notification, two items of one app)
+shared one temporary file, and the second rename failed, dropping its
+picture (`pixmap::tests::writers_of_the_same_pixels_at_once_all_succeed`).
 
 **2026-10-07 · wave4-a2: daemons are started by D-Bus activation.**
 Distributions often start UPower (and bluetoothd) only when someone
@@ -7343,7 +7382,11 @@ through logind's `SetBrightness("backlight", dev, raw)` on
 written (a refusal is answered with the level read back). Tests point
 the service at a directory of fake backlights
 (`brightness::set_backlight_root`, or `STRAND_BACKLIGHT_DIR` for a
-child process).
+child process). The inotify watch is set up before the first read
+(subscribe, then read, as `dbus::Daemon` does): a change between the
+read and the watch is either in the read or queued on the watch. Read
+first, a change in that gap was lost until the next one, and the test
+failed now and then on a busy CPU.
 
 **2026-10-07 · wave4-a2: network.** `connected` is NetworkManager's
 `State` at `CONNECTED_LOCAL` (50) or above; `ssid` and `strength` come
@@ -7379,7 +7422,29 @@ scanning only the devices' `Wireless` `PropertiesChanged` (`arg0`) and
 the access points are, and only the new access points are read.
 A scan is asked for once there is a Wi-Fi device to ask (a
 NetworkManager that just restarted may list none yet). A failed `wifi`
-write reports the radio as last read.
+write reports the radio as last read. A join is settled only on the
+connection's `StateChanged(state, reason)` (sent since NetworkManager
+1.8): the `State` property change sent with it has no reason, and taken
+first it reported "reason 0" and dropped the real one (no secrets);
+the active connections are subscribed before the manager, so a
+`StateChanged` is taken before the manager's list change that drops
+the connection. `State` is still read after a re-read (a
+`StateChanged` not heard). `connect()` reads the Wi-Fi devices'
+`AccessPoints` and the candidates afresh: outside a scan neither is
+followed, and the action often arrives just as the menu (the scan's
+reader) closes. `secure` is a key asked for: `Flags` PRIVACY (WEP), or
+any `WpaFlags`/`RsnFlags`; `Flags`' WPS bits (an open network offering
+WPS) are not. Every call to NetworkManager, BlueZ and UPower is bounded:
+property reads and writes (`dbus::get_all`, `get`, `set`), `GetManagedObjects`,
+`EnumerateDevices`, `ListConnections`, `GetSettings`, `Update` and
+`RequestScan` by 5 s (`dbus::READ_TIMEOUT`), `ActivateConnection` and
+`AddAndActivateConnection` by 25 s (NetworkManager's own bound). A body
+waiting on a call reads none of its streams, and zbus's socket reader
+waits for a full match stream (256 messages) before reading on, so a
+hung daemon could stall every service sharing the system connection; a
+read that times out now fails the run (retried with the backoff), which
+drops its streams. An object gone between listing and reading is still
+just left out.
 
 **2026-10-07 · wave4-a2: bluetooth.** BlueZ's object manager on `/`:
 the first adapter by path gives `powered` (written through `Powered`),
@@ -7408,7 +7473,9 @@ once), the re-read of properties a player invalidated, the position
 after a change and the actions are tasks owned by the body, their
 answers applied by the loop (a position answer overtaken by a seek or a
 newer question is dropped; changes signalled while a read is in flight
-are applied over its answer). A player not read yet is not a choice for
+are applied over its answer, and over every later answer until the last
+property read in flight is in, so an older read answering last cannot
+undo a change signalled after the first answer). A player not read yet is not a choice for
 the active one. `Rate` is clamped to 0.001–1000: a player sending
 `Rate = 1e300` made the duration arithmetic overflow and panic, every
 retry again. `art` is local art
@@ -7425,7 +7492,14 @@ is its bus name and path; its icon is the icon named (found first under
 its `IconThemePath`, four levels deep), else its largest pixmap as a PNG
 (the attention icon while `NeedsAttention`); its tooltip is the
 tooltip's title and description on two lines. `activate()` calls
-`Activate(0, 0)`, falling back to `ContextMenu` for menu-only items;
+`Activate(0, 0)`; an item marked `ItemIsMenu` (libappindicator and
+ayatana items: nm-applet, Discord, Steam) is not sent `Activate` (they
+refuse it) but has its DBusMenu opened, exactly as `item.menu.open()`
+does (`AboutToShow`, `opened`, `menu.opened` true), as the SNI spec asks
+of a host and KDE and waybar do; an item refusing `Activate` without the
+mark gets the same when it has a DBusMenu, else `ContextMenu`. So
+design.md's `on click { item.activate() }` opens these items' menus
+(rather than a schema flag every shell would have to test);
 `scroll(dy)` takes `dy` in wheel notches (one click 1, positive down, as
 `on scroll(dy)` gives it) and sends a vertical `Scroll` of 120 a notch,
 positive up (at least one unit): KDE's host sends Qt's wheel
@@ -7442,7 +7516,12 @@ for its submenu (lazily filled submenus); `item.menu.close()` sends the
 item.menu.opened … for e in item.menu.items }`, calling
 `item.menu.close()` when the popup closes (click-away, Escape, an entry
 chosen); an item without a DBusMenu shows its own menu and `opened`
-stays false. Showing menus is M4's tray menu. Click positions are not
+stays false. `opened` is one flag per item, not per screen: a bar on
+every screen keeps which screen opened the menu (`on secondary {
+item.menu.open(); menu_screen = screen }`, `open: item.menu.opened &&
+menu_screen == screen`), as the schema's doc says; where a popup
+appears is M4's popup's business, and the service keeps only what the
+app must be told. Showing menus is M4's tray menu. Click positions are not
 passed yet (`Activate(0, 0)`, `ContextMenu(0, 0)`): the shell knows
 where a click was only once M4's popups place things; the schema's
 actions gain optional `x`/`y` then. Apps freeze, so nothing the service

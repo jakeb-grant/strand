@@ -129,7 +129,9 @@ impl Bluetooth {
         // Each brings back a failure: the device's address and why.
         let mut calls: tokio::task::JoinSet<Option<(String, String)>> = tokio::task::JoinSet::new();
         loop {
-            let mut objects = read(&daemon).await;
+            let mut objects = read(&daemon)
+                .await
+                .map_err(|e| ServiceError(format!("BlueZ did not answer: {e}")))?;
             if !cx.update(|s| *s = Bluetooth::from_objects(&objects)) {
                 return Ok(());
             }
@@ -225,31 +227,39 @@ impl Bluetooth {
 }
 
 /// Every object BlueZ manages.
-async fn read(daemon: &Daemon) -> Objects {
+///
+/// A hung BlueZ (no answer in [`dbus::READ_TIMEOUT`]) is an error: the
+/// run fails and is retried.
+async fn read(daemon: &Daemon) -> zbus::Result<Objects> {
     if daemon.owner().is_none() {
-        return Objects::new();
+        return Ok(Objects::new());
     }
-    let reply = daemon
-        .conn()
-        .call_method(
+    let reply = dbus::timed_for(
+        dbus::READ_TIMEOUT,
+        daemon.conn().call_method(
             Some(BLUEZ),
             "/",
             Some(OBJECT_MANAGER),
             "GetManagedObjects",
             &(),
-        )
-        .await;
+        ),
+    )
+    .await;
+    let reply = match reply {
+        Err(e) if dbus::is_timeout(&e) => return Err(e),
+        r => r,
+    };
     let objects = reply.and_then(|r| {
         r.body()
             .deserialize::<HashMap<zbus::zvariant::OwnedObjectPath, HashMap<String, Props>>>()
     });
-    match objects {
+    Ok(match objects {
         Ok(o) => o.into_iter().map(|(p, i)| (p.to_string(), i)).collect(),
         Err(e) => {
             log::debug!("bluetooth: no objects: {e}");
             Objects::new()
         }
-    }
+    })
 }
 
 /// Apply a signal; whether anything changed.

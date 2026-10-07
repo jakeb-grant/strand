@@ -1978,14 +1978,27 @@ the primitives, `Option`, `Vec` and derived types.
   against the current owner's unique name: a restarted daemon is read
   afresh without restarting the service; `subscribe`/`unsubscribe` add
   and drop match rules as the service needs them), `get_all`/`get`/`set`
-  of properties, `properties_changed`, `apply_changed` (its re-reads of
+  of properties (each bounded by `READ_TIMEOUT`, 5 s: a hung daemon
+  must not stall a body, whose full match streams would stop zbus's
+  reader for every service on the connection; a read timing out fails
+  the run, `is_timeout` telling it from an object gone),
+  `properties_changed`, `apply_changed` (its re-reads of
   invalidated properties bounded by `CALL_TIMEOUT`), `owner_process` (pid
   and command of a name's owner), `activate` (`StartServiceByName` without waiting:
   a `Daemon` whose name has no owner asks once per start), `timed` (a
-  call to an app given up after `CALL_TIMEOUT`, 2 s). A service owning a
+  call to an app given up after `CALL_TIMEOUT`, 2 s) and `timed_for` (a
+  bound of the caller's: NetworkManager's activations, 25 s). The
+  shared thread's session and system connections (`bus::session`,
+  `bus::system`) are counted per running body that asked for them
+  (`bus::with_user` wraps each shared body): the last body using one
+  closes it, whatever else runs on the thread. A service owning a
   bus name (the notification server, the tray's host and watcher) uses
   a connection of its own (`bus::own_session`), so the name goes with
-  the service. Calls that may wait on an app (tray items, players,
+  the service. What a dropped body still has to say (the notification
+  server's `NotificationClosed` for each one open) is a finalizer
+  (`client::finalize`): a task on the runtime that the shared thread,
+  ending, waits for up to `FINALIZE_LIMIT` (500 ms) before dropping the
+  runtime. Calls that may wait on an app (tray items, players,
   BlueZ connects) run as tasks in a `JoinSet` owned by the body, so they
   hold up nothing and are cancelled when it stops; what they find (a
   player read, a tray item read, a failed connect for
@@ -2014,8 +2027,10 @@ the primitives, `Option`, `Vec` and derived types.
   hands them out after a pump, one per distinct message (a retry failing
   the same way is not repeated until a run stays up `RETRY_MAX` or ends
   cleanly). A notice no longer holding (a later run ready without
-  raising it, a clean end, or the service stopped: no reader for
-  `STOP_GRACE`, or `Services::shutdown`) comes back once with
+  raising it, a clean end, the service stopped: no reader for
+  `STOP_GRACE`, or `Services::shutdown`, or the run saying so itself
+  with `Cx::resolve()` while it goes on: the notification server once
+  the other server let the name go) comes back once with
   `resolved: true`.
   `strand run` logs them (`warn`; a notice at `error`), sends them to
   `strand watch` as `notices`, and shows notices as overlay rows under

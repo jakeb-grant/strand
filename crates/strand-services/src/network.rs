@@ -82,6 +82,10 @@ pub struct Network {
     pub failed: Event<(String, String)>,
 }
 
+/// How long NetworkManager may take to accept an activation (its own
+/// D-Bus timeout is 25 s); the outcome comes later, as `StateChanged`.
+const ACTIVATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
+
 /// `NMActiveConnectionState`: activated.
 const ACTIVATED: u32 = 2;
 /// `NMActiveConnectionState`: deactivated.
@@ -115,8 +119,9 @@ struct Joining {
 }
 
 /// A state change of an active connection: its path, state and reason
-/// (`StateChanged`, or a `State` property change, whose reason is
-/// unknown).
+/// (`StateChanged`, sent since NetworkManager 1.8). The `State` property
+/// change NetworkManager sends with it carries no reason, so a join is
+/// not settled on it: the reason (a password needed, say) would be lost.
 fn active_state(m: &zbus::Message) -> Option<(String, u32, u32)> {
     let path = dbus::path(m)?;
     if dbus::interface(m).as_deref() == Some(ACTIVE)
@@ -125,12 +130,7 @@ fn active_state(m: &zbus::Message) -> Option<(String, u32, u32)> {
         let (state, reason): (u32, u32) = m.body().deserialize().ok()?;
         return Some((path, state, reason));
     }
-    let c = dbus::properties_changed(m)?;
-    if c.iface != ACTIVE {
-        return None;
-    }
-    let state = dbus::number(&c.changed, "State")? as u32;
-    Some((path, state, 0))
+    None
 }
 
 /// An access point's SSID (bytes; shown lossily as UTF-8).
@@ -152,10 +152,12 @@ fn strength(p: &Props) -> f64 {
     (dbus::number(p, "Strength").unwrap_or(0.0) / 100.0).clamp(0.0, 1.0)
 }
 
+/// It asks for a key: `Flags` has PRIVACY (WEP), or it has WPA or RSN
+/// flags. `Flags`' WPS bits (0x2, 0x4, 0x8) say nothing about a key: an
+/// open network may offer WPS.
 fn secure(p: &Props) -> bool {
-    ["Flags", "WpaFlags", "RsnFlags"]
-        .iter()
-        .any(|k| dbus::number(p, k).unwrap_or(0.0) != 0.0)
+    let n = |k| dbus::number(p, k).map_or(0, |n| n as u32);
+    n("Flags") & 0x1 != 0 || n("WpaFlags") != 0 || n("RsnFlags") != 0
 }
 
 fn object_paths(p: &Props, name: &str) -> Vec<String> {
@@ -253,28 +255,41 @@ impl Nm {
     }
 
     /// Read everything from the current owner (`scanning`: every access
-    /// point in range too).
-    async fn read(&mut self, daemon: &Daemon, scanning: bool) {
+    /// point in range too). Each read is bounded ([`dbus::READ_TIMEOUT`]):
+    /// a hung NetworkManager is an error (the run fails and is retried),
+    /// an object gone meanwhile is left out.
+    async fn read(&mut self, daemon: &Daemon, scanning: bool) -> zbus::Result<()> {
         *self = Nm::default();
         if daemon.owner().is_none() {
-            return;
+            return Ok(());
         }
         let conn = daemon.conn();
-        self.manager = dbus::get_all(conn, NM, ROOT, NM).await.unwrap_or_default();
+        let read = |path: String, iface: &'static str| async move {
+            match dbus::get_all(conn, NM, &path, iface).await {
+                Ok(p) => Ok(Some((path, p))),
+                Err(e) if dbus::is_timeout(&e) => Err(e),
+                Err(_) => Ok(None),
+            }
+        };
+        self.manager = match dbus::get_all(conn, NM, ROOT, NM).await {
+            Ok(p) => p,
+            Err(e) if dbus::is_timeout(&e) => return Err(e),
+            Err(_) => Props::new(),
+        };
         for path in object_paths(&self.manager, "ActiveConnections") {
-            if let Ok(p) = dbus::get_all(conn, NM, &path, ACTIVE).await {
+            if let Some((path, p)) = read(path, ACTIVE).await? {
                 self.active.insert(path, p);
             }
         }
         for path in object_paths(&self.manager, "Devices") {
-            let Ok(dev) = dbus::get_all(conn, NM, &path, DEVICE).await else {
+            let Some((path, dev)) = read(path, DEVICE).await? else {
                 continue;
             };
             // NM_DEVICE_TYPE_WIFI.
             if dbus::number(&dev, "DeviceType") != Some(2.0) {
                 continue;
             }
-            if let Ok(w) = dbus::get_all(conn, NM, &path, WIRELESS).await {
+            if let Some((path, w)) = read(path, WIRELESS).await? {
                 self.wifi_devices.insert(path, w);
             }
         }
@@ -285,10 +300,11 @@ impl Nm {
             }
         }
         for path in wanted {
-            if let Ok(p) = dbus::get_all(conn, NM, &path, AP).await {
+            if let Some((path, p)) = read(path, AP).await? {
                 self.aps.insert(path, p);
             }
         }
+        Ok(())
     }
 
     /// Apply a signal: `Some(true)` it changed something, `Some(false)` it
@@ -367,13 +383,16 @@ impl Network {
         // The manager and the active connections; the devices' Wi-Fi
         // interface (access points coming and going) and the access
         // points only while scanning.
-        daemon.subscribe("manager", dbus::path_rule(ROOT)?).await?;
+        // The active connections first: their `StateChanged` (a join's
+        // outcome and reason) is taken before the manager's list change
+        // that drops a failed one.
         daemon
             .subscribe(
                 "active",
                 dbus::namespace_rule("/org/freedesktop/NetworkManager/ActiveConnection")?,
             )
             .await?;
+        daemon.subscribe("manager", dbus::path_rule(ROOT)?).await?;
         let mut nm = Nm::default();
         let mut joining: BTreeMap<String, Joining> = BTreeMap::new();
         let mut scanning = cx.watched("access_points");
@@ -385,7 +404,9 @@ impl Network {
             if scanning {
                 sync_subscriptions(&mut daemon, &nm, scanning, &mut used).await;
             }
-            nm.read(&daemon, scanning).await;
+            if let Err(e) = nm.read(&daemon, scanning).await {
+                return Err(ServiceError(format!("NetworkManager did not answer: {e}")));
+            }
             sync_subscriptions(&mut daemon, &nm, scanning, &mut used).await;
             if !settle_joins(&mut cx, &nm, &mut joining) {
                 return Ok(());
@@ -557,8 +578,10 @@ fn settle_joins(cx: &mut Cx<Network>, nm: &Nm, joining: &mut BTreeMap<String, Jo
             j.seen = true;
             match dbus::number(p, "State").map(|n| n as u32) {
                 Some(ACTIVATED) => false,
+                // Seen deactivated on a re-read: its `StateChanged`, with
+                // the reason, was not heard.
                 Some(DEACTIVATED) => {
-                    failed.push((j.ssid.clone(), reason_text(0)));
+                    failed.push((j.ssid.clone(), "the connection was deactivated".into()));
                     false
                 }
                 _ => true,
@@ -605,16 +628,17 @@ fn security(p: &Props, password: &str) -> zbus::Result<HashMap<&'static str, Own
 async fn request_scan(daemon: &Daemon, nm: &Nm) -> bool {
     for dev in nm.wifi_devices.keys() {
         let opts: std::collections::HashMap<&str, zbus::zvariant::Value<'_>> = Default::default();
-        let r = daemon
-            .conn()
-            .call_method(
+        let r = dbus::timed_for(
+            dbus::READ_TIMEOUT,
+            daemon.conn().call_method(
                 Some(NM),
                 dev.as_str(),
                 Some(WIRELESS),
                 "RequestScan",
                 &(opts,),
-            )
-            .await;
+            ),
+        )
+        .await;
         if let Err(e) = r {
             log::debug!("network: no scan on {dev}: {e}");
         }
@@ -634,58 +658,74 @@ async fn connect(
 ) -> zbus::Result<String> {
     use zbus::zvariant::ObjectPath;
     let conn = daemon.conn();
-    let mut best: Option<(&String, &String, f64)> = None;
-    for (dev, w) in &nm.wifi_devices {
-        for ap in object_paths(w, "AccessPoints") {
-            let Some(p) = nm.aps.get(&ap) else {
-                continue;
+    // The devices' access point lists and the access points read now:
+    // outside a scan neither is followed (the menu may just have closed).
+    let mut best: Option<(String, String, Props, f64)> = None;
+    let devices: Vec<String> = nm.wifi_devices.keys().cloned().collect();
+    for dev in devices {
+        let listed = match dbus::get(conn, NM, &dev, WIRELESS, "AccessPoints").await {
+            Ok(v) => v.try_into().map(dbus::paths).unwrap_or_default(),
+            Err(e) if dbus::is_timeout(&e) => return Err(e),
+            Err(_) => continue,
+        };
+        for ap in listed {
+            let p = match nm.aps.get(&ap) {
+                Some(p) => p.clone(),
+                None => match dbus::get_all(conn, NM, &ap, AP).await {
+                    Ok(p) => p,
+                    Err(e) if dbus::is_timeout(&e) => return Err(e),
+                    Err(_) => continue,
+                },
             };
-            if ssid(p).as_deref() != Some(name) {
+            if ssid(&p).as_deref() != Some(name) {
                 continue;
             }
-            let s = strength(p);
-            if best.is_none_or(|b| s > b.2) {
-                let ap_key = nm.aps.get_key_value(&ap).map(|(k, _)| k);
-                if let Some(k) = ap_key {
-                    best = Some((dev, k, s));
-                }
+            let s = strength(&p);
+            if best.as_ref().is_none_or(|b| s > b.3) {
+                best = Some((dev.clone(), ap, p, s));
             }
         }
     }
-    let Some((dev, ap, _)) = best else {
+    let Some((dev, ap, ap_props, _)) = best else {
         return Err(zbus::Error::Failure(format!("`{name}` is not in range")));
     };
     let secret = match password {
-        Some(pw) => Some(security(nm.aps.get(ap).unwrap_or(&Props::new()), pw)?),
+        Some(pw) => Some(security(&ap_props, pw)?),
         None => None,
     };
     let dev = ObjectPath::try_from(dev.as_str())?;
     let ap = ObjectPath::try_from(ap.as_str())?;
     // A saved connection for the name?
-    let saved: Vec<zbus::zvariant::OwnedObjectPath> = conn
-        .call_method(
+    let saved: Vec<zbus::zvariant::OwnedObjectPath> = dbus::timed_for(
+        dbus::READ_TIMEOUT,
+        conn.call_method(
             Some(NM),
             SETTINGS,
             Some(SETTINGS_IFACE),
             "ListConnections",
             &(),
-        )
-        .await?
-        .body()
-        .deserialize()?;
+        ),
+    )
+    .await?
+    .body()
+    .deserialize()?;
     type Settings = HashMap<String, HashMap<String, OwnedValue>>;
     for path in saved {
-        let Ok(reply) = conn
-            .call_method(
+        let reply = dbus::timed_for(
+            dbus::READ_TIMEOUT,
+            conn.call_method(
                 Some(NM),
                 path.as_str(),
                 Some(CONNECTION_IFACE),
                 "GetSettings",
                 &(),
-            )
-            .await
-        else {
-            continue;
+            ),
+        )
+        .await;
+        let reply = match reply {
+            Ok(r) => r,
+            Err(e) if dbus::is_timeout(&e) => return Err(e),
+            Err(_) => continue,
         };
         let Ok(mut settings) = reply.body().deserialize::<Settings>() else {
             continue;
@@ -701,26 +741,31 @@ async fn connect(
                     sec.insert(k.to_string(), v.try_clone()?);
                 }
                 settings.insert("802-11-wireless-security".into(), sec);
-                conn.call_method(
-                    Some(NM),
-                    path.as_str(),
-                    Some(CONNECTION_IFACE),
-                    "Update",
-                    &(settings,),
+                dbus::timed_for(
+                    dbus::READ_TIMEOUT,
+                    conn.call_method(
+                        Some(NM),
+                        path.as_str(),
+                        Some(CONNECTION_IFACE),
+                        "Update",
+                        &(settings,),
+                    ),
                 )
                 .await?;
             }
-            let active: zbus::zvariant::OwnedObjectPath = conn
-                .call_method(
+            let active: zbus::zvariant::OwnedObjectPath = dbus::timed_for(
+                ACTIVATE_TIMEOUT,
+                conn.call_method(
                     Some(NM),
                     ROOT,
                     Some(NM),
                     "ActivateConnection",
                     &(path.as_ref(), &dev, &ap),
-                )
-                .await?
-                .body()
-                .deserialize()?;
+                ),
+            )
+            .await?
+            .body()
+            .deserialize()?;
             return Ok(active.to_string());
         }
     }
@@ -731,16 +776,44 @@ async fn connect(
     let (_, active): (
         zbus::zvariant::OwnedObjectPath,
         zbus::zvariant::OwnedObjectPath,
-    ) = conn
-        .call_method(
+    ) = dbus::timed_for(
+        ACTIVATE_TIMEOUT,
+        conn.call_method(
             Some(NM),
             ROOT,
             Some(NM),
             "AddAndActivateConnection",
             &(new, &dev, &ap),
-        )
-        .await?
-        .body()
-        .deserialize()?;
+        ),
+    )
+    .await?
+    .body()
+    .deserialize()?;
     Ok(active.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zbus::zvariant::{OwnedValue, Value};
+
+    fn ap(flags: u32, wpa: u32, rsn: u32) -> Props {
+        let n = |v: u32| OwnedValue::try_from(Value::from(v)).unwrap();
+        Props::from([
+            ("Flags".to_string(), n(flags)),
+            ("WpaFlags".to_string(), n(wpa)),
+            ("RsnFlags".to_string(), n(rsn)),
+        ])
+    }
+
+    #[test]
+    fn only_a_key_makes_a_network_secure() {
+        assert!(!secure(&ap(0, 0, 0)), "open");
+        // Open, offering WPS (NM_802_11_AP_FLAGS_WPS, _WPS_PBC, _WPS_PIN).
+        assert!(!secure(&ap(0x2 | 0x4 | 0x8, 0, 0)), "open with WPS");
+        assert!(secure(&ap(0x1, 0, 0)), "WEP (privacy)");
+        assert!(secure(&ap(0x1 | 0x2, 0, 0x188)), "WPA2 with WPS");
+        assert!(secure(&ap(0, 0x108, 0)), "WPA");
+        assert!(secure(&ap(0, 0, 0x400)), "WPA3 (SAE)");
+    }
 }

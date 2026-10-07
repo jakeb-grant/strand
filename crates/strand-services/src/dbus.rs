@@ -31,11 +31,37 @@ pub const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
 /// service behind it.
 pub const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// How long a system daemon (NetworkManager, BlueZ, UPower) may take to
+/// answer a read or a property write ([`get_all`], [`get`], [`set`] are
+/// bounded by it). A body waiting on a call cannot read its signal
+/// streams, and zbus's reader stops for every stream of the connection
+/// once one of them is full: an unbounded call to a hung daemon would
+/// stall every service sharing the connection. A read timing out is a
+/// failed run (retried with the backoff), which drops the streams.
+pub const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// What a call given up on says ([`is_timeout`]).
+const NO_ANSWER: &str = "no answer in time";
+
 /// `call`, given up after [`CALL_TIMEOUT`].
 pub async fn timed<T>(call: impl std::future::Future<Output = zbus::Result<T>>) -> zbus::Result<T> {
-    tokio::time::timeout(CALL_TIMEOUT, call)
+    timed_for(CALL_TIMEOUT, call).await
+}
+
+/// `call`, given up after `limit`.
+pub async fn timed_for<T>(
+    limit: std::time::Duration,
+    call: impl std::future::Future<Output = zbus::Result<T>>,
+) -> zbus::Result<T> {
+    tokio::time::timeout(limit, call)
         .await
-        .unwrap_or_else(|_| Err(zbus::Error::Failure("no answer in time".into())))
+        .unwrap_or_else(|_| Err(zbus::Error::Failure(NO_ANSWER.into())))
+}
+
+/// `e` is a call given up on ([`timed`], [`timed_for`]): the daemon is
+/// hung, not merely missing an object.
+pub fn is_timeout(e: &zbus::Error) -> bool {
+    matches!(e, zbus::Error::Failure(m) if m == NO_ANSWER)
 }
 
 /// A property as `T`, if present and of that type.
@@ -87,9 +113,11 @@ pub async fn get_all(
     path: &str,
     iface: &str,
 ) -> zbus::Result<Props> {
-    let reply = conn
-        .call_method(Some(dest), path, Some(PROPERTIES), "GetAll", &(iface,))
-        .await?;
+    let reply = timed_for(
+        READ_TIMEOUT,
+        conn.call_method(Some(dest), path, Some(PROPERTIES), "GetAll", &(iface,)),
+    )
+    .await?;
     reply.body().deserialize::<Props>()
 }
 
@@ -101,9 +129,11 @@ pub async fn get(
     iface: &str,
     name: &str,
 ) -> zbus::Result<OwnedValue> {
-    let reply = conn
-        .call_method(Some(dest), path, Some(PROPERTIES), "Get", &(iface, name))
-        .await?;
+    let reply = timed_for(
+        READ_TIMEOUT,
+        conn.call_method(Some(dest), path, Some(PROPERTIES), "Get", &(iface, name)),
+    )
+    .await?;
     reply.body().deserialize::<OwnedValue>()
 }
 
@@ -116,12 +146,15 @@ pub async fn set(
     name: &str,
     value: Value<'_>,
 ) -> zbus::Result<()> {
-    conn.call_method(
-        Some(dest),
-        path,
-        Some(PROPERTIES),
-        "Set",
-        &(iface, name, value),
+    timed_for(
+        READ_TIMEOUT,
+        conn.call_method(
+            Some(dest),
+            path,
+            Some(PROPERTIES),
+            "Set",
+            &(iface, name, value),
+        ),
     )
     .await?;
     Ok(())

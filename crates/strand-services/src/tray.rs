@@ -363,6 +363,9 @@ struct Look {
     tooltip: Option<String>,
     status: String,
     menu_path: Option<String>,
+    /// `ItemIsMenu`: the item only shows a menu (libappindicator and
+    /// ayatana items); a click opens it.
+    is_menu: bool,
 }
 
 impl Look {
@@ -383,6 +386,10 @@ impl Look {
                 .and_then(|v| v.downcast_ref::<zbus::zvariant::ObjectPath<'_>>().ok())
                 .map(|p| p.to_string())
                 .filter(|p| p != "/"),
+            is_menu: props
+                .get("ItemIsMenu")
+                .and_then(|v| v.downcast_ref::<bool>().ok())
+                .unwrap_or(false),
         }
     }
 }
@@ -449,6 +456,7 @@ impl Entry {
             bus: self.bus.clone(),
             path: self.path.clone(),
             menu_path: self.look.menu_path.clone(),
+            is_menu: self.look.is_menu,
         }
     }
 }
@@ -461,6 +469,7 @@ struct Target {
     bus: String,
     path: String,
     menu_path: Option<String>,
+    is_menu: bool,
 }
 
 /// An item's properties, read and resolved (`GetAll`, then the icon off
@@ -525,6 +534,8 @@ enum Done {
     /// An action asked for the menu to be read again (the app updated it
     /// before showing it).
     Relayout(String, u64),
+    /// `Activate` was refused by an item with a DBusMenu: open the menu.
+    OpenMenu(String, u64),
     /// An action was sent.
     Sent,
 }
@@ -814,6 +825,9 @@ impl Host {
                 }
                 false
             }
+            Done::OpenMenu(id, generation) => {
+                self.current(&id, generation).is_some() && self.open_menu(&id)
+            }
             Done::Sent => false,
         }
     }
@@ -868,9 +882,14 @@ impl Host {
                         return Done::Relayout(t.id, t.generation);
                     }
                 }
-                (Err(_), Then::ContextMenuOnError) => {
-                    // Menu-only items (`ItemIsMenu`) often have no
-                    // Activate.
+                // No Activate (a menu-only item not marked `ItemIsMenu`):
+                // its DBusMenu opens in the shell's popup, as for
+                // `item.menu.open()`.
+                (Err(_), Then::MenuOnError) if t.menu_path.is_some() => {
+                    return Done::OpenMenu(t.id, t.generation);
+                }
+                // Without one the app shows its own.
+                (Err(_), Then::MenuOnError) => {
                     let _ = timed(conn.call_method(
                         Some(t.bus.as_str()),
                         t.path.as_str(),
@@ -893,16 +912,21 @@ impl Host {
         let target = |id: &str| self.entries.get(id).map(Entry::target);
         match a {
             TrayAction::Activate { item } => {
-                if let Some(t) = target(&item.id) {
-                    let path = t.path.clone();
-                    self.send(
-                        &t,
-                        &path,
-                        ITEM,
-                        "Activate",
-                        (0i32, 0i32),
-                        Then::ContextMenuOnError,
-                    );
+                let Some(t) = target(&item.id) else {
+                    return false;
+                };
+                let path = t.path.clone();
+                match (t.is_menu, &t.menu_path) {
+                    // `ItemIsMenu` (the SNI spec: the host shows the menu
+                    // on activation, as KDE and waybar do): its DBusMenu
+                    // opens, as `item.menu.open()` does.
+                    (true, Some(_)) => return self.open_menu(&item.id),
+                    (true, None) => {
+                        self.send(&t, &path, ITEM, "ContextMenu", (0i32, 0i32), Then::Nothing);
+                    }
+                    (false, _) => {
+                        self.send(&t, &path, ITEM, "Activate", (0i32, 0i32), Then::MenuOnError);
+                    }
                 }
             }
             TrayAction::Secondary { item } => {
@@ -944,17 +968,7 @@ impl Host {
                         let path = t.path.clone();
                         self.send(&t, &path, ITEM, "ContextMenu", (0i32, 0i32), Then::Nothing);
                     }
-                    Some(menu) => {
-                        self.opened(&t, &menu, 0);
-                        // The shell's popup shows it: `open:
-                        // item.menu.opened`.
-                        if let Some(e) = self.entries.get_mut(&item.item)
-                            && !e.menu_open
-                        {
-                            e.menu_open = true;
-                            return true;
-                        }
-                    }
+                    Some(_) => return self.open_menu(&item.item),
                 }
             }
             TrayAction::OpenEntry { item } => {
@@ -988,6 +1002,26 @@ impl Host {
         false
     }
 
+    /// Item `id`'s DBusMenu opens: the app is told (`AboutToShow`,
+    /// `opened`) and the shell's popup shows it (`open:
+    /// item.menu.opened`). Whether the state changed.
+    fn open_menu(&mut self, id: &str) -> bool {
+        let Some(t) = self.entries.get(id).map(Entry::target) else {
+            return false;
+        };
+        let Some(menu) = t.menu_path.clone() else {
+            return false;
+        };
+        self.opened(&t, &menu, 0);
+        match self.entries.get_mut(id) {
+            Some(e) if !e.menu_open => {
+                e.menu_open = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Menu entry `id` (0: the root) opens: the app may update it first
     /// (`AboutToShow` answering true: read again), and is told.
     fn opened(&mut self, t: &Target, menu: &str, id: i32) {
@@ -1014,8 +1048,8 @@ enum Then {
     Nothing,
     /// `AboutToShow`: read the menu again when it answers true.
     RelayoutIfTrue,
-    /// `Activate`: fall back to `ContextMenu`.
-    ContextMenuOnError,
+    /// `Activate`: open the DBusMenu when refused, else `ContextMenu`.
+    MenuOnError,
 }
 
 /// A registered item, read: its owner followed, its properties and menu
