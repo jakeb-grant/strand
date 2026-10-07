@@ -6022,6 +6022,883 @@ shell is never woken by it. Proof:
 
 2026-10-06. Build settings live in the repo: `[profile.dev]` and `[profile.test]` set `debug = 0` in `Cargo.toml`, and `.cargo/config.toml` turns incremental compilation off. Until now agents relied on exporting `CARGO_PROFILE_*_DEBUG=0 CARGO_INCREMENTAL=0` by hand; some did not, so cargo kept a second copy of every crate per setting (a wave 3 worktree reached 21 GB with 18 copies of `strand_compiler`). One checked-in setting stops the duplicates at the source. M1's four open boxes are given owners in `features.md`: keyframes/shader/canvas drawing and the `.wgsl` watch paths go to M4, the latency bench's portal clause to M3, the tree-sitter grammar to M5.
 
+## wave4-wm
+
+**2026-10-06 · wave4-wm: the compositor service is library code with a
+typed change stream.** `strand_services::wm` holds `Workspace`, `Window`
+and `WmState` (the schema's records field for field, plus
+`Workspace::active` and `Window::urgent`, which the provisional schema
+does not show yet: every compositor reports them and a per-screen bar
+needs "shown on this screen" apart from "focused"), and `wm::run(config,
+sink, requests)`, one `Send` future for the shared current-thread
+runtime that sends batches of `WmChange` (keyed `VecDiff`s of
+`workspaces.all` / `windows.all` from `strand_core::keyed::keyed_diff`,
+the focused workspace, window and screen, `ConfigReloaded { failed }`,
+`Sources`). The first publish is a `Reset` per list; after that only
+what changed, and an unchanged state sends nothing (a batch is never
+empty). The `#[service]`/`#[derive(Store)]` wiring is the next step, on
+top of this stream. `Window::icon` is the app id until the apps service
+resolves desktop entries. Proof: `crates/strand-services/src/wm/
+model.rs` (tests), the `Mirror` checks in every adapter test.
+
+**2026-10-06 · wave4-wm: "protocol preferred where it covers a field"
+means a join, not two lists.** With an IPC adapter its workspace and
+window sets and ids stand: only IPC relates windows to workspaces and
+carries the ids `dispatch`/`Action`/commands need. A workspace joined to
+an `ext-workspace-v1` handle by name (and by screen when names repeat
+across outputs, on either side: when the IPC has `1` on two outputs, as
+niri's unnamed workspaces do, even a lone protocol `1` joins only the
+one on its screen) takes `active`, `screen` and (or-ed) `urgent` from the
+protocol; a window joined to an `ext-foreign-toplevel-list-v1` handle
+takes `title` and `app_id` from it. The only stable join key for windows
+is the toplevel identifier, which sway 1.10+ reports in IPC
+(`foreign_toplevel_identifier`) and Hyprland as `stableId` in
+`j/clients` (the same `{:x}` string `src/protocols/ForeignToplevel.cpp`
+sends as the identifier, `src/debug/HyprCtl.cpp`, v0.56.2). Only niri
+reports none, so its windows come from IPC alone (the same values niri
+would send in the protocol). (Corrected in fixer round 2: an earlier
+version said Hyprland had no join key either.) Without an adapter the protocols are the whole state:
+workspaces not `hidden`, numbered by a per-handle key the client assigns
+(the protocol has no integer id), `focused` only when it is the one
+shown (`active`) workspace (see "focus with the protocols alone" below);
+windows by identifier, with no workspace, focus or actions (the list
+protocol has none); `ws.focus()` is `activate` + `commit`. The cost on a
+compositor with no adapter (labwc, COSMIC, wayfire, river): `windows.
+focused` is always null, so design.md's hello bar (`windows.focused?.
+title`) shows no title there, and `win.focus()`, `win.close()` and
+`win.minimize()` answer `Unsupported` (see "wlr-foreign-toplevel-
+management is a follow-up" below). Proof: `src/wm/mod.rs`
+(tests `the_protocol_wins_where_it_covers_a_field`,
+`protocols_alone_make_the_whole_state`), `tests/protocol.rs::
+the_protocols_alone_serve_workspaces_and_windows` and `tests/protocol.rs::
+hyprland_windows_join_the_toplevel_list_by_stable_id`.
+
+**2026-10-06 · wave4-wm: which compositor.** `HYPRLAND_INSTANCE_SIGNATURE`
+(sockets under `$XDG_RUNTIME_DIR/hypr/<sig>/`, falling back to
+`/tmp/hypr/<sig>/` before Hyprland 0.40), `NIRI_SOCKET` (with the `niri`
+feature; a `Backend::Niri` built by hand without it is treated as no
+adapter, not an adapter that never connects) and `SWAYSOCK`; a variable
+whose socket does not exist is skipped. A nested compositor inherits its parent's variables, so when
+several remain the one `XDG_CURRENT_DESKTOP` names wins, then Hyprland,
+niri, sway. Proof: `src/wm/detect.rs` (test).
+
+**2026-10-06 · wave4-wm: Hyprland.** One request per `.socket.sock`
+connection (Hyprland answers and closes; 5 s timeout, it answers
+synchronously). The adapter subscribes to `.socket2.sock` before its
+first read so nothing falls between them. Events that carry the change
+patch the state (`workspacev2`, `focusedmonv2`, `activewindowv2`,
+`windowtitlev2` split at its first comma, `urgent`, `minimized`); the
+others that change structure (`openwindow`, `closewindow`,
+`movewindowv2`, workspace and monitor events, `fullscreen`,
+`configreloaded`) re-read `j/monitors`, `j/workspaces`, `j/clients`,
+`j/activewindow` once per burst (every line already received is applied
+before the read). Special workspaces (`special:…`, Hyprland's
+scratchpads) are left out of `workspaces.all` and their windows count
+as minimised, as does a window a taskbar minimised (`minimized>>…,1`);
+`win.minimize()` is `Unsupported` (Hyprland has no minimise).
+Urgency comes only from `urgent>>` and clears when the window takes
+the focus. Named workspaces (negative ids) are focused with `dispatch
+workspace name:<name>`, ordered after numbered ones. `fullscreen` is a
+bool before 0.42 and a mode number since; both are read. Hyprland
+copies titles as raw bytes into events and JSON replies alike (an
+XWayland `WM_NAME` of type `STRING` is Latin-1), so socket2 lines are
+read as bytes and both are decoded lossily (U+FFFD for bad bytes); one
+such title used to cost the connection and, through `j/clients`, every
+reconnect while that window lived. Hyprland cuts event data at 1024
+bytes (`EventManager.cpp`, `data.substr(0, 1024)`), so a `windowtitlev2`
+whose data reaches the cap (counted in raw bytes) may be cut, even inside
+a UTF-8 sequence: it re-reads `j/clients` instead of patching
+(`tests/hyprland.rs::titles_cut_at_hyprlands_event_cap_are_reread`). The fixtures are reconstructed from
+Hyprland 0.56.2's source (`HyprCtl.cpp` at that tag, the wiki's IPC
+page), not captured from a running Hyprland; real captures replace or
+validate them under M3's "runs on Hyprland, niri and sway" exit box. Known gap: 0.56's optional Lua config turns `dispatch` into
+`hl.dispatch(…)`; the old syntax then fails and the action reports
+`Rejected` with Hyprland's message. Proof: `tests/hyprland.rs`.
+
+**2026-10-06 · wave4-wm: niri.** Our own JSON-lines client behind the
+default-on `niri` feature (design.md's "reimplement niri IPC behind a
+feature flag"; `--no-default-features` drops it and niri falls back to
+the protocols). Events are parsed by name into lenient structs (every
+field defaulted, unknown fields and events ignored), since niri adds
+both in patch versions. Each event stream starts by replaying the whole
+state, ending with `ConfigLoaded` for the last load: that first one is
+not a reload, so a reconnect never fires `wm.config_reloaded`; later
+ones give `Some(failed)`. An unnamed workspace is named by its index;
+workspaces are ordered per output by index. niri's IPC reports no
+fullscreen and has no minimise (`Unsupported`). Every request
+(`Workspaces`, `Windows`, `FocusedOutput`, actions) gets a connection of
+its own: niri before 25.05 reads one request per connection and closes
+it (`src/ipc/server.rs`, `handle_client`), where several requests on one
+connection get EOF after the first; requests are rare, so one per
+connection costs nothing and works on every version. The fake niri in
+the tests closes after each reply, as those versions do. Proof:
+`tests/niri.rs` (fixtures reconstructed from niri 26.04's `niri-ipc`
+types and `src/ipc/server.rs`, not captured).
+
+**2026-10-06 · wave4-wm: sway.** swayipc-async 3.0's types, as design.md
+names, over our own i3-ipc framing on tokio (fixer round 2):
+swayipc-async decodes strictly as UTF-8 and keeps its raw API private,
+and wlroots copies an XWayland `WM_NAME` of type `STRING` (Latin-1) byte
+for byte into titles that sway's json-c output leaves unescaped, so one
+such window made every `get_tree` fail and the adapter reconnect forever
+while it lived. Our framing (`GET_WORKSPACES`, `GET_TREE`, `RUN_COMMAND`,
+`SUBSCRIBE` and the event stream; a 14-byte native-endian header) decodes
+each payload lossily (U+FFFD) and then with swayipc-async's types; it
+also drops the async-io reactor thread. A `window` `title` event is
+patched; every other `workspace`/`window` event re-reads `get_workspaces`
+and `get_tree` once per burst; `workspace` `reload` is
+`wm.config_reloaded` (`failed: None`: sway does not say). Scratchpad
+windows are minimised (no workspace), `win.minimize()` is `move
+scratchpad` and `win.focus()` brings one back. `shutdown` ends the
+session (the adapter then retries with backoff). The sway in the dev
+container and CI (1.9, wlroots 0.17) advertises neither
+`ext_foreign_toplevel_list_v1` (sway 1.10) nor `ext_workspace_manager_v1`,
+so the protocol client is proven against an in-process wayland-server
+compositor that implements both, and the sway tests assert what 1.9
+lacks. Proof: `tests/sway.rs` (with `sway_titles_that_are_not_utf8_keep_the_connection`
+against a fake sway serving replies captured from sway 1.9,
+`tests/fixtures/sway-1.9`), `src/wm/sway.rs` tests, `tests/protocol.rs`.
+
+**2026-10-06 · wave4-wm: lost sockets.** Every adapter reconnects with
+backoff (100 ms doubling to 10 s, back to 100 ms only after a connection
+that lasted 10 s: one that fails right after connecting keeps backing
+off); actions while away answer `NotConnected`. The last state stays while away (no flicker
+to empty), `Sources::connected` says it is stale, and the fresh read on
+reconnecting goes out as a diff. Idle costs nothing: the runtime has no
+timer, the protocol thread sleeps in `poll(2)` on its socket and an
+eventfd, so with nothing changing in the compositor none of the
+service's threads is woken (`tests/idle.rs` counts their context
+switches over 2 s on sway: zero). Proof: `tests/hyprland.rs::
+hyprland_adapter_reconnects_after_losing_its_socket`, `tests/niri.rs::
+niri_adapter_reconnects_without_a_spurious_reload`, `tests/idle.rs`.
+
+**2026-10-06 · wave4-wm: the protocol client is plain wayland-client.**
+The spec names wayland-protocols 0.32 (staging) and smithay-client-toolkit
+0.21. SCTK 0.21 has a helper for `ext-foreign-toplevel-list-v1` but none
+for `ext-workspace-v1`, and its helpers bring its registry and output
+state machinery with them; the client needs one event queue on its own
+thread, `wl_output` names for workspace groups and nothing else. So both
+protocols are dispatched directly with wayland-client 0.31 and
+wayland-protocols 0.32's `staging` bindings (the same crates SCTK sits
+on), which removes a layer rather than adding one. Proof:
+`crates/strand-services/tests/protocol.rs`.
+
+**2026-10-06 · wave4-wm: focus with the protocols alone.**
+`ext-workspace-v1` says which workspace each output shows (`active`), not
+which output has the keyboard. With the protocols alone (labwc, COSMIC,
+any compositor without an adapter), a workspace is `focused` only when
+it is the one non-hidden active workspace; with several outputs each
+showing one, none is `focused` (each stays `active`), `workspaces.
+focused` is unset and so is the focused screen. Marking every active
+workspace focused would break "at most one is" and let list order pick
+`workspaces.focused` and `screens.focused`. Proof: `src/wm/mod.rs::tests::
+protocols_alone_make_the_whole_state`, `tests/protocol.rs::
+two_outputs_alone_mark_active_workspaces_not_focus`.
+
+**2026-10-06 · wave4-wm: a broken adapter does not hide the protocols.**
+design.md puts the standard protocols first and IPC as the fallback, so
+an adapter that cannot connect (a stale `HYPRLAND_INSTANCE_SIGNATURE`
+whose socket refuses, an IPC whose format changed) must not keep the
+protocols' state from the shell. The first batch always carries
+`Sources` (which adapter is meant to run, `connected: false`), so
+`strand report` can say "adapter down". The state goes out at the
+adapter's first state, or, once the adapter has reported a failed
+attempt, from the protocols alone (`wm.name` is still the adapter's
+compositor); not before that failure, so a healthy start does not first
+show protocol ids and then IPC ids. When the adapter comes up, its state
+replaces the protocols' with a `Reset` of both lists, not a keyed diff:
+the protocol's key 1 and Hyprland's workspace 1 are different workspaces,
+and an `Update` of the same key would carry a store's per-item state
+across them (`tests/protocol.rs::a_late_adapter_resets_the_lists`; fixer
+round 2). Until then actions run
+where the protocol can (`ws.focus()` by `activate`) and answer
+`NotConnected` otherwise. Proof: `tests/protocol.rs::
+a_broken_adapter_does_not_hide_the_protocols`, `tests/hyprland.rs::
+a_broken_hyprland_is_retried_with_backoff_not_a_busy_loop` (it also
+counts connection attempts: 2 to 5 in a second).
+
+**2026-10-06 · wave4-wm: `wm.name` without an adapter.** The first entry
+of `XDG_CURRENT_DESKTOP` (`WmConfig::desktop`, filled by
+`WmConfig::from_env`), so a shell on labwc or COSMIC shows `labwc` or
+`COSMIC`, not an empty name. Proof: `tests/protocol.rs::
+two_outputs_alone_mark_active_workspaces_not_focus`, `src/wm/mod.rs::
+tests::every_source_gone_leaves_it_waiting`.
+
+**2026-10-06 · wave4-wm: who fires `wm.config_reloaded`.** A reload is
+sent twice by design, for two consumers: `WmChange::ConfigReloaded` in
+the batch, which the `wm` store turns into the language event, and
+`ChangeEvent::Compositor(ConfigReloaded)` on the `EventSink`, which is
+only the live-reload change source (design.md's table). The binary must
+not turn the second into another `wm.config_reloaded`, so a reload fires
+the event once (docs/architecture.md, `strand-services` and
+`strand-watch`).
+
+**2026-10-06 · wave4-wm: one service, three stores.** `workspaces`,
+`windows` and `wm` are three services to the language, each with its own
+reader count and 5 s stop, and `screens.focused` reads the focused
+screen from the same compositor. They share one `wm::run` (one adapter
+connection, one protocol thread) through `wm::WmHub`: the first
+subscription starts it, a later one gets the current state as one
+batch (never a past reload), the last one dropped stops it at once (each
+store's grace already passed by then). Each start is numbered: a batch
+the stopped run was already delivering when it was aborted (the runtime
+thread inside `fan_out` while another thread drops the last subscription
+and subscribes again) is dropped, never applied to the next run's fresh
+state. Dropping the last `WmHub` aborts the run even while subscriptions
+live (a detached task would keep its sockets and protocol thread until
+the runtime ends), and their streams end. Each subscriber's queue holds
+at most 64 batches: one that stops draining while the compositor is busy
+has its queue replaced by one batch that rebuilds the current state (the
+late joiner's replay) plus every `config_reloaded` it had not seen.
+Proof: `tests/hyprland.rs::the_hub_shares_one_adapter_between_stores`
+(one connection and one read for two subscribers, identical mirrors,
+restart from clean), `src/wm/hub.rs` tests
+(`a_stopped_runs_batch_never_reaches_the_next_run`,
+`a_lagging_subscribers_queue_is_bounded_and_coalesced`,
+`dropping_the_hub_ends_the_streams`), `tests/protocol.rs::
+dropping_the_hub_stops_the_service_its_subscriptions_held`.
+
+**2026-10-06 · wave4-wm: the schema the real services serve.**
+`wm::SCHEMA` is the text the three stores give `Service::schema()` to
+replace the provisional stubs: the same names, fields, actions and
+methods, plus `Workspace.active: bool`, `Window.urgent: bool` and `event
+config_reloaded(failed: bool?)` (niri's `ConfigLoaded { failed }`, which
+design.md's change-source table names; unset from Hyprland and sway).
+Written now so the wiring step adopts it through `Schema::extend`
+without re-deciding. Proof so far is textual: `src/wm/schema.rs`
+compares the text with every provisional declaration in builtin.schema
+(strand-services cannot depend on the compiler). The wiring step adds the
+language-side test: `Schema::extend` with `strand_services::schemas()`
+gives no errors and checks `workspaces.on(screen)`,
+`windows.focused?.title`, `on wm.config_reloaded { }` and
+`on wm.config_reloaded(failed) { }`.
+
+**2026-10-06 · wave4-wm: nested windows are copies.** `Workspace.windows`
+holds copies of its windows, so a title change is also an `Update` of
+its workspace in the stream. Accepted: a workspace holds a handful of
+windows and a title change is one small record either way. If it shows
+in a profile, the store can derive the nested list on the logic side from
+`windows.all` by `workspace` (a keyed view) and drop the copies here.
+
+**2026-10-06 · wave4-wm: smaller fixes.** The protocol thread resolves
+`WAYLAND_DISPLAY` against `XDG_RUNTIME_DIR` itself and never takes
+`WAYLAND_SOCKET` (that fd is the shell's main connection; wayland-client
+would also `remove_var` from a non-main thread). It destroys the toplevel
+handles and the list after `finished`, as the protocol asks, and treats a
+full socket buffer on flush as "wait for POLLOUT", not an error; it lives
+and dies with the display. The coordinator drains everything already
+queued before it merges, so a busy runtime merges and diffs only the
+newest adapter and protocol states (reloads and connection changes keep
+their order).
+
+**2026-10-07 · wave4-wm: `ext-workspace-v1` applies at `done`.** Every
+workspace event (`name`, `state`, `coordinates`, `capabilities`,
+`removed`) and group event (`output_enter`/`leave`,
+`workspace_enter`/`leave`, `removed`), and the creation of a workspace,
+is held pending until the manager's `done`, as the protocol says; a
+snapshot (which a toplevel's `done` can trigger between the two halves
+of a workspace transaction) reads only the applied copies. A removed
+handle is destroyed at once (it is inert) and leaves the state at the
+next `done`. Proof: `tests/protocol.rs::
+workspace_changes_apply_at_the_managers_done`.
+
+**2026-10-07 · wave4-wm: bounded reads.** The compositor is trusted, but
+a socket2 line, a niri line, a Hyprland reply or an i3-ipc frame over
+16 MiB is an I/O error (the adapter reconnects with backoff) instead of
+an ever-growing buffer. The line and frame readers are cancel safe (the
+partial message stays in the reader's buffer across `select!`). Proof:
+`src/wm/lines.rs` and `src/wm/sway.rs` tests.
+
+**2026-10-07 · wave4-wm: the IPC adapters' box waits for the wiring.**
+features.md's "Hyprland, niri, sway IPC adapters" box is unticked again:
+the adapters are proven as library code (fake Hyprland and niri from
+reconstructed traffic, real and fake sway), but shells still see schema
+defaults until the `#[service]` wiring lands; its progress note lists the
+proving tests.
+
+**2026-10-07 · wave4-wm: wlr-foreign-toplevel-management is a
+follow-up.** `ext-foreign-toplevel-list-v1` carries no state and no
+requests, so without an IPC adapter nothing says which window has the
+focus and no window action can run. `zwlr_foreign_toplevel_management_
+v1` does (activated, minimized, fullscreen; activate, close,
+set_minimized) and is offered by sway 1.9, labwc, wayfire, Hyprland and
+niri. It is a standard protocol, so binding it on the same `strand-
+toplevel` thread as a fallback (joined to the list by app id and title
+order, since it has no identifier) is in the spirit of "compositor-
+agnostic first", but design.md does not name it and this round's spec
+does not ask for it. Recorded as a follow-up on features.md's services
+item rather than done now; until then the hello bar shows no title on
+compositors without an adapter.
+
+**2026-10-07 · wave4-wm: an action's outcome is never a closed
+channel.** `WmRequest::new` and `WmSubscription::request` return a
+`WmReply`, a future of `Result<(), WmError>` that reads a reply dropped
+unanswered as `NotConnected`: a request still queued when the hub
+aborts the run (its last subscription or last `WmHub` gone), one sent
+after, or one the protocol thread never took. The protocol thread also
+answers explicitly: `ProtocolClient::send` answers `NotConnected` when
+the thread has ended, and the thread answers every command still queued
+when it ends before closing its channel. Proof: `src/wm/hub.rs::tests::
+requests_to_a_stopped_service_are_not_connected`, `src/wm/protocol.rs::
+tests::a_request_after_the_display_went_away_is_not_connected`.
+
+**2026-10-07 · wave4-wm: the protocol thread starts inside its poll
+loop.** No blocking roundtrip: the registry binds the globals as they
+arrive and three `wl_display.sync`s, each sent once the one before is
+answered (the globals, the binds' first events, the events of the
+handles those created), mark the first state, all in the `poll(2)` loop
+that also watches the eventfd. A compositor that accepts the connection
+and never answers therefore cannot keep the thread: dropping the
+`ProtocolClient` stops it, so a hung compositor does not leak a thread
+and a connection per subscribe. (`UnixStream::connect` itself only
+blocks while the listener's backlog is full.) Proof: `tests/protocol.rs::
+a_hung_compositor_does_not_keep_the_thread`.
+
+**2026-10-07 · wave4-wm: `Window::toplevel` keeps the join.** Every
+window carries its `ext-foreign-toplevel-list-v1` identifier when known
+(the adapter's: sway 1.10+'s `foreign_toplevel_identifier`, Hyprland's
+`stableId`; with the protocols alone, its id), not a schema field. M4's
+`thumbnail w` (`ext-image-copy-capture-v1`) needs the toplevel's handle
+on the connection that owns it, the `strand-toplevel` thread: it will
+add a `ProtoCmd` that captures by identifier, without changing the
+model. Proof: `src/wm/mod.rs` (tests `the_protocol_wins_where_it_covers_
+a_field`, `protocols_alone_make_the_whole_state`).
+
+**2026-10-07 · wave4-wm: Hyprland titles with a newline.** Hyprland's
+`EventManager::formatEvent` (v0.56.2) turns every `\n` in event data
+into a space; `j/clients` escapes it in JSON instead. Titles read from
+`j/clients` get the same mapping, so a `windowtitlev2` patch and the
+next re-read agree and a window that did not change sends no `Update`.
+Related gap, accepted: Hyprland sends no event when an unfocused
+window's class changes, so its `app_id` stays stale until the next
+re-read; on Hyprland 0.50+ the `stableId` join with the toplevel list
+corrects `app_id` from the protocol anyway. Proof: `src/wm/hyprland.rs::
+tests::events_patch_in_place_or_ask_for_a_requery`.
+
+The audio entries below belong to this track too (step b2, the same
+branch), under `wave4-wm (audio)`.
+
+**2026-10-07 · wave4-wm (audio): pipewire 0.10.1 with `v1_0_0`, on a
+`strand-pipewire` thread driven by hand.** design.md names pipewire 0.10;
+0.10.1 builds against Ubuntu 24.04's libpipewire 1.0.5 with the `v1_0_0`
+feature (bindgen needs libclang, which CI now installs), so no fallback
+version was needed. `audio::Audio::spawn(AudioConfig, sink)` starts the
+thread; the loop is iterated by hand (`Loop::iterate`), and every
+PipeWire callback only queues owned data (`Work`) that one `Driver`
+handles with `&mut self` after each iteration. That removes shared
+mutable state between callbacks and the re-entrancy of a stream's
+`connect` calling its listener at once. It also gives one published
+batch per burst of events. A `pipewire::channel` carries the handle's
+commands. Its receiver holds a mutex while it calls back, so nothing on
+the thread sends to it: internal events go through the queue. Proof:
+`crates/strand-services/tests/audio.rs`.
+
+**2026-10-07 · wave4-wm (audio): volume is the cube root of the loudest
+channel, and writes set every channel.** `wpctl get-volume` and
+`pactl`/pavucontrol show volume this way: `channelVolumes` [0.125, 0.001]
+reads as 0.50, which is the max and not the mean (checked against wpctl
+1.0.5). A write of `v` sets every channel to `v³`, as the spec asks. That
+drops the channel balance, which the schema cannot show anyway. A node
+without `channelVolumes` falls back to the `volume` prop. Writes clamp to
+0..1, or to the current volume when another program has already pushed it
+past 1 (pactl allows 150 %). A write then never raises it further but can
+lower it, so `-= 0.05` from 1.2 does not jump to 1.0. NaN is refused. The
+thread remembers the channel volumes of a device's last 64 writes
+(`audio::ECHOES`, as many as core's `MAX_PENDING_ECHOES`) and reports
+the written value when any of them comes back. The echo of `0.37` is
+then `0.37`, not `0.36999998` (f32 cube and root), also when a slider
+sent many writes before the first echo. And `audio::perceptual` snaps a
+root within 1e-6 of a multiple of 1/10 000 to it (the f32 noise is under
+1e-7; no step anyone sets is that fine), so a volume on that grid reads
+back exactly also when its write is forgotten (fixer round 3: with 8
+remembered writes, PipeWire under load echoed an evicted one of a ten
+write drag as `0.3000000025939058`).
+That is exact only on the node `Props` path. Through a card's `Route`,
+ACP quantizes to the mixer's steps and splits hardware and software
+volume, so the echo is near the written value, not equal: an echo
+within 0.005 (half a percent, on the perceptual scale) of a remembered
+write (the closest) reads as that write, and farther is another
+program's volume. Requests carry no tag, so the audio adapter uses
+`strand_core::echo`'s value path (an untagged report equal to a pending
+write is its echo); the exact readback above is what makes that work.
+Answering writes with tags (a tag per request, echoed back when the
+thread recognises the write) would let the store settle by generation
+instead; it is not done, since the readback holds for every write the
+store still keeps pending. A relative step is `AudioAction::StepVolume(device,
+delta)`, resolved on the audio thread when it runs, from the last volume
+written there while PipeWire has not reported it yet (else the volume
+shown), with `SetVolume`'s clamp. That pending write ends when its echo
+comes, or when a volume matching no write arrives after the core sync
+issued with the write has returned. A report before that sync (the
+echo of an earlier mute, which carries the whole `Props` and so the old
+volume) is shown, but a second step still adds to the write. Every language-side
+write arrives as `SetVolume`: VM writes (`audio.sink.volume -= dy *
+0.05`), and IPC's relative form (`strand set audio.sink.volume +5%`,
+design.md example (d)), which wave4/core's `services::set_text` resolves
+for every service by reading the current value through `ServiceHost`
+and writing an absolute one with `ServiceHost::write`, whose optimistic
+tagged cell makes quick steps compound. `StepVolume` is kept only for
+callers that hold the `Audio` handle directly; nothing on the language
+path sends it, and the wiring may drop it if nothing does. Proof:
+`tests/audio.rs::writes_land_where_wpctl_reads_them` (two steps before
+the first echo land at 0.7; 80 slider writes before the first echo all
+read back as written), `src/audio/thread.rs::tests::
+{echoes_of_recent_writes_read_back_as_written,
+an_echo_of_a_forgotten_write_still_reads_as_written,
+an_older_report_before_a_write_is_applied_keeps_the_step_base,
+a_quantized_echo_reads_as_written}`, `src/audio/model.rs` tests.
+
+**2026-10-07 · wave4-wm (audio): the default is read from `default.audio.*`,
+else `default.configured.audio.*`, and `make_default()` writes both.**
+design.md: "no usable WirePlumber binding; read PipeWire's `default`
+metadata". The effective key (what the session manager applied) wins when
+it names a known device of that direction. When it does not, the
+configured key (the user's choice) is used. The effective default source
+can name a sink: WirePlumber ranks monitors as sources. Our `sources`
+list holds no monitors, so `audio.source` is then empty rather than a
+sink posing as an input. `make_default()` writes
+`default.configured.audio.{sink,source}`, which is what `wpctl
+set-default` and `pactl set-default-sink` write and what a session
+manager applies. It also writes `default.audio.{sink,source}`, so a setup
+without a session manager changes too; with WirePlumber both end up
+equal. Writes to `audio.sink.*` go through `DeviceRef::DefaultSink`,
+which resolves on the audio thread when the write runs, so a write never
+lands on a device that stopped being the default in between. Proof:
+`tests/audio.rs::devices_volume_mute_and_the_default_arrive`,
+`writes_land_where_wpctl_reads_them`.
+
+**2026-10-07 · wave4-wm (audio): no per-app streams; peak meters are passive
+capture streams, at most 60 readings a second, never left stale.** The builtin schema's `audio` service declares no
+streams, so none are followed (adding them would add a concept the
+schema lacks). Levels (design.md: "streams like … audio levels only while
+visible") are `Audio::set_levels(targets)`, the set of meters wanted now,
+which the store drives from visible readers. Each meter is a capture
+stream: a sink's monitor (`stream.capture.sink`) or a source. It is
+`node.passive`, so it never keeps a device awake: a sink that plays
+nothing stays suspended and the meter wakes nothing. It is also
+`node.dont-reconnect`; the thread retargets `DefaultSink` itself when the
+default changes. Its process callback runs on PipeWire's data thread
+(`RT_PROCESS`, a listener of its own) and only folds each cycle's peaks
+into per-channel atomics (`f32` bits, `fetch_max`) and counts the
+cycle: no allocation, lock or queue there. It wakes the
+`strand-pipewire` loop (an eventfd) only on the first cycle with sound
+after the loop last read the meter. While sound flows the loop reads
+the meter on the frame timer instead, and the data thread wakes nobody.
+At most one `Levels` per meter goes out per frame (`audio::FRAME`,
+1/60 s), the loudest peak per channel since the last, and the loop
+wakes about as often, however short the graph's cycle. PipeWire
+shrinks the whole graph's cycle when any client asks for low latency (a
+game, voice chat: 64 samples is 750 cycles a second); with the process
+callback on the loop, the loop woke that often even though it published
+60 readings. design.md's state is latest-value and coalesced per frame:
+a meter shown on screen needs no more. A device playing silence wakes
+the loop not at all after its first silent reading. Only the first all-zero reading after
+sound is sent. A meter that pauses, fails, loses its connection, or
+stops (no longer wanted, or retargeted when the default moves or its
+device leaves) sends one closing quiet reading if it last showed sound,
+so a level never stays frozen: hidden while the music stops and shown
+again, or a default that moves to a silent sink, reads 0. A meter whose
+stream failed is started anew after 1 s, doubling per failure in a row
+on the same target and device up to 30 s, and reset once a stream runs:
+a format error never leaves a visible meter dead on an idle system, nor
+restarts it in a storm. Meters on sources
+are passive too, deliberately: a visible microphone level shows nothing
+until something else records. An active capture would open the
+microphone by itself, lighting every "microphone in use" indicator (the
+shell's own included) whenever the meter is on screen, and keep the
+device awake. The spectrum element (M4, realfft) will need samples
+rather than peaks; it can get them from the same stream. Proof:
+`tests/audio.rs::peak_meters_run_only_while_asked_for` (hide, silence,
+show reads 0; a playing sink stays pinned while the default moves to a
+silent one, whose meter then reads 0 with no sound after the switch),
+`peak_readings_are_capped_at_the_frame_rate` (60 batches a second under
+`pw-play --latency 64`, against 741 uncapped, and at most 70 wakeups a
+second of the `strand-pipewire` thread, measured at 60), `src/audio/
+meter.rs::tests` (the data thread's folding and single wake, the retry
+backoff), `tests/audio_idle.rs` (zero wakeups of `strand-pipewire` and
+`pw-data-loop` with a meter on a silent sink).
+
+**2026-10-07 · wave4-wm (audio): reconnection keeps the last devices and does
+not poll forever.** A core error on the core object that means the
+connection broke (`-EPIPE`, `-ECONNRESET`, `-ENOTCONN`, as pw-cli and
+pw-mon read it; other core errors are logged and kept) drops the
+connection, publishes `Connected(false)` with the devices kept,
+and reconnects. A retry timer backs off from 100 ms, doubling up to
+10 s. While disconnected, an inotify watch on the socket's directory
+(`CREATE`/`MOVED_TO`, removed once connected, because the runtime
+directory is busy) reconnects at once when the socket appears. Once the
+doubling passes 10 s and the watch is in place, the timer stops, so a
+machine without PipeWire costs no wakeups. An inotify queue overflow
+counts as the socket appearing (its event may be among those lost), and
+a watch that ends (`IN_IGNORED`: the directory was removed) is dropped
+and re-added on each attempt, the timer at 10 s meanwhile, so the
+service never waits on a dead watch. Without a watch (no runtime
+directory, or no inotify instance: the per-user limit, 128 by default,
+which eight parallel runs of the audio tests exhaust, each test running
+its own dbus-daemon, pipewire and WirePlumber) it retries every 10 s. The timer stops only while the
+socket file is missing: one that is there but refuses (a crashed
+daemon's stale socket, a permission change, a daemon refusing clients)
+keeps the timer at 10 s, since nobody may ever recreate it. A connection
+that dies within 10 s does not reset the backoff (as with wm's
+`STABLE`). The new connection's first state goes out as a diff against
+the kept devices (ids that changed are a remove and an insert) once it
+has settled: its syncs after the last bind are back, the session
+manager's `default` metadata is bound and its properties read (a sync
+after the bind), and each default shown before the loss names a device
+again; or after `audio::SETTLE` (3 s), provided its first sync is back
+(see "a daemon that accepts but never answers"). Until then the last state stays,
+`connected` still false: `connected` turns true with the first settled
+state, so a reader never sees a connected service with an empty
+default. This matters on hardware: inotify reconnects within
+milliseconds of the socket's return, before WirePlumber has made the
+metadata and, through its device monitor, the ALSA and Bluetooth nodes,
+so the first sync used to show an empty `audio.sink` (volume 0, which
+design.md's OSD would flash) and empty lists that then refilled. The
+defaults shown before stay usable meanwhile, after the current
+metadata's effective and configured defaults, until `SETTLE` passes.
+The same holds when the session manager alone restarts (its metadata
+removed): the defaults shown stay until the new metadata's resolve or
+`SETTLE` passes, then an absent session manager shows no default. A
+system without a session manager waits `SETTLE` for its first state.
+Proof: `tests/audio.rs::a_daemon_restart_reconnects` (a crash that
+leaves the socket behind; back within 3 s of a restart 9 s after the
+loss, when the next timed attempt is at 12.7 s; the defaults stay
+`SETTLE` after the session manager goes, and a quick session manager
+restart shows no gap), `a_restart_shows_no_gap_while_the_session_
+manager_comes_back` (a bare daemon whose devices `pw-cli` creates after
+WirePlumber starts: no empty default or list is published between the
+loss and the recovery), `it_starts_without_pipewire_and_connects_when_
+it_appears`, `src/audio/thread.rs::tests::only_a_missing_socket_is_
+waited_for`.
+
+**2026-10-07 · wave4-wm (audio): an action sent before a connection has
+settled waits for it.** The store hands a write to the service as soon as
+the write starts it, before the service is ready (wave4/core: "write
+starts"). So the write of a media key (`strand set audio.sink.volume
+…`), or the first click on a bar whose audio reads have not started it,
+reaches the thread before its first state; it used to answer
+`UnknownDevice(DefaultSink)` (no node was ready yet) or `NotConnected`
+(during a reconnect) and was lost. Now an action that arrives while no
+connection has published its first state is held in order (at most 64;
+more are refused with `NotConnected`) and runs right after that state,
+so `DefaultSink` resolves against the synced defaults. With a
+connection being set up, it waits for it to settle (at most `SETTLE`);
+with none at all (startup without a daemon, or after a loss) it waits
+`audio::GRACE` (2 s) for one, then answers `NotConnected`. After
+`Audio::stop`, actions still queued answer `NotConnected` and nothing
+more is written; `set_levels` after the stop is ignored. Proof:
+`tests/audio.rs::writes_sent_before_the_first_state_land` (a volume and
+a mute sent at spawn land on the default sink as wpctl reads it),
+`a_restart_shows_no_gap_while_the_session_manager_comes_back` (a mute
+sent while the daemon is down lands after it returns),
+`a_daemon_restart_reconnects` (with the daemon away longer than
+`GRACE`, `NotConnected`), `src/audio/mod.rs::tests::
+a_handle_without_a_daemon_answers_not_connected`.
+
+**2026-10-07 · wave4-wm (audio): volume and mute are read from node
+`Props` and written through the card's active `Route` when the node has
+one.** Reads come from the node's `Props` (`channelVolumes`, `mute`):
+the session manager mirrors a route's volume there, and that is what
+`wpctl get-volume` reads. Writes follow `wpctl` (WirePlumber's
+mixer-api) and pipewire-pulse. A node of a card (ALSA's ACP, Bluetooth)
+names its device (`device.id`) and its profile device
+(`card.profile.device`). The thread binds every `Audio/Device` and
+follows its `Route` params, the active route per profile device. When
+the node's profile device has an active route, the write is that
+device's `Route { index, device, props: Props { channelVolumes | mute },
+save: true }`. Each card bind issues a core sync like a node bind, so a
+connection's first state, and the actions waiting for it, wait for the
+card's routes: no early write goes to a card node's `Props`, which
+WirePlumber would revert and not persist. That moves the hardware mixer, and it is what WirePlumber
+saves and restores and re-pushes into the node on a port or profile
+change, so a `Props` write there would be reverted and never persisted.
+Otherwise (null sinks, virtual and filter nodes, pro-audio profiles
+without routes) the node's own `Props` is written. A device's route set
+is replaced as a whole: when its `Route` param info changes (the serial
+flag toggles), its old routes are no longer used until the new set
+arrives, and nodes of a card that reports no route are written
+directly. Stated limitation: the route path cannot be tested end to end
+here, because the container and CI have no sound card and no
+`snd-dummy`, and a null sink has no device. The pod (built as
+pipewire-pulse builds it), the path choice and the route-set
+bookkeeping are unit-tested; the null-sink tests prove the `Props` path.
+Proof: `src/audio/pod.rs::tests::route_pods`, `src/audio/thread.rs::
+tests::{writes_go_through_the_active_route_of_a_card_node,
+a_device_uses_only_its_current_set_of_routes,
+node_links_come_from_its_properties}`.
+
+**2026-10-07 · wave4-wm (audio): `AudioDevice` is exactly the schema
+record; libpipewire sits behind a default-on feature; dropping the
+handle does not wait.** `AudioDevice` holds the schema's fields and
+nothing else: `icon` is a stored field (from `audio::icon(direction,
+volume, muted)`, set when the state is built), and the direction and
+channel count stay on the audio thread, so the store's `#[derive(Data)]`
+record can be `AudioDevice` itself. `audio.sink`/`audio.source` with no
+default (`AudioChange::Sink(None)`) show the record's schema defaults.
+The schema keys devices by `id`, the PipeWire global id, and PipeWire
+reuses freed ids quickly: a device removed and another created under
+its id in one burst would be a keyed update, and a `for` item would
+keep its state for another device. `AudioState::serials` holds each
+device's `object.serial`, and the publisher sends a changed serial
+under the same id as a `Remove` and an `Insert`. A `DeviceRef::Id`
+from a stale item (an open popup) can still reach the device that now
+holds the id; carrying the serial in `DeviceRef` would refuse it, but
+that needs the store's item to carry it too, so it waits for the
+wiring (follow-up). `Audio/Duplex` nodes are listed as sinks only: one
+node is one item, and its playback side is what a volume control
+moves, so a duplex node that `default.audio.source` names (pro-audio
+setups) leaves `audio.source` empty, and `make_default()` on it writes
+the sink keys. Listing it in both lists would show one device twice
+with one volume. Proof: `src/audio/model.rs::tests::
+a_reused_id_is_a_new_device`, `media_classes`.
+`audio::SCHEMA` stays in strand-services on this branch; when this
+merges with wave4/core, it moves to `strand-services-schema` with the
+other builtin schema texts, so the LSP reads it without the runtime. The
+`audio` module is behind the `pipewire` cargo feature, on by default: a
+build with it needs libpipewire's headers and libclang, and the binary
+links libpipewire-0.3. A build without it (`--no-default-features`,
+checked by clippy in CI) answers `audio.*` at the schema's defaults,
+for systems without PipeWire. Lazy start cannot help a missing shared
+library. `Audio`'s `Drop` asks the thread to stop and returns. The
+thread ends on its own once it reads the stop, so the store can drop
+the handle at its 5 s stop on the shared tokio runtime without
+blocking. `Audio::stop` still joins, off the logic thread. The sink must
+never block (an unbounded channel or a `try_send`): it runs on the
+PipeWire loop, which `stop` waits for. Proof: `src/audio/schema.rs::
+tests::the_model_has_exactly_the_schema_fields`, `src/audio/mod.rs::
+tests`, the CI step `cargo clippy -p strand-services
+--no-default-features`.
+
+**2026-10-07 · wave4-wm (audio): a private PipeWire for tests.** Each test
+starts its own `dbus-daemon` on a socket in a fresh `/tmp/strand-pw.*`
+directory. `/tmp` keeps the path short: PipeWire's socket path has a
+108-byte limit, which the scratch directories exceed. In the same
+directory it starts `pipewire -c` with a config of its own (a dummy
+driver, two null sinks with `priority.session` 2000/1000, and a virtual
+source at 3000, above the sinks' monitors) and `wireplumber` (which
+creates the `default` metadata). Every child gets `XDG_RUNTIME_DIR`,
+`PIPEWIRE_RUNTIME_DIR`, `XDG_STATE_HOME` and `XDG_CONFIG_HOME` in that
+directory, the private session bus, and a system bus address that does
+not exist. The machine's daemon and buses are never touched. The tests
+drive it with `wpctl`, `pw-cli`, `pw-metadata`, `pw-dump`, `pw-link` and
+`pw-play` (a generated square-wave WAV, pinned to its sink with
+`node.dont-reconnect`, since WirePlumber otherwise moves a `--target`
+stream to a new default). With `STRAND_REQUIRE_PIPEWIRE=1` or
+`STRAND_REQUIRE_DBUS=1` (CI) a missing tool fails the test instead of
+skipping it. pactl is not used, because the container has no
+pulseaudio-utils; wpctl covers the same ground.
+
+**2026-10-07 · wave4-wm (audio): levels reach the language through the
+`spectrum` element, not a field.** The builtin schema exposes no level:
+no `AudioDevice` or `audio` field carries one, and `meter(float ->
+value)` takes a plain float the shell computes. The only declared
+consumer of audio levels is `spectrum(AudioDevice -> source)` (M4,
+realfft), so levels reach the language through that element: each
+mounted, visible `spectrum` subscribes by its source device (a
+`LevelTarget`), and the store passes the union of those subscriptions to
+`Audio::set_levels`, which keeps "audio levels only while visible"
+without a new schema field. A `level: float` stream field on
+`AudioDevice` (so a `meter` could show it) would add a concept the
+schema lacks; it can come through architecture.md and the schema if a
+shell needs it. What the element needs is samples, not the folded
+per-channel peaks `Levels` carries now: when the spectrum lands, the
+meter's process callback must also copy each cycle's samples into a
+lock-free ring for the FFT (the peaks stay, for "stops when audio is
+silent"). Until then `Levels` has no language-side consumer.
+
+**2026-10-07 · wave4-wm (audio): a daemon that accepts but never answers
+is not a connection.** With socket activation (`pipewire.socket`),
+systemd accepts the connection while `pipewire.service` is slow to start
+or keeps failing, and nobody replies. A connection's first state
+therefore goes out only once its first sync is back: `SETTLE` (3 s)
+forces it out without the session manager, never without the daemon.
+Until then the last state stays (`connected: false`, the devices of
+before), and actions keep waiting. If the first sync has not come back
+after `audio::UNANSWERED` (6 s, twice `SETTLE`), the connection counts
+as lost: the actions that waited for it answer `NotConnected`, the core
+is dropped, and the usual backoff retries. Proof: `tests/audio.rs::
+a_silent_daemon_shows_nothing_and_is_retried` (a crashed daemon's socket
+taken over by a listener that accepts and stays silent: no
+`Connected(true)` and no removals, a write answers `NotConnected`, and
+the real daemon's return reconnects).
+
+**2026-10-07 · wave4-wm (services): three stores, one hub per
+services runtime.** `workspaces`, `windows` and `wm` are three services
+to the language (each its own readers, start and 5 s stop, as design.md's
+lifecycle says per service) but one compositor service underneath:
+each store's body subscribes to `wm::hub()`, a `WmHub` kept in a
+thread-local of the shared runtime thread, so every `Services` registry
+(a `strand run`, a test) has its own and the first store to start starts
+the adapter and the protocol thread, the last to stop stops them. The
+config is process-wide (`wm::configure`, else `WmConfig::from_env(None)`)
+rather than a field of `Buses`: the compositor's sockets come from the
+environment like the session bus, and only tests point elsewhere (they
+serialize). `strand run` passes no `EventSink`: nothing consumes a
+`ChangeEvent::Compositor` yet (live.rs ignores it), and
+`wm.config_reloaded` is the language's event either way. Each store
+waits for its own part of the state before `ready()` (the first frame's
+wait), so a bar does not flash an empty workspace row. Proof:
+`crates/strand-services/tests/wm_services.rs`.
+
+**2026-10-07 · wave4-wm (services): the toplevel client is the hub's
+thread, not a `Start::Thread` body.** The contract's own-thread helper
+runs one service's body on its thread; the Wayland protocol client
+serves three stores, so it stays the `strand-toplevel` thread the shared
+hub's `run` spawns (and drops with it), with the same message protocol
+(typed snapshots over a channel, no shared state). PipeWire serves one
+store and runs on that store's `Start::Thread` (`strand-audio`): the
+loop the `Audio` handle runs on `strand-pipewire` is the same function,
+given a `Host` instead of a sink, so the service thread is the PipeWire
+thread (no second thread, no extra hop).
+
+**2026-10-07 · wave4-wm (services): `wm`'s schema has no focused
+monitor.** The task asked for the focused monitor "if the schema has
+it": the `wm` stub declares only `name` and `config_reloaded`; the
+focused monitor is `screens.focused`, a field of the `screens` service,
+which no crate serves yet. Adding it to `wm` would put one fact in two
+places; the hub already carries `FocusedScreen` for the `screens` store
+to take when it is written.
+
+**2026-10-07 · wave4-wm (services): audio writes are answered by the
+batch that shows them, not by value.** The library's plan was the echo
+module's value path (an untagged report equal to a pending write is its
+echo). Through the store it does not hold: `audio.sink` is a whole
+`AudioDevice` record, and a report's record carries the `icon` PipeWire's
+new volume implies while the optimistic local record still has the old
+one, so a slider's earlier echo crossing an icon boundary compared
+unequal and snapped the slider back (the test fails so when the answers
+are untagged). The store therefore keeps its writes in flight and
+answers each, tagged (`Cx::report`), with the first batch whose state
+shows its value on its device; the writes of that field before it are
+dropped (the logic thread's pending list is cut at the answered tag, so
+their echoes are ignored and the last write settles). A write PipeWire
+refuses, or whose value never shows within `audio::ANSWER_WAIT` (1 s:
+it changed nothing, or was clamped), is answered with the device as it
+is. A field write (`audio.sink.volume`) targets `DeviceRef::DefaultSink`,
+resolved when the action runs, so a write that starts the service lands
+once PipeWire has synced. Proof: `tests/audio_service.rs` (20 slider
+writes, no snap-back).
+
+**2026-10-07 · wave4-wm (services): level meters run for taps, and only
+while a reader is visible.** No schema field carries a level (wave4-wm
+(audio)), so `#[store(stream)]` has nothing to gate them by. The store
+takes the union of `audio::tap_levels` taps (the M4 `spectrum`
+element's hook; a reading goes to the tap's function on the audio
+thread) and passes it to the loop only while `Cx::visible()`; hidden
+(inside the 5 s grace) every meter stops. A tap alone does not start the
+service: the element reading `audio.sink` is its reader. Proof:
+`tests/audio_service.rs` (the `strand-levels` node comes and goes with
+the tap and with the reader's visibility).
+
+**2026-10-07 · wave4-wm (services): the change-sources box is split by
+owner.** features.md's "Change sources beyond files" held two features
+with different owners: the compositor reload (this track: the `wm`
+store's `config_reloaded`) and the cache invalidations of
+`applications/`, `index.theme` and fontconfig (the apps and icon
+caches' owners). It is now two boxes with the same words, so the first
+is ticked with its proofs and the second stays open; nothing was
+dropped.
+
+**2026-10-07 · wave4-wm (services, fixes r1): a cell's writes are
+answered in write order.** The logic thread keeps one echo state per cell
+(`audio.sink`, or one item of `audio.sinks`): an answer tagged `g` ends
+every pending write of that cell up to `g`, and once none is left it
+settles the cell to the answer's value. The store had ordered answers per
+device *field* instead, so a write answered at once (a `muted = false`
+on an unmuted sink, sent right after `volume = 0.7` by an "unmute when
+the slider moves" handler) settled the cell to the state before the
+volume write, and the volume's own answer then read as an old echo: the
+slider stayed on the old value until some outside change. Now every
+write, including one that changes nothing, one PipeWire refuses, one
+that is not a writable leaf and one that times out, joins its cell's
+queue; a write that ended is held while an earlier write of its cell
+still waits, and the queue's run of ended writes is answered by its last,
+with the state that shows them. A batch shows a write only when it
+changes the write's device (an unrelated batch cannot answer a write
+whose value the device happened to hold already), and it overtakes the
+earlier writes of that field. `ANSWER_WAIT` (1 s) now runs from
+PipeWire's reply to the action, not from the write's arrival: an action
+queued for a connection (a daemon or WirePlumber restart, a write that
+cold-starts the service) is not answered "as it is" before it runs; a
+reply that never comes ends the wait after 6 s (`GRACE` + `SETTLE` +
+`ANSWER_WAIT`). The loop logs a refusal nobody waits for (the store's
+`make_default()`) at warn. The PipeWire loop's list keys are the device's
+`u32` id end to end (no conversion that could fail). A loop that cannot
+be created (no PipeWire library loop or context) is the body's error, so
+the contract shows it and retries with backoff. Proof:
+`tests/audio_service.rs` (a volume write then a no-op mute write: the
+cell never leaves the volume written; the test fails with unordered
+answers), and its stop checks (no `strand-audio` thread and PipeWire's
+client count back to before after each stop; a write to the stopped
+service starts it and lands).
+
+**2026-10-07 · wave4-wm (services, fixes r1): the hub joins its protocol
+thread.** This supersedes the "toplevel client is the hub's thread"
+entry's lifecycle: the `strand-toplevel` thread is still the hub's, not
+a `Start::Thread` body (three stores share it), but the hub now starts
+it itself (`wm::run` keeps doing so for direct users) and owns its
+`JoinHandle`: a stop (the last subscriber gone, the hub dropped, or
+`Services::shutdown`, whose runtime drop ends the stores) sends `Stop`
+and joins it (2 s at most; the thread only ever blocks in a poll that
+hears `Stop`). Proof: `tests/wm_services.rs::
+the_compositor_stores_follow_sway_through_one_hub` (no `strand-toplevel`
+thread after the last stop, nor after a shutdown with a store still
+read; a read, unread, read cycle within 5 s keeps one run and one
+thread).
+
+**2026-10-07 · wave4-wm (services, fixes r1): the provisional stubs
+declare what the services serve.** The `Window`, `Workspace`, `windows`,
+`workspaces` and `wm` stubs in builtin.schema now carry
+`Workspace.active`, `Window.urgent` and `event config_reloaded(failed:
+bool?)`, as the served texts do, rather than a test tolerating the
+difference: anything that reads `Schema::builtin()` alone (compiler
+tests, a docs generator, an inspector built without services) sees the
+same contract as `strand check`. `src/wm/schema.rs::
+the_stubs_declare_what_the_services_serve` requires the member lines to
+be equal, in order, as the audio test already did; the language-side
+test the 2026-10-06 entry promised is `crates/strand/src/services/
+mod.rs::the_compositor_services_check_as_design_md_uses_them` (both
+`config_reloaded` handler forms, `workspaces.on(screen)`, `ws.active`,
+`windows.focused?.title`, against the served and the bare builtin
+schema).
+
+**2026-10-07 · wave4-wm (services, fixes r1): what M4 must rework.** Two
+choices hold for M3 but are provisional. (a) `audio::tap_levels` is a
+process-wide registry whose taps get per-channel peaks (`Levels`) on the
+audio thread; M4's `spectrum` element needs samples or FFT bins, so M4
+extends `Levels` (or the tap) with each cycle's samples per tap and may
+tie taps to a `Services` registry. (b) `wm::configure` and
+`audio::configure` are process-wide, so one process cannot run two
+registries against different compositors or PipeWires, and tests that
+use them serialize; when a second registry needs another target, the
+compositor and PipeWire targets move into `Buses` (or a sibling
+`Targets`) as the D-Bus buses did.
+
+**2026-10-07 · wave4-wm (services, fixes r2): a stop never waits on the
+shared runtime; each start detects afresh; swayipc-types.** (a) This
+supersedes the r1 entry's join on stop: the last subscriber's stop runs
+on the shared current-thread runtime under the hub's lock, so it now
+only sends `Stop` and keeps the `ProtocolClient` in the hub's stopping
+list; ended threads are joined (without waiting) at the next start or
+stop, and dropping the hub (the runtime thread's end, which
+`Services::shutdown` joins) joins the rest synchronously. The join waits
+on a done channel with a 2 s `recv_timeout` instead of a 1 ms sleep
+loop. Proof: `tests/wm_services.rs::
+the_compositor_stores_follow_sway_through_one_hub` (the thread ends
+after the last stop; none after a shutdown with a store still read).
+(b) The runtime thread's hub makes its `WmConfig` at each start
+(`WmHub::fresh`: the `wm::configure` override, else
+`WmConfig::from_env`), not once per process, so strand started before
+Hyprland's `.socket2.sock` or niri's socket existed uses the adapter
+from the next start on; a running service keeps its config until it
+stops. Proof: `src/wm/hub.rs::each_start_detects_the_compositor_afresh`.
+(c) The sway adapter depends on swayipc-types 2.0 (the types
+swayipc-async 3.0 re-exports and pins), not swayipc-async itself: the
+adapter only ever used the types, and swayipc-async's async-io,
+async-pidfd and polling stack was build time and binary size for
+nothing. It stands in for design.md's swayipc-async 3.0; moving to
+swayipc-async's own connection later is a dependency swap.
+
 ## wave4-core
 
 **2026-10-06 · wave4-core: a service's schema is its own text, held to
@@ -7125,3 +8002,18 @@ load (it assumes the text request is made synchronously). The
 icon-theme follower, now a task on the shared session connection, does
 not reconnect after the session bus restarts (neither did the thread it
 replaced; the `system` service retries through the client's backoff).
+
+## wave4-integration
+
+**2026-10-07 · wave4-integration: merging wave4/wm into wave4/core.**
+Both tracks extended the same lists (the `Builtin` stores and the schema
+texts, `strand-services`' dependencies, the thread table and the M3
+checklist); the merge keeps every entry of both, `apps` before the
+compositor stores and `audio` as each track appended them. Three M3 boxes
+were open only for the other track's half and are ticked by the merge
+with both halves' proving tests: the builtin services line (apps from
+wave4-a3; audio, workspaces and windows from wave4-wm), and the change
+sources line, which the wm track had split into its compositor half
+(ticked there) and the caches half that wave4-a3 finished. The stated
+limitations stay in the lines (the `Route` write path unit-tested only,
+no `zwlr_foreign_toplevel_management_v1` fallback yet).

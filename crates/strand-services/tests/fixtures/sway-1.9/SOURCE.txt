@@ -1,0 +1,11 @@
+sway 1.9 IPC replies, captured (not reconstructed) from the headless sway
+1.9 (wlroots 0.17) of the dev container on 2026-10-07: `swaymsg -t
+get_tree -r` and `swaymsg -t get_workspaces -r` with one output
+(HEADLESS-1, 1920x1080) and one xdg toplevel (app_id `foot`, title
+`TITLE_HERE`) mapped by the tests' TestWindow client
+(tests/common/window.rs).
+
+tests/sway.rs's fake sway serves these over the i3-ipc framing and puts
+raw Latin-1 bytes where `TITLE_HERE` is, as sway's json-c output does for
+an XWayland window whose WM_NAME is of type STRING (wlroots copies it
+byte for byte; json-c escapes only control characters, quotes and `/`).

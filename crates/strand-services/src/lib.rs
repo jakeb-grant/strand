@@ -35,6 +35,8 @@
 extern crate self as strand_services;
 
 pub mod apps;
+#[cfg(feature = "pipewire")]
+pub mod audio;
 pub mod battery;
 pub mod bluetooth;
 pub mod brightness;
@@ -57,6 +59,7 @@ mod store;
 pub mod system;
 pub mod testing;
 pub mod tray;
+pub mod wm;
 
 pub use bus::{Bus, Buses};
 pub use client::{Client, DynService, Observer, STOP_GRACE, ServiceDiagnostic, Services};
@@ -85,6 +88,11 @@ pub struct Builtin {
     pub media: Client<media::Media>,
     pub tray: Client<tray::Tray>,
     pub apps: Client<apps::Apps>,
+    pub windows: Client<wm::Windows>,
+    pub workspaces: Client<wm::Workspaces>,
+    pub wm: Client<wm::Wm>,
+    #[cfg(feature = "pipewire")]
+    pub audio: Client<audio::AudioStore>,
 }
 
 impl Builtin {
@@ -102,6 +110,11 @@ impl Builtin {
             media: services.register(rt),
             tray: services.register(rt),
             apps: services.register(rt),
+            windows: services.register(rt),
+            workspaces: services.register(rt),
+            wm: services.register(rt),
+            #[cfg(feature = "pipewire")]
+            audio: services.register(rt),
         }
     }
 
@@ -119,6 +132,11 @@ impl Builtin {
             self.media.dynamic(),
             self.tray.dynamic(),
             self.apps.dynamic(),
+            self.windows.dynamic(),
+            self.workspaces.dynamic(),
+            self.wm.dynamic(),
+            #[cfg(feature = "pipewire")]
+            self.audio.dynamic(),
         ]
     }
 }
@@ -129,6 +147,13 @@ impl Builtin {
 /// services.
 /// They live in `strand-services-schema` (the LSP reads them without this
 /// runtime); each service's `SCHEMA` is its text there.
+///
+/// Built without the `pipewire` feature, `audio` is not served: its text
+/// is left out (the stub stays, answered at the schema's defaults).
 pub fn schemas() -> Vec<&'static str> {
-    strand_services_schema::schemas()
+    let mut all = strand_services_schema::schemas();
+    if !cfg!(feature = "pipewire") {
+        all.retain(|t| *t != strand_services_schema::AUDIO);
+    }
+    all
 }

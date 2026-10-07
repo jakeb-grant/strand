@@ -7,6 +7,16 @@ rust-version.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+default = ["niri", "pipewire"]
+# niri's IPC changes in patch versions (design.md, "Risks"), so our own
+# implementation of it sits behind a flag.
+niri = []
+# The `audio` service (PipeWire). Building it needs libpipewire's headers
+# and libclang (bindgen), and the binary then links libpipewire-0.3; a
+# build without it answers `audio.*` at the schema's defaults.
+pipewire = ["dep:pipewire"]
+
 [dependencies]
 strand-core.workspace = true
 strand-services-macros.workspace = true
@@ -16,16 +26,21 @@ strand-services-schema.workspace = true
 # The portal Settings client (`follow`) runs on the services runtime.
 strand-watch.workspace = true
 log = { version = "0.4.34", features = ["std"] }
-# `net`: the backlight watch (inotify) on the runtime's reactor.
-# `process`, `io-util`: the commands of no-code `listen` and `poll` services.
+serde = { version = "1.0.229", features = ["derive"] }
+# `unbounded_depth`: sway trees decode without a recursion limit, as
+# swayipc-types does. No-code services also read documents that are JSON.
+serde_json = { version = "1.0.151", features = ["unbounded_depth"] }
+# `net`: the backlight watch (inotify) and the compositor IPC sockets on
+# the runtime's reactor. `process`, `io-util`: the commands of no-code
+# `listen` and `poll` services, and the IPC sockets.
 tokio = { version = "1.53", features = ["rt", "macros", "sync", "time", "net", "process", "io-util"] }
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 # Streams of signals (zbus's own `futures-lite` streams).
 futures-lite = { version = "2.6", default-features = false, features = ["std"] }
 # logind's `SetBrightness` for `brightness` writes (design.md's table).
 logind-zbus = { version = "5.3.2", default-features = false }
-# The backlight's sysfs files, watched (inotify).
-rustix = { version = "1.1.5", features = ["fs"] }
+# The backlight's sysfs files, watched (inotify); the Wayland client's poll.
+rustix = { version = "1.1.5", features = ["event", "fs"] }
 # A notification's arrival time as a `Date`, in the local zone.
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 # Pixmaps (tray icons, notification `image-data`) written as PNG files for
@@ -42,19 +57,31 @@ unicode-segmentation = "1.13.3"
 # The icon theme lookup the renderer uses: an app's icon is checked
 # against it.
 strand-icons.workspace = true
-# No-code services: documents that are JSON, and their D-Bus objects'
-# introspection.
-serde_json = "1.0.151"
+# No-code services: their D-Bus objects' introspection.
 strand-introspect.workspace = true
 # `apps` launches detached (setsid and a second fork before exec).
 libc = "0.2.190"
+# sway's adapter: swayipc-types, the types design.md's swayipc-async 3.0
+# re-exports (it pins swayipc-types 2.0), over our own lossy i3-ipc
+# framing on tokio; without swayipc-async's async-io stack (decisions.md,
+# wave4-wm). Its default `error` feature holds the `decode` functions.
+swayipc-types = "2.0.3"
+# The Wayland toplevel and workspace protocols, on their own thread.
+wayland-client = "0.31.15"
+wayland-protocols = { version = "0.32.13", features = ["client", "staging"] }
+# Audio (design.md names pipewire 0.10): its own `strand-pipewire` thread,
+# since pipewire-rs is `!Send`. `v1_0_0`: the oldest PipeWire we build
+# against (Ubuntu 24.04's 1.0.5).
+pipewire = { version = "0.10.1", features = ["v1_0_0"], optional = true }
 
 [dev-dependencies]
 # Tests point the icon lookup at a theme of their own.
 strand-icons.workspace = true
-tokio = { version = "1.53", features = ["rt-multi-thread"] }
-# Bodies of the test's own D-Bus calls.
-serde = "1.0.228"
+tempfile = "3.27.0"
+tokio = { version = "1.53", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "net", "process", "io-util", "test-util"] }
+rustix = { version = "1.1.5", features = ["event", "process", "fs", "shm"] }
+wayland-server = "0.31.14"
+wayland-protocols = { version = "0.32.13", features = ["client", "server", "staging"] }
 
 [lints]
 workspace = true

@@ -302,6 +302,30 @@ mod tests {
         assert!(err("nothing.level", "1").contains("nothing is exported"));
     }
 
+    /// The compositor services' uses design.md shows (and the reload
+    /// event in both handler forms: its `failed` argument may be left
+    /// out) check against the served schema, and alike against the bare
+    /// builtin one, whose stubs declare the same (decisions.md, wave4-wm
+    /// fixes).
+    #[test]
+    fn the_compositor_services_check_as_design_md_uses_them() {
+        let src = "state reloads = 0\nstate broke = false\n\
+            on wm.config_reloaded { reloads += 1 }\n\
+            on wm.config_reloaded(failed) { broke = failed ?? false }\n\
+            bar Top {\n  row {\n    for ws in workspaces.on(screen) { box { when ws.active { opacity: 1 } on click { ws.focus() } } }\n    \
+            text windows.focused?.title ?? \"\"\n    \
+            text join(\" \", wm.name, reloads, broke)\n  }\n}\n";
+        for (which, schema) in [("served", schema()), ("builtin", Schema::builtin())] {
+            let (map, _) = strand_compiler::source::SourceMap::single("bar.strand", src);
+            let errors: Vec<_> = strand_compiler::compile_with(&map, schema)
+                .diagnostics
+                .into_iter()
+                .filter(|d| d.is_error())
+                .collect();
+            assert!(errors.is_empty(), "{which}: {errors:#?}");
+        }
+    }
+
     /// The schema the binary checks against holds each linked service's
     /// declaration in place of its stub, documented, and each store's
     /// fields and events are exactly its schema record's.
@@ -2150,10 +2174,16 @@ service shelf {
             assert!(restarted[0].resolved && restarted[0].message == again[0].message);
             // Back to `int`: reported again; the service removed: resolved.
             live.reload(&src);
-            live.until("the int field read", |l| {
-                l.value("m", "lvl") == Value::int(0)
+            // The retyped cell starts at `int`'s default 0 before the
+            // restarted run's read reports the mismatch: wait for the
+            // report itself (taking drains, so collect what arrives).
+            let seen = std::cell::RefCell::new(Vec::new());
+            live.until("the int field's mismatch reported", |l| {
+                seen.borrow_mut().extend(mismatches(l));
+                !seen.borrow().is_empty()
             });
-            let back = mismatches(&live);
+            assert_eq!(live.value("m", "lvl"), Value::int(0));
+            let back = seen.into_inner();
             assert_eq!(back.len(), 1, "{back:?}");
             assert!(!back[0].resolved);
             live.reload("bar B { text \"none\" }\n");

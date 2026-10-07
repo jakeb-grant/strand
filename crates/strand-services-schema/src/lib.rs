@@ -30,6 +30,14 @@ pub const TRAY: &str = include_str!("tray.schema");
 
 /// `apps`: installed apps (desktop entries), fuzzy search, frecency.
 pub const APPS: &str = include_str!("apps.schema");
+/// `windows`: toplevels (`ext-foreign-toplevel-list`, compositor IPC).
+pub const WINDOWS: &str = include_str!("windows.schema");
+/// `workspaces`: `ext-workspace-v1` and compositor IPC.
+pub const WORKSPACES: &str = include_str!("workspaces.schema");
+/// `wm`: the compositor's name and config reloads.
+pub const WM: &str = include_str!("wm.schema");
+/// `audio`: PipeWire devices.
+pub const AUDIO: &str = include_str!("audio.schema");
 
 /// Every builtin service's schema text, in registration order.
 pub fn schemas() -> Vec<&'static str> {
@@ -45,5 +53,9 @@ pub fn schemas() -> Vec<&'static str> {
         MEDIA,
         TRAY,
         APPS,
+        WINDOWS,
+        WORKSPACES,
+        WM,
+        AUDIO,
     ]
 }
