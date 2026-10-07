@@ -48,8 +48,9 @@ pub struct Outcome {
     /// text (an unreadable file is never taken for a deleted one).
     pub held: Vec<PathBuf>,
     /// Errors and warnings of the whole attempt (every saved file), with
-    /// the sources they point into. Empty when everything committed
-    /// cleanly.
+    /// the sources they point into: when everything committed, its
+    /// warnings (a `from dbus` service not checked because its bus did
+    /// not answer); empty when it committed cleanly.
     pub diagnostics: Vec<Diagnostic>,
     pub sources: Arc<SourceMap>,
     /// Files that could not be read, and why.
@@ -60,6 +61,9 @@ pub struct Outcome {
     /// files) and this one has none: a save reverted to the last good
     /// text, or a file readable again with its old text. Nothing may be
     /// committed, but whoever shows the problems must hear they are gone.
+    /// Also set when the running program's warnings went (a recheck
+    /// after a late D-Bus answer): its diagnostics are then empty. A
+    /// revert's outcome carries the running program's warnings.
     pub cleared: bool,
     /// The files on disk are exactly as the last attempt found them (a
     /// `strand reload` and then the watcher's own re-listing): nothing
@@ -100,6 +104,13 @@ pub struct Loader {
     /// The last attempt had errors, held or unreadable files (see
     /// [`Outcome::cleared`]).
     dirty: bool,
+    /// The last attempt that compiled reported warnings only.
+    warned: bool,
+    /// The current attempt compiled (it did not repeat the last one or
+    /// find nothing changed).
+    compiled: bool,
+    /// The running program's warnings, with their sources.
+    standing: (Vec<Diagnostic>, Arc<SourceMap>),
     /// The files the last compiling attempt read, and the problems it
     /// found (see [`Outcome::repeated`]).
     tried: Option<(Disk, Outcome)>,
@@ -142,6 +153,9 @@ impl Loader {
             unlisted: Vec::new(),
             cache_error: None,
             dirty: false,
+            warned: false,
+            compiled: false,
+            standing: Default::default(),
             tried: None,
             extra: None,
         }
@@ -353,7 +367,19 @@ impl Loader {
     /// attempt had some and it has none.
     fn settle(&mut self, out: &mut Outcome) {
         let dirty = out.errors() > 0 || !out.held.is_empty() || !out.unreadable.is_empty();
+        let compiled = std::mem::take(&mut self.compiled);
         out.cleared = self.dirty && !dirty;
+        if out.cleared && !compiled && out.diagnostics.is_empty() {
+            // Reverted to the running text: its warnings stand.
+            out.diagnostics = self.standing.0.clone();
+            out.sources = self.standing.1.clone();
+        }
+        let warned = !dirty && !out.diagnostics.is_empty();
+        if compiled || out.cleared {
+            // The running program's warnings went (a late answer).
+            out.cleared |= self.warned && !warned && !dirty;
+            self.warned = warned;
+        }
         self.dirty = dirty;
     }
 
@@ -361,6 +387,7 @@ impl Loader {
         // Only the attempt right before this one can be repeated: one in
         // between (a revert, say) was reported, and this one must be too.
         let tried = self.tried.take();
+        self.compiled = false;
         let mut unreadable = Vec::new();
         let mut changed: BTreeSet<PathBuf> = BTreeSet::new();
         for (p, t) in &self.disk {
@@ -425,6 +452,7 @@ impl Loader {
         unread: Vec<PathBuf>,
     ) -> Outcome {
         let started = Instant::now();
+        self.compiled = true;
         let full = self.assemble(&changed);
         let compiled = self.compile(&full);
         let mut out = Outcome {
@@ -432,6 +460,11 @@ impl Loader {
             ..Outcome::default()
         };
         if compiled.errors() == 0 {
+            if !compiled.diagnostics.is_empty() {
+                out.diagnostics = compiled.diagnostics.clone();
+                out.sources = Arc::new(full.clone());
+            }
+            self.standing = (out.diagnostics.clone(), out.sources.clone());
             out.build = Some(self.commit(&changed, full, &compiled));
             out.committed = changed.into_iter().collect();
             out.held = unread;
@@ -503,6 +536,7 @@ impl Loader {
             }
         }
         if let Some((map, c)) = done {
+            self.standing = (c.diagnostics.clone(), Arc::new(map.clone()));
             out.build = Some(self.commit(&set, map, &c));
             out.committed = set.iter().cloned().collect();
         }

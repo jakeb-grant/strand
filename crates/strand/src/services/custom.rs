@@ -1032,6 +1032,80 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A `from dbus` service whose bus does not answer at boot commits
+    /// with a `check::dbus_unchecked` warning in the boot's outcome (what
+    /// `strand run` logs and tells `strand watch`); once the daemon
+    /// answers (asked again by a later compile), `recheck` checks the
+    /// running files again and the outcome says the warning is gone
+    /// (`cleared`, no diagnostics).
+    #[test]
+    fn a_dbus_warning_is_reported_and_resolved_by_a_recheck() {
+        use std::sync::atomic::AtomicBool;
+        use strand_compiler::reconcile::loader::Loader;
+        let dir = std::env::temp_dir().join(format!("strand-dbus-warn-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.strand");
+        let svc = "service ppd from dbus system \"net.hadess.PowerProfiles\" { profile: text rw = ActiveProfile }\n";
+        std::fs::write(&file, format!("{svc}bar B {{ text ppd.profile }}\n")).unwrap();
+        let up = Arc::new(AtomicBool::new(false));
+        let u = up.clone();
+        let cache = Arc::new(strand_introspect::Cache::with_fetch(
+            Duration::from_millis(50),
+            move |_, _, _| {
+                if !u.load(Ordering::SeqCst) {
+                    return Err("no system bus".into());
+                }
+                Ok(vec![strand_introspect::Property {
+                    interface: "net.hadess.PowerProfiles".into(),
+                    name: "ActiveProfile".into(),
+                    signature: "s".into(),
+                    readable: true,
+                    writable: true,
+                }])
+            },
+        ));
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let (check, waits) = dbus_check_on(cache, None, move || {
+            let _ = tx.send(());
+        });
+        let mut loader =
+            Loader::new(&dir, crate::services::schema().clone(), None).with_check(check);
+        let boot = loader.boot();
+        waits.stop_waiting();
+        assert!(boot.build.is_some());
+        let codes: Vec<String> = boot
+            .diagnostics
+            .iter()
+            .map(|d| d.code.to_string())
+            .collect();
+        assert_eq!(
+            codes,
+            ["check::dbus_unchecked"],
+            "the boot reports the warning"
+        );
+        assert!(!boot.diagnostics[0].is_error());
+        // The daemon comes up; a save compiles with the remembered
+        // answer (still warned) and asks again off the reload path.
+        up.store(true, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(100));
+        std::fs::write(
+            &file,
+            format!("{svc}bar B {{ text ppd.profile {{ opacity: 0.5 }} }}\n"),
+        )
+        .unwrap();
+        let out = loader.changed([(file.clone(), true)]);
+        assert!(out.build.is_some(), "{:?}", out.diagnostics);
+        assert_eq!(out.diagnostics.len(), 1, "{:?}", out.diagnostics);
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("the answer asks for a check");
+        let out = loader.recheck();
+        assert!(out.build.is_none(), "the running program is unchanged");
+        assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
+        assert!(out.cleared, "the warning is resolved");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The design's ppd service, as the PowerProfiles daemon is reached
     /// through the environment's system bus (`DBUS_SYSTEM_BUS_ADDRESS`, a
     /// private bus with dbusmock's `power_profiles_daemon`): the loader's

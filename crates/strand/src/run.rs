@@ -481,6 +481,11 @@ struct Shell {
     /// Cells kept over a changed default outside a reload while nobody
     /// watched (at boot): the next reload event lists them.
     unheard: Vec<strand_compiler::reconcile::KeptCell>,
+    /// The running config's check warnings (`check::dbus_unchecked`: a
+    /// bus that did not answer), as `strand watch` events list them: a
+    /// watcher that subscribes later hears them at once; a later reload
+    /// event with none resolves them.
+    warnings: Vec<Json>,
     /// Settings files (and their runtime overlays) read again since the
     /// last step, as notices name them.
     settings_reread: Vec<String>,
@@ -703,7 +708,7 @@ impl Shell {
             self.overlay
                 .note(overlay::report_lines(r), Instant::now(), &self.inst);
         }
-        if l.outcome.errors() > 0 {
+        if !l.outcome.diagnostics.is_empty() {
             log::warn!(
                 "{}",
                 render(&l.outcome.diagnostics, &l.outcome.sources, Style::Plain)
@@ -711,6 +716,11 @@ impl Shell {
         }
         self.watch_settings();
         let mut ev = reload_event(&l, report.as_ref(), commit);
+        if l.outcome.errors() == 0 {
+            // What the running config is warned about now (none: the
+            // earlier warnings are resolved).
+            self.warnings = ev["diagnostics"].as_array().cloned().unwrap_or_default();
+        }
         ev["deferred"] = json!(deferred);
         if !self.unheard.is_empty()
             && let Some(k) = ev["kept_over_default"].as_array_mut()
@@ -857,8 +867,24 @@ impl Shell {
                     s.answer(id, &ans);
                 }
             }
-            // Answered by the server itself.
-            ipc::Request::Watch => {}
+            // Answered by the server itself; the running config's
+            // warnings follow (the boot's were made before anyone
+            // watched).
+            ipc::Request::Watch => {
+                if !self.warnings.is_empty()
+                    && let Some(s) = &mut self.server
+                {
+                    s.send(
+                        id,
+                        &json!({
+                            "event": "notices",
+                            "kept_over_default": [],
+                            "notices": [],
+                            "diagnostics": self.warnings,
+                        }),
+                    );
+                }
+            }
         }
     }
 
@@ -991,44 +1017,46 @@ fn ms(d: Duration) -> f64 {
     (d.as_secs_f64() * 1e5).round() / 100.0
 }
 
+/// An attempt's diagnostics as `strand watch` events list them.
+fn diagnostics_json(o: &Outcome) -> Vec<Json> {
+    o.diagnostics
+        .iter()
+        .map(|d| {
+            // One rendering per diagnostic: a multi-line one cannot
+            // shift the others.
+            let short = render_short(std::slice::from_ref(d), &o.sources);
+            let line = short.trim_end();
+            let at = d.primary().and_then(|lab| {
+                o.sources.get(lab.file).map(|f| {
+                    let (ln, col) = overlay::line_col(&f.text, lab.span.start);
+                    json!({"file": f.name, "line": ln, "column": col})
+                })
+            });
+            json!({
+                "severity": if d.is_error() { "error" } else { "warning" },
+                "code": d.code,
+                "message": d.message,
+                "help": d.help,
+                "at": at,
+                "labels": d.labels.iter().map(|lab| {
+                    let at = o.sources.get(lab.file).map(|f| {
+                        let (ln, col) = overlay::line_col(&f.text, lab.span.start);
+                        json!({"file": f.name, "line": ln, "column": col})
+                    });
+                    json!({"message": lab.message, "primary": lab.primary, "at": at})
+                }).collect::<Vec<_>>(),
+                "short": line,
+            })
+        })
+        .collect()
+}
+
 /// A load as `strand watch` streams it (`timing.total_ms` is filled in
 /// when the step that draws it has sent its diff).
 fn reload_event(l: &Loaded, report: Option<&Report>, commit: Duration) -> Json {
     let paths =
         |v: &[PathBuf]| -> Vec<String> { v.iter().map(|p| p.display().to_string()).collect() };
-    let diagnostics: Vec<Json> = {
-        l.outcome
-            .diagnostics
-            .iter()
-            .map(|d| {
-                // One rendering per diagnostic: a multi-line one cannot
-                // shift the others.
-                let short = render_short(std::slice::from_ref(d), &l.outcome.sources);
-                let line = short.trim_end();
-                let at = d.primary().and_then(|lab| {
-                    l.outcome.sources.get(lab.file).map(|f| {
-                        let (ln, col) = overlay::line_col(&f.text, lab.span.start);
-                        json!({"file": f.name, "line": ln, "column": col})
-                    })
-                });
-                json!({
-                    "severity": if d.is_error() { "error" } else { "warning" },
-                    "code": d.code,
-                    "message": d.message,
-                    "help": d.help,
-                    "at": at,
-                    "labels": d.labels.iter().map(|lab| {
-                        let at = l.outcome.sources.get(lab.file).map(|f| {
-                            let (ln, col) = overlay::line_col(&f.text, lab.span.start);
-                            json!({"file": f.name, "line": ln, "column": col})
-                        });
-                        json!({"message": lab.message, "primary": lab.primary, "at": at})
-                    }).collect::<Vec<_>>(),
-                    "short": line,
-                })
-            })
-            .collect()
-    };
+    let diagnostics = diagnostics_json(&l.outcome);
     let r = report.cloned().unwrap_or_default();
     json!({
         "event": "reload",
@@ -1192,6 +1220,7 @@ pub fn logic(
         latest: Problems::of(&boot),
         watched: Vec::new(),
         unheard: Vec::new(),
+        warnings: Vec::new(),
         settings_reread: Vec::new(),
         layout_seen: None,
     };
@@ -1202,6 +1231,12 @@ pub fn logic(
         log::warn!("{}", render(&boot.diagnostics, &boot.sources, Style::Plain));
         let lines = overlay::lines(&boot.diagnostics, &boot.sources, &boot.unreadable);
         shell.overlay.set(lines, Instant::now(), &shell.inst);
+    } else if !boot.diagnostics.is_empty() {
+        // Warnings only (a `from dbus` service whose bus did not
+        // answer): logged, and told to each `strand watch` that
+        // subscribes until a reload resolves them.
+        log::warn!("{}", render(&boot.diagnostics, &boot.sources, Style::Plain));
+        shell.warnings = diagnostics_json(&boot);
     }
     if boot.from_cache {
         log::warn!("the config does not compile: running its last good version");
@@ -1852,6 +1887,92 @@ pub(crate) mod tests {
     /// 250 ms, opens the overlay listing the error with its fix; the fix
     /// takes it away; `strand watch` streams each reload and `strand
     /// reload` answers with its event.
+    /// A config that compiles with warnings (a check that could not run,
+    /// a `from poll` path naming a program): logged, and told to each
+    /// `strand watch` that subscribes, the boot's included; the reload
+    /// event that no longer has them resolves them.
+    #[test]
+    fn check_warnings_reach_strand_watch_and_are_resolved() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("warnings");
+        let prog = dir.join("prog");
+        std::fs::write(&prog, "#!/bin/sh\necho a=1\n").unwrap();
+        std::fs::set_permissions(&prog, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(dir.join("doc"), "a=1\n").unwrap();
+        let src = |path: &str| {
+            format!(
+                "service t from poll \"{path}\" every 5s {{ a: text = a }}\nbar Top {{ text \"x\" }}\n"
+            )
+        };
+        let file = dir.join("bar.strand");
+        std::fs::write(&file, src("./prog")).unwrap();
+        let socket = dir.join("ipc.sock");
+        let (wtx, wrx) = calloop::channel::channel();
+        let (compiler, boot) = Worker::spawn(&dir, None, wtx).unwrap();
+        assert!(boot.build.is_some());
+        assert_eq!(
+            boot.diagnostics
+                .iter()
+                .map(|d| d.code.to_string())
+                .collect::<Vec<_>>(),
+            ["check::poll_program"]
+        );
+        let live = Live {
+            worker: Some(wrx),
+            jobs: Some(compiler.jobs()),
+            socket: Some(socket.clone()),
+            buses: None,
+            icon_theme_switched: None,
+        };
+        let (to_logic, from_main) = calloop::channel::channel();
+        let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+        to_logic
+            .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+            .unwrap();
+        let t = std::thread::spawn(move || logic(boot, Storage::none(), from_main, tx, live));
+        let mut m = Mirror::new(rx);
+        m.until("the bar", |s| s.texts() == ["x"]);
+        let mut events =
+            std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
+        let ok = ipc::request(&mut events, &ipc::Request::Watch, Duration::from_secs(10)).unwrap();
+        assert_eq!(ok["ok"], true);
+        let mut next_event = || {
+            let mut line = String::new();
+            std::io::BufRead::read_line(&mut events, &mut line).unwrap();
+            serde_json::from_str::<Json>(&line).unwrap()
+        };
+        // The boot's warning, at once.
+        let ev = next_event();
+        assert_eq!(ev["event"], "notices", "{ev}");
+        assert_eq!(ev["diagnostics"][0]["severity"], "warning", "{ev}");
+        assert_eq!(ev["diagnostics"][0]["code"], "check::poll_program", "{ev}");
+        assert!(ipc::describe(&ev).contains("is a program"), "{ev}");
+        // Fixed: the reload commits with no warning (resolved).
+        std::fs::write(&file, src("./doc")).unwrap();
+        let ev = next_event();
+        assert_eq!(ev["event"], "reload", "{ev}");
+        assert_eq!(ev["diagnostics"], json!([]), "{ev}");
+        // A watcher subscribing now hears nothing more.
+        let mut late =
+            std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
+        let ok = ipc::request(&mut late, &ipc::Request::Watch, Duration::from_secs(10)).unwrap();
+        assert_eq!(ok["ok"], true);
+        // Broken again by a reload: the reload event carries it.
+        std::fs::write(&file, src("./prog")).unwrap();
+        let ev = next_event();
+        assert_eq!(ev["diagnostics"][0]["code"], "check::poll_program", "{ev}");
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut late, &mut line).unwrap();
+        let ev: Json = serde_json::from_str(&line).unwrap();
+        assert_eq!(
+            ev["event"], "reload",
+            "the late watcher's first event: {ev}"
+        );
+        to_logic.send(ToLogic::Shutdown).unwrap();
+        assert_eq!(t.join().unwrap(), Ok(()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn saves_reload_live_with_state_kept() {
         let dir = temp_dir("live");
