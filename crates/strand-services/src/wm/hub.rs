@@ -3,9 +3,10 @@
 //! `workspaces`, `windows` and `wm` are three services to the language
 //! (each with its own reader count and 5 s stop), and `screens.focused`
 //! reads the focused screen from the same source. They must share one
-//! [`run`]: one adapter connection and one protocol thread. A [`WmHub`]
-//! runs it while at least one [`WmSubscription`] lives: the first
-//! subscriber starts it, the last one to go stops it (at once: the 5 s
+//! [`super::run`]: one adapter connection and one protocol thread. A
+//! [`WmHub`] runs it while at least one [`WmSubscription`] lives: the first
+//! subscriber starts it, the last one to go stops it and joins its
+//! `strand-toplevel` thread, which the hub starts and owns (at once: the 5 s
 //! grace is each store's own, so the hub only sees a body end once that
 //! grace has passed). A subscriber that joins a running hub first gets
 //! the current state as one batch (`Reset`s and every field, never a
@@ -34,7 +35,8 @@ use tokio::task::JoinHandle;
 use strand_core::keyed::VecDiff;
 
 use super::model::Mirror;
-use super::{WmAction, WmChange, WmConfig, WmError, WmReply, WmRequest, run};
+use super::protocol::ProtocolClient;
+use super::{WmAction, WmChange, WmConfig, WmError, WmReply, WmRequest, drive, spawn_protocol};
 
 /// The most batches a subscriber's queue holds before it is coalesced.
 pub const MAX_QUEUED: usize = 64;
@@ -60,6 +62,9 @@ struct Running {
     generation: u64,
     task: JoinHandle<()>,
     requests: UnboundedSender<WmRequest>,
+    /// The run's `strand-toplevel` thread: the hub's, so a stop (the last
+    /// subscriber gone, the hub dropped, the services shut down) joins it.
+    protocol: Option<ProtocolClient>,
 }
 
 /// One subscriber's queue.
@@ -170,11 +175,17 @@ impl WmHub {
             let (rtx, rrx) = mpsc::unbounded_channel();
             let weak = Arc::downgrade(&self.inner);
             let sink = move |batch: Vec<WmChange>| fan_out(&weak, generation, batch);
-            let task = inner.runtime.spawn(run(inner.config.clone(), sink, rrx));
+            let (ptx, prx) = mpsc::unbounded_channel();
+            let protocol = spawn_protocol(&inner.config, ptx);
+            let sender = protocol.as_ref().map(ProtocolClient::sender);
+            let task = inner
+                .runtime
+                .spawn(drive(inner.config.clone(), sink, rrx, sender, prx));
             inner.running = Some(Running {
                 generation,
                 task,
                 requests: rtx,
+                protocol,
             });
         }
         let requests = inner
@@ -267,6 +278,11 @@ impl Inner {
     fn stop(&mut self) {
         if let Some(r) = self.running.take() {
             r.task.abort();
+            // Joined here (it ends as soon as it hears the stop), so no
+            // protocol thread outlives the stores or the services.
+            if let Some(p) = r.protocol {
+                p.stop();
+            }
         }
         self.mirror = Mirror::default();
         self.has_state = false;

@@ -219,16 +219,31 @@ fn the_compositor_stores_follow_sway_through_one_hub() {
         "an idle compositor woke the host"
     );
 
+    // A binding that toggles (read, unread, read again within 5 s)
+    // rebuilds nothing: the store keeps running, and the hub keeps its
+    // one run (the adapter connection) and its one protocol thread.
+    let starts = b.workspaces.starts();
+    assert_eq!(threads_named("strand-toplevel"), 1);
+    b.workspaces.release(&rt);
+    let t0 = Duration::from_secs(2);
+    rt.tick(t0);
+    b.workspaces.acquire(&rt);
+    s.pump(&rt);
+    assert!(b.workspaces.running());
+    assert_eq!(b.workspaces.starts(), starts, "the store restarted");
+    assert_eq!(wm::live_runs(), runs + 1, "the hub's run restarted");
+    assert_eq!(threads_named("strand-toplevel"), 1);
+
     // The last readers go: 5 s on the logic clock later every store
     // stops, and with them the compositor service.
     b.workspaces.release(&rt);
     b.windows.release(&rt);
-    rt.tick(STOP_GRACE + Duration::from_millis(1));
+    rt.tick(t0 + STOP_GRACE + Duration::from_millis(1));
     assert!(!b.workspaces.running() && !b.windows.running());
     assert!(b.wm.running(), "a store still read keeps the hub");
     assert_eq!(wm::live_runs(), runs + 1);
     b.wm.release(&rt);
-    rt.tick(2 * STOP_GRACE + Duration::from_millis(2));
+    rt.tick(t0 + 2 * STOP_GRACE + Duration::from_millis(2));
     assert!(!b.wm.running());
     let deadline = Instant::now() + Duration::from_secs(5);
     while wm::live_runs() != runs {
@@ -238,8 +253,29 @@ fn the_compositor_stores_follow_sway_through_one_hub() {
         );
         std::thread::sleep(Duration::from_millis(10));
     }
+    // The hub joined its protocol thread before its run went.
+    assert_eq!(threads_named("strand-toplevel"), 0, "after the last stop");
+
+    // Read again (a new run and protocol thread), then shut the services
+    // down while it is read: the shutdown joins the protocol thread too.
+    b.workspaces.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)), "the second run");
+    until(&rt, &s, "the second run's protocol thread", || {
+        threads_named("strand-toplevel") == 1 && wm::live_runs() == runs + 1
+    });
     s.shutdown();
+    assert_eq!(threads_named("strand-toplevel"), 0, "after the shutdown");
+    assert_eq!(wm::live_runs(), runs);
     wm::configure(None);
+}
+
+/// This process's threads named `name`.
+fn threads_named(name: &str) -> usize {
+    std::fs::read_dir("/proc/self/task")
+        .unwrap()
+        .filter_map(|t| std::fs::read_to_string(t.ok()?.path().join("comm")).ok())
+        .filter(|comm| comm.trim_end() == name)
+        .count()
 }
 
 /// The same stores over the Hyprland adapter (a fake Hyprland replaying
@@ -264,6 +300,7 @@ fn the_compositor_stores_follow_hyprland() {
     let rt = Runtime::new();
     let s = Services::new(&rt, Buses::none(), || {});
     let b = Builtin::register(&s, &rt);
+    let runs = wm::live_runs();
     let reloads: Rc<RefCell<Vec<Vec<Data>>>> = Rc::default();
     let r = reloads.clone();
     b.wm.dynamic().observe(Box::new(move |_, a| {
@@ -300,6 +337,21 @@ fn the_compositor_stores_follow_hyprland() {
     until(&rt, &s, "configreloaded", || {
         reloads.borrow().as_slice() == [vec![Data::Null]]
     });
+    assert_eq!(wm::live_runs(), runs + 1);
+    // The readers go: 5 s later the stores stop, and the hub's run too.
+    b.workspaces.release(&rt);
+    b.wm.release(&rt);
+    rt.tick(STOP_GRACE + Duration::from_millis(1));
+    assert!(!b.workspaces.running() && !b.wm.running());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while wm::live_runs() != runs {
+        assert!(
+            Instant::now() < deadline,
+            "the Hyprland run outlived its stores"
+        );
+        s.pump(&rt);
+        std::thread::sleep(Duration::from_millis(10));
+    }
     s.shutdown();
     wm::configure(None);
 }

@@ -141,12 +141,37 @@ impl ProtoCmd {
 }
 
 /// The running client; dropping it stops the thread (without waiting),
-/// during its startup too.
+/// during its startup too; [`ProtocolClient::stop`] also waits for it.
 #[derive(Debug)]
 pub struct ProtocolClient {
+    sender: ProtocolSender,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+/// Sends requests to a [`ProtocolClient`]'s thread (the run that routes
+/// actions holds one; the client's owner stops the thread).
+#[derive(Clone, Debug)]
+pub(crate) struct ProtocolSender {
     tx: mpsc::Sender<ProtoCmd>,
     wake: Arc<OwnedFd>,
 }
+
+impl ProtocolSender {
+    /// Queues a request and wakes the thread; one the ended thread cannot
+    /// take is answered `NotConnected`.
+    pub(crate) fn send(&self, cmd: ProtoCmd) {
+        match self.tx.send(cmd) {
+            Ok(()) => {
+                let _ = rustix::io::write(&*self.wake, &1u64.to_ne_bytes());
+            }
+            Err(mpsc::SendError(cmd)) => cmd.refuse(),
+        }
+    }
+}
+
+/// How long [`ProtocolClient::stop`] waits for the thread (it ends as
+/// soon as its poll hears the stop: it never blocks elsewhere).
+const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl ProtocolClient {
     /// Starts the client thread. Every state goes to `tx`; the first one
@@ -168,7 +193,7 @@ impl ProtocolClient {
             ),
             WaylandTarget::Socket(path) => Ok(path),
         };
-        std::thread::Builder::new()
+        let thread = std::thread::Builder::new()
             .name("strand-toplevel".into())
             .spawn(move || {
                 let run = socket.and_then(|s| thread_main(s, &tx, &crx, &thread_wake));
@@ -185,24 +210,45 @@ impl ProtocolClient {
                 drop(crx);
                 let _ = tx.send(ProtocolState::default());
             })?;
-        Ok(Self { tx: ctx, wake })
+        Ok(Self {
+            sender: ProtocolSender { tx: ctx, wake },
+            thread: Some(thread),
+        })
     }
 
     /// Queues a request and wakes the thread; one the ended thread cannot
     /// take is answered `NotConnected`.
     pub(crate) fn send(&self, cmd: ProtoCmd) {
-        match self.tx.send(cmd) {
-            Ok(()) => {
-                let _ = rustix::io::write(&*self.wake, &1u64.to_ne_bytes());
-            }
-            Err(mpsc::SendError(cmd)) => cmd.refuse(),
+        self.sender.send(cmd);
+    }
+
+    /// A sender of requests to the thread.
+    pub(crate) fn sender(&self) -> ProtocolSender {
+        self.sender.clone()
+    }
+
+    /// Stops the thread and waits for it to end (2 s at most; it ends at
+    /// once unless the system is starved, and is then left to end alone).
+    pub fn stop(mut self) {
+        self.send(ProtoCmd::Stop);
+        let Some(t) = self.thread.take() else { return };
+        let deadline = std::time::Instant::now() + STOP_WAIT;
+        while !t.is_finished() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        if t.is_finished() {
+            let _ = t.join();
+        } else {
+            log::warn!("strand-toplevel did not stop within {STOP_WAIT:?}; left running");
         }
     }
 }
 
 impl Drop for ProtocolClient {
     fn drop(&mut self) {
-        self.send(ProtoCmd::Stop);
+        if self.thread.is_some() {
+            self.send(ProtoCmd::Stop);
+        }
     }
 }
 

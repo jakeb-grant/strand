@@ -49,6 +49,7 @@ use tokio::sync::oneshot;
 pub use detect::{Backend, detect, detect_with};
 pub use hub::{MAX_QUEUED, WmHub, WmSubscription};
 pub use model::{CompositorKind, Mirror, Publisher, Sources, Window, WmChange, WmState, Workspace};
+use protocol::ProtocolSender;
 pub use protocol::{ProtoWorkspace, ProtocolClient, ProtocolState, Toplevel, WaylandTarget};
 pub use schema::{WINDOWS_SCHEMA, WM_SCHEMA, WORKSPACES_SCHEMA};
 pub use service::{
@@ -357,8 +358,41 @@ fn adapter(
 /// adapter does not hide them). When the adapter's state arrives later,
 /// its ids replace the protocols' with a `Reset` of both lists (the same
 /// id may mean another workspace), not a keyed diff.
-pub async fn run<S>(config: WmConfig, mut sink: S, mut requests: UnboundedReceiver<WmRequest>)
+///
+/// The protocol thread is this run's own: dropping the run stops it
+/// without waiting. (A [`WmHub`] starts the thread itself, and joins it
+/// when the run stops.)
+pub async fn run<S>(config: WmConfig, sink: S, requests: UnboundedReceiver<WmRequest>)
 where
+    S: FnMut(Vec<WmChange>) + Send,
+{
+    let (ptx, prx) = mpsc::unbounded_channel();
+    let client = spawn_protocol(&config, ptx);
+    let sender = client.as_ref().map(ProtocolClient::sender);
+    drive(config, sink, requests, sender, prx).await;
+    drop(client);
+}
+
+/// Starts `config`'s protocol thread, if it names a display.
+pub(crate) fn spawn_protocol(
+    config: &WmConfig,
+    tx: UnboundedSender<ProtocolState>,
+) -> Option<ProtocolClient> {
+    let target = config.wayland.clone()?;
+    ProtocolClient::spawn(target, tx)
+        .map_err(|e| log::warn!("cannot start the Wayland protocol thread: {e}"))
+        .ok()
+}
+
+/// [`run`] with the protocol thread started by the caller (`protocol`
+/// sends to it; its states come on `prx`).
+pub(crate) async fn drive<S>(
+    config: WmConfig,
+    mut sink: S,
+    mut requests: UnboundedReceiver<WmRequest>,
+    protocol: Option<ProtocolSender>,
+    mut prx: UnboundedReceiver<ProtocolState>,
+) where
     S: FnMut(Vec<WmChange>) + Send,
 {
     LIVE_RUNS.fetch_add(1, Ordering::SeqCst);
@@ -373,17 +407,6 @@ where
     let kind = backend.as_ref().map(Backend::kind);
     let (atx, mut arx) = mpsc::unbounded_channel();
     let (ctx, crx) = mpsc::unbounded_channel::<Cmd>();
-    let (ptx, mut prx) = mpsc::unbounded_channel();
-    let protocol = config
-        .wayland
-        .clone()
-        .and_then(|t| match ProtocolClient::spawn(t, ptx) {
-            Ok(c) => Some(c),
-            Err(e) => {
-                log::warn!("cannot start the Wayland protocol thread: {e}");
-                None
-            }
-        });
     let adapter = adapter(backend, atx, crx);
     let events = config.events;
     let desktop = config.desktop;
@@ -499,7 +522,7 @@ fn route(
     ipc: Option<&IpcSnapshot>,
     proto: &ProtocolState,
     adapter: &UnboundedSender<Cmd>,
-    protocol: Option<&ProtocolClient>,
+    protocol: Option<&ProtocolSender>,
 ) {
     let fail = |r: Option<oneshot::Sender<Result<(), WmError>>>, e: WmError| {
         if let Some(r) = r {

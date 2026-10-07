@@ -6799,6 +6799,81 @@ caches' owners). It is now two boxes with the same words, so the first
 is ticked with its proofs and the second stays open; nothing was
 dropped.
 
+**2026-10-07 · wave4-wm (services, fixes r1): a cell's writes are
+answered in write order.** The logic thread keeps one echo state per cell
+(`audio.sink`, or one item of `audio.sinks`): an answer tagged `g` ends
+every pending write of that cell up to `g`, and once none is left it
+settles the cell to the answer's value. The store had ordered answers per
+device *field* instead, so a write answered at once (a `muted = false`
+on an unmuted sink, sent right after `volume = 0.7` by an "unmute when
+the slider moves" handler) settled the cell to the state before the
+volume write, and the volume's own answer then read as an old echo: the
+slider stayed on the old value until some outside change. Now every
+write, including one that changes nothing, one PipeWire refuses, one
+that is not a writable leaf and one that times out, joins its cell's
+queue; a write that ended is held while an earlier write of its cell
+still waits, and the queue's run of ended writes is answered by its last,
+with the state that shows them. A batch shows a write only when it
+changes the write's device (an unrelated batch cannot answer a write
+whose value the device happened to hold already), and it overtakes the
+earlier writes of that field. `ANSWER_WAIT` (1 s) now runs from
+PipeWire's reply to the action, not from the write's arrival: an action
+queued for a connection (a daemon or WirePlumber restart, a write that
+cold-starts the service) is not answered "as it is" before it runs; a
+reply that never comes ends the wait after 6 s (`GRACE` + `SETTLE` +
+`ANSWER_WAIT`). The loop logs a refusal nobody waits for (the store's
+`make_default()`) at warn. The PipeWire loop's list keys are the device's
+`u32` id end to end (no conversion that could fail). A loop that cannot
+be created (no PipeWire library loop or context) is the body's error, so
+the contract shows it and retries with backoff. Proof:
+`tests/audio_service.rs` (a volume write then a no-op mute write: the
+cell never leaves the volume written; the test fails with unordered
+answers), and its stop checks (no `strand-audio` thread and PipeWire's
+client count back to before after each stop; a write to the stopped
+service starts it and lands).
+
+**2026-10-07 · wave4-wm (services, fixes r1): the hub joins its protocol
+thread.** This supersedes the "toplevel client is the hub's thread"
+entry's lifecycle: the `strand-toplevel` thread is still the hub's, not
+a `Start::Thread` body (three stores share it), but the hub now starts
+it itself (`wm::run` keeps doing so for direct users) and owns its
+`JoinHandle`: a stop (the last subscriber gone, the hub dropped, or
+`Services::shutdown`, whose runtime drop ends the stores) sends `Stop`
+and joins it (2 s at most; the thread only ever blocks in a poll that
+hears `Stop`). Proof: `tests/wm_services.rs::
+the_compositor_stores_follow_sway_through_one_hub` (no `strand-toplevel`
+thread after the last stop, nor after a shutdown with a store still
+read; a read, unread, read cycle within 5 s keeps one run and one
+thread).
+
+**2026-10-07 · wave4-wm (services, fixes r1): the provisional stubs
+declare what the services serve.** The `Window`, `Workspace`, `windows`,
+`workspaces` and `wm` stubs in builtin.schema now carry
+`Workspace.active`, `Window.urgent` and `event config_reloaded(failed:
+bool?)`, as the served texts do, rather than a test tolerating the
+difference: anything that reads `Schema::builtin()` alone (compiler
+tests, a docs generator, an inspector built without services) sees the
+same contract as `strand check`. `src/wm/schema.rs::
+the_stubs_declare_what_the_services_serve` requires the member lines to
+be equal, in order, as the audio test already did; the language-side
+test the 2026-10-06 entry promised is `crates/strand/src/services/
+mod.rs::the_compositor_services_check_as_design_md_uses_them` (both
+`config_reloaded` handler forms, `workspaces.on(screen)`, `ws.active`,
+`windows.focused?.title`, against the served and the bare builtin
+schema).
+
+**2026-10-07 · wave4-wm (services, fixes r1): what M4 must rework.** Two
+choices hold for M3 but are provisional. (a) `audio::tap_levels` is a
+process-wide registry whose taps get per-channel peaks (`Levels`) on the
+audio thread; M4's `spectrum` element needs samples or FFT bins, so M4
+extends `Levels` (or the tap) with each cycle's samples per tap and may
+tie taps to a `Services` registry. (b) `wm::configure` and
+`audio::configure` are process-wide, so one process cannot run two
+registries against different compositors or PipeWires, and tests that
+use them serialize; when a second registry needs another target, the
+compositor and PipeWire targets move into `Buses` (or a sibling
+`Targets`) as the D-Bus buses did.
+
 ## wave4-core
 
 **2026-10-06 · wave4-core: a service's schema is its own text, held to

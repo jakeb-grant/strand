@@ -155,24 +155,27 @@ pub(crate) enum Work {
 
 /// The thread's body: the PipeWire loop on the calling thread until a
 /// [`Cmd::Stop`] (from the channel, or from the host's
-/// [`Host::poll`]).
-pub(crate) fn run(config: AudioConfig, host: Box<dyn Host>, rx: pipewire::channel::Receiver<Cmd>) {
+/// [`Host::poll`]). No loop or context (PipeWire's library failed): the
+/// host is given the defaults and the error is returned.
+pub(crate) fn run(
+    config: AudioConfig,
+    host: Box<dyn Host>,
+    rx: pipewire::channel::Receiver<Cmd>,
+) -> Result<(), String> {
     pipewire::init();
     let mut host = host;
     let mainloop = match MainLoopRc::new(None) {
         Ok(m) => m,
         Err(e) => {
-            log::error!("audio: cannot create a PipeWire loop: {e}");
             host.changes(Publisher::new().publish(AudioState::default()));
-            return;
+            return Err(format!("cannot create a PipeWire loop: {e}"));
         }
     };
     let context = match ContextRc::new(&mainloop, None) {
         Ok(c) => c,
         Err(e) => {
-            log::error!("audio: cannot create a PipeWire context: {e}");
             host.changes(Publisher::new().publish(AudioState::default()));
-            return;
+            return Err(format!("cannot create a PipeWire context: {e}"));
         }
     };
     let q: Queue = Rc::default();
@@ -260,6 +263,7 @@ pub(crate) fn run(config: AudioConfig, host: Box<dyn Host>, rx: pipewire::channe
     // The session (its streams, proxies and core) goes before the loop's
     // sources, the context and the loop.
     drop(driver);
+    Ok(())
 }
 
 /// The inotify fd, shared by the loop's io source and the driver.
@@ -725,6 +729,9 @@ impl Driver<'_> {
             }
             if self.session.as_ref().is_some_and(|s| s.published) && !self.queued.is_empty() {
                 self.run_queued();
+                // The host reads their replies (a write's answer clock
+                // starts once PipeWire was asked).
+                self.q.borrow_mut().push_back(Work::Cmd(Cmd::Poke));
             }
             if self.meters_dirty {
                 self.meters_dirty = false;
@@ -1297,7 +1304,11 @@ impl Driver<'_> {
         if let Err(e) = &r {
             log::debug!("audio: {e}");
         }
-        let _ = reply.send(r);
+        // Nobody waits for this answer (the store's `make_default()`, a
+        // dropped handle reply): a refusal is logged here, or nowhere.
+        if let Err(Err(e)) = reply.send(r) {
+            log::warn!("audio: {e}");
+        }
     }
 
     /// Runs the actions that waited for this connection's first state.

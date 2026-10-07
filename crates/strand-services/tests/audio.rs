@@ -163,7 +163,7 @@ fn devices_volume_mute_and_the_default_arrive() {
     // WirePlumber picks the sink with the higher priority.session.
     assert_eq!(w.mirror.sink.as_ref().map(|d| d.id), Some(a.id));
     assert!(a.default && !b.default);
-    assert!(w.mirror.sinks.iter().all(|(k, d)| *k == i64::from(d.id)));
+    assert!(w.mirror.sinks.iter().all(|(k, d)| *k == d.id));
 
     // Volume, on the cubic scale wpctl uses.
     pw.wpctl(&["set-volume", &a.id.to_string(), "0.5"]);

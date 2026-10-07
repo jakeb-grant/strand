@@ -15,8 +15,14 @@
 //!   by the first batch that shows its value on its device, so the
 //!   logic thread ignores the echoes of a slider's earlier writes and
 //!   settles on the answer of its last; a write PipeWire refused, or
-//!   that shows nowhere within [`ANSWER_WAIT`] (it changed nothing), is
-//!   answered with the device as it is.
+//!   that shows nowhere within [`ANSWER_WAIT`] of PipeWire taking it (it
+//!   changed nothing), is answered with the device as it is. Answers go
+//!   in write order per cell (`audio.sink`, or one item of a list): the
+//!   logic thread takes an answer tagged `g` as the answer of every
+//!   write of the cell up to `g`, so a write that ended (a no-op
+//!   `muted = false` after a `volume = 0.7`) is held until the earlier
+//!   writes of its cell ended too, and answered with the state showing
+//!   them.
 //! - **Levels.** No schema field carries a level (decisions.md, wave4-wm
 //!   (audio)): the peak meters run for [`tap_levels`] taps (the M4
 //!   `spectrum` element's hook), and only while a reader of the service
@@ -26,7 +32,6 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use strand_core::VecDiff;
 use tokio::sync::oneshot;
 
 use super::model::{AudioChange, AudioDevice, LevelTarget, Levels};
@@ -171,7 +176,16 @@ enum Attr {
     Muted(bool),
 }
 
-/// Where a written device shows in the store.
+impl Attr {
+    /// The same field (whatever the value).
+    fn same(self, other: Attr) -> bool {
+        std::mem::discriminant(&self) == std::mem::discriminant(&other)
+    }
+}
+
+/// Where a written device shows in the store: the write's cell on the
+/// logic thread (a field, or a keyed list's item), whose echo state
+/// takes answers in generation order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Shown {
     /// `audio.sink` (`true`) or `audio.source`.
@@ -180,21 +194,56 @@ enum Shown {
     Item(bool, u32),
 }
 
-/// A write waiting for its answer.
+/// How a pending write ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Done {
+    /// A batch showed its value (on a change of its device).
+    Shown,
+    /// Answered with the device as it is: it changed nothing, PipeWire
+    /// refused it, or nothing showed it in time.
+    AsIs,
+}
+
+/// A write waiting for its answer. A cell's writes are answered in
+/// order: a write that ended is held while an earlier write of its cell
+/// still waits, since the logic thread takes an answer tagged `g` as the
+/// answer of every write of the cell up to `g`.
 struct Pending {
     write: Write,
     shown: Shown,
-    attr: Attr,
+    /// `None`: nothing to write (not a writable leaf, or no number).
+    attr: Option<Attr>,
+    /// PipeWire's reply to the action; `None` once it said yes.
     reply: Option<oneshot::Receiver<Result<(), AudioError>>>,
+    /// When PipeWire was asked (its reply came back), until then when
+    /// the write came.
     since: Instant,
+    done: Option<Done>,
 }
 
 impl Pending {
-    /// A write of the same device's same field.
+    /// When it stops waiting for a batch: [`ANSWER_WAIT`] after PipeWire
+    /// was asked, or [`REPLY_WAIT`] after it came with no reply at all.
+    fn due(&self) -> Instant {
+        self.since
+            + if self.reply.is_some() {
+                REPLY_WAIT
+            } else {
+                ANSWER_WAIT
+            }
+    }
+
+    /// A write of `attr`'s field of cell `shown`.
     fn same(&self, shown: Shown, attr: Attr) -> bool {
-        self.shown == shown && std::mem::discriminant(&self.attr) == std::mem::discriminant(&attr)
+        self.shown == shown && self.attr.is_some_and(|a| a.same(attr))
     }
 }
+
+/// How long a write waits for PipeWire's reply to its action (an action
+/// waits for a connection's first state: up to [`super::GRACE`] with no
+/// connection, and [`super::SETTLE`] for the session manager) before it
+/// is answered as things are.
+const REPLY_WAIT: Duration = Duration::from_secs(6);
 
 /// The `audio` store's side of the loop.
 struct StoreHost {
@@ -240,18 +289,21 @@ impl StoreHost {
         }
     }
 
-    /// A write from the logic thread: its action, or its answer now.
+    /// A write from the logic thread: its action. Its answer waits in
+    /// [`Self::pending`], in its cell's order.
     fn write(&mut self, w: Write) -> Option<Cmd> {
         let shown = match (w.field, &w.key) {
             ("sink", None) => Shown::Default(true),
             ("source", None) => Shown::Default(false),
             ("sinks" | "sources", Some(Data::Int(id))) => match u32::try_from(*id) {
                 Ok(id) => Shown::Item(w.field == "sinks", id),
+                // No device has that id, so no write of it waits.
                 Err(_) => {
                     self.answer(&w, |_| {});
                     return None;
                 }
             },
+            // Not a cell of the store: no write of it waits.
             _ => {
                 self.answer(&w, |_| {});
                 return None;
@@ -272,97 +324,157 @@ impl StoreHost {
             Data::Int(n) => Some(*n as f64),
             _ => None,
         };
-        let (action, attr) = match (leaf, number, &w.value) {
+        let action = match (leaf, number, &w.value) {
             ("volume", Some(v), _) if v.is_finite() => {
                 // As the loop clamps: 0 to 1, or to an amplified volume.
                 let top = current.as_ref().map_or(1.0, |d| d.volume.max(1.0));
                 let v = v.clamp(0.0, top);
-                (AudioAction::SetVolume(device, v), Attr::Volume(v))
+                Some((AudioAction::SetVolume(device, v), Attr::Volume(v)))
             }
-            ("muted", _, Data::Bool(m)) => (AudioAction::SetMuted(device, *m), Attr::Muted(*m)),
-            _ => {
-                // Not a writable leaf, or no number: the field as it is.
-                self.answer(&w, |_| {});
-                return None;
+            ("muted", _, Data::Bool(m)) => {
+                Some((AudioAction::SetMuted(device, *m), Attr::Muted(*m)))
             }
+            // Not a writable leaf, or no number: the field as it is.
+            _ => None,
         };
-        let others = self.pending.iter().any(|p| p.same(shown, attr));
+        let now = Instant::now();
+        let Some((action, attr)) = action else {
+            self.pending.push(Pending {
+                write: w,
+                shown,
+                attr: None,
+                reply: None,
+                since: now,
+                done: Some(Done::AsIs),
+            });
+            self.settle();
+            return None;
+        };
+        // Nothing to wait for (PipeWire may say nothing at all) when the
+        // device already holds the value and no earlier write of that
+        // field may still change it.
+        let earlier = self
+            .pending
+            .iter()
+            .any(|p| p.same(shown, attr) && p.done.is_none());
+        let held = !earlier && current.as_ref().is_some_and(|d| holds(d, attr));
         let (reply_tx, reply_rx) = oneshot::channel();
-        if !others && current.as_ref().is_some_and(|d| holds(d, attr)) {
-            // Nothing to wait for: PipeWire may say nothing at all.
-            self.answer(&w, |_| {});
-            return Some(Cmd::Action(action, reply_tx));
-        }
         self.pending.push(Pending {
             write: w,
             shown,
-            attr,
+            attr: Some(attr),
             reply: Some(reply_rx),
-            since: Instant::now(),
+            since: now,
+            done: held.then_some(Done::AsIs),
         });
+        if held {
+            self.settle();
+        }
         Some(Cmd::Action(action, reply_tx))
     }
 
-    /// Takes the pending writes `state` answers: per device field, the
-    /// last write whose value it shows (the earlier ones of that field
-    /// are overtaken, and dropped: answering the last answers them on the
-    /// logic thread), and every write PipeWire refused or that waited
-    /// [`ANSWER_WAIT`] (answered with the device as it is).
-    fn answered(&mut self, state: &AudioStore, by_value: bool) -> Vec<Write> {
+    /// Marks the writes that ended: those whose value `next` shows on a
+    /// device it changed (from `prev`; only `by_value`), with the earlier
+    /// writes of that field of the cell (overtaken); those PipeWire
+    /// refused; and those that waited too long.
+    fn mark(&mut self, prev: &AudioStore, next: &AudioStore, by_value: bool) {
         let now = Instant::now();
-        let mut out = Vec::new();
-        let mut i = 0;
-        while i < self.pending.len() {
-            let p = &mut self.pending[i];
-            let refused = match p.reply.as_mut().map(|r| r.try_recv()) {
+        for p in &mut self.pending {
+            match p.reply.as_mut().map(|r| r.try_recv()) {
                 Some(Ok(Err(e))) => {
                     log::warn!("audio: {e}");
-                    true
+                    p.reply = None;
+                    p.done.get_or_insert(Done::AsIs);
                 }
                 Some(Ok(Ok(()))) => {
+                    // PipeWire was asked just now: the answer clock starts.
                     p.reply = None;
-                    false
+                    p.since = now;
                 }
-                Some(Err(oneshot::error::TryRecvError::Closed)) => true,
-                Some(Err(oneshot::error::TryRecvError::Empty)) | None => false,
-            };
-            let late = now.saturating_duration_since(p.since) >= ANSWER_WAIT;
-            if refused || late {
-                out.push(self.pending.remove(i).write);
-                continue;
+                Some(Err(oneshot::error::TryRecvError::Closed)) => {
+                    p.reply = None;
+                    p.done.get_or_insert(Done::AsIs);
+                }
+                Some(Err(oneshot::error::TryRecvError::Empty)) | None => {}
             }
-            i += 1;
         }
-        let shows = |p: &Pending| Self::device(state, p.shown).is_some_and(|d| holds(d, p.attr));
-        while let Some(last) = self.pending.iter().rposition(shows).filter(|_| by_value) {
-            let (shown, attr) = (self.pending[last].shown, self.pending[last].attr);
-            let answer = self.pending.remove(last);
-            // The writes of that field before it are overtaken.
-            let mut j = 0;
-            let mut end = last;
-            while j < end {
-                if self.pending[j].same(shown, attr) {
-                    self.pending.remove(j);
-                    end -= 1;
-                } else {
-                    j += 1;
+        if by_value {
+            for i in 0..self.pending.len() {
+                let p = &self.pending[i];
+                let (shown, Some(attr), None) = (p.shown, p.attr, p.done) else {
+                    continue;
+                };
+                let after = Self::device(next, shown);
+                if Self::device(prev, shown) != after && after.is_some_and(|d| holds(d, attr)) {
+                    self.pending[i].done = Some(Done::Shown);
+                    for q in &mut self.pending[..i] {
+                        if q.same(shown, attr) {
+                            q.done.get_or_insert(Done::Shown);
+                        }
+                    }
                 }
             }
-            out.push(answer.write);
+        }
+        for p in &mut self.pending {
+            if p.done.is_none() && now >= p.due() {
+                if p.reply.is_some() {
+                    log::warn!("audio: PipeWire did not take a write in time");
+                }
+                p.done = Some(Done::AsIs);
+            }
+        }
+    }
+
+    /// Takes the writes to answer now: per cell, the last of the run of
+    /// ended writes at the front of its queue (on the logic thread, its
+    /// answer answers the whole run).
+    fn take_answers(&mut self) -> Vec<Write> {
+        let mut cells: Vec<Shown> = Vec::new();
+        for p in &self.pending {
+            if !cells.contains(&p.shown) {
+                cells.push(p.shown);
+            }
+        }
+        let mut out = Vec::new();
+        for cell in cells {
+            let mut run = Vec::new();
+            for (i, p) in self.pending.iter().enumerate() {
+                if p.shown != cell {
+                    continue;
+                }
+                if p.done.is_none() {
+                    break;
+                }
+                run.push(i);
+            }
+            let mut answer = None;
+            for i in run.into_iter().rev() {
+                let p = self.pending.remove(i);
+                answer.get_or_insert(p.write);
+            }
+            out.extend(answer);
         }
         out
     }
 
-    /// Sends `next` (the state after a batch: `by_value`, or the state as
-    /// it is, answering only refused and late writes): tagged as the
-    /// answer of the writes it settles, else as an outside change.
+    /// Answers the writes that ended, with the state as it is.
+    fn settle(&mut self) {
+        let now = self.cx.state().clone();
+        self.publish(now, false);
+    }
+
+    /// Sends `next` (the state after a batch, `by_value`; or the state as
+    /// it is, answering only the refused, late and held writes): tagged
+    /// as the answer of the writes it settles, else as an outside change.
     fn publish(&mut self, next: AudioStore, by_value: bool) {
-        let answered = self.answered(&next, by_value);
-        let mut answered = answered.into_iter();
+        let prev = self.cx.state().clone();
+        self.mark(&prev, &next, by_value);
+        let mut answered = self.take_answers().into_iter();
         let ok = match answered.next() {
+            None if prev == next => true,
             None => {
                 let mut patches = Vec::new();
-                AudioStore::diff(self.cx.state(), &next, &mut patches);
+                AudioStore::diff(&prev, &next, &mut patches);
                 self.cx.send(patches)
             }
             Some(first) => {
@@ -381,52 +493,14 @@ impl StoreHost {
     }
 }
 
-/// Keyed diffs of the loop's lists (keyed by `i64`) as the store's
-/// (keyed by the record's `u32` id).
-fn store_diffs(diffs: Vec<VecDiff<i64, AudioDevice>>) -> Vec<VecDiff<u32, AudioDevice>> {
-    let key = |k: i64| u32::try_from(k).unwrap_or_default();
-    diffs
-        .into_iter()
-        .map(|d| match d {
-            VecDiff::Reset { items } => VecDiff::Reset {
-                items: items.into_iter().map(|(k, v)| (key(k), v)).collect(),
-            },
-            VecDiff::Insert {
-                index,
-                key: k,
-                value,
-            } => VecDiff::Insert {
-                index,
-                key: key(k),
-                value,
-            },
-            VecDiff::Update {
-                index,
-                key: k,
-                value,
-            } => VecDiff::Update {
-                index,
-                key: key(k),
-                value,
-            },
-            VecDiff::Remove { index, key: k } => VecDiff::Remove { index, key: key(k) },
-            VecDiff::Move { from, to, key: k } => VecDiff::Move {
-                from,
-                to,
-                key: key(k),
-            },
-        })
-        .collect()
-}
-
 impl Host for StoreHost {
     fn changes(&mut self, batch: Vec<AudioChange>) {
         let mut patches = Vec::new();
         for change in batch {
             match change {
                 AudioChange::Connected(c) => log::info!("audio: PipeWire connected: {c}"),
-                AudioChange::Sinks(d) => patches.push(AudioStorePatch::Sinks(store_diffs(d))),
-                AudioChange::Sources(d) => patches.push(AudioStorePatch::Sources(store_diffs(d))),
+                AudioChange::Sinks(d) => patches.push(AudioStorePatch::Sinks(d)),
+                AudioChange::Sources(d) => patches.push(AudioStorePatch::Sources(d)),
                 AudioChange::Sink(d) => patches.push(AudioStorePatch::Sink(d.unwrap_or_default())),
                 AudioChange::Source(d) => {
                     patches.push(AudioStorePatch::Source(d.unwrap_or_default()))
@@ -454,13 +528,13 @@ impl Host for StoreHost {
             match self.cx.try_recv() {
                 Ok(Msg::Write(w)) => cmds.extend(self.write(w)),
                 Ok(Msg::Action(AudioDeviceAction::MakeDefault { item })) => {
-                    // The outcome arrives in the stream; a refusal is logged.
-                    let (tx, rx) = oneshot::channel();
+                    // The outcome arrives in the stream; the loop logs a
+                    // refusal (nobody waits for its reply).
+                    let (tx, _) = oneshot::channel();
                     cmds.push(Cmd::Action(
                         AudioAction::MakeDefault(DeviceRef::Id(item.id)),
                         tx,
                     ));
-                    drop(rx);
                 }
                 Ok(Msg::Call(c, _)) => match c {},
                 Ok(Msg::Visible(_) | Msg::Watch { .. }) => {}
@@ -474,14 +548,15 @@ impl Host for StoreHost {
         if self.stopped {
             return vec![Cmd::Stop];
         }
-        // Writes refused or waiting too long are answered as things are.
+        // Replies read; writes refused or waiting too long are answered
+        // as things are.
+        let now = Instant::now();
         if self
             .pending
             .iter()
-            .any(|p| p.reply.is_some() || p.since + ANSWER_WAIT <= Instant::now())
+            .any(|p| p.reply.is_some() || p.due() <= now)
         {
-            let now = self.cx.state().clone();
-            self.publish(now, false);
+            self.settle();
         }
         if self.stopped {
             return vec![Cmd::Stop];
@@ -500,7 +575,11 @@ impl Host for StoreHost {
     }
 
     fn deadline(&self) -> Option<Instant> {
-        self.pending.iter().map(|p| p.since + ANSWER_WAIT).min()
+        self.pending
+            .iter()
+            .filter(|p| p.done.is_none())
+            .map(Pending::due)
+            .min()
     }
 }
 
@@ -532,8 +611,9 @@ impl AudioStore {
         };
         // Messages sent before the notify hook was set are read now.
         let _ = tx.send(Cmd::Poke);
-        thread::run(config(), Box::new(host), rx);
-        Ok(())
+        // No PipeWire library loop: the contract shows the error and
+        // starts the service again (with backoff) while it is read.
+        thread::run(config(), Box::new(host), rx).map_err(ServiceError)
     }
 }
 
@@ -550,8 +630,6 @@ mod tests {
         assert_eq!((AudioStore::FIELDS[0].ty)(), "AudioDevice");
         assert_eq!((AudioStore::FIELDS[2].ty)(), "[AudioDevice]");
         assert_eq!(AudioDevice::KEY_FIELD, "id");
-        let d = store_diffs(vec![VecDiff::Remove { index: 0, key: 7 }]);
-        assert!(matches!(d[0], VecDiff::Remove { index: 0, key: 7 }));
     }
 
     #[test]

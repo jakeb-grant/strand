@@ -32,22 +32,28 @@
 //!   answers its first sync publishes nothing and is dropped after
 //!   [`UNANSWERED`] (then retried, as a lost one).
 //!
-//! Every change goes to the sink given to [`Audio::spawn`] as one batch of
+//! The loop runs for one of two hosts. [`AudioStore`] (the `audio`
+//! service on the contract, `#[service(thread)]`) runs it on the
+//! service's own `strand-audio` thread and serves [`SCHEMA`] (the
+//! builtin schema's `audio` declaration); [`Audio::spawn`] (a handle for
+//! Rust users and tests) runs it on a `strand-pipewire` thread and gives
+//! every change to its sink. Either way changes come as one batch of
 //! [`AudioChange`]s per burst of PipeWire events (the [`Publisher`]'s
-//! keyed diffs); [`Mirror`] applies them. [`SCHEMA`] is the schema text
-//! the store will serve (exactly the builtin provisional stub). Nothing polls: with nothing
-//! changing, the thread sleeps in the loop and wakes for nothing.
+//! keyed diffs, keyed by the device's `u32` id); [`Mirror`] applies them.
+//! Nothing polls: with nothing changing, the thread sleeps in the loop
+//! and wakes for nothing.
 //!
-//! Writes are plain requests, untagged; suppressing the echo of a write in
-//! the store (the `rw` contract) is the store's job. The adapter uses
-//! `strand_core::echo`'s value path (an untagged report that equals a
-//! pending write is its echo), which holds because the thread reports a
-//! volume it wrote exactly as written, never as its cube root's float
-//! noise: any of its last [`ECHOES`] writes to a device (as many as the
-//! store keeps pending), and any volume on the 1/10 000 grid
-//! ([`perceptual`]) even once forgotten; through a card's `Route`, whose
-//! mixer steps quantize it, an echo within half a percent reads as the
-//! closest write.
+//! Writes are plain requests to the loop, untagged. The store answers
+//! each write tagged ([`crate::Cx::report`]) by the batch that
+//! shows its value, in write order per cell (see the store's docs), and
+//! does not rely on `strand_core::echo`'s value path. The thread still
+//! reports a volume it wrote exactly as written, never as its cube
+//! root's float noise (any of its last [`ECHOES`] writes to a device, and
+//! any volume on the 1/10 000 grid ([`perceptual`]) even once forgotten;
+//! through a card's `Route`, whose mixer steps quantize it, an echo
+//! within half a percent reads as the closest write): the store's
+//! by-value match needs it, and [`Audio`] handle users whose own echo
+//! suppression goes by value rely on it.
 //!
 //! An action sent before a connection has published its first state (a
 //! media key that starts the service with a write, or one sent during a
@@ -253,7 +259,11 @@ impl Audio {
         let (tx, rx) = pipewire::channel::channel();
         let thread = std::thread::Builder::new()
             .name("strand-pipewire".into())
-            .spawn(move || thread::run(config, Box::new(SinkHost(sink)), rx))?;
+            .spawn(move || {
+                if let Err(e) = thread::run(config, Box::new(SinkHost(sink)), rx) {
+                    log::error!("audio: {e}");
+                }
+            })?;
         Ok(Audio {
             tx,
             thread: Some(thread),

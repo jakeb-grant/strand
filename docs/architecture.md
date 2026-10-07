@@ -13,7 +13,7 @@ file fixes boundaries; each crate is free inside its own boundary.
 | Text worker | `strand-text` | parley shaping, swash rasterisation, per-scale glyph atlases | Block render: a painted surface keeps drawing its last layout (or a realigned stand-in from another scale or width) until the new one arrives |
 | Watcher | `strand-watch` | inotify directory watches and polling (one `strand-watch` thread); not the IPC socket (`docs/decisions.md`, wave2-watch) | Parse files (it sends paths and hashes) |
 | Persist IO (one per `PersistStore`) | `strand-core` | Atomic writes of persisted cells, settings-file edits, settings overlays and last-good snapshots; reports each file it is about to change to `PersistStore::on_written` | Run on the logic tick or block logic (failures come back as diagnostics in a later tick) |
-| Services | `strand-services` | One tokio current-thread runtime thread (`strand-services`), started with the first service that runs on it: every async service body (the `system` service follows the portal Settings with `strand_watch::follow` here; the `workspaces`, `windows` and `wm` stores and their one compositor hub with its IPC adapter run here, the sway adapter on swayipc-async's types over its own tokio framing, so no async-io reactor thread); the `audio` store runs the PipeWire loop on its own service thread (`strand-audio`, `Start::Thread`), and the hub's Wayland toplevel/workspace protocol client its own `strand-toplevel` thread (idle: zero wakeups, `crates/strand-services/tests/idle.rs`, `tests/audio_idle.rs`, `tests/wm_services.rs`, `tests/audio_service.rs`) | Block logic: they send patches and events over channels, applied by `Services::pump` on the logic thread |
+| Services | `strand-services` | One tokio current-thread runtime thread (`strand-services`), started with the first service that runs on it: every async service body (the `system` service follows the portal Settings with `strand_watch::follow` here; the `workspaces`, `windows` and `wm` stores and their one compositor hub with its IPC adapter run here, the sway adapter on swayipc-async's types over its own tokio framing, so no async-io reactor thread); the `audio` store runs the PipeWire loop on its own service thread (`strand-audio`, `Start::Thread`), and the hub's Wayland toplevel/workspace protocol client its own `strand-toplevel` thread (the hub's, not a `Start::Thread` body: three stores share it; the hub joins it on its last stop and on `Services::shutdown`) (idle: zero wakeups, `crates/strand-services/tests/idle.rs`, `tests/audio_idle.rs`, `tests/wm_services.rs`, `tests/audio_service.rs`) | Block logic: they send patches and events over channels, applied by `Services::pump` on the logic thread |
 
 Channels are the only coupling between threads. Logic → render is one
 `SceneDiff` per tick. Render → logic is `InputEvent`s (`strand-scene`) and layout facts
@@ -2105,7 +2105,16 @@ the primitives, `Option`, `Vec` and derived types.
   instead of an unbounded backlog; a store should still drain promptly.
   Each store subscribes from its body, so a store's 5 s stop grace is its
   own and the hub stops at once once all have stopped (a store still read
-  keeps it: `tests/wm_services.rs`). The stores (`wm::Windows`,
+  keeps it: `tests/wm_services.rs`), so a binding that toggles does not
+  tear down and rebuild the adapter connection and the protocol thread
+  each time: `tests/wm_services.rs::
+  the_compositor_stores_follow_sway_through_one_hub` checks that a read,
+  unread, read cycle within 5 s keeps the store's `starts()`,
+  `wm::live_runs()` and the one `strand-toplevel` thread. The hub starts
+  the protocol thread itself (`ProtocolClient::spawn`; `wm::run` does
+  the same for direct users) and owns it: every stop (the last
+  subscriber gone, the hub dropped, `Services::shutdown`) sends `Stop`
+  and joins it (`ProtocolClient::stop`, 2 s at most). The stores (`wm::Windows`,
   `wm::Workspaces`, `wm::Wm`; records `wm::WindowItem` and
   `wm::WorkspaceItem`, the schema's `Window` and `Workspace` field for
   field, converted from the model's, which also carries `toplevel`) are
@@ -2231,19 +2240,31 @@ the primitives, `Option`, `Vec` and derived types.
   `.muted`) becomes `SetVolume`/`SetMuted` on `DeviceRef::DefaultSink`
   (`DefaultSource`); an item write of `audio.sinks`/`audio.sources` on
   `DeviceRef::Id`. Each write is answered tagged (`Cx::report`) by the
-  first batch whose state shows its value on its device (the earlier
-  writes of that device's field are overtaken and dropped, so the logic
-  thread ignores their echoes and settles on the last), or, refused or
-  unseen within `audio::ANSWER_WAIT` (1 s), with the device as it is: a
-  slider's echoes never snap it back, and the value path of
-  `strand_core::echo` is not relied on (a report's record also carries
-  the `icon`, which the optimistic local value does not update).
+  first batch that changes its device and shows its value (the earlier
+  writes of that device's field are overtaken, so the logic thread
+  ignores their echoes and settles on the last), or, refused, not a
+  writable leaf, or unseen within `audio::ANSWER_WAIT` (1 s) of PipeWire
+  taking the action (6 s with no reply), with the device as it is.
+  Answers go in write order per cell (`audio.sink`, or one item of a
+  list): the logic thread takes an answer tagged `g` as the answer of
+  every write of the cell up to `g`, so a write that ended waits for the
+  earlier writes of its cell and the run is answered by its last, with
+  the state that shows them. A slider's echoes never snap it back, and
+  the value path of `strand_core::echo` is not relied on (a report's
+  record also carries the `icon`, which the optimistic local value does
+  not update). A loop that cannot be created ends the body with an
+  error (the contract's diagnostic and backoff). The loop's keyed diffs
+  are keyed by the device's `u32` id.
   `audio::configure(Some(AudioConfig))` points stores started later at
   a socket (tests); `strand run` uses PipeWire's own default. Levels:
   `audio::tap_levels(target, f) -> LevelTap` (the M4 `spectrum`
   element's hook) asks the running store to meter `target`; the store
   passes the tapped targets to the loop only while a reader is visible
-  (`Cx::visible`), an empty set otherwise. Without the
+  (`Cx::visible`), an empty set otherwise. Provisional (decisions.md,
+  wave4-wm fixes r1): the taps are process-wide and get per-channel
+  peaks; M4's `spectrum` extends `Levels` with samples per tap, and the
+  process-wide `audio::configure`/`wm::configure` targets move into
+  `Buses` (or a sibling) when one process needs two. Without the
   `pipewire` feature the module is absent and the store answers
   `audio.*` at the schema's defaults (its schema text is left out of
   `strand_services::schemas()`).

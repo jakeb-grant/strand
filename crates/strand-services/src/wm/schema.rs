@@ -32,14 +32,12 @@ mod tests {
             .collect()
     }
 
-    fn key(member: &str) -> &str {
-        member.split(['(', ':']).next().unwrap_or(member).trim()
-    }
-
-    /// Every field the stubs declare is declared alike (same type); every
-    /// action, method and event keeps its name.
+    /// The stubs declare exactly what the services serve (decisions.md,
+    /// wave4-wm fixes: a config checked against the bare builtin schema
+    /// checks the same as against the served one): the same members, with
+    /// the same types and arities, in the same order.
     #[test]
-    fn the_schema_serves_every_provisional_declaration() {
+    fn the_stubs_declare_what_the_services_serve() {
         let schema = [WINDOWS_SCHEMA, WORKSPACES_SCHEMA, WM_SCHEMA].concat();
         let schema = schema.as_str();
         for (stub, real) in [
@@ -55,20 +53,7 @@ mod tests {
             ("provisional service workspaces {", "service workspaces {"),
             ("provisional service wm {", "service wm {"),
         ] {
-            let ours = block(schema, real);
-            for member in block(BUILTIN, stub) {
-                let callable = ["action ", "fn ", "event "]
-                    .iter()
-                    .any(|p| member.starts_with(p));
-                if callable {
-                    assert!(
-                        ours.iter().any(|m| key(m) == key(member)),
-                        "{real} lacks {member}"
-                    );
-                } else {
-                    assert!(ours.contains(&member), "{real} lacks `{member}`");
-                }
-            }
+            assert_eq!(block(BUILTIN, stub), block(schema, real), "{real}");
         }
         assert!(schema.contains("event config_reloaded(failed: bool?)"));
     }

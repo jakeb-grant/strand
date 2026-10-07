@@ -236,9 +236,9 @@ pub enum AudioChange {
     /// connection's state replaces them). Always in the first batch.
     Connected(bool),
     /// `audio.sinks`, keyed by id.
-    Sinks(Vec<VecDiff<i64, AudioDevice>>),
+    Sinks(Vec<VecDiff<u32, AudioDevice>>),
     /// `audio.sources`, keyed by id.
-    Sources(Vec<VecDiff<i64, AudioDevice>>),
+    Sources(Vec<VecDiff<u32, AudioDevice>>),
     /// `audio.sink`: the default output, if any. `None` (no default, or
     /// no PipeWire yet) is shown as the schema's defaults for the record
     /// (`id` 0, empty texts, `volume` 0, `muted` and `default` false).
@@ -249,11 +249,8 @@ pub enum AudioChange {
     Levels(Levels),
 }
 
-fn items(devices: &[AudioDevice]) -> Vec<(i64, AudioDevice)> {
-    devices
-        .iter()
-        .map(|d| (i64::from(d.id), d.clone()))
-        .collect()
+fn items(devices: &[AudioDevice]) -> Vec<(u32, AudioDevice)> {
+    devices.iter().map(|d| (d.id, d.clone())).collect()
 }
 
 /// The keyed diff of one list, a device whose id now holds another serial
@@ -263,7 +260,7 @@ fn list_diff(
     old: &[AudioDevice],
     next: &AudioState,
     new: &[AudioDevice],
-) -> Vec<VecDiff<i64, AudioDevice>> {
+) -> Vec<VecDiff<u32, AudioDevice>> {
     let reused = |d: &AudioDevice| {
         matches!(
             (last.serials.get(&d.id), next.serials.get(&d.id)),
@@ -274,8 +271,8 @@ fn list_diff(
         return Vec::new();
     }
     let (old, new) = (items(old), items(new));
-    let new_ids: Vec<i64> = new.iter().map(|(k, _)| *k).collect();
-    let gone: Vec<(i64, AudioDevice)> = old
+    let new_ids: Vec<u32> = new.iter().map(|(k, _)| *k).collect();
+    let gone: Vec<(u32, AudioDevice)> = old
         .iter()
         .filter(|(k, d)| !(new_ids.contains(k) && reused(d)))
         .cloned()
@@ -354,9 +351,9 @@ pub struct Mirror {
     /// Connected to PipeWire.
     pub connected: bool,
     /// `audio.sinks`.
-    pub sinks: Vec<(i64, AudioDevice)>,
+    pub sinks: Vec<(u32, AudioDevice)>,
     /// `audio.sources`.
-    pub sources: Vec<(i64, AudioDevice)>,
+    pub sources: Vec<(u32, AudioDevice)>,
     /// `audio.sink`.
     pub sink: Option<AudioDevice>,
     /// `audio.source`.
