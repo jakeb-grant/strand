@@ -44,6 +44,127 @@ pub fn schema() -> &'static Schema {
     })
 }
 
+/// How long `strand set` on a service waits for a stopped service's
+/// first read.
+pub const SET_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Whether `path` names a service field (`brightness.level`): the CLI's
+/// `set` writes it through the service host.
+pub fn is_service_path(path: &str) -> bool {
+    let mut parts = path.split('.');
+    let (Some(service), Some(_)) = (parts.next(), parts.next()) else {
+        return false;
+    };
+    schema().services.contains_key(service)
+}
+
+/// Write `text` to the `rw` service field `path` (`brightness.level`,
+/// `audio.sink.volume`) through `host`, read by the field's type as
+/// `Instance::set_text` reads a state's: `0.4`, `40%`, `true`, an enum
+/// variant, `null`. A number with a sign is a step from the current
+/// value (design.md: `strand set audio.sink.volume +5%`), never below 0.
+pub fn set_text(
+    host: &dyn strand_compiler::vm::ServiceHost,
+    rt: &Runtime,
+    types: &TypeTable,
+    path: &str,
+    text: &str,
+) -> Result<(), String> {
+    use strand_compiler::ty::{Prim, Ty};
+    use strand_compiler::vm::Value;
+    use strand_compiler::vm::host::PathSeg;
+    let s = schema();
+    let mut parts = path.split('.');
+    let service = parts.next().unwrap_or_default();
+    let fields: Vec<&str> = parts.collect();
+    let Some(&record) = s.services.get(service) else {
+        return Err(format!("nothing is exported as `{path}`"));
+    };
+    if fields.is_empty() {
+        return Err(format!("`{path}` names a service, not a field"));
+    }
+    // The leaf's type, and whether it is writable.
+    let mut rec = record;
+    let mut leaf = None;
+    for (i, f) in fields.iter().enumerate() {
+        let def = s
+            .types
+            .record(rec)
+            .fields
+            .iter()
+            .find(|d| d.name == *f)
+            .ok_or_else(|| format!("`{path}` has no field `{f}`"))?;
+        if i + 1 == fields.len() {
+            leaf = Some(def.clone());
+        } else {
+            match def.ty.non_null() {
+                Ty::Record(r) => rec = *r,
+                _ => return Err(format!("`{path}` has no field `{}`", fields[i + 1])),
+            }
+        }
+    }
+    let leaf = leaf.ok_or_else(|| format!("`{path}` has no field"))?;
+    if !leaf.rw {
+        return Err(format!("`{path}` is read-only"));
+    }
+    let text = text.trim();
+    let number = |t: &str| -> Option<f64> {
+        match t.strip_suffix('%') {
+            Some(p) => p.trim().parse::<f64>().ok().map(|n| n / 100.0),
+            None => t.parse::<f64>().ok(),
+        }
+    };
+    let relative = text.starts_with('+') || text.starts_with('-');
+    let current = || -> Result<f64, String> {
+        let mut v = host
+            .read(rt, service, fields[0])
+            .map_err(|e| e.to_string())?;
+        for f in &fields[1..] {
+            v = v.field(types, f).cloned().unwrap_or(Value::Null);
+        }
+        v.as_f64()
+            .ok_or_else(|| format!("`{path}` has no value to step from"))
+    };
+    let value = match leaf.ty.non_null() {
+        _ if text == "null" && matches!(leaf.ty, Ty::Optional(_)) => Value::Null,
+        Ty::Prim(Prim::Float | Prim::Percent) => {
+            let n = number(text).ok_or_else(|| format!("`{text}` is not a number"))?;
+            Value::float(if relative {
+                (current()? + n).max(0.0)
+            } else {
+                n
+            })
+        }
+        Ty::Prim(Prim::Int) => {
+            let n: i64 = text
+                .parse()
+                .map_err(|_| format!("`{text}` is not a whole number"))?;
+            Value::int(if relative {
+                (current()? as i64 + n).max(0)
+            } else {
+                n
+            })
+        }
+        Ty::Prim(Prim::Bool) => match text {
+            "true" => Value::Bool(true),
+            "false" => Value::Bool(false),
+            _ => return Err(format!("`{text}` is not true or false")),
+        },
+        Ty::Prim(Prim::Text | Prim::Path) => Value::text(text),
+        Ty::Enum(e) => {
+            let def = s.types.enum_(*e);
+            let v = def
+                .variant(text)
+                .ok_or_else(|| format!("`{text}` is not a {}", def.name))?;
+            Value::Enum(*e, v)
+        }
+        _ => return Err(format!("`{path}` cannot be set from the command line")),
+    };
+    let segs: Vec<PathSeg> = fields.iter().map(|f| PathSeg::Field((*f).into())).collect();
+    host.write(rt, service, &segs, value)
+        .map_err(|e| e.to_string())
+}
+
 /// The real services of one logic thread.
 pub struct Real {
     pub services: Services,
@@ -51,6 +172,7 @@ pub struct Real {
     /// The host `Instance` gets.
     pub host: Rc<Composite>,
     stores: Vec<Rc<StoreHost>>,
+    types: Rc<TypeTable>,
 }
 
 impl std::fmt::Debug for Real {
@@ -92,7 +214,27 @@ impl Real {
             builtin,
             host: Rc::new(host),
             stores,
+            types,
         }
+    }
+
+    /// `strand set brightness.level 0.4` (or `+5%`): an `rw` service
+    /// field written from the CLI ([`set_text`]). A service nobody reads
+    /// is started for it and its first read waited for (up to
+    /// [`SET_WAIT`]), so a relative step starts from its real value; it
+    /// stops 5 s later.
+    pub fn set_text(&self, rt: &Runtime, path: &str, text: &str) -> Result<(), String> {
+        let name = path.split('.').next().unwrap_or_default();
+        let svc = self.builtin.all().into_iter().find(|s| s.name() == name);
+        if let Some(svc) = &svc {
+            svc.acquire(rt);
+            self.services.wait_ready(rt, SET_WAIT);
+        }
+        let r = set_text(&*self.host, rt, &self.types, path, text);
+        if let Some(svc) = &svc {
+            svc.release(rt);
+        }
+        r
     }
 
     /// Stop every service (joining the shared runtime thread) and dispose
@@ -117,6 +259,37 @@ mod tests {
     use strand_services::{Cells as _, STOP_GRACE};
 
     use super::*;
+
+    /// `strand set` on a service field: absolute and relative values by
+    /// the field's type, read-only fields and unknown names refused.
+    #[test]
+    fn strand_set_writes_service_fields() {
+        let rt = Runtime::new();
+        let types = schema().types.clone();
+        let host = SchemaHost::new(&rt, &types, None);
+        host.set(&rt, "brightness.level", Value::float(0.5))
+            .unwrap();
+        let level =
+            |host: &SchemaHost| host.get(&rt, "brightness.level").unwrap().as_f64().unwrap();
+        assert!(is_service_path("brightness.level"));
+        assert!(!is_service_path("brightness"));
+        assert!(!is_service_path("theme.look"));
+        set_text(&host, &rt, &types, "brightness.level", "+5%").unwrap();
+        assert!((level(&host) - 0.55).abs() < 1e-9, "{}", level(&host));
+        set_text(&host, &rt, &types, "brightness.level", "-0.1").unwrap();
+        assert!((level(&host) - 0.45).abs() < 1e-9);
+        set_text(&host, &rt, &types, "brightness.level", "-100%").unwrap();
+        assert_eq!(level(&host), 0.0, "never below 0");
+        set_text(&host, &rt, &types, "brightness.level", "40%").unwrap();
+        assert!((level(&host) - 0.4).abs() < 1e-9);
+        set_text(&host, &rt, &types, "network.wifi", "false").unwrap();
+        assert_eq!(host.get(&rt, "network.wifi").unwrap(), Value::Bool(false));
+        let err = |p: &str, v: &str| set_text(&host, &rt, &types, p, v).unwrap_err();
+        assert!(err("brightness.available", "true").contains("read-only"));
+        assert!(err("brightness.level", "loud").contains("not a number"));
+        assert!(err("brightness.nope", "1").contains("no field"));
+        assert!(err("nothing.level", "1").contains("nothing is exported"));
+    }
 
     /// The schema the binary checks against holds each linked service's
     /// declaration in place of its stub, documented, and each store's
