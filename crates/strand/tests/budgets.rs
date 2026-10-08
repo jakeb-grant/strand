@@ -1466,6 +1466,12 @@ fn the_design_bar_on_the_real_services_keeps_the_budget() {
         desk.alive("waiting for the first minute tick");
         std::thread::sleep(Duration::from_millis(500));
     }
+    // The idle window's mirror of strand's inotify watches (below) is
+    // built first: it walks HOME and /usr/share, which can take seconds
+    // on a loaded runner, and between the settle and the window it once
+    // pushed the window over the minute tick (CI run 37764216530).
+    let mut monitor = DirMonitor::new(pid, &desk.watched_roots());
+    eprintln!("idle monitor: {}", monitor.describe());
     // Boot work done: a whole second without a wakeup or a frame, early
     // enough in the minute that the window below ends before the tick.
     settle_early_in_minute(&mut desk, "settling");
@@ -1491,10 +1497,11 @@ fn the_design_bar_on_the_real_services_keeps_the_budget() {
     // (another process making or removing a name beside an ancestor of
     // the config) is the environment, not the shell: the window is
     // tried again, at most twice, after settling again.
-    let mut monitor = DirMonitor::new(pid, &desk.watched_roots());
-    eprintln!("idle monitor: {}", monitor.describe());
+    // The PSS readout above takes time too: a window that would start
+    // more than 45 s into the minute settles again first, so it never
+    // covers the minute tick.
     for attempt in 1..=3 {
-        if attempt > 1 {
+        if attempt > 1 || seconds_into_minute() > 45 {
             settle_early_in_minute(&mut desk, "settling again");
         }
         let _ = monitor.events();

@@ -33,7 +33,7 @@ machine's own system or session bus.
 | 100 reloads with no reconnects | no service restarts, no new connection (the `from dbus` introspection refresh exempt; see Open), no mock call | **100 reloads in 8.4 s**, every check clean (below) | pass |
 | Memory: design.md's bar, 2×2560×1440, real services | 34 MB target (warns), 38 MB ceiling (fails) | **31,690 kB** (30.9 MiB) here, **32,664 kB** (31.9 MiB) in CI run 37749789401 | pass, under the target |
 | Memory: full shell, launcher open, toasts, OSD | design.md 59–64 MB; 64 MB target, 70 MB ceiling | **45,502 kB** (44.4 MiB, 12 desktop entries), **55,477 kB** (54.2 MiB, 169) here; 49,384 / 58,115 kB (48.2 / 56.8 MiB) in CI run 37749789401 | pass, under design.md's estimate |
-| Idle wakeups with services running | 0 | **0** context switches in any thread over 10 s on the design bar; 0 logic/services wakeups in each services idle test | pass |
+| Idle wakeups with services running | 0 | **0** context switches in any thread over 10 s on the design bar (a window in which only the `strand-watch` thread woke on another process's change in a watched ancestor directory is re-run, at most twice; see Idle wakeups); 0 logic/services wakeups in each services idle test | pass |
 | Portal change on the next frame (M1's latency gate, M3 clause) | painted within one refresh at p95, presented at the next frame | `SettingChanged` sent → painted **p95 3.4–3.6 ms**, → presented **p95 3.7–3.8 ms** (one refresh 16.7 ms) | pass |
 
 Screenshots (`scripts/m3-shots.sh`, below) show each surface of the
@@ -189,6 +189,41 @@ render wakeups; only cpu and memory poll, and only while read.
 
 All green in the debug workspace run here and in CI's `check` job.
 
+The design bar's window was flaky before review r1: about one full
+workspace run in five failed with `woke while idle over 10s:
+["… strand-watch: 20 -> 21"]`. The cause is outside the shell.
+`strand-watch` watches every ancestor of each watched directory for
+names going (`WatchKind::Ancestor`) and the nearest existing ancestor of
+a missing cache directory for names coming (`WatchKind::Parent`). The
+test's HOME lies under the worktree's `target/`, whose ancestors other
+agents' builds and tests write to, and the missing `~/.fonts`,
+`~/.icons` and `.local/share/fonts` made HOME itself a `Parent` watch.
+Any name made or removed there woke the watcher thread once (it reads
+the event, finds it is not one of its paths and sleeps again: no logic
+wake, no frame). The test now:
+
+- creates the font and icon directories the cache sources name, so HOME
+  is no longer a `Parent` watch;
+- mirrors every inotify watch strand holds (read from
+  `/proc/<pid>/fdinfo`, matched by inode under HOME, the runtime dir,
+  `/usr/share` and `/usr/local/share`; 53 of 53 found here) with its own
+  watch of the same mask (`DirMonitor`);
+- re-runs the window, after settling again early in the minute, only
+  when the `strand-watch` thread alone woke and the mirror saw an event
+  explaining it, at most twice; any other wake fails at once, and the
+  failure prints the raw events and the mirror's coverage;
+- builds that mirror before settling, and settles again if a window
+  would start more than 45 s into the minute, so the window never covers
+  the minute tick (the mirror's directory walk, first placed after the
+  settle, pushed one debug CI window over it: run 37764216530);
+- proves the premise after the window: a directory made and removed
+  beside HOME must show in the mirror and wake the watcher thread.
+
+On a real desktop the same wake happens once per atomic write in `~` or
+`~/.config` (a shell's history, `mimeapps.list`); whether the ancestor
+watches need to reach `/` and `/home` is left to the `strand-watch`
+owner (Open).
+
 ## Portal latency clause
 
 Method: `crates/strand/src/bench.rs::reload_latency_to_the_presented_frame`
@@ -242,7 +277,13 @@ with 1 h 30 min left:
 
 The launcher listing the container's desktop entries with their icons
 (ImageMagick, LibreOffice, Vim; the six Python and Java entries are
-`NoDisplay`):
+`NoDisplay`). Review r1 found LibreOffice's icon drawn about 20 px wide
+in the first shot, its text column out of line with the others: the
+sized `image` shrank under the long ellipsised comment beside it. A
+sized `image` or `icon` now keeps its size unless `shrink:` is given
+(`crates/strand-render/tests/layout.rs::a_sized_image_keeps_its_size_beside_a_long_cut_comment`),
+and the shots were taken again; all three titles now start in one
+column:
 
 ![The launcher with the machine's apps](images/m3-launcher.png)
 
@@ -281,6 +322,12 @@ Every M3 tier has a CI step (`.github/workflows/ci.yml`):
 
 - A second output on Hyprland, niri and sway is not checked live (see
   the matrix).
+- `strand-watch` wakes its thread once for each name made or removed in
+  any ancestor of a watched directory (up to `/`): on a desktop, every
+  atomic save in `~` or `~/.config`. No logic wake or frame follows, but
+  the idle test has to tell these wakes apart (Idle wakeups). Whether
+  the ancestor watches above the config root's parent are needed is the
+  `strand-watch` owner's call.
 - The token clause of the M1 latency bench has under 0.2 ms of p95
   headroom on this machine; whether the memory step's size opt-levels
   cost it should be measured (`opt-level = "s"` on `strand` against 3).

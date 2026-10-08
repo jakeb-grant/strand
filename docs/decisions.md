@@ -4669,7 +4669,8 @@ authors evidently meant with no props added, which removes a concept.
 **2026-10-06 · wave3-pixels: `shrink` and `justify`.** The spec of this
 track lists them as flex props; design.md says "Flex props plus
 `min_*`/`max_*`" without listing them. They are added to the `node` group
-(`shrink: float`, default 1 as CSS; `justify: start | center | end |
+(`shrink: float`, default 1 as CSS, except 0 for a sized `image` or
+`icon` since wave4-exitReport r1; `justify: start | center | end |
 space_between | space_around | space_evenly`, the main-axis distribution)
 and to `Prop`, since without them a row cannot spread or pin its
 children, and `spacer` alone cannot express `space_between`.
@@ -7928,7 +7929,8 @@ reports it again. `SchemaHost` (schema defaults and the mock) implements
 program's defaults only when its record id or field types moved, keeping
 values the mock set otherwise. Not done here, and why: the launcher row
 whose long `ellipsis: end` comment shrinks its sized icon is the
-renderer's layout (reported to its owner); dbusmock's templates
+renderer's layout (reported to its owner; fixed in `1bd4426`,
+wave4-exitReport r1); dbusmock's templates
 introspect every property as writable, so `check::dbus_read_only` is
 proven only against fake introspection.
 
@@ -7996,7 +7998,7 @@ renderer/text owner, not this track: a mark covering part of a ligature
 cluster is dropped (design.md's launcher with real apps: `LibreOffice`
 marked at `[7, 9)` draws no mark, `ffi` being one glyph in DejaVu Sans
 Bold); a sized icon in a row with a long ellipsised comment shrinks a
-few pixels (flex-shrink 0 proposed); and
+few pixels (flex-shrink 0 proposed; done in `1bd4426`, wave4-exitReport r1); and
 `renderer::tests::crashing_requests_are_not_retried` is flaky under
 load (it assumes the text request is made synchronously). The
 icon-theme follower, now a task on the shared session connection, does
@@ -8628,3 +8630,60 @@ The local latency bench failed its M1 token clause by 0.1 ms in two of
 three runs on the shared machine (portal clause green in all three);
 the report states it rather than re-running until green, and lists the
 token headroom as open.
+
+**2026-10-08 · wave4-exitReport (review r1 closed).** (1) A sized
+`image` or `icon` (one with `size`, `width` or `height`) defaults to
+`shrink: 0`; an explicit `shrink:` still wins. This amends wave3-pixels'
+"`shrink` default 1 as CSS" for these two kinds only, and follows CSS
+itself, where a replaced element's automatic minimum size keeps an image
+at its size in a flex row. Without it design.md's launcher row
+(`image h.app.icon { size: 32 }` beside `col { grow: 1 }`) drew a 32 px
+icon about 20 px wide whenever the comment beside it was long enough to
+be cut, and the text column moved with it. Proof:
+`crates/strand-render/tests/layout.rs::a_sized_image_keeps_its_size_beside_a_long_cut_comment`
+(fails at 24 px without the change). The references this moved were
+re-blessed and read: `images_icons` (its panel widened from 240 to
+280 px, so its sized items fit rather than being squeezed) and the
+acceptance `toasts_three`, `toasts_hover` and `toasts_after_dismiss`
+(the chat toast's icon had shrunk the same way). The M3 shots were taken
+again. (2) The idle gate of
+`crates/strand/tests/budgets.rs::the_design_bar_on_the_real_services_keeps_the_budget`
+failed about one run in five, with only the `strand-watch` thread waking.
+`strand-watch` watches every ancestor of a watched directory for names
+going and the nearest existing ancestor of a missing one for names
+coming, so another process making or removing any name there wakes the
+thread. Each such wake costs one read of the inotify fd and a
+path match on the `strand-watch` thread: no message to the logic thread,
+no wake there, no frame. The test now creates the font and icon
+directories the cache sources name (HOME stops being a `Parent` watch),
+mirrors strand's own inotify watches from `/proc/<pid>/fdinfo`, and
+re-runs the 10 s window, at most twice and after settling again, only
+when `strand-watch` alone woke and the mirror saw an outside event;
+any other wake, or a third such window, fails and prints the events.
+A control after the window makes and removes a directory beside HOME
+and asserts that the mirror saw it and the watcher woke. The mirror walks
+HOME and `/usr/share` up to four levels, which took seconds on CI's
+debug run: built between the settle and the window, it pushed the
+window over the minute tick (run 37764216530: `strand`, `strand-text`
+and `strand-logic` woke, the clock repainted). The closer builds it
+before the settle, and a window that would start more than 45 s into the
+minute settles again first. HOME was not
+moved under `/tmp` as the review suggested: `/tmp` would be a watched
+ancestor too, and busier. Whether the ancestor watches should reach `/`
+is the `strand-watch` owner's call (m3-report.md Open). (3) The bar shot
+shows two sway workspaces. Only the screenshot path opens a second
+window on workspace 3, then focuses workspace 1 again; the measured runs
+are unchanged. sway removes an empty workspace once it is not shown, so
+the empty dot cannot be shot on sway. (4) The `from file` watch race CI
+run 37754849203 hit once: `add_watch` failing with `ENOENT` or `ENOTDIR`
+after the `is_dir()` check now climbs a level within the loop's bound,
+and the stale watch descriptors are released on every exit path
+(`crates/strand-services/src/custom.rs::tests::a_directory_removed_while_it_is_watched_is_climbed_past`).
+(5) Docs: m3-report.md and README.md give memory in MiB (kB beside it);
+README.md names `auth` as left for M4, `clock`, `calendar` and `screens`
+as served by the host, and `cpu`/`memory` (and `from poll`) as the only
+timers; the report quotes the portal clause from the current CI run
+37758646892 and qualifies the reloads row with the introspection
+exemption; features.md's IPC adapters note says the live compositor
+matrix supersedes the capture requirement, and its M4 tray-menus note
+says M3's tray service with DBusMenu is done.
