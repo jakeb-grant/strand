@@ -9,7 +9,9 @@
 # saved at each step of `full_shell`, whose checks all still run:
 #
 #   m3-bar.png       the bar: sway's workspaces, the test window's title,
-#                    the clock, volume, network and battery
+#                    the clock, volume, network and battery (design.md's
+#                    bar has no network: the shots add a two-line
+#                    component with its icon and name after the volume)
 #   m3-launcher.png  the launcher listing the machine's desktop entries
 #   m3-toasts.png    two toasts sent over D-Bus to the notifications server
 #   m3-osd.png       the OSD raised by `wpctl set-volume` on PipeWire

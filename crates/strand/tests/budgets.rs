@@ -112,6 +112,17 @@ component Status {
 }
 "#;
 
+/// The network component `the_m3_screenshots` adds to the bar's end
+/// section: `STATUS` without its check box.
+const NETWORK: &str = r#"
+component Network {
+  row { gap: $space.1
+    icon network.connected ? "network-wireless-symbolic" : "network-offline-symbolic"
+    text network.ssid ?? "" { color: $fg.muted }
+  }
+}
+"#;
+
 struct Proc(Child);
 
 impl Drop for Proc {
@@ -1428,6 +1439,17 @@ fn full_shell(name: &str, apps: Apps, shots: Option<&Path>) {
     ]
     .into_iter()
     .map(fixture)
+    .map(|(n, t)| {
+        // design.md's bar shows no network; the screenshots add the
+        // network icon and name after the volume (`NETWORK`).
+        if shots.is_some() && n == "bar.strand" {
+            assert!(t.contains("      Volume\n"));
+            let t = t.replace("      Volume\n", "      Volume\n      Network\n");
+            (n, format!("{t}{NETWORK}"))
+        } else {
+            (n, t)
+        }
+    })
     .collect();
     let files: Vec<(&str, String)> = files.iter().map(|(n, t)| (n.as_str(), t.clone())).collect();
     // The machine's own apps and icons, and the test's.
@@ -1473,7 +1495,8 @@ fn full_shell(name: &str, apps: Apps, shots: Option<&Path>) {
     let bar_rows = 104;
     keep(
         &before_launcher,
-        Some((0, 0, before_launcher.w, bar_rows - 24)),
+        // Down to the bar's bottom edge (88 rows with the pad).
+        Some((0, 0, before_launcher.w, 64)),
         "m3-bar.png",
     );
     // The launcher, on the focused output (HEADLESS-1, scale 2), listing
