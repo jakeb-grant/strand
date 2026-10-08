@@ -12,8 +12,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 
 use strand_scene::SurfaceId;
@@ -627,6 +627,20 @@ fn to_pixmap(r: &Raster) -> Pixmap {
 }
 
 /// Decodes on a thread of its own.
+/// What every image worker runs when its queue drains after a decode,
+/// on its own thread, before it blocks for the next request (see
+/// [`set_idle_hook`]).
+static IDLE_HOOK: OnceLock<fn()> = OnceLock::new();
+
+/// Installs the hook image workers run when their queue drains after
+/// work (the first call wins), like `strand_text::set_idle_hook`:
+/// `strand run` returns the allocator's freed pages there, which only
+/// the worker's own thread can free. It runs inside the burst that woke
+/// the worker, so it costs no wakeup of its own.
+pub fn set_idle_hook(hook: fn()) {
+    let _ = IDLE_HOOK.set(hook);
+}
+
 #[derive(Debug)]
 pub struct ImageWorker {
     requests: Option<Sender<ImageKey>>,
@@ -648,7 +662,8 @@ impl ImageWorker {
         let thread = std::thread::Builder::new()
             .name("strand-image".into())
             .spawn(move || {
-                while let Ok(key) = req_rx.recv() {
+                let mut next = req_rx.recv().ok();
+                while let Some(key) = next {
                     // A request no frame wants any more (a size passed
                     // through, a node gone) is dropped undecoded.
                     let want = still.lock().map(|w| w.contains(&key)).unwrap_or(true);
@@ -667,6 +682,18 @@ impl ImageWorker {
                     if want && let Some(w) = &waker {
                         w();
                     }
+                    next = match req_rx.try_recv() {
+                        Ok(key) => Some(key),
+                        Err(TryRecvError::Disconnected) => None,
+                        Err(TryRecvError::Empty) => {
+                            // Drained: the decode's garbage goes back
+                            // before the worker blocks.
+                            if let Some(hook) = IDLE_HOOK.get() {
+                                hook();
+                            }
+                            req_rx.recv().ok()
+                        }
+                    };
                 }
             })?;
         Ok(Self {

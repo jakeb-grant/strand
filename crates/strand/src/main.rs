@@ -149,8 +149,10 @@ type Tool = fn(&[String], Style) -> (String, bool);
 fn main() -> ExitCode {
     // A text worker that goes quiet after shaping keeps the allocator's
     // freed pages, which only its own thread can return: it trims as its
-    // queue drains (decisions.md, wave4-exitMemory).
+    // queue drains (decisions.md, wave4-exitMemory); so does the image
+    // decoder.
     strand_text::set_idle_hook(run::trim);
+    strand_render::image::set_idle_hook(run::trim);
     let args: Vec<String> = std::env::args().skip(1).collect();
     let tool: Option<Tool> = match args.first().map(String::as_str) {
         Some("check") => Some(check::run),

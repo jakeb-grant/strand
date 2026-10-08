@@ -1095,6 +1095,15 @@ const TRIM_AFTER: Duration = Duration::from_millis(500);
 /// fifth wake.
 const TRIM_EVERY: Duration = Duration::from_secs(5);
 
+/// How long after an inline trim (see [`TRIM_EVERY`]) the burst it
+/// began trims inline again at the end of each wake. A tick's first wake
+/// on the main thread only applies the diff; the paint comes a wake or
+/// three later (the frame callbacks), and what it freed stayed resident
+/// until the next trim: 1-2 MB of the design bar's PSS on a loaded
+/// machine (`docs/decisions.md`, wave4-exitMemory). Each wake of the
+/// tail pays a collect, none pays a wakeup.
+const TRIM_TAIL: Duration = Duration::from_millis(250);
+
 /// Returns the memory the allocator holds freed to the system. mimalloc
 /// purges a freed span only on a later allocation once its delay (1 s)
 /// has passed, so a shell that goes quiet after a burst (boot, a reload,
@@ -1134,6 +1143,8 @@ struct Trimmer {
     at: Option<Instant>,
     /// When this thread last trimmed.
     last: Option<Instant>,
+    /// Until when the burst an inline trim began trims inline again.
+    tail: Option<Instant>,
 }
 
 impl Trimmer {
@@ -1172,14 +1183,21 @@ impl Trimmer {
     }
 
     /// The end of a wake at `now`, before the loop sleeps: whether to
-    /// trim inline, unarmed and [`TRIM_EVERY`] since the last trim.
+    /// trim inline, unarmed and [`TRIM_EVERY`] since the last trim, or
+    /// within [`TRIM_TAIL`] of the inline trim that began this burst.
     fn settles(&mut self, now: Instant) -> bool {
-        let due = self.at.is_none()
-            && self
-                .last
-                .is_none_or(|l| now.saturating_duration_since(l) >= TRIM_EVERY);
+        if self.at.is_some() {
+            return false;
+        }
+        if self.tail.is_some_and(|t| now < t) {
+            return true;
+        }
+        let due = self
+            .last
+            .is_none_or(|l| now.saturating_duration_since(l) >= TRIM_EVERY);
         if due {
             self.last = Some(now);
+            self.tail = Some(now + TRIM_TAIL);
         }
         due
     }
@@ -1859,6 +1877,33 @@ pub(crate) mod tests {
         t.last = Some(t0 + TRIM_AFTER);
         assert!(!t.settles(t0 + Duration::from_secs(1)));
         assert!(t.settles(t0 + TRIM_AFTER + TRIM_EVERY));
+    }
+
+    /// A tick's burst: its first wake trims inline, and so does every
+    /// wake of the burst's tail (the paint on the frame callbacks comes
+    /// after the diff's wake), within [`TRIM_TAIL`]; a wake after the
+    /// tail waits out [`TRIM_EVERY`] again.
+    #[test]
+    fn the_tail_of_an_inline_trimmed_burst_trims_too() {
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let mut t = Trimmer::default();
+        assert!(t.settles(t0), "the tick's first wake");
+        assert!(t.settles(t0 + ms(7)), "the first output's frame");
+        assert!(t.settles(t0 + ms(7)), "the second output's frame");
+        assert!(t.settles(t0 + ms(16)), "a buffer release");
+        assert!(!t.settles(t0 + TRIM_TAIL), "past the tail");
+        assert!(!t.settles(t0 + Duration::from_secs(1)), "a poll");
+        let next = t0 + TRIM_EVERY;
+        assert!(t.settles(next), "the next burst after five seconds");
+        assert!(t.settles(next + ms(16)), "and its tail");
+        // An armed trim's tail is the armed trim itself.
+        let mut t = Trimmer::default();
+        t.arm(t0);
+        assert!(!t.settles(t0 + ms(7)));
+        t.run(t0 + TRIM_AFTER);
+        assert!(!t.settles(t0 + TRIM_AFTER), "trimmed already");
+        assert!(!t.settles(t0 + TRIM_AFTER + ms(16)));
     }
 
     /// Created and removed nodes and swapped tokens are structural; a

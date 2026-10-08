@@ -1257,8 +1257,10 @@ fn the_design_bar_on_the_real_services_keeps_the_budget() {
     }
     // The minute tick: design.md's "wakes once a minute" is one burst
     // (the clock's timer, its frame), with no second wake after it (the
-    // allocator's trim arms only after a burst that grew the heap, and
-    // comes 500 ms after the burst's last wake: a gap over 400 ms).
+    // allocator's delayed trim arms only on a structural diff,
+    // `run::structural`, which a tick's prop set is not, and comes 500 ms
+    // after the burst's last wake: a gap over 400 ms; the tick trims
+    // inline, inside its own wakes).
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
