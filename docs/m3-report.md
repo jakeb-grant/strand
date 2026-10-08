@@ -61,7 +61,7 @@ The job uploads its screenshots as the `compositor-matrix` artifact.
 | [37653086662](https://github.com/jakeb-grant/strand/actions/runs/37653086662) | wave4/exit-ci | 1.12 pass | 26.04 pass | 0.56.2 pass |
 | [37653750783](https://github.com/jakeb-grant/strand/actions/runs/37653750783) | wave4/exit-ci | pass | pass | pass |
 | [37655626535, job 112910256243](https://github.com/jakeb-grant/strand/actions/runs/37655626535/job/112910256243) | wave4/exit-ci, named workspace and click required | pass | pass | pass |
-| [37752116747, job 113227617119](https://github.com/jakeb-grant/strand/actions/runs/37752116747/job/113227617119) | wave4/core `e132d8d` (this merge) | pass | 26.04 pass | 0.56.2 pass |
+| [37752116747, job 113227617119](https://github.com/jakeb-grant/strand/actions/runs/37752116747/job/113227617119) | wave4/core `e132d8d` (this merge; the whole run green, `check` included) | pass | 26.04 pass | 0.56.2 pass |
 
 The job tracks the compositors' current Arch packages on purpose
 (decisions.md wave4-exit-ci) and prints `pacman -Q`. Found on the way:
