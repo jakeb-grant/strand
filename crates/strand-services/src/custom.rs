@@ -858,17 +858,35 @@ impl FileWatch {
     /// Watch the deepest existing directory on the way to the file (its
     /// own, once it exists), and the file itself when that is reached.
     fn arm(&mut self) -> std::io::Result<()> {
+        // Watches this turn may leave behind: let go at the end, on every
+        // way out, unless they are kept (the same inode answers the same
+        // wd, so a directory watched before as the way down may be an
+        // ancestor now, and the other way round).
+        let mut stale = std::mem::take(&mut self.ancestors);
+        let placed = self.place(&mut stale);
+        if let Ok(watched) = &placed {
+            self.watch_ancestors(watched);
+        }
+        for wd in stale {
+            if wd != self.dir_wd && !self.ancestors.contains(&wd) {
+                let _ = rustix::fs::inotify::remove_watch(self.fd.get_ref(), wd);
+            }
+        }
+        placed.map(|_| ())
+    }
+
+    /// Places the directory watch of [`FileWatch::arm`]: the directory
+    /// watched, or the error that ends the watch. A directory removed
+    /// between its check and its watch (`ENOENT`, `ENOTDIR`) is climbed
+    /// past on the next turn.
+    fn place(&mut self, stale: &mut Vec<i32>) -> std::io::Result<PathBuf> {
         use rustix::fs::inotify::{self, WatchFlags};
         use std::os::unix::ffi::OsStrExt;
         let own = dir_of(&self.path).to_path_buf();
-        // Watches this turn may leave behind: let go at the end unless
-        // they are kept (the same inode answers the same wd, so a
-        // directory watched before as the way down may be an ancestor
-        // now, and the other way round).
-        let mut stale = std::mem::take(&mut self.ancestors);
-        let mut watched = PathBuf::new();
-        // A directory created while the watch was being placed is
-        // descended into at once (bounded by the path's depth).
+        let mut watched = None;
+        // A directory created (or removed) while the watch was being
+        // placed is descended into (climbed past) at once, bounded by
+        // the path's depth.
         for _ in 0..=self.path.components().count() {
             let mut dir = own.as_path();
             let mut name = self
@@ -893,7 +911,9 @@ impl FileWatch {
             // The directory already watched keeps its watch (`add_watch`
             // answers the same wd for the same inode): removing and
             // re-adding it would queue an `IN_IGNORED` per turn.
-            let wd = inotify::add_watch(
+            #[cfg(test)]
+            tests::before_watch(dir);
+            let wd = match inotify::add_watch(
                 self.fd.get_ref(),
                 dir,
                 WatchFlags::CLOSE_WRITE
@@ -903,14 +923,19 @@ impl FileWatch {
                     | WatchFlags::DELETE
                     | WatchFlags::DELETE_SELF
                     | WatchFlags::MOVE_SELF,
-            )?;
+            ) {
+                Ok(wd) => wd,
+                // Removed since its check: climb again.
+                Err(rustix::io::Errno::NOENT | rustix::io::Errno::NOTDIR) => continue,
+                Err(e) => return Err(e.into()),
+            };
             if self.dir_wd >= 0 && self.dir_wd != wd {
                 stale.push(self.dir_wd);
             }
             self.dir_wd = wd;
             self.name = name;
             self.complete = complete;
-            watched = dir.to_path_buf();
+            watched = Some(dir.to_path_buf());
             if complete {
                 self.watch_inode();
                 break;
@@ -925,13 +950,7 @@ impl FileWatch {
                 break;
             }
         }
-        self.watch_ancestors(&watched);
-        for wd in stale {
-            if wd != self.dir_wd && !self.ancestors.contains(&wd) {
-                let _ = inotify::remove_watch(self.fd.get_ref(), wd);
-            }
-        }
-        Ok(())
+        watched.ok_or_else(|| std::io::Error::other("the directories kept going while watched"))
     }
 
     /// Watch each ancestor of the watched directory for its own move or
@@ -1712,6 +1731,83 @@ mod tests {
             assert!((1..=3).contains(&reads), "{reads} reads for the removal");
             assert!(!w.complete);
             assert_eq!(drain_for(&mut w, 200), 0, "then nothing");
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    type Hook = Box<dyn FnMut(&Path)>;
+
+    thread_local! {
+        /// Runs before each directory watch is placed (this thread's
+        /// watches only): a test's way into the check-then-watch race.
+        static BEFORE_WATCH: std::cell::RefCell<Option<Hook>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    pub(super) fn before_watch(dir: &Path) {
+        BEFORE_WATCH.with(|h| {
+            if let Some(hook) = h.borrow_mut().as_mut() {
+                hook(dir);
+            }
+        });
+    }
+
+    /// The inotify watches the watch's descriptor holds, from its fdinfo.
+    fn watches(w: &FileWatch) -> usize {
+        use std::os::fd::AsRawFd;
+        let fd = w.fd.get_ref().as_raw_fd();
+        std::fs::read_to_string(format!("/proc/self/fdinfo/{fd}"))
+            .unwrap()
+            .lines()
+            .filter(|l| l.starts_with("inotify wd:"))
+            .count()
+    }
+
+    /// The watches the watch means to hold: its directory, the
+    /// directory's ancestors and the file's inode.
+    fn meant(w: &FileWatch) -> usize {
+        1 + w.ancestors.len() + usize::from(w.file_wd >= 0)
+    }
+
+    /// A directory removed between its check and its watch (`ENOENT`
+    /// from `add_watch`) is climbed past, on the first arm and on a
+    /// re-arm, and no watch of the turn is left behind; the file is then
+    /// waited for as if the directory had never been there.
+    #[test]
+    fn a_directory_removed_while_it_is_watched_is_climbed_past() {
+        let dir = std::env::temp_dir().join(format!("strand-custom-race-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("a/b")).unwrap();
+        let file = dir.join("a/b/f.json");
+        // Removes `a/b` (then `a`) just before its watch, once each.
+        let racing = |victims: Vec<PathBuf>| {
+            let mut victims = victims;
+            BEFORE_WATCH.with(|h| {
+                *h.borrow_mut() = Some(Box::new(move |d: &Path| {
+                    if let Some(i) = victims.iter().position(|v| v == d) {
+                        std::fs::remove_dir_all(victims.remove(i)).unwrap();
+                    }
+                }))
+            });
+        };
+        block_on(async {
+            racing(vec![dir.join("a/b")]);
+            let mut w = watch_file(&file).expect("a removed directory is climbed past");
+            assert!(!w.complete);
+            assert_eq!(watches(&w), meant(&w), "no watch left behind");
+            // A re-arm (a/b made again, then raced away with a) climbs
+            // past both.
+            racing(vec![dir.join("a/b"), dir.join("a")]);
+            std::fs::create_dir(dir.join("a/b")).unwrap();
+            drain_for(&mut w, 300);
+            assert!(!w.complete);
+            assert_eq!(watches(&w), meant(&w), "no watch left behind");
+            BEFORE_WATCH.with(|h| *h.borrow_mut() = None);
+            std::fs::create_dir_all(dir.join("a/b")).unwrap();
+            std::fs::write(&file, "{}").unwrap();
+            assert!(drain_for(&mut w, 300) >= 1, "the file is seen");
+            assert!(w.complete);
+            assert_eq!(watches(&w), meant(&w));
         });
         let _ = std::fs::remove_dir_all(&dir);
     }
