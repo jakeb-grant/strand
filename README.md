@@ -32,9 +32,10 @@ services without Rust. A service starts on its first reader and stops
 5 s after the last one leaves; nothing polls while nothing changes.
 design.md's bar runs on Hyprland, niri and sway (CI's `compositors`
 job), takes 100 live reloads without reconnecting to anything, and on
-two 2560×1440 monitors with the real services uses about 32 MB (target
-34, ceiling 38); the full shell with the launcher, two toasts and the
-OSD up 45–58 MB with 12 to 172 desktop entries (design.md: 59–64). `STRAND_MOCK=desktop` still
+two 2560×1440 monitors with the real services uses about 31–32 MiB
+(target 34, ceiling 38); the full shell with the launcher, two toasts and
+the OSD up 44–57 MiB with 12 to 172 desktop entries (design.md: 59–64;
+figures in docs/m3-report.md). `STRAND_MOCK=desktop` still
 fills everything with a mock desktop for tests.
 
 M2's exit gates are met too (see
