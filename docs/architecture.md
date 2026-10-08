@@ -1736,7 +1736,11 @@ scale }` → `TextLayout { key, size, glyph runs }`. `TextStyle` holds the
 font, line height, alignment, `ellipsis` (start, middle, end), `max_lines`
 and `spans` (byte ranges with weight, italic, underline or colour: marks,
 markup); a glyph run's `color` is its span's, else the node's, and an
-underlined span's run carries its `underline` rect (physical pixels). Glyph atlases are keyed by
+underlined span's run carries its `underline` rect (physical pixels). A
+weight picks the family's face by CSS font matching, and a face is
+emboldened only for a weight of 600 or more on a face lighter than 600
+(CSS `font-synthesis-weight`): a 500 on a family with only 400 and 700
+faces draws the 400 face. Glyph atlases are keyed by
 scale and LRU-bounded. Render draws the last delivered layout.
 Each `TextLayout` also carries the `AtlasUpload`s (alpha pixels) for glyphs
 rasterised while producing it, which render applies to its mirror of the

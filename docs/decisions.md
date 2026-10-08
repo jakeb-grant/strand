@@ -7197,6 +7197,36 @@ of schema texts in `strand-services-schema` equal to the stores in
 **2026-10-08 · wave4-core (carried item 5): the bar's 34 MB gate fails again.** M2's carried item asks for the two-monitor bar on the real services at ≤ 34 MB PSS *under a CI gate*; since commit 3570d56 the bar's 34 MB was only a target (a CI `::warning`) and the build failed at a 38 MB ceiling, so a bar grown to 36 MB passed CI. The owner's direction behind that change (wave4-exitMemory, review r3) was "be reasonable… I don't want to hold myself to an untenable standard"; the 34/38 numbers were the architect's and remain unconfirmed. The 38 MB ceiling was justified by margin: CI read the bar at 31.9–34.9 MB before the allocator trims. Since the trims the bar has measured 31.2–32.4 MB here and 32.6–32.7 MB in every CI run (runs 37721528809, 37733561676, 37749789401), about 2 MB under 34, so a 34 MB gate is no longer untenable, and it is the reading that removes a concept (one number, no target/ceiling pair) and the one design.md had before. So the bar is gated at 34 MiB (34,816 kB) in release again (the real-services bar measured 32,554 kB here with this change): `crates/strand/tests/budgets.rs` (`bar_limit`, `bar_over_budget`; `the_bar_gate_fails_above_34_mib_in_release` runs without a compositor in every build and fails if the limit is loosened), `demo.rs` and `services.rs` (their bars measured 15.3 / 29.7 MB and 23.7 MB in release here with this change); design.md's budget paragraph, risks row and testing table say so. The full shell keeps the 64 MB target (warns) and 70 MB ceiling (fails), still awaiting the owner. Known risk, recorded in wave4-exitMemory ("the figures are read by component"): about 17 MB of the figure is file-backed and follows the page cache; with the whole binary resident the bar could read about 35.4 MB. That has not been seen in any run; if a runner shows it, the fix is in the binary's resident size (anon + shmem is 14.3 MB), or the owner restores a ceiling by reverting this paragraph's commit.
 
 
+**2026-10-08 · wave4-core (carried item 6): faux bold reviewed and
+kept.** wave3-theme (review 3) changed strand-text so a face is
+emboldened only for a request of 600 or more on a face lighter than 600
+(`crates/strand-text/src/engine.rs`, where the glyphs are scaled), and
+left it "for its owner's sign-off". Reviewed in wave 4 against design.md
+and strand-text's contract: design.md names weights, not faces (`$font.ui`
+is "Inter" 500, `$font.title` 600, `weight: 600` labels) and says nothing
+of synthesis, and strand-text's contract (architecture.md) carries a
+weight per text and per span without saying how it meets a family's
+faces. CSS `font-synthesis-weight` is the reading that adds no concept:
+weights already mean CSS weights, CSS font matching already picks the
+face (fontique), and CSS synthesises bold only for bold requests. The
+alternative, fontique's "embolden whenever the request is heavier than
+the face", draws every `$font.ui` label faux bold wherever Inter is
+missing (the common case: DejaVu Sans and Liberation Sans have only 400
+and 700), which is not what a medium weight looks like with any font.
+Kept as it is; this entry is the review the earlier one asked for, and
+architecture.md's `strand-text` section now states the rule. The proof
+the earlier entry lacked, against pixels: `crates/strand-render/tests/weights.rs`
+renders labels at 400, 500, 600 and 700 on the vendored Liberation Sans
+regular face alone and on its regular and bold faces
+(`assets/LiberationSans-Bold.ttf` vendored beside the regular one,
+`strand_text::test_bold_font_path`) against the PNGs
+`refs/weights_regular.png` and `refs/weights_regular_bold.png`, and holds
+the 500 label's pixels equal to the 400 one's, 600 and 700 on the
+two-face family equal to each other and to the real bold face rather
+than an emboldened regular, and 600/700 on the regular-only family
+emboldened. With fontique's request restored, both tests fail on their
+PNG (checked by reverting the condition).
+
 ## wave4-a2
 
 **2026-10-07 · wave4-a2: the D-Bus services are real; which they are.**

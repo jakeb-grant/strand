@@ -243,5 +243,12 @@ pub fn test_font_path() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/LiberationSans-Regular.ttf")
 }
 
+/// Path of the vendored bold face of the test family (Liberation Sans
+/// Bold, SIL OFL 1.1, same release as [`test_font_path`]). Tests load both
+/// to stand for a family with only a 400 and a 700 face.
+pub fn test_bold_font_path() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/LiberationSans-Bold.ttf")
+}
+
 /// Family name of [`test_font_path`].
 pub const TEST_FONT_FAMILY: &str = "Liberation Sans";

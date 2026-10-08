@@ -373,6 +373,12 @@ Every M3 tier has a CI step (`.github/workflows/ci.yml`):
   step added: an `image` or `icon` sized in absolute lengths defaults to
   `shrink: 0` (a percentage size still gives way); decisions.md
   wave3-pixels `shrink` note and wave4-exitReport reviews r1 and r2.
+- Closed since: wave 3's strand-text change that stopped faux bold at
+  weight 500 (CSS `font-synthesis-weight`) was left for its owner's
+  sign-off; it is reviewed and kept (decisions.md wave4-core, carried
+  item 6), stated in architecture.md's `strand-text` section, and proved
+  on pixels by `crates/strand-render/tests/weights.rs` (PNG references
+  on a regular-only and a regular-and-bold family).
 - Fixed since: the `from file` watch race CI run 37754849203 hit once
   (`services::tests::custom_services::a_file_service_waits_for_its_directory`):
   a directory removed between `FileWatch::arm`'s `is_dir()` check and
