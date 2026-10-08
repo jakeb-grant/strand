@@ -1,7 +1,7 @@
 //! M3 exit, "memory verified", and the idle budget on the real services
-//! (design.md, "Memory budget" and "Testing": the build fails above 34 MB
-//! for the two-monitor bar; a running service with nothing changing wakes
-//! nothing).
+//! (design.md, "Memory budget" and "Testing": the two-monitor bar aims at
+//! 34 MB, a warning above it, and the build fails above 38 MB; a running
+//! service with nothing changing wakes nothing).
 //!
 //! `strand run` without `STRAND_MOCK` on a headless sway with two
 //! 2560×1440 outputs (scale 1 and 1.25), beside python-dbusmock's UPower
@@ -18,7 +18,8 @@
 //!   on the machine's icon themes (`/usr/share`; CI installs Adwaita):
 //!   once every value is on screen, its volume, network and battery
 //!   icons drawn, and the boot work is done, PSS stays
-//!   within the 38 MB ceiling, aiming at 34 (release; a debug build has its own ceiling),
+//!   within the 38 MB ceiling (fails above it; above the 34 MB target
+//!   it warns) in release (a debug build has its own ceiling),
 //!   no page of it is a transparent huge page, over 10 s between two
 //!   minute ticks no thread of strand's wakes (or comes or goes) and no
 //!   frame is drawn, and the next minute tick wakes it in one burst.
@@ -31,8 +32,9 @@
 //!   (the test's apps' icons found on screen), two notifications from an
 //!   app as toasts (on screen), the OSD up too (a `wpctl` volume change;
 //!   on screen), then the launcher closed. The larger of the settled
-//!   launcher-and-toasts figure and the OSD's is held to the estimate's
-//!   top, 64 MB, in release.
+//!   launcher-and-toasts figure and the OSD's aims at the estimate's top,
+//!   64 MB (a warning above it), and fails above the 70 MB ceiling, in
+//!   release.
 //! - `the_full_shell_with_a_desktop_of_apps_is_measured`, the same with
 //!   160 more apps (a desktop's worth), half with their own PNG icons of
 //!   mixed sizes, half naming icons of the machine's themes.
@@ -1118,8 +1120,8 @@ fn warn_over_target(what: &str, pss: u64, target: u64) {
     }
 }
 
-/// The two-monitor design bar on the real services: within the 34 MB
-/// gate, no huge page, and 10 s between minute ticks without a wakeup or
+/// The two-monitor design bar on the real services: within the 38 MB
+/// ceiling (a warning above the 34 MB target), no huge page, and 10 s between minute ticks without a wakeup or
 /// a frame.
 #[test]
 fn the_design_bar_on_the_real_services_keeps_the_budget() {

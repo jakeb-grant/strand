@@ -1,11 +1,12 @@
 //! `strand run --demo` end to end on a headless sway: two 2560x1440 outputs
-//! (the second at scale 1.25) within the 34 MB PSS budget, a bar on each
-//! with its clock centred, no wakeups while idle, then a third output of
-//! another width at scale 1 (hotplugged) whose bar is aligned to its own
-//! width. Skipped, loudly, when sway or grim is not installed.
-//! The 38 MB ceiling (34 MB target, warned) is asserted when the test runs in release (`cargo test
-//! --release -p strand --test demo`); a debug run is held to a looser
-//! debug ceiling. `scripts/m0-exit.sh` measures the full M0 gates on a
+//! (the second at scale 1.25) within the PSS budget (34 MB target, 38 MB
+//! ceiling), a bar on each with its clock centred, no wakeups while idle,
+//! then a third output of another width at scale 1 (hotplugged) whose bar
+//! is aligned to its own width. Skipped, loudly, when sway or grim is not
+//! installed. The 38 MB ceiling (34 MB target, warned) is asserted when the
+//! test runs in release (`cargo test --release -p strand --test demo`); a
+//! debug run is held to a looser debug ceiling. `scripts/m0-exit.sh`
+//! measures the full M0 gates on a
 //! release build (a whole minute, the tick's damage).
 
 use std::os::unix::fs::PermissionsExt;
@@ -539,8 +540,8 @@ fn demo_bar_on_two_outputs_then_idle() {
 
 /// The M0 budget on design.md's own bar (theme.strand and bar.strand,
 /// unchanged, on the mock desktop with the real clock), not the M0 demo:
-/// two 2560x1440 outputs at 1.0 and 1.25 within the 34 MB PSS gate (in a
-/// release run; the debug ceiling otherwise); once boot work is done, no
+/// two 2560x1440 outputs at 1.0 and 1.25 within the PSS budget (34 MB
+/// target warned, 38 MB ceiling fails; in a release run; the debug ceiling otherwise); once boot work is done, no
 /// thread waking from then (by :45) to :57 of the minute (no idle-cache
 /// or other timer of its own: the next wake is the minute tick); and the
 /// tick itself repainting at most 2,000 px² over both outputs. Several

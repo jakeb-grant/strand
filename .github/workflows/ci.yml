@@ -111,7 +111,7 @@ jobs:
       # the logs and aborts after 5 min, this bound backs it.
       - run: cargo test -p strand --test reloads -- --nocapture
         timeout-minutes: 10
-      # The 34 MB PSS gate is checked on a release build (design.md, "Testing": budgets).
+      # The bar's PSS budget (34 MB target warns, 38 MB ceiling fails) is checked on a release build (design.md, "Testing": budgets).
       - run: cargo test --release -p strand --test demo
       # The same gate and the idle budget on the real services (private
       # bus, mock portal): `the_real_services_sleep_when_nothing_changes`.
@@ -121,10 +121,11 @@ jobs:
       # tray and notifications on the real backends (python-dbusmock's
       # UPower, NetworkManager and logind and a mock portal on a private
       # bus, the shell's own notifications server and tray host, sway's
-      # IPC, a private PipeWire) within the 34 MB PSS gate with no huge
+      # IPC, a private PipeWire) within the PSS budget (34 MB target
+      # warns, 38 MB ceiling fails) with no huge
       # page, then 10 s without a wakeup or a frame; and the full shell
       # (launcher open at 2x, two toasts, the OSD) printed against
-      # design.md's 59-64 MB and held to 64.
+      # design.md's 59-64 MB (64 MB target warns, 70 MB ceiling fails).
       - run: cargo test --release -p strand --test budgets -- --nocapture --test-threads=1
       # M2 exit: design.md's four example shells and theme.strand, byte
       # for byte, in `strand run` on headless sway with two outputs
