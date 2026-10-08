@@ -122,9 +122,12 @@ wakes with every tick and no trim reached, takes a hook:
 `run::trim`, runs on each worker's thread when its queue and channel
 drain after work, before it blocks (inside the burst, no wakeup of its
 own), at most once per 5 s plus that burst's 250 ms tail, as the main
-thread's inline trim, which also waits out an animation's frames;
-`strand_render::image::set_idle_hook(fn())` does the same for the
-image decode worker. The memory budget also rests on the workspace's
+thread's inline trim, which also waits out an animation's frames
+(`strand_render::Renderer::in_motion()`, true while any surface has a
+spring or crossfade unsettled: a moving wake never trims inline);
+`strand_render::image::set_idle_hook(fn())` runs the same hook on the
+image decode worker as its queue drains after a decode, without the
+5 s limit (decodes are rare: a theme or launcher change, not a tick). The memory budget also rests on the workspace's
 release profile: the root `Cargo.toml`'s `[profile.release.package]`
 opt-levels build event-rate code for size, and neither `cargo install`
 from crates.io nor a packager's own profile carries them, so packages
