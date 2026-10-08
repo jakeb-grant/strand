@@ -858,6 +858,45 @@ impl Shot {
             .count()
     }
 
+    /// The smallest box (`x0, y0, x1, y1`, exclusive ends) in `xs` × `ys`
+    /// holding every pixel that differs from `other`'s.
+    fn changed_box(
+        &self,
+        other: &Shot,
+        xs: std::ops::Range<usize>,
+        ys: std::ops::Range<usize>,
+    ) -> Option<(usize, usize, usize, usize)> {
+        let mut b: Option<(usize, usize, usize, usize)> = None;
+        for y in ys.start..ys.end.min(self.h) {
+            for x in xs.start..xs.end.min(self.w) {
+                if self.px(x, y) != other.px(x, y) {
+                    b = Some(match b {
+                        None => (x, y, x + 1, y + 1),
+                        Some((x0, y0, x1, y1)) => {
+                            (x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1))
+                        }
+                    });
+                }
+            }
+        }
+        b
+    }
+
+    /// Saves `x0..x1` × `y0..y1` (grown by `pad`, clamped to the shot) as
+    /// a PNG.
+    fn save_png(&self, (x0, y0, x1, y1): (usize, usize, usize, usize), pad: usize, path: &Path) {
+        let (x0, y0) = (x0.saturating_sub(pad), y0.saturating_sub(pad));
+        let (x1, y1) = ((x1 + pad).min(self.w), (y1 + pad).min(self.h));
+        let mut img = image::RgbImage::new((x1 - x0) as u32, (y1 - y0) as u32);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                img.put_pixel((x - x0) as u32, (y - y0) as u32, image::Rgb(self.px(x, y)));
+            }
+        }
+        img.save(path)
+            .unwrap_or_else(|e| panic!("saving {}: {e}", path.display()));
+    }
+
     /// The pixels in the top `rows` that are `color`, within 8 a channel.
     fn count(&self, rows: usize, color: [u8; 3]) -> usize {
         self.rgb
@@ -1324,7 +1363,23 @@ fn the_full_shell_on_the_real_services_is_measured() {
             marked: 3,
             themed: 0,
         },
+        None,
     );
+}
+
+/// docs/images/m3-*.png (`scripts/m3-shots.sh`): the full shell on the
+/// real services with only the machine's apps, every check of
+/// `full_shell` made, and HEADLESS-1 saved at each step into
+/// `$STRAND_SHOTS_DIR`: the bar, the launcher, the toasts, the OSD and
+/// the whole output with all four up.
+#[test]
+#[ignore = "writes the M3 report's screenshots: scripts/m3-shots.sh"]
+fn the_m3_screenshots() {
+    let dir = PathBuf::from(
+        std::env::var_os("STRAND_SHOTS_DIR").expect("STRAND_SHOTS_DIR names where the shots go"),
+    );
+    std::fs::create_dir_all(&dir).unwrap();
+    full_shell("shots", Apps::default(), Some(&dir));
 }
 
 /// The same with a desktop's worth of apps: 160 more, half with their
@@ -1338,6 +1393,7 @@ fn the_full_shell_with_a_desktop_of_apps_is_measured() {
             marked: 80,
             themed: 80,
         },
+        None,
     );
 }
 
@@ -1348,7 +1404,7 @@ fn the_full_shell_with_a_desktop_of_apps_is_measured() {
 /// shell has settled (a whole second without a switch or a frame, the
 /// allocator's trim done); the OSD is up 1.2 s, so its figure is read
 /// 0.7 s after its surface draws.
-fn full_shell(name: &str, apps: Apps) {
+fn full_shell(name: &str, apps: Apps, shots: Option<&Path>) {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let fixture = |name: &str| -> (String, String) {
         let text = match name {
@@ -1407,6 +1463,19 @@ fn full_shell(name: &str, apps: Apps) {
             .unwrap_or_else(|| panic!("{what}: no screenshot of HEADLESS-1"))
     };
     let before_launcher = shot(&desk, "the bars");
+    // The bar's band on HEADLESS-1 (36 px and its 8 px margin, at 2x).
+    let keep = |s: &Shot, area: Option<(usize, usize, usize, usize)>, file: &str| {
+        if let Some(dir) = shots {
+            let area = area.unwrap_or_else(|| panic!("{file}: nothing changed to keep"));
+            s.save_png(area, 24, &dir.join(file));
+        }
+    };
+    let bar_rows = 104;
+    keep(
+        &before_launcher,
+        Some((0, 0, before_launcher.w, bar_rows - 24)),
+        "m3-bar.png",
+    );
     // The launcher, on the focused output (HEADLESS-1, scale 2), listing
     // the apps: the marked ones first (by name), one 64 px magenta icon
     // (32 at 2x) a row.
@@ -1428,6 +1497,11 @@ fn full_shell(name: &str, apps: Apps) {
         0,
         "marked icons before the launcher opened"
     );
+    keep(
+        &open,
+        open.changed_box(&before_launcher, 0..open.w, bar_rows..open.h),
+        "m3-launcher.png",
+    );
     // Two toasts from an app, top right of HEADLESS-1 (380 wide at 2x,
     // under the bar).
     let before = desk.surfaces();
@@ -1443,6 +1517,11 @@ fn full_shell(name: &str, apps: Apps) {
         top_right >= 40_000,
         "the toasts changed {top_right} pixels top right of HEADLESS-1\n{}",
         desk.log_text()
+    );
+    keep(
+        &toasted,
+        toasted.changed_box(&open, w - 780..w, bar_rows..600),
+        "m3-toasts.png",
     );
     // The OSD: volume changes made outside the shell, one every 400 ms
     // until its surface draws (each keeps it up 1.2 s longer; a slow
@@ -1493,6 +1572,17 @@ fn full_shell(name: &str, apps: Apps) {
         let shot = shot(&desk, "the OSD");
         let bottom = shot.changed(&toasted, w / 2 - 300..w / 2 + 300, h - 360..h - 160);
         if bottom >= 15_000 {
+            if shots.is_some() {
+                // Its enter pose done, then the OSD and the whole output.
+                std::thread::sleep(Duration::from_millis(300));
+                let up = desk.shot("HEADLESS-1").expect("a screenshot of the OSD");
+                keep(
+                    &up,
+                    up.changed_box(&toasted, w / 2 - 300..w / 2 + 300, h - 360..h - 160),
+                    "m3-osd.png",
+                );
+                keep(&up, Some((0, 0, up.w, up.h)), "m3-shell.png");
+            }
             break;
         }
         desk.alive("the OSD on screen");

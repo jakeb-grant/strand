@@ -19,7 +19,25 @@ bar Top {
 That file is already on every monitor, reactive, themed and animated. It wakes
 once a minute.
 
-**Status: v0.1.** M2's exit gates are met (see
+**Status: v0.1, M3 complete.** M3's exit gates are met (see
+[`docs/m3-report.md`](docs/m3-report.md)): every builtin service is
+real. The portal, cpu, memory, battery (UPower), brightness (logind),
+network (NetworkManager), Bluetooth (BlueZ), the tray (SNI + DBusMenu),
+media (MPRIS) and the shell's own notification server run on D-Bus and
+procfs, audio on PipeWire, workspaces, windows and `wm` on the
+compositor (our own Hyprland, niri and sway IPC adapters,
+`ext-workspace-v1`, `ext-foreign-toplevel-list`), apps on the desktop
+entries and icon themes, and `from dbus | file | listen | poll` declare
+services without Rust. A service starts on its first reader and stops
+5 s after the last one leaves; nothing polls while nothing changes.
+design.md's bar runs on Hyprland, niri and sway (CI's `compositors`
+job), takes 100 live reloads without reconnecting to anything, and on
+two 2560×1440 monitors with the real services uses about 32 MB (target
+34, ceiling 38); the full shell with the launcher, two toasts and the
+OSD up about 47–54 MB (design.md: 59–64). `STRAND_MOCK=desktop` still
+fills everything with a mock desktop for tests.
+
+M2's exit gates are met too (see
 [`docs/m2-report.md`](docs/m2-report.md)): the four example shells of
 the design (a bar with a calendar popup, a fuzzy launcher, a
 notification stack and a volume/brightness OSD) and its `theme.strand`
@@ -35,11 +53,7 @@ about 2 ms of work with declared text/background pairs kept above 3:1,
 while muted and faint text is not guarded mid-swap). They are tested
 on a headless sway with two outputs, driven by clicks, the wheel and
 keys against mock services, with screenshots compared to references.
-design.md's bar on two 2560×1440 monitors uses about 26 MB, does no work
-between minute ticks and repaints about 230–750 px² per tick (about
-2,700 px² on the two ticks after midnight, when the centred clock moves:
-a documented exception, within design.md's 60×20 px per output); the full
-shell with the launcher open about 31 MB. Left for later milestones: the
+Left for later milestones: the
 rich `tooltip { … }` element (the checker warns), clipboard in `input`,
 the directional `pages` transitions and mounting only visible list rows
 (M4), real background blur (a tint until the compositor blurs), and
@@ -54,17 +68,10 @@ frame). `strand check` reports did-you-mean diagnostics, `strand fmt`
 formats, `strand set` writes an exported state or a settings field,
 `strand watch` / `strand reload` talk to a running shell, and
 `strand-dev lsp` serves diagnostics, completion, hover,
-go-to-definition, rename and quick fixes. M3 (in progress) makes the
-system services real: the portal, cpu, memory, battery, brightness,
-network, Bluetooth, tray, media and the notification server run on
-D-Bus and procfs, audio on PipeWire, workspaces and windows on the
-compositor (Hyprland, niri and sway IPC, `ext-workspace-v1`,
-`ext-foreign-toplevel-list`); apps are pending, and
-`STRAND_MOCK=desktop` fills everything with a mock desktop. Still open from
-M1: the tree-sitter grammar, the render side of `keyframes`, `shader`
-and `canvas`, a dedicated format-on-save overlay check, the loader's
-`.wgsl` and wallpaper module paths and the portal clause of the latency
-benchmark. Progress is
+go-to-definition, rename and quick fixes. Still open from M1: the
+tree-sitter grammar, the render side of `keyframes`, `shader` and
+`canvas`, a dedicated format-on-save overlay check and the loader's
+`.wgsl` and wallpaper module paths. Progress is
 tracked in [`docs/features.md`](docs/features.md);
 [`docs/design.md`](docs/design.md) has the full design.
 
@@ -80,6 +87,10 @@ Each crate is one box in the runtime architecture:
 | `strand-compiler` | Parser, type checker, bytecode, reconciler; shared by runtime, `strand check` and LSP | M1 |
 | `strand-core` | Reactive graph on the logic thread: signals, state, handlers, timers | M0 bench, M1 |
 | `strand-services` | Lazy, refcounted services over zbus, PipeWire and compositor IPC | M3 |
+| `strand-services-macros` | `#[service]`, `#[derive(Store)]`, `#[derive(Data)]`, `#[derive(Call)]` | M3 |
+| `strand-services-schema` | The builtin services' schema texts, for the checker and LSP without the service runtime | M3 |
+| `strand-icons` | freedesktop icon theme lookup shared by the renderer and the apps service | M3 |
+| `strand-introspect` | D-Bus introspection that checks no-code `from dbus` services | M3 |
 | `strand-text` | parley shaping and per-scale glyph atlases on a worker thread | M0 |
 | `strand-render` | Springs, tokens, layout, damage, vello_cpu or GPU | M0, M2 |
 | `strand-surface` | Layer-shell, poses, blur, input, frame timing | M0 |
@@ -132,8 +143,20 @@ A nightly job runs the fuzzer for 10,000 edits (`STRAND_FUZZ_EDITS`,
 `STRAND_FUZZ_SEED`), the instance-level fuzzers long, and the latency
 benches for 200 edits per kind. The services tier runs every push: python-dbusmock's
 UPower, NetworkManager, BlueZ, logind and notification daemon and small zbus mocks on a
-private `dbus-daemon`.
+private `dbus-daemon`, and a private PipeWire with WirePlumber and a null
+sink (`STRAND_REQUIRE_DBUS=1` and `STRAND_REQUIRE_PIPEWIRE=1` make a
+missing tool fail instead of skip; locally `STRAND_DBUSMOCK_PYTHON`
+names an interpreter that imports `dbusmock`). M3's exit gates have
+steps of their own: `cargo test -p strand --test reloads` (100 live
+reloads, no reconnects), `cargo test --release -p strand --test
+services` (the real services idle) and `cargo test --release -p strand
+--test budgets` (memory and idle wakeups of design.md's bar and the full
+shell on the real services). The `compositors` job runs
+`crates/strand/tests/compositor_matrix.rs` on sway, niri and Hyprland in
+an Arch Linux container (`scripts/compositor-matrix-ci.sh`).
 
 `scripts/m0-exit.sh` and `scripts/m2-exit.sh` measure the memory, idle
 and damage gates over whole minutes on a release build (the M0 demo and
 design.md's bar, and the full shell with the launcher open).
+`scripts/m3-shots.sh` takes the M3 report's screenshots of the full
+shell on the real services.
