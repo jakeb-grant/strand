@@ -276,7 +276,7 @@ struct Desktop {
     display: String,
     log: PathBuf,
     _tmp: TmpDir,
-    _home: TmpDir,
+    home: TmpDir,
 }
 
 impl Desktop {
@@ -414,6 +414,23 @@ impl Desktop {
             std::fs::write(backlight.join(f), format!("{v}\n")).unwrap();
         }
         std::fs::create_dir_all(home.0.join("share/applications")).unwrap();
+        // The font and icon directories the cache sources name, made, so
+        // that the watcher watches each itself and not, while it is
+        // missing, its nearest existing ancestor for creations: HOME
+        // would be one, and any name made in it would wake the watcher.
+        for d in [
+            ".fonts",
+            ".icons",
+            ".config/fontconfig",
+            ".config/gtk-3.0",
+            ".config/gtk-4.0",
+            "home-share/fonts",
+            "home-share/icons",
+            "share/fonts",
+            "share/icons",
+        ] {
+            std::fs::create_dir_all(home.0.join(d)).unwrap();
+        }
         write_apps(&home.0.join("home-share"), apps);
         let config = home.0.join(".config/strand");
         std::fs::create_dir_all(&config).unwrap();
@@ -464,7 +481,7 @@ impl Desktop {
             display,
             log,
             _tmp: tmp,
-            _home: home,
+            home,
         };
         // The shell's tray is the watcher; its notifications server owns
         // the name.
@@ -487,6 +504,18 @@ impl Desktop {
 
     fn log_text(&self) -> String {
         std::fs::read_to_string(&self.log).unwrap_or_default()
+    }
+
+    /// The directory trees strand's inotify watches can be in: its HOME
+    /// (config, data, backlight), its runtime directory and the system
+    /// data directories, each with its ancestors.
+    fn watched_roots(&self) -> Vec<PathBuf> {
+        vec![
+            self.home.0.clone(),
+            self.dir.clone(),
+            PathBuf::from("/usr/share"),
+            PathBuf::from("/usr/local/share"),
+        ]
     }
 
     fn alive(&mut self, what: &str) {
@@ -1140,6 +1169,146 @@ fn seconds_into_minute() -> u64 {
     seconds_since_epoch() % 60
 }
 
+/// Every inotify watch `pid` holds, from `/proc/<pid>/fdinfo`: the
+/// watched directory's inode and the watch's mask (all its instances').
+fn inotify_watches(pid: u32) -> HashMap<u64, u32> {
+    let mut out = HashMap::new();
+    let Ok(fds) = std::fs::read_dir(format!("/proc/{pid}/fdinfo")) else {
+        return out;
+    };
+    for fd in fds.flatten() {
+        let text = std::fs::read_to_string(fd.path()).unwrap_or_default();
+        for line in text.lines().filter(|l| l.starts_with("inotify ")) {
+            let field = |k: &str| line.split_whitespace().find_map(|w| w.strip_prefix(k));
+            let (Some(ino), Some(mask)) = (field("ino:"), field("mask:")) else {
+                continue;
+            };
+            if let (Ok(ino), Ok(mask)) =
+                (u64::from_str_radix(ino, 16), u32::from_str_radix(mask, 16))
+            {
+                *out.entry(ino).or_default() |= mask;
+            }
+        }
+    }
+    out
+}
+
+/// Sees what strand's watches see: each directory strand watches (found
+/// by inode among `roots`, their ancestors and the directories below
+/// them) watched here with strand's own mask. A wake of strand's
+/// `strand-watch` thread in the idle window is then told apart: an event
+/// here means something outside the shell changed a watched directory
+/// (another process making or removing a name beside an ancestor of the
+/// config, which the watcher watches so that an ancestor moved or
+/// deleted is heard), not that the shell woke on its own.
+struct DirMonitor {
+    fd: rustix::fd::OwnedFd,
+    dirs: HashMap<i32, PathBuf>,
+    /// strand's watches no candidate directory had the inode of.
+    unmatched: usize,
+}
+
+impl DirMonitor {
+    fn new(pid: u32, roots: &[PathBuf]) -> DirMonitor {
+        use rustix::fs::inotify;
+        use std::os::unix::fs::MetadataExt;
+        let watches = inotify_watches(pid);
+        let mut candidates: Vec<PathBuf> = Vec::new();
+        for root in roots {
+            candidates.extend(root.ancestors().map(Path::to_path_buf));
+            let mut stack = vec![(root.clone(), 0)];
+            while let Some((d, depth)) = stack.pop() {
+                let Ok(rd) = std::fs::read_dir(&d) else {
+                    continue;
+                };
+                for e in rd.flatten() {
+                    if depth < 4 && e.file_type().is_ok_and(|t| t.is_dir()) {
+                        candidates.push(e.path());
+                        stack.push((e.path(), depth + 1));
+                    }
+                }
+            }
+        }
+        let fd =
+            inotify::init(inotify::CreateFlags::NONBLOCK | inotify::CreateFlags::CLOEXEC).unwrap();
+        let mut dirs = HashMap::new();
+        let mut found = std::collections::HashSet::new();
+        for d in candidates {
+            let Ok(meta) = std::fs::metadata(&d) else {
+                continue;
+            };
+            let Some(&mask) = watches.get(&meta.ino()) else {
+                continue;
+            };
+            if !found.insert(meta.ino()) {
+                continue;
+            }
+            if let Ok(wd) = inotify::add_watch(&fd, &d, inotify::WatchFlags::from_bits_retain(mask))
+            {
+                dirs.insert(wd, d);
+            }
+        }
+        DirMonitor {
+            fd,
+            dirs,
+            unmatched: watches.len() - found.len(),
+        }
+    }
+
+    /// The events queued since the last call, as `dir/name FLAGS`.
+    fn events(&mut self) -> Vec<String> {
+        let mut buf = [std::mem::MaybeUninit::<u8>::uninit(); 4096];
+        let mut reader = rustix::fs::inotify::Reader::new(&self.fd, &mut buf);
+        let mut out = Vec::new();
+        while let Ok(e) = reader.next() {
+            let dir = self
+                .dirs
+                .get(&e.wd())
+                .map_or_else(|| format!("wd {}", e.wd()), |d| d.display().to_string());
+            let name = e
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            out.push(format!("{dir}/{name} {:?}", e.events()));
+        }
+        out
+    }
+
+    fn describe(&self) -> String {
+        format!(
+            "{} of strand's watched directories mirrored, {} not found under the roots",
+            self.dirs.len(),
+            self.unmatched
+        )
+    }
+}
+
+/// A whole second without a wakeup or a frame, early enough in the
+/// minute (at most 45 s into it) that a 10 s window after it ends before
+/// the next minute tick.
+fn settle_early_in_minute(desk: &mut Desktop, what: &str) {
+    let pid = desk.pid();
+    let deadline = Instant::now() + Duration::from_secs(150);
+    loop {
+        let (f, w) = (desk.frames().len(), switches(pid));
+        std::thread::sleep(Duration::from_secs(1));
+        if desk.frames().len() == f && switches(pid) == w {
+            if seconds_into_minute() <= 45 {
+                break;
+            }
+            // Past the tick, then settle again.
+            std::thread::sleep(Duration::from_secs(63 - seconds_into_minute()));
+        }
+        desk.alive(what);
+        assert!(
+            Instant::now() < deadline,
+            "{what}: never settled: {:?}\n{}",
+            per_thread(pid),
+            desk.log_text()
+        );
+    }
+}
+
 /// The tests run one at a time: a test's directories removed beside the
 /// other's config wake that one's watcher (its ancestors are watched for
 /// children going), which the idle window would count.
@@ -1256,25 +1425,7 @@ fn the_design_bar_on_the_real_services_keeps_the_budget() {
     }
     // Boot work done: a whole second without a wakeup or a frame, early
     // enough in the minute that the window below ends before the tick.
-    let deadline = Instant::now() + Duration::from_secs(150);
-    loop {
-        let (f, w) = (desk.frames().len(), switches(pid));
-        std::thread::sleep(Duration::from_secs(1));
-        if desk.frames().len() == f && switches(pid) == w {
-            if seconds_into_minute() <= 45 {
-                break;
-            }
-            // Past the tick, then settle again.
-            std::thread::sleep(Duration::from_secs(63 - seconds_into_minute()));
-        }
-        desk.alive("settling");
-        assert!(
-            Instant::now() < deadline,
-            "boot never settled: {:?}\n{}",
-            per_thread(pid),
-            desk.log_text()
-        );
-    }
+    settle_early_in_minute(&mut desk, "settling");
     let pss = pss_kb(pid);
     let huge = status_of(pid, "AnonHugePages:").unwrap_or(0);
     let (limit, what) = pss_limit();
@@ -1292,31 +1443,100 @@ fn the_design_bar_on_the_real_services_keeps_the_budget() {
         "PSS {pss} kB over the {limit} kB {what}\n{}",
         memory_report(pid)
     );
-    // Idle: nothing changes, nothing wakes.
-    let frames = desk.frames().len();
-    let before = per_thread(pid);
-    std::thread::sleep(IDLE);
-    let after = per_thread(pid);
-    let woke: Vec<String> = after
-        .iter()
-        .filter(|(t, n)| before.get(*t) != Some(n))
-        .map(|(t, n)| format!("{t}: {} -> {n}", before.get(t).copied().unwrap_or(0)))
-        .collect();
-    assert!(
-        woke.is_empty(),
-        "woke while idle over {IDLE:?}: {woke:?}\n{}",
-        desk.log_text()
-    );
-    // No thread came or went either (one that ended inside the window
-    // ran inside it).
-    assert!(
-        before.keys().eq(after.keys()),
-        "threads changed while idle over {IDLE:?}: {:?} -> {:?}",
-        before.keys().collect::<Vec<_>>(),
-        after.keys().collect::<Vec<_>>()
-    );
-    assert_eq!(desk.frames().len(), frames, "painted while idle");
+    // Idle: nothing changes, nothing wakes. A wake of the watcher thread
+    // alone that a change in one of its watched directories explains
+    // (another process making or removing a name beside an ancestor of
+    // the config) is the environment, not the shell: the window is
+    // tried again, at most twice, after settling again.
+    let mut monitor = DirMonitor::new(pid, &desk.watched_roots());
+    eprintln!("idle monitor: {}", monitor.describe());
+    for attempt in 1..=3 {
+        if attempt > 1 {
+            settle_early_in_minute(&mut desk, "settling again");
+        }
+        let _ = monitor.events();
+        let frames = desk.frames().len();
+        let before = per_thread(pid);
+        std::thread::sleep(IDLE);
+        let after = per_thread(pid);
+        let seen = monitor.events();
+        let woke: Vec<&String> = after
+            .keys()
+            .filter(|t| before.get(*t) != after.get(*t))
+            .collect();
+        let watcher_only = woke.iter().all(|t| {
+            t.split_once(' ')
+                .is_some_and(|(_, comm)| comm == "strand-watch")
+        });
+        let shown: Vec<String> = woke
+            .iter()
+            .map(|t| {
+                format!(
+                    "{t}: {} -> {}",
+                    before.get(*t).copied().unwrap_or(0),
+                    after[*t]
+                )
+            })
+            .collect();
+        if !woke.is_empty() && watcher_only && !seen.is_empty() && attempt < 3 {
+            eprintln!(
+                "idle window {attempt}: the watcher woke on a change outside the shell, \
+                 trying again: {shown:?}, events {seen:?}"
+            );
+            notice(&format!(
+                "idle window {attempt}: the watcher woke on a change outside the shell: {seen:?}"
+            ));
+            continue;
+        }
+        assert!(
+            woke.is_empty(),
+            "woke while idle over {IDLE:?}: {shown:?}\nevents in strand's watched \
+             directories: {seen:?} ({})\n{}",
+            monitor.describe(),
+            desk.log_text()
+        );
+        // No thread came or went either (one that ended inside the window
+        // ran inside it).
+        assert!(
+            before.keys().eq(after.keys()),
+            "threads changed while idle over {IDLE:?}: {:?} -> {:?}",
+            before.keys().collect::<Vec<_>>(),
+            after.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(desk.frames().len(), frames, "painted while idle");
+        break;
+    }
     desk.alive("after the idle window");
+    // The retry's premise, shown: a directory made and removed beside
+    // HOME, in an ancestor of the config the watcher watches for names
+    // going, wakes the watcher thread, and the monitor sees it.
+    let beside = desk
+        .home
+        .0
+        .with_file_name(format!("beside-{}", std::process::id()));
+    let _ = monitor.events();
+    let before = per_thread(pid);
+    std::fs::create_dir(&beside).unwrap();
+    std::fs::remove_dir(&beside).unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    let after = per_thread(pid);
+    let seen = monitor.events();
+    assert!(
+        seen.iter().any(|e| e.contains("/beside-")),
+        "the monitor missed a name removed beside HOME: {seen:?} ({})",
+        monitor.describe()
+    );
+    assert!(
+        after
+            .iter()
+            .any(|(t, n)| t.ends_with(" strand-watch") && before.get(t) != Some(n)),
+        "the watcher slept through a name removed beside HOME: {before:?} -> {after:?}"
+    );
+    settled(
+        &mut desk,
+        "after the watcher's control",
+        Duration::from_secs(30),
+    );
     if !watch_tick {
         return;
     }
