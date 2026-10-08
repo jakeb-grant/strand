@@ -412,6 +412,14 @@ Every M3 tier has a CI step (`.github/workflows/ci.yml`):
   makes the font and icon directories the cache sources name, as
   `budgets.rs` does, so its HOME is not a `Parent` watch
   (decisions.md wave4-core, carried issues round 1 closer).
+- A CI flake in the debug workspace step: run 37796294304 (attempt 1)
+  failed `crates/strand/tests/budgets.rs::the_full_shell_on_the_real_services_is_measured`
+  with "the launcher shows 0 rows with a marked app's icon, not 3": the
+  launcher drew twice (1492x466, then 1492x1306) and the process was
+  quiet for the settle second with no marked icon on screen. Attempt 2
+  passed, as do local debug runs; whether the icons are late or never
+  drawn on that path is not known (strand-icons / strand-render
+  owners).
 - `strand-introspect` opens a new D-Bus connection for each 10 s
   introspection refresh of a `from dbus` check; the reloads test carves
   out its Hello and Introspect.
