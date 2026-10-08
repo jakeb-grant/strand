@@ -8475,3 +8475,130 @@ change is left to the M3 report.
 **2026-10-08 · wave4-exitMemory: the figures are read by component, since the file-backed share follows the page cache.** Review r3 read the gated bar at 23,483–23,495 kB and the full shell at 35.1 / 46.1 MB on the same head that measured 31,373–32,171 kB and 42.2–45.3 / 57.9 MB here, with `Pss_File` 8.7 MB, 8.5 MB of it the `strand` binary's mapping. The binary's four `LOAD` segments map 19,222 kB (`readelf -lW target/release/strand`; 14,330 kB of it the code segment), and how much of that is resident depends on how the kernel read it into the page cache (readahead window, folio size, what else ran): here the mapping holds 15.9–16.4 MB, on that machine 8.5 MB, and evicting the binary from the page cache before a run (`posix_fadvise(DONTNEED)`) did not change it here (15.9 MB on the next run). The anonymous and shared-memory parts are the stable part. So every total is recorded with its split (`Pss_Anon` / `Pss_File` / `Pss_Shmem`, which `memory_report` in `crates/strand/tests/budgets.rs` prints from `/proc/<pid>/smaps_rollup` on every run), and docs/m3-report.md should quote them the same way. Release, unloaded, after review r2's fixes (commit b6d580a), four runs of the design bar and two of each full shell: the design bar on two outputs with real services 31,696–32,375 kB = anon 12,328–12,568 + file 17,005–17,430 (the binary 15,912–16,380) + shmem 2,336–2,528 kB; the full shell at its peak (launcher open at 2×, two toasts, OSD) with 12 desktop entries 47,224–47,882 kB = anon 15,744–16,408 + file 17,864–17,904 + shmem 13,570–13,616 kB, and with 169 entries 53,523–54,382 kB = anon 24,316–24,964 + file 17,697–17,792 + shmem 10,862–12,274 kB, against design.md's 59–64 MB. The gate's margin in those terms: anon and shmem together hold at most 15.1 MB, the libraries' file share about 1.1 MB, so with the whole binary resident (the worst page-cache case, 19.2 MB) the bar would read about 35,420 kB (34.6 MiB): 600 kB over the 34 MB target (34,816 kB, a CI warning) and 3,490 kB under the 38 MB ceiling (38,912 kB) that fails the build. With a cold or small-folio page cache, as on review r3's machine, the same build reads about 8 MB lower; a drop of that size is page-cache state, not a saving, and a regression shows first in `Pss_Anon` and `Pss_Shmem`.
 
 **2026-10-08 · wave4-exitMemory: review r3 closed — one hook gate for both workers, a skipped drain's hook owed until 500 ms of quiet, the delayed trim held at most 5 s.** (1) `HookGate` moved to `strand_text::HookGate` and now rules the image decode worker too, superseding r2's "the image decode worker keeps its unlimited hook": a drain counts as work only after a decode (`want` true), so requests dropped undecoded pay no forced collect, and the same 5 s period and 250 ms tail apply. (2) A drain the gate skips owes the hook. The review suggested blocking until the gate is due again (the last hook + 5 s); tried first, that woke the worker up to 5 s after a burst, past the 1 s of quiet the settle loops in `demo.rs`, `budgets.rs` and `services.rs` wait for, and the M0 demo's idle window caught it once. So the worker instead waits `recv_timeout(HOOK_QUIET = 500 ms)`, the main thread's `TRIM_AFTER`, and `HookGate::quiet` runs the owed hook if nothing came: one wake, only after real work, inside the burst's settling, at most once per 5 s, so an idle worker never wakes (the idle budget is unchanged) and a 1 s poll that reshapes text pays one extra wake per five polls. Tests: `strand-text` `worker::tests::a_skipped_drain_owes_the_hook_until_the_worker_is_quiet`, `crates/strand-text/tests/idle_hook.rs` (a keystroke stream pays no hook while it lasts and one about 500 ms after it, a second stream within 5 s no second wake), `crates/strand-render/tests/image_idle_hook.rs`. (3) `run::Trimmer` keeps the instant it was armed; wakes while armed push the delayed trim back no further than `TRIM_HELD_AT_MOST` = 5 s after it, so a surface that never settles still trims (`run::tests::an_endless_animation_holds_the_trim_back_at_most_five_seconds`: 16 ms frames trim once, at 5,008 ms), and a toast's structural burst costs exactly one trim wake (`a_structural_burst_costs_one_trim_wake`). (4) `services.rs` gives each test its own home, `<target>/strand-services-<name>/<pid>` (`own_dir`), as `budgets.rs` does, so a sibling test removing its directory cannot wake the watcher inside another's idle window. (5) architecture.md names `strand_services::child::restore_in_child` as the required `pre_exec` of every program strand starts (MMF_DISABLE_THP survives fork and exec; apps.rs, custom.rs and overlay.rs already call it) and describes the shared gate. (6) The gate wording is unchanged: the bar's 34 MB target warns and the 38 MB ceiling fails (64 / 70 MB for the full shell), by the owner's direction recorded in the review r3 entry above; the `[profile.release.package]` opt-levels remain guarded by `budgets.rs::the_release_profile_keeps_the_size_opt_levels_the_budget_rests_on` and still await the architect's acceptance in the M3 report. The figures to quote are the per-component ones in the entry just above; the bare totals in the review r2 entry are superseded by them. (7) CI run 37747149738 (0fa6326, a docs-only commit after green runs of the same code) failed `strand-surface`'s `a_lone_toast_plays_its_poses_as_its_panel_opens_and_closes` twice in a row with frames `[0, 0, 40, 99, ...]`: the content-sized toast panel was painted twice at its starting opacity before the fade's first step, which never reproduced here (twelve runs, half of them beside three busy loops). The test now skips repeats of the starting value and still asks every frame from the first step on to move; a stall mid-fade still fails it.
+
+## wave4-exit-ci
+
+**2026-10-07 · wave4-exit-ci: the compositor matrix compares strand with
+the compositor's own report.** The M3 exit box "runs on Hyprland, niri and
+sway" is proved by one test, `crates/strand/tests/compositor_matrix.rs`,
+run against a compositor someone else started (`STRAND_MATRIX=sway|niri|
+hyprland` and that compositor's usual environment), so the same assertions
+run on all three. The truth is what the compositor's CLI says
+(`swaymsg -r`, `hyprctl -j`, `niri msg --json`): the output's workspaces
+in the compositor's order (sway's `num`, Hyprland's id, niri's `idx`),
+which is focused, which hold windows, and the focused window. The stores
+(through `WmConfig::from_env`, the real detection path) must equal it at
+boot, after a real window opens, after its title changes, after a switch
+made from outside, after `ws.focus()`, and after `win.close()`; the
+compositor's reload (`swaymsg reload`, `hyprctl reload`, an edit of the
+config file niri watches) must be `wm.config_reloaded`; two idle seconds
+must wake nothing. design.md's bar (theme.strand and bar.strand, byte for
+byte) in `strand run` must draw the same state: one dot per workspace
+read off the bar's middle row, the focused one the 24 px accent pill,
+occupied dots ($fg.muted, alpha 0.65) told from empty ones
+($fg.alpha(0.25)) by their alpha: each dot's contrast with the bar's
+background over that of the clock's ink (full `$fg`), cut at 0.45, so a
+lone dot of either kind beside the pill (niri's trailing empty workspace)
+reads right on any theme, and the focused window's title as
+ink right of the dots; a click on a dot (where the compositor offers
+`zwlr_virtual_pointer_v1`) must switch the compositor. The test makes no
+assumption that differs between compositors: niri keeps one empty
+workspace after the last, so "the other workspace" is that one there and
+a new number on sway and Hyprland. Without `STRAND_MATRIX` both tests say
+they were skipped (they are in `cargo test --workspace`).
+
+**2026-10-07 · wave4-exit-ci: how each compositor runs without a display.**
+`scripts/compositor-matrix.sh <compositor>` starts it and runs the test.
+sway: headless with the pixman renderer, as every other sway test. niri:
+its winit backend in a window of a headless sway (`WAYLAND_DISPLAY` set to
+the parent; Mesa's software EGL on the parent's `wl_shm`,
+`LIBGL_ALWAYS_SOFTWARE=1`), in its own runtime directory so its sockets
+are the only ones there. Hyprland: aquamarine allocates every buffer, a
+headless output's included, on a DRM node, so it does not start in a
+container without `/dev/dri` (and cannot nest in a pixman sway, which has
+no `linux-dmabuf`); Hyprland's own test job boots a QEMU VM with
+virtio-gpu for the same reason. The CI job `compositors` loads `vkms` on
+the Ubuntu runner (from `linux-modules-extra-$(uname -r)` when the
+image's kernel lacks it), passes the new card into an `archlinux:latest`
+container (`docker run --device /dev/dri`), and runs Hyprland's DRM
+backend on it through `seatd` (`AQ_DRM_DEVICES`, llvmpipe), as a user
+(Hyprland refuses root without a flag); Hyprland 0.55 and later get a
+`hyprland.lua` config, earlier ones `hyprland.conf`. This is the setup
+another project's CI uses to screenshot Hyprland headlessly
+(hexrift/WardOS#365: vkms on the runner, `--device /dev/dri`, seatd
+without a VT, `AQ_DRM_DEVICES`). The test binary and `strand` are built
+on the runner (the Rust cache, the pinned toolchain) and run in the
+container at the same path; they need only libraries Arch has under the
+same sonames.
+
+**2026-10-07 · wave4-exit-ci: Hyprland's Lua dispatch dialect.** Hyprland
+0.55 moved the configuration to Lua (hyprlang is deprecated and being dropped);
+with a Lua config the `dispatch` request's argument is evaluated as
+`return hl.dispatch(<argument>)`, so `dispatch workspace 3` is answered
+`error: [string "return hl.dispatch(workspace 3)"]:1: ')' expected near
+'3'` and `ws.focus()`, `win.focus()` and `win.close()` failed on every
+current Hyprland (reported against 0.56.2 by several projects, among them
+omarchy-session#24 and hypruse#1, with `dispatch hl.dsp.…(…)` answered
+`ok`). The adapter sends the classic form first (older Hyprland only
+understands it), and on that Lua parse error says it again as a
+dispatcher object (`hl.dsp.focus({ workspace = "3" })`,
+`hl.dsp.focus({ window = "address:0x…" })`,
+`hl.dsp.window.close({ window = "address:0x…" })`), keeping the Lua
+dialect for the rest of the connection; any other refusal is the
+action's error as before. The fixtures reconstructed from 0.56.2's source
+had only the classic form, which is why the replay tests passed. Tests:
+`strand-services/src/wm/hyprland.rs::tests::lua_dispatches_are_dispatcher_objects`,
+`tests/hyprland.rs::a_lua_config_hyprland_gets_lua_dispatches` (the fake
+answers as a Lua-config Hyprland). The matrix test's own workspace switch
+falls back the same way.
+
+**2026-10-07 · wave4-exit-ci: the matrix runs green on all three
+(evidence).** Every Actions job was refused for billing until run 201
+(the jobs never got a runner; the annotation asked for the account's
+payments). Once Actions ran, the `compositors` job was iterated to green
+in run 37653086662 (head e01da1f of `wave4/exit-ci`):
+sway 1.12, niri 26.04 and Hyprland 0.56.2 (Arch packages of 2026-10-04),
+five tests each, every step drawn and agreed, and the click on a dot
+switching the compositor on all three (each offers
+`zwlr_virtual_pointer_v1`; no "click not tested" warning). What it took,
+each a fact of the CI container, not of strand: the test binary's path
+from cargo's JSON messages (`CARGO_TERM_COLOR=always` puts colour codes
+inside the human "Executable" line); the compositors' file capabilities
+dropped (`setcap -r`: Arch's sway carries `cap_sys_nice=ep`, which
+Docker's bounding set lacks, so exec(2) failed with EPERM); `Hyprland
+--version` run with `XDG_RUNTIME_DIR` set; and the vkms card made
+read-write for the test user (vkms has no render node, so Hyprland's
+renderer opens the card by path for GBM besides seatd's handle, and
+aborted with "Couldn't open a gbm fd" while the card belonged to the
+host's video gid). Hyprland's reply to a successful Lua dispatch
+(`dispatch hl.dsp.focus({ workspace = "1" })`) is `ok`, as the reports
+said; `dispatch_reply` keeps also taking an empty, `true` or `nil` reply
+from a Lua config. The real compositors agree with the adapters built on
+the reconstructed fixtures (`tests/fixtures/*/SOURCE.txt`), so those stay
+as the offline replay tests; the job's artifact `compositor-matrix` holds
+each compositor's logs, the bare desktop and the bar's screenshots.
+The dev container still cannot run Hyprland or niri (no `/dev/dri`, no
+kernel modules, no Docker, the Arch mirrors refused), so the job is the
+only place they run.
+
+**2026-10-07 · wave4-exit-ci: what the matrix holds fixed and what it
+tracks (review round).** The `compositors` job tracks upstream on
+purpose: `archlinux:latest` and `pacman -Syu` install the Hyprland, niri
+and sway Arch ships that day (pinning the image alone would not pin the
+packages, which `-Syu` upgrades from the live mirrors), so a new release
+can turn the job red with no change here; that is what an exit gate for
+"runs on the compositors people use" should notice, and the job prints
+`pacman -Q` so a red run names the versions. A Hyprland dispatch counts
+as done only on `ok`, in either dialect: the Lua replies once also taken
+for success (empty, `true`, `nil`) were never seen from a live Hyprland
+and would hide a dispatch that did nothing
+(`hyprland.rs::tests::dispatch_replies`). Hyprland's run now also makes a
+named workspace from outside (`hl.dsp.focus({ workspace = "name:matrix"
+})`), and `ws.focus()` leaves it and comes back through the adapter's
+`name:<name>` selector, so a named (negative-id) workspace is checked
+live too (green on Hyprland 0.56.2, job 112910256243 of run 37655626535,
+with the click required on all three). CI sets `STRAND_MATRIX_REQUIRE_CLICK=1`: a compositor that
+stops offering `zwlr_virtual_pointer_manager_v1` fails the bar test
+instead of skipping its click. Still unchecked live: a second output
+(per-screen `workspaces.on(screen)`, one bar per monitor) on any of the
+three.

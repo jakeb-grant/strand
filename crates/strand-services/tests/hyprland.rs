@@ -182,6 +182,51 @@ async fn hyprland_adapter_reconnects_after_losing_its_socket() {
     service.abort();
 }
 
+/// Hyprland with a Lua config (0.55 on; the only kind from 0.56) refuses
+/// a classic dispatch with a Lua parse error: the adapter says it again
+/// as a dispatcher object, and keeps that dialect for the connection.
+#[tokio::test]
+async fn a_lua_config_hyprland_gets_lua_dispatches() {
+    let fake = FakeHyprland::start();
+    fake.set_lua(true);
+    let (sink, mut c) = Collector::new();
+    let (req_tx, req_rx) = unbounded_channel();
+    let config = WmConfig {
+        backend: Some(fake.backend.clone()),
+        wayland: None,
+        events: None,
+        ..Default::default()
+    };
+    let service = tokio::spawn(wm::run(config, sink, req_rx));
+    c.until("boot", |m| m.sources.connected && !m.workspaces.is_empty())
+        .await;
+    fake.set_scene("opened");
+    fake.send("openwindow>>55d0c0a1c3d0,2,foot,foot\n");
+    c.until("the window", |m| m.window_by_app("foot").is_some())
+        .await;
+
+    let (r, done) = WmRequest::new(WmAction::FocusWorkspace(3));
+    req_tx.send(r).unwrap();
+    assert_eq!(done.await, Ok(()));
+    let (r, done) = WmRequest::new(WmAction::CloseWindow("0x55d0c0a1c3d0".into()));
+    req_tx.send(r).unwrap();
+    assert_eq!(done.await, Ok(()));
+    let dispatches: Vec<String> = fake
+        .requests()
+        .into_iter()
+        .filter(|r| r.starts_with("dispatch "))
+        .collect();
+    assert_eq!(
+        dispatches,
+        [
+            "dispatch workspace 3",
+            r#"dispatch hl.dsp.focus({ workspace = "3" })"#,
+            r#"dispatch hl.dsp.window.close({ window = "address:0x55d0c0a1c3d0" })"#,
+        ]
+    );
+    service.abort();
+}
+
 /// Titles that are not UTF-8 (XWayland Latin-1) in events and replies are
 /// shown with U+FFFD and cost nothing: no reconnect, no lost state.
 #[tokio::test]

@@ -23,6 +23,8 @@ pub struct FakeHyprland {
     _dir: Option<tempfile::TempDir>,
     pub backend: Backend,
     scene: Arc<Mutex<&'static str>>,
+    /// Answers dispatches as Hyprland with a Lua config (0.55 on) does.
+    lua: Arc<Mutex<bool>>,
     requests: Arc<Mutex<Vec<String>>>,
     events: UnboundedSender<Ev>,
 }
@@ -43,11 +45,13 @@ impl FakeHyprland {
         };
         std::fs::create_dir_all(requests.parent().unwrap()).unwrap();
         let scene = Arc::new(Mutex::new("boot"));
+        let lua = Arc::new(Mutex::new(false));
         let log = Arc::new(Mutex::new(Vec::new()));
         let s1 = UnixListener::bind(&requests).unwrap();
         let s2 = UnixListener::bind(&events).unwrap();
         {
             let scene = scene.clone();
+            let lua = lua.clone();
             let log = log.clone();
             tokio::spawn(async move {
                 loop {
@@ -58,7 +62,11 @@ impl FakeHyprland {
                     let mut buf = vec![0u8; 1023];
                     let n = conn.read(&mut buf).await.unwrap();
                     let req = String::from_utf8_lossy(&buf[..n]).into_owned();
-                    let reply = answer(*scene.lock().unwrap(), &req);
+                    let reply = if *lua.lock().unwrap() {
+                        answer_lua(*scene.lock().unwrap(), &req)
+                    } else {
+                        answer(*scene.lock().unwrap(), &req)
+                    };
                     log.lock().unwrap().push(req);
                     let _ = conn.write_all(&reply).await;
                     // Then closes.
@@ -89,9 +97,15 @@ impl FakeHyprland {
             _dir: None,
             backend,
             scene,
+            lua,
             requests: log,
             events: tx,
         }
+    }
+
+    /// Answers dispatches as Hyprland with a Lua config does.
+    pub fn set_lua(&self, on: bool) {
+        *self.lua.lock().unwrap() = on;
     }
 
     pub fn set_scene(&self, s: &'static str) {
@@ -146,5 +160,21 @@ pub fn answer(scene: &str, req: &str) -> Vec<u8> {
         "j/activewindow" => file("activewindow.json"),
         r if r.starts_with("dispatch ") => b"ok".to_vec(),
         _ => b"unknown request".to_vec(),
+    }
+}
+
+/// [`answer`] with a Lua config (Hyprland 0.55 on): a dispatch's argument
+/// is evaluated as `return hl.dispatch(<argument>)`, so only a dispatcher
+/// object is `ok`; a classic one is the Lua parser's error, as Hyprland
+/// 0.56.2 words it.
+pub fn answer_lua(scene: &str, req: &str) -> Vec<u8> {
+    match req.strip_prefix("dispatch ") {
+        Some(arg) if arg.starts_with("hl.dsp.") => b"ok".to_vec(),
+        Some(arg) => {
+            let near = arg.split_whitespace().nth(1).unwrap_or("");
+            format!("error: [string \"return hl.dispatch({arg})\"]:1: ')' expected near '{near}'")
+                .into_bytes()
+        }
+        None => answer(scene, req),
     }
 }

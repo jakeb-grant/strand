@@ -3708,13 +3708,20 @@ mod tests {
         let (d, root) = texts_diff(&[(1, "crash"), (2, "fine")]);
         assert!(r.apply(d).is_empty());
         r.attach_surface(SurfaceId(1), root);
-        r.configure_surface(SurfaceId(1), Size::new(80, 20), Scale::ONE);
+        // Sized without `configure_surface`: its `update` polls the worker,
+        // which may already have answered, leaving no request in flight to
+        // crash.
+        r.surfaces
+            .get_mut(&SurfaceId(1))
+            .unwrap()
+            .resize(Size::new(80, 20), Scale::ONE);
         let key_of = |r: &Renderer, n: NodeId| text_at(r, n).requested.as_ref().unwrap().0;
         // Flattening without polling the worker: what `update` would ask.
         let ask = |r: &mut Renderer| {
             r.surfaces.get_mut(&SurfaceId(1)).unwrap().cache = None;
             r.flatten_surface(SurfaceId(1));
         };
+        ask(&mut r);
         let ka = key_of(&r, a);
         r.deliver(TextLayout::reset(ka, Scale::ONE));
         ask(&mut r);

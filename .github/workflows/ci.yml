@@ -166,6 +166,71 @@ jobs:
         env:
           STRAND_FUZZ_MAX_GAP_MS: "20"
 
+  # M3 exit: "runs on Hyprland, niri and sway". The stores and design.md's
+  # bar in `strand run` against each live compositor, compared with what
+  # its own CLI reports (crates/strand/tests/compositor_matrix.rs, run by
+  # scripts/compositor-matrix.sh). Hyprland and niri are packaged on Arch,
+  # not on the Ubuntu runner: the test is built here and run in an
+  # archlinux:latest container. Hyprland's aquamarine allocates on a DRM
+  # node even for headless outputs, so the runner loads vkms (a virtual
+  # KMS card, rendered by Mesa's llvmpipe) and passes it in; niri runs
+  # nested (winit) in a headless sway; sway runs headless.
+  compositors:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libfontconfig1-dev libxkbcommon-dev libwayland-dev libpipewire-0.3-dev libspa-0.2-dev clang libclang-dev
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: compositors
+      - name: Build the compositor matrix test
+        id: build
+        run: |
+          # The binary's path from cargo's JSON messages: the human
+          # "Executable" line carries colour codes under CARGO_TERM_COLOR.
+          cargo test -p strand --test compositor_matrix --no-run --message-format=json >build.json
+          test=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "compositor_matrix" and .executable != null) | .executable' build.json | tail -1)
+          echo "matrix test: $test"
+          test -x "$test"
+          echo "test=$test" >>"$GITHUB_OUTPUT"
+      - name: A virtual KMS card (vkms)
+        id: drm
+        run: |
+          sudo apt-get install -y -q "linux-modules-extra-$(uname -r)" || echo "no linux-modules-extra-$(uname -r); trying the modules present"
+          before=$(ls -d /sys/class/drm/card* 2>/dev/null || true)
+          sudo modprobe vkms
+          sudo udevadm settle || true
+          ls -l /dev/dri
+          card=
+          for c in /sys/class/drm/card*; do
+            name=$(basename "$c")
+            case "$name" in *-*) continue ;; esac
+            echo "$before" | grep -qx "$c" && continue
+            card=/dev/dri/$name
+          done
+          [ -n "$card" ] || { echo "::error::no card appeared for vkms"; exit 1; }
+          echo "vkms card: $card"
+          echo "card=$card" >>"$GITHUB_OUTPUT"
+      - name: sway, niri and Hyprland (archlinux:latest)
+        run: |
+          docker run --rm --device /dev/dri -v "$PWD:$PWD" -w "$PWD" \
+            -e STRAND_DRM_CARD=${{ steps.drm.outputs.card }} \
+            archlinux:latest bash scripts/compositor-matrix-ci.sh "${{ steps.build.outputs.test }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compositor-matrix
+          path: target/matrix/
+          if-no-files-found: ignore
+
   nightly:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
