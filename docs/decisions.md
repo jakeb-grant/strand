@@ -8434,7 +8434,10 @@ arming alone read the bar at 34.6–34.7 MB here; with the inline settle,
 three release runs of the budgets suite read 32.43–32.44 MB, every
 steady tick one burst; the full shell 44.6–47.1 MB (12 entries) and
 53.7–59.2 MB (169) with the OSD; `services.rs` and the M0 demo tests
-green; token-edit p95 19.5 ms against its 19.8 gate. Tests:
+green; token-edit p95 19.5 ms against its 19.8 gate. CI run
+37721528809 (80384fa, green): the bar 32,666 kB with its tick one
+burst; the full shell with the OSD 50,272 kB (15 entries) and 59,626 kB
+(172); `.text` 14,326,866 bytes. Tests:
 `run::tests::only_a_structural_burst_pays_a_trim_wakeup`,
 `a_prop_set_is_not_structural`,
 `a_wake_trims_inline_at_most_every_five_seconds` (the growth-gate tests
