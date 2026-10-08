@@ -1826,23 +1826,18 @@ pub(crate) mod tests {
         assert_eq!(main.wait(tick), None);
     }
 
-    /// `committed` reads mimalloc's own count: it grows with a large
-    /// allocation kept live. The count is process-wide and other tests
-    /// free in parallel, so one of a few tries must see the growth.
+    /// `committed` reads mimalloc's own count: it grows with a block
+    /// larger than all it has committed so far (a smaller one can reuse
+    /// memory freed and still counted, as after a large block is freed
+    /// first, here and in a test binary whose other tests ran).
     #[test]
     fn the_committed_count_follows_the_heap() {
-        let mut seen = Vec::new();
-        for _ in 0..5 {
-            let before = committed();
-            let block = std::hint::black_box(vec![1u8; 8 << 20]);
-            let after = committed();
-            drop(block);
-            if after >= before + (4 << 20) {
-                return;
-            }
-            seen.push((before, after));
-        }
-        panic!("the count never grew by 4 MiB with 8 MiB live: {seen:?}");
+        drop(std::hint::black_box(vec![1u8; 64 << 20]));
+        let before = committed();
+        let block: Vec<u8> = std::hint::black_box(Vec::with_capacity(before + (16 << 20)));
+        let after = committed();
+        drop(block);
+        assert!(after >= before + (16 << 20), "{before} -> {after}");
     }
 
     /// The config in `dir` loaded once (no watcher, no cache).
