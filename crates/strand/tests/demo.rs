@@ -492,9 +492,15 @@ fn demo_bar_on_two_outputs_then_idle() {
     }
     let frames = damage_lines(&log).len();
     let before = switches(pid);
+    let threads = per_thread(pid);
     std::thread::sleep(Duration::from_secs(2));
     let after = switches(pid);
-    assert_eq!(after - before, 0, "woke while idle");
+    let woke: Vec<String> = per_thread(pid)
+        .into_iter()
+        .filter(|(t, n)| threads.get(t) != Some(n))
+        .map(|(t, n)| format!("{t}: {} -> {n}", threads.get(&t).copied().unwrap_or(0)))
+        .collect();
+    assert_eq!(after - before, 0, "woke while idle: {woke:?}");
     assert_eq!(damage_lines(&log).len(), frames, "painted while idle");
 
     // A third monitor, at scale 1 like the first but narrower: the shared
@@ -570,6 +576,21 @@ fn the_design_bar_keeps_the_m0_budget() {
     let home =
         Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("budget-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
+    // The font and icon directories the cache sources name, made, so the
+    // watcher watches each itself and not, while one is missing, its
+    // nearest existing ancestor for creations (HOME would be one).
+    for d in [
+        ".fonts",
+        ".icons",
+        ".config/fontconfig",
+        ".config/gtk-3.0",
+        ".config/gtk-4.0",
+        ".local/share/fonts",
+        ".local/share/icons",
+        ".local/share/applications",
+    ] {
+        std::fs::create_dir_all(home.join(d)).unwrap();
+    }
     let config = home.join(".config/strand");
     std::fs::create_dir_all(&config).unwrap();
     for (name, text) in [

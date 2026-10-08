@@ -7225,6 +7225,32 @@ than an emboldened regular, and 600/700 on the regular-only family
 emboldened. With fontique's request restored, both tests fail on their
 PNG (checked by reverting the condition).
 
+**2026-10-08 · wave4-core (carried issues, round 1 closer): the M0
+idle windows name the thread that woke; the M0 budget test's HOME gets
+the budgets' directories.** With carried items 5 and 6 in, a full
+workspace run (every tier required) failed once in
+`crates/strand/tests/demo.rs::demo_bar_on_two_outputs_then_idle` with
+`woke while idle` (the 2 s window after the PSS read; it did not fail in
+four runs of `demo.rs` alone). The test reported only the process total,
+so the woken thread is unknown, and the cause is not known: `strand run
+--demo` starts no watcher and no service, so the `Parent`-watch cause
+wave4-exitReport review r1 found for `budgets.rs` does not apply to it.
+That window now names each woken thread with its switch counts on
+failure, as the M0 tick window of
+`the_design_bar_keeps_the_m0_budget` already did, so a recurrence says
+which thread to look at. That second test does run the watcher with a
+HOME under `CARGO_TARGET_TMPDIR`; it now makes the font and icon
+directories the cache sources name (`.fonts`, `.icons`,
+`.config/fontconfig`, `.config/gtk-3.0`, `.config/gtk-4.0`,
+`.local/share/{fonts,icons,applications}`), as `budgets.rs` does, so
+HOME is not a `Parent` watch whose creations wake `strand-watch`. Not
+adopted: `budgets.rs`'s inotify mirror and retry, heavier than these
+short M0 windows warrant. The carried-item-5 change these runs began
+with (a hard 34 MB bar gate, e8c0e5f) was reverted by the owner's
+confirmed 34 MB target / 38 MB ceiling (607bd10; its paragraph is at
+the end of wave4-exitReport, "memory targets and ceilings confirmed by
+the owner"); this round keeps that.
+
 ## wave4-a2
 
 **2026-10-07 · wave4-a2: the D-Bus services are real; which they are.**

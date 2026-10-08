@@ -393,10 +393,25 @@ Every M3 tier has a CI step (`.github/workflows/ci.yml`):
   first fade step on must still move); the cause is not known and may
   be a wasted frame on a content-sized panel's first configure
   (strand-surface / strand-render owners; decisions.md wave4-exitMemory,
-  review r3 item 7).
-- For the architect: the M0-only gates in `crates/strand/tests/demo.rs`
-  fail only above the 38 MiB ceiling, though the M0 bars measure about
-  11–26 MiB; whether they should stay a hard 34 MiB is open.
+  review r3 item 7). Seen once more here, in the carried-issues closer's
+  first full workspace run: that test and
+  `a_toggling_panel_plays_its_poses_and_goes_away` failed together on
+  the second frame jumping from 0 to 253 (a stall nearly as long as the
+  fade, both tests at once, so the machine rather than the pose); four
+  runs of the binary and a full workspace run after it passed.
+- Closed since: whether the M0-only gates in `crates/strand/tests/demo.rs`
+  should stay a hard 34 MiB. The owner confirmed the 34 MB target
+  (warns) and 38 MB ceiling (fails) for the two-monitor bar, and the
+  M0 gates follow it (decisions.md wave4-core, "memory targets and
+  ceilings confirmed by the owner"; the M0 bars measure about
+  15–30 MiB).
+- `demo_bar_on_two_outputs_then_idle`'s 2 s idle window failed once in
+  a full workspace run here (an unnamed thread woke; `--demo` runs no
+  watcher or service, so the cause is not known). It now names the
+  woken thread on failure, and `the_design_bar_keeps_the_m0_budget`
+  makes the font and icon directories the cache sources name, as
+  `budgets.rs` does, so its HOME is not a `Parent` watch
+  (decisions.md wave4-core, carried issues round 1 closer).
 - `strand-introspect` opens a new D-Bus connection for each 10 s
   introspection refresh of a `from dbus` check; the reloads test carves
   out its Hello and Introspect.
