@@ -612,6 +612,26 @@ fn the_design_bar_keeps_the_m0_budget() {
         assert!(Instant::now() < deadline, "bars did not paint");
         std::thread::sleep(Duration::from_millis(50));
     }
+    // The tick measured below is a steady one: a surface's buffer of
+    // age 2 repaints its previous frame's damage too, so the first tick
+    // after boot also repaints whatever the boot's last frame drew (icons
+    // decoded late on a loaded runner: CI run 37764492027, 2,196 px²).
+    // The first tick is let by, as budgets.rs does.
+    let minute = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() / 60)
+            .unwrap_or(0)
+    };
+    let booted = minute();
+    while minute() == booted {
+        assert!(
+            strand.0.try_wait().unwrap().is_none(),
+            "strand exited: {}",
+            std::fs::read_to_string(&log).unwrap_or_default()
+        );
+        std::thread::sleep(Duration::from_millis(500));
+    }
     // Boot work done (late icons and glyphs, a loaded machine): a whole
     // second with no wakeup and no frame, early enough in the minute
     // that the window below ends before the next tick.

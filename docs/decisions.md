@@ -8679,7 +8679,15 @@ run 37754849203 hit once: `add_watch` failing with `ENOENT` or `ENOTDIR`
 after the `is_dir()` check now climbs a level within the loop's bound,
 and the stale watch descriptors are released on every exit path
 (`crates/strand-services/src/custom.rs::tests::a_directory_removed_while_it_is_watched_is_climbed_past`).
-(5) Docs: m3-report.md and README.md give memory in MiB (kB beside it);
+(5) `crates/strand/tests/demo.rs::the_design_bar_keeps_the_m0_budget`
+measures a steady minute tick. It now lets the first tick after boot go
+by, as budgets.rs does. A surface's buffer of age 2 repaints its
+previous frame's damage too, so the first tick also repainted the icons
+the boot's last frame drew when a loaded runner decoded them late: CI
+run 37764492027, 2,196 px² against the 2,000 px² gate, clock plus three
+icons per output. The gate itself is unchanged; the steady tick
+measures 228–470 px² here (one or two clock digits per output). (6)
+Docs: m3-report.md and README.md give memory in MiB (kB beside it);
 README.md names `auth` as left for M4, `clock`, `calendar` and `screens`
 as served by the host, and `cpu`/`memory` (and `from poll`) as the only
 timers; the report quotes the portal clause from the current CI run

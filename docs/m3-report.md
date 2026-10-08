@@ -339,6 +339,11 @@ Every M3 tier has a CI step (`.github/workflows/ci.yml`):
   `add_watch` (`ENOENT`/`ENOTDIR`) is now climbed past within the loop's
   bound and the turn's stale watches are let go on every way out;
   `crates/strand-services/src/custom.rs::tests::a_directory_removed_while_it_is_watched_is_climbed_past`.
+- Fixed since: the M0 minute-tick gate in
+  `crates/strand/tests/demo.rs::the_design_bar_keeps_the_m0_budget`
+  failed once on CI (run 37764492027, 2,196 px²): it measured the first
+  tick after boot, whose age-2 buffers also repaint the icons the boot's
+  last frame drew. It now measures a steady tick (228–470 px² here).
 - The strand-surface lone-toast CI flake: on CI only, the content-sized
   toast panel was painted twice at its starting opacity before the
   fade's first step (frames `[0, 0, 40, 99, …]`).
