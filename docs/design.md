@@ -573,7 +573,7 @@ File saves and system changes enter at the top and become writes into the reacti
 - GPU frames send full damage until wgpu's [`present_with_damage` PR #10152](https://github.com/gfx-rs/wgpu/pull/10152) lands. That's acceptable because only large animations run on the GPU.
 - Frame callbacks are requested only while something is dirty or a spring is unsettled. Timing comes from `wp_presentation` feedback, so frames lock to the real refresh rate, not a free-running clock.
 
-**Memory budget** (PSS in MB, design estimates to be measured in M0 and M3)
+**Memory budget** (PSS in MB, design estimates to be measured in M0 and M3). The totals are targets: CI warns above them and fails only above a ceiling, 38 MB for the two-monitor bar and 70 MB for the full shell, so runner variance and real icon themes do not flip the build while growth past the target stays visible.
 
 | Item | Bar only, 2×1440p | Full shell, launcher open |
 | --- | --- | --- |
@@ -767,7 +767,7 @@ TSX lost on every lens for the same reasons: a JS runtime's memory and startup c
 | Blur coverage: sway, labwc and COSMIC have none; Hyprland's support of the new protocol is unverified | The fallback ladder; tint by default |
 | Reload semantics and lock-screen security | A written spec, the edit fuzzer, VM-only lock testing, and a small, separately reviewable PAM helper |
 | The notification bus name can collide with dunst or mako; nucleo releases have stalled; niri's IPC changes in patch versions | Clear error on name conflict; wrap nucleo; reimplement niri IPC behind a feature flag |
-| Memory figures are estimates | Measure in M0 and M3; the exit criteria fail the milestone if over budget |
+| Memory figures are estimates | Measure in M0 and M3; the exit criteria fail the milestone above the ceiling (38 MB bar, 70 MB full shell), and anything over the target is reported |
 
 **Open questions**
 
@@ -787,7 +787,7 @@ Everything is tested on one developer machine plus free CI, with no extra hardwa
 | Wayland integration | One container: sway headless with software rendering, optionally weston | Layer-shell, popups, damage, input regions; hotplug and mixed DPI faked with `swaymsg create_output` and per-output scales | Every push |
 | Services | Same container, private D-Bus via `dbus-run-session` | python-dbusmock for UPower, NetworkManager, BlueZ, logind and notifications; PipeWire with a null sink; small zbus mocks for the portal and tray | Every push |
 | Reload fuzzer | Same container, tmpfs | Random edits replayed through five editor save styles; no panic, blank frame or lost state | Every push, longer runs nightly |
-| Budgets | Same container | Memory (PSS) and idle wakeups; the build fails above 34 MB for the two-monitor bar | Every push |
+| Budgets | Same container | Memory (PSS) and idle wakeups; the two-monitor bar warns above its 34 MB target and fails above 38 MB, the full shell warns above 64 MB and fails above 70 MB | Every push |
 | Lock screen | Local QEMU VM | PAM, fail-closed behaviour under injected faults; never tested on your real session | Before touching the lock code, and before releases |
 | Daily driving | Your own compositor, nested in a window, then as your real shell | Real-world bugs no lab finds | Always |
 

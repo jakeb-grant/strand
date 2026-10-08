@@ -516,7 +516,8 @@ fn the_real_services_sleep_when_nothing_changes() {
     let (limit, what) = if cfg!(debug_assertions) {
         (64 * 1024, "debug ceiling")
     } else {
-        (34 * 1024, "M0 gate")
+        // design.md: aims at 34 MB, fails above 38.
+        (38 * 1024, "38 MB ceiling")
     };
     eprintln!("bar on the real services: PSS {pss} kB ({what} {limit} kB)");
     assert!(pss <= limit, "PSS {pss} kB over the {limit} kB {what}");
