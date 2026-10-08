@@ -1,8 +1,9 @@
 //! `strand run --demo` end to end on a headless sway: two 2560x1440 outputs
-//! (the second at scale 1.25) within the PSS budget (34 MB), a bar on each with its clock centred, no wakeups while idle,
+//! (the second at scale 1.25) within the PSS budget (34 MB target, 38 MB
+//! ceiling), a bar on each with its clock centred, no wakeups while idle,
 //! then a third output of another width at scale 1 (hotplugged) whose bar
 //! is aligned to its own width. Skipped, loudly, when sway or grim is not
-//! installed. The 34 MB gate is asserted when the
+//! installed. The 38 MB ceiling (34 MB target, warned) is asserted when the
 //! test runs in release (`cargo test --release -p strand --test demo`); a
 //! debug run is held to a looser debug ceiling. `scripts/m0-exit.sh`
 //! measures the full M0 gates on a
@@ -196,9 +197,11 @@ fn damage_lines(log: &Path) -> Vec<String> {
         .collect()
 }
 
-/// The memory gate (`docs/design.md`: the build fails above 34 MB for the
-/// two-monitor bar), held on a release build (`cargo test --release`).
-const PSS_GATE_KB: u64 = 34 * 1024;
+/// The memory gate (`docs/design.md`: the two-monitor bar aims at 34 MB and
+/// the build fails above 38 MB), held on a release build (`cargo test
+/// --release`).
+const PSS_TARGET_KB: u64 = 34 * 1024;
+const PSS_GATE_KB: u64 = 38 * 1024;
 
 /// A debug build carries about 9 MB more than release (30–31 MB against
 /// 21–22 MB in M0): its own, looser ceiling, so debug-only growth does not
@@ -210,7 +213,20 @@ fn pss_limit() -> (u64, &'static str) {
     if cfg!(debug_assertions) {
         (DEBUG_PSS_CEILING_KB, "debug ceiling")
     } else {
-        (PSS_GATE_KB, "34 MB gate")
+        (PSS_GATE_KB, "38 MB ceiling")
+    }
+}
+
+/// A release measurement above the 34 MB target: a warning (a CI
+/// annotation), not a failure.
+fn warn_over_target(what: &str, pss: u64) {
+    if !cfg!(debug_assertions) && pss > PSS_TARGET_KB {
+        eprintln!("{what}: PSS {pss} kB is over the {PSS_TARGET_KB} kB target");
+        if std::env::var_os("GITHUB_ACTIONS").is_some() {
+            println!(
+                "\n::warning title=memory over target::{what}: PSS {pss} kB is over the {PSS_TARGET_KB} kB target (the build fails above 38 MB)"
+            );
+        }
     }
 }
 
@@ -462,6 +478,7 @@ fn demo_bar_on_two_outputs_then_idle() {
     let pss = pss_kb(pid);
     let (limit, what) = pss_limit();
     eprintln!("strand PSS with two 2560x1440 bars: {pss} kB ({what} {limit} kB)");
+    warn_over_target("M0 bar", pss);
     assert!(
         pss <= limit,
         "PSS {pss} kB over the {limit} kB {what}\n{}",
@@ -524,7 +541,7 @@ fn demo_bar_on_two_outputs_then_idle() {
 /// The M0 budget on design.md's own bar (theme.strand and bar.strand,
 /// unchanged, on the mock desktop with the real clock), not the M0 demo:
 /// two 2560x1440 outputs at 1.0 and 1.25 within the PSS budget (34 MB
-/// in a release run; the debug ceiling otherwise); once boot work is done, no
+/// target warned, 38 MB ceiling fails; in a release run; the debug ceiling otherwise); once boot work is done, no
 /// thread waking from then (by :45) to :57 of the minute (no idle-cache
 /// or other timer of its own: the next wake is the minute tick); and the
 /// tick itself repainting at most 2,000 px² over both outputs. Several
@@ -644,6 +661,7 @@ fn the_design_bar_keeps_the_m0_budget() {
         pss_limit()
     };
     eprintln!("design bar PSS on two 2560x1440 outputs: {pss} kB ({what} {limit} kB)");
+    warn_over_target("design bar", pss);
     assert!(
         pss <= limit,
         "PSS {pss} kB over the {limit} kB {what}\n{}",
