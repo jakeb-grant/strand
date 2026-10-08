@@ -14,8 +14,10 @@
 //! - `the_design_bar_on_the_real_services_keeps_the_budget`, design.md's
 //!   bar (`bar.strand` with `theme.strand`) with one component added to
 //!   its end section that reads `network` and `notifications` too (the
-//!   bar itself reads workspaces, windows, audio, battery, tray, clock):
-//!   once every value is on screen and the boot work is done, PSS stays
+//!   bar itself reads workspaces, windows, audio, battery, tray, clock),
+//!   on the machine's icon themes (`/usr/share`; CI installs Adwaita):
+//!   once every value is on screen, its volume, network and battery
+//!   icons drawn, and the boot work is done, PSS stays
 //!   within the 34 MB gate (release; a debug build has its own ceiling),
 //!   no page of it is a transparent huge page, and over 10 s between two
 //!   minute ticks no thread of strand's wakes and no frame is drawn.
@@ -718,6 +720,92 @@ impl Shot {
         }
     }
 
+    fn px(&self, x: usize, y: usize) -> [u8; 3] {
+        let i = (y * self.w + x) * 3;
+        [self.rgb[i], self.rgb[i + 1], self.rgb[i + 2]]
+    }
+
+    /// The design bar's end section drew its three icons around the
+    /// status box (the green 10 px box in the top 60 rows): the battery
+    /// icon right after it, and left of the network name ("Home") the
+    /// network icon, then the volume icon. Each is a run of ink (a pixel
+    /// 40 off the bar's background 14 rows up) next to its neighbour; a
+    /// missing icon leaves its 16 px slot blank, which puts the next run
+    /// out of reach.
+    fn status_icons(&self) -> Result<(), String> {
+        let green = |p: [u8; 3]| p[0] <= 8 && p[1] >= 247 && p[2] <= 8;
+        let mut box_x = (usize::MAX, 0);
+        let mut box_y = (usize::MAX, 0);
+        for y in 0..60.min(self.h) {
+            for x in 0..self.w {
+                if green(self.px(x, y)) {
+                    box_x = (box_x.0.min(x), box_x.1.max(x));
+                    box_y = (box_y.0.min(y), box_y.1.max(y));
+                }
+            }
+        }
+        if box_x.0 == usize::MAX {
+            return Err("no status box".into());
+        }
+        let cy = (box_y.0 + box_y.1) / 2;
+        if cy < 14 || cy + 10 >= self.h {
+            return Err(format!("the status box at row {cy}"));
+        }
+        let ink = |x: usize| {
+            let bg = self.px(x, cy - 14);
+            (cy - 10..=cy + 10).any(|y| {
+                let p = self.px(x, y);
+                (0..3).any(|c| p[c].abs_diff(bg[c]) > 40)
+            })
+        };
+        // Runs of ink columns (letters 3 px apart join) from mid-screen.
+        let mut runs: Vec<(usize, usize)> = Vec::new();
+        for x in self.w / 2..self.w {
+            if ink(x) {
+                match runs.last_mut() {
+                    Some(r) if x - r.1 <= 3 => r.1 = x,
+                    _ => runs.push((x, x)),
+                }
+            }
+        }
+        let at = runs
+            .iter()
+            .position(|r| r.0 <= box_x.0 && box_x.0 <= r.1)
+            .ok_or("the status box is no run")?;
+        // An icon's run: 8 to 21 px wide, its near edge within `slot`.
+        let icon = |r: Option<&(usize, usize)>, slot: (usize, usize), left: bool, what: &str| {
+            match r {
+                Some(&(a, b)) if (7..=20).contains(&(b - a)) => {
+                    let edge = if left { b } else { a };
+                    if (slot.0..=slot.1).contains(&edge) {
+                        return Ok(a);
+                    }
+                }
+                _ => {}
+            }
+            Err(format!(
+                "the {what} icon did not draw: no 8-21 px run reaching columns {slot:?} \
+                 (found {r:?}; runs {runs:?})"
+            ))
+        };
+        let right = box_x.1;
+        icon(runs.get(at + 1), (right + 1, right + 24), false, "battery")?;
+        let text = runs.get(at.wrapping_sub(1)).ok_or("no network name")?;
+        let net = icon(
+            runs.get(at.wrapping_sub(2)),
+            (text.0.saturating_sub(12), text.0 - 1),
+            true,
+            "network",
+        )?;
+        icon(
+            runs.get(at.wrapping_sub(3)),
+            (net.saturating_sub(20), net - 1),
+            true,
+            "volume",
+        )?;
+        Ok(())
+    }
+
     /// The pixels in the top `rows` that are `color`, within 8 a channel.
     fn count(&self, rows: usize, color: [u8; 3]) -> usize {
         self.rgb
@@ -872,7 +960,11 @@ fn the_design_bar_on_the_real_services_keeps_the_budget() {
         ),
         ("bar.strand", bar),
     ];
-    let Some(mut desk) = Desktop::start("bar", &files, None, 1) else {
+    // The machine's icon themes (CI installs Adwaita): the bar's volume,
+    // network and battery icons are looked up, their theme indexed and
+    // their SVGs decoded, as on a desktop.
+    let data_dirs = "/usr/local/share:/usr/share";
+    let Some(mut desk) = Desktop::start("bar", &files, Some(data_dirs), 1) else {
         return;
     };
     desk.notify("budgets", "one kept", false);
@@ -881,10 +973,21 @@ fn the_design_bar_on_the_real_services_keeps_the_budget() {
     for output in ["HEADLESS-1", "HEADLESS-2"] {
         loop {
             desk.alive("at boot");
-            let ok = desk
-                .shot(output)
+            let shot = desk.shot(output);
+            let ok = shot
+                .as_ref()
                 .is_some_and(|s| s.count(60, [0, 255, 0]) >= 64 && s.count(60, [255, 0, 0]) == 0);
             if ok {
+                // And the icons drew beside it.
+                if let Some(Err(e)) = shot.as_ref().map(Shot::status_icons) {
+                    assert!(
+                        Instant::now() < deadline,
+                        "{output}: {e}\n{}",
+                        desk.log_text()
+                    );
+                    std::thread::sleep(Duration::from_millis(200));
+                    continue;
+                }
                 break;
             }
             assert!(

@@ -8244,9 +8244,24 @@ budget. Two causes, two fixes:
   anonymous PSS (`MIMALLOC_PURGE_DELAY=0` showed 2.4 MB). The logic
   thread and `strand run`'s main thread each force a collect
   (`mi_collect(true)`: every arena's pending purges and the thread's own
-  free pages) 500 ms after their last wake (`run.rs`, `trim`). One
-  extra wakeup per burst on each, inside the burst's settling; none
-  while nothing changes. A purge delay of 0 was not chosen: every freed
+  free pages) 500 ms after the last wake of a burst that grew mimalloc's
+  committed memory (`mi_process_info`) 512 kB past what their last trim
+  left (`run.rs`, `Trimmer`). One extra wakeup per such burst on each,
+  inside the burst's settling; none while nothing changes. The first
+  cut armed the trim after every wake: a bar polling `cpu` (or
+  `memory`, or a seconds clock) once a second woke the logic thread
+  twice a second, the trim between each two samples, and forced a full
+  collect each second (`services.rs`'s open cpu popup: 6 logic-thread
+  switches in 3 s against 3). A longer quiet (3 s) was weighed: it
+  would put the trim's wakeup inside the 1–4 s quiet windows every
+  sway test settles on after a burst, while a periodic wake commits
+  nothing new and leaves its frees to mimalloc's own delayed purge. A
+  surface closing grows nothing either: what it held waits for that
+  purge too (on the next allocation 1 s on). The full shell, read soon
+  after each burst, keeps more of it: one release run here gave the
+  bar alone 34.5 MB, the launcher open 42.6, with two toasts and the
+  OSD 48.7, the launcher closed 37.9 (against 42.6–45.3 for the full
+  figure under the first trim; still under 64). A purge delay of 0 was not chosen: every freed
   span would be returned and faulted back during a burst (a reload's
   compile), where the token-edit gate has under 2 ms of headroom.
 
@@ -8260,6 +8275,37 @@ window counts no switch in any of
 strand's threads (the main thread, logic, services, audio, PipeWire's
 data loop, toplevel, text, image, compile, watch, persist, the state
 writers and tokio's workers).
+
+**2026-10-08 · wave4-exitMemory: programs strand starts get THP back.**
+`PR_SET_THP_DISABLE` sets a flag of the process (`MMF_DISABLE_THP`)
+that `fork` inherits and `execve` keeps, so from the constructor on
+every app the launcher started, every `from exec` and `poll` service,
+the overlay's editor and their children ran without transparent huge
+pages for life. `strand_services::child::thp_off` (called by the
+constructor) records what strand inherited, and `restore_in_child`
+puts it back in each `pre_exec` (apps' `spawn_detached`, custom
+services, the overlay's editor): async-signal-safe (an atomic load and
+`prctl`). A process started with THP already off (its parent's choice)
+passes that on unchanged. Tests:
+`apps::tests::a_launched_app_gets_back_the_thp_setting_strand_inherited`
+and the binary's
+`programs_strand_starts_get_back_the_inherited_thp_setting` (a child's
+`THP_enabled` against strand's parent's).
+
+**2026-10-08 · wave4-exitMemory: the gated bar draws its icons.** The
+first cut ran the bar with an empty `XDG_DATA_DIRS`, so `icon
+audio.sink.icon`, `icon battery.icon` and the added network icon drew
+nothing: no theme index, lookup or SVG decode in the gated figure. The
+bar now runs on the machine's themes (`/usr/local/share:/usr/share`;
+CI installs adwaita-icon-theme, the container has Adwaita beside
+Humanity and others, and the default theme resolves to Adwaita on
+both), and the boot check also asserts the three icons drew: ink runs
+of 8–21 px in the battery slot right of the status box and in the
+network and volume slots left of the network name (a missing icon
+leaves its slot blank and fails the check). Release, this container:
+32.5–32.6 MB over two runs with the trim's growth gate (under the
+first trim: 31.3 MB without the icons, 32.0 MB with them), still within
+34 MB and still idle over the 10 s window.
 
 **2026-10-07 · wave4-exitMemory: the full shell is measured with the
 launcher's buffers at 2×.** design.md's 59–64 MB estimate for the full
