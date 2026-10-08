@@ -5,7 +5,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use strand_scene::Scale;
 
@@ -21,9 +21,51 @@ static IDLE_HOOK: OnceLock<fn()> = OnceLock::new();
 /// work (the first call wins). `strand run` returns the allocator's
 /// freed pages there: a worker that goes quiet after shaping keeps them
 /// otherwise, and only its own thread can free them. It runs inside the
-/// burst that woke the worker, so it costs no wakeup of its own.
+/// burst that woke the worker, so it costs no wakeup of its own, once
+/// the channel is empty too (requests that arrived while one was being
+/// shaped belong to the same burst), and at most once per 5 s per
+/// worker plus the drains of that burst's first 250 ms (a stream of
+/// keystrokes pays one, not one each). Work
+/// whose drain was skipped is answered at the next drain allowed.
 pub fn set_idle_hook(hook: fn()) {
     let _ = IDLE_HOOK.set(hook);
+}
+
+/// How often a worker may run the idle hook (as `strand run`'s inline
+/// trim on the main and logic threads).
+const HOOK_EVERY: Duration = Duration::from_secs(5);
+
+/// After a drain that ran the idle hook, how long further drains run it
+/// too: a minute tick's requests for two outputs can arrive a few
+/// milliseconds apart, and what the later one freed stays resident
+/// otherwise.
+const HOOK_TAIL: Duration = Duration::from_millis(250);
+
+/// When a worker's drain runs the idle hook ([`HOOK_EVERY`],
+/// [`HOOK_TAIL`]).
+#[derive(Debug, Default)]
+struct HookGate {
+    /// When a drain last began a hook burst.
+    last: Option<Instant>,
+    /// Until when drains run the hook again.
+    tail: Option<Instant>,
+}
+
+impl HookGate {
+    /// A drain after work at `now`: whether it runs the hook.
+    fn due(&mut self, now: Instant) -> bool {
+        if self.tail.is_some_and(|t| now < t) {
+            return true;
+        }
+        let due = self
+            .last
+            .is_none_or(|l| now.saturating_duration_since(l) >= HOOK_EVERY);
+        if due {
+            self.last = Some(now);
+            self.tail = Some(now + HOOK_TAIL);
+        }
+        due
+    }
 }
 
 /// Errors talking to the text worker.
@@ -108,15 +150,30 @@ impl TextWorker {
                 let mut cancelled: HashSet<TextKey> = HashSet::new();
                 // Whether work was done since the idle hook last ran.
                 let mut worked = false;
+                let mut gate = HookGate::default();
                 loop {
+                    if queue.is_empty() {
+                        // Whatever arrived while the last request was
+                        // being shaped is the same burst: drain it before
+                        // calling the worker idle.
+                        loop {
+                            match req_rx.try_recv() {
+                                Ok(m) => enqueue(m, &mut queue, &mut cancelled),
+                                Err(TryRecvError::Empty) => break,
+                                Err(TryRecvError::Disconnected) => return,
+                            }
+                        }
+                    }
                     if queue.is_empty() {
                         // A cancel always follows its request on the
                         // channel, so with nothing queued every
                         // remembered cancel is for a finished request.
                         cancelled.clear();
-                        if std::mem::take(&mut worked)
+                        if worked
                             && let Some(hook) = IDLE_HOOK.get()
+                            && gate.due(Instant::now())
                         {
+                            worked = false;
                             hook();
                         }
                         match req_rx.recv() {
@@ -272,5 +329,48 @@ impl Drop for TextWorker {
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
+
+    /// A stream of drains (keystrokes 100 ms apart for 20 s) runs the
+    /// hook at most once per [`HOOK_EVERY`] plus its [`HOOK_TAIL`]: the
+    /// first drain and the one 100 ms on, then nothing until five
+    /// seconds have passed.
+    #[test]
+    fn the_hook_runs_at_most_once_per_period_and_its_tail() {
+        let t0 = Instant::now();
+        let mut g = HookGate::default();
+        let ran: Vec<u64> = (0..200)
+            .map(|i| i * 100)
+            .filter(|&t| g.due(t0 + ms(t)))
+            .collect();
+        assert_eq!(
+            ran,
+            [
+                0, 100, 200, 5000, 5100, 5200, 10000, 10100, 10200, 15000, 15100, 15200
+            ]
+        );
+    }
+
+    /// A drain past the tail waits out the period; the first drain after
+    /// it runs the hook again and starts a new tail.
+    #[test]
+    fn a_drain_after_the_period_starts_a_new_tail() {
+        let t0 = Instant::now();
+        let mut g = HookGate::default();
+        assert!(g.due(t0), "the first drain");
+        assert!(g.due(t0 + ms(249)), "inside the tail");
+        assert!(!g.due(t0 + HOOK_TAIL), "past the tail");
+        assert!(!g.due(t0 + ms(4999)));
+        assert!(g.due(t0 + HOOK_EVERY));
+        assert!(g.due(t0 + HOOK_EVERY + ms(10)), "the new tail");
     }
 }

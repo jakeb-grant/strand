@@ -38,6 +38,11 @@
 //! - `the_full_shell_with_a_desktop_of_apps_is_measured`, the same with
 //!   160 more apps (a desktop's worth), half with their own PNG icons of
 //!   mixed sizes, half naming icons of the machine's themes.
+//!
+//! The idle window and the minute tick's one burst are timing claims:
+//! run this binary on its own (CI runs it as a step of its own, with
+//! `--test-threads=1`). A concurrent build or test run on the machine can
+//! split the tick's burst with a scheduling gap over 400 ms.
 //! - `the_release_binary_code_stays_within_15_mib`: the release binary's
 //!   `.text` (most of it resident on a large-folio page cache).
 //!
@@ -368,16 +373,24 @@ impl Desktop {
         });
 
         // The runtime directory under /tmp (a short socket path); the
-        // config and data outside it (the watcher's ancestor watches
-        // would wake for other tests' files there).
+        // config and data outside it. The watcher watches every ancestor
+        // of the config for children moved or deleted, so no ancestor may
+        // be a directory other tests make and remove their own in: not
+        // /tmp, nor the target's `tmp` (`CARGO_TARGET_TMPDIR`), which
+        // every test binary of the workspace shares, but a directory
+        // beside it that only this binary (its tests serialised) uses.
         let tmp = TmpDir::new(
             std::env::temp_dir().join(format!("strand-budgets-{name}-{}", std::process::id())),
         );
         let dir = tmp.0.clone();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let target_tmp = Path::new(env!("CARGO_TARGET_TMPDIR"));
         let home = TmpDir::new(
-            Path::new(env!("CARGO_TARGET_TMPDIR"))
-                .join(format!("budgets-{name}-{}", std::process::id())),
+            target_tmp
+                .parent()
+                .unwrap_or(target_tmp)
+                .join("strand-budgets")
+                .join(format!("{name}-{}", std::process::id())),
         );
         let backlight = home.0.join("backlight/intel_backlight");
         std::fs::create_dir_all(&backlight).unwrap();

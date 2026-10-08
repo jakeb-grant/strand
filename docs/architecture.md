@@ -119,8 +119,10 @@ into an idle shell. A forced collect frees only the calling thread's
 pages (and every arena's pending purges), so the text worker, which
 wakes with every tick and no trim reached, takes a hook:
 `strand_text::set_idle_hook(fn())`, installed once by `main` with
-`run::trim`, runs on each worker's thread when its queue drains after
-work, before it blocks (inside the burst, no wakeup of its own);
+`run::trim`, runs on each worker's thread when its queue and channel
+drain after work, before it blocks (inside the burst, no wakeup of its
+own), at most once per 5 s plus that burst's 250 ms tail, as the main
+thread's inline trim, which also waits out an animation's frames;
 `strand_render::image::set_idle_hook(fn())` does the same for the
 image decode worker. The memory budget also rests on the workspace's
 release profile: the root `Cargo.toml`'s `[profile.release.package]`

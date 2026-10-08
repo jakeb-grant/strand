@@ -1053,6 +1053,11 @@ impl Renderer {
         self.surfaces.get(&surface).is_some_and(|s| s.animating)
     }
 
+    /// True while any surface is moving: frames are still to come.
+    pub fn in_motion(&self) -> bool {
+        self.surfaces.values().any(|s| s.animating)
+    }
+
     /// True if the surface node `root` is on screen with a clock: a
     /// change there animates (a frame at time zero, offline, snaps).
     fn shown(&self, root: Option<NodeId>) -> bool {

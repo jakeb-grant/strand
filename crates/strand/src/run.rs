@@ -1185,8 +1185,12 @@ impl Trimmer {
     /// The end of a wake at `now`, before the loop sleeps: whether to
     /// trim inline, unarmed and [`TRIM_EVERY`] since the last trim, or
     /// within [`TRIM_TAIL`] of the inline trim that began this burst.
-    fn settles(&mut self, now: Instant) -> bool {
-        if self.at.is_some() {
+    /// Never while something on screen is `moving` (a spring, a crossfade:
+    /// more frames are coming), so no forced collect lands between an
+    /// animation's frames; its last frame's wake trims, and starts the
+    /// tail, if one is due.
+    fn settles(&mut self, now: Instant, moving: bool) -> bool {
+        if self.at.is_some() || moving {
             return false;
         }
         if self.tail.is_some_and(|t| now < t) {
@@ -1203,8 +1207,8 @@ impl Trimmer {
     }
 
     /// The end of a wake: trims inline when [`Trimmer::settles`].
-    fn settle(&mut self, now: Instant) {
-        if self.settles(now) {
+    fn settle(&mut self, now: Instant, moving: bool) {
+        if self.settles(now, moving) {
             trim();
         }
     }
@@ -1412,7 +1416,7 @@ pub fn logic(
             trimmer.arm(now);
         }
         trimmer.run(now);
-        trimmer.settle(now);
+        trimmer.settle(now, false);
         let mut timeout = wake.deadline.map(|d| d.saturating_sub(start.elapsed()));
         let mut also = |t: Option<Duration>| {
             if let Some(t) = t {
@@ -1737,7 +1741,7 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
             trimmer.arm(now);
         }
         trimmer.run(now);
-        trimmer.settle(now);
+        trimmer.settle(now, mgr.state().host().renderer.in_motion());
         match mgr.dispatch(trimmer.wait(now)) {
             Ok(()) => {}
             Err(e) if connection_closed(&e) => {
@@ -1861,7 +1865,7 @@ pub(crate) mod tests {
         let t0 = Instant::now();
         let mut t = Trimmer::default();
         let polls: Vec<bool> = (0..11)
-            .map(|i| t.settles(t0 + Duration::from_secs(i)))
+            .map(|i| t.settles(t0 + Duration::from_secs(i), false))
             .collect();
         let at: Vec<usize> = polls
             .iter()
@@ -1872,11 +1876,11 @@ pub(crate) mod tests {
         assert_eq!(at, [0, 5, 10]);
         let mut t = Trimmer::default();
         t.arm(t0);
-        assert!(!t.settles(t0), "armed: the delayed trim comes first");
+        assert!(!t.settles(t0, false), "armed: the delayed trim comes first");
         assert!(t.wake(t0 + TRIM_AFTER));
         t.last = Some(t0 + TRIM_AFTER);
-        assert!(!t.settles(t0 + Duration::from_secs(1)));
-        assert!(t.settles(t0 + TRIM_AFTER + TRIM_EVERY));
+        assert!(!t.settles(t0 + Duration::from_secs(1), false));
+        assert!(t.settles(t0 + TRIM_AFTER + TRIM_EVERY, false));
     }
 
     /// A tick's burst: its first wake trims inline, and so does every
@@ -1888,22 +1892,40 @@ pub(crate) mod tests {
         let t0 = Instant::now();
         let ms = Duration::from_millis;
         let mut t = Trimmer::default();
-        assert!(t.settles(t0), "the tick's first wake");
-        assert!(t.settles(t0 + ms(7)), "the first output's frame");
-        assert!(t.settles(t0 + ms(7)), "the second output's frame");
-        assert!(t.settles(t0 + ms(16)), "a buffer release");
-        assert!(!t.settles(t0 + TRIM_TAIL), "past the tail");
-        assert!(!t.settles(t0 + Duration::from_secs(1)), "a poll");
+        assert!(t.settles(t0, false), "the tick's first wake");
+        assert!(t.settles(t0 + ms(7), false), "the first output's frame");
+        assert!(t.settles(t0 + ms(7), false), "the second output's frame");
+        assert!(t.settles(t0 + ms(16), false), "a buffer release");
+        assert!(!t.settles(t0 + TRIM_TAIL, false), "past the tail");
+        assert!(!t.settles(t0 + Duration::from_secs(1), false), "a poll");
         let next = t0 + TRIM_EVERY;
-        assert!(t.settles(next), "the next burst after five seconds");
-        assert!(t.settles(next + ms(16)), "and its tail");
+        assert!(t.settles(next, false), "the next burst after five seconds");
+        assert!(t.settles(next + ms(16), false), "and its tail");
         // An armed trim's tail is the armed trim itself.
         let mut t = Trimmer::default();
         t.arm(t0);
-        assert!(!t.settles(t0 + ms(7)));
+        assert!(!t.settles(t0 + ms(7), false));
         t.run(t0 + TRIM_AFTER);
-        assert!(!t.settles(t0 + TRIM_AFTER), "trimmed already");
-        assert!(!t.settles(t0 + TRIM_AFTER + ms(16)));
+        assert!(!t.settles(t0 + TRIM_AFTER, false), "trimmed already");
+        assert!(!t.settles(t0 + TRIM_AFTER + ms(16), false));
+    }
+
+    /// An animation's frames (a spring, a crossfade) never trim inline,
+    /// however long since the last trim, and use up no due trim: the
+    /// wake after its last frame does, and starts the tail then.
+    #[test]
+    fn no_inline_trim_lands_between_an_animations_frames() {
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let mut t = Trimmer::default();
+        for f in 0..30 {
+            assert!(!t.settles(t0 + ms(16 * f), true), "frame {f} trimmed");
+        }
+        let done = t0 + ms(16 * 30);
+        assert!(t.settles(done, false), "the settled frame's wake");
+        assert!(t.settles(done + ms(16), false), "and its tail");
+        assert!(!t.settles(done + ms(32), true), "moving again, in the tail");
+        assert!(!t.settles(done + TRIM_TAIL, false), "past the tail");
     }
 
     /// Created and removed nodes and swapped tokens are structural; a

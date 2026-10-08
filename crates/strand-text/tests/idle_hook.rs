@@ -1,6 +1,7 @@
 //! The idle hook (`set_idle_hook`) is process-wide, so it is tested in a
-//! binary of its own: it runs once each time a worker's queue drains
-//! after work, on the worker's thread, and never while the worker idles.
+//! binary of its own: it runs once each time a worker's queue and channel
+//! drain after work, at most once per five seconds (and that burst's
+//! tail), on the worker's thread, and never while the worker idles.
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -57,8 +58,12 @@ fn the_idle_hook_runs_once_per_drained_burst_on_the_worker() {
     // Spawned and idle: nothing done, so no hook.
     std::thread::sleep(Duration::from_millis(100));
     assert_eq!(RAN.load(Ordering::SeqCst), 0, "ran before any work");
-    // One burst of two requests: the hook once, after both.
-    worker.request(request(1, "12:59")).unwrap();
+    // A request that arrives while a long one is being shaped is the
+    // same burst: the hook once, after both (not between them, which
+    // the tail would allow).
+    let long = vec!["shaping"; 2000].join(" ");
+    worker.request(request(1, &long)).unwrap();
+    std::thread::sleep(Duration::from_millis(1));
     worker.request(request(2, "13:00")).unwrap();
     for _ in 0..2 {
         worker
@@ -67,11 +72,32 @@ fn the_idle_hook_runs_once_per_drained_burst_on_the_worker() {
             .unwrap();
     }
     wait_for(1);
+    let first = Instant::now();
     // Idle again: it does not run a second time for the same burst.
-    std::thread::sleep(Duration::from_millis(200));
+    std::thread::sleep(Duration::from_millis(300));
     assert_eq!(RAN.load(Ordering::SeqCst), 1, "ran again while idle");
-    // The next burst runs it again.
-    worker.request(request(3, "13:01")).unwrap();
+    // A stream of small requests past the burst's tail (keystrokes)
+    // pays no hook until five seconds have passed.
+    for key in 3..8 {
+        worker.request(request(key, "13:01")).unwrap();
+        worker
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    assert!(
+        first.elapsed() < Duration::from_secs(5),
+        "the stream was slow"
+    );
+    assert_eq!(
+        RAN.load(Ordering::SeqCst),
+        1,
+        "the hook ran within five seconds of the last"
+    );
+    // The first burst after the period runs it again.
+    std::thread::sleep(Duration::from_secs(5).saturating_sub(first.elapsed()));
+    worker.request(request(9, "13:02")).unwrap();
     worker
         .recv_timeout(Duration::from_secs(10))
         .unwrap()
