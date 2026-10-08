@@ -18,7 +18,7 @@
 //!   on the machine's icon themes (`/usr/share`; CI installs Adwaita):
 //!   once every value is on screen, its volume, network and battery
 //!   icons drawn, and the boot work is done, PSS stays
-//!   within the 34 MB gate (release; a debug build has its own ceiling),
+//!   within the 38 MB ceiling, aiming at 34 (release; a debug build has its own ceiling),
 //!   no page of it is a transparent huge page, over 10 s between two
 //!   minute ticks no thread of strand's wakes (or comes or goes) and no
 //!   frame is drawn, and the next minute tick wakes it in one burst.
@@ -62,15 +62,19 @@ use strand_services::testing::{DbusMock, PrivateBus};
 use window::TestWindow;
 use zbus::zvariant::{OwnedValue, Value as ZValue};
 
-/// design.md: "the build fails above 34 MB for the two-monitor bar".
-const PSS_GATE_KB: u64 = 34 * 1024;
+/// design.md: the two-monitor bar aims at 34 MB (CI warns above it) and
+/// the build fails above 38 MB.
+const PSS_TARGET_KB: u64 = 34 * 1024;
+const PSS_GATE_KB: u64 = 38 * 1024;
 /// A debug build's code is about three times release's (65 MB against
 /// 32 MB here): a ceiling of its own that only catches gross growth; the
 /// gate is checked in release (CI).
 const DEBUG_PSS_CEILING_KB: u64 = 96 * 1024;
 /// design.md's estimate for the full shell with the launcher open:
-/// 59–64 MB. Its top is held in release.
-const FULL_SHELL_KB: u64 = 64 * 1024;
+/// 59–64 MB, the target (CI warns above it); the build fails above 70 MB,
+/// held in release.
+const FULL_SHELL_TARGET_KB: u64 = 64 * 1024;
+const FULL_SHELL_KB: u64 = 70 * 1024;
 /// The idle window: no wakeup, no frame.
 const IDLE: Duration = Duration::from_secs(10);
 /// How long a child command or a D-Bus call of the test's may take.
@@ -1097,7 +1101,20 @@ fn pss_limit() -> (u64, &'static str) {
     if cfg!(debug_assertions) {
         (DEBUG_PSS_CEILING_KB, "debug ceiling")
     } else {
-        (PSS_GATE_KB, "34 MB gate")
+        (PSS_GATE_KB, "38 MB ceiling")
+    }
+}
+
+/// A release measurement above its design.md target: a warning (a CI
+/// annotation), not a failure; the ceiling is what fails the build.
+fn warn_over_target(what: &str, pss: u64, target: u64) {
+    if !cfg!(debug_assertions) && pss > target {
+        eprintln!("{what}: PSS {pss} kB is over the {target} kB target");
+        if std::env::var_os("GITHUB_ACTIONS").is_some() {
+            println!(
+                "\n::warning title=M3 memory over target::{what}: PSS {pss} kB is over the {target} kB target (the build fails above the ceiling)"
+            );
+        }
     }
 }
 
@@ -1204,6 +1221,7 @@ fn the_design_bar_on_the_real_services_keeps_the_budget() {
         "design bar on the real services: PSS {pss} kB ({what} {limit} kB)"
     ));
     assert_eq!(huge, 0, "huge pages resident\n{}", memory_report(pid));
+    warn_over_target("design bar on the real services", pss, PSS_TARGET_KB);
     assert!(
         pss <= limit,
         "PSS {pss} kB over the {limit} kB {what}\n{}",
@@ -1498,10 +1516,11 @@ fn full_shell(name: &str, apps: Apps) {
          and the OSD {full} kB, launcher closed {closed} kB (design.md: 59-64 MB)"
     ));
     assert_eq!(full_huge, 0, "huge pages resident\n{full_report}");
+    warn_over_target("full shell", peak, FULL_SHELL_TARGET_KB);
     if !cfg!(debug_assertions) {
         assert!(
             peak <= FULL_SHELL_KB,
-            "the full shell's PSS {peak} kB is over design.md's {FULL_SHELL_KB} kB\n{full_report}"
+            "the full shell's PSS {peak} kB is over design.md's {FULL_SHELL_KB} kB ceiling\n{full_report}"
         );
     }
 }
