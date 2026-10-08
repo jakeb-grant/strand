@@ -363,6 +363,12 @@ impl Setup {
                 .env("HOME", &home)
                 .env("XDG_CACHE_HOME", dir.join("cache"))
                 .env("XDG_STATE_HOME", dir.join("state"))
+                // The XDG homes follow HOME: a runner's own (GitHub's
+                // ubuntu images export XDG_CONFIG_HOME) would move GTK's
+                // settings and fontconfig's user dir out of this HOME.
+                .env("XDG_CONFIG_HOME", home.join(".config"))
+                .env("XDG_DATA_HOME", home.join(".local/share"))
+                .env_remove("STRAND_ICON_THEME")
                 .envs(bus.env())
                 .envs(env.iter().map(|(k, v)| (*k, v.as_os_str())))
                 .env_remove("STRAND_MOCK")

@@ -7272,8 +7272,32 @@ runs here (12 of the test alone, 8 of the whole binary). Rather than
 widen the wait or accept the configured key in the test, which would
 hide a missed event, the timeout now prints the `default` metadata
 (`pw-metadata`) beside the mirror, so a recurrence shows which side
-stalled. No production code changed; m3-report's Open list records the
-flake and closes the cache-sources proof.
+stalled. CI run 37809666789 (at `1286ce6`) then failed item 3's new
+e2e: "never: the Strand theme's icon". GitHub's ubuntu runners export
+`XDG_CONFIG_HOME` (`/home/runner/.config`), which `strand run`
+inherited, so GTK's `settings.ini` and fontconfig's user dir were read
+outside the test's HOME; setting `XDG_CONFIG_HOME` (and
+`XDG_DATA_HOME`) elsewhere reproduces it here at the same step (and at
+the app step). `crates/strand/tests/services.rs`'s `Setup` now points
+both at the test HOME's `.config` and `.local/share` and clears
+`STRAND_ICON_THEME` (a test's own env still overrides them); its five
+tests pass with and without a foreign `XDG_CONFIG_HOME`,
+`XDG_DATA_HOME` and `STRAND_ICON_THEME`. The product reads the XDG
+variables as the spec says; only the harness leaked them. Run
+37810171999 failed `crates/strand/src/run.rs::tests::five_save_styles_land_on_a_cold_boot`
+instead, "round 3 (style 3): a blank frame": a delete-then-create save
+whose file stayed missing past the watcher's 50 ms removal grace
+(design.md "Coalesce") is a real removal, and removing `bar.strand`
+removes the bar, so on a stalled runner the test's 5 ms gap is the
+assumption that fails, not the reload. Not reproduced in 33 runs here;
+that round's label now carries how long the file was missing, so a
+recurrence says whether the grace was outrun (M1 reload owners). A
+second full run here failed
+`crates/strand-render/tests/damage.rs::first_frame_of_a_new_surface_has_its_text`
+once ("no frame without its text", the worker answering before the
+assertion) and passed five times after; left to strand-render's owners.
+No production code changed; m3-report's Open list records both flakes and
+closes the cache-sources proof.
 
 ## wave4-a2
 

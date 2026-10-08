@@ -3241,6 +3241,10 @@ pub(crate) mod tests {
             } else {
                 (theme_path.clone(), theme(&mut rnd))
             };
+            // How long a delete-then-create file was missing: past the
+            // watcher's 50 ms removal grace (a stalled machine) the
+            // removal is real and may show, so a failure names it.
+            let mut gap = String::new();
             match style {
                 // In place: truncate and write.
                 0 => std::fs::write(&path, &text).unwrap(),
@@ -3260,8 +3264,10 @@ pub(crate) mod tests {
                 // Delete, then create.
                 3 => {
                     std::fs::remove_file(&path).unwrap();
+                    let removed = Instant::now();
                     std::thread::sleep(Duration::from_millis(5));
                     std::fs::write(&path, &text).unwrap();
+                    gap = format!(", missing {} ms", removed.elapsed().as_millis());
                 }
                 // A symlink swapped to a new target.
                 _ => {
@@ -3275,7 +3281,7 @@ pub(crate) mod tests {
                 }
             }
             let expect = cold_boot(&config);
-            m.until(&format!("round {round} (style {style})"), |s| {
+            m.until(&format!("round {round} (style {style}{gap})"), |s| {
                 canonical(s) == expect
             });
         }

@@ -442,6 +442,18 @@ Every M3 tier has a CI step (`.github/workflows/ci.yml`):
   did not reproduce in 20 runs here. The test now prints `pw-metadata`'s `default` on
   that timeout, so a recurrence names the side that stalled (audio
   owners).
+- A CI flake in the debug workspace step: run 37810171999 (`522f6ae`)
+  failed `crates/strand/src/run.rs::tests::five_save_styles_land_on_a_cold_boot`
+  with "round 3 (style 3): a blank frame". Style 3 deletes a file and
+  writes it again 5 ms later; a gap the runner stretched past the
+  watcher's 50 ms removal grace is a real removal of `bar.strand`, so
+  the bar goes. It did not reproduce in 33 runs here; the round's
+  label now carries how long the file was missing (M1 reload owners).
+- `crates/strand-render/tests/damage.rs::first_frame_of_a_new_surface_has_its_text`
+  failed once in a full workspace run here ("no frame without its
+  text": the text worker had already answered when the test asserted
+  that nothing had polled it) and passed in the five runs of its binary
+  after; the assertion races the worker (strand-render owners).
 - Closed since: the cache change sources (`applications/`, icon theme
   bases and GTK settings, font dirs and fontconfig) were proved only in
   `strand-watch` and the caches' own tests. `crates/strand/src/live.rs::tests::cache_sources_name_every_directory_strand_run_watches`
@@ -449,7 +461,10 @@ Every M3 tier has a CI step (`.github/workflows/ci.yml`):
   `crates/strand/tests/services.rs::installed_apps_icons_and_fonts_show_without_a_reload`
   installs an app, an icon theme index, a GTK theme setting, a font
   and a fontconfig dir under a running `strand run` and sees each on
-  screen with no reload (carried issues round 2, item 3).
+  screen with no reload (carried issues round 2, item 3). Its first
+  CI runs failed because `strand run` inherited the runner's
+  `XDG_CONFIG_HOME`; the test harness now points the XDG homes at the
+  test's HOME (decisions.md wave4-core, round 2 closer).
 - `strand-introspect` opens a new D-Bus connection for each 10 s
   introspection refresh of a `from dbus` check; the reloads test carves
   out its Hello and Introspect.
