@@ -17,7 +17,7 @@ mod worker;
 
 pub use atlas::{AtlasConfig, AtlasSlot, AtlasUpload, MAX_PAGE_SIZE, PageId, PageLease};
 pub use engine::{FontConfig, MAX_FONT_PX, MAX_TEXT_BYTES, SUBPIXEL_STEPS, TextEngine};
-pub use worker::{TextError, TextWorker, Waker, set_idle_hook};
+pub use worker::{HookGate, TextError, TextWorker, Waker, set_idle_hook};
 
 use std::ops::Range;
 

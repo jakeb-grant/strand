@@ -1,7 +1,9 @@
 //! The idle hook (`set_idle_hook`) is process-wide, so it is tested in a
 //! binary of its own: it runs once each time a worker's queue and channel
 //! drain after work, at most once per five seconds (and that burst's
-//! tail), on the worker's thread, and never while the worker idles.
+//! tail), a skipped one once the worker has been quiet for 500 ms (at
+//! most one such wake per five seconds), on the worker's thread, and
+//! never while the worker idles.
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -76,33 +78,43 @@ fn the_idle_hook_runs_once_per_drained_burst_on_the_worker() {
     // Idle again: it does not run a second time for the same burst.
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(RAN.load(Ordering::SeqCst), 1, "ran again while idle");
-    // A stream of small requests past the burst's tail (keystrokes)
-    // pays no hook until five seconds have passed.
+    // A stream of small requests past the burst's tail (keystrokes
+    // 150 ms apart) pays no hook while it lasts ...
     for key in 3..8 {
         worker.request(request(key, "13:01")).unwrap();
         worker
             .recv_timeout(Duration::from_secs(10))
             .unwrap()
             .unwrap();
-        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(RAN.load(Ordering::SeqCst), 1, "ran inside the stream");
+        std::thread::sleep(Duration::from_millis(150));
     }
+    // ... but owes one: it runs once the worker has been quiet for
+    // 500 ms, with no further request (the launcher closed, nothing else
+    // to shape for a minute).
+    let ended = Instant::now();
+    wait_for(2);
     assert!(
-        first.elapsed() < Duration::from_secs(5),
-        "the stream was slow"
+        ended.elapsed() >= Duration::from_millis(250),
+        "the owed hook ran early: {:?}",
+        ended.elapsed()
     );
-    assert_eq!(
-        RAN.load(Ordering::SeqCst),
-        1,
-        "the hook ran within five seconds of the last"
-    );
-    // The first burst after the period runs it again.
-    std::thread::sleep(Duration::from_secs(5).saturating_sub(first.elapsed()));
-    worker.request(request(9, "13:02")).unwrap();
+    // Then idle: nothing more is owed.
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(RAN.load(Ordering::SeqCst), 2, "ran again while idle");
+    // A second stream within five seconds of that wake owes no second
+    // wake: what it freed waits for the next drain allowed.
+    worker.request(request(10, "13:02")).unwrap();
     worker
         .recv_timeout(Duration::from_secs(10))
         .unwrap()
         .unwrap();
-    wait_for(2);
+    std::thread::sleep(Duration::from_millis(800));
+    assert!(
+        first.elapsed() < Duration::from_secs(5),
+        "the test was slow"
+    );
+    assert_eq!(RAN.load(Ordering::SeqCst), 2, "woke twice within 5 s");
     let on = ON.lock().unwrap().clone();
     let me = std::thread::current().id();
     assert!(

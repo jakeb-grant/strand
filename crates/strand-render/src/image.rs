@@ -12,11 +12,13 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
+use std::time::Instant;
 
 use strand_scene::SurfaceId;
+use strand_text::HookGate;
 use vello_cpu::Pixmap;
 use vello_cpu::color::PremulRgba8;
 
@@ -636,7 +638,11 @@ static IDLE_HOOK: OnceLock<fn()> = OnceLock::new();
 /// work (the first call wins), like `strand_text::set_idle_hook`:
 /// `strand run` returns the allocator's freed pages there, which only
 /// the worker's own thread can free. It runs inside the burst that woke
-/// the worker, so it costs no wakeup of its own.
+/// the worker, so it costs no wakeup of its own, and only after a
+/// decode (a drain that only dropped unwanted requests owes none), at
+/// most once per 5 s plus that burst's first 250 ms
+/// ([`strand_text::HookGate`]); a skipped one runs once the worker has
+/// been quiet for 500 ms (at most one such wake per 5 s).
 pub fn set_idle_hook(hook: fn()) {
     let _ = IDLE_HOOK.set(hook);
 }
@@ -662,12 +668,41 @@ impl ImageWorker {
         let thread = std::thread::Builder::new()
             .name("strand-image".into())
             .spawn(move || {
-                let mut next = req_rx.recv().ok();
-                while let Some(key) = next {
+                let mut gate = HookGate::default();
+                loop {
+                    let key = match req_rx.try_recv() {
+                        Ok(key) => key,
+                        Err(TryRecvError::Disconnected) => return,
+                        Err(TryRecvError::Empty) => {
+                            // Drained: the decodes' garbage goes back
+                            // before the worker blocks (rate-limited as
+                            // the text worker's, `HookGate`).
+                            let wait = IDLE_HOOK
+                                .get()
+                                .and_then(|hook| gate.drained(Instant::now(), hook));
+                            let next = match wait {
+                                None => req_rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
+                                Some(d) => req_rx.recv_timeout(d),
+                            };
+                            match next {
+                                Ok(key) => key,
+                                // Quiet: the owed hook, then block.
+                                Err(RecvTimeoutError::Timeout) => {
+                                    if let Some(hook) = IDLE_HOOK.get() {
+                                        gate.quiet(Instant::now(), hook);
+                                    }
+                                    continue;
+                                }
+                                Err(RecvTimeoutError::Disconnected) => return,
+                            }
+                        }
+                    };
                     // A request no frame wants any more (a size passed
-                    // through, a node gone) is dropped undecoded.
+                    // through, a node gone) is dropped undecoded, and
+                    // owes no hook.
                     let want = still.lock().map(|w| w.contains(&key)).unwrap_or(true);
                     let r = if want {
+                        gate.worked();
                         Some(
                             std::panic::catch_unwind(|| load(&key, &theme)).unwrap_or_else(|_| {
                                 Err(ImageError::Decode("decoder panicked".into()))
@@ -682,18 +717,6 @@ impl ImageWorker {
                     if want && let Some(w) = &waker {
                         w();
                     }
-                    next = match req_rx.try_recv() {
-                        Ok(key) => Some(key),
-                        Err(TryRecvError::Disconnected) => None,
-                        Err(TryRecvError::Empty) => {
-                            // Drained: the decode's garbage goes back
-                            // before the worker blocks.
-                            if let Some(hook) = IDLE_HOOK.get() {
-                                hook();
-                            }
-                            req_rx.recv().ok()
-                        }
-                    };
                 }
             })?;
         Ok(Self {

@@ -115,6 +115,23 @@ fn close(a: [u8; 3], b: [u8; 3]) -> bool {
 const RED: [u8; 3] = [255, 0, 0];
 const GREEN: [u8; 3] = [0, 255, 0];
 
+/// A directory of test `name`'s own: beside the target's `tmp`
+/// (`CARGO_TARGET_TMPDIR`), not in it, under a parent no other test
+/// uses. Every test binary of the workspace makes and removes
+/// directories in `tmp`, and this binary's tests run in parallel too
+/// under `cargo test --workspace`, while the watcher watches each
+/// ancestor of a shell's config (and the apps service its data dirs)
+/// for children moved or deleted: a sibling's cleanup would wake an
+/// idle window (as `budgets.rs`'s home).
+fn own_dir(name: &str) -> PathBuf {
+    let target_tmp = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    target_tmp
+        .parent()
+        .unwrap_or(target_tmp)
+        .join(format!("strand-services-{name}"))
+        .join(std::process::id().to_string())
+}
+
 fn tools() -> bool {
     for tool in ["sway", "swaymsg", "grim"] {
         if Command::new(tool).arg("--version").output().is_err() {
@@ -318,8 +335,7 @@ impl Setup {
         let (sway, display) = sway(&dir);
         // The config outside /tmp: the watcher's light watches on its
         // ancestors would wake for other tests' directories there.
-        let home =
-            Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{name}-{}", std::process::id()));
+        let home = own_dir(name);
         let _ = std::fs::remove_dir_all(&home);
         let config = home.join(".config/strand");
         std::fs::create_dir_all(&config).unwrap();
@@ -582,8 +598,7 @@ fn strand_check_checks_from_dbus_services_on_the_system_bus() {
     ) else {
         return;
     };
-    let dir =
-        Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("ppd-check-{}", std::process::id()));
+    let dir = own_dir("ppd-check");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let check = |property: &str| -> (bool, String) {
@@ -625,8 +640,7 @@ fn strand_check_checks_from_dbus_services_on_the_system_bus() {
 /// poll's command never ran. Opening the popup runs it.
 #[test]
 fn the_m3_services_sleep_when_nothing_changes() {
-    let data =
-        Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("m3-idle-{}", std::process::id()));
+    let data = own_dir("m3-idle");
     let _ = std::fs::remove_dir_all(&data);
     let apps = data.join("share/applications");
     std::fs::create_dir_all(&apps).unwrap();

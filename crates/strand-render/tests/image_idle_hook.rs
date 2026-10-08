@@ -1,7 +1,9 @@
 //! The image worker's idle hook (`image::set_idle_hook`) is
-//! process-wide, so it is tested in a binary of its own: it runs once
-//! each time the worker's queue drains after a decode, on the worker's
-//! thread, and never while the worker idles.
+//! process-wide, so it is tested in a binary of its own: it runs when
+//! the worker's queue drains after a decode, at most once per five
+//! seconds (and that burst's tail), a skipped one once the worker has
+//! been quiet for 500 ms, on the worker's thread, and never while the
+//! worker idles.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -70,12 +72,35 @@ fn the_idle_hook_runs_once_per_drained_burst_on_the_image_worker() {
     arrive(&mut cache, 2, 1);
     let first = RAN.load(Ordering::SeqCst);
     assert!(first <= 2, "ran {first} times for two decodes");
-    // Idle again: it does not run for the same burst.
-    std::thread::sleep(Duration::from_millis(200));
+    // Idle again: it does not run for the same burst (and the burst's
+    // 250 ms tail is over).
+    std::thread::sleep(Duration::from_millis(300));
     assert_eq!(RAN.load(Ordering::SeqCst), first, "ran again while idle");
-    // The next decode runs it again.
+    // A decode past the burst's tail, within five seconds of the hook:
+    // the drain skips it (a scroll through icons pays one, not one per
+    // drain) ...
     cache.want(surface, &[key("halves.jpg", 24)], false);
-    arrive(&mut cache, 1, first + 1);
+    arrive(&mut cache, 1, first);
+    let decoded = Instant::now();
+    assert_eq!(RAN.load(Ordering::SeqCst), first, "ran within five seconds");
+    // ... and owes it: it runs once the worker has been quiet for
+    // 500 ms, with no further request.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while RAN.load(Ordering::SeqCst) == first {
+        assert!(Instant::now() < deadline, "the owed hook never ran");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        decoded.elapsed() >= Duration::from_millis(400),
+        "the owed hook ran early: {:?}",
+        decoded.elapsed()
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        RAN.load(Ordering::SeqCst),
+        first + 1,
+        "ran again while idle"
+    );
     let on = ON.lock().unwrap().clone();
     assert!(
         on.iter().all(|t| *t != std::thread::current().id()),

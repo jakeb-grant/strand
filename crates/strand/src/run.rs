@@ -1088,6 +1088,12 @@ fn reload_event(l: &Loaded, report: Option<&Report>, commit: Duration) -> Json {
 /// How long a thread stays quiet after a burst before [`trim`].
 const TRIM_AFTER: Duration = Duration::from_millis(500);
 
+/// The longest a delayed trim is pushed back once armed: a surface that
+/// never settles (a spinner's frames, each pushing the trim back)
+/// trims anyway this long after the structural diff, at one of its
+/// own wakes, so what the diff freed does not stay resident for good.
+const TRIM_HELD_AT_MOST: Duration = Duration::from_secs(5);
+
 /// How long a thread goes without a [`trim`] before it trims inline at
 /// the end of a wake it was given anyway (a tick, a poll, a service's
 /// report): what an unarmed burst freed goes back within this, at no
@@ -1136,11 +1142,14 @@ fn structural(diff: &SceneDiff) -> bool {
 
 /// When a thread's loop [`trim`]s: [`TRIM_AFTER`] after the last wake of
 /// a burst that [`Trimmer::arm`]ed it (a [`structural`] diff sent or
-/// applied). A wake while armed pushes the trim back; an unarmed wake
-/// (a tick, a poll) changes nothing.
+/// applied). A wake while armed pushes the trim back, to at most
+/// [`TRIM_HELD_AT_MOST`] after the burst was first armed; an unarmed
+/// wake (a tick, a poll) changes nothing.
 #[derive(Default)]
 struct Trimmer {
     at: Option<Instant>,
+    /// When the pending delayed trim was first armed.
+    armed: Option<Instant>,
     /// When this thread last trimmed.
     last: Option<Instant>,
     /// Until when the burst an inline trim began trims inline again.
@@ -1150,7 +1159,15 @@ struct Trimmer {
 impl Trimmer {
     /// A structural burst at `now`: trim once it has been quiet.
     fn arm(&mut self, now: Instant) {
-        self.at = Some(now + TRIM_AFTER);
+        let first = *self.armed.get_or_insert(now);
+        self.at = Some(Self::quiet_from(first, now));
+    }
+
+    /// The trim a burst first armed at `first` owes after a wake at
+    /// `now`: [`TRIM_AFTER`] on, held back no later than
+    /// [`TRIM_HELD_AT_MOST`] after `first`.
+    fn quiet_from(first: Instant, now: Instant) -> Instant {
+        (now + TRIM_AFTER).min(first + TRIM_HELD_AT_MOST)
     }
 
     /// A wake at `now`: whether the quiet ran out (trim now; the trim's
@@ -1159,10 +1176,12 @@ impl Trimmer {
         match self.at {
             Some(at) if now >= at => {
                 self.at = None;
+                self.armed = None;
                 true
             }
             Some(_) => {
-                self.at = Some(now + TRIM_AFTER);
+                let first = *self.armed.get_or_insert(now);
+                self.at = Some(Self::quiet_from(first, now));
                 false
             }
             None => false,
@@ -1926,6 +1945,48 @@ pub(crate) mod tests {
         assert!(t.settles(done + ms(16), false), "and its tail");
         assert!(!t.settles(done + ms(32), true), "moving again, in the tail");
         assert!(!t.settles(done + TRIM_TAIL, false), "past the tail");
+    }
+
+    /// A structural burst (a toast appearing) costs exactly one wake of
+    /// its own: the trim [`TRIM_AFTER`] after its last wake, and nothing
+    /// is armed after it.
+    #[test]
+    fn a_structural_burst_costs_one_trim_wake() {
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let mut t = Trimmer::default();
+        t.arm(t0);
+        // The toast's frames.
+        for f in 1..4 {
+            let now = t0 + ms(16 * f);
+            t.run(now);
+            assert_eq!(t.wait(now), Some(TRIM_AFTER), "frame {f}");
+        }
+        let quiet = t0 + ms(48) + TRIM_AFTER;
+        assert!(t.wake(quiet), "the one trim wake");
+        assert_eq!(t.wait(quiet), None, "nothing armed after it");
+    }
+
+    /// A surface that never settles (a spinner's frames, every 16 ms)
+    /// pushes an armed trim back no further than [`TRIM_HELD_AT_MOST`]
+    /// after the structural diff: one of its frames trims then, and the
+    /// next structural diff arms afresh.
+    #[test]
+    fn an_endless_animation_holds_the_trim_back_at_most_five_seconds() {
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let mut t = Trimmer::default();
+        t.arm(t0);
+        let trimmed: Vec<u64> = (1..700)
+            .map(|f| 16 * f)
+            .filter(|&f| t.wake(t0 + ms(f)))
+            .collect();
+        assert_eq!(trimmed, [5008], "trims once, at the first frame past 5 s");
+        let later = t0 + ms(12_000);
+        t.arm(later);
+        assert_eq!(t.wait(later), Some(TRIM_AFTER), "a fresh arm");
+        assert!(!t.wake(later + ms(16)));
+        assert!(t.wake(later + ms(16) + TRIM_AFTER));
     }
 
     /// Created and removed nodes and swapped tokens are structural; a

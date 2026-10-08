@@ -38,13 +38,13 @@
 //! - `the_full_shell_with_a_desktop_of_apps_is_measured`, the same with
 //!   160 more apps (a desktop's worth), half with their own PNG icons of
 //!   mixed sizes, half naming icons of the machine's themes.
+//! - `the_release_binary_code_stays_within_15_mib`: the release binary's
+//!   `.text` (most of it resident on a large-folio page cache).
 //!
 //! The idle window and the minute tick's one burst are timing claims:
 //! run this binary on its own (CI runs it as a step of its own, with
 //! `--test-threads=1`). A concurrent build or test run on the machine can
 //! split the tick's burst with a scheduling gap over 400 ms.
-//! - `the_release_binary_code_stays_within_15_mib`: the release binary's
-//!   `.text` (most of it resident on a large-folio page cache).
 //!
 //! Each prints its figures (`--nocapture`). Skipped, loudly, without sway,
 //! grim, dbus-daemon, python-dbusmock, PipeWire or WirePlumber (CI sets

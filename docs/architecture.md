@@ -126,8 +126,16 @@ thread's inline trim, which also waits out an animation's frames
 (`strand_render::Renderer::in_motion()`, true while any surface has a
 spring or crossfade unsettled: a moving wake never trims inline);
 `strand_render::image::set_idle_hook(fn())` runs the same hook on the
-image decode worker as its queue drains after a decode, without the
-5 s limit (decodes are rare: a theme or launcher change, not a tick). The memory budget also rests on the workspace's
+image decode worker as its queue drains after a decode (not after
+requests dropped undecoded). Both workers rule it with
+`strand_text::HookGate`: a drain it skips owes the hook, and the worker
+runs it once it has been quiet for 500 ms (one wake, only ever after
+real work and at most once per 5 s, inside the burst's settling as the
+main thread's delayed trim; so an idle worker never wakes, and a skip
+past that wake waits for the next drain allowed). The main and logic
+threads' delayed trim (`run::Trimmer`, armed by a structural diff) is
+pushed back by each wake while armed, but no further than 5 s after it
+was armed, so a surface that never settles still trims. The memory budget also rests on the workspace's
 release profile: the root `Cargo.toml`'s `[profile.release.package]`
 opt-levels build event-rate code for size, and neither `cargo install`
 from crates.io nor a packager's own profile carries them, so packages
@@ -1941,6 +1949,16 @@ handled by name it is `strand_services::Data` (`Null`, `Bool`, `Int`,
 fields }` by name, `Enum { ty, variant }`), with `ToData` / `FromData` /
 `SchemaType` (the schema spelling: `float`, `text?`, `[Workspace]`) for
 the primitives, `Option`, `Vec` and derived types.
+
+`strand_services::child` is the spawn contract: `thp_off()` (called
+once, from `strand`'s ELF constructor), `restore_in_child()` and
+`thp_enabled(status)`. Every program strand starts, in any crate (the
+apps service's launches, `from exec` services, the overlay's editor,
+and later the M4 lock helpers and M5's `strand call` and inspector),
+must run `child::restore_in_child()` as its `CommandExt::pre_exec`:
+the kernel keeps `MMF_DISABLE_THP` across `fork` and `execve`, so a
+child spawned without it, and all its descendants, run without
+transparent huge pages for life.
 
 - **A service** is a state struct:
 
