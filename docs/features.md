@@ -13,8 +13,10 @@ boots (21.3–21.6 MB, MB = MiB = 1,024 kB as the script's 34 × 1,024 kB gate; 
 per frame at 1.0 / 1.25, at most 1,161 px² per tick over both outputs, no
 correction frame after boot); see `docs/m0-report.md`; in `cargo test`:
 `crates/strand/tests/demo.rs` (`demo_bar_on_two_outputs_then_idle`: PSS,
-idle, alignment on 2560@1.0, 2560@1.25 and a hotplugged 1920@1.0; PSS held to
-34 MB in a release run, to a 40 MB debug ceiling in a debug run; SKIPPED
+idle, alignment on 2560@1.0, 2560@1.25 and a hotplugged 1920@1.0; PSS in a
+release run warned above the 34 MB target and failed above the 38 MB ceiling
+(decisions.md wave4-exitMemory, targets and ceilings), held to a 40 MB debug
+ceiling in a debug run; SKIPPED
 without sway locally; CI requires sway, see the CI line below), `crates/strand/src/demo/mod.rs`
 (`a_minute_tick_repaints_at_most_2000_px2`). Re-checked at the M2 exit on design.md's own bar (theme.strand + bar.strand): 25.8–27.3 MB, 0 context switches between ticks, 228–745 px² per tick over both outputs on every tick but local midnight's; the midnight tick and the one after it (the day name changes width, so the centred clock moves and repaints whole) are a measured, documented exception, held to design.md's "about 60×20 px" per output instead (offline 902–924 px² at 1× and 1,206–1,365 px² at 1.25, 2,108–2,289 px² in all: `crates/strand-render/tests/damage.rs::the_midnight_tick_damages_only_the_centred_clock`; on sway: `scripts/m2-exit.sh` section 1b; decisions.md wave3-pixels (exit, fixer r3)) — `scripts/m2-exit.sh`, `crates/strand/tests/demo.rs::the_design_bar_keeps_the_m0_budget`, docs/m2-report.md; the demo itself is now 11.3 MB
 
