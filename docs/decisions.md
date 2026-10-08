@@ -8602,3 +8602,29 @@ stops offering `zwlr_virtual_pointer_manager_v1` fails the bar test
 instead of skipping its click. Still unchecked live: a second output
 (per-screen `workspaces.on(screen)`, one bar per monitor) on any of the
 three.
+
+## wave4-exitReport
+
+**2026-10-08 · wave4-exitReport: the merge, the report's sources and the
+screenshots.** `wave4/exit-ci` merged into `wave4/core` (`e132d8d`): the
+only conflicts were the M3 exit line of features.md (exit-ci ticked the
+matrix box, core the reload and memory boxes; the merged line keeps all
+three ticks with core's citations and exit-ci's paragraph below it) and
+the end of decisions.md (both sections kept, exit-ci's after core's).
+`docs/m3-report.md` quotes only numbers re-run at the merged head or read
+from named CI runs. Its screenshots come from a test, not a script
+driving a shell by hand: `budgets.rs::the_m3_screenshots`, ignored by
+default and run by `scripts/m3-shots.sh`, is `full_shell` with the
+machine's apps only (no magenta test apps) and every one of its checks,
+saving HEADLESS-1 at each step; crops are found from what changed
+between steps, so they follow the fixtures. design.md's bar reads no
+`network`, so for the shots alone the bar gains a two-line `Network`
+component (icon and SSID) after `Volume`; the measured runs keep the
+fixtures byte for byte. The python-dbusmock tier's box is ticked with
+each test's own `dbus-daemon --session --print-address`
+(`PrivateBus`) standing in for `dbus-run-session`: it is the same
+private session bus, and it lets one test binary hold several buses.
+The local latency bench failed its M1 token clause by 0.1 ms in two of
+three runs on the shared machine (portal clause green in all three);
+the report states it rather than re-running until green, and lists the
+token headroom as open.

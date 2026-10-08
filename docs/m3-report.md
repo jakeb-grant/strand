@@ -1,0 +1,284 @@
+# M3 exit report
+
+Measured 2026-10-08 on the dev container (Intel Xeon @ 2.10 GHz, 4 vCPUs
+shared with another agent's builds), Ubuntu 24.04, rustc 1.97.0, headless
+sway 1.9 with the pixman renderer, PipeWire 1.0.5 with WirePlumber 0.4.17,
+dbus-daemon 1.14.10, python-dbusmock 0.31 (under `/usr/bin/python3.12`,
+picked with `STRAND_DBUSMOCK_PYTHON`), release builds with the workspace's
+profile (thin LTO, one codegen unit, mimalloc, the per-package size
+opt-levels of decisions.md wave4-exitMemory). Every number below comes
+from a test in the tree that fails when its gate is missed, run at
+`9b4cc13` (wave4/core after merging wave4/exit-ci) with
+`STRAND_REQUIRE_SWAY=1 STRAND_REQUIRE_DBUS=1 STRAND_REQUIRE_PIPEWIRE=1`,
+so a missing tool fails instead of skipping. CI runs the same tests on
+`ubuntu-24.04` (`.github/workflows/ci.yml`, job `check`) and the
+compositor matrix in an Arch Linux container (job `compositors`); the
+CI figures quoted are read from the runs' notices and logs.
+
+"Real services" means the service code `strand run` ships, with no
+`STRAND_MOCK`: the system services talk D-Bus to python-dbusmock's
+UPower, NetworkManager, BlueZ, logind and power-profiles-daemon templates
+and to small zbus mocks (the portal, a tray item, an MPRIS player) on a
+private `dbus-daemon`; the notification server is the shell's own; audio
+is a private PipeWire with WirePlumber and null sinks; workspaces and
+windows come from the compositor's IPC; apps from the machine's desktop
+entries and icon themes; cpu and memory from procfs. No test touches the
+machine's own system or session bus.
+
+## Result
+
+| Gate (`docs/features.md`, M3 exit) | Budget | Measured | |
+| --- | --- | --- | --- |
+| Runs on Hyprland, niri and sway | the `workspaces`, `windows` and `wm` stores and design.md's bar agree with each compositor | sway, niri 26.04 and Hyprland 0.56.2 green in CI's `compositors` job, latest [job 113227617119](https://github.com/jakeb-grant/strand/actions/runs/37752116747/job/113227617119) of run 37752116747 on this branch's merge commit `e132d8d` | pass |
+| 100 reloads with no reconnects | no service restarts, no new connection, no mock call | **100 reloads in 8.4 s**, every check clean (below) | pass |
+| Memory: design.md's bar, 2×2560×1440, real services | 34 MB target (warns), 38 MB ceiling (fails) | **31,690 kB** here, **32,664 kB** in CI run 37749789401 | pass, under the target |
+| Memory: full shell, launcher open, toasts, OSD | design.md 59–64 MB; 64 MB target, 70 MB ceiling | **45,502 kB** (12 desktop entries), **55,477 kB** (169) here; 49,384 / 58,115 kB in CI run 37749789401 | pass, under design.md's estimate |
+| Idle wakeups with services running | 0 | **0** context switches in any thread over 10 s on the design bar; 0 logic/services wakeups in each services idle test | pass |
+| Portal change on the next frame (M1's latency gate, M3 clause) | painted within one refresh at p95, presented at the next frame | `SettingChanged` sent → painted **p95 3.4–3.6 ms**, → presented **p95 3.7–3.8 ms** (one refresh 16.7 ms) | pass |
+
+Screenshots (`scripts/m3-shots.sh`, below) show each surface of the
+full shell on the real services.
+
+## Compositor matrix
+
+Method: `crates/strand/tests/compositor_matrix.rs` runs against a
+compositor someone else started (`STRAND_MATRIX=sway|niri|hyprland`),
+driven by `scripts/compositor-matrix.sh` and, in CI, by
+`scripts/compositor-matrix-ci.sh` in `archlinux:latest` (sway headless,
+niri nested in a headless sway, Hyprland on a vkms card through seatd).
+It compares strand's stores with the compositor's own CLI (`swaymsg`,
+`niri msg`, `hyprctl`) through a window opening, a title change, a
+second window and `win.focus()`, a switch from outside, `ws.focus()`,
+`win.close()` and a reload; on Hyprland also a named workspace
+(`name:matrix`) entered and left. Then design.md's bar in `strand run`
+must draw the same dots, pill and title and switch the compositor on a
+click (a `zwlr_virtual_pointer_manager_v1` pointer;
+`STRAND_MATRIX_REQUIRE_CLICK=1` in CI makes a missing one a failure).
+The job uploads its screenshots as the `compositor-matrix` artifact.
+
+| Run | Commit | sway | niri | Hyprland |
+| --- | --- | --- | --- | --- |
+| [37653086662](https://github.com/jakeb-grant/strand/actions/runs/37653086662) | wave4/exit-ci | 1.12 pass | 26.04 pass | 0.56.2 pass |
+| [37653750783](https://github.com/jakeb-grant/strand/actions/runs/37653750783) | wave4/exit-ci | pass | pass | pass |
+| [37655626535, job 112910256243](https://github.com/jakeb-grant/strand/actions/runs/37655626535/job/112910256243) | wave4/exit-ci, named workspace and click required | pass | pass | pass |
+| [37752116747, job 113227617119](https://github.com/jakeb-grant/strand/actions/runs/37752116747/job/113227617119) | wave4/core `e132d8d` (this merge) | pass | 26.04 pass | 0.56.2 pass |
+
+The job tracks the compositors' current Arch packages on purpose
+(decisions.md wave4-exit-ci) and prints `pacman -Q`. Found on the way:
+Hyprland 0.55+ with a Lua config answers `ok` to dispatcher objects, which
+the adapter falls back to (`crates/strand-services/tests/hyprland.rs::a_lua_config_hyprland_gets_lua_dispatches`).
+
+**Not tested live:** a second output on any of the three compositors
+(`workspaces.on(screen)` per screen, `Workspace.screen` on a second
+output, one bar per monitor). Each run has one output; the per-screen
+logic is covered only by the offline replay tests and by sway's two
+headless outputs in the other tiers.
+
+## 100 reloads with no reconnects
+
+Method: `crates/strand/tests/reloads.rs::a_hundred_reloads_reconnect_and_restart_nothing`
+(debug build, its own CI step `cargo test -p strand --test reloads`).
+`strand run` on headless sway with a shell reading every builtin service
+but `screens` and `auth` (M4), all on the real backends listed above,
+plus a `from file` and a `from dbus` service. After a baseline it saves
+100 edits in place through the watcher (token edits; markup edits that
+remove and re-add the only reader of `memory`, 33 of them within the
+5 s stop grace; binding edits of expressions reading services). Then,
+6 s after the last save (past the stop grace), it checks:
+
+- the log has one `service `x` started (run 1)` line per service and no
+  second one; the only new lifecycle line is `memory` stopping once;
+- no new bus connection except the `from dbus` check's introspection
+  refresh (a bus monitor accounts for every connection number as Hello
+  and Introspect only);
+- no mock answered a property read or method call past the test's own
+  setup (python-dbusmock call logs; the zbus mocks count theirs);
+- strand's socket inodes are unchanged (sway IPC, PipeWire, the bus,
+  Wayland; 13 sockets in this run's baseline), sway accepted no IPC
+  connection (its `-d` log), `pw-mon` saw no new PipeWire client or
+  object of strand's, and `strand watch` reported no reset;
+- every service's value is still on screen (19 boxes, each checking the
+  value the test gave it; `memory` a 20th while its reader is mounted).
+
+A committed negative control then changes one declaration (`mood`) and
+the log gains exactly that service stopping and starting.
+
+| | Measured here | CI |
+| --- | --- | --- |
+| 100 reloads | **8.4 s** (4–8 s in earlier runs) | green in run [37647946808](https://github.com/jakeb-grant/strand/actions/runs/37647946808) and every `check` since, e.g. [37749789401](https://github.com/jakeb-grant/strand/actions/runs/37749789401) |
+| Calls answered before the reloads (test setup) | bluez5 4, logind 0, networkmanager 47, ppd 1, upower 14; tray item 8, media player 6, portal 5 | — |
+| New calls, connections, sockets, PipeWire clients, restarts after | **0** | 0 |
+
+## Memory
+
+Method: `crates/strand/tests/budgets.rs` (release, its own CI step
+`cargo test --release -p strand --test budgets -- --test-threads=1`).
+PSS is read from `/proc/<pid>/smaps_rollup` after the shell has settled
+(a whole second without a context switch or frame and the allocator's
+trim done), on headless sway with two 2560×1440 outputs.
+
+**Gate in force** (design.md, "Memory budget"; decisions.md
+wave4-exitMemory, targets and ceilings): the two-monitor bar warns above
+the 34 MB target and fails above the 38 MB ceiling (38,912 kB); the full
+shell warns above the 64 MB target and fails above the 70 MB ceiling.
+MB here are MiB (1,024 kB), as the tests compute them. Every figure in
+this report is also under the old hard gates (34 and 64 MB).
+
+| Measurement | PSS (kB) | Anon | File | Shmem |
+| --- | --- | --- | --- | --- |
+| Design bar, 2 outputs (1.0, 1.25), real services, icons drawn | **31,690** | 11,780 | 17,414 (binary 16,352) | 2,496 |
+| Full shell, 12 entries (9 machine + 3 test): bar alone | 32,161 | | | |
+| … launcher open at 2× | 40,739 | | | |
+| … + two toasts | 44,505 | | | |
+| … + OSD up (peak) | **45,502** | 15,540 | 17,794 | 12,168 |
+| … launcher closed, toasts up | 34,840 | | | |
+| Full shell, 169 entries (PNG and theme icons): bar alone | 33,955 | | | |
+| … launcher open at 2× | 50,043 | | | |
+| … + two toasts | 54,121 | | | |
+| … + OSD up (peak) | **55,477** | 25,352 | 17,845 | 12,280 |
+| … launcher closed, toasts up | 45,559 | | | |
+| Release binary `.text` | 14,331,986 bytes (gate 15 MiB) | | | |
+
+CI run [37749789401](https://github.com/jakeb-grant/strand/actions/runs/37749789401)
+(`d74caad`, ubuntu-24.04, 12 machine entries): design bar 32,664 kB;
+full shell 49,384 kB (15 entries) and 58,115 kB (172 entries) at peak;
+`.text` 14,329,874 bytes. Earlier CI runs: 32.6 MB (run 37733561676),
+32.7 MB (run 37721528809).
+
+design.md estimates 29–34 MB for the bar and 59–64 MB for the full
+shell; both measure inside or under their estimate. The design bar's
+test also checks every value on screen (a green box that needs the
+battery, network, volume, notifications, workspace and window values the
+test gave), the volume, network and battery icons drawn from the
+machine's themes, and no transparent huge page.
+
+**Caveat: the file-backed share follows the page cache.** About 17 MB of
+each figure is `Pss_File`, mostly the binary's own mapped pages (16.4 MB
+here). How much of it is resident depends on what the kernel has cached
+and evicted, so the same build has read about 8 MB lower in a reviewer's
+run (decisions.md wave4-exitMemory, "the figures are read by component").
+The anonymous and shmem parts are the ones strand controls: 14.3 MB for
+the bar, 27.7–37.6 MB for the full shell at peak.
+
+The figures rest on decisions.md wave4-exitMemory: transparent huge
+pages off from an ELF constructor, the allocator trimmed after
+structural bursts (at most every 5 s, never between an animation's
+frames), and the release profile's size opt-levels for event-rate
+crates, which `budgets.rs::the_release_profile_keeps_the_size_opt_levels_the_budget_rests_on`
+guards. **Owner note:** the targets-and-ceilings wording of the gate and
+the ~27 `[profile.release.package]` opt-level overrides were proposed by
+the architect after the owner asked for reasonable memory expectations;
+the owner has not explicitly confirmed the 34/38 and 64/70 MB numbers or
+the overrides. Every measured figure also passes the stricter 34/64 MB
+gates, so the milestone does not depend on that decision.
+
+## Idle wakeups
+
+design.md: a running service with nothing changing causes zero logic or
+render wakeups; only cpu and memory poll, and only while read.
+
+| Test | What it holds | Result |
+| --- | --- | --- |
+| `crates/strand/tests/budgets.rs::the_design_bar_on_the_real_services_keeps_the_budget` (release) | the design bar on every real backend: 10 s with no context switch in any thread, no thread started or ended, no frame; a minute tick woken in one burst | **0** switches |
+| `crates/strand/tests/services.rs::the_real_services_sleep_when_nothing_changes` (release) | the portal follow waits on D-Bus; `cpu`, read only by a closed popup through a top-level `let`, stays stopped; opening samples once a second, closing stops the samples at once and the service 5 s later | **0** logic/services wakeups; PSS 22,858 kB |
+| `crates/strand/tests/services.rs::the_m3_services_sleep_when_nothing_changes` (release) | `apps`, a `from file`, the design's ppd `from dbus` and a closed popup's `from poll` running | **0** wakeups; the poll command never ran until opened |
+| `crates/strand-services/tests/dbus_idle.rs::the_dbus_services_sleep_when_nothing_changes` | battery, brightness (a fake backlight), network (a background scan included), bluetooth, media, the tray's watcher and the notification server, each against its daemon | **0** services-thread switches |
+| `crates/strand-services/tests/audio_idle.rs` | audio on PipeWire: the `strand-pipewire` thread and libpipewire's threads, also with a peak meter on a sink that plays nothing | **0** |
+| `crates/strand-services/tests/idle.rs` | the compositor services: their runtime and the protocol thread | **0** |
+
+All green in the debug workspace run here and in CI's `check` job.
+
+## Portal latency clause
+
+Method: `crates/strand/src/bench.rs::reload_latency_to_the_presented_frame`
+(release, CI step `cargo test --release -p strand --bin strand
+reload_latency -- --test-threads=1`, `STRAND_LATENCY_ROUNDS=50`). Beside
+its sway the bench runs a mock `org.freedesktop.portal.Settings` on a
+private `dbus-daemon`, read by the real `system` service as in `strand
+run`, and flips `color-scheme` with `SettingChanged`, one change per
+edit, each on an idle surface. It times from just before the signal is
+sent to the `wp_presentation` of the first frame showing it, and gates it
+as design.md's "portal or monitor changes on the next frame": painted
+within one refresh at p95, presented at the compositor's next frame.
+
+| Run | sent → painted p95 | → presented p95 |
+| --- | --- | --- |
+| here, 3 runs × 50 changes | 3.4–3.6 ms | 3.7–3.8 ms |
+| CI run [37647946808](https://github.com/jakeb-grant/strand/actions/runs/37647946808), 50 changes | 2.1 ms | 2.2 ms |
+
+**The M1 token clause of the same bench is near its edge on this
+machine.** Two of the three local runs failed the token-edit gate by
+0.1 ms (headless p95 19.9 and 20.4 ms against breaks of 19.8 and
+20.3 ms; the third passed at 19.6 against 19.7) while the machine was
+shared; the portal, markup, scale and plug clauses passed in all three.
+The headless token p95 was 18.0 ms at M1 and 19.2 ms at wave4-exitReload.
+The bench collects every clause's verdict before it fails, so the token
+flake does not hide the portal result. CI's `check` job passed the
+whole bench in run 37749789401 (`d74caad`). Whether the size opt-levels
+added for memory cost the token path its headroom is listed as open.
+
+## Screenshots
+
+`scripts/m3-shots.sh` runs `budgets.rs::the_m3_screenshots` (ignored by
+default): `full_shell` with the machine's apps only, every check of the
+full-shell test made, HEADLESS-1 (2560×1440 at scale 2) saved at each
+step. design.md's bar shows no network, so for the shots the bar's end
+section gains a two-line `Network` component (icon and SSID) after the
+volume; the other fixtures are design.md's code byte for byte.
+
+The bar: sway's workspace (the focused, occupied dot), the test
+window's title from `windows`, the clock, the PipeWire sink's volume
+icon, NetworkManager's Wi-Fi network "Home", UPower's battery at 42 %
+with 1 h 30 min left:
+
+![The design bar on the real services](images/m3-bar.png)
+
+The launcher listing the container's desktop entries with their icons
+(ImageMagick, LibreOffice, Vim; the six Python and Java entries are
+`NoDisplay`):
+
+![The launcher with the machine's apps](images/m3-launcher.png)
+
+Two toasts sent with `Notify` over D-Bus to the shell's own notification
+server:
+
+![Toasts from the notifications server](images/m3-toasts.png)
+
+The OSD raised by `wpctl set-volume @DEFAULT_AUDIO_SINK@` on PipeWire:
+
+![The volume OSD after a PipeWire change](images/m3-osd.png)
+
+All four at once:
+
+![The full shell on the real services](images/m3-shell.png)
+
+## CI tiers
+
+Every M3 tier has a CI step (`.github/workflows/ci.yml`):
+
+- `check` installs `dbus-daemon`, `python3-dbusmock`, `pipewire`,
+  `pipewire-pulse`, `pipewire-bin`, `wireplumber`, `pulseaudio-utils`,
+  `libpipewire-0.3-dev`, `libspa-0.2-dev`, `clang` and `libclang-dev`,
+  prints their versions, and sets `STRAND_REQUIRE_SWAY`,
+  `STRAND_REQUIRE_DBUS` and `STRAND_REQUIRE_PIPEWIRE`;
+- `cargo test --workspace` (the services tier: python-dbusmock, the zbus
+  mocks, PipeWire; the idle tests), `cargo clippy` and `cargo test
+  --lib` of `strand-services` without default features (no PipeWire);
+- `cargo test -p strand --test reloads` (100 reloads, 10 min limit);
+- `cargo test --release -p strand --test services` and `--test budgets`
+  (idle and memory on the real services);
+- the release `reload_latency` bench with its portal clause;
+- the `compositors` job: sway, niri and Hyprland in `archlinux:latest`.
+
+## Open
+
+- A second output on Hyprland, niri and sway is not checked live (see
+  the matrix).
+- The token clause of the M1 latency bench has under 0.2 ms of p95
+  headroom on this machine; whether the memory step's size opt-levels
+  cost it should be measured (`opt-level = "s"` on `strand` against 3).
+- The owner's confirmation of the 34/38 and 64/70 MB targets and
+  ceilings and of the release opt-level overrides.
+- `strand-introspect` opens a new D-Bus connection for each 10 s
+  introspection refresh of a `from dbus` check; the reloads test carves
+  out its Hello and Introspect.
