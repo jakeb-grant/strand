@@ -103,13 +103,22 @@ and the thread ends when the main thread's senders are gone), the logic
 clock's `Wake::deadline` (the dispatch timeout) or `Wake::wall` on a
 `CLOCK_REALTIME` timerfd (`TFD_TIMER_ABSTIME | TFD_TIMER_CANCEL_ON_SET`:
 a resume or a clock step wakes it at once). After a burst that grew
-mimalloc's committed memory 512 kB past what the last trim left, the
+mimalloc's committed memory 512 kB past what the last trim (by either
+thread: the growth is process-wide) left, the
 logic thread, and likewise `strand run`'s main thread (a dispatch
 timeout), forces one allocator collect 500 ms after its last wake
 (`run::Trimmer`, `mi_collect(true)`), so what a burst freed is returned
 to the system once the shell goes quiet; a thread woken on a period
 (a 1 s cpu poll) grows nothing and pays no trim between its wakes
-(decisions.md, wave4-exitMemory). Every program strand starts gets back
+(decisions.md, wave4-exitMemory). The services' shared runtime ends
+an idle blocking-pool thread 500 ms after its last task
+(`client::BLOCKING_KEEP_ALIVE`), inside the burst's settling, not 10 s
+into an idle shell. The memory budget also rests on the workspace's
+release profile: the root `Cargo.toml`'s `[profile.release.package]`
+opt-levels build event-rate code for size, and neither `cargo install`
+from crates.io nor a packager's own profile carries them, so packages
+build from the workspace (`budgets.rs` holds the release binary's
+`.text` to 15 MiB). Every program strand starts gets back
 the THP setting strand inherited (`strand_services::child`, in each
 `pre_exec`). SIGINT, SIGTERM (a
 `signalfd` on the main loop, the signals blocked in every thread) and

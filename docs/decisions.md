@@ -8203,6 +8203,12 @@ frame (`crates/strand/tests/budgets.rs`, CI step after `services`). The
 clock's minute tick is outside the window by construction: the design
 budgets it as the one wakeup a minute.
 
+**2026-10-08 · wave4-exitMemory: budgets are in MiB.** design.md's
+"34 MB" and "59–64 MB" are held, as M0's gate was, as 34 × 1024 kB and
+64 × 1024 kB of `smaps_rollup` PSS (which the kernel reports in KiB),
+and every figure written "MB" in these entries is kB / 1024; the
+release binary's `.text` gate is 15 MiB.
+
 **2026-10-07 · wave4-exitMemory: why the bar was over budget on the real
 services, and the fix.** Measured first at 38.0 MB (this container,
 kernel 6.18): the binary's code 17.8 MB resident (`r-xp`) plus 2.2 MB of

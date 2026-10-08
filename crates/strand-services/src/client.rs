@@ -150,6 +150,14 @@ impl Drop for SharedBody {
 /// A job for the shared runtime thread: builds a future there.
 type Job = Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()>>> + Send>;
 
+/// How long a thread of the runtime's blocking pool (`spawn_blocking`:
+/// desktop entries, tray icons, notification images, file reads) waits
+/// for more work before it ends. Tokio's default (10 s) ended a boot's
+/// blocking threads 10 s into an idle shell, each a wakeup with nothing
+/// changing; this ends them inside the burst's own settling (as the
+/// allocator's trim, `strand run`'s `TRIM_AFTER`).
+pub const BLOCKING_KEEP_ALIVE: Duration = Duration::from_millis(500);
+
 /// The shared tokio current-thread runtime and its thread.
 struct Shared {
     jobs: Option<mpsc::UnboundedSender<Job>>,
@@ -160,6 +168,7 @@ impl Shared {
     fn start() -> std::io::Result<Shared> {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
+            .thread_keep_alive(BLOCKING_KEEP_ALIVE)
             .build()?;
         let (tx, mut rx) = mpsc::unbounded_channel::<Job>();
         let thread = std::thread::Builder::new()

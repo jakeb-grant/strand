@@ -42,6 +42,7 @@ use std::io;
 use std::os::fd::{AsFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use calloop::channel::{Channel, Event, Sender};
@@ -1122,13 +1123,30 @@ fn committed() -> usize {
     commit
 }
 
+/// What the last [`trim`] (by either thread) left committed: the
+/// growth a trim answers is process-wide, so one thread's trim resets
+/// the other's base too. With a base of its own, the main thread found
+/// the logic thread's (and the services', images', text's) boot growth
+/// still above its own last trim at the first minute tick, and woke a
+/// second time half a second after it to trim.
+static LAST_TRIM: AtomicUsize = AtomicUsize::new(0);
+
 /// When a thread's loop [`trim`]s: [`TRIM_AFTER`] after the last wake of
-/// a burst that committed [`TRIM_GROWTH`] more than the last trim left.
-#[derive(Default)]
+/// a burst that committed [`TRIM_GROWTH`] more than the last trim (by
+/// any thread) left.
 struct Trimmer {
     at: Option<Instant>,
-    /// The committed memory the last trim left.
-    base: usize,
+    /// The committed memory the last trim left ([`LAST_TRIM`]).
+    base: &'static AtomicUsize,
+}
+
+impl Default for Trimmer {
+    fn default() -> Trimmer {
+        Trimmer {
+            at: None,
+            base: &LAST_TRIM,
+        }
+    }
 }
 
 impl Trimmer {
@@ -1143,7 +1161,12 @@ impl Trimmer {
                 return true;
             }
             Some(_) => self.at = Some(now + TRIM_AFTER),
-            None if commit > self.base.saturating_add(TRIM_GROWTH) => {
+            None if commit
+                > self
+                    .base
+                    .load(Ordering::Relaxed)
+                    .saturating_add(TRIM_GROWTH) =>
+            {
                 self.at = Some(now + TRIM_AFTER)
             }
             None => {}
@@ -1153,7 +1176,7 @@ impl Trimmer {
 
     /// After the trim: what it left is the new base.
     fn trimmed(&mut self, commit: usize) {
-        self.base = commit;
+        self.base.store(commit, Ordering::Relaxed);
     }
 
     /// How long the loop may sleep for the trim.
@@ -1729,8 +1752,10 @@ pub(crate) mod tests {
     fn trims_over(period: Option<Duration>, span: Duration, grows: usize) -> (u32, u32) {
         let t0 = Instant::now();
         let end = t0 + span;
-        let mut trimmer = Trimmer::default();
-        trimmer.trimmed(10 << 20);
+        let mut trimmer = Trimmer {
+            at: None,
+            base: Box::leak(Box::new(AtomicUsize::new(10 << 20))),
+        };
         let mut commit = (10 << 20) + grows;
         let mut now = t0;
         let mut source = period.map(|p| t0 + p);
@@ -1780,6 +1805,25 @@ pub(crate) mod tests {
             ),
             (5, 3)
         );
+    }
+
+    /// One thread's trim resets the other's base: the main thread does
+    /// not trim again at its next wake (a minute tick) for growth the
+    /// logic thread's trim already answered.
+    #[test]
+    fn a_trim_by_either_thread_answers_the_growth_for_both() {
+        let base: &'static AtomicUsize = Box::leak(Box::new(AtomicUsize::new(10 << 20)));
+        let (mut main, mut logic) = (Trimmer { at: None, base }, Trimmer { at: None, base });
+        let t0 = Instant::now();
+        // A burst on the logic thread grew the heap 2 MB; it trims.
+        let grown = (12 << 20) + 1;
+        assert!(!logic.wake(t0, grown));
+        assert!(logic.wake(t0 + TRIM_AFTER, grown));
+        logic.trimmed(11 << 20);
+        // The main thread's next wake (the tick) sees nothing new.
+        let tick = t0 + Duration::from_secs(60);
+        assert!(!main.wake(tick, 11 << 20));
+        assert_eq!(main.wait(tick), None);
     }
 
     /// `committed` reads mimalloc's own count: it grows with a large

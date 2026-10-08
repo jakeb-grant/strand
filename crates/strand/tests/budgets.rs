@@ -19,17 +19,25 @@
 //!   once every value is on screen, its volume, network and battery
 //!   icons drawn, and the boot work is done, PSS stays
 //!   within the 34 MB gate (release; a debug build has its own ceiling),
-//!   no page of it is a transparent huge page, and over 10 s between two
-//!   minute ticks no thread of strand's wakes and no frame is drawn.
+//!   no page of it is a transparent huge page, over 10 s between two
+//!   minute ticks no thread of strand's wakes (or comes or goes) and no
+//!   frame is drawn, and the next minute tick wakes it in one burst.
 //! - `the_full_shell_on_the_real_services_is_measured`, the five design
 //!   files (bar, launcher, toasts, OSD, theme) with the machine's own
-//!   desktop entries and icons (`/usr/share`), `HEADLESS-1` at scale 2
-//!   (design.md budgets the launcher's buffers at 2×), measured against
-//!   design.md's 59–64 MB estimate for the full shell with the launcher
-//!   open: the bar alone, then the launcher open, two notifications from
-//!   an app as toasts and the OSD up (a `wpctl` volume change) at once,
-//!   then the launcher closed. The open figure is held to the estimate's
+//!   desktop entries and icons (`/usr/share`) and three of the test's,
+//!   `HEADLESS-1` at scale 2 (design.md budgets the launcher's buffers
+//!   at 2×), measured against design.md's 59–64 MB estimate for the full
+//!   shell with the launcher open: the bar alone, then the launcher open
+//!   (the test's apps' icons found on screen), two notifications from an
+//!   app as toasts (on screen), the OSD up too (a `wpctl` volume change;
+//!   on screen), then the launcher closed. The larger of the settled
+//!   launcher-and-toasts figure and the OSD's is held to the estimate's
 //!   top, 64 MB, in release.
+//! - `the_full_shell_with_a_desktop_of_apps_is_measured`, the same with
+//!   160 more apps (a desktop's worth), half with their own PNG icons of
+//!   mixed sizes, half naming icons of the machine's themes.
+//! - `the_release_binary_code_stays_within_15_mib`: the release binary's
+//!   `.text` (most of it resident on a large-folio page cache).
 //!
 //! Each prints its figures (`--nocapture`). Skipped, loudly, without sway,
 //! grim, dbus-daemon, python-dbusmock, PipeWire or WirePlumber (CI sets
@@ -251,12 +259,15 @@ struct Desktop {
 
 impl Desktop {
     /// `None` (after saying why) when a tool is missing and its tier is
-    /// not required. `data_dirs` is strand's `XDG_DATA_DIRS`.
+    /// not required. `data_dirs` is strand's `XDG_DATA_DIRS`; `apps` the
+    /// test's own desktop entries in its `XDG_DATA_HOME` (see
+    /// [`write_apps`]).
     fn start(
         name: &str,
         files: &[(&str, String)],
         data_dirs: Option<&str>,
         scale: u32,
+        apps: Apps,
     ) -> Option<Desktop> {
         if !tools(name) {
             return None;
@@ -373,6 +384,7 @@ impl Desktop {
             std::fs::write(backlight.join(f), format!("{v}\n")).unwrap();
         }
         std::fs::create_dir_all(home.0.join("share/applications")).unwrap();
+        write_apps(&home.0.join("home-share"), apps);
         let config = home.0.join(".config/strand");
         std::fs::create_dir_all(&config).unwrap();
         for (file, text) in files {
@@ -537,18 +549,6 @@ impl Desktop {
                 self.log_text()
             );
             std::thread::sleep(Duration::from_millis(50));
-        }
-    }
-
-    /// Waits for `quiet` without a frame (up to `limit`).
-    fn wait_quiet(&self, quiet: Duration, limit: Duration) {
-        let deadline = Instant::now() + limit;
-        loop {
-            let n = self.frames().len();
-            std::thread::sleep(quiet);
-            if self.frames().len() == n || Instant::now() >= deadline {
-                return;
-            }
         }
     }
 
@@ -806,6 +806,39 @@ impl Shot {
         Ok(())
     }
 
+    /// The bands of rows (each at least `tall` rows) with at least
+    /// `wide` pixels of `color` (within 24 a channel): one per marked
+    /// app's icon in the launcher's list.
+    fn bands(&self, color: [u8; 3], wide: usize, tall: usize) -> usize {
+        let mut bands = 0;
+        let mut run = 0;
+        for row in self.rgb.chunks_exact(self.w * 3) {
+            let n = row
+                .chunks_exact(3)
+                .filter(|p| (0..3).all(|c| p[c].abs_diff(color[c]) <= 24))
+                .count();
+            if n >= wide {
+                run += 1;
+            } else {
+                bands += usize::from(run >= tall);
+                run = 0;
+            }
+        }
+        bands + usize::from(run >= tall)
+    }
+
+    /// The pixels in `xs` × `ys` that differ from `other`'s.
+    fn changed(
+        &self,
+        other: &Shot,
+        xs: std::ops::Range<usize>,
+        ys: std::ops::Range<usize>,
+    ) -> usize {
+        ys.flat_map(|y| xs.clone().map(move |x| (x, y)))
+            .filter(|&(x, y)| x < self.w && y < self.h && self.px(x, y) != other.px(x, y))
+            .count()
+    }
+
     /// The pixels in the top `rows` that are `color`, within 8 a channel.
     fn count(&self, rows: usize, color: [u8; 3]) -> usize {
         self.rgb
@@ -827,6 +860,131 @@ fn status_of(pid: u32, key: &str) -> Option<u64> {
 
 fn pss_kb(pid: u32) -> u64 {
     status_of(pid, "Pss:").unwrap_or(0)
+}
+
+/// The test's own desktop entries (in strand's `XDG_DATA_HOME`).
+#[derive(Clone, Copy, Default)]
+struct Apps {
+    /// "App NNN": each with its own solid magenta PNG (by path; sizes
+    /// 16 to 256 px in turn), first in the launcher's list (by name), so
+    /// its rows can be found on screen.
+    marked: usize,
+    /// "Tool NNN": each naming an icon of the machine's themes (looked
+    /// up and decoded as a desktop's apps are).
+    themed: usize,
+}
+
+/// The magenta the marked apps' icons are.
+const MARK: [u8; 3] = [255, 0, 255];
+
+/// Writes `apps` under `share` (`applications/`, `test-icons/`).
+fn write_apps(share: &Path, apps: Apps) {
+    let entries = share.join("applications");
+    let icons = share.join("test-icons");
+    std::fs::create_dir_all(&entries).unwrap();
+    std::fs::create_dir_all(&icons).unwrap();
+    let entry = |file: String, name: &str, icon: &str| {
+        let text = format!(
+            "[Desktop Entry]\nType=Application\nName={name}\nComment=A {name} the budgets test wrote\n\
+             Exec=true\nIcon={icon}\nCategories=Utility;\n"
+        );
+        std::fs::write(entries.join(file), text).unwrap();
+    };
+    const SIZES: [u32; 6] = [16, 32, 48, 64, 128, 256];
+    for i in 0..apps.marked {
+        let size = SIZES[i % SIZES.len()];
+        let png = icons.join(format!("mark-{i:03}.png"));
+        image::RgbaImage::from_pixel(size, size, image::Rgba([MARK[0], MARK[1], MARK[2], 255]))
+            .save(&png)
+            .unwrap();
+        entry(
+            format!("strand-test-app-{i:03}.desktop"),
+            &format!("App {i:03}"),
+            &png.to_string_lossy(),
+        );
+    }
+    let names = theme_icons();
+    assert!(
+        apps.themed == 0 || !names.is_empty(),
+        "no icon in /usr/share/icons/{{hicolor,Adwaita}}"
+    );
+    for i in 0..apps.themed {
+        entry(
+            format!("strand-test-tool-{i:03}.desktop"),
+            &format!("Tool {i:03}"),
+            &names[i % names.len()],
+        );
+    }
+}
+
+/// The icon names of the machine's hicolor and Adwaita themes, sorted.
+fn theme_icons() -> Vec<String> {
+    let mut names = std::collections::BTreeSet::new();
+    let mut stack: Vec<PathBuf> = ["hicolor", "Adwaita"]
+        .iter()
+        .map(|t| Path::new("/usr/share/icons").join(t))
+        .collect();
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let path = e.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|x| x == "png" || x == "svg")
+                && let Some(stem) = path.file_stem()
+            {
+                names.insert(stem.to_string_lossy().into_owned());
+            }
+        }
+    }
+    names.into_iter().collect()
+}
+
+/// The size of the release binary's `.text` (ELF64, little endian).
+fn text_size(elf: &[u8]) -> Option<u64> {
+    let u16_at = |o: usize| Some(u16::from_le_bytes(elf.get(o..o + 2)?.try_into().ok()?));
+    let u32_at = |o: usize| Some(u32::from_le_bytes(elf.get(o..o + 4)?.try_into().ok()?));
+    let u64_at = |o: usize| Some(u64::from_le_bytes(elf.get(o..o + 8)?.try_into().ok()?));
+    if elf.get(..6)? != b"\x7fELF\x02\x01" {
+        return None;
+    }
+    let shoff = usize::try_from(u64_at(0x28)?).ok()?;
+    let (shentsize, shnum, shstrndx) = (
+        usize::from(u16_at(0x3a)?),
+        usize::from(u16_at(0x3c)?),
+        usize::from(u16_at(0x3e)?),
+    );
+    let section = |i: usize| shoff + i * shentsize;
+    let strings = usize::try_from(u64_at(section(shstrndx) + 0x18)?).ok()?;
+    (0..shnum).find_map(|i| {
+        let name = strings + usize::try_from(u32_at(section(i))?).ok()?;
+        let end = name + elf.get(name..)?.iter().position(|&b| b == 0)?;
+        (&elf[name..end] == b".text").then(|| u64_at(section(i) + 0x20))?
+    })
+}
+
+/// Waits for one whole second without a context switch in any of
+/// `pid`'s threads and without a frame (up to `limit`): a burst's
+/// settling done, the allocator's trim (500 ms after it) included.
+fn settled(desk: &mut Desktop, what: &str, limit: Duration) {
+    let pid = desk.pid();
+    let deadline = Instant::now() + limit;
+    loop {
+        let (f, w) = (desk.frames().len(), switches(pid));
+        std::thread::sleep(Duration::from_secs(1));
+        if desk.frames().len() == f && switches(pid) == w {
+            return;
+        }
+        desk.alive(what);
+        assert!(
+            Instant::now() < deadline,
+            "{what}: never settled: {:?}\n{}",
+            per_thread(pid),
+            desk.log_text()
+        );
+    }
 }
 
 /// The rollup's split and the ten mappings with the most PSS.
@@ -902,12 +1060,15 @@ fn switches(pid: u32) -> u64 {
     per_thread(pid).values().sum()
 }
 
-fn seconds_into_minute() -> u64 {
+fn seconds_since_epoch() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs()
-        % 60
+}
+
+fn seconds_into_minute() -> u64 {
+    seconds_since_epoch() % 60
 }
 
 /// The tests run one at a time: a test's directories removed beside the
@@ -964,7 +1125,7 @@ fn the_design_bar_on_the_real_services_keeps_the_budget() {
     // network and battery icons are looked up, their theme indexed and
     // their SVGs decoded, as on a desktop.
     let data_dirs = "/usr/local/share:/usr/share";
-    let Some(mut desk) = Desktop::start("bar", &files, Some(data_dirs), 1) else {
+    let Some(mut desk) = Desktop::start("bar", &files, Some(data_dirs), 1, Apps::default()) else {
         return;
     };
     desk.notify("budgets", "one kept", false);
@@ -999,6 +1160,18 @@ fn the_design_bar_on_the_real_services_keeps_the_budget() {
         }
     }
     let pid = desk.pid();
+    // The minute tick is watched in release only (a debug build's tick
+    // burst has gaps of its own); so is the first tick waited for.
+    let watch_tick = !cfg!(debug_assertions);
+    // One minute tick past first: the first tick after boot can commit
+    // fresh memory (a new heap segment for a thread), which the
+    // allocator's trim answers once, half a second on; the tick watched
+    // below is a steady one.
+    let booted = seconds_since_epoch() / 60;
+    while watch_tick && seconds_since_epoch() / 60 == booted {
+        desk.alive("waiting for the first minute tick");
+        std::thread::sleep(Duration::from_millis(500));
+    }
     // Boot work done: a whole second without a wakeup or a frame, early
     // enough in the minute that the window below ends before the tick.
     let deadline = Instant::now() + Duration::from_secs(150);
@@ -1051,15 +1224,96 @@ fn the_design_bar_on_the_real_services_keeps_the_budget() {
         "woke while idle over {IDLE:?}: {woke:?}\n{}",
         desk.log_text()
     );
+    // No thread came or went either (one that ended inside the window
+    // ran inside it).
+    assert!(
+        before.keys().eq(after.keys()),
+        "threads changed while idle over {IDLE:?}: {:?} -> {:?}",
+        before.keys().collect::<Vec<_>>(),
+        after.keys().collect::<Vec<_>>()
+    );
     assert_eq!(desk.frames().len(), frames, "painted while idle");
     desk.alive("after the idle window");
+    if !watch_tick {
+        return;
+    }
+    // The minute tick: design.md's "wakes once a minute" is one burst
+    // (the clock's timer, its frame), with no second wake after it (the
+    // allocator's trim arms only after a burst that grew the heap, and
+    // comes 500 ms after the burst's last wake: a gap over 400 ms).
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    let until = Instant::now()
+        + Duration::from_millis(u64::try_from(60_000 - millis % 60_000).unwrap() + 3_000);
+    let mut last = per_thread(pid);
+    let mut wakes: Vec<(Instant, Vec<String>)> = Vec::new();
+    while Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(20));
+        let now = per_thread(pid);
+        let woke: Vec<String> = now
+            .iter()
+            .filter(|(t, n)| last.get(*t) != Some(n))
+            .map(|(t, _)| t.clone())
+            .collect();
+        if !woke.is_empty() {
+            wakes.push((Instant::now(), woke));
+        }
+        last = now;
+    }
+    let bursts = wakes
+        .windows(2)
+        .filter(|w| w[1].0 - w[0].0 > Duration::from_millis(400))
+        .count()
+        + usize::from(!wakes.is_empty());
+    let t0 = wakes.first().map(|w| w.0);
+    let shown: Vec<String> = wakes
+        .iter()
+        .map(|(t, w)| format!("+{:?} {w:?}", t0.map(|t0| *t - t0).unwrap_or_default()))
+        .collect();
+    assert_eq!(
+        bursts, 1,
+        "the minute tick woke strand in {bursts} bursts, not one: {shown:#?}"
+    );
+    desk.alive("after the minute tick");
+}
+
+/// The full shell on the real services with the machine's own apps
+/// (and three marked ones the test finds on screen).
+#[test]
+fn the_full_shell_on_the_real_services_is_measured() {
+    full_shell(
+        "full",
+        Apps {
+            marked: 3,
+            themed: 0,
+        },
+    );
+}
+
+/// The same with a desktop's worth of apps: 160 more, half with their
+/// own PNG icons of mixed sizes and half naming icons of the machine's
+/// themes.
+#[test]
+fn the_full_shell_with_a_desktop_of_apps_is_measured() {
+    full_shell(
+        "apps",
+        Apps {
+            marked: 80,
+            themed: 80,
+        },
+    );
 }
 
 /// The full shell on the real services, measured against design.md's
-/// 59–64 MB: the bar, then the launcher open with the machine's apps,
-/// two toasts and the OSD up, then the launcher closed.
-#[test]
-fn the_full_shell_on_the_real_services_is_measured() {
+/// 59–64 MB: the bar, then the launcher open (its marked apps' icons on
+/// screen), two toasts (on screen), then the OSD up too (on screen),
+/// then the launcher closed. Each figure but the OSD's is read once the
+/// shell has settled (a whole second without a switch or a frame, the
+/// allocator's trim done); the OSD is up 1.2 s, so its figure is read
+/// 0.7 s after its surface draws.
+fn full_shell(name: &str, apps: Apps) {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let fixture = |name: &str| -> (String, String) {
         let text = match name {
@@ -1085,19 +1339,21 @@ fn the_full_shell_on_the_real_services_is_measured() {
     .map(fixture)
     .collect();
     let files: Vec<(&str, String)> = files.iter().map(|(n, t)| (n.as_str(), t.clone())).collect();
-    // The machine's own apps and icons.
+    // The machine's own apps and icons, and the test's.
     let data_dirs = "/usr/local/share:/usr/share";
-    let apps = std::fs::read_dir("/usr/share/applications")
+    let machine = std::fs::read_dir("/usr/share/applications")
         .map(|d| {
             d.flatten()
                 .filter(|e| e.path().extension().is_some_and(|x| x == "desktop"))
                 .count()
         })
         .unwrap_or(0);
-    let Some(mut desk) = Desktop::start("full", &files, Some(data_dirs), 2) else {
+    let entries = machine + apps.marked + apps.themed;
+    let Some(mut desk) = Desktop::start(name, &files, Some(data_dirs), 2, apps) else {
         return;
     };
     let pid = desk.pid();
+    let limit = Duration::from_secs(60);
     // The bars drawn and the boot work done.
     let deadline = Instant::now() + Duration::from_secs(30);
     while desk.surfaces() < 2 {
@@ -1109,19 +1365,50 @@ fn the_full_shell_on_the_real_services_is_measured() {
         );
         std::thread::sleep(Duration::from_millis(50));
     }
-    desk.wait_quiet(Duration::from_secs(1), Duration::from_secs(30));
+    settled(&mut desk, "the bars", limit);
     let bar = pss_kb(pid);
-    // The launcher, on the focused output (HEADLESS-1, scale 2).
+    let shot = |desk: &Desktop, what: &str| {
+        desk.shot("HEADLESS-1")
+            .unwrap_or_else(|| panic!("{what}: no screenshot of HEADLESS-1"))
+    };
+    let before_launcher = shot(&desk, "the bars");
+    // The launcher, on the focused output (HEADLESS-1, scale 2), listing
+    // the apps: the marked ones first (by name), one 64 px magenta icon
+    // (32 at 2x) a row.
     let before = desk.surfaces();
     desk.strand_set("launcher.open", "true");
     desk.wait_surfaces(before, "the launcher");
-    desk.wait_quiet(Duration::from_millis(500), Duration::from_secs(10));
+    settled(&mut desk, "the launcher", limit);
     let launcher = pss_kb(pid);
-    // Two toasts from an app.
+    let open = shot(&desk, "the launcher");
+    let rows = open.bands(MARK, 48, 48);
+    assert!(
+        rows >= apps.marked.min(3),
+        "the launcher shows {rows} rows with a marked app's icon, not {}\n{}",
+        apps.marked.min(3),
+        desk.log_text()
+    );
+    assert_eq!(
+        before_launcher.bands(MARK, 48, 48),
+        0,
+        "marked icons before the launcher opened"
+    );
+    // Two toasts from an app, top right of HEADLESS-1 (380 wide at 2x,
+    // under the bar).
     let before = desk.surfaces();
     desk.notify("Build finished", "strand: all <b>green</b>", true);
     desk.notify("Meeting", "Stand-up in 5 minutes", true);
     desk.wait_surfaces(before, "the toasts");
+    settled(&mut desk, "the toasts", limit);
+    let toasts = pss_kb(pid);
+    let toasted = shot(&desk, "the toasts");
+    let w = toasted.w;
+    let top_right = toasted.changed(&open, w - 780..w, 120..600);
+    assert!(
+        top_right >= 40_000,
+        "the toasts changed {top_right} pixels top right of HEADLESS-1\n{}",
+        desk.log_text()
+    );
     // The OSD: volume changes made outside the shell, one every 400 ms
     // until its surface draws (each keeps it up 1.2 s longer; a slow
     // debug run can hide it again before its first frame).
@@ -1151,35 +1438,95 @@ fn the_full_shell_on_the_real_services_is_measured() {
             desk.log_text()
         );
     }
-    // Their enter animations done (the OSD stays up 1.2 s).
-    std::thread::sleep(Duration::from_millis(700));
+    // On screen bottom centre of HEADLESS-1 (260 wide at 2x, 96 up):
+    // shots until it shows, a change before each keeping it up 1.2 s
+    // more (a slow debug run puts it on screen half a second after its
+    // first frame).
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let (w, h) = (toasted.w, toasted.h);
+    for step in 0.. {
+        let volume = if step % 2 == 0 { "0.64" } else { "0.66" };
+        let out = bounded(
+            desk.pw
+                .command("wpctl")
+                .args(["set-volume", "@DEFAULT_AUDIO_SINK@", volume]),
+            "wpctl",
+        )
+        .expect("wpctl runs");
+        assert!(out.status.success(), "wpctl set-volume failed");
+        std::thread::sleep(Duration::from_millis(200));
+        let shot = shot(&desk, "the OSD");
+        let bottom = shot.changed(&toasted, w / 2 - 300..w / 2 + 300, h - 360..h - 160);
+        if bottom >= 15_000 {
+            break;
+        }
+        desk.alive("the OSD on screen");
+        assert!(
+            Instant::now() < deadline,
+            "the OSD changed {bottom} pixels bottom centre of HEADLESS-1\n{}",
+            desk.log_text()
+        );
+    }
+    // Its enter animation done (it stays up 1.2 s past the last change).
+    std::thread::sleep(Duration::from_millis(300));
     let full = pss_kb(pid);
     let full_report = memory_report(pid);
     let full_huge = status_of(pid, "AnonHugePages:").unwrap_or(0);
     desk.strand_set("launcher.open", "false");
     std::thread::sleep(Duration::from_secs(2));
-    desk.wait_quiet(Duration::from_millis(500), Duration::from_secs(10));
+    settled(&mut desk, "the launcher closed", limit);
     let closed = pss_kb(pid);
     desk.alive("at the end");
+    let peak = full.max(toasts);
     eprintln!(
-        "full shell on the real services ({apps} desktop entries in /usr/share/applications), \
+        "full shell on the real services ({entries} desktop entries: {machine} in \
+         /usr/share/applications, {} the test's), \
          HEADLESS-1 2560x1440@2 (the launcher's buffers at 2x, as design.md budgets them), \
          HEADLESS-2 2560x1440@1.25:\n\
          \x20 bar alone: {bar} kB\n\
          \x20 launcher open: {launcher} kB\n\
+         \x20 launcher open, two toasts: {toasts} kB\n\
          \x20 launcher open, two toasts, OSD up: {full} kB (design.md: 59-64 MB)\n\
-         \x20 launcher closed (toasts up): {closed} kB\n{full_report}"
+         \x20 launcher closed (toasts up): {closed} kB\n{full_report}",
+        apps.marked + apps.themed
     );
     notice(&format!(
-        "full shell on the real services ({apps} desktop entries): bar {bar} kB, \
-         launcher open {launcher} kB, with two toasts and the OSD {full} kB, \
-         launcher closed {closed} kB (design.md: 59-64 MB)"
+        "full shell on the real services ({entries} desktop entries, {machine} the machine's): \
+         bar {bar} kB, launcher open {launcher} kB, with two toasts {toasts} kB, \
+         and the OSD {full} kB, launcher closed {closed} kB (design.md: 59-64 MB)"
     ));
     assert_eq!(full_huge, 0, "huge pages resident\n{full_report}");
     if !cfg!(debug_assertions) {
         assert!(
-            full <= FULL_SHELL_KB,
-            "the full shell's PSS {full} kB is over design.md's {FULL_SHELL_KB} kB\n{full_report}"
+            peak <= FULL_SHELL_KB,
+            "the full shell's PSS {peak} kB is over design.md's {FULL_SHELL_KB} kB\n{full_report}"
         );
     }
+}
+
+/// design.md budgets 10–14 MB for "code and libraries touched", and the
+/// two-monitor bar's code is resident close to its whole `.text` where
+/// the page cache maps large folios (decisions.md, wave4-exitMemory):
+/// the release binary's `.text` stays at most 15 MiB whatever the
+/// runner's page cache does. It rests on the workspace's release
+/// profile (`[profile.release.package]`: services and glue built for
+/// size).
+#[test]
+fn the_release_binary_code_stays_within_15_mib() {
+    if cfg!(debug_assertions) {
+        eprintln!("skipped: a debug build's code is not the release binary's");
+        return;
+    }
+    let elf = std::fs::read(env!("CARGO_BIN_EXE_strand")).unwrap();
+    let text = text_size(&elf).expect("an ELF64 binary with a .text");
+    eprintln!("strand's .text: {text} bytes");
+    notice(&format!(
+        "strand's .text: {text} bytes (gate {})",
+        15u64 << 20
+    ));
+    assert!(
+        text <= 15 << 20,
+        "strand's .text is {text} bytes, over 15 MiB: code that runs at event rates belongs at \
+         opt-level \"s\" or \"z\" (Cargo.toml, [profile.release.package])"
+    );
 }
