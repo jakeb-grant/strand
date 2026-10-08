@@ -2060,6 +2060,97 @@ fn release_opt_levels_reads_package_sections_only() {
     assert_eq!(levels["quoted"], "s");
 }
 
+/// The `## <name>` section of a Markdown report, heading excluded.
+fn report_section<'a>(report: &'a str, name: &str) -> &'a str {
+    let heading = format!("\n## {name}\n");
+    let Some(start) = report.find(&heading) else {
+        return "";
+    };
+    let body = &report[start + heading.len()..];
+    &body[..body.find("\n## ").unwrap_or(body.len())]
+}
+
+/// docs/m3-report.md states the memory gates this binary holds, as the
+/// owner confirmed them (decisions.md wave4-core, commit 607bd10): the
+/// bar's 34 MB target and 38 MB ceiling and the full shell's 64 / 70 MB
+/// are named in the result table, the Memory section cites the
+/// confirmation and no sentence of it calls them unconfirmed, and the
+/// Open list does not carry them as awaiting the owner.
+#[test]
+fn the_report_states_the_owner_confirmed_memory_gates() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/m3-report.md");
+    let report = std::fs::read_to_string(path).unwrap();
+    let mb = |kb: u64| kb / 1024;
+    let row = |prefix: &str| {
+        report
+            .lines()
+            .find(|line| line.starts_with(prefix))
+            .unwrap_or_else(|| panic!("m3-report.md has no {prefix:?} row"))
+    };
+    let bar = row("| Memory: design.md's bar");
+    let bar_gate = format!(
+        "{} MB target (warns), {} MB ceiling (fails), owner-confirmed",
+        mb(PSS_TARGET_KB),
+        mb(PSS_GATE_KB)
+    );
+    assert!(bar.contains(&bar_gate), "{bar}\nlacks {bar_gate:?}");
+    let full = row("| Memory: full shell");
+    let full_gate = format!(
+        "{} MB target, {} MB ceiling, owner-confirmed",
+        mb(FULL_SHELL_TARGET_KB),
+        mb(FULL_SHELL_KB)
+    );
+    assert!(full.contains(&full_gate), "{full}\nlacks {full_gate:?}");
+
+    let numbers = [
+        mb(PSS_TARGET_KB),
+        mb(PSS_GATE_KB),
+        mb(FULL_SHELL_TARGET_KB),
+        mb(FULL_SHELL_KB),
+    ];
+    let names_a_gate = |text: &str| {
+        text.contains("targets and ceilings")
+            || numbers.iter().any(|n| {
+                text.contains(&format!("{n} MB"))
+                    || text.contains(&format!("{n}/"))
+                    || text.contains(&format!("/{n}"))
+            })
+    };
+    let memory = report_section(&report, "Memory").split_whitespace();
+    let memory = memory.collect::<Vec<_>>().join(" ");
+    assert!(
+        memory.contains("owner-confirmed") && memory.contains("decisions.md wave4-core"),
+        "the Memory section does not cite the owner's confirmation (decisions.md wave4-core)"
+    );
+    let unconfirmed: Vec<&str> = memory
+        .split(". ")
+        .filter(|s| names_a_gate(s))
+        .filter(|s| {
+            s.contains("not explicitly confirmed")
+                || s.contains("await")
+                || (s.contains(" not ") && s.contains("confirm"))
+        })
+        .collect();
+    assert!(
+        unconfirmed.is_empty(),
+        "the Memory section calls the owner-confirmed gates unconfirmed: {unconfirmed:#?}"
+    );
+
+    let open = report_section(&report, "Open");
+    let pending: Vec<String> = open
+        .split("\n- ")
+        .map(|item| item.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|item| {
+            names_a_gate(item)
+                && !(item.contains("owner-confirmed") || item.contains("owner confirmed"))
+        })
+        .collect();
+    assert!(
+        pending.is_empty(),
+        "the Open list carries the owner-confirmed memory gates as pending: {pending:#?}"
+    );
+}
+
 /// design.md budgets 10–14 MB for "code and libraries touched", and the
 /// two-monitor bar's code is resident close to its whole `.text` where
 /// the page cache maps large folios (decisions.md, wave4-exitMemory):

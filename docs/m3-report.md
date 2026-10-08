@@ -41,8 +41,8 @@ machine's own system or session bus.
 | --- | --- | --- | --- |
 | Runs on Hyprland, niri and sway | the `workspaces`, `windows` and `wm` stores and design.md's bar agree with each compositor | sway, niri 26.04 and Hyprland 0.56.2 green in CI's `compositors` job, on this branch's merge commit `e132d8d` ([job 113227617119](https://github.com/jakeb-grant/strand/actions/runs/37752116747/job/113227617119) of run 37752116747) and latest on `f681c45` ([job 113282445061](https://github.com/jakeb-grant/strand/actions/runs/37768656088/job/113282445061) of run 37768656088, `check` green too) | pass |
 | 100 reloads with no reconnects | no service restarts, no new connection (the `from dbus` introspection refresh exempt; see Open), no mock call | **100 reloads in 8.4 s**, every check clean (below) | pass |
-| Memory: design.md's bar, 2×2560×1440, real services | 34 MB target (warns), 38 MB ceiling (fails) | **31,690 kB** (30.9 MiB) here, **32,664 kB** (31.9 MiB) in CI run 37749789401 | pass, under the target |
-| Memory: full shell, launcher open, toasts, OSD | design.md 59–64 MB; 64 MB target, 70 MB ceiling | **45,502 kB** (44.4 MiB, 12 desktop entries), **55,477 kB** (54.2 MiB, 169) here; 49,384 / 58,115 kB (48.2 / 56.8 MiB) in CI run 37749789401 | pass, under design.md's estimate |
+| Memory: design.md's bar, 2×2560×1440, real services | 34 MB target (warns), 38 MB ceiling (fails), owner-confirmed (decisions.md wave4-core) | **31,690 kB** (30.9 MiB) here, **32,559 kB** (31.8 MiB) in CI run 37796294304, no over-target warning | pass, under the target |
+| Memory: full shell, launcher open, toasts, OSD | design.md 59–64 MB; 64 MB target, 70 MB ceiling, owner-confirmed (decisions.md wave4-core) | **45,502 kB** (44.4 MiB, 12 desktop entries), **55,477 kB** (54.2 MiB, 169) here; 49,726 / 54,987 kB (48.6 / 53.7 MiB, 15 / 172 entries) in CI run 37796294304 | pass, under design.md's estimate |
 | Idle wakeups with services running | 0 | **0** context switches in any thread over 10 s on the design bar (a window in which only the `strand-watch` thread woke on another process's change in a watched ancestor directory is re-run, at most twice; see Idle wakeups); 0 logic/services wakeups in each services idle test | pass |
 | Portal change on the next frame (M1's latency gate, M3 clause) | painted within one refresh at p95, presented at the next frame | `SettingChanged` sent → painted **p95 3.4–3.6 ms**, → presented **p95 3.7–3.8 ms** (one refresh 16.7 ms) | pass |
 
@@ -150,11 +150,16 @@ this report is also under the old hard gates (34 and 64 MB).
 | … launcher closed, toasts up | 45,559 | | | |
 | Release binary `.text` | 14,331,986 bytes (gate 15 MiB) | | | |
 
-CI run [37749789401](https://github.com/jakeb-grant/strand/actions/runs/37749789401)
-(`d74caad`, ubuntu-24.04, 12 machine entries): design bar 32,664 kB;
-full shell 49,384 kB (15 entries) and 58,115 kB (172 entries) at peak;
-`.text` 14,329,874 bytes. Earlier CI runs: 32.6 MB (run 37733561676),
-32.7 MB (run 37721528809).
+Latest green CI run
+[37796294304](https://github.com/jakeb-grant/strand/actions/runs/37796294304)
+(`7e42c02`, attempt 2, ubuntu-24.04, `check` job's release budgets
+step): design bar 32,559 kB, under the 34,816 kB target with no
+over-target warning; full shell 49,726 kB (15 entries) and 54,987 kB
+(172 entries) at peak. CI run
+[37749789401](https://github.com/jakeb-grant/strand/actions/runs/37749789401)
+(`d74caad`): design bar 32,664 kB; full shell 49,384 kB (15 entries) and
+58,115 kB (172 entries) at peak; `.text` 14,329,874 bytes. Earlier CI
+runs: 32.6 MB (run 37733561676), 32.7 MB (run 37721528809).
 
 design.md estimates 29–34 MB for the bar and 59–64 MB for the full
 shell; both measure inside or under their estimate. The design bar's
@@ -177,12 +182,18 @@ pages off from an ELF constructor, the allocator trimmed after
 structural bursts (at most every 5 s, never between an animation's
 frames), and the release profile's size opt-levels for event-rate
 crates, which `budgets.rs::the_release_profile_keeps_the_size_opt_levels_the_budget_rests_on`
-guards. **Owner note:** the targets-and-ceilings wording of the gate and
-the ~27 `[profile.release.package]` opt-level overrides were proposed by
-the architect after the owner asked for reasonable memory expectations;
-the owner has not explicitly confirmed the 34/38 and 64/70 MB numbers or
-the overrides. Every measured figure also passes the stricter 34/64 MB
-gates, so the milestone does not depend on that decision.
+guards. **Owner note:** the gates are owner-confirmed. Asked directly
+on 2026-10-08, the owner chose a 34 MB target (CI warns above it) and a
+38 MB ceiling (the build fails above it) for the two-monitor bar, and
+kept the 64 MB target and 70 MB ceiling for the full shell (decisions.md
+wave4-core, "memory targets and ceilings confirmed by the owner, numbers
+included", commit 607bd10; it supersedes the wave4-exitReport review r2
+qualification). `budgets.rs` holds exactly these numbers, and
+`budgets.rs::the_report_states_the_owner_confirmed_memory_gates` keeps
+this report in step with them. The ~27 `[profile.release.package]`
+opt-level overrides are the architect's and not separately confirmed by
+the owner (Open). Every measured figure also passes 34 / 64 MB as hard
+gates, so the milestone does not depend on them.
 
 ## Idle wakeups
 
@@ -360,10 +371,11 @@ Every M3 tier has a CI step (`.github/workflows/ci.yml`):
   passes it). The size opt-levels are not the cause (measured above:
   `strand` at opt-level 3 fails as often and costs the bar ~2.1 MB);
   the ~19 ms headless token reload is the path to profile (M1 owners).
-- The owner's confirmation of the 34/38 and 64/70 MB targets and
-  ceilings and of the release opt-level overrides (decisions.md
-  wave4-exitReport, review r2, item 3: the "confirmed by the owner"
-  entries of wave4-exitMemory are read with this qualification).
+- The owner's confirmation of the ~27 release opt-level overrides
+  (`[profile.release.package]`, decisions.md wave4-exitMemory and
+  wave4-exitReport review r2). The memory targets and ceilings
+  themselves are owner-confirmed (decisions.md wave4-core, commit
+  607bd10) and no longer open.
 - The strand-render owner's acknowledgement of the layout default this
   step added: an `image` or `icon` sized in absolute lengths defaults to
   `shrink: 0` (a percentage size still gives way); decisions.md
