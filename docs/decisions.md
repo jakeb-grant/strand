@@ -8251,8 +8251,9 @@ budget. Two causes, two fixes:
   thread and `strand run`'s main thread each force a collect
   (`mi_collect(true)`: every arena's pending purges and the thread's own
   free pages) 500 ms after the last wake of a burst that grew mimalloc's
-  committed memory (`mi_process_info`) 512 kB past what their last trim
-  left (`run.rs`, `Trimmer`). One extra wakeup per such burst on each,
+  committed memory (`mi_process_info`) 512 kB past what the last trim
+  by either thread left (`run.rs`, `Trimmer`, one process-wide base
+  since review r1: see below). One extra wakeup per such burst on each,
   inside the burst's settling; none while nothing changes. The first
   cut armed the trim after every wake: a bar polling `cpu` (or
   `memory`, or a seconds clock) once a second woke the logic thread
@@ -8317,18 +8318,79 @@ first trim: 31.3 MB without the icons, 32.0 MB with them), still within
 launcher's buffers at 2×.** design.md's 59–64 MB estimate for the full
 shell budgets "launcher buffers at 2×", so `HEADLESS-1` runs at scale 2
 there (`HEADLESS-2` at 1.25). The five design files run on the same real
-backends with the machine's own desktop entries and icons
+backends with the machine's icon themes
 (`XDG_DATA_DIRS=/usr/local/share:/usr/share`); the launcher is opened
 with `strand set launcher.open true`, two notifications are sent to the
-shell's server and a `wpctl` volume change raises the OSD; PSS is read
-0.7 s after the OSD's surface first draws (it stays up 1.2 s). Release,
-this container (nine desktop entries), two runs: the bar alone
-32.3–34.0 MB, the launcher open 36.5–39.9 MB, the launcher, two toasts
-and the OSD 42.6–45.3 MB, the launcher closed again (toasts up)
-35.2–36.2 MB; CI (twelve desktop entries, run 37696471972): 34.0,
-44.5, 50.9 and 37.0 MB. All under design.md's 59–64 MB. The two toasts are urgency 2 (toasts.strand expires the
-others after 6 s) and the OSD gets a volume change every 400 ms until
-its surface draws: a slow debug run on CI had hidden it before its
-first frame.
-The open figure is held to the estimate's top, 64 MB, in release; a
-debug build only prints it.
+shell's server and a `wpctl` volume change raises the OSD. First cut
+(2026-10-07): PSS read 0.7 s after each surface drew; this container
+(nine desktop entries) the bar alone 32.3–34.0 MB, the launcher open
+36.5–39.9, launcher + two toasts + OSD 42.6–45.3, the launcher closed
+35.2–36.2; CI (twelve entries, run 37696471972) 34.0, 44.5, 50.9 and
+37.0 MB. The two toasts are urgency 2 (toasts.strand expires the others
+after 6 s) and the OSD gets a volume change every 400 ms until it is on
+screen: a slow debug run on CI had hidden it before its first frame.
+
+**2026-10-08 · wave4-exitMemory: the full shell checks what it measures,
+on a desktop of apps.** Review r1 found the figures unchecked (any new
+surface counted as the launcher) and read before the trim, and nine to
+twelve desktop entries far below a real desktop's hundred and more,
+which design.md's 8 MB of images and 11 MB of logic and services
+assume. `full_shell` now reads every figure but the OSD's (up 1.2 s)
+after the bar test's settle (a whole second with no context switch in
+any thread and no frame), and checks on `HEADLESS-1`'s screenshot that
+the launcher shows the test's marked apps with their icons (magenta
+PNG ink in its rows), that the toasts changed the top right and the OSD
+the bottom centre. It runs twice:
+`the_full_shell_on_the_real_services_is_measured` (the machine's
+entries plus the test's three: 12 here) and
+`the_full_shell_with_a_desktop_of_apps_is_measured` (160 more, half
+with their own PNGs of 16–256 px, half naming the machine's hicolor and
+Adwaita icons: 169 here). The larger of the settled launcher-and-toasts
+figure and the OSD figure is held to 64 MB in release; a debug build
+only prints it. Release, this container: 12 entries, the bar 32.3 MB,
+the launcher open 43.4–43.5, with the toasts 44.7–46.0, with the OSD
+44.7–47.5, closed 35.1–35.9; 169 entries over six runs, the bar
+34.0–34.1, the launcher open 50.2–54.5, with the toasts 54.3–59.4, with
+the OSD 56.7–60.8 MB. The realistic desktop reaches design.md's range
+and stays under its top with about 3 MB to spare at worst; the
+apps-heavy figure is the one to quote.
+
+**2026-10-08 · wave4-exitMemory: one burst per minute tick, and no
+thread comes or goes while idle.** Review r1 measured the trim as a
+second wake 500 ms after the minute tick on two threads, against
+design.md's "wakes once a minute". Each trimming thread had kept its
+own growth base, so the thread that had not trimmed saw the other's
+growth at its next wake (the tick) and trimmed then; the base is now
+one process-wide value (`run::LAST_TRIM`, test
+`a_trim_by_either_thread_answers_the_growth_for_both`). mimalloc's
+committed count (`mi_process_info`) never drops after a collect, so the
+gate measures commit growth since the last trim, not garbage: the first
+tick after boot can still commit a fresh 4 MiB segment and earn one
+trim, a one-off; from then on a tick commits nothing and is one burst,
+which is design.md's promise in steady state. In release the bar test
+waits out that first tick and samples every thread every 20 ms across
+the next, failing on any gap over 400 ms between wakes (two bursts);
+it adds up to a minute to the CI step, and a debug build skips it. The
+10 s idle window now also asserts strand's thread set is the same at
+both ends (a thread ending or starting is work): it caught tokio's
+blocking-pool threads, whose 10 s keep-alive ended them 10 s into an
+idle shell; the services' runtime keeps them 500 ms
+(`client::BLOCKING_KEEP_ALIVE`), so they end inside the burst's
+settling. The cpu-poll case is held end to end:
+`services.rs::the_real_services_sleep_when_nothing_changes` counts the
+logic thread over 5 s of an open cpu popup and allows at most 7 (5
+measured; the first trim's always-arm rule gave 6 in 3 s against 3).
+
+**2026-10-08 · wave4-exitMemory: the budget rests on the workspace's
+release profile.** The `[profile.release.package]` opt-levels above
+change the repo's build profile, which this step's brief said not to
+override; they stay because the gate cannot be met without them (the
+binary's code was the budget item over), and the profile's own settings
+are untouched. Neither `cargo install` from crates.io nor a packager's
+own profile carries them, so architecture.md says packages build from
+the workspace, and `budgets.rs::the_release_binary_code_stays_within_15_mib`
+holds `.text` to 15 MiB (14,322,194 bytes today) so a code-size
+regression fails regardless of how many pages a runner's page cache maps
+per fault. The two gates are close: the token-edit p95 has under 1 ms of
+headroom at these levels. Whether the architect accepts the profile
+change is left to the M3 report.
