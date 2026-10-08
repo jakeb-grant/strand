@@ -8253,7 +8253,8 @@ budget. Two causes, two fixes:
   free pages) 500 ms after the last wake of a burst that grew mimalloc's
   committed memory (`mi_process_info`) 512 kB past what the last trim
   by either thread left (`run.rs`, `Trimmer`, one process-wide base
-  since review r1: see below). One extra wakeup per such burst on each,
+  since review r1; the gate was replaced by structural arming on
+  2026-10-08: see below). One extra wakeup per such burst on each,
   inside the burst's settling; none while nothing changes. The first
   cut armed the trim after every wake: a bar polling `cpu` (or
   `memory`, or a seconds clock) once a second woke the logic thread
@@ -8408,6 +8409,37 @@ full shell with 12 entries 47.7–48.5 MB with the OSD, with 169 entries
 19.3 before). The image worker and the services' threads are not
 hooked: no run showed them holding a burst's garbage, and they do not
 wake with the tick.
+
+**2026-10-08 · wave4-exitMemory: the trim is armed by structure, not
+by mimalloc's commit count.** The text worker's hook did not hold on
+CI: run 37717200106 (4ca1517) still woke the main thread 515 ms after a
+steady tick (the bar at 35.1 MB). The growth gate read a count that
+drifts: `mi_arena_purge` (v3.3.2) clears the committed bits of a purged
+range that was only partly committed without counting the stat down (the
+decrement is commented out), so reusing the range counts its commit
+again; every forced collect, the text worker's at each tick included,
+made a later burst look like 512 kB of growth. The gate is gone. A
+thread arms its delayed trim (500 ms after its last wake, as before)
+when a `SceneDiff` is structural, that is creates or removes nodes or
+swaps the tokens (`run::structural`): the logic thread for the diff it
+sends, the main thread for the diff it applies (boot, a reload, a
+surface, popup, toast or row appearing or going). A tick or a poll only
+sets props and never arms. What later prop-only bursts free (the
+services filling in after boot, icons arriving) is returned inline at
+the end of a wake the thread was given anyway, at most every 5 s
+(`TRIM_EVERY`, `Trimmer::settle`; never while a delayed trim is armed):
+a forced collect inside the wake, no wakeup of its own, so a 1 s cpu
+poll pays one every fifth second and a tick one per minute. Structural
+arming alone read the bar at 34.6–34.7 MB here; with the inline settle,
+three release runs of the budgets suite read 32.43–32.44 MB, every
+steady tick one burst; the full shell 44.6–47.1 MB (12 entries) and
+53.7–59.2 MB (169) with the OSD; `services.rs` and the M0 demo tests
+green; token-edit p95 19.5 ms against its 19.8 gate. Tests:
+`run::tests::only_a_structural_burst_pays_a_trim_wakeup`,
+`a_prop_set_is_not_structural`,
+`a_wake_trims_inline_at_most_every_five_seconds` (the growth-gate tests
+and `committed` went with the gate). The paragraph above put the tick's
+extra trim down to the text worker's pages; it was this drift.
 
 **2026-10-08 · wave4-exitMemory: the budget rests on the workspace's
 release profile.** The `[profile.release.package]` opt-levels above

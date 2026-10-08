@@ -42,7 +42,6 @@ use std::io;
 use std::os::fd::{AsFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use calloop::channel::{Channel, Event, Sender};
@@ -59,7 +58,7 @@ use strand_compiler::vm::clock::{Clock, Zone};
 use strand_compiler::vm::schema_host::SchemaHost;
 use strand_core::Runtime;
 use strand_render::{Renderer, TextBackend};
-use strand_scene::{NodeId, SceneDiff};
+use strand_scene::{NodeId, SceneDiff, SceneOp};
 use strand_services::Cells as _;
 use strand_surface::{Config, SurfaceManager};
 use strand_text::{FontConfig, TextWorker};
@@ -1089,94 +1088,74 @@ fn reload_event(l: &Loaded, report: Option<&Report>, commit: Duration) -> Json {
 /// How long a thread stays quiet after a burst before [`trim`].
 const TRIM_AFTER: Duration = Duration::from_millis(500);
 
-/// How much the allocator's committed memory grows (since the last trim)
-/// before a burst is worth a trim: boot, a reload's compile, a surface
-/// opening. A thread woken on a period (a cpu meter, a seconds clock)
-/// commits nothing new from wake to wake, so it never pays a trim's
-/// extra wakeup and forced collect between its wakes; mimalloc purges
-/// what such a shell frees on its own (from a later allocation, after
-/// its 1 s delay).
-const TRIM_GROWTH: usize = 512 * 1024;
+/// How long a thread goes without a [`trim`] before it trims inline at
+/// the end of a wake it was given anyway (a tick, a poll, a service's
+/// report): what an unarmed burst freed goes back within this, at no
+/// wakeup of its own, and a 1 s poll pays a forced collect only every
+/// fifth wake.
+const TRIM_EVERY: Duration = Duration::from_secs(5);
 
 /// Returns the memory the allocator holds freed to the system. mimalloc
 /// purges a freed span only on a later allocation once its delay (1 s)
 /// has passed, so a shell that goes quiet after a burst (boot, a reload,
-/// a minute tick) kept the burst's garbage resident for good: about
+/// a surface opening) kept the burst's garbage resident for good: about
 /// 2.4 MB of the design bar's PSS on the real services. A forced collect
-/// purges every arena's pending spans and this thread's free pages.
+/// purges every arena's pending spans and this thread's free pages (only
+/// this thread's: the text worker runs it too, `strand_text::set_idle_hook`).
 pub(crate) fn trim() {
     // SAFETY: `mi_collect` takes no pointers; it runs on a live thread
     // with mimalloc as the global allocator.
     unsafe { libmimalloc_sys::mi_collect(true) };
 }
 
-/// The allocator's committed memory, process-wide (mimalloc's own count:
-/// an atomic load and a `getrusage`).
-fn committed() -> usize {
-    let mut commit = 0usize;
-    let null = std::ptr::null_mut();
-    // SAFETY: mimalloc writes only the pointers that are not null; the
-    // one given is a live `usize`.
-    unsafe {
-        libmimalloc_sys::mi_process_info(null, null, null, null, null, &mut commit, null, null)
-    };
-    commit
+/// Whether a diff changes the scene's structure: nodes created or
+/// removed (boot, a reload, a surface, popup, toast or row appearing or
+/// going) or the tokens swapped. Those are the bursts worth a [`trim`];
+/// a minute tick or a poll only sets props, and never pays one.
+/// (mimalloc's own commit count is no gauge: a purge of a partly
+/// committed range forgets its commit without counting it down, so
+/// reusing the range counts it again, and every trim made the next
+/// tick look like growth.)
+fn structural(diff: &SceneDiff) -> bool {
+    diff.ops.iter().any(|op| {
+        matches!(
+            op,
+            SceneOp::Create { .. } | SceneOp::Remove { .. } | SceneOp::SetTokens { .. }
+        )
+    })
 }
-
-/// What the last [`trim`] (by either thread) left committed: the
-/// growth a trim answers is process-wide, so one thread's trim resets
-/// the other's base too. With a base of its own, the main thread found
-/// the logic thread's (and the services', images', text's) boot growth
-/// still above its own last trim at the first minute tick, and woke a
-/// second time half a second after it to trim.
-static LAST_TRIM: AtomicUsize = AtomicUsize::new(0);
 
 /// When a thread's loop [`trim`]s: [`TRIM_AFTER`] after the last wake of
-/// a burst that committed [`TRIM_GROWTH`] more than the last trim (by
-/// any thread) left.
+/// a burst that [`Trimmer::arm`]ed it (a [`structural`] diff sent or
+/// applied). A wake while armed pushes the trim back; an unarmed wake
+/// (a tick, a poll) changes nothing.
+#[derive(Default)]
 struct Trimmer {
     at: Option<Instant>,
-    /// The committed memory the last trim left ([`LAST_TRIM`]).
-    base: &'static AtomicUsize,
-}
-
-impl Default for Trimmer {
-    fn default() -> Trimmer {
-        Trimmer {
-            at: None,
-            base: &LAST_TRIM,
-        }
-    }
+    /// When this thread last trimmed.
+    last: Option<Instant>,
 }
 
 impl Trimmer {
-    /// A wake at `now` with `commit` bytes committed: whether the quiet
-    /// ran out (trim now, then [`Trimmer::trimmed`]; the trim's own wake
-    /// arms nothing). A wake while armed pushes the trim back; one past
-    /// the growth arms it.
-    fn wake(&mut self, now: Instant, commit: usize) -> bool {
+    /// A structural burst at `now`: trim once it has been quiet.
+    fn arm(&mut self, now: Instant) {
+        self.at = Some(now + TRIM_AFTER);
+    }
+
+    /// A wake at `now`: whether the quiet ran out (trim now; the trim's
+    /// own wake arms nothing). A wake while armed pushes the trim back.
+    fn wake(&mut self, now: Instant) -> bool {
         match self.at {
             Some(at) if now >= at => {
                 self.at = None;
-                return true;
+                true
             }
-            Some(_) => self.at = Some(now + TRIM_AFTER),
-            None if commit
-                > self
-                    .base
-                    .load(Ordering::Relaxed)
-                    .saturating_add(TRIM_GROWTH) =>
-            {
-                self.at = Some(now + TRIM_AFTER)
+            Some(_) => {
+                self.at = Some(now + TRIM_AFTER);
+                false
             }
-            None => {}
+            None => false,
         }
-        false
-    }
-
-    /// After the trim: what it left is the new base.
-    fn trimmed(&mut self, commit: usize) {
-        self.base.store(commit, Ordering::Relaxed);
     }
 
     /// How long the loop may sleep for the trim.
@@ -1186,9 +1165,29 @@ impl Trimmer {
 
     /// A wake at `now`: trims when due.
     fn run(&mut self, now: Instant) {
-        if self.wake(now, committed()) {
+        if self.wake(now) {
+            self.last = Some(now);
             trim();
-            self.trimmed(committed());
+        }
+    }
+
+    /// The end of a wake at `now`, before the loop sleeps: whether to
+    /// trim inline, unarmed and [`TRIM_EVERY`] since the last trim.
+    fn settles(&mut self, now: Instant) -> bool {
+        let due = self.at.is_none()
+            && self
+                .last
+                .is_none_or(|l| now.saturating_duration_since(l) >= TRIM_EVERY);
+        if due {
+            self.last = Some(now);
+        }
+        due
+    }
+
+    /// The end of a wake: trims inline when [`Trimmer::settles`].
+    fn settle(&mut self, now: Instant) {
+        if self.settles(now) {
+            trim();
         }
     }
 }
@@ -1378,6 +1377,7 @@ pub fn logic(
             diff.reduced_motion = Some(reduced);
             reduced_sent = reduced;
         }
+        let shaped = structural(&diff);
         if !diff.is_empty() && out.send(diff).is_err() {
             break;
         }
@@ -1388,8 +1388,13 @@ pub fn logic(
             s.flush(&handle);
         }
         let now = Instant::now();
-        // A wake after a burst arms (or pushes back) the trim.
+        // A structural burst arms the trim; any wake while armed pushes
+        // it back.
+        if shaped {
+            trimmer.arm(now);
+        }
         trimmer.run(now);
+        trimmer.settle(now);
         let mut timeout = wake.deadline.map(|d| d.saturating_sub(start.elapsed()));
         let mut also = |t: Option<Duration>| {
             if let Some(t) = t {
@@ -1685,9 +1690,17 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
         .spawn(move || logic(boot, storage, from_main, tx, live))?;
     let hung_up = Rc::new(Cell::new(false));
     let flag = Rc::clone(&hung_up);
+    // A structural diff applied: the main thread trims once quiet too.
+    let shaped = Rc::new(Cell::new(false));
+    let shape = Rc::clone(&shaped);
     handle
         .insert_source(rx, move |event, _, state| match event {
-            Event::Msg(diff) => apply(state, diff),
+            Event::Msg(diff) => {
+                if structural(&diff) {
+                    shape.set(true);
+                }
+                apply(state, diff)
+            }
             Event::Closed => flag.set(true),
         })
         .map_err(|e| DemoError::Io(io::Error::other(e.error)))?;
@@ -1702,7 +1715,11 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
             break End::Done;
         }
         let now = Instant::now();
+        if shaped.take() {
+            trimmer.arm(now);
+        }
         trimmer.run(now);
+        trimmer.settle(now);
         match mgr.dispatch(trimmer.wait(now)) {
             Ok(()) => {}
             Err(e) if connection_closed(&e) => {
@@ -1747,24 +1764,22 @@ pub(crate) mod tests {
     }
 
     /// A loop woken by a source every `period` (none: once, at the
-    /// start) and by its [`Trimmer`], for `span`; each source wake
-    /// commits `grows` more bytes. Its wakes after the first, and trims.
-    fn trims_over(period: Option<Duration>, span: Duration, grows: usize) -> (u32, u32) {
+    /// start) and by its [`Trimmer`], for `span`; the source's wakes in
+    /// `armed` (by index) are structural bursts. Its wakes after the
+    /// first, and trims.
+    fn trims_over(period: Option<Duration>, span: Duration, armed: &[u32]) -> (u32, u32) {
         let t0 = Instant::now();
         let end = t0 + span;
-        let mut trimmer = Trimmer {
-            at: None,
-            base: Box::leak(Box::new(AtomicUsize::new(10 << 20))),
-        };
-        let mut commit = (10 << 20) + grows;
+        let mut trimmer = Trimmer::default();
         let mut now = t0;
         let mut source = period.map(|p| t0 + p);
-        let (mut wakes, mut trims) = (0, 0);
+        let (mut wakes, mut trims, mut fired) = (0, 0, 0u32);
+        if armed.contains(&0) {
+            trimmer.arm(now);
+        }
         loop {
-            if trimmer.wake(now, commit) {
+            if trimmer.wake(now) {
                 trims += 1;
-                commit -= grows.min(commit);
-                trimmer.trimmed(commit);
             }
             let trim = trimmer.wait(now).map(|w| now + w);
             let Some(next) = [source, trim].into_iter().flatten().min() else {
@@ -1777,67 +1792,93 @@ pub(crate) mod tests {
             wakes += 1;
             if source == Some(now) {
                 source = period.map(|p| now + p);
-                commit += grows;
+                fired += 1;
+                if armed.contains(&fired) {
+                    trimmer.arm(now);
+                }
             }
         }
         (wakes, trims)
     }
 
-    /// A thread woken each second (a cpu meter, a seconds clock) that
-    /// commits nothing new wakes once a second, not twice: no trim comes
-    /// between its wakes. A burst that grew the heap and went quiet trims
-    /// once, [`TRIM_AFTER`] later; one that did not, never.
+    /// A thread woken each second (a cpu meter, a seconds clock) or each
+    /// minute (the clock's tick) only sets props: it never pays a trim's
+    /// wakeup. A structural burst (boot, a reload, a surface) trims once,
+    /// [`TRIM_AFTER`] after it goes quiet.
     #[test]
-    fn a_one_second_poll_pays_no_trim_wakeup() {
+    fn only_a_structural_burst_pays_a_trim_wakeup() {
         let span = Duration::from_secs(10);
         for period in [Duration::from_millis(700), Duration::from_secs(1)] {
             let polls = (span.as_millis() / period.as_millis()) as u32;
-            assert_eq!(trims_over(Some(period), span, 0), (polls, 0), "{period:?}");
+            assert_eq!(
+                trims_over(Some(period), span, &[]),
+                (polls, 0),
+                "{period:?}"
+            );
         }
-        assert_eq!(trims_over(None, span, 2 << 20), (1, 1));
-        assert_eq!(trims_over(None, span, 4096), (0, 0));
-        // A minute tick that commits a lot each time: one trim after each.
+        // Boot, then quiet: one trim.
+        assert_eq!(trims_over(None, span, &[0]), (1, 1));
+        // Ticks after boot: the boot's trim, none for the ticks.
+        let minute = Duration::from_secs(60);
+        let span = Duration::from_secs(150);
+        assert_eq!(trims_over(Some(minute), span, &[0]), (3, 1));
+        // A reload at the first tick: one trim more.
+        assert_eq!(trims_over(Some(minute), span, &[0, 1]), (4, 2));
+        // A poll while armed pushes the trim back past its own wakes.
         assert_eq!(
             trims_over(
-                Some(Duration::from_secs(60)),
-                Duration::from_secs(150),
-                2 << 20
+                Some(Duration::from_millis(300)),
+                Duration::from_secs(1),
+                &[0]
             ),
-            (5, 3)
+            (3, 0)
         );
     }
 
-    /// One thread's trim resets the other's base: the main thread does
-    /// not trim again at its next wake (a minute tick) for growth the
-    /// logic thread's trim already answered.
+    /// The inline trim at the end of a wake: on the first wake, then not
+    /// again for [`TRIM_EVERY`] (a 1 s poll pays one every fifth wake),
+    /// and never while a delayed trim is armed (that one comes first).
     #[test]
-    fn a_trim_by_either_thread_answers_the_growth_for_both() {
-        let base: &'static AtomicUsize = Box::leak(Box::new(AtomicUsize::new(10 << 20)));
-        let (mut main, mut logic) = (Trimmer { at: None, base }, Trimmer { at: None, base });
+    fn a_wake_trims_inline_at_most_every_five_seconds() {
         let t0 = Instant::now();
-        // A burst on the logic thread grew the heap 2 MB; it trims.
-        let grown = (12 << 20) + 1;
-        assert!(!logic.wake(t0, grown));
-        assert!(logic.wake(t0 + TRIM_AFTER, grown));
-        logic.trimmed(11 << 20);
-        // The main thread's next wake (the tick) sees nothing new.
-        let tick = t0 + Duration::from_secs(60);
-        assert!(!main.wake(tick, 11 << 20));
-        assert_eq!(main.wait(tick), None);
+        let mut t = Trimmer::default();
+        let polls: Vec<bool> = (0..11)
+            .map(|i| t.settles(t0 + Duration::from_secs(i)))
+            .collect();
+        let at: Vec<usize> = polls
+            .iter()
+            .enumerate()
+            .filter(|p| *p.1)
+            .map(|p| p.0)
+            .collect();
+        assert_eq!(at, [0, 5, 10]);
+        let mut t = Trimmer::default();
+        t.arm(t0);
+        assert!(!t.settles(t0), "armed: the delayed trim comes first");
+        assert!(t.wake(t0 + TRIM_AFTER));
+        t.last = Some(t0 + TRIM_AFTER);
+        assert!(!t.settles(t0 + Duration::from_secs(1)));
+        assert!(t.settles(t0 + TRIM_AFTER + TRIM_EVERY));
     }
 
-    /// `committed` reads mimalloc's own count: it grows with a block
-    /// larger than all it has committed so far (a smaller one can reuse
-    /// memory freed and still counted, as after a large block is freed
-    /// first, here and in a test binary whose other tests ran).
+    /// Created and removed nodes and swapped tokens are structural; a
+    /// prop set (the tick's text) is not.
     #[test]
-    fn the_committed_count_follows_the_heap() {
-        drop(std::hint::black_box(vec![1u8; 64 << 20]));
-        let before = committed();
-        let block: Vec<u8> = std::hint::black_box(Vec::with_capacity(before + (16 << 20)));
-        let after = committed();
-        drop(block);
-        assert!(after >= before + (16 << 20), "{before} -> {after}");
+    fn a_prop_set_is_not_structural() {
+        use strand_scene::{Prop, PropValue};
+        let mut tick = SceneDiff::new();
+        tick.set(
+            NodeId::new(7, 0),
+            Prop::Text,
+            PropValue::Text("12:35".into()),
+        );
+        assert!(!structural(&tick));
+        assert!(!structural(&SceneDiff::new()));
+        let mut closed = SceneDiff::new();
+        closed.push(SceneOp::Remove {
+            id: NodeId::new(7, 0),
+        });
+        assert!(structural(&closed));
     }
 
     /// The config in `dir` loaded once (no watcher, no cache).
