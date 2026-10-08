@@ -20,18 +20,22 @@ That file is already on every monitor, reactive, themed and animated. It wakes
 once a minute.
 
 **Status: v0.1, M3 complete.** M3's exit gates are met (see
-[`docs/m3-report.md`](docs/m3-report.md)): every builtin service is
-real. The portal, cpu, memory, battery (UPower), brightness (logind),
-network (NetworkManager), Bluetooth (BlueZ), the tray (SNI + DBusMenu),
-media (MPRIS) and the shell's own notification server run on D-Bus and
-procfs, audio on PipeWire, workspaces, windows and `wm` on the
-compositor (our own Hyprland, niri and sway IPC adapters,
+[`docs/m3-report.md`](docs/m3-report.md)): every builtin service but
+`auth` (M4, the lock screen) is real. The portal, cpu, memory, battery
+(UPower), brightness (logind), network (NetworkManager), Bluetooth
+(BlueZ), the tray (SNI + DBusMenu), media (MPRIS) and the shell's own
+notification server run on D-Bus and procfs, audio on PipeWire,
+`clock`, `calendar` and `screens` in the host, workspaces, windows and
+`wm` on the compositor (our own Hyprland, niri and sway IPC adapters,
 `ext-workspace-v1`, `ext-foreign-toplevel-list`), apps on the desktop
 entries and icon themes, and `from dbus | file | listen | poll` declare
 services without Rust. A service starts on its first reader and stops
-5 s after the last one leaves; nothing polls while nothing changes.
+5 s after the last one leaves. Of the builtins only `cpu` and `memory`
+sample on a timer, and only while read on a visible surface (a `from
+poll` service polls at its declared interval); everything else waits on
+events, so nothing wakes while nothing changes.
 design.md's bar runs on Hyprland, niri and sway (CI's `compositors`
-job), takes 100 live reloads without reconnecting to anything, and on
+job), takes 100 live reloads without a service reconnecting, and on
 two 2560×1440 monitors with the real services uses about 31–32 MiB
 (target 34, ceiling 38); the full shell with the launcher, two toasts and
 the OSD up 44–57 MiB with 12 to 172 desktop entries (design.md: 59–64;
@@ -56,9 +60,10 @@ on a headless sway with two outputs, driven by clicks, the wheel and
 keys against mock services, with screenshots compared to references.
 Left for later milestones: the
 rich `tooltip { … }` element (the checker warns), clipboard in `input`,
-the directional `pages` transitions and mounting only visible list rows
-(M4), real background blur (a tint until the compositor blurs), and
-`strand toggle` (M5; `strand set launcher.open true` is the same write).
+the directional `pages` transitions, mounting only visible list rows and
+the `auth` service for the lock screen (M4), real background blur (a
+tint until the compositor blurs), and `strand toggle` (M5; `strand set
+launcher.open true` is the same write).
 
 `strand run [dir]` compiles your `.strand` files (type checker, bytecode
 VM, reactive core), puts the surfaces on every monitor and reloads live

@@ -30,7 +30,7 @@ machine's own system or session bus.
 | Gate (`docs/features.md`, M3 exit) | Budget | Measured | |
 | --- | --- | --- | --- |
 | Runs on Hyprland, niri and sway | the `workspaces`, `windows` and `wm` stores and design.md's bar agree with each compositor | sway, niri 26.04 and Hyprland 0.56.2 green in CI's `compositors` job, latest [job 113227617119](https://github.com/jakeb-grant/strand/actions/runs/37752116747/job/113227617119) of run 37752116747 on this branch's merge commit `e132d8d` | pass |
-| 100 reloads with no reconnects | no service restarts, no new connection, no mock call | **100 reloads in 8.4 s**, every check clean (below) | pass |
+| 100 reloads with no reconnects | no service restarts, no new connection (the `from dbus` introspection refresh exempt; see Open), no mock call | **100 reloads in 8.4 s**, every check clean (below) | pass |
 | Memory: design.md's bar, 2×2560×1440, real services | 34 MB target (warns), 38 MB ceiling (fails) | **31,690 kB** (30.9 MiB) here, **32,664 kB** (31.9 MiB) in CI run 37749789401 | pass, under the target |
 | Memory: full shell, launcher open, toasts, OSD | design.md 59–64 MB; 64 MB target, 70 MB ceiling | **45,502 kB** (44.4 MiB, 12 desktop entries), **55,477 kB** (54.2 MiB, 169) here; 49,384 / 58,115 kB (48.2 / 56.8 MiB) in CI run 37749789401 | pass, under design.md's estimate |
 | Idle wakeups with services running | 0 | **0** context switches in any thread over 10 s on the design bar; 0 logic/services wakeups in each services idle test | pass |
@@ -205,7 +205,8 @@ within one refresh at p95, presented at the compositor's next frame.
 | Run | sent → painted p95 | → presented p95 |
 | --- | --- | --- |
 | here, 3 runs × 50 changes | 3.4–3.6 ms | 3.7–3.8 ms |
-| CI run [37647946808](https://github.com/jakeb-grant/strand/actions/runs/37647946808), 50 changes | 2.1 ms | 2.2 ms |
+| CI run [37758646892](https://github.com/jakeb-grant/strand/actions/runs/37758646892) (`0ca7592`), 50 changes | 2.1 ms | 2.2 ms |
+| CI run [37647946808](https://github.com/jakeb-grant/strand/actions/runs/37647946808) (exitReload), 50 changes | 2.1 ms | 2.2 ms |
 
 **The M1 token clause of the same bench is near its edge on this
 machine.** Two of the three local runs failed the token-edit gate by
@@ -215,8 +216,10 @@ shared; the portal, markup, scale and plug clauses passed in all three.
 The headless token p95 was 18.0 ms at M1 and 19.2 ms at wave4-exitReload.
 The bench collects every clause's verdict before it fails, so the token
 flake does not hide the portal result. CI's `check` job passed the
-whole bench in run 37749789401 (`d74caad`). Whether the size opt-levels
-added for memory cost the token path its headroom is listed as open.
+whole bench in run 37749789401 (`d74caad`) and in run 37758646892
+(`0ca7592`: token p95 17.8 ms against a break of 19.4 ms). Whether the
+size opt-levels added for memory cost the token path its headroom is
+listed as open.
 
 ## Screenshots
 
