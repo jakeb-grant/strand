@@ -108,7 +108,7 @@ fn scene(photo: &str, gradient: &str) -> SceneDiff {
         NodeKind::Panel,
         None,
         vec![
-            (Prop::Width, num(240.0)),
+            (Prop::Width, num(280.0)),
             (Prop::Height, num(60.0)),
             (Prop::Bg, color("#282c34")),
             (Prop::Color, color("#e5c07b")),
@@ -200,8 +200,8 @@ fn show(r: &mut Renderer, diff: SceneDiff) -> Buffer {
     assert!(r.apply(diff).is_empty());
     let root = r.tree().roots()[0];
     r.attach_surface(SurfaceId(1), root);
-    r.configure_surface(SurfaceId(1), Size::new(240, 60), Scale::ONE);
-    let mut buf = Buffer::new(240, 60, Scale::ONE);
+    r.configure_surface(SurfaceId(1), Size::new(280, 60), Scale::ONE);
+    let mut buf = Buffer::new(280, 60, Scale::ONE);
     buf.paint(r, SurfaceId(1), 0);
     buf
 }

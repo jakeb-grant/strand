@@ -493,6 +493,14 @@ impl<'a> Build<'a> {
         }
         if let Some(s) = num(get(Prop::Shrink).as_deref()) {
             style.flex_shrink = s.max(0.0);
+        } else if matches!(kind, NodeKind::Image | NodeKind::Icon)
+            && (size.is_some() || get(Prop::Width).is_some() || get(Prop::Height).is_some())
+        {
+            // A sized image or icon keeps its size in a full row, as a CSS
+            // replaced element's automatic minimum keeps it (the
+            // launcher's 32 px icon beside a long cut comment); an
+            // explicit `shrink:` lets it give way.
+            style.flex_shrink = 0.0;
         }
         if keyword(get(Prop::Place).as_deref()) == Some("absolute") {
             style.position = Position::Absolute;
