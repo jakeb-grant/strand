@@ -3,7 +3,7 @@
 use std::collections::{HashSet, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -11,6 +11,20 @@ use strand_scene::Scale;
 
 use crate::engine::{FontConfig, TextEngine};
 use crate::{TextKey, TextLayout, TextRequest};
+
+/// What every text worker runs when its queue drains after work, on
+/// its own thread, before it blocks for the next request (see
+/// [`set_idle_hook`]).
+static IDLE_HOOK: OnceLock<fn()> = OnceLock::new();
+
+/// Installs the hook text workers run when their queue drains after
+/// work (the first call wins). `strand run` returns the allocator's
+/// freed pages there: a worker that goes quiet after shaping keeps them
+/// otherwise, and only its own thread can free them. It runs inside the
+/// burst that woke the worker, so it costs no wakeup of its own.
+pub fn set_idle_hook(hook: fn()) {
+    let _ = IDLE_HOOK.set(hook);
+}
 
 /// Errors talking to the text worker.
 #[derive(Debug)]
@@ -92,12 +106,19 @@ impl TextWorker {
                 let mut queue: VecDeque<Msg> = VecDeque::new();
                 // Keys cancelled while their request is still queued.
                 let mut cancelled: HashSet<TextKey> = HashSet::new();
+                // Whether work was done since the idle hook last ran.
+                let mut worked = false;
                 loop {
                     if queue.is_empty() {
                         // A cancel always follows its request on the
                         // channel, so with nothing queued every
                         // remembered cancel is for a finished request.
                         cancelled.clear();
+                        if std::mem::take(&mut worked)
+                            && let Some(hook) = IDLE_HOOK.get()
+                        {
+                            hook();
+                        }
                         match req_rx.recv() {
                             Ok(m) => enqueue(m, &mut queue, &mut cancelled),
                             Err(_) => return,
@@ -118,6 +139,7 @@ impl TextWorker {
                     let Some(msg) = queue.pop_front() else {
                         continue;
                     };
+                    worked = true;
                     let req = match msg {
                         Msg::Layout(req) if !cancelled.remove(&req.key) => req,
                         Msg::DropScale(s) => {

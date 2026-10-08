@@ -113,7 +113,12 @@ to the system once the shell goes quiet; a thread woken on a period
 (decisions.md, wave4-exitMemory). The services' shared runtime ends
 an idle blocking-pool thread 500 ms after its last task
 (`client::BLOCKING_KEEP_ALIVE`), inside the burst's settling, not 10 s
-into an idle shell. The memory budget also rests on the workspace's
+into an idle shell. A forced collect frees only the calling thread's
+pages (and every arena's pending purges), so the text worker, which
+wakes with every tick and no trim reached, takes a hook:
+`strand_text::set_idle_hook(fn())`, installed once by `main` with
+`run::trim`, runs on each worker's thread when its queue drains after
+work, before it blocks (inside the burst, no wakeup of its own). The memory budget also rests on the workspace's
 release profile: the root `Cargo.toml`'s `[profile.release.package]`
 opt-levels build event-rate code for size, and neither `cargo install`
 from crates.io nor a packager's own profile carries them, so packages

@@ -1104,7 +1104,7 @@ const TRIM_GROWTH: usize = 512 * 1024;
 /// a minute tick) kept the burst's garbage resident for good: about
 /// 2.4 MB of the design bar's PSS on the real services. A forced collect
 /// purges every arena's pending spans and this thread's free pages.
-fn trim() {
+pub(crate) fn trim() {
     // SAFETY: `mi_collect` takes no pointers; it runs on a live thread
     // with mimalloc as the global allocator.
     unsafe { libmimalloc_sys::mi_collect(true) };
@@ -1827,17 +1827,22 @@ pub(crate) mod tests {
     }
 
     /// `committed` reads mimalloc's own count: it grows with a large
-    /// allocation kept live.
+    /// allocation kept live. The count is process-wide and other tests
+    /// free in parallel, so one of a few tries must see the growth.
     #[test]
     fn the_committed_count_follows_the_heap() {
-        let before = committed();
-        let block = std::hint::black_box(vec![1u8; 8 << 20]);
-        assert!(
-            committed() >= before + (4 << 20),
-            "{before} -> {}",
-            committed()
-        );
-        drop(block);
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            let before = committed();
+            let block = std::hint::black_box(vec![1u8; 8 << 20]);
+            let after = committed();
+            drop(block);
+            if after >= before + (4 << 20) {
+                return;
+            }
+            seen.push((before, after));
+        }
+        panic!("the count never grew by 4 MiB with 8 MiB live: {seen:?}");
     }
 
     /// The config in `dir` loaded once (no watcher, no cache).

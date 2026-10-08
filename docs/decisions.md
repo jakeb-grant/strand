@@ -8381,6 +8381,34 @@ settling. The cpu-poll case is held end to end:
 logic thread over 5 s of an open cpu popup and allows at most 7 (5
 measured; the first trim's always-arm rule gave 6 in 3 s against 3).
 
+**2026-10-08 · wave4-exitMemory: the text worker trims as its queue
+drains.** CI run 37710323645 (8ee1fe7) failed the gate at 34,867 kB,
+and the full shell's bar alone read 34.0–34.9 MB against 32.6 a run
+earlier. Here the bar read 31.9–32.5 MB in six runs out of seven and
+35.3 MB in one, the extra 3.3 MB all anonymous, and three of seven
+steady ticks woke the main thread a second time 511 ms on, to trim.
+mimalloc's `mi_collect(true)` frees only the calling thread's free and
+retired pages (a thread keeps one empty page per size class, up to
+512 KiB each for medium sizes) plus every arena's pending purges; the
+text worker (`strand-text`) wakes with every tick and with boot, and
+nothing trimmed it, so what it freed stayed resident until it next
+allocated, and other threads took fresh arena memory instead, the
+commit growth that armed the tick's extra trim. With a throwaway
+forced collect in the worker as its queue drained, five runs read
+31.9–32.5 MB, each tick one burst. The fix is that, as an interface:
+`strand_text::set_idle_hook`, installed by `main` with `run::trim`,
+runs on each worker's thread once its queue drains after work, inside
+the burst that woke it (no wakeup of its own; test
+`crates/strand-text/tests/idle_hook.rs`). A worker of its own and not
+a message from the main thread's trim: the tick arms no trim, and a
+tick is when the worker frees. Release here after it, three runs of
+the budgets suite: the bar 32.4–32.5 MB, every tick one burst; the
+full shell with 12 entries 47.7–48.5 MB with the OSD, with 169 entries
+56.0–59.5 MB; the token-edit p95 19.2 ms against its 19.6 gate (19.0–
+19.3 before). The image worker and the services' threads are not
+hooked: no run showed them holding a burst's garbage, and they do not
+wake with the tick.
+
 **2026-10-08 · wave4-exitMemory: the budget rests on the workspace's
 release profile.** The `[profile.release.package]` opt-levels above
 change the repo's build profile, which this step's brief said not to
