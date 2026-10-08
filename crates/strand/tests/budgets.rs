@@ -1,7 +1,7 @@
 //! M3 exit, "memory verified", and the idle budget on the real services
-//! (design.md, "Memory budget" and "Testing": the two-monitor bar aims at
-//! 34 MB, a warning above it, and the build fails above 38 MB; a running
-//! service with nothing changing wakes nothing).
+//! (design.md, "Memory budget" and "Testing": the build fails above 34 MB
+//! for the two-monitor bar; a running service with nothing changing wakes
+//! nothing).
 //!
 //! `strand run` without `STRAND_MOCK` on a headless sway with two
 //! 2560×1440 outputs (scale 1 and 1.25), beside python-dbusmock's UPower
@@ -18,8 +18,8 @@
 //!   on the machine's icon themes (`/usr/share`; CI installs Adwaita):
 //!   once every value is on screen, its volume, network and battery
 //!   icons drawn, and the boot work is done, PSS stays
-//!   within the 38 MB ceiling (fails above it; above the 34 MB target
-//!   it warns) in release (a debug build has its own ceiling),
+//!   within the 34 MB gate (fails above it) in release (a debug build has
+//!   its own ceiling),
 //!   no page of it is a transparent huge page, over 10 s between two
 //!   minute ticks no thread of strand's wakes (or comes or goes) and no
 //!   frame is drawn, and the next minute tick wakes it in one burst.
@@ -69,10 +69,9 @@ use strand_services::testing::{DbusMock, PrivateBus};
 use window::TestWindow;
 use zbus::zvariant::{OwnedValue, Value as ZValue};
 
-/// design.md: the two-monitor bar aims at 34 MB (CI warns above it) and
-/// the build fails above 38 MB.
-const PSS_TARGET_KB: u64 = 34 * 1024;
-const PSS_GATE_KB: u64 = 38 * 1024;
+/// design.md: the build fails above 34 MB (MiB) for the two-monitor bar
+/// (decisions.md wave4-core, "the bar's 34 MB gate fails again").
+const PSS_GATE_KB: u64 = 34 * 1024;
 /// A debug build's code is about three times release's (65 MB against
 /// 32 MB here): a ceiling of its own that only catches gross growth; the
 /// gate is checked in release (CI).
@@ -1403,11 +1402,36 @@ fn notice(text: &str) {
 
 /// The limit and its name for the build under test.
 fn pss_limit() -> (u64, &'static str) {
-    if cfg!(debug_assertions) {
-        (DEBUG_PSS_CEILING_KB, "debug ceiling")
+    bar_limit(!cfg!(debug_assertions))
+}
+
+/// The bar's limit for a release (`true`) or a debug build: release, the
+/// build under CI's gate, fails above design.md's 34 MB.
+fn bar_limit(release: bool) -> (u64, &'static str) {
+    if release {
+        (PSS_GATE_KB, "34 MB gate")
     } else {
-        (PSS_GATE_KB, "38 MB ceiling")
+        (DEBUG_PSS_CEILING_KB, "debug ceiling")
     }
+}
+
+/// Whether a bar measured at `pss` kB fails the build under test's limit.
+fn bar_over_budget(pss: u64, release: bool) -> bool {
+    pss > bar_limit(release).0
+}
+
+/// The gate itself, checked without a compositor in every build: a release
+/// bar at 34 MiB passes and one kB more fails, so a bar that grew to 36 MB
+/// (under the old 38 MB ceiling, which only warned at 34) fails CI.
+#[test]
+fn the_bar_gate_fails_above_34_mib_in_release() {
+    assert_eq!(bar_limit(true), (34 * 1024, "34 MB gate"));
+    assert!(!bar_over_budget(34 * 1024, true));
+    assert!(bar_over_budget(34 * 1024 + 1, true));
+    assert!(bar_over_budget(36 * 1024, true));
+    // The debug ceiling stays looser: debug code is about three times
+    // release's; the gate is held in release.
+    assert!(!bar_over_budget(36 * 1024, false));
 }
 
 /// A release measurement above its design.md target: a warning (a CI
@@ -1423,8 +1447,8 @@ fn warn_over_target(what: &str, pss: u64, target: u64) {
     }
 }
 
-/// The two-monitor design bar on the real services: within the 38 MB
-/// ceiling (a warning above the 34 MB target), no huge page, and 10 s between minute ticks without a wakeup or
+/// The two-monitor design bar on the real services: within the 34 MB
+/// gate (release), no huge page, and 10 s between minute ticks without a wakeup or
 /// a frame.
 #[test]
 fn the_design_bar_on_the_real_services_keeps_the_budget() {
@@ -1514,9 +1538,8 @@ fn the_design_bar_on_the_real_services_keeps_the_budget() {
         "design bar on the real services: PSS {pss} kB ({what} {limit} kB)"
     ));
     assert_eq!(huge, 0, "huge pages resident\n{}", memory_report(pid));
-    warn_over_target("design bar on the real services", pss, PSS_TARGET_KB);
     assert!(
-        pss <= limit,
+        !bar_over_budget(pss, !cfg!(debug_assertions)),
         "PSS {pss} kB over the {limit} kB {what}\n{}",
         memory_report(pid)
     );

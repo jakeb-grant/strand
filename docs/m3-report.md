@@ -41,7 +41,7 @@ machine's own system or session bus.
 | --- | --- | --- | --- |
 | Runs on Hyprland, niri and sway | the `workspaces`, `windows` and `wm` stores and design.md's bar agree with each compositor | sway, niri 26.04 and Hyprland 0.56.2 green in CI's `compositors` job, on this branch's merge commit `e132d8d` ([job 113227617119](https://github.com/jakeb-grant/strand/actions/runs/37752116747/job/113227617119) of run 37752116747) and latest on `f681c45` ([job 113282445061](https://github.com/jakeb-grant/strand/actions/runs/37768656088/job/113282445061) of run 37768656088, `check` green too) | pass |
 | 100 reloads with no reconnects | no service restarts, no new connection (the `from dbus` introspection refresh exempt; see Open), no mock call | **100 reloads in 8.4 s**, every check clean (below) | pass |
-| Memory: design.md's bar, 2×2560×1440, real services | 34 MB target (warns), 38 MB ceiling (fails) | **31,690 kB** (30.9 MiB) here, **32,664 kB** (31.9 MiB) in CI run 37749789401 | pass, under the target |
+| Memory: design.md's bar, 2×2560×1440, real services | 34 MB gate (fails above it) | **31,690 kB** (30.9 MiB) here, **32,664 kB** (31.9 MiB) in CI run 37749789401 | pass, under the gate |
 | Memory: full shell, launcher open, toasts, OSD | design.md 59–64 MB; 64 MB target, 70 MB ceiling | **45,502 kB** (44.4 MiB, 12 desktop entries), **55,477 kB** (54.2 MiB, 169) here; 49,384 / 58,115 kB (48.2 / 56.8 MiB) in CI run 37749789401 | pass, under design.md's estimate |
 | Idle wakeups with services running | 0 | **0** context switches in any thread over 10 s on the design bar (a window in which only the `strand-watch` thread woke on another process's change in a watched ancestor directory is re-run, at most twice; see Idle wakeups); 0 logic/services wakeups in each services idle test | pass |
 | Portal change on the next frame (M1's latency gate, M3 clause) | painted within one refresh at p95, presented at the next frame | `SettingChanged` sent → painted **p95 3.4–3.6 ms**, → presented **p95 3.7–3.8 ms** (one refresh 16.7 ms) | pass |
@@ -128,12 +128,13 @@ PSS is read from `/proc/<pid>/smaps_rollup` after the shell has settled
 (a whole second without a context switch or frame and the allocator's
 trim done), on headless sway with two 2560×1440 outputs.
 
-**Gate in force** (design.md, "Memory budget"; decisions.md
-wave4-exitMemory, targets and ceilings): the two-monitor bar warns above
-the 34 MB target and fails above the 38 MB ceiling (38,912 kB); the full
-shell warns above the 64 MB target and fails above the 70 MB ceiling.
-MB here are MiB (1,024 kB), as the tests compute them. Every figure in
-this report is also under the old hard gates (34 and 64 MB).
+**Gate in force** (design.md, "Memory budget"; decisions.md wave4-core,
+"the bar's 34 MB gate fails again"): the build fails above 34 MB
+(34,816 kB) for the two-monitor bar, in `budgets.rs`, `demo.rs` and
+`services.rs`, each a release CI step; the full shell warns above the
+64 MB target and fails above the 70 MB ceiling. MB here are MiB
+(1,024 kB), as the tests compute them. Every figure in this report is
+also under 64 MB for the full shell.
 
 | Measurement | PSS (kB) | Anon | File | Shmem |
 | --- | --- | --- | --- | --- |
@@ -177,12 +178,14 @@ pages off from an ELF constructor, the allocator trimmed after
 structural bursts (at most every 5 s, never between an animation's
 frames), and the release profile's size opt-levels for event-rate
 crates, which `budgets.rs::the_release_profile_keeps_the_size_opt_levels_the_budget_rests_on`
-guards. **Owner note:** the targets-and-ceilings wording of the gate and
-the ~27 `[profile.release.package]` opt-level overrides were proposed by
-the architect after the owner asked for reasonable memory expectations;
-the owner has not explicitly confirmed the 34/38 and 64/70 MB numbers or
-the overrides. Every measured figure also passes the stricter 34/64 MB
-gates, so the milestone does not depend on that decision.
+guards. **Owner note:** the full shell's 64 MB target / 70 MB ceiling
+and the ~27 `[profile.release.package]` opt-level overrides were proposed
+by the architect after the owner asked for reasonable memory
+expectations; the owner has not explicitly confirmed them. The bar's
+38 MB ceiling of that proposal is withdrawn: the bar fails above 34 MB
+again, the stricter reading, which every measurement passes with about
+2 MB to spare. Every full-shell figure also passes 64 MB, so the
+milestone does not depend on the open decision.
 
 ## Idle wakeups
 
@@ -360,8 +363,10 @@ Every M3 tier has a CI step (`.github/workflows/ci.yml`):
   passes it). The size opt-levels are not the cause (measured above:
   `strand` at opt-level 3 fails as often and costs the bar ~2.1 MB);
   the ~19 ms headless token reload is the path to profile (M1 owners).
-- The owner's confirmation of the 34/38 and 64/70 MB targets and
-  ceilings and of the release opt-level overrides (decisions.md
+- The owner's confirmation of the full shell's 64/70 MB target and
+  ceiling and of the release opt-level overrides (the bar is gated at
+  34 MB again, decisions.md wave4-core, "the bar's 34 MB gate fails
+  again"; decisions.md
   wave4-exitReport, review r2, item 3: the "confirmed by the owner"
   entries of wave4-exitMemory are read with this qualification).
 - The strand-render owner's acknowledgement of the layout default this
