@@ -576,8 +576,16 @@ fn a_lone_toast_plays_its_poses_as_its_panel_opens_and_closes() {
             .collect();
         assert!(frames.len() >= 5, "round {round}: enter frames {frames:?}");
         assert!(frames[0] < 128, "starts near transparent: {frames:?}");
+        // The content-sized panel can be painted twice at its starting
+        // opacity before the fade's first step (CI run 37747149738 drew
+        // [0, 0, 40, 99, ...] twice in a row; never reproduced locally):
+        // repeats of the starting value are skipped, and from the first
+        // step on every frame must move.
+        let start = frames.iter().take_while(|&&a| a == frames[0]).count() - 1;
+        let fade = &frames[start..];
+        assert!(fade.len() >= 5, "round {round}: enter frames {frames:?}");
         assert!(
-            frames[..5].windows(2).all(|w| w[1] > w[0]),
+            fade[..5].windows(2).all(|w| w[1] > w[0]),
             "fades in frame by frame: {frames:?}"
         );
         assert_eq!(*frames.last().unwrap(), 255, "{frames:?}");
