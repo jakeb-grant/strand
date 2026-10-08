@@ -8,7 +8,8 @@
 # private PipeWire with WirePlumber. HEADLESS-1 (2560x1440 at scale 2) is
 # saved at each step of `full_shell`, whose checks all still run:
 #
-#   m3-bar.png       the bar: sway's workspaces, the test window's title,
+#   m3-bar.png       the bar: sway's workspaces (a second window opened on
+#                    workspace 3 for the shots), the test window's title,
 #                    the clock, volume, network and battery (design.md's
 #                    bar has no network: the shots add a two-line
 #                    component with its icon and name after the volume)

@@ -611,6 +611,49 @@ impl Desktop {
         }
     }
 
+    /// `swaymsg` on the desktop's sway; its output.
+    fn swaymsg(&self, args: &[&str]) -> String {
+        let ipc = std::fs::read_dir(&self.dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| {
+                p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with("sway-ipc."))
+            })
+            .expect("sway's IPC socket");
+        let out = bounded(
+            Command::new("swaymsg").args(args).env("SWAYSOCK", ipc),
+            "swaymsg",
+        )
+        .expect("swaymsg runs");
+        assert!(out.status.success(), "swaymsg {args:?} failed");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// A second window, on HEADLESS-1's workspace 3, focus back on
+    /// workspace 1 once it is there: the bar's dots then show a focused
+    /// and an occupied workspace (sway keeps no empty workspace that is
+    /// not shown).
+    fn second_workspace(&self) -> TestWindow {
+        self.swaymsg(&["workspace", "3"]);
+        let window = TestWindow::open(
+            &self.dir.join(&self.display),
+            "strand-budgets-2",
+            "another window",
+        );
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !self
+            .swaymsg(&["-t", "get_tree"])
+            .contains("\"strand-budgets-2\"")
+        {
+            assert!(Instant::now() < deadline, "the second window never mapped");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        self.swaymsg(&["workspace", "1"]);
+        window
+    }
+
     /// One output's screenshot as RGB rows.
     fn shot(&self, output: &str) -> Option<Shot> {
         let path = self.dir.join(format!("{output}.ppm"));
@@ -1698,6 +1741,9 @@ fn full_shell(name: &str, apps: Apps, shots: Option<&Path>) {
         );
         std::thread::sleep(Duration::from_millis(50));
     }
+    // The screenshots' bar shows more than one workspace (the measured
+    // runs keep the one).
+    let _second = shots.map(|_| desk.second_workspace());
     settled(&mut desk, "the bars", limit);
     let bar = pss_kb(pid);
     let shot = |desk: &Desktop, what: &str| {
