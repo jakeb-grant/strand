@@ -1771,3 +1771,62 @@ fn a_sized_image_keeps_its_size_beside_a_long_cut_comment() {
     assert!(shrunk.w < 32.0, "shrink: 1 shrinks: {shrunk:?}");
     assert_matches_ref("layout_sized_image", &buf, TOLERANCE);
 }
+
+/// The sized-image default covers absolute sizes only: an image sized by a
+/// percentage (`width: 100%`) still gives way to a sibling in a row, as any
+/// box does, instead of pushing it out of the row.
+#[test]
+fn a_percentage_sized_image_still_gives_way_in_a_row() {
+    let (mut image, mut icon, mut tail) = (None, None, None);
+    let (d, root) = panel(200, 80, |b, root| {
+        let col = b.node(
+            NodeKind::Col,
+            Some(root),
+            vec![(Prop::Width, len_pct(100.0))],
+        );
+        for kind in [NodeKind::Image, NodeKind::Icon] {
+            let row = b.node(
+                NodeKind::Row,
+                Some(col),
+                vec![(Prop::Width, len_pct(100.0))],
+            );
+            let id = b.node(
+                kind,
+                Some(row),
+                vec![
+                    (Prop::Width, len_pct(100.0)),
+                    (Prop::Height, num(32.0)),
+                    (Prop::Bg, color("#f38ba8")),
+                ],
+            );
+            let fixed = swatch(
+                b,
+                row,
+                "#a6e3a1",
+                vec![
+                    (Prop::Width, num(80.0)),
+                    (Prop::Height, num(32.0)),
+                    (Prop::Shrink, num(0.0)),
+                ],
+            );
+            match kind {
+                NodeKind::Image => image = Some(id),
+                _ => icon = Some(id),
+            }
+            tail = Some(fixed);
+        }
+    });
+    let (r, _) = show(d, root, 200, 80, Scale::ONE);
+    for id in [image, icon].into_iter().flatten() {
+        let im = rect(&r, id);
+        assert!(
+            (im.w - 120.0).abs() < 0.51,
+            "a 100% image shrinks to what the 80 px sibling leaves: {im:?}"
+        );
+    }
+    let tail = rect(&r, tail.unwrap());
+    assert!(
+        tail.x + tail.w <= 200.0 + 0.51,
+        "the sibling stays in the row: {tail:?}"
+    );
+}

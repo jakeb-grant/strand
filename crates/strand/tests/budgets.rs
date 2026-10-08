@@ -509,6 +509,16 @@ impl Desktop {
     /// The directory trees strand's inotify watches can be in: its HOME
     /// (config, data, backlight), its runtime directory and the system
     /// data directories, each with its ancestors.
+    /// What strand itself writes: its log, and its state (persist,
+    /// settings, palettes, frecency) and cache directories.
+    fn own_writes(&self) -> Vec<PathBuf> {
+        vec![
+            self.log.clone(),
+            self.dir.join("state"),
+            self.dir.join("cache"),
+        ]
+    }
+
     fn watched_roots(&self) -> Vec<PathBuf> {
         vec![
             self.home.0.clone(),
@@ -1326,6 +1336,24 @@ impl DirMonitor {
     }
 }
 
+/// Whether a [`DirMonitor::events`] line (`dir/name FLAGS`) names `path`
+/// or a name under it.
+fn event_under(event: &str, path: &Path) -> bool {
+    let p = path.display().to_string();
+    event
+        .strip_prefix(&p)
+        .is_some_and(|rest| rest.starts_with('/') || rest.starts_with(' '))
+}
+
+#[test]
+fn an_event_is_under_its_own_path_only() {
+    let state = Path::new("/run/t/state");
+    assert!(event_under("/run/t/state/strand/persist/x CREATE", state));
+    assert!(event_under("/run/t/state CREATE | ISDIR", state));
+    assert!(!event_under("/run/t/statement CREATE", state));
+    assert!(!event_under("/run/t/cache/x CREATE", state));
+}
+
 /// A whole second without a wakeup or a frame, early enough in the
 /// minute (at most 45 s into it) that a 10 s window after it ends before
 /// the next minute tick.
@@ -1528,7 +1556,21 @@ fn the_design_bar_on_the_real_services_keeps_the_budget() {
                 )
             })
             .collect();
-        if !woke.is_empty() && watcher_only && !seen.is_empty() && attempt < 3 {
+        // Only a change strand did not make explains the wake: one of
+        // its own writes (its log, state, settings or cache files) is the
+        // shell waking itself, and is shown, not tried again.
+        let own = desk.own_writes();
+        let (mine, outside): (Vec<&String>, Vec<&String>) = seen
+            .iter()
+            .partition(|e| own.iter().any(|p| event_under(e, p)));
+        if !mine.is_empty() {
+            eprintln!("idle window {attempt}: events in strand's own files: {mine:?}");
+            notice(&format!(
+                "idle window {attempt}: events in strand's own files: {mine:?}"
+            ));
+        }
+        if !woke.is_empty() && watcher_only && mine.is_empty() && !outside.is_empty() && attempt < 3
+        {
             eprintln!(
                 "idle window {attempt}: the watcher woke on a change outside the shell, \
                  trying again: {shown:?}, events {seen:?}"
