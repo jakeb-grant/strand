@@ -995,6 +995,30 @@ fn a_changed_service_declaration_restarts_only_it() {
     assert_eq!(shell.value("t", "n"), Value::int(3));
 }
 
+/// A reload that renumbers the enums a kept custom service's fields
+/// name (types declared before it, then removed) re-types it: its value
+/// is of the new program's enum, with no `service` edit reported.
+#[test]
+fn a_kept_service_is_retyped_when_its_enum_moves() {
+    use strand_compiler::vm::host::ServiceHost;
+    let src = |extra: &str| {
+        format!(
+            "{extra}enum Mode {{ slow, fast }}\nservice m from dbus system \"x.Mode\" {{ mode: Mode = Mode }}\nbar Top {{ text m.mode == fast ? \"f\" : \"s\" }}\n"
+        )
+    };
+    let mut shell = boot(&[("t.strand", &src(""))]);
+    for extra in ["enum Aaa { a }\nenum Bbb { b }\n", ""] {
+        let (report, _) = shell.reload(&[("t.strand", &src(extra))]);
+        assert!(!report.classes.contains(&EditClass::Service), "{report:?}");
+        let mode = shell.build.program.types.find_enum("Mode").unwrap();
+        assert_eq!(
+            shell.host.read(&shell.rt, "m", "mode").unwrap(),
+            Value::Enum(mode, 0),
+            "after {extra:?}"
+        );
+    }
+}
+
 /// A 2,000-row keyed list survives a prop edit of its item template:
 /// every row kept (no create, no remove), each patched once.
 #[test]

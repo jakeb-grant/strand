@@ -9,6 +9,12 @@ publish.workspace = true
 
 [dependencies]
 strand-compiler.workspace = true
+# The services' schemas (not their runtime): `strand-dev lsp` checks,
+# hovers and completes against the services `strand run` serves.
+strand-services-schema.workspace = true
+# `from dbus` services checked against D-Bus introspection (zbus alone,
+# not the services runtime: decisions.md, wave4-a3).
+strand-introspect.workspace = true
 crossbeam-channel = "0.5.17"
 lsp-server = "0.10.0"
 lsp-types = "0.97.0"

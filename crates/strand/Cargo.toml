@@ -13,6 +13,11 @@ strand-core.workspace = true
 strand-render.workspace = true
 strand-scene.workspace = true
 strand-services.workspace = true
+# The icon lookup's cache, invalidated when an icon base directory changes.
+strand-icons.workspace = true
+# `from dbus` services checked against introspection (strand check, the
+# loader).
+strand-introspect.workspace = true
 strand-surface.workspace = true
 strand-text.workspace = true
 # The last palette and the portal's values written off the logic thread.
@@ -27,20 +32,29 @@ log = { version = "0.4.34", features = ["std"] }
 # With THP in `always` mode the kernel does so unasked: `main` turns THP
 # off for the process (rustix `thread`: `PR_SET_THP_DISABLE`).
 mimalloc = { version = "0.1.52", default-features = false, features = ["no_thp"] }
+# `mi_collect`: freed memory returned once the shell goes quiet (run.rs).
+libmimalloc-sys = { version = "0.1.49", features = ["extended"] }
 libc = "0.2.190"
 rustix = { version = "1.1.5", features = ["event", "thread", "time"] }
 serde_json = "1.0.151"
 
 [dev-dependencies]
+# Bodies of the D-Bus calls the services tests make.
+serde = "1.0.228"
 # A mock portal on a private bus (the theme's end-to-end test).
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 tokio = { version = "1.53", features = ["rt-multi-thread", "time"] }
+# A bus monitor's message stream (the 100 reloads' bus check).
+futures-util = { version = "0.3.34", default-features = false }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
-libmimalloc-sys = { version = "0.1.49", features = ["extended"] }
 wayland-client = "0.31.15"
 wayland-protocols-misc = { version = "0.3.12", features = ["client"] }
 wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
-rustix = { version = "1.1.5", features = ["process"] }
+rustix = { version = "1.1.5", features = ["process", "event", "fs"] }
+# The compositor and audio end-to-end test: a real window (xdg-shell) on
+# sway and a private PipeWire (strand-services' test helpers).
+wayland-protocols = { version = "0.32.13", features = ["client"] }
+tempfile = "3.27.0"
 
 [lints]
 workspace = true

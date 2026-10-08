@@ -13,7 +13,7 @@ file fixes boundaries; each crate is free inside its own boundary.
 | Text worker | `strand-text` | parley shaping, swash rasterisation, per-scale glyph atlases | Block render: a painted surface keeps drawing its last layout (or a realigned stand-in from another scale or width) until the new one arrives |
 | Watcher | `strand-watch` | inotify directory watches and polling (one `strand-watch` thread); not the IPC socket (`docs/decisions.md`, wave2-watch) | Parse files (it sends paths and hashes) |
 | Persist IO (one per `PersistStore`) | `strand-core` | Atomic writes of persisted cells, settings-file edits, settings overlays and last-good snapshots; reports each file it is about to change to `PersistStore::on_written` | Run on the logic tick or block logic (failures come back as diagnostics in a later tick) |
-| Services | `strand-services` | tokio current-thread runtime (the portal Settings client `strand_watch::follow` and the compositor IPC adapters run here); PipeWire and toplevel get their own threads | Block logic: they send state diffs and events |
+| Services | `strand-services` | One tokio current-thread runtime thread (`strand-services`), started with the first service that runs on it: every async service body (the `system` service follows the portal Settings with `strand_watch::follow` here; the `workspaces`, `windows` and `wm` stores and their one compositor hub with its IPC adapter run here, the sway adapter on swayipc-types (swayipc-async 3.0's types) over its own tokio framing, so no async-io reactor thread) and the portal icon-theme follower (`strand_services::icon_theme`, a task on the same session connection); the `audio` store runs the PipeWire loop on its own service thread (`strand-audio`, `Start::Thread`), and the hub's Wayland toplevel/workspace protocol client its own `strand-toplevel` thread (the hub's, not a `Start::Thread` body: three stores share it; the hub tells it to stop on its last stop without waiting on the shared runtime, and joins it at the next start or stop and on `Services::shutdown`) (idle: zero wakeups, `crates/strand-services/tests/idle.rs`, `tests/audio_idle.rs`, `tests/wm_services.rs`, `tests/audio_service.rs`) | Block logic: they send patches and events over channels, applied by `Services::pump` on the logic thread |
 
 Channels are the only coupling between threads. Logic → render is one
 `SceneDiff` per tick. Render → logic is `InputEvent`s (`strand-scene`) and layout facts
@@ -102,18 +102,65 @@ message, the runtime's wake hook (a ping, so the hook holds no sender
 and the thread ends when the main thread's senders are gone), the logic
 clock's `Wake::deadline` (the dispatch timeout) or `Wake::wall` on a
 `CLOCK_REALTIME` timerfd (`TFD_TIMER_ABSTIME | TFD_TIMER_CANCEL_ON_SET`:
-a resume or a clock step wakes it at once). SIGINT, SIGTERM (a
+a resume or a clock step wakes it at once). After a structural burst
+(a `SceneDiff` that creates or removes nodes or swaps the tokens: boot,
+a reload, a surface, popup, toast or row appearing or going), the
+logic thread, which sent it, and `strand run`'s main thread, which
+applied it (a dispatch timeout), each force one allocator collect
+500 ms after their last wake (`run::Trimmer`, `run::structural`,
+`mi_collect(true)`), so what the burst freed is returned to the system
+once the shell goes quiet; a tick or a poll only sets props and pays no
+trim wakeup, and each loop instead trims inline at the end of a wake it
+was given anyway when it has not trimmed for 5 s (`Trimmer::settle`)
+(decisions.md, wave4-exitMemory). The services' shared runtime ends
+an idle blocking-pool thread 500 ms after its last task
+(`client::BLOCKING_KEEP_ALIVE`), inside the burst's settling, not 10 s
+into an idle shell. A forced collect frees only the calling thread's
+pages (and every arena's pending purges), so the text worker, which
+wakes with every tick and no trim reached, takes a hook:
+`strand_text::set_idle_hook(fn())`, installed once by `main` with
+`run::trim`, runs on each worker's thread when its queue and channel
+drain after work, before it blocks (inside the burst, no wakeup of its
+own), at most once per 5 s plus that burst's 250 ms tail, as the main
+thread's inline trim, which also waits out an animation's frames
+(`strand_render::Renderer::in_motion()`, true while any surface has a
+spring or crossfade unsettled: a moving wake never trims inline);
+`strand_render::image::set_idle_hook(fn())` runs the same hook on the
+image decode worker as its queue drains after a decode (not after
+requests dropped undecoded). Both workers rule it with
+`strand_text::HookGate`: a drain it skips owes the hook, and the worker
+runs it once it has been quiet for 500 ms (one wake, only ever after
+real work and at most once per 5 s, inside the burst's settling as the
+main thread's delayed trim; so an idle worker never wakes, and a skip
+past that wake waits for the next drain allowed). The main and logic
+threads' delayed trim (`run::Trimmer`, armed by a structural diff) is
+pushed back by each wake while armed, but no further than 5 s after it
+was armed, so a surface that never settles still trims. The memory budget also rests on the workspace's
+release profile: the root `Cargo.toml`'s `[profile.release.package]`
+opt-levels build event-rate code for size, and neither `cargo install`
+from crates.io nor a packager's own profile carries them, so packages
+build from the workspace (`budgets.rs` holds the release binary's
+`.text` to 15 MiB). Every program strand starts gets back
+the THP setting strand inherited (`strand_services::child`, in each
+`pre_exec`). SIGINT, SIGTERM (a
 `signalfd` on the main loop, the signals blocked in every thread) and
 the compositor going away send `ToLogic::Shutdown`; the main thread
 joins the logic thread, which unmounts the instance, runs
 `Runtime::shutdown` and drops its stores, so debounced persist and
-settings writes reach the disk before the process exits. With
-`Live::portal` set, the logic thread also follows the portal's
-appearance settings (`strand_watch::PortalSettings` on its own thread
-until M3's services runtime; the boot read written as initial values,
-later batches as writes into `system.*`), keeping the last values in
-`$XDG_STATE_HOME/strand/palettes/system` and writing them before the
-first frame. Settings-file notices from core are overlay rows (a
+settings writes reach the disk before the process exits. Without
+`STRAND_MOCK` the logic thread runs the real services
+(`crates/strand/src/services`: `Real::start` registers every builtin
+service of `strand-services` on `Live::buses`, the environment's buses
+for `strand run`, behind a composite host whose fallback is the
+`SchemaHost`; see `strand-services`, "Language side"). It calls
+`Services::pump` after every sleep, before the step (the registry's waker
+is a ping on its loop), holds one reader of `system` itself (render needs
+`system.reduced_motion`), seeds `system` with the last values it kept
+in `$XDG_STATE_HOME/strand/palettes/system` (boot values) and writes
+them back off the logic thread whenever the service reports new ones;
+after mounting, the first frame waits up to 100 ms
+(`Services::wait_ready`) for the first reads of the services the
+config started (the portal's boot read among them). Settings-file notices from core are overlay rows (a
 shadowed field's `[clear]`) and `strand watch` notices. Layout facts
 (`ToLogic::Layout`) address the laid-out nodes logic measures (the
 instance sets `Prop::Watch` on an element whose `width`/`height` a
@@ -147,7 +194,12 @@ message, help, at: {file, line, column}, labels, short}]}`,
 `{"event": "notices", kept_over_default, notices}` for cells kept over a
 changed default outside a reload (persisted cells at boot, a parked bar
 back; with nobody watching they go into the next reload event's
-`kept_over_default`) and lowering's notices, and `{"event": "fault",
+`kept_over_default`) and lowering's notices; right after a `watch` is
+answered, a new watcher also gets `{"event": "notices", …,
+diagnostics}` with the running config's check warnings when it has any
+(`check::dbus_unchecked`, `check::poll_program`; the server hands the
+`Watch` request to the logic thread after answering it), which the next
+reload event without them resolves; and `{"event": "fault",
 message, at, frozen}`). `total_ms` runs from the watcher's last event
 behind the save to the moment the diff holding the reload is sent to
 render. A client whose socket cannot take its output yet gets a write
@@ -161,14 +213,48 @@ strand-scene      shared vocabulary: ids, geometry, colour, scene protocol, Pain
   ^   ^   ^
   |   |   strand-surface   (layer-shell, shm, damage submit, input, frame timing)
   |   strand-render ── strand-text
+  |   |   └── strand-icons (the icon theme lookup; no dependencies)
   |   strand-theme     (palette schema, material(), importers; colour maths in strand-scene)
   |     ^
-  strand-core ── strand-compiler ── strand-dev (LSP, inspector)
-     ^
+  strand-core ── strand-compiler ── strand-dev (LSP, inspector; links
+     ^                                strand-services-schema and strand-introspect,
+     |                                not the runtime)
      strand-services ──> strand-watch (EventSink, CompositorEvent; portal follow;
-                                       strand-watch depends on no Strand crate)
-strand (binary) wires everything.
+          |                            strand-watch depends on no Strand crate)
+          ├── strand-services-macros (#[service], #[derive(Store, Data, Call)])
+          ├── strand-services-schema (the builtin services' schema texts)
+          ├── strand-icons (apps' icons, the renderer's lookup)
+          └── strand-introspect (D-Bus introspection; zbus only)
+strand (binary) wires everything; its ServiceHost adapters join
+strand-services' stores to strand-compiler's VM.
 ```
+
+`strand-icons` (wave 4, a3) is the Icon Theme Specification lookup with a
+cache `invalidate()` refreshes (`lookup(name, size, scale, theme)`,
+`candidates(name)` and `resolve(name, size, scale, theme)`, the one
+candidate chain: the name, its `-symbolic` variant, then the generic
+fallbacks; `exists` follows the same chain; `system_theme`, `base_dirs`, `theme_setting_files`,
+`generation`, and `set_desktop_theme(Option<String>) -> bool`, the
+portal's theme name, preferred to GTK's settings files and invalidating
+when it changes); the renderer and the `apps` service both look icons up
+through it. `strand_services::icon_theme::spawn(&Services, switched)`
+follows the settings portal's `org.gnome.desktop.interface` `icon-theme`
+as a task of the shared services runtime, on its shared session
+connection (`Services::spawn_task`, crate-private), and feeds
+`set_desktop_theme`; `strand run`'s logic thread keeps the returned
+`Follower` with the real services (`run::Live::icon_theme_switched` is the
+main thread's callback) and has `switched` redraw icons as an
+`index.theme` change does. `strand-introspect` reads an object's properties from its
+D-Bus introspection (`properties_on(conn, name, path)` async,
+`properties(&Bus, name, path)` blocking with a 2 s bound, `parse(xml)`,
+`default_path(name)`, and `Cache`: answers remembered for `TTL` (10 s),
+`properties` blocking, `properties_or_ask` answering from what it
+remembers and asking on a thread of its own): what `from dbus` services
+are checked against (`strand check`, the loader, the LSP) and what the
+running service reads signatures from. The compiler's
+`check::dbus::Introspect::properties` answers `None` while a question is
+out (the LSP's, which never waits on a bus: an unanswered service is
+unchecked until the answer wakes the server to publish again).
 
 `strand-scene` has no heavy dependencies; it is what lets render and surface
 be built and tested without the language, and the language without pixels.
@@ -445,8 +531,8 @@ be built and tested without the language, and the language without pixels.
   `motion { reduced: system.reduced_motion }` (or a settings field) to
   reach render through the token table
   (`crates/strand-render/tests/reduced_motion.rs`). `strand run` reads
-  the key with the other appearance settings (`SystemSetting::
-  ReducedMotion`), writes `system.reduced_motion`, and sends render each
+  `system.reduced_motion` (the `system` service's, from the portal's
+  `SystemSetting::ReducedMotion`) after every step, and sends render each
   change of it with the next diff (`SceneDiff::reduced_motion`, applied
   as `Renderer::set_reduced_motion`). `Painter::wants_frame` is true while anything
   moves (`Renderer::animating`), so frame callbacks stop once it
@@ -775,7 +861,17 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   `KeyedVec` clone (`get_untracked`) held across a write makes that write
   copy the items and the key index.
   Service `rw` writes use `write_tagged(value, send)` (throttled writes are
-  held, then sent) and reports come back through `receive`. `let x =
+  held, then sent) and reports come back through `receive`. An item of a
+  service's keyed list is written with `KeyedSignal::write_item_tagged(
+  key, item, send)` (the item updated at once; a throttled handler's item
+  writes are held, the latest per item, each landing with its `send`)
+  and the service's diffs come back through `receive_items(diffs,
+  echo_of)`, which drops an item's echo (by tag, or by value untagged),
+  keeps a written item in a `Reset` that echoes it, and drops updates
+  that change nothing; `keep_pending_items` keeps written items in a
+  boot report, `pending_item_writes(key)` counts them. `forget_echoes()`
+  (on `Signal` and `KeyedSignal`) drops the pending writes of a service
+  run that ended without answering them; tags keep counting up. `let x =
   svc.call(input)` returning `Async` is `rt.async_memo(input, fetch)`, a
   read-only `AsyncMemo`.
 - Service lifecycle (start on first reader, stop 5 s after the last leaves
@@ -994,13 +1090,20 @@ Public interfaces other crates and later stages build on:
   `node-added`, `node-removed`, `state-default`, `state-reset`,
   `handler`, `timer`, `surface`, `service`, `lock-deferred`, `hard`).
   `reconcile::loader::Loader::new(root, schema, cache_dir)` is the
-  compiler worker's state: `boot()`, `changed([(path, exists)])`,
-  `rescan()` each return an `Outcome { build, committed, held,
+  compiler worker's state (`.with_check(ExtraCheck)` adds a check run on
+  every compile whose diagnostics count as the checker's: `strand run`'s
+  D-Bus introspection of `from dbus` services): `boot()`, `changed([(path, exists)])`,
+  `rescan()` and `recheck()` (the extra check's answers changed since
+  the last compile: the running and held files are checked again, held
+  files that now pass are committed, otherwise no build and the late
+  diagnostics are reported as a held edit's) each return an `Outcome { build, committed, held,
   diagnostics, sources, unreadable, from_cache, cleared, repeated,
   compile_time }`
   (`cleared`: the last attempt had errors, held or unreadable files and
   this one has none, even when nothing changed against the last good
-  build): the
+  build, or the running program's warnings went on a recheck;
+  `diagnostics` keeps a successful compile's warnings, and a revert to
+  the running text carries the running program's): the
   largest consistent set of changed files committed, the rest held with
   the diagnostics of the whole attempt; a commit stores the sources under
   `Cache` (`$XDG_CACHE_HOME/strand/last-good/<config hash>`) keyed by
@@ -1050,7 +1153,18 @@ Public interfaces other crates and later stages build on:
   must name a field, re-checked across all records after the extension;
   it is atomic, so on error nothing is added and the fingerprint is
   unchanged), and check with
-  `compile_with(&map, &schema)`. The builtin's service stubs, and the
+  `compile_with(&map, &schema)`. A `service … from dbus|file|listen|poll`
+  declaration's source is a constant the checker evaluates
+  (`hir::ServiceDecl::spec`, a `hir::SourceSpec`; fields carry their key
+  path); `check::dbus::check(&hir::Program, &dyn Introspect)` compares
+  its `dbus` fields with an object's introspection (`Introspect::
+  properties(system, name, path) -> Result<Vec<BusProperty>, String>`;
+  the caller brings the bus: `strand check`, the loader, the LSP).
+  `check::paths::check(&hir::Program, config_dir: Option<&Path>) ->
+  Vec<Diagnostic>` warns (`check::poll_program`) when a `from file` or
+  `from poll` path names a program (executable, `#!` or ELF; stat before
+  open, so a FIFO never blocks); it touches the disk, so it is not part
+  of `compile` and the same three callers run it next to the D-Bus check. The builtin's service stubs, and the
   records only services hand out (`Window`, `Notification`, `Date`, …),
   are declared `provisional service` / `provisional record`: the first
   extension that declares the same name replaces the stub in place (same
@@ -1216,10 +1330,19 @@ Public interfaces other crates and later stages build on:
   is an error value, as a token in arithmetic without numbers is now.
 - **Services** (`strand_compiler::vm::ServiceHost`): the VM's only way
   to services.
-  - `restart(rt, name, record, types)` / `stop(rt, name)`: a reload
-    changed (or added) / removed custom service `name`'s declaration;
-    only that service restarts or stops. Built-ins never do. Both
-    default to nothing.
+  - `declare(rt, &lower::CustomService, types)`: a no-code service the
+    program declares (its name, record of `types`, `hir::SourceSpec`
+    source and fields with their key paths and `rw`), called once at
+    instantiation. `restart(rt, &CustomService, types)` / `stop(rt,
+    name)`: a reload changed (or added) / removed a declaration; only
+    that service restarts or stops. Built-ins never do. `retype(rt,
+    &CustomService, types)`: a reload kept the declaration, but `types`
+    (the new program's table) may renumber its record and the enums and
+    records its fields name; the host reads its values as those types
+    from then on, without restarting it (called for every surviving
+    service that does not restart; `SchemaHost` remounts it at the new
+    defaults when its record or field types moved). All default to
+    nothing.
   - `read(rt, service, field)` and `call(rt, service, method, args)`
     (`fn` methods: `clock.format`, `calendar.days`, `workspaces.on`)
     must read through the graph (a `Signal<Value>` per field) so
@@ -1251,14 +1374,38 @@ Public interfaces other crates and later stages build on:
     match the service's reports with `receive`, so the echo of a write
     is ignored (`SchemaHost` writes the field's cell with
     `write_tagged`).
+  - `write_item(rt, item: &Value, path, value)` writes one `rw` leaf
+    below an item of a service's keyed list: `s.volume = 0.5` for `s`
+    in `audio.sinks` (a slider's `<-> s.volume` too) is
+    `write_item(s, [Field("volume")], 0.5)`. The host routes by the
+    item's record and finds the item by its schema `key` (the sink with
+    id 42), applies it at once and ignores its echo, with core's
+    `KeyedSignal::write_item_tagged` / `receive_items`. Unless the path
+    is fields all the way from a service (`audio.sink.volume` is a
+    `write`), lowering roots a place at the base nearest the leaf whose
+    type is a keyed schema record (`lower::PlaceRoot::Item`: the item's value comes first among
+    the place's index values); the checker accepts an `rw` field only
+    where the place starts at a `state`/settings, a service or such an
+    item (`check::read_only` otherwise). The default refuses.
   - `fetch(rt, service, method, args) -> Fetch` (a boxed future):
     `let x = svc.m(args)` whose method returns `Async` is `rt.async_memo(
     args, fetch)` per mounted `let`, created on the `let`'s first read
     (a closed launcher never searches). Each change of the argument
     tuple starts one fetch and drops the superseded future (cancelling
     it); the value keeps its last result while pending. The default
-    runs `call` once and is ready at once. Async calls anywhere else
-    (inside a larger expression) still go through `call`.
+    runs `call` once and is ready at once. Every other async service
+    call goes through `fetch` too: in a binding (`apps.search(q) ?? []`)
+    the compiler lowers it to `Op::AsyncSite(call chunk)`, the scope's
+    own load of that call (the same `Vm::async_load` as an async `let`,
+    made on first read and kept with the scope); in a handler, `fn` or
+    lambda to `Op::FetchMethod`, a pending `Async` whose `await` waits
+    for the fetch. `call` is never asked for an async method.
+  - `fetch_reads(rt, service, method)`: read, tracked, what an async
+    method's result depends on besides its arguments; a load calls it
+    where it reads its arguments, so a change fetches again (an open
+    launcher searches its query again when the app list or the icon
+    theme changes). The default reads nothing; `StoreHost` reads every
+    field of the service (a keyed one as its collection).
   - `action(rt, ActionTarget::{Service, Item(&record)}, name, args)` runs
     `notifications.clear()` or `ws.focus()`; `event(rt, service,
     event) -> EventQueue<Vec<Value>>` is the lossless queue `on
@@ -1266,7 +1413,9 @@ Public interfaces other crates and later stages build on:
   - `acquire`/`release(rt, service)`: a reader count. Every mounted
     component and the config's top level hold the services their body
     reads; a surface holds its body's services only while shown (its
-    `open` is true, or it has no `open`), a hidden surface's content
+    `open` is true, or it has no `open`; a top-level surface's `open`
+    binding itself is held by the file's top level, so what opens it is
+    read while it is closed), a hidden surface's content
     (components in it, surfaces nested in it) lets go of everything it
     holds, a surface nested in another (`popup` in a `bar`) holds its
     own children's reads only while it is shown (they do not count for
@@ -1274,12 +1423,23 @@ Public interfaces other crates and later stages build on:
     content is unmounted, its components' `state` cells kept for its
     next opening), and a parked bar
     (monitor unplugged) lets go of everything under it until it
-    returns. The
+    returns. A scope's reads include those of the `let`s and `fn`s it
+    reads, transitively; a `let` or `fn` holds nothing itself (the top
+    level holds what its handlers, timers, tokens, `state` initialisers
+    and exported `let`s read), so a service read only through a `let`
+    that a closed popup shows stays stopped. The
     service starts on its first reader and stops 5 s after its last
     leaves or goes invisible: `rt` lets a host create a service's cells
     lazily on `acquire` and arm the 5 s stop with core's timers on
     `release` (also called from scope cleanup: no synchronous disposal
     there).
+  - `acquire_field`/`release_field(rt, service, field)`: the same holds
+    for each field a scope reads directly (`lower::ServiceUses` keeps
+    `(service, None)` and `(service, Some(field))` per scope; a hold
+    acquires the service, then its fields, and releases in reverse).
+    What a `#[store(stream)]` field's stream runs for (a Wi-Fi scan,
+    audio levels): a bar showing `network.ssid` does not keep a closed
+    popup's scan of `network` access points going. Default: nothing.
   - Several service crates, one host (M3 plan): `Instance::new` takes one
     `Rc<dyn ServiceHost>`, and `ServiceHost` (with `Value`, `RecordId`
     and the rest of the VM's dynamic types) stays in `strand-compiler`:
@@ -1312,7 +1472,7 @@ Public interfaces other crates and later stages build on:
     describing its fields by name), it moves into `strand-compiler`
     behind a `strand-core` trait instead; no edge from `strand-services`
     to `strand-compiler` is added either way.
-  - `declare(rt, name, record)` adds a custom service; `next_wake(rt) ->
+  - `declare(rt, &lower::CustomService, types)` adds a custom service; `next_wake(rt) ->
     Option<SystemTime>` and `wake(rt, now)` let wall-clock services (the
     clock) wake the host loop only at minute boundaries (seconds only
     while a binding shows them).
@@ -1516,8 +1676,11 @@ Public interfaces other crates and later stages build on:
     caller retries after `lock_shown()` turns false. Lock hashes are
     compared with the running build's, so once a lock edit waits, every
     later build carries it and waits too (decisions.md, wave2-runtime). `reload_hard(&Build)`
-    unmounts everything (persisted cells flushed) and mounts afresh. The
-    diff comes with the next `step`/`tick`/`flush`.
+    unmounts everything (persisted cells flushed) and mounts afresh;
+    what the old tree held of the services (each service and the fields
+    it read) stays held until the end of the next tick, by when the new
+    tree has taken its own, so no built-in service stops and no stream
+    switches off and on. The diff comes with the next `step`/`tick`/`flush`.
   - `Instance::freeze(&RuntimeError)` also outlines the frozen
     component's top nodes (or the failing node) with a 2 px red
     `border`; `thaw` restores it, and a reload's new tree clears it.
@@ -1573,7 +1736,11 @@ scale }` → `TextLayout { key, size, glyph runs }`. `TextStyle` holds the
 font, line height, alignment, `ellipsis` (start, middle, end), `max_lines`
 and `spans` (byte ranges with weight, italic, underline or colour: marks,
 markup); a glyph run's `color` is its span's, else the node's, and an
-underlined span's run carries its `underline` rect (physical pixels). Glyph atlases are keyed by
+underlined span's run carries its `underline` rect (physical pixels). A
+weight picks the family's face by CSS font matching, and a face is
+emboldened only for a weight of 600 or more on a face lighter than 600
+(CSS `font-synthesis-weight`): a 500 on a family with only 400 and 700
+faces draws the 400 face. Glyph atlases are keyed by
 scale and LRU-bounded. Render draws the last delivered layout.
 Each `TextLayout` also carries the `AtlasUpload`s (alpha pixels) for glyphs
 rasterised while producing it, which render applies to its mirror of the
@@ -1595,7 +1762,13 @@ text at `MAX_TEXT_BYTES` (64 KiB) per request. A layout that had to
 skip glyphs for want of atlas room says so (`is_incomplete`; render asks
 again a bounded number of times), and each layout lists its scale's live
 pages (`atlas_pages`), so the mirror drops pages the worker trimmed.
-Dropping the worker discards its queue. Each layout lists its caret stops
+Dropping the worker discards its queue. `reload_fonts()` (the installed
+fonts changed: the watcher's `CacheKind::Fonts`) builds a fresh engine and
+answers with a reset layout (key 0), on which render forgets every layout
+and shapes again (`Renderer::fonts_changed`; inline,
+`TextEngine::reload_fonts`). `Renderer::icons_changed` is the icon side:
+`strand_icons::invalidate`, every icon decode dropped (one in flight is
+dropped on arrival) and the surfaces drawing icons repainted. Each layout lists its caret stops
 (`TextLayout::carets`: every cluster boundary per line, byte offset and x
 in logical pixels), from which render draws an `input`'s caret and
 selection and places the caret under a click. `TextWorker::waker()`
@@ -1767,8 +1940,546 @@ The inspector joins it in M5; tree-sitter highlighting is not built yet
 
 ### `strand-services`
 
-Specified when M3 starts. It only produces writes and events into
-`strand-core`.
+The M3 service contract (wave 4). `strand-services` depends on
+`strand-core`, `strand-watch`, its proc-macro crate
+`strand-services-macros` (re-exported) and `strand-services-schema` (the
+builtin services' schema texts as constants and `schemas()`, with no
+dependencies: what `strand-dev` links instead of the runtime; each
+service module's `SCHEMA` is its constant there), never on
+`strand-compiler`: it
+never sees `Value`. Service state is typed Rust; where something must be
+handled by name it is `strand_services::Data` (`Null`, `Bool`, `Int`,
+`Float`, `Text`, `Duration`, `Color(Rgba)`, `List`, `Record { ty,
+fields }` by name, `Enum { ty, variant }`), with `ToData` / `FromData` /
+`SchemaType` (the schema spelling: `float`, `text?`, `[Workspace]`) for
+the primitives, `Option`, `Vec` and derived types.
+
+`strand_services::child` is the spawn contract: `thp_off()` (called
+once, from `strand`'s ELF constructor), `restore_in_child()` and
+`thp_enabled(status)`. Every program strand starts, in any crate (the
+apps service's launches, `from exec` services, the overlay's editor,
+and later the M4 lock helpers and M5's `strand call` and inspector),
+must run `child::restore_in_child()` as its `CommandExt::pre_exec`:
+the kernel keeps `MMF_DISABLE_THP` across `fork` and `execve`, so a
+child spawned without it, and all its descendants, run without
+transparent huge pages for life.
+
+- **A service** is a state struct:
+
+  ```rust
+  #[service(name = "battery")]   // schema: the `SCHEMA` const in scope (or `schema = …`); + action = A, call = C, fns = f, thread
+  #[derive(Store, Clone, Debug, Default, PartialEq)]
+  pub struct Battery {
+      pub present: bool,
+      #[store(rw)] pub level: f64,                // `<->` / assignment
+      #[store(keyed)] pub devices: Vec<Device>,  // a keyed collection
+      #[store(stream)] pub scan: Vec<Ap>,        // produced only while a visible reader reads it
+      pub received: Event<Notification>,          // an event (`()`: none, a tuple: several)
+  }
+  impl Battery { async fn run(cx: Cx<Self>) -> Result<(), ServiceError> { … } }
+  ```
+
+  `#[derive(Store)]` generates `BatteryPatch` (`Send`: one variant per
+  field with its new value, a keyed list's `Vec<VecDiff<K, T>>`, an
+  event's payload), `BatteryEvent` (one variant per event: what
+  `Cx::emit` takes), `BatteryCells` (logic thread: `Signal<T>` per
+  field, `KeyedSignal<K, T>` per keyed list, `EventQueue<T>` per event)
+  and the `Store` / `Cells` impls (`FIELDS`, `EVENTS` with names, schema
+  types, `rw`, `keyed`, `key` (the item's `Keyed::KEY_FIELD`),
+  `stream`, `///` docs (held equal to the schema text's by test);
+  `diff(old, new)`, `apply`,
+  `field_patch`, `item_patch(field, key, sent)` (an item write's
+  answer: one `Update`); cells `apply(patch, How::{Initial,
+  Report(echo_of)})` (a plain field's boot value is skipped while a
+  local write is in flight, a keyed list's boot value keeps items
+  written in flight, a keyed report goes through `receive_items`),
+  `snapshot`, `read(field) -> Data` tracked, `ids`, `write(field, Data,
+  send)` with `write_tagged`, `write_item(field, key, path, value,
+  send)` with `write_item_tagged`, `forget_echoes` (a run ended without
+  answering its writes), `keyed_items`). `#[derive(Data)]` on a
+  record struct (`#[data(name = "Workspace", key = id)]`, `#[data(rename
+  = "type")]` on a field; `key` implements `Keyed`) or a unit enum
+  (variants in snake_case). `#[derive(Call)]` on an enum of actions or
+  async methods: variants in snake_case, fields are the arguments in
+  order, a field named `item` takes the item an action was called on
+  (`ws.focus()`), so the language side routes a record's item actions
+  to the service whose `item_records()` names it; `FromCall::signatures()`
+  lists each call's name, arity and item record (`CallSig`), which a
+  test holds to the schema's `action`/`fn` declarations. `#[service]`
+  implements `Service` (`NAME`, `schema()`: its declarations in the
+  schema language, `Action`, `Call` (`NoCall` by default), `call`: `fn`
+  methods computed on the logic thread over the cells, `start`).
+- **Service side** (`Cx<S>`): `state()` (the logic thread's values when
+  it started, then its own updates); `update(|s| …)` sends the fields
+  that changed as one `Envelope` (one tick); `send(patches)` for
+  hand-made keyed diffs; `emit(BatteryEvent::…)`; `report(&write, |s|
+  …)` answers a write (always naming the written field, tagged with its
+  field index and generation, so the logic thread ignores the echo and
+  drops a refused optimistic value; other fields the answer changes are
+  outside changes); `ready()` ends the boot phase (updates before it are boot
+  values: `on change` takes them as its baseline; it also ends the first
+  frame's wait); `recv().await` / `blocking_recv()` / `try_recv()` give
+  `Msg::{Write(Write { field, key, path, value, field_value, generation
+  }) (an item write names the keyed list in `field`, the item's key in
+  `key`, the path below the item, and the item's whole new value),
+  Action(S::Action), Call(S::Call, Reply), Visible(bool), Watch { field,
+  on }}` and `None` once stopped; `visible()` (a reader is visible: a
+  service polling as a whole, cpu or memory, runs only then);
+  `watched(field)` (a visible reader reads that `#[store(stream)]`
+  field: a Wi-Fi scan or a level meter runs only then; `Msg::Watch`
+  says when it changes); `session()` / `system()` (one zbus connection
+  per bus per runtime thread, on the `Buses` the registry was given,
+  shared behind one connect, pinged before reuse so a restarted daemon is
+  reconnected, dropped with the last body on the thread; an error, not a
+  panic, without a tokio runtime: a service on its own thread runs one
+  to use them). A body returns when stopped; one that returns an error
+  while read is started again after a backoff (1 s doubling to 30 s,
+  reset only after a run stayed up 30 s, so a body failing right after
+  `ready()` keeps backing off), and services following a daemon may reconnect
+  themselves (NameOwnerChanged) to avoid that gap; `set_notify(f)` for a
+  service on its own thread with its own event loop (PipeWire's): `f`
+  runs whenever a message is queued and when it is stopped.
+- **Threads.** `Start::Shared`: the body runs on the one tokio
+  current-thread runtime thread (`strand-services`, a `LocalSet`, so
+  bodies need not be `Send`), started lazily with the first such service
+  and joined by `Services::shutdown`; stopping drops the body's future.
+  `Start::Thread` (`#[service(thread)]`, a blocking `fn run(cx)`): a
+  thread per run (`strand-<name>`), stopped by closing its messages;
+  the next run's thread joins the previous one first, and
+  `Services::shutdown` joins them (2 s at most, an overrun logged).
+- **Logic side.** `Services::new(rt, Buses, wake)` (where no owner is
+  current: its cells and timers live in a scope of their own; `wake` is
+  called from any thread after every envelope); `register::<S>(rt) ->
+  Client<S>` (`register_as::<S>(rt, name)` under an instance name, used
+  in logs, timer names, `wait_ready_of` and `ServiceDiagnostic.service`:
+  a no-code service is registered under its declared name;
+  `registered()` counts the members); `report(ServiceDiagnostic)` logs a
+  diagnostic raised outside a run (a no-code field's value that does not
+  convert) and queues it for `take_diagnostics`; `pump(rt)` applies every waiting envelope (outside
+  handlers, before a step: reports are not handler writes);
+  `wait_ready(rt, limit)` pumps until every running service is ready
+  (the first frame's wait); `shutdown()`. `Client<S>`: `cells()`,
+  `acquire(rt)` / `release(rt)` (the reader count: the first acquire
+  starts it; the last release tells it `Visible(false)` at once and arms
+  a core timer, `STOP_GRACE` = 5 s on the logic clock, that stops it;
+  an acquire inside the grace cancels the stop, nothing restarts;
+  `release` disposes nothing, so it is safe in scope cleanup),
+  `acquire_field(i)` / `release_field(i)` (readers of field `i`; a
+  stream field's service is told `Watch` on the first and last),
+  `seed(rt, |s| …)` (boot values before it first reports: a host's
+  remembered values), `act(rt, a)`, `request(rt, call)` (async call →
+  future of `Result<Data, String>`; like a write, both start a stopped
+  service for that operation, which then stops 5 s later), `readers`,
+  `field_readers`, `running` (false once its body ended), `starts`,
+  `stops`, `reports` (updates applied), `dynamic() -> Rc<dyn
+  DynService>`: the by-index view the language side drives (`fields`,
+  `events`, `actions`, `methods`, `action_sigs`, `method_sigs`,
+  `item_records` (the records its keyed lists hand out and its calls
+  take), `read`, `ids`, `keyed_items`, `write(field, path: &[Step],
+  Data)`, `write_item(rt, record, item, path, Data)` (the keyed list
+  holding the item's key; the mirror hears of it as an `Update`),
+  `action(rt, name, item, args)`, `call`, `fetch(rt, …)`, `acquire`,
+  `release`,
+  `acquire_field`, `release_field`, `observe(f)`:
+  every keyed change and event applied, as `Applied::{Keyed { field,
+  diffs: Vec<VecDiff<Data, Data>>, initial }, Event { event, args }}`;
+  `initial`: a boot report the store applied as a reload write, which
+  a mirror takes with `replace_all_reloaded` so `on change` skips it).
+  A committed write reaches the run current then; a write the rate
+  guard held that commits with no run (after the 5 s stop, or after the
+  body ended) starts one, as a write to a stopped service does. When a
+  run ends (its body returned, or the stop), the cells forget the
+  writes it never answered (`Cells::forget_echoes`).
+- **Builtin services here** (wave 4): `system` (the portal's appearance
+  settings through `strand_watch::follow` on the shared runtime, plus
+  `hostname`), `cpu` and `memory` (procfs, sampled once a second only
+  while a reader is visible), and the D-Bus services (wave 4, a2):
+  `battery` (UPower's display device and devices), `brightness`
+  (`/sys/class/backlight` watched with inotify, writes through logind's
+  `SetBrightness`; `brightness::set_backlight_root` /
+  `STRAND_BACKLIGHT_DIR` point it at fake backlights in tests), `network`
+  (NetworkManager; `access_points` is a stream field: read, followed and
+  scanned only while watched), `bluetooth` (BlueZ's object manager),
+  `notifications` (our own `org.freedesktop.Notifications` server),
+  `media` (MPRIS; `elapsed`/`position` carried forward, ticking only
+  while watched) and `tray` (StatusNotifierItem host, its own watcher
+  when the session has none, DBusMenu model), and (wave 4, wm) the
+  compositor's `workspaces`, `windows` and `wm` and PipeWire's `audio`
+  (below). The D-Bus services are all on our own zbus calls
+  (decisions.md, wave4-a2), with `logind-zbus` for `SetBrightness`.
+  `apps` (wave 4, a3): desktop entries (`freedesktop-desktop-entry`;
+  `NoDisplay`, `Hidden`, `OnlyShowIn`/`NotShowIn`, `TryExec`, the first
+  `applications/` directory holding an id deciding it), icons checked
+  against `strand-icons`, `search(query) -> Async<[Hit]>` (nucleo's
+  matcher behind `apps::Fuzzy`, ranges in characters, frecency from the
+  persist store's `services:apps.frecency`), `App.launch()` (`Exec` field
+  codes, a terminal for `Terminal=true`, detached with `setsid` and a
+  double fork); `apps::changed()` makes a running one read its entries
+  again, `apps::set_config` points it at test directories. The no-code
+  services (a3) run on the same contract: `custom::Custom`, one store per
+  declaration (`values`, a keyed list of untyped `Data` by field index,
+  and the id of its `custom::Spec`, which `custom::register` makes known
+  to the body), reading `dbus` properties (introspected;
+  `PropertiesChanged`; `rw` writes `Set` with the property's signature),
+  a `file` (inotify on its directory, its own inode, and the watched
+  directory's ancestors for their move or removal; a missing directory
+  waited for from its nearest existing ancestor), a `listen` command's
+  lines (merged and sent at most once per `custom::LISTEN_FLUSH`, a
+  frame) or a `poll` command or file (only while visible) as
+  `custom::Document`s (JSON, `key=value` lines, or text). `Client::restart(rt)` (a changed
+  declaration: the run stops and starts again if read) and
+  `Client::stop_now(rt)` (a removed one) serve their reloads, and
+  `Client::unregister(rt)` takes a removed declaration out of `Services`
+  (stopped, its cells disposed). Commands run in a process group of
+  their own, ended whole (SIGTERM, then SIGKILL after 500 ms) when the
+  run stops, restarts or a poll times out; `listen` lines are read
+  bounded (`MAX_DOCUMENT`) and lossily decoded. `Data`
+  implements `Default` (null) and `SchemaType` (`any`).
+  `strand_services::dbus` is what they share: `Daemon` (a bus name
+  followed through `NameOwnerChanged`, its signals by match rule, checked
+  against the current owner's unique name: a restarted daemon is read
+  afresh without restarting the service; `subscribe`/`unsubscribe` add
+  and drop match rules as the service needs them), `get_all`/`get`/`set`
+  of properties (each bounded by `READ_TIMEOUT`, 5 s: a hung daemon
+  must not stall a body, whose full match streams would stop zbus's
+  reader for every service on the connection; a read timing out fails
+  the run, `is_timeout` telling it from an object gone),
+  `properties_changed`, `apply_changed` (its re-reads of
+  invalidated properties bounded by `CALL_TIMEOUT`), `owner_process` (pid
+  and command of a name's owner), `activate` (`StartServiceByName` without waiting:
+  a `Daemon` whose name has no owner asks once per start), `timed` (a
+  call to an app given up after `CALL_TIMEOUT`, 2 s) and `timed_for` (a
+  bound of the caller's: NetworkManager's activations, 25 s). The
+  shared thread's session and system connections (`bus::session`,
+  `bus::system`) are counted per running body that asked for them
+  (`bus::with_user` wraps each shared body): the last body using one
+  closes it, whatever else runs on the thread. A service owning a
+  bus name (the notification server, the tray's host and watcher) uses
+  a connection of its own (`bus::own_session`), so the name goes with
+  the service. What a dropped body still has to say (the notification
+  server's `NotificationClosed` for each one open) is a finalizer
+  (`client::finalize`): a task on the runtime that the shared thread,
+  ending, waits for up to `FINALIZE_LIMIT` (500 ms) before dropping the
+  runtime. Calls that may wait on an app (tray items, players,
+  BlueZ connects) run as tasks in a `JoinSet` owned by the body, so they
+  hold up nothing and are cancelled when it stops; what they find (a
+  player read, a tray item read, a failed connect for
+  `bluetooth.failed`) comes back to the loop as the task's result. Pixels from D-Bus
+  (`image-data`, `IconPixmap`, a menu entry's `icon-data`) are checked
+  against the bytes sent before allocating, sampled down to 512 px a
+  side and become content-addressed PNG files under
+  `$XDG_RUNTIME_DIR/strand/pixmaps/<pid>` (`strand_services::pixmap`)
+  that `image` shows by path; each file lives while a `Pinned` handle
+  to it does (the notification or tray item showing it).
+  `testing::PrivateBus::start_activating` gives a private bus a service
+  directory that starts python-dbusmock templates (D-Bus activation).
+  `strand_services::schemas()` (the same as
+  `strand_services_schema::schemas()`) lists the schema texts of every
+  builtin service implemented (the language extends its builtin schema
+  with them; a real service may add fields and records to its stub, and
+  keeps every stub field with its `rw` mark and every stub event);
+  `Builtin::register(&services, rt)` registers them all. A new service
+  module adds its text to `strand-services-schema` and its store to
+  `Builtin`.
+- **Failures are diagnostics.** A run that ends with an error (or
+  panics) is a `ServiceDiagnostic { service, message, notice: false }`
+  (`service: String`, the registered name);
+  a body raises what the user must act on with `Cx::notice(message)`
+  (another notification server owning the name, naming its process:
+  `notice: true`, raised before `Cx::ready`). `Services::take_diagnostics()`
+  hands them out after a pump, one per distinct message (a retry failing
+  the same way is not repeated until a run stays up `RETRY_MAX` or ends
+  cleanly). A notice no longer holding (a later run ready without
+  raising it, a clean end, the service stopped: no reader for
+  `STOP_GRACE`, or `Services::shutdown`, or the run saying so itself
+  with `Cx::resolve()` while it goes on: the notification server once
+  the other server let the name go) comes back once with
+  `resolved: true`.
+  `strand run` logs them (`warn`; a notice at `error`), sends them to
+  `strand watch` as `notices`, and shows notices as overlay rows under
+  `strand: services`, keyed by service, which a resolved one removes.
+  `Services::wait_ready_of(rt, Some(name), limit)` waits for one
+  service's first read (`strand set`'s relative step).
+- **Calls of one name on several records.** `#[derive(Call)]` takes
+  `#[call(name = "…")]` on a variant; variants sharing a name and taking
+  items of different records (`TrayItem.activate()`,
+  `TrayMenuItem.activate()`) are told apart by the item's record type.
+- **Language side** (`crates/strand/src/services`, the binary: it
+  depends on both). `services::schema()` is
+  `Schema::builtin_with(&strand_services::schemas())`: `strand check`,
+  the live loader (whose cache key is the schema's fingerprint) and
+  `strand run` use it, and `strand-dev lsp` serves the same
+  (`strand_dev::schema()` over `strand_services_schema::schemas()`,
+  `serve`; `serve_with` takes any). `StoreHost`
+  is one store as a `ServiceHost`: a `Memo<Value>` per plain field over
+  `DynService::read` (converted by name, `services::convert`: records by
+  type and field name, enums by variant), so a binding depends on
+  exactly that field; a keyed field mirrored as a `KeyedSignal<ValueKey,
+  Value>` fed by the store's `Applied::Keyed` diffs (keyed by the item
+  record's schema `key`; an `initial` one rebaselines it), events as `EventQueue<Vec<Value>>` fed by
+  `Applied::Event`; `write` refuses a non-`rw` field written whole and
+  passes the leaf path as `Step`s (a leaf below a field is `rw` in its
+  record, which the checker saw); `write_item` passes the item's record
+  name, the item and the path to `DynService::write_item`; `call` is the store's `fn` methods; `fetch` its async
+  methods (every async call in a config reaches it);
+  `acquire_field`/`release_field` count readers per field. An async
+  call made while nothing reads the service waits for a reader before it
+  reaches it (a `let hits = apps.search(query)` only a closed launcher
+  shows never searches; decisions.md, wave4-a3).
+  `CustomHost` serves the config's no-code services: `declare` registers
+  a `custom::Custom` store per declaration (its spec from
+  `lower::CustomService`, relative `file` paths under the config
+  directory), each field a memo converting the untyped value to the
+  declared type (`custom::coerce`); `write` of an `rw` field is an item
+  write of its value; `restart`/`stop` restart or stop only that service.
+  `custom::BusIntrospector` is the compiler's `Introspect` over the
+  environment's buses (answers remembered 10 s); `custom::dbus_check(config_dir, recheck)`
+  returns the loader's extra check (the D-Bus check and
+  `check::paths::check` under `config_dir`) with it and a `DbusCheck` handle: the
+  check waits on the bus only until `DbusCheck::stop_waiting()` (called
+  by `live.rs` after `boot()`); later compiles use
+  `Cache::properties_or_ask` (a remembered answer even past its ttl, a
+  service whose first answer is pending skipped), and an answer that
+  differs from the one used calls `recheck`, which queues the worker's
+  `Job::Recheck` (`Loader::recheck`). No reload waits on a bus.
+  `services::set_text` is `strand set` on a service's `rw` field
+  (`brightness.level +5%`: a signed number is a step from the current
+  value; `Real::set_text` starts a stopped service and waits up to
+  500 ms for its first read first).
+  `Composite` routes by service name (one member per name), an item's
+  action or write by the record's name to the member whose
+  `item_records()` name it, `declare`d custom services to its
+  `CustomHost` (`set_custom`; without one, under `STRAND_MOCK`, the
+  fallback answers them at their defaults), and everything else (the
+  clock and calendar, services no crate serves yet) to the `SchemaHost`
+  fallback;
+  `next_wake` is the earliest of all, `wake` reaches all. A service
+  module added to `strand-services` (`Builtin`, `schemas()`) is served
+  by `strand run` with no change here.
+- **Tests** (`strand_services::testing`): `PrivateBus::start()` (a
+  `dbus-daemon` of the test's own, on a configuration without service
+  directories so nothing installed can be activated on it; `buses()`
+  for `Services::new`, `env()` for a child process, `wait_for_name`,
+  `restart()`: a new daemon at the same address), `DbusMock::start(&bus,
+  template, system, parameters, name)` (python-dbusmock: the interpreter
+  is `$STRAND_DBUSMOCK_PYTHON`, else the first of `python3`, `python3.12`
+  that imports `dbusmock`; its output goes to a file in the bus's
+  directory, shown in the failure when the name never appears;
+  `DbusMock::log()` names that file, where python-dbusmock writes a line
+  for each `Get`, `GetAll` and method call it answers, so a test counts
+  a client's calls). Both skip without their tool unless
+  `STRAND_REQUIRE_DBUS` is set (CI), where they fail. Every service run
+  logs `service `x` started (run N)` and `service `x` stopped` at info
+  (`STRAND_LOG=info`): the client's `starts()`/`stops()` counters as a
+  whole process shows them (`crates/strand/tests/reloads.rs`).
+
+- **Compositor (`strand_services::wm`, the `workspaces`, `windows` and
+  `wm` services).** Typed records (`Workspace`, `Window`: the schema's
+  fields plus `Workspace::active` and `Window::urgent`, and
+  `Window::toplevel: Option<String>`, the window's
+  `ext-foreign-toplevel-list-v1` identifier, which is not a schema field:
+  M4's thumbnails will capture by it through a new `ProtoCmd` on the
+  `strand-toplevel` thread, the connection that owns the handle) in a `WmState`,
+  and `wm::run(WmConfig { backend, wayland, events, desktop }, sink,
+  requests) -> impl Future + Send`: the service on the shared runtime,
+  stopped by dropping it. `sink: FnMut(Vec<WmChange>)` gets one
+  non-empty batch per change: `Workspaces`/`Windows`
+  (`Vec<strand_core::keyed::VecDiff<i64 | String, _>>`, a `Reset` on the
+  first publish), `FocusedWorkspace`, `FocusedWindow`, `FocusedScreen`
+  (for `screens.focused`), `Name` (the adapter's compositor, else
+  `desktop`: the first entry of `XDG_CURRENT_DESKTOP`), `ConfigReloaded {
+  failed }` and `Sources` (adapter, connected, which protocols exist;
+  always in the first batch). The state goes out once the adapter's
+  first state arrives, or once the protocols have spoken when there is
+  no adapter or it has failed to connect.
+  `wm.config_reloaded` has one owner: the `wm` store emits it from the
+  batch's `WmChange::ConfigReloaded`. The copy sent to `events` as
+  `ChangeEvent::Compositor(ConfigReloaded)` is only the live-reload
+  change source (design.md's change-source table); the binary must not
+  turn it into a second `wm.config_reloaded`.
+  The three stores (and the owner of `screens.focused`) share one `run`
+  through `wm::WmHub::new(config, runtime_handle)` (or
+  `WmHub::fresh(make_config, runtime_handle)`, which makes the config at
+  each start): `subscribe() ->
+  WmSubscription` (`recv`, `try_recv`, `queued`, `request(WmAction)`)
+  starts it on the first subscriber, gives a later one the current state
+  as one batch (never a past reload), and stops it when the last
+  subscription drops (or the last `WmHub` does; `recv` then ends with
+  `None`). Runs are numbered, so a stopped run's in-flight batch never
+  reaches the next run's subscribers. A subscriber's queue is bounded
+  (`wm::MAX_QUEUED` = 64 batches): a store that stops draining gets one
+  batch that rebuilds the current state, plus the reloads it missed,
+  instead of an unbounded backlog; a store should still drain promptly.
+  Each store subscribes from its body, so a store's 5 s stop grace is its
+  own and the hub stops at once once all have stopped (a store still read
+  keeps it: `tests/wm_services.rs`), so a binding that toggles does not
+  tear down and rebuild the adapter connection and the protocol thread
+  each time: `tests/wm_services.rs::
+  the_compositor_stores_follow_sway_through_one_hub` checks that a read,
+  unread, read cycle within 5 s keeps the store's `starts()`,
+  `wm::live_runs()` and the one `strand-toplevel` thread. The hub starts
+  the protocol thread itself (`ProtocolClient::spawn`; `wm::run` does
+  the same for direct users) and owns it: a stop (the last subscriber
+  gone, on the shared runtime under the hub's lock) only sends `Stop`
+  (`ProtocolClient::request_stop`) and keeps the client, joined without
+  waiting at the next start or stop; dropping the hub (the runtime
+  thread's end, which `Services::shutdown` joins) joins it
+  (`ProtocolClient::stop`: a done channel, 2 s at most). The stores (`wm::Windows`,
+  `wm::Workspaces`, `wm::Wm`; records `wm::WindowItem` and
+  `wm::WorkspaceItem`, the schema's `Window` and `Workspace` field for
+  field, converted from the model's, which also carries `toplevel`) are
+  `#[service]` bodies on the shared runtime: each subscribes to
+  `wm::hub()`, the hub of its runtime thread (made on first use, one per
+  `Services` runtime; each start takes the config
+  `wm::configure(Some(config))` set, else `WmConfig::from_env(None)`
+  afresh, so a compositor socket that appeared since is found: what
+  `strand run` uses), sends each
+  batch as one envelope of its patches (keyed diffs stay keyed diffs),
+  is ready once its part of the state has arrived, emits
+  `wm.config_reloaded` (the `wm` store only), and runs `ws.focus()`,
+  `win.focus()`, `win.close()` and `win.minimize()` as `WmAction`s
+  (a failure is logged; the change arrives in the stream).
+  `workspaces.on(screen)` is a `fn` method over the cells (the
+  workspaces whose `screen` is the `Screen` record's `name`).
+  `wm::live_runs()` counts live `run`s (tests). `screens.focused` is the
+  `screens` service's, which no crate serves yet; when one does it takes
+  `FocusedScreen` from the same hub, with a store's lifecycle (it drops
+  its subscription only 5 s after its last reader). The schema texts
+  are `strand_services_schema::{WINDOWS, WORKSPACES, WM}` (one service
+  per text; `wm::{WINDOWS_SCHEMA, WORKSPACES_SCHEMA, WM_SCHEMA}`),
+  replacing the provisional stubs and adding `Workspace.active`,
+  `Window.urgent` and `event config_reloaded(failed: bool?)`. `requests` takes
+  `WmRequest { action: WmAction::{FocusWorkspace, FocusWindow,
+  CloseWindow, MinimizeWindow}, reply: Option<oneshot> }`
+  (`WmRequest::new(action) -> (WmRequest, WmReply)`;
+  `WmSubscription::request(action) -> WmReply`), answered
+  `Ok` or a `WmError` (`NotConnected`, `Unsupported`, `Unknown…`,
+  `Rejected`, `Io`): `WmReply` is a future of that outcome that reads a
+  request dropped unanswered (the run stopped, or the protocol thread
+  ended, first) as `NotConnected`, so a caller never sees a closed
+  channel. `wm::detect()` picks the `Backend` (Hyprland, niri
+  behind the default-on `niri` feature, sway through swayipc-types
+  (swayipc-async 3.0's types) over its own lossy i3-ipc framing) from
+  the environment; `ProtocolClient::spawn(WaylandTarget, tx)` runs
+  `ext-foreign-toplevel-list-v1` and `ext-workspace-v1` on its own
+  `strand-toplevel` thread (own connection, `poll(2)` on the socket and an
+  eventfd), sending a `ProtocolState` per atomic update; `wm::merge`
+  joins the two (`docs/decisions.md`, wave4-wm). `wm::Mirror` applies the
+  stream (tests).
+
+- **Audio (`strand_services::audio`, the `audio` service; cargo feature
+  `pipewire`, on by default).**
+  `Audio::spawn(AudioConfig { remote }, sink) -> io::Result<Audio>` runs
+  pipewire 0.10.1 (`v1_0_0`, built against libpipewire 1.0.5) on its own
+  `strand-pipewire` thread (the library handle; the `audio` store runs
+  the same loop on its own service thread, below). Dropping the handle asks the thread to stop
+  and returns at once (safe on the shared runtime at the 5 s stop);
+  `stop()` also joins it, which blocks briefly and belongs off the logic
+  thread. `sink: FnMut(Vec<AudioChange>) + Send` gets one non-empty
+  batch per burst of PipeWire events, on that thread, and must never
+  block (an unbounded channel or a `try_send`): `Connected(bool)`
+  (always first in the first batch, which comes once the first connection
+  has settled or the first attempt failed), `Sinks`/`Sources`
+  (`Vec<VecDiff<u32, AudioDevice>>` keyed by the PipeWire id, a `Reset`
+  first; an id PipeWire reused for another device, a new `object.serial`,
+  is a `Remove` and an `Insert`), `Sink`/`Source` (`Option<AudioDevice>`: the defaults; `None`
+  is shown as the record's schema defaults) and `Levels { target,
+  device, peaks }` (at most one per meter per `audio::FRAME`, 1/60 s,
+  the cycles read on PipeWire's data thread so the loop wakes about once
+  a frame at most; a meter that stops or is retargeted after showing sound sends one with
+  no peaks). `AudioDevice` is exactly the schema's record (`id`, `name`,
+  `description`, `volume` on the cubic scale wpctl shows, `muted`,
+  `icon`, `default`), so the store's `#[derive(Data)]` record can be it.
+  `audio::SCHEMA` (`strand_services_schema::AUDIO`) is the text the
+  store serves, which is exactly the provisional stub. `audio::Mirror`
+  applies the stream.
+  `request(AudioAction::{SetVolume(DeviceRef, f64), StepVolume(DeviceRef,
+  f64), SetMuted(DeviceRef, bool), MakeDefault(DeviceRef)}) ->
+  AudioReply` (a future to `.await` inside a runtime, or `wait()` on a
+  plain thread outside any runtime) answers `Ok`
+  once PipeWire has been asked (the change comes through the stream) or
+  an `AudioError` (`NotConnected`, `UnknownDevice`, `InvalidVolume`,
+  `NoDefaultMetadata`, `Failed`). A request dropped unanswered reads as
+  `NotConnected`. A connection settles (its first state goes out) once
+  its syncs are back, including those after binding each card's routes,
+  the session manager's `default` metadata is read, and each default
+  shown before a loss names a device again, or after `audio::SETTLE`
+  (3 s) once at least its first sync is back; until then the last
+  state stays (`connected: false` after a loss), and the defaults shown
+  before a restart of the daemon or of the session manager alone stay
+  until new ones resolve or `SETTLE` passes, so a restart never flashes
+  an empty `audio.sink` or list. A daemon that accepts the connection but
+  never answers its first sync (socket activation with a failing
+  `pipewire.service`) publishes nothing and is dropped after
+  `audio::UNANSWERED` (6 s), then retried like a lost connection.
+  Actions sent before a connection has settled (a write that lazily
+  starts the service, one sent during a restart) wait, in order, and
+  run right after its first state; with no connection at all they
+  answer `NotConnected` after `audio::GRACE` (2 s). `DeviceRef::
+  DefaultSink` resolves on the audio thread when the write runs.
+  Every language-side write arrives as `SetVolume`: VM writes, and
+  IPC's relative form (`strand set audio.sink.volume +5%`, design.md
+  example (d)), which wave4/core's `services::set_text` resolves
+  generically by reading the current value through `ServiceHost` and
+  writing an absolute one with `ServiceHost::write` (its optimistic
+  tagged cell makes quick steps compound). `StepVolume` adds its delta on
+  the audio thread, to the last volume written while its echo is
+  pending; it is kept only for callers holding the `Audio` handle
+  directly (none on the language path). Volume and mute go to the
+  card's active `Route` (`save: true`) when the node has one, else to
+  the node's `Props`.
+  `set_levels(targets)` replaces the set of peak meters
+  (`LevelTarget::{DefaultSink, DefaultSource, Device(id)}`); the store
+  passes what visible readers want, and an empty set stops them all.
+  No schema field carries levels yet: their consumer is the `spectrum`
+  element (M4, `spectrum(AudioDevice -> source)`), which will subscribe
+  by its source device and needs the meter to hand out samples for
+  realfft, not only folded peaks (docs/decisions.md, wave4-wm (audio)).
+  The thread reports a volume it wrote exactly as written: any of a
+  device's last `audio::ECHOES` (64, core's `MAX_PENDING_ECHOES`)
+  writes, and any volume on the 1/10 000 grid even once forgotten
+  (`audio::perceptual` snaps a root within 1e-6 of it); through a card's
+  `Route` (hardware mixer steps) an echo within 0.005 of a write reads
+  as the closest write.
+  The store, `audio::AudioStore` (`#[service(name = "audio", thread)]`,
+  records `AudioDevice` with `#[derive(Data)]`, action
+  `AudioDeviceAction::MakeDefault`): its body runs the loop
+  (`thread::run(config, host, rx)`) on the service's own thread through
+  a `Host` (`changes(batch)`, `poll() -> Vec<Cmd>` after each burst of
+  work, `deadline()`); `Cx::set_notify` pokes the loop (`Cmd::Poke`),
+  which then drains the service's messages there, and a stopped service
+  ends the loop. A write of `audio.sink`/`audio.source` (`.volume`,
+  `.muted`) becomes `SetVolume`/`SetMuted` on `DeviceRef::DefaultSink`
+  (`DefaultSource`); an item write of `audio.sinks`/`audio.sources` on
+  `DeviceRef::Id`. Each write is answered tagged (`Cx::report`) by the
+  first batch that changes its device and shows its value (the earlier
+  writes of that device's field are overtaken, so the logic thread
+  ignores their echoes and settles on the last), or, refused, not a
+  writable leaf, or unseen within `audio::ANSWER_WAIT` (1 s) of PipeWire
+  taking the action (6 s with no reply), with the device as it is.
+  Answers go in write order per cell (`audio.sink`, or one item of a
+  list): the logic thread takes an answer tagged `g` as the answer of
+  every write of the cell up to `g`, so a write that ended waits for the
+  earlier writes of its cell and the run is answered by its last, with
+  the state that shows them. A slider's echoes never snap it back, and
+  the value path of `strand_core::echo` is not relied on (a report's
+  record also carries the `icon`, which the optimistic local value does
+  not update). A loop that cannot be created ends the body with an
+  error (the contract's diagnostic and backoff). The loop's keyed diffs
+  are keyed by the device's `u32` id.
+  `audio::configure(Some(AudioConfig))` points stores started later at
+  a socket (tests); `strand run` uses PipeWire's own default. Levels:
+  `audio::tap_levels(target, f) -> LevelTap` (the M4 `spectrum`
+  element's hook) asks the running store to meter `target`; the store
+  passes the tapped targets to the loop only while a reader is visible
+  (`Cx::visible`), an empty set otherwise. Provisional (decisions.md,
+  wave4-wm fixes r1): the taps are process-wide and get per-channel
+  peaks; M4's `spectrum` extends `Levels` with samples per tap, and the
+  process-wide `audio::configure`/`wm::configure` targets move into
+  `Buses` (or a sibling) when one process needs two. Without the
+  `pipewire` feature the module is absent and the store answers
+  `audio.*` at the schema's defaults (its schema text is left out of
+  `strand_services::schemas()`).
 
 ### `strand-watch`
 
@@ -1818,7 +2529,17 @@ It does not depend on `strand-compiler` or `strand-core`.
   then register. Module-set membership is separate, so a
   module file registered for another role stays a module. Neither a
   referenced file nor its directory need exist yet. Cache sources come
-  through `watch_tree(dir, depth, CacheKind::{Apps, Icons, Fonts})`.
+  through `watch_tree(dir, depth, CacheKind::{Apps, Icons, Fonts})` (and
+  `watch_file(path, Role::Cache(kind))` for one file: GTK's settings).
+  `strand run`'s compiler worker takes them as `live::Job::Caches {
+  sources: live::cache_sources(), changed }` and calls `changed(kind)`
+  once per kind a batch touched (all three after an overflow); `strand
+  run` then tells the `apps` service (`apps::changed`), the icon lookup
+  (`strand_icons::invalidate`) and, on the main thread, the renderer
+  (`icons_changed`, `fonts_changed`); `Apps` and `Icons` are handled
+  alike (`run::cache_changed`: all three of the apps service, the icon
+  lookup and the renderer's icons), since an installed app may bring an
+  icon the icon watch does not see.
   **Blocking:** `watch_file`, `set_referenced` and `watch_tree` wait for
   the watcher thread (watches synced; a new path given without a hash
   is read before they return, one given with a hash is compared later
@@ -1893,8 +2614,11 @@ It does not depend on `strand-compiler` or `strand-core`.
   `Accent(Option<[f64; 3]>)`, `Contrast(Normal | High)`, each with
   `.path()` = `system.dark` / `system.accent` / `system.contrast`.
 - **Compositor.** `CompositorEvent::ConfigReloaded { failed:
-  Option<bool> }` is `wm.config_reloaded` (`None` from Hyprland, which
-  does not say). The M3 Hyprland and niri adapters live in
+  Option<bool> }` is the compositor-reload change source (`None` from
+  Hyprland and sway, which do not say). The language event
+  `wm.config_reloaded` comes from the `wm` store's own stream
+  (`WmChange::ConfigReloaded`, see `strand-services`), not from this
+  copy, so it fires once per reload. The M3 Hyprland and niri adapters live in
   `strand-services` (design.md's services table lists them) and send it
   through a clone of the same `EventSink`, so `strand-services` depends
   on `strand-watch` for `EventSink` and `CompositorEvent`; `strand-watch`

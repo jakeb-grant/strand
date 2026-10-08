@@ -355,8 +355,21 @@ permit exec "sensors"
 ```
 
 `permit exec` (with an optional list of allowed programs) may appear at the
-top level or inside a service block. Without it, `listen` and `poll` sources
-are a load error.
+top level or inside a service block. Without it, a `listen` source and a
+`poll` of a command are a load error. A `poll` whose argument is a string
+naming a path with no whitespace (`/…`, `~/…`, `./…`) reads that file at
+each interval instead of running it (design.md: "a command or file at an
+interval"), so it needs no permit; to run a program by its path, give the
+command as a list (`from poll ["/usr/local/bin/gpu-temp"] every 5s`) and
+permit it. A polled (or `from file`) path that turns out to be a program
+(executable, starting with `#!` or an ELF header) is a
+`check::poll_program` warning when the config is checked (`strand
+check`, `strand run`'s loader, the LSP) and a runtime failure naming
+this, never parsed as a document. An unknown source kind is
+`syntax::unknown_source` and an unknown bus `syntax::unknown_bus` (each
+with a did-you-mean); a `poll` without `every` is one
+`syntax::expected`. See decisions.md, wave4-a3 "no-code
+services, their grammar read precisely".
 
 ### Keyframes and play
 

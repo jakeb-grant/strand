@@ -2099,6 +2099,7 @@ impl<'a> Checker<'a> {
         let saved = self.ctx;
         self.ctx = super::Ctx {
             pure_fn: true,
+            fn_def: Some(id),
             ..super::Ctx::default()
         };
         self.push_scope();
@@ -2227,20 +2228,20 @@ impl<'a> Checker<'a> {
     pub(super) fn service_decl(&mut self, id: DefId, s: &'a ast::Service) -> hir::ServiceDecl {
         let kind = s.source.kind.name.as_str();
         let mut args = Vec::new();
+        // The evaluated source; cleared by any argument that is not a
+        // constant.
+        let mut constant = true;
+        let mut texts: Vec<Option<ConstArg>> = Vec::new();
         match kind {
             "dbus" => {
                 let bus = s.source.args.first();
-                match bus.map(|b| &b.kind) {
-                    Some(ast::ExprKind::Name(n)) if n.name == "system" || n.name == "session" => {}
-                    _ => {
-                        let span = bus.map_or(s.source.span, |b| b.span);
-                        self.error(
-                            "check::type_mismatch",
-                            "a D-Bus service names its bus first: `system` or `session`",
-                            span,
-                            "expected `system` or `session`",
-                        );
-                    }
+                // The parser reports a missing or unknown bus and a missing
+                // bus name (one mistake, one diagnostic): the checker only
+                // stops evaluating the source.
+                if !matches!(bus.map(|b| &b.kind),
+                    Some(ast::ExprKind::Name(n)) if n.name == "system" || n.name == "session")
+                {
+                    constant = false;
                 }
                 for (i, a) in s.source.args.iter().enumerate().skip(1) {
                     if i > 2 {
@@ -2251,46 +2252,58 @@ impl<'a> Checker<'a> {
                             "one too many",
                         );
                     }
-                    args.push(self.expect(a, &Ty::TEXT, "the bus name"));
+                    let e = self.expect(a, &Ty::TEXT, "the bus name");
+                    texts.push(const_arg(&e));
+                    args.push(e);
                 }
                 if s.source.args.len() < 2 {
-                    self.error(
-                        "check::missing_arg",
-                        "a D-Bus service needs its bus name",
-                        s.source.span,
-                        "no bus name",
-                    )
-                    .help = Some("`from dbus system \"net.hadess.PowerProfiles\"`".into());
+                    constant = false;
                 }
             }
             "file" | "listen" | "poll" => {
-                for (i, a) in s.source.args.iter().enumerate() {
-                    if i > 0 {
-                        self.error(
-                            "check::too_many_args",
-                            format!("`{kind}` takes one value"),
-                            a.span,
-                            "one too many",
-                        );
-                    }
+                // The parser reports a count other than one (and a poll
+                // without `every`): one mistake, one diagnostic.
+                for a in s.source.args.iter().take(1) {
                     let want = if kind == "file" {
                         Ty::PATH
                     } else {
                         Ty::Union(vec![Ty::TEXT, Ty::list(Ty::TEXT)])
                     };
-                    args.push(self.expect(a, &want, &format!("`{kind}`")));
+                    let e = self.expect(a, &want, &format!("`{kind}`"));
+                    texts.push(const_arg(&e));
+                    args.push(e);
                 }
-                if kind != "file" {
+                if s.source.args.len() != 1 {
+                    constant = false;
+                }
+                // A poll of a file (a path, no spaces) runs nothing.
+                let polls_file = kind == "poll"
+                    && matches!(texts.first(), Some(Some(ConstArg::Text(t))) if is_file_target(t));
+                if kind != "file" && !polls_file {
                     let program = s.source.args.first().and_then(first_program);
-                    let in_block = s.body.items.iter().any(
-                        |i| matches!(&i.kind, ItemKind::Permit(p) if p.capability.name == "exec"),
-                    );
-                    let allowed = in_block
-                        || self.permits.iter().any(|p| match (p, program) {
-                            (None, _) => true,
-                            (Some(list), Some(prog)) => list.iter().any(|x| x == prog),
-                            (Some(_), None) => false,
-                        });
+                    let program = program.as_deref();
+                    // A block's own permit lists programs the same way a
+                    // top-level one does: bare allows any, a list only those.
+                    let in_block: Vec<Option<Vec<String>>> = s
+                        .body
+                        .items
+                        .iter()
+                        .filter_map(|i| match &i.kind {
+                            ItemKind::Permit(p) if p.capability.name == "exec" => {
+                                Some(super::collect::permit_programs(&p.args))
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    let allowed =
+                        in_block
+                            .iter()
+                            .chain(self.permits.iter())
+                            .any(|p| match (p, program) {
+                                (None, _) => true,
+                                (Some(list), Some(prog)) => list.iter().any(|x| x == prog),
+                                (Some(_), None) => false,
+                            });
                     if !allowed {
                         let prog = program.unwrap_or("the command");
                         self.error(
@@ -2303,11 +2316,31 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            _ => {}
+            _ => constant = false,
+        }
+        for (a, t) in s
+            .source
+            .args
+            .iter()
+            .skip(usize::from(kind == "dbus"))
+            .zip(&texts)
+        {
+            if t.is_none() {
+                self.error(
+                    "check::not_constant",
+                    "a service's source is fixed when the config loads: write it out",
+                    a.span,
+                    "not a constant",
+                )
+                .help = Some("a string (`\"…\"`), or a list of strings for a command".into());
+                constant = false;
+            }
         }
         let every = match (&s.source.every, kind) {
             (Some(e), "poll") => Some(self.expect(e, &Ty::DURATION, "`every`")),
-            (Some(e), _) => {
+            // An unknown source is the parser's one diagnostic: its
+            // `every` is not also misplaced.
+            (Some(e), "dbus" | "file" | "listen") => {
                 self.error(
                     "check::misplaced",
                     "`every` is for `poll` services",
@@ -2316,18 +2349,84 @@ impl<'a> Checker<'a> {
                 );
                 None
             }
-            (None, "poll") => {
-                self.error(
-                    "check::missing_arg",
-                    "a `poll` service needs `every`",
-                    s.source.span,
-                    "how often?",
-                )
-                .help = Some("`from poll [\"sensors\", \"-j\"] every 5s`".into());
-                None
-            }
-            (None, _) => None,
+            // A poll without `every` is the parser's diagnostic.
+            _ => None,
         };
+        let interval = every.as_ref().and_then(const_duration);
+        if let (Some(e), None) = (&s.source.every, interval)
+            && kind == "poll"
+        {
+            self.error(
+                "check::not_constant",
+                "a poll's interval is fixed when the config loads: write it out",
+                e.span,
+                "not a constant duration above zero",
+            )
+            .help = Some("`every 5s`, `every 500ms`".into());
+        }
+        let spec = if !constant {
+            None
+        } else {
+            match (kind, texts.as_slice()) {
+                ("dbus", [Some(ConstArg::Text(name)), rest @ ..]) => {
+                    let system = matches!(
+                        s.source.args.first().map(|b| &b.kind),
+                        Some(ast::ExprKind::Name(n)) if n.name == "system"
+                    );
+                    let path = match rest.first() {
+                        Some(Some(ConstArg::Text(p))) => Some(p.clone()),
+                        _ => None,
+                    };
+                    Some(hir::SourceSpec::Dbus {
+                        system,
+                        name: name.clone(),
+                        path,
+                    })
+                }
+                ("file", [Some(ConstArg::Text(path))]) => {
+                    Some(hir::SourceSpec::File { path: path.clone() })
+                }
+                ("listen", [Some(arg)]) => {
+                    command_of(arg).map(|command| hir::SourceSpec::Listen { command })
+                }
+                ("poll", [Some(arg)]) => {
+                    let target = match arg {
+                        ConstArg::Text(t) if is_file_target(t) => {
+                            Some(hir::PollTarget::File(t.clone()))
+                        }
+                        _ => command_of(arg).map(hir::PollTarget::Command),
+                    };
+                    match (target, interval) {
+                        (Some(target), Some(every)) => {
+                            Some(hir::SourceSpec::Poll { target, every })
+                        }
+                        _ => None,
+                    }
+                }
+                _ => None,
+            }
+        };
+        // A command polled faster than this forks for little: it runs at
+        // this interval (the runtime clamps the same way).
+        if let Some(hir::SourceSpec::Poll {
+            target: hir::PollTarget::Command(_),
+            every,
+        }) = &spec
+            && *every < hir::MIN_COMMAND_POLL
+            && let Some(e) = &s.source.every
+        {
+            self.warning(
+                "check::poll_too_fast",
+                format!(
+                    "a command is polled at most every {}ms",
+                    hir::MIN_COMMAND_POLL.as_millis()
+                ),
+                e.span,
+                "runs at the floor instead",
+            )
+            .help =
+                Some("use `from listen` for a command that reports changes, or poll a file".into());
+        }
         let mut fields = Vec::new();
         let rid = match self.defs[id.0 as usize].kind {
             DefKind::Service(r) => Some(r),
@@ -2345,11 +2444,31 @@ impl<'a> Checker<'a> {
                         .map(|d| d.ty.clone())
                 })
                 .unwrap_or(Ty::Error);
-            let source_key = match f.default.as_ref().map(|d| &d.kind) {
-                None => None,
-                Some(ast::ExprKind::String(s)) => Some(s.value.clone()),
-                Some(_) => f.default.as_ref().and_then(path_text),
+            let (source_key, key) = match f.default.as_ref().map(|d| &d.kind) {
+                None => (None, vec![f.name.name.clone()]),
+                Some(ast::ExprKind::String(s)) => (Some(s.value.clone()), vec![s.value.clone()]),
+                Some(_) => match f.default.as_ref().and_then(key_path) {
+                    Some(path) => (Some(path.join(".")), path),
+                    None => (None, vec![f.name.name.clone()]),
+                },
             };
+            if !readable(&self.types, &ty, &mut Vec::new()) {
+                self.error(
+                    "check::type_mismatch",
+                    format!(
+                        "a service field holds data its source reads: `{}` is not data",
+                        self.types.show(&ty)
+                    ),
+                    f.ty.span,
+                    "not readable from a source",
+                )
+                .help = Some(
+                    "use `bool`, `int`, `float`, `percent`, `length`, `angle`, `duration`, \
+                     `color`, `text`, `path`, an enum, a `type` you declare, or a list or \
+                     optional of these"
+                        .into(),
+                );
+            }
             if let Some(d) = &f.default
                 && source_key.is_none()
             {
@@ -2361,21 +2480,214 @@ impl<'a> Checker<'a> {
                 )
                 .help = Some("`profile: text rw = ActiveProfile`".into());
             }
+            // A D-Bus field reads one property whole: `= Prop.sub` would
+            // otherwise read `Prop` and drop `.sub` without a word.
+            if kind == "dbus"
+                && key.len() > 1
+                && let Some(d) = &f.default
+            {
+                self.error(
+                    "check::type_mismatch",
+                    "a `dbus` service's field reads one property: name it alone",
+                    d.span,
+                    "a key path, not a property name",
+                )
+                .help = Some(format!(
+                    "`= {}`; declare the property's dictionary or struct as a `type`",
+                    key[0]
+                ));
+            }
+            if let Some(rw) = f.rw
+                && kind != "dbus"
+            {
+                self.error(
+                    "check::not_writable",
+                    format!("a `{kind}` service's fields cannot be written"),
+                    rw,
+                    "not writable",
+                )
+                .help = Some(
+                    "only a `dbus` service's fields can be `rw` (writing sets the property)".into(),
+                );
+            }
             fields.push(hir::ServiceField {
                 name: f.name.name.clone(),
                 span: f.name.span,
                 ty,
                 rw: f.rw.is_some(),
                 source_key,
+                key,
+                key_span: f.default.as_ref().map_or(f.name.span, |d| d.span),
             });
         }
         hir::ServiceDecl {
             def: id,
+            file: self.file(),
+            name_span: s.name.span,
+            source_span: s.source.span,
             source: kind.to_string(),
             args,
             every,
             fields,
+            spec,
         }
+    }
+}
+
+/// Whether a source's document can hold a value of `ty`, as a service
+/// field's type (design.md: `from file`, `from listen` and `from poll`
+/// are checked against the schema you declare): the primitives a value
+/// converts to from text or a number, enums, and lists, optionals and
+/// records you declare (`type`) of these. A schema record (`Screen`) is a
+/// live entity its service owns; paints, fonts, shadows and handles are
+/// not data a document holds.
+fn readable(types: &crate::ty::TypeTable, ty: &Ty, seen: &mut Vec<crate::ty::RecordId>) -> bool {
+    match ty {
+        Ty::Error | Ty::Any | Ty::Enum(_) => true,
+        Ty::Prim(p) => matches!(
+            p,
+            Prim::Bool
+                | Prim::Int
+                | Prim::Float
+                | Prim::Length
+                | Prim::Percent
+                | Prim::Angle
+                | Prim::Duration
+                | Prim::Color
+                | Prim::Text
+                | Prim::Path
+        ),
+        Ty::Optional(inner) | Ty::List(inner, _) => readable(types, inner, seen),
+        Ty::Record(r) => {
+            if seen.contains(r) {
+                return true;
+            }
+            let def = types.record(*r);
+            if !matches!(def.origin, Origin::User(..))
+                || def.handle
+                || !def.methods.is_empty()
+                || !def.events.is_empty()
+            {
+                return false;
+            }
+            seen.push(*r);
+            def.fields.iter().all(|f| readable(types, &f.ty, seen))
+        }
+        _ => false,
+    }
+}
+
+/// A source argument known when the config loads.
+enum ConstArg {
+    Text(String),
+    List(Vec<String>),
+}
+
+fn const_arg(e: &hir::Expr) -> Option<ConstArg> {
+    match &e.kind {
+        hir::ExprKind::Text(t) => Some(ConstArg::Text(t.clone())),
+        hir::ExprKind::List(items) => items
+            .iter()
+            .map(|i| match &i.kind {
+                hir::ExprKind::Text(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect::<Option<Vec<String>>>()
+            .map(ConstArg::List),
+        _ => None,
+    }
+}
+
+fn const_duration(e: &hir::Expr) -> Option<std::time::Duration> {
+    let hir::ExprKind::Number { value, unit } = &e.kind else {
+        return None;
+    };
+    let secs = match unit {
+        Some(ast::Unit::S) => *value,
+        Some(ast::Unit::Ms) => *value / 1000.0,
+        _ => return None,
+    };
+    // `try_from` refuses what a `Duration` cannot hold (a typo like
+    // `99999999999999999999s`): reported as not a constant, never a panic.
+    (secs > 0.0)
+        .then(|| std::time::Duration::try_from_secs_f64(secs).ok())
+        .flatten()
+}
+
+/// A poll target that names a file: a path (`/…`, `~/…`, `./…`) with no
+/// whitespace. Anything else is a command line.
+pub(crate) fn is_file_target(t: &str) -> bool {
+    (t.starts_with('/') || t.starts_with("~/") || t.starts_with("./"))
+        && !t.chars().any(char::is_whitespace)
+}
+
+/// A command's arguments: a list as given, a string split into words
+/// (`"…"` and `'…'` group, `\` escapes; no shell runs it).
+fn command_of(arg: &ConstArg) -> Option<Vec<String>> {
+    let argv = match arg {
+        ConstArg::List(l) => l.clone(),
+        ConstArg::Text(t) => split_words(t),
+    };
+    (!argv.is_empty() && !argv[0].is_empty()).then_some(argv)
+}
+
+/// Split a command line into words as a shell would, without running
+/// one: whitespace separates, quotes group, a backslash escapes.
+pub fn split_words(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut started = false;
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            c if c.is_whitespace() => {
+                if started {
+                    out.push(std::mem::take(&mut cur));
+                    started = false;
+                }
+            }
+            '"' | '\'' => {
+                started = true;
+                for d in chars.by_ref() {
+                    if d == c {
+                        break;
+                    }
+                    cur.push(d);
+                }
+            }
+            '\\' => {
+                started = true;
+                if let Some(d) = chars.next() {
+                    cur.push(d);
+                }
+            }
+            c => {
+                started = true;
+                cur.push(c);
+            }
+        }
+    }
+    if started {
+        out.push(cur);
+    }
+    out
+}
+
+/// `= ActiveProfile`, `= a.b`: the key path a field reads.
+fn key_path(e: &ast::Expr) -> Option<Vec<String>> {
+    match &e.kind {
+        ast::ExprKind::Name(i) => Some(vec![i.name.clone()]),
+        ast::ExprKind::Field {
+            base,
+            name,
+            optional: false,
+        } => {
+            let mut p = key_path(base)?;
+            p.push(name.name.clone());
+            Some(p)
+        }
+        ast::ExprKind::Paren(inner) => key_path(inner),
+        _ => None,
     }
 }
 

@@ -20,9 +20,11 @@
 //!   (a lock edit, or a hard reload, waits while a lock is shown), puts
 //!   diagnostics and reload notices on the overlay and streams the event
 //!   to `strand watch`.
-//! - The logic thread owns the runtime, the real service host
-//!   (`SchemaHost::real`: the wall clock and calendar) and the
-//!   `Instance`, and loops on `Instance::step(now, wall)`, sending one
+//! - The logic thread owns the runtime, the real service host (the
+//!   services registry and its stores behind a composite host,
+//!   `services::Real`; `SchemaHost::real` answers the rest, the wall
+//!   clock and calendar among them; `STRAND_MOCK` selects the mock host
+//!   instead) and the `Instance`, and loops on `Instance::step(now, wall)`, sending one
 //!   `SceneDiff` per tick. Between steps it sleeps in a calloop loop of
 //!   its own on the main thread's messages, the runtime's wake hook (an
 //!   IO reply), the logic clock's next deadline and a `CLOCK_REALTIME`
@@ -56,7 +58,8 @@ use strand_compiler::vm::clock::{Clock, Zone};
 use strand_compiler::vm::schema_host::SchemaHost;
 use strand_core::Runtime;
 use strand_render::{Renderer, TextBackend};
-use strand_scene::{NodeId, SceneDiff};
+use strand_scene::{NodeId, SceneDiff, SceneOp};
+use strand_services::Cells as _;
 use strand_surface::{Config, SurfaceManager};
 use strand_text::{FontConfig, TextWorker};
 
@@ -68,7 +71,7 @@ use crate::live::{self, FromWorker, Job, Loaded, Worker};
 use crate::logging::LogConfig;
 use crate::overlay::{self, Click, Overlay};
 use crate::system;
-use strand_watch::Role;
+use strand_watch::{CacheKind, Role};
 
 /// A monitor as the `screens` service shows it (plain data: it crosses
 /// threads).
@@ -237,26 +240,10 @@ pub(crate) fn set_screens(rt: &Runtime, host: &SchemaHost, screens: &[ScreenInfo
     }
 }
 
-/// How long the first frame waits for the portal's boot read (it has
-/// up to 500 ms; a desktop portal answers in a few).
-const BOOT_PORTAL_HOLD: Duration = Duration::from_millis(100);
-
-/// A portal batch: written into the graph (`system.dark`, …) and the
-/// kept values queued for the disk (`saved`: the file and its writer).
-fn portal_batch(
-    rt: &Runtime,
-    host: &SchemaHost,
-    batch: &strand_watch::SystemBatch,
-    last: &mut system::Last,
-    saved: &(Option<PathBuf>, Option<strand_theme::FileWriter>),
-) {
-    system::apply(rt, host, &batch.settings, batch.at_boot);
-    if last.merge(batch)
-        && let (Some(f), Some(w)) = saved
-    {
-        w.write(f.clone(), last.to_text());
-    }
-}
+/// How long the first frame waits for the services it starts to send
+/// their first reads (the portal's boot read has up to 500 ms; a desktop
+/// portal answers in a few).
+const BOOT_SERVICES_HOLD: Duration = Duration::from_millis(100);
 
 /// The persist and settings stores under `$XDG_STATE_HOME/strand`. With
 /// no state directory (neither `XDG_STATE_HOME` nor `HOME` absolute),
@@ -413,9 +400,25 @@ pub struct Live {
     pub jobs: Option<std::sync::mpsc::Sender<Job>>,
     /// Where to serve `strand reload` and `strand watch`.
     pub socket: Option<PathBuf>,
-    /// Follow the portal's appearance settings (`system.dark`, `.accent`,
-    /// `.contrast`) on this bus; `None` keeps the last values.
-    pub portal: Option<strand_watch::Bus>,
+    /// The buses the real services use (`strand run`: the environment's;
+    /// tests: a private one). `None`: no bus at all, so services that
+    /// need one keep their seeded values (`system` its last values).
+    /// Unused under `STRAND_MOCK`, whose mock host serves everything.
+    pub buses: Option<strand_services::Buses>,
+    /// Called (on the services thread) when the portal's icon theme
+    /// switches (`strand_services::icon_theme`, followed on the shared
+    /// services runtime with the real services): the renderer's icons
+    /// are looked up again. `None`: the theme is not followed.
+    pub icon_theme_switched: Option<Switched>,
+}
+
+/// A callback for [`Live::icon_theme_switched`].
+pub struct Switched(pub Box<dyn Fn() + Send>);
+
+impl std::fmt::Debug for Switched {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Switched")
+    }
 }
 
 /// What a load attempt found wrong (held and unreadable files, its
@@ -450,7 +453,12 @@ impl Problems {
 /// The logic thread's state between steps (see [`logic`]).
 struct Shell {
     inst: Instance,
+    /// The schema host: the mock under `STRAND_MOCK`, else the fallback
+    /// of the composite host (the names no service serves yet: `screens`,
+    /// the clock).
     host: Rc<SchemaHost>,
+    /// The real services (not under `STRAND_MOCK`).
+    real: Option<crate::services::Real>,
     build: Build,
     overlay: Overlay,
     server: Option<ipc::Server>,
@@ -473,6 +481,11 @@ struct Shell {
     /// Cells kept over a changed default outside a reload while nobody
     /// watched (at boot): the next reload event lists them.
     unheard: Vec<strand_compiler::reconcile::KeptCell>,
+    /// The running config's check warnings (`check::dbus_unchecked`: a
+    /// bus that did not answer), as `strand watch` events list them: a
+    /// watcher that subscribes later hears them at once; a later reload
+    /// event with none resolves them.
+    warnings: Vec<Json>,
     /// Settings files (and their runtime overlays) read again since the
     /// last step, as notices name them.
     settings_reread: Vec<String>,
@@ -527,6 +540,32 @@ impl Shell {
                 height,
             } => inst.set_size(node, width, height),
             ToLogic::Shutdown => {}
+        }
+    }
+
+    /// Service failures and notices: `strand watch` notices, and overlay
+    /// rows for what the user must act on (another notification server
+    /// owns the name), under a `strand: services` header; a resolved
+    /// notice (the name taken over) takes its rows away and is a `strand
+    /// watch` notice of its own (each is logged where it is made).
+    fn service_diagnostics(&mut self, diagnostics: Vec<strand_services::ServiceDiagnostic>) {
+        let texts: Vec<String> = diagnostics.iter().map(ToString::to_string).collect();
+        // The overlay shows what the user must act on; a failure the
+        // service retries (no session bus) is a log line and a `strand
+        // watch` notice.
+        for d in diagnostics.iter().filter(|d| d.notice) {
+            self.overlay.forget_service(&d.service, &self.inst);
+            if !d.resolved {
+                let rows = overlay::service_lines(&d.service, &d.to_string());
+                self.overlay.note(rows, Instant::now(), &self.inst);
+            }
+        }
+        if let Some(s) = &mut self.server {
+            s.broadcast(&json!({
+                "event": "notices",
+                "kept_over_default": [],
+                "notices": texts,
+            }));
         }
     }
 
@@ -669,7 +708,7 @@ impl Shell {
             self.overlay
                 .note(overlay::report_lines(r), Instant::now(), &self.inst);
         }
-        if l.outcome.errors() > 0 {
+        if !l.outcome.diagnostics.is_empty() {
             log::warn!(
                 "{}",
                 render(&l.outcome.diagnostics, &l.outcome.sources, Style::Plain)
@@ -677,6 +716,11 @@ impl Shell {
         }
         self.watch_settings();
         let mut ev = reload_event(&l, report.as_ref(), commit);
+        if l.outcome.errors() == 0 {
+            // What the running config is warned about now (none: the
+            // earlier warnings are resolved).
+            self.warnings = ev["diagnostics"].as_array().cloned().unwrap_or_default();
+        }
         ev["deferred"] = json!(deferred);
         if !self.unheard.is_empty()
             && let Some(k) = ev["kept_over_default"].as_array_mut()
@@ -783,9 +827,28 @@ impl Shell {
                 }
             }
             ipc::Request::Set { path, value } => {
-                let ans = match self.inst.set_text(&path, &value) {
+                // A service's `rw` field (`brightness.level +5%`) goes
+                // through the service host; everything else is state or
+                // settings.
+                let rt = self.inst.runtime();
+                let exported = self.inst.get(&path).is_ok();
+                let r = if !exported && crate::services::is_service_path(&path) {
+                    match &self.real {
+                        Some(real) => real.set_text(rt, &path, &value),
+                        None => crate::services::set_text(
+                            &*self.host,
+                            rt,
+                            &crate::services::schema().types,
+                            &path,
+                            &value,
+                        ),
+                    }
+                } else {
+                    self.inst.set_text(&path, &value).map_err(|e| e.to_string())
+                };
+                let ans = match r {
                     Ok(()) => json!({"ok": true}),
-                    Err(e) => json!({"ok": false, "error": e.to_string()}),
+                    Err(e) => json!({"ok": false, "error": e}),
                 };
                 if let Some(s) = &mut self.server {
                     s.answer(id, &ans);
@@ -804,8 +867,24 @@ impl Shell {
                     s.answer(id, &ans);
                 }
             }
-            // Answered by the server itself.
-            ipc::Request::Watch => {}
+            // Answered by the server itself; the running config's
+            // warnings follow (the boot's were made before anyone
+            // watched).
+            ipc::Request::Watch => {
+                if !self.warnings.is_empty()
+                    && let Some(s) = &mut self.server
+                {
+                    s.send(
+                        id,
+                        &json!({
+                            "event": "notices",
+                            "kept_over_default": [],
+                            "notices": [],
+                            "diagnostics": self.warnings,
+                        }),
+                    );
+                }
+            }
         }
     }
 
@@ -938,44 +1017,46 @@ fn ms(d: Duration) -> f64 {
     (d.as_secs_f64() * 1e5).round() / 100.0
 }
 
+/// An attempt's diagnostics as `strand watch` events list them.
+fn diagnostics_json(o: &Outcome) -> Vec<Json> {
+    o.diagnostics
+        .iter()
+        .map(|d| {
+            // One rendering per diagnostic: a multi-line one cannot
+            // shift the others.
+            let short = render_short(std::slice::from_ref(d), &o.sources);
+            let line = short.trim_end();
+            let at = d.primary().and_then(|lab| {
+                o.sources.get(lab.file).map(|f| {
+                    let (ln, col) = overlay::line_col(&f.text, lab.span.start);
+                    json!({"file": f.name, "line": ln, "column": col})
+                })
+            });
+            json!({
+                "severity": if d.is_error() { "error" } else { "warning" },
+                "code": d.code,
+                "message": d.message,
+                "help": d.help,
+                "at": at,
+                "labels": d.labels.iter().map(|lab| {
+                    let at = o.sources.get(lab.file).map(|f| {
+                        let (ln, col) = overlay::line_col(&f.text, lab.span.start);
+                        json!({"file": f.name, "line": ln, "column": col})
+                    });
+                    json!({"message": lab.message, "primary": lab.primary, "at": at})
+                }).collect::<Vec<_>>(),
+                "short": line,
+            })
+        })
+        .collect()
+}
+
 /// A load as `strand watch` streams it (`timing.total_ms` is filled in
 /// when the step that draws it has sent its diff).
 fn reload_event(l: &Loaded, report: Option<&Report>, commit: Duration) -> Json {
     let paths =
         |v: &[PathBuf]| -> Vec<String> { v.iter().map(|p| p.display().to_string()).collect() };
-    let diagnostics: Vec<Json> = {
-        l.outcome
-            .diagnostics
-            .iter()
-            .map(|d| {
-                // One rendering per diagnostic: a multi-line one cannot
-                // shift the others.
-                let short = render_short(std::slice::from_ref(d), &l.outcome.sources);
-                let line = short.trim_end();
-                let at = d.primary().and_then(|lab| {
-                    l.outcome.sources.get(lab.file).map(|f| {
-                        let (ln, col) = overlay::line_col(&f.text, lab.span.start);
-                        json!({"file": f.name, "line": ln, "column": col})
-                    })
-                });
-                json!({
-                    "severity": if d.is_error() { "error" } else { "warning" },
-                    "code": d.code,
-                    "message": d.message,
-                    "help": d.help,
-                    "at": at,
-                    "labels": d.labels.iter().map(|lab| {
-                        let at = l.outcome.sources.get(lab.file).map(|f| {
-                            let (ln, col) = overlay::line_col(&f.text, lab.span.start);
-                            json!({"file": f.name, "line": ln, "column": col})
-                        });
-                        json!({"message": lab.message, "primary": lab.primary, "at": at})
-                    }).collect::<Vec<_>>(),
-                    "short": line,
-                })
-            })
-            .collect()
-    };
+    let diagnostics = diagnostics_json(&l.outcome);
     let r = report.cloned().unwrap_or_default();
     json!({
         "event": "reload",
@@ -1002,6 +1083,154 @@ fn reload_event(l: &Loaded, report: Option<&Report>, commit: Duration) -> Json {
         },
         "diagnostics": diagnostics,
     })
+}
+
+/// How long a thread stays quiet after a burst before [`trim`].
+const TRIM_AFTER: Duration = Duration::from_millis(500);
+
+/// The longest a delayed trim is pushed back once armed: a surface that
+/// never settles (a spinner's frames, each pushing the trim back)
+/// trims anyway this long after the structural diff, at one of its
+/// own wakes, so what the diff freed does not stay resident for good.
+const TRIM_HELD_AT_MOST: Duration = Duration::from_secs(5);
+
+/// How long a thread goes without a [`trim`] before it trims inline at
+/// the end of a wake it was given anyway (a tick, a poll, a service's
+/// report): what an unarmed burst freed goes back within this, at no
+/// wakeup of its own, and a 1 s poll pays a forced collect only every
+/// fifth wake.
+const TRIM_EVERY: Duration = Duration::from_secs(5);
+
+/// How long after an inline trim (see [`TRIM_EVERY`]) the burst it
+/// began trims inline again at the end of each wake. A tick's first wake
+/// on the main thread only applies the diff; the paint comes a wake or
+/// three later (the frame callbacks), and what it freed stayed resident
+/// until the next trim: 1-2 MB of the design bar's PSS on a loaded
+/// machine (`docs/decisions.md`, wave4-exitMemory). Each wake of the
+/// tail pays a collect, none pays a wakeup.
+const TRIM_TAIL: Duration = Duration::from_millis(250);
+
+/// Returns the memory the allocator holds freed to the system. mimalloc
+/// purges a freed span only on a later allocation once its delay (1 s)
+/// has passed, so a shell that goes quiet after a burst (boot, a reload,
+/// a surface opening) kept the burst's garbage resident for good: about
+/// 2.4 MB of the design bar's PSS on the real services. A forced collect
+/// purges every arena's pending spans and this thread's free pages (only
+/// this thread's: the text worker runs it too, `strand_text::set_idle_hook`).
+pub(crate) fn trim() {
+    // SAFETY: `mi_collect` takes no pointers; it runs on a live thread
+    // with mimalloc as the global allocator.
+    unsafe { libmimalloc_sys::mi_collect(true) };
+}
+
+/// Whether a diff changes the scene's structure: nodes created or
+/// removed (boot, a reload, a surface, popup, toast or row appearing or
+/// going) or the tokens swapped. Those are the bursts worth a [`trim`];
+/// a minute tick or a poll only sets props, and never pays one.
+/// (mimalloc's own commit count is no gauge: a purge of a partly
+/// committed range forgets its commit without counting it down, so
+/// reusing the range counts it again, and every trim made the next
+/// tick look like growth.)
+fn structural(diff: &SceneDiff) -> bool {
+    diff.ops.iter().any(|op| {
+        matches!(
+            op,
+            SceneOp::Create { .. } | SceneOp::Remove { .. } | SceneOp::SetTokens { .. }
+        )
+    })
+}
+
+/// When a thread's loop [`trim`]s: [`TRIM_AFTER`] after the last wake of
+/// a burst that [`Trimmer::arm`]ed it (a [`structural`] diff sent or
+/// applied). A wake while armed pushes the trim back, to at most
+/// [`TRIM_HELD_AT_MOST`] after the burst was first armed; an unarmed
+/// wake (a tick, a poll) changes nothing.
+#[derive(Default)]
+struct Trimmer {
+    at: Option<Instant>,
+    /// When the pending delayed trim was first armed.
+    armed: Option<Instant>,
+    /// When this thread last trimmed.
+    last: Option<Instant>,
+    /// Until when the burst an inline trim began trims inline again.
+    tail: Option<Instant>,
+}
+
+impl Trimmer {
+    /// A structural burst at `now`: trim once it has been quiet.
+    fn arm(&mut self, now: Instant) {
+        let first = *self.armed.get_or_insert(now);
+        self.at = Some(Self::quiet_from(first, now));
+    }
+
+    /// The trim a burst first armed at `first` owes after a wake at
+    /// `now`: [`TRIM_AFTER`] on, held back no later than
+    /// [`TRIM_HELD_AT_MOST`] after `first`.
+    fn quiet_from(first: Instant, now: Instant) -> Instant {
+        (now + TRIM_AFTER).min(first + TRIM_HELD_AT_MOST)
+    }
+
+    /// A wake at `now`: whether the quiet ran out (trim now; the trim's
+    /// own wake arms nothing). A wake while armed pushes the trim back.
+    fn wake(&mut self, now: Instant) -> bool {
+        match self.at {
+            Some(at) if now >= at => {
+                self.at = None;
+                self.armed = None;
+                true
+            }
+            Some(_) => {
+                let first = *self.armed.get_or_insert(now);
+                self.at = Some(Self::quiet_from(first, now));
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// How long the loop may sleep for the trim.
+    fn wait(&self, now: Instant) -> Option<Duration> {
+        self.at.map(|t| t.saturating_duration_since(now))
+    }
+
+    /// A wake at `now`: trims when due.
+    fn run(&mut self, now: Instant) {
+        if self.wake(now) {
+            self.last = Some(now);
+            trim();
+        }
+    }
+
+    /// The end of a wake at `now`, before the loop sleeps: whether to
+    /// trim inline, unarmed and [`TRIM_EVERY`] since the last trim, or
+    /// within [`TRIM_TAIL`] of the inline trim that began this burst.
+    /// Never while something on screen is `moving` (a spring, a crossfade:
+    /// more frames are coming), so no forced collect lands between an
+    /// animation's frames; its last frame's wake trims, and starts the
+    /// tail, if one is due.
+    fn settles(&mut self, now: Instant, moving: bool) -> bool {
+        if self.at.is_some() || moving {
+            return false;
+        }
+        if self.tail.is_some_and(|t| now < t) {
+            return true;
+        }
+        let due = self
+            .last
+            .is_none_or(|l| now.saturating_duration_since(l) >= TRIM_EVERY);
+        if due {
+            self.last = Some(now);
+            self.tail = Some(now + TRIM_TAIL);
+        }
+        due
+    }
+
+    /// The end of a wake: trims inline when [`Trimmer::settles`].
+    fn settle(&mut self, now: Instant, moving: bool) {
+        if self.settles(now, moving) {
+            trim();
+        }
+    }
 }
 
 /// The logic thread: mount `boot` (the loader's first outcome: its build,
@@ -1033,14 +1262,14 @@ pub fn logic(
             }
         });
     let rt = Runtime::new();
-    let portal_ping = ping.clone();
+    let services_ping = ping.clone();
     rt.set_wake_hook(move || ping.ping());
     // With nothing to run yet (broken at boot, no last good version),
     // the host still serves the builtin services (`screens`, the clock):
     // the fixed config later mounts against this host.
     let host_types = match &boot.build {
         Some(b) => b.program.types.clone(),
-        None => strand_compiler::schema::Schema::builtin().types.clone(),
+        None => crate::services::schema().types.clone(),
     };
     let build = boot.build.clone().unwrap_or_else(Build::empty);
     let mock = crate::mock::requested();
@@ -1058,6 +1287,27 @@ pub fn logic(
     if let Some(m) = &mock {
         crate::mock::desktop(&rt, &host, m);
     }
+    // The real services (none under the mock): registered now, each
+    // started by its first reader.
+    let real = mock.is_none().then(|| {
+        let buses = live
+            .buses
+            .clone()
+            .unwrap_or_else(strand_services::Buses::none);
+        let real = crate::services::Real::start(&rt, &host_types, buses, host.clone(), move || {
+            services_ping.ping()
+        });
+        real.custom.set_config_dir(storage.config_dir.clone());
+        real
+    });
+    // GNOME (and any portal backend exposing GSettings) names the icon
+    // theme in `org.gnome.desktop.interface`, not GTK's settings files:
+    // followed for the whole run as a task of the services' shared
+    // runtime, a switch invalidates like an `index.theme` change.
+    let _icon_theme = real
+        .as_ref()
+        .zip(live.icon_theme_switched)
+        .map(|(r, switched)| strand_services::icon_theme::spawn(&r.services, switched.0));
     // Monitors the main thread already knows about.
     let mut inbox = Inbox::default();
     sleeper
@@ -1072,54 +1322,42 @@ pub fn logic(
             _ => {}
         }
     }
-    // The portal's last values before the first frame (the boot read
-    // may take up to 500 ms), then the portal itself.
+    // `system`'s last values before the first frame (the portal's boot
+    // read may take up to 500 ms), kept off the logic thread whenever
+    // the service reports new ones. The runtime itself reads
+    // `system.reduced_motion` (render snaps every spring while it is
+    // on), so it holds one reader of `system` for the whole run.
     let system_file = system::Last::file(storage.palette_dir());
-    let mut last = system_file
-        .as_deref()
-        .map(system::Last::load)
-        .unwrap_or_default();
-    system::apply(&rt, &host, &last.settings, true);
-    let (sink, portal_rx) = strand_watch::channel();
-    let sink = sink.with_waker(move || portal_ping.ping());
-    let _portal =
-        live.portal
-            .clone()
-            .and_then(|bus| match strand_watch::PortalSettings::spawn(bus, sink) {
-                Ok(p) => Some(p),
-                Err(e) => {
-                    log::warn!("not following the portal's appearance settings: {e}");
-                    None
-                }
-            });
-    // The portal's values are kept off the logic thread.
     let saved = (
         system_file.clone(),
         strand_theme::FileWriter::new()
             .inspect_err(|e| log::warn!("not keeping the portal's settings: {e}"))
             .ok(),
     );
-    // The first frame waits (at most BOOT_PORTAL_HOLD) for the portal's
-    // boot read, so a desktop whose scheme or accent changed while Strand
-    // was not running does not show the persisted values first and then
-    // switch. A slower portal keeps them until its read arrives.
-    if _portal.is_some() {
-        let deadline = Instant::now() + BOOT_PORTAL_HOLD;
-        while let Ok(ev) =
-            portal_rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
-        {
-            if let strand_watch::ChangeEvent::System(batch) = ev {
-                portal_batch(&rt, &host, &batch, &mut last, &saved);
-                if batch.at_boot {
-                    break;
-                }
-            }
+    let mut last = system_file
+        .as_deref()
+        .map(system::Last::load)
+        .unwrap_or_default();
+    if let Some(r) = &real {
+        if let Err(e) = r.builtin.system.seed(&rt, |s| last.seed(s)) {
+            log::warn!("system: {e}");
         }
+        r.builtin.system.acquire(&rt);
     }
-    let inst = Instance::from_build(&rt, &build, host.clone(), storage);
+    let inst = Instance::from_build(&rt, &build, live_host(&host, &real), storage);
+    // The first frame waits (at most BOOT_SERVICES_HOLD) for the first
+    // reads of the services the config started, so a desktop whose
+    // scheme or accent changed while Strand was not running does not show
+    // the kept values first and then switch. A slower service keeps its
+    // seeded or default values until its read arrives.
+    if let Some(r) = &real {
+        r.services.wait_ready(&rt, BOOT_SERVICES_HOLD);
+        keep_system(&rt, r, &mut last, &saved);
+    }
     let mut shell = Shell {
         inst,
         host,
+        real,
         build,
         overlay: Overlay::default(),
         server,
@@ -1130,6 +1368,7 @@ pub fn logic(
         latest: Problems::of(&boot),
         watched: Vec::new(),
         unheard: Vec::new(),
+        warnings: Vec::new(),
         settings_reread: Vec::new(),
         layout_seen: None,
     };
@@ -1140,6 +1379,12 @@ pub fn logic(
         log::warn!("{}", render(&boot.diagnostics, &boot.sources, Style::Plain));
         let lines = overlay::lines(&boot.diagnostics, &boot.sources, &boot.unreadable);
         shell.overlay.set(lines, Instant::now(), &shell.inst);
+    } else if !boot.diagnostics.is_empty() {
+        // Warnings only (a `from dbus` service whose bus did not
+        // answer): logged, and told to each `strand watch` that
+        // subscribes until a reload resolves them.
+        log::warn!("{}", render(&boot.diagnostics, &boot.sources, Style::Plain));
+        shell.warnings = diagnostics_json(&boot);
     }
     if boot.from_cache {
         log::warn!("the config does not compile: running its last good version");
@@ -1148,6 +1393,9 @@ pub fn logic(
     let start = Instant::now();
     // The reduced-motion preference render last heard of.
     let mut reduced_sent = false;
+    // When the allocator's freed memory goes back to the system: once the
+    // process has been quiet a moment ([`trim`]).
+    let mut trimmer = Trimmer::default();
     while !stop {
         if shell.deferred.is_some() || shell.deferred_hard {
             shell.unlocked();
@@ -1158,16 +1406,19 @@ pub fn logic(
         diff.layout_seen = shell.layout_seen.take();
         // `system.reduced_motion` (the portal's, or its last value) goes
         // to render, which snaps every spring while it is on.
-        let reduced = shell
-            .host
-            .get(shell.inst.runtime(), "system.reduced_motion")
-            .ok()
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let reduced = {
+            let rt = shell.inst.runtime();
+            let host = live_host(&shell.host, &shell.real);
+            rt.untrack(|rt| host.read(rt, "system", "reduced_motion"))
+                .ok()
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        };
         if reduced != reduced_sent {
             diff.reduced_motion = Some(reduced);
             reduced_sent = reduced;
         }
+        let shaped = structural(&diff);
         if !diff.is_empty() && out.send(diff).is_err() {
             break;
         }
@@ -1178,12 +1429,20 @@ pub fn logic(
             s.flush(&handle);
         }
         let now = Instant::now();
+        // A structural burst arms the trim; any wake while armed pushes
+        // it back.
+        if shaped {
+            trimmer.arm(now);
+        }
+        trimmer.run(now);
+        trimmer.settle(now, false);
         let mut timeout = wake.deadline.map(|d| d.saturating_sub(start.elapsed()));
         let mut also = |t: Option<Duration>| {
             if let Some(t) = t {
                 timeout = Some(timeout.map_or(t, |x| x.min(t)));
             }
         };
+        also(trimmer.wait(now));
         also(
             shell
                 .overlay
@@ -1214,10 +1473,20 @@ pub fn logic(
         for w in inbox.worker.drain(..) {
             shell.worker(w);
         }
-        while let Ok(ev) = portal_rx.try_recv() {
-            if let strand_watch::ChangeEvent::System(batch) = ev {
-                portal_batch(shell.inst.runtime(), &shell.host, &batch, &mut last, &saved);
-            }
+        // What the services sent while the loop slept, applied outside
+        // handlers (reports are not handler writes) before the next step.
+        if let Some(r) = &shell.real
+            && r.services.pump(shell.inst.runtime())
+        {
+            keep_system(shell.inst.runtime(), r, &mut last, &saved);
+        }
+        let failed = shell
+            .real
+            .as_ref()
+            .map(|r| r.services.take_diagnostics())
+            .unwrap_or_default();
+        if !failed.is_empty() {
+            shell.service_diagnostics(failed);
         }
         if shell.inst.take_theme_files_changed() {
             shell.watch_settings();
@@ -1243,12 +1512,53 @@ pub fn logic(
     // flushed as their cells go; the runtime's shutdown waits for the
     // persist queue (bounded), and the last store handle joins its IO
     // thread.
-    let Shell { mut inst, host, .. } = shell;
+    let Shell {
+        mut inst,
+        host,
+        real,
+        ..
+    } = shell;
     inst.shutdown();
     drop(inst);
+    if let Some(r) = &real {
+        r.shutdown(&rt);
+    }
     rt.shutdown();
+    drop(real);
     drop(host);
     Ok(())
+}
+
+/// The host the instance runs against: the real services' composite, or
+/// the schema host alone (the mock).
+fn live_host(
+    host: &Rc<SchemaHost>,
+    real: &Option<crate::services::Real>,
+) -> Rc<dyn strand_compiler::vm::ServiceHost> {
+    match real {
+        Some(r) => r.host.clone(),
+        None => host.clone(),
+    }
+}
+
+/// `system`'s values, written to the disk (off the logic thread) when
+/// they changed.
+fn keep_system(
+    rt: &Runtime,
+    real: &crate::services::Real,
+    last: &mut system::Last,
+    saved: &(Option<PathBuf>, Option<strand_theme::FileWriter>),
+) {
+    let Ok(now) = real.builtin.system.cells().snapshot(rt) else {
+        return;
+    };
+    let now = system::Last::of(&now);
+    if now != *last {
+        *last = now;
+        if let (Some(f), Some(w)) = saved {
+            w.write(f.clone(), last.to_text());
+        }
+    }
 }
 
 /// SIGINT and SIGTERM as a file descriptor: blocked in the calling thread
@@ -1292,6 +1602,38 @@ fn read_signals(fd: BorrowedFd<'_>) -> Vec<i32> {
     }
 }
 
+/// A cache source changed, on the watcher's thread: the shared icon
+/// lookups and the apps service are told at once; the result is what the
+/// renderer drops ([`caches_changed`]). An app installed with its icon
+/// (`~/.local/share/icons/hicolor/256x256/apps/foo.png`, deeper than the
+/// icon directories' one-level watch, `icon-theme.cache` untouched)
+/// counts as an icon change too: a miss remembered for that name is
+/// forgotten, by the apps service and the renderer alike.
+fn cache_changed(kind: CacheKind) -> CacheKind {
+    match kind {
+        CacheKind::Apps | CacheKind::Icons => {
+            // Before the apps service looks its icons up again.
+            strand_icons::invalidate();
+            strand_services::apps::changed();
+            CacheKind::Icons
+        }
+        CacheKind::Fonts => CacheKind::Fonts,
+    }
+}
+
+/// A cache source changed: the renderer drops what it no longer holds
+/// true (icons looked up afresh, text shaped again) and its surfaces
+/// repaint.
+fn caches_changed(state: &mut strand_surface::State<Host>, kind: CacheKind) {
+    let r = &mut state.host_mut().renderer;
+    match kind {
+        CacheKind::Icons => r.icons_changed(),
+        CacheKind::Fonts => r.fonts_changed(),
+        CacheKind::Apps => return,
+    }
+    crate::demo::text_ready(state);
+}
+
 /// Why the main loop ended.
 enum End {
     /// The compositor went away, or a signal asked us to stop.
@@ -1320,11 +1662,12 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
     if boot.build.is_none() && boot.errors() == 0 {
         log::warn!("{}: nothing to run yet", dir.display());
     }
-    let live = Live {
+    let mut live = Live {
         worker: Some(worker_rx),
         jobs: Some(compiler.jobs()),
         socket: ipc::socket_path(),
-        portal: Some(strand_watch::Bus::Session),
+        buses: Some(strand_services::Buses::default()),
+        icon_theme_switched: None,
     };
     let (ping, ping_source) = calloop::ping::make_ping()?;
     let wake = ping.clone();
@@ -1333,6 +1676,23 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
             .map_err(DemoError::Text)?;
     let mut renderer = Renderer::new(TextBackend::Worker(worker));
     renderer.set_first_frame_wait(FIRST_FRAME_TEXT_WAIT);
+    // Apps, icons and fonts are caches their directories' changes
+    // invalidate (design.md, "Change sources"): the watcher (on the
+    // compiler worker) reports them; the renderer's caches are dropped on
+    // this thread, the apps service is told directly.
+    let (caches_tx, caches_rx) = calloop::channel::channel::<CacheKind>();
+    let icons_tx = caches_tx.clone();
+    let _ = compiler.jobs().send(Job::Caches {
+        sources: live::cache_sources(),
+        changed: live::CacheSink(Box::new(move |kind| {
+            let _ = caches_tx.send(cache_changed(kind));
+        })),
+    });
+    // The portal's icon theme switching (followed by the logic thread's
+    // services) invalidates like an `index.theme` change.
+    live.icon_theme_switched = Some(Switched(Box::new(move || {
+        let _ = icons_tx.send(CacheKind::Icons);
+    })));
     let (to_logic, from_main) = calloop::channel::channel::<ToLogic>();
     let host = Host::new(renderer, log.damage)
         .forwarding(to_logic.clone())
@@ -1341,6 +1701,13 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
     let handle = mgr.loop_handle();
     handle
         .insert_source(ping_source, |_, _, state| crate::demo::text_ready(state))
+        .map_err(|e| DemoError::Io(io::Error::other(e.error)))?;
+    handle
+        .insert_source(caches_rx, |event, _, state| {
+            if let Event::Msg(kind) = event {
+                caches_changed(state, kind);
+            }
+        })
         .map_err(|e| DemoError::Io(io::Error::other(e.error)))?;
     let signalled = Rc::new(Cell::new(false));
     let flag = Rc::clone(&signalled);
@@ -1364,12 +1731,23 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
         .spawn(move || logic(boot, storage, from_main, tx, live))?;
     let hung_up = Rc::new(Cell::new(false));
     let flag = Rc::clone(&hung_up);
+    // A structural diff applied: the main thread trims once quiet too.
+    let shaped = Rc::new(Cell::new(false));
+    let shape = Rc::clone(&shaped);
     handle
         .insert_source(rx, move |event, _, state| match event {
-            Event::Msg(diff) => apply(state, diff),
+            Event::Msg(diff) => {
+                if structural(&diff) {
+                    shape.set(true);
+                }
+                apply(state, diff)
+            }
             Event::Closed => flag.set(true),
         })
         .map_err(|e| DemoError::Io(io::Error::other(e.error)))?;
+    // The main thread's frees (frames, layouts, surfaces) are returned
+    // to the system once it has been quiet a moment too ([`trim`]).
+    let mut trimmer = Trimmer::default();
     let end = loop {
         if hung_up.get() {
             break End::LogicEnded;
@@ -1377,7 +1755,13 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
         if signalled.get() {
             break End::Done;
         }
-        match mgr.dispatch(None) {
+        let now = Instant::now();
+        if shaped.take() {
+            trimmer.arm(now);
+        }
+        trimmer.run(now);
+        trimmer.settle(now, mgr.state().host().renderer.in_motion());
+        match mgr.dispatch(trimmer.wait(now)) {
             Ok(()) => {}
             Err(e) if connection_closed(&e) => {
                 log::info!("the compositor went away: {e}");
@@ -1405,7 +1789,6 @@ pub(crate) mod tests {
     use super::*;
     use strand_compiler::instantiate::SceneMirror;
     use strand_compiler::reconcile::loader::Loader;
-    use strand_compiler::schema::Schema;
     use strand_scene::{Prop, PropValue};
 
     pub(crate) fn screen(id: &str, name: &str) -> ScreenInfo {
@@ -1421,9 +1804,214 @@ pub(crate) mod tests {
         }
     }
 
+    /// A loop woken by a source every `period` (none: once, at the
+    /// start) and by its [`Trimmer`], for `span`; the source's wakes in
+    /// `armed` (by index) are structural bursts. Its wakes after the
+    /// first, and trims.
+    fn trims_over(period: Option<Duration>, span: Duration, armed: &[u32]) -> (u32, u32) {
+        let t0 = Instant::now();
+        let end = t0 + span;
+        let mut trimmer = Trimmer::default();
+        let mut now = t0;
+        let mut source = period.map(|p| t0 + p);
+        let (mut wakes, mut trims, mut fired) = (0, 0, 0u32);
+        if armed.contains(&0) {
+            trimmer.arm(now);
+        }
+        loop {
+            if trimmer.wake(now) {
+                trims += 1;
+            }
+            let trim = trimmer.wait(now).map(|w| now + w);
+            let Some(next) = [source, trim].into_iter().flatten().min() else {
+                break;
+            };
+            if next > end {
+                break;
+            }
+            now = next;
+            wakes += 1;
+            if source == Some(now) {
+                source = period.map(|p| now + p);
+                fired += 1;
+                if armed.contains(&fired) {
+                    trimmer.arm(now);
+                }
+            }
+        }
+        (wakes, trims)
+    }
+
+    /// A thread woken each second (a cpu meter, a seconds clock) or each
+    /// minute (the clock's tick) only sets props: it never pays a trim's
+    /// wakeup. A structural burst (boot, a reload, a surface) trims once,
+    /// [`TRIM_AFTER`] after it goes quiet.
+    #[test]
+    fn only_a_structural_burst_pays_a_trim_wakeup() {
+        let span = Duration::from_secs(10);
+        for period in [Duration::from_millis(700), Duration::from_secs(1)] {
+            let polls = (span.as_millis() / period.as_millis()) as u32;
+            assert_eq!(
+                trims_over(Some(period), span, &[]),
+                (polls, 0),
+                "{period:?}"
+            );
+        }
+        // Boot, then quiet: one trim.
+        assert_eq!(trims_over(None, span, &[0]), (1, 1));
+        // Ticks after boot: the boot's trim, none for the ticks.
+        let minute = Duration::from_secs(60);
+        let span = Duration::from_secs(150);
+        assert_eq!(trims_over(Some(minute), span, &[0]), (3, 1));
+        // A reload at the first tick: one trim more.
+        assert_eq!(trims_over(Some(minute), span, &[0, 1]), (4, 2));
+        // A poll while armed pushes the trim back past its own wakes.
+        assert_eq!(
+            trims_over(
+                Some(Duration::from_millis(300)),
+                Duration::from_secs(1),
+                &[0]
+            ),
+            (3, 0)
+        );
+    }
+
+    /// The inline trim at the end of a wake: on the first wake, then not
+    /// again for [`TRIM_EVERY`] (a 1 s poll pays one every fifth wake),
+    /// and never while a delayed trim is armed (that one comes first).
+    #[test]
+    fn a_wake_trims_inline_at_most_every_five_seconds() {
+        let t0 = Instant::now();
+        let mut t = Trimmer::default();
+        let polls: Vec<bool> = (0..11)
+            .map(|i| t.settles(t0 + Duration::from_secs(i), false))
+            .collect();
+        let at: Vec<usize> = polls
+            .iter()
+            .enumerate()
+            .filter(|p| *p.1)
+            .map(|p| p.0)
+            .collect();
+        assert_eq!(at, [0, 5, 10]);
+        let mut t = Trimmer::default();
+        t.arm(t0);
+        assert!(!t.settles(t0, false), "armed: the delayed trim comes first");
+        assert!(t.wake(t0 + TRIM_AFTER));
+        t.last = Some(t0 + TRIM_AFTER);
+        assert!(!t.settles(t0 + Duration::from_secs(1), false));
+        assert!(t.settles(t0 + TRIM_AFTER + TRIM_EVERY, false));
+    }
+
+    /// A tick's burst: its first wake trims inline, and so does every
+    /// wake of the burst's tail (the paint on the frame callbacks comes
+    /// after the diff's wake), within [`TRIM_TAIL`]; a wake after the
+    /// tail waits out [`TRIM_EVERY`] again.
+    #[test]
+    fn the_tail_of_an_inline_trimmed_burst_trims_too() {
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let mut t = Trimmer::default();
+        assert!(t.settles(t0, false), "the tick's first wake");
+        assert!(t.settles(t0 + ms(7), false), "the first output's frame");
+        assert!(t.settles(t0 + ms(7), false), "the second output's frame");
+        assert!(t.settles(t0 + ms(16), false), "a buffer release");
+        assert!(!t.settles(t0 + TRIM_TAIL, false), "past the tail");
+        assert!(!t.settles(t0 + Duration::from_secs(1), false), "a poll");
+        let next = t0 + TRIM_EVERY;
+        assert!(t.settles(next, false), "the next burst after five seconds");
+        assert!(t.settles(next + ms(16), false), "and its tail");
+        // An armed trim's tail is the armed trim itself.
+        let mut t = Trimmer::default();
+        t.arm(t0);
+        assert!(!t.settles(t0 + ms(7), false));
+        t.run(t0 + TRIM_AFTER);
+        assert!(!t.settles(t0 + TRIM_AFTER, false), "trimmed already");
+        assert!(!t.settles(t0 + TRIM_AFTER + ms(16), false));
+    }
+
+    /// An animation's frames (a spring, a crossfade) never trim inline,
+    /// however long since the last trim, and use up no due trim: the
+    /// wake after its last frame does, and starts the tail then.
+    #[test]
+    fn no_inline_trim_lands_between_an_animations_frames() {
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let mut t = Trimmer::default();
+        for f in 0..30 {
+            assert!(!t.settles(t0 + ms(16 * f), true), "frame {f} trimmed");
+        }
+        let done = t0 + ms(16 * 30);
+        assert!(t.settles(done, false), "the settled frame's wake");
+        assert!(t.settles(done + ms(16), false), "and its tail");
+        assert!(!t.settles(done + ms(32), true), "moving again, in the tail");
+        assert!(!t.settles(done + TRIM_TAIL, false), "past the tail");
+    }
+
+    /// A structural burst (a toast appearing) costs exactly one wake of
+    /// its own: the trim [`TRIM_AFTER`] after its last wake, and nothing
+    /// is armed after it.
+    #[test]
+    fn a_structural_burst_costs_one_trim_wake() {
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let mut t = Trimmer::default();
+        t.arm(t0);
+        // The toast's frames.
+        for f in 1..4 {
+            let now = t0 + ms(16 * f);
+            t.run(now);
+            assert_eq!(t.wait(now), Some(TRIM_AFTER), "frame {f}");
+        }
+        let quiet = t0 + ms(48) + TRIM_AFTER;
+        assert!(t.wake(quiet), "the one trim wake");
+        assert_eq!(t.wait(quiet), None, "nothing armed after it");
+    }
+
+    /// A surface that never settles (a spinner's frames, every 16 ms)
+    /// pushes an armed trim back no further than [`TRIM_HELD_AT_MOST`]
+    /// after the structural diff: one of its frames trims then, and the
+    /// next structural diff arms afresh.
+    #[test]
+    fn an_endless_animation_holds_the_trim_back_at_most_five_seconds() {
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let mut t = Trimmer::default();
+        t.arm(t0);
+        let trimmed: Vec<u64> = (1..700)
+            .map(|f| 16 * f)
+            .filter(|&f| t.wake(t0 + ms(f)))
+            .collect();
+        assert_eq!(trimmed, [5008], "trims once, at the first frame past 5 s");
+        let later = t0 + ms(12_000);
+        t.arm(later);
+        assert_eq!(t.wait(later), Some(TRIM_AFTER), "a fresh arm");
+        assert!(!t.wake(later + ms(16)));
+        assert!(t.wake(later + ms(16) + TRIM_AFTER));
+    }
+
+    /// Created and removed nodes and swapped tokens are structural; a
+    /// prop set (the tick's text) is not.
+    #[test]
+    fn a_prop_set_is_not_structural() {
+        use strand_scene::{Prop, PropValue};
+        let mut tick = SceneDiff::new();
+        tick.set(
+            NodeId::new(7, 0),
+            Prop::Text,
+            PropValue::Text("12:35".into()),
+        );
+        assert!(!structural(&tick));
+        assert!(!structural(&SceneDiff::new()));
+        let mut closed = SceneDiff::new();
+        closed.push(SceneOp::Remove {
+            id: NodeId::new(7, 0),
+        });
+        assert!(structural(&closed));
+    }
+
     /// The config in `dir` loaded once (no watcher, no cache).
     fn load(dir: &Path) -> Outcome {
-        let out = Loader::new(dir, Schema::builtin().clone(), None).boot();
+        let out = Loader::new(dir, crate::services::schema().clone(), None).boot();
         assert_eq!(out.errors(), 0, "{:?}", out.diagnostics);
         out
     }
@@ -1681,6 +2269,92 @@ pub(crate) mod tests {
     /// 250 ms, opens the overlay listing the error with its fix; the fix
     /// takes it away; `strand watch` streams each reload and `strand
     /// reload` answers with its event.
+    /// A config that compiles with warnings (a check that could not run,
+    /// a `from poll` path naming a program): logged, and told to each
+    /// `strand watch` that subscribes, the boot's included; the reload
+    /// event that no longer has them resolves them.
+    #[test]
+    fn check_warnings_reach_strand_watch_and_are_resolved() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("warnings");
+        let prog = dir.join("prog");
+        std::fs::write(&prog, "#!/bin/sh\necho a=1\n").unwrap();
+        std::fs::set_permissions(&prog, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(dir.join("doc"), "a=1\n").unwrap();
+        let src = |path: &str| {
+            format!(
+                "service t from poll \"{path}\" every 5s {{ a: text = a }}\nbar Top {{ text \"x\" }}\n"
+            )
+        };
+        let file = dir.join("bar.strand");
+        std::fs::write(&file, src("./prog")).unwrap();
+        let socket = dir.join("ipc.sock");
+        let (wtx, wrx) = calloop::channel::channel();
+        let (compiler, boot) = Worker::spawn(&dir, None, wtx).unwrap();
+        assert!(boot.build.is_some());
+        assert_eq!(
+            boot.diagnostics
+                .iter()
+                .map(|d| d.code.to_string())
+                .collect::<Vec<_>>(),
+            ["check::poll_program"]
+        );
+        let live = Live {
+            worker: Some(wrx),
+            jobs: Some(compiler.jobs()),
+            socket: Some(socket.clone()),
+            buses: None,
+            icon_theme_switched: None,
+        };
+        let (to_logic, from_main) = calloop::channel::channel();
+        let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+        to_logic
+            .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+            .unwrap();
+        let t = std::thread::spawn(move || logic(boot, Storage::none(), from_main, tx, live));
+        let mut m = Mirror::new(rx);
+        m.until("the bar", |s| s.texts() == ["x"]);
+        let mut events =
+            std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
+        let ok = ipc::request(&mut events, &ipc::Request::Watch, Duration::from_secs(10)).unwrap();
+        assert_eq!(ok["ok"], true);
+        let mut next_event = || {
+            let mut line = String::new();
+            std::io::BufRead::read_line(&mut events, &mut line).unwrap();
+            serde_json::from_str::<Json>(&line).unwrap()
+        };
+        // The boot's warning, at once.
+        let ev = next_event();
+        assert_eq!(ev["event"], "notices", "{ev}");
+        assert_eq!(ev["diagnostics"][0]["severity"], "warning", "{ev}");
+        assert_eq!(ev["diagnostics"][0]["code"], "check::poll_program", "{ev}");
+        assert!(ipc::describe(&ev).contains("is a program"), "{ev}");
+        // Fixed: the reload commits with no warning (resolved).
+        std::fs::write(&file, src("./doc")).unwrap();
+        let ev = next_event();
+        assert_eq!(ev["event"], "reload", "{ev}");
+        assert_eq!(ev["diagnostics"], json!([]), "{ev}");
+        // A watcher subscribing now hears nothing more.
+        let mut late =
+            std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
+        let ok = ipc::request(&mut late, &ipc::Request::Watch, Duration::from_secs(10)).unwrap();
+        assert_eq!(ok["ok"], true);
+        // Broken again by a reload: the reload event carries it.
+        std::fs::write(&file, src("./prog")).unwrap();
+        let ev = next_event();
+        assert_eq!(ev["diagnostics"][0]["code"], "check::poll_program", "{ev}");
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut late, &mut line).unwrap();
+        let ev: Json = serde_json::from_str(&line).unwrap();
+        assert_eq!(
+            ev["event"], "reload",
+            "the late watcher's first event: {ev}"
+        );
+        to_logic.send(ToLogic::Shutdown).unwrap();
+        assert_eq!(t.join().unwrap(), Ok(()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn saves_reload_live_with_state_kept() {
         let dir = temp_dir("live");
@@ -1698,7 +2372,8 @@ pub(crate) mod tests {
             worker: Some(wrx),
             jobs: Some(compiler.jobs()),
             socket: Some(socket.clone()),
-            portal: None,
+            buses: None,
+            icon_theme_switched: None,
         };
         let (to_logic, from_main) = calloop::channel::channel();
         let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -1840,11 +2515,11 @@ pub(crate) mod tests {
         spawn_live_with(dir, socket, None, Storage::none())
     }
 
-    /// [`spawn_live`] following a portal, with storage.
+    /// [`spawn_live`] with the services on `buses`, with storage.
     fn spawn_live_with(
         dir: &Path,
         socket: Option<PathBuf>,
-        portal: Option<strand_watch::Bus>,
+        buses: Option<strand_services::Buses>,
         storage: Storage,
     ) -> (
         Worker,
@@ -1859,7 +2534,8 @@ pub(crate) mod tests {
             worker: Some(wrx),
             jobs: Some(compiler.jobs()),
             socket,
-            portal,
+            buses,
+            icon_theme_switched: None,
         };
         let (to_logic, from_main) = calloop::channel::channel();
         let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -2537,7 +3213,8 @@ pub(crate) mod tests {
             worker: Some(wrx),
             jobs: Some(compiler.jobs()),
             socket: None,
-            portal: None,
+            buses: None,
+            icon_theme_switched: None,
         };
         let (to_logic, from_main) = calloop::channel::channel();
         let (tx, rx) = calloop::channel::channel::<SceneDiff>();
@@ -2564,6 +3241,10 @@ pub(crate) mod tests {
             } else {
                 (theme_path.clone(), theme(&mut rnd))
             };
+            // How long a delete-then-create file was missing: past the
+            // watcher's 50 ms removal grace (a stalled machine) the
+            // removal is real and may show, so a failure names it.
+            let mut gap = String::new();
             match style {
                 // In place: truncate and write.
                 0 => std::fs::write(&path, &text).unwrap(),
@@ -2583,8 +3264,10 @@ pub(crate) mod tests {
                 // Delete, then create.
                 3 => {
                     std::fs::remove_file(&path).unwrap();
+                    let removed = Instant::now();
                     std::thread::sleep(Duration::from_millis(5));
                     std::fs::write(&path, &text).unwrap();
+                    gap = format!(", missing {} ms", removed.elapsed().as_millis());
                 }
                 // A symlink swapped to a new target.
                 _ => {
@@ -2598,7 +3281,7 @@ pub(crate) mod tests {
                 }
             }
             let expect = cold_boot(&config);
-            m.until(&format!("round {round} (style {style})"), |s| {
+            m.until(&format!("round {round} (style {style}{gap})"), |s| {
                 canonical(s) == expect
             });
         }
@@ -2762,8 +3445,8 @@ pub(crate) mod tests {
     }
 
     /// A mock `org.freedesktop.portal.Settings` for the theme test.
-    struct MockPortal {
-        values: std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
+    pub(crate) struct MockPortal {
+        pub(crate) values: std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
     }
 
     #[zbus::interface(name = "org.freedesktop.portal.Settings")]
@@ -2788,9 +3471,9 @@ pub(crate) mod tests {
         }
     }
 
-    struct Bus {
+    pub(crate) struct Bus {
         child: std::process::Child,
-        address: String,
+        pub(crate) address: String,
     }
 
     impl Drop for Bus {
@@ -2802,7 +3485,7 @@ pub(crate) mod tests {
 
     /// A private session bus (skipped without `dbus-daemon` unless
     /// `STRAND_REQUIRE_DBUS` is set).
-    fn private_bus(dir: &Path) -> Option<Bus> {
+    pub(crate) fn private_bus(dir: &Path) -> Option<Bus> {
         use std::io::BufRead;
         let spawned = std::process::Command::new("dbus-daemon")
             .args(["--session", "--nofork", "--print-address=1"])
@@ -2923,7 +3606,7 @@ pub(crate) mod tests {
         let (compiler, to_logic, t, mut m) = spawn_live_with(
             &config,
             Some(socket.clone()),
-            Some(strand_watch::Bus::Address(bus.address.clone())),
+            Some(strand_services::Buses::private(&bus.address)),
             storage,
         );
         let portal_accent = strand_scene::Color::rgb(0.88, 0.11, 0.14);
@@ -3049,5 +3732,45 @@ pub(crate) mod tests {
         assert_eq!(t.join().unwrap(), Ok(()));
         drop(compiler);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// An app installed together with its icon, in a theme directory
+    /// deeper than the icon watch sees and without touching the theme's
+    /// `icon-theme.cache`: the icon's name, looked up (and missed) before,
+    /// resolves after the `applications/` change, and the renderer is told
+    /// to drop its icons too.
+    #[test]
+    fn an_app_installed_with_its_icon_resolves_it() {
+        let root = std::env::temp_dir().join(format!("strand-app-icon-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let theme = format!("StrandAppIcon{}", std::process::id());
+        let base = root.join("icons");
+        std::fs::create_dir_all(base.join(&theme)).unwrap();
+        std::fs::write(
+            base.join(&theme).join("index.theme"),
+            "[Icon Theme]\nName=T\nDirectories=256x256/apps\n\n[256x256/apps]\nSize=256\nType=Fixed\n",
+        )
+        .unwrap();
+        // The defaults too: other tests resolve the system's icons.
+        let mut bases = strand_icons::default_base_dirs();
+        bases.push(base.clone());
+        strand_icons::set_base_dirs(Some(bases));
+        let name = "strand-new-app";
+        assert_eq!(strand_icons::resolve(name, 256, 1, Some(&theme)), None);
+        let icon = base.join(&theme).join("256x256/apps/strand-new-app.png");
+        std::fs::create_dir_all(icon.parent().unwrap()).unwrap();
+        std::fs::write(&icon, b"png").unwrap();
+        assert_eq!(
+            strand_icons::resolve(name, 256, 1, Some(&theme)),
+            None,
+            "the miss is remembered"
+        );
+        assert_eq!(cache_changed(CacheKind::Apps), CacheKind::Icons);
+        assert_eq!(
+            strand_icons::resolve(name, 256, 1, Some(&theme)),
+            Some(icon)
+        );
+        strand_icons::set_base_dirs(None);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

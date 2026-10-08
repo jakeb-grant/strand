@@ -1711,3 +1711,122 @@ fn a_tooltip_element_takes_no_room_and_draws_nothing() {
         "the tooltip element was laid out"
     );
 }
+
+/// design.md's launcher row: `image h.app.icon { size: 32 }` beside
+/// `col { grow: 1 }` whose comment is too long for the row and cut
+/// (`ellipsis: end`). A sized image or icon keeps its size (as a CSS
+/// replaced element's automatic minimum does); only an explicit `shrink:`
+/// lets it give way.
+#[test]
+fn a_sized_image_keeps_its_size_beside_a_long_cut_comment() {
+    let comment = "The office productivity suite compatible with the open and \
+                   standardized ODF document format, and a great deal more besides";
+    let mut ids = Vec::new();
+    let (d, root) = panel(600, 140, |b, root| {
+        let list = b.node(NodeKind::Col, Some(root), vec![(Prop::Pad, num(4.0))]);
+        for (kind, shrink) in [
+            (NodeKind::Image, None),
+            (NodeKind::Icon, None),
+            (NodeKind::Image, Some(1.0)),
+        ] {
+            let row = b.node(
+                NodeKind::Row,
+                Some(list),
+                vec![(Prop::Pad, num(4.0)), (Prop::Gap, num(8.0))],
+            );
+            let mut props = vec![(Prop::Size, num(32.0)), (Prop::Bg, color("#f38ba8"))];
+            props.extend(shrink.map(|s| (Prop::Shrink, num(s))));
+            let image = b.node(kind, Some(row), props);
+            let col = b.node(NodeKind::Col, Some(row), vec![(Prop::Grow, num(1.0))]);
+            b.node(
+                NodeKind::Text,
+                Some(col),
+                vec![(Prop::Text, text("LibreOffice"))],
+            );
+            let cut = b.node(
+                NodeKind::Text,
+                Some(col),
+                vec![(Prop::Text, text(comment)), (Prop::Ellipsis, kw("end"))],
+            );
+            ids.push((image, col, cut));
+        }
+    });
+    let (r, buf) = show(d, root, 600, 140, Scale::ONE);
+    for (i, (image, col, cut)) in ids.iter().copied().take(2).enumerate() {
+        let im = rect(&r, image);
+        approx(im, (im.x, im.y, 32.0, 32.0));
+        let col = rect(&r, col);
+        assert!(
+            (col.x - (im.x + 32.0 + 8.0)).abs() < 0.51,
+            "row {i}: the text column starts past the 32 px box: {col:?}"
+        );
+        let cut = rect(&r, cut);
+        assert!(
+            cut.x + cut.w <= 600.0 - 8.0 + 0.51,
+            "row {i}: the cut comment stays in the row: {cut:?}"
+        );
+    }
+    // `shrink: 1` given: the image gives way to the comment, as asked.
+    let shrunk = rect(&r, ids[2].0);
+    assert!(shrunk.w < 32.0, "shrink: 1 shrinks: {shrunk:?}");
+    assert_matches_ref("layout_sized_image", &buf, TOLERANCE);
+}
+
+/// The sized-image default covers absolute sizes only: an image sized by a
+/// percentage (`width: 100%`) still gives way to a sibling in a row, as any
+/// box does, instead of pushing it out of the row.
+#[test]
+fn a_percentage_sized_image_still_gives_way_in_a_row() {
+    let (mut image, mut icon, mut tail) = (None, None, None);
+    let (d, root) = panel(200, 80, |b, root| {
+        let col = b.node(
+            NodeKind::Col,
+            Some(root),
+            vec![(Prop::Width, len_pct(100.0))],
+        );
+        for kind in [NodeKind::Image, NodeKind::Icon] {
+            let row = b.node(
+                NodeKind::Row,
+                Some(col),
+                vec![(Prop::Width, len_pct(100.0))],
+            );
+            let id = b.node(
+                kind,
+                Some(row),
+                vec![
+                    (Prop::Width, len_pct(100.0)),
+                    (Prop::Height, num(32.0)),
+                    (Prop::Bg, color("#f38ba8")),
+                ],
+            );
+            let fixed = swatch(
+                b,
+                row,
+                "#a6e3a1",
+                vec![
+                    (Prop::Width, num(80.0)),
+                    (Prop::Height, num(32.0)),
+                    (Prop::Shrink, num(0.0)),
+                ],
+            );
+            match kind {
+                NodeKind::Image => image = Some(id),
+                _ => icon = Some(id),
+            }
+            tail = Some(fixed);
+        }
+    });
+    let (r, _) = show(d, root, 200, 80, Scale::ONE);
+    for id in [image, icon].into_iter().flatten() {
+        let im = rect(&r, id);
+        assert!(
+            (im.w - 120.0).abs() < 0.51,
+            "a 100% image shrinks to what the 80 px sibling leaves: {im:?}"
+        );
+    }
+    let tail = rect(&r, tail.unwrap());
+    assert!(
+        tail.x + tail.w <= 200.0 + 0.51,
+        "the sibling stays in the row: {tail:?}"
+    );
+}

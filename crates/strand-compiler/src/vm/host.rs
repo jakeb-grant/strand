@@ -34,19 +34,39 @@ pub enum ActionTarget<'a> {
 /// (or for `<->`, outside any) and must not block: a real service sends
 /// them to its own thread.
 pub trait ServiceHost {
-    /// A custom service the program declares (`service ppd from dbus …`),
-    /// with its record. Called once at instantiation.
-    fn declare(&self, _rt: &Runtime, _name: &str, _record: crate::ty::RecordId) {}
+    /// A custom service the program declares (`service ppd from dbus …`):
+    /// its name, record (of `types`), source and fields. Called once at
+    /// instantiation.
+    fn declare(
+        &self,
+        _rt: &Runtime,
+        _service: &crate::lower::CustomService,
+        _types: &crate::ty::TypeTable,
+    ) {
+    }
 
-    /// A live reload changed (or added) custom service `name`: restart
-    /// it with `record`, a record of `types` (the new program's table).
-    /// Only that service restarts; built-ins never do. The default does
-    /// nothing.
+    /// A live reload changed (or added) a custom service's declaration:
+    /// restart it as `service` now says, its record one of `types` (the
+    /// new program's table). Only that service restarts; built-ins never
+    /// do. The default does nothing.
     fn restart(
         &self,
         _rt: &Runtime,
-        _name: &str,
-        _record: crate::ty::RecordId,
+        _service: &crate::lower::CustomService,
+        _types: &crate::ty::TypeTable,
+    ) {
+    }
+
+    /// A live reload kept custom service `service`'s declaration, but the
+    /// new program's `types` may number its record and the types its
+    /// fields name differently (a type declared or removed elsewhere):
+    /// read its values as those types from now on, without restarting
+    /// it. Called on every reload for each surviving service that does
+    /// not restart. The default does nothing.
+    fn retype(
+        &self,
+        _rt: &Runtime,
+        _service: &crate::lower::CustomService,
         _types: &crate::ty::TypeTable,
     ) {
     }
@@ -108,6 +128,24 @@ pub trait ServiceHost {
         value: Value,
     ) -> Result<(), Error>;
 
+    /// Write one `rw` leaf below an item of a service's keyed list:
+    /// `s.volume = 0.5` for `s` in `audio.sinks` is `write_item(rt, s,
+    /// [Field("volume")], 0.5)`. `item` is the record as the program read
+    /// it: the host routes by its record type and finds the item by its
+    /// key (the sink with id 42), so the write reaches the service with
+    /// the key, applied at once and its echo ignored like
+    /// [`ServiceHost::write`]'s. The default refuses.
+    fn write_item(
+        &self,
+        _rt: &Runtime,
+        item: &Value,
+        _path: &[PathSeg],
+        _value: Value,
+    ) -> Result<(), Error> {
+        let _ = item;
+        Err(Error::failed("this host does not write service items"))
+    }
+
     /// Call a `fn` method of a service (`clock.format(p)`,
     /// `calendar.days(m)`, `workspaces.on(s)`), tracked.
     fn call(
@@ -117,6 +155,16 @@ pub trait ServiceHost {
         method: &str,
         args: &[Value],
     ) -> Result<Value, Error>;
+
+    /// Read, tracked, what an `Async` method's result depends on besides
+    /// its arguments. A load (`let hits = apps.search(query)`) calls it
+    /// where it reads its arguments, so it fetches again when these change
+    /// as when the arguments do: an open launcher searches its query again
+    /// when the app list or the icon theme changes. The default reads
+    /// nothing (the result is a function of the arguments alone).
+    fn fetch_reads(&self, _rt: &Runtime, _service: &str, _method: &str) -> Result<(), Error> {
+        Ok(())
+    }
 
     /// Start an `Async` method (`apps.search(q)`) as a load: `let hits =
     /// apps.search(query)` is `rt.async_memo(args, fetch)` per mounted
@@ -162,6 +210,19 @@ pub trait ServiceHost {
     /// timers on `rt`). Called during scope cleanup too, so a host must
     /// not dispose nodes synchronously from here.
     fn release(&self, _rt: &Runtime, _service: &str) {}
+
+    /// A scope holding `service` (acquired first) also reads `field`
+    /// directly, and is mounted and shown: what a `#[store(stream)]`
+    /// field's stream (a Wi-Fi scan, audio levels) runs for, so a bar
+    /// showing the SSID does not keep the scan of a closed popup going
+    /// (design.md, "Lifecycle"). The compiler collects these per scope
+    /// ([`crate::lower::ServiceUses`]); a field read only through a `fn`
+    /// method or a `let` in another scope is held by the scope reading
+    /// it there. The default does nothing.
+    fn acquire_field(&self, _rt: &Runtime, _service: &str, _field: &str) {}
+
+    /// The matching unmount or hide (released before the service).
+    fn release_field(&self, _rt: &Runtime, _service: &str, _field: &str) {}
 
     /// The next wall-clock time the host loop must wake for (the next
     /// minute boundary while a clock is shown); `None` when nothing is

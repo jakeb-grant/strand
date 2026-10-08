@@ -1,5 +1,6 @@
-Liberation Sans Regular (LiberationSans-Regular.ttf), version 2.1, vendored for
-deterministic text and render tests.
+Liberation Sans Regular (LiberationSans-Regular.ttf) and Bold
+(LiberationSans-Bold.ttf), version 2.1, vendored for deterministic text and
+render tests.
 
 Digitized data copyright (c) 2010 Google Corporation with Reserved Font Arimo, Tinos and Cousine.
 Copyright (c) 2012 Red Hat, Inc. with Reserved Font Name Liberation.

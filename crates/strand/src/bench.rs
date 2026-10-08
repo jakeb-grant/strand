@@ -33,8 +33,15 @@
 //! first plug, an output of a width never seen, also waits for the bar's
 //! text to be shaped for that width: it is timed and printed, and the
 //! five plugs after it are gated.
-//! Portal changes are not wired into `strand run` yet (the `system`
-//! service, M2).
+//!
+//! Portal changes: a mock `org.freedesktop.portal.Settings` on a private
+//! `dbus-daemon` beside the sway (the real `system` service reads it, as
+//! in `strand run`) emits `SettingChanged` for `color-scheme`, flipping
+//! `system.dark`, which the bar's swatch shows; timed from just before
+//! the signal is sent to the presentation of the first frame showing it,
+//! and gated as a monitor change is: painted within one refresh of the
+//! signal, presented at the compositor's next frame. Skipped (printed)
+//! without `dbus-daemon` unless `STRAND_REQUIRE_DBUS` is set (CI).
 //!
 //! A budget test: ignored in debug builds, run optimised in CI
 //! (`cargo test --release -p strand --bin strand reload_latency --
@@ -53,7 +60,7 @@ use std::time::{Duration, Instant};
 use calloop::channel::Event;
 use strand_compiler::instantiate::Storage;
 use strand_render::{Renderer, TextBackend};
-use strand_scene::{Scale, SceneDiff, SceneOp, SurfaceId};
+use strand_scene::{Prop, Scale, SceneDiff, SceneOp, SurfaceId};
 use strand_surface::{Config, FrameClock, Presentation, PresentationClock, SurfaceManager};
 use strand_text::{FontConfig, TextWorker};
 
@@ -177,6 +184,8 @@ enum Await {
     Tokens,
     /// A node created or removed.
     Markup,
+    /// A paint colour set (the portal swatch's `bg`).
+    Portal,
 }
 
 /// The frame being waited for, shared by the diff handler, the painter
@@ -214,6 +223,9 @@ struct Watch {
     /// Presentations of the counted surface timed before its counted
     /// frame was painted (an older frame's), not taken for it.
     stale: u32,
+    /// When any frame was last painted (the portal clause waits for the
+    /// theme's springs to settle before its next change).
+    last_paint: Duration,
 }
 
 #[derive(Clone)]
@@ -230,6 +242,9 @@ impl Probe for Shared {
             Some(s) => s == scale,
             None => !renderer.text_pending(),
         };
+        if drew {
+            w.last_paint = monotonic();
+        }
         let again = w.recount == Some(surface);
         if w.armed && drew && shown && (!w.new_surface || new || again) {
             w.armed = false;
@@ -317,6 +332,12 @@ impl FrameClock for Clock {
 /// The hello bar of the painted-buffer benchmark: a token for its
 /// colour, a node to add and remove.
 fn bar_src(bg: &str, extra: bool) -> String {
+    bar_with(bg, extra, false)
+}
+
+/// [`bar_src`], with a swatch showing `system.dark` (the portal clause)
+/// when `swatch`.
+fn bar_with(bg: &str, extra: bool, swatch: bool) -> String {
     format!(
         "tokens base {{ bar.bg: {bg} }}\n\
          bar Top {{\n\
@@ -325,12 +346,17 @@ fn bar_src(bg: &str, extra: bool) -> String {
          \x20 bg: $bar.bg\n\
          \x20 on click {{ n += 1 }}\n\
          \x20 split {{\n\
-         \x20   start  {{ text \"start\" }}\n\
+         \x20   start  {{ text \"start\"{} }}\n\
          \x20   center {{ text clock.format(\"%H:%M\") }}\n\
          \x20   end    {{ text join(\"\", n) }}\n\
          {}\
          \x20 }}\n\
          }}\n",
+        if swatch {
+            "; box { width: 16; height: 16; bg: system.dark ? #ffffff : #000000 }"
+        } else {
+            ""
+        },
         if extra { "    text \"extra\"\n" } else { "" }
     )
 }
@@ -400,6 +426,9 @@ struct Measured {
     /// A scale change: heard → the bar painted at the new scale →
     /// presented.
     scales: Vec<Steps>,
+    /// The portal's `SettingChanged` sent → the bar painted showing it →
+    /// presented (empty without `dbus-daemon`).
+    portal: Vec<Steps>,
     refresh: Duration,
     discarded: u32,
     stale: u32,
@@ -418,6 +447,37 @@ fn measure(rounds: usize) -> Option<Measured> {
     std::fs::create_dir_all(&root).unwrap();
     let file = root.join("bar.strand");
     std::fs::write(&file, bar_src("#204080", false)).unwrap();
+    // The portal: a mock on a private bus (dark), read by the real
+    // `system` service as `strand run` reads the desktop's.
+    let tokio = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let bus = crate::run::tests::private_bus(&root);
+    if bus.is_none() {
+        eprintln!("\n*** the portal clause did not run: no dbus-daemon ***\n");
+    }
+    let portal = bus.as_ref().map(|bus| {
+        let values = std::collections::HashMap::from([(
+            "color-scheme".to_string(),
+            zbus::zvariant::OwnedValue::from(1u32),
+        )]);
+        tokio.block_on(async {
+            zbus::connection::Builder::address(bus.address.as_str())
+                .unwrap()
+                .name("org.freedesktop.portal.Desktop")
+                .unwrap()
+                .serve_at(
+                    "/org/freedesktop/portal/desktop",
+                    crate::run::tests::MockPortal { values },
+                )
+                .unwrap()
+                .build()
+                .await
+                .unwrap()
+        })
+    });
 
     // `strand run`'s threads, as `run::run` starts them.
     let (wtx, wrx) = calloop::channel::channel();
@@ -426,7 +486,10 @@ fn measure(rounds: usize) -> Option<Measured> {
         worker: Some(wrx),
         jobs: Some(compiler.jobs()),
         socket: None,
-        portal: None,
+        buses: bus
+            .as_ref()
+            .map(|b| strand_services::Buses::private(&b.address)),
+        icon_theme_switched: None,
     };
     let (ping, ping_source) = calloop::ping::make_ping().unwrap();
     let font = std::fs::read(strand_text::test_font_path()).unwrap();
@@ -452,6 +515,7 @@ fn measure(rounds: usize) -> Option<Measured> {
         repaint: None,
         recount: None,
         stale: 0,
+        last_paint: Duration::ZERO,
     })));
     let (to_logic, from_main) = calloop::channel::channel::<ToLogic>();
     let mut host = Host::new(renderer, false).forwarding(to_logic.clone());
@@ -488,6 +552,10 @@ fn measure(rounds: usize) -> Option<Measured> {
                             .ops
                             .iter()
                             .any(|o| matches!(o, SceneOp::Create { .. } | SceneOp::Remove { .. })),
+                        Await::Portal => diff
+                            .ops
+                            .iter()
+                            .any(|o| matches!(o, SceneOp::SetProp { prop: Prop::Bg, .. })),
                     };
                     if hit {
                         w.awaiting = Await::Nothing;
@@ -548,6 +616,56 @@ fn measure(rounds: usize) -> Option<Measured> {
         markup.push(since(&p, saved));
         gaps.push(since(&p, painted));
         idle(&mut mgr, Duration::from_millis(250));
+    }
+    // The desktop's colour scheme flips (the portal's `SettingChanged`):
+    // the swatch's colour is on the next frame.
+    let mut portal_steps = Vec::new();
+    if let Some(conn) = &portal {
+        // The swatch, added after the edits (which time the bar as it
+        // was): the `system` service starts for it and reads the portal.
+        watch.0.borrow_mut().awaiting = Await::Markup;
+        let last = format!("#{:02x}4080", (rounds * 7) % 256);
+        std::fs::write(&file, bar_with(&last, extra, true)).unwrap();
+        presented(&mut mgr, "the portal swatch");
+        idle(&mut mgr, Duration::from_millis(500));
+        for i in 0..rounds {
+            // Dark at boot: light first.
+            let scheme = if i % 2 == 0 { 2u32 } else { 1 };
+            {
+                let mut w = watch.0.borrow_mut();
+                w.awaiting = Await::Portal;
+            }
+            let sent = monotonic();
+            tokio
+                .block_on(conn.emit_signal(
+                    None::<&str>,
+                    "/org/freedesktop/portal/desktop",
+                    "org.freedesktop.portal.Settings",
+                    "SettingChanged",
+                    &(
+                        "org.freedesktop.appearance",
+                        "color-scheme",
+                        zbus::zvariant::Value::from(scheme),
+                    ),
+                ))
+                .unwrap();
+            let (p, painted) = presented(&mut mgr, &format!("portal change {i}"));
+            portal_steps.push(Steps {
+                to_paint: ms(painted.saturating_sub(sent)),
+                to_present: since(&p, painted),
+            });
+            // The scheme's colours spring (the built-in theme follows
+            // `system.dark`): the next change is made on an idle surface,
+            // as the edits are, once no frame was painted for 150 ms.
+            let deadline = Instant::now() + Duration::from_secs(5);
+            idle(&mut mgr, Duration::from_millis(150));
+            while monotonic().saturating_sub(watch.0.borrow().last_paint)
+                < Duration::from_millis(150)
+            {
+                assert!(Instant::now() < deadline, "the portal change never settled");
+                idle(&mut mgr, Duration::from_millis(50));
+            }
+        }
     }
     // The output's scale changed: the bar is shown at the new scale.
     let mut scales: Vec<Steps> = Vec::new();
@@ -615,6 +733,8 @@ fn measure(rounds: usize) -> Option<Measured> {
     drop(mgr);
     drop(compiler);
     drop(sway);
+    drop(portal);
+    drop(bus);
     let _ = std::fs::remove_dir_all(&root);
     Some(Measured {
         tokens,
@@ -624,6 +744,7 @@ fn measure(rounds: usize) -> Option<Measured> {
         plugs,
         first_plug,
         scales,
+        portal: portal_steps,
         refresh,
         discarded,
         stale,
@@ -633,7 +754,7 @@ fn measure(rounds: usize) -> Option<Measured> {
 /// The M1 exit gate on a compositor: p95 save → presented frame within
 /// 35 ms for a token edit and 50 ms for a markup edit, as a monitor
 /// would show them (each sample plus the vblank wait headless sway does
-/// not have), and a monitor change on the next frame.
+/// not have), and a monitor or portal change on the next frame.
 #[test]
 #[cfg_attr(
     debug_assertions,
@@ -657,6 +778,8 @@ fn reload_latency_to_the_presented_frame() {
             .collect::<Vec<_>>()
     };
     let frame = ms(m.refresh);
+    // The portal clause is empty without `dbus-daemon`.
+    let or_nan = |v: Vec<f64>| if v.is_empty() { f64::NAN } else { p95(&v) };
     let (pt, pm) = (p95(&m.tokens), p95(&m.markup));
     let (ht, hm) = (
         on_a_monitor(&m.tokens, frame),
@@ -679,6 +802,7 @@ fn reload_latency_to_the_presented_frame() {
          \x20 markup p95 {pm:.1} ms (max {:.1}; a node added p95 {:.1}, removed {:.1}); on a monitor p95 {hm:.1} ms, worst phase {:.1}\n\
          \x20 painted → presented p95 {:.2} ms (max {:.2}); {} frames discarded, {} stale presentations\n\
          \x20 scale change heard → painted at the new scale + → presented: {} ms\n\
+         \x20 portal SettingChanged sent → painted p95 {:.1} ms, → presented p95 {:.1} ms (one frame is {frame:.1}): {} ms\n\
          \x20 monitor plugged: heard → new surface configured (logic answer + surface creation + round trip) {:?} ms; heard → painted + → presented: {} ms\n\
          \x20 first monitor of a new width (not gated: its text shaped for the width): heard → painted + → presented {} ms",
         max(&m.tokens),
@@ -692,20 +816,29 @@ fn reload_latency_to_the_presented_frame() {
         m.discarded,
         m.stale,
         steps(&m.scales),
+        or_nan(m.portal.iter().map(|s| s.to_paint).collect()),
+        or_nan(m.portal.iter().map(|s| s.to_paint + s.to_present).collect()),
+        steps(&m.portal),
         round(&m.configured),
         steps(&m.plugs),
         steps(m.first_plug.as_slice()),
     );
-    assert!(
-        ht <= 35.0,
-        "token edits: p95 on a monitor {ht:.1} ms (headless {pt:.1}, the gate breaks above {token_break:.1}: a slow runner shows as every sample a little high, a regression as a step): {:?}",
-        m.tokens
-    );
-    assert!(
-        hm <= 50.0,
-        "markup edits: p95 on a monitor {hm:.1} ms (headless {pm:.1}): {:?}",
-        m.markup
-    );
+    // Every gate's verdict is collected before any fails, so a failure
+    // states each clause's own verdict (a token flake never hides the
+    // portal clause's).
+    let mut failed = Vec::new();
+    if ht.is_nan() || ht > 35.0 {
+        failed.push(format!(
+            "token edits: p95 on a monitor {ht:.1} ms (headless {pt:.1}, the gate breaks above {token_break:.1}: a slow runner shows as every sample a little high, a regression as a step): {:?}",
+            m.tokens
+        ));
+    }
+    if hm.is_nan() || hm > 50.0 {
+        failed.push(format!(
+            "markup edits: p95 on a monitor {hm:.1} ms (headless {pm:.1}): {:?}",
+            m.markup
+        ));
+    }
     // The next frame: the first frame the shell paints once it hears of
     // a scale change or a plugged monitor (for the plug: the logic
     // thread's new bar, its layer surface created and configured, then
@@ -717,18 +850,26 @@ fn reload_latency_to_the_presented_frame() {
     // next frame timer (17 ms after the paint for a scale change), so the
     // presentation is held to the compositor's next frame, under two
     // refreshes.
+    // A portal change likewise: the first frame painted after the signal
+    // is sent shows it, within one refresh, and is the one presented.
     for (what, v) in [
         ("a scale change", &m.scales),
         ("a plugged monitor", &m.plugs),
+        ("a portal change", &m.portal),
     ] {
+        if v.is_empty() {
+            continue;
+        }
         let paint = p95(&v.iter().map(|s| s.to_paint).collect::<Vec<_>>());
         let present = p95(&v.iter().map(|s| s.to_present).collect::<Vec<_>>());
-        assert!(
-            paint <= frame && present < 2.0 * frame,
-            "{what}: p95 {paint:.1} ms from hearing of it to the frame showing it (one frame is {frame:.1}), then {present:.1} ms to its presentation: {}",
-            steps(v)
-        );
+        if !(paint <= frame && present < 2.0 * frame) {
+            failed.push(format!(
+                "{what}: p95 {paint:.1} ms from hearing of it to the frame showing it (one frame is {frame:.1}), then {present:.1} ms to its presentation: {}",
+                steps(v)
+            ));
+        }
     }
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
 }
 
 /// The vblank model is the exact p95 of each sample plus a uniform wait

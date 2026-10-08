@@ -13,7 +13,7 @@ mod expr;
 pub mod reads;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 pub use code::{
     ArgMap, Chunk, ChunkId, Const, KeyedQuery, KeyedRoot, Lambda, Op, Pattern, Place, PlaceRoot,
@@ -44,8 +44,8 @@ pub struct Program {
     /// `use tokens …, palette …`.
     pub use_tokens: Option<ChunkId>,
     pub use_palette: Option<ChunkId>,
-    /// Custom services (`service ppd from dbus …`): name and record.
-    pub services: BTreeMap<DefId, (String, RecordId)>,
+    /// Custom services (`service ppd from dbus …`), by declaration.
+    pub services: BTreeMap<DefId, CustomService>,
     /// Keyframes by declaration.
     pub keyframes: BTreeMap<DefId, String>,
     /// The `key` of keyed `state` collections (`state pins: [Pin] key
@@ -67,6 +67,30 @@ pub struct Program {
     /// Each chunk's assignment targets, by chunk id: what a handler
     /// running it declares with `rt.writes_to`.
     pub writes: Vec<Vec<WriteTarget>>,
+}
+
+/// A no-code service (design.md: `service ppd from dbus system
+/// "net.hadess.PowerProfiles" { profile: text rw = ActiveProfile }`): what
+/// a host needs to run it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CustomService {
+    pub name: String,
+    /// Its fields' record.
+    pub record: RecordId,
+    /// Where it reads from.
+    pub source: crate::hir::SourceSpec,
+    /// Its fields, in declaration order (the record's order).
+    pub fields: Vec<CustomField>,
+}
+
+/// One field of a [`CustomService`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct CustomField {
+    pub name: String,
+    /// The D-Bus property, or the key path in a document, it reads.
+    pub key: Vec<String>,
+    /// Written by the shell: sets the D-Bus property.
+    pub rw: bool,
 }
 
 /// What the VM needs to know about a declaration.
@@ -95,9 +119,11 @@ pub struct FileProgram {
     pub file: FileId,
     pub module: String,
     pub items: Vec<Node>,
-    /// Services the file's top level reads (`let`s, handlers, timers,
-    /// tokens): acquired for as long as the config runs.
-    pub services: Arc<BTreeSet<String>>,
+    /// Services the file's top level reads (handlers, timers, tokens,
+    /// `state` initialisers, exported `let`s): acquired for as long as the
+    /// config runs. A `let` or `fn` holds nothing itself: what it reads
+    /// counts for the scopes that read it ([`ServiceUses`]).
+    pub services: Arc<ServiceUses>,
 }
 
 /// A component declaration.
@@ -145,8 +171,22 @@ pub struct Body {
     /// Elements in this body (not in nested `for` items or components).
     pub owned: Arc<BTreeSet<NodeIdx>>,
     /// Services read anywhere in this body (acquired on mount).
-    pub services: Arc<BTreeSet<String>>,
+    pub services: Arc<ServiceUses>,
 }
+
+/// What a scope reads of the services, collected by the compiler: a
+/// scope holds these while it is mounted and shown. `(service, None)`
+/// holds the service (it starts on its first holder); `(service,
+/// Some(field))` also reads that field directly, which is what keeps a
+/// `#[store(stream)]` field's stream (a Wi-Fi scan, audio levels)
+/// running ([`crate::vm::ServiceHost::acquire_field`]). Every field
+/// entry comes with its service's entry.
+///
+/// A scope's uses include those of the `let`s and `fn`s it reads,
+/// transitively (a popup showing `let u = cpu.usage` holds `cpu` while
+/// it is shown); a `let` or `fn` holds nothing on its own, so a service
+/// read only through a `let` that nothing on screen reads stays stopped.
+pub type ServiceUses = BTreeSet<(String, Option<String>)>;
 
 /// A tree item.
 #[derive(Clone, Debug)]
@@ -237,7 +277,7 @@ pub struct Element {
     /// For a surface element (`popup`, `panel`, a `bar`): the services its
     /// children read, held only while it is shown. A nested surface's
     /// reads do not count for the body around it.
-    pub services: Option<Arc<BTreeSet<String>>>,
+    pub services: Option<Arc<ServiceUses>>,
 }
 
 /// A prop binding.
@@ -261,7 +301,8 @@ pub struct Prop {
 #[derive(Clone, Debug)]
 pub struct TwoWay {
     pub place: Place,
-    /// One chunk per `Index` segment of the place.
+    /// One chunk per `Index` segment of the place, after the item's for
+    /// a [`PlaceRoot::Item`] place.
     pub indices: Vec<ChunkId>,
     /// The type of the target (for converting written values).
     pub ty: Ty,
@@ -419,9 +460,14 @@ pub fn lower(program: &hir::Program, schema: &Schema) -> Program {
         file: FileId(0),
         owned: Vec::new(),
         services: Vec::new(),
+        frame_chunks: Vec::new(),
+        pending: Vec::new(),
+        let_values: BTreeMap::new(),
         elem: None,
         let_exprs: BTreeMap::new(),
         time_warned: BTreeSet::new(),
+        frame: 0,
+        whole_async_call: false,
     };
     for d in &program.defs {
         let module = program
@@ -467,6 +513,7 @@ pub fn lower(program: &hir::Program, schema: &Schema) -> Program {
         l.out.files.push(fp);
     }
     reads::compute(&mut l.out);
+    l.resolve_services();
     l.out
 }
 
@@ -478,7 +525,16 @@ pub(crate) struct Lowerer<'a> {
     /// Elements of the bodies being lowered, innermost last.
     owned: Vec<BTreeSet<NodeIdx>>,
     /// Services read by the bodies being lowered, innermost last.
-    pub(crate) services: Vec<BTreeSet<String>>,
+    pub(crate) services: Vec<ServiceUses>,
+    /// The chunks lowered in each frame of `services`: their reads (the
+    /// `let`s and `fn`s they read included, transitively) also count for
+    /// the frame, once every chunk is lowered ([`Lowerer::resolve_services`]).
+    frame_chunks: Vec<Vec<ChunkId>>,
+    /// Every frame made into a scope's uses, with its chunks. Weak, so
+    /// each address stays unique until the frames are resolved.
+    pending: Vec<(Weak<ServiceUses>, Vec<ChunkId>)>,
+    /// Each `let`'s value chunk.
+    let_values: BTreeMap<DefId, ChunkId>,
     /// The schema of the element whose children are being lowered, for
     /// its `when` and pose props.
     elem: Option<&'a crate::schema::ElementSchema>,
@@ -486,6 +542,14 @@ pub(crate) struct Lowerer<'a> {
     let_exprs: BTreeMap<DefId, &'a hir::Expr>,
     /// Time signals already warned about.
     time_warned: BTreeSet<&'static str>,
+    /// Inside a handler, timer, `fn` or lambda body (its locals live in
+    /// the VM's frame, not in a scope): an async service call there is
+    /// fetched in place ([`Op::FetchMethod`]) instead of a scope's load
+    /// ([`Op::AsyncSite`]).
+    pub(crate) frame: u32,
+    /// Lowering an [`Op::AsyncSite`]'s own chunk: the call itself is
+    /// lowered as a plain call there.
+    pub(crate) whole_async_call: bool,
 }
 
 impl Lowerer<'_> {
@@ -518,6 +582,15 @@ impl Lowerer<'_> {
             hir::Item::Surface(s) => {
                 self.begin_body();
                 let element = self.element(&s.element);
+                // Its `open` binding is read while it is closed too (it
+                // is what opens it): its reads count for the file's top
+                // level, not only for the surface while shown (design.md's
+                // toasts panel opens on `notifications.popups`).
+                if let Some(open) = element.props.iter().find(|p| p.name == "open")
+                    && let Some(n) = self.frame_chunks.len().checked_sub(2)
+                {
+                    self.frame_chunks[n].push(open.value);
+                }
                 // A top-level surface holds what its props and children
                 // read while it is shown.
                 if let (Some(own), Some(top)) = (&element.services, self.services.last_mut()) {
@@ -543,7 +616,10 @@ impl Lowerer<'_> {
             hir::Item::State(s) => out.push(Node::State(self.state(s))),
             hir::Item::Let(l) => out.push(self.let_node(l)),
             hir::Item::Fn(f) => {
+                // A `fn` holds nothing: its callers read what it reads.
+                self.push_frame();
                 let body = self.fn_chunk(&f.body);
+                self.discard_frame();
                 self.out.fns.insert(
                     f.def,
                     FnProgram {
@@ -572,10 +648,26 @@ impl Lowerer<'_> {
                 }
             }
             hir::Item::Service(s) => {
-                if let DefKind::Service(r) = self.hir.def(s.def).kind {
-                    self.out
-                        .services
-                        .insert(s.def, (self.hir.def(s.def).name.clone(), r));
+                if let (DefKind::Service(record), Some(source)) =
+                    (&self.hir.def(s.def).kind, s.spec.clone())
+                {
+                    self.out.services.insert(
+                        s.def,
+                        CustomService {
+                            name: self.hir.def(s.def).name.clone(),
+                            record: *record,
+                            source,
+                            fields: s
+                                .fields
+                                .iter()
+                                .map(|f| CustomField {
+                                    name: f.name.clone(),
+                                    key: f.key.clone(),
+                                    rw: f.rw,
+                                })
+                                .collect(),
+                        },
+                    );
                 }
             }
             hir::Item::Keyframes(k) => {
@@ -591,7 +683,39 @@ impl Lowerer<'_> {
 
     fn begin_body(&mut self) {
         self.owned.push(BTreeSet::new());
+        self.push_frame();
+    }
+
+    /// Opens a frame collecting the services the chunks lowered in it
+    /// read.
+    fn push_frame(&mut self) {
         self.services.push(BTreeSet::new());
+        self.frame_chunks.push(Vec::new());
+    }
+
+    /// Closes a frame into a scope's uses. `merge`: they also count for
+    /// the frame around it.
+    fn pop_frame(&mut self, merge: bool) -> Arc<ServiceUses> {
+        let services = self.services.pop().unwrap_or_default();
+        let chunks = self.frame_chunks.pop().unwrap_or_default();
+        if merge {
+            if let Some(outer) = self.services.last_mut() {
+                outer.extend(services.iter().cloned());
+            }
+            if let Some(outer) = self.frame_chunks.last_mut() {
+                outer.extend(chunks.iter().copied());
+            }
+        }
+        let services = Arc::new(services);
+        self.pending.push((Arc::downgrade(&services), chunks));
+        services
+    }
+
+    /// Closes a frame whose reads count for no scope of its own (a `let`
+    /// or `fn`: its readers hold what it reads).
+    fn discard_frame(&mut self) {
+        self.services.pop();
+        self.frame_chunks.pop();
     }
 
     /// Ends a body. `merge`: its services also count for the body around
@@ -599,14 +723,11 @@ impl Lowerer<'_> {
     /// surface's do not count for the file declaring it.
     fn end_body(&mut self, nodes: Vec<Node>, merge: bool) -> Body {
         let owned = self.owned.pop().unwrap_or_default();
-        let services = self.services.pop().unwrap_or_default();
-        if merge && let Some(outer) = self.services.last_mut() {
-            outer.extend(services.iter().cloned());
-        }
+        let services = self.pop_frame(merge);
         Body {
             nodes: Arc::new(nodes),
             owned: Arc::new(owned),
-            services: Arc::new(services),
+            services,
         }
     }
 
@@ -714,9 +835,21 @@ impl Lowerer<'_> {
 
     /// A `let`; one whose value is a keyed chain is also noted as a view.
     fn let_node(&mut self, l: &hir::LetDecl) -> Node {
+        // A `let` holds nothing: the scopes reading it hold what it reads
+        // ([`Lowerer::resolve_services`]). An exported one is also read
+        // from outside (`strand get`), so the scope declaring it holds it.
+        self.push_frame();
         let value = self.expr_chunk(&l.value);
-        if let Some(chain) = self.chain(&l.value) {
+        let chain = self.chain(&l.value);
+        self.discard_frame();
+        if let Some(chain) = chain {
             self.out.let_chains.insert(l.def, chain);
+        }
+        self.let_values.insert(l.def, value);
+        if self.hir.def(l.def).exported
+            && let Some(top) = self.frame_chunks.last_mut()
+        {
+            top.push(value);
         }
         Node::Let { def: l.def, value }
     }
@@ -821,12 +954,12 @@ impl Lowerer<'_> {
         };
         let surface = matches!(kind, ElementKind::Builtin(k) if k.is_surface());
         if surface {
-            self.services.push(BTreeSet::new());
+            self.push_frame();
         }
         let outer = std::mem::replace(&mut self.elem, schema);
         let children = Arc::new(self.nodes(&e.children));
         self.elem = outer;
-        let services = surface.then(|| Arc::new(self.services.pop().unwrap_or_default()));
+        let services = surface.then(|| self.pop_frame(false));
         Element {
             node: e.node,
             kind,
@@ -991,7 +1124,7 @@ impl Lowerer<'_> {
             hir::Event::Element(n) => Event::Element(n.clone()),
             hir::Event::Service { service, event } => {
                 if let Some(s) = self.services.last_mut() {
-                    s.insert(service.clone());
+                    s.insert((service.clone(), None));
                 }
                 Event::Service {
                     service: service.clone(),
@@ -1083,7 +1216,147 @@ impl Lowerer<'_> {
 
     pub(crate) fn add_chunk(&mut self, c: Chunk) -> ChunkId {
         self.out.chunks.push(c);
-        self.out.chunks.len() as ChunkId - 1
+        let id = self.out.chunks.len() as ChunkId - 1;
+        if let Some(top) = self.frame_chunks.last_mut() {
+            top.push(id);
+        }
+        id
+    }
+
+    /// Adds to every scope's uses what its chunks read through `let`s
+    /// and `fn`s ([`ServiceUses`]), once [`reads::compute`] has run.
+    fn resolve_services(&mut self) {
+        let prog = &self.out;
+        let mut lets: BTreeMap<DefId, ServiceUses> = BTreeMap::new();
+        let mut resolved: std::collections::HashMap<usize, ServiceUses> =
+            std::collections::HashMap::new();
+        // The weak references keep every address unique until the end.
+        let pending = std::mem::take(&mut self.pending);
+        for (weak, chunks) in &pending {
+            let mut uses = ServiceUses::new();
+            for &c in chunks {
+                chunk_uses(prog, &self.let_values, &mut lets, c, &mut uses);
+            }
+            if !uses.is_empty() {
+                resolved.insert(weak.as_ptr() as usize, uses);
+            }
+        }
+        if resolved.is_empty() {
+            return;
+        }
+        let patch = |s: &mut Arc<ServiceUses>| {
+            if let Some(more) = resolved.get(&(Arc::as_ptr(s) as usize)) {
+                Arc::make_mut(s).extend(more.iter().cloned());
+            }
+        };
+        let out = &mut self.out;
+        for f in &mut out.files {
+            patch(&mut f.services);
+            patch_nodes(&mut f.items, &patch);
+        }
+        for c in out.components.values_mut() {
+            patch_body(&mut c.body, &patch);
+        }
+        drop(pending);
+    }
+}
+
+/// What chunk `c` reads of the services, through the `let`s it reads
+/// too (each `let`'s closure memoised in `lets`).
+fn chunk_uses(
+    prog: &Program,
+    let_values: &BTreeMap<DefId, ChunkId>,
+    lets: &mut BTreeMap<DefId, ServiceUses>,
+    c: ChunkId,
+    out: &mut ServiceUses,
+) {
+    let Some(r) = prog.reads.get(c as usize) else {
+        return;
+    };
+    add_uses(out, &r.services);
+    for d in &r.defs {
+        if let Some(u) = let_uses(prog, let_values, lets, *d, &mut BTreeSet::new()) {
+            out.extend(u.iter().cloned());
+        }
+    }
+}
+
+/// The services `let` `d` reads, through the `let`s it reads.
+fn let_uses<'m>(
+    prog: &Program,
+    let_values: &BTreeMap<DefId, ChunkId>,
+    lets: &'m mut BTreeMap<DefId, ServiceUses>,
+    d: DefId,
+    visiting: &mut BTreeSet<DefId>,
+) -> Option<&'m ServiceUses> {
+    let &value = let_values.get(&d)?;
+    if !lets.contains_key(&d) {
+        if !visiting.insert(d) {
+            // A cycle (already reported by the checker): stop here.
+            return None;
+        }
+        let mut uses = ServiceUses::new();
+        if let Some(r) = prog.reads.get(value as usize) {
+            add_uses(&mut uses, &r.services);
+            for &dd in &r.defs {
+                if let Some(u) = let_uses(prog, let_values, lets, dd, visiting) {
+                    uses.extend(u.iter().cloned());
+                }
+            }
+        }
+        visiting.remove(&d);
+        lets.insert(d, uses);
+    }
+    lets.get(&d)
+}
+
+/// Adds reads of service fields as uses: each with its service's entry.
+fn add_uses(out: &mut ServiceUses, reads: &BTreeSet<(String, Option<String>)>) {
+    for (s, f) in reads {
+        out.insert((s.clone(), None));
+        if f.is_some() {
+            out.insert((s.clone(), f.clone()));
+        }
+    }
+}
+
+fn patch_body(b: &mut Body, patch: &impl Fn(&mut Arc<ServiceUses>)) {
+    patch(&mut b.services);
+    patch_nodes(Arc::<Vec<Node>>::make_mut(&mut b.nodes), patch);
+}
+
+/// Applies `patch` to the uses of every scope in `nodes`.
+fn patch_nodes(nodes: &mut [Node], patch: &impl Fn(&mut Arc<ServiceUses>)) {
+    fn element(e: &mut Element, patch: &impl Fn(&mut Arc<ServiceUses>)) {
+        if let Some(s) = &mut e.services {
+            patch(s);
+        }
+        patch_nodes(Arc::<Vec<Node>>::make_mut(&mut e.children), patch);
+    }
+    for n in nodes {
+        match n {
+            Node::Element(e) => element(e, patch),
+            Node::Surface(s) => {
+                element(&mut s.element, patch);
+                patch_body(&mut s.body, patch);
+                // A top-level surface holds what its element holds.
+                if let Some(own) = &s.element.services {
+                    let own = own.clone();
+                    Arc::make_mut(&mut s.body.services).extend(own.iter().cloned());
+                }
+            }
+            Node::If { then, else_, .. } => {
+                patch_nodes(Arc::<Vec<Node>>::make_mut(then), patch);
+                patch_nodes(Arc::<Vec<Node>>::make_mut(else_), patch);
+            }
+            Node::For(f) => patch_body(&mut f.body, patch),
+            Node::Match { arms, .. } => {
+                for a in arms {
+                    patch_nodes(Arc::<Vec<Node>>::make_mut(a), patch);
+                }
+            }
+            _ => {}
+        }
     }
 }
 

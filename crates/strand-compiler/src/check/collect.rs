@@ -1133,7 +1133,7 @@ fn if_has_slot(f: &ast::If<ast::Item>) -> bool {
 }
 
 /// The programs a `permit exec` lists (`None`: any).
-fn permit_programs(args: &[ast::Expr]) -> Option<Vec<String>> {
+pub(super) fn permit_programs(args: &[ast::Expr]) -> Option<Vec<String>> {
     if args.is_empty() {
         return None;
     }
@@ -1147,10 +1147,17 @@ fn permit_programs(args: &[ast::Expr]) -> Option<Vec<String>> {
     )
 }
 
-pub(super) fn first_program(e: &ast::Expr) -> Option<&str> {
+/// The program a command runs: a list's first item as is, or a command
+/// line's first word (quotes group, as the command is split when it runs).
+pub(super) fn first_program(e: &ast::Expr) -> Option<String> {
     match &e.kind {
-        ast::ExprKind::String(s) => s.value.split_whitespace().next(),
-        ast::ExprKind::Array(items) => items.first().and_then(first_program),
+        ast::ExprKind::String(s) => super::tree::split_words(&s.value).into_iter().next(),
+        // A list's first item is the program as written: it runs whole,
+        // never split, so `["sh -c", …]` names a program `sh -c`.
+        ast::ExprKind::Array(items) => items.first().and_then(|e| match &e.kind {
+            ast::ExprKind::String(s) => Some(s.value.clone()),
+            _ => None,
+        }),
         _ => None,
     }
 }

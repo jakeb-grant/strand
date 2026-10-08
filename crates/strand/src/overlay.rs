@@ -71,6 +71,41 @@ pub fn notice_line(n: &str) -> Line {
     }
 }
 
+/// A service's notice (another notification server owns the name) as
+/// overlay rows, wrapped to the panel's width; the rows are keyed by the
+/// service (`service:<name>#<n>`), so [`Overlay::forget_service`] takes
+/// them away once the notice is resolved.
+pub fn service_lines(service: &str, text: &str) -> Vec<Line> {
+    // The panel's text is 12 px monospace, about 7.2 px a character.
+    let width = ((WIDTH - PAD * 2.0) / 7.4) as usize;
+    let mut rows: Vec<String> = Vec::new();
+    let mut row = String::new();
+    for word in text.split_whitespace() {
+        if !row.is_empty() && row.chars().count() + 1 + word.chars().count() > width {
+            rows.push(std::mem::take(&mut row));
+            row.push_str("  ");
+        } else if !row.is_empty() && row != "  " {
+            row.push(' ');
+        }
+        row.push_str(word);
+    }
+    if !row.trim().is_empty() {
+        rows.push(row);
+    }
+    rows.into_iter()
+        .enumerate()
+        .map(|(i, text)| Line {
+            text,
+            notice: true,
+            cell: Some(format!("{SERVICE_CELL}{service}#{i}")),
+            ..Line::default()
+        })
+        .collect()
+}
+
+/// The cell key prefix of a service's rows.
+const SERVICE_CELL: &str = "service:";
+
 /// A settings-file notice (a bad value kept at its last good value, a
 /// syntax error, a read-only file whose changes go to an overlay, a file
 /// change the runtime overlay shadows) as an overlay row. Rows about one
@@ -368,6 +403,18 @@ impl Overlay {
         }
     }
 
+    /// Service `service`'s notice was resolved (the notification server
+    /// took the name over): its rows go.
+    pub fn forget_service(&mut self, service: &str, inst: &Instance) {
+        let prefix = format!("{SERVICE_CELL}{service}#");
+        let before = self.notes.len();
+        self.notes
+            .retain(|n| n.cell.as_deref().is_none_or(|c| !c.starts_with(&prefix)));
+        if self.notes.len() != before {
+            self.refresh(inst);
+        }
+    }
+
     /// Show the current list again (or hide it when empty).
     fn refresh(&mut self, inst: &Instance) {
         if self.lines.is_empty() && self.notes.is_empty() {
@@ -516,6 +563,12 @@ impl Overlay {
             )
         } else if all.iter().any(|l| l.reset.is_some()) {
             format!("strand: reloaded with notices — click [reset] to go back to a default{more}")
+        } else if all.iter().all(|l| {
+            l.cell
+                .as_deref()
+                .is_some_and(|c| c.starts_with(SERVICE_CELL))
+        }) {
+            format!("strand: services{more}")
         } else if all.iter().all(|l| {
             l.cell
                 .as_deref()
@@ -678,12 +731,19 @@ pub fn open_editor(file: &Path, line: u32, col: u32) {
         return;
     };
     use std::os::unix::process::CommandExt;
-    match std::process::Command::new(prog)
-        .args(args)
+    let mut cmd = std::process::Command::new(prog);
+    cmd.args(args)
         .stdin(std::process::Stdio::null())
-        .process_group(0)
-        .spawn()
-    {
+        .process_group(0);
+    // SAFETY: `restore_in_child` makes only async-signal-safe calls, as
+    // `pre_exec` requires: the editor gets the THP setting strand had.
+    unsafe {
+        cmd.pre_exec(|| {
+            strand_services::child::restore_in_child();
+            Ok(())
+        });
+    }
+    match cmd.spawn() {
         Ok(mut child) => {
             let _ = std::thread::Builder::new()
                 .name("strand-editor".into())
@@ -978,5 +1038,26 @@ mod tests {
             editor_command(f, 3, 7, Some(" "), None, None),
             ["xdg-open", "/c/bar.strand"]
         );
+    }
+
+    #[test]
+    fn service_notices_wrap_and_are_keyed_by_service() {
+        let text = "word ".repeat(80);
+        let rows = service_lines("notifications", &text);
+        assert!(rows.len() >= 3, "{rows:?}");
+        let width = ((WIDTH - PAD * 2.0) / 7.4) as usize;
+        for (i, r) in rows.iter().enumerate() {
+            assert!(r.text.chars().count() <= width, "{r:?}");
+            assert!(r.notice);
+            assert_eq!(
+                r.cell.as_deref(),
+                Some(&*format!("service:notifications#{i}"))
+            );
+            if i > 0 {
+                assert!(r.text.starts_with("  word"), "continuations indent: {r:?}");
+            }
+        }
+        let words: usize = rows.iter().map(|r| r.text.split_whitespace().count()).sum();
+        assert_eq!(words, 80, "no word lost");
     }
 }

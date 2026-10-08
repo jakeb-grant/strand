@@ -1,0 +1,1793 @@
+//! M3 exit, "100 reloads with no reconnects" (design.md, "Live reload":
+//! a reload keeps services running; "System services": a service starts
+//! on its first reader and stops 5 s after its last one leaves).
+//!
+//! `strand run` without `STRAND_MOCK` runs a shell that reads every
+//! builtin service but `screens` and `auth`: python-dbusmock's UPower,
+//! NetworkManager (a Wi-Fi network joined), BlueZ (a powered adapter, a
+//! paired device), logind (only written to, by `brightness`) and
+//! power-profiles-daemon (a `from dbus` service) and a mock portal on a
+//! private `dbus-daemon`; the shell's own notifications server (one
+//! notification sent) and tray host there, with an app's tray item and
+//! its DBusMenu and an MPRIS player playing (zbus mocks); sway's IPC
+//! (workspaces, windows, wm) on a headless sway; a
+//! private PipeWire with WirePlumber (audio); a backlight directory
+//! (brightness), desktop entries (apps), a `from file` service, procfs
+//! (cpu, memory), the clock and the calendar. Not read: `screens` (the
+//! surface host's outputs, not a service with a run of its own) and
+//! `auth` (M4). Then 100 reloads through `strand run`'s watcher, saved
+//! in place: token edits, markup edits (the only reader of `memory`
+//! removed and added back within the stop grace, once after 3.8 s of
+//! its 5) and binding edits of an
+//! expression that reads services, with the custom services declared
+//! below the edits (moved by every markup edit). Nothing restarts or
+//! reconnects:
+//!
+//! - no service starts or stops again (`STRAND_LOG=info`: one
+//!   `service `x` started` line per run, the client's start counter),
+//!   but `memory` stopping once, 5 s after its reader's last removal;
+//! - no connection is made to the bus but the `from dbus` check's
+//!   introspection once its answer is 10 s old (dbus-daemon numbers its
+//!   connections in order: every number between a probe connection
+//!   before and one after the reloads is accounted for by a bus
+//!   monitor, which sees it `Introspect` and nothing else), and the mocks answer no
+//!   method call (python-dbusmock's logs: every `Get`, `GetAll` and
+//!   method call they answer is a line; the zbus mocks count each
+//!   property read and method call);
+//! - strand's sockets are the same ones after every reload (sway's IPC,
+//!   PipeWire, the bus, Wayland: the socket inodes of its open files);
+//!   sway accepts no IPC connection (its debug log names each one), and
+//!   `pw-mon` sees strand add no PipeWire client or object (serials only
+//!   grow: nothing of strand's newer than before the reloads), however
+//!   short-lived;
+//! - PipeWire's clients of strand are the same objects (`object.serial`);
+//! - every reload keeps its state (`strand watch` lists no reset), and
+//!   the state set before the reloads and every service's value are on
+//!   screen after them, and still 6 s later (past the 5 s stop grace).
+//!
+//! Then the negative control, which proves the detectors live: one more
+//! reload changes `mood`'s declaration, and the log shows exactly `mood`
+//! stopping and starting again (run 2), nothing else, with the bus, the
+//! mocks, sway and PipeWire as quiet as before. Its temporary
+//! directories go when the test ends (`STRAND_KEEP_TMP` keeps them).
+//!
+//! Skipped, loudly, without sway, grim, dbus-daemon, python-dbusmock,
+//! PipeWire or WirePlumber (CI sets `STRAND_REQUIRE_SWAY`,
+//! `STRAND_REQUIRE_DBUS` and `STRAND_REQUIRE_PIPEWIRE`).
+
+#[path = "../../strand-services/tests/pipewire/mod.rs"]
+mod pipewire;
+#[allow(dead_code)]
+#[path = "../../strand-services/tests/common/window.rs"]
+mod window;
+
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
+
+use pipewire::PipeWire;
+use strand_services::testing::{DbusMock, PrivateBus};
+use window::TestWindow;
+use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value as ZValue};
+
+const W: usize = 1280;
+const H: usize = 720;
+const RELOADS: usize = 100;
+
+/// How long `memory`'s only reader stays removed once (its first
+/// removal, reload 1, to its return, reload 4): most of the 5 s stop
+/// grace, so the grace is seen honoured through `strand run`'s reloads,
+/// not only an early stop ruled out.
+const HELD_REMOVED: Duration = Duration::from_millis(3800);
+const UPOWER: &str = "org.freedesktop.UPower";
+const LOGIND: &str = "org.freedesktop.login1";
+const NM: &str = "org.freedesktop.NetworkManager";
+const NM_ROOT: &str = "/org/freedesktop/NetworkManager";
+const BLUEZ: &str = "org.bluez";
+/// The paired Bluetooth device.
+const HEADPHONES: &str = "11:22:33:44:55:66";
+
+/// What each service reads at the values the test gives it: one box
+/// each, green when it holds.
+const CHECKS: [(&str, &str); 18] = [
+    (
+        "battery",
+        "battery.present && battery.percent > 0.41 && battery.percent < 0.43",
+    ),
+    (
+        "audio",
+        "audio.sink.volume > 0.49 && audio.sink.volume < 0.51",
+    ),
+    (
+        "brightness",
+        "brightness.level > 0.49 && brightness.level < 0.51",
+    ),
+    (
+        "network",
+        "network.connected && network.ssid == \"Home\" && network.strength > 0.81 \
+         && network.access_points.count(a => a.active && a.ssid == \"Home\") == 1",
+    ),
+    (
+        "bluetooth",
+        "bluetooth.powered && bluetooth.devices.count(d => d.name == \"Headphones\") == 1",
+    ),
+    (
+        "tray",
+        "tray.items.count(t => t.title == \"Reloads\" \
+         && t.menu.items.count(m => m.label == \"Open\") == 1) == 1",
+    ),
+    (
+        "notifications",
+        "notifications.count == 1 \
+         && notifications.all.count(n => n.summary == \"reloads\") == 1",
+    ),
+    ("media", "media.playing && media.title == \"Track\""),
+    (
+        "workspaces",
+        "workspaces.all.count(w => w.name == \"1\" && w.focused && w.occupied) == 1",
+    ),
+    (
+        "windows",
+        "windows.all.count(w => w.title == \"a window\" && w.app_id == \"strand-reloads\") == 1",
+    ),
+    ("system", "system.dark"),
+    ("apps", "apps.all.count(a => true) == 1"),
+    ("mood (from file)", "mood.level == 7"),
+    ("ppd (from dbus)", "ppd.profile == \"balanced\""),
+    ("wm", "wm.name == \"sway\""),
+    (
+        "cpu",
+        "cpu.usage >= 0 && cpu.usage <= 1 && cpu.cores.count(c => true) >= 1",
+    ),
+    ("clock", "clock.format(\"%Y\") != \"\""),
+    (
+        "calendar",
+        "calendar.days(clock.today).count(d => true) >= 28 \
+         && calendar.days(clock.today).count(d => d.today) == 1",
+    ),
+];
+
+/// `memory`'s box, in the node that alone reads it: drawn after
+/// [`CHECKS`] while that node is mounted.
+const MEMORY_CHECK: &str = "memory.usage > 0 && memory.usage < 1 && memory.total > 0";
+
+/// The edited file: `@COLOR@` (a token edit), `@EXTRA@` (a markup edit:
+/// a node that is the only reader of `memory`, mounted at boot, removed
+/// and added back) and `@CMP@` (a binding edit of an expression reading
+/// services). The custom services are declared after the bar, so the
+/// markup edits move them; `@MOODFIELDS@` changes once, after the 100
+/// reloads (the negative control: that service, and only it, restarts).
+const SHELL: &str = r#"tokens base { probe.c: @COLOR@ }
+export state n = 0
+bar Top {
+  edge: top; height: 40
+  bg: $probe.c
+  row {
+    gap: 4
+    box { width: 20; height: 40; bg: n == 7 ? #00ff00 : #ff0000 }
+@CHECKS@@EXTRA@    text join(" ", network.connected, network.access_points.count(a => true),
+      bluetooth.powered, tray.items.count(t => true), notifications.count,
+      wm.name, media.playing, cpu.usage @CMP@ 0,
+      clock.format("%H:%M"), calendar.days(clock.today).count(d => true))
+  }
+}
+service mood from file "@MOOD@" { @MOODFIELDS@ }
+service ppd from dbus system "net.hadess.PowerProfiles" { profile: text = ActiveProfile }
+"#;
+
+struct Proc(Child);
+
+/// How long a child command (`strand set`, grim, swaymsg, pw-dump,
+/// wpctl) and a D-Bus method call of the test's may take: a hung one
+/// fails the test instead of holding it.
+const STEP_LIMIT: Duration = Duration::from_secs(10);
+/// The whole test's bound (it takes about 40 s): past it the watchdog
+/// prints where the test was and the logs, kills the test's processes
+/// and aborts. `STRAND_RELOADS_LIMIT_SECS` sets another (to see the
+/// watchdog work: `=20`).
+fn test_limit() -> Duration {
+    std::env::var("STRAND_RELOADS_LIMIT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .map_or(Duration::from_secs(300), Duration::from_secs)
+}
+
+/// Runs `cmd` to completion within [`STEP_LIMIT`] (its output read on
+/// threads of their own); `None` when it cannot start. Panics, killing
+/// it, when it takes longer.
+fn bounded(cmd: &mut Command, what: &str) -> Option<std::process::Output> {
+    use std::io::Read;
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?;
+    // The pipes are read on threads that send what they read: a pipe
+    // held open past the child's exit (by a grandchild) is waited on
+    // only until the deadline.
+    let pipe = |r: Option<Box<dyn Read + Send>>| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut v = Vec::new();
+            if let Some(mut r) = r {
+                let _ = r.read_to_end(&mut v);
+            }
+            let _ = tx.send(v);
+        });
+        rx
+    };
+    let out = pipe(child.stdout.take().map(|r| Box::new(r) as _));
+    let err = pipe(child.stderr.take().map(|r| Box::new(r) as _));
+    let deadline = Instant::now() + STEP_LIMIT;
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() {
+            break s;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("{what} took over {STEP_LIMIT:?}");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let read = |rx: std::sync::mpsc::Receiver<Vec<u8>>, which: &str| {
+        let left = deadline
+            .saturating_duration_since(Instant::now())
+            .max(Duration::from_secs(1));
+        rx.recv_timeout(left).unwrap_or_else(|_| {
+            panic!("{what} exited but its {which} stayed open over {STEP_LIMIT:?} (a process it left behind?)")
+        })
+    };
+    Some(std::process::Output {
+        status,
+        stdout: read(out, "stdout"),
+        stderr: read(err, "stderr"),
+    })
+}
+
+/// A test-wide deadline ([`test_limit`]): when it passes, a thread prints
+/// the stage the test reached and the tail of each log it was given,
+/// kills every process the test started (its descendants) and aborts.
+/// Declared first, so it drops last: a hang in a guard's drop is caught
+/// too.
+struct Watchdog {
+    done: Arc<std::sync::atomic::AtomicBool>,
+    state: Arc<std::sync::Mutex<(String, Vec<PathBuf>)>>,
+    t0: Instant,
+}
+
+impl Watchdog {
+    fn start() -> Watchdog {
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let state = Arc::new(std::sync::Mutex::new((
+            "start".to_string(),
+            Vec::<PathBuf>::new(),
+        )));
+        let (d, s) = (done.clone(), state.clone());
+        let t0 = Instant::now();
+        let limit = test_limit();
+        std::thread::spawn(move || {
+            while t0.elapsed() < limit {
+                if d.load(Ordering::Relaxed) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            let (stage, logs) = s.lock().map(|s| s.clone()).unwrap_or_default();
+            eprintln!("\n*** WATCHDOG: the test passed {limit:?}, at: {stage} ***");
+            for log in logs {
+                let text = std::fs::read_to_string(&log).unwrap_or_default();
+                let lines: Vec<&str> = text.lines().collect();
+                eprintln!("--- {} (last 200 lines) ---", log.display());
+                for l in &lines[lines.len().saturating_sub(200)..] {
+                    eprintln!("{l}");
+                }
+            }
+            kill_descendants();
+            std::process::abort();
+        });
+        Watchdog { done, state, t0 }
+    }
+
+    /// The stage the test reached (also printed, with the time).
+    fn stage(&self, what: &str) {
+        eprintln!("[{:6.1} s] {what}", self.t0.elapsed().as_secs_f64());
+        self.at(what);
+    }
+
+    /// The stage the test reached, not printed.
+    fn at(&self, what: &str) {
+        if let Ok(mut s) = self.state.lock() {
+            s.0 = what.to_string();
+        }
+    }
+
+    /// A log to print when the deadline passes.
+    fn log(&self, path: &Path) {
+        if let Ok(mut s) = self.state.lock() {
+            s.1.push(path.to_path_buf());
+        }
+    }
+}
+
+impl Drop for Watchdog {
+    fn drop(&mut self) {
+        self.done.store(true, Ordering::Relaxed);
+    }
+}
+
+/// `SIGKILL`s every descendant of this process (children first found
+/// through `/proc/*/stat`'s parent field).
+fn kill_descendants() {
+    let me = std::process::id();
+    let parents: Vec<(u32, u32)> = std::fs::read_dir("/proc")
+        .map(|d| {
+            d.filter_map(|e| e.ok())
+                .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
+                .filter_map(|pid| {
+                    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+                    // `pid (comm) state ppid ...`: comm may hold spaces.
+                    let rest = &stat[stat.rfind(')')? + 1..];
+                    let ppid = rest.split_whitespace().nth(1)?.parse().ok()?;
+                    Some((pid, ppid))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut ours = vec![me];
+    let mut i = 0;
+    while i < ours.len() {
+        let p = ours[i];
+        ours.extend(parents.iter().filter(|(_, pp)| *pp == p).map(|(c, _)| *c));
+        i += 1;
+    }
+    for pid in &ours[1..] {
+        if let Some(pid) = rustix::process::Pid::from_raw(*pid as i32) {
+            let _ = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
+        }
+    }
+}
+
+/// A directory of the test's, removed when the test ends, failing or not
+/// (kept, and named, when `STRAND_KEEP_TMP` is set).
+struct TmpDir(PathBuf);
+
+impl TmpDir {
+    /// Removes what killed runs left in `parent`: directories named
+    /// `<prefix><pid>` whose process is gone (a killed test never drops
+    /// its guards).
+    fn sweep(parent: &Path, prefix: &str) {
+        let Ok(entries) = std::fs::read_dir(parent) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let name = e.file_name();
+            let Some(pid) = name
+                .to_str()
+                .and_then(|n| n.strip_prefix(prefix))
+                .and_then(|p| p.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            if pid != std::process::id() && !Path::new(&format!("/proc/{pid}")).exists() {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+        }
+    }
+
+    fn new(path: PathBuf) -> TmpDir {
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).unwrap();
+        TmpDir(path)
+    }
+}
+
+impl Drop for TmpDir {
+    fn drop(&mut self) {
+        if std::env::var_os("STRAND_KEEP_TMP").is_some() {
+            eprintln!("kept {}", self.0.display());
+        } else {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+}
+
+impl Drop for Proc {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// A mock `org.freedesktop.portal.Settings`: dark. It counts the calls
+/// it answers (every method, and its property read).
+struct MockPortal {
+    values: std::collections::HashMap<String, OwnedValue>,
+    calls: Calls,
+}
+
+#[zbus::interface(name = "org.freedesktop.portal.Settings")]
+impl MockPortal {
+    async fn read_one(&self, namespace: &str, key: &str) -> zbus::fdo::Result<OwnedValue> {
+        self.calls.tick();
+        self.value(namespace, key)
+    }
+
+    /// Version 1's read (the value wrapped once more).
+    async fn read(&self, namespace: &str, key: &str) -> zbus::fdo::Result<OwnedValue> {
+        self.calls.tick();
+        let v = self.value(namespace, key)?;
+        OwnedValue::try_from(ZValue::new(v)).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+    }
+
+    async fn read_all(
+        &self,
+        namespaces: Vec<String>,
+    ) -> HashMap<String, HashMap<String, OwnedValue>> {
+        self.calls.tick();
+        let ns = "org.freedesktop.appearance";
+        if !namespaces.is_empty() && !namespaces.iter().any(|n| n == ns) {
+            return HashMap::new();
+        }
+        let values = self
+            .values
+            .iter()
+            .filter_map(|(k, v)| v.try_clone().ok().map(|v| (k.clone(), v)))
+            .collect();
+        HashMap::from([(ns.to_string(), values)])
+    }
+
+    #[zbus(property)]
+    fn version(&self) -> u32 {
+        self.calls.tick();
+        2
+    }
+}
+
+impl MockPortal {
+    fn value(&self, namespace: &str, key: &str) -> zbus::fdo::Result<OwnedValue> {
+        if namespace != "org.freedesktop.appearance" {
+            return Err(zbus::fdo::Error::Failed("not found".into()));
+        }
+        self.values
+            .get(key)
+            .and_then(|v| v.try_clone().ok())
+            .ok_or_else(|| zbus::fdo::Error::Failed("not found".into()))
+    }
+}
+
+/// The calls a zbus mock answered: each property read (one per property
+/// of a `GetAll`) and method call is one.
+#[derive(Clone, Default)]
+struct Calls(Arc<AtomicUsize>);
+
+impl Calls {
+    fn tick(&self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn get(&self) -> usize {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+/// An app's tray item (`org.kde.StatusNotifierItem`) with a menu.
+struct TrayItemMock(Calls);
+
+#[zbus::interface(name = "org.kde.StatusNotifierItem")]
+impl TrayItemMock {
+    fn activate(&self, _x: i32, _y: i32) {
+        self.0.tick();
+    }
+    fn secondary_activate(&self, _x: i32, _y: i32) {
+        self.0.tick();
+    }
+    fn scroll(&self, _delta: i32, _orientation: &str) {
+        self.0.tick();
+    }
+    fn context_menu(&self, _x: i32, _y: i32) {
+        self.0.tick();
+    }
+    #[zbus(property)]
+    fn id(&self) -> String {
+        self.0.tick();
+        "reloads".into()
+    }
+    #[zbus(property)]
+    fn title(&self) -> String {
+        self.0.tick();
+        "Reloads".into()
+    }
+    #[zbus(property)]
+    fn status(&self) -> String {
+        self.0.tick();
+        "Active".into()
+    }
+    #[zbus(property)]
+    fn icon_name(&self) -> String {
+        self.0.tick();
+        "reloads-icon".into()
+    }
+    #[zbus(property)]
+    fn tool_tip(&self) -> Tip {
+        self.0.tick();
+        (String::new(), Vec::new(), "Reloads".into(), String::new())
+    }
+    #[zbus(property)]
+    fn menu(&self) -> OwnedObjectPath {
+        self.0.tick();
+        OwnedObjectPath::try_from("/Menu").unwrap()
+    }
+    #[zbus(property)]
+    fn item_is_menu(&self) -> bool {
+        self.0.tick();
+        false
+    }
+}
+
+/// The tray item's menu (`com.canonical.dbusmenu`): Open, Quit.
+struct TrayMenuMock(Calls);
+
+/// A tray item's tooltip: icon name, pixmaps, title, text.
+type Tip = (String, Vec<(i32, i32, Vec<u8>)>, String, String);
+
+type Layout = (u32, (i32, HashMap<String, OwnedValue>, Vec<OwnedValue>));
+
+#[zbus::interface(name = "com.canonical.dbusmenu")]
+impl TrayMenuMock {
+    #[zbus(out_args("revision", "layout"))]
+    fn get_layout(&self, _parent: i32, _depth: i32, _props: Vec<String>) -> Layout {
+        self.0.tick();
+        let node = |id: i32, label: &str| {
+            let props = HashMap::from([("label".to_string(), ZValue::from(label.to_string()))]);
+            OwnedValue::try_from(ZValue::from((id, props, Vec::<ZValue>::new()))).unwrap()
+        };
+        (
+            1,
+            (0, HashMap::new(), vec![node(1, "Open"), node(2, "Quit")]),
+        )
+    }
+    fn event(&self, _id: i32, _event_id: String, _data: OwnedValue, _timestamp: u32) {
+        self.0.tick();
+    }
+    fn about_to_show(&self, _id: i32) -> bool {
+        self.0.tick();
+        false
+    }
+}
+
+/// An MPRIS player playing `Track`.
+struct PlayerMock(Calls);
+
+#[zbus::interface(name = "org.mpris.MediaPlayer2.Player")]
+impl PlayerMock {
+    fn play_pause(&self) {
+        self.0.tick();
+    }
+    fn next(&self) {
+        self.0.tick();
+    }
+    fn previous(&self) {
+        self.0.tick();
+    }
+    #[zbus(property)]
+    fn playback_status(&self) -> String {
+        self.0.tick();
+        "Playing".into()
+    }
+    #[zbus(property)]
+    fn metadata(&self) -> HashMap<String, OwnedValue> {
+        self.0.tick();
+        HashMap::from([
+            (
+                "xesam:title".to_string(),
+                OwnedValue::try_from(ZValue::from("Track")).unwrap(),
+            ),
+            ("mpris:length".to_string(), OwnedValue::from(200_000_000i64)),
+        ])
+    }
+    #[zbus(property(emits_changed_signal = "false"))]
+    fn position(&self) -> i64 {
+        self.0.tick();
+        1_000_000
+    }
+    #[zbus(property)]
+    fn rate(&self) -> f64 {
+        self.0.tick();
+        1.0
+    }
+}
+
+/// The player's `org.mpris.MediaPlayer2`.
+struct PlayerRootMock(Calls);
+
+#[zbus::interface(name = "org.mpris.MediaPlayer2")]
+impl PlayerRootMock {
+    #[zbus(property)]
+    fn identity(&self) -> String {
+        self.0.tick();
+        "Reloads".into()
+    }
+}
+
+struct Img {
+    w: usize,
+    rgb: Vec<u8>,
+}
+
+impl Img {
+    fn ppm(ppm: &[u8]) -> Img {
+        let mut nl = ppm.iter().enumerate().filter(|(_, b)| **b == b'\n');
+        let (a, b, c) = (
+            nl.next().unwrap().0,
+            nl.next().unwrap().0,
+            nl.next().unwrap().0,
+        );
+        let dims = std::str::from_utf8(&ppm[a + 1..b]).unwrap();
+        let mut it = dims.split_whitespace().map(|v| v.parse::<usize>().unwrap());
+        let (w, h) = (it.next().unwrap(), it.next().unwrap());
+        Img {
+            w,
+            rgb: ppm[c + 1..c + 1 + w * h * 3].to_vec(),
+        }
+    }
+
+    fn px(&self, x: usize, y: usize) -> [u8; 3] {
+        let i = (y * self.w + x) * 3;
+        [self.rgb[i], self.rgb[i + 1], self.rgb[i + 2]]
+    }
+
+    /// The probe boxes along the bar, green or not: the state set before
+    /// the reloads, then [`CHECKS`], then `memory`'s when `extra` (its
+    /// node is mounted; `None` until all are drawn).
+    fn boxes(&self, extra: bool) -> Option<Vec<bool>> {
+        let g = |p: [u8; 3]| p[1] > 200 && p[0] < 60 && p[2] < 60;
+        let r = |p: [u8; 3]| p[0] > 200 && p[1] < 60 && p[2] < 60;
+        let mut runs = Vec::new();
+        let mut last = None;
+        for x in 0..600.min(self.w) {
+            let p = self.px(x, 20);
+            let now = if g(p) {
+                Some(true)
+            } else if r(p) {
+                Some(false)
+            } else {
+                None
+            };
+            if now.is_some() && now != last {
+                runs.push(now == Some(true));
+            }
+            last = now;
+        }
+        (runs.len() == 1 + CHECKS.len() + usize::from(extra)).then_some(runs)
+    }
+}
+
+fn tools() -> bool {
+    for (tool, tier) in [
+        ("sway", "STRAND_REQUIRE_SWAY"),
+        ("swaymsg", "STRAND_REQUIRE_SWAY"),
+        ("grim", "STRAND_REQUIRE_SWAY"),
+        ("pw-dump", "STRAND_REQUIRE_PIPEWIRE"),
+    ] {
+        if bounded(Command::new(tool).arg("--version"), tool).is_none() {
+            assert!(
+                std::env::var_os(tier).is_none(),
+                "{tool} is not installed but {tier} is set"
+            );
+            eprintln!("\n*** SKIPPED: {tool} is not installed; the 100 reloads did not run ***\n");
+            return false;
+        }
+    }
+    true
+}
+
+/// A headless sway in `dir`: the process, its display and its IPC socket.
+fn sway(dir: &Path) -> (Proc, String, PathBuf) {
+    let cfg = dir.join("sway.cfg");
+    std::fs::write(
+        &cfg,
+        format!("xwayland disable\noutput HEADLESS-1 resolution {W}x{H} position 0 0 scale 1\n"),
+    )
+    .unwrap();
+    let log = std::fs::File::create(dir.join("sway.log")).unwrap();
+    let mut cmd = Command::new("sway");
+    // SAFETY: the hook runs between fork and exec and makes one
+    // async-signal-safe syscall.
+    unsafe {
+        cmd.pre_exec(|| {
+            rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::KILL))
+                .map_err(std::io::Error::from)
+        });
+    }
+    let child = cmd
+        // Debug: its log names each IPC connection it accepts.
+        .arg("-d")
+        .arg("-c")
+        .arg(&cfg)
+        .env("XDG_RUNTIME_DIR", dir)
+        .env("WLR_BACKENDS", "headless")
+        .env("WLR_RENDERER", "pixman")
+        .env("WLR_LIBINPUT_NO_DEVICES", "1")
+        .env_remove("WAYLAND_DISPLAY")
+        .env_remove("SWAYSOCK")
+        .env_remove("DISPLAY")
+        .stdin(Stdio::null())
+        .stdout(log.try_clone().unwrap())
+        .stderr(log)
+        .spawn()
+        .unwrap();
+    let sway = Proc(child);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        let display = names
+            .iter()
+            .find(|e| e.starts_with("wayland-") && !e.ends_with(".lock"));
+        let ipc = names.iter().find(|e| e.starts_with("sway-ipc."));
+        if let (Some(d), Some(i)) = (display, ipc) {
+            let ok = bounded(
+                Command::new("swaymsg")
+                    .args(["-t", "get_version"])
+                    .env("SWAYSOCK", dir.join(i)),
+                "swaymsg",
+            )
+            .is_some_and(|o| o.status.success());
+            if ok {
+                return (sway, d.clone(), dir.join(i));
+            }
+        }
+        assert!(Instant::now() < deadline, "sway did not start");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn call<B>(
+    tokio: &tokio::runtime::Runtime,
+    conn: &zbus::Connection,
+    dest: &str,
+    path: &str,
+    iface: &str,
+    method: &str,
+    body: &B,
+) -> zbus::Message
+where
+    B: serde::Serialize + zbus::zvariant::DynamicType,
+{
+    tokio
+        .block_on(conn.call_method(Some(dest), path, Some(iface), method, body))
+        .unwrap_or_else(|e| panic!("{dest} {iface}.{method}: {e}"))
+}
+
+/// The bus's next connection number: a probe connection's unique name
+/// (`:1.N`), dropped at once. dbus-daemon numbers connections in order,
+/// so two probes `N` and `M` apart saw `M - N - 1` other connections
+/// made between them.
+fn next_connection(tokio: &tokio::runtime::Runtime, bus: &PrivateBus) -> u64 {
+    tokio.block_on(async {
+        let conn = zbus::connection::Builder::address(bus.address.as_str())
+            .unwrap()
+            .method_timeout(STEP_LIMIT)
+            .build()
+            .await
+            .unwrap();
+        let name = conn.unique_name().unwrap().to_string();
+        name.rsplit('.').next().unwrap().parse().unwrap()
+    })
+}
+
+/// The IPC connections sway accepted so far (its debug log's `New
+/// client` lines): any, by anyone, however short-lived.
+fn sway_accepts(dir: &Path) -> usize {
+    std::fs::read_to_string(dir.join("sway.log"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.contains("ipc-server") && l.contains("New client"))
+        .count()
+}
+
+/// One object `pw-mon` reported added: its type, id and properties.
+struct PwAdded {
+    ty: String,
+    id: Option<u64>,
+    props: HashMap<String, String>,
+}
+
+impl PwAdded {
+    fn serial(&self) -> u64 {
+        self.props
+            .get("object.serial")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0)
+    }
+}
+
+/// The objects `pw-mon` reported added (its blocks headed `added:`).
+fn pw_added(text: &str) -> Vec<PwAdded> {
+    let mut out = Vec::new();
+    let mut cur: Option<PwAdded> = None;
+    for line in text.lines() {
+        let t = line.trim_matches(|c: char| c == ' ' || c == '\t' || c == '*');
+        if !line.starts_with([' ', '\t']) {
+            out.extend(cur.take());
+            if t == "added:" {
+                cur = Some(PwAdded {
+                    ty: String::new(),
+                    id: None,
+                    props: HashMap::new(),
+                });
+            }
+            continue;
+        }
+        let Some(o) = cur.as_mut() else { continue };
+        if let Some(ty) = t.strip_prefix("type: ") {
+            o.ty = ty.to_string();
+        } else if let Some(id) = t.strip_prefix("id: ") {
+            o.id = id.parse().ok();
+        } else if let Some((k, v)) = t.split_once(" = ") {
+            o.props
+                .insert(k.trim().to_string(), v.trim().trim_matches('"').to_string());
+        }
+    }
+    out.extend(cur);
+    out
+}
+
+/// What `pw-mon` saw strand's process connect or create, newer than
+/// `serial` (object serials only grow): its clients (by the socket's
+/// pid) and any object one of them owns (`client.id`).
+fn pw_new_of(text: &str, pid: u32, serial: u64) -> Vec<String> {
+    let added = pw_added(text);
+    let pid = pid.to_string();
+    let ours = |o: &PwAdded| {
+        o.ty.starts_with("PipeWire:Interface:Client")
+            && (o.props.get("pipewire.sec.pid") == Some(&pid)
+                || o.props.get("application.process.id") == Some(&pid))
+    };
+    let clients: BTreeSet<String> = added
+        .iter()
+        .filter(|o| ours(o))
+        .filter_map(|o| o.id.map(|i| i.to_string()))
+        .collect();
+    added
+        .iter()
+        .filter(|o| o.serial() > serial)
+        .filter(|o| {
+            ours(o)
+                || o.props
+                    .get("client.id")
+                    .is_some_and(|c| clients.contains(c))
+        })
+        .map(|o| format!("{} (serial {})", o.ty, o.serial()))
+        .collect()
+}
+
+/// What each connection sent on the bus, by its unique name's number
+/// (`:1.N`), as `type interface.member`: a monitor's view
+/// (`BecomeMonitor`), kept from when it starts.
+#[derive(Clone, Default)]
+struct BusLog(Arc<std::sync::Mutex<BTreeMap<u64, Vec<String>>>>);
+
+impl BusLog {
+    fn start(tokio: &tokio::runtime::Runtime, bus: &PrivateBus) -> BusLog {
+        use futures_util::StreamExt;
+        let log = BusLog::default();
+        let conn = tokio.block_on(async {
+            let conn = zbus::connection::Builder::address(bus.address.as_str())
+                .unwrap()
+                .method_timeout(STEP_LIMIT)
+                .build()
+                .await
+                .unwrap();
+            zbus::fdo::MonitoringProxy::new(&conn)
+                .await
+                .unwrap()
+                .become_monitor(&[], 0)
+                .await
+                .unwrap();
+            conn
+        });
+        let l = log.clone();
+        tokio.spawn(async move {
+            let mut messages = zbus::MessageStream::from(&conn);
+            while let Some(Ok(m)) = messages.next().await {
+                let h = m.header();
+                let Some(n) = h
+                    .sender()
+                    .and_then(|s| s.rsplit('.').next().and_then(|n| n.parse().ok()))
+                else {
+                    continue;
+                };
+                let what = format!(
+                    "{:?} {}.{}",
+                    m.message_type(),
+                    h.interface().map(|i| i.to_string()).unwrap_or_default(),
+                    h.member().map(|m| m.to_string()).unwrap_or_default()
+                );
+                if let Ok(mut log) = l.0.lock() {
+                    log.entry(n).or_default().push(what);
+                }
+            }
+        });
+        log
+    }
+
+    /// The connections numbered between two probes (`from`, `to`, see
+    /// [`next_connection`]) that did anything but introspect: the `from
+    /// dbus` check asks the bus again on a reload once its answer is
+    /// 10 s old (`strand_introspect::TTL`, decisions.md wave4-a3), on a
+    /// connection of its own (`Hello`, then `Introspect`); a service never
+    /// connects anew. A connection that never introspected counts.
+    fn not_introspecting(&self, from: u64, to: u64) -> Vec<(u64, Vec<String>)> {
+        // The monitor sees a message a moment after it is sent.
+        std::thread::sleep(Duration::from_millis(200));
+        let log = self.0.lock().map(|l| l.clone()).unwrap_or_default();
+        (from + 1..to)
+            .map(|n| (n, log.get(&n).cloned().unwrap_or_default()))
+            .filter(|(_, sent)| {
+                let introspect = "MethodCall org.freedesktop.DBus.Introspectable.Introspect";
+                !sent.iter().any(|s| s == introspect)
+                    || sent
+                        .iter()
+                        .any(|s| s != introspect && s != "MethodCall org.freedesktop.DBus.Hello")
+            })
+            .collect()
+    }
+}
+
+/// The socket inodes among a process's open files.
+fn sockets(pid: u32) -> BTreeSet<String> {
+    std::fs::read_dir(format!("/proc/{pid}/fd"))
+        .map(|d| {
+            d.filter_map(|e| e.ok())
+                .filter_map(|e| std::fs::read_link(e.path()).ok())
+                .map(|l| l.display().to_string())
+                .filter(|l| l.starts_with("socket:"))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Asserts a process's sockets are `baseline` again within a second: a
+/// short-lived connection (the `from dbus` check's introspection refresh,
+/// on a thread of its own beside a reload) may be open for a moment; the
+/// bus monitor, sway's accept log and pw-mon account for those. A
+/// difference that persists fails, naming the inodes.
+fn same_sockets(pid: u32, baseline: &BTreeSet<String>, after: &str) {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        let now = sockets(pid);
+        if &now == baseline {
+            return;
+        }
+        if Instant::now() >= deadline {
+            panic!(
+                "strand's sockets changed by {after}: opened {:?}, closed {:?}",
+                now.difference(baseline).collect::<Vec<_>>(),
+                baseline.difference(&now).collect::<Vec<_>>()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// PipeWire's client objects of a process, by `object.serial` (a new
+/// connection is a new serial).
+fn pipewire_clients(pw: &PipeWire, pid: u32) -> BTreeSet<u64> {
+    let out = bounded(&mut pw.command("pw-dump"), "pw-dump").expect("pw-dump runs");
+    let dump: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap_or_default();
+    dump.iter()
+        .filter(|o| o["type"] == "PipeWire:Interface:Client")
+        .filter(|o| {
+            let p = &o["info"]["props"]["application.process.id"];
+            p.as_u64() == Some(pid as u64) || p.as_str() == Some(pid.to_string().as_str())
+        })
+        .filter_map(|o| o["info"]["props"]["object.serial"].as_u64())
+        .collect()
+}
+
+/// The method calls each mock answered so far (lines of its log that
+/// are not signals it emitted).
+fn mock_calls(mocks: &[(&str, &DbusMock)]) -> BTreeMap<String, Vec<String>> {
+    mocks
+        .iter()
+        .map(|(name, m)| {
+            let text = std::fs::read_to_string(m.log()).unwrap_or_default();
+            let calls = text
+                .lines()
+                .filter_map(|l| l.split_once(' ').map(|(_, rest)| rest))
+                .filter(|l| !l.starts_with("emit "))
+                .map(str::to_string)
+                .collect();
+            (name.to_string(), calls)
+        })
+        .collect()
+}
+
+/// The service runs `strand run` logged (`STRAND_LOG=info`): starts and
+/// stops, in order.
+fn lifecycle(log: &str) -> Vec<String> {
+    log.lines()
+        .filter(|l| l.contains("service `") && (l.ends_with(" stopped") || l.contains("started")))
+        .map(str::to_string)
+        .collect()
+}
+
+/// `strand watch --json`'s events, read on a thread of their own.
+struct Watch {
+    _child: Proc,
+    events: std::sync::mpsc::Receiver<serde_json::Value>,
+}
+
+impl Watch {
+    fn start(env: &[(&str, PathBuf)]) -> Watch {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_strand"))
+            .args(["watch", "--json"])
+            .envs(env.iter().map(|(k, v)| (*k, v.as_os_str())))
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let out = child.stdout.take().unwrap();
+        let (tx, events) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for line in std::io::BufReader::new(out).lines() {
+                let Ok(line) = line else { return };
+                if let Ok(v) = serde_json::from_str(&line)
+                    && tx.send(v).is_err()
+                {
+                    return;
+                }
+            }
+        });
+        let w = Watch {
+            _child: Proc(child),
+            events,
+        };
+        w.until("subscribed", |ev| ev["event"] == "watching");
+        w
+    }
+
+    /// The first event `f` accepts (30 s at most).
+    fn until(&self, what: &str, f: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let ev = self
+                .events
+                .recv_timeout(left)
+                .unwrap_or_else(|_| panic!("strand watch never said: {what}"));
+            if f(&ev) {
+                return ev;
+            }
+        }
+    }
+}
+
+#[test]
+fn a_hundred_reloads_reconnect_and_restart_nothing() {
+    // First: it drops last.
+    let dog = Watchdog::start();
+    if !tools() {
+        return;
+    }
+    let Some(pw) = PipeWire::start("a_hundred_reloads_reconnect_and_restart_nothing") else {
+        return;
+    };
+    dog.stage("PipeWire started");
+    pw.wait_for_defaults();
+    let out = bounded(
+        pw.command("wpctl")
+            .args(["set-volume", "@DEFAULT_AUDIO_SINK@", "0.5"]),
+        "wpctl",
+    )
+    .expect("wpctl runs");
+    assert!(out.status.success(), "wpctl set-volume failed");
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let conn = tokio.block_on(async {
+        zbus::connection::Builder::address(bus.address.as_str())
+            .unwrap()
+            .method_timeout(STEP_LIMIT)
+            .build()
+            .await
+            .unwrap()
+    });
+    dog.stage("private bus started");
+    // The system daemons.
+    let Some(upower) = DbusMock::start(&bus, "upower", true, None, UPOWER) else {
+        return;
+    };
+    call(
+        &tokio,
+        &conn,
+        UPOWER,
+        "/org/freedesktop/UPower",
+        "org.freedesktop.DBus.Mock",
+        "SetupDisplayDevice",
+        &(
+            2u32, 2u32, 42.0f64, 42.0f64, 100.0f64, 9.0f64, 5400i64, 0i64, true, "", 1u32,
+        ),
+    );
+    let Some(logind) = DbusMock::start(&bus, "logind", true, None, LOGIND) else {
+        return;
+    };
+    let Some(nm) = DbusMock::start(&bus, "networkmanager", true, None, NM) else {
+        return;
+    };
+    // A Wi-Fi device joined to `Home` (its saved connection active).
+    macro_rules! nm {
+        ($method:expr, $body:expr) => {
+            call(
+                &tokio,
+                &conn,
+                NM,
+                NM_ROOT,
+                "org.freedesktop.DBus.Mock",
+                $method,
+                &$body,
+            )
+            .body()
+            .deserialize::<String>()
+            .unwrap_or_default()
+        };
+    }
+    let dev = nm!("AddWiFiDevice", ("mock_WiFi", "wlan0", 100i32));
+    let ap = nm!(
+        "AddAccessPoint",
+        (
+            dev.as_str(),
+            "Mock_AP1",
+            "Home",
+            "00:23:F8:7E:12:BA",
+            2u32,
+            2425u32,
+            5400u32,
+            82u8,
+            // NM_802_11_AP_SEC_KEY_MGMT_PSK.
+            0x100u32,
+        )
+    );
+    let saved = nm!(
+        "AddWiFiConnection",
+        (dev.as_str(), "Mock_Con1", "Home", "wpa-psk")
+    );
+    nm!(
+        "AddActiveConnection",
+        (
+            vec![dev.as_str()],
+            saved.as_str(),
+            ap.as_str(),
+            "Mock_Active1",
+            2u32
+        )
+    );
+    let Some(bluez) = DbusMock::start(&bus, "bluez5", true, None, BLUEZ) else {
+        return;
+    };
+    // An adapter (powered) with one paired device.
+    macro_rules! bluez {
+        ($method:expr, $body:expr) => {
+            call(&tokio, &conn, BLUEZ, "/", "org.bluez.Mock", $method, &$body)
+        };
+    }
+    bluez!("AddAdapter", ("hci0", "my-laptop"));
+    bluez!("AddDevice", ("hci0", HEADPHONES, "Headphones"));
+    bluez!("PairDevice", ("hci0", HEADPHONES));
+    let Some(ppd) = DbusMock::start(
+        &bus,
+        "power_profiles_daemon",
+        true,
+        None,
+        "net.hadess.PowerProfiles",
+    ) else {
+        return;
+    };
+    dog.stage("system daemons' mocks set up");
+    // The portal: dark.
+    let portal_calls = Calls::default();
+    let values = std::collections::HashMap::from([(
+        "color-scheme".to_string(),
+        OwnedValue::try_from(ZValue::from(1u32)).unwrap(),
+    )]);
+    let _portal = tokio.block_on(async {
+        zbus::connection::Builder::address(bus.address.as_str())
+            .unwrap()
+            .method_timeout(STEP_LIMIT)
+            .name("org.freedesktop.portal.Desktop")
+            .unwrap()
+            .serve_at(
+                "/org/freedesktop/portal/desktop",
+                MockPortal {
+                    values,
+                    calls: portal_calls.clone(),
+                },
+            )
+            .unwrap()
+            .build()
+            .await
+            .unwrap()
+    });
+    // A media player, playing; an app's tray item, registered once the
+    // shell's tray is the watcher. Each counts the calls it answers.
+    let (player_calls, tray_calls) = (Calls::default(), Calls::default());
+    let tray_name = "org.kde.StatusNotifierItem-4242-1";
+    let (_player, tray_item) = tokio.block_on(async {
+        let player = zbus::connection::Builder::address(bus.address.as_str())
+            .unwrap()
+            .method_timeout(STEP_LIMIT)
+            .name("org.mpris.MediaPlayer2.reloads")
+            .unwrap()
+            .serve_at("/org/mpris/MediaPlayer2", PlayerMock(player_calls.clone()))
+            .unwrap()
+            .serve_at(
+                "/org/mpris/MediaPlayer2",
+                PlayerRootMock(player_calls.clone()),
+            )
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        let item = zbus::connection::Builder::address(bus.address.as_str())
+            .unwrap()
+            .method_timeout(STEP_LIMIT)
+            .name(tray_name)
+            .unwrap()
+            .serve_at("/StatusNotifierItem", TrayItemMock(tray_calls.clone()))
+            .unwrap()
+            .serve_at("/Menu", TrayMenuMock(tray_calls.clone()))
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        (player, item)
+    });
+
+    // Removed when the test ends, failing or not (after the processes
+    // using them: the guards drop before these).
+    TmpDir::sweep(&std::env::temp_dir(), "strand-reloads-");
+    TmpDir::sweep(Path::new(env!("CARGO_TARGET_TMPDIR")), "reloads-");
+    let tmp =
+        TmpDir::new(std::env::temp_dir().join(format!("strand-reloads-{}", std::process::id())));
+    let dir = tmp.0.clone();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // A backlight at half (brightness), one desktop entry (apps), the
+    // `from file` service's document.
+    let backlight = dir.join("backlight");
+    let light = backlight.join("intel_backlight");
+    std::fs::create_dir_all(&light).unwrap();
+    for (f, v) in [
+        ("max_brightness", "1000"),
+        ("brightness", "500"),
+        ("actual_brightness", "500"),
+        ("type", "raw"),
+    ] {
+        std::fs::write(light.join(f), format!("{v}\n")).unwrap();
+    }
+    // The config and data outside /tmp: the watcher's light watches on
+    // the config's ancestors would wake for other tests' files there.
+    let home_tmp = TmpDir::new(
+        Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("reloads-{}", std::process::id())),
+    );
+    let home = home_tmp.0.clone();
+    let apps = home.join("share/applications");
+    std::fs::create_dir_all(&apps).unwrap();
+    std::fs::write(
+        apps.join("one.desktop"),
+        "[Desktop Entry]\nType=Application\nName=One\nExec=true\n",
+    )
+    .unwrap();
+    let mood = home.join("mood.json");
+    std::fs::write(&mood, r#"{"level": 7, "tag": "kept"}"#).unwrap();
+    let config = home.join(".config/strand");
+    std::fs::create_dir_all(&config).unwrap();
+    let file = config.join("reload.strand");
+    let checks: String = CHECKS
+        .iter()
+        .map(|(_, c)| format!("    box {{ width: 12; height: 40; bg: {c} ? #00ff00 : #ff0000 }}\n"))
+        .collect();
+    // The node that alone reads `memory`.
+    let memory_node =
+        format!("    box {{ width: 12; height: 40; bg: {MEMORY_CHECK} ? #00ff00 : #ff0000 }}\n");
+    let (mood_fields, mood_changed) = ("level: int", "level: int; tag: text");
+    let shell = |color: &str, extra: bool, cmp: &str, fields: &str| {
+        SHELL
+            .replace("@MOOD@", &mood.display().to_string())
+            .replace("@MOODFIELDS@", fields)
+            .replace("@CHECKS@", &checks)
+            .replace("@COLOR@", color)
+            .replace("@CMP@", cmp)
+            .replace("@EXTRA@", if extra { &memory_node } else { "" })
+    };
+    std::fs::write(&file, shell("#204080", true, ">", mood_fields)).unwrap();
+
+    dog.stage("mocks on the bus");
+    let mocks = [
+        ("upower", &upower),
+        ("logind", &logind),
+        ("networkmanager", &nm),
+        ("bluez5", &bluez),
+        ("power_profiles_daemon", &ppd),
+    ];
+    // The test's own setup calls (python-dbusmock logs its `Add*` and
+    // `PairDevice` Mock-interface calls too): strand's reads come after.
+    let setup: BTreeMap<String, usize> = mock_calls(&mocks)
+        .into_iter()
+        .map(|(k, c)| (k, c.len()))
+        .collect();
+    dog.log(&dir.join("sway.log"));
+    let (_sway, display, ipc) = sway(&dir);
+    dog.stage("sway started");
+    // A window: the windows store has one, its workspace is occupied.
+    let _window = TestWindow::open(&dir.join(&display), "strand-reloads", "a window");
+    let log = dir.join("strand.log");
+    dog.log(&log);
+    let mut strand = Proc(
+        Command::new(env!("CARGO_BIN_EXE_strand"))
+            .arg("run")
+            .arg(&config)
+            .env("XDG_RUNTIME_DIR", &dir)
+            .env("WAYLAND_DISPLAY", &display)
+            .env("SWAYSOCK", &ipc)
+            .env("PIPEWIRE_RUNTIME_DIR", pw.dir.path())
+            .env_remove("PIPEWIRE_REMOTE")
+            .env("HOME", &home)
+            .env("XDG_DATA_DIRS", home.join("share"))
+            .env("XDG_DATA_HOME", home.join("home-share"))
+            .env("XDG_CACHE_HOME", dir.join("cache"))
+            .env("XDG_STATE_HOME", dir.join("state"))
+            .env("STRAND_BACKLIGHT_DIR", &backlight)
+            .env("STRAND_LOG", "info")
+            .envs(bus.env())
+            .env_remove("STRAND_MOCK")
+            .stdin(Stdio::null())
+            .stderr(std::fs::File::create(&log).unwrap())
+            .spawn()
+            .unwrap(),
+    );
+    let pid = strand.0.id();
+    let log_text = || std::fs::read_to_string(&log).unwrap_or_default();
+    let env: Vec<(&str, PathBuf)> = vec![
+        ("XDG_RUNTIME_DIR", dir.clone()),
+        ("WAYLAND_DISPLAY", PathBuf::from(&display)),
+        ("HOME", home.clone()),
+    ];
+    let shot = || -> Option<Img> {
+        let path = dir.join("shot.ppm");
+        let ok = bounded(
+            Command::new("grim")
+                .args(["-t", "ppm", "-o", "HEADLESS-1"])
+                .arg(&path)
+                .env("XDG_RUNTIME_DIR", &dir)
+                .env("WAYLAND_DISPLAY", &display),
+            "grim",
+        )
+        .is_some_and(|o| o.status.success());
+        ok.then(|| Img::ppm(&std::fs::read(&path).unwrap()))
+    };
+    let mut alive = |what: &str| {
+        let exited = strand.0.try_wait().unwrap();
+        assert!(exited.is_none(), "strand exited {what}:\n{}", log_text());
+    };
+    // Screenshots until every service's box is green (`memory`'s too when
+    // `extra`: its node mounted) and the state's is `state`; the
+    // services not showing their value named otherwise.
+    let wait_shot = |what: &str, state: bool, extra: bool| {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let boxes = shot().and_then(|img| img.boxes(extra));
+            if let Some(b) = &boxes
+                && b[0] == state
+                && b[1..].iter().all(|g| *g)
+            {
+                return;
+            }
+            if Instant::now() >= deadline {
+                let wrong: Vec<&str> = match &boxes {
+                    Some(b) => CHECKS
+                        .iter()
+                        .chain(extra.then_some(&("memory", MEMORY_CHECK)))
+                        .zip(&b[1..])
+                        .filter(|(_, g)| !**g)
+                        .map(|((name, _), _)| *name)
+                        .collect(),
+                    None => vec!["(the boxes are not drawn)"],
+                };
+                panic!(
+                    "never: {what}; not shown: {wrong:?}, the state's box {:?}\n{}",
+                    boxes.as_ref().map(|b| b[0]),
+                    log_text()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+
+    dog.stage("strand run started");
+    // The shell's tray is the watcher, its notifications server owns the
+    // name: the item registers, a notification arrives.
+    for name in [
+        "org.kde.StatusNotifierWatcher",
+        "org.freedesktop.Notifications",
+    ] {
+        assert!(
+            bus.wait_for_name(name, Duration::from_secs(30)),
+            "strand never owned {name}:\n{}",
+            log_text()
+        );
+    }
+    call(
+        &tokio,
+        &tray_item,
+        "org.kde.StatusNotifierWatcher",
+        "/StatusNotifierWatcher",
+        "org.kde.StatusNotifierWatcher",
+        "RegisterStatusNotifierItem",
+        &(tray_name,),
+    );
+    call(
+        &tokio,
+        &conn,
+        "org.freedesktop.Notifications",
+        "/org/freedesktop/Notifications",
+        "org.freedesktop.Notifications",
+        "Notify",
+        &(
+            "reloads",
+            0u32,
+            "",
+            "reloads",
+            "kept across them",
+            Vec::<&str>::new(),
+            HashMap::<&str, ZValue>::new(),
+            0i32,
+        ),
+    );
+    dog.stage("tray item registered, notification sent");
+    // Every service read: its box green.
+    wait_shot("every service's value", false, true);
+    dog.stage("every service's value on screen");
+    alive("at boot");
+    // The state the reloads must keep.
+    let out = bounded(
+        Command::new(env!("CARGO_BIN_EXE_strand"))
+            .args(["set", "reload.n", "7"])
+            .envs(env.iter().map(|(k, v)| (*k, v.as_os_str()))),
+        "strand set",
+    )
+    .expect("strand set runs");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    wait_shot("the state set", true, true);
+    dog.stage("the state set");
+    // Settled: no service started for 2 s.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let before = lifecycle(&log_text()).len();
+        std::thread::sleep(Duration::from_secs(2));
+        if lifecycle(&log_text()).len() == before {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the services never settled");
+    }
+    dog.stage("services settled");
+    let watch = Watch::start(&env);
+    let runs = lifecycle(&log_text());
+    let started: BTreeSet<&str> = runs.iter().filter_map(|l| l.split('`').nth(1)).collect();
+    eprintln!("services running: {started:?}");
+    for s in [
+        "audio",
+        "battery",
+        "bluetooth",
+        "brightness",
+        "network",
+        "tray",
+        "notifications",
+        "workspaces",
+        "windows",
+        "wm",
+        "apps",
+        "system",
+        "media",
+        "cpu",
+        "memory",
+        "mood",
+        "ppd",
+    ] {
+        assert!(
+            started.contains(s),
+            "`{s}` never started:\n{}",
+            runs.join("\n")
+        );
+    }
+    assert!(
+        runs.iter().all(|l| l.contains("(run 1)")),
+        "a service ran twice before the reloads:\n{}",
+        runs.join("\n")
+    );
+    let calls = mock_calls(&mocks);
+    let zbus_calls = [
+        ("tray item", &tray_calls),
+        ("media player", &player_calls),
+        ("portal", &portal_calls),
+    ];
+    let zbus_before: Vec<usize> = zbus_calls.iter().map(|(_, c)| c.get()).collect();
+    assert!(
+        zbus_before.iter().all(|n| *n > 0),
+        "a zbus mock was never read: {zbus_before:?}"
+    );
+    let socks = sockets(pid);
+    // Wayland, the bus, sway's IPC and PipeWire at least: an empty set
+    // (an unreadable /proc/<pid>/fd) would make every check below vacuous.
+    assert!(
+        socks.len() >= 4,
+        "strand's sockets not read (or too few): {socks:?}"
+    );
+    let clients = pipewire_clients(&pw, pid);
+    assert!(!clients.is_empty(), "strand is no PipeWire client");
+    for m in [&upower, &logind, &nm, &bluez, &ppd] {
+        dog.log(m.log());
+    }
+    let bus_log = BusLog::start(&tokio, &bus);
+    let first = next_connection(&tokio, &bus);
+    let accepts = sway_accepts(&dir);
+    assert!(
+        accepts > 1,
+        "sway's log names no IPC connection: strand never connected"
+    );
+    // PipeWire's objects as they come and go: strand's client is among
+    // them; anything strand adds from now on is newer than `pw_serial`.
+    let mon_log = dir.join("pw-mon.log");
+    let _mon = Proc(
+        pw.command("pw-mon")
+            .arg("-N")
+            .stdin(Stdio::null())
+            .stdout(std::fs::File::create(&mon_log).unwrap())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let mon_text = || std::fs::read_to_string(&mon_log).unwrap_or_default();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while pw_new_of(&mon_text(), pid, 0).is_empty() {
+        assert!(
+            Instant::now() < deadline,
+            "pw-mon never showed strand's client"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let pw_serial = pw_added(&mon_text())
+        .iter()
+        .map(PwAdded::serial)
+        .max()
+        .unwrap_or(0);
+    eprintln!(
+        "before the reloads: calls answered {:?} {:?}; {} sockets; PipeWire clients {clients:?}; bus connection {first}",
+        calls
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.len()))
+            .collect::<Vec<_>>(),
+        zbus_calls
+            .iter()
+            .zip(&zbus_before)
+            .map(|((k, _), n)| (k, n))
+            .collect::<Vec<_>>(),
+        socks.len(),
+    );
+    // (logind is only written to: brightness reads the backlight.)
+    let unread: Vec<_> = calls
+        .iter()
+        .filter(|(k, c)| *k != "logind" && c.len() <= setup[k.as_str()])
+        .collect();
+    assert!(
+        unread.is_empty(),
+        "a mock was never read by strand (only the test's setup calls): {unread:?}"
+    );
+
+    // 100 reloads, saved in place: a token edit, a markup edit (the only
+    // reader of `memory` removed, then added back within the 5 s stop
+    // grace: once, reloads 1 to 4, after `HELD_REMOVED`), a binding edit of an expression that reads services, in
+    // turn.
+    let (mut color, mut extra, mut cmp) = ("#204080".to_string(), true, ">");
+    dog.stage("baseline taken; the reloads");
+    let t0 = Instant::now();
+    let mut removed_at = None;
+    for i in 0..RELOADS {
+        dog.at(&format!("reload {i}"));
+        if i == 4 {
+            // `memory`'s reader, removed by reload 1, held out for most
+            // of the grace before reload 4 takes it back: nothing stops.
+            let since: Instant = removed_at.expect("reload 1 removed `memory`'s reader");
+            std::thread::sleep(HELD_REMOVED.saturating_sub(since.elapsed()));
+            let now = lifecycle(&log_text());
+            assert_eq!(
+                now,
+                runs,
+                "a service started or stopped {:.1} s after `memory`'s reader \
+                 was removed (the stop grace is 5 s)",
+                since.elapsed().as_secs_f64()
+            );
+        }
+        match i % 3 {
+            0 => color = format!("#{:02x}4080", (i * 7) % 256),
+            1 => extra = !extra,
+            _ => cmp = if cmp == ">" { ">=" } else { ">" },
+        }
+        std::fs::write(&file, shell(&color, extra, cmp, mood_fields)).unwrap();
+        let ev = watch.until(&format!("reload {i}"), |ev| {
+            ev["event"] == "reload" && ev["committed"].as_array().is_some_and(|c| !c.is_empty())
+        });
+        assert_eq!(
+            ev["reset"],
+            serde_json::json!([]),
+            "reload {i} reset state: {ev}"
+        );
+        let errors: Vec<_> = ev["diagnostics"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|d| d["severity"] == "error")
+            .collect();
+        assert!(errors.is_empty(), "reload {i}: {errors:?}");
+        if i == 1 {
+            assert!(!extra, "reload 1 removes `memory`'s reader");
+            removed_at = Some(Instant::now());
+        }
+        if i == 4 {
+            let held = removed_at.map_or(Duration::ZERO, |t| t.elapsed());
+            assert!(
+                extra && held < Duration::from_millis(4800),
+                "`memory`'s reader came back {:.2} s after its removal: too \
+                 close to the 5 s grace for the test to mean anything",
+                held.as_secs_f64()
+            );
+            eprintln!(
+                "`memory`'s only reader held removed for {:.2} s",
+                held.as_secs_f64()
+            );
+        }
+        alive(&format!("after reload {i}"));
+        same_sockets(pid, &socks, &format!("reload {i}"));
+    }
+    eprintln!("{RELOADS} reloads in {:.1} s", t0.elapsed().as_secs_f64());
+    // Past the 5 s stop grace: a reader released by a reload and not
+    // taken again would stop its service now. The last markup edit
+    // removed `memory`'s only reader (33 removals, 32 taken back in
+    // time): that, and nothing else, stops.
+    assert!(!extra, "the reloads end with `memory`'s reader removed");
+    dog.stage("the reloads done; past the stop grace");
+    std::thread::sleep(Duration::from_secs(6));
+    alive("after the reloads");
+    let now = lifecycle(&log_text());
+    let new = &now[runs.len().min(now.len())..];
+    assert!(
+        now.len() == runs.len() + 1
+            && now[..runs.len()] == runs[..]
+            && new[0].ends_with("service `memory` stopped"),
+        "a service other than `memory` (stopping once, after its last reader \
+         left) started or stopped during the reloads:\n{}",
+        new.join("\n")
+    );
+    assert_eq!(
+        sway_accepts(&dir),
+        accepts,
+        "sway accepted IPC connections during the reloads"
+    );
+    let pw_new = pw_new_of(&mon_text(), pid, pw_serial);
+    assert!(
+        pw_new.is_empty(),
+        "strand connected to PipeWire or created objects there during the reloads: {pw_new:?}"
+    );
+    let last = next_connection(&tokio, &bus);
+    let made = bus_log.not_introspecting(first, last);
+    assert!(
+        made.is_empty(),
+        "connections were made to the bus during the reloads (of {}, those \
+         that did more than introspect): {made:?}",
+        last - first - 1
+    );
+    let after = mock_calls(&mocks);
+    for (name, before) in &calls {
+        let now = &after[name];
+        assert_eq!(
+            now.len(),
+            before.len(),
+            "{name} answered calls during the reloads: {:?}",
+            &now[before.len().min(now.len())..]
+        );
+    }
+    for ((name, c), before) in zbus_calls.iter().zip(&zbus_before) {
+        assert_eq!(
+            c.get(),
+            *before,
+            "the {name} answered calls during the reloads"
+        );
+    }
+    same_sockets(pid, &socks, "the reloads");
+    assert_eq!(
+        pipewire_clients(&pw, pid),
+        clients,
+        "strand's PipeWire clients changed"
+    );
+    // The state and every service's value, on screen.
+    wait_shot("the state and every service after the reloads", true, extra);
+    dog.stage("the negative control");
+
+    // The negative control (design.md's edit table: "custom service
+    // declaration: only that service restarts; built-ins never do"): a
+    // field added to `mood`'s declaration restarts it, which the log
+    // shows, and nothing else (no bus connection, no call answered, no
+    // IPC or PipeWire connection).
+    let runs = lifecycle(&log_text());
+    std::fs::write(&file, shell(&color, extra, cmp, mood_changed)).unwrap();
+    let ev = watch.until("the declaration's reload", |ev| {
+        ev["event"] == "reload" && ev["committed"].as_array().is_some_and(|c| !c.is_empty())
+    });
+    assert_eq!(ev["reset"], serde_json::json!([]), "{ev}");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while lifecycle(&log_text()).len() < runs.len() + 2 {
+        assert!(
+            Instant::now() < deadline,
+            "the changed `mood` never restarted:\n{}",
+            log_text()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // Anything else would have shown by now.
+    std::thread::sleep(Duration::from_secs(1));
+    alive("after the declaration's edit");
+    let now = lifecycle(&log_text());
+    let new: Vec<&str> = now[runs.len()..]
+        .iter()
+        .map(|l| l.rsplit_once("service `").map_or(l.as_str(), |(_, r)| r))
+        .collect();
+    assert_eq!(
+        new,
+        ["mood` stopped", "mood` started (run 2)"],
+        "the declaration's edit restarted more than `mood`"
+    );
+    let control = next_connection(&tokio, &bus);
+    let made = bus_log.not_introspecting(last, control);
+    assert!(
+        made.is_empty(),
+        "the declaration's edit connected to the bus: {made:?}"
+    );
+    let after_control = mock_calls(&mocks);
+    assert_eq!(
+        after_control, after,
+        "a mock answered the declaration's edit"
+    );
+    for ((name, c), before) in zbus_calls.iter().zip(&zbus_before) {
+        assert_eq!(
+            c.get(),
+            *before,
+            "the {name} answered the declaration's edit"
+        );
+    }
+    assert_eq!(sway_accepts(&dir), accepts, "the edit connected to sway");
+    assert_eq!(pw_new_of(&mon_text(), pid, pw_serial), Vec::<String>::new());
+    wait_shot("every service after the declaration's edit", true, extra);
+    dog.stage("done; stopping");
+    drop(watch);
+    drop(strand);
+}

@@ -1,0 +1,9 @@
+/// The compositor.
+service wm {
+  /// Its name, such as `Hyprland`, `niri` or `sway` (the desktop's name
+  /// when only the standard protocols serve it).
+  name: text
+  /// The compositor reloaded its config; `failed` says whether the new
+  /// config failed to load, when the compositor tells (niri).
+  event config_reloaded(failed: bool?)
+}

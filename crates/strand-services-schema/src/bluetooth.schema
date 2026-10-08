@@ -1,0 +1,30 @@
+/// A paired Bluetooth device, keyed by `address`.
+record BluetoothDevice key address {
+  /// Its address.
+  address: text
+  /// Its name.
+  name: text
+  /// It is connected.
+  connected: bool
+  /// Its battery, 0 to 1, when it reports one.
+  battery: float?
+  /// An icon name for its kind.
+  icon: text
+  /// Connects to it; a failure is `bluetooth.failed`.
+  action connect()
+  /// Disconnects from it; a failure is `bluetooth.failed`.
+  action disconnect()
+}
+
+/// Bluetooth, from BlueZ, followed live: the first adapter and the
+/// devices paired with it.
+service bluetooth {
+  /// The adapter is on. Writable.
+  powered: bool rw
+  /// Paired devices, keyed by `address`.
+  devices: [BluetoothDevice]
+  /// Connecting or disconnecting a device failed (out of range, turned
+  /// off, timed out after 30 s): `on bluetooth.failed(address, error)
+  /// { … }`.
+  event failed(address: text, error: text)
+}

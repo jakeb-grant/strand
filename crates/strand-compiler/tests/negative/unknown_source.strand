@@ -1,0 +1,3 @@
+// expect: syntax::unknown_source
+// An unknown source is one diagnostic: its `every` is not also misplaced.
+service t from pol "x" every 1s { a: text }

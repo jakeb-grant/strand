@@ -1,0 +1,16 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+syntax::unknown_source
+
+  × unknown service source `pol`
+   ╭─[unknown_source.strand:3:16]
+ 2 │ // An unknown source is one diagnostic: its `every` is not also misplaced.
+ 3 │ service t from pol "x" every 1s { a: text }
+   ·                ─┬─
+   ·                 ╰── sources are dbus, file, listen and poll
+   ╰────
+  help: did you mean `poll`?
+
+fix [syntax::unknown_source] unknown_source.strand: `pol` -> `poll`

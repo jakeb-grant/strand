@@ -846,6 +846,39 @@ impl Renderer {
             ));
     }
 
+    /// The icon theme changed (`index.theme`, a theme installed or
+    /// switched, an icon added: the watcher's `CacheKind::Icons`): the
+    /// shared lookup ([`strand_icons::invalidate`]) and every icon decode
+    /// are forgotten, and the surfaces drawing icons repaint with them
+    /// looked up afresh.
+    pub fn icons_changed(&mut self) {
+        strand_icons::invalidate();
+        for id in self.extras.images.invalidate_icons() {
+            if let Some(s) = self.surfaces.get_mut(&id) {
+                s.mark_dirty();
+            }
+        }
+    }
+
+    /// The installed fonts changed (a fontconfig directory: the watcher's
+    /// `CacheKind::Fonts`): the text engine looks them up afresh and every
+    /// text is shaped again (the old frame stays on screen until the new
+    /// text is in, as for a first frame).
+    pub fn fonts_changed(&mut self) {
+        match &mut self.text {
+            TextBackend::Worker(w) => {
+                // Its reset layout (key 0) arrives through `update`, which
+                // forgets every layout and asks again. A gone worker keeps
+                // the last layouts (as `update` does).
+                let _ = w.reload_fonts();
+            }
+            TextBackend::Inline(engine) => {
+                engine.reload_fonts();
+                self.reset_text();
+            }
+        }
+    }
+
     /// Bytes of decoded images held (at most
     /// [`crate::image::IMAGE_CACHE_BYTES`] beyond what one frame draws).
     pub fn image_bytes(&self) -> usize {
@@ -1018,6 +1051,11 @@ impl Renderer {
     /// it wants frames until it settles.
     pub fn animating(&self, surface: SurfaceId) -> bool {
         self.surfaces.get(&surface).is_some_and(|s| s.animating)
+    }
+
+    /// True while any surface is moving: frames are still to come.
+    pub fn in_motion(&self) -> bool {
+        self.surfaces.values().any(|s| s.animating)
     }
 
     /// True if the surface node `root` is on screen with a clock: a
@@ -3670,13 +3708,20 @@ mod tests {
         let (d, root) = texts_diff(&[(1, "crash"), (2, "fine")]);
         assert!(r.apply(d).is_empty());
         r.attach_surface(SurfaceId(1), root);
-        r.configure_surface(SurfaceId(1), Size::new(80, 20), Scale::ONE);
+        // Sized without `configure_surface`: its `update` polls the worker,
+        // which may already have answered, leaving no request in flight to
+        // crash.
+        r.surfaces
+            .get_mut(&SurfaceId(1))
+            .unwrap()
+            .resize(Size::new(80, 20), Scale::ONE);
         let key_of = |r: &Renderer, n: NodeId| text_at(r, n).requested.as_ref().unwrap().0;
         // Flattening without polling the worker: what `update` would ask.
         let ask = |r: &mut Renderer| {
             r.surfaces.get_mut(&SurfaceId(1)).unwrap().cache = None;
             r.flatten_surface(SurfaceId(1));
         };
+        ask(&mut r);
         let ka = key_of(&r, a);
         r.deliver(TextLayout::reset(ka, Scale::ONE));
         ask(&mut r);

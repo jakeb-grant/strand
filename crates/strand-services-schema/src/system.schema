@@ -1,0 +1,16 @@
+/// The desktop's appearance settings, from the XDG desktop portal and
+/// followed live, and the machine's host name.
+service system {
+  /// The desktop prefers a dark style.
+  dark: bool
+  /// The desktop's accent colour, if it sets one.
+  accent: color?
+  /// The contrast preference, as `material(contrast:)` takes it: 0 for
+  /// normal, 1 for high.
+  contrast: float
+  /// Motion should be reduced: springs snap, and loops, time signals and
+  /// effects stop.
+  reduced_motion: bool
+  /// The machine's host name.
+  hostname: text
+}

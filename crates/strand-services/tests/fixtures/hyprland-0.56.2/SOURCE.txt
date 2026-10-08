@@ -1,0 +1,23 @@
+Hyprland 0.56.2 IPC traffic, reconstructed from Hyprland's source at tag
+v0.56.2 (the files and wiki page cited below), not captured from a
+running Hyprland. M3's exit box "runs on Hyprland, niri and sway" is
+where real captures replace or validate these files.
+
+Request replies (.socket.sock, one request per connection; Hyprland writes
+the reply and closes): j/monitors, j/workspaces, j/clients, j/activewindow,
+one directory per moment of the scenario (boot, opened, closed). The JSON
+follows the format strings of src/debug/HyprCtl.cpp at tag v0.56.2
+(getMonitorData, getWorkspaceData, getWindowData, activeWindowRequest:
+`{}` when no window has focus): 4-space indentation, field order, a
+trailing comma after each monitor/window object removed by
+trimTrailingComma, addresses as "0x%x", `fullscreen` as a mode number.
+
+events.txt holds .socket2.sock lines ("EVENT>>DATA\n") as Hyprland 0.56.2
+emits them (wiki content/ipc/_index.md, "Events list"): addresses in events
+carry no "0x", every v2 event follows its v1 twin, `configreloaded>>` has
+empty data. Lines starting with `#` and blank lines are the test's
+markers, not traffic; `## name` starts the burst the test sends as one
+write.
+
+Scenario: two monitors (DP-1 focused, HDMI-A-1), workspaces 1 and 2 on
+DP-1, 3 on HDMI-A-1, special:magic on DP-1 with pavucontrol; kitty on 1.

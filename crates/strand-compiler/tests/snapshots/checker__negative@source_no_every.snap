@@ -1,0 +1,13 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+syntax::expected
+
+  × a `poll` source takes a command and `every` interval
+   ╭─[source_no_every.strand:4:16]
+ 3 │ // error alone, not also a missing argument.
+ 4 │ service t from poll "/tmp/x" { a: text }
+   ·                ──────┬──────
+   ·                      ╰── such as `poll ["sensors", "-j"] every 5s`
+   ╰────

@@ -371,123 +371,30 @@ impl Ctx {
         if !matches!(prog.def(def).ty, Ty::Async(_)) {
             return None;
         }
+        // `let hits = apps.search(q)` lowers to the call's site: the
+        // `let` is that load.
+        let value = match prog.chunk(value).ops.as_slice() {
+            [Op::AsyncSite(site)] => *site,
+            _ => value,
+        };
         let chunk = prog.chunk(value);
         let (Some(Op::Service(_)), Some(Op::CallMethod { action: false, .. })) =
             (chunk.ops.first(), chunk.ops.last())
         else {
             return None;
         };
-        let (vm, e) = (self.vm.clone(), env.clone());
-        let owner = rt.current_owner();
-        let weak = rt.downgrade();
+        let env_for_reads = env.clone();
+        // The chunk's own reads go on the load's effect.
         let me = Rc::downgrade(self);
-        let cell: Rc<Cell<Option<strand_core::AsyncMemo<Value>>>> = Rc::default();
-        // Handlers awaiting the `let` while it is pending: woken when it
-        // settles.
-        let waiters: Rc<RefCell<Vec<std::task::Waker>>> = Rc::default();
-        let w_outer = waiters.clone();
-        Some(rt.memo(move |rt| {
-            let waiters = w_outer.clone();
-            let am = match cell.get() {
-                Some(am) => am,
-                None => {
-                    let (vm2, e2, w) = (vm.clone(), e.clone(), weak.clone());
-                    let make = move |rt: &Runtime| {
-                        let vm3 = vm2.clone();
-                        rt.async_memo(
-                            move |rt| {
-                                let (recv, args) = vm2.eval_call_args(rt, value, &e2)?;
-                                let Value::Service(s) = recv else {
-                                    return Err(Error::failed("not a service call"));
-                                };
-                                let method = match vm2.prog.chunk(value).ops.last() {
-                                    Some(Op::CallMethod { name, .. }) => {
-                                        vm2.prog.chunk(value).names[*name as usize].clone()
-                                    }
-                                    _ => String::new(),
-                                };
-                                Ok((s, method, args))
-                            },
-                            move |(s, method, args): (Rc<str>, String, Vec<Value>)| {
-                                let host = vm3.host.clone();
-                                let rt = w.upgrade();
-                                async move {
-                                    let Some(rt) = rt else {
-                                        return Err(Error::failed("the runtime is gone"));
-                                    };
-                                    let fut = host.fetch(&rt, &s, &method, args);
-                                    drop(rt);
-                                    fut.await
-                                }
-                            },
-                        )
-                    };
-                    let am = rt.untrack(|rt| match owner {
-                        Some(o) => rt.with_owner(o, make),
-                        None => Ok(make(rt)),
-                    })?;
-                    // The input's reads go on the load's effect; readers
-                    // of the `let` read the async memo.
-                    if let Some(ctx) = me.upgrade() {
-                        ctx.declare_reads(rt, am.effect_id(), &[value], &e, &[]);
-                    }
-                    // Wakes the awaiters once the load settles.
-                    let w = waiters.clone();
-                    let settle = move |rt: &Runtime| {
-                        if !am.get(rt)?.pending() {
-                            for w in w.borrow_mut().drain(..) {
-                                w.wake();
-                            }
-                        }
-                        Ok(())
-                    };
-                    rt.untrack(|rt| {
-                        let make = |rt: &Runtime| rt.effect(settle);
-                        let fx = match owner {
-                            Some(o) => rt.with_owner(o, make),
-                            None => Ok(make(rt)),
-                        };
-                        if let Ok(fx) = fx {
-                            let _ = rt.reads_from(fx.id(), &[am.id()]);
-                        }
-                    });
-                    cell.set(Some(am));
-                    am
-                }
-            };
-            let a = am.get(rt)?;
-            // `await hits` while a load runs waits for it to settle (and
-            // every handler awaiting it gets the same result).
-            let op = a.pending().then(|| {
-                let (weak, waiters) = (weak.clone(), waiters.clone());
-                let fut = std::future::poll_fn(move |cx| {
-                    let Some(rt) = weak.upgrade() else {
-                        return std::task::Poll::Ready(Err("the runtime is gone".to_string()));
-                    };
-                    match am.get_untracked(&rt) {
-                        Ok(a) if a.pending() => {
-                            let mut w = waiters.borrow_mut();
-                            if !w.iter().any(|x| x.will_wake(cx.waker())) {
-                                w.push(cx.waker().clone());
-                            }
-                            std::task::Poll::Pending
-                        }
-                        Ok(a) => std::task::Poll::Ready(match (a.error(), a.value()) {
-                            (Some(e), _) => Err(e.to_string()),
-                            (None, v) => Ok(v.cloned().unwrap_or(Value::Null)),
-                        }),
-                        Err(e) => std::task::Poll::Ready(Err(e.to_string())),
-                    }
-                });
-                Rc::new(crate::vm::value::PendingOp::new(Box::pin(fut)))
-            });
-            Ok(Value::Async(Rc::new(crate::vm::value::AsyncValue {
-                value: a.value().cloned(),
-                pending: a.pending(),
-                error: a.error().map(|e| e.to_string().into()),
-                op,
-            })))
-        }))
+        let declare: crate::vm::DeclareLoad = Rc::new(move |rt, effect| {
+            if let Some(ctx) = me.upgrade() {
+                ctx.declare_reads(rt, effect, &[value], &env_for_reads, &[]);
+            }
+        });
+        Some(
+            self.vm
+                .async_load(rt, value, env, rt.current_owner(), declare),
+        )
     }
 
     pub(crate) fn declare_state(
@@ -1148,7 +1055,7 @@ impl Ctx {
         env: &Rc<Env>,
         parent: FragId,
         extra: Vec<(SceneProp, PropValue)>,
-        services: Option<&Arc<std::collections::BTreeSet<String>>>,
+        services: Option<&Arc<crate::lower::ServiceUses>>,
     ) {
         if let ElementKind::Component(d) = &e.kind
             && self.runaway.borrow().contains(d)
@@ -1208,7 +1115,7 @@ impl Ctx {
         env: &Rc<Env>,
         parent: FragId,
         extra: Vec<(SceneProp, PropValue)>,
-        services: Option<&Arc<std::collections::BTreeSet<String>>>,
+        services: Option<&Arc<crate::lower::ServiceUses>>,
     ) {
         // A nested surface (a `popup` in a bar) holds what its children
         // read while it is shown.
@@ -1340,7 +1247,7 @@ impl Ctx {
         env: &Rc<Env>,
         frag: FragId,
         ec: ElemCtx,
-        services: Option<Arc<std::collections::BTreeSet<String>>>,
+        services: Option<Arc<crate::lower::ServiceUses>>,
     ) {
         let (own, content): (Vec<Node>, Vec<Node>) =
             e.children.iter().cloned().partition(
@@ -2428,11 +2335,7 @@ impl Ctx {
 
     /// Acquire services for the current scope and release them when it
     /// goes.
-    pub(crate) fn acquire(
-        self: &Rc<Self>,
-        rt: &Runtime,
-        services: &std::collections::BTreeSet<String>,
-    ) {
+    pub(crate) fn acquire(self: &Rc<Self>, rt: &Runtime, services: &crate::lower::ServiceUses) {
         let token = self.hold(rt, Arc::new(services.clone()));
         self.set_held(rt, token, true);
     }
@@ -2445,7 +2348,7 @@ impl Ctx {
     pub(crate) fn hold(
         self: &Rc<Self>,
         rt: &Runtime,
-        services: Arc<std::collections::BTreeSet<String>>,
+        services: Arc<crate::lower::ServiceUses>,
     ) -> u64 {
         let token = self.next_hold.get();
         self.next_hold.set(token + 1);
@@ -2479,9 +2382,7 @@ impl Ctx {
                 if let Some(h) = gone
                     && h.acquired
                 {
-                    for s in h.services.iter() {
-                        ctx.vm.host.release(&rt, s);
-                    }
+                    hold_services(&*ctx.vm.host, &rt, &h.services, false);
                 }
             }
         });
@@ -2495,13 +2396,7 @@ impl Ctx {
             return;
         }
         h.acquired = should;
-        for s in h.services.iter() {
-            if should {
-                self.vm.host.acquire(rt, s);
-            } else {
-                self.vm.host.release(rt, s);
-            }
-        }
+        hold_services(&*self.vm.host, rt, &h.services, should);
     }
 
     /// Hold (`true`) or let go of a registered scope's services.
@@ -3128,6 +3023,32 @@ fn collect_decls<'a>(
                 collect_decls(&e.children, lets, states)
             }
             _ => {}
+        }
+    }
+}
+
+/// Acquire (`on`) or release what a scope holds of the services: each
+/// service, and the fields it reads directly. A service is acquired
+/// before its fields and released after them.
+pub(crate) fn hold_services(
+    host: &dyn crate::vm::ServiceHost,
+    rt: &Runtime,
+    uses: &crate::lower::ServiceUses,
+    on: bool,
+) {
+    if on {
+        for (s, f) in uses {
+            match f {
+                None => host.acquire(rt, s),
+                Some(f) => host.acquire_field(rt, s, f),
+            }
+        }
+    } else {
+        for (s, f) in uses.iter().rev() {
+            match f {
+                None => host.release(rt, s),
+                Some(f) => host.release_field(rt, s, f),
+            }
         }
     }
 }

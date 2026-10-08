@@ -23,7 +23,10 @@
 //!   for as long as the connection stays open: `{"event": "reload", …}`
 //!   (files, edit classes, kept and reset cells, notices, timing,
 //!   diagnostics), `{"event": "fault", …}` (a runtime error that froze a
-//!   component).
+//!   component), `{"event": "notices", …}` (service and settings
+//!   notices; right after subscribing, the running config's warnings in
+//!   its `diagnostics`, which a later reload event without them
+//!   resolves).
 //!
 //! The server lives on the logic thread's loop (`docs/architecture.md`,
 //! "Threads"): every socket is non-blocking, a client that does not read
@@ -324,6 +327,9 @@ impl Server {
                 Ok(Request::Watch) => {
                     c.watching = true;
                     answers.push(json!({"ok": true}));
+                    // Answered here; handed out too, for what a new
+                    // watcher hears at once (after its answer).
+                    out.push(Request::Watch);
                 }
                 Ok(r) => {
                     c.pending += 1;
@@ -645,6 +651,12 @@ pub fn describe(ev: &Json) -> String {
         Some("notices") => {
             for n in list("notices") {
                 out.push_str(&format!("{n}\n"));
+            }
+            // The running config's warnings, told to a new watcher.
+            if let Some(ds) = ev.get("diagnostics").and_then(Json::as_array) {
+                for d in ds {
+                    out.push_str(&format!("{}\n", s(&d["short"])));
+                }
             }
         }
         Some("fault") => {

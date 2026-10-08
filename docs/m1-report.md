@@ -15,11 +15,11 @@ it.
 | Token edit, save → presented frame | p95 ≤ 35 ms | **p95 33.3 ms in the model of a 60 Hz monitor** (headless sway 18.0 ms, max 18.2, plus a vblank wait at a uniform phase over one refresh, p95 computed exactly; worst phase 34.6; the gate breaks above a headless p95 of 19.6 ms), 100 edits | pass (model) |
 | Markup edit, save → presented frame | p95 ≤ 50 ms | **p95 33.4 ms in the model** (headless 18.1 ms, max 18.3: a node added 18.2, removed 18.0; worst phase 34.7), 100 edits | pass (model) |
 | Monitor change on the next frame | next frame | the first frame painted after the shell hears of it shows it: a scale change 1.7–2.7 ms after `wl_output.done`, a plugged monitor's bar 1.6–2.1 ms after `wl_output.done` (its new surface configured 0.5–0.9 ms after it; the first plug, of a width not yet shaped, is printed and not gated: 1.5 ms in this run, 10.5 ms in a reviewer's), and that frame is the one presented (sway's next frame timer, 4–17 ms later); the logic thread answers every plug, scale change, unplug and replug in its first diff | pass |
-| Portal change on the next frame | next frame | not measured: portal settings are not fed into `strand run` yet (M2) | open |
+| Portal change on the next frame | next frame | (measured in M3, wave4-exitReload) a mock portal's `SettingChanged` (`color-scheme`) on a private bus beside the sway, through the real `system` service: the first frame painted after the signal is sent shows it 2.1–3.9 ms later, and that frame is presented 0.2–1.3 ms after its paint (2 × 20 changes, on an idle surface) | pass |
 
 The design's two M1 exit boxes ("10k random edits with no panic or blank
 frame", "under 50 ms from save to pixels") are ticked. The benchmark line
-under "Live reload" stays open for its portal clause only.
+under "Live reload" was ticked in M3, with its portal clause.
 
 ## Reload fuzzer
 
@@ -373,10 +373,9 @@ relaxing the budget.
 
 ## Open
 
-- Portal changes on the next frame: `strand-watch` reads and follows the
-  portal settings, but nothing feeds `system.dark`, `system.accent` and
-  `system.contrast` into `strand run` yet (the portal item under M2).
-  The benchmark line in `docs/features.md` stays open for this clause.
+- (Closed in M3, wave4-exitReload.) Portal changes on the next frame:
+  `crates/strand/src/bench.rs` times a mock portal's `SettingChanged` to
+  the presented frame and gates it as a monitor change.
 - The latency gates are a model of a 60 Hz monitor (uniform vblank
   phase, idle surface) on headless sway; nothing is measured on
   hardware. The token edit has about 1.6 ms of headroom in the model,

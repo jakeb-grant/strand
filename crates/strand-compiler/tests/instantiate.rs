@@ -504,10 +504,15 @@ fn two_way_bindings_write_back() {
     let mut shell = boot(&refs(&files), desktop);
     // A closed launcher has no content yet and runs no search.
     assert!(shell.scene.of_kind(NodeKind::Input).is_empty());
-    assert_eq!(shell.host.readers("apps"), 1, "the config's own `let`");
+    assert_eq!(
+        shell.host.readers("apps"),
+        0,
+        "`let hits = apps.search(query)` is read only inside the closed popup"
+    );
     // `strand toggle launcher.open`.
     shell.inst.set("launcher.open", Value::Bool(true)).unwrap();
     shell.flush();
+    assert_eq!(shell.host.readers("apps"), 1, "the open launcher reads it");
     let input = shell.scene.of_kind(NodeKind::Input)[0];
     shell
         .inst
@@ -3334,4 +3339,82 @@ fn runaway_recursion_stops_at_the_depth_limit() {
     );
     assert!(errors.is_empty(), "{errors:#?}");
     one_error(&later, "component `C`");
+}
+
+/// A per-device mixer: `s.volume` for `s` in `audio.sinks` (a keyed list
+/// of `AudioDevice`, whose `volume` is `rw`) is written through the
+/// service by the item's key, from a handler and from a slider's `<->`,
+/// and the row shows the new value at once.
+#[test]
+fn rw_fields_of_keyed_service_items_are_written_by_key() {
+    let src = "bar B {\n  for s in audio.sinks {\n    row {\n      text join(\" \", s.name, pct(s.volume))\n      box { on click { s.volume = 0.25 } }\n      slider { value: <-> s.volume }\n    }\n  }\n}\n";
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"]);
+        let dev = |id: i64, name: &str| {
+            host.record(
+                "AudioDevice",
+                &[
+                    ("id", Value::int(id)),
+                    ("name", Value::text(name)),
+                    ("volume", Value::float(0.5)),
+                ],
+            )
+        };
+        host.set(
+            rt,
+            "audio.sinks",
+            Value::list(vec![dev(40, "speakers"), dev(41, "headset")]),
+        )
+        .unwrap();
+    });
+    assert!(shell.scene.find_text("headset 50%").is_some());
+    // The second row's button: the headset, by its key.
+    let b = shell.scene.of_kind(NodeKind::Box)[1];
+    assert!(shell.inst.event(b, "click", Vec::new()));
+    shell.flush();
+    let writes = shell.host.take_writes();
+    assert_eq!(writes.len(), 1, "{writes:?}");
+    assert_eq!(writes[0].path, "AudioDevice(41).volume");
+    assert_eq!(writes[0].value, Value::float(0.25));
+    assert!(
+        shell.scene.find_text("headset 25%").is_some(),
+        "{}",
+        shell.scene.render()
+    );
+    assert!(shell.scene.find_text("speakers 50%").is_some());
+    // The first row's slider writes the speakers' volume.
+    let slider = shell.scene.of_kind(NodeKind::Slider)[0];
+    shell
+        .inst
+        .write(slider, Prop::Value, PropValue::Number(0.75))
+        .unwrap();
+    shell.flush();
+    let writes = shell.host.take_writes();
+    assert_eq!(writes.len(), 1, "{writes:?}");
+    assert_eq!(writes[0].path, "AudioDevice(40).volume");
+    assert!(shell.scene.find_text("speakers 75%").is_some());
+    assert_eq!(
+        shell.scene.prop(slider, Prop::Value),
+        Some(&PropValue::Number(0.75))
+    );
+}
+
+/// `audio.sink.volume` (fields all the way from the service) stays a
+/// write of the service's `sink` field, though `sink` is an
+/// `AudioDevice`, a keyed record.
+#[test]
+fn a_field_path_from_a_service_is_a_field_write() {
+    let src = "bar B {\n  box { on click { audio.sink.muted = !audio.sink.muted } }\n}\n";
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"]);
+        let sink = host.record("AudioDevice", &[("id", Value::int(40))]);
+        host.set(rt, "audio.sink", sink).unwrap();
+    });
+    let b = shell.scene.of_kind(NodeKind::Box)[0];
+    assert!(shell.inst.event(b, "click", Vec::new()));
+    let u = shell.flush();
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    let writes = shell.host.take_writes();
+    assert_eq!(writes.len(), 1, "{writes:?}");
+    assert_eq!(writes[0].path, "audio.sink.muted");
 }

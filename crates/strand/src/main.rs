@@ -11,6 +11,7 @@ mod logging;
 mod mock;
 mod overlay;
 mod run;
+mod services;
 mod system;
 
 #[cfg(test)]
@@ -26,6 +27,33 @@ use strand_compiler::diagnostic::Style;
 /// mimalloc for the whole runtime (`docs/design.md`, "Stack").
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+/// No transparent huge pages, from before the first allocation. On a
+/// system with THP `always` (GitHub's runners) the kernel backs a
+/// 2 MiB-aligned anonymous range with a huge page on its first touch:
+/// mimalloc's arenas filled 2 MiB pages for a few KiB of heap (55 MB PSS
+/// for design.md's bar instead of about 25). mimalloc's `no_thp` only
+/// stops it asking for them, and turning THP off in `main` came after
+/// the runtime's first allocations (the thread handle, the arguments)
+/// had already faulted two huge pages in (4 MB of `AnonHugePages`, the
+/// M0 gate missed by 265 kB in CI run 37644817292). An ELF constructor
+/// at priority 100 runs before `main` and every other constructor in the
+/// executable but std's argv capture (priority 99, which does not
+/// allocate): mimalloc's own included (checked in the release binary's
+/// `.init_array`: argv, this, then the unprioritised rest). The call
+/// makes two `prctl`s and does not allocate. A failure (an old kernel)
+/// leaves the default. The kernel keeps the flag across `fork` and
+/// `exec`: every program strand starts gets back what strand inherited
+/// (`strand_services::child::restore_in_child`, in each `pre_exec`).
+#[cfg(target_os = "linux")]
+#[used]
+#[unsafe(link_section = ".init_array.00100")]
+static NO_THP: extern "C" fn() = {
+    extern "C" fn no_thp() {
+        strand_services::child::thp_off();
+    }
+    no_thp
+};
 
 /// Subcommands the design commits to, with the milestone that delivers each.
 const COMMANDS: &[(&str, &str, &str)] = &[
@@ -119,12 +147,12 @@ fn dispatch(args: &[String]) -> Result<Action, String> {
 type Tool = fn(&[String], Style) -> (String, bool);
 
 fn main() -> ExitCode {
-    // No transparent huge pages: on a system with THP `always` (GitHub's
-    // runners), mimalloc's arenas fill 2 MiB pages for a few KiB of heap
-    // (55 MB PSS for design.md's bar instead of about 25). mimalloc's
-    // `no_thp` only stops it asking for them. Before anything allocates
-    // much; a failure (an old kernel) leaves the default.
-    let _ = rustix::thread::disable_transparent_huge_pages(true);
+    // A text worker that goes quiet after shaping keeps the allocator's
+    // freed pages, which only its own thread can return: it trims as its
+    // queue drains (decisions.md, wave4-exitMemory); so does the image
+    // decoder.
+    strand_text::set_idle_hook(run::trim);
+    strand_render::image::set_idle_hook(run::trim);
     let args: Vec<String> = std::env::args().skip(1).collect();
     let tool: Option<Tool> = match args.first().map(String::as_str) {
         Some("check") => Some(check::run),
@@ -258,6 +286,50 @@ mod tests {
         );
         assert!(run(&["run", "--demo", "x"]).is_err());
         assert!(run(&["run", "a", "b"]).is_err());
+    }
+
+    /// `NO_THP` ran before the test harness's `main`.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn transparent_huge_pages_are_off_before_main() {
+        if let Ok(off) = rustix::thread::transparent_huge_pages_are_disabled() {
+            assert!(off, "THP is on for the process");
+        }
+    }
+
+    /// A program strand starts gets back the THP setting strand inherited
+    /// (its parent's): `NO_THP` turned it off for this process only.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn programs_strand_starts_get_back_the_inherited_thp_setting() {
+        let thp = |p: &str| {
+            std::fs::read_to_string(p)
+                .ok()
+                .and_then(|s| strand_services::child::thp_enabled(&s))
+        };
+        let parent = format!("/proc/{}/status", std::os::unix::process::parent_id());
+        let (Some(inherited), Some(own)) = (thp(&parent), thp("/proc/self/status")) else {
+            eprintln!("skipped: no THP_enabled in /proc/<pid>/status");
+            return;
+        };
+        assert!(!own, "THP is on for the process");
+        let out = std::env::temp_dir().join(format!("strand-main-thp-{}", std::process::id()));
+        let _ = std::fs::remove_file(&out);
+        let part = out.with_extension("part");
+        let script = format!(
+            "grep THP_enabled /proc/self/status > '{}' && mv '{}' '{}'",
+            part.display(),
+            part.display(),
+            out.display()
+        );
+        strand_services::apps::spawn_detached(&["sh".into(), "-c".into(), script], None).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !out.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let got = thp(&out.display().to_string());
+        let _ = std::fs::remove_file(&out);
+        assert_eq!(got, Some(inherited), "the child kept strand's THP off");
     }
 
     #[test]

@@ -142,7 +142,19 @@ fn check_config(dir: &Path, focus: Option<&Path>, style: Style) -> Result<Report
             focus_id = Some(id);
         }
     }
-    let mut diags = strand_compiler::compile(&map).diagnostics;
+    let compiled = strand_compiler::compile_with(&map, crate::services::schema());
+    let mut diags = compiled.diagnostics;
+    // `from dbus` services against the bus's introspection (a warning
+    // when the bus cannot be reached).
+    diags.extend(strand_compiler::check::dbus::check(
+        &compiled.program,
+        &crate::services::custom::BusIntrospector::default(),
+    ));
+    // `from file`/`from poll` paths that name a program (read, not run).
+    diags.extend(strand_compiler::check::paths::check(
+        &compiled.program,
+        Some(dir),
+    ));
     if focus.is_some() {
         // A diagnostic is the file's if any of its labels is there: the
         // first declaration of a name redeclared in another file, a call

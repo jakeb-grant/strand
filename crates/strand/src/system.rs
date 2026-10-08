@@ -1,49 +1,20 @@
-//! The portal's appearance settings as the `system` service: `system.dark`,
-//! `system.accent` and `system.contrast` (design.md, "Change sources").
+//! The last values of the `system` service (the portal's appearance
+//! settings: `system.dark`, `.accent`, `.contrast`, `.reduced_motion`),
+//! kept across restarts (design.md, "Wallpaper palettes": boot never
+//! flashes default colours).
 //!
-//! The portal follower (`strand_watch::PortalSettings`) runs on a thread
-//! of its own and sends [`SystemBatch`]es; the logic thread writes them
-//! into the host. The boot read is written as initial values (`on change`
-//! does not fire for them); later batches are ordinary writes. The last
-//! values are kept in the state directory and written before the first
-//! frame, so a dark desktop never boots into a light frame while the
-//! portal answers (it may take up to `BOOT_READ_TIMEOUT`).
+//! The service itself (`strand_services::system`) follows the portal on
+//! the shared services runtime. `strand run` seeds it with these values
+//! before the first frame (`Client::seed`: boot values, so `on change`
+//! does not fire for them), and writes them back off the logic thread
+//! whenever the service reports new ones, so a dark desktop never boots
+//! into a light frame while the portal answers.
 
 use std::path::{Path, PathBuf};
 
-use strand_compiler::vm::Value;
-use strand_compiler::vm::schema_host::SchemaHost;
-use strand_core::Runtime;
 use strand_scene::Color;
-use strand_watch::{Contrast, SystemBatch, SystemSetting};
-
-/// The graph value a setting writes.
-pub fn value(s: &SystemSetting) -> Value {
-    match s {
-        SystemSetting::Dark { dark, .. } => Value::Bool(*dark),
-        SystemSetting::Accent(Some([r, g, b])) => {
-            Value::Color(Color::rgb(*r as f32, *g as f32, *b as f32))
-        }
-        SystemSetting::Accent(None) => Value::Null,
-        SystemSetting::Contrast(Contrast::High) => Value::float(1.0),
-        SystemSetting::Contrast(Contrast::Normal) => Value::float(0.0),
-        SystemSetting::ReducedMotion(on) => Value::Bool(*on),
-    }
-}
-
-/// Writes `settings` into the host; `initial`: as boot values.
-pub fn apply(rt: &Runtime, host: &SchemaHost, settings: &[SystemSetting], initial: bool) {
-    for s in settings {
-        let r = if initial {
-            host.set_initial(rt, s.path(), value(s))
-        } else {
-            host.set(rt, s.path(), value(s))
-        };
-        if let Err(e) = r {
-            log::warn!("{}: {e}", s.path());
-        }
-    }
-}
+use strand_services::system::System;
+use strand_watch::{ColorScheme, Contrast, SystemSetting};
 
 /// The last portal values, kept across restarts.
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -70,7 +41,6 @@ impl Last {
             let s = match (k.trim(), v.trim()) {
                 // `dark=<bool>,<scheme>` (an older file has no scheme).
                 ("dark", v) => {
-                    use strand_watch::ColorScheme;
                     let (dark, scheme) = v.split_once(',').unwrap_or((v, ""));
                     let dark = dark.trim() == "true";
                     let scheme = match scheme.trim() {
@@ -97,24 +67,36 @@ impl Last {
         Last { settings }
     }
 
-    /// Takes in a batch's values (each setting replaces the kept one).
-    /// Returns whether anything changed.
-    pub fn merge(&mut self, batch: &SystemBatch) -> bool {
-        let mut changed = false;
-        for s in &batch.settings {
-            match self.settings.iter_mut().find(|o| o.path() == s.path()) {
-                Some(o) if o == s => {}
-                Some(o) => {
-                    *o = *s;
-                    changed = true;
-                }
-                None => {
-                    self.settings.push(*s);
-                    changed = true;
-                }
-            }
+    /// The values `system` holds now.
+    pub fn of(s: &System) -> Last {
+        let scheme = if s.dark {
+            ColorScheme::PreferDark
+        } else {
+            ColorScheme::NoPreference
+        };
+        let contrast = if s.contrast >= 0.5 {
+            Contrast::High
+        } else {
+            Contrast::Normal
+        };
+        Last {
+            settings: vec![
+                SystemSetting::Dark {
+                    dark: s.dark,
+                    scheme,
+                },
+                SystemSetting::Accent(s.accent.map(|c| [c.r as f64, c.g as f64, c.b as f64])),
+                SystemSetting::Contrast(contrast),
+                SystemSetting::ReducedMotion(s.reduced_motion),
+            ],
         }
-        changed
+    }
+
+    /// Put the kept values into `s` (the service's seed).
+    pub fn seed(&self, s: &mut System) {
+        for setting in &self.settings {
+            s.apply_setting(setting);
+        }
     }
 
     /// Writes the kept values (temp file plus rename; tests). `strand
@@ -157,57 +139,50 @@ impl Last {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Instant;
+    use strand_services::Rgba;
 
     #[test]
-    fn last_values_round_trip_and_merge() {
+    fn last_values_round_trip_through_the_service_state() {
         let dir = std::env::temp_dir().join(format!("strand-system-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = Last::file(Some(dir.clone())).unwrap();
         assert_eq!(Last::load(&path), Last::default());
-        let mut last = Last::default();
-        let batch = SystemBatch {
-            settings: vec![
-                SystemSetting::Dark {
-                    dark: true,
-                    scheme: strand_watch::ColorScheme::PreferDark,
-                },
-                SystemSetting::Accent(Some([1.0, 0.0, 0.0])),
-                SystemSetting::Contrast(Contrast::High),
-                SystemSetting::ReducedMotion(true),
-            ],
-            at_boot: true,
-            received: Instant::now(),
+        let state = System {
+            dark: true,
+            accent: Some(Rgba::rgb(1.0, 0.0, 0.0)),
+            contrast: 1.0,
+            reduced_motion: true,
+            hostname: "box".into(),
         };
-        assert!(last.merge(&batch));
-        assert!(!last.merge(&batch), "the same values change nothing");
+        let last = Last::of(&state);
         last.save(&path).unwrap();
-        assert_eq!(Last::load(&path), last);
+        let back = Last::load(&path);
+        assert_eq!(back, last);
+        let mut seeded = System::default();
+        back.seed(&mut seeded);
         assert_eq!(
-            value(&last.settings[1]),
-            Value::Color(Color::rgb(1.0, 0.0, 0.0))
+            seeded,
+            System {
+                hostname: String::new(),
+                ..state
+            },
+            "the host name is not kept"
         );
-        assert_eq!(value(&last.settings[2]), Value::float(1.0));
-        assert_eq!(value(&last.settings[3]), Value::Bool(true));
-        // An explicit light preference survives a restart as such.
-        let light = SystemBatch {
-            settings: vec![SystemSetting::Dark {
-                dark: false,
-                scheme: strand_watch::ColorScheme::PreferLight,
-            }],
-            at_boot: false,
-            received: Instant::now(),
-        };
-        assert!(last.merge(&light));
-        last.save(&path).unwrap();
-        assert_eq!(Last::load(&path), last);
+        // Light, no accent.
+        let mut light = System::default();
+        Last::load(&{
+            Last::of(&light).save(&path).unwrap();
+            path.clone()
+        })
+        .seed(&mut light);
+        assert_eq!(light, System::default());
         // The older form still reads.
         std::fs::write(&path, "dark=true\n").unwrap();
         assert_eq!(
             Last::load(&path).settings,
             [SystemSetting::Dark {
                 dark: true,
-                scheme: strand_watch::ColorScheme::PreferDark
+                scheme: ColorScheme::PreferDark
             }]
         );
         let _ = std::fs::remove_dir_all(dir);

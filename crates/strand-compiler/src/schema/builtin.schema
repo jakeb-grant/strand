@@ -164,6 +164,8 @@ provisional record Window key id {
   minimized: bool
   /// It is fullscreen.
   fullscreen: bool
+  /// It asks for attention.
+  urgent: bool
   /// Raises and focuses it.
   action focus()
   /// Asks it to close.
@@ -180,6 +182,8 @@ provisional record Workspace key id {
   name: text
   /// It is the focused workspace.
   focused: bool
+  /// It is shown on its screen (one per screen).
+  active: bool
   /// It holds windows.
   occupied: bool
   /// A window on it asks for attention.
@@ -548,8 +552,9 @@ provisional service screens {
 provisional service wm {
   /// Its name, such as `Hyprland`, `niri` or `sway`.
   name: text
-  /// The compositor reloaded its config.
-  event config_reloaded()
+  /// The compositor reloaded its config; `failed` says whether the new
+  /// config failed to load, when the compositor tells.
+  event config_reloaded(failed: bool?)
 }
 
 /// The network, from NetworkManager.

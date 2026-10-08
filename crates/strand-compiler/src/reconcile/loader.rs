@@ -48,8 +48,9 @@ pub struct Outcome {
     /// text (an unreadable file is never taken for a deleted one).
     pub held: Vec<PathBuf>,
     /// Errors and warnings of the whole attempt (every saved file), with
-    /// the sources they point into. Empty when everything committed
-    /// cleanly.
+    /// the sources they point into: when everything committed, its
+    /// warnings (a `from dbus` service not checked because its bus did
+    /// not answer); empty when it committed cleanly.
     pub diagnostics: Vec<Diagnostic>,
     pub sources: Arc<SourceMap>,
     /// Files that could not be read, and why.
@@ -60,6 +61,9 @@ pub struct Outcome {
     /// files) and this one has none: a save reverted to the last good
     /// text, or a file readable again with its old text. Nothing may be
     /// committed, but whoever shows the problems must hear they are gone.
+    /// Also set when the running program's warnings went (a recheck
+    /// after a late D-Bus answer): its diagnostics are then empty. A
+    /// revert's outcome carries the running program's warnings.
     pub cleared: bool,
     /// The files on disk are exactly as the last attempt found them (a
     /// `strand reload` and then the watcher's own re-listing): nothing
@@ -100,9 +104,32 @@ pub struct Loader {
     /// The last attempt had errors, held or unreadable files (see
     /// [`Outcome::cleared`]).
     dirty: bool,
+    /// The last attempt that compiled reported warnings only.
+    warned: bool,
+    /// The current attempt compiled (it did not repeat the last one or
+    /// find nothing changed).
+    compiled: bool,
+    /// The running program's warnings, with their sources.
+    standing: (Vec<Diagnostic>, Arc<SourceMap>),
     /// The files the last compiling attempt read, and the problems it
     /// found (see [`Outcome::repeated`]).
     tried: Option<(Disk, Outcome)>,
+    /// Checks beyond the checker's, on each compile: `strand run`'s D-Bus
+    /// introspection of `from dbus` services ([`Loader::with_check`]).
+    extra: Option<ExtraCheck>,
+}
+
+/// A check run on each compiled config, adding diagnostics
+/// ([`Loader::with_check`]).
+pub struct ExtraCheck(pub Box<CheckFn>);
+
+/// What an [`ExtraCheck`] runs.
+pub type CheckFn = dyn Fn(&crate::Compiled) -> Vec<Diagnostic> + Send;
+
+impl std::fmt::Debug for ExtraCheck {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ExtraCheck")
+    }
 }
 
 /// Compile attempts per batch at most (each held-back file costs one per
@@ -126,8 +153,35 @@ impl Loader {
             unlisted: Vec::new(),
             cache_error: None,
             dirty: false,
+            warned: false,
+            compiled: false,
+            standing: Default::default(),
             tried: None,
+            extra: None,
         }
+    }
+
+    /// Run `check` on every compiled config too (before boot): its
+    /// diagnostics count as the checker's (an error holds the file back).
+    /// `strand run` checks `from dbus` services against introspection
+    /// with it.
+    pub fn with_check(mut self, check: ExtraCheck) -> Self {
+        self.extra = Some(check);
+        self
+    }
+
+    /// Compile `map` with the schema and the extra check.
+    fn compile(&self, map: &SourceMap) -> crate::Compiled {
+        let mut c = crate::compile_with(map, &self.schema);
+        if let Some(extra) = &self.extra {
+            let more = (extra.0)(&c);
+            if !more.is_empty() {
+                c.diagnostics.extend(more);
+                c.diagnostics
+                    .sort_by_key(|d| (d.file(), d.primary_span().map_or(0, |s| s.start)));
+            }
+        }
+        c
     }
 
     /// The config directory.
@@ -186,7 +240,7 @@ impl Loader {
         // any, and take the saved files on top as far as they are
         // consistent.
         let all: BTreeSet<PathBuf> = self.disk.keys().cloned().collect();
-        let broken = crate::compile_with(&self.assemble(&all), &self.schema).errors() > 0;
+        let broken = self.compile(&self.assemble(&all)).errors() > 0;
         let cached = match broken {
             true => self.cache.as_ref().and_then(|c| c.load(&self.schema)),
             false => None,
@@ -199,9 +253,11 @@ impl Loader {
             map.add(p.display().to_string(), t.clone());
         }
         let started = Instant::now();
-        let Ok(build) = Build::compile_with(None, map, &self.schema) else {
+        let compiled = self.compile(&map);
+        if compiled.errors() > 0 {
             return self.reconcile(false);
-        };
+        }
+        let build = Build::lowered(None, map, &compiled, &self.schema);
         self.live = cached;
         self.last = Some(build);
         // Then the saved files on top of it, as far as they are
@@ -261,6 +317,25 @@ impl Loader {
         }
     }
 
+    /// The extra check's answers changed since the last compile (a `from
+    /// dbus` daemon answered after a reload went ahead without it): check
+    /// the running files, and those held back, again. Files held back
+    /// that now compile are committed (`build`); otherwise there is no
+    /// build (the running program is unchanged) and the diagnostics say
+    /// what the late answer found: an error in a running file cannot
+    /// unload it, but is reported (and holds later edits back) like any
+    /// other until it is fixed.
+    pub fn recheck(&mut self) -> Outcome {
+        let last = self.last.clone();
+        let mut out = self.reconcile(true);
+        if out.committed.is_empty() && out.build.is_some() {
+            // Nothing new committed: the same program, not a reload.
+            out.build = None;
+            self.last = last;
+        }
+        out
+    }
+
     /// The source map of `live` with `take` taken from disk.
     fn assemble(&self, take: &BTreeSet<PathBuf>) -> SourceMap {
         let mut texts: BTreeMap<&PathBuf, Arc<str>> = BTreeMap::new();
@@ -292,7 +367,19 @@ impl Loader {
     /// attempt had some and it has none.
     fn settle(&mut self, out: &mut Outcome) {
         let dirty = out.errors() > 0 || !out.held.is_empty() || !out.unreadable.is_empty();
+        let compiled = std::mem::take(&mut self.compiled);
         out.cleared = self.dirty && !dirty;
+        if out.cleared && !compiled && out.diagnostics.is_empty() {
+            // Reverted to the running text: its warnings stand.
+            out.diagnostics = self.standing.0.clone();
+            out.sources = self.standing.1.clone();
+        }
+        let warned = !dirty && !out.diagnostics.is_empty();
+        if compiled || out.cleared {
+            // The running program's warnings went (a late answer).
+            out.cleared |= self.warned && !warned && !dirty;
+            self.warned = warned;
+        }
         self.dirty = dirty;
     }
 
@@ -300,6 +387,7 @@ impl Loader {
         // Only the attempt right before this one can be repeated: one in
         // between (a revert, say) was reported, and this one must be too.
         let tried = self.tried.take();
+        self.compiled = false;
         let mut unreadable = Vec::new();
         let mut changed: BTreeSet<PathBuf> = BTreeSet::new();
         for (p, t) in &self.disk {
@@ -364,13 +452,19 @@ impl Loader {
         unread: Vec<PathBuf>,
     ) -> Outcome {
         let started = Instant::now();
+        self.compiled = true;
         let full = self.assemble(&changed);
-        let compiled = crate::compile_with(&full, &self.schema);
+        let compiled = self.compile(&full);
         let mut out = Outcome {
             unreadable,
             ..Outcome::default()
         };
         if compiled.errors() == 0 {
+            if !compiled.diagnostics.is_empty() {
+                out.diagnostics = compiled.diagnostics.clone();
+                out.sources = Arc::new(full.clone());
+            }
+            self.standing = (out.diagnostics.clone(), out.sources.clone());
             out.build = Some(self.commit(&changed, full, &compiled));
             out.committed = changed.into_iter().collect();
             out.held = unread;
@@ -396,7 +490,7 @@ impl Loader {
         let mut done: Option<(SourceMap, crate::Compiled)> = None;
         while !set.is_empty() && attempts < MAX_ATTEMPTS {
             let map = self.assemble(&set);
-            let c = crate::compile_with(&map, &self.schema);
+            let c = self.compile(&map);
             attempts += 1;
             if c.errors() == 0 {
                 done = Some((map, c));
@@ -425,7 +519,7 @@ impl Loader {
                 }
                 let mut s = set.clone();
                 s.remove(p);
-                let errors = crate::compile_with(&self.assemble(&s), &self.schema).errors();
+                let errors = self.compile(&self.assemble(&s)).errors();
                 attempts += 1;
                 if best.as_ref().is_none_or(|(e, _)| errors < *e) {
                     best = Some((errors, p.clone()));
@@ -442,6 +536,7 @@ impl Loader {
             }
         }
         if let Some((map, c)) = done {
+            self.standing = (c.diagnostics.clone(), Arc::new(map.clone()));
             out.build = Some(self.commit(&set, map, &c));
             out.committed = set.iter().cloned().collect();
         }

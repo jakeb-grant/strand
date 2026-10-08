@@ -824,3 +824,356 @@ fn unknown_named_arguments_offer_the_parameters_left() {
     assert_eq!(help, "it takes `a`, `b` and `c`");
     assert_eq!(names, vec!["b".to_string(), "c".to_string()]);
 }
+
+/// An async service call a binding reaches through a lambda or a `fn` is
+/// fetched once in place and never answers the binding: warned at the
+/// call (a binding's own call, and calls in handlers, are fine).
+#[test]
+fn async_service_calls_a_binding_reaches_through_functions_are_warned() {
+    let codes = |src: &str| {
+        let (out, map) = compile_files(&[("a.strand", src.to_string())]);
+        assert_eq!(
+            out.errors(),
+            0,
+            "{}",
+            render(&out.diagnostics, &map, Style::Plain)
+        );
+        out.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>()
+    };
+    const W: &str = "check::async_in_binding_fn";
+    assert_eq!(
+        codes("let qs = [\"a\"]\nlet r = qs.map(q => apps.search(q))\n"),
+        [W]
+    );
+    assert_eq!(
+        codes(
+            "fn f(q: text) -> Async<[Hit]> { apps.search(q) }\n\
+             fn g(q: text) -> Async<[Hit]> { f(q) }\n\
+             let r = g(\"x\")\n"
+        ),
+        [W]
+    );
+    // Fine: the binding's own call, and calls in handlers (awaited).
+    assert!(codes("let r = apps.search(\"x\")\n").is_empty());
+    assert!(
+        codes(
+            "fn f(q: text) -> Async<[Hit]> { apps.search(q) }\n\
+             export state q = \"\"\n\
+             export state n = 0\n\
+             on change q { let h = await f(q)\n  n = h.count(x => true) }\n"
+        )
+        .is_empty()
+    );
+}
+
+/// An `rw` field of an item of a service's keyed list is written through
+/// the item (the service finds it by its key): assigned in a handler, or
+/// bound two-way, through a `for` local or an index.
+#[test]
+fn rw_fields_of_service_items_are_writable() {
+    one("component Mixer {\n\
+           col {\n\
+             for s in audio.sinks {\n\
+               row {\n\
+                 text s.description\n\
+                 box { on click { s.volume = 0.5; s.muted = !s.muted } }\n\
+                 slider { value: <-> s.volume }\n\
+               }\n\
+             }\n\
+             box { on click { audio.sinks[0].volume += 0.1 } }\n\
+           }\n\
+         }\n");
+}
+
+// ---------------------------------------------------------------------------
+// No-code services
+
+fn codes(src: &str) -> Vec<&'static str> {
+    let (out, _) = compile_files(&[("a.strand", src.to_string())]);
+    out.diagnostics.iter().map(|d| d.code).collect()
+}
+
+/// design.md: `from dbus`, `from file`, `from listen` and `from poll`
+/// sources are constants evaluated at load, lowered with each field's
+/// key; running a command needs `permit exec` (a poll of a file runs
+/// nothing), and only a D-Bus property can be `rw`.
+#[test]
+fn no_code_service_sources_are_constant_and_lowered() {
+    let src = r#"
+permit exec "sensors", "playerctl", "my tool"
+service ppd from dbus system "net.hadess.PowerProfiles" { profile: text rw = ActiveProfile }
+service ups from dbus session "org.example.Thing" "/obj" { level: float = Level }
+service mood from file "~/.cache/mood.json" { level: int = mood.level; name: text? = "Display Name" }
+service music from listen ["playerctl", "-F", "metadata"] { title: text? }
+service temp from poll ["sensors", "-j"] every 5s { cpu: float = package }
+service tool from poll "'my tool' --json a\\ b" every 500ms { x: int }
+service heat from poll "/sys/class/thermal/thermal_zone0/temp" every 2s { milli: int }
+bar B { text join(" ", ppd.profile, ups.level, mood.level, music.title ?? "", temp.cpu, tool.x, heat.milli) }
+"#;
+    let out = one(src);
+    let program =
+        strand_compiler::lower::lower(&out.program, strand_compiler::schema::Schema::builtin());
+    let svc = |name: &str| {
+        program
+            .services
+            .values()
+            .find(|s| s.name == name)
+            .unwrap_or_else(|| panic!("{name} lowered"))
+            .clone()
+    };
+    use std::time::Duration;
+    use strand_compiler::hir::{PollTarget, SourceSpec};
+    assert_eq!(
+        svc("ppd").source,
+        SourceSpec::Dbus {
+            system: true,
+            name: "net.hadess.PowerProfiles".into(),
+            path: None
+        }
+    );
+    assert_eq!(svc("ppd").fields[0].key, ["ActiveProfile"]);
+    assert!(svc("ppd").fields[0].rw);
+    assert_eq!(
+        svc("ups").source,
+        SourceSpec::Dbus {
+            system: false,
+            name: "org.example.Thing".into(),
+            path: Some("/obj".into())
+        }
+    );
+    assert_eq!(
+        svc("mood").source,
+        SourceSpec::File {
+            path: "~/.cache/mood.json".into()
+        }
+    );
+    assert_eq!(svc("mood").fields[0].key, ["mood", "level"]);
+    assert_eq!(svc("mood").fields[1].key, ["Display Name"]);
+    assert_eq!(
+        svc("music").source,
+        SourceSpec::Listen {
+            command: vec!["playerctl".into(), "-F".into(), "metadata".into()]
+        }
+    );
+    assert_eq!(svc("music").fields[0].key, ["title"], "its own name");
+    assert_eq!(
+        svc("temp").source,
+        SourceSpec::Poll {
+            target: PollTarget::Command(vec!["sensors".into(), "-j".into()]),
+            every: Duration::from_secs(5)
+        }
+    );
+    assert_eq!(
+        svc("tool").source,
+        SourceSpec::Poll {
+            target: PollTarget::Command(vec!["my tool".into(), "--json".into(), "a b".into()]),
+            every: Duration::from_millis(500)
+        }
+    );
+    assert_eq!(
+        svc("heat").source,
+        SourceSpec::Poll {
+            target: PollTarget::File("/sys/class/thermal/thermal_zone0/temp".into()),
+            every: Duration::from_secs(2)
+        }
+    );
+
+    // A poll of a file needs no permit; a command does.
+    assert_eq!(
+        codes("service u from poll \"uptime -p\" every 60s { t: text }"),
+        ["check::no_permit"]
+    );
+    assert!(codes("service h from poll \"/sys/x\" every 1s { a: int }").is_empty());
+    // Sources are constants.
+    assert_eq!(
+        codes("let p = \"/tmp/x\"\nservice f from file p { a: int }"),
+        ["check::not_constant"]
+    );
+    assert_eq!(
+        codes("permit exec\nservice f from poll [\"a\"] every 0s { a: int }"),
+        ["check::not_constant"]
+    );
+    // An interval no `Duration` holds is reported, never a panic (the
+    // checker runs on every keystroke in the LSP).
+    assert!(
+        codes(
+            "permit exec\nservice f from poll [\"a\"] every 99999999999999999999999999s { a: int }"
+        )
+        .contains(&"check::not_constant")
+    );
+    // A permit inside the service block lists programs as a top-level
+    // one does: bare allows any, a list only those it names.
+    assert_eq!(
+        codes(
+            "service t from poll [\"sensors\", \"-j\"] every 5s { cpu: float = package; permit exec \"foo\" }"
+        ),
+        ["check::no_permit"]
+    );
+    assert_eq!(
+        codes("service t from listen [\"curl\", \"x\"] { a: int; permit exec \"sensors\" }"),
+        ["check::no_permit"]
+    );
+    assert!(codes("service t from poll [\"sensors\", \"-j\"] every 5s { cpu: float = package; permit exec \"sensors\" }").is_empty());
+    assert!(codes("service t from listen [\"curl\", \"x\"] { a: int; permit exec }").is_empty());
+    // A command polled faster than the floor forks for little: warned
+    // (it runs at the floor); a file poll forks nothing.
+    assert_eq!(
+        codes("permit exec\nservice f from poll [\"a\"] every 10ms { a: int }"),
+        ["check::poll_too_fast"]
+    );
+    assert!(codes("permit exec\nservice f from poll [\"a\"] every 100ms { a: int }").is_empty());
+    assert!(codes("service h from poll \"/sys/x\" every 10ms { a: int }").is_empty());
+    // A list's first item is the program whole, as it runs (never split
+    // into words): `["sh -c", …]` is not the program `sh`.
+    assert_eq!(
+        codes("permit exec \"sh\"\nservice t from listen [\"sh -c\", \"x\"] { a: int }"),
+        ["check::no_permit"]
+    );
+    assert!(
+        codes("permit exec \"my tool\"\nservice t from listen [\"my tool\", \"x\"] { a: int }")
+            .is_empty()
+    );
+    // A D-Bus field reads one property whole; a key path on it is an
+    // error, not `Prop` read silently (a file's key path walks the document).
+    assert_eq!(
+        codes(
+            "service p from dbus system \"net.hadess.PowerProfiles\" { a: text = ActiveProfile.sub }"
+        ),
+        ["check::type_mismatch"]
+    );
+    assert!(codes("service f from file \"/tmp/x.json\" { a: int = outer.inner }").is_empty());
+    // Only D-Bus properties are written.
+    assert_eq!(
+        codes("service f from file \"/tmp/x\" { a: int rw }"),
+        ["check::not_writable"]
+    );
+    // A field's type is one a document holds: a schema entity (`Screen`)
+    // or a paint is not; colours, durations, enums, lists, optionals and
+    // declared records of these are.
+    assert_eq!(
+        codes("service bad from file \"x.json\" { m: Screen; c: color; s: [Screen]; p: paint? }"),
+        [
+            "check::type_mismatch",
+            "check::type_mismatch",
+            "check::type_mismatch"
+        ]
+    );
+    assert!(
+        codes(
+            "enum Mood { calm, busy }\ntype Temp { label: text; c: float; at: duration }\n\
+             service ok from file \"x.json\" { c: color; d: duration; m: Mood?; t: [Temp]; \
+             l: length; p: percent; a: angle; f: path; b: bool }"
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        codes("type Holder { s: Screen }\nservice bad from file \"x.json\" { h: [Holder] }"),
+        ["check::type_mismatch"]
+    );
+}
+
+/// `from dbus` fields against the object's introspection: a missing
+/// property (with a did-you-mean), a type that does not convert, `rw` on
+/// a read-only property, and a bus that cannot be reached (a warning, the
+/// config still loads).
+#[test]
+fn dbus_services_are_checked_against_introspection() {
+    use strand_compiler::check::dbus::{BusProperty, Introspect, check};
+    struct Fake(Option<Result<Vec<BusProperty>, String>>);
+    impl Introspect for Fake {
+        fn properties(
+            &self,
+            system: bool,
+            name: &str,
+            path: &str,
+        ) -> Option<Result<Vec<BusProperty>, String>> {
+            assert!(system);
+            assert_eq!(name, "net.hadess.PowerProfiles");
+            assert_eq!(path, "/net/hadess/PowerProfiles");
+            self.0.clone()
+        }
+    }
+    let prop = |name: &str, sig: &str, writable: bool| BusProperty {
+        interface: "net.hadess.PowerProfiles".into(),
+        name: name.into(),
+        signature: sig.into(),
+        writable,
+    };
+    let ppd = Fake(Some(Ok(vec![
+        prop("ActiveProfile", "s", true),
+        prop("PerformanceDegraded", "s", false),
+        prop("Profiles", "aa{sv}", false),
+    ])));
+    let src = |fields: &str| {
+        format!(
+            "service ppd from dbus system \"net.hadess.PowerProfiles\" {{ {fields} }}\nbar B {{ text \"x\" }}\n"
+        )
+    };
+    let run = |fields: &str, intro: &Fake| {
+        let (out, _) = compile_files(&[("a.strand", src(fields))]);
+        assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
+        check(&out.program, intro)
+    };
+    assert!(
+        run(
+            "profile: text rw = ActiveProfile; degraded: text = PerformanceDegraded",
+            &ppd
+        )
+        .is_empty()
+    );
+    let d = run("profile: text rw = ActiveProfil", &ppd);
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert_eq!(d[0].code, "check::dbus_property");
+    assert_eq!(d[0].help.as_deref(), Some("did you mean `ActiveProfile`?"));
+    assert_eq!(d[0].suggestions[0].replacement, "ActiveProfile");
+    let d = run("profile: int = ActiveProfile", &ppd);
+    assert_eq!(d[0].code, "check::dbus_type", "{d:?}");
+    assert!(d[0].message.contains("`s`"), "{}", d[0].message);
+    let d = run("degraded: text rw = PerformanceDegraded", &ppd);
+    assert_eq!(d[0].code, "check::dbus_read_only", "{d:?}");
+    // An answer still being asked for (the LSP's): not checked, no word.
+    assert!(run("profile: int rw = Nope", &Fake(None)).is_empty());
+    let down = Fake(Some(Err("cannot reach the bus: no such file".into())));
+    let d = run("profile: text rw = ActiveProfile", &down);
+    assert_eq!(d.len(), 1);
+    assert_eq!(d[0].code, "check::dbus_unchecked");
+    assert!(!d[0].is_error(), "a warning: the config still loads");
+    assert!(
+        d[0].message.contains("cannot reach the bus"),
+        "{}",
+        d[0].message
+    );
+}
+
+/// One mistake in a no-code service's source is one diagnostic: the
+/// parser's, never also a checker error on the same source.
+#[test]
+fn a_bad_service_source_is_one_diagnostic() {
+    for (src, code) in [
+        (
+            "service t from poll \"/tmp/x\" { a: text }",
+            "syntax::expected",
+        ),
+        (
+            "service t from dbus systm \"net.hadess.PowerProfiles\" { a: text = A }",
+            "syntax::unknown_bus",
+        ),
+        (
+            "service t from pol \"x\" every 1s { a: text }",
+            "syntax::unknown_source",
+        ),
+        (
+            "service t from dbus \"net.hadess.PowerProfiles\" { a: text = A }",
+            "syntax::expected",
+        ),
+        ("service t from file { a: text }", "syntax::expected"),
+        (
+            "service t from file \"/a\" \"/b\" { a: text }",
+            "syntax::expected",
+        ),
+    ] {
+        let (out, _) = compile_files(&[("a.strand", src.to_string())]);
+        let codes: Vec<String> = out.diagnostics.iter().map(|d| d.code.to_string()).collect();
+        assert_eq!(codes, [code], "{src}");
+    }
+}

@@ -1,0 +1,86 @@
+/// An entry of a tray item's menu (DBusMenu), keyed by `id`.
+record TrayMenuItem key id {
+  /// Its id in its menu.
+  id: int
+  /// The tray item whose menu holds it.
+  item: text
+  /// Its label, without mnemonic underscores.
+  label: text
+  /// It can be chosen.
+  enabled: bool
+  /// `standard` or `separator`.
+  kind: text
+  /// `none`, `checkmark` or `radio`.
+  toggle: text
+  /// Its check mark or radio button is on.
+  checked: bool
+  /// Its icon: an icon name, or the path of the picture the app sent.
+  icon: text?
+  /// Its keyboard shortcut, if it has one (`Control+S`).
+  shortcut: text?
+  /// Its submenu's entries; empty when it has none.
+  children: [TrayMenuItem]
+  /// Chooses it: the app is told it was clicked.
+  action activate()
+  /// Opens its submenu: the app is told (and may update the entries
+  /// first).
+  action open()
+}
+
+/// A tray item's menu (DBusMenu).
+record TrayMenu {
+  /// The tray item it belongs to.
+  item: text
+  /// Its entries, as the app last laid them out; empty when the item has
+  /// no menu.
+  items: [TrayMenuItem]
+  /// It is open: true from `open()` until `close()` (or the item going
+  /// away). A popup shows it with `open: item.menu.opened`, and calls
+  /// `item.menu.close()` when it closes. One flag per item, not per
+  /// screen: a bar on every screen keeps which screen opened it
+  /// (`on secondary { item.menu.open(); menu_screen = screen }`, `open:
+  /// item.menu.opened && menu_screen == screen`).
+  opened: bool
+  /// Opens it as a popup: `on secondary { item.menu.open() }`. The app is
+  /// told it opens (and may update its entries first), and `opened`
+  /// becomes true. An item without a DBusMenu shows its own menu. An
+  /// item that is only a menu (`ItemIsMenu`, or one refusing `Activate`)
+  /// opens it on `item.activate()` too.
+  action open()
+  /// The popup closed: the app is told, and `opened` becomes false.
+  action close()
+}
+
+/// An item in the system tray (StatusNotifierItem), keyed by `id`.
+record TrayItem key id {
+  /// Its identity: its bus name and object path.
+  id: text
+  /// Its title.
+  title: text
+  /// Its icon: `image item.icon`. An icon name, or the path of a picture
+  /// (an icon the app ships, or pixels it sent).
+  icon: text
+  /// Its tooltip, if it has one.
+  tooltip: text?
+  /// `Active`, `Passive` or `NeedsAttention`.
+  status: text
+  /// Its menu.
+  menu: TrayMenu
+  /// Its primary action: `on click { item.activate() }`. An item that is
+  /// only a menu (`ItemIsMenu`: most libappindicator apps) opens its
+  /// menu instead (`menu.opened`), as the StatusNotifierItem spec asks.
+  action activate()
+  /// Its secondary action.
+  action secondary()
+  /// Scrolls on it by `dy` wheel notches (one click is 1, a touchpad
+  /// sends fractions; positive is down, as `on scroll(dy)` gives it). The
+  /// app gets 120 per notch, positive up, as KDE's tray sends it.
+  action scroll(dy: float)
+}
+
+/// The system tray: a StatusNotifierItem host, with a watcher of its own
+/// when the session has none, and each item's DBusMenu.
+service tray {
+  /// The tray's items, keyed by `id`: `for item in tray.items`.
+  items: [TrayItem]
+}

@@ -76,10 +76,17 @@ struct Held {
     waiting: Vec<HeldFetch>,
 }
 
+/// A mounted service's record and its field types (`None`: the record
+/// was not in its program's table).
+type Mounted = (RecordId, Option<Vec<crate::ty::Ty>>);
+
 /// See the module docs.
 pub struct SchemaHost {
     types: Rc<TypeTable>,
     services: RefCell<BTreeMap<String, RecordId>>,
+    /// Each mounted service's record and field types, as of the program
+    /// that mounted it (`retype` compares them with the new program's).
+    custom_tys: RefCell<HashMap<String, Mounted>>,
     fields: RefCell<HashMap<(String, String), Field>>,
     writes: Rc<RefCell<Vec<WriteCall>>>,
     held: RefCell<Held>,
@@ -122,6 +129,7 @@ impl SchemaHost {
         let host = SchemaHost {
             types: Rc::new(types.clone()),
             services: RefCell::default(),
+            custom_tys: RefCell::default(),
             fields: RefCell::default(),
             writes: Rc::default(),
             held: RefCell::default(),
@@ -215,6 +223,10 @@ impl SchemaHost {
             }
         });
         self.services.borrow_mut().insert(name.to_string(), r);
+        let tys = def.fields.iter().map(|f| f.ty.clone()).collect();
+        self.custom_tys
+            .borrow_mut()
+            .insert(name.to_string(), (r, Some(tys)));
     }
 
     pub fn types(&self) -> &TypeTable {
@@ -534,18 +546,36 @@ impl SchemaHost {
 }
 
 impl ServiceHost for SchemaHost {
-    fn declare(&self, rt: &Runtime, name: &str, record: RecordId) {
-        if !self.services.borrow().contains_key(name) {
-            self.add_service(rt, name, record);
+    fn declare(&self, rt: &Runtime, service: &crate::lower::CustomService, _types: &TypeTable) {
+        if !self.services.borrow().contains_key(&service.name) {
+            self.add_service(rt, &service.name, service.record);
         }
     }
 
-    fn restart(&self, rt: &Runtime, name: &str, record: RecordId, types: &TypeTable) {
+    fn restart(&self, rt: &Runtime, service: &crate::lower::CustomService, types: &TypeTable) {
         // Its old cells go (nobody reads them after the reload); the new
         // declaration's fields start at their defaults.
+        let name = service.name.as_str();
         self.drop_service(rt, name);
         let types = Rc::new(types.clone());
-        self.add_service_in(rt, name, record, &types);
+        self.add_service_in(rt, name, service.record, &types);
+    }
+
+    fn retype(&self, rt: &Runtime, service: &crate::lower::CustomService, types: &TypeTable) {
+        // Its cells hold values of the old program's types (a default
+        // enum's id): when its record or the types its fields name moved,
+        // remount it at the new program's defaults. Nothing moved, nothing
+        // changes (values the mock set are kept).
+        let name = service.name.as_str();
+        let tys = |t: &TypeTable, r: RecordId| {
+            t.records
+                .get(r.0 as usize)
+                .map(|d| d.fields.iter().map(|f| f.ty.clone()).collect::<Vec<_>>())
+        };
+        let now = (service.record, tys(types, service.record));
+        if self.custom_tys.borrow().get(name) != Some(&now) {
+            self.restart(rt, service, types);
+        }
     }
 
     fn stop(&self, rt: &Runtime, name: &str) {
@@ -554,6 +584,7 @@ impl ServiceHost for SchemaHost {
         }
         self.drop_service(rt, name);
         self.services.borrow_mut().remove(name);
+        self.custom_tys.borrow_mut().remove(name);
     }
 
     fn read(&self, rt: &Runtime, service: &str, field: &str) -> Result<Value, Error> {
@@ -639,6 +670,62 @@ impl ServiceHost for SchemaHost {
             }
         })?;
         Ok(())
+    }
+
+    fn write_item(
+        &self,
+        rt: &Runtime,
+        item: &Value,
+        path: &[PathSeg],
+        value: Value,
+    ) -> Result<(), Error> {
+        let Value::Record(r) = item else {
+            return Err(fail("no item to write"));
+        };
+        let Some(def) = self.types.records.get(r.ty.0 as usize) else {
+            return Err(fail("no item to write"));
+        };
+        let Some(key_path) = &def.key else {
+            return Err(fail(format!("`{}` items have no key", def.name)));
+        };
+        let key = ValueKey(
+            item.key_path(&self.types, key_path)
+                .cloned()
+                .unwrap_or(Value::Null),
+        );
+        // The keyed list holding an item of this record with this key.
+        let lists: Vec<KeyedSignal<ValueKey, Value>> = self
+            .fields
+            .borrow()
+            .values()
+            .filter_map(|f| match f {
+                Field::Keyed(k, _) => Some(*k),
+                Field::Plain(_) => None,
+            })
+            .collect();
+        for k in lists {
+            let Some(cur) = k.get_key(rt, &key)? else {
+                continue;
+            };
+            if !matches!(&cur, Value::Record(c) if c.ty == r.ty) {
+                continue;
+            }
+            let new = self.set_path(&cur, path, value.clone())?;
+            let shown: String = path.iter().map(ToString::to_string).collect();
+            let log = self.record_actions.then(|| WriteCall {
+                path: format!("{}{shown}", self.item_name(item)),
+                value,
+            });
+            let writes = self.writes_log();
+            // The mock's service applies every write as sent.
+            k.write_item_tagged(rt, key, new, move |_, _, _, _| {
+                if let (Some(log), Some(w)) = (log, writes.upgrade()) {
+                    w.borrow_mut().push(log);
+                }
+            })?;
+            return Ok(());
+        }
+        Err(fail(format!("no `{}` with this key to write", def.name)))
     }
 
     fn fetch(&self, rt: &Runtime, service: &str, method: &str, args: Vec<Value>) -> Fetch {

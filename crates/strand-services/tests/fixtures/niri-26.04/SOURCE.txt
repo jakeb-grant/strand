@@ -1,0 +1,24 @@
+niri 26.04 IPC traffic, reconstructed from niri's source at tag v26.04
+(the files cited below), not captured from a running niri. M3's exit box
+"runs on Hyprland, niri and sway" is where real captures replace or
+validate these files.
+
+niri writes each reply and event as one line of compact JSON
+(serde_json::to_writer plus "\n", src/ipc/server.rs at tag v26.04). The
+types are niri-ipc/src/lib.rs at v26.04: Reply = Result<Response, String>
+serialised externally tagged ({"Ok":…} / {"Err":"…"}); Response::Workspaces,
+Response::Windows, Response::FocusedOutput; Event variants as
+{"Name":{fields}}; Window with layout and focus_timestamp; Workspace with
+idx, name (null when unnamed), output, is_urgent, is_active, is_focused,
+active_window_id; Output with modes, logical and transform "Normal".
+
+reply-*.json: the replies to "Workspaces", "Windows" and "FocusedOutput".
+events.txt: what the event-stream connection carries. `## stream-start`
+is the reply to "EventStream" followed by the state niri replicates to
+every new stream (niri-ipc/src/state.rs, EventStreamState::replicate:
+workspaces, windows, keyboard layouts, overview, config, casts); the
+other `## name` sections are bursts the test sends as one write. Lines
+starting with `#` and blank lines are markers, not traffic.
+
+Scenario: DP-1 (focused) with workspaces 1, "chat", 3 and HDMI-A-1 with
+workspace 4; Alacritty (focused) on 1, Signal on "chat".

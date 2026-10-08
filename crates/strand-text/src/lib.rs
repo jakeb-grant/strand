@@ -17,7 +17,7 @@ mod worker;
 
 pub use atlas::{AtlasConfig, AtlasSlot, AtlasUpload, MAX_PAGE_SIZE, PageId, PageLease};
 pub use engine::{FontConfig, MAX_FONT_PX, MAX_TEXT_BYTES, SUBPIXEL_STEPS, TextEngine};
-pub use worker::{TextError, TextWorker, Waker};
+pub use worker::{HookGate, TextError, TextWorker, Waker, set_idle_hook};
 
 use std::ops::Range;
 
@@ -241,6 +241,13 @@ impl TextLayout {
 /// fonts installed on the machine.
 pub fn test_font_path() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/LiberationSans-Regular.ttf")
+}
+
+/// Path of the vendored bold face of the test family (Liberation Sans
+/// Bold, SIL OFL 1.1, same release as [`test_font_path`]). Tests load both
+/// to stand for a family with only a 400 and a 700 face.
+pub fn test_bold_font_path() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/LiberationSans-Bold.ttf")
 }
 
 /// Family name of [`test_font_path`].

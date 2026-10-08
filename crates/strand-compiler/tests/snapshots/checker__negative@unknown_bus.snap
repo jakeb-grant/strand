@@ -1,0 +1,16 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+syntax::unknown_bus
+
+  × unknown bus `systm`
+   ╭─[unknown_bus.strand:4:21]
+ 3 │ // type mismatch.
+ 4 │ service t from dbus systm "net.hadess.PowerProfiles" { a: text = A }
+   ·                     ──┬──
+   ·                       ╰── the bus is `system` or `session`
+   ╰────
+  help: did you mean `system`?
+
+fix [syntax::unknown_bus] unknown_bus.strand: `systm` -> `system`

@@ -38,16 +38,20 @@ impl Lowerer<'_> {
     /// A handler or timer body.
     pub(crate) fn stmts_chunk(&mut self, body: &[hir::Stmt], _span: Span) -> ChunkId {
         let mut c = Chunk::new(self.file);
+        self.frame += 1;
         for s in body {
             self.stmt(&mut c, s, false);
         }
+        self.frame -= 1;
         self.add_chunk(c)
     }
 
     /// A `fn` body or block lambda: its value is its last expression.
     pub(crate) fn fn_chunk(&mut self, body: &[hir::Stmt]) -> ChunkId {
         let mut c = Chunk::new(self.file);
+        self.frame += 1;
         self.block_value(&mut c, body);
+        self.frame -= 1;
         self.add_chunk(c)
     }
 
@@ -158,12 +162,45 @@ impl Lowerer<'_> {
         }
     }
 
-    /// Pushes the index values of `target`'s place and returns the place.
-    fn place(&mut self, c: &mut Chunk, target: &hir::Expr) -> Place {
+    /// An item of a service's keyed list (a schema record with a key):
+    /// a write below it goes to the service by the item's key.
+    pub(crate) fn is_service_item(&self, ty: &Ty) -> bool {
+        match ty.non_null() {
+            Ty::Record(r) => {
+                let def = self.hir.types.record(*r);
+                def.key.is_some() && !def.handle && matches!(def.origin, crate::ty::Origin::Schema)
+            }
+            _ => false,
+        }
+    }
+
+    /// The root of `target`'s place, its segments (leaf last), the index
+    /// expressions above the root and, for [`PlaceRoot::Item`], the item
+    /// expression: a path of fields from a service is that service's
+    /// field (`audio.sink.volume`); otherwise the base nearest the leaf
+    /// that is an item of a service's keyed list, else the
+    /// `state`/settings or service it starts at. `None`: no writable root
+    /// (the checker reported it).
+    fn place_parts<'e>(&self, target: &'e hir::Expr) -> Option<PlaceParts<'e>> {
+        // `audio.sink.volume`: fields all the way from the service is a
+        // write of the service's field, whatever records it crosses.
+        let mut cur = target;
+        let fields_from_service = loop {
+            match &cur.kind {
+                ExprKind::Field { base, .. } => cur = base,
+                ExprKind::Service(_) => break true,
+                _ => break false,
+            }
+        };
         let mut segs = Vec::new();
         let mut cur = target;
         let mut indices = Vec::new();
+        let mut item = None;
         let root = loop {
+            if !fields_from_service && !std::ptr::eq(cur, target) && self.is_service_item(&cur.ty) {
+                item = Some(cur);
+                break PlaceRoot::Item;
+            }
             match &cur.kind {
                 ExprKind::Field { base, name, .. } => {
                     segs.push(PlaceSeg::Field(name.clone()));
@@ -175,16 +212,43 @@ impl Lowerer<'_> {
                     cur = base;
                 }
                 ExprKind::Def(d) => break PlaceRoot::Def(*d),
-                ExprKind::Service(s) => {
-                    self.note_service(s);
-                    break PlaceRoot::Service(s.clone());
-                }
-                // Already reported; writes go nowhere.
-                _ => break PlaceRoot::Service(String::new()),
+                ExprKind::Service(s) => break PlaceRoot::Service(s.clone()),
+                _ => return None,
             }
         };
         segs.reverse();
         indices.reverse();
+        Some(PlaceParts {
+            root,
+            segs,
+            indices,
+            item,
+        })
+    }
+
+    /// Pushes the item (for [`PlaceRoot::Item`]) and the index values of
+    /// `target`'s place and returns the place.
+    fn place(&mut self, c: &mut Chunk, target: &hir::Expr) -> Place {
+        let Some(PlaceParts {
+            root,
+            segs,
+            indices,
+            item,
+        }) = self.place_parts(target)
+        else {
+            // Rejected by the checker (`check::read_only`): nothing
+            // reaches a program that writes here.
+            return Place {
+                root: PlaceRoot::Service(String::new()),
+                segs: Vec::new(),
+            };
+        };
+        if let PlaceRoot::Service(s) = &root {
+            self.note_service(s);
+        }
+        if let Some(e) = item {
+            self.expr(c, e);
+        }
         for i in indices {
             self.expr(c, i);
         }
@@ -197,29 +261,14 @@ impl Lowerer<'_> {
         target: &hir::Expr,
         indices: &mut Vec<ChunkId>,
     ) -> Option<Place> {
-        let mut segs = Vec::new();
-        let mut cur = target;
-        let mut idx = Vec::new();
-        let root = loop {
-            match &cur.kind {
-                ExprKind::Field { base, name, .. } => {
-                    segs.push(PlaceSeg::Field(name.clone()));
-                    cur = base;
-                }
-                ExprKind::Index { base, index } => {
-                    segs.push(PlaceSeg::Index);
-                    idx.push(index.as_ref());
-                    cur = base;
-                }
-                ExprKind::Def(d) => break PlaceRoot::Def(*d),
-                ExprKind::Service(s) => break PlaceRoot::Service(s.clone()),
-                _ => return None,
-            }
-        };
-        segs.reverse();
-        idx.reverse();
-        for i in idx {
-            let id = self.expr_chunk(i);
+        let PlaceParts {
+            root,
+            segs,
+            indices: idx,
+            item,
+        } = self.place_parts(target)?;
+        for e in item.into_iter().chain(idx) {
+            let id = self.expr_chunk(e);
             indices.push(id);
         }
         Some(Place { root, segs })
@@ -241,7 +290,7 @@ impl Lowerer<'_> {
                 optional: false,
             } => match &base.kind {
                 ExprKind::Service(s) => {
-                    self.note_service(s);
+                    self.note_field(s, name);
                     Some(KeyedRoot::Service {
                         service: c.name(s),
                         field: c.name(name),
@@ -255,7 +304,15 @@ impl Lowerer<'_> {
 
     fn note_service(&mut self, s: &str) {
         if let Some(top) = self.services.last_mut() {
-            top.insert(s.to_string());
+            top.insert((s.to_string(), None));
+        }
+    }
+
+    /// A direct read of `service.field` (it also holds the service).
+    fn note_field(&mut self, s: &str, field: &str) {
+        if let Some(top) = self.services.last_mut() {
+            top.insert((s.to_string(), None));
+            top.insert((s.to_string(), Some(field.to_string())));
         }
     }
 
@@ -354,6 +411,12 @@ impl Lowerer<'_> {
                 }
             }
             ExprKind::Def(d) => {
+                // A custom service (`service ppd from dbus …`) is held by
+                // its readers, as a builtin one is.
+                if matches!(self.hir.def(*d).kind, DefKind::Service(_)) {
+                    let name = self.hir.def(*d).name.clone();
+                    self.note_service(&name);
+                }
                 c.emit(Op::Def(*d), span);
             }
             ExprKind::Service(s) => {
@@ -429,6 +492,9 @@ impl Lowerer<'_> {
                 name,
                 optional,
             } => {
+                if let ExprKind::Service(svc) = &base.kind {
+                    self.note_field(svc, name);
+                }
                 self.expr(c, base);
                 let skip = optional.then(|| c.emit(Op::NullJump(0), span));
                 let n = c.name(name);
@@ -481,10 +547,12 @@ impl Lowerer<'_> {
             }
             ExprKind::Lambda { params, body } => {
                 let mut inner = Chunk::new(self.file);
+                self.frame += 1;
                 match body {
                     LambdaBody::Expr(b) => self.expr(&mut inner, b),
                     LambdaBody::Block(stmts) => self.block_value(&mut inner, stmts),
                 }
+                self.frame -= 1;
                 let free = free_locals(&inner, params);
                 let chunk = self.add_chunk(inner);
                 c.lambdas.push(Lambda {
@@ -533,11 +601,38 @@ impl Lowerer<'_> {
                 }
                 c.emit(Op::Spaced(items.len() as u32), span);
             }
-            ExprKind::Call { callee, args } => self.call(c, callee, args, span),
+            ExprKind::Call { callee, args } => {
+                let service_async = matches!(e.ty, Ty::Async(_))
+                    && match callee {
+                        Callee::Method {
+                            receiver,
+                            name,
+                            overload,
+                        } => {
+                            matches!(receiver.kind, ExprKind::Service(_))
+                                && !self.method_sig(&receiver.ty, name, *overload).2
+                        }
+                        _ => false,
+                    };
+                // Only the site's own call is lowered as a plain call: its
+                // arguments' async calls are sites of their own.
+                let whole = std::mem::take(&mut self.whole_async_call);
+                if service_async && self.frame == 0 && !whole {
+                    // In a binding: the scope's load of this call (its
+                    // own chunk, as a `let` of it would be).
+                    self.whole_async_call = true;
+                    let site = self.expr_chunk(e);
+                    c.emit(Op::AsyncSite(site), span);
+                } else {
+                    self.call(c, callee, args, span, service_async && self.frame > 0);
+                }
+            }
         }
     }
 
-    fn call(&mut self, c: &mut Chunk, callee: &Callee, args: &[CallArg], span: Span) {
+    /// `fetch`: an async service method called in a handler, `fn` or
+    /// lambda ([`Op::FetchMethod`]).
+    fn call(&mut self, c: &mut Chunk, callee: &Callee, args: &[CallArg], span: Span, fetch: bool) {
         match callee {
             Callee::Fn(d) => {
                 let arity = self.out_fn_arity(*d);
@@ -600,6 +695,10 @@ impl Lowerer<'_> {
                 let arity = arity.unwrap_or(args.len());
                 let map = self.push_args(c, args, arity, variadic.map(usize::from));
                 let n = c.name(name);
+                if fetch {
+                    c.emit(Op::FetchMethod { name: n, args: map }, span);
+                    return;
+                }
                 c.emit(
                     Op::CallMethod {
                         name: n,
@@ -811,4 +910,15 @@ fn free_locals(inner: &Chunk, params: &[hir::LocalId]) -> Vec<hir::LocalId> {
         used.extend(l.free.iter().copied());
     }
     used.difference(&bound).copied().collect()
+}
+
+/// A writable place taken apart: see [`Lowerer::place_parts`].
+struct PlaceParts<'e> {
+    root: PlaceRoot,
+    /// Its segments, leaf last.
+    segs: Vec<PlaceSeg>,
+    /// The index expressions above the root.
+    indices: Vec<&'e hir::Expr>,
+    /// The item expression of a [`PlaceRoot::Item`] place.
+    item: Option<&'e hir::Expr>,
 }

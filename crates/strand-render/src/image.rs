@@ -12,11 +12,13 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
+use std::time::Instant;
 
 use strand_scene::SurfaceId;
+use strand_text::HookGate;
 use vello_cpu::Pixmap;
 use vello_cpu::color::PremulRgba8;
 
@@ -155,9 +157,10 @@ impl std::error::Error for ImageError {}
 /// Where icons come from: the theme to look in.
 #[derive(Clone, Debug, Default)]
 pub struct IconTheme {
-    /// A theme by name; `None` is the system's, found on first use.
+    /// A theme by name; `None` is the desktop's
+    /// ([`strand_icons::system_theme`], read again after the icon caches
+    /// are invalidated).
     named: Option<String>,
-    found: std::sync::OnceLock<String>,
 }
 
 impl IconTheme {
@@ -165,11 +168,10 @@ impl IconTheme {
     pub fn named(name: impl Into<String>) -> Self {
         Self {
             named: Some(name.into()),
-            found: std::sync::OnceLock::new(),
         }
     }
 
-    /// The system's theme, read on first use: `$STRAND_ICON_THEME`, else
+    /// The desktop's theme: `$STRAND_ICON_THEME`, else
     /// `gtk-icon-theme-name` in `$XDG_CONFIG_HOME/gtk-3.0/settings.ini`
     /// (or `gtk-4.0`), else Adwaita.
     pub fn system() -> Self {
@@ -177,49 +179,21 @@ impl IconTheme {
     }
 
     /// The theme's name.
-    pub fn name(&self) -> &str {
-        if let Some(n) = &self.named {
-            return n;
+    pub fn name(&self) -> String {
+        match &self.named {
+            Some(n) => n.clone(),
+            None => strand_icons::system_theme(),
         }
-        self.found.get_or_init(system_theme)
     }
 }
 
-fn system_theme() -> String {
-    if let Ok(t) = std::env::var("STRAND_ICON_THEME")
-        && !t.trim().is_empty()
-    {
-        return t.trim().to_string();
-    }
-    let config = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")));
-    for v in ["gtk-3.0", "gtk-4.0"] {
-        let Some(path) = config.as_ref().map(|c| c.join(v).join("settings.ini")) else {
-            continue;
-        };
-        let Ok(text) = std::fs::read_to_string(path) else {
-            continue;
-        };
-        for line in text.lines() {
-            if let Some((k, v)) = line.split_once('=')
-                && k.trim() == "gtk-icon-theme-name"
-            {
-                let v = v.trim().trim_matches('"');
-                if !v.is_empty() {
-                    return v.to_string();
-                }
-            }
-        }
-    }
-    "Adwaita".into()
-}
-
-/// Resolves `key`'s source to a file.
-fn resolve(key: &ImageKey, theme: &IconTheme) -> Result<PathBuf, ImageError> {
+/// Whether `key` is looked up in the icon theme (an `icon`, or an
+/// `image` whose source is no path): what an icon theme change
+/// invalidates.
+pub fn is_icon(key: &ImageKey) -> bool {
     let src = key.source.trim();
-    let path_like = !key.icon
-        && (src.starts_with('/')
+    key.icon
+        || !(src.starts_with('/')
             || src.starts_with("~/")
             || src.starts_with("file://")
             || src.starts_with("./")
@@ -228,8 +202,13 @@ fn resolve(key: &ImageKey, theme: &IconTheme) -> Result<PathBuf, ImageError> {
                     e.to_ascii_lowercase().to_str(),
                     Some("png" | "jpg" | "jpeg" | "svg")
                 )
-            }));
-    if path_like {
+            }))
+}
+
+/// Resolves `key`'s source to a file.
+fn resolve(key: &ImageKey, theme: &IconTheme) -> Result<PathBuf, ImageError> {
+    let src = key.source.trim();
+    if !is_icon(key) {
         let p = if let Some(rest) = src.strip_prefix("file://") {
             PathBuf::from(percent_decode(rest))
         } else if let Some(rest) = src.strip_prefix("~/") {
@@ -250,49 +229,14 @@ fn resolve(key: &ImageKey, theme: &IconTheme) -> Result<PathBuf, ImageError> {
         return Err(ImageError::NotFound(src.into()));
     }
     let size = (key.w.max(key.h) as f32 / key.scale.max(1) as f32).round() as u16;
-    icon_candidates(src)
-        .into_iter()
-        .find_map(|name| {
-            freedesktop_icons::lookup(&name)
-                .with_theme(theme.name())
-                .with_size(size.max(1))
-                .with_scale(key.scale.max(1))
-                .with_cache()
-                .find()
-        })
+    let theme = theme.name();
+    strand_icons::resolve(src, size.max(1), key.scale.max(1), Some(&theme))
         .ok_or_else(|| ImageError::NotFound(src.into()))
 }
 
-/// The names an icon lookup tries, in order: the name, then its other
-/// variant (`-symbolic` added, or removed for a symbolic name), then the
-/// same for each generic fallback with a trailing `-segment` stripped
-/// (the freedesktop icon naming spec: `network-wireless-signal-good`,
-/// `network-wireless-signal`, `network-wireless`, `network`). GTK 4 does
-/// both; current themes (Adwaita) ship mostly symbolic icons, so a tray
-/// item's `network-wireless` finds `network-wireless-symbolic`.
-pub fn icon_candidates(name: &str) -> Vec<String> {
-    let (base, symbolic) = match name.strip_suffix("-symbolic") {
-        Some(b) if !b.is_empty() => (b, true),
-        _ => (name, false),
-    };
-    let mut out = Vec::new();
-    let mut g = base;
-    loop {
-        let sym = format!("{g}-symbolic");
-        if symbolic {
-            out.push(sym);
-            out.push(g.to_string());
-        } else {
-            out.push(g.to_string());
-            out.push(sym);
-        }
-        match g.rfind('-') {
-            Some(i) if i > 0 => g = &g[..i],
-            _ => break,
-        }
-    }
-    out
-}
+/// The names an icon lookup tries ([`strand_icons::candidates`]: the
+/// name, its other `-symbolic` variant, then its generic fallbacks).
+pub use strand_icons::candidates as icon_candidates;
 
 fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();
@@ -685,6 +629,24 @@ fn to_pixmap(r: &Raster) -> Pixmap {
 }
 
 /// Decodes on a thread of its own.
+/// What every image worker runs when its queue drains after a decode,
+/// on its own thread, before it blocks for the next request (see
+/// [`set_idle_hook`]).
+static IDLE_HOOK: OnceLock<fn()> = OnceLock::new();
+
+/// Installs the hook image workers run when their queue drains after
+/// work (the first call wins), like `strand_text::set_idle_hook`:
+/// `strand run` returns the allocator's freed pages there, which only
+/// the worker's own thread can free. It runs inside the burst that woke
+/// the worker, so it costs no wakeup of its own, and only after a
+/// decode (a drain that only dropped unwanted requests owes none), at
+/// most once per 5 s plus that burst's first 250 ms
+/// ([`strand_text::HookGate`]); a skipped one runs once the worker has
+/// been quiet for 500 ms (at most one such wake per 5 s).
+pub fn set_idle_hook(hook: fn()) {
+    let _ = IDLE_HOOK.set(hook);
+}
+
 #[derive(Debug)]
 pub struct ImageWorker {
     requests: Option<Sender<ImageKey>>,
@@ -706,11 +668,41 @@ impl ImageWorker {
         let thread = std::thread::Builder::new()
             .name("strand-image".into())
             .spawn(move || {
-                while let Ok(key) = req_rx.recv() {
+                let mut gate = HookGate::default();
+                loop {
+                    let key = match req_rx.try_recv() {
+                        Ok(key) => key,
+                        Err(TryRecvError::Disconnected) => return,
+                        Err(TryRecvError::Empty) => {
+                            // Drained: the decodes' garbage goes back
+                            // before the worker blocks (rate-limited as
+                            // the text worker's, `HookGate`).
+                            let wait = IDLE_HOOK
+                                .get()
+                                .and_then(|hook| gate.drained(Instant::now(), hook));
+                            let next = match wait {
+                                None => req_rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
+                                Some(d) => req_rx.recv_timeout(d),
+                            };
+                            match next {
+                                Ok(key) => key,
+                                // Quiet: the owed hook, then block.
+                                Err(RecvTimeoutError::Timeout) => {
+                                    if let Some(hook) = IDLE_HOOK.get() {
+                                        gate.quiet(Instant::now(), hook);
+                                    }
+                                    continue;
+                                }
+                                Err(RecvTimeoutError::Disconnected) => return,
+                            }
+                        }
+                    };
                     // A request no frame wants any more (a size passed
-                    // through, a node gone) is dropped undecoded.
+                    // through, a node gone) is dropped undecoded, and
+                    // owes no hook.
                     let want = still.lock().map(|w| w.contains(&key)).unwrap_or(true);
                     let r = if want {
+                        gate.worked();
                         Some(
                             std::panic::catch_unwind(|| load(&key, &theme)).unwrap_or_else(|_| {
                                 Err(ImageError::Decode("decoder panicked".into()))
@@ -781,6 +773,9 @@ pub struct ImageStore {
     /// Per source, the latest decode at any size: drawn scaled while the
     /// one at the drawn size is not there yet (a size spring).
     latest: HashMap<SourceKey, ImageKey>,
+    /// Icon decodes in flight when the icon theme changed: their results
+    /// are dropped (and asked for again) when they arrive.
+    stale: HashSet<ImageKey>,
 }
 
 impl Default for ImageStore {
@@ -799,7 +794,36 @@ impl ImageStore {
             tick: 0,
             frames: HashMap::new(),
             latest: HashMap::new(),
+            stale: HashSet::new(),
         }
+    }
+
+    /// The icon theme changed (a theme installed or switched, an icon
+    /// added): every decode looked up in it is forgotten, so the next
+    /// frame asks for it again, and decodes in flight are dropped on
+    /// arrival. Returns the surfaces whose last frame drew one (to
+    /// repaint). Images drawn from paths stay.
+    pub fn invalidate_icons(&mut self) -> Vec<SurfaceId> {
+        let gone: Vec<ImageKey> = self
+            .entries
+            .keys()
+            .filter(|k| is_icon(k))
+            .cloned()
+            .collect();
+        for k in &gone {
+            if let Some(e) = self.entries.remove(k) {
+                self.bytes -= e.bytes;
+            }
+        }
+        // A stand-in of the old icon would be drawn until the new one
+        // arrives: keep it (no blank frame), it is replaced then.
+        self.stale
+            .extend(self.pending.iter().filter(|k| is_icon(k)).cloned());
+        self.frames
+            .iter()
+            .filter(|(_, f)| f.iter().any(is_icon))
+            .map(|(s, _)| *s)
+            .collect()
     }
 
     pub fn set_backend(&mut self, backend: ImageBackend) {
@@ -919,6 +943,14 @@ impl ImageStore {
         let mut arrived = Vec::new();
         for (k, r) in got {
             self.pending.remove(&k);
+            if self.stale.remove(&k) {
+                // Looked up in the old theme: asked for again by the
+                // frame it repaints.
+                if r.is_some() {
+                    arrived.push(k);
+                }
+                continue;
+            }
             if let Some(r) = r {
                 arrived.push(k.clone());
                 self.insert(k, r);

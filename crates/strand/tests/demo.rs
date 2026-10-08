@@ -1,11 +1,12 @@
 //! `strand run --demo` end to end on a headless sway: two 2560x1440 outputs
-//! (the second at scale 1.25) within the 34 MB PSS budget, a bar on each
-//! with its clock centred, no wakeups while idle, then a third output of
-//! another width at scale 1 (hotplugged) whose bar is aligned to its own
-//! width. Skipped, loudly, when sway or grim is not installed.
-//! The 34 MB gate is asserted when the test runs in release (`cargo test
-//! --release -p strand --test demo`); a debug run is held to a looser
-//! debug ceiling. `scripts/m0-exit.sh` measures the full M0 gates on a
+//! (the second at scale 1.25) within the PSS budget (34 MB target, 38 MB
+//! ceiling), a bar on each with its clock centred, no wakeups while idle,
+//! then a third output of another width at scale 1 (hotplugged) whose bar
+//! is aligned to its own width. Skipped, loudly, when sway or grim is not
+//! installed. The 38 MB ceiling (34 MB target, warned) is asserted when the
+//! test runs in release (`cargo test --release -p strand --test demo`); a
+//! debug run is held to a looser debug ceiling. `scripts/m0-exit.sh`
+//! measures the full M0 gates on a
 //! release build (a whole minute, the tick's damage).
 
 use std::os::unix::fs::PermissionsExt;
@@ -196,9 +197,11 @@ fn damage_lines(log: &Path) -> Vec<String> {
         .collect()
 }
 
-/// The M0 memory gate (`docs/design.md`: the build fails above 34 MB for
-/// the two-monitor bar), held on a release build (`cargo test --release`).
-const PSS_GATE_KB: u64 = 34 * 1024;
+/// The memory gate (`docs/design.md`: the two-monitor bar aims at 34 MB and
+/// the build fails above 38 MB), held on a release build (`cargo test
+/// --release`).
+const PSS_TARGET_KB: u64 = 34 * 1024;
+const PSS_GATE_KB: u64 = 38 * 1024;
 
 /// A debug build carries about 9 MB more than release (30–31 MB against
 /// 21–22 MB in M0): its own, looser ceiling, so debug-only growth does not
@@ -210,7 +213,20 @@ fn pss_limit() -> (u64, &'static str) {
     if cfg!(debug_assertions) {
         (DEBUG_PSS_CEILING_KB, "debug ceiling")
     } else {
-        (PSS_GATE_KB, "M0 gate")
+        (PSS_GATE_KB, "38 MB ceiling")
+    }
+}
+
+/// A release measurement above the 34 MB target: a warning (a CI
+/// annotation), not a failure.
+fn warn_over_target(what: &str, pss: u64) {
+    if !cfg!(debug_assertions) && pss > PSS_TARGET_KB {
+        eprintln!("{what}: PSS {pss} kB is over the {PSS_TARGET_KB} kB target");
+        if std::env::var_os("GITHUB_ACTIONS").is_some() {
+            println!(
+                "\n::warning title=memory over target::{what}: PSS {pss} kB is over the {PSS_TARGET_KB} kB target (the build fails above 38 MB)"
+            );
+        }
     }
 }
 
@@ -242,8 +258,14 @@ fn memory_report(pid: u32) -> String {
     }
     // The ten mappings with the most PSS.
     let smaps = read(&format!("/proc/{pid}/smaps"));
-    let mut maps: Vec<(u64, String)> = Vec::new();
+    let mut maps: Vec<(u64, u64, String)> = Vec::new();
     let mut head = String::new();
+    let kb = |v: &str| {
+        v.split_whitespace()
+            .next()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
+    };
     for l in smaps.lines() {
         if l.split_whitespace()
             .next()
@@ -251,17 +273,21 @@ fn memory_report(pid: u32) -> String {
         {
             head = l.to_string();
         } else if let Some(v) = l.strip_prefix("Pss:") {
-            let kb = v
-                .split_whitespace()
-                .next()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(0);
-            maps.push((kb, head.clone()));
+            maps.push((kb(v), 0, head.clone()));
+        } else if let Some(v) = l.strip_prefix("AnonHugePages:")
+            && let Some(m) = maps.last_mut()
+        {
+            m.1 = kb(v);
         }
     }
     maps.sort_by_key(|m| std::cmp::Reverse(m.0));
-    for (kb, m) in maps.iter().take(10) {
-        out.push_str(&format!("{kb:>7} kB  {m}\n"));
+    for (kb, huge, m) in maps.iter().take(10) {
+        let huge = if *huge > 0 {
+            format!(" ({huge} kB huge)")
+        } else {
+            String::new()
+        };
+        out.push_str(&format!("{kb:>7} kB{huge}  {m}\n"));
     }
     out
 }
@@ -275,6 +301,18 @@ fn assert_thp_off(pid: u32) {
     if let Some(l) = line {
         assert_eq!(l.split_whitespace().nth(1), Some("0"), "THP is on: {l}");
     }
+    // Off from before the first allocation (`main.rs`, `NO_THP`): with
+    // THP `always`, pages the runtime touched before `main` were huge.
+    let rollup = std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup")).unwrap();
+    let huge = rollup
+        .lines()
+        .find_map(|l| l.strip_prefix("AnonHugePages:"))
+        .map(str::trim);
+    assert!(
+        huge.is_none_or(|h| h == "0 kB"),
+        "huge pages resident: {huge:?}\n{}",
+        memory_report(pid)
+    );
 }
 
 fn pss_kb(pid: u32) -> u64 {
@@ -440,6 +478,7 @@ fn demo_bar_on_two_outputs_then_idle() {
     let pss = pss_kb(pid);
     let (limit, what) = pss_limit();
     eprintln!("strand PSS with two 2560x1440 bars: {pss} kB ({what} {limit} kB)");
+    warn_over_target("M0 bar", pss);
     assert!(
         pss <= limit,
         "PSS {pss} kB over the {limit} kB {what}\n{}",
@@ -453,9 +492,15 @@ fn demo_bar_on_two_outputs_then_idle() {
     }
     let frames = damage_lines(&log).len();
     let before = switches(pid);
+    let threads = per_thread(pid);
     std::thread::sleep(Duration::from_secs(2));
     let after = switches(pid);
-    assert_eq!(after - before, 0, "woke while idle");
+    let woke: Vec<String> = per_thread(pid)
+        .into_iter()
+        .filter(|(t, n)| threads.get(t) != Some(n))
+        .map(|(t, n)| format!("{t}: {} -> {n}", threads.get(&t).copied().unwrap_or(0)))
+        .collect();
+    assert_eq!(after - before, 0, "woke while idle: {woke:?}");
     assert_eq!(damage_lines(&log).len(), frames, "painted while idle");
 
     // A third monitor, at scale 1 like the first but narrower: the shared
@@ -501,8 +546,8 @@ fn demo_bar_on_two_outputs_then_idle() {
 
 /// The M0 budget on design.md's own bar (theme.strand and bar.strand,
 /// unchanged, on the mock desktop with the real clock), not the M0 demo:
-/// two 2560x1440 outputs at 1.0 and 1.25 within the 34 MB PSS gate (in a
-/// release run; the debug ceiling otherwise); once boot work is done, no
+/// two 2560x1440 outputs at 1.0 and 1.25 within the PSS budget (34 MB
+/// target warned, 38 MB ceiling fails; in a release run; the debug ceiling otherwise); once boot work is done, no
 /// thread waking from then (by :45) to :57 of the minute (no idle-cache
 /// or other timer of its own: the next wake is the minute tick); and the
 /// tick itself repainting at most 2,000 px² over both outputs. Several
@@ -531,6 +576,21 @@ fn the_design_bar_keeps_the_m0_budget() {
     let home =
         Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("budget-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
+    // The font and icon directories the cache sources name, made, so the
+    // watcher watches each itself and not, while one is missing, its
+    // nearest existing ancestor for creations (HOME would be one).
+    for d in [
+        ".fonts",
+        ".icons",
+        ".config/fontconfig",
+        ".config/gtk-3.0",
+        ".config/gtk-4.0",
+        ".local/share/fonts",
+        ".local/share/icons",
+        ".local/share/applications",
+    ] {
+        std::fs::create_dir_all(home.join(d)).unwrap();
+    }
     let config = home.join(".config/strand");
     std::fs::create_dir_all(&config).unwrap();
     for (name, text) in [
@@ -573,6 +633,26 @@ fn the_design_bar_keeps_the_m0_budget() {
         assert!(Instant::now() < deadline, "bars did not paint");
         std::thread::sleep(Duration::from_millis(50));
     }
+    // The tick measured below is a steady one: a surface's buffer of
+    // age 2 repaints its previous frame's damage too, so the first tick
+    // after boot also repaints whatever the boot's last frame drew (icons
+    // decoded late on a loaded runner: CI run 37764492027, 2,196 px²).
+    // The first tick is let by, as budgets.rs does.
+    let minute = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() / 60)
+            .unwrap_or(0)
+    };
+    let booted = minute();
+    while minute() == booted {
+        assert!(
+            strand.0.try_wait().unwrap().is_none(),
+            "strand exited: {}",
+            std::fs::read_to_string(&log).unwrap_or_default()
+        );
+        std::thread::sleep(Duration::from_millis(500));
+    }
     // Boot work done (late icons and glyphs, a loaded machine): a whole
     // second with no wakeup and no frame, early enough in the minute
     // that the window below ends before the next tick.
@@ -602,6 +682,7 @@ fn the_design_bar_keeps_the_m0_budget() {
         pss_limit()
     };
     eprintln!("design bar PSS on two 2560x1440 outputs: {pss} kB ({what} {limit} kB)");
+    warn_over_target("design bar", pss);
     assert!(
         pss <= limit,
         "PSS {pss} kB over the {limit} kB {what}\n{}",

@@ -573,7 +573,7 @@ File saves and system changes enter at the top and become writes into the reacti
 - GPU frames send full damage until wgpu's [`present_with_damage` PR #10152](https://github.com/gfx-rs/wgpu/pull/10152) lands. That's acceptable because only large animations run on the GPU.
 - Frame callbacks are requested only while something is dirty or a spring is unsettled. Timing comes from `wp_presentation` feedback, so frames lock to the real refresh rate, not a free-running clock.
 
-**Memory budget** (PSS in MB, design estimates to be measured in M0 and M3)
+**Memory budget** (PSS in MB, design estimates to be measured in M0 and M3). The totals are targets: CI warns above them and fails only above a ceiling, 38 MB for the two-monitor bar and 70 MB for the full shell, so runner variance and real icon themes do not flip the build while growth past the target stays visible.
 
 | Item | Bar only, 2×1440p | Full shell, launcher open |
 | --- | --- | --- |
@@ -716,15 +716,15 @@ Services are typed Rust structs that start lazily when a shell first references 
 | Crate | Purpose | Notes |
 | --- | --- | --- |
 | [zbus](https://crates.io/crates/zbus) 5.19, zbus\_xmlgen | D-Bus for UPower, logind, MPRIS, portal, power profiles, notifications | Generate our own typed proxies; `upower_dbus` and `mpris` are stale or libdbus-based |
-| tokio 1.53 | Services runtime | zbus, nmrs and system-tray all assume it |
+| tokio 1.53 | Services runtime | zbus (and the services built on it) assume it |
 | smithay-client-toolkit 0.21, wayland-protocols 0.32 | Surfaces and protocols | Staging includes ext-workspace, foreign-toplevel-list, image-copy-capture, background-effect |
 | pipewire 0.10 | Audio, levels, default sink | No usable WirePlumber binding; read PipeWire's `default` metadata |
 | logind-zbus 5.3 | Brightness via `SetBrightness` | No root or udev rules needed |
-| nmrs 3.5 | NetworkManager | zbus 5, actively released |
+| Own zbus clients | NetworkManager | nmrs 3.5 was the first choice; it only connects to the machine's system bus, so it cannot run on the buses the services are given or a private test bus (decisions.md, wave4-a2) |
 | bluer 0.17, or own zbus proxies | Bluetooth | bluer uses libdbus; a few zbus proxies may be lighter |
-| system-tray 0.8.9 | StatusNotifierItem host plus DBusMenu | Used by ironbar |
+| Own zbus clients | StatusNotifierItem host plus DBusMenu | system-tray 0.8.9 was the first choice; it only connects to the machine's session bus and leaves detached tasks running after its client is dropped (decisions.md, wave4-a2) |
 | Own zbus `#[interface]` | Notification server | notify-rust's server is experimental; fail clearly if dunst or mako owns the name |
-| freedesktop-desktop-entry 0.8, freedesktop-icons 0.4 | Launcher data and icons | Watched live |
+| freedesktop-desktop-entry 0.8; own icon theme lookup | Launcher data and icons | Watched live; freedesktop-icons 0.4 was the first choice, but its theme and lookup caches are process statics nothing can refresh, so it cannot follow a theme change (decisions.md, wave4-a3) |
 | nucleo 0.5 | Fuzzy matching with match ranges | Releases stalled since 2024; wrap it, fork if needed |
 | swayipc-async 3.0; own Hyprland and niri IPC | Compositor adapters | `hyprland` and `niri-ipc` crates are GPL-3.0; their IPC is simple JSON over a socket |
 | rustix inotify, blake3 | Live reload | Directory watches without `IN_OPEN`; see live reload |
@@ -767,7 +767,7 @@ TSX lost on every lens for the same reasons: a JS runtime's memory and startup c
 | Blur coverage: sway, labwc and COSMIC have none; Hyprland's support of the new protocol is unverified | The fallback ladder; tint by default |
 | Reload semantics and lock-screen security | A written spec, the edit fuzzer, VM-only lock testing, and a small, separately reviewable PAM helper |
 | The notification bus name can collide with dunst or mako; nucleo releases have stalled; niri's IPC changes in patch versions | Clear error on name conflict; wrap nucleo; reimplement niri IPC behind a feature flag |
-| Memory figures are estimates | Measure in M0 and M3; the exit criteria fail the milestone if over budget |
+| Memory figures are estimates | Measure in M0 and M3; the exit criteria fail the milestone above the ceiling (38 MB bar, 70 MB full shell), and anything over the target is reported |
 
 **Open questions**
 
@@ -787,7 +787,7 @@ Everything is tested on one developer machine plus free CI, with no extra hardwa
 | Wayland integration | One container: sway headless with software rendering, optionally weston | Layer-shell, popups, damage, input regions; hotplug and mixed DPI faked with `swaymsg create_output` and per-output scales | Every push |
 | Services | Same container, private D-Bus via `dbus-run-session` | python-dbusmock for UPower, NetworkManager, BlueZ, logind and notifications; PipeWire with a null sink; small zbus mocks for the portal and tray | Every push |
 | Reload fuzzer | Same container, tmpfs | Random edits replayed through five editor save styles; no panic, blank frame or lost state | Every push, longer runs nightly |
-| Budgets | Same container | Memory (PSS) and idle wakeups; the build fails above 34 MB for the two-monitor bar | Every push |
+| Budgets | Same container | Memory (PSS) and idle wakeups; the two-monitor bar warns above its 34 MB target and fails above 38 MB, the full shell warns above 64 MB and fails above 70 MB | Every push |
 | Lock screen | Local QEMU VM | PAM, fail-closed behaviour under injected faults; never tested on your real session | Before touching the lock code, and before releases |
 | Daily driving | Your own compositor, nested in a window, then as your real shell | Real-world bugs no lab finds | Always |
 

@@ -1,0 +1,76 @@
+/// The app that sent a notification.
+record NotificationApp {
+  /// The app's name.
+  name: text
+  /// The app's icon: an icon name or a path.
+  icon: text
+}
+
+/// A button a notification offers.
+record NotificationAction key id {
+  /// Its identity: the key the sender gave it.
+  id: text
+  /// Its label: `button a.label`.
+  label: text
+  /// The notification it belongs to.
+  notification: int
+  /// Invokes it: `on click { a.invoke() }`. The sender is told; the
+  /// notification closes unless it is resident.
+  action invoke()
+}
+
+/// A desktop notification, keyed by `id`.
+record Notification key id {
+  /// Its identity.
+  id: int
+  /// The app that sent it.
+  app: NotificationApp
+  /// Its summary line.
+  summary: text
+  /// Its body, which may hold basic markup (`markup: basic`).
+  body: text
+  /// An image it carries, if any: a path.
+  image: text?
+  /// `low`, `normal` or `critical`.
+  urgency: Urgency
+  /// How long the sender asked it to show; null leaves it to the shell:
+  /// `after n.timeout ?? 6s { n.expire() }`.
+  timeout: duration?
+  /// The sender asked it never to expire (an `expire_timeout` of 0): a
+  /// shell keeps its popup with `after n.timeout ?? 6s while !n.persistent
+  /// { n.expire() }`.
+  persistent: bool
+  /// When it arrived.
+  time: Date
+  /// The buttons it offers.
+  actions: [NotificationAction]
+  /// Ends its popup, as a timeout does; it stays in `all`, still open
+  /// (its actions still reach the sender) until dismissed.
+  action expire()
+  /// Closes it: `on secondary { n.dismiss() }`.
+  action dismiss()
+  /// Invokes its default action: `on click { n.activate() }`.
+  action activate()
+}
+
+/// The notification server: the shell owns the freedesktop notification
+/// name, and says so clearly if another daemon (dunst, mako) has it.
+service notifications {
+  /// The notifications to show now; each leaves when it expires or is
+  /// dismissed.
+  popups: [Notification]
+  /// Every notification kept, popups included: the newest 100 (older
+  /// ones close as expired).
+  all: [Notification]
+  /// How many notifications are kept.
+  count: int
+  /// Do not disturb: new notifications that are not critical skip the
+  /// popups (they are kept in `all`, and `received` still fires).
+  /// Writable.
+  dnd: bool rw
+  /// Dismisses every notification.
+  action clear()
+  /// A notification arrived. Events are lossless queues:
+  /// `on notifications.received(n) { … }`.
+  event received(n: Notification)
+}

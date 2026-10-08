@@ -1,0 +1,45 @@
+[{
+    "id": 1,
+    "name": "1",
+    "monitor": "DP-1",
+    "monitorID": 0,
+    "windows": 1,
+    "hasfullscreen": false,
+    "lastwindow": "0x55d0c0a1b2c0",
+    "lastwindowtitle": "~",
+    "ispersistent": false,
+    "tiledLayout": "dwindle"
+},{
+    "id": 3,
+    "name": "3",
+    "monitor": "HDMI-A-1",
+    "monitorID": 1,
+    "windows": 0,
+    "hasfullscreen": false,
+    "lastwindow": "0x0",
+    "lastwindowtitle": "",
+    "ispersistent": false,
+    "tiledLayout": "dwindle"
+},{
+    "id": -98,
+    "name": "special:magic",
+    "monitor": "DP-1",
+    "monitorID": 0,
+    "windows": 1,
+    "hasfullscreen": false,
+    "lastwindow": "0x55d0c0a1e5f0",
+    "lastwindowtitle": "Volume Control",
+    "ispersistent": false,
+    "tiledLayout": "dwindle"
+},{
+    "id": 2,
+    "name": "2",
+    "monitor": "DP-1",
+    "monitorID": 0,
+    "windows": 1,
+    "hasfullscreen": false,
+    "lastwindow": "0x55d0c0a1c3d0",
+    "lastwindowtitle": "foot",
+    "ispersistent": false,
+    "tiledLayout": "dwindle"
+}]

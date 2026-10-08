@@ -493,6 +493,20 @@ impl<'a> Build<'a> {
         }
         if let Some(s) = num(get(Prop::Shrink).as_deref()) {
             style.flex_shrink = s.max(0.0);
+        } else if matches!(kind, NodeKind::Image | NodeKind::Icon) {
+            // An image or icon sized in absolute lengths keeps its size in
+            // a full row, as a CSS replaced element's automatic minimum
+            // keeps it (the launcher's 32 px icon beside a long cut
+            // comment); an explicit `shrink:` lets it give way. A
+            // percentage size is relative to the row, so it gives way as
+            // any box does.
+            let w = dim(get(Prop::Width).as_deref(), font).or(size);
+            let h = dim(get(Prop::Height).as_deref(), font).or(size);
+            let px = |l: Option<Len>| matches!(l, Some(Len::Px(_)));
+            let pct = |l: Option<Len>| matches!(l, Some(Len::Pct(_)));
+            if (px(w) || px(h)) && !pct(w) && !pct(h) {
+                style.flex_shrink = 0.0;
+            }
         }
         if keyword(get(Prop::Place).as_deref()) == Some("absolute") {
             style.position = Position::Absolute;
