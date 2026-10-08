@@ -8719,3 +8719,20 @@ owner's explicit confirmation. The wave4-exitMemory entries above that
 say "confirmed by the owner" and commit `3570d56`'s title are read with
 that qualification. Every measured figure also passes the 34 / 64 MB
 hard gates, so the M3 exit holds under either reading.
+
+**2026-10-08 · wave4-exitReport (review r2): the size opt-levels and the
+token clause, measured.** Review r2 asked whether `opt-level = "s"` on
+`strand` costs the M1 latency bench's token clause its headroom. At
+`a595513`, three release runs each on this machine: with `"s"` the
+headless token p95 read 20.0 / 19.8 / 19.7 ms against breaks of
+19.9 / 19.7 / 19.7 ms; with `strand` at `opt-level = 3` it read
+21.3 / 19.3 / 19.9 ms against 21.1 / 19.5 / 19.8 ms. Two of three failed
+by 0.1–0.2 ms either way; the logic, text and render crates are at the
+default 3 in both builds. Opt-level 3 on `strand` raised the design
+bar's PSS from 31,978 / 31,987 kB to 34,031 / 34,116 kB (file-backed
+17.6–17.7 → 19.3–19.4 MB), over the 34 MB target. So the override stays
+`"s"`: it does not cost the token clause, and dropping it costs the bar
+its margin. The token clause's narrow headroom on this machine is the
+reload path's own (~19 ms headless), left to the M1 owners
+(m3-report.md Open); CI passes it (runs 37758646892, 37768656088).
+

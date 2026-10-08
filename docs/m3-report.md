@@ -8,7 +8,17 @@ picked with `STRAND_DBUSMOCK_PYTHON`), release builds with the workspace's
 profile (thin LTO, one codegen unit, mimalloc, the per-package size
 opt-levels of decisions.md wave4-exitMemory). Every number below comes
 from a test in the tree that fails when its gate is missed, run at
-`9b4cc13` (wave4/core after merging wave4/exit-ci) with
+`9b4cc13` (wave4/core after merging wave4/exit-ci) and re-checked at
+the final heads: review r2 re-ran the design bar, the latency bench and
+the screenshots at `f681c45` (bar PSS 31,093 kB, anon 11,884, file
+16,681, shmem 2,528; portal sent → painted p95 3.3 ms, → presented
+3.6 ms; `the_m3_screenshots` green), and the r2 fixer re-ran the bar
+and the bench at `a595513` (bar PSS 31,978 and 31,987 kB; portal p95
+3.3–3.8 ms painted, 3.6–4.0 ms presented); the code changed since
+`9b4cc13` (the sized-image shrink default, the budgets idle window, the
+demo tick gate, the `from file` watch climb) leaves the re-checked
+figures within 0.9 MB (bar) and 0.4 ms (portal p95) of those quoted
+below, all under their targets. Runs used
 `STRAND_REQUIRE_SWAY=1 STRAND_REQUIRE_DBUS=1 STRAND_REQUIRE_PIPEWIRE=1`,
 so a missing tool fails instead of skipping. CI runs the same tests on
 `ubuntu-24.04` (`.github/workflows/ci.yml`, job `check`) and the
@@ -29,7 +39,7 @@ machine's own system or session bus.
 
 | Gate (`docs/features.md`, M3 exit) | Budget | Measured | |
 | --- | --- | --- | --- |
-| Runs on Hyprland, niri and sway | the `workspaces`, `windows` and `wm` stores and design.md's bar agree with each compositor | sway, niri 26.04 and Hyprland 0.56.2 green in CI's `compositors` job, latest [job 113227617119](https://github.com/jakeb-grant/strand/actions/runs/37752116747/job/113227617119) of run 37752116747 on this branch's merge commit `e132d8d` | pass |
+| Runs on Hyprland, niri and sway | the `workspaces`, `windows` and `wm` stores and design.md's bar agree with each compositor | sway, niri 26.04 and Hyprland 0.56.2 green in CI's `compositors` job, on this branch's merge commit `e132d8d` ([job 113227617119](https://github.com/jakeb-grant/strand/actions/runs/37752116747/job/113227617119) of run 37752116747) and latest on `f681c45` ([job 113282445061](https://github.com/jakeb-grant/strand/actions/runs/37768656088/job/113282445061) of run 37768656088, `check` green too) | pass |
 | 100 reloads with no reconnects | no service restarts, no new connection (the `from dbus` introspection refresh exempt; see Open), no mock call | **100 reloads in 8.4 s**, every check clean (below) | pass |
 | Memory: design.md's bar, 2×2560×1440, real services | 34 MB target (warns), 38 MB ceiling (fails) | **31,690 kB** (30.9 MiB) here, **32,664 kB** (31.9 MiB) in CI run 37749789401 | pass, under the target |
 | Memory: full shell, launcher open, toasts, OSD | design.md 59–64 MB; 64 MB target, 70 MB ceiling | **45,502 kB** (44.4 MiB, 12 desktop entries), **55,477 kB** (54.2 MiB, 169) here; 49,384 / 58,115 kB (48.2 / 56.8 MiB) in CI run 37749789401 | pass, under design.md's estimate |
@@ -62,6 +72,7 @@ The job uploads its screenshots as the `compositor-matrix` artifact.
 | [37653750783](https://github.com/jakeb-grant/strand/actions/runs/37653750783) | wave4/exit-ci | pass | pass | pass |
 | [37655626535, job 112910256243](https://github.com/jakeb-grant/strand/actions/runs/37655626535/job/112910256243) | wave4/exit-ci, named workspace and click required | pass | pass | pass |
 | [37752116747, job 113227617119](https://github.com/jakeb-grant/strand/actions/runs/37752116747/job/113227617119) | wave4/core `e132d8d` (this merge; the whole run green, `check` included) | pass | 26.04 pass | 0.56.2 pass |
+| [37768656088, job 113282445061](https://github.com/jakeb-grant/strand/actions/runs/37768656088/job/113282445061) | wave4/core `f681c45` (latest fully green run: `check` and `compositors`) | pass | pass | pass |
 
 The job tracks the compositors' current Arch packages on purpose
 (decisions.md wave4-exit-ci) and prints `pacman -Q`. Found on the way:
@@ -252,9 +263,22 @@ The headless token p95 was 18.0 ms at M1 and 19.2 ms at wave4-exitReload.
 The bench collects every clause's verdict before it fails, so the token
 flake does not hide the portal result. CI's `check` job passed the
 whole bench in run 37749789401 (`d74caad`) and in run 37758646892
-(`0ca7592`: token p95 17.8 ms against a break of 19.4 ms). Whether the
-size opt-levels added for memory cost the token path its headroom is
-listed as open.
+(`0ca7592`: token p95 17.8 ms against a break of 19.4 ms), and in run
+37768656088 (`f681c45`).
+
+**The size opt-levels do not cost the token clause its headroom.**
+Measured at `a595513`, three bench runs each, release, same machine:
+with the workspace's `opt-level = "s"` on `strand` the headless token
+p95 read 20.0, 19.8 and 19.7 ms against breaks of 19.9, 19.7 and
+19.7 ms (two of three failed by 0.1 ms); with `strand` at `opt-level = 3`
+it read 21.3, 19.3 and 19.9 ms against 21.1, 19.5 and 19.8 ms (two of
+three failed too). The logic, text and render crates are at the default
+3 in both. Opt-level 3 on `strand` cost the design bar about 2.1 MB of
+PSS (34,031 and 34,116 kB against 31,978 and 31,987 kB with `"s"`,
+almost all file-backed: 19.3–19.4 MB against 17.6–17.7 MB), which puts it
+over the 34 MB target, so the override stays. The token edit's ~19 ms
+is the reload path itself, not the binary's code size; the margin is
+the M1 gate's, and listed as open.
 
 ## Screenshots
 
@@ -288,7 +312,10 @@ column:
 ![The launcher with the machine's apps](images/m3-launcher.png)
 
 Two toasts sent with `Notify` over D-Bus to the shell's own notification
-server:
+server, both at urgency critical (`budgets.rs`'s `Desktop::notify(…, true)`)
+so they stay up through the shots: that is why both carry toasts.strand's
+`when n.urgency == critical { border: 1, $error }` border, which a normal
+toast does not have:
 
 ![Toasts from the notifications server](images/m3-toasts.png)
 
@@ -329,10 +356,18 @@ Every M3 tier has a CI step (`.github/workflows/ci.yml`):
   the ancestor watches above the config root's parent are needed is the
   `strand-watch` owner's call.
 - The token clause of the M1 latency bench has under 0.2 ms of p95
-  headroom on this machine; whether the memory step's size opt-levels
-  cost it should be measured (`opt-level = "s"` on `strand` against 3).
+  headroom on this machine and fails about two runs in three here (CI
+  passes it). The size opt-levels are not the cause (measured above:
+  `strand` at opt-level 3 fails as often and costs the bar ~2.1 MB);
+  the ~19 ms headless token reload is the path to profile (M1 owners).
 - The owner's confirmation of the 34/38 and 64/70 MB targets and
-  ceilings and of the release opt-level overrides.
+  ceilings and of the release opt-level overrides (decisions.md
+  wave4-exitReport, review r2, item 3: the "confirmed by the owner"
+  entries of wave4-exitMemory are read with this qualification).
+- The strand-render owner's acknowledgement of the layout default this
+  step added: an `image` or `icon` sized in absolute lengths defaults to
+  `shrink: 0` (a percentage size still gives way); decisions.md
+  wave3-pixels `shrink` note and wave4-exitReport reviews r1 and r2.
 - Fixed since: the `from file` watch race CI run 37754849203 hit once
   (`services::tests::custom_services::a_file_service_waits_for_its_directory`):
   a directory removed between `FileWatch::arm`'s `is_dir()` check and
