@@ -98,13 +98,29 @@ impl Watch {
 
     /// Waits (at most `secs`) until `done` holds for the mirror.
     fn until(&mut self, secs: u64, what: &str, done: impl Fn(&Mirror) -> bool) {
+        self.until_or(secs, what, done, String::new);
+    }
+
+    /// [`Watch::until`], adding `context()` (read at the timeout, e.g. the
+    /// session's metadata) to the failure message.
+    fn until_or(
+        &mut self,
+        secs: u64,
+        what: &str,
+        done: impl Fn(&Mirror) -> bool,
+        context: impl FnOnce() -> String,
+    ) {
         let deadline = Instant::now() + Duration::from_secs(secs);
         self.poll();
         while !done(&self.mirror) {
             let left = deadline.saturating_duration_since(Instant::now());
             match self.rx.recv_timeout(left) {
                 Ok(b) => self.take(b),
-                Err(_) => panic!("timed out waiting for {what}: {:#?}", self.mirror),
+                Err(_) => panic!(
+                    "timed out waiting for {what}: {:#?}\n{}",
+                    self.mirror,
+                    context()
+                ),
             }
         }
     }
@@ -201,9 +217,15 @@ fn devices_volume_mute_and_the_default_arrive() {
     // The default moves to b (wpctl writes default.configured.audio.sink;
     // WirePlumber then sets default.audio.sink).
     pw.wpctl(&["set-default", &b.id.to_string()]);
-    w.until(5, "b as the default", |m| {
-        m.sink.as_ref().is_some_and(|d| d.name == "strand-sink-b")
-    });
+    // On a timeout the `default` metadata shows which side stalled: the
+    // session manager (no `default.audio.sink` = b yet) or the service.
+    // CI run 37804811859 timed out here once, without that record.
+    w.until_or(
+        5,
+        "b as the default",
+        |m| m.sink.as_ref().is_some_and(|d| d.name == "strand-sink-b"),
+        || format!("pw-metadata default:\n{}", pw.metadata()),
+    );
     assert!(w.sink("strand-sink-b").default);
     assert!(!w.sink("strand-sink-a").default);
     assert!(w.mirror.sink.as_ref().is_some_and(|d| d.muted));

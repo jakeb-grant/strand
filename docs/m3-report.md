@@ -432,6 +432,24 @@ Every M3 tier has a CI step (`.github/workflows/ci.yml`):
   passed, as do local debug runs; whether the icons are late or never
   drawn on that path is not known (strand-icons / strand-render
   owners).
+- A CI flake in the debug workspace step: run 37804811859 (`5eb4a1a`)
+  failed `crates/strand-services/tests/audio.rs::devices_volume_mute_and_the_default_arrive`
+  at "b as the default": after `wpctl set-default` the mirror kept
+  sink a as the default for 5 s (volume and mute had arrived at once).
+  The service takes the effective `default.audio.sink` when it names a
+  device, so either WirePlumber had not applied the configured key or
+  the metadata event was missed; the log could not say which. It
+  did not reproduce in 20 runs here. The test now prints `pw-metadata`'s `default` on
+  that timeout, so a recurrence names the side that stalled (audio
+  owners).
+- Closed since: the cache change sources (`applications/`, icon theme
+  bases and GTK settings, font dirs and fontconfig) were proved only in
+  `strand-watch` and the caches' own tests. `crates/strand/src/live.rs::tests::cache_sources_name_every_directory_strand_run_watches`
+  pins the list `strand run` watches, and
+  `crates/strand/tests/services.rs::installed_apps_icons_and_fonts_show_without_a_reload`
+  installs an app, an icon theme index, a GTK theme setting, a font
+  and a fontconfig dir under a running `strand run` and sees each on
+  screen with no reload (carried issues round 2, item 3).
 - `strand-introspect` opens a new D-Bus connection for each 10 s
   introspection refresh of a `from dbus` check; the reloads test carves
   out its Hello and Introspect.

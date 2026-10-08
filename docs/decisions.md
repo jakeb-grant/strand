@@ -7251,6 +7251,30 @@ confirmed 34 MB target / 38 MB ceiling (607bd10; its paragraph is at
 the end of wave4-exitReport, "memory targets and ceilings confirmed by
 the owner"); this round keeps that.
 
+**2026-10-08 · wave4-core (carried issues, round 2 closer): the round's
+fixes checked together; an audio default-sink timeout gets a witness.**
+With items 3 (cache sources proved: `crates/strand/src/live.rs::tests::cache_sources_name_every_directory_strand_run_watches`,
+`crates/strand/tests/services.rs::installed_apps_icons_and_fonts_show_without_a_reload`)
+and 5 (m3-report states the owner-confirmed gates,
+`crates/strand/tests/budgets.rs::the_report_states_the_owner_confirmed_memory_gates`;
+its paragraph sits after the owner's entry at the end of
+wave4-exitReport, which it refers to as "the entry above") in, fmt,
+clippy and a full `cargo test --workspace` with every tier required
+passed here (1,490 passed, 0 failed, 5 ignored). CI run 37804811859 (at
+`5eb4a1a`, before this round) had failed once in
+`crates/strand-services/tests/audio.rs::devices_volume_mute_and_the_default_arrive`:
+after `wpctl set-default` the mirror kept sink a as the default for the
+5 s wait. The service reads the effective `default.audio.sink` before
+the configured key (wave4-wm audio defaults above), so that is either
+WirePlumber not yet applying the configured key or a missed metadata
+event, and the log could not tell which. It did not reproduce in 20
+runs here (12 of the test alone, 8 of the whole binary). Rather than
+widen the wait or accept the configured key in the test, which would
+hide a missed event, the timeout now prints the `default` metadata
+(`pw-metadata`) beside the mirror, so a recurrence shows which side
+stalled. No production code changed; m3-report's Open list records the
+flake and closes the cache-sources proof.
+
 ## wave4-a2
 
 **2026-10-07 · wave4-a2: the D-Bus services are real; which they are.**
