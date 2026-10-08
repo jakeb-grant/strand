@@ -297,6 +297,18 @@ impl Setup {
         mocks: &[(&str, &str)],
         env: &[(&str, PathBuf)],
     ) -> Option<Setup> {
+        Setup::start_prepared(name, config_text, mocks, env, |_| {})
+    }
+
+    /// [`Setup::start_with`], with `prepare` filling the home directory
+    /// (made empty but for the config) before `strand run` starts.
+    fn start_prepared(
+        name: &str,
+        config_text: &str,
+        mocks: &[(&str, &str)],
+        env: &[(&str, PathBuf)],
+        prepare: impl FnOnce(&Path),
+    ) -> Option<Setup> {
         if !tools() {
             return None;
         }
@@ -340,6 +352,7 @@ impl Setup {
         let config = home.join(".config/strand");
         std::fs::create_dir_all(&config).unwrap();
         std::fs::write(config.join("bar.strand"), config_text).unwrap();
+        prepare(&home);
         let log = dir.join("strand.log");
         let strand = Proc(
             Command::new(env!("CARGO_BIN_EXE_strand"))
@@ -714,4 +727,218 @@ bar Top {{
     }
     drop(setup);
     let _ = std::fs::remove_dir_all(&data);
+}
+
+const MAGENTA: [u8; 3] = [255, 0, 255];
+const CYAN: [u8; 3] = [0, 255, 255];
+
+/// A one-colour scalable icon.
+fn svg(fill: &str) -> String {
+    format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\">\
+         <rect width=\"16\" height=\"16\" fill=\"{fill}\"/></svg>\n"
+    )
+}
+
+/// An icon theme of scalable apps icons.
+fn index_theme(name: &str, inherits: &str) -> String {
+    format!(
+        "[Icon Theme]\nName={name}\n{inherits}Directories=scalable/apps\n\n\
+         [scalable/apps]\nSize=32\nMinSize=8\nMaxSize=512\nType=Scalable\n"
+    )
+}
+
+/// Pixels of row `y` that are `c`.
+fn count(img: &Img, y: usize, c: [u8; 3]) -> usize {
+    (0..img.w).filter(|&x| close(img.px(x, y), c)).count()
+}
+
+/// The bottom bar's pixels (rows 680 to 719 of the 1280x720 output).
+fn bottom(img: &Img) -> Vec<u8> {
+    img.rgb[680 * img.w * 3..720 * img.w * 3].to_vec()
+}
+
+/// design.md, "Change sources": apps, icons and fonts are caches their
+/// directories' changes invalidate, live and without a reload. `strand
+/// run` on headless sway, with `$HOME` its own and fontconfig reading the
+/// default user directories (`~/.local/share/fonts`, and
+/// `~/.config/fontconfig/fonts.conf` included): installing an app
+/// (`~/.local/share/applications`) widens the green box `apps.all`
+/// sizes; installing hicolor's `index.theme` shows the magenta icon
+/// already in it; naming the `Strand` theme in GTK's settings shows its
+/// cyan icon; installing Liberation Sans in `~/.local/share/fonts`, then
+/// its bold face in a directory fontconfig's user configuration adds,
+/// draws the bottom bar's bold "Liberation Sans" text anew each time.
+/// This runs the list `strand run` watches (`live::cache_sources`) and
+/// its wiring to the apps service and the renderer end to end.
+#[test]
+fn installed_apps_icons_and_fonts_show_without_a_reload() {
+    let name = "caches";
+    let home = own_dir(name);
+    let fonts_root = home.join("fontconfig-root");
+    let config = "\
+bar Top {
+  edge: top; height: 40; bg: #000000
+  row {
+    box { width: 10 + apps.all.count(a => true) * 100; height: 40; bg: #00ff00 }
+    icon \"strand-a\" { size: 32 }
+    icon \"strand-b\" { size: 32 }
+  }
+}
+bar Bottom {
+  edge: bottom; height: 40; bg: #000000
+  row { text \"Strand Hello\" { font: \"Liberation Sans\" 24px 700; color: #ffffff } }
+}
+";
+    let env = [
+        ("XDG_DATA_DIRS", home.join("share")),
+        ("FONTCONFIG_FILE", fonts_root.join("fonts.conf")),
+        ("STRAND_LOG", PathBuf::from("info")),
+    ];
+    let prepare = |home: &Path| {
+        let share = home.join(".local/share");
+        for d in [
+            "share",
+            ".local/share/applications",
+            ".local/share/fonts",
+            ".local/share/icons/hicolor/scalable/apps",
+            ".local/share/icons/Strand/scalable/apps",
+            ".config/gtk-3.0",
+            ".config/fontconfig",
+            "fontconfig-root/base",
+            "fontconfig-root/bold",
+        ] {
+            std::fs::create_dir_all(home.join(d)).unwrap();
+        }
+        let icons = share.join("icons");
+        // hicolor's icon without its `index.theme`: not a theme yet.
+        std::fs::write(
+            icons.join("hicolor/scalable/apps/strand-a.svg"),
+            svg("#ff00ff"),
+        )
+        .unwrap();
+        std::fs::write(
+            icons.join("Strand/index.theme"),
+            index_theme("Strand", "Inherits=hicolor\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            icons.join("Strand/scalable/apps/strand-b.svg"),
+            svg("#00ffff"),
+        )
+        .unwrap();
+        // fontconfig: DejaVu Sans to fall back on, the user directories.
+        let root = home.join("fontconfig-root");
+        std::fs::copy(
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            root.join("base/fallback.ttf"),
+        )
+        .unwrap();
+        std::fs::copy(
+            strand_text::test_bold_font_path(),
+            root.join("bold/LiberationSans-Bold.ttf"),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("fonts.conf"),
+            format!(
+                "<?xml version=\"1.0\"?>\n<!DOCTYPE fontconfig SYSTEM \"fonts.dtd\">\n\
+                 <fontconfig><dir>{}</dir><dir>{}</dir>\
+                 <include ignore_missing=\"yes\">{}</include>\
+                 <cachedir>{}</cachedir></fontconfig>\n",
+                root.join("base").display(),
+                share.join("fonts").display(),
+                home.join(".config/fontconfig/fonts.conf").display(),
+                root.join("cache").display(),
+            ),
+        )
+        .unwrap();
+    };
+    let Some(setup) = Setup::start_prepared(name, config, &[], &env, prepare) else {
+        return;
+    };
+    let share = home.join(".local/share");
+    let booted = setup.wait("both bars drawn", |img| {
+        count(img, 20, GREEN) >= 10 && bottom(img).iter().any(|&v| v > 0x80)
+    });
+    assert_eq!(count(&booted, 20, GREEN), 10, "no app yet");
+    assert_eq!(count(&booted, 20, MAGENTA), 0, "hicolor is no theme yet");
+    assert_eq!(
+        count(&booted, 20, CYAN),
+        0,
+        "the Strand theme is not chosen yet"
+    );
+    let reloads = |s: &Setup| s.log().matches("reload (").count();
+    let booted_reloads = reloads(&setup);
+
+    // An app installed.
+    std::fs::write(
+        share.join("applications/strand-test.desktop"),
+        "[Desktop Entry]\nType=Application\nName=Strand Test\nExec=true\n",
+    )
+    .unwrap();
+    setup.wait("the installed app counted", |img| {
+        count(img, 20, GREEN) >= 100
+    });
+
+    // An icon theme installed (its `index.theme`).
+    std::fs::write(
+        share.join("icons/hicolor/index.theme"),
+        index_theme("Hicolor", ""),
+    )
+    .unwrap();
+    setup.wait("hicolor's icon", |img| count(img, 20, MAGENTA) > 0);
+
+    // The desktop's icon theme switched in GTK's settings.
+    std::fs::write(
+        home.join(".config/gtk-3.0/settings.ini"),
+        "[Settings]\ngtk-icon-theme-name=Strand\n",
+    )
+    .unwrap();
+    setup.wait("the Strand theme's icon", |img| count(img, 20, CYAN) > 0);
+
+    // A font installed in `~/.local/share/fonts`.
+    let before = bottom(&setup.wait("settled", |_| true));
+    std::fs::copy(
+        strand_text::test_font_path(),
+        share.join("fonts/LiberationSans-Regular.ttf"),
+    )
+    .unwrap();
+    let regular = bottom(&setup.wait("the text in Liberation Sans", |img| bottom(img) != before));
+
+    // fontconfig's user configuration adds a directory with the bold face.
+    std::fs::write(
+        home.join(".config/fontconfig/fonts.conf"),
+        format!(
+            "<?xml version=\"1.0\"?>\n<!DOCTYPE fontconfig SYSTEM \"fonts.dtd\">\n\
+             <fontconfig><dir>{}</dir></fontconfig>\n",
+            fonts_root.join("bold").display()
+        ),
+    )
+    .unwrap();
+    setup.wait("the text in Liberation Sans Bold", |img| {
+        let now = bottom(img);
+        now != regular && now != before
+    });
+    assert_eq!(
+        reloads(&setup),
+        booted_reloads,
+        "a cache change reloaded the config\n{}",
+        setup.log()
+    );
+    // A config save is what reloads (and is logged so).
+    std::fs::write(
+        home.join(".config/strand/bar.strand"),
+        format!("{config}// saved\n"),
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while reloads(&setup) == booted_reloads {
+        assert!(
+            Instant::now() < deadline,
+            "a save never logged its reload\n{}",
+            setup.log()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }

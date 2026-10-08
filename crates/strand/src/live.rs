@@ -694,6 +694,104 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// What `cache_sources()` must be in each environment of
+    /// [`cache_sources_name_every_directory_strand_run_watches`]: `xdg`
+    /// with every XDG variable set (a relative `$XDG_DATA_DIRS` entry
+    /// ignored, a repeated one watched once), `home` with `$HOME` alone
+    /// (the XDG defaults).
+    fn cache_case(case: &str) -> (Vec<(&'static str, &'static str)>, Vec<CacheSource>) {
+        let tree = |p: &str, depth, kind| CacheSource::Tree(PathBuf::from(p), depth, kind);
+        let file = |p: &str| CacheSource::File(PathBuf::from(p), CacheKind::Icons);
+        use CacheKind::*;
+        match case {
+            "xdg" => (
+                vec![
+                    ("HOME", "/h"),
+                    ("XDG_DATA_HOME", "/d"),
+                    ("XDG_DATA_DIRS", "/s1:relative:/s2:/s1"),
+                    ("XDG_CONFIG_HOME", "/c"),
+                ],
+                vec![
+                    tree("/d/applications", 3, Apps),
+                    tree("/s1/applications", 3, Apps),
+                    tree("/s2/applications", 3, Apps),
+                    tree("/h/.icons", 1, Icons),
+                    tree("/d/icons", 1, Icons),
+                    tree("/s1/icons", 1, Icons),
+                    tree("/s2/icons", 1, Icons),
+                    tree("/usr/share/pixmaps", 1, Icons),
+                    file("/c/gtk-3.0/settings.ini"),
+                    file("/c/gtk-4.0/settings.ini"),
+                    tree("/d/fonts", 3, Fonts),
+                    tree("/h/.fonts", 3, Fonts),
+                    tree("/s1/fonts", 3, Fonts),
+                    tree("/s2/fonts", 3, Fonts),
+                    tree("/c/fontconfig", 1, Fonts),
+                ],
+            ),
+            _ => (
+                vec![("HOME", "/h")],
+                vec![
+                    tree("/h/.local/share/applications", 3, Apps),
+                    tree("/usr/local/share/applications", 3, Apps),
+                    tree("/usr/share/applications", 3, Apps),
+                    tree("/h/.icons", 1, Icons),
+                    tree("/h/.local/share/icons", 1, Icons),
+                    tree("/usr/local/share/icons", 1, Icons),
+                    tree("/usr/share/icons", 1, Icons),
+                    tree("/usr/share/pixmaps", 1, Icons),
+                    file("/h/.config/gtk-3.0/settings.ini"),
+                    file("/h/.config/gtk-4.0/settings.ini"),
+                    tree("/h/.local/share/fonts", 3, Fonts),
+                    tree("/h/.fonts", 3, Fonts),
+                    tree("/usr/local/share/fonts", 3, Fonts),
+                    tree("/usr/share/fonts", 3, Fonts),
+                    tree("/h/.config/fontconfig", 1, Fonts),
+                ],
+            ),
+        }
+    }
+
+    /// The list `strand run` hands the watcher (`cache_sources`) names
+    /// every `applications/` directory (the apps service's), every icon
+    /// base directory, GTK's settings, every font directory fontconfig
+    /// reads by default and fontconfig's user configuration, each with
+    /// the cache it invalidates. The environment is the process's, so
+    /// each case runs in a child of this test binary with its own.
+    #[test]
+    fn cache_sources_name_every_directory_strand_run_watches() {
+        const CASE: &str = "STRAND_TEST_CACHE_SOURCES";
+        if let Ok(case) = std::env::var(CASE) {
+            assert_eq!(cache_sources(), cache_case(&case).1, "case {case}");
+            return;
+        }
+        for case in ["xdg", "home"] {
+            let name = "live::tests::cache_sources_name_every_directory_strand_run_watches";
+            let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+            cmd.args(["--exact", name, "--test-threads=1"]);
+            for v in [
+                "HOME",
+                "XDG_DATA_HOME",
+                "XDG_DATA_DIRS",
+                "XDG_CONFIG_HOME",
+                "XDG_STATE_HOME",
+            ] {
+                cmd.env_remove(v);
+            }
+            let out = cmd
+                .envs(cache_case(case).0)
+                .env(CASE, case)
+                .output()
+                .unwrap();
+            let text = String::from_utf8_lossy(&out.stdout).into_owned()
+                + &String::from_utf8_lossy(&out.stderr);
+            assert!(
+                out.status.success() && text.contains("1 passed"),
+                "case {case}:\n{text}"
+            );
+        }
+    }
+
     /// The own-write observer must not keep the watcher alive: `join`
     /// stops and joins it even with storage configured, so a watcher
     /// panic is reported.
