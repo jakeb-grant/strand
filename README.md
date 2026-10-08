@@ -30,17 +30,20 @@ notification server run on D-Bus and procfs, audio on PipeWire,
 `ext-workspace-v1`, `ext-foreign-toplevel-list`), apps on the desktop
 entries and icon themes, and `from dbus | file | listen | poll` declare
 services without Rust. A service starts on its first reader and stops
-5 s after the last one leaves. Of the builtins only `cpu` and `memory`
-sample on a timer, and only while read on a visible surface (a `from
-poll` service polls at its declared interval); everything else waits on
-events, so nothing wakes while nothing changes.
+5 s after the last one leaves or goes invisible; streams such as a
+Wi-Fi scan or audio levels run only while visible. Of the builtins
+only `cpu` and `memory` sample on a timer, and only while read on a
+visible surface (a `from poll` service polls at its declared
+interval); everything else waits on events, so nothing wakes while
+nothing changes.
 design.md's bar runs on Hyprland, niri and sway (CI's `compositors`
 job), takes 100 live reloads without a service reconnecting, and on
 two 2560×1440 monitors with the real services uses about 31–32 MiB
 (target 34, ceiling 38); the full shell with the launcher, two toasts and
-the OSD up 44–57 MiB with 12 to 172 desktop entries (design.md: 59–64;
-figures in docs/m3-report.md). `STRAND_MOCK=desktop` still
-fills everything with a mock desktop for tests.
+the OSD up 44–61 MiB with 12 to 172 desktop entries across the runs
+measured here and in CI (design.md: 59–64; figures in
+docs/m3-report.md). `STRAND_MOCK=desktop` still fills everything with
+a mock desktop for tests.
 
 M2's exit gates are met too (see
 [`docs/m2-report.md`](docs/m2-report.md)): the four example shells of
