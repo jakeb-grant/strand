@@ -279,6 +279,15 @@ Every M3 tier has a CI step (`.github/workflows/ci.yml`):
   cost it should be measured (`opt-level = "s"` on `strand` against 3).
 - The owner's confirmation of the 34/38 and 64/70 MB targets and
   ceilings and of the release opt-level overrides.
+- A likely race in the `from file` watch (`crates/strand-services/src/custom.rs`,
+  `FileWatch::arm`; not reproduced locally in 8 runs): a directory on the way that is removed between its
+  `is_dir()` check and `add_watch` makes `add_watch` fail with `ENOENT`,
+  `drain` turns that into "the file watch failed" and the service ends
+  instead of climbing a level. CI run 37754849203 hit it once in
+  `services::tests::custom_services::a_file_service_waits_for_its_directory`
+  (`remove_dir_all` of the file's directories); a re-run passed. The fix
+  belongs to the services owner: treat `ENOENT`/`ENOTDIR` from
+  `add_watch` as "climb and try again" within the loop's bound.
 - `strand-introspect` opens a new D-Bus connection for each 10 s
   introspection refresh of a `from dbus` check; the reloads test carves
   out its Hello and Introspect.
