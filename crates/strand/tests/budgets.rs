@@ -1540,6 +1540,98 @@ fn full_shell(name: &str, apps: Apps) {
     }
 }
 
+/// The release profile's per-package opt-levels the memory budget rests
+/// on (decisions.md, wave4-exitMemory: "the budget rests on the
+/// workspace's release profile"): without them the binary's `.text` was
+/// 19.4 MB and the bar over budget. Checked in every build, debug too,
+/// so a cleanup of `Cargo.toml` fails `cargo test --workspace` locally
+/// rather than only the release budget in CI.
+const RELEASE_OPT_LEVELS: &[(&str, &str)] = &[
+    ("strand-services", "z"),
+    ("zbus", "z"),
+    ("zvariant", "z"),
+    ("zbus_names", "z"),
+    ("tokio", "z"),
+    ("swayipc-types", "z"),
+    ("logind-zbus", "z"),
+    ("strand", "s"),
+    ("strand-icons", "s"),
+    ("strand-introspect", "s"),
+    ("serde_json", "s"),
+    ("toml_edit", "s"),
+    ("toml_parser", "s"),
+    ("wayland-client", "s"),
+    ("wayland-backend", "s"),
+    ("smithay-client-toolkit", "s"),
+    ("calloop", "s"),
+    ("material-colors", "s"),
+    ("fontique", "s"),
+    ("quick-xml", "s"),
+    ("roxmltree", "s"),
+    ("xkeysym", "s"),
+    ("miette", "s"),
+    ("chrono", "s"),
+    ("freedesktop-desktop-entry", "s"),
+    ("pipewire", "s"),
+    ("libspa", "s"),
+];
+
+/// `[profile.release.package.<name>]` → its `opt-level`, read from a
+/// Cargo.toml's text (section headers and `key = value` lines only).
+fn release_opt_levels(manifest: &str) -> std::collections::BTreeMap<String, String> {
+    let unquote = |s: &str| s.trim().trim_matches(|c| c == '"' || c == '\'').to_string();
+    let mut levels = std::collections::BTreeMap::new();
+    let mut package: Option<String> = None;
+    for line in manifest.lines() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        if line.starts_with('[') {
+            package = line
+                .strip_prefix("[profile.release.package.")
+                .and_then(|rest| rest.strip_suffix(']'))
+                .map(unquote);
+        } else if let (Some(name), Some((key, value))) = (&package, line.split_once('='))
+            && key.trim() == "opt-level"
+        {
+            levels.insert(name.clone(), unquote(value));
+        }
+    }
+    levels
+}
+
+#[test]
+fn the_release_profile_keeps_the_size_opt_levels_the_budget_rests_on() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.toml");
+    let manifest = std::fs::read_to_string(path).unwrap();
+    let levels = release_opt_levels(&manifest);
+    let changed: Vec<String> = RELEASE_OPT_LEVELS
+        .iter()
+        .filter(|(name, level)| levels.get(*name).map(String::as_str) != Some(*level))
+        .map(|(name, level)| {
+            format!(
+                "{name}: opt-level {level} expected, found {:?}",
+                levels.get(*name)
+            )
+        })
+        .collect();
+    assert!(
+        changed.is_empty(),
+        "the workspace's [profile.release.package] opt-levels changed; the bar's memory budget \
+         rests on them (decisions.md, wave4-exitMemory): {changed:#?}"
+    );
+}
+
+#[test]
+fn release_opt_levels_reads_package_sections_only() {
+    let manifest = "[profile.release]\nopt-level = 3\n\
+                    [profile.release.package.zbus]\nopt-level = \"z\" # size\n\
+                    [profile.release.package.\"quoted\"]\nopt-level = 's'\n\
+                    [dependencies]\nopt-level = \"z\"\n";
+    let levels = release_opt_levels(manifest);
+    assert_eq!(levels.len(), 2, "{levels:?}");
+    assert_eq!(levels["zbus"], "z");
+    assert_eq!(levels["quoted"], "s");
+}
+
 /// design.md budgets 10–14 MB for "code and libraries touched", and the
 /// two-monitor bar's code is resident close to its whole `.text` where
 /// the page cache maps large folios (decisions.md, wave4-exitMemory):
