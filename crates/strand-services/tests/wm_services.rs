@@ -265,9 +265,23 @@ fn the_compositor_stores_follow_sway_through_one_hub() {
         threads_named("strand-toplevel") == 1 && wm::live_runs() == runs + 1
     });
     s.shutdown();
-    assert_eq!(threads_named("strand-toplevel"), 0, "after the shutdown");
+    assert_eq!(
+        threads_named("strand-toplevel"),
+        0,
+        "after the shutdown; this process's threads: {:?}",
+        thread_names()
+    );
     assert_eq!(wm::live_runs(), runs);
     wm::configure(None);
+}
+
+/// The names of this process's threads (a failure's witness).
+fn thread_names() -> Vec<String> {
+    std::fs::read_dir("/proc/self/task")
+        .unwrap()
+        .filter_map(|t| std::fs::read_to_string(t.ok()?.path().join("comm")).ok())
+        .map(|comm| comm.trim_end().to_string())
+        .collect()
 }
 
 /// This process's threads named `name`.
@@ -353,6 +367,93 @@ fn the_compositor_stores_follow_hyprland() {
         s.pump(&rt);
         std::thread::sleep(Duration::from_millis(10));
     }
+    s.shutdown();
+    wm::configure(None);
+}
+
+/// The `windows` store with no IPC adapter (sway's turned off, as on
+/// labwc, wayfire or river): `windows.focused` and `win.focus()`/
+/// `win.close()` come from `zwlr_foreign_toplevel_management_v1` on the
+/// `strand-toplevel` thread.
+#[test]
+fn the_windows_store_follows_wlr_management_without_an_adapter() {
+    let _serial = serial();
+    let Some(sway) = Sway::start("windows_store_wlr") else {
+        return;
+    };
+    wm::configure(Some(WmConfig {
+        backend: None,
+        wayland: Some(WaylandTarget::Socket(sway.socket())),
+        desktop: Some("labwc".into()),
+        ..Default::default()
+    }));
+    let rt = Runtime::new();
+    let s = Services::new(&rt, Buses::none(), || {});
+    let b = Builtin::register(&s, &rt);
+    b.windows.acquire(&rt);
+    b.wm.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)), "the first read");
+    until(&rt, &s, "boot", || {
+        b.wm.cells().snapshot(&rt).is_ok_and(|w| w.name == "labwc")
+    });
+    let focused_app = || {
+        b.windows
+            .cells()
+            .snapshot(&rt)
+            .ok()
+            .and_then(|w| w.focused)
+            .map(|f| f.app_id)
+    };
+    // One at a time: each maps (and takes the focus) on its own thread,
+    // so two opened together may map in either order.
+    let a = TestWindow::open(&sway.socket(), "strand-a", "alpha");
+    until(&rt, &s, "a focused", || {
+        focused_app().as_deref() == Some("strand-a")
+    });
+    let _b = TestWindow::open(&sway.socket(), "strand-b", "beta");
+    until(&rt, &s, "b focused", || {
+        focused_app().as_deref() == Some("strand-b")
+            && b.windows
+                .cells()
+                .snapshot(&rt)
+                .is_ok_and(|w| w.all.len() == 2)
+    });
+    let item = |app: &str| {
+        b.windows
+            .cells()
+            .snapshot(&rt)
+            .unwrap()
+            .all
+            .into_iter()
+            .find(|w| w.app_id == app)
+            .unwrap()
+    };
+    b.windows
+        .act(
+            &rt,
+            WindowAction::Focus {
+                item: item("strand-a"),
+            },
+        )
+        .unwrap();
+    until(&rt, &s, "a focused", || {
+        focused_app().as_deref() == Some("strand-a")
+    });
+    b.windows
+        .act(
+            &rt,
+            WindowAction::Close {
+                item: item("strand-a"),
+            },
+        )
+        .unwrap();
+    until(&rt, &s, "a closed", || {
+        b.windows
+            .cells()
+            .snapshot(&rt)
+            .is_ok_and(|w| w.all.len() == 1 && w.all[0].app_id == "strand-b")
+    });
+    assert!(a.closed.load(Ordering::SeqCst));
     s.shutdown();
     wm::configure(None);
 }

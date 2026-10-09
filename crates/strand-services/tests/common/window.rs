@@ -22,6 +22,7 @@ struct State {
     surface: wl_surface::WlSurface,
     buffer: wl_buffer::WlBuffer,
     closed: Arc<AtomicBool>,
+    activated: Arc<AtomicBool>,
 }
 
 /// A mapped toplevel; closes when dropped.
@@ -31,6 +32,10 @@ pub struct TestWindow {
     stop: Arc<AtomicBool>,
     /// The compositor asked it to close (it then unmaps itself).
     pub closed: Arc<AtomicBool>,
+    /// The compositor's last configure said it is activated (has the
+    /// keyboard focus): the client's own view, independent of any
+    /// compositor IPC or foreign-toplevel protocol.
+    pub activated: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -57,10 +62,12 @@ impl TestWindow {
         let pool = shm.create_pool(fd.as_fd(), len as i32, &qh, ());
         let buffer = pool.create_buffer(0, SIZE, SIZE, SIZE * 4, wl_shm::Format::Argb8888, &qh, ());
         let closed = Arc::new(AtomicBool::new(false));
+        let activated = Arc::new(AtomicBool::new(false));
         let mut state = State {
             surface,
             buffer,
             closed: closed.clone(),
+            activated: activated.clone(),
         };
         queue.roundtrip(&mut state).unwrap();
         let stop = Arc::new(AtomicBool::new(false));
@@ -94,6 +101,7 @@ impl TestWindow {
             toplevel,
             stop,
             closed,
+            activated,
             thread: Some(thread),
         }
     }
@@ -172,11 +180,21 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for State {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let xdg_toplevel::Event::Close = event {
-            // Unmap: a null buffer.
-            state.closed.store(true, Ordering::SeqCst);
-            state.surface.attach(None, 0, 0);
-            state.surface.commit();
+        match event {
+            xdg_toplevel::Event::Close => {
+                // Unmap: a null buffer.
+                state.closed.store(true, Ordering::SeqCst);
+                state.surface.attach(None, 0, 0);
+                state.surface.commit();
+            }
+            xdg_toplevel::Event::Configure { states, .. } => {
+                let activated = u32::from(xdg_toplevel::State::Activated);
+                let on = states
+                    .chunks_exact(4)
+                    .any(|c| u32::from_ne_bytes([c[0], c[1], c[2], c[3]]) == activated);
+                state.activated.store(on, Ordering::SeqCst);
+            }
+            _ => {}
         }
     }
 }

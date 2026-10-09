@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The CI job `compositors` (.github/workflows/ci.yml), inside an
 # archlinux:latest container (Hyprland and niri are packaged there, not
-# on the Ubuntu runner): installs sway, niri, Hyprland, grim, seatd and
+# on the Ubuntu runner): installs sway, niri, Hyprland, labwc, grim, seatd and
 # Mesa, then runs scripts/compositor-matrix.sh for each compositor as an
 # unprivileged user (Hyprland refuses root) with the test binary built on
 # the runner (the same path: the repository is mounted where the runner
@@ -10,7 +10,7 @@
 # Usage (as root): scripts/compositor-matrix-ci.sh TEST_BINARY
 # Env:   STRAND_DRM_CARD  the vkms card passed in with --device (Hyprland)
 #        MATRIX_OUTPUTS   outputs for sway and Hyprland (default 2; niri 1)
-#        MATRIX           the compositors (default "sway niri hyprland")
+#        MATRIX           the compositors (default "sway niri hyprland labwc")
 # The bar's click is required (STRAND_MATRIX_REQUIRE_CLICK=1): a
 # compositor without zwlr_virtual_pointer_manager_v1 fails, not skips it.
 # Exit status is non-zero when any compositor failed; logs and shots are
@@ -20,7 +20,7 @@ set -uo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 TEST=${1:?the compositor_matrix test binary}
-MATRIX=${MATRIX:-sway niri hyprland}
+MATRIX=${MATRIX:-sway niri hyprland labwc}
 
 # pacman's free-space check cannot read an overlayfs root's mount points
 # in a container ("could not determine filesystem mount points"): off.
@@ -29,15 +29,15 @@ sed -i 's/^CheckSpace/#CheckSpace/' /etc/pacman.conf
 pacman-key --init >/dev/null 2>&1 || true
 pacman-key --populate archlinux >/dev/null 2>&1 || true
 pacman -Syu --noconfirm --needed \
-  sway niri hyprland grim seatd mesa dbus ttf-dejavu adwaita-icon-theme \
+  sway niri hyprland labwc grim seatd mesa dbus ttf-dejavu adwaita-icon-theme \
   fontconfig libxkbcommon wayland pipewire libcap >/tmp/pacman.log 2>&1 ||
   { tail -40 /tmp/pacman.log; exit 1; }
-pacman -Q sway niri hyprland grim seatd mesa
+pacman -Q sway niri hyprland labwc grim seatd mesa
 # sway is installed with file capabilities (cap_sys_nice, for its
 # realtime scheduling); Docker's bounding set lacks them, so exec(2) of
 # it fails with EPERM ("env: 'sway': Operation not permitted", run 206).
 # Off for every compositor: none needs them headless.
-for bin in /usr/bin/sway /usr/bin/niri /usr/bin/Hyprland /usr/bin/Hyprland-bin; do
+for bin in /usr/bin/sway /usr/bin/niri /usr/bin/Hyprland /usr/bin/Hyprland-bin /usr/bin/labwc; do
   [ -e "$bin" ] || continue
   if [ -n "$(getcap "$bin" 2>/dev/null)" ]; then
     echo "dropping $(getcap "$bin")"

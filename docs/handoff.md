@@ -119,9 +119,21 @@ and the full shell warns above 64 MB and fails above 70 MB
 
 ### Known limits, recorded and not M3 blockers
 
-- No IPC adapter for labwc, COSMIC, wayfire or river: `windows.focused` is
-  null and window actions answer `Unsupported` until
-  `zwlr_foreign_toplevel_management_v1` is bound as a fallback.
+- No IPC adapter for labwc, COSMIC, wayfire or river. Since branch
+  `laptop/toplevel`, `zwlr_foreign_toplevel_management_v1` is the fallback
+  for windows: `windows.focused`, `minimized`, `fullscreen` and
+  `win.focus()`/`close()`/`minimize()` work on labwc (checked live in the
+  compositor matrix) and should on wayfire and river (not run here).
+  Still limited: COSMIC offers only `ext-foreign-toplevel-list`, so
+  `windows.focused` is null and window actions answer `Unsupported`
+  there; no window has a `workspace` without an adapter (no standard
+  protocol relates the two); the wlr protocol has no identifier, so a
+  window's `ext-foreign-toplevel-list` handle (M4 thumbnails) is joined
+  by app id and title and is missing while twins disagree; maximize and
+  fullscreen toggles are not language actions (decisions.md
+  laptop-toplevel); `wm.config_reloaded` never fires without IPC; and
+  the design bar's pixel test does not run on labwc (only the stores
+  test does).
 - Notifications: ActivationToken (spec 1.2) needs an xdg-activation token
   from the clicked surface (M4), so the server reports spec 1.1;
   `Notification.time` has no time of day yet.

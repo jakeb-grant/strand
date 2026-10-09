@@ -1,6 +1,11 @@
 //! The standard protocols, compositor-agnostic: `ext-foreign-toplevel-list-v1`
-//! (windows: identifier, title, app id) and `ext-workspace-v1`
+//! (windows: identifier, title, app id), `zwlr_foreign_toplevel_management_v1`
+//! (windows with their state: activated, minimized, maximized, fullscreen,
+//! outputs; activate, close, set_minimized) and `ext-workspace-v1`
 //! (workspaces, their groups' outputs, active/urgent/hidden, activate).
+//! The wlr protocol is what serves `windows.focused` and the window
+//! actions on a compositor with no IPC adapter (labwc, wayfire, river; see
+//! [`merge`](super::merge)).
 //!
 //! The client runs on its own thread (design.md, "Threads": the Wayland
 //! toplevel protocols get their own thread) with its own connection. It
@@ -38,7 +43,7 @@ use std::sync::mpsc;
 use rustix::event::{EventfdFlags, PollFd, PollFlags};
 use tokio::sync::mpsc::UnboundedSender;
 use wayland_client::backend::ObjectId;
-use wayland_client::protocol::{wl_callback, wl_output, wl_registry};
+use wayland_client::protocol::{wl_callback, wl_output, wl_registry, wl_seat};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, event_created_child};
 use wayland_protocols::ext::foreign_toplevel_list::v1::client::{
     ext_foreign_toplevel_handle_v1::{self, ExtForeignToplevelHandleV1},
@@ -48,6 +53,10 @@ use wayland_protocols::ext::workspace::v1::client::{
     ext_workspace_group_handle_v1::{self, ExtWorkspaceGroupHandleV1},
     ext_workspace_handle_v1::{self, ExtWorkspaceHandleV1},
     ext_workspace_manager_v1::{self, ExtWorkspaceManagerV1},
+};
+use wayland_protocols_wlr::foreign_toplevel::v1::client::{
+    zwlr_foreign_toplevel_handle_v1::{self, ZwlrForeignToplevelHandleV1},
+    zwlr_foreign_toplevel_manager_v1::{self, ZwlrForeignToplevelManagerV1},
 };
 
 use super::WmError;
@@ -103,6 +112,41 @@ pub struct ProtoWorkspace {
     pub can_activate: bool,
 }
 
+/// A toplevel from `zwlr_foreign_toplevel_management_v1`, with its state.
+/// The protocol gives no identifier: [`ManagedToplevel::key`] is this
+/// client's own number for the handle.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ManagedToplevel {
+    /// This client's number for it, stable while it lives.
+    pub key: u64,
+    /// Its title.
+    pub title: String,
+    /// Its app id.
+    pub app_id: String,
+    /// It is active (has the keyboard focus of a seat).
+    pub activated: bool,
+    /// It is minimized.
+    pub minimized: bool,
+    /// It is maximized.
+    pub maximized: bool,
+    /// It is fullscreen (version 2 and later).
+    pub fullscreen: bool,
+    /// The names of the outputs it is on.
+    pub screens: Vec<String>,
+}
+
+impl ManagedToplevel {
+    /// The window id the services show for it (`windows.all[i].id`).
+    pub fn window_id(&self) -> String {
+        managed_window_id(self.key)
+    }
+}
+
+/// The window id of the wlr toplevel with `key`: `wlr-<key>`.
+pub(crate) fn managed_window_id(key: u64) -> String {
+    format!("wlr-{key}")
+}
+
 /// What the standard protocols show.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProtocolState {
@@ -111,30 +155,48 @@ pub struct ProtocolState {
     pub connected: bool,
     /// `ext_foreign_toplevel_list_v1` is advertised.
     pub toplevel_list: bool,
+    /// `zwlr_foreign_toplevel_manager_v1` is advertised (and has not
+    /// finished).
+    pub toplevel_management: bool,
     /// `ext_workspace_manager_v1` is advertised.
     pub workspace_manager: bool,
     /// Every toplevel past its first `done`, oldest first.
     pub toplevels: Vec<Toplevel>,
+    /// Every wlr toplevel past its first `done`, oldest first.
+    pub managed: Vec<ManagedToplevel>,
     /// Every workspace, oldest first.
     pub workspaces: Vec<ProtoWorkspace>,
 }
+
+/// A window action `zwlr_foreign_toplevel_handle_v1` can run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WindowOp {
+    /// `activate` on the first seat still offered.
+    Activate,
+    /// `close`.
+    Close,
+    /// `set_minimized`.
+    Minimize,
+}
+
+type Reply = Option<tokio::sync::oneshot::Sender<Result<(), WmError>>>;
 
 /// A request to the protocol thread.
 #[derive(Debug)]
 pub(crate) enum ProtoCmd {
     /// Activate the workspace with this key; the reply says whether it was
     /// sent.
-    Activate(
-        u64,
-        Option<tokio::sync::oneshot::Sender<Result<(), WmError>>>,
-    ),
+    Activate(u64, Reply),
+    /// Run a window action on the wlr toplevel with this key; the reply
+    /// says whether it was sent.
+    Window(u64, WindowOp, Reply),
     Stop,
 }
 
 impl ProtoCmd {
     /// The thread is gone: answer `NotConnected`.
     fn refuse(self) {
-        if let Self::Activate(_, Some(reply)) = self {
+        if let Self::Activate(_, Some(reply)) | Self::Window(_, _, Some(reply)) = self {
             let _ = reply.send(Err(WmError::NotConnected));
         }
     }
@@ -327,13 +389,42 @@ struct WorkspaceEntry {
     removed: bool,
 }
 
+/// A wlr toplevel's double-buffered state: events go to `pending`, the
+/// handle's `done` copies it to `current`.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct ManagedData {
+    title: String,
+    app_id: String,
+    activated: bool,
+    minimized: bool,
+    maximized: bool,
+    fullscreen: bool,
+    outputs: Vec<ObjectId>,
+}
+
+#[derive(Debug)]
+struct ManagedEntry {
+    handle: ZwlrForeignToplevelHandleV1,
+    key: u64,
+    pending: ManagedData,
+    /// `None` until its first `done`.
+    current: Option<ManagedData>,
+}
+
 #[derive(Debug, Default)]
 struct Client {
     toplevel_list: Option<ExtForeignToplevelListV1>,
+    toplevel_manager: Option<ZwlrForeignToplevelManagerV1>,
     workspace_manager: Option<ExtWorkspaceManagerV1>,
+    /// Every seat, with its global name, in the order announced: wlr's
+    /// `activate` names the first one still offered, so a removed seat
+    /// falls back to the next.
+    seats: Vec<(u32, wl_seat::WlSeat)>,
     /// wl_output proxies by object, with their global name and `name`.
     outputs: HashMap<ObjectId, (u32, wl_output::WlOutput, String)>,
     toplevels: Vec<(ObjectId, ToplevelEntry)>,
+    managed: Vec<(ObjectId, ManagedEntry)>,
+    next_managed_key: u64,
     groups: Vec<(ObjectId, GroupEntry)>,
     workspaces: Vec<(ObjectId, WorkspaceEntry)>,
     next_key: u64,
@@ -353,14 +444,38 @@ impl Client {
                 .filter(|n| !n.is_empty())
                 .collect()
         };
+        let output_name = |o: &ObjectId| -> Option<String> {
+            self.outputs
+                .get(o)
+                .map(|(_, _, n)| n.clone())
+                .filter(|n| !n.is_empty())
+        };
         ProtocolState {
             connected: true,
             toplevel_list: self.toplevel_list.is_some(),
+            toplevel_management: self.toplevel_manager.is_some(),
             workspace_manager: self.workspace_manager.is_some(),
             toplevels: self
                 .toplevels
                 .iter()
                 .filter_map(|(_, t)| t.current.clone())
+                .collect(),
+            managed: self
+                .managed
+                .iter()
+                .filter_map(|(_, m)| {
+                    let c = m.current.as_ref()?;
+                    Some(ManagedToplevel {
+                        key: m.key,
+                        title: c.title.clone(),
+                        app_id: c.app_id.clone(),
+                        activated: c.activated,
+                        minimized: c.minimized,
+                        maximized: c.maximized,
+                        fullscreen: c.fullscreen,
+                        screens: c.outputs.iter().filter_map(output_name).collect(),
+                    })
+                })
                 .collect(),
             workspaces: self
                 .workspaces
@@ -496,6 +611,12 @@ fn thread_main(
                             let _ = r.send(result);
                         }
                     }
+                    ProtoCmd::Window(key, op, reply) => {
+                        let result = window_action(&client, key, op);
+                        if let Some(r) = reply {
+                            let _ = r.send(result);
+                        }
+                    }
                 }
             }
         }
@@ -519,6 +640,34 @@ fn activate(client: &Client, key: u64) -> Result<(), WmError> {
     }
     ws.handle.activate();
     manager.commit();
+    Ok(())
+}
+
+/// Sends a window action on the wlr toplevel with `key`. `Ok` means the
+/// request was sent; what the compositor does with it comes back as state
+/// (a compositor may ignore it: sway has no minimize).
+fn window_action(client: &Client, key: u64, op: WindowOp) -> Result<(), WmError> {
+    if client.toplevel_manager.is_none() {
+        return Err(WmError::Unsupported(
+            "no zwlr_foreign_toplevel_management_v1",
+        ));
+    }
+    let (_, entry) = client
+        .managed
+        .iter()
+        .find(|(_, m)| m.key == key && m.current.is_some())
+        .ok_or_else(|| WmError::UnknownWindow(managed_window_id(key)))?;
+    match op {
+        WindowOp::Activate => {
+            let (_, seat) = client
+                .seats
+                .first()
+                .ok_or(WmError::Unsupported("the compositor offers no seat"))?;
+            entry.handle.activate(seat);
+        }
+        WindowOp::Close => entry.handle.close(),
+        WindowOp::Minimize => entry.handle.set_minimized(),
+    }
     Ok(())
 }
 
@@ -559,6 +708,15 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Client {
                 {
                     state.toplevel_list = Some(registry.bind(name, version.min(1), qh, ()));
                     state.dirty = true;
+                } else if interface == ZwlrForeignToplevelManagerV1::interface().name
+                    && state.toplevel_manager.is_none()
+                {
+                    state.toplevel_manager = Some(registry.bind(name, version.min(3), qh, ()));
+                    state.dirty = true;
+                } else if interface == wl_seat::WlSeat::interface().name {
+                    // Only named by `activate`: version 1 (no events read).
+                    // Every seat is bound, so one removed leaves the others.
+                    state.seats.push((name, registry.bind(name, 1, qh, ())));
                 } else if interface == ExtWorkspaceManagerV1::interface().name
                     && state.workspace_manager.is_none()
                 {
@@ -567,6 +725,8 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Client {
                 }
             }
             wl_registry::Event::GlobalRemove { name } => {
+                // A version 1 seat has no `release`: forget it.
+                state.seats.retain(|(n, _)| *n != name);
                 let gone: Vec<ObjectId> = state
                     .outputs
                     .iter()
@@ -674,6 +834,112 @@ impl Dispatch<ExtForeignToplevelHandleV1, ()> for Client {
             }
             ext_foreign_toplevel_handle_v1::Event::Closed => {
                 let (_, e) = state.toplevels.remove(pos);
+                state.dirty |= e.current.is_some();
+                e.handle.destroy();
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<wl_seat::WlSeat, ()> for Client {
+    fn event(
+        _: &mut Self,
+        _: &wl_seat::WlSeat,
+        _: wl_seat::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<ZwlrForeignToplevelManagerV1, ()> for Client {
+    fn event(
+        state: &mut Self,
+        _: &ZwlrForeignToplevelManagerV1,
+        event: zwlr_foreign_toplevel_manager_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwlr_foreign_toplevel_manager_v1::Event::Toplevel { toplevel } => {
+                state.next_managed_key += 1;
+                state.managed.push((
+                    toplevel.id(),
+                    ManagedEntry {
+                        handle: toplevel,
+                        key: state.next_managed_key,
+                        pending: ManagedData::default(),
+                        current: None,
+                    },
+                ));
+            }
+            zwlr_foreign_toplevel_manager_v1::Event::Finished => {
+                // A destructor: the manager is gone. Its handles stay
+                // valid until destroyed; nothing will update them.
+                for (_, m) in state.managed.drain(..) {
+                    m.handle.destroy();
+                }
+                state.toplevel_manager = None;
+                state.dirty = true;
+            }
+            _ => {}
+        }
+    }
+
+    event_created_child!(Client, ZwlrForeignToplevelManagerV1, [
+        zwlr_foreign_toplevel_manager_v1::EVT_TOPLEVEL_OPCODE => (ZwlrForeignToplevelHandleV1, ()),
+    ]);
+}
+
+impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for Client {
+    fn event(
+        state: &mut Self,
+        handle: &ZwlrForeignToplevelHandleV1,
+        event: zwlr_foreign_toplevel_handle_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        use zwlr_foreign_toplevel_handle_v1::{Event, State};
+        let id = handle.id();
+        let Some(pos) = state.managed.iter().position(|(i, _)| *i == id) else {
+            return;
+        };
+        let entry = &mut state.managed[pos].1;
+        let data = &mut entry.pending;
+        match event {
+            Event::Title { title } => data.title = title,
+            Event::AppId { app_id } => data.app_id = app_id,
+            Event::OutputEnter { output } => {
+                if !data.outputs.contains(&output.id()) {
+                    data.outputs.push(output.id());
+                }
+            }
+            Event::OutputLeave { output } => data.outputs.retain(|o| *o != output.id()),
+            Event::State { state: bytes } => {
+                // An array of `state` enum values (u32, native endian);
+                // values this client does not know are ignored.
+                let values: Vec<u32> = bytes
+                    .chunks_exact(4)
+                    .map(|c| u32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect();
+                let has = |s: State| values.contains(&u32::from(s));
+                data.activated = has(State::Activated);
+                data.minimized = has(State::Minimized);
+                data.maximized = has(State::Maximized);
+                data.fullscreen = has(State::Fullscreen);
+            }
+            Event::Done => {
+                if entry.current.as_ref() != Some(&entry.pending) {
+                    entry.current = Some(entry.pending.clone());
+                    state.dirty = true;
+                }
+            }
+            Event::Closed => {
+                let (_, e) = state.managed.remove(pos);
                 state.dirty |= e.current.is_some();
                 e.handle.destroy();
             }

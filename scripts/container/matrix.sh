@@ -2,15 +2,16 @@
 # The CI `compositors` job (.github/workflows/ci.yml) on this machine:
 # builds the compositor_matrix test in the CI image (run.sh), then runs
 # scripts/compositor-matrix-ci.sh in archlinux:latest (a derived image,
-# Dockerfile.matrix, with its packages cached) against sway and niri.
+# Dockerfile.matrix, with its packages cached) against sway, niri and
+# labwc (the compositor without an IPC adapter).
 #
 # Hyprland: CI loads vkms (a virtual KMS card); that needs modprobe, not
 # done here. Only the render node /dev/dri/renderD128 is passed in (never
 # a /dev/dri/card*): Hyprland is tried on it, and skipped with a message
 # when it cannot start without a KMS card.
 #
-# Usage: scripts/container/matrix.sh [sway] [niri] [hyprland]
-#        (default: all three). Logs and shots: target/matrix/<compositor>.
+# Usage: scripts/container/matrix.sh [sway] [niri] [hyprland] [labwc]
+#        (default: all four). Logs and shots: target/matrix/<compositor>.
 # Env:   MATRIX_REBUILD=1 rebuilds the Arch image (pulls archlinux:latest).
 #        MATRIX_OUTPUTS (default 2): outputs for sway and Hyprland (niri: 1).
 
@@ -19,7 +20,7 @@ set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 KINDS=("$@")
-[ "${#KINDS[@]}" -gt 0 ] || KINDS=(sway niri hyprland)
+[ "${#KINDS[@]}" -gt 0 ] || KINDS=(sway niri hyprland labwc)
 RENDER=/dev/dri/renderD128
 
 hash=$(sha256sum "$HERE/Dockerfile.matrix" | cut -c1-12)
@@ -53,7 +54,7 @@ results=()
 status=0
 for kind in "${KINDS[@]}"; do
   case "$kind" in
-    sway | niri)
+    sway | niri | labwc)
       echo "=== $kind"
       if run_arch "$kind" ""; then results+=("$kind: passed"); else results+=("$kind: FAILED"); status=1; fi
       ;;
@@ -76,7 +77,7 @@ for kind in "${KINDS[@]}"; do
         status=1
       fi
       ;;
-    *) echo "unknown compositor: $kind (sway, niri or hyprland)"; exit 2 ;;
+    *) echo "unknown compositor: $kind (sway, niri, hyprland or labwc)"; exit 2 ;;
   esac
 done
 

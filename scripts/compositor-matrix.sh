@@ -3,12 +3,17 @@
 # starts one compositor without a display, then runs
 # crates/strand/tests/compositor_matrix.rs against it (the `workspaces`,
 # `windows` and `wm` stores, and design.md's bar in `strand run`,
-# compared with what the compositor's own CLI reports).
+# compared with what the compositor's own CLI reports; on labwc, which
+# has no IPC, the stores against the test windows' own view).
 #
 #   sway      headless (WLR_BACKENDS=headless, the pixman renderer),
 #             1280x720 outputs.
 #   niri      nested: its winit backend in a window of a headless sway
 #             (Mesa's software EGL on the parent's wl_shm), 1280x720.
+#   labwc     headless (the pixman renderer), one output: the compositor
+#             without an IPC adapter (the standard protocols alone:
+#             ext-foreign-toplevel-list, wlr-foreign-toplevel-management,
+#             ext-workspace), two desktops.
 #   hyprland  on a virtual KMS device (vkms) through seatd: aquamarine
 #             allocates every buffer, headless outputs included, on a
 #             DRM node, so it needs one; Mesa renders in software
@@ -24,7 +29,7 @@
 #             gets one. The test is told how many (STRAND_MATRIX_OUTPUTS)
 #             and checks every output when there are two.
 #
-# Usage: scripts/compositor-matrix.sh sway|niri|hyprland [TEST_BINARY]
+# Usage: scripts/compositor-matrix.sh sway|niri|hyprland|labwc [TEST_BINARY]
 #   TEST_BINARY  the built compositor_matrix test (default: built here
 #                with `cargo test -p strand --test compositor_matrix
 #                --no-run`).
@@ -37,7 +42,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 KIND=${1:-}
 TEST=${2:-}
 case "$KIND" in
-  sway|niri|hyprland) ;;
+  sway|niri|hyprland|labwc) ;;
   *) sed -n '2,32p' "$0"; exit 2 ;;
 esac
 OUTPUTS=${MATRIX_OUTPUTS:-2}
@@ -103,6 +108,8 @@ niri_ready() {
   ipc=$(first "$1" '^niri\..*\.sock$'); display=$(first "$1" '^wayland-')
   [ -n "$ipc" ] && [ -n "$display" ] && NIRI_SOCKET=$1/$ipc niri msg version
 }
+
+labwc_ready() { [ -n "$(first "$1" '^wayland-')" ]; }
 
 hypr_instance() { hyprctl -j instances | sed -n "s/.*\"$1\": *\"\([^\"]*\)\".*/\\1/p" | head -1; }
 
@@ -268,6 +275,39 @@ EOF
       echo "focus $first_mon: '$reply'"
       hyprctl -j monitors | grep -E '^    "(name|x|y|width|height|focused)"'
     fi
+    ;;
+
+  labwc)
+    # One output (WLR_HEADLESS_OUTPUTS=1 below): the multi-output tests
+    # skip labwc, so the test is told one.
+    OUTPUTS=1
+    mkdir -p "$RT/labwc"
+    cat >"$RT/labwc/rc.xml" <<'EOF'
+<?xml version="1.0"?>
+<labwc_config>
+  <desktops number="2">
+    <popupTime>0</popupTime>
+    <names>
+      <name>1</name>
+      <name>2</name>
+    </names>
+  </desktops>
+</labwc_config>
+EOF
+    : >"$RT/labwc/autostart"
+    env -u WAYLAND_DISPLAY -u SWAYSOCK -u DISPLAY -u HYPRLAND_INSTANCE_SIGNATURE -u NIRI_SOCKET \
+      XDG_RUNTIME_DIR="$RT" WLR_BACKENDS=headless WLR_HEADLESS_OUTPUTS=1 WLR_RENDERER=pixman \
+      WLR_LIBINPUT_NO_DEVICES=1 \
+      labwc -C "$RT/labwc" >"$OUT/labwc.log" 2>&1 &
+    PIDS+=($!)
+    wait_for "$OUT/labwc.log" labwc_ready "$RT"
+    export XDG_RUNTIME_DIR=$RT
+    WAYLAND_DISPLAY=$(first "$RT" '^wayland-')
+    export WAYLAND_DISPLAY
+    # No IPC: nothing for the adapters' detection to find.
+    unset SWAYSOCK NIRI_SOCKET HYPRLAND_INSTANCE_SIGNATURE
+    export XDG_CURRENT_DESKTOP=labwc
+    labwc --version || true
     ;;
 esac
 

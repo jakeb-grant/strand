@@ -225,7 +225,7 @@ jobs:
           [ -n "$card" ] || { echo "::error::no card appeared for vkms"; exit 1; }
           echo "vkms card: $card"
           echo "card=$card" >>"$GITHUB_OUTPUT"
-      - name: sway, niri and Hyprland (archlinux:latest)
+      - name: sway, niri, Hyprland and labwc (archlinux:latest)
         run: |
           docker run --rm --device /dev/dri -v "$PWD:$PWD" -w "$PWD" \
             -e STRAND_DRM_CARD=${{ steps.drm.outputs.card }} \
