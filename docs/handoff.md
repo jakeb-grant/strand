@@ -75,9 +75,10 @@ and the full shell warns above 64 MB and fails above 70 MB
   `scripts/container/capture-niri.sh`). The Hyprland capture lacks a
   second monitor, close, move, fullscreen, reload and special workspaces.
   It was put together from three separate captures with unrecorded gaps
-  between them (its SOURCE.txt). A gap-free capture from
+  between them (its SOURCE.txt). A capture from
   `scripts/capture-hyprland.sh` during a busy session would close that
-  gap.
+  gap: it reads its replies while the stream is quiet and records in
+  `marks.txt` the stream line where each set falls.
 
 ### Known limits, recorded and not M3 blockers
 

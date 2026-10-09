@@ -107,7 +107,10 @@ are public app ids and were kept as captured. The fixture was put
 together from three separate captures: the replies before, a long
 event stream, and the replies after. There are unrecorded gaps between
 them, and its SOURCE.txt gives the times. `scripts/capture-hyprland.sh`
-takes a gap-free capture of the same kind. Differences found: niri lists windows in map
+takes a capture of the same kind in one run, reads each set of replies
+while the stream is quiet, and records in `marks.txt` the stream line
+where each set falls (`scripts/test-capture-hyprland.sh` checks this
+against a fake Hyprland). Differences found: niri lists windows in map
 order, so the adapter now sorts them by id; both reconstructed event
 streams had bursts in the wrong order (fixed in their `events.txt`).
 The Hyprland adapter needed no change. Regression tests:

@@ -6,7 +6,9 @@ adapter writes them (`j/monitors` etc. over .socket.sock, socat).
 
 The fixture is put together from three separate captures, not from one
 run of scripts/capture-hyprland.sh (which takes the same kind of capture
-without gaps, and took the third one):
+and took the third one; it now also records, in marks.txt, the stream
+line at which each set of replies was read, which the first two captures
+did not):
 
 1. before/: the replies to j/monitors, j/workspaces, j/clients and
    j/activewindow, read at 18:55:05. Four windows on workspaces 1-4.
@@ -50,8 +52,10 @@ Not scrubbed, as captured: window classes (public app ids such as
 com.mitchellh.ghostty, dev.zed.Zed, google-chrome), addresses, stableIds,
 pids, the monitor.
 
-What differs from the reconstruction (tests/fixtures/hyprland-0.56.2),
-which was reordered to match:
+What differs from the reconstruction (tests/fixtures/hyprland-0.56.2).
+Its switch, title and open bursts were reordered to match; it has no
+switch to a new workspace, so that order is replayed only from
+bursts.txt here:
 - A switch sends activewindow/activewindowv2 before workspace/
   workspacev2.
 - A switch to a new workspace starts with createworkspace/

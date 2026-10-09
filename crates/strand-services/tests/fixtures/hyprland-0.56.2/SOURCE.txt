@@ -2,9 +2,14 @@ Hyprland 0.56.2 IPC traffic, reconstructed from Hyprland's source at tag
 v0.56.2 (the files and wiki page cited below), not captured from a
 running Hyprland. Checked against a live Hyprland 0.56.2
 (hyprland-0.56.2-captured, 2026-10-08): the reply shapes match but for
-stableId (below); the switch burst was reordered (the active window
-first) and the title burst gained the activewindow pair Hyprland
-restates after a focused window's title. This file keeps the
+stableId (below). Three bursts were reordered to the captured order:
+the switch sends the active window first; the title burst gained the
+activewindow pair Hyprland restates after a focused window's title; and
+the open burst sends the new window's title and an urgent hint before
+openwindow, then the focus (the open burst only after a second review,
+2026-10-08). The scenario has no switch to a new workspace, so the
+captured createworkspace-first order is covered by the captured bursts
+only (src/wm/hyprland.rs captured_bursts_patch_or_ask_for_a_read). This file keeps the
 two-monitor scenario and the events the capture did not see. The
 stableIds were short placeholders ("a", "b", "c"); they now have the
 captured 8-hex-digit form ("18000001"...).
