@@ -44,7 +44,10 @@ pub struct ScrollInput {
 /// with no row there (rows still being mounted or laid out), and those
 /// whose view was held back at the edge of the mounted rows while the
 /// scroll went on (logic's rows late): the view stalls there, then
-/// jumps when they land.
+/// jumps when they land. A jump to a row not mounted
+/// ([`Renderer::reveal_index`]: a `nav` key, Ctrl+End) is held at the
+/// mounted edge until logic mounts it by design and is not a stall,
+/// until the pointer scrolls that list again.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct ListFrames {
     pub frames: u64,
@@ -67,6 +70,11 @@ pub(crate) struct Lists {
     /// The node a touchpad scrolls on each surface, until it lifts.
     touching: HashMap<SurfaceId, NodeId>,
     stats: ListFrames,
+    /// Lists whose offset a reveal set ([`Renderer::reveal_index`]): held
+    /// at the mounted rows' edge until logic answers, which is not a
+    /// stall. Cleared when the view reaches the offset or the pointer
+    /// scrolls the list.
+    revealing: HashSet<NodeId>,
     /// Rows laid out by scroll steps (tests: each row once).
     scroll_rows: usize,
     /// Nodes the diff being applied mounted for a list's window (rows
@@ -90,6 +98,7 @@ impl Renderer {
     /// Returns the node scrolled, if any moved.
     pub fn scroll(&mut self, surface: SurfaceId, point: LogicalPoint, dy: f32) -> Option<NodeId> {
         let id = self.scrollable_at(surface, point, dy, false)?;
+        self.lists.revealing.remove(&id);
         self.scrolls.entry(id).or_default().scroll_by(dy);
         self.scrolled(id);
         Some(id)
@@ -111,6 +120,7 @@ impl Renderer {
             ScrollKind::Lift => {
                 let id = self.lists.touching.remove(&surface)?;
                 let last = self.last_frame(surface);
+                self.lists.revealing.remove(&id);
                 let st = self.scrolls.get_mut(&id)?;
                 if reduced || !st.lift(input.time, last) {
                     return None;
@@ -120,6 +130,7 @@ impl Renderer {
             }
             ScrollKind::Touch => {
                 let id = self.scrollable_at(surface, point, input.dy, false)?;
+                self.lists.revealing.remove(&id);
                 self.lists.touching.insert(surface, id);
                 self.scrolls
                     .entry(id)
@@ -130,6 +141,7 @@ impl Renderer {
             }
             ScrollKind::Wheel => {
                 let id = self.scrollable_at(surface, point, input.dy, true)?;
+                self.lists.revealing.remove(&id);
                 let curve = if reduced {
                     Curve::Instant
                 } else {
@@ -237,6 +249,7 @@ impl Renderer {
         st.stop();
         st.offset = to.clamp(0.0, (st.content - st.viewport).max(0.0));
         if st.offset != before {
+            self.lists.revealing.insert(id);
             self.scrolled(id);
         }
     }
@@ -462,6 +475,8 @@ impl Renderer {
         let mut gap = false;
         let mut stall = false;
         let mut top = None;
+        // Lists whose view is where their offset is.
+        let mut at_offset = Vec::new();
         let mut ids: Vec<NodeId> = boxes.lists.keys().copied().collect();
         ids.sort();
         for id in &ids {
@@ -480,10 +495,14 @@ impl Renderer {
             }
             any = true;
             // Shown short of where the scroll is: held at the mounted
-            // rows' edge.
+            // rows' edge (a reveal's hold is not a stall).
             let max = (st.content - st.viewport).max(0.0);
             if (st.offset.clamp(0.0, max) - lb.applied).abs() > 0.5 {
-                stall = true;
+                if !self.lists.revealing.contains(id) {
+                    stall = true;
+                }
+            } else {
+                at_offset.push(*id);
             }
             // The part of the view the content reaches.
             let bottom = view.y + view.h.min(st.content - lb.applied);
@@ -518,6 +537,9 @@ impl Renderer {
             if reached + slack < bottom {
                 gap = true;
             }
+        }
+        for id in at_offset {
+            self.lists.revealing.remove(&id);
         }
         if any {
             let stats = &mut self.lists.stats;

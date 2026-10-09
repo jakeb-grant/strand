@@ -673,6 +673,25 @@ fn a_2000_row_list_lays_out_only_its_window() {
         r.scroll_state(lst)
     );
     assert!((1245..=1255).contains(&stats.top_row), "{stats:?}");
+
+    // A jump to the last row (Ctrl+End, `reveal_index`): the view is
+    // held at the mounted rows until logic mounts it, by design, so the
+    // frame is not a stall.
+    r.reveal_index(lst, 1999);
+    buf.paint(&mut r, S, 1);
+    let offset = r.scroll_state(lst).unwrap().offset;
+    assert!(
+        (r.scroll_offset(lst).unwrap() - offset).abs() > 100.0,
+        "held at the mounted rows: {:?}",
+        r.scroll_state(lst)
+    );
+    let stats = r.list_frames();
+    assert_eq!((stats.stalls, stats.gaps), (2, 0), "{stats:?}");
+    // The pointer scrolling it on while still held: a stall again.
+    assert!(r.scroll(S, LogicalPoint::new(10.0, 10.0), -100.0).is_some());
+    buf.paint(&mut r, S, 1);
+    let stats = r.list_frames();
+    assert_eq!((stats.stalls, stats.gaps), (3, 0), "{stats:?}");
 }
 
 /// Hit testing uses the rounded shape (a pill's corner is not the pill),
