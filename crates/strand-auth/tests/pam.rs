@@ -298,3 +298,68 @@ fn helper_faults_fail_closed_and_respawn() {
     let mut c = faulty("logic_panic, other");
     assert!(submit(&mut c, "anything").is_unlocked());
 }
+
+/// PAM takes at most `MAX_PASSWORD` bytes. A longer password is refused,
+/// never cut to a prefix that PAM would then accept.
+#[test]
+fn an_overlong_password_is_refused_not_cut() {
+    use strand_auth::protocol::MAX_PASSWORD;
+    let dir = tempfile::tempdir().unwrap();
+    // pam_exec hands the password on stdin (NUL-terminated); the right
+    // one is exactly as long as PAM takes.
+    let right = "a".repeat(MAX_PASSWORD);
+    let check = script(
+        dir.path(),
+        "check",
+        &format!(r#"pw=$(tr -d '\000'); [ "$pw" = "{right}" ]"#),
+    );
+    service(
+        dir.path(),
+        "strand",
+        &format!("pam_exec.so expose_authtok quiet {check}"),
+        "pam_permit.so",
+    );
+    let mut c = client(dir.path());
+    let v = submit(&mut c, &right);
+    assert!(v.is_unlocked(), "{v:?}");
+    for extra in ["a", "b", &"z".repeat(3000)] {
+        let v = submit(&mut c, &format!("{right}{extra}"));
+        assert!(matches!(v, Verdict::Denied { .. }), "{extra:?}: {v:?}");
+    }
+}
+
+/// The helper refuses an overlong password itself, whatever sends it:
+/// with a stack that accepts anything, a 600-byte password is denied.
+#[test]
+fn the_helper_refuses_an_overlong_password() {
+    use std::process::{Command, Stdio};
+    use strand_auth::protocol::{Code, MAX_PASSWORD, Message, read_message, write_message};
+    let dir = tempfile::tempdir().unwrap();
+    service(dir.path(), "strand", "pam_permit.so", "pam_permit.so");
+    let mut child = Command::new(HELPER)
+        .env_clear()
+        .env("STRAND_AUTH_PAM_CONFDIR", dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    let mut output = child.stdout.take().unwrap();
+    assert!(matches!(
+        read_message(&mut output).unwrap(),
+        Message::Hello { .. }
+    ));
+    let mut verdict = |pw: String| {
+        write_message(&mut input, &Message::Submit(Password::from(pw))).unwrap();
+        match read_message(&mut output).unwrap() {
+            Message::Verdict { code, .. } => code,
+            m => panic!("{m:?}"),
+        }
+    };
+    assert_eq!(verdict("x".repeat(MAX_PASSWORD)), Code::Success, "control");
+    assert_eq!(verdict("x".repeat(MAX_PASSWORD + 1)), Code::Denied);
+    assert_eq!(verdict("x".repeat(600)), Code::Denied);
+    drop(verdict);
+    drop(input);
+    assert!(child.wait().unwrap().success());
+}

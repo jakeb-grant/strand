@@ -26,9 +26,13 @@ use crate::Password;
 
 /// The protocol version a `HELLO` carries.
 pub const VERSION: u8 = 1;
-/// The longest payload of a frame: a password (PAM itself takes at most
-/// 512 bytes of one) or a verdict's message.
+/// The longest payload of a frame: a password or a verdict's message.
 pub const MAX_PAYLOAD: usize = 1024;
+/// The longest password PAM can be asked about: `PAM_MAX_RESP_SIZE`
+/// (512) less its NUL. A longer one is refused, by the client before
+/// it is sent and by the helper, never cut: a cut password would be
+/// checked as its prefix.
+pub const MAX_PASSWORD: usize = 511;
 /// The frame header: the length (4 bytes) and the kind.
 pub const HEADER: usize = 5;
 
@@ -133,6 +137,10 @@ pub fn encode(message: &Message) -> Zeroizing<Vec<u8>> {
             truncate(message, MAX_PAYLOAD - 1).as_bytes(),
         ),
     };
+    // A verdict's message is cut above. A password never needs cutting
+    // (the client refuses one over `MAX_PASSWORD`); if one is, it stays
+    // over `MAX_PASSWORD`, so the helper refuses it rather than check a
+    // prefix.
     let body = &body[..body.len().min(MAX_PAYLOAD - head.len())];
     let len = 1 + head.len() + body.len();
     // Sized once: extending within capacity never reallocates, so the
@@ -239,6 +247,18 @@ pub fn write_message(w: &mut impl Write, message: &Message) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const _: () = assert!(MAX_PASSWORD < MAX_PAYLOAD);
+
+    #[test]
+    fn an_oversized_password_stays_too_long_for_pam() {
+        let long = "x".repeat(4 * MAX_PAYLOAD);
+        let frame = encode(&Message::Submit(Password::from(long)));
+        let Message::Submit(p) = read_message(&mut frame.as_slice()).unwrap() else {
+            panic!("not a submit");
+        };
+        assert!(p.as_bytes().len() > MAX_PASSWORD);
+    }
 
     #[test]
     fn verdict_messages_are_cut_on_a_character_boundary() {

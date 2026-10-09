@@ -11,7 +11,7 @@
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::ptr;
 
-use strand_auth::protocol::Code;
+use strand_auth::protocol::{Code, MAX_PASSWORD};
 use zeroize::Zeroize;
 
 const PAM_SUCCESS: c_int = 0;
@@ -31,6 +31,7 @@ const PAM_TEXT_INFO: c_int = 4;
 
 /// `PAM_MAX_RESP_SIZE`: PAM takes at most this much of a response.
 const MAX_RESP: usize = 512;
+const _: () = assert!(MAX_PASSWORD == MAX_RESP - 1);
 
 #[repr(C)]
 struct PamMessage {
@@ -92,10 +93,17 @@ struct Conversation<'a> {
     messages: Vec<String>,
 }
 
+/// The denial of a password longer than PAM takes.
+fn too_long() -> String {
+    format!("a password longer than {MAX_PASSWORD} bytes cannot be checked")
+}
+
 /// Allocates a NUL-terminated copy of `bytes` with malloc (PAM frees
 /// responses with `free`, after wiping them in the modules that read
 /// passwords).
 fn malloc_copy(bytes: &[u8]) -> *mut c_char {
+    // [`check`] refused anything longer; the bound only keeps the copy
+    // in PAM's size.
     let n = bytes.len().min(MAX_RESP - 1);
     // SAFETY: a fresh allocation of n + 1 bytes, written in bounds.
     unsafe {
@@ -233,6 +241,10 @@ pub fn check(
 ) -> (Code, String) {
     if password.contains(&0) {
         return (Code::Denied, "a password cannot contain a NUL byte".into());
+    }
+    // Refused, never cut: PAM would check a prefix of what was typed.
+    if password.len() > MAX_PASSWORD {
+        return (Code::Denied, too_long());
     }
     let Ok(service) = CString::new(service) else {
         return (Code::Error, "bad service name".into());

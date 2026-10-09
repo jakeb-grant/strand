@@ -294,8 +294,20 @@ impl Client {
     /// Checks `password` (wiped once sent). Blocks until the helper
     /// answers or the timeout passes. Only a success reply mints an
     /// [`UnlockToken`]; anything else, including every failure to ask,
-    /// is not an unlock.
+    /// is not an unlock. A password longer than
+    /// [`protocol::MAX_PASSWORD`] bytes is denied without asking: PAM
+    /// takes no more, and cutting it would check a prefix.
     pub fn submit(&mut self, password: Password) -> Verdict {
+        // Refused, never cut (the helper refuses it too): PAM would be
+        // asked about a prefix of what was typed.
+        if password.as_bytes().len() > protocol::MAX_PASSWORD {
+            return Verdict::Denied {
+                message: Some(format!(
+                    "a password longer than {} bytes cannot be checked",
+                    protocol::MAX_PASSWORD
+                )),
+            };
+        }
         let deadline = Instant::now() + self.timeout;
         if let Err(e) = self.ensure_helper() {
             return Verdict::Failed(e);
