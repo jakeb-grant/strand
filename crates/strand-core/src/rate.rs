@@ -270,6 +270,34 @@ impl Runtime {
         }
     }
 
+    /// Edits the held writes to `cell` whose value is a `V` (other
+    /// handlers' held item writes, when an item write lands): `f` changes
+    /// the value in place and says whether anything is left to land; a
+    /// held write left with nothing is dropped.
+    pub(crate) fn edit_deferred<V: 'static>(
+        &self,
+        cell: NodeId,
+        mut f: impl FnMut(&mut V) -> bool,
+    ) {
+        let held = {
+            let mut throttled = self.inner.throttled.borrow_mut();
+            if throttled.is_empty() || !throttled.holds(cell) {
+                return;
+            }
+            throttled.extract(|d| d.cell == cell && d.value.as_ref().is_some_and(|v| v.is::<V>()))
+        };
+        for mut d in held {
+            let keep = d
+                .value
+                .as_mut()
+                .and_then(|v| v.downcast_mut::<V>())
+                .is_none_or(&mut f);
+            if keep {
+                self.inner.throttled.borrow_mut().reinsert(d);
+            }
+        }
+    }
+
     /// True while a held write to `cell` is waiting.
     pub(crate) fn has_deferred(&self, cell: NodeId) -> bool {
         self.inner.throttled.borrow().holds(cell)

@@ -531,6 +531,12 @@ where
 struct ItemEchoes<K, T> {
     next: u64,
     items: HashMap<K, EchoState<T>>,
+    /// The order item writes were made in (held or not): of two writes
+    /// of one item, the later one wins whichever lands first.
+    made: u64,
+    /// An item write is landing: the list's change is its own, and the
+    /// held writes it supersedes are dropped by their order after it.
+    landing: bool,
 }
 
 impl<K, T> Default for ItemEchoes<K, T> {
@@ -538,6 +544,8 @@ impl<K, T> Default for ItemEchoes<K, T> {
         ItemEchoes {
             next: 1,
             items: HashMap::new(),
+            made: 0,
+            landing: false,
         }
     }
 }
@@ -545,8 +553,20 @@ impl<K, T> Default for ItemEchoes<K, T> {
 /// Passes an item write on: the item's index, its new value, its tag.
 type ItemSend<T> = Box<dyn FnOnce(&Runtime, usize, &T, Generation)>;
 
+/// One held item write.
+struct HeldItem<K, T> {
+    key: K,
+    value: T,
+    /// The item when the write was made: another change of it since
+    /// supersedes the write.
+    base: T,
+    /// When it was made ([`ItemEchoes::made`]).
+    made: u64,
+    send: ItemSend<T>,
+}
+
 /// The item writes a throttled handler holds: the latest per item.
-struct HeldItems<K, T>(Vec<(K, T, ItemSend<T>)>);
+struct HeldItems<K, T>(Vec<HeldItem<K, T>>);
 
 /// Service-backed keyed lists: optimistic item writes and their echoes
 /// (the keyed counterpart of [`crate::Signal::write_tagged`] and
@@ -565,6 +585,12 @@ where
     /// handler's item writes are held, the latest per item, and land
     /// (each with its `send`) when its window has room: `Ok(None)`.
     /// Writing an item the list does not hold is an error.
+    ///
+    /// Latest write wins, per item: an item write that lands (even one
+    /// that changes nothing) drops the writes of that item other handlers
+    /// hold that were made before it, and any other change of the item
+    /// (another write of the list, a service's report) drops every held
+    /// write of it. Held writes of other items are kept.
     pub fn write_item_tagged(
         self,
         rt: &Runtime,
@@ -580,45 +606,77 @@ where
         if !self.with_untracked(rt, |v| v.contains_key(&key))? {
             return Err(super::KeyedError::MissingKey.into());
         }
+        let base = self
+            .with_untracked(rt, |v| v.get(&key).cloned())?
+            .ok_or(super::KeyedError::MissingKey)?;
+        let made = with_state::<ItemEchoes<K, T>, _>(rt, self.id, |s| {
+            s.made += 1;
+            s.made
+        });
         let mut held = rt
             .take_deferred::<HeldItems<K, T>>(self.id)
             .map_or_else(Vec::new, |h| h.0);
-        held.retain(|(k, _, _)| *k != key);
-        held.push((key.clone(), value, Box::new(send)));
+        held.retain(|h| h.key != key);
+        held.push(HeldItem {
+            key: key.clone(),
+            value,
+            base,
+            made,
+            send: Box::new(send),
+        });
         if rt.rate_gate(self.id) {
             let mut mine = Ok(None);
-            for (k, v, send) in held {
-                let r = self.commit_item(rt, k.clone(), v, send);
+            for h in held {
+                let k = h.key.clone();
+                let r = self.commit_item(rt, h);
                 if k == key {
                     mine = r.map(Some);
                 }
             }
             mine
         } else {
+            // Another change of a held item supersedes its write; a change
+            // made by an item write landing is sorted out by order there.
+            let rebase: crate::rate::Rebase = Rc::new(move |rt: &Runtime, _, v: Box<dyn Any>| {
+                let landing =
+                    peek_state::<ItemEchoes<K, T>, _>(rt, self.id, |s| s.landing).unwrap_or(false);
+                match v.downcast::<HeldItems<K, T>>() {
+                    Ok(mut h) if !landing => {
+                        let _ = self.with_untracked(rt, |v| {
+                            h.0.retain(|h| v.get(&h.key) == Some(&h.base));
+                        });
+                        h
+                    }
+                    Ok(h) => h,
+                    Err(v) => v,
+                }
+            });
             rt.defer_write(
                 self.id,
                 Some(Box::new(HeldItems(held))),
                 Box::new(move |rt: &Runtime, h| {
                     if let Some(Ok(h)) = h.map(|h| h.downcast::<HeldItems<K, T>>()) {
-                        for (k, v, send) in h.0 {
-                            let _ = self.commit_item(rt, k, v, send);
+                        for h in h.0 {
+                            let _ = self.commit_item(rt, h);
                         }
                     }
                 }),
-                None,
+                Some(rebase),
             );
             Ok(None)
         }
     }
 
-    /// Apply one item write, remember it, send it.
-    fn commit_item(
-        self,
-        rt: &Runtime,
-        key: K,
-        value: T,
-        send: ItemSend<T>,
-    ) -> Result<Generation, Error> {
+    /// Apply one item write, remember it, send it; the writes of that
+    /// item other handlers hold that were made before it are dropped.
+    fn commit_item(self, rt: &Runtime, held: HeldItem<K, T>) -> Result<Generation, Error> {
+        let HeldItem {
+            key,
+            value,
+            made,
+            send,
+            ..
+        } = held;
         let (index, changed) = rt.with_data::<CellData<K, T>, _>(self.id, |d| {
             let mut vec = d.vec.try_borrow_mut().map_err(|_| Error::Reentrant)?;
             let index = vec.index_of(&key).ok_or(super::KeyedError::MissingKey)?;
@@ -630,8 +688,14 @@ where
             Ok::<_, Error>((index, changed))
         })??;
         if changed {
+            with_state::<ItemEchoes<K, T>, _>(rt, self.id, |s| s.landing = true);
             rt.cell_changed(self.id);
+            with_state::<ItemEchoes<K, T>, _>(rt, self.id, |s| s.landing = false);
         }
+        rt.edit_deferred::<HeldItems<K, T>>(self.id, |h| {
+            h.0.retain(|h| h.key != key || h.made > made);
+            !h.0.is_empty()
+        });
         let g = with_state::<ItemEchoes<K, T>, _>(rt, self.id, |s| {
             let g = Generation(s.next);
             s.next += 1;
